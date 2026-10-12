@@ -90,6 +90,13 @@ class ConstructMarkdown(object):
         'JSON_Config': ('JSON Configuration', None, None),
     }
 
+    #: A section's pages in reading order where alphabetical is not it; a page not listed follows,
+    #: sorted, and a section not listed keeps its alphabetical order with `General` first.
+    READING_ORDER = {'Developer': ('Architecture', 'Calc Lifecycle', 'Dependency System',
+                                   'Resolver Layer', 'Conventions', 'Market Prices',
+                                   'Quote Sensitivities', 'Quote Propagation', 'Structures', 'Mcp',
+                                   'Spine', 'Roadmap')}
+
     #: What a stated default MEANS differs by store, so every generated page opens with its own.
     STORE_NOTES = {
         'Instrument': (
@@ -590,10 +597,13 @@ class ConstructMarkdown(object):
             pages = generated_docs_nav[display_name]
             config_lines.append(f"{base_indent}- {display_name}:")
             # Sort pages alphabetically within a section, a `general.md` (a chapter's index) first,
-            # except for JSON structure, whose order is built deliberately - each store's Overview
-            # first, its types sorted after it
+            # except where the section declares a reading order, and for JSON structure, whose
+            # order is built deliberately - each store's Overview first, its types sorted after it
+            order = self.READING_ORDER.get(display_name, ())
             ordered = (list if display_name == 'JSON Configuration' else
-                       lambda items: sorted(items, key=lambda item: (item[0] != 'General', item[0])))
+                       lambda items: sorted(items, key=lambda item: (
+                           order.index(item[0]) if item[0] in order else len(order),
+                           item[0] != 'General', item[0])))
             page_items = ordered(pages.items())
 
             for page_title, filepath_or_dict in page_items:

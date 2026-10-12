@@ -150,10 +150,6 @@
   Routledge (the DOI record of the 1996 monograph is dated 2 May 2018).
   [doi:10.1201/9780203748725](https://doi.org/10.1201/9780203748725)
 
-[@fisher1915]: Fisher, R. A. (1915). Frequency Distribution of the Values of the Correlation
-  Coefficient in Samples from an Indefinitely Large Population. *Biometrika*, 10(4), 507.
-  [doi:10.2307/2331838](https://doi.org/10.2307/2331838)
-
 [@follmer1988]: Föllmer, H. and Schweizer, M. (1988). Hedging by Sequential Regression: An
   Introduction to the Mathematics of Option Trading. *ASTIN Bulletin*, 18(2), 147-160.
   [doi:10.2143/ast.18.2.2014948](https://doi.org/10.2143/ast.18.2.2014948)

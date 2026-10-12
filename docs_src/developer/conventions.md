@@ -1,35 +1,36 @@
 # Conventions
 
-House rules for the derivus codebase. Enforced by convention, not by lint.
+House rules for the derivus codebase. A rule marked **Held by** goes red under the named test or gate
+if it is broken; one marked **Not gated** is held by nothing.
 
 ## JSON is the contract {#json-is-the-contract}
 
-The job JSON is the whole program. End-user scripts do `import derivus as rf`, `cx.load_json(...)`, `cx.run_job(...)` — **no internal imports, no monkey-patching**. Every framework feature ships behind a JSON switch, defaulting to bit-identical-when-off until the desk moves that default on measured numbers, which leaves the estimator it replaced one value away (`Branch_And_Weight`, whose `'No'` is the crisp path). The format is documented in [JSON Configuration](../json/index.md) and generated from `schema.mapping`.
+The job JSON is the whole program: a script does `import derivus as rf`, `cx.load_json(...)`, `cx.run_job(...)`, with no internal imports and no monkey-patching, since behaviour reached from outside the JSON is behaviour no other job can state. A feature ships behind a switch whose default stays bit-identical to the old path until the desk moves it on measured numbers, leaving the replaced estimator one value away (`Branch_And_Weight: 'No'` is the crisp path). **Held by** `tests/test_branch_and_weight.py::test_the_default_is_the_switch_on_a_real_document`. The format is generated from `schema.mapping` ([JSON Configuration](../json/index.md)).
 
-- **No defensive checks.** The JSON is validated by being the contract; code assumes required fields are present and fails loud (`KeyError` naming the factor via `check_tuple_name`). Do not add `if x in d` guards for contract fields.
-- **Config per variant, not flags.** A variant is a separate JSON config; scripts stay generic. Do not thread experiment booleans through function signatures.
-- **Never monkey-patch internals.** A missing metric or behavior is added to the framework behind a switch, never reached into from a user script.
-- **MarketData files are data-only** — no `Description` / commentary fields.
+- **No defensive checks.** Code assumes a contract field is present and fails loud (`KeyError` naming the factor via `check_tuple_name`); a guard turns a malformed job into a plausible wrong number.
+- **A variant is a separate JSON document**, not a flag threaded through signatures.
+- **MarketData files are data-only** — no `Description` or commentary fields.
 
 ## A declared default is a convention or a placeholder {#declared-defaults}
 
-`F(..., convention=True)` says the default is what omission MEANS — `Pay_Timing: End`, a null calendar, a blank `Discount_Rate`. `schema.DealFields` completes a convention on a read by name (`field['Cash_Rebate']`), so an author writes only what differs. Unflagged, a default is a placeholder — `Swap_Rate: 0.0`, a blank date — what a panel shows and nobody means by leaving it out: a deal that does not state one is refused by name at booking (`"Swap_Rate is not stated"`, `schema.validate_instrument`), and a placeholder reaching a pricer still raises its `KeyError`. A completion answers a read and never enters the block: `.get`, `in`, iteration, the JSON round trip, `plan_hash` and the factor universe see exactly what the author wrote. Anything authoring a deal (a benchmark emitter, the structures runner) writes the terms and the required fields, and a convention only where it differs from the declaration.
+`F(..., convention=True)` says the default is what omission MEANS — `Pay_Timing: End`, a null calendar, a blank `Discount_Rate`. `schema.DealFields` completes a convention on a read by name (`field['Cash_Rebate']`), so an author writes only what differs. Unflagged, a default is a placeholder — `Swap_Rate: 0.0`, a blank date — what a panel shows and nobody means by leaving it out: a deal that does not state one is refused by name at booking (`"Swap_Rate is not stated"`, `schema.validate_instrument`), and a placeholder reaching a pricer still raises its `KeyError`. A completion answers a read and never enters the block: `.get`, `in`, iteration, the JSON round trip, `plan_hash` and the factor universe see exactly what the author wrote. Anything authoring a deal (a benchmark emitter, the structures runner) writes the terms and the required fields, and a convention only where it differs from the declaration. **Held by** `tests/test_declared_defaults.py::test_a_default_answers_a_read_and_never_enters_the_program`, `::test_an_economic_field_is_refused_by_name_and_does_not_price`, `::test_a_job_document_keeps_its_plan_hash_and_its_factor_universe`.
 
 ## `globals()` dispatch {#globals-dispatch}
 
-Constructors dispatch on class name through the module `globals()`: `construct_calculation` does `globals().get(calc_type)(...)`; processes, deals, factors and calibration classes resolve the same way from their JSON type string. Hence **one class per concept in a file** — the class name *is* the dispatch key. Adding a type means adding a class, not editing a dispatcher.
+Constructors dispatch on class name through the module `globals()` — `construct_calculation`, `construct_instrument`, `construct_factor`, `process_class`, `construct_calibration_config` — so the class name is the dispatch key: **one class per concept in a file**, and a new type is a new class, never an edit to a dispatcher. An unknown deal `Object` loads as `{'Object': name}`, which `Config.validate` reports and the compile refuses.
 
-## Registries, not functions
+## Registries, not functions {#registries-not-functions}
 
-Extension points are data.
+Extension points are data: a new type is a row or a class attribute the engine already iterates.
 
-- Factor discovery is three dicts (`dependant_fields`, `nested_fields`, `conditional_fields` — see [Dependency System](dependency_system.md)); process→factor wiring and calibration are registered in `Model Configuration` and `calibration_config.json`.
-- A deal's, price factor's, process's, calculation's, calibration's, sales structure's or price family's JSON schema is a per-class `fields` list (`schema.py`), and every store but `System` is the view `schema.emit_*` builds from those declarations at import — not a second copy to keep in step.
-- Where the store's key is not the class name, **the class declares the bridge** rather than the emitter guessing it: a process declares the `factor_types` it drives, a calculation the `calc_type` its JSON `Object` writes (`Base_Revaluation` is authored as `BaseValuation`), a calibration the `model_type` it calibrates, a bootstrapper the `market_factor_type` it selects work by (a block is named `LogVar2FJModelPrices` while its class is `LogVar2FJModelParameters`) and the `price_factor_type` it writes, which keys its `Bootstrapper Configuration` entry (`FXVol`, whose class is `FXVolSurfaceParameters`). No rule recovers any of those names from the other.
-- Two menus are the same declarations read sideways: `Process_factor_map`, and `Interpolation_factor_map` from the `interpolation_methods` the three curve factors declare.
-- A schema may REFERENCE another rather than restating it — a market-price quote names an instrument type and carries a block of it, so the `Instrument` declarations are the quote's schema; see [Market Prices](market_prices.md).
+- Factor discovery is three dicts in `config.py` ([Dependency System](dependency_system.md)); process wiring and calibration are registered in `Model Configuration` and `calibration_config.json`.
+- Every JSON schema is a per-class `fields` list, and every store but `System` is the view `schema.emit_*` builds from those declarations at import, never a second copy.
+- Where a store's key is not the class name, **the class declares the bridge**: `factor_types` on a process, `calc_type` on a calculation (`Base_Revaluation` is authored as `BaseValuation`), `model_type` on a calibration, `market_factor_type` and `price_factor_type` on a bootstrapper (`FXVolSurfaceParameters` reads `FXVolPrices` and writes `FXVol`, its `Bootstrapper Configuration` key). No rule recovers one name from another.
+- `Process_factor_map` and `Interpolation_factor_map` are the same declarations read sideways; a market-price quote references the `Instrument` declarations rather than restating them ([Market Prices](market_prices.md)).
 
-A function that switches on a magic-string type, or a parallel dict passed alongside a primary operand, is a class-or-registry waiting to happen — flag it. Strengthen the existing primitive; do not bolt on a parallel concept or a magic-string branch.
+**Held by** `tests/test_schema_emission.py::test_every_store_is_the_emitted_view`, `::test_the_calculation_types_are_what_run_job_dispatches`.
+
+A function switching on a magic-string type, or a parallel dict passed beside a primary operand, is a class or registry waiting to happen: strengthen the existing primitive.
 
 ## Documentation and doc generation {#documentation-and-doc-generation}
 
@@ -44,77 +45,51 @@ So for a deal, a price factor, a stochastic process, a calculation, a calibratio
 
 ## Comment and code style {#code-style}
 
-- Terse. Correct **>** efficient **>** least-lines — but no redundant work in hot paths (no stray `.to()` / `.item()` / `.detach()` in the AAD path).
-- One-line comments explaining *why*, not *what*. No banner comments.
-- Operational lines at `logging.info`, build-time checks at `logging.debug` (the `LEDGER`, `BOUNDARY` and `KINK` lines), never behind `os.environ` flags.
-- A diff that removes lines/imports usually wins: small public surface, one-way dependency edges.
+- Correct > efficient > terse, and no redundant work in a hot path (no stray `.to()` / `.item()` / `.detach()` in the AAD path).
+- Numerically stable forms by default: `expm1`/`log1p`, log-domain tails, no difference of near-equal roots, float64 precalculation cast once.
+- A comment says why, in at most three lines; a docstring says what the code does; an `F` description is one sentence. History goes in the commit message.
+- Operational lines at `logging.info`, build-time checks at `logging.debug` (`LEDGER`, `BOUNDARY`, `KINK`), never behind `os.environ` flags.
+- A diff that removes lines usually wins.
 
 ## Look before you write {#look-before-you-write}
 
-Before adding any helper, **search `utils.py` and the package for an existing equivalent** — a hard rule, and every new-code task must do it first. Dedupe on contact when moving code. The name-resolution, curve-gather, date and tensor primitives you need almost always already exist; a new one is usually a missed search.
+Before adding a helper, **search `utils.py` and the package for an existing equivalent**; a new primitive is usually a missed search. A `Deal` method is the seam for every family whatever its docstring says (`check_option_data`): extend it with a parameter rather than writing beside it. A second spelling found while working is deleted.
 
 ## Change scope {#change-scope}
 
-`Credit_Monte_Carlo` and `Base_Revaluation` are **do-not-touch** — the CVA/FVA/CollVA/IM block inside `Credit_Monte_Carlo.execute` in particular, whose reductions are specified on [xVA](../theory/valuation_adjustments.md). They are the production valuation paths and everything downstream reconciles against the numbers they report. The `HedgeMonteCarlo` / solver stack is free to redesign. Reuse pre-processed deal data (`field_index['Cashflows']` etc.) inside `Deal` methods rather than re-walking `self.field`.
+`Credit_Monte_Carlo` and `Base_Revaluation` are **do-not-touch** — above all the CVA/FVA/CollVA/IM block in `Credit_Monte_Carlo.execute`, specified on [xVA](../theory/valuation_adjustments.md) — because they are the production valuation paths everything downstream reconciles against. The `HedgeMonteCarlo` / solver stack is free to redesign. Inside `Deal` methods, reuse pre-processed data (`field_index['Cashflows']`) rather than re-walking `self.field`.
 
-The one thing wired into that block is [boundary-correction assembly](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem), and the terms on which it got there are the terms for anything else: it changes what is handed to `backward()` and **nothing** about what is reported — worth exactly zero in the forward pass by construction, gated bit-identically (`np.array_equal` on the exposure, `==` on the scalar, sensitivities on versus off). A change that cannot make that guarantee does not belong here. A per-factor scaling of the correlation matrix before the Cholesky does not: a declared correlation is the correlation of the innovations for every process, and nothing scales it.
+The one thing wired into that block is [boundary-correction assembly](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem), and its terms are the terms for anything else: it changes what reaches `backward()` and **nothing** reported, being worth exactly zero forward. **Held by** `tests/test_boundary_pricer_events.py::test_asking_for_sensitivities_does_not_move_the_autocall_exposure` (exposure `np.array_equal`, CVA `==`, sensitivities on against off) and `tests/test_cva_gamma_kink.py::test_asking_for_the_hessian_moves_nothing_the_run_already_reported`. A per-factor scaling of the correlation matrix before the Cholesky fails those terms: a declared correlation is the correlation of the innovations for every process, and nothing scales it. **Held by**, for LogVar2FJ, `tests/test_logvar2fj_json.py::test_a_logvar2fj_equity_realises_the_rows_its_four_sub_factors_declare`.
 
 ## A unification owes its siblings {#unification-siblings}
 
-When you absorb N call sites into one seam, **enumerate the call sites you did not absorb**, and for each either bring it in or gate it against the seam. Naming them in the commit message is the floor. An unnamed sibling is where the next defect gets written.
+When you absorb N call sites into one seam, **enumerate the call sites you did not absorb** and either bring each in or gate it against the seam; naming them in the commit message is the floor. The duty is the unifier's because a unification degrades its siblings three ways: **the seam inherits all the new testing** while a sibling's coverage stays put; **the sibling becomes the only copy** of a formula once reviewed beside its twin; and **a reviewer reading a clean seam stops looking**.
 
-The obligation is on the unifier, because a unification does not leave its siblings where it found them — it degrades them three ways at once: **the seam inherits all the new testing**, while the sibling's coverage stays what it was; **the sibling becomes the only copy** of a formula that used to be reviewed beside its twin; and **a reviewer reading a clean seam stops looking**, generalising "obviously right" to the whole pricer.
+In the OSS pricers every sibling `InnerMCRecompute.run` left outside it kept its own spelling of the forward or the variance, and each was wrong. Two failure shapes run through all of them:
 
-**Measured — four unabsorbed siblings of one seam.** `InnerMCRecompute.run` absorbed three pricers' inner simulation (`pv_MC_Accumulator` joined as a fourth later), and each sibling left beside it was wrong:
+- **The wrong allocation telescopes to the right total**, so European limits, in-out parity and CRN gradient ladders stay right and only path-dependent monitoring is biased.
+- **At a flat surface or zero carry the value cannot see the strip while the gradient can.**
 
-| unabsorbed sibling | the defect | measured |
-| --- | --- | --- |
-| `hit_value`, the outer path-state override in `pv_discrete_barrier_option` | a literal copy of the in-out-parity leg's forward: annualised rates summed with no `dt`, plus a half-variance whose cancelling subtraction exists only on the branch it came from | **+1432%** of value on every `all_hit` row of every `BARRIER_IN` deal, under every spot model alike, with the whole suite green |
-| `sim_spot_oss`'s `carry * dt` | a per-interval carry where the two maintained adopters differenced cumulative integrals, so `E[S_T] ≠ F(t,T)` under the pricer's own Monte Carlo | **4.276e-02** on the sibling fixture's sloped curve |
-| `sim_spot_oss`'s `(vols*vols) * dt`, and the same expression in both `pv_MC_AutoCallSwap` branches | ONE implied vol read at the strike's moneyness and the EXPIRY tenor, applied to every monitoring interval; only `pv_MC_Tarf` differenced | `Down_And_In` **+11.53%**, `Up_And_Out` -11.07% on a 0.10–0.32 surface; the autocall **-8.27%, 207 se** against a sloped oracle, the strip -0.081% |
-| `pv_MC_AutoCallSwap`'s *full-path* branch, since retired | its own `carry * dt`, named by no defect report | price unchanged (`r = q = 0` fixture); **rate sensitivities move 100%** |
+`pricing.total_log_forward`, `forward_carry_rate`, `forward_vol_strip` and `forward_vol_rate` make divergence **unrepresentable**: every adopter takes them, and none keeps an inline spelling, even a correct one. A vol read belongs to the leg, at the leg's own strike (the autocall's triggers through `trigger_vol_strip`, its put on a strip of its own). They cannot catch a wrong `cum_t`, which is shape-compatible and prices identically on a flat fixture. **Held by** `tests/test_branch_and_weight.py::test_the_two_fixing_tarf_lands_on_the_quadrature_table`, `::test_the_two_coupon_autocall_lands_on_the_quadrature_table` (flat inputs: the totals, not the allocation) and `tests/test_sticky_strike_strip.py::test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forward`. **Not gated:** the allocation under a sloped curve or a vol term structure.
 
-Two failure shapes run through all four. The wrong allocation **telescopes to the right total**, so every European limit, in-out parity and every CRN gradient ladder stay right and only the path-dependent monitoring is biased. And **at a flat surface or zero carry the value cannot see the strip while the gradient can** — which is why a flat-surface repo could not see any of it.
+**A documented limitation must carry its number.** One recorded without its measured size is absolution, not documentation: a reader assumes it is small. If it is unmeasured, say so and say what measuring it would take.
 
-Closed the way the mechanism says, not by fixing the one that was wrong: `pricing.forward_carry_rate`, `pricing.forward_vol_strip` and `pricing.forward_vol_rate` are the primitives, every adopter takes them in its `theta`, and the correct inline spellings were **deleted** rather than left as the reference. Bit-identity was measured, not assumed (2 ULP on one CVA-gradient entry from backward reassociation). The moneyness half is a **second** change with the opposite sign, closed by internal consistency: the deal's own `use_forwards` is threaded into the strip, so both pricers read the surface at the moneyness they mark their own Europeans at (0 ULP on the autocall's closed-form digital, +0.016% on the barrier, parity back to -0.19 ± 1.30) and every flat repo fixture is 0 ULP. What remains in [the roadmap](roadmap.md) is the MODELLING question — a desk quoting sticky-*forward* moneyness wants the read that was removed — a switch, not a defect.
+### What is gated, and what is not {#what-holds-today-and-what-the-purge-left-open}
 
-**The moneyness half had a second half.** Reading each PRICER at the moneyness it marks its own Europeans at left the compact autocall reading ONE moneyness for a deal with two strikes in it — a trigger at the initial level and a put at 70% of it — and the put was therefore marked at the ATM vol. On an NKY surface that is 24.6% against 20.3% at five years and **33% of the mark**, measured against the same economics booked as six separate legs, each of which reads its own strike because each is its own deal. The unit is the LEG, not the pricer: `pv_MC_AutoCallSwap` builds a second `forward_vol_strip` at the put's own strike and the put leg walks, survives and pays on it, off the same uniforms, so no other document's stream moves. The barrier OSS pricers already read their European legs at their own strike (`sd_to_expiry = sigma(K, tau) sqrt(tau)`); measured on the skewed NKY surface, an always-in discrete up-and-in matches its own European to **+0.034%** at a 70% strike and +0.022% at the money, so nothing there had to move.
-
-**A fix can wake a sleeping guard, and the fixture that proves the fix is the one that hides it.** `sim_spot_oss` floors every interval's variance at `1e-4`, harmless only while the defect above handed it the largest vol on an upward surface. A correct strip makes it bind wherever `sigma_fwd < 0.01/sqrt(dt)`: **114 of 365 daily intervals** on a 0.12→0.24 surface, worth +1.584% on a `Down_And_Out` and -6.870% on an `Up_And_Out`. Every barrier fixture here is MONTHLY, ten times clear of it and bitwise identical with the floor on, off or conditional. The floor is now conditioned on the zero-length first interval it exists for (`dt == 0`, elementwise, because `dt` is a tensor axis), with `drift` and `vol` reading ONE `var` so a floored interval is a martingale under the law it is drawn from; daily readings land at +0.183% and +0.403%. Its two halves partly CANCEL — the floor alone costs -5.576% on the up-and-out but only -0.13% on the down-and-out, so a one-armed gate would have scored it harmless. **Deleting it entirely is how you find out what it was for**: every value stays finite and 11 of 13 CVA-gradient entries go NaN. It was never a value guard; it is a `sqrt`-at-zero guard.
-
-**A documented limitation must carry its number.** A "known limitation" recorded without its measured magnitude is absolution, not documentation. The model half of the barrier defect sat in the pricer's own docstring for years with no number attached; it was **15.8%** per unit and 25.3% of EPE. A reader who meets a limitation with no size assumes it is small. If you have not measured it, write that you have not, and write what measuring it would take.
-
-### What holds today, and what the purge left open
-
-`pricing.total_log_forward`, `forward_carry_rate`, and `forward_vol_strip` / `forward_vol_rate` catch nothing by assertion — they make divergence **unrepresentable** rather than detected, so a second spelling has to be written deliberately. What they cannot catch: a caller handing the wrong `cum_t` (the strip is *shape*-compatible with the raw zero rates, so it still prices, and prices identically on every flat fixture), and a FLAT surface, which is every barrier, TARF and autocall fixture in this repo.
-
-**A guard is a branch too.** `boundary_weights` carried a near-singularity refusal testing `denominator/(s0·s2)` — a ratio Cauchy–Schwarz bounds by 1 — against `1e-30`. It refused nothing in the engine's entire history, and nothing could tell: a refusal that never fires and one that is never needed look identical from outside. The docstring stated the intent and the code did not implement it. It now bounds `||weights||_1`, which is what the solve actually produces.
-
-**OPEN — ungated since the suite was cut to JSON-contract tests.** The measurements are kept above; nothing below re-checks them. Each item is what a removed test checked.
-
-- **The term-structure strip** — that a surface's TERM STRUCTURE reaches the monitoring (two surfaces agreeing at expiry must separate, each landing on an independent fine-step oracle), the moneyness half, and the European invariant the fix must not break. It held the repo's only 0-ULP price assertion (the autocall's one-coupon closed-form digital) and its only fixture dense enough to reach the `1e-4` variance floor.
-- **Sibling forward agreement** — that the forward the **payoff** uses equals the forward the **vol surface** is read at — the third route, the only one that was never a sibling. Measured: dropping `times` inside the helper left the sibling assertion green and died only on that route. Nothing replaces it, so the payoff-forward against vol-surface-forward route is ungated.
-- **The already-hit barrier leg's value** — the `hit_value` leg's VALUE against a reference rebuilt from the deal's own dates, on an `all_hit` block where the leg is the entire reported PV. This is the class **no AAD-vs-CRN gate can see** — a bump ladder differentiates the same wrong value, so a wrong number with a consistent derivative reads as a pass. **Replaced**: `tests/test_barrier_fold_json.py` runs a knock-in that every scenario of a credit Monte Carlo crosses at its first monitoring date, at a 4% rate against a 2% dividend, and holds every later row — the `all_hit` rows, those between monitoring dates included — to Black's call by hand, its knock-out twin to the rebate and then nothing.
-- **Rate units** — an AST taint pass over `derivus/` for a name holding an annualised carry rate reaching `exp` without a year fraction first (1.5 s, no engine import, no fixture). It flagged exactly the shipped expression and nothing else. Nothing runs the pass today. It never could see the sloped-carry strip, which is units-**correct** and value-wrong.
-- **The pricer branch ledger** — branch arcs no test executes. **Replaced**: the ledger is inlined in `gates/pricer_branch_census.py`, the tracer is stdlib `sys.monitoring`, the AST hold is back as `--anchors`, and the reading is **38** arcs, each named in the ledger — not comparable to the 64/65 the old ledger recorded. Neither catches wrong arithmetic: the defective barrier line WAS executed, as a `boundary_aad` counterfactual whose value is discarded. **Executed is not observed** — and `if all_hit:`, a must-cover arc, was executed by nothing for a month after its only test left, which the census is what said.
+- **Held:** the already-hit barrier leg's value, invisible to an AAD-against-CRN gate since a bump ladder differentiates the same wrong value (`tests/test_barrier_fold_json.py::test_a_row_every_scenario_has_crossed_is_what_the_barrier_became`); pricer branches no test executes (`gates/pricer_branch_census.py`), though a branch executed is not a branch checked.
+- **Not gated:** the vol term structure reaching the monitoring (two surfaces agreeing at expiry and differing before it); the payoff's forward against the vol surface's; rate units, an annualised carry reaching `exp` without a year fraction (an AST pass is the cheap check, blind to a units-correct, value-wrong sloped carry).
 
 ## A fixture must not zero the quantity its gate is sensitive to {#fixture-degeneracy}
 
-The recurring way work with passing tests turns out wrong here is not bad reasoning and not a mis-stated assertion. It is a **fixture that sets the quantity under test to nothing**, so the gate runs, passes, and measures a term that is identically zero. Eight instances in one work stream; the already-hit barrier leg is the expensive one — a **+1432%** mark that three independent degeneracies each hid on their own:
+A gate whose fixture zeroes the quantity under test runs, passes and measures a term that is identically zero. Two rules follow.
 
-- **`r = q = 0`.** The defect was a drift summed without its `dt`, proportional to the carry. At zero carry the same defect reads **+17.5%**, and two of the six mutants that kill it become no-ops.
-- **Base valuation.** One MTM row means the `all_hit` mask is all-False at row 0, so the leg was not mis-asserted — it was **never executed**.
-- **`Down_And_Out` only.** The one barrier that did run an exposure grid took the model-free zeros branch.
+**Vary the parameter the defect would live in, then check the mutant dies.** A surviving mutant means the fixture is wrong, not that the code is right. Record the kill magnitudes in the docstring (`tests/test_boundary_pricer_events.py` is the template), so a later "simplify this fixture" refuses itself.
 
-Two rules follow, and they are different rules.
-
-**Vary the parameter the defect would live in, then check the mutant dies.** A mutant that survives your gate means the **fixture** is wrong, not that the code is right. Record the kill *magnitudes* in the test's docstring — the mutation prose in `tests/test_boundary_pricer_events.py` is the template — which is what makes a later "simplify this fixture" refuse itself.
-
-**Marginal coverage is not joint coverage.** The suite already had a knock-in barrier and an exposure grid and a non-zero carry — in *different* tests. When a branch is reached only by a conjunction, one gate has to satisfy the whole conjunction.
+**Marginal coverage is not joint coverage.** A branch reached only by a conjunction needs one gate that satisfies all of it.
 
 ### The checklist
 
-Before calling a gate done, for each of these say either "varied" or "degenerate **because** …":
+Before calling a gate done, say for each "varied" or "degenerate **because** …":
 
 | | |
 |---|---|
@@ -129,25 +104,21 @@ Before calling a gate done, for each of these say either "varied" or "degenerate
 | netting sets | more than one where the calculation aggregates |
 | the conjunction | which combination reaches the branch you are gating, and does one run hold all of it? |
 
-### The mechanical half
+### The plugin
 
-`gates/fixture_degeneracy.py` is a pytest plugin that observes the calculation entry points and folds every run into a **deal type × degeneracy axis** table — no test source parsing, no hand-kept module→family map, so a new deal type appears the day its first test runs. A cell is *blind* when no run of that deal type ever made the quantity non-degenerate. Run it as `python gates/fixture_degeneracy.py tests/...`; on fourteen barrier, option, TARF and autocall test modules, as the suite then stood, it costs 6:39 → 7:12, so it rides an existing suite invocation rather than being a run of its own.
-
-What **enforces** is the short `JOINT` list, not the table, and the reason is measured: with the fix's own gates removed from the row set, every *marginal* cell for `EquityBarrierOption` still reads `ok` — knock-ins existed, exposure grids existed, live carries existed. Only the three-way conjunction is unmet. **The marginal table would not have caught this defect; the joint requirement does.** The table stays a report until someone triages it into `ACCEPTED` (`--degeneracy-strict` makes it fail), because forty-five red cells on day one is a gate nobody reads.
-
-**OPEN.** The test the `EquityBarrierOption` JOINT entry was verified against was removed, and the knock-in equity-barrier fixtures that survived it went with the Heston-Nandi family's retirement. Whether any surviving run still meets the three-way conjunction the entry requires — `single_mtm_row=False` **and** `barrier_dir='In'` **and** `carry_zero=False` — is a question for a run of the plugin, not a grep, and it has not been re-run since the purge.
-
-Neither half can tell you a gate's *assertion* is weak — only that its fixture had nothing to assert on.
+`python gates/fixture_degeneracy.py tests/<modules>` tables every run by **deal type × degeneracy axis**; a cell is *blind* when no run made the quantity non-degenerate. What **enforces** is the short `JOINT` list of conjunctions one run must hold (`EquityBarrierOption`: `single_mtm_row=False`, `barrier_dir='In'`, `carry_zero=False`), since every marginal cell can read `ok` while a conjunction is unmet: an unmet entry or a stale `ACCEPTED` exemption fails the run, and `--degeneracy-strict` fails a blind cell too. A selection pricing no deal of an entry's type skips the entry, so confirm one over the modules that price it (`tests/test_barrier_fold_json.py` meets the barrier's by construction).
 
 ## What a landing runs {#what-a-landing-runs}
 
-**A landing runs the tests its diff reaches.** `python gates/impacted.py --dirty --time` names them and `--run` runs them (`--since BASE`, `--commit SHA` for a range or one commit). The selection is line-granular off an execution map: a changed statement selects the tests that executed it, a new one those that reach its place, a changed `def` header the tests that entered it, a module- or class-level binding every test reaching a line that names it; a docstring or comment selects nothing. It fails open on `tests/conftest.py`, `derivus/__init__.py` and any path the map has never seen, and says which. `--files` rounds up to whole test files, for a test that reads a value another test of its file left in a cache. Beside it run the standing identity readings, and on a numeric change every test that banks a simulated number bit for bit or tighter than 1e-6 the change reaches — the selection holds those, a last-bit respelling reaching every test that runs the line.
+**Blast radius first:** `python gates/reach.py <Symbol>` (or `--dirty`) names the consumers, callers, documents and holes a change reaches ([limits](roadmap.md#how-a-change-is-verified)).
 
-**A campaign boundary runs the suite** with the tree held still, then `python gates/impacted.py --measure DIR`, the one instrumented pass that rebuilds the map (every test file in its own process under coverage, homes on temp folders, GPU 0), then `gates/pricer_branch_census.py`, which traces only the tests the map says enter a census pricer.
+**A landing runs the tests its diff reaches.** `python gates/impacted.py --dirty --time` names them, `--run` runs them (`--since BASE`, `--commit SHA`), and `--files` rounds up to whole files for a test reading another's cached value. Selection is line-granular off an execution map — a changed statement selects the tests that executed it, a comment nothing — and fails open, saying why, on `tests/conftest.py`, `derivus/__init__.py`, an unmapped path or no map. Beside it run the standing readings.
 
-**Every test names its killing mutation**, and a slow one is made as cheap as that mutation allows: a world priced once per module where several tests read it, fewer paths, rungs or rows only where the mutation still dies with margin, the readings before and after restated in the docstring beside it. A test goes only where every mutation it names is shown red under the tests that remain - never on coverage alone.
+**A campaign boundary runs the full suite** with the tree held still, since a selection cannot see an order-sensitive statistical gate or a dependency gained since the map; then `python gates/impacted.py --measure DIR` rebuilds the local map, and `CUDA_VISIBLE_DEVICES=0 python gates/pricer_branch_census.py` traces the tests it says enter a census pricer (`--anchors`: the AST half alone).
 
-Measured on 2026-10-09 on a single-GPU workstation, after the suite was cut to tests that drive a JSON contract, have a defined outcome, cover a named area and run or fail quickly: 1,150 tests, 29.5 minutes instrumented where 1,590 took 75; the engine's modules 12.8 minutes, the record and service sets 16.7, those bound by `fsync` - 52 ms a sync, 36 ms an append, up to a second a minted home, and a home minted per test; the census 26 minutes where it traced the suite in 80 to 120. The census then read 48 arcs; it reads 38 since its tracer counts the jump Python 3.13 emits to close a nested `if` as the branch not taken.
+**A test** drives a JSON contract, has a defined outcome, covers a named area, runs or fails quickly, and names its killing mutation; it goes only where every mutation it names is shown red under the tests that remain, never on coverage alone.
+
+**A change that renames, moves or deletes code runs `python gates/doc_symbols.py`**, which checks that every function, class, constant, test and file these pages cite in backticks still exists, so a **Held by** line cannot point at a test that is gone. It cannot tell whether a page describes the code correctly: a change to behaviour updates the page that states the rule.
 
 ## No overengineering
 

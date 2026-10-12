@@ -40,6 +40,8 @@ tests/_stepper_out*/
 # spelling of that pipeline has to be in the tree. The 28 MB of live prints still are not.
 !/gates/hw2f_composition.py
 !/gates/reach.py
+# the developer pages name it as what a renaming change runs, so it has to be in the tree
+!/gates/doc_symbols.py
 # the acceptance game is tracked for the same reason: tests/test_spine_game.py plays the day it
 # describes, so the roles, the objectives and the faults have to be in the tree. What a RUN of it
 # writes still is not - that lands under artifacts/.

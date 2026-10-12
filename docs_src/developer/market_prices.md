@@ -1,1303 +1,464 @@
 # Market Prices
 
-`Market Prices` is the risk-neutral half of the market data: the **quotes** a risk-neutral model is
-fitted to, where `Price Factors` holds the curves and surfaces a historical calibration produces. A
-*bootstrapper* turns each block into the factor or model parameters the simulation reads. All six
-families are built; each family's method is specified on its [Bootstrapping](../bootstrapping/general.md)
-page, and this page is the reasoning and the measurements behind them.
+`Market Prices` holds the quotes a market factor or a model is fitted to; `Price Factors` holds what
+the fits write. A *price family*, one class in `derivus/bootstrappers.py`, turns each of its blocks
+into one price factor, and `Config.bootstrap` runs the configured families in the order their reads
+demand. A family is a set of declarations because the same declarations publish the schema, drive
+the web screens and order the run, so the three cannot drift. Each family's method is on its
+[Bootstrapping](../bootstrapping/general.md) page; this page is how the framework works and why.
 
-!!! note "How to read the numbers on this page"
-    Unless a test is named beside it, a number here was measured during development and is not
-    re-checked by a test. Timings were taken on one development workstation (its CPU, and an RTX 3090
-    where a card is named) and are indicative only. The index ladders named (SX5E, NDX, NKY, SD3E)
-    and the USDZAR ladders are option sets fitted during development and are not in the repository.
-    The "five-expiry world" is the synthetic `INDEX_A` ladder of
-    `tests/fixtures/data/logvar2fj_world.json`, and the curve "round-trip worlds" are the synthetic
-    USD and ZAR worlds of `tests/test_interest_rate_prices.py`.
+| where | what |
+| --- | --- |
+| `bootstrappers.py` | the families, `FAMILIES`, `WRITERS`, `bootstrap_order`, `bootstrap_dependents` |
+| `config.py` | `Config.bootstrap(only, wanted)` |
+| `schema.py` | `emit_market_prices`, `emit_configuration`, `MARKET_QUOTE_VALUES`, `update_market_quote` |
+| `service.py` | the verbs that author market data ([below](#verbs)) |
+| `derivus_bloomberg/` | the seed, the security map, the curve strip, the surface and chain fetch |
+| `derivus_bootstrap.py` | the multiprocessing launcher |
+
+A rule marked **Held by** goes red under that test if it is broken.
 
 ## A quote is an instrument, a quote type and a number {#a-quote}
 
 | | |
 | --- | --- |
-| **the instrument** | a reference to an EXISTING instrument type — the thing the number is a price *for* |
-| **`Quote_Type`** | what kind of number is quoted, and therefore what "reprices to the quote" means |
+| **the instrument** | a declared instrument type, the thing the number is a price *for* |
+| **`Quote_Type`** | what kind of number is quoted, and so what "reprices to the quote" means |
 | **`Quoted_Market_Value`** | the number |
 
-A quote does not restate an instrument's fields. It names an instrument type and carries a block of
-that type, so the `Instrument` store's declarations *are* the quote's schema. `quote_instruments` on
-the bootstrapper class names the types a family's quotes may be, and that list is what a `DealType`
-dropdown offers. No test holds quotes to the declared deal types;
-`test_the_registry_publishes_exactly_the_declared_structures` (`tests/test_structures.py`) holds the
-same rule for structures.
+A quote never restates an instrument's fields: it names a declared type and carries a block of it,
+so the `Instrument` declarations are its schema and the two cannot drift. `Quote_Type` is per family
+because one name would ask three questions: the energy family takes vols, the option family a vol
+or a premium, a curve a par rate.
+**Held by** `test_schema_emission.py::test_a_quote_type_means_different_things_to_different_families`.
 
-`Quote_Type` is per family, not global: Clewlow–Strickland takes implied vols, the option family a
-vol or a premium, an interest-rate quote a par rate.
+**Values and plan.** A quote row's `Quoted_Market_Value`, `Quoted_Bid`, `Quoted_Ask` and `Timestamp`
+(`schema.MARKET_QUOTE_VALUES`) are values; everything else in a block is plan. A row joins the value
+plane by declaring all four: `Points` and `European_Options` do, so the curve, FX smile and
+LogVar2FJ families tick as values and the other three are wholly plan-side. An absent value key is
+dropped rather than shadowed, because a pillar that starts being quoted two-sided is the same node
+of the same plan. `schema.update_market_quote` refuses an update moving anything plan-side, a moved
+node being a new plan and a recompile, and `values_hash` is taken with the clocks projected out
+(`schema.without_clocks`), a market's identity being its numbers. **Held by**
+`test_market_prices_partition.py::test_the_tick_guard_and_the_partition_draw_the_same_line`,
+`test_market_prices_partition.py::test_a_quote_tick_moves_the_values_hash_and_leaves_the_plan_bit_identical`.
+What the split buys is on [Quote Propagation](quote_propagation.md#protocol).
 
 ## A family maps a quote set to what it calibrates {#a-family}
 
-A bootstrapper class is one price family. It declares:
+A family subclasses `Construction` (a closed form or a square system of roots, repricing its quotes
+exactly) or `ImpliedCalibration` (a least-squares fit); both are `Family`, which completes the
+configured entry from the declarations. The six are tabled on [General](../bootstrapping/general.md).
+A family declares:
 
-- `market_factor_type` — the `Market Prices` type string a block is filed under, and the string the
-  class selects its own work by. Declared rather than recovered from the class name, because the
-  block is `LogVar2FJModelPrices` while the class is `LogVar2FJModelParameters`.
-- `price_factor_type` — the `Price Factors` type it writes, which is its key in the
-  `Bootstrapper Configuration` section, and `reads` — the factor types its fit reads, which is
-  what orders the section (below).
-- `fields` — the block's schema, including the quote table or container as the class reads it.
-- `quote_instruments`, where the quotes are instruments rather than a fixed option table.
+| attribute | what |
+| --- | --- |
+| `market_factor_type` | the `Market Prices` type it reads; declared because it differs from the class name |
+| `price_factor_type` | the `Price Factors` type it writes under each block's name, and its `Bootstrapper Configuration` key |
+| `reads` | the factor types it prices on, which order a run |
+| `fields` | the block's schema as `schema.F`, the quote table included |
+| `quote_instruments` | the instrument types a quote may be, where quotes are instruments |
+| `documentation` | its generated methodology page |
 
-`mapping['MarketPrices']['types']` is `schema.emit_market_prices(bootstrappers)` over those
-declarations, and `construct_bootstrapper` resolves the class from its section key — the factor
-type it writes, or the class name as an alias.
+`mapping['MarketPrices']` carries the families and the value plane, so a client ticks what the guard
+admits without spelling it; `mapping['Configuration']` is one entry per family, its dials the
+declarations less the quote block's Tables and Containers, its class name under `aliases`. **Held by**
+`test_schema_emission.py::test_the_configuration_store_is_the_families_own_declarations`.
 
-| Family | Quotes | Writes |
+**Extending.** Declare the attributes, implement `bootstrap(...)` writing
+`price_factors['<price_factor_type>.<name>']`, and add the class to `FAMILIES`, which the registry
+and the schema read. Read the family's own written factor as its [warm start](#warm-starts); declare
+the four value keys on the quote row (`schema.QUOTE_TWO_WAY`) if a tick should move it without a
+recompile; for `Quote_Sensitivity`, leave the connected parameters in `calibrated` and the leaves in
+`quote_leaves` for `Config.bootstrap` to harvest. The schema gates are parametrised over families
+(`test_schema_emission.py::test_the_quote_block_declares_what_the_bootstrapper_reads`); the
+partition gate spells them by hand and fails until the new one is added
+(`test_market_prices_partition.py::test_every_family_partitions_by_the_one_rule_and_round_trips_exactly`).
+
+## Warm starts {#warm-starts}
+
+A family's own written factor is its warm start, and no field declares it: a written factor is the
+evidence that a basin was found, so an implied calibration skips the search and solves from it.
+
+| family | cold | warm |
 | --- | --- | --- |
-| `GBMAssetPriceTSModelPrices` | a vol surface, ATM column only — or, where `FXVolPrices` built that surface, [its ATM rows](#fxvolprices) | `GBMAssetPriceTSModelParameters` — an integrated vol curve |
-| `CSForwardPriceModelPrices` | European energy futures options | `CSForwardPriceModelParameters` — sigma, alpha |
-| `LogVar2FJModelPrices` | European options on any spot, plus forward-start smiles | `LogVar2FJModelParameters` — four scalars, **a forward-variance curve `ξ` and four bucketed levers** |
-| `HullWhite2FactorModelPrices` | forward-starting swaps against a swaption surface | `HullWhite2FactorModelParameters` — two sigma curves, two alphas, a correlation |
-| `InterestRatePrices` | deposits, FRAs, swaps and FX forward outrights | an `InterestRate` zero curve |
-| `FXVolPrices` | ATM vols, risk reversals and butterflies | an `FXVol` log-moneyness surface |
+| Hull-White | basin hopping, then least squares | the least squares alone |
+| Clewlow-Strickland | L-BFGS-B from `Seed` | from the factor, clipped into the boxes |
+| LogVar2FJ | the staged search | the joint polish alone ([below](#logvar2fj)) |
+| `FXVolPrices` | a refined grid | the [pinned grid](#fxvolprices) |
+| `InterestRatePrices` | the par rates | none: the par rates move with the tick, a previous θ\* does not |
 
-**A family's own written factor is its warm start.** There either are parameters in `Price Factors`
-for that name or there are not, and no field declares which: present, the next fit of that block
-starts at them and skips the SEARCH that finds a basin, running the polish alone; absent, the full
-search. That is what an intraday tick pays for — on the four-quote Hull-White block
-(`tests/fixtures/hw2f_four_quote_job.json`), whose chain is fifty basin hops and then a least
-squares, about 420 objective evaluations cold against single digits warm, landing within 1e-8 of
-each other, and on a 2% move in every quoted vol a warm fit reaching a lower residual than the cold
-chain in a fraction of its evaluations. The energy fit (`tests/fixtures/cs_energy_job.json`), one
-bounded minimisation from its declared `Seed`, reads 69 evaluations against 15.
-`tests/test_warm_starts.py` holds the properties rather than the counts: warm under a tenth of cold
-and within 1e-7 of it on the Hull-White block, under a quarter of cold and no worse a loss on the
-moved ladder, and under half of cold on the energy block. The two families whose seed
-is already a function of the CURRENT quotes take nothing from this and are unchanged: `FXVolPrices`
-[reuses its pinned grid](#fxvolprices) at the same expiries and tolerance, and `InterestRatePrices`
-seeds from the par rates, which move with the tick where a previous θ\* does not — measured on the
-round-trip worlds, a previous θ\* is worth one Newton iteration of four or five, none, or one more.
-`GBMAssetPriceTSModelParameters` fits nothing.
+**Held by** `test_warm_starts.py::test_the_written_hull_white_factor_skips_the_search`,
+`test_warm_starts.py::test_the_written_energy_factor_seeds_the_minimisation`.
 
-## `Bootstrapper Configuration` is the book's own default for every dial {#bootstrapper-configuration}
+## `Bootstrapper Configuration` {#bootstrapper-configuration}
 
-A `Market Prices` block carries the quotes and the factors they price against. Everything else a
-family reads — the boxes it fits in, the seeds it starts from, the budgets it stops on, the priors
-it falls back to — is a hyperparameter, and a book states those ONCE, in that family's
-`Bootstrapper Configuration` entry.
+A quote block carries quotes and the factors they price against; every other dial a family reads
+is a hyperparameter, stated once per book in the family's entry. The author's rules are on
+[the JSON page](../json/bootstrapper_configuration.md); this is the mechanism.
 
-**Two levels, one rule.** A family is constructed with its section entry and completes it from its
-own declarations (`schema.declared_defaults`), so every declared key stands whether the book wrote
-it or not; each quote block is then read as `dict(section, **block)`, the block winning on
-conflict. A dial nobody declares is its `F(...)` default; a dial the section declares is the book's
-answer for every block of that family; a dial the block declares is that name's own. A malformed
-value refuses by name at construction, before a quote is read — `Sigma_L_Bounds` reversed,
-`Psi_Strikes` unordered, a `Seed` of the wrong length, a prior table naming an asset class the
-family does not fit — and `Config.bootstrap` RAISES on that refusal, naming the entry, so the whole
-bootstrap stops and a book with a bad entry writes no factor rather than a wrong one.
+**Two levels.** A family is built from its entry completed by its declarations
+(`schema.declared_defaults`), and each block is read as `dict(section, **block)`, the block winning.
+Construction types every dial, so a malformed value refuses by name before a quote is read and
+`Config.bootstrap` raises naming the entry: a bad entry writes no factor rather than a wrong one.
+**Held by** `test_loud_refusals.py::test_a_family_refusing_at_construction_is_refused_by_name`.
 
-**Failures inside a family are per block.** A block whose named factor is missing, or whose
-construction fails, is logged and skipped, and whatever that block wrote before stands: the
-Clewlow-Strickland, GBM term-structure and Hull-White families all do this, and Hull-White also
-skips a block on a curve that is not its currency's `Master_Curves` entry. The curve solve RAISES
-instead (no decreasing Newton step, or the iteration cap). After each family `Config.bootstrap` logs
-an error where blocks were handed over and no `<type>.*` factor was written.
+**Keyed by what a family writes** (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`), so a
+section reads as the factors a run writes; class names stay aliases in `WRITERS`. `Prices` is the
+stem of the `Market Prices` type an entry routes on: `derivus_bootstrap` routes blocks to workers
+off it and refuses an entry without it, while in process a missing one is a warning, the family
+knowing its type.
 
-**The section is keyed by what each family WRITES, and `Prices` names what it reads:**
+**The order is a topological sort.** `bootstrap_order` sorts the entries over what each writes
+against what it `reads`, so a curve is solved before the swaption fit on it and a surface before the
+fits reading it, whatever the file's order; both paths take it. Independent entries keep the file's
+order and a cycle refuses. The curve family solves each block after every block building a curve
+its `Discount_Rate` or its benchmark deals name. **Held by**
+`test_interest_rate_prices.py::test_the_blocks_are_solved_in_dependency_order`,
+`test_interest_rate_prices.py::test_a_forward_block_authored_before_the_curve_its_other_leg_needs_still_solves`.
 
-```json
-"Bootstrapper Configuration": {
-    "InterestRate":             {"Prices": "InterestRate"},
-    "FXVol":                    {"Prices": "FXVol"},
-    "LogVar2FJModelParameters": {"Prices": "LogVar2FJModel", "Paths": 8192}
-}
-```
+**Each family is handed only its own blocks** (`market_prices_for`), and a block no family reads
+refuses the bootstrap. A block missing a named factor is logged and skipped by the
+Clewlow-Strickland, GBM and Hull-White families and refused by the others; on the service an ERROR
+refuses the write ([below](#verbs)).
 
-The key is the family's `price_factor_type`, the `Price Factors` block it produces, so a section
-reads as the factors a run will write. Four families already spelled that in their class name; the
-two that did not are `InterestRate` (was `InterestRateCurveParameters`) and `FXVol` (was
-`FXVolSurfaceParameters`), and every old class name stays as an alias, so an older book keeps
-working; an unknown key refuses by name and lists both spellings. `Prices` is the STEM of the
-`Market Prices` type the entry routes on — the type is that value plus the literal `Prices` — and
-is mandatory on the multiprocessing path (`derivus_bootstrap`, which routes blocks to workers off
-the section alone, and refuses before a worker is spawned); in process a missing `Prices` is a
-warning naming the fix, the family knowing its own type, and one naming another family's type
-refuses on both paths. An entry may still be the legacy CSV string an older file carries, which
-routes on its first field and declares no hyperparameter. The rename also repairs
-`derivus_bootstrap`'s daily carry-over, which matches previously written factors against the
-section's keys and so never carried an `FXVol.*` or `InterestRate.*` forward. The launcher shares
-the physical cores out over its workers, never more threads than cores, and the split matters by
-block size: a small block is dispatch-bound, so eight single-thread workers fit four times what
-one eight-thread worker does on the five-expiry world, while a desk-size block is
-bandwidth-bound and reads the same throughput at eight by one as at four by eight; the
-hyperthreads add nothing either way. The parent sets it before the workers spawn, since a
-spawned worker sizes its BLAS pool at import; `DV_BOOTSTRAP_THREADS` overrides.
+**A run narrows to what moved.** `Config.bootstrap(only=…)` covers the blocks whose numbers moved
+plus every block reading one of them (`bootstrap_dependents`): a family's `reads`, and for curves the
+very curve a block names, so a curve re-solves the curves discounting on it and no others. `wanted=`
+narrows to what named factors stand on, so a calculation bootstraps only what its book reads.
+**Held by** `test_service.py::test_a_moved_curve_re_solves_what_reads_it_and_nothing_else`.
 
-**The section drives the loop, and the order is a topological sort.** `Config.bootstrap` and
-`derivus_bootstrap.Parent.start` both take `bootstrappers.bootstrap_order`, a
-`utils.topological_sort` over what each family writes against what it `reads`, so a curve is
-solved before the swaption fit that prices on it and an FX surface before the GBM curve that
-integrates its ATM column, whatever order the file gives — where `sorted()` put
-`HullWhite2FactorModelParameters` before both spellings of the curve family. A read no configured
-family writes carries no edge, that factor being already in `Price Factors`; a family reading what
-it writes orders only its own blocks; a cycle refuses by name; independent entries keep the file's
-order. Each family is handed only its own blocks, and both empty cases are logged: a configured
-family the book carries no block for, and a block type no configured family claims.
+**Outside `bootstrap`**, the swaption residual (`calc_loss`) and the curve ride (`propagate`,
+`plan_key`) complete their block from the declarations, so the declared default is the fallback
+everywhere.
 
-**A run narrows to what moved.** `Config.bootstrap(only=…)` names the `Market Prices` blocks whose
-numbers moved and covers those plus every block that READS one of them —
-`bootstrappers.bootstrap_dependents`, closed over the same declarations the order is taken from: a
-family's `reads` for a surface or a spot model, and for the curve family the very curve a block
-names, in `Discount_Rate` or inside its benchmark deals, which is per block rather than per type. A
-family left with no selected block is neither constructed nor run and its factors stand exactly as
-they are. `None` is every block, which is what every caller but a values tick passes.
+## The verbs that author market data {#verbs}
 
-Three entry points are reachable without `bootstrap` — the swaption residual closure (`calc_loss`,
-`calc_loss_on_ir_curve`), which a gate builds off a hand-authored block, and the curve ride
-(`propagate`, `plan_key`), which runs at EXECUTE off a document carrying no bootstrapper. Each
-completes its own block from the declarations, so the declared default is the fallback there
-rather than a literal repeated in the code. A Table's declared blank is the string `'null'`, so
-`sigma_knots` reads a LIST or nothing, which is `schema.quote_rows`' own reading: taking anything
-truthy as a knot list would put one knot at t = 0 in place of the ten-knot grid. The same blank is
-why the two prior tables promoted below are Text and not Tables: a Table cannot carry a default
-table.
+The [MCP tools](mcp.md#the-tools) and the web screens call these same verbs. A writing verb holds
+three invariants:
 
-One thing is deliberately not declarable. `FXVolSurfaceParameters.grid_tolerance_bounds` is
-`Grid_Tolerance`'s own domain rather than a dial — below `1e-8` the refinement does not terminate —
-so it is the field's declared `bounds` and the engine's own refusal. `OptionQuoteFamily`'s FX
-ladder is declared like every other dial: `ATM_Expiries` and `Wing_Expiries` in MONTHS,
-`Wing_Pillars` as delta magnitudes, `Days_Per_Year`, `Expiry_Tolerance` in DAYS of that year and
-`Minimum_Contracts`. `fx_surface_block` is handed the family's completed section entry and reads
-every rung off it; handed none — which is what a caller with no book in hand gets — it reads the
-declarations alone, and that is what the partition gate holds the emitted header to.
-`LogVar2FJModelParameters` declares its own four wing expiries at two pillars and the floor of
-eight its chain emitter refuses under, so a thin surface collapsing onto six contracts is refused
-by name until the book states a `Minimum_Contracts` it will accept. What each family declares is
-on its generated page; the fields promoted out of the code —
-`LogVar2FJModelParameters`' `Leverage_Prior_Weight`, `Shape_Penalty`, `Residual_Horizon`,
-`Spot_Rung_Tolerance`, `Slow_Factor_Prior_Defaults` and `Leverage_Prior_Defaults`;
-`HullWhite2FactorModelParameters`' `Sigma_Bounds`, `Alpha_Bounds`, `Correlation_Bounds`,
-`Basin_Step`, `Basin_Temperature` and `Basin_Hops`; `CSForwardPriceModelParameters`'
-`Sigma_Bounds`, `Alpha_Bounds` and `Seed` — default to the numbers the code carried, so a book
-declaring none of them fits what it fit before (the NKY block bit for bit, the four index ladders
-within 1e-11).
+- **One atomic write.** Blocks, entries, spots, dates and the bootstrap land in one `Book.mutate`
+  edit, so the file never holds quotes and factors from two states.
+- **The bootstrap judges.** `market_edit` captures the bootstrap's ERROR channel
+  (`utils.CapturedErrors`) and anything on it refuses the whole write: a book never carries a market
+  its own bootstrap complained about. **Held by**
+  `test_service.py::test_a_bootstrap_that_complains_writes_nothing`,
+  `test_service.py::test_a_set_up_a_bootstrap_complains_about_writes_nothing`.
+- **A terminal trip is an act.** The tick, a verification and a set-up are queued jobs whose id
+  hashes the submission clock, so two asks are two trips.
 
-**The section is declared, set and re-bootstrapped from outside the file.** `emit_configuration`
-publishes `mapping['Configuration']`, one entry per family keyed the way the section is keyed, its
-dials the family's own declarations less the Tables and Containers — those are the quote block's
-ladders and instrument definitions, never a hyperparameter — each carrying the default it stands
-at, and the class-name spellings beside them as `aliases`, so a client files an older book's key
-without knowing what a price family is. `POST /book/configure` (`{section, entry, fields}`) merges
-`fields` into the entry under the key the book already uses, rather than renaming it, completing
-one that states no `Prices` with the stem it routes on; it validates by CONSTRUCTING the family
-off the merged entry, which is where a malformed value refuses by name before a quote is read; and
-it then re-bootstraps the whole market through the tick's own path, so a bootstrap that complains
-writes NOTHING and hands its messages back, and an answer that writes names the price factors the
-run rewrote. `Price Factor Interpolation` is the second section the verb writes, its entry a routed
-factor TYPE: `{method}` is what every factor of it is built with and `{id, method}` one factor's own
-rule, both held to `Interpolation_factor_map`, which is also what the store names rather than
-restating.
+| verb | what it does | its own rule |
+| --- | --- | --- |
+| `POST /book/market` | installs or value-updates quote blocks, bootstraps what moved | a quote moves under `quotes`, never as a values patch, which nothing would re-solve |
+| `POST /book/configure` | merges `fields` into one entry of either configuration section | validated by constructing the family; the market re-bootstraps |
+| `POST /book/curve` | authors an `InterestRatePrices` block from benchmark rows | the tenor says what a row is |
+| `POST /book/date` | moves both base dates, re-authoring every curve block | goes back as well as forward |
+| `POST /book/bloomberg`, `DV_Service --tick` | the tick: surfaces, curve rows and routed spots | freshness first; a routine beat never provisions |
+| `/book/securities` | the ticker vocabulary, the verified map, each knot's print | only a terminal writes the map |
+| `/book/dependencies` | the factor walk, each missing factor with what would supply it | writes nothing |
+| `POST /book/setup` | builds the market a pair, a deal or a subtree needs | nothing lands that depends on a block the write will not carry |
+| `POST /book/model` | fits one pair's spot model off its built surface | on request, never on the tick |
 
-**A curve is set up the same way, from its instruments.** `POST /book/curve` (`{curve, currency,
-rows: [{tenor, security?, quote?, use?}], discount_rate?, interpolation?}`) authors an
-`InterestRatePrices` block
-from the benchmark rows a desk states: the TENOR is what says what each instrument is — `ON` and the
-curve's declared front are deposits, `1Mx4M` a FRA, `6M1M` a swap starting in six months, anything
-else a spot swap ending there — and the conventions it accrues under are completed from the
-workstation's seed entry for that curve, the desk's own file where it declares them and the packaged
-one otherwise, which is read and never written. A row states its own `quote` or the `security` this
-workstation's terminal prices it off; an unquoted row refuses by name. `interpolation` is THIS
-CURVE'S OWN SCHEME, written as its `id` rule in `Price Factor Interpolation` in the same write and
-before the solve — so the curve is solved under what it will be read under — blank clearing
-the rule and an absent one leaving it as it stands; it is the one request field that does not
-reach the block. The block is dropped
-and re-installed rather than ticked, the `InterestRate` entry added where the book configures none,
-and the whole market re-bootstrapped in the same atomic write, so a bootstrap that complains writes
-NOTHING. The Bloomberg tick then keeps those rows valued: the used rows' securities are re-priced
-and moved as VALUES, a row whose print the screen refuses keeps its number and is held out with
-`Use` No by name — the verb is what puts it back — and a block whose base date has rolled is
-RE-AUTHORED from its own rows and conventions first, because the dates are structure and no tick may
-move them. **The tick values the book's SPOTS too**, in that same write: every `FxRate.<ccy>.Spot`
-whose currency routes to a verified `fx_spot` pair against the base is re-fetched in the session the
-trip already holds and crossed onto the engine's axis by `structures.with_live_spots`' own
-inversion, as a values patch rather than an authoring; the outcome names them under `spots`, and a
-currency the map verified no pair for keeps the spot it had and is named under `unrouted`, a cross
-never being triangulated through a third currency. A SPOT PAYS THE SAME SCREEN AS A SURFACE: its
-print goes through `security_map.stale` in the same check, before anything is fetched, so a series
-that stopped printing refuses the whole trip by name rather than writing a plausible number every
-deal in the book then reprices off — and a ticker that does not answer at all is a named refusal
-(`written` false, the message verbatim) rather than an error status the cadence cannot read a cause
-off.
+**The tick** re-prices every curve block's rows as values and re-crosses each routed
+`FxRate.<ccy>.Spot` onto the engine's axis, never triangulating a cross. Every wanted security is
+screened by `security_map.stale` before anything is fetched, and one late print refuses the trip,
+because a dead series keeps answering with a plausible number. A curve row the screen refuses is
+held out with `Use` No, by name: one dead ticker is one knot fewer. **Held by**
+`test_service.py::test_a_stale_quote_refuses_the_tick_by_name`,
+`test_service.py::test_a_spot_print_the_terminal_will_not_stand_behind_refuses_the_tick`,
+`test_service.py::test_the_tick_values_the_books_curve_rows_and_holds_a_dead_one_out`.
 
-**The snap sets the date.** A row priced off the terminal carries the print's own clock, so both the
-curve verb and the tick author on the LATEST print they came back with, and where that is later than
-the day the book stands at the book rolls onto it — `System Parameters.Base_Date`, what the
-benchmarks roll off, and `Calculation.Base_Date`, what the pricers run on, move together — with
-every other curve block re-authored there in the same write, two curves dated differently being one
-of them solved for a day nobody asked about. A snap never rolls a book BACKWARDS: an old print is
-evidence about a quote, not a valuation date, and a row a desk states by hand carries no print at
-all and is authored as of the day the book already stands at. `POST /book/date` (`{base_date}`) is
-the verb that puts the date ANYWHERE, back-valuations included: it stamps both dates, re-authors
-every block on the new day from its own rows and conventions with no terminal asked, and, where the
-book declares a bootstrapper, re-bootstraps the whole market in one atomic write, naming a block too
-old to carry its conventions and leaving it exactly as it stands. Because the strip is a function
-of its own tenors, a roll that leaves the year fractions alone leaves the solved factor alone with
-them.
+**The snap sets the date.** A row priced off a terminal carries the print's clock, so the curve
+verb, the tick and a set-up author on the latest print; where that is after the book's day, both
+base dates roll onto it and every other curve block is re-authored there, two curves dated
+differently being one solved for a day nobody asked about. A snap never rolls a book back: an old
+print is evidence about a quote, not a valuation date. **Held by**
+`test_service.py::test_a_later_print_rolls_the_books_date_through_the_tick_and_an_older_one_does_not`,
+`test_service.py::test_a_tick_landing_while_the_terminal_priced_the_rows_refuses_rather_than_rolling_back`,
+`test_service.py::test_the_date_verb_sets_both_dates_and_re_rolls_every_curve_onto_them`.
 
-**The ticker vocabulary is served the same way, and every knot names its print.** Which securities
-a desk could quote is a SEED file it owns (`$DV_HOME/seed.json`, completed by the packaged
-questionnaire block by block and curve by curve); what a terminal answered about them is the
-verified MAP (`$DV_HOME/security_map.json`), every entry carrying the NAME the terminal gave, the
-quote's last print and when it was verified, beside a `rejected` ledger keyed by ticker.
-`GET /book/securities` reads both, says whether this home has been verified at all, and JOINS them
-onto the book: `used` is every `InterestRatePrices` row with its tenor, security, quote and
-timestamp and that security's evidence beside it — the verdict that rejected it, or `unmapped` — so
-which print a knot was solved from is one read rather than two files. `POST /book/securities`
-(`{block, key, entry}`, a null entry removing it) merges one entry into the desk's own seed,
-validated by SPELLING every candidate the merged file now names, and written atomically with the
-file it replaced kept beside it; the packaged questionnaire is never written. The terminal half is
-`POST /book/securities/verify` (`{block?, key?, securities?}`), queued on the same executor and
-cost class as the tick: every entry in scope is re-probed for the drift its own recorded evidence
-cannot show, every name the seed spells that the map has never heard of is probed once and
-ledgered, every REJECTED name in scope is asked again - a rejection is one day's answer, so one
-that prices now moves off the ledger into the map under `revived` - and the map is rewritten
-atomically. A workstation
-whose blpapi does not import refuses there by name — the map is evidence, and only a terminal
-writes one.
+**Vocabulary and evidence.** The seed (`$DV_HOME/seed.json`) names what a desk could quote; the map
+(`$DV_HOME/security_map.json`) is what a terminal verified, beside a `rejected` ledger verification
+re-asks, a rejection being one day's answer; `used` joins each curve row to that evidence. **Held by**
+`test_service.py::test_a_vocabulary_entry_is_merged_kept_and_refused_by_name`,
+`test_service.py::test_every_knot_names_the_print_it_was_solved_from`.
 
-**And a market is set up from what a trade NEEDS.** `GET /book/dependencies` (`?deal_path=`, no path
-being the whole book) and `POST /book/dependencies` (`{deal, parent_reference?}`, the candidate
-spliced the way the what-if splices one and nothing written) are the engine's own factor walk over
-one subtree, re-emitted: every factor with its status and, for a missing one, the `supply` that
-would fill it — the vocabulary block and key this desk seeds it under, how many securities the seed
-spells for it, how many the map has verified, and for a curve whether its entry declares
-conventions. That last read is `scoped_seed` and `scoped_map`, the same narrowing a verification is
-asked in, so the counts cannot drift from what a probe would cover; a factor nothing seeds carries
-`supply` null and a note, an equity as honestly as a currency nobody named, and a counterparty's
-`SurvivalProb` names `POST /book/survival`, which writes it from the spread and the recovery the CVA
-desk states. The candidate runs the
-BOOKING's own authoring verdict first (`newly_said`, the half of `deal_verdict` that is not about
-market data, which is the question being asked) and refuses in its words, because a deal whose
-`Object` names no type reaches nothing and a walk that answered it would tell a model the market is
-fine.
-`POST /book/setup` (`{pair?, deal?, parent_reference?, deal_path?}`, exactly one of the three or
-none for the whole book's want-list) is the act. A PAIR'S WANT-LIST IS THE WALK TOO: a vanilla
-option on it is walked through the same discovery, so each leg's spot is read at the curve its own
-`FxRate` block discounts on and a book carrying a ZARONIA-discounting rand gains no second rand
-curve; only a leg the book has no spot for takes the curve the seed names for its currency, that
-being the one thing no walk can find until the block exists. The job is queued on the tick's own
-executor and cost class: it discovers ONLY the names the map has never heard of for the supplying
-entries, its rejected ledger asked again beside them — THE MAP IS EVIDENCE AND IS WRITTEN AS IT IS
-GATHERED, before the book, so a refused set-up leaves a grown map and an unmoved book, and a map
-whose content would not change is not rewritten at all. Then every wanted surface and spot print is
-checked for FRESHNESS FIRST, one late security refusing the whole trip by name with nothing fetched
-and nothing written exactly as it refuses a tick; then the surface is fetched, each new currency's
-spot is crossed onto the ENGINE's axis and each new curve's seeded benchmarks are priced, a row the
-screen refuses held out by name. One seed reading serves the whole job — `desk_seed`, the packaged
-entry with the desk's own over it curve by curve — so the strip that is priced is the strip that
-was counted, discovered and verified.
-WHERE THE PRINTS MOVE THE BOOK'S DATE the market it already carries is re-priced in the same
-session and lands in the same write - the standing surfaces, every standing curve's rows and the
-routed spots - through `market_fetch`, the ONE fetch a tick IS, so there is no second spelling of
-the trip and no book holding two days of quotes under one date; where the date does not move, only
-the wants are fetched. Everything lands in ONE atomic write through `curve_edit`: the `FxRate`
-blocks, the quote blocks, the entries that solve them and the bootstrap of what was installed and
-what reads it.
-NOTHING LANDS THAT WOULD DEPEND ON A BLOCK THE BOOK WILL NOT CARRY AFTER THE WRITE. A curve nothing
-can supply - no seed entry, no conventions, or a strip the screen leaves under the emitter's floor -
-is a `not_supplied` row carrying the reason, and A NEW CURRENCY IS INSTALLED AS A PAIR OR NOT AT
-ALL: its curve values its own benchmark deals in the book's base, so the fit reads the currency's
-`FxRate` block exactly as that block reads the curve, and the two are held with each other — a spot
-the map verified no pair for holds its curve exactly as a dead strip holds the spot. A surface is
-held with whichever leg is not coming. So no `FxRate` ever lands pointing at a curve the book does
-not have, no curve lands that nothing can value, and every row names the factor it waits on. What
-is left still lands. A strip screened out by age says so in the screen's own
-verdicts with the book's date and `POST /book/date` beside them - the emitter's census counts what
-it REJECTED, and a held-out row is not rejected, so a book valued forward of its market would read
-"nothing refused" there. THE ANSWER'S THREE FACTS ARE INDEPENDENT: `written` says whether the book
-moved and is true iff something landed, `installed` is exactly the factors written, `refused` is
-what refused the WRITE and is only ever non-empty with `written` false, and `not_supplied` is
-`{factor, reason}` for every want that could not be filled. What lands is ORDINARY blocks — the
-screens below edit them in place from then on — and `check` names what a trader should look at
-there: a curve set up on the conventions this build ships, the benchmarks held out, every standing
-block a roll re-priced under the desk's feet, and a surface the base currency is neither leg of.
-Refused at submission with no terminal, with no `Bootstrapper
-Configuration`, for a pair this desk's vocabulary does not spell (one stated backwards being told
-the spelling the seed carries), and for a `deal` the booking verb would itself refuse.
-
-**Each half has its own screen in the web UI.** *Bootstrapper* renders both sections off that store,
-every dial at what the entry states or the declaration's default otherwise, edited in place, and
-offers the families the book does not configure yet: adding one posts an empty entry, which the verb
-completes with that family's stem and then re-bootstraps like any other change — so a family the book
-has quotes for lands and one that writes no price factor refuses in `Config.bootstrap`'s own words
-with the file untouched. A section declaring a `menu` renders as the three-column table it has
-always been edited in — `Risk_Factor.Method | Where | Equals` — a row per routed type with the two
-columns blank and a row per rule with the attribute a single factor is named by and the name it
-must equal, so a per-curve scheme set from a Curves card and one set here are the same row. *Market Prices* renders every quote block against `mapping['MarketPrices']`,
-each block's ladder under the columns its family declares, and edits the VALUE columns alone:
-`mapping['MarketPrices']['values']` publishes `MARKET_QUOTE_VALUES` beside the types, so a client
-moves what the tick guard admits without spelling one of the four names, and finds a block's ladder by
-the predicate `quote_containers` uses — the declared row carrying them all. An edit posts the WHOLE
-block back through `/book/market`, which value-updates it and bootstraps that block and whatever
-reads it in one atomic write, naming what it covered under `bootstrapped`, and a structural change
-refuses by name. *Curves* is the third: `GET /book/curve` read back as one card
-per block — the rows under the keys the verb takes, the conventions as a panel over the family's
-declarations whose lower-case spellings the answer names plus the curve's own `interpolation`,
-which the answer names and the family declares no column for, and the solved factor beside them —
-and the card is the editor, every commit posting the whole curve back through `POST /book/curve`
-once the burst has gone quiet, with no set-up button on it. The card states the conventions it
-shows, the block being the curve's definition; `Near_Interpolation` travels only where a
-`Near_Tenor` stops it, and the last card is a new curve the commit completing it creates. *Securities* is the fourth, over the three verbs above: the seed one card per key a block
-files an entry by, edited in the shape it stands in and merged one entry at a time; the map's
-entries under the paths a drift is named by with the rejected ledger beside them and a verify per
-block, queued and polled like any run; and the `used` join read-only, every knot of the book under
-the print it was solved from with that security's evidence, verdict or `unmapped` beside it.
+**Set-up.** The want-list is the dependency walk; for a pair a vanilla on it is walked, so each leg's
+spot reads the curve its own `FxRate` discounts on. The map is written as it is gathered, before the
+book, so a refused set-up leaves a grown map and an unmoved book. Where the prints roll the date, the
+market already carried is re-priced in the same session (`market_fetch`), so the book never holds
+two days of quotes. **Nothing lands that depends on a block the write will not carry**: a new
+currency's spot and curve land together or not at all, the curve's fit reading the `FxRate` that
+discounts on it, and a surface is held with whichever leg is not coming; the rest lands.
+**Held by** `test_service.py::test_a_set_up_installs_no_curve_the_book_does_not_discount_on`,
+`test_service.py::test_what_the_write_can_complete_still_lands`,
+`test_service.py::test_a_surface_is_held_with_the_leg_it_cannot_stand_on`,
+`test_service.py::test_a_roll_re_prices_the_market_the_book_already_carried`.
 
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 
-**The block.** `InterestRateCurveParameters` declares the `Currency` of the curve to build, the
-`Day_Count` its tenors are expressed in, an optional `Discount_Rate` naming the curve the quotes
-discount on, the solver's three knobs (`N_Iter`, `Tol`, `Damping_Halvings`, each read off the
-block completed by its declarations and by `Bootstrapper Configuration.InterestRate`; a coupled
-set runs at the largest `N_Iter`, the smallest `Tol` and the largest `Damping_Halvings` of its
-members), the three lifecycle switches (`Quote_Sensitivity`,
-`Quote_Propagation`, `Drift_Tolerance` — see [Quote Propagation](quote_propagation.md)), and the
-quote `Points`. A blank `Discount_Rate` builds a **self-discounting** curve.
+The residual, solver and refusals are on
+[Interest Rates](../bootstrapping/interest_rates.md#interestratecurveparameters).
 
-**The block is the curve's definition.** Beside the quotes it declares what they were authored
-under — the `Calendar` the dates were rolled against, `Spot_Days`, `Fixed_Frequency` and
-`Float_Frequency`, `Fixed_Day_Count`, `Float_Day_Count` and `Front_Day_Count`, and `Compounding`,
-which says whether the swap rows are overnight benchmarks — and each `Points` row carries the
-`Tenor` it came from (`ON`, `3M`, `3Y`, `1Mx4M` for a FRA, `6M1M` for a swap starting in six
-months) and the `Security` it was quoted off. None of that is read by the solve, which prices the
-`Deal` it is handed; it is what lets a strip be **re-rolled on a later date** from the block alone
-rather than from whatever authored it, and what makes two blocks quoting the same number under
-different conventions distinguishable. The curve's interpolation comes from `Price Factor
-Interpolation` — the rule naming this curve where the section carries one, else the method it names
-for every `InterestRate` — with one exception the block owns: `Near_Interpolation` and `Near_Tenor`
-are written onto the solved factor as `Near_Interpolation` and `Near_Date`, so a curve whose near
-end is quoted in a different instrument — a ZARONIA curve is quoted monthly to the last policy
-meeting anyone has a view on and annually beyond — carries one scheme through the near half and the
-section's own over the far one. The solve reads both segments, so every benchmark still reprices at
-par.
+**The block is the curve's definition.** Beside the quotes it declares the conventions they were
+authored under (`Calendar`, `Spot_Days`, each leg's frequency and day count, `Compounding`), and
+each `Points` row its `Tenor` (`ON`, `3M`, `1Mx4M` a FRA, `6M1M` a swap starting in six months) and
+`Security`. The solve reads none of it, but it lets a strip re-roll on a later date from the block
+alone. A blank `Discount_Rate` builds a self-discounting curve.
 
-**The quotes.** Each point carries a `Deal` — a deposit, an FRA, a swap, an `FXForwardDeal` or a
-`StructuredDeal` over two legs, authored exactly as it would be in `Trade Data` — plus `DealType`,
-`Quote_Type`, `Quoted_Market_Value`, a free-text `Descriptor` and a `Use` flag so a quote can be held
-out without being deleted. `Quoted_Bid`, `Quoted_Ask` and `Timestamp` are declared and the solve
-reads none of them: they are this family's share of `schema.MARKET_QUOTE_VALUES`, the value plane a
-tick may move without touching the plan. `DealType` supplies the block's `Object`, and the family
-stamps `Discount_Rate` — what an instrument *projects* off is authored in its own deal, what the
-quote set *discounts* on belongs to the curve set and is stated once. A row's `Deal` states its
-terms and only the conventions that *differ* from what the instrument declares — a benchmark is a
-deal and completes its own reads like one.
+**The quotes.** Each point carries a `Deal` authored as in `Trade Data`, its `DealType`, `Quote_Type`
+(`Par_Rate`: held at PV zero), the number and `Use`, which holds a quote out without deleting it. The
+family stamps `Discount_Rate` on every leg, what the set discounts on being stated once. Where the
+number lands is the instrument type's own declaration (`Deal.quoted`, `Deal.quote`), so a new
+quotable instrument declares itself.
 
-`Quoted_Market_Value` is read in its own `DealType`'s unit, and where it lands is a property of the
-instrument TYPE — a `FRA_Rate`, a `Swap_Rate`, a pinned `Interest_Rate_Schedule`, a fixed leg's
-`Rate` column. The type declares it - `quoted` beside `observes` and `settles`, and `quote` where
-the number reaches more than one place - so a new quotable instrument declares itself and the
-family names no type. Nothing is scaled centrally: a rate benchmark is quoted in **percent**
-because that deal's own field semantics divide by 100, so a quote that is not a rate rides untouched.
-`Quote_Type` declares the one convention that is built, `Par_Rate`: every benchmark held at PV zero.
+**A forward outright as a benchmark.** An `FXForwardDeal`'s quote is the outright, landing as
+`Buy_Amount = quote × Sell_Amount`, which keeps PV affine in the quote. Covered interest parity is
+written nowhere: the residual is the forward's own pricer held at zero, the other leg's curve and
+both spots entering as constants. `Quote_Sensitivity` and `Quote_Propagation` refuse such a block,
+because a quote derivative rides cashflow-schedule columns and an outright moves none; the refusal
+is measured, not a branch on the type. **Held by**
+`test_interest_rate_prices.py::test_a_forward_curve_reprices_the_outrights_it_was_solved_from`,
+`test_interest_rate_prices.py::test_a_forward_block_refuses_quote_sensitivity`,
+`test_interest_rate_prices.py::test_the_refusal_is_measured_and_leaves_the_rate_quotes_carrying`.
 
-**A forward outright as a benchmark.** `FXForwardDeal` is the one quotable type whose quote is not a
-rate. Its `Quoted_Market_Value` is the forward **outright** — units of `Buy_Currency` per one unit of
-`Sell_Currency` — landing as `Buy_Amount = quote × Sell_Amount` on a benchmark that fixes the sold
-amount and both discount-rate names, which keeps the PV affine in the quote the way the par solve and
-the drift metric both need. Covered interest parity is written nowhere: the residual is the forward's
-own pricer held at PV zero. The residual **crosses currencies**, which the benchmark closure allows
-by the rule it applies to every factor a solve is not solving for — the other leg's curve and both
-`FxRate` spots are discovered from the deal's declarations and enter as detached constants. Because
-the coupling is authored inside the deal rather than in `Discount_Rate`, the **solve order** reads it
-there too: a block comes after every block building a curve its benchmark deals name.
+**The knot rule.** One knot per used quote, at its last cashflow date in the block's `Day_Count`: the
+only placement that makes the system square, since a knot nothing matures at is unidentified and two
+instruments between two knots leave the curve under-determined. A quote held out drops its knot, one
+at the base date refuses, and the output grid is the knot grid, because an interpolated curve no
+longer reprices its quotes. **Held by** `test_interest_rate_prices.py::test_a_held_out_quote_leaves_the_solve`,
+`test_interest_rate_prices.py::test_a_benchmark_matured_at_the_base_date_refuses_by_name`.
 
-`Quote_Sensitivity` on such a block **refuses by name**. The overlay carrying a quote derivative
-rides cashflow-schedule value columns; an outright lands in `Buy_Amount`, read as a float off the
-deal, so no schedule moves. The refusal is measured rather than a branch on the type, so it stays
-silent wherever a quote does reach a column. `Quote_Propagation` meets the same refusal.
-**Not built: quote derivatives for an amount-valued quote.**
+**Interpolation** comes from `Price Factor Interpolation`, the rule naming this curve's `id` else the
+`InterestRate` method ([Conventions](conventions.md#registries-not-functions)), except
+`Near_Interpolation` up to `Near_Tenor`, which the block owns for a near end quoted in another
+instrument; the solve reads both segments. **Held by**
+`test_interest_rate_prices.py::test_the_near_split_is_written_through_and_every_quote_still_reprices`,
+`test_interest_rate_prices.py::test_a_curves_own_rule_builds_it_and_leaves_its_neighbour_on_the_default`.
 
-**The knot rule.** ONE knot per used quote, at that benchmark's last cashflow date, in the block's
-`Day_Count`. That is the only placement that makes the system square: a knot with no instrument
-maturing at it is unidentified, and two instruments between the same pair of knots leave the curve
-under-determined. Below the shortest knot the curve is flat, which `CurveTenor` gives by clipping.
-**The output grid is that grid** — writing onto a wider grid would interpolate the result, and an
-interpolated curve no longer reprices its quotes. There is therefore no `Zero_Rate_Grid` field, and
-holding a quote out with `Use` drops its knot with it.
-
-**The solve.** A damped Newton root find in float64 on the vector of the engine's own pricers held at
-par [@dennis1996]. Two blocks make a multi-curve set and `Discount_Rate` orders them,
-the discount curve solved before the projection curve that discounts on it
-[@ametrano2013]. The Jacobian comes from AAD
-through the pricers — one backward pass per quote gives a whole row, no bump loop — which is the same
-derivative the [quote-sensitivity](quote_sensitivities.md) thread carries the other way into `dV/dq`.
-The residual is written once and differentiated twice.
-
-**Fields that are not declared, on the terms every store here is held to** — a field nothing reads
-is not declared. `Zero_Rate_Grid` (there is no second output grid), and `Quote_Type`'s `Rate` and
-`Price` values, which are conventions the family would have to author differently.
-
-The curve this writes is an `InterestRate`, not a `<ClassName>` parameter block, so the class
-declares `price_factor_type` and `Config.bootstrap`'s "wrote no `<name>.*` price factor" check reads
-it. Interpolation of a solved curve comes from `Price Factor Interpolation` — one method per routed
-factor type, and a `modelfilters` rule on a curve's own `id` where that curve is built another way —
-the near split aside; see [Conventions](conventions.md#registries-not-functions).
-
-## Retired: the two Heston-Nandi families {#hestonnandi-retired}
-
-`HestonNandiModelPrices` (five parameters off a Fourier-inverted daily GARCH recursion) and
-`HestonNandiComponentModelPrices` (its CJOW extension, a long-run component fitted as an **L
-curve**) were this library's spot families before LogVar2FJ. Both are gone: the calibrators, the price
-factors, the OSS kits, the stride, the two implied spot processes and the whole `utils` half they
-alone read. What replaced them is [`LogVar2FJModelPrices`](#logvar2fj), which fits the same
-`European_Options` ladder on the same `fx_surface_block` — hoisted here as `OptionQuoteFamily`, the
-family-neutral quote preparation — and which measured **five times** better on the wings than the
-plain family and **six times** better than the component one on the same 22 USDZAR contracts (0.131
-vol points against 0.663 and 0.760), with second-order greeks and quote-space risk where both
-Heston-Nandi families refused the switch by name. The Heston-Nandi code is gone, so that comparison
-cannot be re-run. Nothing in the engine reads them, and a book that names one refuses by name.
+**The solve** is a damped Newton in float64 on the host, from the par rates [@dennis1996], its
+Jacobian AAD through the engine's own pricers: the derivative
+[Quote Sensitivities](quote_sensitivities.md#the-ift-contract) carries the other way into `dV/dq`,
+so the residual is written once and differentiated twice. A discount curve is solved before the
+projection curve on it [@ametrano2013]; where a quote derivative or a ride asks, blocks reading each
+other's curves solve as one system ([multi-curve](quote_propagation.md#multi-curve)). **Held by**
+`test_interest_rate_prices.py::test_the_bootstrap_recovers_the_curve_its_quotes_came_from`.
 
 ## `LogVar2FJModelPrices` — a smile fit with a forward-skew term {#logvar2fj}
 
-The model itself — its state, its return law, its Black-Scholes limit, what it shares with
-Bergomi's forward-variance models and the references — is on the
-[Theory page](../theory/stochastic_volatility.md).
+The model is on [the theory page](../theory/stochastic_volatility.md); the stages, objective rows,
+prior weights and report on [its Bootstrapping page](../bootstrapping/fx_and_equity.md#logvar2fjmodelparameters);
+this is why it is built so.
 
-**The block** is `OptionQuoteFamily`'s shared quote preparation plus `Fit_Mode`, the walk, the
-structural constants, `Residual_Law`, the two declared guards, the weights, the calendar-time
-`Param_Buckets`, `Event_Days`, the forward block (`Forward_Smile_Source`, `Forward_Smiles`,
-`Forward_Tenors`, `Stickiness_Band`), stage 4's `Slow_Factor_Prior` and `Quote_Sensitivity` — each documented where it is declared. `derivus_bloomberg.equity_chain` emits it off a listed chain, and the inherited
-`fx_surface_block` authors the FX one off the ladder this family declares — **two delta pillars**
-at four wing expiries, because a `Bootstrap` bucket frees one parameter per wing quote, and a floor
-of **eight** distinct contracts. What follows is what it MEASURED.
+**The block** is `OptionQuoteFamily`'s quote preparation plus this family's dials.
+`derivus_bloomberg.equity_chain` emits one off a listed chain as premiums; `fx_surface_block` authors
+the FX one off a built surface: two delta pillars at four wing expiries, because a `Bootstrap`
+bucket frees one parameter per wing quote, and at least eight distinct contracts after snapping,
+because a repeated contract is a weight, not an observation. **Held by**
+`test_market_prices_partition.py::test_the_ladder_is_the_entrys_and_the_contract_floor_is_a_declared_lever`.
 
-**The stored curve is `ξ(t) = E₀[h_t]`, the expected forward variance, and the OU level is
-DERIVED from it.** `ℓ + s` is Gaussian, so `E[e^{ℓ+s}] = e^{L* + Var(ℓ+s)/2}`: storing the LEVEL
-makes the stored curve not the expected variance, and every change of vol-of-vol drags the ATM
-level with it. Storing `ξ` and setting `L*(t) = log ξ(t) − ½Var(ℓ_t + s_t)` makes `E₀[h_t] = ξ(t)`
-exactly whatever the vol-of-vol is; the ATM vol still moves with `σ_s, σ_ℓ`, but little, which keeps
-the inner solve near-identity. The variance is measured from wherever the walk STARTS, so a row
-the kit re-seeds at `(L*(t_row), 0)` reads `ξ` exactly where a base-date Jensen term would
-under-shoot it. `ξ` is piecewise CONSTANT on the segments between ATM expiries — flat forward
-variance, the shape var-swap strips are quoted in — so the strip has no recurrence to zig-zag along
-and every ATM still reprices exactly. `Event_Days` is then a one-day segment of `ξ` at
-`Event_Variance_Prior` times the level enclosing it — unless the day already HAS a segment of its
-own, in which case the ordinary pillar bootstrap sets it, the prior is ignored and the report says
-so. The curve is comparable to a market object: it should sit on a replicated variance-swap strip
-[@demeterfi1999] up to the smile's own ATM convexity, and the report prints it beside the market's ATM² forward variance
-rather than beside a log level. **No `e^{L*}` appears in any report.**
+**ξ is stored and the level derived.** The factor stores `ξ(t) = E₀[h_t]` and derives
+`L*(t) = log ξ(t) − ½Var(ℓ_t + s_t)`, so `E₀[h_t] = ξ(t)` whatever the vol-of-vol; a stored level
+would drag the ATM level with every vol-of-vol move. ξ is flat forward variance between ATM expiries,
+the shape a variance-swap strip is quoted in [@demeterfi1999], so every ATM reprices exactly
+([theory](../theory/stochastic_volatility.md#the-forward-variance-curve)).
 
-**The residual is an NIG increment on the variance clock, and its drift is forced**
-([its law](../theory/stochastic_volatility.md#the-residual); [@barndorffnielsen1998]). The part of a return leverage does
-not explain spends the clock `A = Σ c_k V_k` with `c = 1 − ρ_s² − ρ_ℓ²`, its variance exactly `A`
-and its drift whatever makes `E[e^{X_A}] = 1`. Both are LINEAR in the clock, so the residual
-composes exactly: a month cut into days is one law once the clock is one number, and a fixing
-interval straddling a bucket knot splits its clock there — two mixers, one
-Gaussian whose `M` and `Σ²` sum. `α` is tail thickness and smile convexity, `β` is skew, and there is
-no intensity, no jump size, no compensator to derive per segment and **no parameter the Greeks
-cannot reach**: the drift is no-arbitrage's, not the fit's. What replaces the Poisson intensity rule
-is nothing at all — that strip existed because vanillas do not identify an intensity apart from the
-jump sizes, and `(α, β)` are identified by the 1–3 month wings. The pair is fitted in the
-UNCONSTRAINED coordinates `α = ½ + ε + softplus(a)`, `β = −½ + (α − ½ − ε)tanh(b)`, which land
-inside `|β| < α` and `|β+1| < α` for every iterate; the transform lives in the calibrator, the model
-applies none, and the factor asserts admissibility — `|β| < α`, `|β+1| < α` and the conditioning
-share `γ²/α² = 1 − (β/α)² ≥ 0.4` — by name at load.
+**The residual is NIG on the variance clock, its drift forced**
+([theory](../theory/stochastic_volatility.md#the-residual); [@barndorffnielsen1998]): no intensity,
+no compensator, no parameter the greeks cannot reach. `Alpha` and `Beta` are fitted in unconstrained
+coordinates that stay admissible at every iterate, and the factor asserts admissibility at load.
+`Residual_Law: Gaussian` is a limit and test mode whose `Alpha` and `Beta` report zero rows, so the
+sensitivity set does not depend on the mode. **Held by** `test_logvar2fj_json.py::test_the_gbm_limit_reproduces_the_gbm_arm`.
 
-**`Residual_Law: Gaussian` is a limit/test mode.** It drops the mixer, reads the clock as the
-variance and the drift as its own compensator, and leaves `Alpha` and `Beta` unread (they may be
-absent), reporting them as sensitivities with identically zero rows so the set reported does not
-depend on the mode. The factor logs it at INFO by name; the calibrator refuses to warm start an NIG block off a
-Gaussian factor, or the other way round, because the two are different models and neither seeds the
-other.
+**ξ is re-solved at every outer iterate**, segment by segment against each ATM premium (triangular:
+an option to T never reads ξ beyond T), so every candidate reprices the ATM term structure exactly
+and is judged on the smile alone. Each segment is a damped Newton (`Xi_Solve_Iterations`,
+`Xi_Solve_Damping`, `Pillar_Tolerance`) returning one Newton step at its root,
+`x* − F/detach(∂F/∂x)`, so `dξ/dθ` and `dξ/dq` ride the tape and the outer `least_squares`
+[@branch1999] keeps an exact Jacobian. **Held by**
+`test_logvar2fj_json.py::test_the_fit_reprices_its_atm_strip_fits_its_wings_and_writes_every_field`.
 
-**The quanto drift lives INSIDE the walk, read off the state's own budget.** A quanto payoff — an
-index in one currency paid in another at a fixed rate, which is the shape an autocall book takes —
-changes measure to the payoff currency, and the GBM arm applies that as one deal-level carry
-`−ρ σ_ATM σ_FX` off a LOGNORMAL implied ATM vol read at the row's expiry (`pricing.calc_vol_adjustment`).
-Under a walking kit the equity has no implied vol to read: its instantaneous variance is the
-state's own and it moves along the path. So each business day's leverage mean gains
-`−ρ_q σ_FX,k √(V_k δ_k)` — the day's own budget `V_k`, so the quanto drift follows the variance
-path — and `calc_vol_adjustment` hands the walking arm `(ρ_q, σ_FX)` in place of the carry, which
-it returns as zero. `utils.LogVar2FJ.walk` takes the loading `q_k = ρ_q σ_FX,k √δ_k` as one more per-step
-tensor and adds `−q_k √V_k`; absent, the arithmetic is bit-identical, and under `Invert_Spot` it is
-added the same way, a drift being a drift on either axis.
+**The walk is a closed form on the quotes' own grid.** Both factors are linear in their shocks, so a
+block's path is one cumulative sum (`utils.LogVar2FJ.ou_path`); under `Invert_Spot` the measure shift
+is the state's own `√V`, so that case keeps the recursion. A block ends at every quoted maturity,
+forward window end and bucket knot, so the fit reads at a maturity what a pricer reads there.
 
-`ρ_q` is the book's marked `Correlation.EquityPrice.<eq>/FxRate.<pair>` read through the same
-`Correlation_Sign` the GBM arm resolves, and it is the desk's number read as a **total-return
-correlation**, which is what a desk measures. It is applied to the day's own
-return sd `√V_k`, and that IS the un-diluted framework correlation: the framework applies a
-correlation to the Gaussian GIVEN THE MIXER, whose sd is `E[Σ_k] = D √V_k` with
-`Σ_k² = (ρ_ℓ² + ρ_s²) V_k + G_k`, so a loading on `√V_k` is `ρ_q/D` applied to `Σ_k` and the
-normalisation by `D` is the identity. That share `D` is a property of the law and not a number
-the engine computes, the outer process applying no dilution: **1 exactly** under a Gaussian
-residual (`Σ_k ≡ √V_k`), **0.9256** at the risk-neutral class defaults the fit seeds from (`α` 44,
-`β` −22) and **0.597** on an NKY fit (`c` 0.84, `α` 7.8). Measured at 2^17 paths on the daily grid, three joints at the same draws: the
-joint whose realised total-return correlation IS the marked −0.40 puts the exact quanto forward
-`E[SX]/E[X]` within **1.2 SE** of the loading as built, where the loading times `D` sits 8.4 SE
-away and the loading over `D` 11.6 SE away, so dividing by `D` is wrong-signed. The 91.6–92.0%
-measured beside it is the OTHER reading: the marked ρ applied directly to the Gaussian given the
-mixer, which is the loading times `D` — worth 1.6% of an NKY V2 mark at the class-default `D` and
-**8.4% of the mark** at the fit's own 0.597.
-`σ_FX` is the FX surface's ATM FORWARD
-strip on the WALK's own grid — read at every internal step's tenor and differenced by
-`pricing.forward_vol_rate` — where the GBM arm reads one expiry ATM and calls it the whole deal's.
-On a FLAT FX surface the two are the same number and the walk reproduces the closed form to 8e-16
-relative; on a surface sloping 2 vol points of ATM per year they differ by 0.99% of a 2y autocall's
-value, 2.72% at 5 points per year. The fx surface's ATM rows are on the tape, so the quanto vega
-comes out with the rest (0.000% against its CRN ladder); the CORRELATION delta does not, because
-`Correlation` is a `DimensionLessFactor` with no leaf, so `BaseValuation` reports it as a central
-CRN bump of the marked value instead (`Correlation_Bump`, default 0.025, `Greeks: 'First'` only,
-one re-compile and re-value each side on the job's own seed for each correlation a priced quanto
-or compo read, so a book with none pays nothing): the row lands in `Greeks_First` under the
-factor's own name and in a `Correlation_Bump` block that names the width and says NOT ON THE
-TAPE. An NKY V2's correlation delta reads flat to 0.003% at 32,768 paths
-between half-widths 0.05 and 0.025 (the value is linear in ρ, as a drift linear in ρ makes it),
-and a 2y SPX autocall's −10.95, flat to 0.001%. Only
-`QEDI_CustomAutoCallSwap`/`_V2` passes the loading today; `Compo` stays refused by name on every
-walking deal, being the product `S·X` and so a second asset the arm does not simulate, and a quanto
-naming no `Correlation` factor refuses rather than pricing with a drift of exactly zero.
+**`Vanilla_Pricer: Quadrature`, the default, is a surrogate**: Gauss-Hermite [@golub1969] over a
+lognormal clock matched on its moments and the exact mixer, with no seed and no sampling noise. θ\*
+fitted under it is used by pricers that walk; the gap is on the Bootstrapping page. Forward-start
+rows walk either way. Quadrature refuses `Cap_A` and a second residual bucket, its moments needing
+an uncapped exponential and one mixer. The walk's draws are fixed for the fit, so `Paths` is the
+noise floor under θ\*, not a confidence interval.
 
-**The ξ strip is re-bootstrapped at EVERY outer iterate**, so every candidate reprices the ATM term
-structure exactly and is judged on the smile alone; the ATM misses the report prints are 1e-16 to
-1e-13 rather than the 1e-12 to 1e-9 a between-stage refit left. The level each segment returns is one
-Newton step at its own root, so `dξ/dθ` rides the tape and the outer solver keeps its exact Jacobian.
-What that costs is one graph pass per segment per iterate: the search itself runs off the tape on
-the previous sweep's slope. **The walk is the block's CLOSED FORM, not a scan.** Both factors are
-linear in their own shocks, and the OU transition `exp(C_k − C_{j+1})` on the cumulated `−κδ`
-factorises, so the whole block's state path is one cumulative sum of the discounted shocks scaled
-back by the cumulated decay (`utils.LogVar2FJ.ou_path`) and the clock, the leverage mean and the quanto
-drift are elementwise over the step axis with one reduction each — tens of dispatches a block
-where the scan spent fifteen a step. At 8192 paths over 690 daily steps a forward pass is **0.156 s against the scan's 0.349 s**, and
-with its backward **0.251 s against 0.704 s**; the same walk on an RTX 3090 is **0.0062 s and
-0.0099 s**, twenty-five times the CPU, where the scan measured SLOWER on the card than on the
-host. **`Vanilla_Pricer` is `Quadrature` by default**: a vanilla is priced off the surrogate law's
-closed-form moments by Gauss-Hermite [@golub1969] over the clock and the mixer
-(`Quadrature_Nodes`, 24 and 16, converged to 2e-5 vol points against 64 and 48), with no seed, no
-path count and no sampling noise in the objective, so the same document writes the same bytes on
-every run; the forward-start rows price on the walk either way, and `Walk` prices the vanillas on
-it too. **The surrogate is an approximation, and θ\* fitted under it is used by pricers that
-walk.** On the five-expiry, fifteen-quote `INDEX_A` ladder of
-`tests/fixtures/data/logvar2fj_world.json`, at the parameters a walk fit wrote, the quadrature
-priced within **0.085 vol points** of a 32,768-path walk and within **0.098** of a 1,048,576-path
-walk, worst of the fifteen quotes; the walk itself moved **0.36 vol points** between 8,192 and
-32,768 paths, the bias of its ratio estimator, to which every forward-start row is exposed, being
-always walked at `Paths` (default 8,192). On other ladders, and on the forward-start rows, both are
-unmeasured. **A
-fit that walks nothing — quadrature vanillas and no forward block — runs on the HOST**, where
-tensors that small dispatch faster than a card launches (11.7 s against 23.5 s on the five-expiry
-world), and a `Quadrature` block declaring `Cap_A` or a second residual bucket refuses by name.
-**A WALK RUNS ON THE JOB'S DEVICE**, which on a CUDA box is the card: the constructed device is no
-longer ignored, and the two things the old note held the pin for are answered rather than
-avoided. THE STREAM IS THE SEED'S AND NOT THE SILICON'S — `draw` generates both streams on
-the HOST under `Random_Seed`'s own generator and moves the tensors, so `Pseudo` 8192 on the card
-is the draw it was on the CPU and a banked fit re-fits to it; a CUDA generator is a different
-stream, and a seed that named a draw only together with the device it was drawn on would make "the
-same answer" undefined. THE LEAF LIVES ON THE CALCULATION'S DEVICE — `Calculation.factor_leaf`
-already moves the calibrated `theta` with `.to(device=self.device, dtype=self.dtype)` before it
-splices `leaf + (theta - theta.detach())`, and that copy is differentiable, so the calculation's
-backward reaches the fit's graph across a device boundary and `dV/dq` arrives on the fit's own
-quote leaf. A CPU-sharded calculation on a CUDA box is therefore a CPU calculation reading a leaf
-fitted on the card, which is what that seam was always shaped for.
+**Where it runs.** A fit that walks nothing (quadrature, no forward block) runs on the host, its
+tensors too small for a card; a walk runs on the job's device, its draws made on the host so a seed names one draw on any device.
+`Calculation.factor_leaf` moves θ onto the calculation's device before splicing it, so `dV/dq`
+crosses the boundary. **Held by**
+`test_logvar2fj_json.py::test_the_quote_switch_writes_the_same_factor_and_publishes_its_leaves`.
 
-**The clock moved with it, and the profile changed shape.** The capped NKY profile
-(three fits at 8,192 paths, profiled) is **126.8 s on the CPU against 17.3 s on
-the card**, and the item that was 61% of the CPU clock — the batched reverse Jacobian — is 4% of
-the card's: the 25-row backward over a 504-step block at 8192 paths costs **6.78 s on the CPU and
-0.104 s on an RTX 3090**. What is left is the inverse-Gaussian root at 30% and the pillars' own
-backwards at 28%. `ig_root`'s fixed budget of 34 masked Newton steps is roughly 1,200 kernel
-launches on a `[paths, blocks]` tensor of a few tens of thousands of doubles, so its cost is
-DISPATCH: **34 ms whether the strip is one block or four**, which is two and a half times a whole
-690-step walk. One consequence for a reader tuning a block: **the path count is no longer a speed
-lever on the card.** An eight-fold cut in `Paths` buys about 1.4x an evaluation where the CPU's
-vectorised walk gave most of eight.
+**A previous factor is the warm start**: every parameter and the ξ strip seed at it and the fit is
+the joint polish alone, the staged search existing to find a basin a written factor names.
+`Fit_Mode: Bootstrap` stays cold, having no joint stage; a factor carrying a retired key or the other
+`Residual_Law` refuses by name. **Held by** `test_logvar2fj_json.py::test_a_previous_factor_makes_the_fit_the_polish_alone`,
+`test_logvar2fj_json.py::test_a_warm_start_off_the_other_residual_law_refuses_by_name`.
 
-**The inner bootstrap is a damped NEWTON, not a chord.** A pillar's pass has to carry a backward
-anyway — the level returned is one Newton step at the root, which is what puts `dxi/dtheta` on the
-tape — so the slope that step is taken with is already paid for, and a chord off the PREVIOUS
-sweep's slope only buys a cheaper step at the price of spending more of them. Measured on the four
-index ladders, a sweep costs **2.1–2.5 pillar passes a pillar against the chord's 3.5–4.3**, which
-is 1.64–1.70x fewer passes and **1.33x on the wall clock**, at the same evaluation count and the
-same RMSE — and it solves the strip TIGHTER, the worst ATM miss falling from 8.8e-11 to 6.5e-12 on
-NDX and from 6.7e-11 to 9.1e-12 on NKY. A slope of exactly zero now divides
-in TENSORS to an infinite step the damping bounds, so the `ZeroDivisionError` a Sobol stream once
-reached has no bare float left to raise on.
-`Invert_Spot` keeps the recursion: the S-numeraire shift is the state's own `√V`, which makes the
-transition state-dependent, and the block sums below it are the one spelling either way. The grid is the QUOTES' own, one trading day
-between block ends with a stub landing each block on its `T`: reading the same rung on the
-trading-day grid instead costs **0.124 vol points** at the 1m ATM.
+### Priors and guards {#logvar2fj-priors}
 
-**A PREVIOUS FACTOR IS THE WARM START, and no field declares it.** Either `Price Factors` already
-carries this block's fitted factor — the seed puts every scalar, the four bucket curves and the `ξ`
-strip at it — or it does not. Where it does, the fit is the JOINT POLISH from that state and
-nothing before it: the staged search is what finds the BASIN, and a fitted factor names it. A first
-fit is that staged search unchanged, to the bit. Measured on the five-expiry synthetic world:
-**45** evaluations cold, over stages 2/3/6 as 20/5/20; the polish off its own answer on an unmoved
-market **1**, the solver confirming the gradient it was handed, every written float back within
-2.0e-14 relative; and with every quote moved +2%, **6** against that market's own cold **43**, the
-two landing 7.3e-4 relative apart at the worst — on `Beta`, the direction vanillas leave flat — at
-one 0.742 vol points of RMSE. A Nasdaq ladder reads the same shape, 42 cold against a
-polish of 9–10. Every guard, prior row, identification table and `On_Guard` reading is the polish's
-own, and the report says once at INFO that the fit was a warm start, with its count. Two previous
-factors are not warm starts at all and refuse in the seed BY NAME: a retired-era one, and one of the
-other `Residual_Law`. **`Fit_Mode: Bootstrap` stays COLD** — bucket `k` is fitted GIVEN the buckets
-before it, so its last stage is one bucket's and not the surface's, and there is no joint stage to
-polish. What a polish does not take from the class priors is the RESIDUAL SEED: `α` and the skew
-share seed a cold fit at their own rows' targets, where a state already at a fitted pair keeps it
-and the rows go on weighing in the objective. `/book/model` leaves the written factor where it is,
-so a desk's second call on a pair is the polish.
+Whatever the ladder cannot identify
+([what the vanillas identify](../theory/stochastic_volatility.md#what-the-vanillas-identify)) carries
+a prior row.
 
-**`Sampling` picks the stream, and it is what sets `Paths`.** The draws are fixed for the whole
-fit, so `Paths` is not a confidence interval around θ\*, it is the NOISE FLOOR under it: the same
-ladder at another `Random_Seed` lands somewhere else, and how far is the only honest reading of
-how much of a fitted number is the surface. `Pseudo` is the generator this family drew from
-before the field existed and is what a bit-identity gate against a banked fit declares. `Sobol`
-is a scrambled Sobol' sequence [@sobol1967; @owen1997] over the `2 × steps + blocks` dimensions in the calculation's own
-convention (`calculation.CMC_State.quasi_rng` — one engine at `QUASI_ANCHOR`, that clamp margin,
-that `norm_icdf`), scrambled off `Random_Seed`; a ladder wider than the engine's `MAXDIM` refuses
-by name rather than chunking, the calculation chunking because a scenario grid can be that wide
-and a calibration grid that is saying the grid is wrong. **`Pseudo` STAYS THE DEFAULT** and `Paths` stays 8192, and the PRODUCTION objective — priors on
-and the forward rows in, which is what a book fits under — is not the cure. Measured with the
-vanillas on the walk (before `Quadrature` became the default), across `Random_Seed` 1–5 at
-`Pseudo` 8192, `Beta` changes SIGN on SX5E, NDX and NKY, and `Alpha` runs from 110 to its box top
-of 500 on NKY, inside RMSE bands 0.03 to 0.25 vol points wide. **That is an identification failure and not a noise floor**: the ATM strip is pinned
-by the inner bootstrap, and what wanders is exactly what the WING quotes are supposed to identify.
-No stream is uniformly tighter either — Sobol holds `Alpha` inside 2.1 where `Pseudo` spreads it
-over 107.7 on NDX, is seven times WIDER on SD3E, and is indifferent on NKY, where every stream
-spreads `Alpha` over its whole box. The quadrature pricer takes the seed out of the vanilla rows;
-it does not change what the wings identify. A default cannot be set
-against a quantity the objective cannot tell apart, and a same-answer gate on such a ladder proves
-determinism rather than agreement.
+| choice | why |
+| --- | --- |
+| a prior is a soft row, never a pin | a pin leaves θ\*, the Jacobian and the quote contraction |
+| one standard error costs one quote missing by one vol point | scaled otherwise, a row is a pin or nothing |
+| the leverage prior is two rows, `ρ_s` and `ρ_s σ_s`, on the engine's axis | one row alone is evaded through the other factor |
+| a prior reads the block, else a history, else the class default | a desk's view, then an estimate, then a convention |
+| the residual rows are on `log α` and `β/α` | a row on β alone is obeyed by running α to its ceiling |
+| a history counts only where its SE beats the class spread | otherwise it says less than the default |
+| a history number is clipped into the fit's box | outside it, it crushes the derived boxes |
+| `Residual_Shape_Floor` softly floors `α·δ_A` | nothing else bounds α below |
+| the `ρ_s` box is symmetric with priors on | which way a smile leans is the prior's statement |
+| the slow pair is pinned without a wing at `Slow_Horizon`, signed by the fitted `ρ_s` | the slow skew must not oppose the fast |
+| `Model_Priors: Off` is the vanilla-only fit | the switch a bit-identity gate runs under |
 
-**The defaults, with the numbers that set them**:
+**Held by** `test_logvar2fj_json.py::test_two_class_tables_disagreeing_in_sign_refuse`,
+`test_logvar2fj_json.py::test_a_withdrawn_declaration_refuses_by_name`,
+`test_logvar2fj_json.py::test_a_priors_off_fit_is_bit_identical_to_its_banked_reading`.
 
-| field | default | the number that sets it |
-| --- | --- | --- |
-| `Sampling` | `Pseudo` | under the PRODUCTION objective, with the vanillas on the walk, `Beta` changes SIGN across `Random_Seed` on three of the four index ladders, and no stream is uniformly tighter; under `Quadrature` it reaches the forward-start rows alone |
-| `Paths` | 8192 | the same reading; and on the card the path count is no longer a speed lever, an eight-fold cut buying about 1.4x an evaluation |
-| `Tolerance` | 1e-8 | 1e-6 buys ONE evaluation of forty-four and moves theta\* by 4e-5 relative |
-| `LogVar2FJ.IG_EXPAND`, `LogVar2FJ.IG_STEPS` | 3, 34 | the worst element converges in 26 geometric steps against 53 arithmetic. NOW 30% of the card's clock — the lever left, and a choice rather than a measurement |
-| `LVFit.l_iterations`, `l_damping` | 12, 0.5 | the budget is early-stopped, so it costs nothing unused; measured at 2.1–2.5 passes a pillar |
-| `Forward_Smile_Source` | `None` (`Prior` withdrawn) | a sticky-delta TARGET costs 0.4–1.1 vol points of spot fit on all four index ladders and a 0.5y bucket does not repair it; the tie-breaker that capped that cost bound stage 5 alone, and on a one-bucket ladder stage 5 does not run |
-| `Residual_Horizon` | 0.25 | it switches no row off: both residual rows stay and the wings outvote them. Its one reader is the report's own line saying whether the ladder's wings reach the residual. The +23 / +13 / +15 the wings alone landed on NKY was the leverage's mis-allocation, not the horizon's; horizon zero was the wrong fix |
-| `Alpha_Prior_Defaults` | 44 for every class | the residual is sized ONCE, at the index `(44, −22)`, and states no separate FX number; a soft row beside the wings, where a walk to the 500 ceiling costs 5.1 standard errors |
-| `Alpha_Prior_Sd` | 0.5 on `log α` | a log-normal spread, a factor of 1.65 either way — and the bar a history's own SE must beat to be called informative |
-| `Residual_Skew_Share_Defaults`, `Residual_Skew_Share_Sd` | −0.5 for every class, 0.2 | the −22/44 sizing restated as the share the smile sees; `Beta_Prior_Defaults` and `Beta_Prior_Sd` are retired and refuse by name. The 0.2 is asserted, not measured: what would measure it is the estimator's `β^P/α^P` spread on an uncontaminated history, which no index history here is |
-| `Contamination_Ratio` | 2.0 | the estimator's `C_Eff > 2c`; the estimator's own report already names the ratio at this threshold |
-| `Leverage_Prior_Weight` | 0.02 | a FIXED weight for a prior row with no standard error: `0.01 × 0.2 / 0.1`, one quote vol point per tenth of `ρ_s` at an RMS quote weight of 0.2 (25 rungs, no forward rows) and per 0.125 on 16 rungs. The product row's weight is this over `Sigma_S_Reference`; a history's product carries a delta-method error and is weighted by it. At a fitted `σ_s` of 5 a unit of `ρ_s` is five of product, so the row reads 6.5 quote rows on `ρ_s` where it read 2.3 — an open question |
-| `Leverage_Product_Defaults` | index −1.9, FX 0.0 | `ρ_s σ_s ≈ −1.9` from VIX-vs-SPX daily co-movement (the regression below) |
-| `Sigma_S_Reference` | 2.4 | the state's own `Sigma_S` seed, the risk-neutral-sized vol-of-vol a declared `Leverage_Prior` is multiplied by to reach the product; refused at or below zero |
-| the fit's device | the job's for a walk; the host for a quadrature fit with no forward block | the walk is 25x on an RTX 3090, the batched Jacobian 65x, and the capped NKY profile 126.8 s → 17.3 s; a quadrature fit's tensors are too small to fill the card, 11.7 s on the host against 23.5 s on it |
+**Guards are readings, never re-solves.** `On_Guard` names every guard θ\* sits on (a box edge, a
+share near its bound, a prior row past `LVFit.PRIOR_RATIO` quote rows, a coordinate the quotes are
+silent on) and is collected into the mark's `Stats`, so a price carries the flag. No guard moves
+θ\*, which keeps the quote contraction where it was taken. **Held by**
+`test_logvar2fj_json.py::test_a_fit_forced_onto_a_box_names_it_and_the_mark_reports_it`,
+`test_logvar2fj_json.py::test_a_ladder_with_no_wings_reads_its_skew_as_silent`,
+`test_logvar2fj_json.py::test_the_stationary_guard_refuses_the_same_surface_by_name`.
 
-**`Tolerance` is `ftol` on a MONTE CARLO objective, and it is not what a stage stops on.** Asking
-a fixed-draw sample mean to converge to 1e-8 looks like asking it to converge to its own rounding
-— but measured on the NKY chain block at `Pseudo` 8192, two orders of magnitude of `ftol` (1e-8
-against 1e-6) buy **one evaluation out of forty-four** and move θ\* by **4e-5 relative**. The
-stage is stopping on `xtol` (`Step_Tolerance`, 1e-12 by default), on `gtol`, or on the step. **The
-default stays 1e-8** because loosening it is free of cost and free of benefit; a stage that runs
-long is a stage with a column the data does not move (see the identification table), not a stage
-converging to rounding.
+### Crosses and the axis {#logvar2fj-crosses}
 
-The inverse-Gaussian root's safeguard BISECTS GEOMETRICALLY. Its bracket spans ten decades —
-`[m·1e-8, 200m + 200m²/λ]` — so its midpoint is a ratio, not a width: measured over 2e5 uniforms
-with the tails out to 1e-300, at clocks 1e-6 to 3 across the whole admissible `(α, β)` box, the
-arithmetic halving needs 53 Newton steps against the geometric one's 26, and the bracket never
-doubles at all. The fixed budget is therefore `LogVar2FJ.IG_EXPAND, IG_STEPS = 3, 34` where it was
-`20, 60` — the same root to `LogVar2FJ.IG_TOL`, reached in 37 CDF evaluations instead of 80.
+An `FxRate` is a currency priced in the base, so a desk's leverage view can carry the other sign
+here; `security_map.leverage_prior` turns the seed's view onto the axis the book fits. A cross is
+fitted on its alphabetically later token priced in the earlier, however the deal or surface is
+written, so one pair has one law ([the pair's key](structures.md#accrual)). The block's `Priced_In`
+is a resolved `FxRate` reference and the spot is `FxRate.<Underlying> / FxRate.<Priced_In>`, blank
+being the base's rate of one, so the ratio is the only spelling. Each leg's carry is the curve its
+own `FxRate` names, so the fit's forward is the deal's. The block is filed `<later>.<earlier>`, never
+as a two-token `FxRate`, which discovery reads as a spot plus a basis tail. **Held by**
+`test_cross_spot_model.py::test_the_fit_is_the_same_on_either_base`,
+`test_cross_spot_model.py::test_the_axis_is_the_pairs_not_the_surfaces_spelling`,
+`test_cross_spot_model.py::test_the_seed_prior_arrives_on_the_fitted_axis`.
 
-The CJOW harness tables that stood here were readings of the Poisson residual against a reference
-surface priced by the retired Heston-Nandi half of `utils`; the harness could not be re-run after
-that retirement and has been deleted with its banked premiums, so the record they carried is the
-Poisson residual's and is not re-measured. The flat-segment choice that preceded them stands on its
-own measurement: the piecewise-linear curve's strip alternated across the market's by the `−1`
-multiplier of a segment integral that reads both ends, and flat segments took the strip's second
-difference from 20.4 vol points RMS to 5.1 on the CJOW surface and from 1.57 to 0.42 on a reduced
-USDZAR block at unchanged wing RMSEs.
+### The forward block and the reserve {#logvar2fj-forward}
 
-**Two modes on one banked surface** (a USDZAR `FXVol` surface not in the repository, `Paths` 8192
-with the vanillas on the walk, daily δ, CPU), against the SAME 22 contracts the Poisson residual
-was read on. Six of those rungs are the ATM one of each expiry, which any family carrying a curve
-solves to zero, so folding them into one RMSE reports the split rather than the fit: the table
-separates them and the headline is the WING RMSE over the other 16.
+The split between β and `ρ_s σ_s` is what a forward smile sees and an autocall reads.
+`Forward_Smile_Source` is `None`, `Quotes` (traded forward-starts) or `Reference` (a reference
+model's forward smiles), both off `Forward_Smiles`. A view fitted as a target is paid for in vanilla
+fit, so `Prior` is withdrawn. A source enters at stage 3, which fits `(ρ_s, σ_s)`, and moves the
+later buckets of `β(t)` and `ρ_s(t)`: a smile at T never reads a bucket past T while a forward smile
+reads nothing else.
 
-| fit | ATM rungs | 16 WING rungs, RMSE | worst wing | **one-month wing** | wall clock |
-|---|---|---|---|---|---|
-| LogVar2FJ v2 `Global` | 6 at **0.0e+00** vol points | 0.177 | +0.403 | **0.296** over 5 | 1,661 s |
-| LogVar2FJ v2 `Bootstrap` | 6 at 0.0e+00 | **0.222** | −0.439 | **0.032** over 5 | 435 s |
-| *the Poisson residual's record, `Global`* | 6 at 0.0e+00 | *0.132* | *−0.252* | *0.174* | *213 s* |
-| *the Poisson residual's record, `Bootstrap`* | 6 at 0.0e+00 | *0.574* | *+1.291* | *0.043* | *222 s* |
+- **The targets are differences**, forward slope and butterfly less the market's spot ones. A ratio
+  would divide by a spot quantity near zero on a symmetric smile and fit noise.
+- **An unreachable tenor is dropped by name**: a row whose nearest rung is more than
+  `Spot_Rung_Tolerance` of Δ away would difference against the wrong maturity.
+- **A short Δ identifies the residual pair**: over a quarter the residual is nearly Gaussian.
+  **Held by** `test_logvar2fj_json.py::test_the_forward_block_identifies_the_residual_pair_the_vanillas_leave_at_its_prior`.
 
-The two retired Heston-Nandi families read 0.663 and 0.760 on the same 22 contracts, a record
-nothing reproduces.
+**Where the forward smile is not quoted, the factor carries a reserve line**, `Skew_Gradient` and
+`Stickiness_Band`, from which a deal reporting `Greeks: First` composes `Skew_Reserve`, the parameter
+move being the minimum-norm one, per deal and for the set, the set's being its deals contracted
+rather than summed. The fit's own reported rows sit on grid block ends, since a window end off one
+splits a mixer and moves θ\*; the factor's line is read again at the declared window off θ\*.
+**Held by** `test_logvar2fj_json.py::test_the_skew_reserve_is_the_minimum_norm_contraction`,
+`test_logvar2fj_json.py::test_the_reserve_is_per_deal_beside_the_portfolio`.
 
-**THE ONE-MONTH WING IS THE NUMBER THE RESIDUAL WAS SWAPPED FOR, and it reads two ways.** On the
-equity chain the swap is worth 42% of the fit and on the USDZAR ladder in `Bootstrap` mode 61%; in
-`Global` mode on the same ladder it is 34% WORSE. The reason is in the fitted shape: a USDZAR smile
-is nearly symmetric, so `Global` has no use for residual SKEW and takes `β → −0.08` while driving
-`α` down to **5.45** for convexity instead — where the residual's own shape `α·δ_A` is 7.7e-03 at
-one month against the "≈ 1 strongly non-Gaussian" the sizing note gives, and the mixer's
-coefficient of variation is 11.4. Every declared guard is satisfied there (`c` 0.311 ≥ 0.12,
-`γ²/α²` **1.000** ≥ 0.4). `Bootstrap`, which frees `α` per expiry against that expiry's own wings,
-does not reach the corner (`α` 41.6, `γ²/α²` 0.930) and reads an eighth of `Global`'s one-month
-wing. **Nothing else bounds `α` from below**; the residual-shape floor below closes it. `Bootstrap` is structurally the mode for a deal read at many
-fixings rather than the mode that fits a surface best — bucket `k` acts only on `[E_{k−1}, E_k)`
-while the option to `E_k` averages over every bucket before it — and the report says per bucket
-which parameters were free and which tied.
+### Quote-space risk {#logvar2fj-quote-risk}
 
-**The leverage prior is never absent, it is on the PRODUCT `ρ_s σ_s`, and it is stated on the
-ENGINE'S axis.** Vanillas do not separate residual skew from leverage skew: `β` and `ρ_s σ_s` both
-bend the spot smile the same way, so a vanilla-only fit gives the skew to whichever is cheaper and
-leaves the FORWARD smile — the thing an autocall reads — undetermined. The row is a weak soft term
-on the product in every stage's objective, one per fitted bucket, because a prior on `ρ_s` alone
-was measured letting the fit buy the product it wanted through the factor nobody priced: on NKY
-`ρ_s` −0.59 sat obediently near its −0.7 prior while `σ_s` ran to its 5.0 box, a product of
-**−2.97** against the VIX-implied **−1.9** of the regression below, and the over-sized leverage
-suppressed the call wing until the residual took a POSITIVE skew (`β` +23 / +13 / +15 over three
-seeds) to lift it back — two mechanisms compensating along the direction vanillas cannot see, and a
-right-skewed residual on an index carried into every terminal put priced off the fit. **It is TWO
-rows**: one on `ρ_s` and one on the product,
-because a product row alone was met on NKY by `ρ_s` falling to −0.37 with `σ_s` still on its 5.0
-box, which the log-vol band consents to. Each is read in one order — the block's own declaration
-(`Leverage_Prior`, a `ρ_s` on the engine's axis, with an optional `Leverage_Prior_SE`;
-`Leverage_Product_Prior` with `Leverage_Product_Prior_SE`, a blank product being
-`Leverage_Prior × Sigma_S_Reference`, 2.4), else a LogVar2FJ history's `Rho_S ± Rho_S_SE` and its
-`Rho_S × Sigma_S` with the delta-method error, else the class defaults `Leverage_Prior_Defaults`
-(an index −0.7, FX 0.0) and `Leverage_Product_Defaults` (an index **−1.9**, FX **0.0**). A
-declared error weights its row at one quote per standard error; a blank one takes the nominal
-weight, `Leverage_Prior_Weight` on `ρ_s` and that over `Sigma_S_Reference` on the product. **The
-block's own numbers come from the IMPLIED REGRESSION** that sizes the reference — the daily
-log change of the index's implied-vol index on the index's return, `σ_s` the annualised sd of the
-log-variance change, with Fisher [@fisher1915], `σ/√2N` and delta-method errors: SPX/VIX reads ρ_s −0.762 ± 0.012, σ_s 2.48,
-product −1.89 ± 0.05, the reference to the second decimal; NDX/VXN −0.712, 1.88, −1.34; NKY against
-the Nikkei VI **−0.529 ± 0.025, 3.07, −1.62 ± 0.09** — a weaker correlation and more vol-of-vol
-than SPX, which is why NKY's wings wanted a positive residual skew at SPX's −1.85: it is not NKY's
-number. The Bloomberg chain emitter writes that pair onto the block it emits, keyed by the chain's
-own underlying, so an index it carries starts from its own regression rather than from the class
-default. `Leverage_Prior_Defaults` also signs the seed (`sign·0.75`) and the slow pair's pin, and a
-class whose product and `ρ_s` defaults disagree in sign refuses by name.
+`Quote_Sensitivity: Yes` is the Gauss-Newton contraction at the stationary point through
+`utils.LeastSquaresSolve`, over the coordinates no box holds, on the column-scaled Jacobian cut at
+`Jacobian_Rcond` [@hansen1987]. Each market premium carries its quote as a splice worth zero
+forward, so the switch cannot move a fitted digit. It refuses where a stage stopped off stationarity
+and under `Fit_Mode: Bootstrap`, whose θ\* is a stationary point of no single objective
+([the stationarity contract](quote_sensitivities.md#the-stationarity-contract)). **Held by**
+`test_logvar2fj_json.py::test_the_quote_switch_writes_the_same_factor_and_publishes_its_leaves`.
 
-That history now has a producer, and where the ladder cannot see the residual pair it is one of the
-three things that can anchor them. `Rho_S`, the slow pair, `Alpha` and `Beta` each arrive with their
-own standard error and **each enters as a SOFT ROW weighted by it** — never a pin, so the wings
-still move every one of them, and each stays in θ\*, in the Jacobian, in the identification table
-and in the quote contraction, where a pinned coordinate is in none of them. Every history number is
-also **CLIPPED into the box the fit moves that lever in**, and the report names the clip: a prior
-the fit cannot reach is a refusal by another name, and an unclipped one is worse than that — a slow
-pair pinned at a historical `ρ_ℓ` of −0.83 went straight through `Rho_L_Bounds` (−0.6, 0), crushed
-the derived `ρ_s` box from ±0.94 to ±0.43 under a value stage 3 had already fitted in the wider one,
-and took stage 5 non-finite. **A history's slow pair is a row like the rest**; what a ladder with no
-18-month wing is PINNED at is `Slow_Factor_Prior` where a block declares one, else the class default,
-and nothing else.
+### The quanto drift is inside the walk {#logvar2fj-quanto}
 
-**Every prior row with a standard error costs the same, and the price is one quote.** Such a row
-is `(x − x^P)/SE_x` scaled so that **one standard error of miss costs exactly what one quote missing
-by one vol point costs in the objective on the ladder at hand**. The arithmetic: the quote rows are
-decimal-vol misses times weights normalised so `Σ w² = 1 − Forward_Weight` (the share counted only
-where forward rows exist), so one quote missing by a vol point costs `0.01 × √((1 − share)/N)` —
-**0.0025** on the sixteen-rung NKY ladder, 0.0021 on the twenty-two-rung USDZAR one — and that
-number is the multiplier on every such row (`LVPriors.quote_point`). A row with NO standard error
-(a declaration, a class leverage default) takes the FIXED `Leverage_Prior_Weight` 0.02 instead,
-which does not scale with the ladder: it equals `0.01 × 0.2 / 0.1`, one quote vol point per 0.1 of
-miss, only at an RMS quote weight of 0.2 (25 rungs, no forward rows), and is one quote vol point per
-0.125 on the sixteen-rung ladder. A row scaled any other way is a hard pin — the first cut of this rule was a bare z-score, which charged
-400 quote-vol-points per standard error and landed `β` on six figures of the history.
-
-Read `α^P` as an UPPER bound on the residual's tail thickness rather than as a measurement of it:
-the estimator fits the law of the diffusive REMAINDER, and at an index-sized leverage (`c` 0.27) the
-remainder is nearly all leverage the smoothed shocks could not remove — its clock share reads 0.997
-against `c` — so the fitted `α` is pulled toward Gaussian. Past `Contamination_Ratio` (2) times the
-model's own `c`, `α^P` is **reported and not used** whatever its standard error, and a history block
-carrying no `C_Eff` cannot be read at all and counts as contaminated.
-
-**THE HIERARCHY, and what 'informative' means.** Where the ladder carries no wing under
-`Residual_Horizon` it does not price the 1–3 month tails at all, and `α` and `β` take priors in a
-hierarchy of three, the tier in force named in the report on every fit:
-
-| tier | when | the row |
-| --- | --- | --- |
-| **the short-dated wings** | the ladder quotes a wing at or under `Residual_Horizon` | the rows stay and the wings OUTVOTE them: the report says the wings reach the residual, and `Residual_Horizon` reads nothing else |
-| **the history** | its own standard error is at or under the class prior's spread, and its `α^P` is not contaminated | `(x − x^P)/SE^P` at that estimate |
-| **the class default** | otherwise | `(x − x_class)/SD_class`, reported as *class prior, history uninformative* with the standard error that failed |
-
-**The two residual rows are on the coordinates a smile sees** — `log α` at `Alpha_Prior_Defaults`
-44 with spread `Alpha_Prior_Sd` 0.5, and the SKEW SHARE `β/α` at `Residual_Skew_Share_Defaults`
-−0.5 with spread `Residual_Skew_Share_Sd` 0.2, a history's `β^P/α^P` with its delta-method error
-where informative. A prior has to sit on a coordinate the price depends on, or the optimiser
-satisfies it for free: an earlier row on `β` alone was obeyed on NKY and SX5E by running `α` to
-its 500 ceiling, where any `β` is a label on a Gaussian (`|β|/α` 0.044, the `β` row 690 quote rows
-against quote rows worth 1.8e-04). `Beta_Prior_Defaults` and `Beta_Prior_Sd` are RETIRED and refuse
-by name naming the share; the residual seed is `share × α_seed`, −22 at the defaults to the digit.
-
-**That test IS the definition of informative**, and it is declared: `Residual_Skew_Share_Sd`
-(0.2 on the share `β/α`) and `Alpha_Prior_Sd` (0.5 on `log α`, a factor of 1.65 either way) are
-both the class spread AND the bar a history's own standard error has to beat. `α` is a scale, so
-its prior is on `log α` and a history's own error is read in the same units; a history's share
-`β^P/α^P` carries its delta-method error. `β^P` crosses only through that share, as a prior with
-its standard error: an Esscher tilt [@gerber1996] moves `β` by one unit at most, so the
-P and Q skews are not the same number and the sanity table still says so on its row; what the
-prior states is not that they are equal but that the ladder has nothing to say.
-
-**`Residual_Horizon` stays 0.25, and the positive skew it left free was the leverage's doing.**
-Measured with the vanillas on the walk. Over `Random_Seed` 1–3 on the NKY chain block at 8,192
-paths with no history, the wings alone
-landed `β` at **+23.11, +12.68 and +14.85** at `|β|/α` 0.74 / 0.68 / 0.74 against the 0.77 bound —
-the objective's own failure mode, reached by the wings — and horizon zero forced it to −13.76 / −20.11 /
-−14.35 for 0.43–0.49 vol points while leaving `σ_s` on its box, the wrong fix for the right
-symptom. With the product row in force `β` is negative on every index fit:
-NKY **−21.89 / −21.97 / −21.91** with the product −1.85 in place of −2.97, SX5E −21.97, NDX −20.99,
-SD3E −19.86, at 1.614 / 1.083 / 1.000 / 1.034 vol points of unweighted RMSE against 1.308 / 0.845 /
-0.943 / 0.390, and the three ladders the old row left with `σ_s` on its 0.5 FLOOR (a product a tenth
-of Q size) are pulled off it to 3.96 / 4.89 / 1.78. What the class-default tier still cannot do is
-put NKY's `σ_s` inside its box: at 5.0 the stationary log-vol sd reads 0.878, inside the 0.4–0.9
-band, so the box and the band collude and the ladder wants that vol-of-vol — reported with the
-flag below, the box not widened. And the row `β` obeys is on `β` while the residual's skew is
-`|β|/α`, so on NKY and SX5E the fit obeys it for free by running `α` to its 500 ceiling
-(`|β|/α` 0.044, the residual effectively Gaussian, the whole smile leverage at the Q size) — an open
-row. The history tier is where the expected shape lives: NKY with the index history lands
-`α` 7.99, `β` **−2.35**, `|β|/α` 0.29 at **1.171** vol points, better than the previous anchored
-fit's 1.180. On an NKY autocall the mark moves by **3.9%** and
-the forward-skew reserve **falls 38%**: with the residual near Gaussian its half of
-`Skew_Gradient` is nothing and the reserve is the `ρ_s` half alone.
-
-**On-guard fits are reported and flagged, never stood behind.** A fit a box or a floor is holding
-is not a fitted one: `LVFit.on_guard` names every guard θ\* sits on — a `Sigma_S`, `Alpha` or
-`Sigma_L` on either edge of its declared box, `|β|/α` within `C_Margin` (0.05) of the conditioning
-bound 0.7746, `c` within `C_Margin` of its `C_Min` floor, or **a prior row whose column norm exceeds
-one quote row's in its own coordinate by more than `LVFit.PRIOR_RATIO` (100)** at the last stage that
-fitted it — the signature of a prior on a coordinate the data cannot see, which is what the
-identification line now prints per row (*Rho_S[0y] 38.5x, Beta[0y] 5.92x …*) — in one sentence,
-logged as a WARNING by the report, written on the factor as the structural Text field `On_Guard`
-(blank where clean), logged at INFO when the factor loads, and collected by `Base_Revaluation` into
-`Stats['On_Guard']` per factor it priced off, so a mark carries the flag. **Where the quotes do not
-reach the coordinate at all there is no multiple**: a column carrying under `Jacobian_Rcond` of what
-its own prior rows do — an ATM-only ladder's skew columns, which are the inner Newton's rounding —
-is reported as the word, *Alpha[0y] silent* on the identification line and *quotes silent* on the
-guard, and counts as unidentified without a ratio. Scored on the fits with a product row alone
-the fourth guard names the α escape in one number (`Alpha[0y] 566x … Beta[0y] 551x` on NKY,
-SX5E at 532x where the three box rules had read it clean), and on the two-row fits it names one thing: NDX
-at the regression's own 0.015 error, whose `ρ_s` row is 138 quote rows — a 1.5%-standard-error
-desk view is a pin on that ladder, and the mark says so rather than standing behind it.
-
-**With the rows on the smile's coordinates NKY lands where its regression says**: at its own
-implied leverage over seeds 1–3, `α` **39.4 / 40.9 / 38.8**, `β` −11.4 / −12.9 / −11.9, the share
-−0.29 / −0.32 / −0.31 (the wings outvoting the −0.5 row by about one standard error), `ρ_s` −0.523,
-`σ_s` **3.105 / 3.105 / 3.109 inside its box** at the ratio of the two rows, the product −1.62, and
-`On_Guard` BLANK — the first NKY fit with no guard held. `α` is off its ceiling on every index
-ladder (25.6 to 53.9 across seven fits) and `σ_s` inside its box on every ladder but the
-history-anchored NKY. The price is vanilla fit, NKY 1.614 → **1.985** vol points with the miss in the
-one-month wing, and the autocall mark comes in **6.8%** under the product-row-only fit's at 32,768
-pricing paths, with `Skew_Reserve` at **21% of the mark** under this fit, the residual now live in
-it. At the CLASS defaults
-(SPX's −1.9 with a −0.7 `ρ_s`) NKY lands `σ_s` on its 5.0 box with `ρ_s` −0.397, and under the
-cap the fit then carried by default it refused on cap headroom first: an index class default is not a shape
-this model can carry on NKY, which is the argument for the per-name implied numbers.
-
-THE AXIS IS THE POINT. An `FxRate` is priced in the domestic currency, so `FxRate.ZAR` in a USD book
-is *USD per rand* and a desk's `+0.4` on an EM cross quoted USD-per-currency is **−0.4** here. The
-declaration is DATA the desk owns: `derivus_bloomberg/seed.json`'s `fx_vol.leverage_prior` states it
-per pair on that axis (`USDZAR`/`EURZAR`/`GBPZAR` −0.4, the majors 0.0), `security_map.leverage_prior`
-reads it off `$DV_HOME/seed.json` where that exists — a desk seed that predates the key declares no
-prior and gets the class default — `/book/model` hands it to `fx_surface_block`, and the emitted
-block carries it with `Quote_Source` naming the seed. A block declaring `Leverage_Prior` overrides
-all of that and the report says *from the declared Leverage_Prior*.
-
-**A CROSS is fitted as the pair would be on a book based at its ALPHABETICALLY EARLIER token.** For
-`EUR/ZAR` that is the euro: the `Underlying` is ZAR, the moneyness inverts, and the discount curve
-is the euro's and the carry the rand's, each read off its own `FxRate`'s `Interest_Rate` — which is
-the curve `utils.calc_fx_forward` grows that leg on, so the fit's forward is the deal's. The axis is
-a property of the two CURRENCIES: the book may store the surface either way round and the fit finds
-it and sets `Invert_Moneyness` against the canonical axis, so one pair has one law however a desk
-spells its quotes. What a cross adds is one declared field, `Priced_In` — a resolved `FxRate`
-reference like every other, refusing by name where the book carries no rate for it — and one read:
-the spot is `FxRate.<Underlying> / FxRate.<Priced_In>`, blank being the base, whose own rate is
-identically one, so the ratio is the ONLY spelling and a pair with a base leg is bit-identical by
-`x / 1.0 == x` rather than by a second branch. The block is filed as
-`LogVar2FJModelPrices.<later>.<earlier>` and writes the same key as a `LogVar2FJModelParameters`
-factor; it is never a two-token `FxRate` name, which discovery reads as a spot plus an
-`ObservedBasis` tail.
-
-BASE INVARIANCE is what gates it, on a world with nothing free in it: one economy on a EUR-base and
-a USD-base document — the euro book primitive and the dollar book's rates DERIVED from it, so the
-cross fit's ratio is a real division; every `FxRate` naming a curve that is not its own currency
-with a decoy 200bp away under the bare token; different day counts — authors the same eleven
-contracts and fits the same parameters to **0.0e+00** relative, and the same accumulator and TARF
-solve the same strikes off them. And the desk's prior is a view about ONE RATE: the seed turns its
-own number onto the axis the book fits (`security_map.leverage_prior`, which is spelling-blind about
-the pair), so `-0.4` on EURZAR reaches a EUR or USD book's fit as `-0.4` on the rand priced in the
-euro and a ZAR book's as `+0.4` on the euro priced in the rand, and the fitted `Rho_S` comes back
-with the sign of the prior in force.
-
-**TWO RESIDUES, both stated with their size.** The same market stored the other way round fits the
-same law under the same key to **8.0e-2** at the derived `Cap_A` and 1.7% at `Rho_S`, and that is
-the DELTA-NEUTRAL STRADDLE not being self-inverse: `K = F exp(-sigma^2 T/2)` is placed on whichever
-axis the surface is stored on, so the two books' ATM strikes differ by `exp(sigma^2 T)` — on a flat
-surface with no wings at all the residue is there and tracks `sigma^2 T` to nothing, while the
-25-delta rungs agree to 7.8e-04 in strike. The FITTED parameters move by **2.4e-02** at most on the
-re-quoted mirror and 9.7e-03 on an exact one, and the derived corner amplifies that; at the price it
-is **8.1e-05** of the solved strike, inside the 2e-4
-axis band and a twentieth of what the model itself is worth. And a base-leg pair keeps the
-`FxRate`'s own axis, which none of this changes: EURZAR on a EUR book is the rand priced in the euro
-and on a ZAR book the euro priced in the rand, so two books of different BASES fit reciprocal laws
-of one pair and their strikes agree only to the family's reciprocal-axis difference — measured
-**1.0e-3** against the same band. Only the cross case is canonical.
-
-**With a prior the box is SYMMETRIC.** `ρ_s ∈ [−ρ_max, +ρ_max]`, `ρ_max = √(1 − ρ_ℓ² − c_min)`,
-re-derived as `ρ_ℓ` moves. Half a box is an assertion about which way a smile leans, and the prior
-is where that assertion belongs; the seed is `sign(prior)·0.75` and a zero prior seeds −0.75 and lets
-the box decide. `Model_Priors` governs every soft term at once: the leverage prior on `ρ_s`, the
-floor on the residual shape `α·δ_A`, the residual pair's own priors where the ladder does not
-identify it, and a history's slow pair where the ladder fits it — all four scaled to the one price
-above. `Off` restores the one-sided box with the vanilla-only objective it replaced, and is the
-switch a bit-identity gate runs under.
-
-**`Residual_Shape_Floor` is the lower bound on `α` the residual sizing does not have.** `|β|/α ≤ 0.77`
-bounds the skew share and nothing bounds `α` from below, so on a nearly symmetric smile the fit has
-no use for residual SKEW and buys CONVEXITY instead by walking `α` to the admissible map's own
-softplus floor — the 22-rung USDZAR ladder in `Global` landed at `α` 5.45 with `α·δ_A` **7.7e-03** at
-one month, on a scale where 1 is strongly non-Gaussian and 15 nearly Gaussian, and with the floor
-off it walks on to **0.627**. The guard is one soft term on that shape at the SHORTEST calibrated
-expiry, `0.05 · relu(1 − shape/floor)`: relative, so a fit inside the floor pays nothing and one at
-the map's floor pays five vol points of residual, against wing misses of a few tenths. Any floor at
-or above 0.1 lands the same θ\* (`α` 48.5, shape 1.358), so it excludes a BASIN rather than setting a
-value. It is a FIELD and not a box because the number is a modelling choice and `0` is off. With
-the floor and the desk's −0.4 together the ladder's one-month wing reads **0.134** against an
-earlier fit's 0.305 and the Poisson residual's 0.174, and the stationary log-vol sd comes back inside the 0.4–0.9
-band (0.353 → 0.515) without the band moving.
-
-Both modes REFUSE on the default `Stationary_Spread: Refuse`, and that refusal is the reading: with
-the residual carrying the skew the fit no longer needs the vol-of-vol to carry it, so the
-stationary log-vol sd lands under the 0.4–0.9 the VIX market implies and the guard names the
-bucket, the sd and the pair that produced it. The rows above are read under
-`Stationary_Spread: Floor`, which takes the same θ\* — the guard is a READING of θ\*, never a
-re-solve — and says so. This is the identification statement made concrete: vanillas cannot tell
-residual skew from leverage skew, so a vanilla-only fit gives the skew to whichever is cheaper, and
-the forward-smile block is what separates them.
-
-**The slow factor's prior is per ASSET CLASS, and the floor is the guard beneath it.** Where the
-ladder carries no wing at `Slow_Horizon` (1.5 years) or longer, `(ρ_l, σ_l)` are fitted to nothing
-and are pinned instead, at `Slow_Factor_Prior` where the block declares one, else the class default
-off the factor type `Underlying` resolves to: **FX (0.2, 0.5), an index (0.4, 1.0)**, whose SIGN is
-that of the `Rho_S` in force at the pin (`LVPriors.slow_prior`). A LogVar2FJ history is NEVER a
-pin: where the ladder FITS the slow pair, a history's `Rho_L` and `Sigma_L` enter as soft rows with
-their own standard errors, clipped into the box, like every other prior. That history is the
-`utils.LogVar2FJ.SLOW_HISTORY` block `stochasticprocess.LogVar2FJCalibration` writes, the P-measure
-estimator — `Rho_L`, `Sigma_L`, `Alpha`, `Beta`, `Rho_S` and `Sigma_S`, each with its own `_SE`, a
-block missing any one of the twelve refusing by name — and it is also where the leverage prior's
-`Rho_S` and the residual seed `Alpha` are read from. The sign is the point: the fit runs on the
-`FxRate`'s own axis, so a USDZAR block whose deal convention has vol rising as the rand weakens fits
-`ρ_s < 0` on `FxRate.ZAR`, and pinning `ρ_l = −0.4` from the index seed would be the right sign here
-but the wrong one on the reciprocal — the rule reads it off the data instead of assuming it. Under
-`Model_Priors` `On`, the default, stage 3's box on `ρ_s` is symmetric and the pin follows the fitted
-sign; under `Off` the box is `[−√(1 − ρ_l² − c_min), 0]`, no fit can produce a positive fast
-leverage, and the FX default resolves to (−0.2, 0.5). A pin is applied to every name without a
-wing at `Slow_Horizon`, so a floor-BY-DEFAULT would
-understate a whole book's 2–5 year vol in one direction; the floor `σ_l ≥ 0.3` is the BOX beneath
-all three instead, a declared prior under it refusing by name.
-
-**Risk in quote space.** `Quote_Sensitivity` **Yes** keeps the written parameters connected to the
-numbers quoted. The outer fit is a least-squares minimum, so its half is the Gauss-Newton contraction
-at the stationarity point — **`LeastSquaresSolve`, the one node the swaption family also solves
-through** — taken over the coordinates `least_squares` did not stop against a bound, and on the
-COLUMN-SCALED Jacobian at `Jacobian_Rcond`, which is the same matrix and the same cutoff the
-identification table reads. The ξ strip's half is the Newton splice the inner solve already carries,
-so `dξ/dq` needs no rule of its own; the residual and its Jacobian are taken once at θ\* and kept, so
-a whole `dθ/dq` matrix is one contraction per written parameter rather than one fit's worth of
-evaluations each. `Stationarity_Tol` refuses the lot where θ\* is not a stationary point — a stage
-that stopped at `Max_Iterations` has no quote derivative to report. Measured on a 2y SPX autocall
-priced off a factor the same `Context` calibrated (nine quotes, `Paths` 2048):
-
-| gate | result |
-|---|---|
-| `dV/dq` one backward vs `dV/dθ · dθ/dq` | **4.4e-16 to 5.8e-14** relative over nine quotes — and a TAUTOLOGY: both route through the same backward, so what closes is the ATTACHMENT |
-| `Quote_Sensitivity` Yes vs No, the written factor | **identical on all 14 fields** |
-| the fit's own stationarity `‖Jᵀr‖` at θ\* | **1.55e-08** against `‖r‖` 7.65e-05, all seven coordinates free of their box |
-| the re-authored central difference, the leg that tests the THEOREM | **does not close**: −39.8 at a half-width of 0.005 and +115.4 at 0.0025, against the backward's 4989 |
-
-The market premium each row measures against carries its quote as a splice worth zero forward, which
-is why the fit cannot move when the switch flips.
-
-!!! warning "The third leg is the only one that tests the theorem, and on this document it fails"
-    Re-authoring a quote and re-solving goes AROUND the node instead of through it, and it is a
-    truth only where `q → θ*` is single valued. Here it is not: the two re-fits either side of a
-    0.005 tick land with `Rho_L` **on its −0.6 box** one side and at −0.127 the other, which are two
-    different Karush-Kuhn-Tucker points rather than two points on one smooth manifold, and every coordinate's
-    re-fit displacement is two to three orders under the contraction's. **`Jacobian_Rcond` is the
-    dial that reaches this**, and it is measured: on a reduced USDZAR polish whose five scaled
-    singular values are 1.940 / 0.871 / 0.567 / 0.384 / 0.0861, raising the cutoff (a truncated
-    SVD, [@hansen1987]) from 1e-3 to 0.05
-    drops the last direction and takes `Sigma_S` from −430.8 to −232.2 against a re-solved −196.3,
-    and `Rho_S` from +11.5 to −13.4 against −15.7 — from sign-wrong to within a fifth. What a desk
-    should read first is the identification table.
-
-**Refused under `Fit_Mode` Bootstrap**: bucket `k` is fitted given the buckets before it, so θ\* is
-a stationary point of no single objective and the contraction would report the last bucket's
-derivative as the whole surface's.
-
-**A traded forward-start is a different contract** from a reference model's slopes, and the block
-says which it is being given: **Quotes** prices `E[S_T1(R − k)⁺]/E[S_T1]`, the same per-path gain
-under the share measure and about 0.4 vol points of level away from **Reference**'s ratio
-expectation `E[(S_T2/S_T1 − k)⁺]`. Either table-reading source with no rows refuses rather than
-quietly fitting the vanillas alone.
-
-**The target is a DIFFERENCE, and there is one term whatever the source.** `Δ_skew` is the forward
-90–110 slope less the spot slope at maturity Δ and `Δ_bfly` the same for the 90/110 butterfly, both
-in vol points, both targeted — residual skew is sticky while its convexity dilutes at the forward
-date, leverage skew dilutes while vol-of-vol convexity amplifies, so the slope alone cannot separate
-the residual's share from the vol-of-vol. A withdrawn **Prior** source DECLARED the pair
-(`Stickiness_Prior`, `0.0,0.0` being sticky-delta); both now refuse by name, and the measurements
-below were taken under it. **Quotes** and **Reference** MEASURE it — the source's own forward
-smile less the MARKET's own spot smile at the rung nearest Δ, read off the quoted vols in
-log-moneyness, a quote itself wherever the rung carries one at 90/100/110 and the nearest quote
-with a log line where it does not. The residual is then the model's difference less the target's,
-applied to the model's OWN spot smile per evaluation, and the forward ATM LEVEL is targeted by
-neither: the ATM ladder pins it and the ξ strip reprices it exactly.
-
-A RATIO divides by a spot quantity that is within a few tenths of zero wherever the smile is
-symmetric — on CJOW `ψ_bfly` read 0.075, 1.37 and −4.1 across three tenors — so it asks the fit to
-match noise, and it did: a ratio target of `1.0,1.0` on the 22-rung USDZAR ladder pulled the wings
-0.202 → **0.512** and degraded the vanillas at the target maturities by **+0.329** vol points, the
-failure a ratio of near-zero quantities predicts. The same ladder at `0.0,0.0` — the identical assumption, sticky-delta,
-written as differences — moves that guarded RMSE by **−0.012**: it does not reproduce the failure.
-What it does not buy is the rest of the surface. The wings still go 0.135 → **0.433** and the spot
-RMSE 0.115 → 0.369, because the objective's guard watches the TARGET maturities (0.5y and 1y here) and
-the degradation lands on the shorter expiries it does not watch; the forward block is expensive on a
-sub-year FX ladder either way, and what changed is that it is no longer expensive for a reason that
-was arithmetic. The fit lands at `Δ_skew` −1.84 (6m into 6m) and −2.54 (1y into 1y) against a target
-of exactly `+0.00` — sticky-delta is what it is aimed at, not what it reaches — but it reaches
-CLOSER than the ratio target did, `ψ_skew` 0.906 / 0.819 against 0.859 / 0.713, on a fit that also
-lands a better surface: 0.433 wings against 0.512.
-
-**Wherever the forward smile was not QUOTED the number is a reserve, and the factor carries its
-model half.** `Stickiness_Band` (default **0.5 vol points**, the spread between the sticky-delta and
-LSV-like views) is the band; a deal's reserve is `|∂PV/∂Δ_skew| × band`, and with `Prior` withdrawn
-this is the ONLY place a desk's forward-smile view is priced. The calibration writes
-`Skew_Gradient` — `∂(Δ_skew)/∂β` and `∂(Δ_skew)/∂ρ_s` in the LAST bucket at the DECLARED forward
-tenor, in vol points per unit — and `Stickiness_Band` beside it on the `LogVar2FJModelParameters`
-factor, both STRUCTURAL. A deal reporting `Greeks: First` on that factor composes
-`utils.LogVar2FJ.skew_reserve` from them and its own last-bucket `(∂PV/∂β, ∂PV/∂ρ_s)`, and reports
-the answer as **`Skew_Reserve`** beside `Value` on the `mtm` frame. Two parameters carry one target,
-so the parameter move behind a vol point of `Δ_skew` is the MINIMUM-NORM one, `Jᵀ/(J Jᵀ)` — the
-convention the quote contraction takes over its null space. **It is reported PER DEAL and for the
-portfolio**: `pricing.greeks` composes the netting set's off the one gradient it takes, and
-`pricing.deal_reserves` takes one reverse sweep per deal against those two levers alone, so every
-deal row carries its own number beside the set's — which is those deals CONTRACTED rather than
-summed, `|Σ|` at most `Σ|·|` and far under it wherever a book has two sides. Measured on an
-NKY autocall under the fit the current defaults write: `Skew_Reserve` **28% of
-the mark**, composed identically by hand. The 21% quoted above was taken under the earlier two-row
-fit, so the two differ by the fit and not by the reserve's arithmetic.
-
-**With the block OFF the rows are REPORTED rather than targeted.** The calibrator can evaluate the
-forward window without aiming at it, and does: each `Forward_Tenors` pair is moved onto the two grid
-BLOCK ENDS nearest its own, the second strictly beyond the first. Moved, because a window end that
-is not a block end is not on the walk's grid at all — putting one there splits a block into two
-mixers and moves θ\*, and the reserve would then be quoted off a different fit from the one written.
-So the grid, the draws and θ\* are the vanilla-only fit's to the bit. What the FACTOR carries is
-read once more once θ\* is fixed, at the window `Forward_Tenors` DECLARES: `declared_skew_rows`
-prepares the same fit around those two ends — a grid that carries them exactly, one forward pass,
-no stage run — so a desk asking 6m into 6m is reserved at 6m into 6m where the fit's own rows read
-0.51y into 2.23y. The log line names each window and marks the one written.
-
-**`Forward_Smile_Source` defaults to `None`, and `Prior` is WITHDRAWN.** *Vanillas do not close this
-model* — but a target is not a source: measured on all four index ladders, a
-sticky-delta TARGET on a one-bucket ladder is reached only by driving `α` to its box, flipping `β`
-to its admissibility bound and carrying the skew on `ρ_s = −0.8`, at 0.4–1.1 vol points of spot fit,
-and a 0.5y bucket does not repair it on a listed chain. **The block exists with a market or a
-reference source or not at all.** `Quotes` and `Reference` are SOURCES, read off `Forward_Smiles`,
-and enter at stage 3 WITH the leverage prior, because that is the stage that fits `(ρ_s, σ_s)`: the
-split between `β` and `ρ_s σ_s` is exactly the direction the vanillas leave flat, and the polish
-spectrum says so — its two smallest directions read 0.6699 / 0.2870 with the rows against 0.4135 /
-0.0847 without on the USDZAR ladder, 0.4329 / 0.1199 against 0.1499 / 0.0317 on the SPX chain, the
-two largest unmoved. A block declaring `Prior` refuses by name and is told which two sources there
-are and where a view is carried instead. The tie-breaker form of `Prior` — a declared view
-CONSTRAINED to 0.1 vol points of vanilla degradation on stage 5 — was built, measured and
-withdrawn: a cap that covers one stage while the damage occurs in another is not a cap, and on a
-one-bucket ladder, which is every ladder fitted so far, stage 5 does not run at all. `Vanilla_Guard`, `Vanilla_Band` and `Stickiness_Prior`
-refuse by name from the retired block; a source that names a TABLE still refuses in `Fit_Mode:
-Bootstrap` by name.
-
-**A tenor the ladder cannot reach is DROPPED by name.** `Δ_skew` is the forward slope less the SPOT
-slope at maturity Δ, read at the quoted rung nearest Δ, so a tenor whose nearest rung is more than a
-QUARTER of Δ away is a difference taken at the wrong maturity: on a three-week FX ladder the default
-`1y:1y` would put a one-year forward smile beside a three-week spot one, and would walk the grid to
-two years to do it. The rule drops it with the ladder's own expiries in the message; where nothing
-survives the block is not fitted and the report says so.
-
-**Stage 5's guard is read on the rung NEAREST each forward row's own `T1` and `T1 + Delta`**,
-within the same quarter of `Delta` the reachability rule measures a spot rung by. The two rules
-asked one question with two tolerances: a row survived reachability because its rung was 1.9% of
-`Delta` away and then had no quote within one internal STEP of its maturity, so the guard was read
-over an empty set and `torch.stack` raised. A ladder with no rung inside the tolerance now REFUSES
-by name rather than judging a stage on no rows at all.
-
-**The lever is the calendar bucket.** With ONE bucket a forward target has nothing to move but the
-vanillas; a later bucket of the skew pair, `β(t)` beside `ρ_s(t)`, is what it moves instead. A rung that does not
-reach 90 or 110 is named in the log, since `Δ` at that tenor is then measured against an understated
-spot slope.
-
-**`Reference` prices the RATIO EXPECTATION.** A reference model's forward smile is
-`E[(S_T₂/S_T₁ − k)⁺]` over the block `[T₁, T₂]` under the pricing measure — the same per-path
-conditional Black a traded forward-start takes, WITHOUT the share-measure factor `exp(M₁ + V₁/2)`
-that `Quotes` carries, which is the whole of the difference between the two instruments. Everything
-else is one table: the same rows, the same `tilts` objective, the same refusals, the same Jacobian.
-A written factor's own forward smiles are read back by `LogVar2FJModelParameters.forward_smiles`,
-which prices the block's declared windows at the parameters `Price Factors` carries and runs no
-stage — the instrument being whichever source the block names.
-
-**What the block identifies, measured on a world the model owns.** Take the five-expiry ladder
-re-quoted at one written factor's OWN vanilla vols, so that factor IS the vanilla minimum: the fit
-still leaves `α` on its class prior, 43.76 against the 44 the prior states, with the prior rows
-reading 6.74× one quote row on `α` and 4.34× on `β`. Nine `Reference` rows carrying that same
-factor's forward smiles at a ONE-MONTH tenor, three months, six months and a year forward, land `α`
-at **20.27 against the world's 20.92** and move `β` from −13.50 to −4.78 against −2.03 — the prior
-rows now 2.35× and 2.58×, and the polish's own table taken a second time at the same θ\* WITHOUT
-the forward rows reads its smallest singular value 0.0898 where the rows read 0.1997. The same rows
-priced as traded forward-starts land 28.01 and −6.31: two sources agreeing on the move and not on
-the digit. **`Δ` is what decides it.** The identical measurement at the declared default windows —
-6m into 6m, 1y into 1y, 1y into 3m — lands `α` at 43.48, unmoved, its Jacobian column 6.30e−05
-against the 6.17e−05 the vanillas alone give. Over a quarter the residual's increment has already
-aggregated to nearly Gaussian, so what those windows tilt by is the leverage; a block asked to
-identify the residual pair is asked for a SHORT `Δ`.
+The GBM arm applies a quanto as one carry off an implied ATM vol; a walking kit has none, so it is
+handed the correlation and the walk adds `−q_k √V_k` a day, `q_k = ρ_q σ_FX,k √δ_k`, the drift
+following the variance path ([theory](../theory/stochastic_volatility.md#equity-and-fx)). `ρ_q` is the marked equity/FX
+correlation read as a total-return correlation; applied to the day's total sd it already is the
+framework's correlation given the mixer, so it is not divided by the mixer's dilution. Only the
+autocall passes the loading; `Compo` is refused, and so is a quanto naming no correlation. A
+correlation mints no leaf, so its delta is a common-random-number bump (`Correlation_Bump`).
+**Held by** `test_logvar2fj_json.py::test_the_quanto_loading_is_off_at_zero_correlation`,
+`test_logvar2fj_json.py::test_the_quanto_gbm_limit_reproduces_the_gbm_quanto_deal`.
 
 ### What the quotes cannot say {#what-the-quotes-cannot-say}
 
-Properties of the market data available, not of the engine: each is a limit on what a fit of that
-data can be asked to identify, recorded so a reader knows which readings rest on it.
+Limits of the market data available, not of the engine:
 
-- **A declared standard error tight enough is a pin, and the guard says so.** The Nasdaq at its
-  regression's own 0.015 reads 138 quote rows on the leverage and is flagged; the Nikkei at 0.025
-  reads 38.5 and is not. Whether a 1,149-day regression's sampling error is the right spread for a
-  risk-neutral prior is a modelling question; `Leverage_Prior_SE` is where a desk states its own.
-- **The width of the residual's skew prior is asserted, not measured.** At 0.2 the wings outvote
-  it by about one standard error on every index ladder, −0.29 to −0.49 against a prior of −0.5.
-  The historical estimator's own spread on an uncontaminated history would measure it, and no
-  index history here is uncontaminated: the Nikkei's estimated clock share reads 0.9967 against a
-  fitted 0.2671.
-- **A ladder of vanillas alone does not pin the residual's tail parameter.** The fit reports, for
-  each parameter, how hard its prior pushes compared with the quotes; on a Nikkei block the tail
-  parameter `Alpha` reads about ten times one quote row, so its fitted value is the prior's as much
-  as the market's. Under the walk this showed as two fitted values from different seeds; the
-  quadrature pricer writes the same bytes on every run of the same document, so what remains is
-  identification, not the pricer. A block of forward-starting options identifies it at a tenor
-  short enough for the residual to still be non-Gaussian: measured on a world the model owns, nine
-  ONE-MONTH rows take `Alpha` from the prior 44 to 20.27 against the world's 20.92 and the prior
-  row from 6.74 to 2.35 quote rows, where the same rows at the declared default windows move
-  neither. The vendor's chain quotes no forward-start.
-- **The Nikkei's implied-volatility surface answers one maturity**, so its long end comes from the
-  listed chain, pulled in the Tokyo session, or the file's own surface; a Nikkei autocall's mark
-  moves 4.6% between a chain-only fit and one carrying the file's long-dated at-the-money point.
-  The S&P 500, Nasdaq 100 and Euro Stoxx 50 surfaces answer three to twenty-four months at 90 to
-  110 percent moneyness, and the listed chain carries every expiry past that.
-- **A closes-only price archive attenuates the historical estimator's shock rows.** Two names
-  simulated from the four-factor process with every correlation row at 0.60 and re-estimated from
-  daily closes read 0.55 on the return row, 0.32 and 0.53 on the two volatility-shock rows and
-  0.35 on the mixer, each to about ±0.015. A smoothed shock is a linear functional of one name's
-  noisy observations, so its cross-name correlation is the state's share of that functional's
-  variance, driven down by the measurement noise; the mixer column is further compressed by a fit
-  whose tail parameter reads 258 to 380 against a truth of 44. The estimator logs both shock
-  standard deviations by name. A range-bar archive is the measurement that would close it.
-- **A ladder shorter than the slow horizon cannot reach the model's flat limit.** The slow
-  factor's horizon is 1.5 years, and a ladder with no wing that far injects skew and convexity a
-  flat surface does not want, so a flat 20% ladder fitted with priors off lands at 0.21 vol points
-  on one rung and 0.44 on two rather than at zero, with a fitted leverage product of −0.001 beside
-  the pinned −0.400. Every ladder a short-dated FX desk quotes is such a ladder, and a flat-limit
-  gate needs one reaching 1.5 years.
-- **The two reversion speeds are declared, not fitted.** `Kappa_L` 0.5 and `Kappa_S` 6.0 are
-  structural: no stage moves them, and their influence on θ\* and on a mark is unmeasured.
-- **The default vanilla pricer is a surrogate.** `Quadrature` prices the vanillas off a lognormal
-  stand-in for the variance clock, 0.085 to 0.098 vol points from the walk on the fixture ladder
-  (see [above](#logvar2fj)), while the pricers that use θ\* walk; the forward-start rows walk at
-  `Paths` and are exposed to the walk's own small-sample bias, which moved the vanillas 0.36 vol
-  points between 8,192 and 32,768 paths on that ladder and is unmeasured elsewhere.
+- **A tight declared standard error is a pin**; `On_Guard` flags it, and `Leverage_Prior_SE` is
+  where a desk states its own spread.
+- **The skew-share prior's width is asserted, not measured**: an uncontaminated history would measure
+  it, and an index history is contaminated by its leverage.
+- **Vanillas alone do not pin α**: on the fixture's model-owned ladder the fit lands on the class
+  prior, and one-month `Reference` rows recover the world's α. A vendor chain quotes no forward-start.
+- **A closes-only archive attenuates the estimator's cross-name shock correlations**, a smoothed
+  shock being a functional of one name's noisy closes.
+- **A ladder shorter than `Slow_Horizon` cannot reach the flat limit**, the pinned slow pair
+  injecting skew a flat surface does not want.
+- **`Kappa_L` and `Kappa_S` are declared, never fitted**; their influence on a mark is unmeasured.
+- **The default vanilla pricer is a surrogate**, and the forward-start rows carry the walk's
+  small-sample bias at `Paths` ([roadmap](roadmap.md#the-calibration)).
 
-## `FXVolPrices` — a smile quoted in delta, and where the conversion runs {#fxvolprices}
+## `FXVolPrices` — a smile quoted in delta {#fxvolprices}
 
-An FX smile ticks in as DELTA quotes: an ATM vol per expiry and, per delta pillar, the risk reversal
-and butterfly around it. The surface the pricers read is a log-moneyness one. Both halves of the
-conversion already existed — the strangle pair `vol(call) = ATM + BF + RR/2`,
-`vol(put) = ATM + BF − RR/2`, and the delta-to-strike solve `Factor2D` runs for a `Malz` surface — so
-this family is the same conversion **moved**, and the move is the point. The specification is on
-[its Bootstrapping page](../bootstrapping/fx_and_equity.md); two of its readings matter here.
+An FX smile ticks in as ATM, risk-reversal and butterfly quotes by delta, and the pricers read a
+log-moneyness surface; this family converts one into the other
+([specification](../bootstrapping/fx_and_equity.md#fxvolsurfaceparameters)).
 
-- **`BF` is the SMILE strangle**, the wing pair's average vol over ATM. A broker's MARKET (one-vol)
-  strangle is in general a different number [@clark2011; @reiswich2010], and one
-  authored here is read as a smile strangle; the error that makes is unmeasured.
-- **"Malz" is a label.** The wings are piecewise LINEAR in premium-adjusted forward delta, flat
-  beyond the outermost quoted delta, which is not the quadratic-in-delta interpolation of Malz
-  [@malz1997].
+**The grid is pinned, because refinement is compile-time work.** The solve refines a log-moneyness
+grid until it resolves the smile to `Grid_Tolerance`, so the grid is a function of the quotes;
+refined at factor construction, every vol tick would move a node, a new plan and a recompile. So the
+bootstrap refines once and writes the grid with the factor, and a re-bootstrap finding its own
+surface at the same expiries and tolerance reuses it (`pinned_grid`), moving only the vols.
+`Factor2D.solves_delta_surface` is what lets a solved surface keep its grid. Below 1e-8 the
+refinement does not terminate, so that bound is `Grid_Tolerance`'s declared domain, not a dial.
 
-**The x-grid is pinned, because refinement is compile-time work.** The delta solve refines a
-log-moneyness grid until interpolating total variance between the nodes resolves the smile to
-`Grid_Tolerance`, so that grid is a function of the quotes — and at factor-construction time, where
-it used to run, every vol tick was potentially STRUCTURAL: a moved node is a new plan and a recompile.
-So the refinement runs in the bootstrap once and its grid is part of the written factor. A
-re-bootstrap finding a surface already written **for the same expiries at the same `Grid_Tolerance`**
-reuses that grid and moves only the vols on it, which is exactly a `bind='value'` patch; changed
-expiries, or a different tolerance, refine from scratch. The log says what the pinned grid resolves
-the CURRENT quotes to, beside the tolerance it was built at.
+**Each convention offers one value**, because the solve implements one: a premium-adjusted forward
+delta and the delta-neutral straddle ATM [@reiswich2010]. `BF` is the smile strangle; a broker's
+market strangle is a different number [@clark2011]. "Malz" is a label: the wings are piecewise linear
+in delta, not Malz's quadratic [@malz1997].
 
-`Surface_Type` names the moneyness convention the engine reads a surface at (`calc_moneyness` returns
-log(F/K), term interpolation in total variance) and it also said a delta smile is the form the block
-was authored in. `Factor2D.solves_delta_surface` separates the two: a `Malz` block **carrying
-deltas** is unsolved and gets solved on construction, as before; one carrying only the solved
-`Surface` is what this family writes and falls through with its grid intact.
-
-**The conversion is vectorized** — one bisection over the whole grid (`Factor2D.malz_sigma`) rather
-than a Python loop with a scalar `brentq` per point, per expiry, per refinement pass. It refines the
-identical grid, agrees with the loop to 5e-14 vol (inside `brentq`'s own 2e-12 `xtol`), and is made of
-operations an autograd tape can carry, which the scipy call is not. The 5e-14 agreement was
-measured during development against a scalar `brentq` solve; no test re-checks it.
-
-**The conventions are declared and each offers exactly one value**, because the solve implements
-exactly one: `Delta_Type` `Forward`, `Premium_Adjusted` `Yes` (the pillar delta is `(K/F)N(d₂)`) and
-`ATM_Convention` `Delta_Neutral_Straddle` (`K = F exp(−σ²T/2)`). A spot delta or an ATMF quote needs
-different algebra, and a value the engine cannot honour is the same defect as a field nothing reads.
-The conventions are the standard ones of Reiswich and Wystup [@reiswich2010]. No test checks them as
-mathematics; the single-valued declarations are what holds them.
-
-**The ATM row is the surface's ATM vol, and a second family reads it as one.** `malz_skew` places the
-±0.5 label's vol at the delta-neutral straddle strike, so this family's written ATM vol IS the quoted
-number — nothing is read back off the refined grid to recover it. `FXVolSurfaceParameters.atm_quotes`
-is the one reader of that rule, and `GBMAssetPriceTSModelParameters` takes those rows as its ATM
-column wherever the surface it integrates is one this family **wrote** — evidenced by the same
-fingerprint `pinned_grid` reads back, never by the name. See
-[the quote sources](quote_sensitivities.md#the-atm-column), and the defect named beside them.
-
-**The smile differentiates in its own quotes.** `Quote_Sensitivity` — declared here, default `No` —
-leaves the written surface connected to the ATM / RR / BF numbers it was built from, so a backward
-pass reports `dV/d(risk reversal)` beside `dV/d(surface node)`. The written surface is bit-identical
-either way; what this conversion has that the other families do not is a **root find**, and the tape
-does not enter it — see [the delta solve](quote_sensitivities.md#the-delta-solve).
+**The ATM row is the surface's ATM vol.** `Factor2D.malz_skew` places it at the delta-neutral
+straddle strike, so the written ATM vol is the quoted number, and `GBMAssetPriceTSModelPrices` takes
+those rows as its ATM column wherever this family wrote the surface, evidenced by the fingerprint
+`pinned_grid` reads, never by the name ([the two sources](quote_sensitivities.md#the-atm-column)).
+`Quote_Sensitivity` leaves the surface connected to its quotes, bit-identical either way
+([the delta solve](quote_sensitivities.md#the-delta-solve)).
 
 !!! warning "One ATM quote, two families, two partial derivatives"
     This block's ATM row is also `GBMAssetPriceTSModelPrices`' ATM column, so with **both** blocks
-    asking for `Quote_Sensitivity` a single JSON number reaches a valuation through two independent
-    maps and its `dV/dq` arrives split over two `quote_leaves` entries — under the *same* descriptor
-    string, because a quote is named by what it is and not by which family read it. Each half is
-    correct and neither is the total. A consumer must group by descriptor across blocks and **sum**;
-    see [the collision](quote_sensitivities.md#the-attachment) for the measured numbers.
+    asking for `Quote_Sensitivity` one JSON number reaches a valuation through two maps and its
+    `dV/dq` arrives split over two `quote_leaves` entries under the *same* descriptor. Each half is
+    correct and neither is the total: a consumer must group by descriptor across blocks and **sum**
+    ([the attachment](quote_sensitivities.md#the-attachment)).
 
-**A point may carry a two-way, and the bootstrap never reads it.** `Quoted_Bid` and `Quoted_Ask` are
-optional columns beside the mid, written by `derivus_bloomberg` where the terminal answered
-`PX_BID`/`PX_ASK`; a mid-only block is byte-identical to the one this family was always handed.
-Everything below reads `Quoted_Market_Value` by name, so the surface, the pinned grid and every mark
-on the book are built from the **mid**. The one reader is the quote layer:
-[`derivus.structures`](structures.md#two-sided) charges each leg the pillar's half-spread times its
-vega to that pillar, on the coordinate the quote solves. *The spread is the quote's; the mid is the
-book's.*
+**A point may carry a two-way, and the bootstrap never reads it.** Every read here is of
+`Quoted_Market_Value`, so the surface and every mark are the mid's; the one reader of
+`Quoted_Bid`/`Quoted_Ask` is [`derivus.structures`](structures.md#two-sided), which charges each leg
+the pillar's half-spread times its vega to that pillar. *The spread is the quote's; the mid is the
+book's.* **Held by** `test_service.py::test_a_two_way_ticks_beside_the_mid_and_a_moved_pillar_still_refuses`,
+`test_structures.py::test_a_book_with_no_two_way_quotes_exactly_as_it_always_did`.
 
-Both sides are on the value side of `update_market_quote`'s structure guard — a spread widens between
-prints and a pillar that starts or stops being quoted two-sided is the same node of the same plan,
-while a moved `Pillar` or `Expiry` refuses as it always did. That guard IS the section's plan/values
-split, `schema.MARKET_QUOTE_VALUES`, read by the guard, by `plan_hash`, by `market_patch`/
-`patch_market` and by the artifact slot alike, so a vol tick moves `values_hash` and leaves
-`plan_hash` alone. See [Quote Propagation](quote_propagation.md#protocol) for what that buys and for
-the five families whose quotes are not `Points` rows and are therefore wholly plan-side.
+**Timestamps are stored, never priced**; what counts as too old is the consumer's policy.
+`config.CustomJsonEncoder` writes a midnight stamp as a date and any other in ISO form, so intraday
+snapshots survive a save.
 
-**Timestamps are data the engine stores and reports.** Each quote row carries when it was seen; the
-written surface carries the latest as `Quote_Timestamp`, its own as-of, `bind='value'` because it
-travels with the vols. A stamp is patched, ticked and stored like any value and **nothing in pricing
-reads it** — what counts as too old is the consumer's policy. **A MARKET'S IDENTITY IS ITS NUMBERS**,
-so `values_hash` is taken of the values patch with the clocks projected out (`schema.without_clocks`,
-derived from the declarations — a value-bound `Date` on a factor and the stamp on a quote row): the
-same numbers are the same market whenever they were read, and a cadence that re-stamps a board it did
-not move leaves the hash bit-identical. Resolution is still FULL where the stamp is stored:
-`CustomJsonEncoder` writes a midnight `Timestamp` as the plain date it always did (old files
-re-encode byte-stable) and a non-midnight one in ISO form with its time, so the 09:15 and 16:30
-snapshots of a quote survive a save as themselves.
+## Open
+
+The surrogate vanilla pricer ([roadmap](roadmap.md#the-calibration)); the outright that cannot
+carry a quote derivative ([roadmap](roadmap.md#the-engine)); whether a missing `Prices` refuses in
+process, the nominal leverage weight, the correlation as a leaf
+([roadmap](roadmap.md#decisions-waiting-on-the-desk)).

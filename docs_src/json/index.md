@@ -96,7 +96,7 @@ buy USD and sell ZAR, and negating both reverses the trade. The fields of every 
 
 A deal carries its terms and nothing about where it is held. Where a desk keeps a record, the
 portfolio a trade sits in, the agreement it is dealt under and the seat that booked it are carried
-by the fill that books it - see [the Spine](../developer/spine.md#increment-8-the-paper-and-where-a-position-sits).
+by the fill that books it - see [the Spine](../developer/spine.md#where-a-position-sits).
 
 ## MergeMarketData
 

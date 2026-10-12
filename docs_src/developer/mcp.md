@@ -1,305 +1,277 @@
 # MCP Binding
 
-`derivus_mcp/server.py` is the derivus verbs as MCP tools, for a model to book instruments in
-plain language. It is the third client of the service — the web UI and the Excel add-in are the
-others — and owns **no logic**: every tool is a thin adapter onto a `DV_Service` endpoint, so
-anything a tool needs that an endpoint cannot answer is a missing verb on the service, never code
-here. It sits outside the `derivus` package on purpose, `derivus_bloomberg`'s shape: importing the
-engine pulls torch (~3 s) into a process that only talks HTTP. `tests/test_mcp.py` holds the module
-to `requests`, `mcp` and `mcp_types`.
+`derivus_mcp/server.py` serves the derivus verbs as MCP tools, so a model can book, quote and value
+in plain language. It is a client of `DV_Service` beside the web UI and the Excel add-in, and owns
+no logic: each tool adapts one or two endpoints, so anything a tool needs that no endpoint answers
+is a missing verb on the service, never code here. It sits outside the `derivus` package because
+importing the engine pulls torch into a process that only speaks HTTP.
+
+| where | what |
+| --- | --- |
+| `derivus_mcp/server.py` | the tools, prompts and resources on `MCP`, the host-facing `INSTRUCTIONS`, `main` (stdio) |
+| `Service`, `configure` | the HTTP client; `session` is the transport seam a test drives in process |
+| `_await_result` | the poll loop every waiting tool rides, reporting progress on each poll |
+| `_summary`, `_booking` | a run trimmed to its replay tuple and table shapes; a booking answer to that booking |
+| `derivus/service.py` | the endpoints, and `Metronome` behind `--tick` |
+
+Tests named below are in `tests/test_mcp.py` unless another module is given; they drive the tool
+functions against the in-process service (`configure(session=TestClient(service.app))`). The module
+imports only `asyncio`, `os`, `time`, `requests`, `mcp` and `mcp_types`. **Held by**
+`test_the_mcp_server_imports_neither_the_engine_nor_the_add_in`.
 
 ## Running it
 
 ```
-pip install 'derivus[desk]'                     # service + binding + quote sheet; mcp needs python 3.10+
-DV_Service --book path/to/job.json &            # the service does the work
+pip install 'derivus[desk]'                     # service, binding and quote sheet; python 3.10+
+DV_Service --book path/to/job.json
 claude mcp add derivus -- DV_MCP
-# a service somewhere else:
-claude mcp add derivus --env RF_SERVICE_URL=http://host:8000 -- DV_MCP
+claude mcp add derivus --env RF_SERVICE_URL=http://host:8000 -- DV_MCP   # a service elsewhere
 ```
 
-`RF_SERVICE_URL` is the variable the Excel add-in reads — one setting configures every client.
-There is deliberately no tracked `.mcp.json`: it would pin one machine's paths into the repo, and
-`DV_MCP` takes the path out of the command altogether.
+`RF_SERVICE_URL` (default `http://127.0.0.1:8000`) is the variable the Excel add-in reads, so one
+setting configures every client; `DV_SPINE_TOKEN`, where set, is sent as the bearer on every call.
+No `.mcp.json` is tracked, because it would pin one machine's paths into the repo.
 
-**The server's instructions are the desk's orientation.** A host reads them once per session and
-shows them to the model before it calls anything, so they are `INSTRUCTIONS` in
-`derivus_mcp/server.py`. They say:
+## The instructions
 
-- what the desk is, and to start with `desk_status`;
-- the shape of a working day, the wire forms a deal is written in, and the FX strike axis;
-- what a refusal means, that quoting is not booking, and where the second seat comes in;
-- that bootstrapping dials and ticker codes are configured once in the web UI;
-- where this desk keeps a record, the five verbs that read it: what the book owes, whether a close
-  is legal, where the file and the record disagree, the strip of what has been recorded, and the
-  official closes;
-- the paper the book trades under, declared by the seat that keeps the legal documents: a booking's
-  quantity is the position change in units of the deal and its portfolio a path under the book;
-  `book_positions` reads what stands, `book_cash` the money the settlements moved,
-  `collateral_calls` what each agreement's CSA calls on a marked close, and `mark_book` and
-  `book_pnl` the close's marks and what the book made between them;
-- that every booking is a ticket, a trade a second seat must sign booking PENDING, with `worklist`
-  saying what waits on whom.
-
-The module docstring stays the maintainer's.
+A host shows the server's `instructions` to the model once per session, before any call, so
+`INSTRUCTIONS` is the desk's orientation and the module docstring stays the maintainer's. They say
+to start with `desk_status`, that a deal states its terms and leaves conventions to their declared
+defaults, the wire forms (`{".Timestamp": "YYYY-MM-DD"}`, `{".Percent": 2.5}`), that an FX
+`Strike_Price` is on the engine axis, that a refusal is an answer, that quoting is not booking, and
+how the market and the record are worked. **Held by**
+`test_the_instructions_a_host_shows_are_the_desks_orientation`.
 
 ## The tools
 
-| | |
+A tool's docstring is the contract the model reads, and every read carries the read-only hint so a
+host runs discovery without asking to write. **Held by**
+`test_every_tool_is_registered_and_carries_its_contract`, which holds the registry to exactly these
+tools and the writers to exactly those without the hint.
+
+| tool | endpoint: what |
 | --- | --- |
-| `desk_status` | `GET /book/status` — the desk in ONE read: the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether a terminal is present |
-| `list_instrument_types` | every bookable type, the create-menu grouping, `containers`, and each type's `vernacular` - the plain names a desk says for it |
-| `describe_instrument_type` | one type's fields as declared — required, defaults, valid values — a name that is no type answered with the types whose name or vernacular holds it |
-| `describe_structure` | the structures the desk quotes — the sales names, the parameters, the legs or the variations each is dealt as, the recipe |
-| `describe_calculation_type` / `describe_factor_type` | the same for calculations and factors |
-| `describe_configuration` | every dial the book's bootstrap can be set with, per section, at the default it stands at |
-| `job_skeleton` | the envelope, as a job that loads |
-| `read_book` / `read_deal` | the live book summarised per deal; one deal verbatim |
-| `amend_deal` | merge fields into the deal at a path — the same validate-delta as a booking |
-| `book_deal` / `delete_deal` | write verbs onto `POST /book/deals`; `book_deal` carries the `quantity` (the position change in units of the deal), `execution_reference` and `actor` a recorded desk requires, and the `agreement`, `portfolio`, `price` and the price's currency it may state - a consideration in another currency is crossed at the booking's own board - and the `notional` and `notional_currency` a tiers policy reads; a delete records nothing so it takes no seat |
-| `price_candidate` / `execute_book` | `POST /book/price` — the what-if; waits, then hands back the id |
-| `describe_calculations` / `configure_calculation` / `run_calculation` | `/calculations` — the desk's own named calculations: listed, saved one at a time (judged against the type's declarations), and run over the live book or one subtree in the curiosity lane |
-| `solve_deal` | `POST /book/solve` — solve one field to a target, get the deal back ready to book |
-| `solve_structure` | `POST /book/structure` — quote a declared structure: legs priced at the MID, strikes solved with the two-way charged on them, the mid and the edge said, the pending trade filed under its id. Records nothing |
-| `book_quote` | `POST /book/quote` — the ACCEPTANCE: the client took the price, so the quote is recorded and its mirror booked into the `portfolio` the quote stated, refused exactly as a booking is, and PENDING where the desk's tiers want a second seat |
-| `approve_ticket` / `reject_ticket` | `POST /book/approve` \| `/reject` — a seat's verdict over the ticket a booking carries, filed where it books; `approve_quote` / `reject_quote` are the same for an accepted quote named by its id |
-| `worklist` | `GET /book/worklist` — what waits on the seat asking, each list what one verb acts on where it holds it: tickets to sign, payments due, fills to confirm, collateral calls due, closes to mark, rejected trades standing, each row keyed where its clearing fact is filed, `counts` beside the newest 200 of each |
-| `declare_portfolio` / `describe_portfolios` | `/book/portfolios` — a node of the book's tree declared at its parent, and the tree read back |
-| `update_market_quotes` / `patch_market_values` | `POST /book/market` — quote blocks in (values-only updates, bootstrap judging the write), spot/vol values patched |
-| `configure_book` | `POST /book/configure` — one bootstrapping dial merged into its entry, built to be judged, then the market re-bootstrapped |
-| `describe_curve` | the book's curves as definitions — rows, conventions, and the interpolation each is built under with the source that named it — and, with none named, the seed's own entries a desk can set up |
-| `configure_curve` | `POST /book/curve` — a curve's benchmark rows stated, its own interpolation with them, the block authored from them and the curve solved |
-| `set_base_date` | `POST /book/date` — the day the book is valued as of, both spellings of it, with every curve re-rolled onto it |
-| `tick_market_from_bloomberg` | `POST /book/bloomberg` — today's surfaces, curve rows and spots off this workstation's terminal; provisions the desk on first use, reporting progress while it waits |
-| `book_dependencies` | `GET`/`POST /book/dependencies` — what a candidate, a netting set or the whole book needs from the market, and which seed entry would supply each missing factor |
-| `setup_market` | `POST /book/setup` — build that market: discover only what is unknown, install the surface, spots and curves, bootstrap, one write |
-| `describe_securities` | `GET /book/securities` — the ticker vocabulary a desk could quote, the map of what a terminal verified, and the IPV join: every curve row with the print behind it, the verdict that rejected it, or `unmapped` |
-| `configure_securities` | `POST /book/securities` — one entry of the desk's own seed set or removed, validated by spelling the candidates it now names |
-| `verify_securities` | `POST /book/securities/verify` — the named scope re-verified against the terminal, drift named per entry and new names ledgered, reporting progress while it waits |
-| `calibrate_spot_model` | `POST /book/model` — fit one pair's spot-model parameters off its built surface and land them in the book, under the family the runner pins unless one is named; the expensive one, on request and never on the tick, and what a TARF or accumulator quote reads |
-| `book_risk_summary` | `GET /book/risk` — the whole book's mark and its biggest rows, counterparty-blind: per quote the book's factors are built from, and per factor |
-| `xva_view` / `recalc_xva` | `GET`/`POST /book/xva` — the cached XVA projection per netting set, and the only thing that moves it |
-| `book_diary` | `GET /book/diary` — every payment, fixing and expiry the book carries, with the amount where the compile determines one and the key a settlement fact names the row by |
-| `close_check` | `GET /book/close/check` — whether a close on a day is legal, and the rows it waits on |
-| `book_reconcile` | `GET /book/reconcile` — where the book file and the book of record disagree, named by instrument |
-| `book_activity` | `GET /book/activity` — the record's strip, one line per event with the head to page from; `since` is that head and `limit` keeps the newest |
-| `book_markets` | `GET /book/markets` — the official close standing per market - its latest by day - with the close of its day it superseded, the declared names, the snapshots |
-| `declare_market` | `POST /book/markets` — the desk's mark: the book's own values filed under a name, `official` wanting a `mark` seat and a `private/` board naming the seat that declares it |
-| `declare_close` | `POST /book/close` — the official close over those values, behind `close_check`'s own verdict, a second close for one day superseding that day's first |
-| `export_settlements` | `POST /book/settlements` — the settlement file for one day, struck on the market the desk DESIGNATED for the export and on no other, refusing an undetermined amount by name |
-| `file_status` | `POST /book/transition` — the back office's half: a payment settled or a confirmation matched, against the row's own derived key, which is what a close then waits on; where money moved, the amount, asset, kind (payment, fee, collateral, margin), the settlement reference and the value date |
-| `file_lifecycle` | `POST /book/lifecycle` — a fixing printed, a holder's election or an agent's ruling filed through the writer, which admits it as every append: the print a close waits on for a fixing row, the election it waits on for an expiry vesting a choice |
-| `book_cash` | `GET /book/cash` — the money the settlements moved, one movement per reference, and the balances they sum to per kind, subject and asset, as of a date where one is named |
-| `collateral_calls` | `GET /book/collateral` — what each agreement's CSA calls on a marked close: the exposure its netting set recurses on, read off the P&L, the support its terms require, the collateral and the margin held apart as of the day, and the call with its direction, `call` or `post`, settled with `file_status` as collateral against the agreement; a call nobody can work out names what is not known |
-| `mark_book` / `book_pnl` | `POST /book/marks`, `GET /book/pnl` — the book marked at its own day's close on the market designated for `pnl`, one unit of every instrument as a standing run; and the desk's P&L between two marked days or since the last, per position and by portfolio, agreement or client, with the realised half and whatever nobody can know named, and a settlement moving another amount than its determined payment listed under `breaks`; `explain` takes what the held positions made apart into carry, the market per risk factor and the residual |
-| `declare_legal_entity` / `declare_agreement` / `describe_agreements` | `/book/entities`, `/book/agreements` — the paper the book trades under: an entity, an agreement with it whose terms are the netting set its positions compile into, and both read back |
-| `declare_survival_curve` | `POST /book/survival` — a counterparty's survival curve written from the spread the CVA desk states, flat or per tenor, and its recovery, each spread a hazard spread / (1 - recovery) and the last one's line run on to fifty years, so a flat spread is a flat hazard to fifty years; never looked up, and under a recorded desk for a declared entity by a seat holding `mark` |
-| `book_positions` | `GET /book/positions` — the positions standing on the record, each under its agreement and its portfolio with the counterparty, the net quantity in units of the deal, the `deal_paths` where the book file holds it, and the `status` its tickets read with the `pending` quantity; an expired deal stands until the day it settles and rolls off on it |
-| `validate_book` / `describe_book` | the read verbs over the live document |
-| `poll_result` / `fetch_table` / `deal_values` | results: status, one paged table, `{reference: value}` |
+| `desk_status` | `GET /book/status`: date, currency, curves and surfaces with their snap times, models, netting sets, last XVA, terminal |
+| `list_instrument_types`, `describe_instrument_type` | `GET /schema`: the bookable types; one type's declared fields, a non-type answered with close matches |
+| `describe_structure`, `describe_calculation_type`, `describe_factor_type`, `describe_configuration` | `GET /schema`: a structure, calculation, price factor, or the bootstrap dials |
+| `job_skeleton` | `GET /schema/job`: a minimal job that loads |
+| `read_book`, `read_deal` | `GET /book`: one row per deal with its `deal_path`; one deal verbatim |
+| `book_deal`, `amend_deal`, `delete_deal` | `POST /book/deals`: add, merge fields at a path, remove |
+| `validate_book`, `describe_book` | `POST /validate`, `/describe` over the live book |
+| `describe_portfolios`, `declare_portfolio` | `GET`/`POST /book/portfolios`: the declared tree |
+| `price_candidate`, `execute_book` | `POST /book/price`: the book with a candidate, or alone; nothing written |
+| `describe_calculations`, `configure_calculation`, `run_calculation` | `GET`/`POST /calculations`, `POST /calculations/run`: the desk's named calculations |
+| `solve_deal` | `POST /book/solve`: one field solved to a target, the deal ready to book |
+| `solve_structure`, `book_quote` | `POST /book/structure`, `/book/quote`: a quote filed pending; its acceptance |
+| `approve_ticket`, `reject_ticket`, `approve_quote`, `reject_quote` | `POST /book/approve`, `/book/reject`: a second seat's verdict |
+| `worklist` | `GET /book/worklist`: what waits on the seat asking |
+| `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes; one capped page; `{reference: value}` |
+| `update_market_quotes`, `patch_market_values` | `POST /book/market`: quote blocks ticked and bootstrapped; values patched |
+| `configure_book` | `POST /book/configure`: one bootstrap dial, the market re-bootstrapped |
+| `describe_curve`, `configure_curve` | `GET`/`POST /book/curve`: curves as definitions; a curve authored from its rows |
+| `set_base_date` | `POST /book/date`: both dates moved, every curve re-rolled |
+| `tick_market_from_bloomberg` | `POST /book/bloomberg`: surfaces, curve rows and spots off this terminal |
+| `describe_securities`, `configure_securities`, `verify_securities` | `GET`/`POST /book/securities`, `POST /book/securities/verify`: the ticker seed, map and IPV join |
+| `book_dependencies`, `setup_market` | `GET`/`POST /book/dependencies`, `POST /book/setup`: what a trade needs; that market built |
+| `calibrate_spot_model` | `POST /book/model`: one pair's spot model fitted, never on the tick |
+| `declare_survival_curve` | `POST /book/survival`: a counterparty's curve from the CVA desk's spread |
+| `book_risk_summary` | `GET /book/risk`: the mark and its largest quote and factor rows |
+| `xva_view`, `recalc_xva` | `GET`/`POST /book/xva`: the cached projection per netting set; the verb that moves it |
+| `book_diary` | `GET /book/diary`: every payment, fixing and expiry |
+| `close_check`, `declare_close` | `GET /book/close/check`, `POST /book/close`: whether a close is legal; the close |
+| `book_markets`, `declare_market` | `GET`/`POST /book/markets`: the closes, names and snapshots; a name declared |
+| `book_reconcile`, `book_activity` | `GET /book/reconcile`, `/book/activity`: file against record; the record's strip |
+| `export_settlements` | `POST /book/settlements`: the settlement file for a day |
+| `file_status`, `file_lifecycle` | `POST /book/transition`, `/book/lifecycle`: a settlement or match; a fixing, election or ruling |
+| `book_cash`, `collateral_calls` | `GET /book/cash`, `/book/collateral`: money moved; what each CSA calls |
+| `mark_book`, `book_pnl` | `POST /book/marks`, `GET /book/pnl`: the close's marks; the P&L between them |
+| `book_positions` | `GET /book/positions`: positions under agreement and portfolio |
+| `declare_legal_entity`, `declare_agreement`, `describe_agreements` | `/book/entities`, `/book/agreements`: the paper the book trades under |
+
+A read that needs a record answers the service's 404 on a desk that keeps none, never an empty
+answer a model would read as agreement. **Held by**
+`test_the_record_reads_say_so_on_a_box_that_records_nothing`.
 
 ## Prompts and resources
 
-A host offers **prompts** as commands a user picks and **resources** as documents it can open, so
-both are contract the way a tool schema is. Three prompts, each a short numbered walk the model
-follows with the tools: `quote_a_structure` (describe, solve, report the legs at market terms,
-accept only on the client's word, and where a tier wants a second seat, its approval of the
-trade booked pending), `import_a_legacy_book` (the deals wrapped as one
-`NettingCollateralSet` and booked in one call, then marked), and `morning_desk_check` (status,
-tick where there is a terminal, the mark, and every XVA row older than today).
+A host offers prompts as commands and resources as documents, so both are contract. Three prompts,
+each a numbered walk: `quote_a_structure`, `import_a_legacy_book` (the deals as one
+`NettingCollateralSet` in one booking) and `morning_desk_check`. Four resources: `derivus://book`
+(the job document), `derivus://schema/{store}` (one of the seven `/schema` stores),
+`derivus://quote/{quote_id}` (the pending trade) and `derivus://quote/{quote_id}/sheet` (the
+`.xlsx`, so the client's workbook travels as a file rather than a path on the service's disk); a
+quote answers with those two URIs under `resources`. **Held by**
+`test_the_host_is_offered_three_walks_and_four_documents`.
 
-Four resources, each one `service().call`: `derivus://book` is the live job document itself
-(`read_book` stays the summary a model should hold); `derivus://schema/{store}` is one store of
-`/schema` whole, an unknown one refused naming the seven; `derivus://quote/{quote_id}` is the
-pending trade a quote filed; and `derivus://quote/{quote_id}/sheet` is the sheet as the `.xlsx`
-itself. A quote answers with those last two URIs under `resources`, beside the `files` paths.
+## The contracts
 
-**The blotter's two data views, said out loud in the docstrings.** Risk is whole-book and
-counterparty-blind: one base valuation with first-order Greeks, cached service-side on the book's
-content. XVA is per netting set and a cached projection: a credit Monte Carlo takes minutes, so it
-never rides a tick — `xva_view` reads the last run of each set off `DV_HOME/xva.json` with its own
-`as_of`, and `recalc_xva` (full, or the sets it names) is the only thing that moves it. Staleness
-there is data, not a failure, and the docstrings say so, which is what stops a model treating a
-three-hour-old CVA as live or paying for a book-wide Monte Carlo to answer "what's my delta".
+### Validate before write {#validate-before-write}
 
-## The contracts that matter
+`book_deal`, `amend_deal` and `book_quote` write only if the edited copy says nothing new about the
+deal, about a deal the book carried no message for, or about market data the book did not already
+lack, because a deal the book cannot price loads and is then dropped by discovery. A refusal is a
+normal return, `{written: false, refused: [...]}`, because the model's next move is to fix what it
+names; a tool error means the call cannot proceed (the service down, a parent that takes no
+children, a quote id with nothing filed). `price_candidate` and `solve_deal` run the same check
+before they queue. **Held by**
+`test_a_rejected_booking_is_an_answer_that_wrote_nothing`,
+`test_what_a_model_actually_mistypes_comes_back_as_data`,
+`test_the_store_names_what_must_be_stated_and_a_missing_term_refuses_by_name`,
+`test_service.py::test_a_candidate_naming_market_data_the_book_lacks_is_refused`.
 
-**Validate-before-write.** `book_deal` never writes a deal something is said against. The rule is
-what the booking NEWLY says: its own authoring messages, any deal the book was not already carrying
-a message about — which is how a misspelt `Object` is caught, a node that never became a deal being
-keyed by its walk position rather than by a reference it no longer has — and market data the book
-did not already lack. The messages are the declarations read back: a field the type cannot price
-without, an amount authored as text, a date that is not `{".Timestamp": "YYYY-MM-DD"}`, a value
-outside the menu its field declares. A refusal is a **normal return** (`{written: false, refused:
-[...]}`), not a tool error, because the model's next move is to read the messages and fix what they
-name. Tool errors are reserved for *cannot proceed*: service down (named, with how to start it),
-unknown type (with close matches), a parent that takes no children. `price_candidate` and
-`solve_deal` run the same check before the what-if or the solve queues, in the same words: a
-candidate the book has no market data for is refused there rather than dropped from the run it
-asked for.
+### A refusal names the thing and the remedy
 
-**A refusal names the thing and the remedy, wherever the model gets it wrong.** `solve_deal` refuses
-a field the deal's type does not declare and a `bounds` that is not a pair of numbers before
-anything prices, and states the field, the target and the distance left where the search will not
-converge. `calculation_overrides` are judged against the calculation's own declarations, so a dial
-it does not declare and a value outside that dial's menu refuse rather than being ignored.
-`patch_market_values` refuses a value whose type is not the declared field's. `solve_structure`
-refuses parameters the structure declares and the client did not state, a pair the book does not
-quote (naming the ones it does), an expiry on or before the base date and a notional that is not
-positive. A credit Monte Carlo over a book with no model, no loaded deal or no date after the base
-date refuses naming which, rather than dying inside the simulation. A book carrying a node whose
-`Object` names no deal type — a legacy import, a hand edit — is named by position at the first verb
-that compiles it instead of making the whole book unpriceable.
+A wrong argument refuses by name before anything prices, because the alternative is a solver's or
+a tensor's exception naming neither the field nor the deal: a solve on an undeclared field, a
+`bounds` that is not a pair or an unreachable target; a calculation override the calculation does
+not declare, which would otherwise be ignored; a quote for a netting set the book never opened; a
+credit Monte Carlo with no model or no live deal; a node whose `Object` names no type, by walk
+position. **Held by**
+`test_service.py::test_a_solve_refuses_a_field_and_a_bounds_the_deal_cannot_carry`,
+`::test_a_calculation_override_is_judged_against_its_own_declarations`,
+`::test_a_credit_monte_carlo_this_book_cannot_frame_refuses_before_it_draws`,
+`::test_a_book_carrying_an_unnamed_deal_names_it_rather_than_dying`.
 
-**A RECORDED DESK BOOKS THROUGH THESE TOOLS.** Under a configured `DV_SPINE_HOME` the booking
-endpoint additionally requires a signed `quantity`, an `execution_reference` and an enclosing
-`NettingCollateralSet` naming a counterparty (`spine_fill`), and every write verb attributes its
-fact to a seat: `book_deal` takes all four, `amend_deal` and `solve_structure` take `actor`, and a
-delete records nothing so it takes no seat. The record's reads take `actor` too - the seat reading,
-which sees the rows under the nodes it holds any grant at - and where the service checks who is
-asking the binding sends `DV_SPINE_TOKEN` as its bearer, the token's subject being the seat. A desk
-that keeps no record ignores them all, which is why they are optional rather than required — the
-tool schema is one contract for both postures, and the service's own refusal is what names a missing
-one. The quantity PRICES: the book's reads price every position at its net, and
-`describe_instrument_type` marks the fields a position scales (`sized`, or `magnitude` for an
-amortisation step, which never takes the short's sign), the ones a short flips (`side`) — a
-structure and a mark-to-market cross-currency swap mark none, their legs carrying the size — and the
-dates it settles cash on that its schedule does not (`settles`).
+### A recorded desk books through these tools
 
-**Deals are addressed positionally.** `deal_path` (`"0/2/1"`) is the identity everywhere, as in the
-web UI's tree, because references are not unique in a book. Another host's booking moves every
-position under a path, so `amend_deal` and `delete_deal` take the `reference` the model read at
-that path and refuse by name when it no longer holds it, rather than acting on whoever sits there
-now — measured under three hosts booking at once, where a delete by position alone removed other
-hosts' deals.
+Under `DV_SPINE_HOME` a booking also needs a signed `quantity` (the position change in units of the
+deal), an `execution_reference` and an enclosing `NettingCollateralSet` naming a counterparty, and
+every write files under the seat in `actor`. They are optional in the schema because one schema
+serves a desk with a record and one without; the service's refusal names a missing one. A delete
+records nothing, so it takes no seat. `describe_instrument_type` marks the fields a position scales
+(`sized`), flips (`side`) and settles cash on (`settles`). **Held by**
+`test_a_recorded_desk_books_and_accepts_through_the_binding`.
 
-**Answers are summaries and pointers; the model's context is a budget.** A run comes back as its
-replay tuple, its stats and one line per table (`"250 rows x 4 columns"`); a booking outcome is about
-*that* booking, the rest of the book's troubles being counts pointing at `validate_book`;
-`fetch_table` pages at most 200 rows and refuses a table wider than 60 columns by name; and
-`deal_values` checks a result's shape **before** fetching anything. Drill-down is available, never
-the default.
+### Deals are addressed by position {#positional-addressing}
 
-**Par, margin and strikes are `solve_deal`'s job.** The root find runs server-side (brentq inside
-bounds, else a secant — exact in two pricings for an amount) and the model receives the solved
-coordinates with the deal ready to book, so no pricing loop runs through the conversation. A collar
-or seagull composes from 1D solves under its conventions: fix one strike, solve the other, margin
-last.
+`deal_path` (`"0/2/1"`) is the identity because references are not unique in a book. Another host's
+booking moves every position under a path, so `amend_deal` and `delete_deal` take the `reference`
+read there and refuse when the path no longer holds it, rather than acting on whoever sits there
+now. **Held by** `test_service.py::test_a_tick_that_keeps_losing_to_bookings_lands_on_its_last_pass`.
 
-**Structures are declared, not composed by the model.** A structure is a class in
-`derivus/structures.py` — its `vernacular` (the sales names a desk says), its legs or the
-[variations](structures.md#variations) it is dealt as, and a recipe —
-served off `/schema` by `describe_structure`, so a model reads what a zero-cost collar IS instead of
-inventing it. It fills the structure's own parameters, strikes in **market terms** (a USDZAR strike
-is 15.50; the runner puts it on the engine's axis, and that inversion is the one thing never done by
-hand). Where a structure is dealt more than one way it fills the level the client named, or
-`buy_currency` / `sell_currency`, or both: the runner selects the one variation consistent with what
-was stated, refuses rather than guessing, and the quote reports which it dealt. The menu says which
-variations there are, the extra parameter each takes, and whether a direction has to be stated at all.
-Every FX `Strike_Price` and `Barrier_Price` declaration carries the axis it lives on, so
-`describe_instrument_type` says it before a model books an FX option directly instead.
-`solve_structure` runs the recipe server-side and answers with the composed deal, the per-leg
-premiums and the net — plus, where the book's `FXVolPrices` carries a two-way, each leg's
-`spread_charge` with the pillar rows it was levied on, the `net_mid` the trade will mark at and the
-`edge` between them, which IS that charge (`spread_note` says so where there is no two-way, and a leg
-no vega reaches carries a null rather than a zero). It writes nothing into the book: the quote lands in
-`DV_HOME/tmp/<quote_id>.json` as one pending trade, its sheet beside it when the `quote` extra is
-installed (a missing `xlsxwriter` names the install in `files.sheet_note` and never refuses a quote).
-Both read back by id — `GET /book/quote/{id}` and the `/sheet` beside it, offered to a host as
-`derivus://quote/<id>` and `derivus://quote/<id>/sheet` — so the workbook a client is sent travels
-as the file rather than as a path only the service's own machine can open.
-A quote prices on the LIVE spot when this workstation's terminal is up and the book's last ticked one
-when it is not, the outcome's `spot` block naming which and why; surface and curves are always the
-book's.
+### Answers are summaries and pointers
 
-**QUOTING IS NOT BOOKING, and the instructions say the walk.** `solve_structure` records nothing —
-a desk quotes many times a day and the record holds the one that comes back — so the model quotes as
-often as the client asks. `book_quote(quote_id, actor)` is the ACCEPTANCE: called on the client's
-word, it records the quote and books the MIRROR of the pending deal (a quote is client paper, a book
-holds the bank's position) over the same validate-before-write seam, and the file stays afterwards.
-Between the two the market moves, which the answer REPORTS under `market` and never refuses. Where
-the desk's `tiers` policy wants a second seat the trade books all the same and reads PENDING, the
-answer carrying `accepted`, `tier` and `waits_on`: that seat calls `approve_quote(quote_id, actor)`
-— or `reject_quote(quote_id, reason, actor)`, which leaves the trade standing rejected — and nobody
-books it again. A direct booking is a ticket the same way, signed with `approve_ticket`, and so is
-an amendment: `amend_deal` states the `notional` it deals and, under four eyes, the position reads
-pending on the restrike's ticket. `solve_structure` states the `portfolio` a quote books into once
-accepted. The `quote_a_structure` prompt walks the same five steps.
+The model's context is a budget. A run comes back as its replay tuple, stats and one line per table
+(`"250 rows x 4 columns"`); a booking answer counts the book's other troubles and points at
+`validate_book`; `fetch_table` pages at most `MAX_PAGE_ROWS` (200) and refuses a table wider than
+`MAX_TABLE_COLUMNS` (60) unfetched; `deal_values` reads the shape first and refuses a cube or more
+than 500 rows. **Held by** `test_a_run_comes_back_as_shapes_never_cells`,
+`test_fetch_table_is_capped_and_a_cube_is_refused`, `test_deal_values_refuses_a_cube_without_fetching`,
+`test_a_booking_answer_is_the_booking_not_the_book`.
 
-**A waiting tool speaks while it waits.** A desktop host cuts a tool call that stays quiet for about
-a minute and resets that clock on every progress notification, and the runs behind these verbs are
-measured in minutes: a credit Monte Carlo, a spot-model fit, a first Bloomberg use. So every tool
-that sits on a run — `price_candidate`, `execute_book`, `solve_deal`, `solve_structure`,
-`recalc_xva`, `calibrate_spot_model`, `tick_market_from_bloomberg`, `verify_securities` — is `async`, puts every blocking
-HTTP call through `asyncio.to_thread`, and waits in the one poll loop (`_await_result`), which
-notifies the injected `Context` on every poll: `done` the seconds waited, `total` the `wait_seconds`
-asked for, and the note the run's status carrying the job's own `progress` note where it publishes
-one (the provisioning and the spot-model fit do). The poll is a quarter second for the first two and
-a second after that, so a host hears from the call about once a second however long the run takes —
-which is what lets a five-minute first use finish instead of timing out. `ctx` is injected by the
-SDK and never appears in an advertised schema (a gate reads every listed tool's properties to prove
-it). Past `wait_seconds` the answer is the pointer it always was, `{result_id, status, hint}`, the
-run carrying on service-side.
+Risk is whole-book and counterparty-blind, one base valuation cached on the book's content; XVA is
+a projection per netting set in `DV_HOME/xva.json`, each row with its `as_of`, moved only by
+`recalc_xva` because a credit Monte Carlo is too slow to ride a tick. The docstrings say so, so a
+model neither reads an old CVA as live nor runs a simulation to answer a delta.
 
-**First use provisions the desk.** `tick_market_from_bloomberg` is the one verb a model calls for
-today's market, and on a fresh machine it is also the setup: `DV_HOME` created, the packaged seed
-copied in, every candidate the seed spells verified against *this* workstation's terminal (what it
-is, whether it prices, when it last printed), and only then the surfaces fetched through the same
-quote-block tick. That verification is the minutes the notifications exist for, and its answer is
-the provisioning's own — what installed, what updated, what was refused — where every other waiting
-tool answers the run's summary.
+### Solves run in the service
 
-**A ticking service refreshes itself, so the verb is for forcing and for provisioning.**
-`DV_Service --tick SECONDS` (30 with no value) runs a metronome thread submitting the *same* queued
-Bloomberg job `POST /book/bloomberg` submits — same job class, same single-worker queue — so a beat's
-write serialises with pricings and lands atomically. It never stacks (a beat whose predecessor is
-still queued or running is skipped), never provisions (an unprovisioned `DV_HOME` refuses by name and
-the cadence carries on; verifying a workstation is a person's decision), and never dies (a failure is
-one warning line, book untouched; three in a row stretch the interval fivefold). `--tick` refuses at
-startup where `blpapi` does not import, and `--tick --no-book` is refused by name.
+`solve_deal` runs the root find server-side (brentq inside `bounds`, else a secant, exact in two
+pricings for an affine field) and answers a `solved_deal` ready to book, so no pricing loop runs
+through the conversation. A money `target` is crossed at the book's spots and recorded as
+`Sales_Margin`. **Held by** `test_a_margin_target_is_money_and_the_deal_records_what_was_charged`,
+`test_service.py::test_a_solve_brackets_a_nonlinear_strike`.
 
-**A market is set up from what a trade needs.** A booking refused for market data names the factors
-the book lacks, and the two verbs that follow are the model's whole move: `book_dependencies` walks
-a candidate — spliced the way the what-if splices one, so the answer is that trade's want-list and
-not the book's — and hands back each missing factor with the seed entry that would supply it, the
-securities that entry spells and how many a terminal has verified; `setup_market` then builds it.
-It discovers only the names the map has never heard of, checks every wanted print for freshness
-before it fetches anything, and installs the surface, each new currency's spot crossed onto the
-engine's axis and each new curve's seeded benchmarks in one atomic write that the bootstrap judges.
-Nothing lands that would depend on a block the write will not carry: a new currency is installed as
-a pair or not at all, its spot and its curve held with each other and any surface on that leg with
-them, each named with what it waits on, and what is left still lands. A model reads three independent facts off the answer — whether the book
-moved, exactly what was installed, and what could not be supplied and why (`not_supplied`, beside a
-`refused` that only ever rides a write that did not land) — and gets the job's own outcome rather
-than the result envelope it arrived in. What lands is ordinary blocks, which is the point: the Curves and Market
-Prices screens edit them from then on, and `check` names what to look at there. A candidate the
-booking verb would refuse is refused by both verbs in its words, so a misspelt type is never
-answered "nothing is missing". No model has to chain five verbs in the right order to get a market,
-and none of this is a second installer — both verbs ride the curve verb's own edit closures.
+### Structures are declared
 
-**A curve is set up from its instruments, not from a curve.** `configure_curve` takes the benchmark
-rows a desk quotes — a tenor, the security it prints on and a number — and the TENOR is what says
-what each instrument is, so a model never authors a deposit or a FRA. The block is re-authored whole
-and the market re-bootstrapped in one write, which is why this is a separate verb from
-`update_market_quotes`: a benchmark set is structure, and structure is never a tick. A row priced
-off the terminal carries the print's own clock, so both this verb and the tick roll the book's date
-FORWARD onto the day their quotes were snapped and re-author every other curve there; `set_base_date`
-is the one that puts it anywhere, which is how a model back-values a book.
+A structure is a class in `derivus/structures.py` served by `describe_structure`, so what a collar
+is never depends on which model is driving. The model fills its parameters with strikes in market
+terms, and the runner crosses the axis and selects the [variation](structures.md#variations) or
+refuses ([Structures](structures.md)). Every FX `Strike_Price` and `Barrier_Price` declaration names
+its axis for a model booking an option directly. **Held by**
+`test_the_structure_store_is_the_quoting_menu`,
+`test_the_fx_strike_axis_is_published_on_the_field_a_model_fills_in`.
 
-**Market data moves on the engine's terms.** `patch_market_values` rides the `bind='value'` seam —
-the engine's own `patch_market` refuses a structural key by name. `update_market_quotes` installs or
-ticks whole `Market Prices` blocks (the shape `derivus_bloomberg.to_market_prices_block` emits): an
-update may move only each point's quoted value and timestamp — a changed pillar, expiry or convention
-is a re-authoring, refused — and the bootstrap judges the whole write, so any error it reports
-refuses everything, messages verbatim. Structure (a new factor, a moved node) is authoring and stays
-outside these tools.
+### Quoting is not booking
 
-## Testing
+`solve_structure` prices the legs at mid, charges the [two-way](structures.md#two-sided) and margin,
+files the pending trade under `DV_HOME/tmp/<quote_id>` with its sheet where `xlsxwriter` is
+installed, and records nothing: a desk quotes many times and the record holds what the client
+takes. It prices on the live spot where this terminal answers, else the book's, and says which.
+`book_quote` is the acceptance, on the client's word: it books the mirror (the quote is client
+paper, the book the bank's side) under the quote's netting set through `book_deal`'s seam and keeps
+the pending file as the audit trail. Past a declared `Quote Policy.firm_seconds` it refuses. Under a
+record a moved market is reported, never refused, and a tier wanting a second seat books the trade
+pending until `approve_quote`. **Held by**
+`test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar`,
+`test_a_recorded_desk_books_and_accepts_through_the_binding`,
+`test_structures.py::test_a_quote_is_an_act_not_a_lookup`,
+`test_service.py::test_a_quote_is_firm_only_for_the_window_the_book_declares`.
 
-`tests/test_mcp.py` drives the tool functions directly against the in-process service
-(`configure(session=TestClient(service.app))` — the seam the Excel client uses), so the gates run with
-no stdio and no sockets: the import discipline, the registry's contracts and read-only hints, schema
-tools equal to the declarations, a booking that prices to the closed form, a refusal that writes
-nothing, the byte-identical book-then-delete round trip, and the quoting day end to end — a structure
-named, its collar solved to a zero net, the pending trade filed under `DV_HOME/tmp` and approved into
-a book that marks the desk's mirror of it at zero.
+### A waiting tool speaks while it waits {#progress}
+
+A desktop host cuts a call that stays quiet for about a minute and resets that clock on every
+progress notification, and several runs take minutes. So each tool that sits on a run
+(`price_candidate`, `execute_book`, `run_calculation`, `solve_deal`, `solve_structure`,
+`recalc_xva`, `calibrate_spot_model`, `tick_market_from_bloomberg`, `verify_securities`,
+`setup_market`) is `async`, threads its blocking calls, and waits in `_await_result`, which reports
+the seconds waited, the `wait_seconds` and the run's own `progress` note on every poll: a quarter
+second apart for two seconds, then a second. `ctx` never appears in a schema, since a host would try
+to fill it. Past `wait_seconds` the answer is `{result_id, status, hint}` and the run carries on.
+**Held by** `test_every_waiting_tool_is_async_and_takes_the_context` (its list omits
+`run_calculation`), `test_no_tool_advertises_the_context_the_sdk_injects`,
+`test_a_waiting_tool_notifies_the_host_the_whole_time_it_waits`.
+
+### First use provisions the desk
+
+On a fresh workstation `tick_market_from_bloomberg` is the setup: it creates `DV_HOME`, copies the
+packaged seed in and verifies every candidate against this terminal before fetching, since a retired
+series keeps quoting a plausible price and only its update date says so. Its answer is the
+provisioning's own, not a run summary. **Held by**
+`test_a_bloomberg_tick_returns_the_finished_payload`,
+`test_service.py::test_the_bloomberg_verb_provisions_fetches_and_ticks_the_book`,
+`::test_a_stale_quote_refuses_the_tick_by_name`,
+`test_bloomberg_discover.py::test_first_use_provisions_once_and_the_second_run_probes_nothing`.
+
+### A ticking service refreshes itself
+
+`DV_Service --tick SECONDS` (`TICK_SECONDS`, 30, with no value) runs a `Metronome` submitting the
+job `POST /book/bloomberg` submits, so a beat serialises with pricings and lands atomically. It
+never stacks (a beat whose predecessor is in flight is skipped), never provisions (verifying a
+workstation is a person's decision), and never dies: a failed beat is one warning and an untouched
+book, and `TICK_FAILURES` (3) in a row stretch the interval `TICK_STRETCH` (5) times. `--tick` is a
+usage error without `blpapi` or beside `--no-book`. **Held by**
+`test_service.py::test_the_metronome_skips_the_beat_its_last_tick_is_still_in_flight`,
+`::test_a_routine_tick_refuses_an_unprovisioned_home_and_leaves_the_book_alone`.
+
+### A market is set up from what a trade needs
+
+`book_dependencies` walks a candidate spliced as the what-if splices one, so the answer is that
+trade's want-list, and names the seed entry that would supply each missing factor; `setup_market`
+builds it in one call. It discovers only names the map has never heard of, checks every print for
+freshness before fetching, and installs surface, spots and curves in one write the bootstrap
+judges. A new currency lands as a pair or not at all, because its curve values its benchmarks in
+the book's base through its `FxRate`; what can complete still lands, and `not_supplied` says why
+the rest did not. A candidate `book_deal` would refuse is refused in its words, so a misspelt type
+never reads "nothing is missing". **Held by** `test_a_market_is_set_up_from_what_a_trade_needs`,
+`test_service.py::test_a_surface_is_held_with_the_leg_it_cannot_stand_on`,
+`::test_what_the_write_can_complete_still_lands`, `::test_a_late_print_refuses_the_whole_set_up`.
+
+### A curve is set up from its instruments
+
+`configure_curve` takes the rows a desk quotes (tenor, security, number), and the tenor says what
+each instrument is (`1Mx4M` a FRA, `6M1M` a forward-starting swap), so a model never authors the
+instruments. The block is re-authored whole in one write, which is why this is not
+`update_market_quotes`: a benchmark set is structure, and structure is never a tick. A terminal
+print later than the book's date rolls both dates onto it, here and on the tick, and re-authors
+every other curve there, so no two curves stand on different days; `set_base_date` moves the date
+anywhere. **Held by** `test_a_curve_is_described_set_up_and_read_back`,
+`test_the_date_is_set_by_name_and_the_curve_follows_it`,
+`test_service.py::test_a_curve_set_up_off_a_later_print_rolls_the_book_and_every_other_curve`.
+
+### Market data moves on the engine's terms
+
+`update_market_quotes` may move only each row's `schema.MARKET_QUOTE_VALUES`, a changed pillar or
+convention refusing as a re-authoring, and any bootstrap error refuses the whole write, so the book
+never carries a market its bootstrap complained about. `patch_market_values` rides the
+`bind='value'` seam, which refuses a structural key or a mistyped value, and refuses a
+`Market Prices` block naming `update_market_quotes`, because a patched quote would leave the written
+factors stale against it. **Held by** `test_service.py::test_a_quote_update_may_move_only_the_numbers`,
+`::test_a_market_values_patch_reaches_the_file_and_a_structural_one_is_refused`,
+`::test_a_bootstrap_that_complains_writes_nothing`.
+
+## Open and non-goals
+
+Progress over SSE, and a screen for the dependency walk and the set-up, are on the
+[roadmap](roadmap.md#designed-not-built). The binding serves stdio only, which is what a desktop
+host launches.

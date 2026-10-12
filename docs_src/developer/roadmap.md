@@ -3,11 +3,9 @@
 The live status of the library, written for a model-validation reader: what is known to be wrong or
 limited and how big it is, what is waiting on a desk decision, and what is designed but not built.
 What was built, and every number it was measured to, is in the commit messages — `git log` reads
-as the ledger, one landing per commit — and the long-form record that stood on this page until
-2026-09-10 is in the repository's history before that date. The model pages carry the numbers a validator prices
-against: [Market Prices](market_prices.md#logvar2fj) for the LogVar2FJ calibration,
-[Calc Lifecycle](calc_lifecycle.md) for the engine and the
-[LogVar2FJ xVA outer](calc_lifecycle.md#logvar2fj-outer).
+as the ledger, one landing per commit. The methods a validator prices against are on the Theory,
+Valuation and Bootstrapping pages ([the LogVar2FJ fit](../bootstrapping/fx_and_equity.md#logvar2fjmodelparameters)
+among them), and the tests that hold each rule are named on the developer page that states it.
 
 ## Known limitations, open
 

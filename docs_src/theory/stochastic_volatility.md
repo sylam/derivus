@@ -236,7 +236,7 @@ underlying is the currency the law is priced in (an FX TARF or accumulator writt
 up) pays on $1/S$, and the kit prices it under the $S$ numeraire (`Invert_Spot`). With $R_k$ the
 day's log-return, the density $e^{R_k-b_k}$ factorises over the day's own draws,
 so each variance shock shifts by its loading, $\eta^s_k\sim N(\rho_s\sqrt{V_k},1)$ and
-$\eta^\ell_k\sim N(\rho_\ell\sqrt{V_k},1)$, and the residual takes the Esscher transform at one,
+$\eta^\ell_k\sim N(\rho_\ell\sqrt{V_k},1)$, and the residual takes the Esscher transform [@gerber1996] at one,
 $\mathrm{NIG}(\alpha,\beta)\to\mathrm{NIG}(\alpha,\beta+1)$:
 
 $$G\sim\mathrm{IG}\big(\text{mean }\delta_A/\gamma_1,\ \text{shape }\delta_A^2\big),\qquad
@@ -279,6 +279,7 @@ $\Delta_\text{skew}$,
 $$b\,\frac{\big|g\cdot J\big|}{J\cdot J},\qquad
 g=\Big(\frac{\partial PV}{\partial\beta},\frac{\partial PV}{\partial\rho_s}\Big)\ \text{in the same bucket},$$
 
-and is reported per deal and for the portfolio. The priors that hold what the ladder cannot see,
-and what each costs against a quote, are on
-[Market Prices](../developer/market_prices.md#logvar2fj).
+and is reported per deal and for the portfolio. The priors that hold what the ladder cannot see
+are on [the fit's page](../bootstrapping/fx_and_equity.md#logvar2fjmodelparameters), with the
+weights each carries, and the design rule behind them on
+[Market Prices](../developer/market_prices.md#logvar2fj-priors).

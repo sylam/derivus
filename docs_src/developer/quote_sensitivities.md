@@ -1,1118 +1,451 @@
 # Quote Sensitivities
 
-The autograd tape used to start at *calibrated* factors, so a greek came out in zero-curve-node or
-model-parameter space. Desks explain P&L in **quote** space — par swap rates, FRA strips, OIS quotes,
-swaption vols. This workstream extends the tape one layer upstream by owning the calibration inside
-the library and differentiating through its fixed point, so one backward pass yields `dV/dq` beside
-`dV/dθ`.
+A desk explains P&L in the numbers it quotes, while the engine's tape starts at calibrated factors,
+so the library owns each calibration and differentiates through its fixed point: one backward pass
+reports `dV/dq` beside `dV/dθ`. Every carrier is a splice worth exactly zero forward, so switching it
+on cannot move a mark.
 
 ```
-q (leaves)  ->  calibration solve  ->  θ*  ->  factor buffers  ->  scenarios  ->  V
+q (leaves)  ->  calibration  ->  θ*  ->  factor leaves  ->  scenarios  ->  V
 ```
 
-Only the middle arrow is new; everything downstream of θ\* is the existing engine. All four are
-built, and the four calibrations put four different things in that arrow — the page reads in that
-order:
+The switch is `Quote_Sensitivity` (default `No`) on each `Market Prices` block; the middle arrow is
+the family's:
 
-| # | family | what is in the arrow |
+| `Market Prices` type | the arrow | the backward |
 | --- | --- | --- |
-| 1 | `InterestRatePrices` | a damped Newton on a root, differentiated by the [IFT](#the-ift-contract) |
-| 2 | `HullWhite2FactorModelPrices` | least squares on a [stationarity point](#the-stationarity-contract); `Objective` picks the residual, `Analytic` the default |
-| 3 | `GBMAssetPriceTSModelPrices` | [no solve at all](#the-closed-form-map) — an explicit map |
-| 4 | `FXVolPrices` | [a bisection per node the tape refuses to enter](#the-delta-solve) |
+| `InterestRatePrices` | damped Newton on a square root | [implicit function theorem](#the-ift-contract), exact |
+| `HullWhite2FactorModelPrices` | least squares, `Objective` `Analytic` by default | Gauss–Newton at a [stationary point](#the-stationarity-contract) |
+| `LogVar2FJModelPrices` | staged least squares | the same node, `Fit_Mode: Global` only |
+| `GBMAssetPriceTSModelPrices` | an [explicit map](#the-closed-form-map) | autograd through a twin |
+| `FXVolPrices` | a [bisection per grid node](#the-delta-solve) | one Newton step at each root |
 
-So a vol tick arrives as ATM / RR / BF, becomes a log-moneyness surface on a pinned grid, integrates
-into a GBM vol curve and reaches `V`, and one backward pass reports `dV/dq` at every coordinate on
-the way. `Monte_Carlo` remains fully supported as the engine's own estimator and as this page's
-oracle: every comparison here is taken against it.
+`CSForwardPriceModelPrices` has none. The methods and their shared maths are on
+[Bootstrapping](../bootstrapping/general.md); this page is how the code carries them.
 
-!!! note "How to read the numbers on this page"
-    Most tables here were measured during development and are NOT re-checked by a test: the tests
-    that held them were removed, and each section says so. Where a test still holds a property it
-    is named. The four-quote Hull-White block is `tests/fixtures/hw2f_four_quote_job.json`; the
-    25-quote "identified fixture" and the gated FX and GBM fixtures are not in the repository. The
-    families' methods are specified on the [Bootstrapping](../bootstrapping/general.md) pages.
+| where | what |
+| --- | --- |
+| `bootstrappers.BenchmarkInstruments`, `utils.TensorSchedule.carry` | the curve residual and its quote overlay |
+| `utils.damped_newton`, `CalibrationSolve`, `residual_jacobians` | the curve solve and its backward |
+| `utils.LeastSquaresSolve`, `utils.Residual`, `utils.active_set` | the least-squares node and its operand |
+| `SwaptionCalibration`, `utils.create_market_swaps`, `utils.market_swap_class` | the HW2F operand and splice |
+| `GBMAssetPriceTSModelParameters.carried_vol`, `FXVolSurfaceParameters.carried_sigma` | the constructions' twins |
+| `Calculation.factor_leaf`, `Config.bootstrap` | the attachment and the harvest |
+| `structures.vol_risk`, `service.quote_rows` | the readers of `dV/dq` |
 
-## The residual is priced by the engine's own pricers {#the-residual}
+A rule marked **Held by** goes red under the named test if it is broken.
 
-A benchmark is an ordinary deal. A quote **names an instrument type and carries a block of it** — see
-[Market Prices](market_prices.md#a-quote) — so the residual is a vector of the library's own pricing
-functions,
+## The curve residual {#the-residual}
 
-$$F_i(\theta, q_i) = PV_i(\theta, q_i) \big|_{t_0}$$
+A quote names an instrument and carries a block of it ([Market Prices](market_prices.md#a-quote)), so
+the residual is the engine's own pricers held at par, $F_i(\theta, q_i) = PV_i(\theta, q_i)|_{t_0}$.
+`BenchmarkInstruments` compiles the benchmark nodes once and prices them at t0 off a `{Factor: tensor}`
+of curve nodes; a node with `Children` is one benchmark, with no netting rule on top. Every factor not
+being solved for — an `FXForwardDeal`'s other curve and `FxRate` included — is a detached constant.
 
-evaluated so a fair instrument prices to zero. `bootstrappers.BenchmarkInstruments` is that
-evaluation: it compiles the benchmark deal-tree nodes once — discovery, factor objects, tenor
-payloads, each leaf's `Factor_dep` / `Time_dep` — and prices them at t0 from a `{Factor: tensor}` of
-curve nodes, returning one PV per benchmark as a `torch` vector whose graph reaches those tensors.
+### The graph audit {#the-graph-audit}
 
-A benchmark is a **node**, not a deal, so a container with `Children` is one benchmark: a deposit and
-an FRA are single deals, a par swap and an OIS swap are each one `SwapInterestDeal`, and a two-leg
-benchmark is a `StructuredDeal`. The node's PV is the sum of its leaves', each converted
-to the reporting currency by its own `pv_*_leg`. No netting or collateral rule applies on top, which
-keeps this out of `DealStructure`.
+A severance raises nothing and moves no value; it reports a zero gradient. The closure avoids four:
 
-The reporting currency **is** the curve's currency, so a rate benchmark crosses nothing and every
-`calc_fx_cross` is the identity. A forward outright is the exception: its other leg discounts on that
-currency's own solved curve and converts at a spot the residual reads as a **detached constant**.
-
-## The graph audit {#the-graph-audit}
-
-The factor-construction path severs autograd in four places. A severance here does not raise and does
-not change a value — it silently reports a zero gradient — so finding them is the point of the curve
-family's quote side rather than incidental to it.
-
-| Where | What severs | How the closure avoids it |
+| where | severs | avoided by |
 | --- | --- | --- |
-| `Calculation._build_factor_state`, `Base_Revaluation.update_factors` | every leaf minted as `torch.tensor(factor.current_value(...))` out of a **numpy array** — the only way a curve becomes a tensor on the ordinary path | θ is written straight into `t_Static_Buffer`, where the pricers read a static curve; `current_value` is never called for a curve being solved |
-| `riskfactors.Factor1D.current_value` | numpy end to end; handed a tensor it still returns numpy | not on the closure's path. Still used for the **constants** — every factor the solve is not solving for — where a detached leaf is right |
-| `Factor1D.__init__` → `check_interpolation` | precomputes the Hermite `(g, c)` pair from the numpy rate column | the pricing path does not read it. `utils.Interpolation.build` re-derives the pair from the buffer **tensor**, and `all_tenors` carries only the kind and the tenor grid. No test checks this per interpolation kind; it stands on the code alone |
-| `utils.TensorSchedule.bind` | copies the schedule with `new_tensor` — notionals, accruals, margins **and the fixed rate**. Where the **quote** stopped being differentiable | closed by `TensorSchedule.carry`; see [the quote side](#the-quote-side). θ never passed through this seam either way |
+| `_build_factor_state`, `Base_Revaluation.update_factors` | every leaf is minted from numpy | θ goes straight into `t_Static_Buffer`, where pricers read a static curve |
+| `Factor1D.current_value` | numpy end to end | used for constants only; θ follows the knot order `get_tenor` leaves on the constructed factor |
+| `Factor1D.check_interpolation` | the Hermite pair from numpy | `utils.Interpolation.build` re-derives it from the tensor (no test per kind) |
+| `TensorSchedule.bind` | `new_tensor` copies the fixed rate | [the overlay](#the-quote-side) |
 
-Two traps that are not severances and would each be silent:
+Two silent traps: `t_Buffer` is keyed by factor and time, not tensor identity, so `Benchmark_State` is
+built per evaluation (no test checks it); `utils.CurveTenor` caches its grid from the first tensor
+asking, so `all_tenors` is rebuilt per closure.
 
-- **`t_Buffer` is a memo keyed by `(stoch, Factor)` and a time hash, not by tensor identity**, so a
-  state reused across two θ answers the second call with the first's discount factors.
-  `Benchmark_State` is built fresh per evaluation. No test checks this.
-- **`utils.CurveTenor` caches its tenor grid from the first tensor that queries it.** `all_tenors` is
-  rebuilt per closure instance, so a float64 solve cannot inherit a float32 grid.
+### The quote side {#the-quote-side}
 
-## The quote side {#the-quote-side}
+`TensorSchedule.carry` attaches a `{column: tensor}` overlay to a schedule's tensor half, spliced into
+the copy `bind` makes ([lifecycle](calc_lifecycle.md#the-schedule-lifecycle)), so
+`BenchmarkInstruments` binds last. `_carry_quotes` measures the columns: it compiles the set again one
+percent higher and overlays what moved, the difference as slope. Authoring is affine in the quote, so
+that difference is exact, and a type's own `quoted` stays the one place it declares where its quote
+lands. The splice is
 
-A schedule is a **dual**: `.np` for the index columns (everything `np.unique` and `searchsorted` are
-asked about) and a device copy for the arithmetic. That split stays. `TensorSchedule.carry` attaches an
-optional `{column: tensor}` overlay to the **tensor half only**, spliced into the copy `bind` makes:
-absent by default, and a compile-time edit that raises once the copy exists — see [the schedule
-lifecycle](calc_lifecycle.md#the-schedule-lifecycle). `BenchmarkInstruments` binds its own schedules
-last, once every overlay is on.
+$$\text{column} = \text{base} + \big(q - \texttt{detach}(q)\big)\,\partial\,\text{column}/\partial q .$$
 
-Only **value** columns are overlaid, measured rather than assumed: across the four schedule-carried
-benchmark shapes at three quotes, exactly one column moves — `CASHFLOW_INDEX_FixedRate`/`FloatMargin`
-(the same index 6) on the deposit, the FRA and both fixed legs — and moves *linearly*, second
-difference exactly zero. `_carry_quotes` raises if a reset column ever moves, because a reset value
-also leaves through `known_resets`, which reads numpy. The fifth quotable shape, an `FXForwardDeal`
-outright, moves no column at all — its quote lands in `Buy_Amount` — so `_carry_quotes` refuses it by
-name rather than report a zero `dV/dq` row (`test_a_forward_block_refuses_quote_sensitivity`).
+A moved reset column raises, a reset also leaving through `known_resets`, which reads numpy. A
+benchmark moving no column — an `FXForwardDeal`, whose outright lands in `Buy_Amount` — raises by name,
+measured rather than branched on type so it lapses when such a type grows a schedule. **Held by**
+`tests/test_interest_rate_prices.py::test_a_forward_block_refuses_quote_sensitivity`,
+`::test_the_refusal_is_measured_and_leaves_the_rate_quotes_carrying`.
 
-`BenchmarkInstruments` therefore takes the benchmark set **twice**, at its quotes and one percent
-higher. The difference is the exact ∂(schedule)/∂q, so
-[the type's own `quoted`](market_prices.md#interestrateprices) stays the only place a quotable
-instrument declares where its number goes. The splice is
+!!! warning "A derivative carrier, not a reparameterisation"
+    Worth zero forward, the overlay does not follow a quote that moves; a moved quote needs a fresh
+    closure. `pv_fixed_cashflows` memoizes in the schedule's `derived`, which `bind` re-mints.
 
-$$\text{column} = \text{base} + \big(q - \texttt{detach}(q)\big)\,\frac{\partial \text{column}}{\partial q}$$
+## The curve solve {#the-solve}
 
-— the [boundary correction](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem)'s shape,
-for its reason: worth **exactly zero** in the forward pass, derivative one. The tensor half is
-bit-identical to the plain copy (`np.array_equal`, not a tolerance), so enabling quote gradients
-cannot move a PV.
+`utils.damped_newton` flattens every curve being solved into one system whose Jacobian, by autograd a
+row per benchmark, is the one the backward needs too: the residual is written once and differentiated
+twice [@dennis1996]. The seed is each par quote as a zero rate. Damping halves the step until the
+max-norm residual decreases; convergence is tested on the step before the line search, as a step
+inside the linear solve's rounding cannot reduce a residual at noise level. A coupled set takes its
+members' strictest knobs.
 
-!!! warning "The overlay is a derivative carrier, not a reparameterisation"
-    A moved quote needs a **fresh closure**: the splice is worth zero forward, so a schedule's value
-    columns do not follow a quote that moves — only the derivative does. `pv_fixed_cashflows`' payment
-    tensor is memoized beside the tensor half in `derived`, which `bind` mints and re-mints with it,
-    so the memo cannot outlive the copy it was built from.
-
-## The solve {#the-solve}
-
-`utils.damped_newton` is the plain solver — the one the IFT wrapper runs unchanged in its
-forward pass. The curves being solved are flattened into **one** system, so a projection curve and
-the discount curve it prices against are a single Jacobian. That Jacobian is autograd on the
-residual: one backward pass per benchmark gives a whole row, no bump loop over the knots, and it is
-the same derivative the IFT needs on the other side — *written once, differentiated twice*.
-
-Damping is a backtracking line search on the residual's max-norm: full step first, halved until it
-decreases. The three knobs are **declared fields of the block being solved**, not module constants,
-each read off the block completed by its declarations (`block['N_Iter']`); a coupled set runs at the
-largest `N_Iter`, the smallest `Tol` and the largest `Damping_Halvings` of its members
-([@dennis1996], on the damped Newton method).
-
-| Field | Default | |
+| field | default | why |
 | --- | --- | --- |
-| `N_Iter` | 50 | a par-rate seed is within a few basis points, so a well-posed strip converges in single digits. Reaching the cap raises rather than returning a half-solved curve |
-| `Tol` | 1e-13 | a zero rate is O(1e-2), so ~1e-11 relative — inside the 1e-10 a round trip asks for; an overnight knot's step floors at machine epsilon over a day's accrual, about 8e-14, which a tighter tolerance sits under |
-| `Damping_Halvings` | 6 | below that the step *length* is not what is wrong, so the solve says so rather than creeping |
+| `N_Iter` | 50 | a par seed is basis points off; the cap raises rather than return a half-solved curve |
+| `Tol` | 1e-13 | ~1e-11 relative on a zero rate, inside a round trip's 1e-10; a floor on the step, not a target |
+| `Damping_Halvings` | 6 | past that the step's length is not what is wrong |
 
-Convergence is tested on the **step, before the line search**. A step inside the linear solve's own
-rounding cannot be asked to reduce a residual already at noise level. The seed is each quote itself,
-seeded into `Price Factors` before the closure is built, because the closure constructs the curve
-factor out of that section.
+**Held by** `tests/test_interest_rate_prices.py::test_the_bootstrap_recovers_the_curve_its_quotes_came_from`,
+`::test_the_solver_knobs_are_read_off_the_block`, `::test_a_tighter_tolerance_still_converges_to_the_same_curve`.
+No test world takes a halved step.
 
-!!! note "Honest negative result — the damping never engages here"
-    On both round-trip worlds the line search takes the full step every iteration: zero halvings
-    across all three solves (USD OIS 4 iterations, USD projection 4, ZAR 5), and removing the damping
-    leaves every gate green. It is insurance against a first iterate these fixtures do not produce.
+### The knot rule {#the-knot-rule}
 
-## The knot rule {#the-knot-rule}
+One knot per used quote, at the benchmark's last cashflow date, and the output grid is that grid
+([Market Prices](market_prices.md#interestrateprices)). It makes $\partial F/\partial\theta$ square, so
+the quote-delta buckets are the benchmark maturities.
 
-ONE knot per used quote, at that benchmark's last cashflow date, in the block's `Day_Count`, and the
-output grid is that grid. The reasoning is on [Market
-Prices](market_prices.md#interestrateprices); what matters here is that the knot grid is what the
-Jacobian is square in, so the quote-delta buckets a desk reads are the benchmark maturities.
+### Curve contracts {#curve-contracts}
 
-## Curve contracts the solve relies on {#curve-contracts}
-
-**No knot at tenor zero.** The bootstrap never writes a 0.0 knot: rates start at T+1, and a rate at
-tenor zero is redundant anyway since its discount factor is 1 by identity. Whether an authored zero
-knot is harmful depends on the interpolation: `Factor1D.interpolate` divides by the tenor for the
-rate-times-time kinds (`LinearRT`, `HermiteRT`), so there it yields NaN; under `Linear` and `Hermite`
-it is read like any other knot.
-The knot rule complies where the quotes do, and says so where they do not: a benchmark whose last
-cashflow is on or before the base date refuses by name as its block is seeded, naming the quote, that
-date and the two remedies — hold it out with `Use`, or move the base date.
-
-**A coupon owning several resets is a compile-time SHAPE, and how they fold is the leg's own
-declaration.** `pv_float_cashflow_list` folds a row's resets into one rate when the reset count
-differs from the cashflow count (`all_resets.shape[1] != reset_cashflows.np.shape[0]`) — daily resets
-against quarterly cashflows, the reshape set up at `calculate_dependencies` by
-`compress_no_compounding(groupsize=-1)` under `Compounding_Method='OIS'`, or a term leg whose index
-tenor is shorter than its coupon, which `generate_float` writes at `Weight = 1/n`. Each reset is read
-back at its full rate, so `None` averages the term leg's and the other methods compound them,
-`Include_Margin` with the margin, `Exclude_Margin` adding it simply and `Flat` growing it at the rate
-alone - `Flat` refusing a payment date that gathers several cashflows, one of several resets, and a
-`Pre_Aggregation` list, which caps each fixing and places no margin, refusing all three. **The shape
-test is the one signal left** an explicit mark on the compiled cashflows would replace.
-
-**An OIS benchmark is nevertheless a TERM swap.** At t0 the compounded overnight forwards read off a
-curve telescope to the period forward, so a `SwapInterestDeal` with `Compounding_Method='OIS'` and
-one reset spanning each coupon (`Index_Tenor` and `Receive_Interest_Frequency` at `0M`) prices what
-the daily fixing list prices. Measured at a 4% quote on a million of notional: on a flat 4% curve the
-2Y reads **483.511030079** both ways — one deal against 523 cashflow items — and the 10Y
-**2068.437863819** off 2612; on a sloped curve the 5Y reads **-355.506266991** both ways and the 10Y
-**2012.027439223**. The largest disagreement over those eight readings is 6.4e-10, the float64 noise
-of summing 2612 items. So the list is a **spelling**, two orders of magnitude of JSON for the same
-number, and the benchmark is authored as the term swap. What the list spelling still buys is a leg
-whose fixings are KNOWN rather than forecast; the shape in between — a list authored one item per
-coupon carrying every fixing's reset, which is what the engine's own leg generation produces — averages
-them under `None` and compounds them under `OIS`.
+- **No knot at tenor zero.** It identifies nothing and Newton meets it as a singular Jacobian, so a
+  benchmark maturing on or before the base date refuses by name at seeding. **Held by**
+  `tests/test_interest_rate_prices.py::test_a_benchmark_matured_at_the_base_date_refuses_by_name`.
+- **An OIS benchmark is a term swap**: at t0 compounded overnight forwards telescope to the period
+  forward, so one reset per coupon prices what the daily list prices. **Held by**
+  `::test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces`.
+- **Several resets per coupon fold by the leg's declaration**: `None` averages, the OIS methods
+  compound, undefined combinations refuse; a reset count differing from the cashflow count is the only
+  signal. **Held by** `::test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them`.
 
 ## The IFT contract {#the-ift-contract}
 
-`utils.CalibrationSolve` is the bootstrap as one differentiable node.
+`utils.CalibrationSolve` is the curve solve as one node. **Forward** is `damped_newton` and nothing
+else, grad mode re-enabled inside for its own Jacobian; with no quote leaf it is a pass-through.
 
-**Forward is the ordinary solve.** It calls `damped_newton` and nothing else — same iterations, same
-tolerances, same float64 — so enabling quote gradients cannot move a mark by construction. Autograd
-runs `forward` with grad mode off and the solve needs it on for its own Jacobian, so it is re-enabled
-inside and the iteration's graph dies with the iteration. The block goes through the wrapper whether
-or not a quote is on the tape; with `quotes=None` it is a pass-through. The one thing the switch
-changes is the SET: on a multi-curve book it solves each [coupled set](quote_propagation.md#multi-curve)
-inside a currency as one system, the only solve whose Jacobian carries `dθ₂/dq₁` - the same root,
-the USD world's OIS curve bit for bit and its projection curve 2 ulp of zero rate away.
+**The switch changes the set.** With `Quote_Sensitivity` or `Quote_Propagation` on, the family
+measures which blocks' residuals read each other's curves (`BenchmarkInstruments.reads`) and solves
+each [coupled set](quote_propagation.md#multi-curve) within a currency as one system, the only
+Jacobian carrying $d\theta_2/dq_1$. Its one vector leaf is filed under each member that asked,
+descriptors prefixed by block.
 
-**Backward is the implicit function theorem** [@christianson1998; @henrard2014], never an
-unrolled solver. At $F(\theta^*, q) = 0$,
-$d\theta/dq = -(\partial F/\partial\theta)^{-1}\partial F/\partial q$, so an incoming cotangent
-$v = \partial L/\partial\theta^*$ contracts in two steps:
-
-$$\Big(\frac{\partial F}{\partial \theta}\Big)^{\!\top} w = v
-\qquad\text{then}\qquad
-\frac{\partial L}{\partial q} = -\Big(\frac{\partial F}{\partial q}\Big)^{\!\top} w$$
-
-Both derivatives come from **autograd on the residual closure itself**, evaluated once at
-$(\theta^*, q)$: `residual_jacobians` takes a row of each out of one backward pass per benchmark,
-because the $q$ side is another output of the pass the $\theta$ side already needs. $n$ is the
-benchmark count, so the linear solve is small and the [knot rule](#the-knot-rule) makes it square. The
-Jacobian is recomputed at $\theta^*$ rather than reused from the last Newton step, which was taken at
-the iterate *before* it; that costs one iteration's work.
+**Backward** is the implicit function theorem [@christianson1998; @henrard2014], never an unrolled
+solver: $(\partial F/\partial\theta)^\top w = v$, then $\partial L/\partial q = -(\partial F/\partial
+q)^\top w$. `residual_jacobians` takes both from one backward per benchmark, recomputed at θ\* because
+the last Newton step was taken at the iterate before it. Every cotangent at once is
+`calibration_jacobian`, the operator [Quote Propagation](quote_propagation.md) rides.
 
 !!! warning "Every `grad` in the backward retains the graph"
-    The residual's subgraph is **shared with the forward pass** — `pv_fixed_cashflows` memoizes its
-    payment tensor on the schedule — so freeing it in the backward would take the forward's graph too.
+    The residual's subgraph is shared with the forward through `pv_fixed_cashflows`' memo, so freeing
+    it would take the forward's graph.
 
-!!! note "The same two pieces are also an OPERATOR"
-    Solve every cotangent at once and $d\theta/dq$ comes out whole, which is what lets a quote that
-    moves between bootstraps carry the curve with it rather than trigger a re-solve. That lifecycle is
-    [Quote Propagation](quote_propagation.md), built for this family only, and its unit is the
-    **coupled set** rather than the block.
+**Held by** `tests/test_quote_propagation.py::test_the_artifact_holds_the_calibration_jacobian_the_solve_would_have_differenced`,
+`tests/test_service.py::test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from`
+(red with the blocks solved one at a time).
 
 ## The stationarity contract {#the-stationarity-contract}
 
-`utils.LeastSquaresSolve` is the HW2F swaption calibration as one differentiable node: the
-contract above with one word changed, the fixed point being the **stationarity** of a least-squares
-loss rather than the root of a residual. Everything below is what that word costs.
+`utils.LeastSquaresSolve` is the same contract at a stationarity point, $J^\top r = 0$. Its operand,
+a `utils.Residual`, supplies `solve()`, the residual `__call__(x)`, `interior(x, g)`, `labels` and
+`descriptors`; the HW2F and LogVar2FJ families differ there and nowhere else. HW2F's forward is basin
+hopping then least squares, a candidate kept only if it beats the running best with a well-posed
+process — so θ\* can be the seed — seeded by the declared `Random_Seed` alone. `Objective` is
+`Analytic` (Schrager–Pelsser [@schrager2006]; [why](roadmap.md#model-punchlist)) or `Monte_Carlo`,
+which an analytic solve runs once at θ\* to log its worst benchmark.
 
-**Forward is the ordinary solve.** `SwaptionCalibration.solve` runs the chain the bootstrap always ran
-— basin hopping, then least squares, `x0` chained, a candidate accepted only if it beats the running
-best *and* the process it implies is well posed. The seed is the block's, not the process's:
-`Random_Seed` is a declared field and one generator serves both the step taker and the Metropolis
-test, which used to draw from the numpy **global** RNG — θ\* moves 0.93 absolute between ambient
-seeds on the four-quote fixture. This is therefore the first reproducible HW2F calibration and there
-is no earlier baseline to preserve.
+### The Monte Carlo loss is conditional on its draw {#the-mc-loss}
 
-`HullWhite2FactorModelParameters.Objective` picks the residual. **`Analytic` is the declared
-default** [@schrager2006]; `Monte_Carlo` is the estimator and this page's oracle, and an analytic solve ends by repricing θ\*
-through it and logging what it makes of the answer. Everything from here to [the
-analytic section](#the-analytic-quote-side) is the Monte Carlo path, unchanged to the bit.
+Under `Monte_Carlo`, $r_i = w_i\big(100(P_i(q_i)/M_i(\theta) - 1)\big)^2$ with $M_i$ priced on Sobol
+paths. The sample is drawn once per closure and the memos cleared per evaluation, so every
+evaluation, Jacobian and backward prices the same paths: the reported derivative is the derivative of
+the reported number, where a re-drawn sample would have the optimizer differencing noise.
 
-### The loss is a Monte Carlo, and the derivative is conditional on the draw {#the-mc-loss}
+### The swaption quote splice {#the-swaption-quote-side}
 
-There is no par instrument to drive to zero. Each benchmark is a swaption priced by brute-force Monte
-Carlo through the engine's own `pv_float_cashflow_list`, and the residual is the weighted squared
-relative pricing error against the market premium,
+The one severance is the numpy market premium. Each benchmark carries a float64 quote leaf (the vol,
+or the premium where a file supplies it) and a `premium` callable through the tensor twin of the
+surface's `Distribution_Type` formula, spliced in `market_swap_class.error` as
+$\text{error} + (\widetilde{\text{error}} - \texttt{detach}(\widetilde{\text{error}}))$:
 
-$$r_i(\theta, q_i) = w_i\Big(100\big(\tfrac{P_i(q_i)}{M_i(\theta)} - 1\big)\Big)^2$$
+- **the model price is detached in the carried half only** — attached, it doubles the calibration
+  Jacobian while the residual stays bit-identical;
+- **the splice sits at the error, not the price**, as torch divides by a numpy scalar at the scalar's
+  precision and would round twice;
+- **the premium is rebuilt per evaluation**, as the basin adapter calls `backward()` without
+  `retain_graph`.
 
-with $M_i$ the model price. Two consequences run through everything below. The residual is **already
-squared**, so `least_squares` minimises a quartic in the pricing error and $J = \partial r/\partial
-\theta$ carries a factor of that error in every row: at an exact fit $J$ is not small but **zero** and
-Gauss–Newton degenerates. And $r$ cannot reach zero anyway on a block quoting more swaptions than the
-model has parameters — which is the block this was validated on.
+`get_par_swap_rate` and `set_fixed_amount` stay severed, their upstream being the curve family's
+quotes. A `Volatility_Delta` re-strike runs a `brentq`, which carries no derivative, so
+`create_market_swaps` refuses `Quote_Sensitivity` with it, before either objective exists. A zero
+`Market_Volatility` refuses unless a premium file supplies the target and nothing re-strikes it.
+**Held by**
+`tests/test_hw2f_analytic.py::test_a_block_the_family_cannot_price_refuses_by_name`; no test holds the
+re-strike refusal or the detached model price.
 
-The Sobol engine is seeded once on the state the closure builds, and `reset` clears `t_Buffer` and
-`t_PreCalc` (the memo trap) rather than re-drawing. So every evaluation, every Jacobian and the
-backward price the **same paths**, and `dθ/dq` is the derivative *conditional on that draw* — the
-same philosophy as a pinned `process_ofs`: the number reported is the derivative of the number
-reported, and a re-drawn sample would have the optimizer differencing the noise.
+### Gauss–Newton and the dropped terms {#the-dropped-term}
 
-### What the quote side closes, and what stays severed {#the-swaption-quote-side}
+Differentiating $J^\top r = 0$ drops a term on each side ([General](../bootstrapping/general.md);
+[@nocedal2006], ch. 10); the backward contracts $w = (J^\top J)^{+} v$, then $\partial L/\partial q =
+-(\partial r/\partial q)^\top Jw$. On the Monte Carlo residual, $r_i = w_i f_i^2$ makes each dropped
+term half of what it corrects,
 
-The severance is at the **market premium** and nowhere else: `create_market_swaps` prices it with
-`utils.black_european_option_price`, scipy end to end, so it reaches the residual as a numpy scalar.
-The repair is the splice this page uses three times, on `market_swap_class.error`:
-
-$$\text{error} = w\big(100(\tfrac{P}{M}-1)\big)^2
-+ \big(\widetilde{\text{error}} - \texttt{detach}(\widetilde{\text{error}})\big)$$
-
-with $\widetilde{\text{error}}$ the same expression off a float64 **twin** of the premium —
-`utils.black_european_option`, the engine's own tensor Black, which is what the cap/floor and swaption
-pricers value an option with, and bit-identical to the numpy one at the money to 1e-12.
-
-Two details in that line are load-bearing and neither is visible to a price gate:
-
-- **The model price is detached in the carried half, and only there.** Left attached, the carried half
-  reaches the *model parameters* as well as the quote and the calibration Jacobian comes out
-  **doubled** — the residual stays bit-identical and the optimizer simply walks a different path. The
-  quote derivative of the error does not involve the model's own sensitivity.
-- **The premium is a callable rebuilt per evaluation, not a compiled subgraph.**
-  `make_basin_hopping_loss` calls `total_loss.backward()` with no `retain_graph`, so a subgraph
-  compiled once with the benchmark set would be freed by the first evaluation and every one after it
-  would raise. Rebuilding costs one scalar Black per benchmark.
-
-Two severances stay **open on purpose**, because their upstream is not a quote of this calibration:
-`get_par_swap_rate` prices the strike and the pvbp in numpy off the zero curve, and `set_fixed_amount`
-writes that strike into the schedule's numpy half. Both are the calibrated curve, whose quotes are
-the curve family's. A zero `Market_Volatility` refuses by name rather than reading the surface's own
-ATM.
-
-!!! warning "A premium re-struck by `Volatility_Delta` declines the quote side — on either objective"
-    That path recovers an implied vol with a `brentq` root find and re-strikes the premium off it, and
-    a numerical root find carries no derivative. Reporting zero there is the exact failure this
-    workstream exists to prevent, so `Quote_Sensitivity` **raises**. The refusal is in
-    `create_market_swaps`, which runs before either objective exists, so `Analytic` inherits it word
-    for word rather than declaring a second one.
-
-### Gauss–Newton, and the two terms it drops {#the-dropped-term}
-
-$r(\theta^*, q) \neq 0$ and never will be, so what is held fixed is the gradient of half the sum of
-squares, $g = J^\top r = 0$. Differentiating that gives a dropped term on **each** side
-([@nocedal2006], ch. 10, on the Gauss–Newton approximation):
-
-$$\Big(J^\top J + \underbrace{\sum_i r_i \nabla^2_\theta r_i}_{\text{dropped}}\Big)\frac{d\theta}{dq}
-= -\Big(J^\top \frac{\partial r}{\partial q} + \underbrace{\sum_i r_i \frac{\partial^2 r_i}{\partial\theta\,\partial q}}_{\text{dropped}}\Big)$$
-
-A cotangent $v$ contracts as $w = (J^\top J)^{+} v$ then
-$\partial L/\partial q = -(\partial r/\partial q)^\top (Jw)$, with both derivatives from autograd on
-one fresh evaluation at $(\theta^*, q)$ — functionally, through `autograd.grad` and never off `.grad`.
-The scipy adapters clear `.grad` per evaluation while the quote leaves accumulate across them, so a
-harvested `.grad` is the sum over the optimizer's whole path: on the gate fixture, numbers six orders
-out and one `NaN`.
-
-**Neither dropped term is second-order small here.** The textbook argument assumes $r$ is the pricing
-error; on this block it is the pricing error **squared**, $r_i = w_i f_i^2$, so each dropped term is
-**half** what it corrects at any residual level. **The two halves cancel**: squaring a residual
-row-scales $J$ and $\partial r/\partial q$ by the same $\operatorname{diag}(2w_i f_i)$ and the normal
-equations are invariant under that, so the true system *is* the Gauss–Newton system and
-`LeastSquaresSolve.backward` reports the **exact leading-order derivative**. No correction is owed.
-
-Both halves are measured, because an algebraic cancellation nobody checked is a claim: 0.500064 on the
-θ side, 0.4953–0.5115 with cosine 1.000000 on the q side, contracted ratio 0.9908 — in [the identified
-fixture](#the-identified-fixture). The *instruments* differ. The θ side is a double backward; the q
-side cannot be, because [the splice](#the-swaption-quote-side) detaches the model price in its carried
-half, so the closure's mixed second derivative is **structurally zero** and autograd faithfully
-reports zero. Measuring it needs a finite difference of $J$ in the **authored** quote at fixed θ\*,
-which goes round the splice rather than through it.
-
-!!! warning "Correcting one side is how a factor 3/2 appears"
-    Measure the Hessian term, add it, leave the cross term alone, and the reported derivative looks
-    3/2 too large — **1.4974** in the top four directions. An artefact of a half-applied correction,
-    and the gate's own mutation.
-
-!!! warning "Stationarity is checked, not assumed"
-    `solve` accepts whatever the chain returned, which can be the **seed**, and the contraction is
-    worthless off the fixed point. So $\|J^\top r\|$ above the declared `Stationarity_Tol` **raises,
-    naming the norm**: 3.3e-6 achieved on the four-quote fixture against 2.9e10 for a chain stopped
-    after basin hopping. The norm is **absolute and the objective's scale is the block's own**, so a
-    tolerance is per block and the identified fixture declares its own.
-
-    **On an over-determined block the Monte Carlo chain does not get there.** It closes most of the
-    orders between seed and stationarity — 2.9e11 down to **3.16e2** (8.6e3 at an earlier seed and
-    day-count clock) — and stops, because a quartic is flat enough near its minimum that the
-    relative-improvement test fires long before the gradient does. The analytic objective is the same
-    chain over a residual that is not pre-squared and reaches **8.63e-7** on the same block, so this is
-    a property of the OBJECTIVE'S SHAPE, measured from both sides. On an under-determined block it
-    never shows: the fit interpolates and `‖J'r‖` is small for free. It is why `θ*(q)` is the
-    optimizer's stopping point rather than the argmin, and therefore why the classic oracle is
-    unavailable.
-
-### Rank deficiency is the problem, not a defect {#rank-deficiency}
-
-$J$ has one row per benchmark and 23 columns — two mean reversions, a correlation, two ten-knot
-volatility term structures. A block quoting four swaptions leaves a **19-dimensional null space**:
-combinations the quote set does not identify, which no care in the linear algebra can invent.
-
-The inverse is therefore a **pseudo-inverse** [@penrose1955] at the declared `Jacobian_Rcond`, a
-truncated SVD [@hansen1987], and `dθ/dq` in a null direction is the **minimum-norm
-representative**. No ridge is added: a Tikhonov term returns a
-unique-looking number that is the derivative of a different problem.
-
-!!! warning "On an identified block the cutoff is a real decision, not a formality"
-    `Jacobian_Rcond` is a relative cutoff on the singular values of the **column-scaled** Jacobian
-    `J/‖J_:,j‖` — the matrix `x_scale='jac'` steps on, which is how the LogVar2FJ solve runs; the
-    swaption family's `least_squares` runs unscaled (`x_scale` 1) — and defaults to **1e-5** on this
-    family. An earlier cutoff of 1e-8 on the eigenvalues of the raw `JᵀJ` is a 1e-4 cutoff in σ and
-    means nothing where the column norms span orders. On σ of the scaled matrix 1e-8 keeps a
-    direction 1.4e-6 of the largest whose `dθ/dq` amplifies seven hundred thousand fold. The
-    four-quote block keeps 4 of 4 at any cutoff under 0.21. The identified block's scaled spectrum
-    has one gap — 2.97e-4 of the largest against 1.43e-6, two hundred fold — and the default sits in
-    it, keeping **16 of the 23** directions (the old σ² cutoff kept 15). That is right rather than
-    lossy: the term Gauss–Newton drops is the same *size* as the singular values below the gap, so a
-    derivative along them would be a derivative of the wrong Hessian.
-
-    **The box is part of the fixed point.** What holds at θ\* inside a box is the KKT condition, not
-    `Jᵀr = 0`, so the contraction is taken over the coordinates the active set leaves free:
-    `utils.active_set` holds a coordinate that lies within 1e-4 of the box width of a bound
-    *and* whose gradient `(Jᵀr)_j` points into it — scipy's own `active_mask` is a step-length report
-    and reads empty with a coordinate jammed against its floor. Contracting a held coordinate answers
-    in a direction the fit cannot move in: on a reduced LogVar2FJ fit `Nu` read −3791 where a
-    re-solved polish reads 0. Every held bound is named in the family's report whether or not quote
-    sensitivities were asked for, because a binding bound is a calibration statement.
-
-### The re-solve reference, refuted three times {#the-manifold-finding}
-
-The usual reference for a calibration's quote derivative — bump a quote, re-run the calibration,
-difference θ\* — is **refuted with evidence**. It is the central result of this section and it is a
-negative one.
-
-| refutation | reading |
-| --- | --- |
-| **θ space, four quotes** | on a 19-dimensional manifold a re-solve lands somewhere else on it: displacement 0.044 at half a percent and 0.065 at a fifth against identified steps of 0.00206 and 0.00082, so the quotient **diverges as 1/h** — cold- and warm-started alike |
-| **value space, four quotes** | the CVA change that displacement causes swamps the quote's, by a factor itself unstable in the bump: +10.15 against +4.33 predicted at half a percent, +0.50 against +1.73 at a fifth. On the neighbouring quote the pair **reverses sign** |
-| **both, twenty-five quotes** | [the identified fixture](#the-identified-fixture) has `J` 25 × 23 at rank 23 and no manifold, and fails anyway — displacement 0.076 / 0.165 / 0.030 at half, a fifth and a tenth of a vol point, again growing |
-
-**The three have one diagnosis.** The solve wanders in the directions the objective is **flat** in —
-on four quotes a true null space, on twenty-five the directions the declared cutoff discards (only a
-quarter to seven tenths of the displacement lands inside the subspace the pseudo-inverse keeps).
-Either way they are exactly the directions along which a derivative is refused.
-
-Stated plainly: **bump-and-recalibrate P&L explain is ill-posed for this calibration.** The reference
-has no limit to converge to, whether or not the quote set identifies the model. The three
-refutations were held by tests that passed by *failing* to agree; those tests are gone, so the
-readings above were measured during development and are not re-checked. There is a
-[fourth](#the-re-solve-fourth-time), on the analytic objective.
-
-What *is* well posed is the direction the quotes **do** identify: step the parameters by
-$d\theta/dq \cdot h$ and re-price **without re-solving**. On four quotes that recovers 1.0274 /
-1.0121 / 1.0005 / 1.0002 of the predicted move at one percent, a half, a fifth and a tenth, and the
-wrong-signed step lands three to four times further out than doing nothing. On the identified fixture
-it lands between 0.809 and 1.195 at a hundredth of a vol point (the representative on the scaled
-metric is a longer walk in θ, so the check reads at a tenth of the old step), and the mandated
-sign-flip mutation negates it. **That check is the value-space reference**, in place of the ladder.
-
-### The analytic objective's quote side — separable, and that is the whole of it {#the-analytic-quote-side}
-
-`Objective: 'Analytic'` — the declared default, so this is the quote side an undeclared block gets —
-differences **normal vols, plain**. There is no second contract: the leaf, the map, the descriptor,
-the wrapper, the pseudo-inverse, the stationarity refusal and the `create_graph` refusal are all the
-ones above. What is new is the SHAPE of the residual,
-
-$$r_j(\theta, q_j) = w_j\Big(\sigma^{SP}_j(\theta) - \sigma^{mkt}_j(q_j)\Big),
+$$\textstyle\sum_i r_i\nabla^2_\theta r_i = \tfrac12 J^\top J + O(f^3),
 \qquad
-\sigma^{mkt}_j = \frac{P_j(q_j)}{A_j}\sqrt{\frac{2\pi}{T_{0,j}}}$$
+\sum_i r_i\,\partial^2_{\theta q} r_i = \tfrac12 J^\top \partial_q r + O(f^3),$$
 
-and every difference below follows from it.
+so the true system is $\tfrac32$ the Gauss–Newton one on both sides and the contraction is exact to
+leading order. On the analytic residual the cross term is [absent](#the-analytic-quote-side) and the
+other is $O(\|r\|)$.
 
-!!! note "The premium construction is convention-aware"
-    `create_market_swaps` reads the surface's declared `Distribution_Type`
-    through `Factor3D.get_subtype` and prices the market premium in that convention — Black at
-    `K + shift` under `'Lognormal'` (the declared default, so every existing document is
-    bit-identical), the general-form Bachelier off an absolute normal vol under `'Normal'` — with the
-    float64 tensor twin bound to the *same* pair. The two conventions are **9.7x–11.4x** apart on the
-    same numeric ladder, which is 1/F. Under `'Normal'` the inversion below returns the quoted σ_N as
-    itself (0.0 to 2.2e-16) and `∂r/∂q` is exactly `−w` at every benchmark, independent of expiry,
-    curve and θ; the lognormal diagonal runs −0.10235 … −0.08706, about a tenth, because a lognormal
-    vol is a fraction of the forward rather than a rate. Both the premium and its inversion read
-    the curve's own day count, so no clock ratio enters.
+!!! warning "Correcting one side makes a factor 3/2"
+    A reference adding the Hessian term alone is $\tfrac23$ of the truth. The cross term needs a
+    finite difference of $J$ in the authored quote: the splice detaches the model price, so autograd
+    reports the mixed derivative as exactly zero.
 
-**One severance, one splice, one leaf.** The severance is the scipy market premium, so the repair is
-the twin `create_market_swaps` already built (`utils.black_european_option` or
-`utils.bachelier_european_option`), carried through the closed-form Bachelier inversion
-[@bachelier1900].
-`market_swap_class.market_normal_vol` is the whole of it. The splice is worth **exactly zero**
-forward: residual, model value, market normal vol, `‖J'r‖` and **θ\* itself** are bit-identical with
-the quote side on and off, taken through two whole optimizer chains by `np.array_equal` and hex
-comparison rather than a tolerance.
+Both Jacobians come through `autograd.grad`, never `.grad`: basin hopping calls `backward()` every
+evaluation, so a quote leaf's `.grad` is a plausible path sum. `bootstrap` clears it before publishing.
 
-**Nothing is detached, and that is the difference.** `error` divides the twin by the MODEL price and
-has to detach it or the Jacobian doubles. `market_normal_vol` divides it by the **annuity**, which
-`schrager_pelsser_swaption` builds with `new_tensor` off a numpy curve read, so it carries no
-derivative in θ: the market side is a function of $q$ alone and the model side of θ alone.
+### Stationarity is checked {#stationarity-checked}
 
-**The residual is therefore SEPARABLE and the cross term is ABSENT**, not small.
-$\partial^2 r/\partial\theta\,\partial q \equiv 0$ exactly, so of the two terms [Gauss–Newton
-drops](#the-dropped-term) one is structurally zero and the other is the textbook $O(\|r\|)$ — nothing
-pre-squared this residual, so there is no factor of a half and no cancellation to rely on. Measured on
-the identified block at its own θ\*, and **around the splice** rather than through it, because a mixed
-partial read off the tape is the tape agreeing with itself:
+`solve` may return the seed, so the backward raises, naming the norm, when $\|J^\top r\|$ over the free
+coordinates exceeds `Stationarity_Tol`. The norm is in the objective's units, hence a block field:
 
-| what | how it was taken | reading |
+| family | `Stationarity_Tol` | `Jacobian_Rcond` |
 | --- | --- | --- |
-| $\partial r/\partial q$ is DIAGONAL | autograd, off the unstacked residual | **600 of 625** pairs structurally absent; materialised off-diagonal exactly 0.0; diagonal −0.10232 … −0.08704 |
-| $\partial^2 r/\partial\theta\,\partial q = 0$ | $J$ across RE-AUTHORED quote rungs, and $\partial r/\partial q$ across θ rungs | `np.array_equal` both ways |
-| the annuity is severed | `sp.annuity.requires_grad` | **False** — which is why the two above are exact rather than small |
-| the θ-side dropped term | double backward at θ\* | $\|\sum_i r_i\nabla^2 r_i\|_F$ **5.397e-4** against $\|J^\top J\|_F$ **3.604** — a ratio of **1.50e-4** beside a $\|r\|$ of 1.48e-3 |
+| HW2F | 1e-3 | 1e-5 |
+| LogVar2FJ | 1e-4 | 1e-3 |
 
-The Monte Carlo path's θ-side term is 0.500064 of what it corrects at any residual level. This one is
-1.50e-4 and **shrinks with the fit** — measured shrinking: 8.75e-4 at an earlier θ\* whose fit was
-three times worse. Two objectives, one contraction, two different reasons it is the exact
-leading-order derivative.
+The analytic chain reaches the default; the Monte Carlo residual is pre-squared, so its objective is a
+quartic, flat enough near its minimum that scipy stops orders above it. LogVar2FJ also refuses
+under `Fit_Mode: Bootstrap` (θ\* stationary for no single objective) and after a stage capped at
+`Max_Iterations`. **Held by**
+`tests/test_warm_starts.py::test_the_warm_hull_white_fit_reprices_a_moved_ladder_without_the_search`
+(stationary under the default, cold and warm); no test holds the refusal.
 
-**It runs at the declared `Stationarity_Tol`.** No fixture tolerance is written on this path and none
-is allowed: the analytic chain reaches 8.63e-7 on the identified block against the field's own
-**1e-3**, where the Monte Carlo path has to declare **1e5** to be differentiated at all.
+### Rank deficiency, the pseudo-inverse and the box {#rank-deficiency}
 
-**The spectrum is this objective's own.** $J$ is 25 × 23 and `Jacobian_Rcond` keeps **16** of the 23
-directions at the default 1e-5 on the column-scaled Jacobian (15 on the earlier σ² cutoff, 13 at an
-earlier θ\*). Nothing is wrong: σ knots past the last benchmark expiry are in no swaption's
-variance integral, and the KKT set holds one coordinate of this θ\* — `Correlation` on its −0.95
-floor with the gradient pushing into it — while `Sigma_1[7]`, 2.6e-4 of its box width under the
-0.09 ceiling, stays free. Those are directions 25 flat quotes do not identify, and `dθ/dq` along
-them is the minimum-norm representative exactly as [rank deficiency](#rank-deficiency) says.
+On HW2F's default knots $J$ has 23 columns, so four swaptions leave a 19-dimensional null space. The
+inverse is the pseudo-inverse [@penrose1955], truncated [@hansen1987] at `Jacobian_Rcond`, and
+$d\theta/dq$ along a null direction is the minimum-norm representative; no ridge, which would return
+the derivative of another problem. The cutoff is on the singular values of the column-scaled
+$J/\|J_{:,j}\|$, the matrix `x_scale='jac'` steps on (LogVar2FJ; the swaption solve is unscaled),
+because column norms span orders and minimum-norm needs a metric that is not the parameters' units.
+That being a convention, the backward logs each delta's share in the discarded null space. **Held by**
+`tests/test_hw2f_analytic.py::test_the_four_quote_job_document_pins_theta_and_its_quote_deltas`: θ\*
+and four deltas on `tests/fixtures/hw2f_four_quote_job.json` to 1e-6, red with the unscaled
+pseudo-inverse (fourth delta 0.2667 against 0.3014) or `.grad` left on the leaves.
 
-**The triangle closes.** `V` is the four benchmarks priced by the engine's **own Monte Carlo** at θ\*,
-so the value chain shares no arithmetic with the residual under test. One backward through
-`LeastSquaresSolve` reports `dV/dq`, and three routes reproduce it: the contraction spelled out,
-**2.22e-16** relative; the same as $v\cdot d\theta/dq$ with the OPERATOR, **1.088e-14**; the same with
-$\partial r/\partial q$ from a RE-AUTHORED central difference, **9.376e-06 / 3.750e-07 / 1.500e-08**
-at h = 0.5 / 0.1 / 0.02 vol points — $h^2$ twice. Stepping θ by `dθ/dq · h` and re-pricing without
-re-solving closes on 1 from both sides and linearly in h (0.809 to 1.195 at a hundredth of a vol
-point, 0.905 to 1.013 at a five-hundredth), and the mandated sign flip negates every one.
+**The box is part of the fixed point.** At θ\* the KKT condition holds, so the contraction runs over
+the coordinates `utils.active_set` leaves free. A coordinate is held within 1e-4 of the box width of a
+bound **and** with $(J^\top r)_j$ pushing into it — a solver stops a hair short of a floor it is jammed
+on, and one resting on a bound the data pulls away from is free. The swaption solve logs every held
+bound, a calibration statement. No test holds the active set.
 
-**One node, one metric.** `LeastSquaresSolve` is the single Gauss–Newton IFT node, serving
-`HullWhite2FactorModelPrices` and `LogVar2FJModelPrices` alike: the operand supplies `solve()`,
-`__call__(x)`, `interior(x, g)` and `labels`, the Jacobian is one vmapped backward (bit-identical to
-the per-row loop on both objectives, 0.22 s against 1.21 s on the identified block), and the
-pseudo-inverse is taken on the column-scaled Jacobian, so the minimum-norm representative in the
-null space is the one in the metric the LogVar2FJ solver steps in (the swaption solver steps
-unscaled). That is a convention, and the only defensible one — otherwise a quote's delta is allocated across unidentified directions by the units
-the parameters happen to be written in — but it is still a convention, so the backward logs each
-quote's delta beside the share of it lying in the null space the cutoff discards: the Euclidean
-projection of `dθ/dq_j` onto the unscaled Jacobian's null space over `‖dθ/dq_j‖`, and the same for
-the value's cotangent. On the four-quote block that share is 0.99–1.00 on every quote, which is why
-the fourth benchmark's `dV/dq` read 0.3014 under the scaled metric where the unscaled one read 0.2667
-at the same θ\* — the metric enters the backward alone — every quote moving 0.60 to 1.21 of its
-scaled reading (`tests/test_hw2f_analytic.py` pins those numbers on
-`tests/fixtures/hw2f_four_quote_job.json`); on
-the identified block it is 0.70 typical, on a LogVar2FJ autocall fit 0.90.
+### The analytic objective {#the-analytic-quote-side}
 
-!!! warning "`.grad` after an analytic chain is 0.3–2.3% of the answer, which is worse than six orders out"
-    Basin hopping calls `total_loss.backward()` per evaluation and the quote leaves accumulate across
-    all of them. On the Monte Carlo residual that is six orders out with a `NaN` in it; here it is
-    2.11e-4 / 4.72e-3 / 3.65e-4 / 4.05e-3 against one-pass numbers of 0.0258 / 0.2024 / 0.1189 /
-    0.2702 — **0.31% to 2.33%**, a plausible-looking number that is nobody's derivative. The backward
-    reads `dV/dq` functionally and `bootstrap` clears the leaves before publishing; this measurement
-    says the second is load-bearing rather than tidy.
+The default differences normal vols: $r_j = w_j\big(\sigma^{SP}_j(\theta) - \sigma^N_j(q_j)\big)$, with
+$\sigma^N_j = P_j\sqrt{2\pi/T_{0,j}}/A_j$ the ATM Bachelier inversion [@bachelier1900]
+(`market_normal_vol`). Nothing is detached: the annuity comes off the t=0 curve in numpy
+(`swaption_legs`), so it carries no θ. The residual is separable, $\partial r/\partial q$ diagonal and
+$\partial^2 r/\partial\theta\,\partial q \equiv 0$: one dropped term absent, the other $O(\|r\|)$.
 
-!!! note "Honest negative result — the basin stage alone is already stationary here"
-    On the four-quote block the seed reads `‖J'r‖` 9.64e-3 and is refused against the declared 1e-3;
-    basin hopping ALONE reaches 5.85e-7 and is accepted; the full chain reaches 6.91e-8 (the Monte
-    Carlo path's basin-only reading is 2.9e10). So the gate that reaches the refusal had to change
-    instrument.
+### The re-solve reference is ill-posed {#the-manifold-finding}
 
-#### The re-solve reference, refuted a fourth time {#the-re-solve-fourth-time}
+Bumping a quote, re-calibrating and differencing θ\* has no limit here: on four quotes θ\* lives on a
+19-dimensional manifold, a re-solve lands elsewhere on it, and the quotient grows as the bump shrinks.
+The value chain is not what fails — the factor greek contracted with a re-solve's actual displacement
+reproduces the value it moved. **Bump-and-recalibrate is ill-posed for the HW2F calibration**: the
+solve wanders in the directions the objective is flat in, the ones a derivative is refused along.
 
-The three refutations had a diagnosis with two halves: the solve wanders in the **flat** directions,
-*and* on the identified block it **stops short** (`‖J'r‖` 8.24e3), so `θ*(q)` was the optimizer's
-stopping point rather than the argmin. The analytic objective removes the second half outright — every
-re-solve below lands at `‖J'r‖` between **8.6e-7 and 1.6e-5**, nine orders below the Monte Carlo
-chain's stopping point. Same fixture, same chain, same seed.
+### The direction check {#the-identified-fixture}
 
-**It changes nothing.** Quote 12 (3Y × 3Y) of the flat 25-quote grid, cold-started both sides, against
-a one-pass `‖dθ/dq‖` of **36.70** in that column:
-
-The 13 directions kept below are the count at that measurement's θ\* and cutoff; the current
-default keeps 16.
-
-| h (vol points) | ‖θ(+h) − θ(−h)‖ | ÷ 2h | × 36.70 | cosine with it | in the kept 13 | MC path, same rung |
-| --- | --- | --- | --- | --- | --- | --- |
-| 0.5 | 0.03872 | 3.872 | 0.1055 | 0.0607 | 0.820 | 0.037, quotient 3.7 |
-| 0.2 | 0.02182 | 5.456 | 0.1486 | 0.1657 | 0.576 | 0.021, quotient 5.3 |
-| 0.1 | **1.92016** | **960.1** | 26.16 | 0.0197 | 0.807 | 0.013, quotient 6.7 |
-
-The quotient **grows** as h shrinks — two and a half orders at the finest rung, where the up-bumped
-solve found a different basin outright. The displacement points **nowhere**: cosines of 0.02 to 0.17
-against the 1/√23 = 0.209 a random direction scores, and a fraction inside the kept 13 of 0.58 to 0.82
-against a random vector's √(13/23) = 0.752 — so it is not preferentially in the *discarded* directions
-either. And every re-solve lands 0.27 to 0.30 from θ\* whatever h is, against bumps worth 0.18 /
-0.073 / 0.037 in θ: what sets the displacement is where each search stopped. The two coarse rungs
-match the Monte Carlo ladder **to two digits**.
-
-**That settles which half of the diagnosis was load-bearing** — the flat directions; stationarity was
-never the obstacle. The classic oracle stays unavailable, `dθ/dq` is not gated against it, and the
-value-space direction check remains the reference. The table above was measured during
-development — four cold analytic solves of the 25-quote block in CPU float64, which is why the ladder
-is one column rather than the grid — and no test re-runs it.
+Full rank does not rescue it: a 25-quote grid against 23 parameters (not in the repository) has no
+manifold, and its re-solves, stationary on the analytic objective, still wander along near-flat
+directions. The reference is the direction the quotes identify: **step θ by $d\theta/dq \cdot h$ and
+re-price without re-solving**, which closes on one linearly in $h$ and negates under a sign flip.
+[Quote Propagation](quote_propagation.md#value-space) scores the vol families so. No test re-runs it.
 
 ## The closed-form map {#the-closed-form-map}
 
-`GBMAssetPriceTSModelParameters` turns the ATM column of a vol surface into the integrated vol curve a
-risk-neutral GBM reads, and **it does not fit anything** — so it needs no contract at all:
+`GBMAssetPriceTSModelParameters` integrates a surface's ATM column into a GBM vol curve by Simpson's
+rule inverted step by step ([Equity and FX](../bootstrapping/fx_and_equity.md)); nothing is fitted,
+and autograd walks the map. Every mark comes from the numpy walk `integrated_vol`; its float64 torch
+twin `carried_vol` rides in as `integrated_vol + (carried − carried.detach())`, since torch's square
+root and association order would move shipped vols by an ulp.
 
-$$V(t_i) = \bar\sigma(t_i)^2 t_i
-\qquad
-V(t_i) - V(t_{i-1}) = \tfrac{\Delta t}{3}\big(\sigma_{i-1}^2 + \sigma_{i-1}\sigma_i + \sigma_i^2\big)$$
-
-the second being Simpson's rule solved for the instantaneous vol over each step, positive root taken.
-No fixed point, so no implicit function theorem, no stationarity tolerance, no pseudo-inverse and no
-dropped Gauss–Newton term. `integrated_vol` is the whole of it and autograd walks it.
-
-**A twin, spliced — not a replacement.** `integrated_vol` is the numpy walk this family always
-shipped, and every written mark comes out of it; `carried_vol` is the same walk in float64 torch,
-riding in as `integrated_vol + (carried - carried.detach())`. One walk is not enough, even though
-`+ - * /` and `sqrt` are all correctly rounded in IEEE 754: `torch.sqrt` is one ulp below `np.sqrt` on
-**1.4%** of float64 inputs on this box, and a torch walk re-associates the expression tree besides.
-Measured on 4000 random ATM columns, letting torch write the curve moves the **shipped** vols on
-24.3% of them by up to 2 ulp; with the splice the written curve moves on **none** while the twin still
-differs on the same 971.
-
-!!! warning "The map is the IDENTITY wherever forward variance rises"
-    Only $\bar\sigma$ is written — $\sigma$ is the walk's own state, sizing the next step's floor and
-    never published — so on a well-behaved column the curve that comes back is the column, up to the
-    rounding of a square and its root: exactly so on the fixtures gated here, but **not as a property
-    of the map** (a round trip returns a different last bit on 5.7% of random rising columns over the
-    gated expiries and 23.1% over a ten-point desk grid). Either way `dV/dq` is `dV/dθ` relabelled and
-    such a fixture passes whatever the walk does, so every derivative gate here runs on a **declining**
-    column and the rising one only pins the identity as the property it is.
+!!! warning "The identity wherever forward variance rises"
+    There the curve is the column, `dV/dq` is `dV/dθ` relabelled, and any walk passes. A gate needs a
+    declining column.
 
 ### The repair is a kink {#the-repair-kink}
 
-A column implying a *falling* forward variance has no real root, so $V(t_i)$ is floored at the least
-variance the step can reach — the one $\sigma_i = 0$ leaves — and the written vol is that floor rather
-than the quote. The switch is a **kink**: $d\bar\sigma_i/dq_i$ is 1 on the smooth side and 0 on the
-floored one, and autograd reports the one-sided derivative of the branch the column is in, which is
-the only quotient a piecewise map has a limit for. Measured at $\pm10^{-3}$ either side: **1.0** and
-**0.0**. Straddling the switch reports **exactly 0.5 at every $h$** — one side moves with the quote
-and the other does not — so a symmetric bump ladder converges here to nobody's derivative. That is
-gated, because it is the reading a ladder would quietly have produced.
+Falling forward variance has no real root, so $V(t_i)$ is floored where $\sigma_i = 0$ and the vol
+written is the floor. $d\bar\sigma_i/dq_i$ is 1 on the smooth side and 0 on the floored one; autograd
+reports the branch's one-sided derivative, and a bump straddling the switch converges to 0.5, nobody's.
+The whole column severs: the floor is built from state before that expiry and σ over the floored step
+is zero, so no later step carries the quote. The quadratic is written with $c = \text{floor} - V(t_i)$
+so the floored branch is exactly zero.
 
-The severance is a whole **column** of the Jacobian, not a diagonal entry: the floor is built out of
-the walk's state *before* that expiry and $\sigma$ over the floored step is zero, so the next step's
-floor does not carry the quote either. The quadratic is written with $c = \text{floor} - V(t_i)$ so
-that branch cancels to an exact zero rather than a rounding of one.
+!!! danger "The discriminant is guarded"
+    A second consecutive repair meets $b = c = 0$: $\sqrt{}$'s infinite derivative times the zero
+    $d(b^2)/db$ NaNs every Jacobian entry once a later step reads that σ. So the root at a zero
+    discriminant is written as zero and `sqrt` never sees it.
 
-!!! danger "The discriminant is guarded, and that cancellation is why it has to be"
-    The floored branch leaves $c$ exactly zero, so $\sigma_i = (-b + \sqrt{b^2})/2a$ is exactly zero. A
-    *second* consecutive repair arrives with $b = 0$ beside that zero $c$, so the discriminant is
-    exactly 0: the forward value is right, the backward is not — $\sqrt{}$ has an infinite derivative
-    at zero, $d(b^2)/db$ is zero beside it, and $\infty \times 0$ is NaN on **every** entry of the
-    Jacobian, identity rows included. A *third* repair is what pulls a gradient back through the second
-    and detonates it; two in a row look clean. So the root at a
-    zero discriminant is written as zero and `sqrt` never sees the point. The gate is a five-expiry
-    hump column that repairs three steps running.
+No test holds the map's quote side.
 
-### Two quote sources, and which one a config gets {#the-atm-column}
+### Two quote sources {#the-atm-column}
 
-The leaves are the **ATM column, one per surface expiry** either way; where those numbers come from is
-a property of the surface's PROVENANCE rather than a switch.
-
-**Preferred: the surface's own `FXVolPrices` quotes.** Where the market data carries an
-[`FXVolPrices`](market_prices.md#fxvolprices) block for the surface being integrated **and that block
-wrote the surface**, its ATM rows **are** the quotes — an identity, because `Factor2D.malz_skew`
-places the ±0.5 label's vol at the delta-neutral straddle strike. Reading it back off the refined grid
-would recover it to the grid's tolerance and no better, and would put the Malz delta solve on the tape
-to say so.
+The leaves are the ATM column either way; `atm_column` picks the source by provenance. Where an
+`FXVolPrices` block wrote the surface, its ATM rows are the surface's ATM vols by construction —
+`malz_skew` puts them at the delta-neutral straddle — so they are taken as quoted rather than read back
+off the grid. Otherwise the column is the surface at moneyness 1.
 
 !!! warning "Provenance is evidence, not a name"
-    Keying on the name is a **silent desync**: a hand-authored surface can sit under a name a quote
-    block also uses, the pricers read the surface, and the integrated curve is built off numbers
-    nothing else agrees with — **20–26 vols against a 39–45 vol surface** on the fixture measured, both
-    halves individually valid and neither raising. What is checked is the fingerprint
-    `FXVolSurfaceParameters` leaves and [`pinned_grid`](market_prices.md#fxvolprices) reads back — the
-    `Malz` subtype beside the `Grid_Tolerance` the grid was refined at. A surface the family *did*
-    write whose quotes have since moved off its expiries is the other half of the same desync, and it
-    **raises, naming both expiry sets**, rather than dying on a `KeyError`.
-
-**Fallback: the surface, at moneyness 1.** Anything else is authored data and the ATM column is what
-`np.interp` reads off it. Where the surface carries a node AT moneyness 1 that read *is* the node, so
-`dV/d(ATM column)` is `dV/d(surface node)` there.
-
-!!! warning "OPEN DEFECT — a hand-authored `Malz` surface reads a wing"
-    Moneyness 1 is the ATM coordinate of a **ratio** surface. A `Malz` surface's axis is $\log(F/K)$,
-    whose ATM is at 0 and whose grid stops at ±0.5, so `searchsorted` lands on the last node and the
-    "ATM column" is a deep wing — **0.194 against a quoted 0.200** on a test surface, and a full vol
-    point at three months on a USDZAR-shaped smile. This predates quote derivatives, is a defect of the
-    *read*, and **no test holds it**; the preferred path above is what such a surface reaches in
-    practice, so it is named rather than moving a shipped forward for it.
-
-### The attachment, and the triangle {#the-gbm-attachment}
-
-Nothing new. `Quote_Sensitivity` is the declared field, default `No`; `Config.bootstrap` harvests
-`calibrated` and `quote_leaves` as it does for the other families; θ\* reaches the calculation through
-[`factor_leaf`](#the-attachment). `quote_leaves` publishes **one vector leaf** per block — the curve
-family's shape, because the whole ATM column enters one map.
-
-The tests that held the numbers below were removed, so they were measured during development and
-are not re-checked by a test. The forward was `np.array_equal` throughout — the
-written curve on vs off on both quote-source paths, the shipped walk against the numpy loop it always
-was on 5 fixtures, a reference exposure run's CVA, profile and whole gradient frame — with the torch
-twin ≤ **1 ulp** away and the Simpson identity inverted independently to **1.2e-16**. What the
-derivative was pinned on:
-
-| check | result |
-| --- | --- |
-| `J` vs central FD of the **whole family** | **2.4e-4 / 2.4e-6 / 2.4e-8** at h = 1e-2 / 1e-3 / 1e-4 — $h^2$ |
-| three repairs running, on a 5-expiry hump | `J` finite, identity rows intact, FD **1.3e-8 / 1.3e-10** |
-| one-sided FD either side of the switch | **1.0** above, **0.0** below; **0.500000000** straddling |
-| a surface the family did not write; quotes moved off their own surface | the authored read lands; the second raises naming both expiry sets |
-| `dV/dq` vs `J' dV/dθ`, one backward | **1.1e-16** absolute; the repaired quote's delta exactly 0 while its factor delta is 0.524 |
-
-The FD rung is taken through the **whole family** — re-authored surface, re-read ATM column, re-walked
-— so what converges is the derivative of the thing the job runs. The identity rows carry no $h^2$
-term, so what is left in them is the difference quotient's own rounding, which *grows* as $h$ shrinks
-(8.9e-16 to 1.1e-13); they are asserted exact-to-rounding rather than put on the ladder.
+    A hand-authored surface can share a quote block's name. The check is the fingerprint
+    [`pinned_grid`](market_prices.md#fxvolprices) reads back, the `Malz` type beside its
+    `Grid_Tolerance`; a written surface whose quotes left its expiries raises naming both sets.
 
 ## The delta solve {#the-delta-solve}
 
-`FXVolSurfaceParameters` turns a broker's smile into the log-moneyness surface the option pricers
-read. The closed-form map takes the ATM row; this takes **all** of it, so `dV/d(RR)` and `dV/d(BF)`
-exist.
+`FXVolSurfaceParameters` turns ATM, RR and BF into a log-moneyness surface — the strangle pair
+`ATM + BF ± RR/2` (its twin bit-identical), the wing pair, a bisection per pinned node ([Equity and
+FX](../bootstrapping/fx_and_equity.md)) — so `dV/d(RR)` and `dV/d(BF)` exist.
 
-```
-q  ->  the strangle pair  ->  the Malz wing pair  ->  a bisection per PINNED x-node  ->  surface
-```
+### The tape boundary {#the-tape-boundary}
 
-The first link is `vol(call) = ATM + BF + RR/2`, `vol(put) = ATM + BF − RR/2`: linear, exactly
-invertible, and its twin is bit-identical to the shipped `smile` because there is no `sqrt` for two
-implementations to disagree over. The second places the ±0.5 label at the delta-neutral straddle and
-mirrors a one-sided smile onto the other wing. The third is the design decision.
+A tape runs straight through `Factor2D.malz_delta`'s 64 halvings and reports the wrong number: a
+bisection's iterates are dyadic combinations of the bracket endpoints, so it carries their
+derivative, not the root's. So **the tape starts at the converged root**, one Newton step off it in
+`carried_sigma`:
 
-### The tape boundary, and why it is not where it looks {#the-tape-boundary}
+$$\delta = \delta^* - \frac{R(\delta^*, q)}{\texttt{detach}(\partial R/\partial\delta)}
+\;\Longrightarrow\;
+\frac{d\delta}{dq} = -\Big(\frac{\partial R}{\partial\delta}\Big)^{-1}\frac{\partial R}{\partial q} .$$
 
-`Factor2D.malz_delta` closes an array of brackets 64 times and `malz_sigma` is the wing lookup over
-the root. Every operation in that loop is `+`, `*`, a comparison and a `torch.where`, so **a tape runs
-straight through it and reports a number** — which is the trap, because the number is wrong.
+δ\* being the root makes it the theorem, not the `detach`: $R(\delta^*)$ is a rounding that multiplies
+away the slope's graph. `R` mirrors the value path's residual with `utils.norm_cdf` for
+`scipy.special.ndtr`, so the splice keeps the written surface the numpy one. The grid is pinned, not
+taped, so a tick is a values patch; every discrete decision — ordering, label, wing, bracket,
+segment — is read off the value path, a permutation having no derivative.
 
-A bisection's iterates are **dyadic combinations of the bracket endpoints**: after any number of
-halvings `δ_n = α·lo + (1−α)·hi` with α a step function of the data, zero derivative almost
-everywhere, so the tape carries `d(endpoint)/dq` rather than `d(root)/dq`. On the call wing `lo` is a
-quoted pillar delta and `hi` is `delta_atm`, so the reported derivative is a function of the ATM quote
-and nothing else the root actually moves with. Measured: the shipped loop mirrored literally gives the
-same forward number to **2.8e-17** and a Jacobian **0.135** out on entries of order one (6.5%
-Frobenius), with `dσ/d(ATM)` a plausible **1.000137** where the truth is **0.865559**.
+!!! warning "`delta_atm` is taped"
+    The ATM quote sets where the wing grid's ATM nodes sit, $\tfrac12 e^{-\sigma_{ATM}^2T/2}$, so the
+    knot positions are a function of a quote; a twin freezing them is silently wrong.
 
-So **the tape starts at the converged root.** δ\* is a constant and the differentiable object is one
-Newton step off it:
+### Four discrete choices {#the-four-choices}
 
-$$\delta = \delta^* - \frac{R(\delta^*, q)}{\texttt{detach}\big(\partial R/\partial\delta\big)}
-\qquad\Longrightarrow\qquad
-\frac{d\delta}{dq} = -\Big(\frac{\partial R}{\partial\delta}\Big)^{-1}\frac{\partial R}{\partial q}$$
+The wing ($x = \sigma_{ATM}^2T/2$), the bracket (the root reaching the endpoint) and the segment (δ\*
+crossing a pillar) are kinks: autograd reports the branch's one-sided derivative, and a difference
+straddling one converges to the two sides' average, nobody's. The clamp endpoint — where the two endpoint residuals swap which
+is smaller — is a jump: no derivative exists there, and either one-sided answer is right. A ladder
+fingerprints each node by all four (the endpoint on clamped nodes only) and drops a rung where one
+changes.
 
-— the [implicit function theorem](#the-ift-contract) as an expression rather than a `Function`. **What
-makes it the theorem is that δ\* is the root**, not the `detach` on the slope: `R(δ*)` is a rounding,
-so anything the slope's graph would contribute is multiplied away ([measured](#the-clamp)). `R` is the
-residual the value path solves, mirrored once and differentiated by autograd for **both** the slope and
-the quote side. The mirror is not the same function — `scipy.special.ndtr` against the engine's own
-`utils.norm_cdf` — so the twin's surface sits 2.8e-17 off the shipped one, and the splice
-`value + (carried − carried.detach())` keeps the written surface the numpy one bit for bit.
+### The clamp is flat extrapolation {#the-clamp}
 
-**The grid is not on the tape at all**, which is a property rather than an omission: it is refined
-against the quotes when BUILT and [pinned](market_prices.md#fxvolprices) from then on, so a tick is a
-values patch instead of a recompile and the twin moves the **vols on frozen nodes**. A rebuild is a
-new plan, and a difference quotient across two plans is not one. Everything the solve decides
-discretely — ordering, the ±0.5 label mask, which side had its ATM node mirrored in, which wing a node
-reads, whether it is bracketed, which linear segment the root sits in — is read off the value path,
-for the same reason a permutation has no derivative.
+A node with no root in its bracket takes the nearer endpoint knot's vol, the smile being flat beyond
+its widest quote, so its row is that knot's algebra: 1 in ATM, 1 in BF, ±½ in RR, zero elsewhere.
+Assert it as a set: walking non-zero entries never sees a missing column. `dσ/d(ATM) = 1` also marks a
+bracketed node on a flat segment.
 
-!!! warning "What *is* taped that looks like a coordinate"
-    `delta_atm` is. The ATM quote sets the delta-neutral straddle, `|δ| = ½exp(−σ_atm²T/2)`, which is
-    **where the two ATM nodes of the wing grid sit** — so the wing's knot *positions* are a function of
-    a quote. A twin treating the deltas as coordinates loses that channel silently: forward untouched,
-    ladder breaks at h², ATM column comes back looking almost right. Detaching them is a gated mutation.
+!!! danger "An ATM-only smile divides zero by zero, only backward"
+    Each wing is one knot of zero span; dividing before selecting NaNs the Jacobian of a good flat
+    surface. A double `where` guards it, and the Jacobian is the expiry indicator.
 
-### Four discrete choices, and the fourth is a jump {#the-four-choices}
+### The Jacobian's structure {#the-jacobian-structure}
 
-The closed-form map has one piecewise switch; this map makes four per node, every one a property of the
-shipped conversion rather than of the twin:
-
-| switch | where | what it does to the surface |
-| --- | --- | --- |
-| the **wing** | `x = σ_atm²T/2` | which wing the node reads — the two agree in value at the straddle strike, not in slope. A kink |
-| the **bracket** | where the root arrives AT the wing's endpoint | the flat extrapolation takes over. A kink |
-| the **segment** | where δ\* crosses a quoted pillar delta | the wing is piecewise LINEAR in delta. A kink |
-| the **clamp endpoint** | where the two endpoint residuals swap which is smaller | a clamped node steps from one endpoint knot's vol to the other's. A **JUMP** |
-
-Across the three kinks autograd reports the one-sided derivative of the branch a node is in, and a
-central difference **straddling** one converges to the average of two one-sided derivatives — which is
-nobody's: **0.9403** between a clamped 1.0 and a bracketed 0.8806047, at h = 1e-6 and again at 1e-8.
-
-**The fourth is a discontinuity, found by mutating the instrument rather than the code.** A clamped
-node takes whichever end of the bracket its residual misses by less (`|f_lo| < |f_hi|`), and the two
-ends are *different knots carrying different vols*, so where those magnitudes cross the written number
-steps. On a single-expiry smile whose risk reversal is 2.5× its ATM vol, a **2e-6** move in the ATM
-quote jumps one node by **0.1199** of vol. The flip starts around RR ≈ 1.5 × ATM, where the same bump
-is worth 0.086. Nothing needs repairing — the flat extrapolation is changing its mind about which knot
-to extrapolate *from*, no derivative exists at the crossing, and autograd's one-sided answer is correct
-either side.
-
-What was wrong was the **measurement**. Wing, bracket and segment are all identical either side of that
-flip, so a three-part fingerprint scores the rung and scores a jump divided by 2h: **6.0e+04** at
-h = 1e-6, ten times that at 1e-7 — the signature of a step. So the fingerprint carries the endpoint as
-a fourth mark, **on the clamped branch alone**, which is the branch that reads it; recording it
-unconditionally would exclude rungs where nothing happened. On the gated fixture no clamped node flips
-and the census is unchanged: **24** straddles at h = 1e-3, **5** at 1e-4, **none** at 1e-5.
-
-### The clamp is flat extrapolation, and its derivative is exact {#the-clamp}
-
-A third of the grid — **32 of 97 nodes** on the fixture measured, 20–43% per expiry — has no fixed point
-inside its wing's bracket. That is not a repair: beyond the widest quoted delta the smile is **flat**,
-so the vol at such a node IS the endpoint knot's. Its derivative is therefore that knot's own quote
-algebra and nothing else — `1` in the expiry's ATM quote, `1` in the pillar's butterfly, `±½` in its
-risk reversal, and exactly zero in everything else, on all 32 rows to the last bit. The taped δ on that
-branch is the knot itself, so the `(δ − d_j)·slope` term cancels to an exact zero, the same discipline
-[the floored branch](#the-repair-kink) needed.
-
-**The row is asserted as a SET.** Walking the row's non-zero entries visits the columns that *are* live
-and can never notice one that is **missing** — a family that dropped the risk reversals from the tape
-publishes a shorter row of perfectly correct entries and walks through. That mutation passes the
-entry-by-entry form and fails the set.
-
-!!! warning "`dσ/d(ATM) == 1` is not the clamped branch's signature"
-    It is the signature of a node whose vol does not move with delta, and a **bracketed** node can be
-    one: where two adjacent pillars' wing vols coincide the segment between them is flat, so sliding
-    `delta_atm` under the node changes nothing and the level follows the ATM quote exactly.
-    `ATM + BF + RR/2` = 0.1396 at both the 0.35 and 0.25 delta of an ordinary mildly-inverted three-year
-    does it: **1 of that smile's 16 nodes**, and 5 of 90 on the two-expiry version. A check that a
-    bracketed row's ATM entry is never 1 passes only on fixture luck; it has to be conditioned on the
-    segment not being flat.
-
-!!! danger "A flat smile divides zero by zero, and only in the backward"
-    Quote the ATM row and nothing else — a legitimate config the value path handles without comment.
-    `malz_skew` mirrors the single ATM node onto **both** sides, so each wing is one knot: its span is
-    exactly zero and so is its slope. Dividing first and selecting after puts a NaN on **every** entry
-    of the Jacobian while the written surface is a perfectly good flat one. Guarded with the
-    double-where, the flat smile's Jacobian is the **expiry indicator**. Reachable from the schema
-    rather than from a pathological fixture.
-
-!!! note "Honest negative results — three no-ops in `carried_sigma`, all measured"
-    Each was mutated and every gate stayed green. Recorded so they stay known properties rather than
-    being read as tested ones.
-
-    - **The second guard is idiom, not a measured hazard.** The same double-where sits on the Newton
-      step's slope, which nothing cancels to zero: a 375-point sweep over x ∈ [−0.6, 0.6] drives
-      `∂R/∂δ` no lower than **0.948**.
-    - **Detaching the slope is conceptual hygiene, not the mechanism.** `R(δ*)` is ~1e-17, so a graph
-      carried through `∂R/∂δ` is multiplied away; `create_graph` changes no reported number.
-    - **`base.detach()` is dead** — `base` is minted from a numpy array and carries no graph. Both
-      lines stay because they say what the expression *means*.
-
-### What the Jacobian has to look like {#the-jacobian-structure}
-
-The quote algebra is visible in `J`, and was checked as arithmetic:
-
-- **Block diagonal in expiry, exactly** — each expiry's smile is built from its own rows onto its own
-  nodes, so `max|J|` off the block is **0.0**.
-- **`RR = ±½ BF`, wing by wing, exactly** — a node's vol depends on the quotes only through its own
-  wing's knot vols (and, through `delta_atm`, on the ATM quote), and those knots are `ATM + BF ± RR/2`,
-  so the two columns are in exact ratio and the sign is which wing the node reads (`np.array_equal`,
-  not `allclose`). That is "the risk reversal is antisymmetric and the butterfly is symmetric" said so
-  that floating point can check it: BF's column is ≥ 0 everywhere, reaching exactly 1.0 on the clamped
-  10-delta wing, and RR's flips at the wing boundary — +0.436 … +0.500 on the call side against
-  −0.483 … −0.509 on the put side.
-- **The ATM column lands near one, not on it** — every wing knot carries the ATM quote with coefficient
-  one, but `delta_atm` moves too, sliding the delta each node resolves to. Measured 0.8656 … 1.0537,
-  everywhere positive, and asserted *not* to be exactly one, because exactly one is what the
-  frozen-`delta_atm` mutation produces.
-
-### The measurements {#the-fx-vol-gates}
-
-Nothing under `tests/` exercises the Malz lookup as mathematics today, so the numbers below were
-measured during development and are not re-checked by a test. The forward was held by
-`np.array_equal` throughout — written surface on vs off and against a SHA-256 of the surface before
-the change, a reference FX option valuation's whole `Greeks_First` frame, the carried smile
-against `smile`, the carried skew against `malz_skew` (wing deltas ≤ 1 ulp) — and the `market_patch`
-round trip held the grid and `J` `array_equal` across a re-bootstrap. What the derivative was pinned
-on:
-
-| check | result |
-| --- | --- |
-| **the bisection taped literally** | `J` **0.135** out, 6.5% Frobenius, 1.000137 against 0.865559 |
-| `J` vs central FD of the **whole family** | **9.8e-5 / 9.8e-7 / 9.8e-9** at h = 1e-3 / 1e-4 / 1e-5 — $h^2$ |
-| the same FD on the clamped nodes | exact to rounding, **1.3e-14 → 1.8e-12** — it GROWS as h shrinks |
-| every clamped row, as a SET | **32 / 32** exactly `{ATM: 1, BF: 1, RR: ±½}` and nothing else |
-| one-sided FD either side of the bracket switch | **1.0** clamped, **0.8806047** bracketed; **0.9403** straddling |
-| **a 2.5× risk reversal, bumped 2e-6** | the node steps **0.1199** vol; the fingerprint scores **6.0e+04**, growing as 1/h |
-| a wing with a flat segment; an ATM-only smile | a BRACKETED node reads exactly 1.0 (1 of 16); `J` finite and equal to the expiry indicator |
-| `dV/dq` vs `J' dV/dθ`, one backward | **1.0e-16** relative; vega chain 7.039e6 against a Black vega of 7.032e6 |
-| `Quote_Sensitivity` Yes → No, re-bootstrapped | the connected tensor and its leaf are **gone**, not stale |
-
-!!! note "Honest negative result — the reorder is insurance"
-    Three orders are in play: `malz_surface` **emits** expiry-major, `utils.Curve` stores what it is
-    handed sorted by **moneyness** first, and `Factor2D` lexsorts back to expiry-major before minting a
-    leaf. The twin follows the emission and is paired against it, so the permutation the bootstrap
-    applies is the **identity** on every quote set the family can build, and deleting it leaves every
-    gate green. It is there because the emission order and the lexsort could drift apart with nothing
-    else noticing, and the identity is asserted so the day it stops being one is visible.
-
-### The retraction {#the-retraction}
-
-An earlier non-goal read **"No differentiable Malz solve"**, on the grounds that a bisection per node
-would put that solve on the tape. Retracted: the solve does not go on the tape. The root is found
-exactly as it always was, in numpy, and the derivative comes from **one Newton step at the answer** —
-two residual evaluations against 64 halvings, value path untouched. What the closed-form map says
-about the **ATM row** stands: that number is the surface's ATM vol by construction,
-`GBMAssetPriceTSModelParameters` still takes it straight off the quote block, and nothing was put on
-the tape to recover it.
+$J$ is block diagonal in expiry; the RR column is ±½ the BF column wing by wing, exactly; the ATM
+column is near one but not on it, as `delta_atm` moves — exactly one is the frozen-`delta_atm`
+mutation. **Held by** `tests/test_structures.py::test_each_pillars_charge_is_what_repricing_that_pillar_costs`:
+per pillar `dV/dq` against a re-bootstrapped central difference within 2%, signs included. The kinks,
+clamp rows and guards are held by no test.
 
 ## The attachment {#the-attachment}
 
-θ\* still carrying its graph has to become the factor leaf a calculation consumes, and there is one
-seam where that is possible: `Calculation.factor_leaf`, called from both `_build_factor_state` branches
-and from `Base_Revaluation.update_factors` — the three sites that were the first row of [the graph
-audit](#the-graph-audit). The leaf offered there is
+`Calculation.factor_leaf` mints every leaf — the three branches of `Credit_Monte_Carlo._build_factor_state`
+and `Base_Revaluation.update_factors` — and offers a factor with a connected θ\* as
+$\text{leaf} + (\theta^* - \texttt{detach}(\theta^*))$, the [boundary
+correction](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem)'s shape: `retain_grad` on
+the sum keeps the factor greek and lands `dV/dq` on the quote leaves in the same pass. A model
+attaches per named parameter, split by `utils.Residual.split`, the one place the flat vector comes
+apart, so a leaf cannot take the wrong slice. A non-zero `Tenor_Offset` declines, a shifted curve
+being another curve. A credit Monte Carlo needs `Gradient_Variables` `Implied` or `All` for a model's
+parameters, and reuses `implied_leaves` in its static branch so a gradient cannot split ([the
+invariant](calc_lifecycle.md#compile-phase-2-_build_factor_state)).
 
-$$\text{leaf} + \big(\theta^* - \texttt{detach}(\theta^*)\big)$$
+**The harvest removes as well as adds.** `Config.bootstrap` copies each family's tensors onto the
+config, not into JSON `Price Factors`. A whole run first drops the family's keys, or a block flipped
+to `No` would leave yesterday's tensor reported as today's; a narrowed run replaces what it covered.
+No test flips the switch.
 
-the [boundary correction](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem)'s shape,
-here for its reason: **change what reaches `backward()`, nothing about what is reported**. `leaf` stays
-a leaf, so it is still the tensor the pricers read, and `retain_grad` keeps `.grad` populated on the
-sum — the factor greek is the same number it always was and `dV/dq` arrives in the *same* pass. Nothing
-about discovery ordering or `process_ofs` moves, so a quote bump and its reval are bit-comparable.
+**Two leaf shapes**, `(descriptors, leaves)` either way: HW2F a tuple of scalar leaves, the others one
+vector. FX descriptors name the pillar (`RR 0.25 1`).
 
-The switch is the declared field `Quote_Sensitivity` on the block being solved. `Config.bootstrap`
-harvests `calibrated` and `quote_leaves` off the bootstrapper into `calibrated_factors` and
-`quote_leaves` on the config; they are tensors, so they cannot live in `Price Factors`, which is data
-and gets written back out as JSON.
-
-**The harvest removes as well as adds, and it has to.** Flip `Quote_Sensitivity` to `No`, re-bootstrap
-with quotes that have since moved, and an update-only harvest leaves the *previous* connected tensor
-standing under the same key — the old surface against the old quotes, reported by a backward as
-today's, raising nothing because a splice worth zero forward is invisible to every price gate. So each
-family drops its own keys before publishing: the **factor type it writes** and the **Market Prices type
-it reads**, both already declared, scoped because `Config.bootstrap` runs one family at a time.
-
-Both an ordinary price factor and a calibrated model's parameters attach at that same seam, which is
-why it is a method and not four call sites. An `FXVol` surface is a *static* factor, so the FX family
-publishes its connected tensor under `Factor('FXVol', name)`; `Credit_Monte_Carlo._build_factor_state`
-mints one leaf per *named* parameter of an implied model, and `SwaptionCalibration.split` is the one
-place the flat 23-vector comes apart — used by the residual and the publish alike, so a factor leaf
-cannot be handed the wrong slice. Only an equality against `Price Factors` can see that go wrong,
-because the splice is worth zero *whatever* is attached. `Gradient_Variables` governs a factor as
-`Factors` or `All` and an implied model as `Implied` or `All`.
-
-!!! warning "A `Tenor_Offset` declines the attachment — and there is an open question in it"
-    A non-zero offset shifts every tenor before the leaf is minted, so the curve the calculation
-    consumes is a **different** one and $d\theta_{\text{shifted}}/dq$ is not $d\theta/dq$.
-
-    **The open question:** the decline is unconditional, and a `Factor2D` surface's `current_value()`
-    *ignores* the offset — so under a non-zero `Tenor_Offset` an FX vol quote delta is dropped for a
-    surface that did not move. Refusing is the conservative direction, so it stays as it is until the
-    offset's own semantics per factor type are worth writing down.
-
-!!! warning "`Gradient_Variables` must be `All` or `Implied` for an implied model"
-    `Factors` reaches the zero curve and never the calibrated parameters, so a swaption-vol quote delta
-    authored under `Factors` reports nothing at all. Not a new switch; a second consumer now depends on
-    it.
-
-!!! note "The dedupe invariant survives by construction"
-    A `…ModelParameters` factor reachable *both* as a spot process's implied factor and as an ordinary
-    static dependent must map to **one** tensor — see [the
-    invariant](calc_lifecycle.md#compile-phase-2-_build_factor_state). The static branch reuses
-    `implied_leaves`, so it reuses the *connected* tensor and the quote gradient cannot split across
-    two leaves. Nothing in the deal tree pulls an HW2F block that way today, so the collision is
-    authored in the gate rather than waited for.
-
-**Two `quote_leaves` shapes, and a reporting layer has to honour both.** The value is
-`(descriptors, leaves)` in every family, but a curve solve publishes **one vector leaf** whose entries
-are the coupled SET's `Points` (block-prefixed where the set has more than one member, filed under
-every member's key) while a swaption calibration publishes a **tuple of scalar leaves**, one per
-`Instrument_Definitions` row. The shapes are the quotes' own — a curve's quotes enter one residual as a
-vector, a swaption's quote carries its own Black preamble — so anything reading `dV/dq` iterates rather
-than assumes. There are still two: the GBM and FX families both publish the vector shape. The FX descriptors
-name the pillar as well as the expiry (`ATM 1`, `RR 0.25 1`, `BF 0.1 1`), because a quote there is
-identified by three things.
-
-!!! danger "Descriptors collide across families, and the truth is the SUM"
-    One JSON number can feed **two** chains: `FXVolPrices` writes the surface an option pricer reads and
-    `GBMAssetPriceTSModelPrices` integrates *that surface's ATM column* into the vol curve the FX rate
-    is simulated with. With both blocks asking for `Quote_Sensitivity`, a single ATM quote reaches `V`
-    twice and its `dV/dq` is **split across two `quote_leaves` entries whose descriptors are the same
-    string**. Measured on a CVA over a stacked pair: `ATM 0.5` reads 2.243453e4 on the `FXVolPrices`
-    leaf and 8.071709e4 on the `GBMAssetPriceTSModelPrices` leaf, against a bumped total of
-    **1.031516e5** to 3.2e-11 relative — reading the surface's leaf alone is 78% short.
-
-    There is nothing to merge in the engine: the two families are genuinely two maps, and which one a
-    consumer wants is a reporting question. **A consumer that reports per-quote deltas must group by
-    descriptor across blocks and sum.**
+!!! danger "Descriptors collide across families; the truth is the sum"
+    An `FXVolPrices` ATM quote is also the GBM family's ATM column, so with both blocks on, its
+    `dV/dq` splits across two leaves under one descriptor. A reader groups by descriptor and sums, as
+    `structures.vol_risk` does; `service.quote_rows` files the halves under their two blocks.
 
 ## The precision seam {#the-precision-seam}
 
-The curve bootstrap and its Jacobian are **float64 regardless of the simulation's precision**, and
-they run on the host whatever device the job runs on: a benchmark Jacobian is one small backward
-per quote per iteration, so the solve is dispatch-bound, and three desk curves solve in 5 s on the
-host against 17 s on an RTX 3090.
-`BenchmarkInstruments.dtype` states it once and `construct_bootstrapper`'s own `dtype` — float32 by
-default — does not reach it: a solve converging to 1e-10 cannot be done in float32. Gate:
-`test_the_bootstrap_recovers_the_curve_its_quotes_came_from` (`tests/test_interest_rate_prices.py`)
-bootstraps under the default dtype and requires a float64 curve recovered to 1e-10.
-
-θ\* crosses back into the simulation as one `.to()` inside `factor_leaf`. The cast is
-**differentiable**, so the cotangent is promoted back to float64 before the linear solve — a float32
-cube loses the precision of the *cotangent*, not of the contraction. **Bit-identity survives it**:
-`theta - theta.detach()` is evaluated after the cast, in the cube's dtype, so it is exactly `0.0`. And
-the seam is **one-way** — the residual closure, its Jacobian and the transpose solve are all float64.
-
-**The swaption calibration sits the other way round, and it has to.** Its residual is a Monte Carlo
-over the whole path set, so it runs in the job's own dtype — float32 by default — because forcing
-float64 would multiply the cost of every evaluation of an optimizer that makes thousands. The seam is
-therefore *inside* the backward:
-
-- **The residual is float32; the linear algebra is float64.** $J$ is promoted with `.double()` the
-  moment autograd hands it over, and the pseudo-inverse, the transpose contraction and the stationarity
-  norm run there. $\partial r/\partial q$ is never materialised — $-(\partial r/\partial q)^\top (Jw)$
-  is one autograd VJP — so the promotion buys the linear solve's conditioning, not the residual's
-  accuracy.
-- **`grad_outputs` casts back**, so what the backward reports carries float32 resolution however
-  exactly it was computed: 4.4e-8 absolute against columns of norm 4 on the four-quote fixture. That is
-  the floor under every tolerance on this path.
-- **The residual's own resolution is the floor under the quote gradient too.** A check of
-  $\partial r/\partial q$ against a central difference stalls at about 5e-3 in float32 however small
-  the bump — a cancellation of two numbers near a minimum. Re-run in float64 at the float32 solve's
-  θ\* it converges as $h^2$ (1e-2, 1e-4, 1e-6). The derivative is right; float32 is what it is
-  reported in.
-
-**The LogVar2FJ walk follows the Hull-White pattern**. Every nonlinear piece that is
-a function of the grid and the parameters alone — the OU step weights and cumulated decays, the ξ
-curve and the Jensen term the level is derived with, the NIG budget `(δ_A, μ_A, γ)`, the bucket
-search — is computed in double through `utils.LogVar2FJ.wide`, a differentiable cast, and cast once into
-the job's dtype; the walk multiplies and adds. The inverse-Gaussian root and both of
-`LogVar2FJ.ig_quantile`'s Newton steps run in double (`LogVar2FJ.IG_TOL` is 1e-11 against float32's own 6e-8, and
-`ig_cdf`'s second term adds `2λ/m` — 2,092 on a quarterly interval at α 500 — to a log-tail of the
-same size), and the mixer uniform reaches them in double: `CMC_State.quasi_rng` draws Sobol in
-float64 and returns `(icdf, u, u in double)`, the first two bit-identical to a float32 draw because
-a Sobol point is a dyadic rational, the third for the one consumer that reads the tail, where
-`1 − u` at the clamp's own margin carries 3% error in float32. `LogVar2FJ.walk`'s two block sums
-accumulate in double where the block is narrow. A double caller gets its own arithmetic back, so
-the calibrator, which fits in double, is unmoved at the level of every primitive (870 floats, value
-and gradient, hex for hex on the CPU). What it closed: `LogVar2FJ.state_variance` rides `exp(2κT)`, which
-at the fast factor's κ = 6 is 3.0e36 at seven years against float32's 3.4e38, so a LogVar2FJ grid
-past 7.4 years priced NaN at float32 — no grid here runs past five years, which is why nothing had hit
-it. The stable spellings are the given: `−expm1(−2κδ)/(2κ)` for the step weight and
-`−δ_A(2β+1)/(√(α²−(β+1)²)+γ)` for the forced drift, each at rounding in double where the old
-forms read 2.9e-10 and 6.5e-11 against a 60-digit reference. What float32 costs on a mark, measured
-during development (a LogVar2FJ xVA document, 512 outer × 2,048 pricing paths, three seeds,
-uncollateralised): float32 and float64 estimate the same expectation to within **0.13%**, which
-is 0.05 of the seed spread, the spreads themselves 2.6% and
-2.3% — so the −14% read at 32 × 256 was two samples of a nonlinear walk, not rounding; and the
-tree before this pattern agrees with it row for row to 1e-15 at float64 and 1e-6 at float32,
-so the pattern moved nothing on a five-year book but the NaN past 7.4 years.
+- **The curve solve is float64 on the host** (`BenchmarkInstruments.dtype`; `construct_bootstrapper`'s
+  float32 does not reach it): float32 cannot converge to 1e-10, and the solve is dispatch-bound. The
+  GBM and FX tapes are float64 too. **Held by**
+  `tests/test_interest_rate_prices.py::test_the_bootstrap_recovers_the_curve_its_quotes_came_from`.
+- **θ\* enters the simulation by one differentiable `.to()`** in `factor_leaf`; the splice, taken
+  after it, is exactly zero in the simulation's dtype.
+- **The swaption residual runs in the bootstrapper's dtype**, float32 by default, because the Monte
+  Carlo objective prices the path set thousands of times. The backward promotes $J$ to float64 for the
+  pseudo-inverse, contraction and norm, and casts `grad_outputs` back, so what it reports has the
+  residual's resolution. The LogVar2FJ family declares double.
+- **The LogVar2FJ walk computes every nonlinear function of grid and parameters in double**
+  (`utils.LogVar2FJ.wide`) and casts once; its step weight is `−expm1(−2κδ)/(2κ)`, since
+  $e^{2\kappa T}$ overflows float32 past 7.4 years at κ = 6.
 
 ## The validation triangle {#the-validation-triangle}
 
-Three corners, deliberately independent. Of the six rows only **round trip vs θ_true** is re-checked
-by a test (`tests/test_interest_rate_prices.py`, asserting < 1e-10); the other five were measured
-during development and the tests that held them are gone.
+Each corner independent of the machinery it checks:
 
-| check | result |
-| --- | --- |
-| θ\* bit-identical, gradients on vs off | `np.array_equal`, max diff **0.0** |
-| round trip vs θ_true | **1.7e-15** |
-| one-pass `dV/dq` vs `dV/dθ · dθ/dq` (FD) | **8.7e-12** relative |
-| CRN quote-bump ladder, re-authored and re-bootstrapped per rung | agreement **3.7e-11 … 8.1e-8**, flatness **8.1e-8** |
-| benchmark self-delta matrix | `‖·− I‖∞` = **2.2e-14** |
-| reference exposure run, gradients on vs off | `np.array_equal` |
+| family | check | test |
+| --- | --- | --- |
+| curves | round trip, 1e-10 | `test_interest_rate_prices.py::test_the_bootstrap_recovers_the_curve_its_quotes_came_from` |
+| curves | $d\theta/dq$ against re-bootstraps, 1e-8 | `test_quote_propagation.py::test_the_artifact_holds_the_calibration_jacobian_the_solve_would_have_differenced` |
+| curves | `dV/dq` against a refitted book, 1e-6 | `test_service.py::test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from` |
+| curves | `dV/dq · dq` against the ride, first order | `test_quote_propagation.py::test_the_quote_delta_predicts_the_value_the_ride_reprices` |
+| HW2F | θ\* and deltas pinned, 1e-6 | `test_hw2f_analytic.py::test_the_four_quote_job_document_pins_theta_and_its_quote_deltas` |
+| LogVar2FJ | factor hex-identical, switch on or off | `test_logvar2fj_json.py::test_the_quote_switch_writes_the_same_factor_and_publishes_its_leaves` |
+| FX vol | per-pillar `dV/dq`, 2% | `test_structures.py::test_each_pillars_charge_is_what_repricing_that_pillar_costs` |
+| GBM | none | — |
 
-The self-delta identity is the one to read twice. A benchmark is at par, so $PV_i(\theta^*(q), q_i) = 0$
-for *every* q, and differentiating that total derivative gives
+No test holds the curve θ\* bit-identical on and off, which `lifecycle_fields` assumes.
 
-$$\frac{\partial PV_i}{\partial \theta}\cdot\frac{d\theta}{dq_j}
-= -\frac{\partial PV_i}{\partial q_i}\,\delta_{ij}$$
+**The self-delta identity.** A benchmark is at par for every q, so
+$\partial_\theta PV_i \cdot d\theta/dq_j = -\partial_{q_i}PV_i\,\delta_{ij}$: the benchmarks priced as
+ordinary deals report a diagonal quote-delta matrix, the identity once each row is divided by its own
+quote sensitivity — a secant, PV being affine in the quote, so nothing is reused. Under a
+pseudo-inverse it is the projector onto the kept directions. No test holds it.
 
-The left-hand side is exactly what a calculation reports when it prices benchmark $i$ as an **ordinary
-deal** — the deal carries a number, not a quote — so the reported quote-delta matrix must be diagonal,
-and dividing by each instrument's own quote sensitivity makes it the identity. The normaliser is a
-*secant* on the fixed solved curve, because a benchmark's PV is affine in its quote, so no part of the
-check reuses the machinery it is checking.
+## Open {#open}
 
-### The identified fixture {#the-identified-fixture}
-
-The swaption triangle needs a fixture the classic oracle is **legal on**, and the finding is that it
-does not exist for this calibration. The fixture is a 5 × 5 expiry × tenor grid — **25 benchmarks
-against 23 parameters**, every row carrying its own quote, so there is no manifold and `θ*(q)` is
-locally a function. Expiries reach 10Y because the σ term structures carry knots to 120 months and a
-knot past the last expiry is in nobody's variance integral; the quotes are flat because a cube shaped
-in expiry and tenor is fittable only by pushing a front σ knot onto its 1e-5 lower bound, where the
-solution is not interior and unconstrained stationarity cannot hold at all.
-
-Full column rank makes `θ*(q)` a function only if the solve **reaches** the minimum, and on the Monte
-Carlo objective it does not. The fixture and the tests that held these are not in the repository,
-so the numbers below were measured during development and are not re-checked.
-
-| check | result |
-| --- | --- |
-| singular spectrum of `J` (25 × 23) | rank **23**, σ from 5.65e4 down to 0.258, `σ_min/σ_max` 4.57e-6; the earlier 1e-8 cutoff on `JᵀJ` keeps **18** |
-| stationarity of the accepted θ\* | `‖J'r‖` **8.6e3** at θ\*, 2.9e11 at the seed, `‖r‖` 46.1 — worst benchmark 4.3% out |
-| the two dropped Gauss–Newton terms | θ side **0.500064** of `J'J`; q side 0.4785 / 0.5115 / 0.5065 of `J'(∂r/∂q)`, cosine **1.000000** |
-| GN against both corrections applied | **1.0022** (cos 0.999940) in the top 4 directions; 1.0136 / 1.1098 / 1.8743 at top 6 / 8 / 12 |
-| re-solve at a bumped quote | `‖Δθ‖` 0.037 / 0.021 / 0.013 at h = 0.5 / 0.2 / 0.1 vol points, so the quotient **grows**: 3.7 / 5.3 / 6.7 |
-| CRN ladder on those re-solves | **1294 / 2900 / 4189** against a one-pass 1.80e5 |
-| where the displacement points | **0.26 / 0.70 / 0.44** of it inside the subspace the cutoff keeps |
-| `dV/dθ · Δθ` vs the CVA the re-solve moved | **1.00 / 0.32 / 0.19** relative, converging — so the failure is in the **solve** |
-| benchmark self-delta, its **trace** | **17.99964** against the 18 directions the cutoff keeps |
-| direction check, nothing re-solved | re-priced move is **1.0333** of the predicted one; the sign-flip mutation gives **−0.9489** |
-
-Three of those are worth reading twice.
-
-**Both dropped terms are half, and they cancel** ([the derivation](#the-dropped-term)); what matters
-here is that *both* were measured. The q side cannot be a double backward, because the splice detaches
-the model price in its carried half, so the honest instrument is a finite difference of `J` in the
-**authored** quote at fixed θ\*: 0.4953 / 0.5115 / 0.4992 on three columns, cosine 1.000000.
-Contracted with both corrections the ratio is 0.9908 in the top four directions, degrading to 1.9738
-by the twelfth — asserted as a *property*, because that is where the $O(f^3)$ remainder overtakes the
-eigenvalue it corrects, the same place `Jacobian_Rcond` already declines to differentiate.
-
-**The trace of the self-delta matrix counts the identified directions.** What replaces the identity is
-the orthogonal projector onto the subspace the pseudo-inverse kept, so its trace is that projector's
-**rank** and lands on the integer to better than a thousandth. The individual diagonals run 0.05 to
-1.04 and must not be asserted near one: the off-diagonal weight scales with the ratio of the two
-benchmarks' relative pricing errors.
-
-**The value chain is not what is broken.** The reported factor greek contracted with a re-solve's
-actual displacement reproduces the CVA that re-solve actually moved, better as the bump shrinks. So
-`dV/dθ`, the attachment and the pricing chain are right; what is not a function of the quotes is `θ*`
-itself. Without that row a scattering ladder would be evidence against everything at once.
+- The GBM family reads a wing as a hand-authored `Malz` surface's ATM column: moneyness 1 is a ratio
+  surface's ATM, a `Malz` axis is $\log(F/K)$. A surface the FX family wrote takes the [quote
+  path](#the-atm-column).
+- `Tenor_Offset` declines an FX surface's attachment though `Factor2D.current_value()` ignores the
+  offset, dropping a delta for a surface that did not move.
+- A model-priced leg's charge reads a lognormal vega; a consolidated risk read refits its blocks
+  ([roadmap](roadmap.md#the-engine)).
 
 ## Non-goals {#non-goals}
 
-- **No SIMM aggregation or regulatory bucketing** — bucketed quote deltas are the raw material and
-  this stops there. No wrong-way risk.
-- **No recalibration inside the simulation** — quote sensitivities are t0 risk, and future-dated
-  dynamics stay on calibrated parameters.
-- **No new pricers**, and no changes to the `instruments.py` pricers beyond what the t0 closure
-  strictly requires — so far, none.
-- **No vol-surface parameterisation** — SABR and SSVI are out of scope; a Malz smile is the one delta
-  parameterisation built, and a swaption quote here is the number on the `Instrument_Definitions` row
-  or a premium, never a smile parameter; a zero row refuses by name.
-- **No reporting format in the engine** — `dV/dq` lands on the quote leaves in `Config.quote_leaves`
-  paired with each quote's descriptor, and no `Greeks_First`-style block is emitted: `make_factor_index`
-  reads a tenor grid off `all_factors`, and a quote is not a factor. The service's consolidated risk
-  (`/book/risk`, `service.quote_rows`) is the one reader: it honours the [two shapes](#the-attachment)
-  and a coupled set's one leaf filed under every member, and files a quote two families read as two
-  rows under their two blocks, whose total is their sum.
-- **No second differentiation** — neither `CalibrationSolve.backward` nor `LeastSquaresSolve.backward`
-  supports `create_graph`, and the second refuses it explicitly. A Gauss–Newton contraction carries no
-  second derivative, so a quote-space Hessian off that node would be the curvature of a different
-  problem.
-- **No differentiable x-grid** — the log-moneyness nodes are refined against the quotes ONCE and
-  pinned; the tape moves the vols on them. A grid following its quotes would make every tick a
-  recompile, which is what [pinning](market_prices.md#fxvolprices) exists to prevent.
-- ~~**No differentiable Malz solve.**~~ **BUILT — see [the delta solve](#the-delta-solve).** The
-  premise was that a bisection per node would have to go on the tape; it does not, and the IFT needs
-  the answer rather than the iteration.
+Listed on the [roadmap](roadmap.md#designed-not-built).
+
+- **No aggregation off these deltas**; the `SIMM` calculation bumps and re-bootstraps on its own. No
+  wrong-way risk.
+- **No recalibration inside the simulation**; quote sensitivities are t0 risk.
+- **No new pricers**, and no pricer changes for the t0 closure — so far none.
+- **No SABR or SSVI**; a Malz smile is the one delta parameterisation, and a swaption quote is its
+  row's number or a premium.
+- **No reporting format in the engine**: `dV/dq` is `.grad` on `Config.quote_leaves`, a quote being no
+  factor for `make_factor_index`; `service.quote_rows` reads [both shapes](#the-attachment).
+- **No second differentiation**: neither backward supports `create_graph`, and `LeastSquaresSolve`
+  refuses it, Gauss–Newton carrying no second derivative.
+- **No differentiable x-grid**: one following its quotes would make every tick a recompile, which
+  [pinning](market_prices.md#fxvolprices) prevents.

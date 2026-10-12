@@ -12,7 +12,21 @@ derivus is a **financial virtual machine**. A job is a program; the engine compi
 | registers / heap | `shared_mem.t_Scenario_Buffer` (simulated paths — a tensor, or a `ScenarioSource` sequence of row blocks inside an inner-MC fork), `t_Static_Buffer` (static leaves) |
 | memoized eval cache | `shared_mem.t_Buffer` |
 
-The public surface is documented in [API Overview](../api_overview.md); this section is the internal view. Reading order: Architecture → [Calc Lifecycle](calc_lifecycle.md) → [Dependency System](dependency_system.md) → [Resolver Layer](resolver_layer.md) → [Conventions](conventions.md). (mkdocs sorts the nav alphabetically; follow the prose order.) The record around the engine - bookings, markets, closes, and how they become a job - starts at [The Spine](spine.md#how-it-fits).
+The public surface is documented in [API Overview](../api_overview.md) and the job and market data formats in [JSON Configuration](../json/index.md); those pages carry contracts too. This section is the internal view, in reading order:
+
+| page | read it when you |
+| --- | --- |
+| [Calc Lifecycle](calc_lifecycle.md) | change anything between a job's load and its result: the compile phases, the generate loop, the random streams, the grids, the valuation modes, the inner Monte Carlo, boundary corrections |
+| [Dependency System](dependency_system.md) | add a factor type, a process, a deal or a valuation option |
+| [Resolver Layer](resolver_layer.md) | write a deal's `calc_dependencies` or a pricer that reads factors |
+| [Conventions](conventions.md) | make any change: the house rules, the change scope, what a landing runs, how a test is built |
+| [Market Prices](market_prices.md) | add or change a calibration family, `Bootstrapper Configuration`, or a verb that authors market data |
+| [Quote Sensitivities](quote_sensitivities.md) | touch a calibration's derivative, or `dV/dq` |
+| [Quote Propagation](quote_propagation.md) | ride a quote between calibrations |
+| [Structures](structures.md) | work on the sales structures or the quote runner |
+| [MCP](mcp.md) | add or change a tool a model drives the desk with |
+| [The Spine](spine.md) | work on the book of record: bookings, markets, closes, and how they become a job |
+| [Roadmap](roadmap.md) | propose work: what is wrong, what waits on a decision, what is designed and not built |
 
 ## Market data files, the context and the job {#market-data-context-job}
 
