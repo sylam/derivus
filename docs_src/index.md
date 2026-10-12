@@ -20,8 +20,7 @@ read, run and validate. Commercial use requires a separate licence — contact t
 
 ## Features
 
-* Full-portfolio Monte Carlo through time: exposure profiles and XVA (CVA / FVA / collateral /
-  an LCH-style initial margin) at GPU speed
+* Full-portfolio Monte Carlo through time: exposure profiles and XVA (CVA / FVA) at GPU speed
 * ISDA SIMM sensitivities: a CRIF built by bump and revaluation, re-bootstrapping what each move
   feeds
 * Sensitivities via automatic differentiation, including the boundary terms a path-dependent

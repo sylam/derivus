@@ -12,18 +12,19 @@ The core dependencies, and what each is for:
 
 - [PyTorch](https://pytorch.org/) >= 2.0 - the computational library that evaluates tensors on
   CPU or GPU, and the automatic-differentiation engine every sensitivity comes from.
-- [NumPy](https://numpy.org/) >= 1.16.1 and [SciPy](https://scipy.org/) - array plumbing,
+- [NumPy](https://numpy.org/) >= 1.23.5 and [SciPy](https://scipy.org/) >= 1.15 - array plumbing,
   interpolation, root finding and optimisation.
 - [Pandas](https://pandas.pydata.org/) >= 1.0 - every tabular input and result.
 - [pyparsing](https://github.com/pyparsing/pyparsing) >= 2.4.7 - the time-grid grammar.
 
 ## Python and SciPy versions
 
-The package declares Python 3.8 and SciPy 1.2.2 as its floors, but the two-factor Hull-White
-bootstrapper (`HullWhite2FactorModelParameters`) calls `scipy.optimize.basinhopping` with the `rng`
-keyword, which SciPy takes from 1.15.0, and SciPy 1.15.0 requires Python 3.10. A library that
-bootstraps that family therefore needs **Python >= 3.10 and SciPy >= 1.15**; on an older SciPy that
-bootstrap fails with an unexpected-keyword error.
+The package requires **Python >= 3.10**: the MCP binding's `mcp` needs it, and so does SciPy 1.15,
+the first SciPy whose `scipy.optimize.basinhopping` takes the `rng` keyword the two-factor
+Hull-White bootstrapper (`HullWhite2FactorModelParameters`) passes - hence **SciPy >= 1.15**, and
+NumPy >= 1.23.5, that SciPy's own floor. The test suite runs on Python 3.13 (NumPy 2.5, SciPy 1.18,
+pandas 3.0, PyTorch 2.13); the pandas and PyTorch floors are the declared ones and are not tested
+below those versions.
 
 ## Extras
 

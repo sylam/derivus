@@ -1,10 +1,10 @@
 ## xVA: what a credit Monte Carlo reports
 
 A `CreditMonteCarlo` calculation (`Credit_Monte_Carlo` in `calculation.py`) simulates the book's
-value along $N$ paths and reduces those paths to an exposure profile and up to four adjustments:
-the credit valuation adjustment (CVA), the funding valuation adjustment (FVA), the collateral
-valuation adjustment (CollVA) and an initial margin (IM). Each is switched on by its own block in
-the `Calculation`. This page states what each reduction computes, as the code computes it, so a
+value along $N$ paths and reduces those paths to an exposure profile and two adjustments: the
+credit valuation adjustment (CVA) and the funding valuation adjustment (FVA), each switched on by its
+own block in the `Calculation`. The `Collateral_Valuation_Adjustment` and `Initial_Margin` blocks are
+experimental and are not specified here. This page states what each reduction computes, as the code computes it, so a
 validator can rebuild the number from the simulated paths. The simulation itself (grids, random
 numbers, correlation) is on [Calc Lifecycle](../developer/calc_lifecycle.md); the collateral
 mechanics are on [Container](../valuation/container.md#nettingcollateralset).
@@ -36,8 +36,7 @@ off the deflation curve, the same on every path. With `Yes`,
 $$D_k(t_i)=\exp\Big(-\sum_{j=1}^{i}y_k(t_j;\Delta_j)\,\Delta_j\Big),\qquad D_k(t_0)=1,$$
 
 where $y_k(t;\tau)$ is the deflation curve's zero rate for tenor $\tau$ as it stands on path $k$ at
-row $t$. Interval $j$ is discounted off the curve at its **end**, $t_j$, for a tenor equal to its
-length. A deflation curve with no model is read per the calculation's `NoModel`: `Constant` (the
+row $t$, read for a tenor equal to the interval's length. A deflation curve with no model is read per the calculation's `NoModel`: `Constant` (the
 default) reads today's curve at tenor $\Delta_j$ on every interval, so the curve does not roll;
 `RiskNeutral` reads its forward from $t_j$.
 
@@ -69,7 +68,7 @@ per interval and then summed, an order the code keeps so the reported float does
 | `Stochastic_Hazard_Rates` | $H_k(t_i)$ |
 | --- | --- |
 | `No` | $\exp(-I(t_i))$, today's survival, the same on every path |
-| `Yes` | $\exp\big(-\sum_{j=1}^{i} I_k(t_j;\Delta_j)\big)$, $I_k(t;\tau)$ the simulated log-survival from $t$ over tenor $\tau$; like the deflator, interval $j$ is read at its end |
+| `Yes` | $\exp\big(-\sum_{j=1}^{i} I_k(t_j;\Delta_j)\big)$, $I_k(t;\tau)$ the simulated log-survival from $t$ over tenor $\tau$, read as the deflator is |
 
 Default is independent of exposure unless the survival curve is simulated (`HWHazardRateModel`),
 `Stochastic_Hazard_Rates` is `Yes` and `Correlations` declares a correlation between the hazard's
@@ -96,57 +95,10 @@ counterparty's survival: while the block is on, every netting set multiplies its
 $S(0,t)$ of its own `Credit_Support_Amounts.Counterparty` (a set naming none is left at 1 with a
 WARNING). Summed at the root, $U$ is then $\sum_s S_s(0,t)V_s(t)$, the bank-wide form of the
 API page ([`Credit_Monte_Carlo`](../api_usage/calculations.md#credit_monte_carlo)). A CVA in the
-same run divides its exposure by the CVA counterparty's $S(0,t)$ to undo the scaling, which is
-exact only where every set names that counterparty. The block's `Counterparty` only adds that
+same run divides its exposure by the CVA counterparty's $S(0,t)$ to undo the scaling - the run's one
+counterparty (see the scope above). The block's `Counterparty` only adds that
 survival curve to the factor universe; `Bank` and `Stochastic_Funding` are not read. Funding
 adjustments of this shape are derived by Burgard and Kjaer (2011) and Green (2015).
-
-### Collateral valuation adjustment
-
-A collateralised set holding exactly one `Cash_Collateral` row with a `Collateral_Rate` (and the
-`Funding_Rate` its `validate` asks for) computes per path and report row
-
-$$F_k(t_i)=C_k(t_i)\,x_k(t_i)\,\Big(e^{\,(y^{f}_k(t_i;\delta_i)-y^{c}_k(t_i;\delta_i))\,\delta_i}-1\Big)\,P_c(0,t_i),
-\qquad \delta_i=t_{i+1}-t_i,\ \delta_m=0,$$
-
-$C_k(t_i)=B_k(t_e)S_k(t_e)$ the collateral balance expected to be held (units times haircut unit
-value, in the reporting currency; [Container](../valuation/container.md#nettingcollateralset)),
-$x_k$ the cash currency's rate over the reporting currency's, $y^f$, $y^c$ the funding and
-collateral curves as simulated at $t_i$, and $P_c(0,t_i)$ today's collateral-curve discount
-factor. It is kept on the set's own result block as `Funding`. The intended adjustment is
-$\sum_i\frac1N\sum_k F_k(t_i)$, but the calculation's reduction reads a state attribute no code
-writes, so **no CollVA is reported**: `Gradient: Yes` raises `AttributeError` and `Gradient: No`
-reports no `collva` (see Known limitations).
-
-With the block on, `run_cmc` edits the first top-level set before the run: one whose
-`Collateral_Assets` has no `Cash_Collateral` entry is given one row in its `Balance_Currency`, with
-haircut 0, at `Collateral_Curve` and `Funding_Curve`,
-each replaced by `<curve>.COLLATERAL` or `<curve>.FUNDING`, a flat spread of
-`Collateral_Spread` or `Funding_Spread` basis points over it, where non-zero; one with several cash
-rows keeps the first.
-
-### Initial margin
-
-`Initial_Margin` computes, on every path and report row, a delta charge plus a liquidity add-on
-from two weight tables read from csv files. It is neither ISDA SIMM (the separate `SIMM`
-calculation) nor a clearing house's VaR model.
-
-1. **Liquidity deltas.** For each bucket column $b$ of `Liquidity_Weights`, every single-name
-   interest-rate curve in `Local_Currency` is shifted at each of its tenors by the column's weight
-   (interpolated linearly in tenor; outside the table 1 where the edge row is labelled `<=` or
-   `>=`, else 0) times 1bp, and the book is revalued: $\Delta_b=(V^{(b)}-V)\,X$.
-2. **Size weights.** $L_b=\Delta_b\,w_b(\Delta_b)$, $w_b$ the `IRS_Weights` column $b$ interpolated
-   linearly at the delta's own size (the table is indexed by amount).
-3. **Liquidity add-on.** $\mathrm{LIQ}=\big[c(L_{2y},L_{5y})+c(L_{10y},L_{30y})\big]X_{IM}$ with
-   $c(a,b)=\max(|a|,|b|)$ where $ab<0$ and $|a|+|b|$ otherwise, $X_{IM}$ base to `IM_Currency`;
-   the tables must carry the columns `2y`, `5y`, `10y` and `30y`.
-4. **Delta charge.** Every single-name interest-rate curve is shifted +1bp in parallel:
-   $\mathrm{PV01}=(V^{(+1bp)}-V)\,X\,X_{IM}$, signed.
-
-$$\mathrm{IM}_k(t_i)=\texttt{Delta\_Factor}\cdot\mathrm{PV01}_k(t_i)+\mathrm{LIQ}_k(t_i),$$
-
-reported unaveraged as `Results['LCH_Margin']`. Its funding cost (MVA) is not computed. No test
-exercises this block, and reading the code it cannot be used as it stands (see Known limitations).
 
 ### Inputs and defaults
 
@@ -167,8 +119,6 @@ reads `No`.
 | `Funding_Valuation_Adjustment` | `Funding_Cost_Interest_Curve`, `Funding_Benefit_Interest_Curve`, `Risk_Free_Curve` | blank | $c$, $b$, $f$ |
 | | `Deflate_Stochastically`, `Gradient` | `Yes`, `No` | as above |
 | | `Counterparty`, `Bank`, `Stochastic_Funding` | blank, blank, `No` | see FVA |
-| `Collateral_Valuation_Adjustment` | `Collateral_Curve`, `Funding_Curve`, `Collateral_Spread`, `Funding_Spread`, `Gradient` | blank, blank, 0, 0, `No` | see CollVA |
-| `Initial_Margin` | `Liquidity_Weights`, `IRS_Weights`, `Local_Currency`, `IM_Currency`, `Delta_Factor` | blank, blank, blank, blank, 1.0 | see IM |
 | top level | `Batch_Size`, `Simulation_Batches`, `Random_Seed`, `Antithetic` | 1024, 1, 5120, `No` | paths and seed |
 | | `Time_Grid`, `Dynamic_Scenario_Dates` | `0d 2d 1w(1w) 3m(1m) 2y(3m)`, `Yes` | the grids |
 | | `MCMC_Simulations` | 2048 | inner paths of a Monte Carlo pricer |
@@ -189,8 +139,8 @@ period of risk itself see Andersen, Pykhtin and Sokol (2017).
 `Gradient: Yes` on a block differentiates that block's scalar by reverse-mode algorithmic
 differentiation (Capriotti, 2011; Griewank and Walther, 2008): one backward pass per batch against
 every leaf `Gradient_Variables` selects (today's curve knots, vols, spots and calibrated model
-parameters; `Implied` or `Factors` narrows it), averaged over batches and reported as `grad_cva`,
-`grad_fva` or `grad_collva`. A leaf the library calibrated carries the graph of the quotes it was
+parameters; `Implied` or `Factors` narrows it), averaged over batches and reported as `grad_cva`
+or `grad_fva`. A leaf the library calibrated carries the graph of the quotes it was
 solved from, so the same sweep yields quote-space risk ([Quote Sensitivities](../developer/quote_sensitivities.md)).
 A correlation is not a leaf; its delta is a bump ([Roadmap](../developer/roadmap.md#decisions-waiting-on-the-desk), decision 12).
 
@@ -216,11 +166,6 @@ A correlation is not a leaf; its delta is a bump ([Roadmap](../developer/roadmap
   forward at 65,536 paths the gamma and vanna land on common-random-number ladders of the reported
   delta within 5% and 10%, and asking for the Hessian moves no reported number.
 
-**One gradient per run.** Every `Gradient: Yes` block differentiates into the same leaves and
-nothing clears them between objectives (FVA's backward runs before CVA's in each batch), so with two
-gradients asked each report carries the other: the later all of it, the earlier every batch's but the
-last. Ask for one xVA gradient per run.
-
 ### What is and is not modelled
 
 | modelled | not modelled |
@@ -236,11 +181,6 @@ last. Ask for one xVA gradient per run.
 
 | limitation | size |
 | --- | --- |
-| CollVA is not reported: its reduction reads a state attribute no code writes | no number; the per-set `Funding` integrand is computed |
-| IM, read from the code: the +1bp delta-charge shift is never undone, so a CVA or FVA computed later in the batch reads shifted curves and an unmodelled curve keeps 1bp more each batch (raising instead where it is a gradient leaf); the cashflow ledger is cleared, so `Generate_Cashflows: Yes` (the default) fails at the batch's end | untested; the CVA and FVA move by the 1bp shift, unmeasured |
-| the stochastic deflator and stochastic hazard read interval $j$ at its end, $t_j$, rather than its start | exact on a flat curve and a regular grid; unmeasured otherwise |
-| two `Gradient: Yes` blocks in one run each carry the other's gradient | up to the whole of the other objective's gradient |
-| FVA's survival scaling is undone in the CVA by the CVA counterparty's curve | exact when every set names that counterparty; otherwise the ratio of the two survivals |
 | one haircut, `Haircut_Posted`, is applied whichever side holds the asset | [Roadmap](../developer/roadmap.md#the-engine), UNMEASURED |
 | collateral is called only on simulation dates | unmeasured; a finer grid reduces it ([Container](../valuation/container.md#nettingcollateralset)) |
 | the collateralised autocall's CVA delta reads short of its ladder below 16,384 paths | 8.0% short at 1,024 paths to within 1.4% at 16,384, four seeds ([Roadmap](../developer/roadmap.md#the-autocall-tarf-and-barrier-pricers)) |

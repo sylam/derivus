@@ -14,7 +14,7 @@ full greek vector costs one backward pass however many factors it covers.
 pip install derivus
 ```
 
-Requires python >= 3.8 and pytorch >= 2.0. A GPU build of pytorch is strongly recommended — the
+Requires python >= 3.10 and pytorch >= 2.0; the tests run on python 3.13. A GPU build of pytorch is strongly recommended — the
 scenario engine is written for it.
 
 Optional extras:

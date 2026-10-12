@@ -44,9 +44,8 @@ calc, out = cx.Credit_Monte_Carlo(overrides={})
 - `cva` / `grad_cva` — the credit valuation adjustment and its sensitivities; `grad_cva_hessian`
   under `Hessian: Yes`, and `CS01` when `CDS_Tenors` are given (both need `Gradient: Yes`)
 - `fva` / `grad_fva` — the funding valuation adjustment and its sensitivities
-- `collva`, `collva_t` / `grad_collva` — the collateral valuation adjustment, per report date, and
-  its sensitivities
-- `LCH_Margin` — the LCH-style initial margin, under `Initial_Margin`
+- `collva`, `collva_t` / `grad_collva` and `LCH_Margin` — the experimental collateral valuation
+  adjustment and initial margin, not yet specified
 
 ## Hedge Monte Carlo
 

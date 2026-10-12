@@ -48,12 +48,15 @@ setup(
     description='An XVA quantitative library with AAD',
     long_description=long_description,
     long_description_content_type="text/markdown",
-    # torch>=2.0 does not build below 3.8, so the old >=3.6 floor let pip resolve a broken install
-    python_requires='>=3.8',
+    # 3.10 is the floor three ways: the MCP binding (mcp needs it), `float | None` annotations in
+    # derivus_bloomberg, and scipy 1.15 below; the test suite runs on 3.13
+    python_requires='>=3.10',
     # exactly what the package imports — pyparsing was previously only reaching us by accident,
     # as a transitive dependency of matplotlib, and sortedcontainers was declared and read by
     # nothing at all
-    install_requires=['numpy>=1.16.1', 'scipy>=1.2.2', 'pandas>=1.0', 'pyparsing>=2.4.7',
+    # scipy 1.15 is the first to take basinhopping's `rng` (the HW2F bootstrap), and numpy
+    # 1.23.5 is that scipy's own floor
+    install_requires=['numpy>=1.23.5', 'scipy>=1.15', 'pandas>=1.0', 'pyparsing>=2.4.7',
                       'torch>=2.0'],
     extras_require={
         'interactive': ['jupyter', 'matplotlib>=3.0'],
@@ -93,5 +96,9 @@ setup(
                  'Intended Audience :: Developers',
                  'Intended Audience :: Science/Research',
                  'Topic :: Office/Business :: Financial',
-                 'Programming Language :: Python :: 3'],
+                 'Programming Language :: Python :: 3',
+                 'Programming Language :: Python :: 3.10',
+                 'Programming Language :: Python :: 3.11',
+                 'Programming Language :: Python :: 3.12',
+                 'Programming Language :: Python :: 3.13'],
 )

@@ -918,7 +918,7 @@ class Credit_Monte_Carlo(Calculation):
         'carries its survival weight.',
         '',
         'The collateral valuation adjustment (**Collateral Valuation Adjustment**) and the initial margin',
-        '(**Initial Margin**) are specified on the [xVA](../theory/valuation_adjustments.md) page, with what each reports today.',
+        '(**Initial Margin**) are experimental and are not specified.',
         '',
         'Calculation parameters are extended from the Base Valuation with these fields:',
         '',
@@ -941,9 +941,9 @@ class Credit_Monte_Carlo(Calculation):
         '   date being a scenario date',
         ' - **Generate Cashflows** - returns the simulated cashflows during the simulation period (default',
         '   `Yes`)',
-        ' - **Credit Valuation Adjustment**, **Funding Valuation Adjustment**, **Collateral Valuation',
-        '   Adjustment**, **Initial Margin** - one block per adjustment; their fields and defaults are',
-        '   tabulated on the [xVA](../theory/valuation_adjustments.md#inputs-and-defaults) page'
+        ' - **Credit Valuation Adjustment**, **Funding Valuation Adjustment** - one block per adjustment;',
+        '   their fields and defaults are tabulated on the',
+        '   [xVA](../theory/valuation_adjustments.md#inputs-and-defaults) page'
     ])
 
     calc_type = 'CreditMonteCarlo'
