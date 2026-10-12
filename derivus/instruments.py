@@ -17,7 +17,8 @@ from functools import partial, reduce
 
 from . import utils, pricing
 from .schema import (
-    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_settlements, settlement_days,
+    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
+    settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
     FX_TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
@@ -676,6 +677,13 @@ class Deal(object):
 
     #: valuation options this type reads, at the value an unstated one means
     option_defaults = {}
+    #: `{field: [factor types]}` - read off the type's declarations (`F(..., factors=)`), never
+    #: written beside them
+    factor_fields = {}
+
+    def __init_subclass__(cls, **kwargs):
+        super().__init_subclass__(**kwargs)
+        cls.factor_fields = declared_factors(cls)
 
     @classmethod
     def quote(cls, deal, value):
@@ -917,25 +925,28 @@ class NettingCollateralSet(Deal):
     accepts_children = True
     vernacular = 'netting set, CSA, client, counterparty agreement'
     fields = [ADMIN, own('NettingCollateralSet', [
-        F('Agreement_Currency', 'Text', default='', convention=True),
+        F('Agreement_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Apply_Closeout_When_Uncollateralized', 'Text', default='No', convention=True, values=['Yes', 'No']),
-        F('Balance_Currency', 'Text', default='', convention=True),
+        F('Balance_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Opening_Balance', 'Float', default=0.0, convention=True),
         F('Base_Collateral_Call_Date', 'Date', default='', convention=True),
         F('Calendars', 'Text', default='', convention=True),
         F('Collateral_Assets', 'Container',
           default={'Cash_Collateral': [], 'Bond_Collateral': [], 'Equity_Collateral': [], 'Commodity_Collateral': []},
           convention=True, sub_fields=[F('Cash_Collateral', 'Table', default='null', row=Row(
-                [F('Currency', 'Text'), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'),
-                 F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'),
+                [F('Currency', 'Text', factors=['FxRate']), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'),
+                 F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text', factors=['InterestRate']),
+                 F('Funding_Rate', 'Text', factors=['InterestRate']),
                  F('Liquidation_Period', 'Integer')])), F('Bond_Collateral', 'Table', default='null', row=Row(
                 [F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Liquidation_Period', 'Integer'),
-                 F('Issuer', 'Text'), F('Currency', 'Text'), F('Discount_Rate', 'Text'), F('Maturity', 'Period'),
+                 F('Issuer', 'Text'), F('Currency', 'Text', factors=['FxRate']),
+                 F('Discount_Rate', 'Text', factors=['InterestRate']), F('Maturity', 'Period'),
                  F('Principal', 'Float'), F('Coupon_Rate', 'Percent'), F('Coupon_Interval', 'Period'),
                  F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text')])),
                                        F('Equity_Collateral', 'Table', default='null', description='Equity_Collateral',
                                          row=Row(
-                                             [F('Equity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'),
+                                             [F('Equity', 'Text', factors=['EquityPrice', 'DividendRate']),
+                                              F('Units', 'Float'), F('Haircut_Posted', 'Percent'),
                                               F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'),
                                               F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])),
                                        F('Commodity_Collateral', 'Table', default='null', row=Row(
@@ -948,7 +959,8 @@ class NettingCollateralSet(Deal):
         F('Credit_Support_Amounts', 'Container',
           default={'Bank': '', 'Counterparty': '', 'Independent_Amount': [], 'Received_Threshold': [],
                    'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []}, convention=True,
-          sub_fields=[F('Bank', 'Text', default=''), F('Counterparty', 'Text', default=''),
+          sub_fields=[F('Bank', 'Text', default=''),
+                      F('Counterparty', 'Text', default='', factors=['SurvivalProb']),
                       F('Independent_Amount', 'Table', default='[[0,1]]',
                         row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]),
                         tag='CreditSupportList'), F('Received_Threshold', 'Table', default='[[0,1]]', row=Row(
@@ -960,7 +972,7 @@ class NettingCollateralSet(Deal):
                       F('Minimum_Posted', 'Table', default='[[0,1]]',
                         row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]),
                         tag='CreditSupportList')]),
-        F('Funding_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Funding_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Liquidation_Period', 'Integer', default=0, convention=True),
         F('Settlement_Period', 'Integer', default=0, convention=True),
         F('Post_Regulations', 'Text', default='', convention=True,
@@ -971,18 +983,6 @@ class NettingCollateralSet(Deal):
           description='The regimes initial margin is COLLECTED under this agreement by, as the '
                       'CRIF carries them; a term of the agreement, blank where none is declared')
     ])]
-
-    factor_fields = {'Agreement_Currency': ['FxRate'],
-                     'Funding_Rate': ['InterestRate'],
-                     'Balance_Currency': ['FxRate'],
-                     ('Credit_Support_Amounts', 'Counterparty'): ['SurvivalProb'],
-                     ('Collateral_Assets', 'Cash_Collateral', 'Currency'): ['FxRate'],
-                     ('Collateral_Assets', 'Cash_Collateral', 'Funding_Rate'): ['InterestRate'],
-                     ('Collateral_Assets', 'Cash_Collateral', 'Collateral_Rate'): ['InterestRate'],
-                     ('Collateral_Assets', 'Equity_Collateral', 'Equity'): ['EquityPrice', 'DividendRate'],
-                     ('Collateral_Assets', 'Bond_Collateral', 'Currency'): ['FxRate'],
-                     ('Collateral_Assets', 'Bond_Collateral', 'Discount_Rate'): ['InterestRate']
-                     }
 
     documentation = ('Container', [
         'Collateral agreements (CSA\'s) are represented using a container instrument called a netting ',
@@ -1805,34 +1805,27 @@ class MtMCrossCurrencySwapDeal(Deal):
     accepts_children = True
     vernacular = 'mark-to-market cross-currency swap, resetting cross-currency swap, MtM CCS'
     fields = [ADMIN, own('MtMCrossCurrencySwapDeal', [
-        F('Pay_Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Pay_Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Pay_Rate_Type', 'Text', default='Fixed', convention=True, values=['Fixed', 'Floating']),
-        F('Receive_Interest_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Receive_Interest_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Maturity_Date', 'Date', default=''),
         F('Principal_Exchange', 'Text', default='None', values=['None', 'Start', 'Maturity', 'Start_Maturity']),
-        F('Pay_Interest_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Receive_Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Pay_Interest_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Receive_Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Receive_Rate_Type', 'Text', default='Floating', convention=True, values=['Fixed', 'Floating']),
         F('Effective_Date', 'Date', default=''),
-        F('Pay_Currency', 'Text', default=''),
+        F('Pay_Currency', 'Text', default='', factors=['FxRate']),
         F('MtM_Side', 'Text', default='Pay', values=['Pay', 'Receive']),
-        F('Receive_Currency', 'Text', default=''),
-        F('Pay_Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Pay_Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Receive_Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Receive_Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple')
+        F('Receive_Currency', 'Text', default='', factors=['FxRate']),
+        F('Pay_Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Pay_Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Receive_Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Receive_Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol'])
     ])]
-
-    factor_fields = {'Pay_Interest_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
-                     'Pay_Discount_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
-                     'Receive_Interest_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
-                     'Receive_Discount_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
-                     'Pay_Currency': ['FxRate'],
-                     'Pay_Discount_Rate': ['InterestRate'],
-                     'Pay_Interest_Rate': ['InterestRate'],
-                     'Receive_Currency': ['FxRate'],
-                     'Receive_Discount_Rate': ['InterestRate'],
-                     'Receive_Interest_Rate': ['InterestRate']}
 
     documentation = ('Interest Rates',
                      ['This currency swap adjusts the notional of one leg to capture any changes in the FX Spot rate',
@@ -1969,19 +1962,14 @@ class MtMCrossCurrencySwapDeal(Deal):
 class FXNonDeliverableForward(Deal):
     vernacular = 'non-deliverable forward, NDF'
     fields = [ADMIN, own('FXNonDeliverableForward', [
-        F('Sell_Currency', 'Text', default=''),
+        F('Sell_Currency', 'Text', default='', factors=['FxRate']),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
         F('Settlement_Date', 'Date', default='', settles=Cash('Settlement_Currency')),
-        F('Settlement_Currency', 'Text', default=''),
+        F('Settlement_Currency', 'Text', default='', factors=['FxRate']),
         F('Buy_Amount', 'Float', default=0.0, sized=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Buy_Currency', 'Text', default='')
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Buy_Currency', 'Text', default='', factors=['FxRate'])
     ])]
-
-    factor_fields = {'Buy_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Sell_Currency': ['FxRate'],
-                     'Settlement_Currency': ['FxRate']}
 
     documentation = ('Fx And Equity',
                      ['An FX non-deliverable forward effectively an FX Forward deal that is cash settled in a',
@@ -2072,20 +2060,15 @@ class FXSwapDeal(Deal):
         F('Far_Settlement_Date', 'Date', default='', settles=(
             Cash('Near_Sell_Far_Buy_Ccy', 'Far_Buy_Amount'),
             Cash('Near_Buy_Far_Sell_Ccy', 'Far_Sell_Amount', -1.0))),
-        F('Near_Buy_Far_Sell_Ccy', 'Text', default=''),
-        F('Near_Sell_Far_Buy_Ccy', 'Text', default=''),
-        F('Near_Buy_Far_Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple'),
-        F('Near_Sell_Far_Buy_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple'),
+        F('Near_Buy_Far_Sell_Ccy', 'Text', default='', factors=['FxRate']),
+        F('Near_Sell_Far_Buy_Ccy', 'Text', default='', factors=['FxRate']),
+        F('Near_Buy_Far_Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple', factors=['InterestRate']),
+        F('Near_Sell_Far_Buy_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple', factors=['InterestRate']),
         F('Near_Buy_Amount', 'Float', default=0.0, sized=True),
         F('Near_Sell_Amount', 'Float', default=0.0, sized=True),
         F('Far_Buy_Amount', 'Float', default=0.0, sized=True),
         F('Far_Sell_Amount', 'Float', default=0.0, sized=True)
     ])]
-
-    factor_fields = {'Near_Buy_Far_Sell_Ccy': ['FxRate'],
-                     'Near_Buy_Far_Sell_Discount_Rate': ['InterestRate'],
-                     'Near_Sell_Far_Buy_Ccy': ['FxRate'],
-                     'Near_Sell_Far_Buy_Discount_Rate': ['InterestRate']}
 
     documentation = ('Fx And Equity', [
         'An FX swap is a combination of an FX forward deal with near settlement date $t_1$ and',
@@ -2196,20 +2179,15 @@ class FXForwardDeal(Deal):
     vernacular = 'FX forward, outright forward, deliverable forward'
     quoted = 'Buy_Amount'
     fields = [ADMIN, own('FXForwardDeal', [
-        F('Sell_Currency', 'Text', default=''),
+        F('Sell_Currency', 'Text', default='', factors=['FxRate']),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
         F('Settlement_Date', 'Date', default='', settles=(
             Cash('Buy_Currency', 'Buy_Amount'), Cash('Sell_Currency', 'Sell_Amount', -1.0))),
         F('Buy_Amount', 'Float', default=0.0, sized=True),
-        F('Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple'),
-        F('Buy_Currency', 'Text', default=''),
-        F('Buy_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple')
+        F('Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple', factors=['InterestRate']),
+        F('Buy_Currency', 'Text', default='', factors=['FxRate']),
+        F('Buy_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple', factors=['InterestRate'])
     ])]
-
-    factor_fields = {'Buy_Currency': ['FxRate'],
-                     'Buy_Discount_Rate': ['InterestRate'],
-                     'Sell_Currency': ['FxRate'],
-                     'Sell_Discount_Rate': ['InterestRate']}
 
     documentation = ('Fx And Equity', [
         'An FX forward is an agreement to buy an amount $A$ (**Buy_Amount**) of one currency in exchange',
@@ -2290,11 +2268,9 @@ class StructuredDeal(Deal):
     accepts_children = True
     vernacular = 'structure, package, strategy'
     fields = [ADMIN, own('StructuredDeal', [
-        F('Currency', 'Text', default=''),
+        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Net_Cashflows', 'Text', default='No', convention=True, values=['Yes', 'No'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate']}
 
     documentation = ('Container', [
         'A structured deal consists of multiple individual deals. In credit exposure calculations',
@@ -2380,8 +2356,8 @@ class DepositDeal(Deal):
     observes = Observes('Interest_Rate', 'InterestRate')
     quoted = 'Interest_Rate_Schedule'
     fields = [ADMIN, own('DepositDeal', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Payment_Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
@@ -2400,14 +2376,10 @@ class DepositDeal(Deal):
         F('Known_FX_Rates', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Amount', 'Float', default=0.0, sized=True),
-        F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Interest_Rate_Schedule', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList')
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Interest_Rate': ['InterestRate']}
 
     documentation = ('Interest Rates', [
         'A deposit pays interest on its balance, repays each **Amortisation** step at the end of',
@@ -2503,14 +2475,15 @@ class SwapInterestDeal(Deal):
         F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Rate_Multiplier', 'Float', default=1.0, convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
           tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
-        F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
+        F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
         F('Effective_Date', 'Date', default=''),
         F('Index_Offset', 'Integer', default=0, convention=True),
         F('Floating_Margin', 'Float', default=0.0, convention=True),
@@ -2521,8 +2494,9 @@ class SwapInterestDeal(Deal):
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Amortisation', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
-        F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Currency', 'Text', default=''),
+        F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Swap_Rate', 'Float', default=0.0),
         F('Principal', 'Float', default=0.0, sized=True)
     ]), own('SwapInterestDeal', [
@@ -2547,12 +2521,6 @@ class SwapInterestDeal(Deal):
         F('Receive_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Receive_Payment_Offset', 'Integer', default=0, convention=True)
     ], 'Receive')]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Interest_Rate': ['InterestRate'],
-                     'Interest_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
-                     'Discount_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol']}
 
     documentation = ('Interest Rates', [
         'A fixed-float interest rate swap built from its own fields: a fixed leg at **Swap_Rate**',
@@ -2669,11 +2637,6 @@ class CFFixedInterestListDeal(Deal):
         F('Calendars', 'Text', default='', convention=True)
     ])]
 
-    factor_fields = {'Currency': ['FxRate'],
-                     'Repo_Rate': ['InterestRate'],
-                     'Settlement_Rate': ['InterestRate'],
-                     'Discount_Rate': ['InterestRate']}
-
     documentation = (
         'Interest Rates', ['A series of fixed interest cashflows as described [here](#fixed-interest-cashflows)'])
 
@@ -2740,17 +2703,14 @@ class CFFixedInterestListDeal(Deal):
 class CFFixedListDeal(Deal):
     vernacular = 'fixed cashflows, cashflow schedule, known payments'
     fields = [ADMIN, own('CFFixedListDeal', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Description', 'Text', default='', convention=True),
         F('Fixed_Simple_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows',
           sub_fields=[F('FixedSimpleItems', 'Table', default='null', description='Items', json_name='Items',
                         row=Row([F('Payment_Date', 'Date'), F('Fixed_Amount', 'Float', sized=True)]))])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate']}
 
     documentation = (
         'Interest Rates',
@@ -2791,15 +2751,12 @@ class CFFixedListDeal(Deal):
 class FixedCashflowDeal(Deal):
     vernacular = 'fixed cashflow, single payment, fee'
     fields = [ADMIN, own('FixedCashflowDeal', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Calendars', 'Text', default='', convention=True),
         F('Amount', 'Float', default=0.0, sized=True),
         F('Payment_Date', 'Date', default='', settles=Cash('Currency', 'Amount'))
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate']}
 
     documentation = (
         'Interest Rates', ['The time $t$ value of a fixed cashflow amount $C$ paid at time $T$ is $D(t,T)C$.'])
@@ -2848,10 +2805,12 @@ class CFFloatingInterestListDeal(Deal):
     vernacular = 'floating-rate note, floating leg, FRN'
     observes = Observes('Forecast_Rate', 'InterestRate')
     fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFloatingInterestListDeal', [
-        F('Discount_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestYieldVol']),
         F('Rate_Adjustment_Method', 'Text', default='None', convention=True,
           values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding']),
-        F('Forecast_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple'),
+        F('Forecast_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestYieldVol']),
         F('Settlement_Amount', 'Float', default=0.0),
         F('Float_Cashflows', 'Container',
           default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []},
@@ -2879,22 +2838,16 @@ class CFFloatingInterestListDeal(Deal):
                                                                                F('Fixed_Amount', 'Float', sized=True),
                                                                                F('FX_Reset_Date', 'Date'),
                                                                                F('Known_FX_Rate', 'Float')]))]),
-        F('Forecast_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Discount_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple'),
+        F('Forecast_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol']),
+        F('Discount_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol']),
         F('Rate_Calendars', 'Text', default='', convention=True),
-        F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Rate_Sticky_Month_End', 'Text', default='Yes', convention=True, values=['Yes', 'No']),
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Rate_Offset', 'Integer', default=0, convention=True)
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Discount_Rate_Cap_Volatility': ['InterestRateVol'],
-                     'Discount_Rate_Swaption_Volatility': ['InterestYieldVol'],
-                     'Forecast_Rate': ['InterestRate'],
-                     'Forecast_Rate_Cap_Volatility': ['InterestRateVol'],
-                     'Forecast_Rate_Swaption_Volatility': ['InterestYieldVol']}
 
     documentation = (
         'Interest Rates', [
@@ -2931,8 +2884,8 @@ class CFFloatingInterestListDeal(Deal):
         self.add_reval_dates(reset_dates, self.field['Currency'])
 
     def validate(self):
-        """A floating list settles no forward: its pricer reads neither settlement field."""
-        for key in ('Settlement_Date', 'Settlement_Amount'):
+        """A floating list settles no forward: its pricer reads no settlement field or curve."""
+        for key in ('Settlement_Date', 'Settlement_Amount', 'Repo_Rate', 'Settlement_Rate'):
             if self.field.get(key):
                 yield '{} is stated, and a floating cashflow list settles no forward'.format(key)
 
@@ -3002,7 +2955,7 @@ class CFFloatingInterestListDeal(Deal):
 class YieldInflationCashflowListDeal(Deal):
     vernacular = 'inflation-linked bond, linker, inflation cashflows'
     fields = [ADMIN, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
-        F('Index', 'Text', default=''),
+        F('Index', 'Text', default='', factors=['InflationRate']),
         F('Index_Reference', 'Container', default={'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1,
                                                    'Index_Reference_Type': 'Interpolated', 'Reference_Day': 1,
                                                    'Days_In_Period': 0},
@@ -3022,12 +2975,6 @@ class YieldInflationCashflowListDeal(Deal):
         F('Calendars', 'Text', default='', convention=True),
         F('Is_Forward_Deal', 'Text', default='No', convention=True, values=['Yes', 'No'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Repo_Rate': ['InterestRate'],
-                     'Settlement_Rate': ['InterestRate'],
-                     'Index': ['InflationRate']}
 
     documentation = ('Inflation', ['This pays a fixed coupon on an inflation indexed principal. Define the following: ',
                                    '',
@@ -3141,8 +3088,8 @@ class CapDeal(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payment_Calendars', 'Text', default='', convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
@@ -3162,21 +3109,17 @@ class CapDeal(Deal):
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Amortisation', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
-        F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Currency', 'Text', default=''),
-        F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
         F('Index_Offset', 'Integer', default=0, convention=True),
         F('Principal', 'Float', default=0.0, sized=True)
     ])]
 
     #: what each period is an option on: the strike the schedule reads and the pricer it takes
     optionlet = ('Cap_Rate', pricing.pricer_cap)
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Forecast_Rate': ['InterestRate'],
-                     'Forecast_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol'],
-                     'Discount_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol']}
 
     documentation = (
         'Interest Rates', ['A series of caplets as described [here](#capletsfloorlets)'])
@@ -3264,8 +3207,8 @@ class FloorDeal(CapDeal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payment_Calendars', 'Text', default='', convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
@@ -3285,9 +3228,11 @@ class FloorDeal(CapDeal):
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Amortisation', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
-        F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
-        F('Currency', 'Text', default=''),
-        F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
         F('Index_Offset', 'Integer', default=0, convention=True),
         F('Principal', 'Float', default=0.0, sized=True)
     ])]
@@ -3313,7 +3258,8 @@ class SwaptionDeal(Deal):
         F('Swap_Rate', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Expiry_Date', 'Date', default=''),
-        F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple'),
+        F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
+          factors=['InterestRateVol', 'InterestYieldVol']),
         F('Settlement_Date', 'Date', default=''),
         F('Margin_Schedule', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
@@ -3321,10 +3267,10 @@ class SwaptionDeal(Deal):
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Swap_Maturity_Date', 'Date', default=''),
         F('Swap_Effective_Date', 'Date', default=REQUIRED),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver']),
-        F('Currency', 'Text', default=''),
+        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Offset', 'Integer', default=0, convention=True),
         F('Index_Calendars', 'Text', default='', convention=True)
@@ -3351,11 +3297,6 @@ class SwaptionDeal(Deal):
         F('Receive_Calendars', 'Text', default='', convention=True),
         F('Receive_Payment_Offset', 'Integer', default=0, convention=True)
     ], 'Receive')]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Forecast_Rate': ['InterestRate'],
-                     'Forecast_Rate_Volatility': ['InterestRateVol', 'InterestYieldVol']}
 
     documentation = ('Interest Rates', [
         'Let $t_0, T_1$ and $T_2$ be the **Option_Expiry_Date**, **Swap_Effective_Date** and',
@@ -3654,13 +3595,13 @@ class FXDiscreteExplicitAsianOption(Deal):
     vernacular = 'FX Asian option, average-rate option'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Sampling_Data', 1)
     fields = [ADMIN, FX_ADMIN, own('FXDiscreteExplicitAsianOption', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Underlying_Currency', 'Text', default=''),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Strike_Price', 'Float', default=0.0,
           description=FX_AXIS.format('Strike price')),
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -3668,11 +3609,6 @@ class FXDiscreteExplicitAsianOption(Deal):
         F('Sampling_Data', 'Table', default='null', description='Sampling_Data',
           row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
 
     documentation = ('Fx And Equity', [
         'A discretely sampled FX Asian option on **Underlying_Amount** units of **Underlying_Currency**,',
@@ -3743,13 +3679,13 @@ class FXDiscreteExplicitAsianOption(Deal):
 class FXDiscreteExplicitDoubleAsianOption(FXDiscreteExplicitAsianOption):
     vernacular = 'FX double Asian, average-strike average-rate option'
     fields = [ADMIN, FX_ADMIN, own('FXDiscreteExplicitDoubleAsianOption', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Underlying_Currency', 'Text', default=''),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Strike_Price', 'Float', default=0.0,
           description=FX_AXIS.format('Strike price')),
@@ -3793,13 +3729,6 @@ class EquityDiscreteExplicitAsianOption(Deal):
           row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Dividends': ['DividendRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
         'A path independent option described [here](#discrete-asian-options)',
@@ -3887,13 +3816,6 @@ class EquityBarrierBinaryOption(Deal):
     ])]
 
     spot_models = ('None', 'LogVar2FJ')
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Dividends': ['DividendRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
         'A discrete barrier binary (digital) option priced using the same One-Step Survival (OSS)',
@@ -4008,13 +3930,6 @@ class EquityOptionDeal(Deal):
           settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
         EXPIRY_PRINT
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Dividends': ['DividendRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
         'A vanilla option on **Units** shares, priced as described [here](./definitions.md#european-options)',
@@ -4203,13 +4118,6 @@ class QEDI_CustomAutoCallSwap(Deal):
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
 
     spot_models = ('None', 'LogVar2FJ')
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Dividends': ['DividendRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
         'An autocall on one equity: contingent coupons that end the deal when the coupon window\'s',
@@ -4523,13 +4431,6 @@ class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, monitors=True)
     fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMSWAP, QEDI_CUSTOMAUTOCALLSWAP]
 
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Forecast_Rate': ['InterestRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
-
     documentation = ('Fx And Equity', [
         'The autocall of `QEDI_CustomAutoCallSwap` written as a swap: the same coupons, put, windows,',
         'valuation options and refusals ([Autocallable Swaps](#autocallable-swaps)), plus a floating leg',
@@ -4642,12 +4543,6 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing')]
 
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
-
     documentation = ('Fx And Equity', [
         'A path dependent Equity Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)',
         '',
@@ -4753,13 +4648,6 @@ class EquityBarrierOption(Deal):
     ])]
 
     spot_models = ('None', 'LogVar2FJ')
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Dividends': ['DividendRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
         'A barrier option on **Units** shares with two arms, chosen by **Barrier_Dates**:',
@@ -4984,8 +4872,8 @@ class CommodityDigitalOption(Deal):
     vernacular = 'commodity digital, energy digital, binary option on a reference price'
     observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
     fields = [ADMIN, own('CommodityDigitalOption', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Expiry_Date', 'Date', default=''),
@@ -4995,15 +4883,10 @@ class CommodityDigitalOption(Deal):
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
-        F('Reference_Type', 'Text', default='', obj='Tuple'),
-        F('Reference_Volatility', 'Text', default='', obj='Tuple'),
+        F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice']),
+        F('Reference_Volatility', 'Text', default='', obj='Tuple', factors=['ReferenceVol', 'CommodityPriceVol']),
         EXPIRY_PRINT
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Reference_Type': ['ReferencePrice'],
-                     'Reference_Volatility': ['ReferenceVol', 'CommodityPriceVol']}
 
     documentation = ('Energy', [
         'A European digital on a commodity reference price, described',
@@ -5106,11 +4989,6 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing')]
 
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Reference_Type': ['ReferencePrice'],
-                     'Reference_Volatility': ['ReferenceVol', 'CommodityPriceVol']}
-
     documentation = ('Energy', [
         'A one-touch on a commodity reference price, priced by the closed form and bridge described',
         '[here](./fx_and_equity.md#one-touch-and-no-touch-binary-options-and-rebates) for equity and FX.',
@@ -5207,17 +5085,12 @@ class CommodityForwardDeal(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Forward_Date', 'Date', default='', convention=True),
         F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
-        F('Commodity', 'Text', default='', obj='Tuple'),
+        F('Commodity', 'Text', default='', obj='Tuple', factors=['CommodityPrice']),
         F('Units', 'Float', default=0.0, sized=True),
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Reference_Type', 'Text', default='', obj='Tuple')
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Commodity': ['CommodityPrice'],
-                     'Reference_Type': ['ReferencePrice'],
-                     'Discount_Rate': ['InterestRate']}
 
     documentation = ('Energy',
                      ['A commodity funded at its own repo rate, which may differ from the carry implied by',
@@ -5292,19 +5165,14 @@ class CommodityForwardDeal(Deal):
 class CommodityFutureDeal(Deal):
     vernacular = 'commodity future, futures contract'
     fields = [ADMIN, own('CommodityFutureDeal', [
-        F('Commodity', 'Text', default='', obj='Tuple'),
+        F('Commodity', 'Text', default='', obj='Tuple', factors=['CommodityPrice']),
         F('Maturity_Date', 'Date', default=''),
-        F('Repo_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Carry', 'Text', default='', obj='Tuple'),
-        F('Currency', 'Text', default=''),
+        F('Repo_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Carry', 'Text', default='', obj='Tuple', factors=['ForwardRate']),
+        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Units', 'Float', default=1.0, convention=True, sized=True,
           description='The number of contracts, one when omitted')
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Commodity': ['CommodityPrice'],
-                     'Repo_Rate': ['InterestRate'],
-                     'Carry': ['ForwardRate']}
 
     documentation = ('Energy', [
         'A standardised futures contract on a commodity. **Commodity** is the pricing spot — a',
@@ -5372,21 +5240,16 @@ class CommodityAveragePriceSwapDeal(Deal):
     observes = Observes('Commodity', 'CommodityPrice', 'Sampling_Data', 1)
     fields = [ADMIN, own('CommodityAveragePriceSwapDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Commodity', 'Text', default=REQUIRED, obj='Tuple'),
-        F('Carry', 'Text', default=REQUIRED, obj='Tuple'),
-        F('Currency', 'Text', default=REQUIRED),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Commodity', 'Text', default=REQUIRED, obj='Tuple', factors=['CommodityPrice']),
+        F('Carry', 'Text', default=REQUIRED, obj='Tuple', factors=['ForwardRate']),
+        F('Currency', 'Text', default=REQUIRED, factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Units', 'Float', default=0.0, sized=True),
         F('Fixed_Price', 'Float', default=0.0),
         F('Settlement_Date', 'Date', default=REQUIRED, settles=Cash('Currency')),
         F('Sampling_Data', 'Table', default=REQUIRED, description='Sampling_Data',
           row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Commodity': ['CommodityPrice'],
-                     'Carry': ['ForwardRate'],
-                     'Discount_Rate': ['InterestRate']}
 
     documentation = ('Energy', [
         'A cash-settled average-price swap on a commodity fix. **Commodity** is the sampled spot -',
@@ -5495,20 +5358,14 @@ class EquityForwardDeal(Deal):
         F('Forward_Price', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
-        F('Equity_Volatility', 'Text', default='', obj='Tuple'),
+        F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
         F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
-        F('Equity', 'Text', default='', obj='Tuple'),
+        F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
         F('Units', 'Float', default=0.0, sized=True),
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Payoff_Currency', 'Text', default='', convention=True)
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Equity_Volatility': ['EquityPriceVol'],
-                     'Discount_Rate': ['InterestRate']}
 
     documentation = ('Fx And Equity', [
         'Described [here](definitions.md#forwards)',
@@ -5584,14 +5441,11 @@ class EquityForwardDeal(Deal):
 class CashAccountDeal(Deal):
     vernacular = 'cash account, call account, cash balance'
     fields = [ADMIN, own('CashAccountDeal', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Investment_Horizon', 'Date', default=''),
         F('Units', 'Float', default=0.0, sized=True)
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate']}
 
     documentation = ('Fx And Equity', [
         '**Units** of cash to **Investment_Horizon**, each interval of the grid accruing at the rate',
@@ -5632,15 +5486,12 @@ class CashAccountDeal(Deal):
 class EquityDeal(Deal):
     vernacular = 'shares, stock position, equity holding'
     fields = [ADMIN, own('EquityDeal', [
-        F('Equity', 'Text', default='', obj='Tuple'),
+        F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice']),
         F('Investment_Horizon', 'Date', default=''),
-        F('Currency', 'Text', default=''),
+        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Units', 'Float', default=0.0, sized=True)
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Equity': ['EquityPrice']}
 
     documentation = ('Fx And Equity', [
         'A holding of **Units** shares, not a forward: no strike is exchanged and no dividend is paid.',
@@ -5683,10 +5534,10 @@ class EquitySwapletListDeal(Deal):
     fields = [ADMIN, own('EquitySwapletListDeal', [
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Settlement_Days', 'Integer', default=0, convention=True),
-        F('Equity', 'Text', default='', obj='Tuple'),
-        F('Equity_Currency', 'Text', default=''),
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
+        F('Equity_Currency', 'Text', default='', factors=['FxRate']),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Amount_Type', 'Text', default='Principal', convention=True, description='Amount_Type',
@@ -5697,14 +5548,8 @@ class EquitySwapletListDeal(Deal):
                F('Amount', 'Float', sized=True), F('Start_Multiplier', 'Float'), F('End_Multiplier', 'Float'),
                F('Dividend_Multiplier', 'Float'), F('Known_Start_Price', 'Float'), F('Known_End_Price', 'Float'),
                F('Known_Start_FX_Rate', 'Float'), F('Known_End_FX_Rate', 'Float'), F('Quanto_FX_Rate', 'Float')]))]),
-        F('Equity_Volatility', 'Text', default='', obj='Tuple')
+        F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Equity_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
         'Described [here](#equity-swaps)',
@@ -5774,8 +5619,8 @@ class EquitySwapLeg(Deal):
           values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding'],
           json_name='Rate_Adjustment_Method'),
         F('Dividend_Timing', 'Text', default='Terminal', convention=True, values=['Continuous', 'Terminal']),
-        F('Equity', 'Text', default='', obj='Tuple'),
-        F('Equity_Volatility', 'Text', default='', obj='Tuple'),
+        F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
+        F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
         F('Equity_Known_Prices', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Asset Price', 'Float'), F('FX Rate', 'Float')]), tag='DateEqualList'),
         F('Effective_Date', 'Date', default=''),
@@ -5794,22 +5639,15 @@ class EquitySwapLeg(Deal):
         F('Units', 'Float', default=0.0, sized=True),
         F('Include_Dividends', 'Text', default='Yes', convention=True, values=['Yes', 'No']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Principal', 'Float', default=0.0, sized=True),
-        F('Payoff_Currency', 'Text', default='', convention=True),
+        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Reset_Calendars', 'Text', default='', convention=True),
         F('Reset_Offset', 'Integer', default=0, convention=True),
-        F('Equity_Currency', 'Text', default='')
+        F('Equity_Currency', 'Text', default='', factors=['FxRate'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Equity_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Equity': ['EquityPrice', 'DividendRate'],
-                     'Equity_Volatility': ['EquityPriceVol']}
 
     documentation = ('Fx And Equity', [
         'Described [here](#equity-swaps)',
@@ -5926,12 +5764,6 @@ class FXOneTouchOption(TouchLifecycle, Deal):
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing')]
 
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
-
     documentation = ('Fx And Equity', [
         'A path dependent FX Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)'])
 
@@ -6010,28 +5842,22 @@ class FXBarrierOption(Deal):
     fields = [ADMIN, FX_ADMIN, own('FXBarrierOption', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-        F('Payoff_Currency', 'Text', default='', convention=True),
+        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Barrier_Price', 'Float', default=0,
           description=FX_AXIS.format('Barrier price')),
         F('Cash_Rebate', 'Float', default=0, convention=True, sized=True),
         F('Strike_Price', 'Float', default=0.0,
           description=FX_AXIS.format('Strike price')),
-        F('Underlying_Currency', 'Text', default=''),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Barrier_Type', 'Text', default='Down_And_In',
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Currency', 'Text', default='')
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Currency', 'Text', default='', factors=['FxRate'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Payoff_Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
 
     documentation = ('Fx And Equity', [
         'A continuously monitored FX barrier option on **Underlying_Amount** units of',
@@ -6124,13 +5950,13 @@ class FXBarrierOption(Deal):
 class FXPartialTimeBarrierOption(Deal):
     vernacular = 'partial barrier, window barrier, partial-time barrier'
     fields = [ADMIN, FX_ADMIN, own('FXPartialTimeBarrierOption', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Underlying_Currency', 'Text', default=''),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Payoff_Currency', 'Text', default='', convention=True),
         F('Strike_Price', 'Float', default=0.0,
@@ -6144,11 +5970,6 @@ class FXPartialTimeBarrierOption(Deal):
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Cash_Rebate', 'Float', default=0, convention=True, sized=True)
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
 
     documentation = ('Fx And Equity', [
         'An FX barrier option monitored over a window only, on **Underlying_Amount** units of',
@@ -6242,9 +6063,9 @@ class FXTARFOptionDeal(Deal):
     vernacular = 'TARF, target redemption forward, target forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'TARF_ExpiryDates', 2)
     fields = [ADMIN, FX_ADMIN, own('FXTARFOptionDeal', [
-        F('Currency', 'Text', default=''),
-        F('Underlying_Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
@@ -6253,7 +6074,7 @@ class FXTARFOptionDeal(Deal):
           description=FX_AXIS.format('Strike price')),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         F('InvertedTarget', 'Text', default='', convention=True),
         F('LeverageNotional', 'Float', default=0, sized=True),
         F('TargetLevel', 'Float', default=0),
@@ -6266,11 +6087,6 @@ class FXTARFOptionDeal(Deal):
     ])]
 
     spot_models = ('None', 'LogVar2FJ')
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
 
     documentation = (
         'Fx And Equity', [
@@ -6441,10 +6257,10 @@ class FXAccumulatorOptionDeal(Deal):
     vernacular = 'FX accumulator, decumulator, accu'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Accumulator_ExpiryDates', 2)
     fields = [ADMIN, FX_ADMIN, own('FXAccumulatorOptionDeal', [
-        F('Currency', 'Text', default=''),
-        F('Underlying_Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Strike_Price', 'Float', default=0.0,
@@ -6461,11 +6277,6 @@ class FXAccumulatorOptionDeal(Deal):
     ])]
 
     spot_models = ('None', 'LogVar2FJ')
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
 
     documentation = (
         'Fx And Equity', [
@@ -6625,10 +6436,10 @@ class FXExtendableForwardDeal(Deal):
     vernacular = 'extendable forward, extendible forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Extendable_ExpiryDates', 2)
     fields = [ADMIN, FX_ADMIN, own('FXExtendableForwardDeal', [
-        F('Currency', 'Text', default=''),
-        F('Underlying_Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         # the mirror flips Buy_Sell AND Exercised_By, so a short position flips both
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -6648,11 +6459,6 @@ class FXExtendableForwardDeal(Deal):
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float'),
             F('Extended', 'Text')]))
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
 
     documentation = (
         'Fx And Equity', [
@@ -6848,22 +6654,17 @@ class FXOptionDeal(Deal):
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Strike_Price', 'Float', default=0.0,
           description=FX_AXIS.format('Strike price')),
-        F('Underlying_Currency', 'Text', default=''),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         F('Forward_Price_Date', 'Date', default='', convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
-        F('Currency', 'Text', default='')
+        F('Currency', 'Text', default='', factors=['FxRate'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Underlying_Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'FX_Volatility': ['FXVol']}
 
     documentation = (
         'Fx And Equity', ['A path independent vanilla FX Option on **Underlying_Amount** units of',
@@ -6950,13 +6751,13 @@ class FXBinaryOption(FXOptionDeal):
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Strike_Price', 'Float', default=0.0, description=FX_AXIS.format('Strike price')),
-        F('Underlying_Currency', 'Text', default=''),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple'),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Currency', 'Text', default='')
+        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Currency', 'Text', default='', factors=['FxRate'])
     ])]
 
     documentation = (
@@ -7007,9 +6808,9 @@ class FXBinaryOption(FXOptionDeal):
 class CreditNthToDefault(Deal):
     vernacular = 'nth-to-default, first-to-default, basket default swap'
     fields = [ADMIN, own('CreditNthToDefault', [
-        F('Names', 'Table', default='null', row=Row([F('Name', 'Text')])),
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Names', 'Table', default='null', row=Row([F('Name', 'Text')]), factors=['SurvivalProb']),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Correlation', 'Float', default=0, convention=True),
@@ -7027,13 +6828,8 @@ class CreditNthToDefault(Deal):
           description='Accrual day count, ACT family only'),
         F('Amortisation', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
-        F('CDS_Index', 'Text', default='', obj='Tuple')
+        F('CDS_Index', 'Text', default='', obj='Tuple', factors=['SurvivalProb'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'CDS_Index': ['SurvivalProb'],
-                     'Names': ['SurvivalProb']}
 
     documentation = (
         'Credit',
@@ -7127,25 +6923,21 @@ class DealDefaultSwap(Deal):
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Pay_Rate', 'Float', default=0.0, obj='Basis'),
         F('Pay_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-        F('Name', 'Text', default=''),
+        F('Name', 'Text', default='', factors=['SurvivalProb']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Amortisation', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
-        F('Currency', 'Text', default=''),
+        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Digital_Recovery', 'Float', default=0.0, convention=True, obj='Percent'),
         F('Accrue_Fee', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Principal', 'Float', default=0.0, sized=True)
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Name': ['SurvivalProb']}
 
     documentation = ('Credit', [
         'A single-name credit default swap [@hull2000; @okane2008]. The protection buyer pays a periodic fee',
@@ -7260,21 +7052,17 @@ class FRADeal(Deal):
         F('Known_Rate', 'Float', default=0, convention=True, obj='Percent'),
         F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Principal', 'Float', default=0.0, sized=True),
-        F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Interest_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Calendars', 'Text', default='', convention=True),
         F('Reset_Date', 'Date', default='', convention=True),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Borrower_Lender', 'Text', default='Borrower', values=['Borrower', 'Lender'], side=True),
         F('FRA_Rate', 'Float', default=0.0)
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Interest_Rate': ['InterestRate']}
 
     documentation = ('Interest Rates',
                      ['A forward rate agreement (FRA) pays the difference between a floating rate and a fixed',
@@ -7360,10 +7148,10 @@ class FRADeal(Deal):
 class FloatingEnergyDeal(Deal):
     vernacular = 'floating energy leg, floating-price energy swap'
     fields = [ADMIN, own('FloatingEnergyDeal', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-        F('Sampling_Type', 'Text', default='', obj='Tuple'),
-        F('FX_Sampling_Type', 'Text', default='', obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+        F('Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
+        F('FX_Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
         F('Energy_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments',
@@ -7372,19 +7160,11 @@ class FloatingEnergyDeal(Deal):
                F('Volume', 'Float', sized=True), F('Fixed_Basis', 'Float'), F('Price_Multiplier', 'Float'),
                F('Realized_Average_Date', 'Date'), F('Realized_Average', 'Float'), F('FX_Period_Start', 'Date'),
                F('FX_Period_End', 'Date'), F('FX_Realized_Average', 'Float')]))]),
-        F('Reference_Type', 'Text', default='', obj='Tuple'),
+        F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice']),
         F('Reference_Volatility', 'Text', default='', obj='Tuple'),
-        F('Payoff_Currency', 'Text', default='', convention=True),
-        F('Commodity', 'Text', default='', obj='Tuple')
+        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
+        F('Commodity', 'Text', default='', obj='Tuple', factors=['CommodityPrice'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Sampling_Type': ['ForwardPriceSample'],
-                     'FX_Sampling_Type': ['ForwardPriceSample'],
-                     'Reference_Type': ['ReferencePrice'],
-                     'Commodity': ['CommodityPrice'],
-                     'Payoff_Currency': ['FxRate']}
 
     documentation = ('Energy', [
         'The time $t$ value of an energy cashflow paid at $T$ indexed to volume $V$ of energy at a price determined by',
@@ -7471,18 +7251,14 @@ class FloatingEnergyDeal(Deal):
 class FixedEnergyDeal(Deal):
     vernacular = 'fixed energy leg, fixed-price energy swap'
     fields = [ADMIN, own('FixedEnergyDeal', [
-        F('Currency', 'Text', default=''),
-        F('Payoff_Currency', 'Text', default='', convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
         F('Energy_Fixed_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments',
           sub_fields=[F('EnergyFixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
               [F('Payment_Date', 'Date'), F('Volume', 'Float', sized=True), F('Fixed_Price', 'Float')]))])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Payoff_Currency': ['FxRate']}
 
     documentation = ('Energy', [
         'The time $t$ value of a fixed energy cashflow paid at $T$ indexed to volume $V$ of energy at a fixed price $K$ is',
@@ -7524,11 +7300,11 @@ class FixedEnergyDeal(Deal):
 class EnergySingleOption(Deal):
     vernacular = 'energy option, commodity option'
     fields = [ADMIN, own('EnergySingleOption', [
-        F('Currency', 'Text', default=''),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Sampling_Type', 'Text', default='', obj='Tuple'),
-        F('FX_Sampling_Type', 'Text', default='', obj='Tuple'),
+        F('Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
+        F('FX_Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Settlement_Date', 'Date', default=''),
         F('Period_Start', 'Date', default=''),
@@ -7540,19 +7316,11 @@ class EnergySingleOption(Deal):
         F('FX_Period_End', 'Date', default=''),
         F('FX_Realized_Average', 'Float', default=0.0),
         F('Volume', 'Float', default=0.0, sized=True),
-        F('Reference_Type', 'Text', default='', obj='Tuple'),
-        F('Reference_Volatility', 'Text', default='', obj='Tuple'),
+        F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice']),
+        F('Reference_Volatility', 'Text', default='', obj='Tuple', factors=['ReferenceVol', 'CommodityPriceVol']),
         F('Payoff_Type', 'Text', default='Compo', convention=True, values=['Compo', 'Quanto']),
-        F('Payoff_Currency', 'Text', default='', convention=True)
+        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate'])
     ])]
-
-    factor_fields = {'Currency': ['FxRate'],
-                     'Discount_Rate': ['InterestRate'],
-                     'Sampling_Type': ['ForwardPriceSample'],
-                     'FX_Sampling_Type': ['ForwardPriceSample'],
-                     'Reference_Type': ['ReferencePrice'],
-                     'Reference_Volatility': ['ReferenceVol', 'CommodityPriceVol'],
-                     'Payoff_Currency': ['FxRate']}
 
     documentation = ('Energy', [
         'A European option on an energy forward contract can be priced using the Black model with a volatility derived',

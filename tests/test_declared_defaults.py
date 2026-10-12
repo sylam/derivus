@@ -635,6 +635,24 @@ def test_an_economic_field_is_refused_by_name_and_does_not_price(key, silent):
             key, priced, silent))
 
 
+#: A forward settlement as a fixed cashflow list states it.
+SETTLEMENT = {'Settlement_Date': pd.Timestamp('2025-01-02'), 'Settlement_Amount': 1.0e6,
+              'Repo_Rate': 'USD-OIS', 'Settlement_Rate': 'USD-OIS'}
+
+
+@pytest.mark.parametrize('key', sorted(SETTLEMENT))
+def test_a_floating_list_refuses_every_settlement_field_by_name(key):
+    """A floating list shares the cashflow-list group's forward-settlement fields and its pricer
+    reads none of them: stated, each is refused at booking, so no curve it names is discovered.
+
+    Killing mutation: the key dropped from `CFFloatingInterestListDeal.validate`."""
+    import trial_rates
+    block = trial_rates.float_list('FLOAT', 'Buy', [])
+    assert schema.validate_instrument(construct_instrument(dict(block), {})) == []
+    stated = dict(block, **{key: SETTLEMENT[key]})
+    assert '{} is stated, and a floating cashflow list settles no forward'.format(key) in         schema.validate_instrument(construct_instrument(stated, {}))
+
+
 def test_a_blank_date_default_keeps_its_named_refusal():
     """`Expiry_Date` declares `''`, and a blank Date is not an absent one: completed, it reaches a
     date comparison as a `str` and the deal dies four layers down on

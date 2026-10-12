@@ -148,6 +148,9 @@ class F(object):
 
     `settles` marks a date - a field, or a table's date column - the deal SETTLES cash on, one
     `Cash` per payment that day, which is what its diary announces (`declared_settlements`).
+
+    `factors` names the price-factor types the field's value refers to; discovery finds a deal's
+    factors through them (`declared_factors`).
     """
     # 'Surface' covers BOTH shaped types (a Space is a tenor-keyed surface), so a renderer branches
     # on the value's row arity, never on the token.
@@ -157,11 +160,12 @@ class F(object):
               'Curve': 'Curve', 'Surface': 'Surface', 'Space': 'Surface'}
 
     __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag', 'sub_fields',
-                 'json_name', 'obj', 'bounds', 'bind', 'convention', 'sized', 'side', 'settles')
+                 'json_name', 'obj', 'bounds', 'bind', 'convention', 'sized', 'side', 'settles',
+                 'factors')
 
     def __init__(self, name, type, default=None, description=None, values=None, row=None,
                  tag=None, sub_fields=None, json_name=None, obj=None, bounds=None, bind=None,
-                 convention=False, sized=False, side=False, settles=()):
+                 convention=False, sized=False, side=False, settles=(), factors=()):
         self.name = name
         self.type = type
         self.default = BLANK.get(type) if default is None else default
@@ -182,6 +186,8 @@ class F(object):
         self.sized = sized
         self.side = side
         self.settles = (settles,) if isinstance(settles, Cash) else tuple(settles)
+        # the price factor types a deal field names, which is how discovery finds a deal's factors
+        self.factors = tuple(factors)
 
     @property
     def key(self):
@@ -253,6 +259,22 @@ def declared_fields(cls):
     """Every field a class declares, by the key an author writes - inherited declarations included,
     which is the reading `mapping` composes a type's sections from."""
     return {f.key: f for group in getattr(cls, 'fields', []) for f in group.fields}
+
+
+def declared_factors(cls):
+    """`{field: [factor types]}` for every field a class declares naming a price factor, a nested
+    one by its path through its container and table (`utils.get_fieldname`'s key): what discovery
+    looks a deal's factors up by."""
+    found = {}
+
+    def walk(fields, path):
+        for f in fields:
+            key = path + (f.key,)
+            if f.factors:
+                found[key if path else f.key] = list(f.factors)
+            walk(list(f.sub_fields or []) + (f.row.fields if f.row is not None else []), key)
+    walk(declared_fields(cls).values(), ())
+    return found
 
 
 def flipped(field, value):
@@ -904,26 +926,26 @@ def apply_market_values(structural, values):
 
 # Shared field blocks - the groups a class lists rather than inherits.
 CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
-    F('Repo_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Repo_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
     F('Description', 'Text', default='', convention=True),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Settlement_Date', 'Date', default='', convention=True),
-    F('Settlement_Rate', 'Text', default='', convention=True),
-    F('Currency', 'Text', default=''),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple')
+    F('Settlement_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
+    F('Currency', 'Text', default='', factors=['FxRate']),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate'])
 ])
 
 EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-    F('Currency', 'Text', default=''),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-    F('Equity', 'Text', default='', obj='Tuple'),
-    F('Equity_Volatility', 'Text', default='', obj='Tuple'),
+    F('Currency', 'Text', default='', factors=['FxRate']),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
+    F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
     F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-    F('Payoff_Currency', 'Text', default='', convention=True),
+    F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
     F('Strike_Price', 'Float', default=0.0),
-    F('Dividends', 'Text', default='', convention=True, obj='Tuple')
+    F('Dividends', 'Text', default='', convention=True, obj='Tuple', factors=['DividendRate'])
 ])
 
 #: The print an option's expiry fixed at, `[[Expiry_Date, print]]` - stated where the expiry is
@@ -941,8 +963,8 @@ FX_AXIS = ('{} on the ENGINE axis: the reporting currency per unit of Underlying
 #: What a one-touch and a no-touch on an equity share both are - every field but when a one-touch
 #: pays, a no-touch paying at expiry alone.
 EQUITY_TOUCH = own('EquityOneTouchOption', [
-    F('Payoff_Currency', 'Text', default='', convention=True),
-    F('Equity', 'Text', default='', obj='Tuple'),
+    F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
+    F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
@@ -951,9 +973,9 @@ EQUITY_TOUCH = own('EquityOneTouchOption', [
     F('Barrier_Price', 'Float', default=0),
     F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
-    F('Equity_Volatility', 'Text', default='', obj='Tuple'),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-    F('Currency', 'Text', default='')
+    F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    F('Currency', 'Text', default='', factors=['FxRate'])
 ])
 
 #: What a one-touch and a no-touch on an exchange rate both are - every field but when a one-touch
@@ -961,8 +983,8 @@ EQUITY_TOUCH = own('EquityOneTouchOption', [
 #: What a one-touch and a no-touch on a commodity reference price both are - the equity touch's
 #: terms on the reference's fixing, paid in `Currency`.
 COMMODITY_TOUCH = own('CommodityOneTouchOption', [
-    F('Currency', 'Text', default=''),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
+    F('Currency', 'Text', default='', factors=['FxRate']),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
@@ -971,13 +993,13 @@ COMMODITY_TOUCH = own('CommodityOneTouchOption', [
     F('Barrier_Price', 'Float', default=0),
     F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
     F('Expiry_Date', 'Date', default='', settles=Cash('Currency')),
-    F('Reference_Type', 'Text', default='', obj='Tuple'),
-    F('Reference_Volatility', 'Text', default='', obj='Tuple')
+    F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice']),
+    F('Reference_Volatility', 'Text', default='', obj='Tuple', factors=['ReferenceVol', 'CommodityPriceVol'])
 ])
 
 FX_TOUCH = own('FXOneTouchOption', [
-    F('Payoff_Currency', 'Text', default='', convention=True),
-    F('Underlying_Currency', 'Text', default=''),
+    F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
+    F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
     F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
@@ -985,9 +1007,9 @@ FX_TOUCH = own('FXOneTouchOption', [
       description=FX_AXIS.format('Barrier price')),
     F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
     F('Expiry_Date', 'Date', default=''),
-    F('FX_Volatility', 'Text', default='', obj='Tuple'),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple'),
-    F('Currency', 'Text', default='')
+    F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    F('Currency', 'Text', default='', factors=['FxRate'])
 ])
 
 QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
@@ -1021,7 +1043,7 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
 ])
 
 QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
-    F('Forecast_Rate', 'Text', default='', obj='Tuple'),
+    F('Forecast_Rate', 'Text', default='', obj='Tuple', factors=['InterestRate']),
     F('Floating_Margin', 'Float', default=0.0, convention=True, obj='Basis'),
     F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
     F('Autocall_Floating', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList',
