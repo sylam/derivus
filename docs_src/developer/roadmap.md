@@ -135,9 +135,10 @@ there.
   would do (S). `test_notebooks` needs a world file that is not in the repository.
 - `gates/impacted.py` fails open on any change to `derivus/__init__.py`; read line by line it would
   still select nine tests in ten.
-- `derivus_jupyter.py` (tracked, not in the wheel, superseded by the web UI) raises on three field
-  names outside its write allowlist and on multi-column Tables outside a four-name allowlist, and
-  fourteen output-shaped descriptors have no widget. Retire or repair is a desk call.
+- `derivus_jupyter.py` (tracked, not in the wheel) stays until the web UI exports a calculation as
+  a job and links each result table for download, as it does; it then retires. It raises on three
+  field names outside its write allowlist and on multi-column Tables outside a four-name allowlist,
+  and fourteen output-shaped descriptors have no widget.
 - `pv_float_cashflow_list` decides a coupon's resets need folding by comparing their count with the
   cashflows', a shape; an explicit mark on the compiled cashflows would replace it.
 

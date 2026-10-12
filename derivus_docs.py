@@ -161,7 +161,7 @@ class ConstructMarkdown(object):
         self.docs_src_dir = self.project_dir / 'docs_src'
         self.doc_build_dir = self.project_dir / 'docs'
         self.package_name = 'derivus'
-        self.static_dirs = ['running_calcs', 'stylesheets']
+        self.static_dirs = ['stylesheets']
         # Sub‑folders inside docs_src that must be copied wholesale
         if not self.docs_src_dir.is_dir():
             logging.error(f"'docs_src' directory not found at {self.docs_src_dir}")
@@ -794,7 +794,7 @@ class ConstructMarkdown(object):
                      with open(build_path, 'wt', encoding='utf-8') as f: f.write('\n'.join(content))
                      logging.info(f"  Generated: {build_path}")
                  except Exception as e: logging.error(f"  Error writing file {build_path}: {e}")
-        # --- Copy whole static directories (running_calcs/, stylesheets/) ---
+        # --- Copy whole static directories (stylesheets/) ---
 
         for d in self.static_dirs:
             src_dir = self.docs_src_dir / d

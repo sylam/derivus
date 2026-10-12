@@ -35,24 +35,16 @@ inspected or run from the next cell. The same interface runs as a stand-alone da
 
 ## Booking a deal
 
-The clip books an equity option. Every price factor the deal names must be defined on the Price
-Factors tab before it prices; curve rates are continuously compounded unless a field says otherwise
-([Price Factors](json/price_factors_overview.md)).
-
-<video width="1000" height="500" controls>
-  <source src="equity_option.mp4" type="video/mp4">
-</video>
+A deal is added on the Portfolio tab. Every price factor the deal names must be defined on the
+Price Factors tab before it prices; curve rates are continuously compounded unless a field says
+otherwise ([Price Factors](json/price_factors_overview.md)).
 
 ## Simulating through time
 
 A base valuation prices the book at the base date. A Monte Carlo through time also needs a
 stochastic process for each simulated factor, assigned on the Settings tab under
-`Model Configuration`; the clip below routes both the FX rates and the equity prices to
+`Model Configuration`, for example routing both the FX rates and the equity prices to
 `GBMAssetPriceModel`. A factor type is offered only the processes that can simulate it.
-
-<video width="1000" height="500" controls>
-  <source src="credit_monte_carlo.mp4" type="video/mp4">
-</video>
 
 The calculation's fields are in the [Calculations](json/calculations.md) reference and its methods
 in [API & Usage](api_usage/calculations.md). A process's parameters and the `Correlations` between
