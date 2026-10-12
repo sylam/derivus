@@ -26,7 +26,8 @@ The public surface is documented in [API Overview](../api_overview.md) and the j
 | [Structures](structures.md) | work on the sales structures or the quote runner |
 | [MCP](mcp.md) | add or change a tool a model drives the desk with |
 | [The Spine](spine.md) | work on the book of record: bookings, markets, closes, and how they become a job |
-| [Roadmap](roadmap.md) | propose work: what is wrong, what waits on a decision, what is designed and not built |
+| [Roadmap](roadmap.md) | propose work: what is designed and not built, how a change is verified, the tidy-ups |
+| [Model Limitations](../limitations.md) | need what is known to be wrong or limited, and what waits on a desk decision |
 
 ## Market data files, the context and the job {#market-data-context-job}
 
@@ -38,7 +39,7 @@ The public surface is documented in [API Overview](../api_overview.md) and the j
 
 **One context, one job at a time.** `load_json` sets the config the next `run_job` prices, so loads and runs on a context are sequential, and whoever runs long — a batch, a service's worker — KEEPS the context and loads through it. A data cache is an attribute of the object that owns the data, here the context; it is never a dictionary at the top of a module.
 
-**The files are to be part of the record — designed, not built.** A valuation adjustment, or an exposure profile as it stood on a past date, is reproducible only against the files it was priced on. In the design a market data file and a calendar are each a blob addressed by its content like any other the [spine](spine.md) holds - configuration, and so kept in the clear - and each is DECLARED in the record like any other fact: one of each name stands at a time, the latest, and a run at a point in the record reads the ones standing there, so nothing carries a version, nothing can be priced against an older file by choice, and a document is its deals and nothing of the market. Today a job names each file by its path and the record declares none of them ([Roadmap](roadmap.md#the-engine)).
+**The files are to be part of the record — designed, not built.** A valuation adjustment, or an exposure profile as it stood on a past date, is reproducible only against the files it was priced on. In the design a market data file and a calendar are each a blob addressed by its content like any other the [spine](spine.md) holds - configuration, and so kept in the clear - and each is DECLARED in the record like any other fact: one of each name stands at a time, the latest, and a run at a point in the record reads the ones standing there, so nothing carries a version, nothing can be priced against an older file by choice, and a document is its deals and nothing of the market. Today a job names each file by its path and the record declares none of them ([Model Limitations](../limitations.md#the-engine)).
 
 ## One `Factor` keys everything
 

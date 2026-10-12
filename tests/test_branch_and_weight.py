@@ -61,7 +61,7 @@ def _phi(x):
 # ONE WORLD for every product gate. Both curves flat and DIFFERENT (4% against 2%, so the carry is
 # live and no gate passes on a degenerate zero drift), the surface flat at 10%. That gives the
 # reference an exact interval strip written from the market data rather than from
-# `forward_carry_rate`, which is what is on test. Sloped curves have their own gates (roadmap).
+# `forward_carry_rate`, which is what is on test. Sloped curves have their own gates (limitations.md).
 R_USD, R_EUR, SIGMA_FLAT = 0.04, 0.02, 0.10
 SPOT_FX, STRIKE_FX = 1.1, 1.1
 N_ITM, N_OTM = 1000.0, 2000.0

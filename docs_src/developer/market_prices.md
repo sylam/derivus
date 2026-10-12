@@ -410,7 +410,7 @@ Limits of the market data available, not of the engine:
   injecting skew a flat surface does not want.
 - **`Kappa_L` and `Kappa_S` are declared, never fitted**; their influence on a mark is unmeasured.
 - **The default vanilla pricer is a surrogate**, and the forward-start rows carry the walk's
-  small-sample bias at `Paths` ([roadmap](roadmap.md#the-calibration)).
+  small-sample bias at `Paths` ([limitations](../limitations.md#the-calibration)).
 
 ## `FXVolPrices` — a smile quoted in delta {#fxvolprices}
 
@@ -458,7 +458,7 @@ snapshots survive a save.
 
 ## Open
 
-The surrogate vanilla pricer ([roadmap](roadmap.md#the-calibration)); the outright that cannot
-carry a quote derivative ([roadmap](roadmap.md#the-engine)); whether a missing `Prices` refuses in
-process, the nominal leverage weight, the correlation as a leaf
-([roadmap](roadmap.md#decisions-waiting-on-the-desk)).
+The surrogate vanilla pricer ([limitations](../limitations.md#the-calibration)); the outright that
+cannot carry a quote derivative ([limitations](../limitations.md#the-engine)); whether a missing
+`Prices` refuses in process, the nominal leverage weight, the correlation as a leaf
+([desk decisions](../limitations.md#decisions-waiting-on-the-desk)).

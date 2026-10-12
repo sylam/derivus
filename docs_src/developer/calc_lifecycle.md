@@ -80,8 +80,8 @@ Below an eigenvalue of `1e-8` the matrix is repaired with a WARNING, its size un
 `Eigenvalue_Raising` (default) floors eigenvalues at `1e-4` and rescales to a unit diagonal;
 `Alternating_Projections` is Higham's method [@higham2002] without Dykstra's correction (100 passes
 at most, to a relative `1e-8`), a nearby matrix, not provably the nearest. The matrix is no AAD leaf
-([decision 12](roadmap.md#decisions-waiting-on-the-desk)); a base valuation bumps a quanto or compo
-correlation under common random numbers (`Correlation_Bump`, 0.025).
+([decision 12](../limitations.md#decisions-waiting-on-the-desk)); a base valuation bumps a quanto or
+compo correlation under common random numbers (`Correlation_Bump`, 0.025).
 
 ## The batch loop
 
@@ -426,8 +426,8 @@ density-derivative term. The $O(\varepsilon^2)$ bias shows on volga, so it is a 
 ## Open
 
 The correlation as a leaf and the recompute segment length are
-[desk decisions 12 and 20](roadmap.md#decisions-waiting-on-the-desk). Limitations are under
-[the xVA outer](roadmap.md#the-xva-outer-and-the-correlation),
-[the pricers](roadmap.md#the-autocall-tarf-and-barrier-pricers) and
-[the engine](roadmap.md#the-engine); Hessian-vector products through the recompute node are
+[desk decisions 12 and 20](../limitations.md#decisions-waiting-on-the-desk). Limitations are under
+[the xVA outer](../limitations.md#the-xva-outer-and-the-correlation),
+[the pricers](../limitations.md#the-autocall-tarf-and-barrier-pricers) and
+[the engine](../limitations.md#the-engine); Hessian-vector products through the recompute node are
 [designed, not built](roadmap.md#designed-not-built).

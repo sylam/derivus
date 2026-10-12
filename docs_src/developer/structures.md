@@ -243,7 +243,7 @@ the runner is that data's only reader.
   on the side the risk puts it, not the side the leg's `Buy_Sell` says — a geared strip booked `Buy`
   is short vol at every ATM pillar, and signing by the label quotes the desk paying the client. The
   structure's charge is the sum over legs; legs are not netted against each other first (a desk
-  decision on the [roadmap](roadmap.md#decisions-waiting-on-the-desk)).
+  [decision](../limitations.md#decisions-waiting-on-the-desk)).
 - The charge moves the solved coordinate in a second pass seeded on the first. A recipe that solves
   nothing (straddle, strangle) charges the premium instead; `charged_on` names which.
 
@@ -378,6 +378,6 @@ strip has no spread to show).
 ## Open
 
 The two-way on a fitted leg reads the lognormal vega, not the fit's
-([roadmap](roadmap.md#the-engine)); netting a package's legs before charging is a desk decision;
-incremental XVA as the second risk-impact term and a ratio-solve primitive for participating
-forwards are designed, not built ([roadmap](roadmap.md#designed-not-built)).
+([limitations](../limitations.md#the-engine)); netting a package's legs before charging is a desk
+decision; incremental XVA as the second risk-impact term and a ratio-solve primitive for
+participating forwards are designed, not built ([roadmap](roadmap.md#designed-not-built)).

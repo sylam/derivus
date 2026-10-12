@@ -14,7 +14,7 @@ already uses: at 1e-12 the kernel underflows on every scenario, `boundary_weight
 empty-kernel branch, and the correction contributes an exact zero. Nothing is patched, and the
 registration still happens and is still scored.
 
-ONE SUBJECT, the roadmap row's own re-baselined gate, ridden as a fixture rather than rerun as a
+ONE SUBJECT, the Model Limitations row's own re-baselined gate, ridden as a fixture rather than rerun as a
 test: the monthly discrete down-and-out of `test_boundary_pricer_events.DISCRETE_BARRIER`, whose
 correction is 24% of its reported gradient. A second subject under a declared spot model, whose
 knocked-out counterfactual is the model-free zeros branch, read 4.7% before the Heston-Nandi

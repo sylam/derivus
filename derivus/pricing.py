@@ -422,7 +422,7 @@ def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
     once per fixing. ``carry_rate`` is the ZERO carry (a forward wants the cumulative integral
     ``F_j = S * exp(c_j * T_j)``), and ``cum_t`` arrives as numpy, being also the surface's hashable
     expiry key. ``use_forwards`` is the deal's declaration; the per-fixing smile convention is an
-    open modelling question (roadmap.md).
+    open modelling question (limitations.md, decision 1).
 
     Rank-polymorphic as ``forward_carry_rate``; the fixing axis returns at ``-2`` so the strip drops
     straight into ``forward_vol_rate``. The moneyness is broadcast onto that axis here, this being
@@ -1717,9 +1717,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     Reads. The carry arrives as the interval strip (``forward_carry_rate``) and the vol as TWO
     quantities, deliberately not unified: the per-interval strip the simulation steps on, and
     ``sd_to_expiry = sigma(K, tau) * sqrt(tau)`` for the European legs. The strip reads the moneyness
-    the deal declares; the per-fixing smile convention is open (roadmap.md). Under a spot model
-    neither vol quantity is built, so a leg reaching for an implied surface fails on the shape rather
-    than quietly pricing a second model. Quanto bends the per-fixing carry; compo prices S*X.
+    the deal declares; the per-fixing smile convention is open (limitations.md, decision 1). Under a
+    spot model neither vol quantity is built, so a leg reaching for an implied surface fails on the
+    shape rather than quietly pricing a second model. Quanto bends the per-fixing carry; compo
+    prices S*X.
 
     Conventions this loop owns:
 

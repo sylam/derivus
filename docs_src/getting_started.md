@@ -1,28 +1,25 @@
 # Getting Started
 
-The working stack in fifteen minutes: one service holding a live book, a web UI over it, Claude
-wired in over MCP, and a quote source ticking the market — everything a desk needs to book, price,
-structure and re-mark, all through the same verbs.
-
-The [Quick Start](quickstart.md) covers the three-line in-process route (`load_json` /
-`run_job`); this page is the served route those three lines grew into.
+From an install to a working desk: the library in three lines of Python, then one service holding
+a live book, a web UI over it, Claude wired in over MCP, and a quote source ticking the market —
+everything a desk needs to book, price, structure and re-mark, all through the same verbs.
 
 ## Install
 
 ```
+pip install derivus                    # the engine alone, enough for the three lines below
 pip install "derivus[desk]"            # the engine, DV_Service, the MCP binding and the quote ticket
 pip install torch                      # the CUDA build if you have an NVIDIA GPU
 ```
 
-A release wheel serves its own web UI, so there is nothing to build. (The library alone is
-`pip install derivus` — the three-line route needs no extras at all. The `desk` extra needs
-python 3.10+, which is `mcp`'s floor.)
+Derivus needs Python 3.10 or later; [Requirements](require.md) lists every extra and the GPU
+notes. A release wheel serves its own web UI, so there is nothing to build.
 
 Working on derivus itself is the clone route instead:
 
 ```
 git clone https://github.com/sylam/derivus && cd derivus
-pip install -e ".[desk]" pytest httpx
+pip install -e ".[desk,enterprise]" pytest httpx
 cd web && npm ci && npm run build && cd ..     # a source tree serves the UI it builds
 ```
 
@@ -32,9 +29,43 @@ Optional, for a Bloomberg-enabled workstation:
 pip install --index-url=https://blpapi.bloomberg.com/repository/releases/python/simple/ blpapi
 ```
 
-Sanity check: start the service and `GET /schema` answers with `engine_version`. From a clone,
-`pytest tests -q -rs` runs the suite — on CPU expect a skip or two that name their reasons (one
-CRN oracle calibrated under CUDA; the quote sheet without `derivus[quote]`).
+Sanity check: start the service and `GET /schema` answers with `engine_version`. Running the test
+suite yourself, and reading what each test holds, is [Validating Derivus](validating.md).
+
+## Three lines of Python
+
+A calculation is a JSON document; running one is loading it and asking for the result:
+
+```python
+import derivus as rf
+
+cx = rf.Context()
+cx.load_json('BaseValuation.Test1.json')
+calc, out = cx.run_job(overrides={})
+```
+
+`run_job` dispatches on the document's `Calculation.Object` (`BaseValuation`, `CreditMonteCarlo`,
+`HedgeMonteCarlo` or `SIMM`) and returns the calculation object and its output, whose tables are
+described in [Understanding Output](output.md). [JSON Configuration](json/index.md) describes every
+block of the document, and the service's `GET /schema/job` (below) serves a minimal one that loads
+and prices unchanged.
+
+Before running anything, `cx.validate()` reports what would stop the job (a missing market-data
+block, a deal missing a required field, a value that is not what its field declares) without
+pricing anything, and `cx.describe()` reports what the engine made of the document. The
+[API Overview](api_overview.md) covers both, the explicit method for each calculation, patching
+market values and replaying a run. The notebook interface over the same `Context` is the
+[Jupyter Workbench](running_calcs.md).
+
+## How a job is put together
+
+Every market input a price depends on (an FX rate, an equity price, a curve, a volatility surface)
+is a *price factor* of its own, and a deal names the factors it reads rather than carrying their
+values. The instrument's terms and the market it is priced on are therefore separate blocks of one
+document, and one market can price any book whose factors it holds. A simulation attaches a stochastic process to a price
+factor (`Price Models`, routed by `Model Configuration`): an xVA run needs a risk-neutral
+calibration of that process, and any other process can be declared to see how a book behaves under
+it. Curve rates are continuously compounded zero rates unless a field says otherwise.
 
 ## Start the stack
 
@@ -141,14 +172,13 @@ Data tab.
 
 The desk's vocabulary is **declared**, not composed by whoever is driving. `derivus/structures.py`
 ships seven structures — `Straddle`, `Strangle`, `ZeroCostCollar`, `Seagull`, `ForwardExtra`,
-`TargetRedemptionForward` and `Accumulator` —
-each a class naming its sales names, its legs and a recipe (price this leg, solve that one to the
-other's premium). `POST /book/structure` runs the recipe server-side and files the pending trade
-plus its `.xlsx` ticket under `DV_HOME/tmp`, named by the quote id; `POST /book/quote` is the
-ACCEPTANCE, called when the client takes the price. Over MCP the same three acts are
-`describe_structure` (what a zero-cost collar IS, and
-the parameters it takes — strikes in **market** terms, a USDZAR floor of 17.50), `solve_structure`
-and `book_quote(quote_id)`, so this is a sentence:
+`TargetRedemptionForward` and `Accumulator` — each a class naming its sales names, its legs and a
+recipe (price this leg, solve that one to the other's premium). `POST /book/structure` runs the
+recipe server-side and files the pending trade plus its `.xlsx` ticket under `DV_HOME/tmp`, named
+by the quote id; `POST /book/quote` is the acceptance, called when the client takes the price. Over
+MCP the same three acts are `describe_structure` (what a zero-cost collar is, and the parameters it
+takes — strikes in **market** terms, a USDZAR floor of 17.50), `solve_structure` and
+`book_quote(quote_id)`, so this is a sentence:
 
 > quote a one-year zero-cost collar on 1m USD ZAR with the floor at 17.50
 
@@ -179,8 +209,9 @@ bootstrapped surface's own nodes beside it. `First` is one backward pass however
 
 ## Where next
 
-- [Running Calculations](running_calcs.md) and [Understanding Output](output.md) — the job
-  document and what comes back.
+- [Understanding Output](output.md) — what a calculation returns.
 - [API Overview](api_overview.md) — every verb, the replay tuple, patching and hashing.
+- [Jupyter Workbench](running_calcs.md) — the notebook interface over a `Context`.
+- [Validating Derivus](validating.md) — running the test suite and reading what each test holds.
 - [Developer docs](developer/architecture.md) — the internal view, and
   [the MCP binding](developer/mcp.md) in particular.

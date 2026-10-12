@@ -1,6 +1,6 @@
 """Every code name the developer pages cite still exists in the code.
 
-    python gates/doc_symbols.py                     # docs_src/developer/*.md
+    python gates/doc_symbols.py                     # the developer pages, limitations, AGENTS.md
     python gates/doc_symbols.py PAGE.md ...         # the pages named
 
 A page names code in backticks - `structures.quote`, `Solve.STRIKE_BRACKET`, a test's name,
@@ -223,7 +223,8 @@ def spans(path):
 
 
 def main(argv):
-    pages = [Path(p) for p in argv] or sorted((ROOT / 'docs_src' / 'developer').glob('*.md'))
+    pages = [Path(p) for p in argv] or sorted((ROOT / 'docs_src' / 'developer').glob('*.md')) + [
+        ROOT / 'docs_src' / 'limitations.md', ROOT / 'AGENTS.md']
     sources = sorted(ROOT.glob('*.py'))
     for source in SOURCES:
         sources.extend(sorted((ROOT / source).rglob('*.py')))

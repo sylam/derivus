@@ -1,15 +1,85 @@
-# Welcome to Derivus
+# Derivus
 
-Derivus is a source-available quantitative finance framework built on
-[PyTorch](https://pytorch.org). It prices portfolios of derivatives and simulates them through
-time — on CPUs or NVIDIA GPUs via [CUDA](https://developer.nvidia.com/cuda-zone) — for
-valuation, XVA and hedging, with sensitivities by automatic differentiation carried all the way
-back to market quotes.
+Derivus values portfolios of derivatives and simulates them through time, on CPUs or NVIDIA GPUs,
+to give a trading desk, a risk function and an xVA desk their numbers from one engine: marks,
+exposure profiles, CVA and FVA, and the sensitivities of each. Every sensitivity comes from
+automatic differentiation, carried back through the library's own calibrations to the market quotes
+a desk trades on. Curves, volatility surfaces and model parameters are calibrated inside the library,
+by the same pricers that value the book. A quoting desk runs over it as an HTTP service that people,
+spreadsheets and a language model drive through the same verbs, and a book of record, the spine,
+keeps every booking, market and close the engine prices against.
 
-A calculation is a JSON document in and a set of tables out: the job file declares the market
-data, the models and the book, and the engine compiles and runs it. A run is identified by
-`(plan, values, engine version, seed)`; repeating its last bits also needs the same device and
-PyTorch build, and for a GPU gradient `Deterministic_Kernels: Yes`.
+## Who it is for
+
+Dealers that quote, book and carry counterparty risk on an over-the-counter derivatives book: the
+front office, the xVA desk, market and credit risk, product control and model validation. In a
+bank's stack these functions usually run on separate systems that reconcile against each other: a
+pricing library, a curve and volatility construction tool, an exposure and xVA engine, a
+sensitivity feed for initial margin, and the trade store they all read. Derivus is one engine, one
+job format and one record for all of them, so a desk's mark and the xVA desk's exposure come from
+the same model of the same trade on the same market. The source is open to read, so a validator reads the code that produced a
+number beside the theory that specifies it.
+
+```mermaid
+flowchart LR
+    subgraph clients["Clients"]
+        UI["Web UI"]
+        XL["Excel add-in"]
+        LLM["Language model<br/>through DV_MCP"]
+        PY["Python scripts<br/>and notebooks"]
+    end
+    BBG["Bloomberg<br/>terminal or B-PIPE"]
+    subgraph host["Service host"]
+        SVC["DV_Service<br/>HTTP verbs, job queue,<br/>live book"]
+        ENG["derivus engine<br/>CPU or GPU"]
+        HUB[("Spine home<br/>book of record")]
+    end
+    REP[("Replicas")]
+    UI & XL & LLM & PY -->|HTTP| SVC
+    BBG -->|blpapi| SVC
+    SVC --> ENG
+    SVC -->|single writer| HUB
+    REP -.->|DV_Spine follow| SVC
+```
+
+The engine is also a Python library: a script can load a job document and run it in process with
+no service at all. [Deployment and Operations](deployment.md) describes each box in the diagram.
+
+## What it covers
+
+| | |
+| --- | --- |
+| **Products** | *Rates:* deposits, FRAs, swaps, caps, floors, swaptions, fixed and floating cashflow lists. *FX:* forwards, non-deliverable forwards, FX swaps, mark-to-market cross-currency swaps, vanilla, binary, touch, barrier, partial-time barrier and Asian options, target redemption forwards, accumulators, extendable forwards. *Equity:* shares, forwards, equity swaps, vanilla, binary, touch, barrier and Asian options, autocallable swaps. *Commodity and energy:* fixed and floating energy swaps, average-price swaps, forwards, futures, energy, digital and touch options. *Inflation:* inflation-linked cashflow lists. *Credit:* credit default swaps, nth-to-default baskets. *Structures:* netting sets with their collateral agreements, deals holding other deals, and seven declared FX sales structures (straddle, strangle, zero-cost collar, seagull, forward extra, target redemption forward, accumulator) quoted two-way and solved in the service. |
+| **Models** | *Spot:* geometric Brownian motion (constant or term-structure implied), log Ornstein-Uhlenbeck, hidden-Markov regime switching, GARCH, basis-linked spot. *Rates:* Hull-White one- and two-factor, principal-component curves; Hull-White hazard rates for credit. *Commodity:* Clewlow-Strickland forward curves, quadratic carry curves, chained basis, fixing bridge. *Stochastic volatility:* LogVar2FJ, a two-factor log-variance model whose one parameter set prices path-dependent equity and FX options, generates spot scenarios and fits European and forward-start smiles. |
+| **Calibration** | Inside the library, from market quotes: zero curves from deposit, FRA, swap and FX-forward quotes; FX volatility surfaces from ATM, risk-reversal and butterfly quotes; Hull-White two-factor from at-the-money swaptions; LogVar2FJ from European options and forward-start smiles; Clewlow-Strickland from energy futures options. The simulation models also fit to history. |
+| **Measures** | Mark-to-market and cashflows. Exposure profiles (expected positive and negative exposure, potential future exposure at chosen percentiles) from a full-portfolio Monte Carlo through time, collateralised or not. CVA and FVA per netting set, with their gradients. ISDA SIMM sensitivities written as a CRIF. First- and second-order greeks by automatic differentiation. Quote-space risk: first-order sensitivities to the market quotes behind the curves, the FX smiles and the Hull-White and LogVar2FJ calibrations, beside those to the calibrated factors. |
+| **Operations** | Validate before write: a booking, amendment or market update lands only when the engine has nothing against it, and a refusal returns the engine's own message. Replay identity: a run is named by its plan, its market values, the engine version and its seed, so the same submission is one execution and one result. A record: bookings, market declarations, official closes, approvals and attested runs are appended to the spine, chained, sealed and never edited, and positions, P&L, cash, collateral calls and the settlement diary are derived from it. |
+
+## What is ready and what is not
+
+Base valuation and the credit Monte Carlo's exposure, CVA and FVA are the library's production
+valuation paths, the ones every other part of it reconciles against. Three parts are not at that
+standard:
+
+- The collateral valuation adjustment (CollVA) and the initial margin add-on in the credit Monte
+  Carlo's xVA block are experimental and stay undocumented until they are fixed. Do not rely on
+  their numbers.
+- The `SIMM` calculation writes the sensitivities file; the margin aggregated from it is not
+  computed by the library.
+- The hedging simulation (`HedgeMonteCarlo`) and its solver are a research stack whose design is
+  still open.
+
+Everything known to be wrong or limited elsewhere is listed on [Model Limitations](limitations.md).
+
+## Where next
+
+- [Getting Started](getting_started.md): from an install to a working desk.
+- [Deployment and Operations](deployment.md): the components, the files, security, backup and
+  hardware, for whoever runs it.
+- [Validating Derivus](validating.md): running the test suite and reading what each test holds.
+- The [Theory](theory/definitions.md) and [Valuation](valuation/definitions.md) pages: each model
+  and pricer as a validator reads it, with [xVA](theory/valuation_adjustments.md) on its own page.
+- [JSON Configuration](json/index.md): every block of a job document.
 
 ## Licence
 
@@ -17,55 +87,3 @@ Derivus is free for **noncommercial** use under the
 [PolyForm Noncommercial License 1.0.0](https://polyformproject.org/licenses/noncommercial/1.0.0):
 research, personal projects, education and evaluation are all in scope, and the source is open to
 read, run and validate. Commercial use requires a separate licence — contact the author.
-
-## Features
-
-* Full-portfolio Monte Carlo through time: exposure profiles and XVA (CVA / FVA) at GPU speed
-* ISDA SIMM sensitivities: a CRIF built by bump and revaluation, re-bootstrapping what each move
-  feeds
-* Sensitivities via automatic differentiation, including the boundary terms a path-dependent
-  decision contributes — a barrier crossing or an autocall trigger moves the value
-  discontinuously, and the flux of scenarios across the trigger is carried onto the tape rather
-  than dropped
-* Sensitivities to market **quotes**, not only to calibrated factors: zero curves solved from
-  deposit, FRA, swap, OIS and FX-forward-outright benchmarks, swaption-vol model calibration, and
-  FX smiles built from ATM / risk-reversal / butterfly quotes all differentiate through their
-  calibration, so one backward pass reports `dV/dq` beside `dV/dθ`
-* Bootstrapping inside the library: benchmark instruments are priced by the engine's own pricers,
-  and between calibrations a moved quote can *ride* the calibration Jacobian to a valuation with
-  no re-solve — with the drift of the ridden curve measured against a declared tolerance and the
-  ride refused past it
-* A hedging stack: a dynamic-programming solver trained against the simulator, with a
-  deployment-faithful day-by-day backtest of the frozen policy on observed paths
-* An HTTP service over the same engine — the JSON schema is published, jobs post and replay, and
-  spreadsheets or notebooks are ordinary clients
-* A quoting desk over that same service: a live book that validates before it writes, declared
-  structures quoted two-sided and solved server-side, an MCP binding a model books through, and a
-  Bloomberg tick that keeps the market current
-* Theoretical documentation beside the code, encouraging independent validation
-
-## Motivation
-
-Similar to other quantitative finance libraries (like [quantlib](http://quantlib.org/)), the
-motivations for Derivus are:
-
-- Stop re-inventing the wheel. Robust implementations of standard pricing functions (like Black
-  Scholes) have been written multiple times and, as a result of regulation, have had to be
-  independently validated as many times.
-- Keep the source open to inspection, so a model and its documentation can be validated together.
-
-Libraries like quantlib already do an excellent job of the above. Derivus attempts to also:
-
-- Make use of modern GPUs to perform full portfolio Monte Carlo simulation.
-- Provide theoretical documentation as part of the library, thereby encouraging model validation.
-- Standardize the way market and trade data is loaded and stored, as JSON — the job document is
-  the whole contract, and a run is reproducible from it.
-- Offer a simpler alternative by using Python as the main development language.
-
-## Roadmap
-
-What the library should be able to price and report next — engineering work the codebase owes
-itself is tracked separately in the [Developer Roadmap](developer/roadmap.md):
-
-- Wrong-way risk during the Monte Carlo simulation
-- The ISDA SIMM margin itself, aggregated from the CRIF the `SIMM` calculation writes

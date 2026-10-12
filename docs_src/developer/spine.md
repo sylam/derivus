@@ -619,11 +619,12 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 ## Open {#open}
 
 Unbuilt parts of the design: a job's files are named by path, not declared in the record
-([the engine](roadmap.md#the-engine)); the deal tree is the book file with nets written on, not
-composed from the fold; and a print is not yet one fact feeding both a calibration's archive and a
-deal's fixings ([designed, not built](roadmap.md#designed-not-built)). [The engine](roadmap.md#the-engine)
-lists the record's other open rows - the log open's full scan, the rotation and replay limits, the
-oracle's blind spots, reads outside admission, verbs under no seat, settlements naming no agreement,
-unindexed fixings, legacy trades. `advancing` pairs are process-wide, so one home per service process
-is the deployed shape ([tidy-ups](roadmap.md#tidy-ups)); one `settle` verb is a
-[desk decision](roadmap.md#decisions-waiting-on-the-desk).
+([the engine](../limitations.md#the-engine)); the deal tree is the book file with nets written on,
+not composed from the fold; and a print is not yet one fact feeding both a calibration's archive and
+a deal's fixings ([designed, not built](roadmap.md#designed-not-built)).
+[The engine](../limitations.md#the-engine) lists the record's other open rows - the log open's full
+scan, the rotation and replay limits, the oracle's blind spots, reads outside admission, verbs under
+no seat, settlements naming no agreement, unindexed fixings, legacy trades. `advancing` pairs are
+process-wide, so one home per service process is the deployed shape
+([tidy-ups](roadmap.md#tidy-ups)); one `settle` verb is a
+[desk decision](../limitations.md#decisions-waiting-on-the-desk).

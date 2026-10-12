@@ -148,8 +148,8 @@ a `utils.Residual`, supplies `solve()`, the residual `__call__(x)`, `interior(x,
 `descriptors`; the HW2F and LogVar2FJ families differ there and nowhere else. HW2F's forward is basin
 hopping then least squares, a candidate kept only if it beats the running best with a well-posed
 process — so θ\* can be the seed — seeded by the declared `Random_Seed` alone. `Objective` is
-`Analytic` (Schrager–Pelsser [@schrager2006]; [why](roadmap.md#model-punchlist)) or `Monte_Carlo`,
-which an analytic solve runs once at θ\* to log its worst benchmark.
+`Analytic` (Schrager–Pelsser [@schrager2006]; [why](../limitations.md#model-punchlist)) or
+`Monte_Carlo`, which an analytic solve runs once at θ\* to log its worst benchmark.
 
 ### The Monte Carlo loss is conditional on its draw {#the-mc-loss}
 
@@ -431,7 +431,7 @@ pseudo-inverse it is the projector onto the kept directions. No test holds it.
 - `Tenor_Offset` declines an FX surface's attachment though `Factor2D.current_value()` ignores the
   offset, dropping a delta for a surface that did not move.
 - A model-priced leg's charge reads a lognormal vega; a consolidated risk read refits its blocks
-  ([roadmap](roadmap.md#the-engine)).
+  ([limitations](../limitations.md#the-engine)).
 
 ## Non-goals {#non-goals}
 

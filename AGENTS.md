@@ -8,8 +8,9 @@ of rules they elaborate.
 - `docs_src/developer/architecture.md` — what derivus is, and a table of every developer page with
   when to read it.
 - `docs_src/developer/conventions.md` — the house rules, the change scope, what a landing runs.
-- `docs_src/developer/roadmap.md` — what is known wrong, waiting on a decision, or designed and not
-  built. Check it before proposing work.
+- `docs_src/limitations.md` — what is known to be wrong or limited, and what waits on a desk
+  decision; `docs_src/developer/roadmap.md` — what is designed and not built. Check both before
+  proposing work.
 - The user pages carry contracts too: `docs_src/json/index.md` (the job and market data files) and
   `docs_src/api_overview.md` (the public verbs).
 
@@ -30,7 +31,8 @@ rule held by nothing says **Not gated**.
   `Deal` method with a parameter rather than writing beside it; delete a second spelling.
 - **A refactor is proven, not assumed.** Price the documents it reaches before and after and
   compare bit for bit; a number that moves marks an untested part and gets a test, not a revert.
-- **A fix lands whole.** It deletes its roadmap row and never adds rows for parts of it.
+- **A fix lands whole.** It deletes its row on Model Limitations or the roadmap and never adds rows
+  for parts of it.
 - **Numerically stable forms** (`expm1`, `log1p`, log-domain tails) and float64 precalculation.
 - **Comments say why in at most three lines; docstrings say what the code does.** History, sessions
   and measurements go in the commit message, which is the ledger.

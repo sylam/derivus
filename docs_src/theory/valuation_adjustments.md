@@ -142,7 +142,7 @@ every leaf `Gradient_Variables` selects (today's curve knots, vols, spots and ca
 parameters; `Implied` or `Factors` narrows it), averaged over batches and reported as `grad_cva`
 or `grad_fva`. A leaf the library calibrated carries the graph of the quotes it was
 solved from, so the same sweep yields quote-space risk ([Quote Sensitivities](../developer/quote_sensitivities.md)).
-A correlation is not a leaf; its delta is a bump ([Roadmap](../developer/roadmap.md#decisions-waiting-on-the-desk), decision 12).
+A correlation is not a leaf; its delta is a bump ([decision 12](../limitations.md#decisions-waiting-on-the-desk)).
 
 - **Decisions on simulated state.** A barrier crossing, an autocall trigger, an exercise or a
   collateral transfer clearing its minimum adds a term worth exactly zero in value that restores the
@@ -175,16 +175,16 @@ A correlation is not a leaf; its delta is a bump ([Roadmap](../developer/roadmap
 | netting of everything in the run | several counterparties in one run |
 | thresholds, minimum transfers, independent amount, cash, bond and equity collateral, a margin period of risk split into settlement and liquidation | `Haircut_Received`, `Commodity_Collateral`, `Netted`, `Apply_Closeout_When_Uncollateralized`; rating-dependent CSA amounts (the first entry is read); interest on collateral over the closeout |
 | funding cost and benefit over a risk-free curve, survival-weighted | funding of initial margin (MVA), capital (KVA) |
-| exposure, PFE and CVA off one outer model, the run's `Model Configuration` | a historical outer for PFE beside a risk-neutral one for CVA in the same run ([decision 7](../developer/roadmap.md#decisions-waiting-on-the-desk)) |
+| exposure, PFE and CVA off one outer model, the run's `Model Configuration` | a historical outer for PFE beside a risk-neutral one for CVA in the same run ([decision 7](../limitations.md#decisions-waiting-on-the-desk)) |
 
 ### Known limitations
 
 | limitation | size |
 | --- | --- |
-| one haircut, `Haircut_Posted`, is applied whichever side holds the asset | [Roadmap](../developer/roadmap.md#the-engine), UNMEASURED |
+| one haircut, `Haircut_Posted`, is applied whichever side holds the asset | [Model Limitations](../limitations.md#the-engine), UNMEASURED |
 | collateral is called only on simulation dates | unmeasured; a finer grid reduces it ([Container](../valuation/container.md#nettingcollateralset)) |
-| the collateralised autocall's CVA delta reads short of its ladder below 16,384 paths | 8.0% short at 1,024 paths to within 1.4% at 16,384, four seeds ([Roadmap](../developer/roadmap.md#the-autocall-tarf-and-barrier-pricers)) |
-| the boundary correction holds still over its bandwidth only at the declared path count | no dependence resolved over bandwidths 0.00125 to 0.08 at 16,384 paths; a 24% fall at 2,048 ([Roadmap](../developer/roadmap.md#the-autocall-tarf-and-barrier-pricers)) |
+| the collateralised autocall's CVA delta reads short of its ladder below 16,384 paths | 8.0% short at 1,024 paths to within 1.4% at 16,384, four seeds ([Model Limitations](../limitations.md#the-autocall-tarf-and-barrier-pricers)) |
+| the boundary correction holds still over its bandwidth only at the declared path count | no dependence resolved over bandwidths 0.00125 to 0.08 at 16,384 paths; a 24% fall at 2,048 ([Model Limitations](../limitations.md#the-autocall-tarf-and-barrier-pricers)) |
 | no test holds the CVA or FVA value to an independent closed form | the gates hold derivatives to bump ladders and switches to bit-identity |
 
 The trapezoid's error in the report-grid spacing is unmeasured on the library's grids.

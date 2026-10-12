@@ -38,7 +38,8 @@ on [Cross Factor](cross_factor.md).
 | `ChainedBasisCalibration` | `ChainedBasisModel` | `ObservedBasis` | basis and its chain source | OLS link residuals, bridge identities | [Observed Basis](observed_basis.md) |
 | `FixingBridgeCalibration` | `FixingBridgeModel` | `ObservedBasis` | fixing basis and its parent | pooled bracket OLS | [Observed Basis](observed_basis.md) |
 
-Each process's dynamics are on the Theory page of the same name.
+Each process's dynamics are on the Theory page named like its calibration page, except the commodity
+spot and observed basis processes, which are on [Asset Pricing](../theory/asset_pricing.md).
 
 ## What every estimator shares
 
