@@ -5122,7 +5122,11 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
         "the expiry's delivery. That holds while the delivery stays put (one contract) or moves with the",
         'date (a spot-like reference); a reference that rolls from one contract to another before the',
         'expiry jumps at the roll, which the closed form cannot price, and is refused by name. The',
-        'bridge observes endpoints: the forward-price process publishes no bridge variance.'])
+        'bridge observes endpoints: the forward-price process publishes no bridge variance.',
+        '',
+        'Paid in another currency than the forward curve\'s, a `Quanto` or `Compo` **Payoff_Type** reads',
+        '`Correlation.FxRate.<forward>.<payoff>/ReferencePrice.<reference>.<forward>`, stated local to',
+        'payoff and read as stated - the opposite sign to the equity touch\'s sorted-pair spelling.'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):

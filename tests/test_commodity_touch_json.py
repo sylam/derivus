@@ -71,6 +71,42 @@ def test_a_commodity_touch_prices_as_the_equity_touch_its_forward_maps_to():
         assert commodity == pytest.approx(equity, abs=1e-12 * 10_000.0), tag
 
 
+#: one 0.3 correlation spelled the way each family names it: the equity's on the sorted pair, read
+#: with the flip the deal's USD -> EUR direction gives it, the reference's local to payoff, unsigned
+CORR = 0.3
+CROSS = {'Correlation.EquityPrice.EQ/FxRate.EUR.USD': {'Value': CORR},
+         'Correlation.FxRate.USD.EUR/ReferencePrice.EQC.USD': {'Value': -CORR}}
+#: a quanto's barrier is a USD level on the forward, a compo's a EUR level on S*X (80 today)
+PAID_IN_EUR = [('Quanto', 'Down', 90.0), ('Quanto', 'Up', 110.0), ('Compo', 'Down', 72.0), ('Compo', 'Up', 88.0)]
+
+
+def test_a_quanto_or_compo_commodity_touch_prices_as_the_equity_touch_it_maps_to():
+    """Paid in EUR on a USD reference: each quanto and compo one-touch, down and up, on the touch and
+    at expiry, booked on the world's equity and on the reference whose forward is that equity's, the
+    one correlation stated in each family's own spelling - the two agree to 1e-12 of the payout,
+    every mark non-zero.
+
+    KILLING MUTATION: the reference's correlation read with the opposite sign - the compo up-touch
+    at 88 paid on the touch reads 8,350.41 against the equity's 7,213.00.
+    """
+    deals = []
+    for ptype, barrier_type, barrier in PAID_IN_EUR:
+        for timing in ('Touch', 'Expiry'):
+            tag = '{}_{}_{}'.format(ptype, barrier_type, timing)
+            deals.append(touch('EquityOneTouchOption', 'EQ_' + tag, barrier_type, barrier, timing,
+                               Equity='EQ', Equity_Volatility='EQ', Payoff_Currency='EUR',
+                               Discount_Rate='EUR', Payoff_Type=ptype))
+            deals.append(touch('CommodityOneTouchOption', 'CM_' + tag, barrier_type, barrier, timing,
+                               Reference_Type='EQC', Reference_Volatility='EQC', Currency='EUR',
+                               Discount_Rate='EUR', Payoff_Type=ptype))
+    marks, _ = book.marks(deals, {**reference('EQC'), **CROSS})
+    for deal in deals[::2]:
+        tag = deal['Reference'][3:]
+        equity, commodity = (float.fromhex(marks[side + tag]) for side in ('EQ_', 'CM_'))
+        assert equity != 0.0
+        assert commodity == pytest.approx(equity, abs=1e-12 * 10_000.0), tag
+
+
 def test_the_touch_paid_at_expiry_and_the_no_touch_sum_to_the_discounted_payout():
     """On the trial's own fuel reference, whose forward curve slopes from 80 to 84: the one-touch
     paid at expiry and the no-touch on the same terms are complements, together the payout
