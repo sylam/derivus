@@ -618,7 +618,7 @@ class Book:
         second pass the appends are on the attempt that writes by construction.
 
         The price is the lock held for the length of the act rather than for a read and a write -
-        80 ms against 2 for a booking, and the ~200 ms an acceptance costs - so an edit with
+        some forty times as long for a booking, longer for an acceptance - so an edit with
         nothing to append, which is every edit with no home under it, keeps `mutate`.
         """
         with self.lock:
@@ -5730,8 +5730,9 @@ def spot_model_edit(document, pair, family):
 
     THE FAMILY ENTRY IS BORROWED FOR THIS RUN AND HANDED BACK: every market tick is a bootstrap, so
     a book left declaring this family would refit on every tick. It is added if missing and removed
-    once the fit has run; a book declaring the family itself keeps it. Families run in SORTED
-    order, so `FXVolSurfaceParameters` rebuilds the surface before the fit reads it.
+    once the fit has run; a book declaring the family itself keeps it. Families run in
+    `bootstrap_order`, what each writes before what reads it, so `FXVolSurfaceParameters` rebuilds
+    the surface before the fit reads it.
     """
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     if not market.get('Bootstrapper Configuration'):
@@ -5774,9 +5775,9 @@ def spot_model_edit(document, pair, family):
 class SpotModelJob:
     """One pair's spot-model calibration as ONE unit of queued work.
 
-    The XVA mosaic's pattern, for its reason: the fit is a least squares over a simulated walk or a
-    Fourier inversion of a daily recursion, and it takes MINUTES - 205 s for LogVar2FJ on a
-    22-contract ladder reaching a year - so it is queued at `HEAVY` and must not sit in front of a salesperson's quote.
+    The XVA mosaic's pattern, for its reason: the fit is a least squares over a simulated walk and
+    takes minutes on a ladder reaching a year, so it is queued at `HEAVY` and must not sit in front
+    of a salesperson's quote.
 
     No second file and no projection: the fitted `<family>ModelParameters.<pair key>` block - the
     pair's non-base token, or `<later>.<earlier>` alphabetically for a cross - lands in the book's

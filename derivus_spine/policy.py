@@ -203,9 +203,9 @@ def parse_tiers(document, where):
     An ORDERED list of tiers, and the market each designated process resolves by name. A tier
     declares a unique name, whether a second seat signs, the node it covers and its checks - a key
     it omits is a check it does not make, so a tier declaring none is the catch-all the list ends
-    at. Staleness is not among them: pillar age and book staleness are the firmness policy's two
-    windows, checked on every booking before a tier is read, so a tier restating one is refused
-    here rather than making one question two standards. A `seat` is refused by name - an automatic
+    at. Staleness is not among them: pillar age is the firmness policy's one window and a moved
+    book the plan check's, both made on every booking before a tier is read, so a tier restating
+    either is refused here rather than making one question two standards. A `seat` is refused by name - an automatic
     approval is the hub's own act - and a stored one read past by `in_force`.
 
     WHAT IS STORED IS THE COMPLETED DOCUMENT, `parse_firmness`'s practice: the two defaults this

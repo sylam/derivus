@@ -83,7 +83,7 @@ SUMMARIES = {
 }
 
 #: The projectors a seed is never minted for. The strip's state IS its history, so copying it out of
-#: a seed costs more than folding it (219 ms against 38 at two thousand events).
+#: a seed costs more than folding it (about six times, at two thousand events).
 UNSEEDED = ('activity',)
 
 

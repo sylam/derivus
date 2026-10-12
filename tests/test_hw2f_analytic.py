@@ -12,8 +12,8 @@ row. The digit-level readings the branch was placed on (the closed form 2.7e+10 
 THE CALIBRATION is `fixtures/hw2f_four_quote_job.json` through `derivus.Context`: four ATM
 swaptions on a humped ZAR curve, the analytic objective the family declares by default, and the
 quote side on. The Schrager-Pelsser checker against the brute-force Monte Carlo, the stationarity
-readings of the two objectives and the refuted re-solve oracle are records:
-`docs_src/developer/roadmap.md` and `quote_sensitivities.md` carry their numbers.
+readings of the two objectives and the refuted re-solve oracle are records: the git history
+carries their numbers, and `quote_sensitivities.md` states what they settled.
 """
 import json
 import logging

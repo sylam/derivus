@@ -12,11 +12,11 @@ correction outright, max |delta| 5.512191e-06 on a gradient of 2.147838e-03. The
 decided on an OUTER scenario spot, so its registration stays outside and the same drop is a no-op,
 while removing the correction moves it by 2.194252e-03 on 7.259363e-01.
 
-A CASHFLOW GATE ON THE REPORTED CASHFLOWS IS A PLACEBO for the settle-outside rule: the replay runs
-in `backward()` while `save_cashflows` runs in the forward pass, so a double settlement lands after
-the snapshot. What IS observable is the cashflow's GRAPH - settled inside, it reaches `t_Cashflows`
-carrying nothing, so a COLLATERALISED exposure reading that ledger through `C_ts_te` loses 8.7% of
-the CVA gradient.
+THE SETTLE-OUTSIDE RULE has two observable halves. A cashflow settled inside the callable books
+twice, and the credit Monte Carlo takes the batch's `backward()`, where the replay runs, before it
+saves the batch's cashflows, so the report carries both. And the forward's booking carries no
+GRAPH, so a COLLATERALISED exposure reading that ledger through `C_ts_te` loses 8.7% of the CVA
+gradient.
 
 UNGATED: `past_fixings` and the floating leg, reached only by `QEDI_CustomAutoCallSwap_V2`. Both
 are hoisted into theta on the same rule as everything else and carried on trust.

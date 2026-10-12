@@ -4396,7 +4396,8 @@ def test_describe_is_the_parse_and_it_never_runs_anything():
     describe that wrote to what it read would move the plan and the id would stop agreeing.
 
     A node whose `Object` names no deal type is counted under nothing - `construct_instrument`
-    logged it and returned `{}`, and `/validate` is where that node is reported.
+    logged it and returned the bare `{'Object': name}`, and `/validate` is where that node is
+    reported.
     """
     document = job(deals=(CASHFLOW, dict(CASHFLOW, Reference='CF2')), Random_Seed=23)
     described = CLIENT.post('/describe', content=dump(document), headers=JSON).json()

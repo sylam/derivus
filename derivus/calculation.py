@@ -3517,8 +3517,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
 
         The fork BORROWS `shared_mem` and the `finally` restores it on ANY exit - without that a
         mid-fork raise leaves the state flat-sized and the next t-step fails on shapes rather than
-        the real cause. The Sobol sample cache is dropped there too: keyed by sample_size, it would
-        otherwise grow unbounded across t-steps.
+        the real cause, and clears the fork's `t_Buffer` and `t_Scenario_Buffer`.
         """
         spot_key = self._find_spot_key()
         if outer_rows is not None:

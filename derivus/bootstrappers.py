@@ -2915,9 +2915,9 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                    description='The shortest wing expiry, in years, that identifies the slow pair; with no '
                                'wing at or beyond it Rho_L/Sigma_L are pinned'),
                  F('Xi_Solve_Iterations', 'Integer', default=12,
-                   description='Chord steps one xi pillar\'s Newton solve gets per round'),
+                   description='Newton steps one xi pillar\'s solve gets per round'),
                  F('Xi_Solve_Damping', 'Float', default=0.5,
-                   description='The largest move in log-variance one xi pillar chord step may take'),
+                   description='The largest move in log-variance one xi pillar Newton step may take'),
                  F('Cap_Headroom_Max', 'Float', default=1e-5,
                    description='The mass of path-days at or above the corner the factor will carry that '
                                'REFUSES the fit; nothing where the walk is unbounded'),
@@ -5245,7 +5245,7 @@ class InterestRateCurveParameters(Construction):
     def __init__(self, param, device, dtype):
         super().__init__(param, device, dtype)
         # the solve is dispatch-bound - one small backward per quote per iteration - so it runs on
-        # the host: three desk curves in 5 s there against 17 s on the card
+        # the host, about three times faster there than on a card
         self.device = torch.device('cpu')
         #: What `Quote_Sensitivity` leaves behind: the solved nodes still connected to their quotes,
         #: per curve, plus the quote leaf per block; and what `Quote_Propagation` publishes, one
@@ -5478,10 +5478,8 @@ class InterestRateCurveParameters(Construction):
                 'measured, not declared. {} declares it while {} does not, and a partial ride is '
                 'the one configuration this operator cannot express: the declining block would be '
                 'priced off the curve the last bootstrap wrote while its partner rode the tick, '
-                'and the drift metric would report the ridden half as perfectly fresh. Measured on '
-                'the USD world at a 10bp OIS tick, that reads a PV of 9829.62 where the refit says '
-                '9621.25, against a true move of -23.36 - wrong sign, 8.9x the size, drift 4.5e-4. '
-                'Declare Quote_Propagation on every block of the set, or on none.'.format(
+                'and the drift metric would report the ridden half as perfectly fresh, an error '
+                'first order in the tick that no tolerance catches. Declare Quote_Propagation on every block of the set, or on none.'.format(
                     ' + '.join(name for name, _ in members),
                     ' + '.join(name for (name, _), asks in zip(members, propagate) if asks),
                     ' + '.join(name for (name, _), asks in zip(members, propagate) if not asks)))
@@ -5573,7 +5571,7 @@ class InterestRateCurveParameters(Construction):
         interpolation scheme and the engine version - with the `lifecycle_fields` shadowed out and
         the quote VALUES projected away.
 
-        Literally `schema.partition_market_price`'s structural half, the split `Config.plan_hash`
+        Literally `schema.partition_market_price`'s structural half, the split `Context.plan_hash`
         takes over the same section, so the two cannot drift. Every tick of one strip lands on the
         same slot, which is what makes a ride possible, while a re-authored instrument, a flipped
         `Use`, a different `Day_Count`, a different solver knob or a new engine build lands
@@ -5583,8 +5581,8 @@ class InterestRateCurveParameters(Construction):
         of every curve solved against it.
 
         `base_date` and `Price Factor Interpolation` are in it because the SOLVE reads them and the
-        block does not carry them. Without them two jobs 45 days apart share a slot, and a Linear
-        job rides a Hermite solve 0.53bp away from its own.
+        block does not carry them: without them two jobs on different days, or a Linear job and a
+        Hermite one, would share a slot and one would ride the other's solve.
 
         The block is COMPLETED by the family's declarations first, so an omitted knob and one
         written at its own default share a slot. A knob declared in `Bootstrapper Configuration`
@@ -5635,9 +5633,8 @@ class InterestRateCurveParameters(Construction):
         for `Quote_Propagation`.
 
         A block that DID ask and finds no artifact REFUSES - a miss is a 404 rather than a different
-        number. That closes the replay hole: falling back to `theta*` reprices the book (13.4% on
-        the eviction probe) while `plan_hash`, `values_hash`, the engine version and the seed all
-        stay identical. A fresh context rides nothing and says so, an artifact being unserialisable.
+        number. That closes the replay hole: falling back to `theta*` reprices the book while
+        `plan_hash`, `values_hash`, the engine version and the seed all stay identical. A fresh context rides nothing and says so, an artifact being unserialisable.
 
         A ride leaving the benchmarks further out of par than `Drift_Tolerance` refuses too. The
         tolerance is the SET's strictest, so a coupled set rides or refuses whole, and `slot`

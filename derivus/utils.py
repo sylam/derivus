@@ -749,8 +749,8 @@ class CalibrationStale(Exception):
     plan at all - a cold process, an evicted slot, a re-authored strip.
 
     Both refuse rather than falling back: the fallback is a plausible wrong curve and the replay
-    tuple cannot tell it from the right one (two runs agreeing on `plan_hash`, `values_hash`, the
-    version and the seed disagreed by 13.4% on a mark once one lost its artifact).
+    tuple cannot tell it from the right one: two runs agreeing on `plan_hash`, `values_hash`, the
+    version and the seed would disagree on a mark.
 
     Named so a caller can REFIT rather than lose the run: no number has been reported and the
     artifact is simply missing or older than the move it was asked to carry, so
@@ -1094,8 +1094,8 @@ class UnroutedInterpolation(object):
 class Interpolation(UnroutedInterpolation):
     """Tenor and time interpolation over ONE physical scenario tensor.
 
-    A leaf, and the only class base valuation / credit Monte Carlo / the outer hedge loop ever
-    build. What a kind derives from the values - the tenor an RT kind folds in, Hermite's
+    A leaf, and with `SegmentedInterpolation` all that base valuation / credit Monte Carlo / the
+    outer hedge loop build; only a fork builds a `RoutedInterpolation`. What a kind derives from the values - the tenor an RT kind folds in, Hermite's
     coefficient pair - a curve carrying a graph holds, so a derivative sums its reads into them
     before the derivation; a graph-free curve derives them at the read from the values it gathers.
     Dividend curves are plain here; what makes them different lives in `CurveTenor`.
@@ -5422,7 +5422,7 @@ def resolve_factor_key(factor, price_factors):
 
     RETIREMENT: once no market data carries `VolatilityGrid.*`, delete this function, drop
     `VolatilityGrid` from `TwoDimensionalFactors` and `FactorRiskClass`, and put `check_tuple_name`
-    back in `riskfactors.construct_factor` and `Config.factor_universe`.
+    back in `riskfactors.construct_factor`, `Config.factor_universe` and `SIMM.bumps`.
     """
     name = check_tuple_name(factor)
     if name in price_factors or factor.type not in TwoDimensionalFactors:
@@ -5792,8 +5792,8 @@ class CalibrationArtifact(object):
             F(theta, q) = F(theta, q0) + (dF/dq)(q - q0)
 
         holds with no remainder - provided `dF/dq` is taken at the theta being scored.
-        `residual_jacobians` re-differentiates HERE, at the ridden theta: 71.7ms against a 594ms
-        refit on the ZAR strip. Reusing the `dF/dq` stored at `theta*` is cheaper by one backward
+        `residual_jacobians` re-differentiates HERE, at the ridden theta, for about an eighth of a
+        refit. Reusing the `dF/dq` stored at `theta*` is cheaper by one backward
         and misses by `(d2F/dtheta dq) dtheta dq` - the same order as the residual it estimates -
         reading low (0.886 of the truth at worst) on the tick shapes the tolerance exists to refuse.
 

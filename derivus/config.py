@@ -953,7 +953,8 @@ class Config(object):
         the `Calculation` block as loaded.
 
         A node whose `Object` names no deal type is absent from the counts - `construct_instrument`
-        logged it and returned `{}`, taking the name with it; `validate` is where it is reported.
+        logged it and returned the bare `{'Object': name}`, no `Deal`; `validate` is where it is
+        reported.
         """
         return {'deals': dict(Counter(
                     instrument.field['Object'] for instrument in self.walk_deals()

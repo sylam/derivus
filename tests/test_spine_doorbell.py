@@ -596,8 +596,8 @@ def test_the_doorbell_rings_over_the_wire_and_the_follow_verb_catches_up(tmp_pat
 
     A `TestClient` collects a response before it answers and a doorbell never completes, so the
     stream is driven against a real service here or nowhere. The beat is timed from the append that
-    rang it, which is the number the page quotes; what the beat CARRIES is a position and nothing
-    else, and the follower reads it for nothing but "ask again".
+    rang it; what the beat CARRIES is a position and nothing else, and the follower reads it for
+    nothing but "ask again".
 
     Killing mutation: the writer announcing nothing when its bytes land.
     """
