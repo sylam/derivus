@@ -204,7 +204,7 @@ through its own quantile, $G=F^{-1}_\mathrm{IG}(\Phi(Z_G))$. A declared correlat
 four rows is therefore realised as declared. A book may instead run a GBM term-structure outer
 with the LogVar2FJ pricer. Recovering $(\ell,s)$ from an observed price path is a filtering
 problem, so the process refuses to replay one. Detail:
-[Structures](../developer/structures.md#model-worth).
+[Calc Lifecycle](../developer/calc_lifecycle.md#logvar2fj-outer).
 
 **The calibration.** A `LogVar2FJModelPrices` block fits the factor to a ladder of Europeans and,
 where a source has them, forward-start smiles. A vanilla is a conditional Black averaged over the
@@ -228,9 +228,10 @@ another. A pair with a base leg is its non-base token priced in the base. A cros
 alphabetically later token priced in the earlier: EUR/ZAR is the rand priced in the euro, its spot
 the ratio of the two base-priced rates (the block's **Priced_In**), filed as
 `LogVar2FJModelParameters.ZAR.EUR`, whichever way the deal or the surface is written. Detail:
-[the join](../developer/structures.md#the-join).
+[accrual legs](../developer/structures.md#accrual).
 
-**A deal paying on the reciprocal axis is a change of numeraire, not a second fit.** A deal whose
+**A deal paying on the reciprocal axis is a change of numeraire, not a second fit** — left out,
+the price carries Siegel's convexity [@siegel1972]. A deal whose
 underlying is the currency the law is priced in (an FX TARF or accumulator written the other way
 up) pays on $1/S$, and the kit prices it under the $S$ numeraire (`Invert_Spot`). With $R_k$ the
 day's log-return, the density $e^{R_k-b_k}$ factorises over the day's own draws,

@@ -1278,8 +1278,9 @@ optional columns beside the mid, written by `derivus_bloomberg` where the termin
 `PX_BID`/`PX_ASK`; a mid-only block is byte-identical to the one this family was always handed.
 Everything below reads `Quoted_Market_Value` by name, so the surface, the pinned grid and every mark
 on the book are built from the **mid**. The one reader is the quote layer:
-[`derivus.structures`](structures.md#two-sided) shifts a leg's own copy of the written surface by the
-ATM half-spread to quote a client two-sided. *The spread is the quote's; the mid is the book's.*
+[`derivus.structures`](structures.md#two-sided) charges each leg the pillar's half-spread times its
+vega to that pillar, on the coordinate the quote solves. *The spread is the quote's; the mid is the
+book's.*
 
 Both sides are on the value side of `update_market_quote`'s structure guard — a spread widens between
 prints and a pillar that starts or stops being quoted two-sided is the same node of the same plan,

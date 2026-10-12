@@ -6,8 +6,8 @@ What was built, and every number it was measured to, is in the commit messages â
 as the ledger, one landing per commit â€” and the long-form record that stood on this page until
 2026-09-10 is in the repository's history before that date. The model pages carry the numbers a validator prices
 against: [Market Prices](market_prices.md#logvar2fj) for the LogVar2FJ calibration,
-[Structures](structures.md#model-worth) for what the model is worth on a book and how the xVA
-outer is chosen, [Calc Lifecycle](calc_lifecycle.md) for the engine.
+[Calc Lifecycle](calc_lifecycle.md) for the engine and the
+[LogVar2FJ xVA outer](calc_lifecycle.md#logvar2fj-outer).
 
 ## Known limitations, open
 

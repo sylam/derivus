@@ -29,7 +29,7 @@ Discovers the factor universe, wires the dependency DAG, topologically orders it
 
 ## Compile phase 2a — correlation + cholesky + `process_ofs`
 
-A step *inside* phase 2: `_build_factor_state` → `_init_shared_mem` → `get_cholesky_decomp`, the only place `process_ofs` is populated, ahead of the precalculate loop that reads it. It iterates `stoch_factors.items()` in topological order; per factor `value.correlation_name` returns `(corr_type, [sub_factor_tuples])`, `process_ofs.setdefault(key, len(correlation_factors))` records the row offset of this factor's random substream, and each sub-factor appends a `Factor(corr_type, key.name+sub)`. The symmetric matrix is built from `Correlations` (a pair nothing declares reads 0.0; a declared name no simulated factor answers to is named at INFO), repaired if needed, and `torch.linalg.cholesky`'d. The declared number is the correlation of the innovations for every process alike, and nothing is scaled for it; a multi-factor process declares one row per sub-factor (`PC1..PCn`, `F1, F2`, the LogVar2FJ outer's return row and its `.S`, `.L` and `.G`) and the framework hands it one normal per row per step ([Structures](structures.md#model-worth)).
+A step *inside* phase 2: `_build_factor_state` → `_init_shared_mem` → `get_cholesky_decomp`, the only place `process_ofs` is populated, ahead of the precalculate loop that reads it. It iterates `stoch_factors.items()` in topological order; per factor `value.correlation_name` returns `(corr_type, [sub_factor_tuples])`, `process_ofs.setdefault(key, len(correlation_factors))` records the row offset of this factor's random substream, and each sub-factor appends a `Factor(corr_type, key.name+sub)`. The symmetric matrix is built from `Correlations` (a pair nothing declares reads 0.0; a declared name no simulated factor answers to is named at INFO), repaired if needed, and `torch.linalg.cholesky`'d. The declared number is the correlation of the innovations for every process alike, and nothing is scaled for it; a multi-factor process declares one row per sub-factor (`PC1..PCn`, `F1, F2`, the LogVar2FJ outer's return row and its `.S`, `.L` and `.G`) and the framework hands it one normal per row per step ([the LogVar2FJ outer](#logvar2fj-outer)).
 
 !!! warning "Invariant — `num_factors()` must equal `len(correlation_name[1])`"
     The first sizes the rows of the correlated random block; the second sizes the correlation matrix and the `process_ofs` stride. Wired together by convention only — no assert. A process whose two counts disagree silently misaligns every downstream `z_offset`, so each process reads another factor's substream. Wrong numbers, not an error.
@@ -149,6 +149,15 @@ The LogVar2FJ outer process publishes:
 | `(key, 'ell0_inner')`, `(key, 's0_inner')` | the per-path pair `inner_fork_seed` hands the fork |
 
 A seed key may be read by a PRICER rather than by a process's `generate`. `pricing.LogVar2FJKit.carried` reads the fork's `(ell0_inner, s0_inner)` where the fork published one and the outer path's `(lv_ell, lv_s)` at the row's own node otherwise; where no LogVar2FJ process ran it finds nothing and the row re-seeds at `(L*(t_row), 0)`, which is why every document that does not name the process is bit-identical.
+
+### The LogVar2FJ outer {#logvar2fj-outer}
+
+`LogVar2FJImpliedSpotModel` is the xVA scenario generator for an `EquityPrice` or `FxRate` under LogVar2FJ (the model: [theory](../theory/stochastic_volatility.md#one-walk-three-readers)). What a developer needs from it:
+
+- **One walk.** It is an implied process reading the calibrated `LogVar2FJModelParameters` factor through `implied_tensor`, so a CVA sensitivity reaches the one leaf the pricer reads; and its `draws` and `residual` ARE `pricing.LogVar2FJKit`'s, bound on the class, so outer, fork and pricer cannot disagree. Do not give it a draw or a root of its own.
+- **Four rows per name.** `correlation_name` is `('LognormalDiffusionProcess', [(), ('S',), ('L',), ('G',)])`: the return's Gaussian given the mixer, the fast and slow log-variance shocks, and the mixer through its quantile `G = F_IG⁻¹(Φ(Z_G))`, taken in double. Each variance factor steps node to node by its exact OU transition driven by its framework normal, the days inside the interval bridged between the endpoints; whole trading days plus one shorter remainder step span each interval.
+- **The day's shocks are a function of the day.** One `torch.Generator` per calendar-anchored segment of `LogVar2FJKit.CHECKPOINT_STEPS` trading days draws them; they are never stored and are redrawn in the checkpoint's recompute, so where the scenario nodes fall moves no draw. The antithetic half takes `-eta`. `Checkpoint_Outer_Walk` (a `CreditMonteCarlo` field, default `Yes`) puts the walk under the checkpoint.
+- **No replay.** The variance carries its own shocks, so `(ell, s)` is not a function of realised returns and `reseed_from_path` refuses by name.
 
 ---
 
