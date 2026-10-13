@@ -257,8 +257,8 @@ Grouped by where a validator meets them.
   its day gets no close, marks or P&L. The double Asian, the equity swap leg and swaplet list and the
   two energy deals (and a composite equity Asian) read a table the fill cannot write yet (M), the
   inflation list M-L; a swaption announces no expiry of its own, a design call. The rate deals name
-  their index, but a blank one still announces under none, and they refuse a past reset their table
-  does not state until fixings are market data
+  their index, but a blank one still announces under none, and a past reset their table does not
+  state fixes at 0% with a warning until fixings are market data
   ([designed, not built](developer/roadmap.md#designed-not-built)). `UNOBSERVED` in
   `tests/test_diary.py` lists the open types.
 - **The pricer branch census names 38 arcs no test executes** (2026-10-11). The LogVar2FJ

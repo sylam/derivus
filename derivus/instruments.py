@@ -2346,7 +2346,7 @@ class DepositDeal(Deal):
     lets a curve bootstrapper price a depo quote without depending on the curve it is solving for.
     Coverage is all-or-nothing rather than per-period, because the float path's known-rate override
     pins only resets ON OR BEFORE the reference date - the right reading for a seasoned floating
-    deposit, a reset behind it with no row refused by name.
+    deposit, a reset behind it with no row fixed at 0% with a warning.
 
     The amount lent is an outflow at the start that drops out once the deposit has started, and
     comes back as the steps and the final balance. Flows discount on **Discount_Rate**, defaulting

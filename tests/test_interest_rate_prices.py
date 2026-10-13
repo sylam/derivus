@@ -964,10 +964,10 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
         assert paths.mean() == pytest.approx(value(averaged + fixed, at), rel=1e-9, abs=1e-6), at
 
 
-def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states():
-    """A reset behind the base date reads the rate its document states and is refused BY NAME where
-    it states none, where it read as a fixing at 0%; one ON the base date reads the stated rate
-    where there is one and the curve where not. By hand, each stated fixing at its rate and the rest
+def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states(caplog):
+    """A reset behind the base date reads the rate its document states and is fixed at 0% with a
+    warning naming the deal where it states none - almost always a container's own terms; one ON the
+    base date reads the stated rate where there is one and the curve where not. By hand, each stated fixing at its rate and the rest
     at the simple ACT/360 forward off USD-PROJ, a coupon's fixings averaged, discounted on USD:
 
         a one-year 4.5% swap on quarterly coupons seasoned a month, its 6% stated   4,204.67
@@ -976,11 +976,12 @@ def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states():
         a 4.3% FRA reset a month ago, Use_Known_Rate Yes at 6%: (6% - 4.3%) a D(T)  4,315.50
         and one resetting today                                                     4,300.86
 
-    The seasoned swap stating no row is refused, and so is the FRA saying Use_Known_Rate No, which
-    states no rate whatever its Known_Rate. Under a credit Monte Carlo with no volatility the swap
-    effective today reads its flows still to pay, its 6% fixing among them, on every date.
+    The seasoned swap stating no row marks as one stating 0%, and so does the FRA saying
+    Use_Known_Rate No, which states no rate whatever its Known_Rate, each warning by name. Under a
+    credit Monte Carlo with no volatility the swap effective today reads its flows still to pay, its
+    6% fixing among them, on every date.
 
-    Killing mutations: the refusal dropped, the unstated swap marking -11,026.51 off a 0% fixing;
+    Killing mutations: the refusal restored, or the warning dropped;
     a row stated today unread, 303.50 off the curve; the FRA's Known_Rate read whatever its flag;
     a cashflow list's Use_Known_Rate unread today, the FRA at 413.95; a known reset counted by its
     day in the block split, 303.50, or in the coupon fold, 17,977.10; its row read by day, three
@@ -1023,11 +1024,15 @@ def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states():
     for reference, (_, hand, *_) in documents.items():
         assert float.fromhex(marks[reference]) == pytest.approx(hand, rel=1e-12), (reference, hand)
 
-    for unstated in (dict(documents['SEASONED'][0], Reference='UNSTATED', Known_Rates=None),
-                     dict(documents['FRA'][0], Reference='FRA_UNSTATED', Use_Known_Rate='No')):
-        with pytest.raises(utils.UnpriceableSchedule, match='{}: the reset fixing 2026-07-03'.format(
-                unstated['Reference'])):
-            book.marks([unstated])
+    for unstated, zero in (
+            (dict(documents['SEASONED'][0], Reference='UNSTATED', Known_Rates=None),
+             dict(documents['SEASONED'][0], Reference='UNSTATED', Known_Rates=utils.DateList({start: 0.0}))),
+            (dict(documents['FRA'][0], Reference='FRA_UNSTATED', Use_Known_Rate='No'),
+             dict(documents['FRA'][0], Reference='FRA_UNSTATED', Known_Rate=utils.Percent(0.0)))):
+        caplog.clear()
+        with caplog.at_level(logging.WARNING):
+            assert book.marks([unstated])[0] == book.marks([zero])[0]
+        assert caplog.text.count('{}: the reset fixing 2026-07-03'.format(unstated['Reference'])) == 1
 
     deal, _, flows = documents['TODAY']
     calc, _ = book.simulated([deal], ('USD', 'USD-PROJ'), sigma=0.0, prec=torch.float64,

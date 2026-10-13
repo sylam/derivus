@@ -1875,12 +1875,13 @@ def join_resets(blocks, dim, deal_data, codes):
 
 
 def unstated_reset(reference, day):
-    """The refusal of a rate reset fixed by the base date whose document states no rate for it."""
-    return UnpriceableSchedule(
-        '{}: the reset fixing {:%Y-%m-%d} has fixed by the base date and its document states no rate '
-        'for it, which is not a fixing at 0%. State the rate it fixed at: a Known_Rates row, a '
+    """Warn that a rate reset fixed by the base date states no rate and is fixed at 0% - almost
+    always a container's own terms, whose children carry the rates that price."""
+    logging.warning(
+        '%s: the reset fixing %s has fixed by the base date and its document states no rate for it, '
+        'so it is fixed at 0%%. State the rate it fixed at where it prices: a Known_Rates row, a '
         'deposit\'s Interest_Rate_Schedule row, a cashflow list\'s reset row, or an FRA\'s Known_Rate '
-        'under Use_Known_Rate Yes'.format(reference, day))
+        'under Use_Known_Rate Yes', reference, '{:%Y-%m-%d}'.format(day))
 
 
 class TensorResets(TensorSchedule):
@@ -2071,7 +2072,7 @@ class TensorCashFlows(TensorSchedule):
                        reset_tenor, reset_frequency, daycount_code, spread, reference=None):
         """`periods`' schedule plus the reset structure. The nominal array must be one shorter
         than `reset_dates`, or a single number for a constant profile; `reference` names the deal
-        a reset behind the base date with no known rate is refused for.
+        a reset behind the base date with no known rate is fixed at 0% for, with a warning.
         """
         # prepare to consume reset dates
         known_rates = known_rate_list if known_rate_list is not None else DateList({})
@@ -2106,7 +2107,7 @@ class TensorCashFlows(TensorSchedule):
                 # a reset on or before the base date reads the row stated for it, a known reset
                 stated = Reset_Day <= 0 and closest_date is not None and closest_date <= reference_date
                 if Reset_Day < 0 and not stated:
-                    raise unstated_reset(reference, reset_day)
+                    unstated_reset(reference, reset_day)
                 r.append(([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
                            Value / 100.0 if stated else 0.0, Accrual], -1 if stated else Scenario))
 
@@ -2389,9 +2390,10 @@ class TensorCashFlows(TensorSchedule):
                 # Use_Known_Rate (its next-to-last column) says Yes
                 known = Reset_Day < 0 or Reset_Day == 0 and reset[-2] == 'Yes'
                 if known and reset[-1] is None:
-                    raise unstated_reset(reference, reset[0])
+                    unstated_reset(reference, reset[0])
                 r.append(([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
-                           reset[-1].amount if known else 0.0, Accrual], -1 if known else Scenario))
+                           getattr(reset[-1], 'amount', 0.0) if known else 0.0, Accrual],
+                          -1 if known else Scenario))
             return r
 
         return cls.from_items(

@@ -33,6 +33,7 @@ rather than against zero.
 import copy
 import glob
 import json
+import logging
 import math
 import os
 import sys
@@ -867,22 +868,27 @@ def test_a_cap_stated_by_its_terms_prices_its_caplets():
 
 
 @pytest.mark.parametrize('kind', ['CapDeal', 'FloorDeal'])
-def test_a_cap_on_its_optionlet_list_states_no_principal(kind):
-    """A cap or floor's principal is a convention of a million, and on its optionlet list the list
-    is what prices: left out, the cap books with nothing to say and marks its list to the bit.
+def test_a_cap_on_its_optionlet_list_states_no_principal_or_known_rates(kind, caplog):
+    """A cap or floor on its optionlet list is the list's sum, its own terms only what the list was
+    generated from: seasoned seven months and stating neither a principal - a convention of a
+    million - nor the rates its terms fixed at, it books with nothing to say, warns that those
+    resets are fixed at 0%, and marks its list to the bit.
 
-    Killing mutation: the convention flag dropped - booking refuses the cap and the compile skips
-    it with its whole list."""
+    Killing mutations: the principal's convention flag dropped - booking refuses the cap and the
+    compile skips it with its whole list; an unstated past reset refused - the run fails."""
     import trial_rates
     held = trial_rates.optioned(kind, 'HELD', 2.0)
-    bare = dict({key: value for key, value in held.items() if key != 'Principal'}, Reference='BARE')
+    bare = dict({key: value for key, value in held.items() if key != 'Principal'}, Reference='BARE',
+                Effective_Date=WORLD_BASE - pd.DateOffset(months=7))
     bare['Children'] = [dict(child, Reference='BARE_LETS') for child in held['Children']]
     job = book([held, bare])
     job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(trial_rates.FACTORS)
     context = derivus.Context()
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'lists'))
     assert context.validate()['deals'] == {}
-    _, answer = context.run_job()
+    with caplog.at_level(logging.WARNING):
+        _, answer = context.run_job()
+    assert 'BARE: the reset fixing' in caplog.text
     frame = answer['Results']['mtm']
     valued = dict(zip(frame['Reference'], frame['Value']))
     assert valued['BARE'] == valued['BARE_LETS'] == valued['HELD'] != 0.0
