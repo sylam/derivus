@@ -2066,9 +2066,11 @@ class FXSwapDeal(Deal):
     vernacular = 'FX swap, forex swap, near and far legs'
     fields = [ADMIN, own('FXSwapDeal', [
         F('Near_Settlement_Date', 'Date', default='', settles=(
-            Cash('Near_Buy_Far_Sell_Ccy', 'Near_Buy_Amount'), Cash('Near_Sell_Far_Buy_Ccy', 'Near_Sell_Amount', -1.0))),
+            Cash('Near_Buy_Far_Sell_Ccy', 'Near_Buy_Amount'),
+            Cash('Near_Sell_Far_Buy_Ccy', 'Near_Sell_Amount', -1.0))),
         F('Far_Settlement_Date', 'Date', default='', settles=(
-            Cash('Near_Sell_Far_Buy_Ccy', 'Far_Buy_Amount'), Cash('Near_Buy_Far_Sell_Ccy', 'Far_Sell_Amount', -1.0))),
+            Cash('Near_Sell_Far_Buy_Ccy', 'Far_Buy_Amount'),
+            Cash('Near_Buy_Far_Sell_Ccy', 'Far_Sell_Amount', -1.0))),
         F('Near_Buy_Far_Sell_Ccy', 'Text', default='', factors=['FxRate']),
         F('Near_Sell_Far_Buy_Ccy', 'Text', default='', factors=['FxRate']),
         F('Near_Buy_Far_Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple', factors=['InterestRate']),

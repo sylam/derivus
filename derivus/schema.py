@@ -953,6 +953,10 @@ EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', 'Equity option', [
 EXPIRY_PRINT = F('Price_Fixing', 'Table', default='null', convention=True,
                  row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
 
+#: Which side of the spot a touch's barrier sits, written as `Barrier_Type`.
+BARRIER_SIDE = F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'],
+                 json_name='Barrier_Type')
+
 #: An FX strike or barrier is a level of the rate the ENGINE prices, never the pair's market
 #: quote - said on every FX field that carries one, since the declarations are what a model reads
 #: before it books.
@@ -982,7 +986,7 @@ EQUITY_TOUCH = own('EquityOneTouchOption', [
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
     F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
     F('Barrier_Price', 'Float', default=0),
-    F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
+    BARRIER_SIDE,
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
     F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol'])
 ])
@@ -998,7 +1002,7 @@ COMMODITY_TOUCH = own('CommodityOneTouchOption', [
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
     F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
     F('Barrier_Price', 'Float', default=0),
-    F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
+    BARRIER_SIDE,
     F('Expiry_Date', 'Date', default='', settles=Cash('Currency')),
     F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice']),
     F('Reference_Volatility', 'Text', default='', obj='Tuple', factors=['ReferenceVol', 'CommodityPriceVol'])
@@ -1012,7 +1016,7 @@ FX_TOUCH = own('FXOneTouchOption', [
     F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
     F('Barrier_Price', 'Float', default=0,
       description=FX_AXIS.format('Barrier price')),
-    F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
+    BARRIER_SIDE,
     F('Expiry_Date', 'Date', default=''),
     F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol'])
 ])
@@ -1037,7 +1041,8 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall term
       description='Which price fixing each coupon is observed on, one row per coupon; absent, a '
                   'coupon observes every fixing after its predecessor up to and including its own '
                   'date'),
-    F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
+    F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]),
+      tag='DateValueList'),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
     F('FixFXRate', 'Float', default=1.0, convention=True,
       description='The fixed rate a quanto converts its payoff at, payoff currency per unit of '
@@ -1051,7 +1056,8 @@ QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', 'Swap leg', [
     F('Forecast_Rate', 'Text', default='', obj='Tuple', factors=['InterestRate']),
     F('Floating_Margin', 'Float', default=0.0, convention=True, obj='Basis'),
     F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-    F('Autocall_Floating', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList',
+    F('Autocall_Floating', 'Table', default='null', convention=True,
+      row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList',
       description="The swap leg's payment dates, a period's amount read only once it has started - "
                   'a later period is forecast off Forecast_Rate plus Floating_Margin')
 ])
