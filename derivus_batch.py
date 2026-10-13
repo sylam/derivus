@@ -68,9 +68,36 @@ def rename_factor(cx, old_name, new_name):
         new_local_param = old_local_param.replace(old_name, new_name)
         cx.current_cfg.params['Price Factors'][new_local_param] = cx.current_cfg.params['Price Factors'][
             old_local_param]
-            
+
+
+def merge_crif(original, crif):
+    """`original` with every row of each trade `crif` carries replaced by `crif`'s rows, both read
+    as text: each takes the original's columns that are terms of its trade, its amount in the
+    original's currency at the rate the original's two amounts state, and its vertex spelled as
+    the original spells it. A trade the original does not carry is left out."""
+    computed = ['RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2', 'Amount', 'AmountUSD']
+    terms = original.drop(columns=computed).groupby('TradeID', sort=False).first()
+    amounts = original[['Amount', 'AmountUSD']].astype(float)
+    rates = (amounts['Amount'] / amounts['AmountUSD'])[amounts['AmountUSD'] != 0.0].groupby(
+        original['AmountCurrency']).median()
+    spelled = {label.lower(): label for label in original['Label1']}
+    mine = crif[crif['TradeID'].isin(terms.index)]
+    usd = mine['AmountUSD'].astype(float)
+    rate = terms['AmountCurrency'].map(rates).reindex(mine['TradeID']).to_numpy()
+    rows = mine[['TradeID'] + computed[:5]].assign(
+        Label1=mine['Label1'].map(lambda label: spelled.get(label.lower(), label)),
+        Amount=[repr(float(amount)) for amount in usd * rate],
+        AmountUSD=[repr(float(amount)) for amount in usd]).join(terms, on='TradeID')
+    order = {trade: index for index, trade in enumerate(terms.index)}
+    merged = pd.concat([original[~original['TradeID'].isin(mine['TradeID'])], rows])
+    return merged.sort_values('TradeID', key=lambda trades: trades.map(order), kind='stable')[
+        list(original.columns)]
+
 
 class JOB(object):
+    #: whether a netting set's deals are compressed on load
+    compress = True
+
     def __init__(self, cx, rundate, input_path, outputdir, netting_set, stats, log):
         self.cx = cx
         self.rundate = rundate
@@ -84,7 +111,7 @@ class JOB(object):
                        'Generate_Cashflows': 'No'}
 
         # load trades (and marketdata)
-        self.cx.load_json(os.path.join(self.input_path, self.rundate, self.netting_set))
+        self.cx.load_json(os.path.join(self.input_path, self.rundate, self.netting_set), self.compress)
 
         # get the netting set
         self.ns = self.cx.current_cfg.deals['Deals']['Children'][0]['Instrument']
@@ -115,6 +142,10 @@ class JOB(object):
 
     def run_calc(self):
         pass
+
+    @classmethod
+    def collate(cls, outputdir, rundate, stats):
+        """What the parent writes off every netting set's stats beyond their total: nothing."""
 
 
 class PFE(JOB):
@@ -889,6 +920,104 @@ class SA_CVA(JOB):
         self.stats.setdefault('Stats', {})[self.netting_set] = out['Stats']
 
 
+class SIMM(JOB):
+    """ISDA SIMM sensitivities of each booked trade of the netting set by bump and revaluation, its
+    CRIF written to `CRIF/CRIF_<rundate>_<file>.tsv`. DERIVUS_SIMM_MAPPING and
+    DERIVUS_SIMM_PARAMETERS name the mapping and the ISDA parameters file, DERIVUS_SIMM_CURRENCY the
+    calculation currency (USD unless stated); DERIVUS_SIMM_CRIF may name an original CRIF, whose
+    regulations a netting set declaring none takes for its trades and onto which `collate` merges
+    the run."""
+    # a sensitivity is a booked trade's, and compression folds trades into one
+    compress = False
+
+    def __init__(self, cx, rundate, input_path, outputdir, netting_set, stats, log):
+        super(SIMM, self).__init__(cx, rundate, input_path, outputdir, netting_set, stats, log)
+        config = self.cx.current_cfg
+        stated = config.deals['Calculation']
+        # the document's own seed, so trades' Monte Carlo errors stay independent across a book
+        config.deals['Calculation'] = dict(
+            {key: stated[key] for key in ('Random_Seed',) if key in stated}, Object='SIMM',
+            Base_Date=stated['Base_Date'], Currency=os.environ.get('DERIVUS_SIMM_CURRENCY', 'USD'),
+            Mapping=os.environ['DERIVUS_SIMM_MAPPING'], Parameters=os.environ['DERIVUS_SIMM_PARAMETERS'])
+        self.quote(stated['Base_Date'])
+        if os.environ.get('DERIVUS_SIMM_CRIF'):
+            self.regulations(pd.read_csv(
+                os.environ['DERIVUS_SIMM_CRIF'], sep='\t', dtype=str, keep_default_na=False,
+                usecols=['TradeID', 'PostRegulations', 'CollectRegulations']))
+
+    def quote(self, base_date):
+        """Par quotes on each curve's own knots for every curve the book reads that no block quotes,
+        so the bootstrap returns the curve as it stands and a basis point moves a market rate."""
+        from derivus import bootstrappers, utils
+
+        config = self.cx.current_cfg
+        prices = config.params['Market Prices']
+        family = bootstrappers.InterestRateCurveParameters.market_factor_type
+        for curve in sorted({utils.check_rate_name(name)[1]
+                             for name in config.factor_universe()['resolved']
+                             if utils.check_rate_name(name)[0] == 'InterestRate'}):
+            if '{}.{}'.format(family, curve) not in prices:
+                name, block = bootstrappers.knot_prices(
+                    curve, config.params['Price Factors'],
+                    config.params['Price Factor Interpolation'], base_date, config.holidays)
+                prices[name] = block
+                config.params['Bootstrapper Configuration'].setdefault(
+                    'InterestRate', {'Prices': 'InterestRate'})
+
+    def regulations(self, original):
+        """The regimes a netting set declaring none posts and collects margin under, where the
+        original CRIF's rows for its trades state one pair."""
+        for agreement in self.cx.current_cfg.deals['Deals']['Children']:
+            terms = agreement['Instrument'].field
+            trades = {node['Instrument'].field.get('Reference') for node in agreement.get('Children', [])}
+            stated = original[original['TradeID'].isin(trades)].drop_duplicates(
+                ['PostRegulations', 'CollectRegulations'])
+            if len(stated) == 1:
+                for field, column in (('Post_Regulations', 'PostRegulations'),
+                                      ('Collect_Regulations', 'CollectRegulations')):
+                    terms[field] = terms.get(field) or stated[column].iloc[0]
+
+    def valid(self):
+        return bool(self.cx.current_cfg.deals['Deals']['Children'][0].get('Children'))
+
+    def run_calc(self):
+        filename = os.path.join(self.outputdir, 'CRIF', 'CRIF_{}_{}.tsv'.format(
+            self.rundate, os.path.splitext(self.netting_set)[0]))
+        try:
+            calc, out = self.cx.run_job()
+        except Exception as e:
+            # a set the engine refuses keeps the original's rows; its stats say why
+            self.logger(self.netting_set, 'SIMM refused - {}'.format(e))
+            self.stats.setdefault('Stats', {})[self.netting_set] = {
+                'Error': '{}: {}'.format(type(e).__name__, e)}
+            return
+        crif, trades = out['Results']['CRIF'], out['Results']['Trades']
+        os.makedirs(os.path.dirname(filename), exist_ok=True)
+        calc.write(crif, filename)
+        skipped = '; '.join(said for said in trades['Skipped'] if said)
+        if skipped:
+            self.logger(self.netting_set, 'skipped inside a trade - {}'.format(skipped))
+        self.stats.setdefault('Stats', {})[self.netting_set] = {
+            'CRIF': filename, 'Trades': len(trades), 'Rows': len(crif), 'Moves': trades['Moves'].sum(),
+            'Value': trades['Value'].sum(), 'Currency': calc.params['Currency'], 'Skipped': skipped}
+
+    @classmethod
+    def collate(cls, outputdir, rundate, stats):
+        """The run's CRIF over every netting set, and its merge onto the original CRIF that
+        DERIVUS_SIMM_CRIF names."""
+        written = stats['CRIF'].dropna() if 'CRIF' in stats else []
+        if not len(written):
+            return
+        crif = pd.concat([pd.read_csv(path, sep='\t', dtype=str, keep_default_na=False)
+                          for path in written])
+        stem = os.path.join(outputdir, 'CRIF', 'SIMM_CRIF_{}'.format(rundate))
+        crif.to_csv(stem + '_Total.tsv', sep='\t', index=False)
+        if os.environ.get('DERIVUS_SIMM_CRIF'):
+            merge_crif(pd.read_csv(os.environ['DERIVUS_SIMM_CRIF'], sep='\t', dtype=str,
+                                   keep_default_na=False), crif).to_csv(
+                stem + '_Merged.tsv', sep='\t', index=False)
+
+
 def work(id, lock, queue, results, job, rundate, input_path, outputdir):
     def log(netting_set, msg):
         lock.acquire()
@@ -1000,6 +1129,7 @@ class Parent:
             if v:
                 out_path = os.path.join(outputdir, k, '{0}_{1}_{2}_Total.csv'.format(job, k, rundate))
                 pd.concat(v).to_csv(out_path)
+        globals()[job].collate(outputdir, rundate, pd.concat(post_results.get('Stats', [pd.DataFrame()])))
 
 
 def main():
