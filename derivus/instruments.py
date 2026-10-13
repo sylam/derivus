@@ -412,6 +412,17 @@ def equity_fx_correlation(field, all_factors):
         ('EquityPrice',) + field['Equity_Volatility'], ('FxRate',) + fx_lookup, all_factors), corr_sign
 
 
+def unnamed_surface(deal, paid_in):
+    """The booking message of a compo or quanto paid across the pair - in `paid_in`, blank being the
+    deal's own currency - that names no Equity_Volatility, which `equity_fx_correlation` refuses at
+    compile; the surface is otherwise optional on a deal pricing no option of its own."""
+    currency = deal.field.get('Currency')
+    crossed = (deal.field.get(paid_in) or currency) != currency
+    if deal.payoff_type != 'Standard' and crossed and not deal.field.get('Equity_Volatility'):
+        yield 'Equity_Volatility is not stated, and a {} payoff reads the pair\'s correlation off it'.format(
+            deal.payoff_type)
+
+
 def reference_fx_correlation(field, all_factors):
     """A reference price's, as the energy family declares it (`config.conditional_fields`):
     `Correlation.FxRate.<local>.<payoff>/ReferencePrice.<reference>.<local>`, named local to payoff
@@ -5261,7 +5272,7 @@ class EquityForwardDeal(Deal):
         F('Forward_Price', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
-        F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
+        F('Equity_Volatility', 'Text', default='', convention=True, obj='Tuple', factors=['EquityPriceVol']),
         F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
         F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
         F('Units', 'Float', default=0.0, sized=True),
@@ -5275,6 +5286,10 @@ class EquityForwardDeal(Deal):
         'outright fx forward into **Payoff_Currency** and **Forward_Price** a level in it; under `Quanto`',
         'the equity\'s forward is carried by $-\\rho\\sigma_S\\sigma_X$ and paid in **Payoff_Currency** at',
         'one. Either names **Equity_Volatility**, which names the pair\'s correlation.'])
+
+    def validate(self):
+        """A Quanto or Compo paid in a Payoff_Currency other than its Currency names its surface."""
+        return unnamed_surface(self, 'Payoff_Currency')
 
     def reset(self, calendars):
         super(EquityForwardDeal, self).reset()
@@ -5446,7 +5461,7 @@ class EquitySwapletListDeal(Deal):
                   F('Amount', 'Float', sized=True), F('Start_Multiplier', 'Float'), F('End_Multiplier', 'Float'),
                   F('Dividend_Multiplier', 'Float'), F('Known_Start_Price', 'Float'), F('Known_End_Price', 'Float'),
                   F('Known_Start_FX_Rate', 'Float'), F('Known_End_FX_Rate', 'Float'), F('Quanto_FX_Rate', 'Float')]))]),
-        F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol'])
+        F('Equity_Volatility', 'Text', default='', convention=True, obj='Tuple', factors=['EquityPriceVol'])
     ])]
 
     documentation = ('Fx And Equity', [
@@ -5457,6 +5472,11 @@ class EquitySwapletListDeal(Deal):
         'outright fx forward - and `Quanto` carries each forward by $-\\rho\\sigma_S\\sigma_X$ and pays at',
         'one. Both are the forward calculation on a price return: a row reinvesting its dividends refuses',
         'by name.'])
+
+    def validate(self):
+        """A Quanto or Compo in a Currency other than the Equity_Currency names its surface - the
+        compile reads the equity's currency off its price factor, which booking cannot see."""
+        return unnamed_surface(self, 'Equity_Currency')
 
     def reset(self, calendars):
         super(EquitySwapletListDeal, self).reset()
@@ -5518,7 +5538,7 @@ class EquitySwapLeg(Deal):
           json_name='Rate_Adjustment_Method'),
         F('Dividend_Timing', 'Text', default='Terminal', convention=True, values=['Continuous', 'Terminal']),
         F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
-        F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
+        F('Equity_Volatility', 'Text', default='', convention=True, obj='Tuple', factors=['EquityPriceVol']),
         F('Equity_Known_Prices', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Asset Price', 'Float'), F('FX Rate', 'Float')]), tag='DateEqualList'),
         F('Effective_Date', 'Date', default=''),
@@ -5552,6 +5572,10 @@ class EquitySwapLeg(Deal):
         'swaplet list: `Compo` prices the product $S\\cdot X$, `Quanto` carries the forward by',
         '$-\\rho\\sigma_S\\sigma_X$ and pays at one, and either is the forward calculation on a price',
         'return, so a leg including its dividends refuses by name.'])
+
+    def validate(self):
+        """A Quanto or Compo paid in a Payoff_Currency other than its Currency names its surface."""
+        return unnamed_surface(self, 'Payoff_Currency')
 
     def reset(self, calendars):
         super(EquitySwapLeg, self).reset()

@@ -697,6 +697,43 @@ def test_a_deal_is_refused_a_blank_or_missing_currency(block):
     assert 'Currency is required' in said({k: v for k, v in block.items() if k != 'Currency'})
 
 
+#: The three types whose equity surface only a compo or quanto reads, each stated in full, beside
+#: what pays it in a currency other than the equity's: a forward's or a leg's Payoff_Currency, a
+#: swaplet list's own Currency against its Equity_Currency.
+CROSSED = [
+    (PRICED[1], {'Payoff_Currency': 'EUR'}),
+    (EQUITY_LEG, {'Payoff_Currency': 'EUR'}),
+    ({'Object': 'EquitySwapletListDeal', 'Reference': 'EQSL', 'Currency': 'USD', 'Discount_Rate': 'USD',
+      'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Equity_Currency': 'USD', 'Buy_Sell': 'Buy',
+      'Amount_Type': 'Shares', 'Cashflows': {'Items': [{
+          'Start_Date': WORLD_BASE, 'End_Date': WORLD_EXPIRY, 'Payment_Date': WORLD_EXPIRY, 'Amount': 1e4,
+          'Start_Multiplier': 1.0, 'End_Multiplier': 1.0, 'Dividend_Multiplier': 0.0,
+          'Known_Start_Price': 0.0, 'Known_End_Price': 0.0, 'Known_Start_FX_Rate': 0.0,
+          'Known_End_FX_Rate': 0.0, 'Quanto_FX_Rate': 0.0}]}},
+     {'Currency': 'EUR'})]
+
+
+@pytest.mark.parametrize('block,crossed', CROSSED, ids=[block['Object'] for block, _ in CROSSED])
+def test_an_equity_surface_is_stated_by_a_compo_or_quanto_alone(block, crossed):
+    """A deal stating no Equity_Volatility books with nothing to say, a Quanto in its own currency
+    too; paid across a currency pair as a Quanto or a Compo it is refused by name, and books once it
+    names the surface.
+
+    Killing mutations: the surface declared a placeholder, under which the Standard deal is refused
+    as not stated; the type's `validate()` removed, under which the crossed quanto books; the
+    currency comparison dropped from it, under which the quanto in its own currency is refused."""
+    def said(**stated):
+        lean = {key: value for key, value in block.items() if key != 'Equity_Volatility'}
+        return schema.validate_instrument(construct_instrument(dict(lean, **stated), {}))
+    assert said() == []
+    assert said(Payoff_Type='Quanto') == []
+    for payoff_type in ('Quanto', 'Compo'):
+        assert said(Payoff_Type=payoff_type, **crossed) == [
+            'Equity_Volatility is not stated, and a {} payoff reads the pair\'s correlation off '
+            'it'.format(payoff_type)]
+        assert said(Payoff_Type=payoff_type, Equity_Volatility='EQ', **crossed) == []
+
+
 def test_a_blank_date_default_keeps_its_named_refusal():
     """`Expiry_Date` declares `''`, and a blank Date is not an absent one: completed, it reaches a
     date comparison as a `str` and the deal dies four layers down on
