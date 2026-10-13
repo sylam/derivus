@@ -116,7 +116,7 @@ from .schema import (PRICES_KEY, mapping, deal_at, instrument_of, job_children, 
 from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire
 from .instruments import construct_instrument
-from .calculation import Diary
+from .calculation import Diary, calculation_class
 from .spine import SETTLED, Collateral, PnL, book_name, diary, export_settlements, replay
 
 LOG = logging.getLogger(__name__)
@@ -716,8 +716,9 @@ def schema_job():
 @app.post('/validate', summary='What would stop this job running')
 def validate(job: dict):
     """What would stop this job running, verbatim from `cx.validate()` — the authoring messages of
-    every deal in the book, and the price factors it names that the market data has no block for.
-    Answered inline: it runs nothing, prices nothing and never reaches the queue."""
+    every deal in the book, the price factors it names that the market data has no block for, and
+    what the `Calculation` block's declarations say against it. Answered inline: it runs nothing,
+    prices nothing and never reaches the queue."""
     return context_for(job).validate()
 
 
@@ -1352,11 +1353,8 @@ def with_overrides(document, overrides):
     type, so it is the one key judged by naming a calculation.
     """
     calculation = dict(document['Calc']['Calculation'], **overrides)
-    declared = mapping['Calculation']['types'].get(calculation.get('Object'))
-    if declared is None:
-        raise ValueError('{!r} is no calculation - this engine runs {}'.format(
-            calculation.get('Object'), ', '.join(sorted(mapping['Calculation']['types']))))
-    judge_fields(calculation['Object'], declared,
+    calc_type = calculation_class(calculation.get('Object')).calc_type
+    judge_fields(calc_type, mapping['Calculation']['types'][calc_type],
                  {field: value for field, value in overrides.items() if field != 'Object'})
     document['Calc']['Calculation'] = calculation
 
@@ -1444,12 +1442,9 @@ def save_calculation(request: dict):
     if calculation is None:
         saved.pop(name, None)
     else:
-        declared = mapping['Calculation']['types'].get(calculation.get('Object'))
         try:
-            if declared is None:
-                raise ValueError('{!r} is no calculation - this engine runs {}'.format(
-                    calculation.get('Object'), ', '.join(sorted(mapping['Calculation']['types']))))
-            judge_fields(calculation['Object'], declared, {
+            calc_type = calculation_class(calculation.get('Object')).calc_type
+            judge_fields(calc_type, mapping['Calculation']['types'][calc_type], {
                 field: value for field, value in calculation.items() if field != 'Object'})
         except ValueError as error:
             return {'written': False, 'name': name, 'refused': [str(error)]}
@@ -5096,12 +5091,15 @@ def walked_factors(document, deal_path=None):
 
     No path is the book as it stands. A path re-wraps the document around that ONE node rather
     than copying it or editing it, so the caller's document is left exactly where it was found and
-    the market data is not duplicated to ask a question about the deals.
+    the market data is not duplicated to ask a question about the deals. A `Calculation` block its
+    declarations refuse is refused here in their words, the walk having nothing to answer with.
     """
     if deal_path is not None:
         document = dict(document, Calc=dict(document['Calc'], Deals=dict(
             document['Calc']['Deals'], Deals={'Children': [deal_at(document, deal_path)]})))
     universe = load(document).current_cfg.factor_universe()
+    if 'calculation' in universe:
+        raise ValueError('; '.join(universe['calculation']))
     return universe['resolved'], universe['missing']
 
 

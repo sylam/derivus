@@ -260,8 +260,10 @@ def own(cls_name, fields, role='Fields', title='Terms'):
 
 def declared_fields(cls):
     """Every field a class declares, by the key an author writes - inherited declarations included,
-    which is the reading `mapping` composes a type's sections from."""
-    return {f.key: f for group in getattr(cls, 'fields', []) for f in group.fields}
+    each of a deal's groups in turn or a calculation's flat list, which is the reading `mapping`
+    composes a type's sections from."""
+    return {f.key: f for entry in getattr(cls, 'fields', [])
+            for f in (entry.fields if isinstance(entry, Group) else [entry])}
 
 
 def declared_factors(cls):
@@ -466,22 +468,20 @@ def unreadable(deal):
                for key, value in deal.field.items() if key in declared)
 
 
-def validate_instrument(deal):
-    """Authoring-time messages for one constructed deal; empty when it has nothing to say.
+def validate_block(cls, block):
+    """Messages for one block - a deal's or a calculation's - against `cls`'s declarations, in their
+    order; empty when they have nothing to say.
 
-    The declarations give the fields an author MUST STATE and what every authored value has to BE;
-    a rule spanning several fields is code in the class's own `validate()`. A REQUIRED field is
-    missing when FALSY, having no default to be confused with; a PLACEHOLDER - any other declared
-    default the class does not call a convention - is missing when it is ABSENT OR NULL, because
-    `Swap_Rate: 0.0` is a rate a benchmark states while a null is what a front end round-trips for
-    nothing at all, and `Swap_Rate` unsaid is a swap with no fixed leg. A falsy value is checked
-    against nothing else, having nothing to state. `validate` is looked up normally rather than
-    own-attr-only, unlike `fields`, so an alias subclass inherits the rules. Nothing in the
-    valuation path calls this; a message never stops a deal.
+    The declarations give the fields an author MUST STATE and what every authored value has to BE.
+    A REQUIRED field is missing when FALSY, having no default to be confused with; a PLACEHOLDER -
+    any other declared default the class does not call a convention - is missing when it is ABSENT
+    OR NULL, because `Swap_Rate: 0.0` is a rate a benchmark states while a null is what a front end
+    round-trips for nothing at all, and `Swap_Rate` unsaid is a swap with no fixed leg. A falsy
+    value is checked against nothing else, having nothing to state.
     """
     messages = []
-    for key, field in declared_fields(type(deal)).items():
-        value = deal.field.get(key)
+    for key, field in declared_fields(cls).items():
+        value = block.get(key)
         if not value and field.default is REQUIRED:
             message = '{} is required'.format(key)
         elif value is None and field.default is not None and not field.convention:
@@ -490,8 +490,17 @@ def validate_instrument(deal):
             message = value_message(field, value)
         if message:
             messages.append(message)
+    return messages
+
+
+def validate_instrument(deal):
+    """Authoring-time messages for one constructed deal: its block judged by `validate_block`, then
+    a rule spanning several fields, which is code in the class's own `validate()`. `validate` is
+    looked up normally rather than own-attr-only, unlike `fields`, so an alias subclass inherits the
+    rules. Nothing in the valuation path calls this; a message never stops a deal.
+    """
     own = getattr(deal, 'validate', None)
-    return messages + (list(own()) if own else [])
+    return validate_block(type(deal), deal.field) + (list(own()) if own else [])
 
 
 def deal_descriptor(field):

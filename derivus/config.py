@@ -30,6 +30,7 @@ from . import schema
 from .bootstrappers import (bootstrap_dependents, bootstrap_order, bootstrap_precedents,
                             bootstrap_writers, construct_bootstrapper, family_class,
                             market_prices_for, InterestRateCurveParameters, FAMILIES)
+from .calculation import calculation_class
 from .instruments import construct_instrument, deal_node, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
 
@@ -894,7 +895,14 @@ class Config(object):
         (`readable`): discovery reads the block's own dates and amounts, so a bare-string date or a
         string amount dies inside it, and a want-list is a question only a readable block can be
         asked. A deal merely MISSING a required field is walked and still reports what it lacks.
+
+        A `Calculation` block its declarations refuse is not walked either - the walk cannot name a
+        report currency the block does not state - so both halves are empty and its messages come
+        back under `calculation`.
         """
+        refused = self.calculation_refusals()
+        if refused:
+            return {'resolved': [], 'missing': [], 'calculation': refused}
         # cached against the deal list it walked, because `validate` and `describe` both read it
         # and the booking verbs load a fresh document rather than editing a loaded book in place
         children = self.deals['Deals']['Children']
@@ -927,15 +935,25 @@ class Config(object):
                 for position, instrument in enumerate(self.walk_deals())
                 if not isinstance(instrument, Deal)}
 
+    def calculation_refusals(self):
+        """What the `Calculation` block's own declarations say against it, as the class its `Object`
+        names judges it before a run (`Calculation.refusals`) - or that it names no calculation."""
+        block = self.deals['Calculation']
+        try:
+            return calculation_class(block.get('Object')).refusals(block)
+        except ValueError as refusal:
+            return [str(refusal)]
+
     def validate(self):
         """What stops this job running, as data: the authoring messages of every deal in the book,
-        and the price factors the book names that the market data has no block for.
+        the price factors the book names that the market data has no block for, and what the
+        `Calculation` block's declarations say against it.
 
         Keyed by the deal's `Reference`, with the walk position appended where that is blank or
         repeated. A deal whose VALUES are not what it declares them to be does not reach the factor
         walk (`factor_universe`) - discovery reads the block's own dates and amounts, and one that
-        never parsed is what it died on. Nothing here raises, and a message never stops a deal
-        pricing.
+        never parsed is what it died on - and neither does any deal under a refused calculation.
+        Nothing here raises, and a message never stops a deal pricing.
         """
         deals, nameless = {}, self.nameless_deals()
         for position, instrument in enumerate(self.walk_deals()):
@@ -946,7 +964,8 @@ class Config(object):
                 key = key or '#{}'.format(position)
                 deals[key if key not in deals else '{}#{}'.format(key, position)] = messages
 
-        return {'deals': deals, 'factors': self.factor_universe()['missing']}
+        return {'deals': deals, 'factors': self.factor_universe()['missing'],
+                'calculation': self.calculation_refusals()}
 
     def describe(self):
         """What the engine made of this job without running it: the book counted by the `Object` a

@@ -179,7 +179,8 @@ dict. It runs nothing, prices nothing and changes nothing:
 cx = rf.Context()
 cx.load_json('fxfwd.json')
 cx.validate()
-{'deals': {'FWD1': ['Sell_Discount_Rate is required']}, 'factors': ['InterestRate.ZAR']}
+{'deals': {'FWD1': ['Sell_Discount_Rate is required']}, 'factors': ['InterestRate.ZAR'],
+ 'calculation': []}
 ```
 
 - `'deals'` — the authoring messages of every deal in the book, keyed by the deal's `Reference`
@@ -190,9 +191,13 @@ cx.validate()
 - `'factors'` — every price factor the book names that the market data has no `Price Factors` block
   for, spelled as the key you would add. A factor with no block is never built, so the deals that
   reference it are dropped from the portfolio when the run reaches them.
+- `'calculation'` — what the `Calculation` block's own declarations say against it, or that its
+  `Object` names no calculation: a field it must state (`Currency is required`) or a value that
+  is not what its field declares. A run refuses the block by name for the same messages, and a
+  refused block is not walked, so `'factors'` is empty beside it.
 
-Both empty means nothing here can tell you the job will fail. A message never stops a deal pricing:
-the engine still fails exactly where it always failed, and this says so first.
+All three empty means nothing here can tell you the job will fail. A deal's message never stops it
+pricing: the engine still fails exactly where it always failed, and this says so first.
 
 `cx.describe()` answers the other question — not what is wrong with the job, but what the engine
 made of it. Also read-only, on the same discovery walk:
@@ -209,7 +214,8 @@ cx.describe()
   names no deal type is counted under nothing: it keeps that name and nothing else, and
   `validate()` is where it is reported, by its walk position and the name as authored.
 - `'factors'` — the same walk as `validate()`, both halves this time: `resolved` is what a run would
-  build, and `missing` is the want-list `validate()` returns on its own.
+  build, and `missing` is the want-list `validate()` returns on its own. Under a refused
+  `Calculation` block both are empty and its messages sit beside them under `'calculation'`.
 - `'calculation'` — the `Calculation` block as loaded.
 
 ## Patching market values and replaying a run

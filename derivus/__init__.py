@@ -226,7 +226,7 @@ def run_baseval(context, prec=torch.float64, overrides=None):
         update_dict(params_bv, overrides)
 
     calc = construct_calculation('Base_Revaluation', context, device=device, prec=prec)
-    out = calc.execute(params_bv)
+    out = calc.execute(calc.judged(params_bv))
     return calc, out
 
 
@@ -334,6 +334,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     if overrides is not None:
         update_dict(params_mc, overrides)
 
+    Credit_Monte_Carlo.judged(params_mc)
     if params_mc.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
         cva_sect = params_mc['Credit_Valuation_Adjustment']
         if cva_sect.get('CDS_Tenors'):

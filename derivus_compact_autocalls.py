@@ -234,6 +234,7 @@ def validate(doc):
     finally:
         os.remove(path)
     return ['', 'engine validation: %d deals with messages, %d factors missing' % (len(report['deals']), len(report['factors']))] + [
+        '  - calculation: %s' % message for message in report['calculation']] + [
         '  - %s: %s' % (ref, '; '.join(msgs)) for ref, msgs in report['deals'].items()] + ['  - missing %s' % f for f in report['factors']]
 
 

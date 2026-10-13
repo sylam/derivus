@@ -382,3 +382,30 @@ def test_an_fx_resetting_nominal_off_a_frozen_pair_is_refused_by_name(tmp_path):
         mtm_cross_currency_swap(), XCCY_FACTORS, base_valuation=True))
     assert row_value(base, 'XCCY_MTM') == pytest.approx(17310252.8668, rel=1e-8), (
         'one column on both sides is untouched - a base valuation prices the frozen pair')
+
+
+def test_a_calculation_stating_no_currency_is_refused_by_name(tmp_path):
+    """Row: every calculation declared `Currency` with a default, so a job stating none was valued in
+    rand or dollars without a word, and `validate` died in the factor walk on `KeyError:
+    'Currency'`. The same document stating one is the control: nothing is said against its block,
+    and it prices.
+
+    Killing mutations: `Base_Revaluation`'s `Currency` declared `default='ZAR'` again, which judges
+    the block clean and walks it into `KeyError: 'Currency'`; the factor walk run on a refused block,
+    the same `KeyError`."""
+    document = frozen_world(ENERGY_LEG, ENERGY_FACTORS, base_valuation=True)
+    stated = derivus.Context()
+    stated.load_json(authored(tmp_path, 'stated.json', document))
+    del document['Calc']['Calculation']['Currency']
+    unstated = derivus.Context()
+    unstated.load_json(authored(tmp_path, 'unstated.json', document))
+
+    verdict = unstated.validate()
+    assert (verdict['calculation'], verdict['factors']) == (['Currency is required'], [])
+    assert unstated.describe()['factors'] == {
+        'resolved': [], 'missing': [], 'calculation': ['Currency is required']}
+    with pytest.raises(ValueError, match='BaseValuation: Currency is required'):
+        unstated.run_job()
+
+    assert stated.validate()['calculation'] == []
+    assert row_value(stated.run_job()[1], 'PLAT_FEB26') == pytest.approx(27675.088004, rel=1e-8)

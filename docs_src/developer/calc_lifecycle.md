@@ -24,6 +24,14 @@ comes from the class's `fields` through `declared_defaults`. `run_simm` injects 
 device: `SIMM` values each booked trade through `run_baseval`, once per market input moved by ISDA's
 definition, all on one seed.
 
+The calculation's `Currency` is required: no default names the currency a book reports in. Before
+anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
+judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a
+`ValueError` names every field it refuses at once: `run_baseval` and `run_cmc` judge the merged
+block, `HedgeMonteCarlo`, `SIMM` and the diary where they complete it. `Config.validate` reports the
+same messages under `calculation`, and a refused block is not walked for factors.
+**Held by** `tests/test_loud_refusals.py::test_a_calculation_stating_no_currency_is_refused_by_name`.
+
 ## Compile phase 1 — `calculate_dependencies` {#compile-phase-1-calculate_dependencies}
 
 `Config.calculate_dependencies` discovers the factor universe, sorts it topologically and splits

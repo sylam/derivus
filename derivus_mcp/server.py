@@ -278,7 +278,8 @@ def _booking(outcome):
     verdict = outcome.pop('validate', None) or {}
     issues = {name: count for name, count in
               (('deal_messages', len(verdict.get('deals', {}))),
-               ('missing_factors', len(verdict.get('factors', [])))) if count}
+               ('missing_factors', len(verdict.get('factors', []))),
+               ('calculation_messages', len(verdict.get('calculation', [])))) if count}
     if issues:
         outcome['book_issues'] = dict(issues, hint='validate_book lists them')
     return outcome
@@ -1364,7 +1365,8 @@ async def execute_book(calculation_overrides: dict | None = None,
 @MCP.tool(annotations=READ_ONLY)
 def validate_book() -> dict:
     """What would stop the live book running, without running it: authoring messages per deal
-    reference, and the price factors named by deals that the market data has no block for."""
+    reference, the price factors named by deals that the market data has no block for, and what
+    the book's `Calculation` block's own declarations say against it."""
     live = service().call('GET', '/book')
     return service().call('POST', '/validate', json=live['document'])
 

@@ -367,6 +367,21 @@ class Calculation(object):
     def execute(self, params):
         pass
 
+    @classmethod
+    def refusals(cls, params):
+        """What this calculation's declarations say against `params` completed as a run completes
+        them (`declared_defaults`): a REQUIRED field left unstated, or a value that is not what its
+        field declares."""
+        return schema.validate_block(cls, declared_defaults(cls, params))
+
+    @classmethod
+    def judged(cls, params):
+        """`params`, or a `ValueError` naming every one of its `refusals` at once."""
+        refused = cls.refusals(params)
+        if refused:
+            raise ValueError('{}: {}'.format(cls.calc_type, '; '.join(refused)))
+        return params
+
     def factor_leaf(self, factor, current_val, requires_grad, offset=0.0):
         """The AAD leaf for `factor`, connected to a calibration where one exists.
 
@@ -949,7 +964,7 @@ class Credit_Monte_Carlo(Calculation):
     calc_type = 'CreditMonteCarlo'
     fields = [
         F('Base_Date', 'Date', default=''),
-        F('Currency', 'Text', default='ZAR'),
+        F('Currency', 'Text', default=REQUIRED),
         F('Time_Grid', 'Text', default='0d 2d 1w(1w) 3m(1m) 2y(3m)'),
         F('Deflation_Interest_Rate', 'Text', default='ZAR-SWAP'),
         F('Percentile', 'Text', default='95'),
@@ -2006,7 +2021,7 @@ class Base_Revaluation(Calculation):
     calc_type = 'BaseValuation'
     fields = [
         F('Base_Date', 'Date', default=''),
-        F('Currency', 'Text', default='ZAR'),
+        F('Currency', 'Text', default=REQUIRED),
         F('MCMC_Simulations', 'Integer', default=1 << 14,
           description='Inner Monte Carlo paths a simulated pricer spends per reporting row, '
                       'mirrored (z, -z); an analytic deal never reads it'),
@@ -2370,7 +2385,7 @@ class Diary(Base_Revaluation):
         tree is matched to the loaded one by reference, so two deals sharing one - which the book's
         own positional path is the answer to - are read as the live one.
         """
-        params = declared_defaults(type(self), params)
+        params = declared_defaults(type(self), self.judged(params))
         base_date = pd.Timestamp(params['Run_Date'])
         self.params = params
         shared = self.update_factors(params, base_date)
@@ -2740,7 +2755,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
     calc_type = 'HedgeMonteCarlo'
     fields = [
         F('Base_Date', 'Date', default=''),
-        F('Currency', 'Text', default='ZAR'),
+        F('Currency', 'Text', default=REQUIRED),
         F('Time_Grid', 'Text', default='0d 1d(1d) 4m'),
         F('Calendar', 'Text', default='',
           description='Holiday calendar naming the business day the roll steps on'),
@@ -3078,7 +3093,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         fresh state-at-t leaves (`Bundle.inner_mc_grad`), so it needs no outer leaf.
         """
         # the declaration is the single source of an omitted field's default
-        params = declared_defaults(type(self), params)
+        params = declared_defaults(type(self), self.judged(params))
         # `.get` with no fallback on purpose: HedgeMonteCarlo declares no `Greeks` field, so there
         # is no default to publish - it only refuses the value that would silently do nothing
         if params.get('Greeks') == 'All':
@@ -3771,7 +3786,7 @@ class SIMM(Calculation):
     Bump = namedtuple('Bump', 'factor coordinates split move base')
     fields = [
         F('Base_Date', 'Date', default=''),
-        F('Currency', 'Text', default='USD',
+        F('Currency', 'Text', default=REQUIRED,
           description='The calculation currency the CRIF amounts are in'),
         F('Mapping', 'Text', default=REQUIRED,
           description='Path to the regime mapping: per price factor its SIMM coordinates or null, '
@@ -3801,8 +3816,8 @@ class SIMM(Calculation):
         """The run's inputs read and its book listed - what the run and each of its workers share."""
         from .bootstrappers import market_prices_for
 
-        params = declared_defaults(type(self), params)
-        missing = [name for name in ('Base_Date', 'Mapping', 'Parameters') if not params.get(name)]
+        params = declared_defaults(type(self), self.judged(params))
+        missing = [] if params['Base_Date'] else ['Base_Date']
         missing += ['a non-zero ' + name for name in ('Rate_Shift', 'Spot_Shift', 'Vol_Shift')
                     if not params[name]]
         if missing:
@@ -4186,6 +4201,17 @@ class SIMM(Calculation):
 
 def construct_calculation(calc_type, config, **kwargs):
     return globals().get(calc_type)(config, **kwargs)
+
+
+def calculation_class(calc_type):
+    """The calculation a job's `Object` names - the class declaring it as its own `calc_type` -
+    refused by name where none does."""
+    declared = {cls.__dict__['calc_type']: cls for cls in globals().values()
+                if isinstance(cls, type) and 'calc_type' in cls.__dict__}
+    if calc_type not in declared:
+        raise ValueError('{!r} is no calculation - this engine runs {}'.format(
+            calc_type, ', '.join(sorted(declared))))
+    return declared[calc_type]
 
 
 if __name__ == '__main__':

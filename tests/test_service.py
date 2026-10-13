@@ -312,7 +312,7 @@ def test_a_missing_book_file_starts_blank_and_takes_its_first_booking(tmp_path):
         assert live['document']['Calc']['Calculation']['Base_Date'] == {
             '.Timestamp': datetime.date.today().strftime('%Y-%m-%d')}
         assert CLIENT.post('/validate', json=live['document']).json() == {
-            'deals': {}, 'factors': []}
+            'deals': {}, 'factors': [], 'calculation': []}
 
         first = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': {
             'Object': 'FixedCashflowDeal', 'Reference': 'FIRST', 'Currency': 'USD',
@@ -353,7 +353,7 @@ def test_a_booking_lands_in_the_file_and_every_client_sees_it(book):
     assert on_disk['Calc']['Deals']['Deals']['Children'][1][
         'Instrument']['.Deal']['Reference'] == 'CF2'
     # and the written file is still a job the other binding loads and validates clean
-    assert in_process(on_disk).validate() == {'deals': {}, 'factors': []}
+    assert in_process(on_disk).validate() == {'deals': {}, 'factors': [], 'calculation': []}
 
 
 def test_a_book_edited_twice_inside_one_stamp_reads_back_the_second_edit(book):
@@ -642,7 +642,7 @@ def test_a_book_carrying_an_unnamed_deal_names_it_rather_than_dying(tmp_path):
         assert priced['status'] == 'error' and priced['error'] == named
         assert risk.status_code == 422 and named in risk.json()['detail']
         assert CLIENT.post('/validate', content=dump(document), headers=JSON).json() == {
-            'deals': {'#1': [named]}, 'factors': []}
+            'deals': {'#1': [named]}, 'factors': [], 'calculation': []}
     finally:
         service.BOOK = None
 
@@ -718,7 +718,7 @@ def test_an_amendment_lands_in_the_file(book):
     assert outcome['etag'] != etag
     assert on_disk['Calc']['Deals']['Deals']['Children'][0][
         'Instrument']['.Deal']['Amount'] == 750_000.0
-    assert in_process(on_disk).validate() == {'deals': {}, 'factors': []}
+    assert in_process(on_disk).validate() == {'deals': {}, 'factors': [], 'calculation': []}
 
 
 def test_a_bad_amendment_touches_nothing(book):
@@ -801,6 +801,23 @@ def test_a_calculation_override_is_judged_against_its_own_declarations(book):
     assert declared.status_code == 200
     assert CLIENT.get('/results/{}'.format(
         declared.json()['result_id'])).json()['status'] == 'done'
+
+
+def test_a_calculation_stating_no_currency_is_refused_by_validate():
+    """`/validate` says what a job's `Calculation` block's own declarations say against it under
+    `calculation`, and walks no factor for a block stating no `Currency`, the walk having no report
+    currency to name; the skeleton stating one validates clean.
+
+    KILLING MUTATIONS: the base valuation's `Currency` declared with a default again, which judges
+    the block clean and walks it; the factor walk run on the refused block. Each dies on
+    `KeyError: 'Currency'`.
+    """
+    skeleton = CLIENT.get('/schema/job').json()
+    assert CLIENT.post('/validate', json=skeleton).json()['calculation'] == []
+
+    del skeleton['Calc']['Calculation']['Currency']
+    assert CLIENT.post('/validate', json=skeleton).json() == {
+        'deals': {}, 'factors': [], 'calculation': ['Currency is required']}
 
 
 def test_a_credit_monte_carlo_this_book_cannot_frame_refuses_before_it_draws(book):
@@ -4355,7 +4372,7 @@ def test_validate_over_http_is_the_verb_verbatim():
 
     assert over_http == in_process(document).validate()
     assert over_http == {'deals': {'BIN1': ['Payoff is required']},
-                         'factors': ['InterestRate.GBP']}
+                         'factors': ['InterestRate.GBP'], 'calculation': []}
 
 
 def test_a_browser_is_allowed_to_call_the_service_at_all():
@@ -4381,7 +4398,8 @@ def test_the_job_skeleton_is_a_job_that_loads():
     result_id, result = run(skeleton)
     payment = skeleton['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
 
-    assert CLIENT.post('/validate', json=skeleton).json() == {'deals': {}, 'factors': []}
+    assert CLIENT.post('/validate', json=skeleton).json() == {
+        'deals': {}, 'factors': [], 'calculation': []}
     assert result['status'] == 'done'
     assert mtm(result_id)['CF1'] == pytest.approx(
         payment['Amount'] * np.exp(-0.02 * 2.0), rel=1e-3)

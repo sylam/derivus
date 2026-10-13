@@ -43,8 +43,10 @@ export function JobHeader() {
       </button>
       {validate && (
         Object.keys(validate.deals).length === 0 && validate.factors.length === 0
+          && validate.calculation.length === 0
           ? <span style={{ color: 'var(--good)' }}>✓ validates clean</span>
           : <span className="bad">
+              {validate.calculation.length > 0 && `calculation: ${validate.calculation.join('; ')} · `}
               {Object.entries(validate.deals).map(([ref, messages]) =>
                 `${ref}: ${messages.join('; ')}`).join(' · ')}
               {validate.factors.length > 0 && ` · no market data: ${validate.factors.join(', ')}`}

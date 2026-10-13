@@ -106,7 +106,9 @@ export type DescribeResult = {
   cost?: { class: number; estimate: number; basis: string };
 };
 
-export type ValidateResult = { deals: Record<string, string[]>; factors: string[] };
+export type ValidateResult = {
+  deals: Record<string, string[]>; factors: string[]; calculation: string[];
+};
 
 export type BookResponse = { document: JobDoc; etag: string; path: string };
 
