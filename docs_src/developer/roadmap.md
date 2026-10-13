@@ -127,15 +127,12 @@ there.
 
 ## Tidy-ups
 
-- **What is left of the test fold** (2026-10-09). The record and service modules (625 tests) are
-  `fsync`-bound: each test mints its own home, because `spine.advancing` keeps its fold pairs
-  process-wide and homes copied from one template would read each other's folds. That module-level
-  cache belongs on the log handle or the served book
-  ([Architecture](architecture.md#market-data-context-job)): S. 146 of these tests name a mutation
-  nobody has run red, and 34 patch `session.BloombergSession` where a declared canned-terminal entry
-  would do (S). `test_notebooks` needs a world file that is not in the repository.
-- `gates/impacted.py` fails open on any change to `derivus/__init__.py`; read line by line it would
-  still select nine tests in ten.
+- **What is left of the test fold** (2026-10-09). The record and service modules (635 tests) are
+  `fsync`-bound: most mint a home per test where a copy of the session's (`recorded`,
+  `tests/conftest.py`) would do, as the diary, P&L and engine modules do. 146 of these tests name a
+  mutation nobody has run red, and 34 patch `session.BloombergSession` where a declared
+  canned-terminal entry would do (S). `test_notebooks` needs a world file that is not in the
+  repository.
 - `derivus_jupyter.py` (tracked, not in the wheel) stays until the web UI exports a calculation as
   a job and links each result table for download, as it does; it then retires. It raises on three
   field names outside its write allowlist and on multi-column Tables outside a four-name allowlist,

@@ -527,6 +527,9 @@ class Book:
         # against by `structures.book_risk`'s hash: a standing book pays one greeks run for each
         self.risk_cache = utils.LRUCache(8)
         self.vol_risk_cache = utils.LRUCache(16)
+        # the record's folds a booking or a read advances rather than re-walks (`spine.advancing`),
+        # kept as long as the book is served
+        self.folds = {}
 
     def _current(self, strict=False):
         """The etag of the file as it stands. Its text is read where the stamp or the size moved,
@@ -744,7 +747,7 @@ def prepare(job: dict):
     here and run there is one plan rather than two.
     """
     try:
-        job = spine.compiled_job(job)
+        job = spine.compiled_job(job, folds=folds())
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
     context = load(job)
@@ -793,7 +796,7 @@ def executed(job, book):
     try:
         # the PLAN is terms plus the observations the record holds, so what runs and what an
         # auditor recompiles are one document. Without a home this is the document as posted
-        job = spine.compiled_job(job)
+        job = spine.compiled_job(job, folds=folds())
     except spine.SpineRefused as refused:
         raise HTTPException(422, str(refused))
     context = context_for(job)
@@ -871,6 +874,12 @@ def live_book():
         raise HTTPException(404, 'No book is being served - start DV_Service (it serves '
                                  'DV_HOME/book.json by default; --book names another file)')
     return BOOK
+
+
+def folds():
+    """The pairs the served book keeps the record's folds advanced in, or None where no book is
+    served, which folds from the newest seed (`spine.advancing`)."""
+    return None if BOOK is None else BOOK.folds
 
 
 @app.get('/book', summary='The live job document this service serves')
@@ -966,7 +975,7 @@ def priced(document, runs=None):
     where it `runs` as a calculation that reads one - and the file as it stands where no home is
     configured. A read never refuses a print nobody ordered, so the compile is not strict; a
     balance in an asset the book carries no spot for refuses it all the same."""
-    return spine.compiled_job(document, strict=False, runs=runs)
+    return spine.compiled_job(document, strict=False, runs=runs, folds=folds())
 
 
 def enclosing_set(document, deal_path):
@@ -1101,7 +1110,7 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
         instrument_of(deal_at(document, deal_path)), quantity, counterparty,
         node.get('Reference'), execution_reference, actor_name=actor, book_name=book, price=price,
         currency=currency, rate=rate, agreement=agreement, portfolio=portfolio, plan=plan,
-        terms=terms, quote=quote, once=once)
+        terms=terms, quote=quote, once=once, folds=folds())
 
 
 def spine_amendment(document, deal_path, before, actor=None, plan=None, terms=None):
@@ -1116,7 +1125,7 @@ def spine_amendment(document, deal_path, before, actor=None, plan=None, terms=No
     if not spine.configured():
         return {}
     return spine.amend(before, instrument_of(deal_at(document, deal_path)), actor_name=actor,
-                       book_name=book_name(document), plan=plan, terms=terms)
+                       book_name=book_name(document), plan=plan, terms=terms, folds=folds())
 
 
 def deal_expiry(deal):
@@ -2128,7 +2137,7 @@ def sighted(document, sight, verb=None, rows=None):
     book is. Yes throughout where nothing narrows the seat. `rows` are the positions standing."""
     if sight is None:
         return lambda instrument: True
-    rows = spine.standing() if rows is None else rows
+    rows = spine.standing(folds=folds()) if rows is None else rows
     held = {row['instrument'] for row in rows}
     seen = {row['instrument'] for row in spine.visible(rows, sight, verb=verb)}
     legs = PnL.held_legs(job_children(document), held)
@@ -2159,7 +2168,7 @@ def book_positions(actor: str = None):
     nodes it holds any grant at (`spine.visible`). 404 where no home is configured.
     """
     document, _ = recording().read()
-    standing = spine.visible([row for row in spine.standing() if row['quantity']],
+    standing = spine.visible([row for row in spine.standing(folds=folds()) if row['quantity']],
                              spine.sight(actor))
     wanted = {row['instrument'] for row in standing}
     held, legs = file_positions(document, wanted), PnL.held_legs(job_children(document), wanted)
@@ -2575,7 +2584,7 @@ def live_marks(document, book, since):
     instrument it holds or traded since `since`, run here and recorded nowhere."""
     wanted = marked_instruments(book, since['lsn'])
     job = PnL.marks_job(document, PnL.held_terms(document, wanted, spine.stored))
-    context = load(spine.compiled_job(job, strict=False))
+    context = load(spine.compiled_job(job, strict=False, folds=folds()))
     _, out = context.run_job()
     return {'day': structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime(
         '%Y-%m-%d'), 'lsn': spine.pin()['lsn'], 'units': PnL.unit_marks(as_json(out['Results'])),
@@ -2627,7 +2636,7 @@ def sensed(job):
     are built from where they refit (`quote_context`): its value, `{block, quote, value, level}`
     per quote, the factors those stand for, and `{factor, tenor?, value, level}` per factor."""
     run = spine.compiled_job(dict(job, Calc=dict(job['Calc'], Calculation=dict(
-        job['Calc']['Calculation'], Greeks='First'))), strict=False)
+        job['Calc']['Calculation'], Greeks='First'))), strict=False, folds=folds())
     context, note = quote_context(run)
     _, out = context.run_job()
     quotes, quoted = quote_rows(context.current_cfg)
@@ -2644,7 +2653,7 @@ def carried(job, day):
     if not write:
         raise ValueError('the start would not roll onto {}: {}'.format(
             day, '; '.join(outcome['refused'])))
-    _, out = load(spine.compiled_job(rolled, strict=False)).run_job()
+    _, out = load(spine.compiled_job(rolled, strict=False, folds=folds())).run_job()
     return sum(PnL.unit_marks(as_json(out['Results'])).values())
 
 
@@ -2740,7 +2749,7 @@ def diary_rows(job, lsn):
     keyed as the book's own diary keys it, and `{leg address: unit}` for every leg of a structure
     among them."""
     units = {node['Instrument']['.Deal']['Reference'] for node in job_children(job)}
-    context = load(spine.compiled_job(job, lsn=lsn, strict=False))
+    context = load(spine.compiled_job(job, lsn=lsn, strict=False, folds=folds()))
     return (diary(context, dict(booked_instruments(job), **{
         address: address for address in units})), PnL.held_legs(job_children(job), units))
 
@@ -2804,9 +2813,10 @@ def collateral_calls(document, marks, day, market, sight, verb=None, positions=N
     over that close alone, every position held through it (`valued_between`), the paper and the
     `cash` fold the record's at its head, a balance held as of the day - or every movement filed,
     whatever its value date, where `filed`. No P&L is read where the seat sees no call."""
-    head, movements = spine.cash_standing()
+    head, movements = spine.cash_standing(folds=folds())
     agreements = Collateral.seen(Collateral.collateralised(spine.agreements(head)),
-                                 spine.standing() if positions is None else positions, sight, verb)
+                                 spine.standing(folds=folds()) if positions is None else positions,
+                                 sight, verb)
     calls = []
     if agreements:
         close = PnL.loaded(marks[day], spine.stored)
@@ -3071,7 +3081,7 @@ def book_worklist(actor: str = None):
     book, sight = book_name(document), spine.sight(actor)
     vocabulary, confirmed = spine.package().vocabulary, spine.package().verbs.CONFIRMED
     day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
-    rows = [row for row in spine.standing() if row['book'] == book]
+    rows = [row for row in spine.standing(folds=folds()) if row['book'] == book]
     names = {address: reference for reference, address in booked_instruments(document).items()}
     moved = {row['subject']: row for row in spine.lifecycle()['transitions']}
     market = spine.designation(spine.PNL)
@@ -6704,7 +6714,7 @@ def decided(request, verb):
         quoted, ticket = [spine.quote_at(accepted['lsn'], quote_id)], accepted['ticket']
 
     def carrying():
-        return [(row, entry) for row in spine.standing() for entry in row['tickets']
+        return [(row, entry) for row in spine.standing(folds=folds()) for entry in row['tickets']
                 if entry['ticket'] == ticket]
 
     # where the trade books, else - a ticket no tier admitted - where its quote would have

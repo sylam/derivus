@@ -15,7 +15,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from derivus import service, spine, utils
 from derivus.config import as_json
 from derivus_mcp import server as binding
-from derivus_spine import SpineLog, init_home, oracle, policy, verbs
+from derivus_spine import SpineLog, oracle, policy, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 import rates_world
@@ -69,17 +69,6 @@ def unit(deal, base, spot):
     column = {name: position for position, name in enumerate(table['columns'])}
     return next(float(row[column['Value']]) for row in table['data']
                 if row[column['Reference']] == deal['Reference'])
-
-
-@pytest.fixture
-def recorded(tmp_path, monkeypatch):
-    """A minted spine home with an actor for the appends."""
-    home = tmp_path / 'spine'
-    init_home(home, ACTOR)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
-    monkeypatch.setenv('DV_HOME', str(tmp_path))
-    yield home
 
 
 @pytest.fixture

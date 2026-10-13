@@ -46,6 +46,7 @@ import hashlib
 import itertools
 import json
 import os
+import shutil
 import sys
 import threading
 
@@ -169,18 +170,6 @@ def unrecorded(tmp_path, monkeypatch):
     monkeypatch.delenv('DV_SPINE_ACTOR', raising=False)
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     yield tmp_path
-
-
-@pytest.fixture
-def recorded(tmp_path, monkeypatch):
-    """A minted spine home with an actor for the appends. Genesis is four events, so every head
-    assertion below counts from there."""
-    home = tmp_path / 'spine'
-    init_home(home, ACTOR)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
-    monkeypatch.setenv('DV_HOME', str(tmp_path))
-    yield home
 
 
 @pytest.fixture
@@ -1965,7 +1954,8 @@ def test_a_board_stamped_only_on_its_rows_has_an_age(recorded, quoting, tmp_path
 
 
 def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quoting):
-    """`advancing`'s three laws, read off the fold itself rather than through a booking.
+    """`advancing`'s three laws, read off the fold itself rather than through a booking, on the
+    pairs the served book keeps.
 
     It ADVANCES, so a verdict filed after the pair was taken is in the next answer. It is BOUNDED at
     the position it answers, so a frame appended between two asks is not applied twice - a
@@ -1982,7 +1972,8 @@ def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quotin
     plan, other = 'a' * 64, 'b' * 64
 
     def verdicts_at(lsn=None):
-        return spine.folded(lambda log: spine.advancing(log, decisions, lsn)['plans'])
+        return spine.folded(
+            lambda log: spine.advancing(log, decisions, lsn, service.folds())['plans'])
 
     spine.approve(plan, actor_name=ACTOR, book_name='spine-desk')
     first = verdicts_at()
@@ -2002,7 +1993,7 @@ def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quotin
     init_home(elsewhere, ACTOR)
     log = opened(elsewhere)
     try:
-        assert spine.advancing(log, decisions)['plans'] == {}
+        assert spine.advancing(log, decisions, folds=service.folds())['plans'] == {}
     finally:
         log.close()
     assert [row['lsn'] for row in verdicts_at()[plan]] == [first[plan][0]['lsn']]
@@ -2011,24 +2002,48 @@ def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quotin
 def test_a_home_re_minted_where_the_last_one_stood_is_a_different_record(recorded, quoting,
                                                                         tmp_path):
     """THE PAIR IS KEYED ON THE HISTORY, NOT THE PATH. A home deleted and minted again at the same
-    place holds none of the verdicts the last one did, and a fold that answered the old ones would
-    route a booking on a record that no longer exists - silently, which is the unsafe direction.
+    place, under the book that kept the pairs, holds none of the verdicts the last one did, and a
+    fold that answered the old ones would route a booking on a record that no longer exists -
+    silently, which is the unsafe direction.
 
     Killing mutation: the key taken off `log.home`, which answers the predecessor's history.
     """
-    import shutil
-
     decisions = spine.package().projections.PROJECTORS['decisions']
+
+    def plans():
+        return spine.folded(
+            lambda log: spine.advancing(log, decisions, folds=service.folds())['plans'])
+
     spine.approve('a' * 64, actor_name=ACTOR, book_name='spine-desk')
-    assert spine.folded(lambda log: spine.advancing(log, decisions))['plans'].get('a' * 64)
+    assert plans().get('a' * 64)
 
     shutil.rmtree(str(recorded))
     init_home(recorded, ACTOR)
     spine.approve('c' * 64, actor_name=ACTOR, book_name='spine-desk')
 
-    standing = spine.folded(lambda log: spine.advancing(log, decisions))['plans']
+    standing = plans()
     assert 'a' * 64 not in standing, 'the pair answered a history this home no longer has'
     assert 'c' * 64 in standing
+
+
+def test_a_home_copied_from_another_is_its_own_record(minted, tmp_path, monkeypatch):
+    """THE PAIRS ARE THE SERVED BOOK'S, NOT THE PROCESS'S. Two homes copied from one minted record
+    share its genesis and part at the first fact either files; each is served with the pairs its
+    own book keeps, so a fold on one never answers from the other's - which is what lets a gate copy
+    a minted home rather than mint its own.
+
+    Killing mutation: the pairs kept at module level under the genesis alone, which answers the
+    second copy with the first copy's verdict.
+    """
+    decisions = spine.package().projections.PROJECTORS['decisions']
+    monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
+    for name, plan in (('first', 'a' * 64), ('second', 'b' * 64)):
+        shutil.copytree(str(minted), str(tmp_path / name))
+        monkeypatch.setenv('DV_SPINE_HOME', str(tmp_path / name))
+        spine.approve(plan, actor_name=ACTOR, book_name='spine-desk')
+        own = {}
+        plans = spine.folded(lambda log: spine.advancing(log, decisions, folds=own))['plans']
+        assert set(plans) == {plan}, 'the {} copy answered another copy\'s history'.format(name)
 
 
 def test_the_board_is_aged_at_the_moment_the_quote_was_struck(recorded, quoting):

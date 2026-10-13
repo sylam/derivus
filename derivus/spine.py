@@ -135,13 +135,6 @@ _WRITER = threading.Lock()
 #: set is read again rather than every request reading it.
 _KEYSET = [None, None, None]
 
-#: The folds a BOOKING advances rather than re-walking, as the `(lsn, state)` pair `projections.fold`
-#: takes: projector name -> that pair, under the one HISTORY they were folded on. A box serves one
-#: record, so a history that changes drops the lot rather than growing a map nobody evicts.
-#: Assignment is the only write and the fold copies before it advances, so a second thread costs at
-#: worst a pair one position older.
-_ADVANCED, _ADVANCED_HOME = {}, None
-
 
 class SpineRefused(ValueError):
     """The book of record declining, in the engine's own exception vocabulary.
@@ -400,39 +393,40 @@ def _rows(projector, lsn=None):
     return folded(fold)
 
 
-def advancing(log, projector, lsn=None):
-    """`projector`'s state at `lsn`, ADVANCED from the position this process last folded it to.
+def advancing(log, projector, lsn=None, folds=None):
+    """`projector`'s state at `lsn`, ADVANCED from the pair `folds` holds for it.
 
     The strip's own pattern moved onto the booking path: a fold takes an `(lsn, state)` pair, so a
     booking pays for the events since the last one rather than for every decision the desk has ever
     filed - which is the difference between a constant and a number that grows with exactly the rows
-    this verb mints. The fold is PURE in that pair, copying the state before it advances it, so what
-    is held here is never what a caller reads.
+    this verb mints. `folds` is `{projector name: pair}`, kept by whatever outlives one act - the
+    served book's - and None folds from the newest seed. The fold is PURE in that pair, copying the
+    state before it advances it, so what is held there is never what a caller reads; assignment is
+    the only write, so a second thread costs at worst a pair one position older.
 
     Bounded at the position it answers rather than at the end of the platter, so the pair says
     exactly what it covers and a frame appended mid-fold is not applied twice. A position BEHIND the
     pair, or one no pair is held for, folds from the newest seed at or behind it (genesis where
-    there is none), and a history that is not the one the pairs were taken on drops them
-    - keyed on the GENESIS EVENT HASH rather than on the path, the way `read_seed` checks a close's
-    own hash, so a home re-minted where the last one stood is a different record and not a fold
-    that answers its predecessor's. What comes back is the pair's own state, so a caller READS it
-    and does not edit it - and a caller at the position the pair stands at pays nothing.
+    there is none), and a pair taken on another history is passed over - keyed on the GENESIS EVENT
+    HASH rather than on the path, the way `read_seed` checks a close's own hash, so a home re-minted
+    where the last one stood is a different record and not a fold that answers its predecessor's.
+    What comes back is the pair's own state, so a caller READS it and does not edit it - and a
+    caller at the position the pair stands at pays nothing.
     """
-    global _ADVANCED_HOME
+    if folds is None:
+        return fold_from(log, projector, lsn)
     projections = package().projections
     at = log.head()[0] if lsn is None else lsn
     genesis = log.frame_at(1)['event_hash']
-    if _ADVANCED_HOME != genesis:
-        _ADVANCED.clear()
-        _ADVANCED_HOME = genesis
-    held = _ADVANCED.get(projector.name)
+    held = folds.get(projector.name)
+    held = held if held and held['genesis'] == genesis else None
     if held and held['lsn'] == at:
         return held['state']
     state = projections.fold(log, projector, lsn=at,
                              seed=held if held and held['lsn'] <= at
                              else projections.latest_seed(log, projector, seeds(), at))
-    _ADVANCED[projector.name] = {'projector': projector.name, 'version': projector.version,
-                                 'lsn': at, 'state': state}
+    folds[projector.name] = {'projector': projector.name, 'version': projector.version,
+                             'genesis': genesis, 'lsn': at, 'state': state}
     return state
 
 
@@ -556,7 +550,7 @@ def observations(lsn=None, indices=None):
     return folded(fold)
 
 
-def compiled_job(document, lsn=None, strict=True, runs=None):
+def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
     """The job the plan hashes, with every position the record holds at `lsn` written at its net
     and every declared observation filled. Unchanged where no home is configured.
 
@@ -589,7 +583,7 @@ def compiled_job(document, lsn=None, strict=True, runs=None):
     written none and a settlement moves neither its plan nor what it caches; it still refuses a
     balance its spots cannot cross, as every valuation does. `runs` False is a job that values
     nothing - a diary's schedules - and reads no balance at all. The margin is never written, nor
-    a movement dated after the base date.
+    a movement dated after the base date. The `cash` fold advances in `folds` (`advancing`).
     """
     if not configured():
         return document
@@ -598,7 +592,7 @@ def compiled_job(document, lsn=None, strict=True, runs=None):
     except ValueError:
         return document
     held = _nets(lsn, book_name(document))
-    balances = {} if runs is False else _balances(document, lsn)
+    balances = {} if runs is False else _balances(document, lsn, folds)
     if (runs or document['Calc']['Calculation'].get('Object')) == Base_Revaluation.calc_type:
         balances = {}
     if not held and not balances and not _observing(document):
@@ -643,13 +637,13 @@ def _nets(lsn=None, book=None):
     return nets
 
 
-def _balances(document, lsn=None):
+def _balances(document, lsn=None, folds=None):
     """`{agreement: balance}` - the `Opening_Balance` of each collateralised netting set of
     `document` the record holds collateral under at `lsn`: what it holds by the job's base date,
     after haircuts (`CSA.valued`), in the set's `Balance_Currency`, every other asset crossed at
-    the job's own spots (`PnL.rates`). The `cash` fold is ADVANCED, and folded only where such a
-    set exists. A set holding an asset those spots cannot cross REFUSES by name, a plan and a read
-    alike: the book lacks that market, and nothing is valued on a zero."""
+    the job's own spots (`PnL.rates`). The `cash` fold is ADVANCED in `folds`, and folded only
+    where such a set exists. A set holding an asset those spots cannot cross REFUSES by name, a
+    plan and a read alike: the book lacks that market, and nothing is valued on a zero."""
     sets = {deal.get('Reference'): deal for deal in (
         node['Instrument']['.Deal'] for _, node in walk_job_deals(document))
         if deal.get('Object') == 'NettingCollateralSet' and deal.get('Collateralized') == 'True'}
@@ -657,8 +651,8 @@ def _balances(document, lsn=None):
         return {}
     spine = package()
     cash = spine.projections.PROJECTORS['cash']
-    held = spine.projections.CSA.held(folded(lambda log: cash.rows(advancing(log, cash, lsn))),
-                                      _base_day(document))
+    held = spine.projections.CSA.held(folded(lambda log: cash.rows(advancing(
+        log, cash, lsn, folds))), _base_day(document))
     market = document['Calc'].get('MergeMarketData', {}).get('ExplicitMarketData') or {}
     balances = {}
     for agreement, terms in sets.items():
@@ -934,7 +928,7 @@ def executor(kind=None):
 def book(deal, quantity, counterparty, netting_set, execution_reference,
          actor_name=None, book_name=None, effective_time=None, price=None, agreement=None,
          portfolio=None, currency=None, rate=None, plan=None, terms=None, quote=None,
-         once=False):
+         once=False, folds=None):
     """Book a fill against the canonical instrument `deal`, answering what the record now says
     (`routed`) - or, with `once`, answering the fill already standing under its key (`_booked`):
     a booking sent again.
@@ -945,15 +939,15 @@ def book(deal, quantity, counterparty, netting_set, execution_reference,
     position change in units of the instrument; `agreement`, `portfolio` and `price` are filed
     where they are stated, a price in another currency with that `currency` and the `rate` the
     booking crossed it at. Once any node under the book is declared, a portfolio below the book is
-    one of them - read off the tree ADVANCED on this handle. `quote` is an acceptance's quote,
-    filed before the fill under the fill's own ticket.
+    one of them - read off the tree ADVANCED in `folds`. `quote` is an acceptance's quote, filed
+    before the fill under the fill's own ticket.
     """
     spine = package()
     with writing() as log:
         subject = actor(actor_name, log)
         if portfolio not in (None, book_name):
             declared = sorted(path for path in advancing(log, spine.projections.PROJECTORS[
-                'portfolios']) if spine.capability.under(path, book_name))
+                'portfolios'], folds=folds) if spine.capability.under(path, book_name))
             if declared and portfolio not in declared:
                 raise SpineRefused(
                     'this booking names portfolio {!r}, and book {!r} books into itself or a node '
@@ -962,18 +956,18 @@ def book(deal, quantity, counterparty, netting_set, execution_reference,
         body = spine.verbs.fill(log, canonical(deal), quantity, counterparty, netting_set,
                                 execution_reference, price=price, agreement=agreement,
                                 portfolio=portfolio, currency=currency, rate=rate)
-        return once and _booked(log, body) or routed(
-            log, 'fill', body, subject, book_name, effective_time, plan, terms, quote)
+        return once and _booked(log, body, folds) or routed(
+            log, 'fill', body, subject, book_name, effective_time, plan, terms, quote, folds)
 
 
-def _booked(log, body):
+def _booked(log, body, folds=None):
     """`{booked: {lsn, instrument}}` for the fill standing under `body`'s key - its instrument
     and execution reference - where it files the fields `body` does, the rate its price was
     crossed at aside, `instrument` being the terms its position stands in now; None where none
     stands; and refused by name where one stands with other fields."""
     key = (body['instrument'], body['execution_reference'])
     held = next(((instrument, clip['fill']) for instrument, agreements in advancing(
-        log, package().projections.PROJECTORS['positions']).items()
+        log, package().projections.PROJECTORS['positions'], folds=folds).items()
         for rows in agreements.values() for row in rows.values() for clip in row['tickets']
         if (clip['instrument'], clip['execution_reference']) == key), None)
     if held is None:
@@ -990,7 +984,8 @@ def _booked(log, body):
     return {'booked': {'lsn': held[1], 'instrument': held[0]}}
 
 
-def routed(log, event_type, body, subject, book_name, effective_time, plan, terms, quote=None):
+def routed(log, event_type, body, subject, book_name, effective_time, plan, terms, quote=None,
+           folds=None):
     """File `body` - a fill or a restrike - as its ticket routes it, in ONE act of the writer:
     `{recorded, ticket, accepted?, tier?, waits_on?}`, or `{ticket, accepted?, refused}` with
     nothing booked.
@@ -1016,7 +1011,8 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
             log, subject, ticket=body.get('ticket'), book=book_name,
             portfolio=body.get('portfolio'), **quote)
     route = None if terms is None or not admitted else _route(
-        log, body.get('ticket'), dict(terms, portfolio=body.get('portfolio') or book_name), subject)
+        log, body.get('ticket'), dict(terms, portfolio=body.get('portfolio') or book_name), subject,
+        folds=folds)
     if route is not None:
         if route['tier'] is None:
             return dict(answer, refused=route['refusals'])
@@ -1092,24 +1088,25 @@ def agreements(lsn=None):
 
 
 def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None, plan=None,
-          terms=None):
+          terms=None, folds=None):
     """Record that these terms became those terms - a new instrument hash linked to the old one -
     judged at the deepest node holding every position in them under the book, read off the
-    positions ADVANCED on this handle and never stated by a caller. A restrike is a trade of its
-    own, ticketed and routed as `book` routes a fill (`routed`), and one that already landed is
+    positions ADVANCED in `folds` and never stated by a caller. A restrike is a trade of its own,
+    ticketed and routed as `book` routes a fill (`routed`), and one that already landed is
     answered `{booked: {lsn}}` rather than filed again (`_restruck`)."""
     spine = package()
     was, now = (hashlib.sha256(canonical(terms)).hexdigest() for terms in (deal, amended_to))
     with writing() as log:
         subject = actor(actor_name, log)
-        held = advancing(log, spine.projections.PROJECTORS['positions'])
+        held = advancing(log, spine.projections.PROJECTORS['positions'], folds=folds)
         landed = _restruck(held, was, now)
         if landed is not None:
             return {'booked': {'lsn': landed}}
         body = spine.verbs.amendment(
             log, canonical(deal), canonical(amended_to), portfolio=spine.capability.deepest(
                 spine.capability.holders(held, was, book_name)))
-        return routed(log, 'amendment', body, subject, book_name, effective_time, plan, terms)
+        return routed(log, 'amendment', body, subject, book_name, effective_time, plan, terms,
+                      folds=folds)
 
 
 def _restruck(positions, was, now):
@@ -1164,13 +1161,13 @@ def cash(lsn=None):
     return _rows('cash', lsn)
 
 
-def cash_standing():
-    """`(lsn, rows)` - the head, and the `cash` fold's rows there ADVANCED from where this process
-    last folded it: what a collateral call reads on every ask."""
+def cash_standing(folds=None):
+    """`(lsn, rows)` - the head, and the `cash` fold's rows there ADVANCED in `folds`: what a
+    collateral call reads on every ask."""
     def read(log):
         cash = package().projections.PROJECTORS['cash']
         head = log.head()[0]
-        return head, cash.rows(advancing(log, cash, head))
+        return head, cash.rows(advancing(log, cash, head, folds))
 
     return folded(read)
 
@@ -1222,16 +1219,16 @@ def fills(after=None, until=None):
 STATUSES = ('rejected', 'pending', 'approved', 'unticketed')
 
 
-def standing(lsn=None):
+def standing(lsn=None, folds=None):
     """Every position the record holds at `lsn` with what its tickets read: each ticket its own
     `status` (`status_of`), the position the first of `STATUSES` among them and `pending` the
     quantity awaiting a second seat. The positions fold beside the decisions fold, both ADVANCED
-    in one open of the log - no fill is reopened."""
+    in `folds` in one open of the log - no fill is reopened."""
     def read(log):
         projections = package().projections
-        decisions = advancing(log, projections.PROJECTORS['decisions'], lsn)
+        decisions = advancing(log, projections.PROJECTORS['decisions'], lsn, folds)
         rows = projections.PROJECTORS['positions'].rows(
-            advancing(log, projections.PROJECTORS['positions'], lsn))
+            advancing(log, projections.PROJECTORS['positions'], lsn, folds))
         for row in rows:
             row['tickets'] = [dict(entry, status=status) for entry, status in zip(
                 row['tickets'], status_of(row['tickets'], decisions))]
@@ -1424,7 +1421,7 @@ def route_ticket(plan_hash, terms, booker, lsn=None):
     return folded(lambda log: _route(log, plan_hash, terms, booker, lsn))
 
 
-def _route(log, plan_hash, terms, booker, lsn=None):
+def _route(log, plan_hash, terms, booker, lsn=None, folds=None):
     """Which tier a ticket falls in on `log` and whether it is already signed, or None where this
     home declared no tiers.
 
@@ -1432,8 +1429,8 @@ def _route(log, plan_hash, terms, booker, lsn=None):
     read, `{notional_in, tenor_years, values_hash, portfolio}`, as `tiers.assess` takes it. The
     composition nothing else performs: the `tiers` document in force, the evaluator over it, the
     market names standing, and - for a tier under four eyes - the verdicts standing over that plan.
-    Both folds ADVANCE (`advancing`) rather than re-walk, and a home whose decisions name no tiers
-    policy walks nothing more: this runs on every booking, inside the writer's act.
+    Both folds ADVANCE in `folds` (`advancing`) rather than re-walk, and a home whose decisions name
+    no tiers policy walks nothing more: this runs on every booking, inside the writer's act.
 
     `{tier, four_eyes, refusals, approval_lsn, waits_on}`: a `tier` of None with the route's own
     sentences under `refusals` is a ticket no tier admits; a tier without `four_eyes` is automatic,
@@ -1441,12 +1438,12 @@ def _route(log, plan_hash, terms, booker, lsn=None):
     missing where none does.
     """
     spine = package()
-    decisions = advancing(log, spine.projections.PROJECTORS['decisions'], lsn)
+    decisions = advancing(log, spine.projections.PROJECTORS['decisions'], lsn, folds)
     document = (spine.policy.tiers_in_force(log, lsn)
                 if spine.policy.TIERS_POLICY in decisions['policies'] else None)
     if document is None:
         return None
-    markets = advancing(log, spine.projections.PROJECTORS['markets'], lsn)['names']
+    markets = advancing(log, spine.projections.PROJECTORS['markets'], lsn, folds)['names']
     verdict = spine.tiers.assess(
         document, terms, dict((name, row['values_hash']) for name, row in markets.items()))
     tier = next((row for row in document[spine.policy.TIERS_SECTION]

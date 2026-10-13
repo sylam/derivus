@@ -52,7 +52,7 @@ import test_position_scaling as trials
 from derivus import instruments, schema, service, spine, utils
 from derivus.calculation import Diary, construct_calculation
 from derivus.config import CustomJsonEncoder
-from derivus_spine import SpineLog, capability, init_home, policy, vocabulary
+from derivus_spine import SpineLog, capability, policy, vocabulary
 
 
 ACTOR = 'subject-desk-one'
@@ -220,17 +220,6 @@ def unrecorded(tmp_path, monkeypatch):
     monkeypatch.delenv('DV_SPINE_ACTOR', raising=False)
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     yield tmp_path
-
-
-@pytest.fixture
-def recorded(tmp_path, monkeypatch):
-    """A minted spine home with an actor for the appends."""
-    home = tmp_path / 'spine'
-    init_home(home, ACTOR)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
-    monkeypatch.setenv('DV_HOME', str(tmp_path))
-    yield home
 
 
 def serving(tmp_path, nodes, factors=None):

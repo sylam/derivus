@@ -310,10 +310,12 @@ projector bumps its `version` when rows change, so an old seed refuses. **Held b
 `test_spine_projections.py::test_a_seeded_fold_is_the_from_genesis_fold_byte_for_byte`,
 `::test_a_projector_one_version_on_folds_the_same_bodies_and_a_seed_is_verified_not_trusted`.
 
-`spine.advancing` holds each projector's `(lsn, state)` and advances it, so a booking pays for the
-events since the last, not the whole history; pairs are keyed on the genesis hash, so a re-minted
-home is another record. **Held by**
-`test_spine_engine.py::test_a_home_re_minted_where_the_last_one_stood_is_a_different_record`.
+`spine.advancing` advances each projector's `(lsn, state)` pair, kept by the served book
+(`service.Book.folds`), so a booking pays for the events since the last, not the whole history;
+pairs are keyed on the genesis hash, so a re-minted home is another record, and a copied home is
+served with its own. **Held by**
+`test_spine_engine.py::test_a_home_re_minted_where_the_last_one_stood_is_a_different_record`,
+`::test_a_home_copied_from_another_is_its_own_record`.
 
 `fixings_at` resolves prints by the source order the `fixings` policy declares per index, the first
 source holding a print winning. With no policy nothing resolves; under one, an index asked for and
@@ -624,7 +626,5 @@ not composed from the fold; and a print is not yet one fact feeding both a calib
 a deal's fixings ([designed, not built](roadmap.md#designed-not-built)).
 [The engine](../limitations.md#the-engine) lists the record's other open rows - the log open's full
 scan, the rotation and replay limits, the oracle's blind spots, reads outside admission, verbs under
-no seat, settlements naming no agreement, unindexed fixings, legacy trades. `advancing` pairs are
-process-wide, so one home per service process is the deployed shape
-([tidy-ups](roadmap.md#tidy-ups)); one `settle` verb is a
+no seat, settlements naming no agreement, unindexed fixings, legacy trades. One `settle` verb is a
 [desk decision](../limitations.md#decisions-waiting-on-the-desk).
