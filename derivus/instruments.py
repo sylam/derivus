@@ -2508,7 +2508,7 @@ class SwapInterestDeal(Deal):
         F('Pay_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Pay_Payment_Calendars', 'Text', default='', convention=True),
         F('Pay_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS)
-    ], 'Pay'), own('SwapInterestDeal', [
+    ], 'Pay', 'Pay leg'), own('SwapInterestDeal', [
         F('Receive_Payment_Calendars', 'Text', default='', convention=True),
         F('Receive_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Receive_Accrual_Calendars', 'Text', default='', convention=True),
@@ -2518,7 +2518,7 @@ class SwapInterestDeal(Deal):
         F('Receive_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Receive_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Receive_Payment_Offset', 'Integer', default=0, convention=True)
-    ], 'Receive')]
+    ], 'Receive', 'Receive leg')]
 
     documentation = ('Interest Rates', [
         'A fixed-float interest rate swap built from its own fields: a fixed leg at **Swap_Rate**',
@@ -3275,7 +3275,7 @@ class SwaptionDeal(Deal):
         F('Pay_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Pay_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Pay_Calendars', 'Text', default='', convention=True)
-    ], 'Pay'), own('SwaptionDeal', [
+    ], 'Pay', 'Pay leg'), own('SwaptionDeal', [
         F('Receive_Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Receive_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Receive_First_Coupon_Date', 'Date', default='', convention=True),
@@ -3286,7 +3286,7 @@ class SwaptionDeal(Deal):
         F('Receive_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Receive_Calendars', 'Text', default='', convention=True),
         F('Receive_Payment_Offset', 'Integer', default=0, convention=True)
-    ], 'Receive')]
+    ], 'Receive', 'Receive leg')]
 
     documentation = ('Interest Rates', [
         'Let $t_0, T_1$ and $T_2$ be the **Option_Expiry_Date**, **Swap_Effective_Date** and',
@@ -4515,7 +4515,7 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'equity one-touch, one touch, touch option'
     fields = [ADMIN, EQUITY_TOUCH, own('EquityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
-    ], role='Timing')]
+    ], role='Timing', title='Payment timing')]
 
     documentation = ('Fx And Equity', [
         'A path dependent Equity Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)',
@@ -4961,7 +4961,7 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'commodity one-touch, energy one-touch, one touch on a reference price'
     fields = [ADMIN, COMMODITY_TOUCH, own('CommodityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
-    ], role='Timing')]
+    ], role='Timing', title='Payment timing')]
 
     documentation = ('Energy', [
         'A one-touch on a commodity reference price, priced by the closed form and bridge described',
@@ -5737,7 +5737,7 @@ class FXOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'FX one-touch, one touch, touch option'
     fields = [ADMIN, FX_ADMIN, FX_TOUCH, own('FXOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
-    ], role='Timing')]
+    ], role='Timing', title='Payment timing')]
 
     documentation = ('Fx And Equity', [
         'A path dependent FX Option described [here](#one-touch-and-no-touch-binary-options-and-rebates)'])

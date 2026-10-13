@@ -241,18 +241,21 @@ class Group(object):
     """A named, reusable block of fields - what `mapping` calls a section.
 
     Shared blocks (`Admin`, `FXAdmin`) are module-level constants; a class's own is
-    `<ClassName>.Fields` by convention, built by `own()`.
+    `<ClassName>.Fields` by convention, built by `own()`. A section declares the title the desk sees
+    on its card.
     """
-    __slots__ = ('name', 'fields')
+    __slots__ = ('name', 'title', 'fields')
 
-    def __init__(self, name, fields):
+    def __init__(self, name, title, fields):
         self.name = name
+        self.title = title
         self.fields = list(fields)
 
 
-def own(cls_name, fields, role='Fields'):
-    """A class's own block, named the way `mapping`'s sections are."""
-    return Group('{}.{}'.format(cls_name, role), fields)
+def own(cls_name, fields, role='Fields', title='Terms'):
+    """A class's own block, named the way `mapping`'s sections are and titled `Terms` unless the
+    declaration states another."""
+    return Group('{}.{}'.format(cls_name, role), title, fields)
 
 
 def declared_fields(cls):
@@ -505,8 +508,8 @@ def deal_descriptor(field):
 
 
 def emit_instrument(module):
-    """The `types`, `sections`, `containers` and `vernacular` of `mapping['Instrument']`, from the
-    classes.
+    """The `types`, `sections`, `containers`, `vernacular` and `titles` of `mapping['Instrument']`,
+    from the classes.
 
     Scans `module` for classes declaring their own `fields` list. Own-attr only, so a subclass
     inheriting its parent's declaration is not a second deal type. Declaration order is the UI's
@@ -515,7 +518,7 @@ def emit_instrument(module):
     read off `Deal.accepts_children`, so a client renders it without importing the engine, and
     `vernacular` off each type's own plain names - never a parent's, as `observes` is read.
     """
-    types, sections, containers, vernacular = {}, {}, [], {}
+    types, sections, containers, vernacular, titles = {}, {}, [], {}, {}
     for deal_type, cls in vars(module).items():
         groups = cls.__dict__.get('fields') if isinstance(cls, type) else None
         if not isinstance(groups, list):
@@ -526,7 +529,8 @@ def emit_instrument(module):
             containers.append(deal_type)
         for g in groups:
             sections.setdefault(g.name, {f.key: deal_descriptor(f) for f in g.fields})
-    return types, sections, sorted(containers), vernacular
+            titles.setdefault(g.name, g.title)
+    return types, sections, sorted(containers), vernacular, titles
 
 
 def observes(module):
@@ -925,7 +929,7 @@ def apply_market_values(structural, values):
 
 
 # Shared field blocks - the groups a class lists rather than inherits.
-CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
+CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', 'Cashflow list', [
     F('Repo_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
     F('Description', 'Text', default='', convention=True),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
@@ -935,7 +939,7 @@ CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', [
     F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate'])
 ])
 
-EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', [
+EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', 'Equity option', [
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Currency', 'Text', default='', factors=['FxRate']),
     F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
@@ -961,7 +965,7 @@ FX_AXIS = ('{} on the ENGINE axis: the reporting currency per unit of Underlying
            'strikes in market terms and crosses the axis itself')
 
 #: What every FX option is written on: the pair, its vol and discount curve, the side and the strike.
-FXOPTIONBASE = Group('FXOptionBase.Fields', [
+FXOPTIONBASE = Group('FXOptionBase.Fields', 'FX option', [
     F('Currency', 'Text', default='', factors=['FxRate']),
     F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
     F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
@@ -1023,7 +1027,7 @@ FX_TOUCH = own('FXOneTouchOption', [
     F('Currency', 'Text', default='', factors=['FxRate'])
 ])
 
-QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
+QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall terms', [
     F('Price_Fixing', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
     F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
     F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -1053,7 +1057,7 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', [
                   "arithmetic average of the coupon window it falls in")
 ])
 
-QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
+QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', 'Swap leg', [
     F('Forecast_Rate', 'Text', default='', obj='Tuple', factors=['InterestRate']),
     F('Floating_Margin', 'Float', default=0.0, convention=True, obj='Basis'),
     F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
@@ -1062,7 +1066,7 @@ QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', [
                   'a later period is forecast off Forecast_Rate plus Floating_Margin')
 ])
 
-ADMIN = Group('Admin', [
+ADMIN = Group('Admin', 'Admin', [
     F('Object', 'Text', default=REQUIRED,
       description='The deal TYPE this block is, spelled as the engine names it'),
     F('Reference', 'Text', default='', convention=True),
@@ -1075,7 +1079,7 @@ ADMIN = Group('Admin', [
                   'settles or discounts in')
 ])
 
-FX_ADMIN = Group('FXAdmin', [
+FX_ADMIN = Group('FXAdmin', 'FX conventions', [
     F('Trade_Date', 'Date', default='', convention=True),
     F('Delivery_Date', 'Date', default='', convention=True,
       settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
@@ -1317,7 +1321,7 @@ MARKET_QUOTE_CLOCKS = quote_clocks(bootstrappers)
 #: through this module, never bound by name at import, as the families import from here.
 OBSERVES = observes(instruments)
 FACTOR_FIELDS = factor_fields(riskfactors)
-_types, _sections, _containers, _vernacular = emit_instrument(instruments)
+_types, _sections, _containers, _vernacular, _titles = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)
 VALUE_CLOCKS = value_clocks()
 _process_types, _process_factor_map = emit_process(stochasticprocess, _factor_types)
@@ -1411,6 +1415,8 @@ mapping = {
             'New Credit Derivative': ['DealDefaultSwap', 'CreditNthToDefault']
         },
         'sections': _sections,
+        # the title the desk sees on each section's card
+        'titles': _titles,
         'types': _types,
         'containers': _containers,
         # the plain names a desk says for each type

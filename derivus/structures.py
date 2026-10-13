@@ -262,7 +262,7 @@ class Structure(object):
                      description='Currency the client buys: the other side of pair')
     SELECTORS = (SELL_CURRENCY, BUY_CURRENCY)
     #: The desk's quoting mandate, a section of the job beside `Calculation`; no block, no policy.
-    POLICY = schema.Group('Quote Policy', [
+    POLICY = schema.Group('Quote Policy', 'Quote policy', [
         F('participation', 'Float', default=0.5, convention=True,
           description='The share of a measured hedge-cost saving passed to the client'),
         F('floor', 'Text', default='mid', convention=True,

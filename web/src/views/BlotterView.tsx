@@ -205,7 +205,7 @@ function Row(props: {
               ? sections.map((section) => (
                   <DescriptorPanel
                     key={section}
-                    title={section}
+                    title={schema?.Instrument.titles?.[section] ?? section}
                     fields={schema?.Instrument.sections[section]}
                     values={row.deal}
                   />

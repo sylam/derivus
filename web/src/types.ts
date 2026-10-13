@@ -40,6 +40,7 @@ export type Schema = {
   Instrument: {
     groups: Record<string, string[]>;
     sections: Record<string, Section>;
+    titles: Record<string, string>;
     types: Record<string, string[]>;
     containers: string[];
   };

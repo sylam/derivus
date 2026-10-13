@@ -149,6 +149,32 @@ def test_every_deal_type_carries_its_own_plain_names():
     assert schema.emit_instrument(scratch)[3] == {'Parent': 'a parent', 'Child': None}
 
 
+#: The shared sections and the title each declares; every other `<Class>.Fields` is `Terms`.
+SHARED_TITLES = {
+    'Admin': 'Admin', 'FXAdmin': 'FX conventions', 'FXOptionBase.Fields': 'FX option',
+    'EquityOptionBase.Fields': 'Equity option', 'CashflowListDeal.Fields': 'Cashflow list',
+    'QEDI_CustomAutoCallSwap.Fields': 'Autocall terms', 'QEDI_CustomSwap.Fields': 'Swap leg'}
+
+
+def test_every_published_section_carries_the_title_the_desk_sees():
+    """A deal panel is a card per section, headed by the title the section declares and published
+    as `titles` beside `sections`, never by its key: a desk reads `Pay leg`, not
+    `SwapInterestDeal.Pay`. A class's own block is `Terms` unless its declaration states another,
+    and a shared one states its own.
+
+    Killing mutation: a group constructed without a title, which raises at import; `own` publishing
+    its role as the title, which heads every own block `Fields`.
+    """
+    titles = INSTRUMENT['titles']
+    assert set(titles) == set(INSTRUMENT['sections'])
+    assert [section for section, title in sorted(titles.items()) if not isinstance(title, str)
+            or not title or '.' in title or 'Fields' in title] == []
+    assert {section: titles[section] for section in SHARED_TITLES} == SHARED_TITLES
+    assert {title for section, title in titles.items()
+            if section.endswith('.Fields') and section not in SHARED_TITLES} == {'Terms'}
+    assert titles['SwapInterestDeal.Pay'] == 'Pay leg'
+
+
 #: The deal types whose own declarations name no day they settle, expire or mature on: containers
 #: dated by what they hold, and schedules no field of theirs declares as settling.
 UNDATED = ('CFFixedInterestListDeal', 'CFFixedListDeal', 'CFFloatingInterestListDeal',
