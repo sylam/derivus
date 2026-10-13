@@ -160,13 +160,11 @@ class DealStructure(object):
         struct_time_dep = self.calc_time_dependency(base_date, struct.obj.Instrument, time_grid)
         if struct_time_dep is not None:
             try:
-                # a deal its children's terms replace prices off them alone
                 struct.obj = utils.DealDataType(
                     Instrument=struct.obj.Instrument,
-                    Factor_dep={} if struct.obj.Instrument.list_terms else utils.bind_schedules(
-                        struct.obj.Instrument.calc_dependencies(
-                            base_date, static_offsets, stochastic_offsets,
-                            all_factors, all_tenors, time_grid, calendars), unit),
+                    Factor_dep=utils.bind_schedules(struct.obj.Instrument.calc_dependencies(
+                        base_date, static_offsets, stochastic_offsets,
+                        all_factors, all_tenors, time_grid, calendars), unit),
                     Time_dep=struct_time_dep,
                     Calc_res={} if self.store_results or struct.obj.Instrument.accum_dependencies else None)
                 self.sub_structures.append(struct)

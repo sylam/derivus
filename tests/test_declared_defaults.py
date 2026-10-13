@@ -807,7 +807,7 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
             dropped(child) for child in deal.get('Children', ()))
 
     lean, full = [stripped(deal) for deal in BOOK], [furnished(deal) for deal in BOOK]
-    assert sum(dropped(deal) for deal in BOOK) == 167
+    assert sum(dropped(deal) for deal in BOOK) == 168
 
     lean_marks, lean_stats = marks(lean)
     full_marks, full_stats = marks(full)
@@ -867,27 +867,21 @@ def test_a_cap_stated_by_its_terms_prices_its_caplets():
 
 
 @pytest.mark.parametrize('kind', ['CapDeal', 'FloorDeal'])
-def test_a_cap_on_its_optionlet_list_states_no_principal_or_strike(kind):
-    """A cap or floor holding its optionlet list is the list's sum, so its own principal and strike
-    are never read: left out, it books with nothing to say and marks its list to the bit, while
-    the same cap stated by its terms alone is still asked for both.
+def test_a_cap_on_its_optionlet_list_states_no_principal(kind):
+    """A cap or floor's principal is a convention of a million, and on its optionlet list the list
+    is what prices: left out, the cap books with nothing to say and marks its list to the bit.
 
-    Killing mutations: the structure compiling its own terms - the bare cap is skipped with its
-    list; booking asking a list's holder for its `list_terms`."""
+    Killing mutation: the convention flag dropped - booking refuses the cap and the compile skips
+    it with its whole list."""
     import trial_rates
     held = trial_rates.optioned(kind, 'HELD', 2.0)
-    strike, = set(type(construct_instrument(dict(held), {})).list_terms) - {'Principal'}
-    bare = dict({key: value for key, value in held.items()
-                 if key not in ('Principal', strike, 'Amortisation')}, Reference='BARE')
+    bare = dict({key: value for key, value in held.items() if key != 'Principal'}, Reference='BARE')
     bare['Children'] = [dict(child, Reference='BARE_LETS') for child in held['Children']]
-    terms = dict({key: value for key, value in bare.items() if key != 'Children'}, Reference='TERMS')
-    job = book([held, bare, terms])
+    job = book([held, bare])
     job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(trial_rates.FACTORS)
     context = derivus.Context()
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'lists'))
-    said = context.validate()['deals']
-    assert list(said) == ['TERMS'] and sorted(said['TERMS']) == sorted(
-        ['Principal is not stated', '{} is not stated'.format(strike)])
+    assert context.validate()['deals'] == {}
     _, answer = context.run_job()
     frame = answer['Results']['mtm']
     valued = dict(zip(frame['Reference'], frame['Value']))
