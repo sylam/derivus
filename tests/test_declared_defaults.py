@@ -734,6 +734,31 @@ def test_an_equity_surface_is_stated_by_a_compo_or_quanto_alone(block, crossed):
         assert said(Payoff_Type=payoff_type, Equity_Volatility='EQ', **crossed) == []
 
 
+@pytest.mark.parametrize('block,crossed', CROSSED, ids=[block['Object'] for block, _ in CROSSED])
+def test_a_blank_equity_surface_is_no_surface_to_factor_discovery(block, crossed):
+    """A Quanto paid across the pair stating a blank Equity_Volatility is refused by name at booking
+    and reaches the factors of the same deal stating none; stating the surface adds it, the pair's
+    correlation off it and the pair's FX surface.
+
+    Killing mutation: discovery's `EquityPrice` condition reading `is not None` again, under which the
+    blank surface names `Correlation.EquityPrice./FxRate.EUR.USD`, a factor with an empty token."""
+    def read(**stated):
+        lean = {key: value for key, value in block.items() if key != 'Equity_Volatility'}
+        context = derivus.Context()
+        context.load_json((json.dumps(
+            book([dict(lean, Payoff_Type='Quanto', **crossed, **stated)]), cls=CustomJsonEncoder), 'surface'))
+        factors = context.describe()['factors']
+        return context.validate()['deals'], set(factors['resolved'] + factors['missing'])
+
+    refused, blank = read(Equity_Volatility='')
+    assert refused == {block['Reference']: [
+        'Equity_Volatility is not stated, and a Quanto payoff reads the pair\'s correlation off it']}
+    assert blank == read()[1]
+    booked, named = read(Equity_Volatility='EQ')
+    assert booked == {} and named - blank == {
+        'EquityPriceVol.EQ', 'Correlation.EquityPrice.EQ/FxRate.EUR.USD', 'FXVol.EUR.USD'}
+
+
 def test_a_blank_date_default_keeps_its_named_refusal():
     """`Expiry_Date` declares `''`, and a blank Date is not an absent one: completed, it reaches a
     date comparison as a `str` and the deal dies four layers down on

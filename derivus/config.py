@@ -406,7 +406,7 @@ conditional_fields = {
         '.'.join(sorted([factor_fields['Currency'], instrument.payoff_ccy]))
     ).split('.'))),
       utils.Factor('FXVol', tuple(sorted([factor_fields['Currency'], instrument.payoff_ccy])))]
-     if instrument.field.get('Equity_Volatility') is not None
+     if instrument.field.get('Equity_Volatility')
      and instrument.payoff_type != 'Standard'
      and factor_fields['Currency'] != instrument.payoff_ccy else []),
     # FX analogue, keyed on the pair by the same `utils.spot_model_currency` rule the deal's own
