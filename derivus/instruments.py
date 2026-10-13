@@ -933,45 +933,45 @@ class NettingCollateralSet(Deal):
         F('Calendars', 'Text', default='', convention=True),
         F('Collateral_Assets', 'Container',
           default={'Cash_Collateral': [], 'Bond_Collateral': [], 'Equity_Collateral': [], 'Commodity_Collateral': []},
-          convention=True, sub_fields=[F('Cash_Collateral', 'Table', default='null', row=Row(
-                [F('Currency', 'Text', factors=['FxRate']), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'),
-                 F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text', factors=['InterestRate']),
-                 F('Funding_Rate', 'Text', factors=['InterestRate']),
-                 F('Liquidation_Period', 'Integer')])), F('Bond_Collateral', 'Table', default='null', row=Row(
-                [F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Liquidation_Period', 'Integer'),
-                 F('Issuer', 'Text'), F('Currency', 'Text', factors=['FxRate']),
-                 F('Discount_Rate', 'Text', factors=['InterestRate']), F('Maturity', 'Period'),
-                 F('Principal', 'Float'), F('Coupon_Rate', 'Percent'), F('Coupon_Interval', 'Period'),
-                 F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text')])),
-                                       F('Equity_Collateral', 'Table', default='null', description='Equity_Collateral',
-                                         row=Row(
-                                             [F('Equity', 'Text', factors=['EquityPrice', 'DividendRate']),
-                                              F('Units', 'Float'), F('Haircut_Posted', 'Percent'),
-                                              F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'),
-                                              F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])),
-                                       F('Commodity_Collateral', 'Table', default='null', row=Row(
-                                           [F('Commodity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'),
-                                            F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'),
-                                            F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')]))]),
+          convention=True, sub_fields=[
+              F('Cash_Collateral', 'Table', default='null', row=Row([
+                  F('Currency', 'Text', factors=['FxRate']), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'),
+                  F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text', factors=['InterestRate']),
+                  F('Funding_Rate', 'Text', factors=['InterestRate']), F('Liquidation_Period', 'Integer')])),
+              F('Bond_Collateral', 'Table', default='null', row=Row([
+                  F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Liquidation_Period', 'Integer'),
+                  F('Issuer', 'Text'), F('Currency', 'Text', factors=['FxRate']),
+                  F('Discount_Rate', 'Text', factors=['InterestRate']), F('Maturity', 'Period'),
+                  F('Principal', 'Float'), F('Coupon_Rate', 'Percent'), F('Coupon_Interval', 'Period'),
+                  F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text')])),
+              F('Equity_Collateral', 'Table', default='null', row=Row([
+                  F('Equity', 'Text', factors=['EquityPrice', 'DividendRate']), F('Units', 'Float'),
+                  F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'),
+                  F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])),
+              F('Commodity_Collateral', 'Table', default='null', row=Row([
+                  F('Commodity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'),
+                  F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'),
+                  F('Liquidation_Period', 'Integer')]))]),
         F('Collateral_Call_Frequency', 'Text', default='1D', convention=True, obj='Period'),
         F('Collateralized', 'Text', default='False', convention=True, values=['True', 'False']),
         F('Netted', 'Text', default='True', convention=True, values=['True', 'False']),
         F('Credit_Support_Amounts', 'Container',
-          default={'Bank': '', 'Counterparty': '', 'Independent_Amount': [], 'Received_Threshold': [],
-                   'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []}, convention=True,
-          sub_fields=[F('Bank', 'Text', default=''),
-                      F('Counterparty', 'Text', default='', factors=['SurvivalProb']),
-                      F('Independent_Amount', 'Table', default='[[0,1]]',
-                        row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]),
-                        tag='CreditSupportList'), F('Received_Threshold', 'Table', default='[[0,1]]', row=Row(
-                  [F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'),
-                      F('Posted_Threshold', 'Table', default='[[0,1]]',
-                        row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]),
-                        tag='CreditSupportList'), F('Minimum_Received', 'Table', default='[[0,1]]', row=Row(
-                  [F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'),
-                      F('Minimum_Posted', 'Table', default='[[0,1]]',
-                        row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]),
-                        tag='CreditSupportList')]),
+          default={
+              'Bank': '', 'Counterparty': '', 'Independent_Amount': [], 'Received_Threshold': [],
+              'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []},
+          convention=True, sub_fields=[
+              F('Bank', 'Text', default=''),
+              F('Counterparty', 'Text', default='', factors=['SurvivalProb']),
+              F('Independent_Amount', 'Table', default='[[0,1]]',
+                row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'),
+              F('Received_Threshold', 'Table', default='[[0,1]]',
+                row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'),
+              F('Posted_Threshold', 'Table', default='[[0,1]]',
+                row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'),
+              F('Minimum_Received', 'Table', default='[[0,1]]',
+                row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList'),
+              F('Minimum_Posted', 'Table', default='[[0,1]]',
+                row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]), tag='CreditSupportList')]),
         F('Funding_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Liquidation_Period', 'Integer', default=0, convention=True),
         F('Settlement_Period', 'Integer', default=0, convention=True),
@@ -2055,11 +2055,9 @@ class FXSwapDeal(Deal):
     vernacular = 'FX swap, forex swap, near and far legs'
     fields = [ADMIN, own('FXSwapDeal', [
         F('Near_Settlement_Date', 'Date', default='', settles=(
-            Cash('Near_Buy_Far_Sell_Ccy', 'Near_Buy_Amount'),
-            Cash('Near_Sell_Far_Buy_Ccy', 'Near_Sell_Amount', -1.0))),
+            Cash('Near_Buy_Far_Sell_Ccy', 'Near_Buy_Amount'), Cash('Near_Sell_Far_Buy_Ccy', 'Near_Sell_Amount', -1.0))),
         F('Far_Settlement_Date', 'Date', default='', settles=(
-            Cash('Near_Sell_Far_Buy_Ccy', 'Far_Buy_Amount'),
-            Cash('Near_Buy_Far_Sell_Ccy', 'Far_Sell_Amount', -1.0))),
+            Cash('Near_Sell_Far_Buy_Ccy', 'Far_Buy_Amount'), Cash('Near_Buy_Far_Sell_Ccy', 'Far_Sell_Amount', -1.0))),
         F('Near_Buy_Far_Sell_Ccy', 'Text', default='', factors=['FxRate']),
         F('Near_Sell_Far_Buy_Ccy', 'Text', default='', factors=['FxRate']),
         F('Near_Buy_Far_Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple', factors=['InterestRate']),
@@ -2181,8 +2179,8 @@ class FXForwardDeal(Deal):
     fields = [ADMIN, own('FXForwardDeal', [
         F('Sell_Currency', 'Text', default='', factors=['FxRate']),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
-        F('Settlement_Date', 'Date', default='', settles=(
-            Cash('Buy_Currency', 'Buy_Amount'), Cash('Sell_Currency', 'Sell_Amount', -1.0))),
+        F('Settlement_Date', 'Date', default='',
+          settles=(Cash('Buy_Currency', 'Buy_Amount'), Cash('Sell_Currency', 'Sell_Amount', -1.0))),
         F('Buy_Amount', 'Float', default=0.0, sized=True),
         F('Sell_Discount_Rate', 'Text', default=REQUIRED, obj='Tuple', factors=['InterestRate']),
         F('Buy_Currency', 'Text', default='', factors=['FxRate']),
@@ -2622,17 +2620,14 @@ class CFFixedInterestListDeal(Deal):
     quoted = 'Cashflows'
     fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFixedInterestListDeal', [
         F('Fixed_Cashflows', 'Container', default={'Compounding': 'No', 'Items': []}, description='Cashflows',
-          json_name='Cashflows', sub_fields=[F('Compounding', 'Text', default='No', values=['Yes', 'No']),
-                                             F('FixedItems', 'Table', default='null', description='Items',
-                                               json_name='Items', row=Row(
-                                                     [F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True),
-                                                      F('Rate', 'Percent'), F('Accrual_Start_Date', 'Date'),
-                                                      F('Accrual_End_Date', 'Date'),
-                                                      F('Accrual_Day_Count', 'Text', values=DAY_COUNTS),
-                                                      F('Accrual_Year_Fraction', 'Float'),
-                                                      F('Fixed_Amount', 'Float', sized=True),
-                                                      F('Discounted', 'Text', values=['Yes', 'No']),
-                                                      F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
+          json_name='Cashflows', sub_fields=[
+              F('Compounding', 'Text', default='No', values=['Yes', 'No']),
+              F('FixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row([
+                  F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Rate', 'Percent'),
+                  F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'),
+                  F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'),
+                  F('Fixed_Amount', 'Float', sized=True), F('Discounted', 'Text', values=['Yes', 'No']),
+                  F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Settlement_Amount', 'Float', default=0.0, sized=True),
         F('Calendars', 'Text', default='', convention=True)
     ])]
@@ -2708,8 +2703,9 @@ class CFFixedListDeal(Deal):
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Description', 'Text', default='', convention=True),
         F('Fixed_Simple_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows',
-          sub_fields=[F('FixedSimpleItems', 'Table', default='null', description='Items', json_name='Items',
-                        row=Row([F('Payment_Date', 'Date'), F('Fixed_Amount', 'Float', sized=True)]))])
+          sub_fields=[
+              F('FixedSimpleItems', 'Table', default='null', description='Items', json_name='Items',
+                row=Row([F('Payment_Date', 'Date'), F('Fixed_Amount', 'Float', sized=True)]))])
     ])]
 
     documentation = (
@@ -2814,30 +2810,19 @@ class CFFloatingInterestListDeal(Deal):
         F('Settlement_Amount', 'Float', default=0.0),
         F('Float_Cashflows', 'Container',
           default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []},
-          description='Cashflows', json_name='Cashflows', sub_fields=[F('Properties', 'Table', default='null', row=Row(
-                [F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'),
-                 F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])),
-                                                                      F('Compounding_Method', 'Text', default='None',
-                                                                        values=['None', 'OIS', 'Include_Margin', 'Flat',
-                                                                                'Exclude_Margin']),
-                                                                      F('Averaging_Method', 'Text',
-                                                                        default='Average_Rate',
-                                                                        values=['Average_Interest', 'Average_Rate',
-                                                                                'Pre_Aggregation', 'Post_Aggregation']),
-                                                                      F('FloatItems', 'Table', default='null',
-                                                                        description='Items', json_name='Items', row=Row(
-                                                                              [F('Payment_Date', 'Date'),
-                                                                               F('Notional', 'Float', sized=True),
-                                                                               F('Accrual_Start_Date', 'Date'),
-                                                                               F('Accrual_End_Date', 'Date'),
-                                                                               F('Accrual_Day_Count', 'Text',
-                                                                                 values=DAY_COUNTS),
-                                                                               F('Accrual_Year_Fraction', 'Float'),
-                                                                               F('Resets', 'Table'),
-                                                                               F('Margin', 'Basis'),
-                                                                               F('Fixed_Amount', 'Float', sized=True),
-                                                                               F('FX_Reset_Date', 'Date'),
-                                                                               F('Known_FX_Rate', 'Float')]))]),
+          description='Cashflows', json_name='Cashflows', sub_fields=[
+              F('Properties', 'Table', default='null', row=Row([
+                  F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'),
+                  F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])),
+              F('Compounding_Method', 'Text', default='None',
+                values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
+              F('Averaging_Method', 'Text', default='Average_Rate',
+                values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
+              F('FloatItems', 'Table', default='null', description='Items', json_name='Items', row=Row([
+                  F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Accrual_Start_Date', 'Date'),
+                  F('Accrual_End_Date', 'Date'), F('Accrual_Day_Count', 'Text', values=DAY_COUNTS),
+                  F('Accrual_Year_Fraction', 'Float'), F('Resets', 'Table'), F('Margin', 'Basis'),
+                  F('Fixed_Amount', 'Float', sized=True), F('FX_Reset_Date', 'Date'), F('Known_FX_Rate', 'Float')]))]),
         F('Forecast_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol']),
         F('Discount_Rate_Cap_Volatility', 'Text', default='', convention=True, obj='Tuple',
@@ -2956,22 +2941,27 @@ class YieldInflationCashflowListDeal(Deal):
     vernacular = 'inflation-linked bond, linker, inflation cashflows'
     fields = [ADMIN, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
         F('Index', 'Text', default='', factors=['InflationRate']),
-        F('Index_Reference', 'Container', default={'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1,
-                                                   'Index_Reference_Type': 'Interpolated', 'Reference_Day': 1,
-                                                   'Days_In_Period': 0},
-          sub_fields=[F('Months_Lag', 'Integer', default=1), F('Quarters_Lag', 'Integer', default=0),
-                      F('Quarter_Reference_Month', 'Integer', default=1),
-                      F('Index_Reference_Type', 'Text', default='Interpolated', description='Reference Type',
-                        values=['Single', 'Interpolated', 'Average'], json_name='Reference_Type'),
-                      F('Reference_Day', 'Integer', default=1), F('Days_In_Period', 'Integer', default=0)]),
+        F('Index_Reference', 'Container',
+          default={
+              'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1, 'Index_Reference_Type': 'Interpolated',
+              'Reference_Day': 1, 'Days_In_Period': 0},
+          sub_fields=[
+              F('Months_Lag', 'Integer', default=1),
+              F('Quarters_Lag', 'Integer', default=0),
+              F('Quarter_Reference_Month', 'Integer', default=1),
+              F('Index_Reference_Type', 'Text', default='Interpolated', description='Reference Type',
+                values=['Single', 'Interpolated', 'Average'], json_name='Reference_Type'),
+              F('Reference_Day', 'Integer', default=1),
+              F('Days_In_Period', 'Integer', default=0)]),
         F('Real_Yield_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows',
-          sub_fields=[F('RealYieldItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
-              [F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Base_Reference_Date', 'Date'),
-               F('Base_Reference_Value', 'Float'), F('Final_Reference_Date', 'Date'),
-               F('Final_Reference_Value', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'),
-               F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'),
-               F('Yield', 'Percent'), F('Margin', 'Basis'), F('Rate_Multiplier', 'Float'),
-               F('Is_Coupon', 'Text', values=['Yes', 'No'])]))]),
+          sub_fields=[
+              F('RealYieldItems', 'Table', default='null', description='Items', json_name='Items', row=Row([
+                  F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Base_Reference_Date', 'Date'),
+                  F('Base_Reference_Value', 'Float'), F('Final_Reference_Date', 'Date'),
+                  F('Final_Reference_Value', 'Float'), F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'),
+                  F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'),
+                  F('Yield', 'Percent'), F('Margin', 'Basis'), F('Rate_Multiplier', 'Float'),
+                  F('Is_Coupon', 'Text', values=['Yes', 'No'])]))]),
         F('Calendars', 'Text', default='', convention=True),
         F('Is_Forward_Deal', 'Text', default='No', convention=True, values=['Yes', 'No'])
     ])]
@@ -5527,11 +5517,12 @@ class EquitySwapletListDeal(Deal):
         F('Amount_Type', 'Text', default='Principal', convention=True, description='Amount_Type',
           values=['Principal', 'Shares']),
         F('Equity_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows',
-          sub_fields=[F('EquityItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
-              [F('Start_Date', 'Date'), F('End_Date', 'Date'), F('Payment_Date', 'Date'),
-               F('Amount', 'Float', sized=True), F('Start_Multiplier', 'Float'), F('End_Multiplier', 'Float'),
-               F('Dividend_Multiplier', 'Float'), F('Known_Start_Price', 'Float'), F('Known_End_Price', 'Float'),
-               F('Known_Start_FX_Rate', 'Float'), F('Known_End_FX_Rate', 'Float'), F('Quanto_FX_Rate', 'Float')]))]),
+          sub_fields=[
+              F('EquityItems', 'Table', default='null', description='Items', json_name='Items', row=Row([
+                  F('Start_Date', 'Date'), F('End_Date', 'Date'), F('Payment_Date', 'Date'),
+                  F('Amount', 'Float', sized=True), F('Start_Multiplier', 'Float'), F('End_Multiplier', 'Float'),
+                  F('Dividend_Multiplier', 'Float'), F('Known_Start_Price', 'Float'), F('Known_End_Price', 'Float'),
+                  F('Known_Start_FX_Rate', 'Float'), F('Known_End_FX_Rate', 'Float'), F('Quanto_FX_Rate', 'Float')]))]),
         F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol'])
     ])]
 
@@ -6041,8 +6032,8 @@ class FXTARFOptionDeal(Deal):
         # NO `tag`: a tag names the container the WIRE form uses, and this table is read by
         # iterating rows. Tagged `DateEqualList`, the decoder hands over a `utils.DateEqualList`,
         # which is not iterable.
-        F('TARF_ExpiryDates', 'Table', default='null', row=Row(
-            [F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')])),
+        F('TARF_ExpiryDates', 'Table', default='null', row=Row([
+            F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')])),
         F('Barrier', 'Float', default=0)
     ])]
 
@@ -7084,11 +7075,12 @@ class FloatingEnergyDeal(Deal):
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
         F('Energy_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments',
-          sub_fields=[F('EnergyItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
-              [F('Payment_Date', 'Date'), F('Period_Start', 'Date'), F('Period_End', 'Date'),
-               F('Volume', 'Float', sized=True), F('Fixed_Basis', 'Float'), F('Price_Multiplier', 'Float'),
-               F('Realized_Average_Date', 'Date'), F('Realized_Average', 'Float'), F('FX_Period_Start', 'Date'),
-               F('FX_Period_End', 'Date'), F('FX_Realized_Average', 'Float')]))]),
+          sub_fields=[
+              F('EnergyItems', 'Table', default='null', description='Items', json_name='Items', row=Row([
+                  F('Payment_Date', 'Date'), F('Period_Start', 'Date'), F('Period_End', 'Date'),
+                  F('Volume', 'Float', sized=True), F('Fixed_Basis', 'Float'), F('Price_Multiplier', 'Float'),
+                  F('Realized_Average_Date', 'Date'), F('Realized_Average', 'Float'), F('FX_Period_Start', 'Date'),
+                  F('FX_Period_End', 'Date'), F('FX_Realized_Average', 'Float')]))]),
         F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice']),
         F('Reference_Volatility', 'Text', default='', obj='Tuple'),
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
@@ -7185,8 +7177,9 @@ class FixedEnergyDeal(Deal):
         F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
         F('Energy_Fixed_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments',
-          sub_fields=[F('EnergyFixedItems', 'Table', default='null', description='Items', json_name='Items', row=Row(
-              [F('Payment_Date', 'Date'), F('Volume', 'Float', sized=True), F('Fixed_Price', 'Float')]))])
+          sub_fields=[
+              F('EnergyFixedItems', 'Table', default='null', description='Items', json_name='Items',
+                row=Row([F('Payment_Date', 'Date'), F('Volume', 'Float', sized=True), F('Fixed_Price', 'Float')]))])
     ])]
 
     documentation = ('Energy', [
