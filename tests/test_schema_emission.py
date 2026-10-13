@@ -153,7 +153,8 @@ def test_every_deal_type_carries_its_own_plain_names():
 SHARED_TITLES = {
     'Admin': 'Admin', 'Pricing': 'Pricing', 'FXAdmin': 'FX conventions', 'FXOptionBase.Fields': 'FX option',
     'EquityOptionBase.Fields': 'Equity option', 'CashflowListDeal.Fields': 'Cashflow list',
-    'QEDI_CustomAutoCallSwap.Fields': 'Autocall terms', 'QEDI_CustomSwap.Fields': 'Swap leg'}
+    'QEDI_CustomAutoCallSwap.Fields': 'Autocall terms', 'QEDI_CustomSwap.Fields': 'Swap leg',
+    'FloatingIndex': 'Floating index'}
 
 
 def test_every_published_section_carries_the_title_the_desk_sees():

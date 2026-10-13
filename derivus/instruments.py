@@ -20,7 +20,7 @@ from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
     settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
-    FX_TOUCH, FXOPTIONBASE, PRICING,
+    FX_TOUCH, FXOPTIONBASE, PRICING, FLOATING_INDEX,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -2466,13 +2466,9 @@ class SwapInterestDeal(Deal):
     vernacular = 'interest rate swap, IRS, vanilla swap, basis swap, payer swap, receiver swap'
     observes = Observes('Interest_Rate', 'InterestRate')
     quoted = 'Swap_Rate'
-    fields = [ADMIN, PRICING, own('SwapInterestDeal', [
-        F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
-        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
+    fields = [ADMIN, PRICING, FLOATING_INDEX, own('SwapInterestDeal', [
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Rate_Multiplier', 'Float', default=1.0, convention=True),
-        F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
-        F('Index_Calendars', 'Text', default='', convention=True),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
           tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
@@ -2480,13 +2476,11 @@ class SwapInterestDeal(Deal):
         F('Interest_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
         F('Effective_Date', 'Date', default=''),
-        F('Index_Offset', 'Integer', default=0, convention=True),
         F('Floating_Margin', 'Float', default=0.0, convention=True),
         F('Fixed_Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Rate_Constant', 'Float', default=0.0, convention=True, obj='Percent'),
         F('Compounding_Method', 'Text', default='None', convention=True,
           values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
-        F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Amortisation', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
@@ -3063,16 +3057,12 @@ class CapDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate cap, cap, caplets'
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, PRICING, own('CapDeal', [
-        F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
+    fields = [ADMIN, PRICING, FLOATING_INDEX, own('CapDeal', [
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
-        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payment_Calendars', 'Text', default='', convention=True),
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
-        F('Index_Calendars', 'Text', default='', convention=True),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
           tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
@@ -3084,7 +3074,6 @@ class CapDeal(Deal):
         F('First_Coupon_Date', 'Date', default='', convention=True),
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
-        F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Cap_Rate', 'Float', default=0.0),
         F('Payment_Interval', 'Text', default='3M', convention=True, obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
@@ -3094,7 +3083,6 @@ class CapDeal(Deal):
           factors=['InterestRateVol', 'InterestYieldVol']),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Index_Offset', 'Integer', default=0, convention=True),
         F('Principal', 'Float', default=1000000.0, convention=True, sized=True)
     ])]
 
@@ -3180,16 +3168,12 @@ class FloorDeal(CapDeal):
     vernacular = 'interest rate floor, floor, floorlets'
     # the schema reads each type's own declarations, never a parent's
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, PRICING, own('FloorDeal', [
-        F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
+    fields = [ADMIN, PRICING, FLOATING_INDEX, own('FloorDeal', [
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
-        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payment_Calendars', 'Text', default='', convention=True),
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
-        F('Index_Calendars', 'Text', default='', convention=True),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
           tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
@@ -3202,7 +3186,6 @@ class FloorDeal(CapDeal):
         F('First_Coupon_Date', 'Date', default='', convention=True),
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
-        F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Payment_Interval', 'Text', default='3M', convention=True, obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Amortisation', 'Table', default='null', convention=True,
@@ -3211,7 +3194,6 @@ class FloorDeal(CapDeal):
           factors=['InterestRateVol', 'InterestYieldVol']),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Index_Offset', 'Integer', default=0, convention=True),
         F('Principal', 'Float', default=1000000.0, convention=True, sized=True)
     ])]
 
@@ -3226,13 +3208,11 @@ class SwaptionDeal(Deal):
     # its legs are the underlying the option is written on: a position sizes them, flips the option
     option_on_children = True
     vernacular = 'swaption, payer swaption, receiver swaption'
-    fields = [ADMIN, PRICING, own('SwaptionDeal', [
+    fields = [ADMIN, PRICING, FLOATING_INDEX, own('SwaptionDeal', [
         F('Floating_Margin', 'Float', default=0.0, convention=True),
         F('Rate_Schedule', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
           tag='DateList'),
-        F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Swap_Rate', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Expiry_Date', 'Date', default=''),
@@ -3242,14 +3222,10 @@ class SwaptionDeal(Deal):
         F('Margin_Schedule', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float')]), tag='DateList'),
         F('Principal', 'Float', default=0.0, sized=True),
-        F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Swap_Maturity_Date', 'Date', default=''),
         F('Swap_Effective_Date', 'Date', default=REQUIRED),
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver']),
-        F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
-        F('Index_Offset', 'Integer', default=0, convention=True),
-        F('Index_Calendars', 'Text', default='', convention=True)
+        F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'])
     ]), own('SwaptionDeal', [
         F('Pay_Amortisation', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
