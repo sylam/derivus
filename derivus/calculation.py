@@ -4035,21 +4035,20 @@ class SIMM(Calculation):
             stated = self.coordinates(factor, reference)
             kind = None if stated is None else self.MOVES[stated['RiskType']][1]
             rate = utils.check_rate_name(factor)
-            key = utils.resolve_factor_key(utils.Factor(rate[0], rate[1:]), factors)
             if kind == 'quote' and not any(move.factor == factor for move in moves):
                 raise ValueError('SIMM: {} maps to Risk_IRCurve, which moves a curve by its '
                                  'quotes, and no InterestRatePrices block quotes it - map it null '
                                  'where it rides on its parent'.format(factor))
             elif kind in ('parallel', 'spot') or (kind == 'fx' and rate[1] != currency):
-                moves.append(self.Bump(factor, stated, [('', 1.0)], (kind, key), None))
+                moves.append(self.Bump(factor, stated, [('', 1.0)], (kind, factor), None))
             elif kind == 'vega':
-                surface = factors[key].get('Surface_Type', 'Explicit')
+                surface = factors[factor].get('Surface_Type', 'Explicit')
                 if surface not in self.VOL_PILLARS:
                     raise ValueError('SIMM: {} is a {} surface, and a point of vega moves the vols '
                                      'of a {} one'.format(factor, surface,
                                                           ', '.join(self.VOL_PILLARS)))
-                moves.extend(self.Bump(factor, stated, [(label, 1.0)], ('vega', key, label),
-                                       ('augmented', key)) for label, _ in self.vertices)
+                moves.extend(self.Bump(factor, stated, [(label, 1.0)], ('vega', factor, label),
+                                       ('augmented', factor)) for label, _ in self.vertices)
         return moves
 
     def move(self, move):

@@ -66,7 +66,7 @@ def _cfg():
                            'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
                             'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-        'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+        'EquityPriceVol.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                               'Surface': utils.Curve([], [[m, t, VOL] for m in (0.8, 1.0, 1.2)
                                                           for t in (0.02, 2.0)])},
     }
@@ -412,9 +412,6 @@ def test_digital_terminal_step_is_integrated_not_sampled():
     r = ladder(price=lambda s: _cva(s, deal, False, **kw), aad=aad, base=SPOT,
                rungs=(5e-4, 1e-3, 2e-3, 5e-3))
     assert r.agrees(tol=0.02), f'digital terminal step is not being integrated\n{r}'
-    # the surface is authored under the PRE-TAG name and the gradient comes back tagged:
-    # `resolve_factor_key` accepts the old spelling on read, and the gradient is filed under the
-    # type the resolver asked for
     factors = {str(i[0]).split('.')[0] for i in _cva(SPOT, deal, 'frame', **kw).index}
     for needed in ('EquityPrice', 'EquityPriceVol'):
         assert needed in factors, f'{needed} missing from the greeks report; got {sorted(factors)}'

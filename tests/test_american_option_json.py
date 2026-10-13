@@ -72,7 +72,7 @@ def _factors(r, q, vol):
         'EquityPrice.EQ': {'Spot': SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
                            'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Curve': utils.Curve([], [[0.0, q], [10.0, q]])},
-        'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+        'EquityPriceVol.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                               'Surface': utils.Curve([], [[m, t, vol] for m in (0.5, 1.0, 1.5)
                                                           for t in (0.02, 5.0)])}}
 

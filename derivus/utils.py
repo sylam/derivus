@@ -151,10 +151,9 @@ Collateral = namedtuple('Collateral', 'Haircut Amount Currency Funding_Rate Coll
 # define 1, 2 and 3d risk factors - add more as development proceeds
 DimensionLessFactors = ['ReferenceVol', 'Correlation']
 OneDimensionalFactors = ['InterestRate', 'InflationRate', 'DividendRate', 'SurvivalProb', 'ForwardPrice', 'ForwardRate']
-#: Every (moneyness, expiry) vol surface. ONE implementation - `riskfactors.VolatilityGrid` - with
-#: an asset-class TAG per member, the risk-class partition below being a pure function of the factor
-#: type. The untagged name is transitional: see `resolve_factor_key`.
-TwoDimensionalFactors = ['FXVol', 'EquityPriceVol', 'CommodityPriceVol', 'VolatilityGrid']
+#: Every (moneyness, expiry) vol surface: ONE implementation, `riskfactors.VolatilityGrid`, with an
+#: asset-class TAG per member, so the risk-class partition below is a pure function of the type.
+TwoDimensionalFactors = ['FXVol', 'EquityPriceVol', 'CommodityPriceVol']
 ThreeDimensionalFactors = ['InterestRateVol', 'InterestYieldVol', 'ForwardPriceVol']
 
 #: The CRIF-style risk class of every declared factor type, as data. A sensitivity is reported under
@@ -172,10 +171,7 @@ FactorRiskClass = {
     'CSForwardPriceModelParameters': 'Commodity',
     'SurvivalProb': 'Credit',
     'Correlation': 'CrossClass', 'ObservedBasis': 'CrossClass',
-    'GBMAssetPriceTSModelParameters': 'CrossClass', 'LogVar2FJModelParameters': 'CrossClass',
-    # TRANSITIONAL: an untagged surface cannot decide its own class. Here only because the store
-    # still declares the name `resolve_factor_key` reads, and it retires with that shim.
-    'VolatilityGrid': 'CrossClass'
+    'GBMAssetPriceTSModelParameters': 'CrossClass', 'LogVar2FJModelParameters': 'CrossClass'
 }
 
 # weekends and weekdays
@@ -5411,29 +5407,6 @@ def check_rate_name(name):
 def check_tuple_name(factor):
     """Opposite of check_rate_name - used to make sure the name is a flat name"""
     return '.'.join((factor.type,) + factor.name) if type(factor.name) == tuple else factor
-
-
-def resolve_factor_key(factor, price_factors):
-    """The `Price Factors` key holding this factor's block, which is its own name unless a vol
-    surface was written under a SIBLING 2D name.
-
-    TRANSITIONAL, ONE RELEASE: market data exists under both the tagged and untagged spellings. A
-    factor in `TwoDimensionalFactors` falls back to the untagged `VolatilityGrid.<name>` block AND
-    TO NOTHING ELSE - never to a sibling tag, which would let one asset class price off another's
-    surface. The requested type still decides which class is built, so the typed name stays
-    canonical on write.
-
-    RETIREMENT: once no market data carries `VolatilityGrid.*`, delete this function, drop
-    `VolatilityGrid` from `TwoDimensionalFactors` and `FactorRiskClass`, and put `check_tuple_name`
-    back in `riskfactors.construct_factor`, `Config.factor_universe` and `SIMM.bumps`.
-    """
-    name = check_tuple_name(factor)
-    if name in price_factors or factor.type not in TwoDimensionalFactors:
-        return name
-    # PRE-TAG spelling only: a cross-tag fallback would let an FX request silently price off an
-    # equity block - right gradient label, wrong number (measured)
-    legacy = check_tuple_name(Factor('VolatilityGrid', factor.name))
-    return legacy if legacy in price_factors else name
 
 
 #: The positional name-prefix chain, head type to tail type: a curve's tail is itself (a spread chain),

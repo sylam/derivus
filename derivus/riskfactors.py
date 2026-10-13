@@ -1480,6 +1480,47 @@ class HullWhite2FactorModelParameters(Factor1D):
         return params
 
 
+#: What every vol surface declares, whatever its asset class; the three tags below declare it, the
+#: base none, so the store offers the tags and never the base.
+VOL_SURFACE = [
+    F('Surface_Type', 'Text', default='Explicit',
+      values=['Explicit', 'SVI', 'Skew', 'Malz', 'Relative_Forward']),
+    F('Surface', 'Surface', bind='value',
+      description='(moneyness, expiry, volatility) triples, flat extrapolated and linearly '
+                  'interpolated, read when Surface Type is Explicit'),
+    F('Moneyness_Rule', 'Text', default='Sticky_Moneyness',
+      values=['Sticky_Strike', 'Sticky_Moneyness', 'Sticky_Delta']),
+    # NOT bind='value': update() runs the Malz solver on these and rebuilds Surface on an
+    # x-grid refined against the numbers, so the moneyness grid follows them
+    F('Delta_Surface', 'Surface',
+      description='(delta, expiry, volatility) triples, read when Surface Type is Malz'),
+    F('ATM_Ref', 'Curve', description='Skew and SVI parameter'),
+    F('ATM_Vol', 'Curve', description='Skew and SVI parameter'),
+    F('a', 'Curve', description='SVI parameter'),
+    F('b', 'Curve', description='SVI parameter'),
+    F('s', 'Curve', description='Skew parameter'),
+    F('L', 'Curve', description='Skew parameter'),
+    F('R', 'Curve', description='Skew parameter'),
+    F('C', 'Curve', description='Skew parameter'),
+    F('D', 'Curve', description='Skew parameter'),
+    F('lam', 'Curve', description='Skew parameter'),
+    F('rho', 'Curve', description='Skew and SVI parameter'),
+    F('m', 'Curve', description='SVI parameter'),
+    F('sigma', 'Curve', description='SVI parameter'),
+    F('Currency', 'Text', default=''),
+    # bind='value' because it TRAVELS WITH THE VOLS: a tick delivers new numbers and the time
+    # it saw them, and a stamp that invalidated the plan would recompile on every tick
+    F('Quote_Timestamp', 'Date', default='', bind='value',
+      description='When the latest quote this surface was bootstrapped from was observed, '
+                  'reported for staleness and never read by pricing'),
+    # STRUCTURAL, unlike the stamp beside it: it says what the moneyness grid IS, so a
+    # re-bootstrap asking for another one is asking for another grid
+    F('Grid_Tolerance', 'Float', default=0.0,
+      description='The vol error the moneyness grid of a bootstrapped surface was refined to; '
+                  '0 on a surface no bootstrapper built')
+]
+
+
 class VolatilityGrid(Factor2D):
     """A (moneyness, expiry) vol surface - the ONE implementation, shared by every asset class.
 
@@ -1491,62 +1532,25 @@ class VolatilityGrid(Factor2D):
     names those surfaces `Risk_FXVol`/`Risk_EquityVol`/`Risk_CommodityVol`, and a factor-keyed
     gradient carries nothing but `Factor(type, name)` - so `utils.FactorRiskClass` must be a pure
     function of the type, which one untagged name would make undecidable."""
-    fields = [
-        F('Surface_Type', 'Text', default='Explicit',
-          values=['Explicit', 'SVI', 'Skew', 'Malz', 'Relative_Forward']),
-        F('Surface', 'Surface', bind='value',
-          description='(moneyness, expiry, volatility) triples, flat extrapolated and linearly '
-                      'interpolated, read when Surface Type is Explicit'),
-        F('Moneyness_Rule', 'Text', default='Sticky_Moneyness',
-          values=['Sticky_Strike', 'Sticky_Moneyness', 'Sticky_Delta']),
-        # NOT bind='value': update() runs the Malz solver on these and rebuilds Surface on an
-        # x-grid refined against the numbers, so the moneyness grid follows them
-        F('Delta_Surface', 'Surface',
-          description='(delta, expiry, volatility) triples, read when Surface Type is Malz'),
-        F('ATM_Ref', 'Curve', description='Skew and SVI parameter'),
-        F('ATM_Vol', 'Curve', description='Skew and SVI parameter'),
-        F('a', 'Curve', description='SVI parameter'),
-        F('b', 'Curve', description='SVI parameter'),
-        F('s', 'Curve', description='Skew parameter'),
-        F('L', 'Curve', description='Skew parameter'),
-        F('R', 'Curve', description='Skew parameter'),
-        F('C', 'Curve', description='Skew parameter'),
-        F('D', 'Curve', description='Skew parameter'),
-        F('lam', 'Curve', description='Skew parameter'),
-        F('rho', 'Curve', description='Skew and SVI parameter'),
-        F('m', 'Curve', description='SVI parameter'),
-        F('sigma', 'Curve', description='SVI parameter'),
-        F('Currency', 'Text', default=''),
-        # bind='value' because it TRAVELS WITH THE VOLS: a tick delivers new numbers and the time
-        # it saw them, and a stamp that invalidated the plan would recompile on every tick
-        F('Quote_Timestamp', 'Date', default='', bind='value',
-          description='When the latest quote this surface was bootstrapped from was observed, '
-                      'reported for staleness and never read by pricing'),
-        # STRUCTURAL, unlike the stamp beside it: it says what the moneyness grid IS, so a
-        # re-bootstrap asking for another one is asking for another grid
-        F('Grid_Tolerance', 'Float', default=0.0,
-          description='The vol error the moneyness grid of a bootstrapped surface was refined to; '
-                      '0 on a surface no bootstrapper built')
-    ]
 
 
 # The asset-class tags: the type a deal's vol surface is authored and keyed under, and what
-# `utils.FactorRiskClass` partitions on. `fields` is re-declared as the SAME list object because
-# `emit_factor` is own-attr only - an alias that merely inherited could not be authored at all.
+# `utils.FactorRiskClass` partitions on; each declares the one surface, own-attr, as the
+# store reads.
 
 class FXVol(VolatilityGrid):
     """The vol surface of an FX pair - CRIF `Risk_FXVol`."""
-    fields = VolatilityGrid.fields
+    fields = VOL_SURFACE
 
 
 class EquityPriceVol(VolatilityGrid):
     """The vol surface of an equity or equity index - CRIF `Risk_EquityVol`."""
-    fields = VolatilityGrid.fields
+    fields = VOL_SURFACE
 
 
 class CommodityPriceVol(VolatilityGrid):
     """The vol surface of a commodity or energy reference price - CRIF `Risk_CommodityVol`."""
-    fields = VolatilityGrid.fields
+    fields = VOL_SURFACE
 
 
 class InterestYieldVol(Factor3D):
@@ -1752,7 +1756,7 @@ class ForwardPriceVol(Factor3D):
 @utils.log_exception
 def construct_factor(factor, price_factors, factor_interp, base_date=None):
     # now lookup the params of the factor
-    pf = price_factors[utils.resolve_factor_key(factor, price_factors)]
+    pf = price_factors[utils.check_tuple_name(factor)]
     # change the logging name in case there are any errors
     logging.root.name = '.'.join(factor.name)
     # check the interpolation on interest Rates - can add more methods/price factors as desired

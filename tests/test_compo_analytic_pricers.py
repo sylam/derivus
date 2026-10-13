@@ -83,7 +83,7 @@ def _factors(skew=SKEW, q=Q_EQ, eq_vol=VOL_ATM, fx_vol=FX_SIGMA, corr=CORR, fx_s
         'EquityPrice.EQ': {'Spot': SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
                            'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Curve': utils.Curve([], [[0.0, q], [5.0, q]])},
-        'VolatilityGrid.EQ': _surface(eq_vol, skew),
+        'EquityPriceVol.EQ': _surface(eq_vol, skew),
         'FXVol.EUR.USD': _surface(fx_vol, fx_skew),
         'Correlation.EquityPrice.EQ/FxRate.EUR.USD': {'Value': corr}})
 

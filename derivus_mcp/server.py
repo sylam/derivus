@@ -436,7 +436,7 @@ def describe_calculation_type(calc_type: str) -> dict:
 
 @MCP.tool(annotations=READ_ONLY)
 def describe_factor_type(factor_type: str) -> dict:
-    """Every field one price-factor type carries (`InterestRate`, `FxRate`, `VolatilityGrid`, ...)
+    """Every field one price-factor type carries (`InterestRate`, `FxRate`, `FXVol`, ...)
     plus the stochastic processes that can drive it and the interpolations it accepts - for
     READING the book's market data; nothing here edits it."""
     schema = service().call('GET', '/schema')

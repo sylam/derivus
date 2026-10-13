@@ -78,7 +78,7 @@ JOINT = [
      'same shape of outer path-state override. It has never been priced at a non-zero carry.'),
 ]
 
-_VOL_FACTORS = ('VolatilityGrid', 'FXVol', 'SurfaceVol', 'ForwardPriceVol')
+_VOL_FACTORS = ('FXVol', 'EquityPriceVol', 'CommodityPriceVol', 'ForwardPriceVol')
 
 
 def _values(block, key='Curve'):

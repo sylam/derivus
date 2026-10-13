@@ -22,7 +22,7 @@ structural.
 
 ## GBMAssetPriceTSModelPrices
 
-Names the vol surface (`FXVol`, `EquityPriceVol`, `CommodityPriceVol` or `VolatilityGrid`) whose
+Names the vol surface (`FXVol`, `EquityPriceVol` or `CommodityPriceVol`) whose
 ATM column becomes the instantaneous vol curve:
 
 ```json

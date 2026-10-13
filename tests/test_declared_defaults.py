@@ -127,7 +127,7 @@ PINNED = {
     # attributes and `Tags` every deal, keys no program read - the factor universes are unmoved and
     # the three documents priced here mark bit for bit
     'autocall_job.json': (
-        'dc88939c63f341fb641977e4995ac4cead587aa12c52e4753db531882c74b8c8', 5, 0),
+        '824cd185cdee1ea9771c784b2d9679fd5c49d2ce3240ac05d3d00a63f73fcbb8', 5, 0),
     # re-pinned 2026-09-22: the only plan a declared default has ever moved, and it moved by a
     # constructor no longer WRITING one. `NettingCollateralSet.__init__` used to `setdefault`
     # `Settlement_Period`, `Liquidation_Period` and `Opening_Balance` into the authored block,
@@ -150,7 +150,7 @@ PINNED = {
     'platinum_hedge_shipping.json': (
         'aeb9c875021626cc15de29d15bc705d8d77a5b11a1b87b961332ba162a44b262', 2, 0),
     'policy_test_simulate_only.json': (
-        '695ab01aa2aeebf526e64d007d47d63d2ffee852f0b162bd05fb72147f603f13', 2, 0),
+        '343f82b4d57ef9136f7614eaca794fbe6b8dcdfa0669dce2099f1115d322b335', 2, 0),
 }
 
 

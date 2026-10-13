@@ -44,6 +44,7 @@ UNDECLARED_FACTORS = {
     'Factor0D': 'dimension base', 'Factor1D': 'dimension base',
     'Factor2D': 'dimension base', 'Factor3D': 'dimension base',
     'CurveModelParameters': 'the base of a spot model whose parameters carry term structures, never a type',
+    'VolatilityGrid': 'the one vol-surface implementation, typed by its three asset-class tags, never a type',
     'InterestRateJacobian': 'its block is keyed by BENCHMARK name, so it has no fixed field set',
 }
 
@@ -373,7 +374,7 @@ def test_one_name_may_carry_two_descriptors_in_different_types():
     `Payment_Timing` is `Touch`/`Expiry` on a one-touch and `End`/`Begin`/`Discounted` on a
     cashflow leg; `Sigma` a scalar on the OU/hazard/Clewlow-Strickland models and a term-structure
     curve on Hull-White (once filed as `sigma`); `Surface` a (moneyness, expiry, vol) triple list on
-    a `VolatilityGrid` and a quad list on the three vol SPACES (once filed as `Space`).
+    the three vol SURFACES and a quad list on the three vol SPACES (once filed as `Space`).
 
     Killing mutation: the Instrument emitter filing each descriptor under its field name across
     every section, the first declaration winning."""
@@ -395,7 +396,8 @@ def test_one_name_may_carry_two_descriptors_in_different_types():
     assert processes['BasisLinkedSpotModel']['Phi']['widget'] == 'Float'
     assert not any('sigma' in d for d in processes.values()), 'the lowercase alias key is back'
 
-    assert FACTOR['types']['VolatilityGrid']['Surface']['value'] == schema.BLANK['Surface']
+    for surface in ('FXVol', 'EquityPriceVol', 'CommodityPriceVol'):
+        assert FACTOR['types'][surface]['Surface']['value'] == schema.BLANK['Surface']
     for space in ('InterestYieldVol', 'InterestRateVol', 'ForwardPriceVol'):
         assert FACTOR['types'][space]['Surface']['value'] == schema.BLANK['Space']
 
@@ -453,8 +455,8 @@ def test_the_factor_types_are_the_riskfactor_classes():
     type naming no class is `None(block)` - a TypeError at compile time rather than a logged miss;
     `ConvenienceYield` sat in that state, declared with two fields and no class. And a factor class
     no schema declares cannot be authored or documented. The exemptions are the four dimension
-    bases and the curve-model base, which are never a `Factor.type`, and the Jacobian, whose block
-    is keyed by benchmark instrument rather than by a fixed field set.
+    bases, the vol-surface base and the curve-model base, which are never a `Factor.type`, and the
+    Jacobian, whose block is keyed by benchmark instrument rather than by a fixed field set.
 
     Killing mutation: `ForwardPriceSample`'s declaration withdrawn."""
     undispatchable = sorted(set(FACTOR['types']) - set(riskfactor_classes()))

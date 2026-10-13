@@ -118,7 +118,7 @@ def job_document():
                            'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
                             'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-        'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+        'EquityPriceVol.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                               'Surface': utils.Curve([], [[m, t, VOL] for m in (0.8, 1.0, 1.2)
                                                           for t in (0.02, 3.0)])},
     }

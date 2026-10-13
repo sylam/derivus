@@ -63,7 +63,7 @@ UNITS = _D['Units']
 COUPON = _D['Autocall_Coupons'][0][1]
 R_USD = _PF['InterestRate.USD']['Curve']['.Curve']['data'][0][1]
 Q_EQ = _PF['DividendRate.EQ']['Curve']['.Curve']['data'][0][1]
-SIGMA = _PF['VolatilityGrid.EQ']['Surface']['.Curve']['data'][0][2]
+SIGMA = _PF['EquityPriceVol.EQ']['Surface']['.Curve']['data'][0][2]
 DAYS = 365.0
 
 

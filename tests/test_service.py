@@ -83,7 +83,7 @@ EQUITY = {
     'EquityPrice.EQ': {'Spot': EQ_SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD', 'Issuer': '',
                        'Respect_Default': 'No', 'Jump_Level': 0.0},
     'DividendRate.EQ': {'Currency': 'USD', 'Curve': utils.Curve([], [[0.0, 0.0], [5.0, 0.0]])},
-    'VolatilityGrid.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+    'EquityPriceVol.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                           'Surface': utils.Curve([], [[m, t, VOL] for m in (0.8, 1.0, 1.2)
                                                       for t in (0.02, 2.0)])}}
 
@@ -5873,7 +5873,7 @@ def test_a_row_filed_before_the_fva_column_existed_still_reads(desk_xva, tmp_pat
 # the XVA tab over a market data file and a calendar the book names
 # --------------------------------------------------------------------------------------------
 #: The equities the named market data FILE carries. EQ_1 has no surface there, so the book's own
-#: `VolatilityGrid.EQ_1` is its only one, and EQ_2 runs an implied model whose parameters the book
+#: `EquityPriceVol.EQ_1` is its only one, and EQ_2 runs an implied model whose parameters the book
 #: states over the file's.
 NAMED = ['EQ_{}'.format(k) for k in range(6)]
 
@@ -5934,7 +5934,7 @@ def named_book(tmp_path):
     stated = {'SurvivalProb.CPTY_{}'.format(k): hazard(0.04 + 0.005 * k)
               for k in (3, 5, 6, 7, 8, 9)}
     stated.update({'EquityPrice.EQ_0': dict(EQUITY['EquityPrice.EQ'], Spot=110.0),
-                   'VolatilityGrid.EQ_1': surface(0.3), 'GBMAssetPriceTSModelParameters.EQ_2':
+                   'EquityPriceVol.EQ_1': surface(0.3), 'GBMAssetPriceTSModelParameters.EQ_2':
                    implied(0.35)})
     sets = [netting_set('NS_{}'.format(k), 'CPTY_{}'.format(k), [
         dict(VANILLA, Reference='OPT_{}_{}'.format(k, name), Equity=name, Dividends=name,
@@ -5977,7 +5977,7 @@ def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_na
     """THE XVA TAB OVER A NAMED MARKET DATA FILE AND CALENDAR, ten netting sets.
 
     Each set's document names the book's file and calendar and restates the book's whole explicit
-    block - a surface under its pre-tag name, an implied model's parameters and a model among
+    block - a surface, an implied model's parameters and a model among
     what it overrides - and loads onto the executor's one long-lived context, which parses the
     file once and serves every set. Every CVA and FVA is the number a fresh context over the same
     document reads, to the bit, and so is every one after the book restates the values it
@@ -6002,7 +6002,7 @@ def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_na
         document = json.loads(book.read_text())
         stated = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
         stated['EquityPrice.EQ_0']['Spot'] = 120.0
-        stated.update({'VolatilityGrid.EQ_1': wire(surface(0.35)), 'SurvivalProb.CPTY_7': wire(
+        stated.update({'EquityPriceVol.EQ_1': wire(surface(0.35)), 'SurvivalProb.CPTY_7': wire(
             hazard(0.06)), 'GBMAssetPriceTSModelParameters.EQ_2': wire(implied(0.45))})
         book.write_text(json.dumps(document, indent=2), newline='\n')
         recalc()

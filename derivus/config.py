@@ -907,14 +907,10 @@ class Config(object):
         factors, skipped, _, _ = self.discover_factors(
             options, options['Base_Date'], '0d', False, readable=True)
         names = set(map(utils.check_tuple_name, factors))
-        # resolved through the same lookup `construct_factor` uses, or a vol surface written under
-        # its pre-tag name would be reported missing and then built anyway
-        present = {utils.check_tuple_name(f) for f in factors if utils.resolve_factor_key(
-            f, self.params['Price Factors']) in self.params['Price Factors']}
 
         self._universe_of = children
-        self._universe = {'resolved': sorted(present),
-                          'missing': sorted(skipped.union(names.difference(present)))}
+        self._universe = {'resolved': sorted(names.intersection(self.params['Price Factors'])),
+                          'missing': sorted(skipped.union(names.difference(self.params['Price Factors'])))}
         return self._universe
 
     def nameless_deals(self):

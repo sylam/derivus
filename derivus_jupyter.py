@@ -190,7 +190,7 @@ class TreePanel(metaclass=ABCMeta):
         def get_repr(obj, field_name, default_val):
 
             if isinstance(obj, rf.utils.Curve):
-                # {}, VolatilityGrid, VolatilityGrid.AUD.JPY, <class 'derivus.utils.Curve'>
+                # {}, FXVol, FXVol.AUD.JPY, <class 'derivus.utils.Curve'>
                 if field_name in ['Surface', 'Delta_Surface']:
                     # need to use a threeview
                     v = getattr(rf.riskfactors, rate_type)(config[section_name])

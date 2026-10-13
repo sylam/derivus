@@ -737,7 +737,7 @@ def _autocall_doc(put_barrier=0.0, coupon_days=AC_DAYS, threshold=1.0, rebate=No
     pf = job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
     pf['InterestRate.USD']['Curve'] = _flat(AC_R)
     pf['DividendRate.EQ']['Curve'] = _flat(AC_Q)
-    pf['VolatilityGrid.EQ']['Surface'] = _ac_surface(AC_SIGMA)
+    pf['EquityPriceVol.EQ']['Surface'] = _ac_surface(AC_SIGMA)
     pf['EquityPrice.EQ']['Spot'] = spot
     deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
     deal.update(Strike_Price=AC_STRIKE, Units=AC_UNITS)

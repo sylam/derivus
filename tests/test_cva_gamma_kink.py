@@ -38,7 +38,7 @@ THE FIXTURE-DEGENERACY CHECKLIST, per axis:
                 which is the deep-ITM control below.
   vol surface   varied - the exposure reads `GBMAssetPriceTSModelParameters.EQ`'s term structure,
                 0.20 / 0.28 / 0.32 piecewise linear, so the vanna entry is a sum over knots a flat
-                curve would collapse. (`VolatilityGrid.EQ` is degenerate because a linear forward
+                curve would collapse. (`EquityPriceVol.EQ` is degenerate because a linear forward
                 never reads it.)
   side          varied - Buy on the live document, Sell on its mirror in the atom gate.
   netting sets  one: the CVA objective is the ROOT sum, so a second uncollateralised set adds rows

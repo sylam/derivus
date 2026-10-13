@@ -72,7 +72,7 @@
               }
             }
           },
-          "VolatilityGrid.EQ": {
+          "EquityPriceVol.EQ": {
             "Surface_Type": "Explicit",
             "Moneyness_Rule": "Sticky_Moneyness",
             "Surface": {

@@ -770,7 +770,7 @@ def test_a_live_window_nothing_can_price_is_named_and_never_a_500(recorded, desk
     booked(BINARY, 1.0, 'EXEC-Q', BOOK + '/FX', 5_000.0)
     closed_and_marked()
     body = json.loads(desk.read_text())
-    body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].pop('VolatilityGrid.EQ')
+    body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].pop('EquityPriceVol.EQ')
     desk.write_text(json.dumps(body, indent=2), newline='\n')
 
     answer = CLIENT.get('/book/pnl', params={'start': START.strftime('%Y-%m-%d')})
@@ -931,7 +931,7 @@ def test_a_trade_is_read_on_the_market_it_was_done_on(recorded, desk):
     designated(recorded)
     body = json.loads(desk.read_text())
     factors = body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
-    surface = factors.pop('VolatilityGrid.EQ')
+    surface = factors.pop('EquityPriceVol.EQ')
     desk.write_text(json.dumps(body, indent=2), newline='\n')
     booked(LONG, 1.0, 'EXEC-A', BOOK + '/Rates', 17_800_000.0)
     closed_and_marked()
@@ -939,7 +939,7 @@ def test_a_trade_is_read_on_the_market_it_was_done_on(recorded, desk):
     rolled(desk, END, 18.0)
     body = json.loads(desk.read_text())
     body['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
-        'VolatilityGrid.EQ'] = surface
+        'EquityPriceVol.EQ'] = surface
     desk.write_text(json.dumps(body, indent=2), newline='\n')
     booked(TICKED, 1.0, 'EXEC-T', BOOK + '/FX', 5_000.0)
     booked(BESIDE, 1.0, 'EXEC-L', BOOK + '/FX', 1_700_000.0)

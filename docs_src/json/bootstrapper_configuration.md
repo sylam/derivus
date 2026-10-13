@@ -23,10 +23,10 @@ only if an entry names it.
 |---|---|---|---|---|---|
 | `InterestRate` | `InterestRateCurveParameters` | `InterestRate` | `InterestRatePrices.<curve>` | `InterestRate.<curve>` | `InterestRate`, `FxRate` |
 | `FXVol` | `FXVolSurfaceParameters` | `FXVol` | `FXVolPrices.<pair>` | `FXVol.<pair>` | none |
-| `GBMAssetPriceTSModelParameters` | - | `GBMAssetPriceTSModel` | `GBMAssetPriceTSModelPrices.<name>` | `GBMAssetPriceTSModelParameters.<name>` | `FXVol`, `EquityPriceVol`, `CommodityPriceVol`, `VolatilityGrid` |
+| `GBMAssetPriceTSModelParameters` | - | `GBMAssetPriceTSModel` | `GBMAssetPriceTSModelPrices.<name>` | `GBMAssetPriceTSModelParameters.<name>` | `FXVol`, `EquityPriceVol`, `CommodityPriceVol` |
 | `HullWhite2FactorModelParameters` | - | `HullWhite2FactorModel` | `HullWhite2FactorModelPrices.<curve>` | `HullWhite2FactorModelParameters.<curve>` | `InterestRate`, `InterestYieldVol`, `GBMAssetPriceTSModelParameters` |
 | `CSForwardPriceModelParameters` | - | `CSForwardPriceModel` | `CSForwardPriceModelPrices.<name>` | `CSForwardPriceModelParameters.<name>` | `ForwardPrice`, `ForwardPriceVol`, `InterestRate` |
-| `LogVar2FJModelParameters` | - | `LogVar2FJModel` | `LogVar2FJModelPrices.<name>` | `LogVar2FJModelParameters.<name>` | `CommodityPrice`, `CommodityPriceVol`, `DividendRate`, `EquityPrice`, `EquityPriceVol`, `FXVol`, `FuturesPrice`, `FxRate`, `InterestRate`, `VolatilityGrid` |
+| `LogVar2FJModelParameters` | - | `LogVar2FJModel` | `LogVar2FJModelPrices.<name>` | `LogVar2FJModelParameters.<name>` | `CommodityPrice`, `CommodityPriceVol`, `DividendRate`, `EquityPrice`, `EquityPriceVol`, `FXVol`, `FuturesPrice`, `FxRate`, `InterestRate` |
 
 A block writes its family's factor under the block's own name. The four `*Parameters` factors are
 what the implied models read (see [Price Models](price_models.md#implied-models)). Every field an
