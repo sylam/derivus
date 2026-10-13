@@ -20,7 +20,7 @@ from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
     settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
-    FX_TOUCH, FXOPTIONBASE,
+    FX_TOUCH, FXOPTIONBASE, PRICING,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -2353,9 +2353,7 @@ class DepositDeal(Deal):
     vernacular = 'deposit, money-market deposit, placement'
     observes = Observes('Interest_Rate', 'InterestRate')
     quoted = 'Interest_Rate_Schedule'
-    fields = [ADMIN, own('DepositDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, PRICING, own('DepositDeal', [
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Payment_Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
@@ -2468,12 +2466,11 @@ class SwapInterestDeal(Deal):
     vernacular = 'interest rate swap, IRS, vanilla swap, basis swap, payer swap, receiver swap'
     observes = Observes('Interest_Rate', 'InterestRate')
     quoted = 'Swap_Rate'
-    fields = [ADMIN, own('SwapInterestDeal', [
+    fields = [ADMIN, PRICING, own('SwapInterestDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Rate_Multiplier', 'Float', default=1.0, convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
@@ -2494,7 +2491,6 @@ class SwapInterestDeal(Deal):
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Swap_Rate', 'Float', default=0.0),
         F('Principal', 'Float', default=0.0, sized=True)
     ]), own('SwapInterestDeal', [
@@ -2618,7 +2614,7 @@ class SwapInterestDeal(Deal):
 class CFFixedInterestListDeal(Deal):
     vernacular = 'fixed-rate bond, fixed leg, fixed coupons'
     quoted = 'Cashflows'
-    fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFixedInterestListDeal', [
+    fields = [ADMIN, PRICING, CASHFLOWLISTDEAL, own('CFFixedInterestListDeal', [
         F('Fixed_Cashflows', 'Container', default={'Compounding': 'No', 'Items': []}, description='Cashflows',
           json_name='Cashflows', sub_fields=[
               F('Compounding', 'Text', default='No', values=['Yes', 'No']),
@@ -2697,9 +2693,7 @@ class CFFixedInterestListDeal(Deal):
 
 class CFFixedListDeal(Deal):
     vernacular = 'fixed cashflows, cashflow schedule, known payments'
-    fields = [ADMIN, own('CFFixedListDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, PRICING, own('CFFixedListDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Description', 'Text', default='', convention=True),
         F('Fixed_Simple_Cashflows', 'Container', default={'Items': []}, description='Cashflows', json_name='Cashflows',
@@ -2746,9 +2740,7 @@ class CFFixedListDeal(Deal):
 
 class FixedCashflowDeal(Deal):
     vernacular = 'fixed cashflow, single payment, fee'
-    fields = [ADMIN, own('FixedCashflowDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, PRICING, own('FixedCashflowDeal', [
         F('Calendars', 'Text', default='', convention=True),
         F('Amount', 'Float', default=0.0, sized=True),
         F('Payment_Date', 'Date', default='', settles=Cash('Currency', 'Amount'))
@@ -2800,7 +2792,7 @@ class FixedCashflowDeal(Deal):
 class CFFloatingInterestListDeal(Deal):
     vernacular = 'floating-rate note, floating leg, FRN'
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, CASHFLOWLISTDEAL, own('CFFloatingInterestListDeal', [
+    fields = [ADMIN, PRICING, CASHFLOWLISTDEAL, own('CFFloatingInterestListDeal', [
         F('Discount_Rate_Swaption_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestYieldVol']),
         F('Rate_Adjustment_Method', 'Text', default='None', convention=True,
@@ -2939,7 +2931,7 @@ class CFFloatingInterestListDeal(Deal):
 
 class YieldInflationCashflowListDeal(Deal):
     vernacular = 'inflation-linked bond, linker, inflation cashflows'
-    fields = [ADMIN, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
+    fields = [ADMIN, PRICING, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
         F('Index', 'Text', default='', factors=['InflationRate']),
         F('Index_Reference', 'Container',
           default={
@@ -3071,14 +3063,13 @@ class CapDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate cap, cap, caplets'
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, own('CapDeal', [
+    fields = [ADMIN, PRICING, own('CapDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payment_Calendars', 'Text', default='', convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
@@ -3101,7 +3092,6 @@ class CapDeal(Deal):
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
         F('Index_Offset', 'Integer', default=0, convention=True),
@@ -3190,14 +3180,13 @@ class FloorDeal(CapDeal):
     vernacular = 'interest rate floor, floor, floorlets'
     # the schema reads each type's own declarations, never a parent's
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, own('FloorDeal', [
+    fields = [ADMIN, PRICING, own('FloorDeal', [
         F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears']),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payment_Calendars', 'Text', default='', convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Calendars', 'Text', default='', convention=True),
@@ -3220,7 +3209,6 @@ class FloorDeal(CapDeal):
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
         F('Index_Offset', 'Integer', default=0, convention=True),
@@ -3238,7 +3226,7 @@ class SwaptionDeal(Deal):
     # its legs are the underlying the option is written on: a position sizes them, flips the option
     option_on_children = True
     vernacular = 'swaption, payer swaption, receiver swaption'
-    fields = [ADMIN, own('SwaptionDeal', [
+    fields = [ADMIN, PRICING, own('SwaptionDeal', [
         F('Floating_Margin', 'Float', default=0.0, convention=True),
         F('Rate_Schedule', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
           tag='DateList'),
@@ -3257,10 +3245,8 @@ class SwaptionDeal(Deal):
         F('Index_Publication_Calendars', 'Text', default='', convention=True),
         F('Swap_Maturity_Date', 'Date', default=''),
         F('Swap_Effective_Date', 'Date', default=REQUIRED),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver']),
-        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
         F('Index_Offset', 'Integer', default=0, convention=True),
         F('Index_Calendars', 'Text', default='', convention=True)
@@ -3696,7 +3682,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
     # a Compo's samples are S*X, which no print of the equity is
     observes = Observes('Equity', 'EquityPrice', 'Sampling_Data', 1,
                         unless=('Payoff_Type', 'Compo'))
-    fields = [ADMIN, EQUITYOPTIONBASE, own('EquityDiscreteExplicitAsianOption', [
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityDiscreteExplicitAsianOption', [
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Units', 'Float', default=0.0, sized=True),
         F('Sampling_Data', 'Table', default='null', description='Sampling_Data',
@@ -3778,7 +3764,7 @@ class EquityBarrierBinaryOption(Deal):
     vernacular = 'barrier digital, knock-in digital, knock-out binary'
     observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date',
                         monitors=True)
-    fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityBarrierBinaryOption', [
         F('Barrier_Dates', 'Table', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Observed', 'Float')])),
         F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
@@ -3893,7 +3879,7 @@ class EquityOptionDeal(Deal):
     vernacular = 'equity option, stock option, vanilla call or put'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, elects='Settlement_Style',
                         expires='Expiry_Date')
-    fields = [ADMIN, EQUITYOPTIONBASE, own('EquityOptionDeal', [
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityOptionDeal', [
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
@@ -4023,7 +4009,7 @@ class EquityOptionDeal(Deal):
 class EquityBinaryOption(EquityOptionDeal):
     vernacular = 'equity digital, binary option, cash-or-nothing, asset-or-nothing'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, expires='Expiry_Date')
-    fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBinaryOption', [
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Date', 'Date', default='', convention=True,
@@ -4089,7 +4075,7 @@ class EquityBinaryOption(EquityOptionDeal):
 class QEDI_CustomAutoCallSwap(Deal):
     vernacular = 'autocall, autocallable, phoenix, snowball'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, monitors=True)
-    fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
 
     spot_models = ('None', 'LogVar2FJ')
 
@@ -4403,7 +4389,7 @@ class QEDI_CustomAutoCallSwap(Deal):
 class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
     vernacular = 'autocall swap, autocallable swap, phoenix swap'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, monitors=True)
-    fields = [ADMIN, EQUITYOPTIONBASE, QEDI_CUSTOMSWAP, QEDI_CUSTOMAUTOCALLSWAP]
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, QEDI_CUSTOMSWAP, QEDI_CUSTOMAUTOCALLSWAP]
 
     documentation = ('Fx And Equity', [
         'The autocall of `QEDI_CustomAutoCallSwap` written as a swap: the same coupons, put, windows,',
@@ -4513,7 +4499,7 @@ class TouchLifecycle:
 
 class EquityOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'equity one-touch, one touch, touch option'
-    fields = [ADMIN, EQUITY_TOUCH, own('EquityOneTouchOption', [
+    fields = [ADMIN, PRICING, EQUITY_TOUCH, own('EquityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing', title='Payment timing')]
 
@@ -4593,7 +4579,7 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
 
 class EquityNoTouchOption(EquityOneTouchOption):
     vernacular = 'equity no-touch, no touch'
-    fields = [ADMIN, EQUITY_TOUCH]
+    fields = [ADMIN, PRICING, EQUITY_TOUCH]
 
     no_touch = True
     #: paid at expiry alone, where the barrier was never touched
@@ -4609,7 +4595,7 @@ class EquityBarrierOption(Deal):
     vernacular = 'equity barrier option, knock-in, knock-out'
     observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date',
                         monitors=True)
-    fields = [ADMIN, EQUITYOPTIONBASE, own('EquityBarrierOption', [
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityBarrierOption', [
         F('Cash_Rebate', 'Float', default=0, convention=True, sized=True),
         F('Units', 'Float', default=0.0, sized=True),
         F('Barrier_Dates', 'Table', default='null', convention=True,
@@ -4845,9 +4831,7 @@ class EquityBarrierOption(Deal):
 class CommodityDigitalOption(Deal):
     vernacular = 'commodity digital, energy digital, binary option on a reference price'
     observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
-    fields = [ADMIN, own('CommodityDigitalOption', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, PRICING, own('CommodityDigitalOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Expiry_Date', 'Date', default=''),
@@ -4959,7 +4943,7 @@ class CommodityDigitalOption(Deal):
 
 class CommodityOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'commodity one-touch, energy one-touch, one touch on a reference price'
-    fields = [ADMIN, COMMODITY_TOUCH, own('CommodityOneTouchOption', [
+    fields = [ADMIN, PRICING, COMMODITY_TOUCH, own('CommodityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing', title='Payment timing')]
 
@@ -5041,7 +5025,7 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
 
 class CommodityNoTouchOption(CommodityOneTouchOption):
     vernacular = 'commodity no-touch, energy no-touch, no touch on a reference price'
-    fields = [ADMIN, COMMODITY_TOUCH]
+    fields = [ADMIN, PRICING, COMMODITY_TOUCH]
 
     no_touch = True
     #: paid at expiry alone, where the barrier was never touched
@@ -5055,14 +5039,12 @@ class CommodityNoTouchOption(CommodityOneTouchOption):
 
 class CommodityForwardDeal(Deal):
     vernacular = 'commodity forward, metal forward'
-    fields = [ADMIN, own('CommodityForwardDeal', [
+    fields = [ADMIN, PRICING, own('CommodityForwardDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Forward_Date', 'Date', default='', convention=True),
         F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
         F('Commodity', 'Text', default='', obj='Tuple', factors=['CommodityPrice']),
         F('Units', 'Float', default=0.0, sized=True),
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice'])
     ])]
 
@@ -5212,12 +5194,10 @@ class CommodityFutureDeal(Deal):
 class CommodityAveragePriceSwapDeal(Deal):
     vernacular = 'average price swap, commodity swap, Asian swap'
     observes = Observes('Commodity', 'CommodityPrice', 'Sampling_Data', 1)
-    fields = [ADMIN, own('CommodityAveragePriceSwapDeal', [
+    fields = [ADMIN, PRICING, own('CommodityAveragePriceSwapDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Commodity', 'Text', default=REQUIRED, obj='Tuple', factors=['CommodityPrice']),
         F('Carry', 'Text', default=REQUIRED, obj='Tuple', factors=['ForwardRate']),
-        F('Currency', 'Text', default=REQUIRED, factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Units', 'Float', default=0.0, sized=True),
         F('Fixed_Price', 'Float', default=0.0),
         F('Settlement_Date', 'Date', default=REQUIRED, settles=Cash('Currency')),
@@ -5328,7 +5308,7 @@ class CommodityAveragePriceSwapDeal(Deal):
 
 class EquityForwardDeal(Deal):
     vernacular = 'equity forward, stock forward'
-    fields = [ADMIN, own('EquityForwardDeal', [
+    fields = [ADMIN, PRICING, own('EquityForwardDeal', [
         F('Forward_Price', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
@@ -5336,8 +5316,6 @@ class EquityForwardDeal(Deal):
         F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
         F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
         F('Units', 'Float', default=0.0, sized=True),
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate'])
     ])]
 
@@ -5414,9 +5392,7 @@ class EquityForwardDeal(Deal):
 
 class CashAccountDeal(Deal):
     vernacular = 'cash account, call account, cash balance'
-    fields = [ADMIN, own('CashAccountDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, PRICING, own('CashAccountDeal', [
         F('Investment_Horizon', 'Date', default=''),
         F('Units', 'Float', default=0.0, sized=True)
     ])]
@@ -5505,13 +5481,11 @@ class EquityDeal(Deal):
 
 class EquitySwapletListDeal(Deal):
     vernacular = 'equity swap, total return swap, TRS'
-    fields = [ADMIN, own('EquitySwapletListDeal', [
+    fields = [ADMIN, PRICING, own('EquitySwapletListDeal', [
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Settlement_Days', 'Integer', default=0, convention=True),
         F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
         F('Equity_Currency', 'Text', default='', factors=['FxRate']),
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Amount_Type', 'Text', default='Principal', convention=True, description='Amount_Type',
@@ -5588,7 +5562,7 @@ class EquitySwapletListDeal(Deal):
 
 class EquitySwapLeg(Deal):
     vernacular = 'equity swap leg, total return leg'
-    fields = [ADMIN, own('EquitySwapLeg', [
+    fields = [ADMIN, PRICING, own('EquitySwapLeg', [
         F('Accrual_Calendars', 'Text', default='', convention=True),
         F('Adjustment_Method', 'Text', default='None', convention=True, description='Rate Adjustment Method',
           values=['None', 'Modified_Following', 'Following', 'Preceding', 'Modified_Preceding'],
@@ -5614,8 +5588,6 @@ class EquitySwapLeg(Deal):
         F('Units', 'Float', default=0.0, sized=True),
         F('Include_Dividends', 'Text', default='Yes', convention=True, values=['Yes', 'No']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Principal', 'Float', default=0.0, sized=True),
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
@@ -5735,7 +5707,7 @@ class EquitySwapLeg(Deal):
 
 class FXOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'FX one-touch, one touch, touch option'
-    fields = [ADMIN, FX_ADMIN, FX_TOUCH, own('FXOneTouchOption', [
+    fields = [ADMIN, PRICING, FX_ADMIN, FX_TOUCH, own('FXOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing', title='Payment timing')]
 
@@ -5800,7 +5772,7 @@ class FXOneTouchOption(TouchLifecycle, Deal):
 
 class FXNoTouchOption(FXOneTouchOption):
     vernacular = 'FX no-touch, no touch'
-    fields = [ADMIN, FX_ADMIN, FX_TOUCH]
+    fields = [ADMIN, PRICING, FX_ADMIN, FX_TOUCH]
 
     no_touch = True
     #: paid at expiry alone, where the barrier was never touched
@@ -6727,10 +6699,8 @@ class FXBinaryOption(FXOptionDeal):
 
 class CreditNthToDefault(Deal):
     vernacular = 'nth-to-default, first-to-default, basket default swap'
-    fields = [ADMIN, own('CreditNthToDefault', [
+    fields = [ADMIN, PRICING, own('CreditNthToDefault', [
         F('Names', 'Table', default='null', row=Row([F('Name', 'Text')]), factors=['SurvivalProb']),
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Correlation', 'Float', default=0, convention=True),
@@ -6837,7 +6807,7 @@ class CreditNthToDefault(Deal):
 
 class DealDefaultSwap(Deal):
     vernacular = 'credit default swap, CDS, single-name CDS'
-    fields = [ADMIN, own('DealDefaultSwap', [
+    fields = [ADMIN, PRICING, own('DealDefaultSwap', [
         F('Upfront_Date', 'Date', default='', convention=True),
         F('Upfront', 'Float', default=0, convention=True, obj='Percent'),
         F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
@@ -6849,9 +6819,7 @@ class DealDefaultSwap(Deal):
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Calendars', 'Text', default='', convention=True),
         F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
-        F('Currency', 'Text', default='', factors=['FxRate']),
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Digital_Recovery', 'Float', default=0.0, convention=True, obj='Percent'),
@@ -6966,7 +6934,7 @@ class FRADeal(Deal):
     vernacular = 'forward rate agreement, FRA'
     observes = Observes('Interest_Rate', 'InterestRate')
     quoted = 'FRA_Rate'
-    fields = [ADMIN, own('FRADeal', [
+    fields = [ADMIN, PRICING, own('FRADeal', [
         F('Use_Known_Rate', 'Text', default='No', convention=True, values=['Yes', 'No'],
           description='Yes where the reset has fixed at Known_Rate, which a reset behind the base date must'),
         F('Known_Rate', 'Float', default=0, convention=True, obj='Percent'),
@@ -6978,8 +6946,6 @@ class FRADeal(Deal):
         F('Reset_Date', 'Date', default='', convention=True),
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Borrower_Lender', 'Text', default='Borrower', values=['Borrower', 'Lender'], side=True),
         F('FRA_Rate', 'Float', default=0.0)
     ])]
@@ -7067,9 +7033,7 @@ class FRADeal(Deal):
 
 class FloatingEnergyDeal(Deal):
     vernacular = 'floating energy leg, floating-price energy swap'
-    fields = [ADMIN, own('FloatingEnergyDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, PRICING, own('FloatingEnergyDeal', [
         F('Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
         F('FX_Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -7171,10 +7135,8 @@ class FloatingEnergyDeal(Deal):
 
 class FixedEnergyDeal(Deal):
     vernacular = 'fixed energy leg, fixed-price energy swap'
-    fields = [ADMIN, own('FixedEnergyDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
+    fields = [ADMIN, PRICING, own('FixedEnergyDeal', [
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
         F('Energy_Fixed_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments',
           sub_fields=[
@@ -7221,9 +7183,7 @@ class FixedEnergyDeal(Deal):
 
 class EnergySingleOption(Deal):
     vernacular = 'energy option, commodity option'
-    fields = [ADMIN, own('EnergySingleOption', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, PRICING, own('EnergySingleOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
         F('FX_Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),

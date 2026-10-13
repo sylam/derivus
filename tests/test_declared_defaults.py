@@ -674,6 +674,29 @@ def test_an_fx_option_is_refused_a_zero_or_missing_strike(deal_type):
     assert 'Strike_Price is required' not in said(Strike_Price=1.1)
 
 
+#: Two types stacking the pricing block, each stated in full.
+PRICED = [
+    rates_world.par_swap('SWAP', 'USD', 'USD-PROJ', 'USD', 3, 4.5),
+    {'Object': 'EquityForwardDeal', 'Reference': 'FWD', 'Currency': 'USD', 'Discount_Rate': 'USD',
+     'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Units': 100.0,
+     'Forward_Price': 95.0, 'Maturity_Date': WORLD_EXPIRY}]
+
+
+@pytest.mark.parametrize('block', PRICED, ids=[block['Object'] for block in PRICED])
+def test_a_deal_is_refused_a_blank_or_missing_currency(block):
+    """A deal states the currency it is priced in: omitted, or stated blank as a front end
+    round-trips a field left empty, it is refused by name at booking, and the same deal stating
+    one books.
+
+    Killing mutation: the pricing block's `Currency` declared with a blank placeholder, under which
+    a blank currency books."""
+    def said(stated):
+        return schema.validate_instrument(construct_instrument(dict(stated), {}))
+    assert said(block) == []
+    assert 'Currency is required' in said(dict(block, Currency=''))
+    assert 'Currency is required' in said({k: v for k, v in block.items() if k != 'Currency'})
+
+
 def test_a_blank_date_default_keeps_its_named_refusal():
     """`Expiry_Date` declares `''`, and a blank Date is not an absent one: completed, it reaches a
     date comparison as a `str` and the deal dies four layers down on

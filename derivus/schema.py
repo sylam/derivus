@@ -934,15 +934,11 @@ CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', 'Cashflow list', [
     F('Description', 'Text', default='', convention=True),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Settlement_Date', 'Date', default='', convention=True),
-    F('Settlement_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
-    F('Currency', 'Text', default='', factors=['FxRate']),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate'])
+    F('Settlement_Rate', 'Text', default='', convention=True, factors=['InterestRate'])
 ])
 
 EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', 'Equity option', [
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-    F('Currency', 'Text', default='', factors=['FxRate']),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
     F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
     F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
@@ -988,9 +984,7 @@ EQUITY_TOUCH = own('EquityOneTouchOption', [
     F('Barrier_Price', 'Float', default=0),
     F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
-    F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-    F('Currency', 'Text', default='', factors=['FxRate'])
+    F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol'])
 ])
 
 #: What a one-touch and a no-touch on an exchange rate both are - every field but when a one-touch
@@ -998,8 +992,6 @@ EQUITY_TOUCH = own('EquityOneTouchOption', [
 #: What a one-touch and a no-touch on a commodity reference price both are - the equity touch's
 #: terms on the reference's fixing, paid in `Currency`.
 COMMODITY_TOUCH = own('CommodityOneTouchOption', [
-    F('Currency', 'Text', default='', factors=['FxRate']),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
@@ -1022,9 +1014,7 @@ FX_TOUCH = own('FXOneTouchOption', [
       description=FX_AXIS.format('Barrier price')),
     F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'], json_name='Barrier_Type'),
     F('Expiry_Date', 'Date', default=''),
-    F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-    F('Currency', 'Text', default='', factors=['FxRate'])
+    F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol'])
 ])
 
 QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall terms', [
@@ -1077,6 +1067,12 @@ ADMIN = Group('Admin', 'Admin', [
     F('Sales_Margin_Currency', 'Text', default='', convention=True,
       description='The currency Sales_Margin is stated in, which need not be one this deal '
                   'settles or discounts in')
+])
+
+#: What a deal is priced in: the currency it settles and the curve it discounts on.
+PRICING = Group('Pricing', 'Pricing', [
+    F('Currency', 'Text', default=REQUIRED, factors=['FxRate']),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate'])
 ])
 
 FX_ADMIN = Group('FXAdmin', 'FX conventions', [
