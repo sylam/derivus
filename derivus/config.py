@@ -376,11 +376,6 @@ dependant_fields = {'FxRate': [('Interest_Rate', 'InterestRate')],
                                        ('Forward_Rate', 'ForwardRate'), ('Currency', 'FxRate')],
                     'EquityPrice': [('Interest_Rate', 'InterestRate'), ('Currency', 'FxRate')]}
 
-#: nested fields need to include all their children - name-prefix chains {head type: tail-period
-#: type}: identity for a curve, ObservedBasis for a 0D spot
-nested_fields = {'InterestRate': 'InterestRate', 'CommodityPrice': 'ObservedBasis',
-                 'EquityPrice': 'ObservedBasis', 'FxRate': 'ObservedBasis'}
-
 #: conditional fields need to potentially include correlation and fx vol surfaces (e.g. reference
 #: prices). Each reads the instrument, its own loaded block and the whole `params` the walk is over
 conditional_fields = {
@@ -1013,7 +1008,7 @@ class Config(object):
         def update_nested_rates(factor, rates_to_add):
             # tail periods take the mapped nested type, linked to their parent prefix; a type switch
             # leaves the full-name head key virtual (drop it)
-            nested = nested_fields[factor.type]
+            nested = utils.NESTED[factor.type]
             for i in range(1, len(factor.name) + 1):
                 rates_to_add.update({utils.Factor(factor.type if i == 1 else nested, factor.name[:i]): [
                     utils.Factor(factor.type if i == 2 else nested, factor.name[:i - 1])] if i > 1 else []})
@@ -1078,9 +1073,9 @@ class Config(object):
         def get_rates(factor, instrument):
             rates_to_add = {factor: []}
             # pull the name-prefix chain first; the head period carries the dependant/conditional fields
-            if factor.type in nested_fields and len(factor.name) > 1:
+            if factor.type in utils.NESTED and len(factor.name) > 1:
                 update_nested_rates(factor, rates_to_add)
-                if nested_fields[factor.type] == 'ObservedBasis':
+                if utils.NESTED[factor.type] == 'ObservedBasis':
                     add_chained_bases(factor.type, rates_to_add)
                 factor = utils.Factor(factor.type, factor.name[:1])
             factor_name = utils.check_tuple_name(factor)
@@ -1092,12 +1087,12 @@ class Config(object):
                                   self.params['Price Factors'][factor_name].get(dep_field[0])]
                 for linked_factor in linked_factors:
                     if linked_factor.type in dependant_fields and linked_factor.type in \
-                            nested_fields and len(linked_factor.name) > 1:
+                            utils.NESTED and len(linked_factor.name) > 1:
                         # a composed link: the recursion registers its chain, the head with its own
                         # dependants and no virtual full name, so the factor reads the last link
                         rates_to_add.update(get_rates(linked_factor, instrument))
                         rates_to_add[factor].append(
-                            utils.Factor(nested_fields[linked_factor.type], linked_factor.name))
+                            utils.Factor(utils.NESTED[linked_factor.type], linked_factor.name))
                         continue
                     # add it assuming no dependencies
                     rates_to_add.setdefault(linked_factor, [])
@@ -1107,7 +1102,7 @@ class Config(object):
                     rates_to_add[factor].append(linked_factor)
 
                     # check that we include any nested factors
-                    if linked_factor.type in nested_fields and len(linked_factor.name) > 1:
+                    if linked_factor.type in utils.NESTED and len(linked_factor.name) > 1:
                         update_nested_rates(linked_factor, rates_to_add)
 
             if factor.type in conditional_fields:

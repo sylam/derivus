@@ -258,10 +258,10 @@ def calc_factor_index(field, static_offsets, stochastic_offsets, all_tenors={}):
         raise Exception('Cannot find {}'.format(utils.check_tuple_name(field)))
 
 
-def calc_factor_code_chain(head, tail, fieldname, static_offsets, stochastic_offsets, all_tenors={}):
-    """Positional prefix-chain code: period 1 is the `head` factor, each longer prefix a `tail`
-    factor named by the whole chain (curve: head==tail; 0D spot: tail=ObservedBasis). See docs."""
-    return [calc_factor_index(utils.Factor(head if x == 1 else tail, fieldname[:x]),
+def calc_factor_code_chain(head, fieldname, static_offsets, stochastic_offsets, all_tenors={}):
+    """Positional prefix-chain code: period 1 is the `head` factor, each longer prefix the head's
+    `utils.NESTED` tail named by the whole chain (curve: itself; 0D spot: ObservedBasis). See docs."""
+    return [calc_factor_index(utils.Factor(head if x == 1 else utils.NESTED[head], fieldname[:x]),
                               static_offsets, stochastic_offsets, all_tenors)
             for x in range(1, len(fieldname) + 1)]
 
@@ -300,7 +300,7 @@ def get_inflation_index_objects(inflation_name, index_name, all_factors):
 
 def get_fxrate_factor(fieldname, static_offsets, stochastic_offsets):
     """Read the (basis-aware) code of the FX rate price factor"""
-    return calc_factor_code_chain('FxRate', 'ObservedBasis', fieldname, static_offsets, stochastic_offsets)
+    return calc_factor_code_chain('FxRate', fieldname, static_offsets, stochastic_offsets)
 
 
 def get_cross_barrier_underlying(pair, stochastic_offsets):
@@ -433,7 +433,7 @@ def reference_fx_correlation(field, all_factors):
 
 def get_commodity_rate_factor(fieldname, static_offsets, stochastic_offsets):
     """Read the (basis-aware) code of the commodity spot price factor"""
-    return calc_factor_code_chain('CommodityPrice', 'ObservedBasis', fieldname, static_offsets, stochastic_offsets)
+    return calc_factor_code_chain('CommodityPrice', fieldname, static_offsets, stochastic_offsets)
 
 
 def get_forward_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
@@ -462,7 +462,7 @@ def get_observed_basis_decay(commodity, all_factors):
 
 def get_equity_rate_factor(fieldname, static_offsets, stochastic_offsets):
     """Read the (basis-aware) code of the equity spot price factor"""
-    return calc_factor_code_chain('EquityPrice', 'ObservedBasis', fieldname, static_offsets, stochastic_offsets)
+    return calc_factor_code_chain('EquityPrice', fieldname, static_offsets, stochastic_offsets)
 
 
 def get_equity_spot(fieldname, static_offsets, stochastic_offsets, all_factors):
@@ -486,8 +486,7 @@ def get_dividend_rate_factor(fieldname, static_offsets, stochastic_offsets, all_
 
 def get_interest_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
     """Read the index of the interest rate price factor (a curve + its basis-spread chain)"""
-    return calc_factor_code_chain('InterestRate', 'InterestRate', fieldname,
-                                  static_offsets, stochastic_offsets, all_tenors)
+    return calc_factor_code_chain('InterestRate', fieldname, static_offsets, stochastic_offsets, all_tenors)
 
 
 def get_equity_zero_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors, all_factors):
@@ -528,8 +527,7 @@ def get_survival_factor(fieldname, static_offsets, stochastic_offsets, all_tenor
 
 def get_inflation_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
     """Read the index of the inflation rate price factor (a curve + its prefix chain)"""
-    return calc_factor_code_chain('InflationRate', 'InflationRate', fieldname,
-                                  static_offsets, stochastic_offsets, all_tenors)
+    return calc_factor_code_chain('InflationRate', fieldname, static_offsets, stochastic_offsets, all_tenors)
 
 
 def get_vol_factor(factor_type, fieldname, static_offsets, stochastic_offsets, all_tenors):

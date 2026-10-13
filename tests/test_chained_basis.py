@@ -2,17 +2,23 @@
 other, and discovery pulls the partner into the factor universe whenever either side enters,
 under every calculation. The declared `Chained_Lag` states where each link binds: a same-row
 link (lag 0) enters the graph as an edge — the link simulates first — and a lagged link is
-the chain's day boundary and orders nothing, which is what keeps the loop out of the sort.
+the chain's day boundary and orders nothing, which is what keeps the loop out of the sort. The
+positional chain every link rides is one registry, `utils.NESTED`, which discovery and the resolver
+both read.
 
-Each gate is a credit Monte Carlo document through `Context.load_json`, read at its own factor
-discovery - the walk `run_job` takes before any model is asked for.
+Each chained-basis gate is a credit Monte Carlo document through `Context.load_json`, read at its
+own factor discovery - the walk `run_job` takes before any model is asked for; the registry's is a
+one-deal base valuation per head, described and priced.
 """
 import json
+from types import SimpleNamespace
 
 import pandas as pd
 import pytest
 
 import derivus as rf
+import test_position_scaling as trials
+import trial_rates
 from derivus import utils
 
 BASE = pd.Timestamp('2026-01-15')
@@ -179,3 +185,38 @@ def test_the_same_row_entry_orders_its_link_first():
     order = list(_discover(_world('LBMA_AM.PM.CME')))
     assert CME in order                                # the pull itself, from the same-row side
     assert order.index(CME) < order.index(PM_CME)
+
+
+#: Per head the chain registry names: a trial deal, its field naming that head, the composed name,
+#: the tail type its second period is and the tail's block - a curve's spread, a spot's basis.
+COMPOSED = {
+    'InterestRate': ('CF', 'Discount_Rate', 'USD.FUNDING', 'InterestRate', {
+        'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+        'Curve': utils.Curve([], [[0.0, 0.002], [5.0, 0.002]])}),
+    'InflationRate': ('LINKER', 'Index', 'INFL.SPREAD', 'InflationRate', dict(
+        trial_rates.FACTORS['InflationRate.INFL'], Curve=utils.Curve([], [[0.0, 0.003], [10.0, 0.003]]))),
+    'FxRate': ('FWD', 'Buy_Currency', 'EUR.ONSHORE', 'ObservedBasis', {'Spot': 0.01}),
+    'EquityPrice': ('EQS', 'Equity', 'EQ.ADR', 'ObservedBasis', {'Spot': 0.5}),
+    'CommodityPrice': ('METAL_FUT', 'Commodity', 'METAL.LBMA', 'ObservedBasis', {'Spot': 2.0})}
+
+
+@pytest.mark.parametrize('head', sorted(utils.NESTED))
+def test_discovery_and_the_resolver_read_one_chain_registry(head):
+    """For every head `utils.NESTED` names, one trial deal naming it composed: the universe holds the
+    head on the primary and the tail on the whole name - the full name a factor only where it is the
+    tail - and the deal prices, its compile finding each link of its chain in that universe by name.
+    A head added to the registry with no row here fails by name.
+
+    Killing mutation: `calc_factor_code_chain` reading a tail of its own for one head - `InterestRate`
+    for `EquityPrice` - names `InterestRate.EQ.ADR`, which discovery never registers, and the equity
+    deal is skipped.
+    """
+    reference, field, name, tail, block = COMPOSED[head]
+    deal, factors = next((deal, family.FACTORS) for family in trials.FAMILIES.values()
+                         for deal in family.DEALS if deal['Reference'] == reference)
+    job = trials.document(SimpleNamespace(DEALS=[dict(deal, **{field: name})], CONFIGURATION={},
+                                          FACTORS=dict(factors, **{tail + '.' + name: block})))
+    universe = rf.Context().load_json((json.dumps(job), 'chain')).describe()['factors']['resolved']
+    assert {head + '.' + name.split('.')[0], tail + '.' + name} <= set(universe), universe
+    assert (head + '.' + name in universe) == (tail == head), universe
+    assert reference in trials.marks(job), 'the deal did not resolve its chain'

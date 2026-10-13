@@ -5436,10 +5436,11 @@ def resolve_factor_key(factor, price_factors):
     return legacy if legacy in price_factors else name
 
 
-# 0D spot factor types whose NAME may carry a composed reference: a primary spot plus one or
-# more ObservedBasis periods, positional like the InterestRate curve+basis parent chain
-# (InterestRate.USD_SOFR.FUNDING; here CommodityPrice.PLATINUM_CME.LME_CME).
-BASIS_COMPOSABLE_TYPES = ('FxRate', 'EquityPrice', 'CommodityPrice')
+#: The positional name-prefix chain, head type to tail type: a curve's tail is itself (a spread chain),
+#: a 0D spot's is the basis riding it.
+NESTED = {'InterestRate': 'InterestRate', 'InflationRate': 'InflationRate', 'FxRate': 'ObservedBasis',
+          'EquityPrice': 'ObservedBasis', 'CommodityPrice': 'ObservedBasis'}
+BASIS_COMPOSABLE_TYPES = tuple(head for head, tail in NESTED.items() if tail == 'ObservedBasis')
 
 
 def check_scope_name(factor):

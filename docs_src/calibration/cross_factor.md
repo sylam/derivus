@@ -100,9 +100,9 @@ code is summed by `calc_time_grid_spot_rate` (composed spot = primary + Σ bases
 single-period name yields a one-element code — bit-identical to the pre-chain lookup. Repo / carry /
 dividend / currency lookups take the head (`fieldname[:1]`), since those live on the primary.
 
-**Discovery is the existing curve mechanism, generalized as data.** `nested_fields` is a
-`{head type: tail type}` map (identity for `InterestRate`, `ObservedBasis` for the 0D spot types);
-`update_nested_rates` walks the name prefixes, giving period 1 the head type and the tail periods
+**Discovery is the existing curve mechanism, generalized as data.** `utils.NESTED` is a
+`{head type: tail type}` map (identity for the curves, `ObservedBasis` for the 0D spot types), the
+one registry the resolver reads too; `update_nested_rates` walks the name prefixes, giving period 1 the head type and the tail periods
 the mapped type, each linked to its parent prefix so `topological_sort` orders them. Because
 `CommodityPrice` (unlike `InterestRate`) also carries `dependant_fields`, `get_rates` pulls the
 chain first and then applies the dependant/conditional fields to the head; the type-switched
