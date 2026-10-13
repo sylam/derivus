@@ -22,6 +22,7 @@ import pandas as pd
 import scipy.interpolate
 from scipy.linalg import expm as matrix_expm, logm as matrix_logm
 import torch
+import torch.utils.checkpoint
 import torch.nn.functional as nnf
 
 from . import utils, pricing
