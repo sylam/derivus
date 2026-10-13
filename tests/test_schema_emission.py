@@ -154,7 +154,7 @@ SHARED_TITLES = {
     'Admin': 'Admin', 'Pricing': 'Pricing', 'FXAdmin': 'FX conventions', 'FXOptionBase.Fields': 'FX option',
     'EquityOptionBase.Fields': 'Equity option', 'CashflowListDeal.Fields': 'Cashflow list',
     'QEDI_CustomAutoCallSwap.Fields': 'Autocall terms', 'QEDI_CustomSwap.Fields': 'Swap leg',
-    'FloatingIndex': 'Floating index'}
+    'FloatingIndex': 'Floating index', 'CouponSchedule': 'Coupon schedule'}
 
 
 def test_every_published_section_carries_the_title_the_desk_sees():

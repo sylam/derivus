@@ -1086,6 +1086,20 @@ FLOATING_INDEX = Group('FloatingIndex', 'Floating index', [
     F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears'])
 ])
 
+#: How a coupon schedule is built: the accrual basis and calendars, when and how a coupon pays, the
+#: stub dates and the amortisation.
+COUPON_SCHEDULE = Group('CouponSchedule', 'Coupon schedule', [
+    F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
+    F('Accrual_Calendars', 'Text', default='', convention=True),
+    F('Payment_Calendars', 'Text', default='', convention=True),
+    F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
+    F('Payment_Offset', 'Integer', default=0, convention=True),
+    F('First_Coupon_Date', 'Date', default='', convention=True),
+    F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
+    F('Amortisation', 'Table', default='null', convention=True,
+      row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList')
+])
+
 FX_ADMIN = Group('FXAdmin', 'FX conventions', [
     F('Trade_Date', 'Date', default='', convention=True),
     F('Delivery_Date', 'Date', default='', convention=True,

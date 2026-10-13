@@ -20,7 +20,7 @@ from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
     settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
-    FX_TOUCH, FXOPTIONBASE, PRICING, FLOATING_INDEX,
+    FX_TOUCH, FXOPTIONBASE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -2353,20 +2353,11 @@ class DepositDeal(Deal):
     vernacular = 'deposit, money-market deposit, placement'
     observes = Observes('Interest_Rate', 'InterestRate')
     quoted = 'Interest_Rate_Schedule'
-    fields = [ADMIN, PRICING, own('DepositDeal', [
-        F('Accrual_Calendars', 'Text', default='', convention=True),
-        F('Payment_Calendars', 'Text', default='', convention=True),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
-        F('First_Coupon_Date', 'Date', default='', convention=True),
-        F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
-        F('Amortisation', 'Table', default='null', convention=True,
-          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
+    fields = [ADMIN, PRICING, COUPON_SCHEDULE, own('DepositDeal', [
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Frequency', 'Text', default='3M', convention=True, obj='Period'),
         F('Interest_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-        F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
-        F('Payment_Offset', 'Integer', default=0, convention=True),
         F('Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('FX_Reset_Offset', 'Integer', default=0, convention=True),
         F('Known_FX_Rates', 'Table', default='null', convention=True,
@@ -3057,28 +3048,19 @@ class CapDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate cap, cap, caplets'
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, PRICING, FLOATING_INDEX, own('CapDeal', [
-        F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
+    fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, own('CapDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-        F('Payment_Calendars', 'Text', default='', convention=True),
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
           tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
-        F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
-        F('Payment_Offset', 'Integer', default=0, convention=True),
         F('Effective_Date', 'Date', default=''),
         F('Averaging_Method', 'Text', default='Average_Rate', convention=True,
           values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
-        F('First_Coupon_Date', 'Date', default='', convention=True),
-        F('Accrual_Calendars', 'Text', default='', convention=True),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Cap_Rate', 'Float', default=0.0),
         F('Payment_Interval', 'Text', default='3M', convention=True, obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-        F('Amortisation', 'Table', default='null', convention=True,
-          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
@@ -3168,28 +3150,19 @@ class FloorDeal(CapDeal):
     vernacular = 'interest rate floor, floor, floorlets'
     # the schema reads each type's own declarations, never a parent's
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, PRICING, FLOATING_INDEX, own('FloorDeal', [
-        F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
+    fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, own('FloorDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Index_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-        F('Payment_Calendars', 'Text', default='', convention=True),
         F('Forecast_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
         F('Known_Rates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date'), F('Amount', 'Float')]),
           tag='DateList'),
         F('Maturity_Date', 'Date', default=''),
-        F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
         F('Floor_Rate', 'Float', default=0.0),
-        F('Payment_Offset', 'Integer', default=0, convention=True),
         F('Effective_Date', 'Date', default=''),
         F('Averaging_Method', 'Text', default='Average_Rate', convention=True,
           values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
-        F('First_Coupon_Date', 'Date', default='', convention=True),
-        F('Accrual_Calendars', 'Text', default='', convention=True),
-        F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
         F('Payment_Interval', 'Text', default='3M', convention=True, obj='Period'),
         F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-        F('Amortisation', 'Table', default='null', convention=True,
-          row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList'),
         F('Discount_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
           factors=['InterestRateVol', 'InterestYieldVol']),
         F('Forecast_Rate_Volatility', 'Text', default='', convention=True, obj='Tuple',
