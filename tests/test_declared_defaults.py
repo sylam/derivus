@@ -607,15 +607,15 @@ def test_every_deal_in_every_job_document_holds_exactly_its_authored_block():
 #: The fields of the SAME `FXBarrierOption` block whose declared default is a blank panel's value
 #: and not the engine's meaning. Dropping one is a schema-INVALID document, and the value beside
 #: each is what completing it would have priced.
-NOT_COMPLETABLE = [('Strike_Price', 741.5344181072), ('Barrier_Type', 6.3673278714),
-                   ('Buy_Sell', 78.9325214257), ('Option_Type', 78.9325214257)]
+NOT_COMPLETABLE = [('Barrier_Type', 6.3673278714), ('Buy_Sell', 78.9325214257),
+                   ('Option_Type', 78.9325214257)]
 
 
 @pytest.mark.parametrize('key,silent', NOT_COMPLETABLE, ids=[k for k, _ in NOT_COMPLETABLE])
 def test_an_economic_field_is_refused_by_name_and_does_not_price(key, silent):
-    """The seam's own hazard, gated at the booking rather than at the skip. `FXBarrierOption` marks
-    none of its economic fields REQUIRED, so a blanket completion prices a strikeless deal at
-    741.53 and flips a Down_And_Out to its In at 6.37, against 78.93 for the deal the author meant.
+    """The seam's own hazard, gated at the booking rather than at the skip. `FXBarrierOption`'s
+    direction and side are placeholders, so a blanket completion flips a Down_And_Out to its In at
+    6.37, against 78.93 for the deal the author meant.
     The block is now REFUSED BY NAME before anything prices it, and a pricing run still leaves no
     row: a placeholder keeps its `KeyError` and the loader's skip is the last line, not the first.
 
@@ -651,6 +651,26 @@ def test_a_floating_list_refuses_every_settlement_field_by_name(key):
     assert schema.validate_instrument(construct_instrument(dict(block), {})) == []
     stated = dict(block, **{key: SETTLEMENT[key]})
     assert '{} is stated, and a floating cashflow list settles no forward'.format(key) in         schema.validate_instrument(construct_instrument(stated, {}))
+
+
+#: Every type written on the FX option base, whose strike it declares.
+FX_OPTIONS = sorted(deal_type for deal_type, sections in schema.mapping['Instrument']['types'].items()
+                    if 'FXOptionBase.Fields' in sections)
+
+
+@pytest.mark.parametrize('deal_type', FX_OPTIONS)
+def test_an_fx_option_is_refused_a_zero_or_missing_strike(deal_type):
+    """An FX strike is a level of a rate, never zero: omitted or stated at zero it is refused by
+    name at booking on every FX option type, and a stated level books.
+
+    Killing mutation: the strike declared with a 0.0 placeholder - a zero strike books, and the
+    partial-time barrier prices it NaN."""
+    def said(**stated):
+        block = dict({'Object': deal_type, 'Reference': 'K'}, **stated)
+        return schema.validate_instrument(construct_instrument(block, {}))
+    assert 'Strike_Price is required' in said()
+    assert 'Strike_Price is required' in said(Strike_Price=0.0)
+    assert 'Strike_Price is required' not in said(Strike_Price=1.1)
 
 
 def test_a_blank_date_default_keeps_its_named_refusal():

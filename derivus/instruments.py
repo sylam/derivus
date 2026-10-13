@@ -20,7 +20,7 @@ from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
     settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
-    FX_TOUCH,
+    FX_TOUCH, FXOPTIONBASE,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -3594,16 +3594,8 @@ class SwaptionDeal(Deal):
 class FXDiscreteExplicitAsianOption(Deal):
     vernacular = 'FX Asian option, average-rate option'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Sampling_Data', 1)
-    fields = [ADMIN, FX_ADMIN, own('FXDiscreteExplicitAsianOption', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXDiscreteExplicitAsianOption', [
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-        F('Strike_Price', 'Float', default=0.0,
-          description=FX_AXIS.format('Strike price')),
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Sampling_Data', 'Table', default='null', description='Sampling_Data',
@@ -3678,17 +3670,9 @@ class FXDiscreteExplicitAsianOption(Deal):
 
 class FXDiscreteExplicitDoubleAsianOption(FXDiscreteExplicitAsianOption):
     vernacular = 'FX double Asian, average-strike average-rate option'
-    fields = [ADMIN, FX_ADMIN, own('FXDiscreteExplicitDoubleAsianOption', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXDiscreteExplicitDoubleAsianOption', [
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
-        F('Strike_Price', 'Float', default=0.0,
-          description=FX_AXIS.format('Strike price')),
         F('Strike_Multiplier', 'Float', default=1.0, convention=True),
         F('Sampling_Data_1', 'Table', default='null', description='Sampling_Data_1',
           row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
@@ -5839,24 +5823,16 @@ class FXNoTouchOption(FXOneTouchOption):
 
 class FXBarrierOption(Deal):
     vernacular = 'FX barrier option, knock-in, knock-out'
-    fields = [ADMIN, FX_ADMIN, own('FXBarrierOption', [
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXBarrierOption', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Barrier_Price', 'Float', default=0,
           description=FX_AXIS.format('Barrier price')),
         F('Cash_Rebate', 'Float', default=0, convention=True, sized=True),
-        F('Strike_Price', 'Float', default=0.0,
-          description=FX_AXIS.format('Strike price')),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Barrier_Type', 'Text', default='Down_And_In',
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
-        F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('Currency', 'Text', default='', factors=['FxRate'])
+        F('Expiry_Date', 'Date', default='')
     ])]
 
     documentation = ('Fx And Equity', [
@@ -5949,18 +5925,10 @@ class FXBarrierOption(Deal):
 
 class FXPartialTimeBarrierOption(Deal):
     vernacular = 'partial barrier, window barrier, partial-time barrier'
-    fields = [ADMIN, FX_ADMIN, own('FXPartialTimeBarrierOption', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXPartialTimeBarrierOption', [
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Payoff_Currency', 'Text', default='', convention=True),
-        F('Strike_Price', 'Float', default=0.0,
-          description=FX_AXIS.format('Strike price')),
         F('Barrier_Price', 'Float', default=0,
           description=FX_AXIS.format('Barrier price')),
         F('Barrier_Type', 'Text', default='Down_And_In',
@@ -6062,19 +6030,11 @@ class FXPartialTimeBarrierOption(Deal):
 class FXTARFOptionDeal(Deal):
     vernacular = 'TARF, target redemption forward, target forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'TARF_ExpiryDates', 2)
-    fields = [ADMIN, FX_ADMIN, own('FXTARFOptionDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXTARFOptionDeal', [
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Strike_Price', 'Float', default=0.0,
-          description=FX_AXIS.format('Strike price')),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         F('InvertedTarget', 'Text', default='', convention=True),
         F('LeverageNotional', 'Float', default=0, sized=True),
         F('TargetLevel', 'Float', default=0),
@@ -6256,15 +6216,7 @@ class FXTARFOptionDeal(Deal):
 class FXAccumulatorOptionDeal(Deal):
     vernacular = 'FX accumulator, decumulator, accu'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Accumulator_ExpiryDates', 2)
-    fields = [ADMIN, FX_ADMIN, own('FXAccumulatorOptionDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Strike_Price', 'Float', default=0.0,
-          description=FX_AXIS.format('Strike price')),
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXAccumulatorOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('LeverageNotional', 'Float', default=0.0, sized=True),
         F('Barrier_Type', 'Text', default='Up_And_Out', values=['Up_And_Out', 'Down_And_Out']),
@@ -6435,21 +6387,13 @@ class FXAccumulatorOptionDeal(Deal):
 class FXExtendableForwardDeal(Deal):
     vernacular = 'extendable forward, extendible forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Extendable_ExpiryDates', 2)
-    fields = [ADMIN, FX_ADMIN, own('FXExtendableForwardDeal', [
-        F('Currency', 'Text', default='', factors=['FxRate']),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
-        # the mirror flips Buy_Sell AND Exercised_By, so a short position flips both
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Strike_Price', 'Float', default=REQUIRED,
-          description=FX_AXIS.format('Strike price')),
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXExtendableForwardDeal', [
         F('Extension_Strike', 'Float', default=REQUIRED),
         F('Extension_Date', 'Date', default=REQUIRED),
         F('Extension_Style', 'Text', default='Strip', convention=True, values=['Strip', 'Rolling']),
         # WHOSE right the extension is, from the REPORTED book: 'Bank' is the reporter and
-        # 'Counterparty' the mirror booking, where the exerciser optimises against this book.
+        # 'Counterparty' the mirror booking, where the exerciser optimises against this book;
+        # a short position flips it with Buy_Sell.
         F('Exercised_By', 'Text', default='Bank', values=['Bank', 'Counterparty'], side=True),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         # NO `tag`, read by iterating rows - the accumulator's schedule states the reason.
@@ -6649,21 +6593,13 @@ class FXOptionDeal(Deal):
     vernacular = 'FX option, currency option, vanilla call or put'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', elects='Settlement_Style',
                         expires='Expiry_Date')
-    fields = [ADMIN, FX_ADMIN, own('FXOptionDeal', [
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Strike_Price', 'Float', default=0.0,
-          description=FX_AXIS.format('Strike price')),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
         F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
         F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
         F('Forward_Price_Date', 'Date', default='', convention=True),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
-        F('Currency', 'Text', default='', factors=['FxRate'])
+        F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No'])
     ])]
 
     documentation = (
@@ -6746,18 +6682,11 @@ class FXEuropeanOption(FXOptionDeal):
 class FXBinaryOption(FXOptionDeal):
     vernacular = 'FX digital, binary option, cash-or-nothing, asset-or-nothing'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', expires='Expiry_Date')
-    fields = [ADMIN, FX_ADMIN, own('FXBinaryOption', [
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Strike_Price', 'Float', default=0.0, description=FX_AXIS.format('Strike price')),
-        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
-        F('Expiry_Date', 'Date', default=''),
-        F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
-        F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-        F('Currency', 'Text', default='', factors=['FxRate'])
+        F('Expiry_Date', 'Date', default='')
     ])]
 
     documentation = (

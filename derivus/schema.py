@@ -960,6 +960,17 @@ FX_AXIS = ('{} on the ENGINE axis: the reporting currency per unit of Underlying
            'USDZAR level of 17.50 on a USD book is authored as 1/17.50. solve_structure takes FX '
            'strikes in market terms and crosses the axis itself')
 
+#: What every FX option is written on: the pair, its vol and discount curve, the side and the strike.
+FXOPTIONBASE = Group('FXOptionBase.Fields', [
+    F('Currency', 'Text', default='', factors=['FxRate']),
+    F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
+    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
+    F('Strike_Price', 'Float', default=REQUIRED, description=FX_AXIS.format('Strike price'))
+])
+
 #: What a one-touch and a no-touch on an equity share both are - every field but when a one-touch
 #: pays, a no-touch paying at expiry alone.
 EQUITY_TOUCH = own('EquityOneTouchOption', [
