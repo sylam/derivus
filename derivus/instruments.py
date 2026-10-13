@@ -654,6 +654,9 @@ class Deal(object):
     #: them in `post_process`; a leaf - an option, a cashflow list, a deposit - cannot. The engine
     #: recurses on `Children` being PRESENT, never on the type.
     accepts_children = False
+    #: The terms a deal holding `Children` takes from them, never compiled off its own block nor
+    #: asked for at booking - a cap on its optionlet list is the list's sum.
+    list_terms = ()
 
     #: What the type observes (`schema.Observes`) - the index a fixing is of, the table a print
     #: fills, the choice its expiry vests. Read through `schema.OBSERVES`, which holds each type's
@@ -3079,6 +3082,7 @@ class YieldInflationCashflowListDeal(Deal):
 
 class CapDeal(Deal):
     accepts_children = True
+    list_terms = ('Principal', 'Cap_Rate')
     vernacular = 'interest rate cap, cap, caplets'
     observes = Observes('Forecast_Rate', 'InterestRate')
     fields = [ADMIN, own('CapDeal', [
@@ -3238,6 +3242,7 @@ class FloorDeal(CapDeal):
     ])]
 
     optionlet = ('Floor_Rate', pricing.pricer_floor)
+    list_terms = ('Principal', 'Floor_Rate')
 
     documentation = (
         'Interest Rates', ['A series of floorlets as described [here](#capletsfloorlets)'])

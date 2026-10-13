@@ -869,14 +869,15 @@ class Config(object):
                         (factor_correlation_names[index1], factor_correlation_names[index2])] = \
                         factor_correlations[index1, index2]
 
-    def walk_deals(self):
-        """Every instrument in the book, depth first. `walk_groups` semantics: an `Ignore` node is
-        skipped whole, and recursion is on `Children` being PRESENT, never on the type."""
+    def walk_deals(self, nodes=False):
+        """Every instrument in the book, depth first, or its node where `nodes` asks. `walk_groups`
+        semantics: an `Ignore` node is skipped whole, and recursion is on `Children` being PRESENT,
+        never on the type."""
         def live(node):
             return node.get('Ignore') != 'True'
 
-        return (node['Instrument'] for _, node in schema.walk(self.deals['Deals']['Children'], live)
-                if live(node))
+        return (node if nodes else node['Instrument']
+                for _, node in schema.walk(self.deals['Deals']['Children'], live) if live(node))
 
     def factor_universe(self):
         """Every price factor the deal walk reaches, split by whether the market data has a block
@@ -938,10 +939,11 @@ class Config(object):
         pricing.
         """
         deals, nameless = {}, self.nameless_deals()
-        for position, instrument in enumerate(self.walk_deals()):
+        for position, node in enumerate(self.walk_deals(nodes=True)):
+            instrument = node['Instrument']
             key = None if position in nameless else instrument.field.get('Reference')
             messages = [nameless[position]] if position in nameless \
-                else schema.validate_instrument(instrument)
+                else schema.validate_instrument(instrument, bool(node.get('Children')))
             if messages:
                 key = key or '#{}'.format(position)
                 deals[key if key not in deals else '{}#{}'.format(key, position)] = messages

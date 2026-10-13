@@ -463,7 +463,7 @@ def unreadable(deal):
                for key, value in deal.field.items() if key in declared)
 
 
-def validate_instrument(deal):
+def validate_instrument(deal, held=False):
     """Authoring-time messages for one constructed deal; empty when it has nothing to say.
 
     The declarations give the fields an author MUST STATE and what every authored value has to BE;
@@ -473,13 +473,17 @@ def validate_instrument(deal):
     `Swap_Rate: 0.0` is a rate a benchmark states while a null is what a front end round-trips for
     nothing at all, and `Swap_Rate` unsaid is a swap with no fixed leg. A falsy value is checked
     against nothing else, having nothing to state. `validate` is looked up normally rather than
-    own-attr-only, unlike `fields`, so an alias subclass inherits the rules. Nothing in the
+    own-attr-only, unlike `fields`, so an alias subclass inherits the rules. `held` says the deal
+    holds `Children`, which replace its `list_terms`: those it need not state. Nothing in the
     valuation path calls this; a message never stops a deal.
     """
     messages = []
+    replaced = getattr(deal, 'list_terms', ()) if held else ()
     for key, field in declared_fields(type(deal)).items():
         value = deal.field.get(key)
-        if not value and field.default is REQUIRED:
+        if key in replaced:
+            message = value_message(field, value)
+        elif not value and field.default is REQUIRED:
             message = '{} is required'.format(key)
         elif value is None and field.default is not None and not field.convention:
             message = '{} is not stated'.format(key)

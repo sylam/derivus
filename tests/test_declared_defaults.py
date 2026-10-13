@@ -866,6 +866,34 @@ def test_a_cap_stated_by_its_terms_prices_its_caplets():
         assert opened[reference] == pytest.approx(float.fromhex(valued[reference]), rel=1e-5)
 
 
+@pytest.mark.parametrize('kind', ['CapDeal', 'FloorDeal'])
+def test_a_cap_on_its_optionlet_list_states_no_principal_or_strike(kind):
+    """A cap or floor holding its optionlet list is the list's sum, so its own principal and strike
+    are never read: left out, it books with nothing to say and marks its list to the bit, while
+    the same cap stated by its terms alone is still asked for both.
+
+    Killing mutations: the structure compiling its own terms - the bare cap is skipped with its
+    list; booking asking a list's holder for its `list_terms`."""
+    import trial_rates
+    held = trial_rates.optioned(kind, 'HELD', 2.0)
+    strike, = set(type(construct_instrument(dict(held), {})).list_terms) - {'Principal'}
+    bare = dict({key: value for key, value in held.items()
+                 if key not in ('Principal', strike, 'Amortisation')}, Reference='BARE')
+    bare['Children'] = [dict(child, Reference='BARE_LETS') for child in held['Children']]
+    terms = dict({key: value for key, value in bare.items() if key != 'Children'}, Reference='TERMS')
+    job = book([held, bare, terms])
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(trial_rates.FACTORS)
+    context = derivus.Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'lists'))
+    said = context.validate()['deals']
+    assert list(said) == ['TERMS'] and sorted(said['TERMS']) == sorted(
+        ['Principal is not stated', '{} is not stated'.format(strike)])
+    _, answer = context.run_job()
+    frame = answer['Results']['mtm']
+    valued = dict(zip(frame['Reference'], frame['Value']))
+    assert valued['BARE'] == valued['BARE_LETS'] == valued['HELD'] != 0.0
+
+
 def test_a_convention_whose_fallback_is_another_field_still_means_its_declared_value():
     """THE ONE READER SHAPE A FLAG CANNOT FIX BY ITSELF. `dict.get` never reaches `__missing__`, so
     `self.field.get('Payment_Calendars', self.field['Accrual_Calendars'])` made an OMITTED key mean
