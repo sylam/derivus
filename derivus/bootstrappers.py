@@ -3549,24 +3549,20 @@ class GBMAssetPriceTSModelParameters(Construction):
     documentation = (
         'Fx And Equity',
         ['A construction, not a fit: the ATM column of the `Asset_Price_Volatility` surface becomes the',
-         'integrated vol curve $\\bar\\sigma(t)$ a risk-neutral GBM reads, $\\bar\\sigma(t)^2t$ being the total',
-         'variance to $t$. It writes `GBMAssetPriceTSModelParameters.<name>` (`Vol`, plus',
-         '`Quanto_FX_Correlation` below) and `GBMAssetPriceTSModelImplied.<name>` in `Price Models`.',
+         'instantaneous vol curve $\\sigma(t)$ a risk-neutral GBM integrates, its total variance',
+         '$V(t_i)=\\bar\\sigma(t_i)^2t_i$ at every surface expiry $t_1<\\dots<t_n$. It writes',
+         '`GBMAssetPriceTSModelParameters.<name>` (`Vol`, plus `Quanto_FX_Correlation` below) and',
+         '`GBMAssetPriceTSModelImplied.<name>` in `Price Models`.',
          '',
-         'The variance curve is $V(0)=0$, $V(t_i)=\\bar\\sigma(t_i)^2t_i$ at the surface expiries',
-         '$t_1<\\dots<t_n$, and $V(t)=\\bar\\sigma(t_n)^2t$ for $t>t_n$. The instantaneous vol $\\sigma(t)$ is',
-         'piecewise LINEAR between expiries, so with $f(t)=\\sigma(t)^2$ Simpson\'s rule is exact on each step:',
+         '$\\sigma$ is flat at $\\bar\\sigma(t_1)$ to the first expiry and flat at its own level $f_i$ over each',
+         'later step, reached from the last by a linear ramp of $r$, one day, so the integral the process',
+         'takes of the piecewise-linear curve is exact:',
          '',
-         '$$V(t_i)-V(t_{i-1})=\\frac{t_i-t_{i-1}}{6}\\Big(f(t_{i-1})+4f\\big(\\tfrac{t_{i-1}+t_i}{2}\\big)+f(t_i)\\Big)'
-         '=\\frac{t_i-t_{i-1}}{3}\\big(\\sigma_{i-1}^2+\\sigma_{i-1}\\sigma_i+\\sigma_i^2\\big)$$',
+         '$$V(t_i)-V(t_{i-1})=\\frac{r}{3}\\big(f_{i-1}^2+f_{i-1}f_i+f_i^2\\big)+(t_i-t_{i-1}-r)f_i^2$$',
          '',
-         'and each step is solved for $\\sigma_i$, the positive root taken. Only $\\bar\\sigma$ is written;',
-         '$\\sigma$ is the walk\'s state. Integrated curves are linearly interpolated and flat extrapolated.',
-         '',
-         'A point implying a DECREASE in forward variance has no root, and is raised to the least',
-         'variance that step can reach, the one a zero instantaneous vol over it leaves:',
-         '$V(t_i)=V(t_{i-1})+\\frac{t_i-t_{i-1}}{3}\\sigma_{i-1}^2$. The written vol is then that floor rather',
-         'than the quote.',
+         'solved for $f_i$, the positive root taken; beyond the last expiry $\\sigma$ stays at $f_n$. A step',
+         'adding less variance than its ramp alone - in practice a DECREASE in total variance - has no root',
+         'and is raised to that least variance, $f_i=0$, so the curve misses the quote there.',
          '',
          '**Sources and limitations.**',
          '',
@@ -3580,8 +3576,7 @@ class GBMAssetPriceTSModelParameters(Construction):
          '  straddle vol, not the ATM-forward vol. The model is flat in strike, so the difference passes',
          '  straight into the GBM vol; its size is unmeasured.',
          '- `Quote_Sensitivity` Yes keeps the curve connected to the ATM vols. The repair is a KINK:',
-         '  $d\\bar\\sigma_i/dq_i$ is 1 on the smooth side and 0 once floored, in that column and every later',
-         '  one ([Quote Sensitivities](../developer/quote_sensitivities.md#the-repair-kink)).',
+         '  $df_i/dq_i$ is 0 once floored ([Quote Sensitivities](../developer/quote_sensitivities.md#the-repair-kink)).',
          '- `Quanto_FX_Correlation` is 0 for an FX rate. For an equity it is the',
          '  `Correlation.EquityPrice.<name>/FxRate.<pair>` price factor between the equity and its',
          '  currency against the base, 0 when absent; `Quanto_FX_Volatility` is written blank.'
@@ -3593,23 +3588,25 @@ class GBMAssetPriceTSModelParameters(Construction):
     #: Configuration` entry names it by - here, its own class name.
     price_factor_type = 'GBMAssetPriceTSModelParameters'
     factor_types = {'Asset_Price_Volatility': utils.TwoDimensionalFactors}
-    #: What this family READS: the surface `Asset_Price_Volatility` names, whose ATM column is the
-    #: integrated vol curve - and which `FXVolPrices` may have written in the same run.
+    #: What this family READS: the surface `Asset_Price_Volatility` names, whose ATM column the vol
+    #: curve is built from - and which `FXVolPrices` may have written in the same run.
     reads = tuple(utils.TwoDimensionalFactors)
-    #: The precision the TAPE runs in - the value path is numpy and has no dtype to pick. Float64 on
-    #: the CPU whatever the job asked for; `construct_bootstrapper`'s dtype does not reach it.
+    #: The precision the walk runs in: float64 on the CPU whatever the job asked for;
+    #: `construct_bootstrapper`'s dtype does not reach it.
     dtype = torch.float64
+    #: How long the vol curve takes to ramp from one step's level to the next, in years: a day
+    RAMP = 1.0 / 365.0
     fields = [
         F('Asset_Price_Volatility', 'Text', default=REQUIRED,
-          description='The vol surface whose ATM column becomes the integrated vol curve'),
+          description='The vol surface whose ATM column becomes the vol curve'),
         F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
-          description='Keep the integrated vol curve connected to the ATM vols it was built from, '
+          description='Keep the vol curve connected to the ATM vols it was built from, '
                       'so a calculation\'s backward pass reports dV/dq beside dV/dtheta')
     ]
 
     def __init__(self, param, device, dtype):
         super().__init__(param, device, dtype)
-        #: What `Quote_Sensitivity` leaves behind: the integrated vol curve still connected to its
+        #: What `Quote_Sensitivity` leaves behind: the vol curve still connected to its
         #: ATM quotes, keyed as `_build_factor_state` mints its `Vol` leaf, plus the quote leaf per
         #: block. `Config.bootstrap` harvests both - tensors cannot live in `Price Factors`.
         self.calibrated = {}
@@ -3655,88 +3652,52 @@ class GBMAssetPriceTSModelParameters(Construction):
         return [np.interp(1, vol_surface.moneyness[mn_ix - 1:mn_ix + 1], y) for y in
                 vol_surface.get_vols()[:, mn_ix - 1:mn_ix + 1]], 'the surface at moneyness 1'
 
-    @staticmethod
-    def integrated_vol(atm_vol, expiry):
-        """The ATM column as the integrated vol curve the process reads - the value path.
+    @classmethod
+    def integrated_vol(cls, atm_vol, expiry):
+        """The ATM column `atm_vol` as the instantaneous vol curve the process integrates: its knot
+        times, its vols on `atm_vol`'s tape, and the expiries the repair fired at.
 
-        `V(t_i) = sigma_bar(t_i)^2 t_i` is the total variance the column implies, and the walk is
-        Simpson's rule inverted for the instantaneous vol over each step,
+        `V(t_i) = sigma_bar(t_i)^2 t_i` is the total variance the column implies. The curve is flat
+        to the first expiry and holds each later step flat at its own vol `f_i`, reached from the
+        last by a linear ramp of `r = RAMP` years, so with the ramp integrated exactly
 
-            V(t_i) - V(t_{i-1}) = (dt/3)(sigma_{i-1}^2 + sigma_{i-1} sigma_i + sigma_i^2)
+            V(t_i) - V(t_{i-1}) = (r/3)(f_{i-1}^2 + f_{i-1} f_i + f_i^2) + (dt - r) f_i^2
 
-        a quadratic in `sigma_i` whose positive root is taken. Returns the curve and the expiries
-        the repair fired at. The numpy walk is the only thing a mark is built from; `carried_vol`
-        is the derivative twin.
+        a quadratic in `f_i` whose positive root is taken.
 
-        The map is piecewise and the switch is a KINK. A column implying a declining forward
-        variance has no root, so `V(t_i)` is floored at what `sigma_i = 0` leaves and the written
-        vol is that floor rather than the quote - `d/dq` is 1 on the smooth side and 0 on the
-        floored one, in that column and every later one.
-
-        Only `sigma_bar` is written; `sigma` is the walk's own state, sizing the next step's floor.
+        The repair is a KINK. A step adding less variance than the ramp alone does - a decline -
+        has no root, so `V(t_i)` is floored there and `f_i` is zero, `df_i/dq_i` with it. A second
+        repair meets a zero discriminant, where `sqrt`'s infinite derivative would NaN the Jacobian,
+        so that root is written as zero.
         """
-        if expiry.size == 1:
-            return list(atm_vol), []
-
-        dt = np.diff(np.append(0, expiry))
-        var = expiry * np.array(atm_vol) ** 2
-        sig, vol, var_tm1, floored = atm_vol[:1], atm_vol[:1], var[0], []
-
-        for var_t, delta_t, t_i in zip(var[1:], dt[1:] / 3.0, expiry[1:]):
-            M = var_tm1 + delta_t * (sig[-1] ** 2)
-            if var_t < M:
-                floored.append(t_i)
-                var_t = M
-
-            a, b, c = delta_t, sig[-1] * delta_t, M - var_t
-            sig.append((-b + np.sqrt(b * b - 4.0 * a * c)) / (2.0 * a))
-            vol.append(np.sqrt(var_t / t_i))
-            var_tm1 = var_t
-
-        return vol, floored
-
-    @staticmethod
-    def carried_vol(atm_vol, expiry):
-        """The same walk on a tape - a derivative carrier, never a value.
-
-        It rides in as the splice `integrated_vol + (carried - carried.detach())`: exactly zero in
-        the forward pass, derivative one, so the shipped curve is the numpy walk's bit for bit.
-
-        The two walks stay separate because they do not agree to the bit: `torch.sqrt` is one ulp
-        below `np.sqrt` on better than one float64 in a hundred here and re-associates the
-        expression tree, which moved the shipped vols on 24% of 4000 random ATM columns.
-
-        The discriminant is guarded, and only here. One repair leaves `sigma` exactly zero, so a
-        second reaches a discriminant of exactly zero, where `sqrt` has an infinite derivative: the
-        backward pass multiplies it by the zero `d(b^2)/db` and NaNs the whole Jacobian. The root
-        there is zero, so it is written as zero and `sqrt` never sees the point.
-        """
-        third = np.diff(np.append(0.0, expiry)) / 3.0
         variance = atm_vol * atm_vol * atm_vol.new_tensor(expiry)
-        sigma, curve, previous = atm_vol[0], [atm_vol[0]], variance[0]
-
+        tenors, curve, floored = [expiry[0]], [atm_vol[0]], []
+        level, previous = atm_vol[0], variance[0]
         for i in range(1, expiry.size):
-            floor = previous + third[i] * sigma * sigma
+            dt = expiry[i] - expiry[i - 1]
+            ramp = min(cls.RAMP, dt / 2.0)
+            a, b = dt - 2.0 * ramp / 3.0, ramp * level / 3.0
+            floor = previous + b * level
+            if variance[i] < floor:
+                floored.append(expiry[i])
             previous = floor if variance[i] < floor else variance[i]
-            b = sigma * third[i]
-            disc = b * b - 4.0 * third[i] * (floor - previous)
+            disc = b * b - 4.0 * a * (floor - previous)
             real = disc > 0
-            root = torch.where(real, torch.sqrt(torch.where(real, disc, torch.ones_like(disc))),
-                               torch.zeros_like(disc))
-            sigma = (-b + root) / (2.0 * third[i])
-            curve.append(torch.sqrt(previous / expiry[i]))
-
-        return torch.stack(curve)
+            level = (torch.where(real, torch.sqrt(torch.where(real, disc, torch.ones_like(disc))),
+                                 torch.zeros_like(disc)) - b) / (2.0 * a)
+            tenors += [expiry[i - 1] + ramp, expiry[i]]
+            curve += [level, level]
+        return tenors, torch.stack(curve), floored
 
     def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices, calendars):
         '''
-        Turns the ATM column of the named vol surface into the integrated vol curve the risk neutral
-        process reads, repairing any declining variance on the way - see `integrated_vol`.
+        Turns the ATM column of the named vol surface into the instantaneous vol curve the risk
+        neutral process integrates, repairing any declining variance on the way - see
+        `integrated_vol`.
 
         `Quote_Sensitivity` leaves that curve behind still connected to its ATM vols, so
         `Calculation.factor_leaf` can offer the connected tensor rather than minting a `Vol` leaf out
-        of numpy. The map is explicit - no solve, no implicit function theorem - and the tape is a
-        SPLICE over the shipped walk, so every number written comes out of `integrated_vol`.
+        of numpy. The map is explicit - no solve, no implicit function theorem.
         '''
         for market_price, implied_params in market_prices.items():
             rate = utils.check_rate_name(market_price)
@@ -3764,12 +3725,13 @@ class GBMAssetPriceTSModelParameters(Construction):
                 connect = implied_params['instrument']['Quote_Sensitivity'] == 'Yes'
                 atm_vol, source = self.atm_column(
                     vol_factor, vol_surface, market_prices, price_factors)
-                curve, floored = self.integrated_vol(atm_vol, vol_surface.expiry)
+                quotes = torch.tensor(atm_vol, dtype=self.dtype, requires_grad=connect)
+                tenors, curve, floored = self.integrated_vol(quotes, vol_surface.expiry)
 
                 # store the output
                 price_param = utils.Factor(self.__class__.__name__, market_factor.name)
                 model_param = utils.Factor('GBMAssetPriceTSModelImplied', market_factor.name)
-                vol = utils.Curve(['Integrated'], list(zip(vol_surface.expiry, curve)))
+                vol = utils.Curve([], list(zip(tenors, curve.tolist())))
 
                 if is_fx:
                     quanto_fx_corr = 0.0
@@ -3787,11 +3749,7 @@ class GBMAssetPriceTSModelParameters(Construction):
                 price_models[utils.check_tuple_name(model_param)] = {'Risk_Premium': None}
 
                 if connect:
-                    quotes = torch.tensor(atm_vol, dtype=self.dtype, requires_grad=True)
-                    carried = self.carried_vol(quotes, vol_surface.expiry)
-                    self.calibrated[utils.Factor(
-                        price_param.type, price_param.name + ('Vol',))] = torch.tensor(
-                        curve, dtype=self.dtype) + (carried - carried.detach())
+                    self.calibrated[utils.Factor(price_param.type, price_param.name + ('Vol',))] = curve
                     self.quote_leaves[market_price] = (
                         ['ATM {:g}'.format(expiry) for expiry in vol_surface.expiry], quotes)
 

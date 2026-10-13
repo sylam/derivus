@@ -9,7 +9,7 @@ reads refuses the bootstrap by name.
 |---|---|---|---|
 | `InterestRatePrices` | a zero curve, holding its benchmarks (`DepositDeal`, `FRADeal`, `SwapInterestDeal`, `StructuredDeal`, `FXForwardDeal`) at par | `Points` | `InterestRate.<name>` |
 | `FXVolPrices` | an FX smile surface from ATM, risk-reversal and butterfly quotes | `Points` | `FXVol.<name>` |
-| `GBMAssetPriceTSModelPrices` | the integrated ATM vol curve of `GBMAssetPriceTSModelImplied` | none: the named surface's ATM column | `GBMAssetPriceTSModelParameters.<name>` |
+| `GBMAssetPriceTSModelPrices` | the vol curve of `GBMAssetPriceTSModelImplied`, off an ATM column | none: the named surface's ATM column | `GBMAssetPriceTSModelParameters.<name>` |
 | `HullWhite2FactorModelPrices` | the two-factor Hull-White model to ATM swaption vols | `Instrument_Definitions` | `HullWhite2FactorModelParameters.<name>` |
 | `CSForwardPriceModelPrices` | the Clewlow-Strickland $(\sigma, \alpha)$ to energy futures options | `Energy_Futures_Options` | `CSForwardPriceModelParameters.<name>` |
 | `LogVar2FJModelPrices` | the LogVar2FJ spot model to vanilla option quotes | `European_Options` | `LogVar2FJModelParameters.<name>` |
@@ -23,7 +23,7 @@ structural.
 ## GBMAssetPriceTSModelPrices
 
 Names the vol surface (`FXVol`, `EquityPriceVol`, `CommodityPriceVol` or `VolatilityGrid`) whose
-ATM column becomes the integrated vol curve:
+ATM column becomes the instantaneous vol curve:
 
 ```json
 {

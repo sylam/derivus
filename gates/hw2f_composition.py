@@ -195,8 +195,8 @@ def yield_vol_surface(config, name, currency, distribution='Normal'):
 
 
 def fx_gbm_block(surface_name):
-    """The `GBMAssetPriceTSModelPrices` block that turns an FX vol SURFACE into the integrated vol
-    curve a `GBMAssetPriceTSModelImplied` process reads.
+    """The `GBMAssetPriceTSModelPrices` block that turns an FX vol SURFACE into the instantaneous vol
+    curve a `GBMAssetPriceTSModelImplied` process integrates.
 
     The snapshot emits the surface (`FXVolPrices`) and stops there, because the ATM column is a
     derived quantity and the emitter's job is quotes. This block is the one authored input of the
@@ -699,7 +699,7 @@ def composition_config(fitted, ir_curve, fx_currency, fx_spot, benchmarks, base_
     to move - so `Model Configuration` names `HullWhite2FactorImpliedInterestRateModel` behind a
     `Currency` FILTER rather than as a default: a default would resolve the USD curve too and
     `find_models` would log an error about the parameters it cannot find. The ZAR FX rate is a
-    `GBMAssetPriceTSModelImplied` off the integrated vol curve the FX-vol bootstrap wrote; the base
+    `GBMAssetPriceTSModelImplied` off the vol curve the FX-vol bootstrap wrote; the base
     currency's own `FxRate` is excluded by `find_models` itself, which is why no USD FX process
     appears. The ZAR curve simulates off `HullWhite2FactorModelParameters.ZAR` exactly as emitted,
     quanto drift included.

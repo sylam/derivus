@@ -29,7 +29,7 @@ the family's:
 | `utils.damped_newton`, `CalibrationSolve`, `residual_jacobians` | the curve solve and its backward |
 | `utils.LeastSquaresSolve`, `utils.Residual`, `utils.active_set` | the least-squares node and its operand |
 | `SwaptionCalibration`, `utils.create_market_swaps`, `utils.market_swap_class` | the HW2F operand and splice |
-| `GBMAssetPriceTSModelParameters.carried_vol`, `FXVolSurfaceParameters.carried_sigma` | the constructions' twins |
+| `GBMAssetPriceTSModelParameters.integrated_vol`, `FXVolSurfaceParameters.carried_sigma` | the constructions' tapes |
 | `Calculation.factor_leaf`, `Config.bootstrap` | the attachment and the harvest |
 | `structures.vol_risk`, `service.quote_rows` | the readers of `dV/dq` |
 
@@ -265,31 +265,26 @@ re-price without re-solving**, which closes on one linearly in $h$ and negates u
 
 ## The closed-form map {#the-closed-form-map}
 
-`GBMAssetPriceTSModelParameters` integrates a surface's ATM column into a GBM vol curve by Simpson's
-rule inverted step by step ([Equity and FX](../bootstrapping/fx_and_equity.md)); nothing is fitted,
-and autograd walks the map. Every mark comes from the numpy walk `integrated_vol`; its float64 torch
-twin `carried_vol` rides in as `integrated_vol + (carried − carried.detach())`, since torch's square
-root and association order would move shipped vols by an ulp.
-
-!!! warning "The identity wherever forward variance rises"
-    There the curve is the column, `dV/dq` is `dV/dθ` relabelled, and any walk passes. A gate needs a
-    declining column.
+`GBMAssetPriceTSModelParameters` turns a surface's ATM column into the instantaneous vol curve the GBM
+process integrates, one quadratic per step between expiries
+([Equity and FX](../bootstrapping/fx_and_equity.md)); nothing is fitted. The walk runs on the quotes'
+own tape, float64 on the CPU, so under `Quote_Sensitivity` the curve it writes is the connected
+tensor and autograd walks the map.
 
 ### The repair is a kink {#the-repair-kink}
 
-Falling forward variance has no real root, so $V(t_i)$ is floored where $\sigma_i = 0$ and the vol
-written is the floor. $d\bar\sigma_i/dq_i$ is 1 on the smooth side and 0 on the floored one; autograd
-reports the branch's one-sided derivative, and a bump straddling the switch converges to 0.5, nobody's.
-The whole column severs: the floor is built from state before that expiry and σ over the floored step
-is zero, so no later step carries the quote. The quadratic is written with $c = \text{floor} - V(t_i)$
-so the floored branch is exactly zero.
+A step adding less variance than its one-day ramp, in practice a falling total variance, has no real
+root, so $V(t_i)$ is floored and the step's vol is zero. $df_i/dq_i$ is 0 there; autograd reports the
+branch's one-sided derivative, and a bump straddling the switch converges to half of it. The quadratic
+is written with $c = \text{floor} - V(t_i)$ so the floored root is exactly zero.
 
 !!! danger "The discriminant is guarded"
     A second consecutive repair meets $b = c = 0$: $\sqrt{}$'s infinite derivative times the zero
     $d(b^2)/db$ NaNs every Jacobian entry once a later step reads that σ. So the root at a zero
     discriminant is written as zero and `sqrt` never sees it.
 
-No test holds the map's quote side.
+**Held by** `tests/test_gbm_term_structure.py` for the values: every column whose total variance
+rises reprices, and a falling one repairs to zero. No test holds the map's quote side.
 
 ### Two quote sources {#the-atm-column}
 
