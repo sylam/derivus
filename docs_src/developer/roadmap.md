@@ -130,9 +130,10 @@ there.
 - **What is left of the test fold** (2026-10-09). The record and service modules (635 tests) are
   `fsync`-bound: most mint a home per test where a copy of the session's (`recorded`,
   `tests/conftest.py`) would do, as the diary, P&L and engine modules do. 146 of these tests name a
-  mutation nobody has run red, and 34 patch `session.BloombergSession` where a declared
-  canned-terminal entry would do (S). `test_notebooks` needs a world file that is not in the
-  repository.
+  mutation nobody has run red, and fourteen, twelve in `test_service.py` and two in `test_mcp.py`,
+  patch `session.BloombergSession` or the `blpapi` module where a declared canned-terminal entry
+  would do (S); `test_bloomberg_session.py` already drives a scripted fake of the SDK as data.
+  `test_notebooks` needs a world file that is not in the repository.
 - `derivus_jupyter.py` (tracked, not in the wheel) stays until the web UI exports a calculation as
   a job and links each result table for download, as it does; it then retires. It raises on three
   field names outside its write allowlist and on multi-column Tables outside a four-name allowlist,
