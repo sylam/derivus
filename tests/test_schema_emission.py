@@ -394,6 +394,18 @@ def test_every_top_level_field_declares_a_default():
     assert found == schema.UNSTATED, sorted(found ^ schema.UNSTATED)
 
 
+def test_a_containers_default_spells_only_the_keys_its_children_declare():
+    """A container's default is what a panel writes for the whole block, so a key in it that no
+    child declares is one nothing reads, standing where the key the pricer indexes should be.
+
+    Killing mutation: the inflation deal's `Index_Reference` default keyed `Index_Reference_Type`
+    again, the alias its `Reference_Type` child once carried."""
+    stray = {key: sorted(set(d['value']) - set(d['sub_fields']))
+             for key, d in every_descriptor() if 'sub_fields' in d and isinstance(d['value'], dict)
+             and set(d['value']) - set(d['sub_fields'])}
+    assert not stray, stray
+
+
 def test_no_class_is_hidden_from_the_create_menu():
     """`groups` is the Workbench's create-deal menu and stays hand-curated, being presentation. So
     it is the one part of the store that can still drift from the classes: a deal type absent from

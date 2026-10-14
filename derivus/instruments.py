@@ -2931,7 +2931,7 @@ class YieldInflationCashflowListDeal(Deal):
         F('Index', 'Text', default='', factors=['InflationRate']),
         F('Index_Reference', 'Container',
           default={
-              'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1, 'Index_Reference_Type': 'Interpolated',
+              'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1, 'Reference_Type': 'Interpolated',
               'Reference_Day': 1, 'Days_In_Period': 0},
           sub_fields=[
               F('Months_Lag', 'Integer', default=1),
