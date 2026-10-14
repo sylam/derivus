@@ -636,6 +636,18 @@ def test_a_priors_off_fit_is_bit_identical_to_its_banked_reading():
                             if banked.get(k) != v}
 
 
+def test_a_null_cap_fits_as_omitted_and_writes_the_corner():
+    """`Cap_A` null is what omitting it means: the priors-off block stating it null writes the
+    banked reading of the same block omitting it, hex for hex, its `Cap_A` among the 20 floats -
+    the corner `LVFit.cap_level` reads off the fitted law, never null.
+
+    Killing mutation: `cap_level` returning None for a null `Cap_A` again, the factor written
+    unbounded."""
+    factor, _ = _fit(_ladder(Cap_A=None, **PRIORS_OFF), 'cap_null')
+    with open(PRIORS_OFF_FILE) as handle:
+        assert _floats_of(factor) == json.load(handle), factor.get('Cap_A')
+
+
 # ------------------------------------------------------------------------------------------
 # 1 (CVA) and 9  THE CREDIT GATES
 # ------------------------------------------------------------------------------------------

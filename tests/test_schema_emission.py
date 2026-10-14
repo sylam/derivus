@@ -384,14 +384,11 @@ def test_a_published_obj_is_the_wire_token_its_type_names():
 def test_every_top_level_field_declares_a_default():
     """A top-level field is REQUIRED, a convention or offers a value, so its reader indexes the block
     its declarations complete rather than finding a key missing; a table's columns and a container's
-    children are reached through their field. Pinned both ways on the LogVar2FJ family's `Cap_A`,
-    whose omission, null and number are three different corners: a field declaring none fails,
-    and so does stating that one without unpinning it.
+    children are reached through their field.
 
     Killing mutation: the import-time check removed and `ChainedBasisModel.Next_Const` declaring no
     default again."""
-    found = set(schema.undeclared(schema.mapping))
-    assert found == schema.UNSTATED, sorted(found ^ schema.UNSTATED)
+    assert schema.undeclared(schema.mapping) == []
 
 
 def test_a_containers_default_spells_only_the_keys_its_children_declare():

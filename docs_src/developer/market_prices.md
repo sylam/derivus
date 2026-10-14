@@ -286,9 +286,12 @@ forward window end and bucket knot, so the fit reads at a maturity what a pricer
 **`Vanilla_Pricer: Quadrature`, the default, is a surrogate**: Gauss-Hermite [@golub1969] over a
 lognormal clock matched on its moments and the exact mixer, with no seed and no sampling noise. θ\*
 fitted under it is used by pricers that walk; the gap is on the Bootstrapping page. Forward-start
-rows walk either way. Quadrature refuses `Cap_A` and a second residual bucket, its moments needing
-an uncapped exponential and one mixer. The walk's draws are fixed for the fit, so `Paths` is the
-noise floor under θ\*, not a confidence interval.
+rows walk either way. Quadrature refuses a `Cap_A` level and a second residual bucket, its moments
+needing an uncapped exponential and one mixer. `Cap_A` null is the family's convention, omitted or
+stated: the fit runs uncapped and writes the corner `LVFit.cap_level` reads off the fitted stationary law, which
+a level is raised to. **Held by** `test_logvar2fj_json.py::test_a_null_cap_fits_as_omitted_and_writes_the_corner`.
+The walk's draws are fixed for the fit, so `Paths` is the noise floor under θ\*, not a confidence
+interval.
 
 **Where it runs.** A fit that walks nothing (quadrature, no forward block) runs on the host, its
 tensors too small for a card; a walk runs on the job's device, its draws made on the host so a seed names one draw on any device.

@@ -1463,10 +1463,6 @@ mapping = {
     }
 }
 
-#: The one top-level field no default states: the LogVar2FJ family's `Cap_A`, omitted writing the
-#: fit's own corner, null none, and a number both the corner its walk takes and one Quadrature refuses.
-UNSTATED = {('MarketPrices', 'LogVar2FJModelPrices', 'Cap_A'),
-            ('Configuration', 'LogVar2FJModelParameters', 'Cap_A')}
-if set(undeclared(mapping)) != UNSTATED:
+if undeclared(mapping):
     raise TypeError('a top-level field declares a default, REQUIRED or a convention: {}'.format(
-        ', '.join('{} {}.{}'.format(*name) for name in sorted(set(undeclared(mapping)) ^ UNSTATED))))
+        ', '.join('{} {}.{}'.format(*name) for name in undeclared(mapping))))

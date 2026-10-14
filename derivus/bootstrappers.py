@@ -1440,14 +1440,13 @@ class LVFit(utils.Residual):
         self.quadrature = read['Vanilla_Pricer'] == 'Quadrature'
         self.nodes = typed['nodes']
         self.sampled = None
-        if self.quadrature and utils.LogVar2FJ.declared(read.get('Cap_A')) is not None:
+        if self.quadrature and read['Cap_A'] is not None:
             raise ValueError(
                 '{}: Vanilla_Pricer Quadrature prices the instantaneous variance as the EXPONENTIAL '
                 'of a Gaussian, which is what makes the clock\'s moments closed form, and this '
                 'block declares Cap_A {:g} - a corner the walk would take and the moments cannot. '
-                'Omit Cap_A and the fit runs unbounded, writing the corner onto the factor as it '
-                'does now, or price the vanillas on the Walk'.format(
-                    market_price, utils.LogVar2FJ.declared(read['Cap_A'])))
+                'Leave Cap_A null and the fit runs unbounded, writing the corner onto the factor, '
+                'or price the vanillas on the Walk'.format(market_price, float(read['Cap_A'])))
         self.source = read['Forward_Smile_Source']
         # a fit that walks nothing - quadrature vanillas and no forward block - runs on the HOST,
         # where tensors this small dispatch faster than a card launches; the walk wants the card
@@ -1720,11 +1719,9 @@ class LVFit(utils.Residual):
 
     def cap_headroom(self, scalars, levers, curve):
         """The mass of path-days at or above the corner the factor will carry, read once at the
-        written parameters; zero where the walk is unbounded."""
+        written parameters."""
         eta_l, eta_s, _ = self.draws
         a = self.cap_level()
-        if a is None:
-            return 0.0
         sigma_s = levers['Sigma_S'][self.step_bucket[:-1]]
         w_s = utils.LogVar2FJ.ou_step_weights(scalars['Kappa_S'], sigma_s, self.deltas)[1]
         w_l = utils.LogVar2FJ.ou_step_weights(scalars['Kappa_L'], scalars['Sigma_L'], self.deltas)[1]
@@ -1969,13 +1966,11 @@ class LVFit(utils.Residual):
 
     def cap_level(self):
         """The corner the written factor carries: `L(0)` plus twelve stationary log-vol sds at the
-        widest bucket where none is declared, a declared level raised to that, None where null."""
+        widest bucket where `Cap_A` is null, a declared level raised to that."""
         level = self.levels[0]
         rule = float(level.detach() if torch.is_tensor(level) else level) + 12.0 * max(self.spreads())
-        if 'Cap_A' not in self.instrument:
-            return rule
         a = utils.LogVar2FJ.declared(self.instrument['Cap_A'])
-        return a if a is None else max(a, rule)
+        return rule if a is None else max(a, rule)
 
     def spreads(self):
         """The stationary log-vol sd per bucket, half the log-variance one."""
@@ -2451,9 +2446,9 @@ class LVReport:
                 fit.labels, np.array([fit.value_of(x) for x in fit.fitted]),
                 fit.edges[0], fit.edges[1], fit.slope)):
             logging.info('  {}'.format(line))
-        logging.info('  stationary log-vol sd {}; corner {} with {:.2e} of path-days at or above '
-                     'it'.format('/'.join('{:.3f}'.format(x) for x in fit.spreads()),
-                                 utils.LogVar2FJ.text(fit.cap_level(), '.4g'), fit.headroom))
+        logging.info('  stationary log-vol sd {}; corner {:.4g} with {:.2e} of path-days at or '
+                     'above it'.format('/'.join('{:.3f}'.format(x) for x in fit.spreads()),
+                                       fit.cap_level(), fit.headroom))
         for note in fit.notes:
             logging.warning('  {}: {}'.format(fit.market_price, note))
         for line in ([fit.pinned_slow] if fit.pinned_slow else []) + \
@@ -2498,7 +2493,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          '*Vanilla_Pricer* `Quadrature`, the default, averages over a deterministic Gauss-Hermite',
          'grid on the clock, lognormal on its closed-form moments, and on the mixer, the walk\'s own',
          'inverse Gaussian (the mixer of the normal inverse Gaussian residual,',
-         '[@barndorffnielsen1998]); it refuses a *Cap_A* or a second residual bucket by name. `Walk`, which',
+         '[@barndorffnielsen1998]); it refuses a *Cap_A* level or a second residual bucket by name. `Walk`, which',
          'takes both, averages over FIXED antithetic paths, and the forward-start rows read the walk',
          'either way. Each prices off its own forward, a martingale control variate that costs one',
          '`logsumexp` and takes the level bias out of every strike at once.',
@@ -2743,11 +2738,6 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
          ]
     )
 
-    #: The three structural numbers the PRICE FACTOR declares, read here rather than re-spelt so
-    #: the calibrator's bound and the factor's own load assertion cannot disagree.
-    FACTOR_DEFAULTS = {field.name: field.default
-                       for field in riskfactors.LogVar2FJModelParameters.fields}
-
     market_factor_type = 'LogVar2FJModelPrices'
     #: The `Price Factors` type this family writes, which is what a `Bootstrapper
     #: Configuration` entry names it by - here, its own class name.
@@ -2793,11 +2783,11 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                    description='Structural slow log-variance reversion speed, per year; never fitted'),
                  F('Kappa_S', 'Float', default=6.0,
                    description='Structural fast log-variance reversion speed, per year; never fitted'),
-                 F('Cap_A', 'Float', default=FACTOR_DEFAULTS['Cap_A'],
-                   description='Structural log-variance corner min(l+s, Cap_A), never below L(0) '
-                               '+ 6*s_inf; omitted, the fit runs unbounded and writes that '
-                               'level, and null writes none'),
-                 F('C_Min', 'Float', default=FACTOR_DEFAULTS['C_Min'],
+                 F('Cap_A', 'Float', convention=True,
+                   description='Structural log-variance corner min(l+s, Cap_A) written onto the '
+                               'factor, never below L(0) plus twelve stationary log-vol sds at the '
+                               'widest bucket, which is the corner null writes'),
+                 F('C_Min', 'Float', default=utils.LogVar2FJ.C_MIN,
                    description='Floor on the idiosyncratic share c = 1 - Rho_S^2 - Rho_L^2, written onto '
                                'the factor and bounding Rho_S in the fit'),
                  F('Idiosyncratic_Share', 'Text', default='Refuse', values=['Refuse', 'Floor'],
@@ -2920,7 +2910,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                    description='The largest move in log-variance one xi pillar Newton step may take'),
                  F('Cap_Headroom_Max', 'Float', default=1e-5,
                    description='The mass of path-days at or above the corner the factor will carry that '
-                               'REFUSES the fit; nothing where the walk is unbounded'),
+                               'REFUSES the fit'),
                  F('Log_Vol_Sd_Band', 'Text',
                    default='FxRate:0.2,0.9; EquityPrice:0.4,0.9; CommodityPrice:0.4,0.9; FuturesPrice:0.4,0.9',
                    description='The band the fitted stationary log-vol sd may sit in, as class:lower,upper '
@@ -3514,7 +3504,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         cold = fit.prior.cold()
         fit.state = {'Kappa_L': float(read['Kappa_L']), 'Kappa_S': float(read['Kappa_S']),
                      'Sigma_L': 1.0, 'Rho_L': -0.4,
-                     'Cap_A': utils.LogVar2FJ.declared(read.get('Cap_A')),
+                     'Cap_A': utils.LogVar2FJ.declared(read['Cap_A']),
                      'Rho_S': [cold['Rho_S']] * n, 'Beta': [cold['Beta']] * n,
                      'Sigma_S': [2.4] * n, 'Alpha': [cold['Alpha']] * n}
 
