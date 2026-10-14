@@ -18,8 +18,8 @@ object as the MarketData JSON via a second `parse_json` call.
         "ID": "",
         "Method": "MarkovHMMSpotCalibration",
         "N_States": 3,
-        "Use_Student_T": true,
-        "Log_Price": true
+        "Use_Student_T": "Yes",
+        "Log_Price": "Yes"
       },
       "QuadraticCarryCurveModel": {
         "ID": "",

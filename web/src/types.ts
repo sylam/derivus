@@ -11,8 +11,6 @@ export type Descriptor = {
   /** Instrument only: leaving this field out MEANS `value`, so an author may say nothing. */
   convention?: boolean;
   values?: string[];
-  min?: number;
-  max?: number;
   bind?: string;
   obj?: string | string[];
   col_names?: string[];

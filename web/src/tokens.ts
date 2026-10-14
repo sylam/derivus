@@ -58,7 +58,7 @@ export function curveOf(value: unknown): { meta: unknown[]; data: number[][] } |
 // new field edits correctly the day it is declared.
 
 const SCALAR_WIDGETS = new Set([
-  'Text', 'Dropdown', 'Float', 'BoundedFloat', 'Integer', 'DatePicker', 'Checkbox',
+  'Text', 'Dropdown', 'Float', 'Integer', 'DatePicker', 'Checkbox',
 ]);
 
 const SCALAR_TOKENS = ['.Timestamp', '.Percent', '.Basis', '.DateOffset'];
@@ -93,7 +93,7 @@ export function encodeScalar(descriptor: Descriptor, raw: string | boolean): unk
     case 'Period': return { '.DateOffset': raw };
   }
   switch (descriptor.widget) {
-    case 'Float': case 'BoundedFloat': return Number(raw);
+    case 'Float': return Number(raw);
     case 'Integer': return Math.trunc(Number(raw));
     case 'DatePicker': return { '.Timestamp': raw };
     case 'Checkbox': return raw === 'true';

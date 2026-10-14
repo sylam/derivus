@@ -1085,12 +1085,12 @@ def wire_default(field):
     container; everything else is the literal a panel shows. A widget also writes a blank Table as
     JSON `null`, which the loader reads as `None` - a different value a reader takes alike.
     """
-    if field.type == 'Table' and field.default == 'null':
+    if schema.F.WIDGET[field.type] == 'Table' and field.default == 'null':
         tag = {'DateList': '.DateList', 'DateEqualList': '.DateEqualList',
-               'CreditSupportList': '.CreditSupportList'}.get(field.tag)
+               'CreditSupportList': '.CreditSupportList'}.get(field.type)
         return {tag: []} if tag else []
-    if field.obj in ('Period', 'Percent', 'Basis'):
-        return {'.DateOffset' if field.obj == 'Period' else '.' + field.obj: field.default}
+    if field.type in ('Period', 'Percent', 'Basis'):
+        return {'.DateOffset' if field.type == 'Period' else '.' + field.type: field.default}
     return copy.deepcopy(field.default)
 
 

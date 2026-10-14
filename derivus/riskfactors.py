@@ -648,9 +648,9 @@ class FxRate(Factor0D):
     positive = True
     fields = [
         F('Domestic_Currency', 'Text', default=''),
-        F('Interest_Rate', 'Text', default='', obj='Tuple',
+        F('Interest_Rate', 'Text', default='',
           description='Associated interest rate curve name'),
-        F('Spot', 'Float', default=0, bind='value', description='Spot rate in base currency')
+        F('Spot', 'Float', default=0.0, bind='value', description='Spot rate in base currency')
     ]
 
     def __init__(self, param):
@@ -669,7 +669,7 @@ class FuturesPrice(Factor0D):
     specific futures by name rather than a forward curve indexed by maturity.
     """
     fields = [
-        F('Price', 'Float', default=0, bind='value',
+        F('Price', 'Float', default=0.0, bind='value',
           description='The current settlement price of the futures contract in its quote currency')
     ]
 
@@ -727,10 +727,10 @@ class EquityPrice(Factor0D):
     fields = [
         F('Issuer', 'Text', default=''),
         F('Respect_Default', 'Text', default='Yes', values=['Yes', 'No']),
-        F('Jump_Level', 'Float', default=0.0, obj='Percent'),
+        F('Jump_Level', 'Percent', default=0.0),
         F('Currency', 'Text', default=''),
-        F('Interest_Rate', 'Text', default='', obj='Tuple', description='The equity repo curve'),
-        F('Spot', 'Float', default=0, bind='value',
+        F('Interest_Rate', 'Text', default='', description='The equity repo curve'),
+        F('Spot', 'Float', default=0.0, bind='value',
           description='Spot price in the specified Currency')
     ]
 
@@ -754,12 +754,12 @@ class CommodityPrice(EquityPrice):
     #: power and crude have printed below zero
     positive = False
     fields = [
-        F('Spot', 'Float', default=0, bind='value',
+        F('Spot', 'Float', default=0.0, bind='value',
           description='Spot price in the specified Currency'),
         F('Currency', 'Text', default=''),
-        F('Interest_Rate', 'Text', default='', obj='Tuple',
+        F('Interest_Rate', 'Text', default='',
           description='The repo/lease (carry funding) curve'),
-        F('Forward_Rate', 'Text', default='', obj='Tuple',
+        F('Forward_Rate', 'Text', default='',
           description='The carry curve; falls back to Currency when blank')
     ]
 
@@ -779,7 +779,7 @@ class ObservedBasis(Factor0D):
     the factor's own name minus its last period (e.g. ObservedBasis.PLATINUM_CME.LME_CME
     is observed against CommodityPrice.PLATINUM_CME). The state is exposed as the spot value.
     """
-    fields = [F('Spot', 'Float', default=0, bind='value',
+    fields = [F('Spot', 'Float', default=0.0, bind='value',
                 description='Initial basis level $b_0$'),
               F('Chained_Basis', 'Text', default='',
                 description='Name of the factor this one is chained to, another basis or the '
@@ -821,9 +821,9 @@ class ForwardPriceSample(Factor0D):
 class ReferenceVol(object):
     """Pairs a forward-price vol space with the reference-price lookup it is quoted against."""
     fields = [
-        F('ForwardPriceVol', 'Text', default='', obj='Tuple',
+        F('ForwardPriceVol', 'Text', default='',
           description='Name of the ForwardPriceVol price factor to use'),
-        F('ReferencePrice', 'Text', default='', obj='Tuple',
+        F('ReferencePrice', 'Text', default='',
           description='Name of the ReferencePrice price factor that defines the reference lookup')
     ]
 
@@ -874,7 +874,7 @@ class InterestRateJacobian(object):
 class Correlation(Factor0D):
     """The market implied correlation between the two rates its name pairs, e.g.
     `Correlation.FxRate.USD.ZAR/ReferencePrice.BRENT_OIL-IPE.USD`."""
-    fields = [F('Value', 'Float', default=0, bind='value',
+    fields = [F('Value', 'Float', default=0.0, bind='value',
                 description='Market implied correlation between the two rates the name pairs')]
 
     def __init__(self, param):
@@ -932,7 +932,7 @@ class SurvivalProb(Factor1D):
     Represents the Probability of Survival risk factor
     """
     fields = [
-        F('Recovery_Rate', 'Float', default=0.4, bounds=(0.0, 1.0), bind='value',
+        F('Recovery_Rate', 'Float', default=0.4, bind='value',
           description='The assumed recovery amount, entered as 0.4 for 40%'),
         F('Minimum_Recovery_Rate', 'Text', default='<undefined>'),
         F('Issuer', 'Text', default=''),
@@ -1013,7 +1013,7 @@ class InflationRate(Factor1D):
     """
     interpolation_methods = INTERPOLATION_METHODS
     fields = [
-        F('Price_Index', 'Text', default='', obj='Tuple',
+        F('Price_Index', 'Text', default='',
           description='Name of the associated PriceIndex factor'),
         F('Reference_Name', 'Text', default='IndexReferenceInterpolated3M',
           description='Price index reference rule',
@@ -1087,7 +1087,7 @@ class ReferencePrice(Factor1D):
         F('Fixing_Curve', 'Curve',
           description='(date, reference date) pairs giving the delivery date for a particular '
                       'date, both in excel format'),
-        F('ForwardPrice', 'Text', default='', obj='Tuple',
+        F('ForwardPrice', 'Text', default='',
           description='Name of the associated ForwardPrice factor')
     ]
 
@@ -1119,9 +1119,9 @@ class CSForwardPriceModelParameters(Factor0D):
     Represents the Bootstrapped CS implied parameters for a risk neutral process
     """
     fields = [
-        F('Sigma', 'Float', default=0, bind='value',
+        F('Sigma', 'Float', default=0.0, bind='value',
           description='Bootstrapped forward-price volatility'),
-        F('Alpha', 'Float', default=0, bind='value',
+        F('Alpha', 'Float', default=0.0, bind='value',
           description='Bootstrapped mean reversion speed')
     ]
 
@@ -1193,12 +1193,12 @@ class LogVar2FJModelParameters(CurveModelParameters):
     curves' knots are structural and their VALUES are `bind='value'` leaves.
     """
     fields = [
-        F('Kappa_L', 'Float', default=0, bind='value',
+        F('Kappa_L', 'Float', default=0.0, bind='value',
           description='Slow reversion speed $\\kappa_\\ell$, per year'),
-        F('Sigma_L', 'Float', default=0, bind='value',
+        F('Sigma_L', 'Float', default=0.0, bind='value',
           description='Slow vol-of-log-variance $\\sigma_\\ell$'),
-        F('Rho_L', 'Float', default=0, bind='value', description='Slow leverage $\\rho_\\ell$'),
-        F('Kappa_S', 'Float', default=0, bind='value',
+        F('Rho_L', 'Float', default=0.0, bind='value', description='Slow leverage $\\rho_\\ell$'),
+        F('Kappa_S', 'Float', default=0.0, bind='value',
           description='Fast reversion speed $\\kappa_s$, per year'),
         F('Cap_A', 'Float', default=None,
           description='Log-variance corner $a$, the walk taking $\\min(\\ell+s, a)$; null is '
@@ -1357,7 +1357,7 @@ class GBMAssetPriceTSModelParameters(Factor1D):
           description='Term structure of the bootstrapped asset volatility'),
         # NOT bind='value' either: get_tenor_indices branches on its TRUTHINESS, so the leaf set
         # follows the number
-        F('Quanto_FX_Correlation', 'Float', default=0,
+        F('Quanto_FX_Correlation', 'Float', default=0.0,
           description='Correlation between the asset and the payoff-currency FX rate')
     ]
 
@@ -1392,19 +1392,19 @@ class HullWhite2FactorModelParameters(Factor1D):
         # NOT bind='value': get_quanto_fx()'s all-zero test makes this a code path, not a value
         F('Quanto_FX_Volatility', 'Curve',
           description='Vol of the payoff-currency FX rate, read only when quanto'),
-        F('Alpha_1', 'Float', default=0, bind='value',
+        F('Alpha_1', 'Float', default=0.0, bind='value',
           description='Mean reversion speed of the first factor'),
         F('Sigma_1', 'Curve', bind='value',
           description='Volatility term structure of the first factor'),
-        F('Quanto_FX_Correlation_1', 'Float', default=0, bind='value',
+        F('Quanto_FX_Correlation_1', 'Float', default=0.0, bind='value',
           description='Correlation between the first factor and the payoff-currency FX rate'),
-        F('Alpha_2', 'Float', default=0, bind='value',
+        F('Alpha_2', 'Float', default=0.0, bind='value',
           description='Mean reversion speed of the second factor'),
         F('Sigma_2', 'Curve', bind='value',
           description='Volatility term structure of the second factor'),
-        F('Quanto_FX_Correlation_2', 'Float', default=0, bind='value',
+        F('Quanto_FX_Correlation_2', 'Float', default=0.0, bind='value',
           description='Correlation between the second factor and the payoff-currency FX rate'),
-        F('Correlation', 'Float', default=0, bind='value',
+        F('Correlation', 'Float', default=0.0, bind='value',
           description='Correlation between the two factors')
     ]
 
@@ -1564,7 +1564,7 @@ class InterestYieldVol(Factor3D):
         F('Surface', 'Space', bind='value',
           description='(moneyness, expiry, tenor, volatility) quads, flat extrapolated and '
                       'linearly interpolated'),
-        F('Shift', 'Float', default=0, obj='Percent',
+        F('Shift', 'Percent', default=0.0,
           description='Displacement of the shifted lognormal quote'),
         F('Distribution_Type', 'Text', default='Lognormal', values=['Lognormal', 'Normal'],
           description='The convention these vols are quoted in: Lognormal (Black) or Normal '

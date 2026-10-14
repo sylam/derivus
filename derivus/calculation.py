@@ -1057,7 +1057,7 @@ class Credit_Monte_Carlo(Calculation):
                 description='Path to the delta-weight csv, indexed by tenor bucket'),
               F('Local_Currency', 'Text', default='',
                 description='The currency whose curves are charged the local weights'),
-              F('IM_Currency', 'Text', default='', obj='Tuple',
+              F('IM_Currency', 'Text', default='',
                 description='Currency the margin is reported in'),
               F('Delta_Factor', 'Float', default=1.0,
                 description='Multiplier on the delta charge before the liquidity add-on')])

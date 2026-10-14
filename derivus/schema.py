@@ -77,20 +77,29 @@ WIDGET_FORMAT = {
     'Basis': {'type': 'numeric', 'numericFormat': {'pattern': '0,0.00'}},
     'Percent': {'type': 'numeric', 'numericFormat': {'pattern': '0.00 %'}},
     'Integer': {'type': 'numeric', 'numericFormat': {'pattern': '0.'}},
-    'Boolean': {'type': 'checkbox'},
     'Text': {}, 'Period': {}, 'Table': {},
 }
 
 #: The `obj` token `mapping` uses per type, for a table declaring its columns positionally.
 OBJ_TOKEN = {'Date': 'DatePicker', 'Float': 'Float', 'Integer': 'Integer', 'Text': 'Text',
-              'Percent': 'Percent', 'Basis': 'Basis', 'Period': 'Period', 'Boolean': 'Boolean',
-              'Table': 'ResetArray'}
+              'Percent': 'Percent', 'Basis': 'Basis', 'Period': 'Period', 'Table': 'ResetArray'}
+
+#: A blank table by its type: a plain `Table`, or the `utils` container it is carried as. `'null'`
+#: is what a widget writes for an empty table, so it is the declared blank of every table on a deal.
+BLANK_TABLE = {'DateList': lambda: utils.DateList({}),
+               'DateEqualList': lambda: utils.DateEqualList([]),
+               'CreditSupportList': lambda: utils.CreditSupportList([]),
+               'DateValueList': list, 'Table': list}
+
+#: The types whose wire form is the `utils` token of the same name, a scalar's or a whole table's,
+#: which `mapping` publishes as the field's `obj`: the token a front end writes, a widget cannot say.
+TOKENS = ('Period', 'Percent', 'Basis') + tuple(name for name in BLANK_TABLE if name != 'Table')
 
 #: What one declared field's value must BE once `decode_wire` has run, and the wire form to name
-#: where it is not: keyed by the `obj` token a field declares, else by its `type`. A declaration
-#: absent here is one nothing checkable can be said about from the descriptor alone - a Text, a
-#: table, a shape, and a Period, which is a `DateOffset` on a deal and the bare string a desk posts
-#: a convention as. A scaled number is a number: the tag says which unit it was authored in.
+#: where it is not, keyed by its `type`. A declaration absent here is one nothing checkable can be
+#: said about from the descriptor alone - a Text, a table, a shape, and a Period, which is a
+#: `DateOffset` on a deal and the bare string a desk posts a convention as. A scaled number is a
+#: number: the tag says which unit it was authored in.
 AUTHORED = {'Date': ((pd.Timestamp,), '{".Timestamp": "2027-01-15"}'),
             'Float': ((numbers.Real, utils.Scaled), 'a number'),
             'Integer': ((numbers.Real, utils.Scaled), 'a number')}
@@ -120,11 +129,12 @@ class Row(object):
 class F(object):
     """One field of one deal or one price factor.
 
-    `type` is semantic (Text/Float/Integer/Date/Percent/Basis/Period/Table/Container, plus the
-    market-data shapes Curve/Surface/Space); the widget name is reintroduced only when emitting
-    `mapping`. A choice list is a Text with fixed `values`. `json_name` overrides the key the
-    descriptor is filed under. A Table declares its columns as a `Row`; `tag` names the utils
-    container the wire form uses, absent for a plain array of rows.
+    `type` says what the value IS: Text, Float, Integer or Date; one of `TOKENS`, whose wire form is
+    that `utils` token - a Period, Percent or Basis scalar, or a table carried as a container; a
+    plain Table of rows; a Container; or a market-data shape (Curve/Surface/Space). The widget and
+    the `obj` token are derived from it when emitting `mapping`. A choice list, a flag's `Yes`/`No`
+    among them, is a Text with fixed `values`. A table declares its columns as a `Row`. The name is
+    the key an author writes.
 
     `convention` says the declared default is what OMISSION MEANS - `Pay_Timing: End`, a null
     calendar, a blank `Discount_Rate` - so a deal completes it on a read by name. Unflagged, a
@@ -135,9 +145,6 @@ class F(object):
     that nothing about discovery, tenor grids, process wiring, correlation or the code paths depends
     on it - see `partition_factor`. Declare it only from the consumption site: a wrong structural
     costs a recompile, a wrong value corrupts a plan silently.
-
-    `Boolean` is a bare JSON `true`/`false`, not the `'Yes'`/`'No'` a flag is spelled with -
-    `bool(param.get(...))` takes `'No'` as true, so the two cannot share a descriptor.
 
     `sized` says the field is an AMOUNT of the instrument, so a position of q units prices it at q
     times what was written - a scalar, or a table column. `sized='magnitude'` is an amount the
@@ -155,30 +162,22 @@ class F(object):
     # 'Surface' covers BOTH shaped types (a Space is a tenor-keyed surface), so a renderer branches
     # on the value's row arity, never on the token.
     WIDGET = {'Text': 'Text', 'Float': 'Float', 'Integer': 'Integer', 'Date': 'DatePicker',
-              'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text', 'Boolean': 'Checkbox',
-              'Table': 'Table', 'Container': 'Container',
-              'Curve': 'Curve', 'Surface': 'Surface', 'Space': 'Surface'}
+              'Percent': 'Float', 'Basis': 'Float', 'Period': 'Text', **dict.fromkeys(BLANK_TABLE, 'Table'),
+              'Container': 'Container', 'Curve': 'Curve', 'Surface': 'Surface', 'Space': 'Surface'}
 
-    __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'tag', 'sub_fields',
-                 'json_name', 'obj', 'bounds', 'bind', 'convention', 'sized', 'side', 'settles',
-                 'factors')
+    __slots__ = ('name', 'type', 'default', 'description', 'values', 'row', 'sub_fields', 'bind',
+                 'convention', 'sized', 'side', 'settles', 'factors')
 
     def __init__(self, name, type, default=None, description=None, values=None, row=None,
-                 tag=None, sub_fields=None, json_name=None, obj=None, bounds=None, bind=None,
-                 convention=False, sized=False, side=False, settles=(), factors=()):
+                 sub_fields=None, bind=None, convention=False, sized=False, side=False, settles=(),
+                 factors=()):
         self.name = name
         self.type = type
         self.default = BLANK.get(type) if default is None else default
         self.description = description if description is not None else name.replace('_', ' ')
         self.values = values
         self.row = row
-        self.tag = tag
         self.sub_fields = sub_fields
-        self.json_name = json_name
-        # parse token, scalars only ('Tuple' = a dotted factor reference); a table uses `row`/`tag`
-        self.obj = obj
-        # (min, max) on a Float the author cannot sensibly exceed - a recovery rate is a fraction
-        self.bounds = bounds
         self.bind = bind
         # the declared default is what omission MEANS, rather than what a blank panel shows
         self.convention = convention
@@ -192,16 +191,15 @@ class F(object):
     @property
     def key(self):
         """The key an author writes in the JSON, which is what the descriptor is filed under."""
-        return self.json_name or self.name
+        return self.name
 
     def descriptor(self):
         """This field as a `mapping[...]['fields']` entry.
 
-        `col_names`, `sub_types` and `obj` are derived from the row rather than stored, which keeps
-        the parallel lists from drifting apart.
+        `obj`, `col_names` and `sub_types` are derived from the type and the row rather than stored,
+        which keeps the parallel lists from drifting apart.
         """
-        widget = ('Dropdown' if self.values is not None else
-                  'BoundedFloat' if self.bounds is not None else self.WIDGET[self.type])
+        widget = 'Dropdown' if self.values is not None else self.WIDGET[self.type]
         # a required field has no default to offer - it is blank until the author supplies it
         d = {'widget': widget, 'description': self.description,
              'value': '' if self.default is REQUIRED else self.default}
@@ -217,14 +215,13 @@ class F(object):
             d['settles'] = [cash._asdict() for cash in self.settles]
         if self.values is not None:
             d['values'] = self.values
-        if self.bounds is not None:
-            d['min'], d['max'] = self.bounds
         if self.bind is not None:
             d['bind'] = self.bind
-        if self.obj is not None:
-            d['obj'] = self.obj
+        if self.type in TOKENS:
+            d['obj'] = self.type
         if self.row is not None:
-            d['obj'] = self.tag if self.tag else [OBJ_TOKEN[f.type] for f in self.row.fields]
+            if self.type == 'Table':
+                d['obj'] = [OBJ_TOKEN[f.type] for f in self.row.fields]
             d['col_names'] = [f.name for f in self.row.fields]
             d['sub_types'] = [{'type': 'dropdown', 'source': f.values} if f.values is not None
                               else dict(WIDGET_FORMAT[f.type]) for f in self.row.fields]
@@ -374,13 +371,6 @@ def declared_defaults(cls, params):
     return merged
 
 
-#: A blank Table by the `utils` container its `tag` names. `'null'` is what a widget writes for an
-#: empty table, so it is the declared blank of every Table on a deal.
-BLANK_TABLE = {'DateList': lambda: utils.DateList({}),
-               'DateEqualList': lambda: utils.DateEqualList([]),
-               'CreditSupportList': lambda: utils.CreditSupportList([]),
-               'DateValueList': list, None: list}
-
 def engine_default(field):
     """One declared default in the form the ENGINE reads, not the form a widget shows.
 
@@ -388,13 +378,13 @@ def engine_default(field):
     default reaching a pricer is converted exactly as the loader converts that field's wire form. A
     blank Text or Date stays blank: `Expiry_Date` declares `''` and reaches a comparison as a `str`.
     """
-    if field.type == 'Table':
-        return BLANK_TABLE[field.tag]() if field.default == 'null' else copy.deepcopy(field.default)
-    if field.obj == 'Period':
+    if field.type in BLANK_TABLE:
+        return BLANK_TABLE[field.type]() if field.default == 'null' else copy.deepcopy(field.default)
+    if field.type == 'Period':
         return utils.parse_period(field.default)
-    if field.obj == 'Percent':
+    if field.type == 'Percent':
         return utils.Percent(field.default)
-    if field.obj == 'Basis':
+    if field.type == 'Basis':
         return utils.Basis(field.default)
     return copy.deepcopy(field.default)
 
@@ -450,7 +440,7 @@ def value_message(field, value):
         return None
     if field.values is not None and value not in field.values:
         return '{} is {!r}, not one of {}'.format(field.key, value, ', '.join(field.values))
-    wanted = AUTHORED.get(field.obj or field.type)
+    wanted = AUTHORED.get(field.type)
     if wanted is None or (not isinstance(value, bool) and isinstance(value, wanted[0])):
         return None
     return '{} must be {}, not {!r}'.format(field.key, wanted[1], value)
@@ -939,7 +929,7 @@ def apply_market_values(structural, values):
 
 # Shared field blocks - the groups a class lists rather than inherits.
 CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', 'Cashflow list', [
-    F('Repo_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
+    F('Repo_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
     F('Description', 'Text', default='', convention=True),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Settlement_Date', 'Date', default='', convention=True),
@@ -948,24 +938,23 @@ CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', 'Cashflow list', [
 
 EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', 'Equity option', [
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-    F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
-    F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol']),
+    F('Equity', 'Text', default='', factors=['EquityPrice', 'DividendRate']),
+    F('Equity_Volatility', 'Text', default='', factors=['EquityPriceVol']),
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
     F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
     F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
     F('Strike_Price', 'Float', default=0.0),
-    F('Dividends', 'Text', default='', convention=True, obj='Tuple', factors=['DividendRate'],
+    F('Dividends', 'Text', default='', convention=True, factors=['DividendRate'],
       description='The dividend curve the option reads, the base equity\'s own when blank')
 ])
 
 #: The print an option's expiry fixed at, `[[Expiry_Date, print]]` - stated where the expiry is
 #: behind the base date, since a payoff settling after it is on that print and not on today's spot.
-EXPIRY_PRINT = F('Price_Fixing', 'Table', default='null', convention=True,
-                 row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList')
+EXPIRY_PRINT = F('Price_Fixing', 'DateValueList', default='null', convention=True,
+                 row=Row([F('Date', 'Date'), F('Value', 'Float')]))
 
 #: Which side of the spot a touch's barrier sits, written as `Barrier_Type`.
-BARRIER_SIDE = F('Barrier_Type_One', 'Text', default='Up', description='Barrier Type', values=['Up', 'Down'],
-                 json_name='Barrier_Type')
+BARRIER_SIDE = F('Barrier_Type', 'Text', default='Up', values=['Up', 'Down'])
 
 #: An FX strike or barrier is a level of the rate the ENGINE prices, never the pair's market
 #: quote - said on every FX field that carries one, since the declarations are what a model reads
@@ -978,8 +967,8 @@ FX_AXIS = ('{} on the ENGINE axis: the reporting currency per unit of Underlying
 FXOPTIONBASE = Group('FXOptionBase.Fields', 'FX option', [
     F('Currency', 'Text', default='', factors=['FxRate']),
     F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate']),
-    F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol']),
+    F('Discount_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
+    F('FX_Volatility', 'Text', default='', factors=['FXVol']),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
     F('Strike_Price', 'Float', default=REQUIRED, description=FX_AXIS.format('Strike price'))
@@ -989,16 +978,16 @@ FXOPTIONBASE = Group('FXOptionBase.Fields', 'FX option', [
 #: pays, a no-touch paying at expiry alone.
 EQUITY_TOUCH = own('EquityOneTouchOption', [
     F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
-    F('Equity', 'Text', default='', obj='Tuple', factors=['EquityPrice', 'DividendRate']),
+    F('Equity', 'Text', default='', factors=['EquityPrice', 'DividendRate']),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
-    F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-    F('Barrier_Price', 'Float', default=0),
+    F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+    F('Barrier_Price', 'Float', default=0.0),
     BARRIER_SIDE,
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
-    F('Equity_Volatility', 'Text', default='', obj='Tuple', factors=['EquityPriceVol'])
+    F('Equity_Volatility', 'Text', default='', factors=['EquityPriceVol'])
 ])
 
 #: What a one-touch and a no-touch on an exchange rate both are - every field but when a one-touch
@@ -1010,12 +999,12 @@ COMMODITY_TOUCH = own('CommodityOneTouchOption', [
     F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
-    F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-    F('Barrier_Price', 'Float', default=0),
+    F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+    F('Barrier_Price', 'Float', default=0.0),
     BARRIER_SIDE,
     F('Expiry_Date', 'Date', default='', settles=Cash('Currency')),
-    F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice']),
-    F('Reference_Volatility', 'Text', default='', obj='Tuple', factors=['ReferenceVol', 'CommodityPriceVol'])
+    F('Reference_Type', 'Text', default='', factors=['ReferencePrice']),
+    F('Reference_Volatility', 'Text', default='', factors=['ReferenceVol', 'CommodityPriceVol'])
 ])
 
 FX_TOUCH = own('FXOneTouchOption', [
@@ -1023,19 +1012,19 @@ FX_TOUCH = own('FXOneTouchOption', [
     F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
-    F('Barrier_Monitoring_Frequency', 'Text', default='0M', convention=True, obj='Period'),
-    F('Barrier_Price', 'Float', default=0,
+    F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+    F('Barrier_Price', 'Float', default=0.0,
       description=FX_AXIS.format('Barrier price')),
     BARRIER_SIDE,
     F('Expiry_Date', 'Date', default=''),
-    F('FX_Volatility', 'Text', default='', obj='Tuple', factors=['FXVol'])
+    F('FX_Volatility', 'Text', default='', factors=['FXVol'])
 ])
 
 QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall terms', [
-    F('Price_Fixing', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList'),
+    F('Price_Fixing', 'DateValueList', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')])),
     F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
     F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
-    F('Barrier', 'Float', default=0, convention=True),
+    F('Barrier', 'Float', default=0.0, convention=True),
     F('Rebate', 'Float', default=0.0, convention=True,
       description='The fraction of the strike a breached put gives back, the put paying '
                   'S/K - 1 + Rebate of the notional, so 0 owes the whole loss below the strike'),
@@ -1044,15 +1033,14 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall term
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')]),
       description="The put barrier's observation dates, each a coupon date or a price fixing in a "
                   "coupon's window, the put paying on that coupon's date"),
-    F('Autocall_Coupons', 'Table', default='null', row=Row([
-        F('Date', 'Date', settles=Cash('Payoff_Currency')), F('Value', 'Float')]), tag='DateValueList'),
+    F('Autocall_Coupons', 'DateValueList', default='null', row=Row([
+        F('Date', 'Date', settles=Cash('Payoff_Currency')), F('Value', 'Float')])),
     F('Coupon_Observations', 'Table', default='null', convention=True,
       row=Row([F('Coupon', 'Date'), F('Observation', 'Date')]),
       description='Which price fixing each coupon is observed on, one row per coupon; absent, a '
                   'coupon observes every fixing after its predecessor up to and including its own '
                   'date'),
-    F('Autocall_Thresholds', 'Table', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')]),
-      tag='DateValueList'),
+    F('Autocall_Thresholds', 'DateValueList', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')])),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
     F('FixFXRate', 'Float', default=1.0, convention=True,
       description='The fixed rate a quanto converts its payoff at, payoff currency per unit of '
@@ -1063,11 +1051,11 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall term
 ])
 
 QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', 'Swap leg', [
-    F('Forecast_Rate', 'Text', default='', obj='Tuple', factors=['InterestRate']),
-    F('Floating_Margin', 'Float', default=0.0, convention=True, obj='Basis'),
-    F('Reset_Frequency', 'Text', default='3M', convention=True, obj='Period'),
-    F('Autocall_Floating', 'Table', default='null', convention=True,
-      row=Row([F('Date', 'Date'), F('Value', 'Float')]), tag='DateValueList',
+    F('Forecast_Rate', 'Text', default='', factors=['InterestRate']),
+    F('Floating_Margin', 'Basis', default=0.0, convention=True),
+    F('Reset_Frequency', 'Period', default='3M', convention=True),
+    F('Autocall_Floating', 'DateValueList', default='null', convention=True,
+      row=Row([F('Date', 'Date'), F('Value', 'Float')]),
       description="The swap leg's payment dates, a period's amount read only once it has started - "
                   'a later period is forecast off Forecast_Rate plus Floating_Margin')
 ])
@@ -1077,7 +1065,7 @@ ADMIN = Group('Admin', 'Admin', [
       description='The deal TYPE this block is, spelled as the engine names it'),
     F('Reference', 'Text', default='', convention=True),
     F('MtM', 'Text', default='', convention=True),
-    F('Sales_Margin', 'Float', default=0, convention=True,
+    F('Sales_Margin', 'Float', default=0.0, convention=True,
       description='What the desk charged for this ticket over the mid, in Sales_Margin_Currency '
                   'and positive when the desk earns it, a RECORD nothing is priced off'),
     F('Sales_Margin_Currency', 'Text', default='', convention=True,
@@ -1088,13 +1076,13 @@ ADMIN = Group('Admin', 'Admin', [
 #: What a deal is priced in: the currency it settles and the curve it discounts on.
 PRICING = Group('Pricing', 'Pricing', [
     F('Currency', 'Text', default=REQUIRED, factors=['FxRate']),
-    F('Discount_Rate', 'Text', default='', convention=True, obj='Tuple', factors=['InterestRate'])
+    F('Discount_Rate', 'Text', default='', convention=True, factors=['InterestRate'])
 ])
 
 #: How a floating index fixes: its tenor, day count, the calendars it is read and published on,
 #: the offset to the fixing and whether it resets in advance or in arrears.
 FLOATING_INDEX = Group('FloatingIndex', 'Floating index', [
-    F('Index_Tenor', 'Text', default='3M', convention=True, obj='Period'),
+    F('Index_Tenor', 'Period', default='3M', convention=True),
     F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
     F('Index_Calendars', 'Text', default='', convention=True),
     F('Index_Publication_Calendars', 'Text', default='', convention=True),
@@ -1112,8 +1100,8 @@ COUPON_SCHEDULE = Group('CouponSchedule', 'Coupon schedule', [
     F('Payment_Offset', 'Integer', default=0, convention=True),
     F('First_Coupon_Date', 'Date', default='', convention=True),
     F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
-    F('Amortisation', 'Table', default='null', convention=True,
-      row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]), tag='DateList')
+    F('Amortisation', 'DateList', default='null', convention=True,
+      row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]))
 ])
 
 FX_ADMIN = Group('FXAdmin', 'FX conventions', [

@@ -245,7 +245,7 @@ class Structure(object):
     #: The parameters every structure quotes in, listed first in its `fields`.
     QUOTED = (F('pair', 'Text', default=REQUIRED,
                 description='The market pair, base then quote - USDZAR is ZAR per USD'),
-              F('expiry', 'Period', default=REQUIRED,
+              F('expiry', 'Text', default=REQUIRED,
                 description="Tenor from the book's Base_Date - 3M, 1Y - or an ISO date for a "
                             "broken one"),
               F('notional', 'Float', default=REQUIRED,
@@ -409,7 +409,7 @@ class TargetRedemptionForward(Structure):
     """
     vernacular = 'tarf, target redemption forward, target forward'
     fields = [*Structure.QUOTED, *Structure.SELECTORS,
-              F('fixing_frequency', 'Period', default=REQUIRED,
+              F('fixing_frequency', 'Text', default=REQUIRED,
                 description='How often the strip fixes - 1M, 3M - counted off the book\'s '
                             'Base_Date to the tenor'),
               F('target', 'Float', default=REQUIRED,
@@ -445,7 +445,7 @@ class Accumulator(Structure):
     """
     vernacular = 'accumulator, decumulator, accumulator forward, accu'
     fields = [*Structure.QUOTED, *Structure.SELECTORS,
-              F('fixing_frequency', 'Period', default=REQUIRED,
+              F('fixing_frequency', 'Text', default=REQUIRED,
                 description='How often the strip fixes - 1M, 3M - counted off the book\'s '
                             'Base_Date to the tenor'),
               Structure.strike('knockout',

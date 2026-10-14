@@ -582,7 +582,7 @@ def test_every_fixing_names_the_index_its_type_declares():
         factors, table = getattr(instruments, name).factor_fields, fields.get(observes.table)
         keys = observes.index if isinstance(observes.index, tuple) else (observes.index,)
         assert all(key in fields and observes.family in factors.get(key, ()) for key in keys), name
-        assert observes.table is None or table is not None and table.type == 'Table' and len(
+        assert observes.table is None or table is not None and schema.F.WIDGET[table.type] == 'Table' and len(
             table.row.fields) > observes.column, name
         assert {observes.elects, observes.expires, (observes.unless or [None])[0]} - {None} <= set(
             fields) and (observes.table or not observes.monitors), name

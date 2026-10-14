@@ -354,6 +354,33 @@ def test_the_column_default_map_is_keyed_by_a_column_token():
     assert emitted.isdisjoint(shape_widgets), sorted(emitted & shape_widgets)
 
 
+#: The `obj` a widget may publish beside it: the token a front end writes the value as, which a
+#: widget alone cannot say - `encodeScalar` writes a Period `{'.DateOffset': ...}` and a Percent
+#: `{'.Percent': ...}` - and, on a table, the container it is carried as.
+WIRE_TOKENS = {'Text': {'Period'}, 'Float': {'Percent', 'Basis'},
+               'Table': {'DateList', 'DateValueList', 'DateEqualList', 'CreditSupportList'}}
+
+
+def test_a_published_obj_is_the_wire_token_its_type_names():
+    """`obj` is read off a field's declared type, never spelled beside it: a scalar publishes one
+    only where its type is a wire token, a table its container or one token per column, and every
+    token is published somewhere. A factor name is a Text whose `factors` say what it names, a flag
+    a Yes/No menu, and no widget clamps what the engine never checks.
+
+    Killing mutation: `F.descriptor` deriving no `obj` for a Period, which a front end then writes
+    as the bare string where the engine adds a `DateOffset` to a date."""
+    published = set()
+    for key, d in every_descriptor():
+        assert d['widget'] not in ('Checkbox', 'BoundedFloat') and not {'min', 'max'} & set(d), key
+        obj = d.get('obj')
+        if isinstance(obj, list):
+            assert d['widget'] == 'Table' and len(obj) == len(d['col_names']), key
+        elif obj is not None:
+            assert obj in WIRE_TOKENS.get(d['widget'], ()), (key, obj)
+            published.add(obj)
+    assert published == set().union(*WIRE_TOKENS.values()), sorted(published)
+
+
 def test_no_class_is_hidden_from_the_create_menu():
     """`groups` is the Workbench's create-deal menu and stays hand-curated, being presentation. So
     it is the one part of the store that can still drift from the classes: a deal type absent from

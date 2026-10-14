@@ -204,13 +204,11 @@ class ConstructMarkdown(object):
         obj = meta.get('obj')
         if obj == 'Percent': return "Number (Float, in percent; see `Percent` in [General Types](../general_types.md))"
         if obj == 'Basis': return "Number (Float, in basis points; see `Basis` in [General Types](../general_types.md))"
-        if widget == 'Float' or widget == 'BoundedFloat': return "Number (Float)"
+        if widget == 'Float': return "Number (Float)"
         if widget == 'Integer': return "Number (Integer)"
-        if widget == 'Checkbox': return "Boolean (JSON `true`/`false`)"
         if widget == 'DatePicker': return "Date (`{\".Timestamp\": \"YYYY-MM-DD\"}`, see [General Types](../general_types.md))"
         if widget == 'Dropdown': return f"String (Allowed: `{', '.join(str(v) for v in meta.get('values', []))}`)"
         if obj == 'Period': return "String (Period, e.g., '3M', '1Y6M')"
-        if obj == 'Tuple': return "String (Dot-separated, e.g., 'USD.EUR')"
         # Link complex types
         if widget == 'Curve' or (widget == 'Table' and obj == 'DateValueList'): return "JSON Array (See `.Curve` type in [General Types](../general_types.md))"
         if widget == 'Surface': return "JSON Object (a `.Curve` of surface points, see [General Types](../general_types.md))"
@@ -253,8 +251,8 @@ class ConstructMarkdown(object):
                          for name, token in zip(names, tokens))
 
     def _field_lines(self, field_name, meta, store):
-        """One top-level field as markdown: description, JSON type, what its default means, its
-        bounds, a table's columns and a container's fields - each nested field with the same."""
+        """One top-level field as markdown: description, JSON type, what its default means, a
+        table's columns and a container's fields - each nested field with the same."""
         lines = [f"### `{field_name}`",
                  f"- **Description:** {meta.get('description', field_name)}",
                  f"- **JSON Type:** {self._infer_data_type(meta, store)}"]
@@ -278,8 +276,6 @@ class ConstructMarkdown(object):
                              "(shown on a blank panel, never applied to an omitted field)")
         else:
             lines.append(f"{bullet}**Default:** {self._format_default_value(value, meta)}")
-        if 'min' in meta or 'max' in meta:
-            lines.append(f"{bullet}**Bounds:** `{meta.get('min')}` to `{meta.get('max')}`")
         return lines
 
     def _nested_lines(self, sub_fields, store, indent):

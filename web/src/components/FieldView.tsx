@@ -225,12 +225,11 @@ export function EditableScalar({ name, descriptor, value, onAmend }: {
     );
   } else {
     const kind = descriptor.widget === 'DatePicker' ? 'date'
-      : ['Float', 'BoundedFloat', 'Integer'].includes(descriptor.widget)
+      : ['Float', 'Integer'].includes(descriptor.widget)
         || descriptor.obj === 'Percent' || descriptor.obj === 'Basis' ? 'number' : 'text';
     input = (
       <input
         type={kind} value={raw} disabled={saving} step="any"
-        min={descriptor.min} max={descriptor.max}
         onChange={(e) => setRaw(e.target.value)}
         onBlur={() => void save(raw)}
         onKeyDown={(e) => { if (e.key === 'Enter') void save(raw); }}

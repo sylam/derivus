@@ -345,8 +345,6 @@ class TreePanel(metaclass=ABCMeta):
                 w = LEGACY_WIDGET['Surface'](description=element['description'], value=element['value'])
             elif element['widget'] == 'Integer':
                 w = widgets.IntText(description=element['description'], value=element['value'])
-            elif element['widget'] == 'Checkbox':
-                w = widgets.Checkbox(description=element['description'], value=element['value'])
             elif element['widget'] == 'HTML':
                 w = widgets.HTML(value=element['value'])
             elif element['widget'] == 'Table':
@@ -368,9 +366,6 @@ class TreePanel(metaclass=ABCMeta):
             elif element['widget'] == 'DatePicker':
                 w = widgets.DatePicker(description=element['description'],
                                        value=pd.Timestamp(element['value']), layout=dict(width='420px'))
-            elif element['widget'] == 'BoundedFloat':
-                w = widgets.BoundedFloatText(min=element['min'], max=element['max'],
-                                             description=element['description'], value=element['value'])
             else:
                 raise Exception('Unknown widget field')
 

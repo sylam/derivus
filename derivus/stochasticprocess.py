@@ -682,8 +682,8 @@ class GBMAssetPriceModel(StochasticProcess):
 
     factor_types = ('EquityPrice', 'FxRate')
     fields = [
-        F('Vol', 'Float', default=0),
-        F('Drift', 'Float', default=0)
+        F('Vol', 'Float', default=0.0),
+        F('Drift', 'Float', default=0.0)
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -944,8 +944,8 @@ class GBMPriceIndexModel(StochasticProcess):
 
     factor_types = ('PriceIndex',)
     fields = [
-        F('Vol', 'Float', default=0),
-        F('Drift', 'Float', default=0),
+        F('Vol', 'Float', default=0.0),
+        F('Drift', 'Float', default=0.0),
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -1104,8 +1104,8 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
 
     factor_types = ('InterestRate',)
     fields = [
-        F('Lambda_1', 'Float', default=0),
-        F('Lambda_2', 'Float', default=0)
+        F('Lambda_1', 'Float', default=0.0),
+        F('Lambda_2', 'Float', default=0.0)
     ]
 
     def __init__(self, factor, param, implied_factor):
@@ -1502,10 +1502,10 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
 
     factor_types = ('InterestRate', 'InflationRate', 'DividendRate')
     fields = [
-        F('Alpha', 'Float', default=0),
-        F('Lambda', 'Float', default=0),
+        F('Alpha', 'Float', default=0.0),
+        F('Lambda', 'Float', default=0.0),
         F('Sigma', 'Curve'),
-        F('Quanto_FX_Correlation', 'Float', default=0),
+        F('Quanto_FX_Correlation', 'Float', default=0.0),
         F('Quanto_FX_Volatility', 'Curve')
     ]
 
@@ -1699,9 +1699,9 @@ class HWHazardRateModel(StochasticProcess):
 
     factor_types = ('SurvivalProb',)
     fields = [
-        F('Alpha', 'Float', default=0),
-        F('Lambda', 'Float', default=0),
-        F('Sigma', 'Float', default=0)
+        F('Alpha', 'Float', default=0.0),
+        F('Lambda', 'Float', default=0.0),
+        F('Sigma', 'Float', default=0.0)
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -1839,9 +1839,9 @@ class CSForwardPriceModel(StochasticProcess):
 
     factor_types = ('ForwardPrice',)
     fields = [
-        F('Alpha', 'Float', default=0),
-        F('Drift', 'Float', default=0),
-        F('Sigma', 'Float', default=0)
+        F('Alpha', 'Float', default=0.0),
+        F('Drift', 'Float', default=0.0),
+        F('Sigma', 'Float', default=0.0)
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -2059,7 +2059,7 @@ class PCAInterestRateModel(StochasticProcess):
 
     factor_types = ('InterestRate', 'InflationRate', 'DividendRate')
     fields = [
-        F('Reversion_Speed', 'Float', default=0),
+        F('Reversion_Speed', 'Float', default=0.0),
         F('Historical_Yield', 'Curve'),
         F('Yield_Volatility', 'Curve'),
         F('Eigenvectors', 'Curve', default='[{"label":"1", "data":[[0.0,0.0]]},'
@@ -2337,9 +2337,9 @@ class LogOUSpotModel(StochasticProcess):
 
     factor_types = ('CommodityPrice',)
     fields = [
-        F('Kappa', 'Float', default=0),
-        F('Theta', 'Float', default=0),
-        F('Sigma', 'Float', default=0)
+        F('Kappa', 'Float', default=0.0),
+        F('Theta', 'Float', default=0.0),
+        F('Sigma', 'Float', default=0.0)
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -2970,7 +2970,7 @@ class MarkovHMMSpotCalibration(object):
         '| `Transition_Matrix` | $P$, at the one-day step |',
         '| `Initial_State_Probs` | the occupancy of the decoded regime path |',
         '| `Calibration_DT_Years` | 1/252 |',
-        '| `Log_Price` | the tuning value |',
+        '| `Log_Price` | true under the tuning `Log_Price` Yes |',
         '',
         '`delta` is $(x_t-\\mu_{s_t})/\\sigma_{s_t}$ under the decoded regime; `correlation` is `[[1.0]]`.',
         '',
@@ -2982,9 +2982,9 @@ class MarkovHMMSpotCalibration(object):
         '| `N_Iter` | 200 |',
         '| `Seed` | 42 |',
         '| `Tol` | 1e-6 |',
-        '| `Use_Student_T` | true |',
+        '| `Use_Student_T` | Yes |',
         '| `Nu_Min`, `Nu_Max` | 3, 50 |',
-        '| `Log_Price` | true |',
+        '| `Log_Price` | Yes |',
         '',
         '**Limitations.**',
         '',
@@ -3003,12 +3003,12 @@ class MarkovHMMSpotCalibration(object):
         F('Seed', 'Integer', default=42, description='RNG seed for the EM initialisation'),
         F('Tol', 'Float', default=1e-6,
           description='Relative log-likelihood change that stops the EM loop'),
-        F('Use_Student_T', 'Boolean', default=True,
-          description='Refit a shared Student-t nu; false leaves the emissions Gaussian'),
+        F('Use_Student_T', 'Text', default='Yes', values=['Yes', 'No'],
+          description='Refit a shared Student-t nu; No leaves the emissions Gaussian'),
         F('Nu_Min', 'Float', default=3.0, description='Floor on the fitted degrees of freedom'),
         F('Nu_Max', 'Float', default=50.0,
           description='Ceiling on the degrees of freedom, above which the t refit is dropped'),
-        F('Log_Price', 'Boolean', default=True,
+        F('Log_Price', 'Text', default='Yes', values=['Yes', 'No'],
           description='Fit on log returns rather than raw price differences')
     ]
 
@@ -3039,11 +3039,11 @@ class MarkovHMMSpotCalibration(object):
         n_iter = int(self.param.get('N_Iter', 200))
         seed = int(self.param.get('Seed', 42))
         tol = float(self.param.get('Tol', 1.0e-6))
-        use_t = bool(self.param.get('Use_Student_T', True))
+        use_t = self.param.get('Use_Student_T', 'Yes') == 'Yes'
         nu_min = float(self.param.get('Nu_Min', 3.0))
         nu_max = float(self.param.get('Nu_Max', 50.0))
         # Log_Price: fit on log returns. Scale-invariant, simulator exp()s to keep prices positive.
-        log_price = bool(self.param.get('Log_Price', True))
+        log_price = self.param.get('Log_Price', 'Yes') == 'Yes'
         dt_calib = 1.0 / float(num_business_days)
 
         prices = data_frame.iloc[:, 0].astype(np.float64).dropna()

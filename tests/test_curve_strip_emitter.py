@@ -835,9 +835,7 @@ def _committed(path, at='HEAD'):
 
 def declared_deal_fields(deal_type):
     """`{JSON key: whether its default is a CONVENTION}` for one INSTRUMENT type, off the store its
-    `fields` declaration emits (`schema.mapping`) rather than the engine's reading of a deal, with
-    `json_name` honoured: both cashflow legs declare their container as `Fixed_Cashflows` /
-    `Float_Cashflows` and write it as `Cashflows`, the key the emitter must match.
+    `fields` declaration emits (`schema.mapping`) rather than the engine's reading of a deal.
     """
     from derivus import schema
     instrument = schema.mapping['Instrument']
