@@ -1200,7 +1200,7 @@ class LogVar2FJModelParameters(CurveModelParameters):
         F('Rho_L', 'Float', default=0.0, bind='value', description='Slow leverage $\\rho_\\ell$'),
         F('Kappa_S', 'Float', default=0.0, bind='value',
           description='Fast reversion speed $\\kappa_s$, per year'),
-        F('Cap_A', 'Float', default=None,
+        F('Cap_A', 'Float', convention=True,
           description='Log-variance corner $a$, the walk taking $\\min(\\ell+s, a)$; null is '
                       'unbounded - STRUCTURAL'),
         F('Steps_Per_Year', 'Float', default=252.0,

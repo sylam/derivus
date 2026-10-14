@@ -255,10 +255,10 @@ class Structure(object):
                             'underlying, and naming the quote currency is what inverts the strike '
                             'axis'))
     #: Which way a structure with variations is dealt, as the client's own two cashflows: they
-    #: choose a form rather than fill a leg, so they are optional to state and never defaulted.
-    SELL_CURRENCY = F('sell_currency', 'Text',
+    #: choose a form rather than fill a leg, so a blank states no direction and is never completed.
+    SELL_CURRENCY = F('sell_currency', 'Text', default='', convention=True,
                       description='Currency the client sells: one side of pair')
-    BUY_CURRENCY = F('buy_currency', 'Text',
+    BUY_CURRENCY = F('buy_currency', 'Text', default='', convention=True,
                      description='Currency the client buys: the other side of pair')
     SELECTORS = (SELL_CURRENCY, BUY_CURRENCY)
     #: The desk's quoting mandate, a section of the job beside `Calculation`; no block, no policy.
@@ -1355,7 +1355,7 @@ def read_policy(document):
     if policy is None:
         return None
     completed = schema.declared_defaults(Structure.POLICY, policy)
-    read = {f.key: completed.get(f.key) for f in Structure.POLICY.fields}
+    read = {f.key: completed[f.key] for f in Structure.POLICY.fields}
     try:
         read['firm_seconds'] = float(read['firm_seconds'])
         if read['firm_seconds'] < 0.0:

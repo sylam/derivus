@@ -381,6 +381,19 @@ def test_a_published_obj_is_the_wire_token_its_type_names():
     assert published == set().union(*WIRE_TOKENS.values()), sorted(published)
 
 
+def test_every_top_level_field_declares_a_default():
+    """A top-level field is REQUIRED, a convention or offers a value, so its reader indexes the block
+    its declarations complete rather than finding a key missing; a table's columns and a container's
+    children are reached through their field. Pinned both ways on the LogVar2FJ family's `Cap_A`,
+    whose omission, null and number are three different corners: a field declaring none fails,
+    and so does stating that one without unpinning it.
+
+    Killing mutation: the import-time check removed and `ChainedBasisModel.Next_Const` declaring no
+    default again."""
+    found = set(schema.undeclared(schema.mapping))
+    assert found == schema.UNSTATED, sorted(found ^ schema.UNSTATED)
+
+
 def test_no_class_is_hidden_from_the_create_menu():
     """`groups` is the Workbench's create-deal menu and stays hand-curated, being presentation. So
     it is the one part of the store that can still drift from the classes: a deal type absent from

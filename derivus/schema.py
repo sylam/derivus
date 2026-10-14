@@ -39,8 +39,8 @@ import pandas as pd
 from . import utils
 
 
-#: `default=REQUIRED` - the author must supply it. Distinct from `default=None`, a field the engine
-#: reads with `.get` and is content to find missing.
+#: `default=REQUIRED` - the author must supply it. Every top-level field declares it or a default,
+#: a null one being a convention's; only a table's columns and a container's children declare none.
 REQUIRED = object()
 
 #: The blank FORM of a shape-valued field: one degenerate knot, a curve having no empty value.
@@ -363,10 +363,10 @@ def declared_defaults(cls, params):
     """A block completed by its own declarations - the `F` default under every key the author
     omitted, so a reader may index directly.
 
-    Mutable defaults are deep-copied per call. `REQUIRED` and `None` are skipped: the first has
-    nothing to offer, the second declares a field the engine is content to find missing."""
+    Mutable defaults are deep-copied per call. `REQUIRED` has nothing to offer, and a null is
+    offered where the declaration says omission means it (`convention=True`)."""
     merged = {f.key: copy.deepcopy(f.default) for f in cls.fields
-              if f.default is not REQUIRED and f.default is not None}
+              if f.default is not REQUIRED and (f.default is not None or f.convention)}
     merged.update(params)
     return merged
 
@@ -708,6 +708,20 @@ def emit_structures(base):
             entry['legs'] = {leg.role: leg.descriptor() for leg in cls.__dict__['legs']}
         entries[cls.__name__] = entry
     return entries
+
+
+def undeclared(node, path=()):
+    """`[(store, type, key)]` - every field a store publishes at its top level offering no default:
+    not required, not a convention and no value, so its reader can only find it missing. A
+    container's children and a table's columns are reached through their field, never here."""
+    found = []
+    for key, child in node.items():
+        if isinstance(child, dict) and 'widget' in child:
+            if child.get('value') is None and not (child.get('required') or child.get('convention')):
+                found.append((path[0], [p for p in path if p not in ('types', 'fields')][-1], key))
+        elif isinstance(child, dict):
+            found.extend(undeclared(child, path + (key,)))
+    return found
 
 
 def partition_factor(type_name, block):
@@ -1448,3 +1462,11 @@ mapping = {
         'vernacular': _vernacular
     }
 }
+
+#: The one top-level field no default states: the LogVar2FJ family's `Cap_A`, omitted writing the
+#: fit's own corner, null none, and a number both the corner its walk takes and one Quadrature refuses.
+UNSTATED = {('MarketPrices', 'LogVar2FJModelPrices', 'Cap_A'),
+            ('Configuration', 'LogVar2FJModelParameters', 'Cap_A')}
+if set(undeclared(mapping)) != UNSTATED:
+    raise TypeError('a top-level field declares a default, REQUIRED or a convention: {}'.format(
+        ', '.join('{} {}.{}'.format(*name) for name in sorted(set(undeclared(mapping)) ^ UNSTATED))))

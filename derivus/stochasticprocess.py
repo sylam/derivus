@@ -26,7 +26,7 @@ import torch.utils.checkpoint
 import torch.nn.functional as nnf
 
 from . import utils, pricing
-from .schema import F, REQUIRED
+from .schema import F, REQUIRED, declared_defaults
 from .instruments import get_fx_zero_rate_factor, get_equity_zero_rate_factor, get_dividend_rate_factor
 
 
@@ -4133,9 +4133,9 @@ class ChainedBasisModel(StochasticProcess):
         F('Next_Self_Loading', 'Float', default=0.0,
           description='Loading of the source\'s own current value in its next own-session '
                       'value'),
-        F('Next_Const', 'Float', default=None,
-          description='Intercept of the source\'s next own-session value, $/oz. When absent '
-                      'the unit-loading default uses minus the bridge premium')
+        F('Next_Const', 'Float', convention=True,
+          description='Intercept of the source\'s next own-session value, $/oz, null being the '
+                      'unit-loading law\'s minus the bridge premium')
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -4182,12 +4182,11 @@ class ChainedBasisModel(StochasticProcess):
         (see `BasisLinkedSpotModel._chain_shift`). Defaults reproduce the unit-loading law
         (print less premium). Only a basis source consumes these keys — a composable primary
         source (the Log bridge) reads nothing under them."""
-        p = self.param
+        p = declared_defaults(type(self), self.param)
         b = state[factor_key][t]
-        a = float(p.get('Next_Print_Loading', 1.0))
-        k = float(p.get('Next_Const', 0.0)) if 'Next_Const' in p \
-            else -float(p.get('Bridge_Premium', 0.0))
-        c = float(p.get('Next_Self_Loading', 0.0))
+        a = float(p['Next_Print_Loading'])
+        k = -float(p['Bridge_Premium']) if p['Next_Const'] is None else float(p['Next_Const'])
+        c = float(p['Next_Self_Loading'])
         target = a * b + k + (c * state[self.source_key][t] if c else 0.0)
         return {(self.source_key, 'partner_print'): target.reshape(-1)}
 
