@@ -421,6 +421,32 @@ def test_an_independent_amount_stated_as_an_empty_list_is_one_of_zero():
     assert all(np.array_equal(empty, zero) for empty, zero in zip(*runs))
 
 
+def test_a_set_omitting_its_support_amounts_and_assets_holds_a_zero_csa():
+    """What omitting the two containers means: no threshold, no minimum transfer and no
+    independent amount, each one row at rating 1 of nothing, and no collateral asset - so a
+    collateralised set stating neither marks and holds bit for bit as the set stating those zeros
+    and four empty asset tables, where it once failed the run on the support it could not read.
+
+    KILLING MUTATIONS: the support amounts' completion back to empty lists, whose `.value()` fails
+    the set; a container's completion handed over as its children's wire defaults, the tables as
+    the four characters `'null'` read as assets."""
+    zeros = {dial: listed((1, 0.0)) for dial in (
+        'Independent_Amount', 'Received_Threshold', 'Posted_Threshold', 'Minimum_Received',
+        'Minimum_Posted')}
+    omitted = {key: value for key, value in TERMS.items() if key != 'Credit_Support_Amounts'}
+    runs = []
+    for terms in (omitted, dict(omitted, Credit_Support_Amounts=zeros, Collateral_Assets={
+            table: [] for table in ('Cash_Collateral', 'Bond_Collateral', 'Equity_Collateral',
+                                    'Commodity_Collateral')})):
+        context = derivus.Context()
+        context.load_json((json.dumps(engine_job(terms)), 'zero csa'))
+        _, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
+        result = out['Netting'].sub_structures[0].obj.Calc_res
+        runs.append([np.asarray(result[key][0]) for key in ('Value', 'Collateral')])
+    assert all(np.array_equal(omits, states) for omits, states in zip(*runs))
+    assert np.unique(runs[0][1]).size > 1, 'the balance never moves, so the CSA reads nothing'
+
+
 def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it(caplog):
     """`Amount` weighs an asset in the collateral the balance is counted in, and with one asset the
     weight cancels - the balance is held in units of it - so a sole cash row stating none, as the

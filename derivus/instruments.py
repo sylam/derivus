@@ -936,6 +936,9 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
 class NettingCollateralSet(Deal):
     accepts_children = True
     vernacular = 'netting set, CSA, client, counterparty agreement'
+    #: One row of a credit support list, rating 1 at amount 0, as the wire spells it: no threshold,
+    #: no minimum transfer and no independent amount.
+    ZERO_SUPPORT = {'.CreditSupportList': [[1, 0.0]]}
     fields = [ADMIN, own('NettingCollateralSet', [
         F('Agreement_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Apply_Closeout_When_Uncollateralized', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -944,7 +947,6 @@ class NettingCollateralSet(Deal):
         F('Base_Collateral_Call_Date', 'Date', default='', convention=True),
         F('Calendars', 'Text', default='', convention=True),
         F('Collateral_Assets', 'Container',
-          default={'Cash_Collateral': [], 'Bond_Collateral': [], 'Equity_Collateral': [], 'Commodity_Collateral': []},
           convention=True, sub_fields=[
               F('Cash_Collateral', 'Table', default='null', row=Row([
                   F('Currency', 'Text', factors=['FxRate']), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'),
@@ -968,21 +970,18 @@ class NettingCollateralSet(Deal):
         F('Collateralized', 'Text', default='False', convention=True, values=['True', 'False']),
         F('Netted', 'Text', default='True', convention=True, values=['True', 'False']),
         F('Credit_Support_Amounts', 'Container',
-          default={
-              'Bank': '', 'Counterparty': '', 'Independent_Amount': [], 'Received_Threshold': [],
-              'Posted_Threshold': [], 'Minimum_Received': [], 'Minimum_Posted': []},
           convention=True, sub_fields=[
               F('Bank', 'Text', default=''),
               F('Counterparty', 'Text', default='', factors=['SurvivalProb']),
-              F('Independent_Amount', 'CreditSupportList', default='[[0,1]]',
+              F('Independent_Amount', 'CreditSupportList', default=ZERO_SUPPORT,
                 row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')])),
-              F('Received_Threshold', 'CreditSupportList', default='[[0,1]]',
+              F('Received_Threshold', 'CreditSupportList', default=ZERO_SUPPORT,
                 row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')])),
-              F('Posted_Threshold', 'CreditSupportList', default='[[0,1]]',
+              F('Posted_Threshold', 'CreditSupportList', default=ZERO_SUPPORT,
                 row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')])),
-              F('Minimum_Received', 'CreditSupportList', default='[[0,1]]',
+              F('Minimum_Received', 'CreditSupportList', default=ZERO_SUPPORT,
                 row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')])),
-              F('Minimum_Posted', 'CreditSupportList', default='[[0,1]]',
+              F('Minimum_Posted', 'CreditSupportList', default=ZERO_SUPPORT,
                 row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]))]),
         F('Funding_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
         F('Liquidation_Period', 'Integer', default=0, convention=True),
@@ -2586,7 +2585,7 @@ class SwapInterestDeal(Deal):
                 self.field.get('Reference'))
 
         field_index['Compounding'] = self.field['Fixed_Compounding'] == 'Yes'
-        field_index['CompoundingMethod'] = self.field.get('Compounding_Method', 'None')
+        field_index['CompoundingMethod'] = self.field['Compounding_Method']
         # read where a coupon owns several resets, which its Compounding_Method folds: None
         # averages them at generate_float's 1/n and the others compound them
         field_index['AveragingMethod'] = 'Average_Rate'
@@ -2614,9 +2613,9 @@ class CFFixedInterestListDeal(Deal):
     vernacular = 'fixed-rate bond, fixed leg, fixed coupons'
     quoted = 'Cashflows'
     fields = [ADMIN, PRICING, CASHFLOWLISTDEAL, own('CFFixedInterestListDeal', [
-        F('Cashflows', 'Container', default={'Compounding': 'No', 'Items': []},
+        F('Cashflows', 'Container',
           sub_fields=[
-              F('Compounding', 'Text', default='No', values=['Yes', 'No']),
+              F('Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
               F('Items', 'Table', default='null', row=Row([
                   F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Rate', 'Percent'),
                   F('Accrual_Start_Date', 'Date'), F('Accrual_End_Date', 'Date'),
@@ -2679,7 +2678,7 @@ class CFFixedInterestListDeal(Deal):
         field_index['Cashflows'] = utils.TensorCashFlows.fixed(
             base_date, buy_sell, self.field['Cashflows'], self.field.get('Settlement_Date'))
 
-        field_index['Compounding'] = self.field['Cashflows'].get('Compounding', 'No') == 'Yes'
+        field_index['Compounding'] = self.field['Cashflows']['Compounding'] == 'Yes'
         field_index['Settlement_Date'] = (self.field.get('Settlement_Date') -
                                           base_date).days if self.field.get('Settlement_Date') else None
         field_index['Settlement_Amount'] = self.field.get('Settlement_Amount', 0.0) * buy_sell
@@ -2695,7 +2694,7 @@ class CFFixedListDeal(Deal):
     fields = [ADMIN, PRICING, own('CFFixedListDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Description', 'Text', default='', convention=True),
-        F('Cashflows', 'Container', default={'Items': []},
+        F('Cashflows', 'Container',
           sub_fields=[
               F('Items', 'Table', default='null',
                 row=Row([F('Payment_Date', 'Date'), F('Fixed_Amount', 'Float', sized=True)]))])
@@ -2800,14 +2799,13 @@ class CFFloatingInterestListDeal(Deal):
           factors=['InterestYieldVol']),
         F('Settlement_Amount', 'Float', default=0.0),
         F('Cashflows', 'Container',
-          default={'Properties': [], 'Compounding_Method': 'None', 'Averaging_Method': 'Average_Interest', 'Items': []},
           sub_fields=[
               F('Properties', 'Table', default='null', row=Row([
                   F('Digital_Payoff_Rate', 'Percent'), F('Cap_Multiplier', 'Float'), F('Cap_Strike', 'Percent'),
                   F('Floor_Multiplier', 'Float'), F('Floor_Strike', 'Percent')])),
-              F('Compounding_Method', 'Text', default='None',
+              F('Compounding_Method', 'Text', default='None', convention=True,
                 values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
-              F('Averaging_Method', 'Text', default='Average_Rate',
+              F('Averaging_Method', 'Text', default='Average_Rate', convention=True,
                 values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
               F('Items', 'Table', default='null', row=Row([
                   F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Accrual_Start_Date', 'Date'),
@@ -2887,8 +2885,8 @@ class CFFloatingInterestListDeal(Deal):
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
             self.field['Cashflows'], self.field.get('Reference'))
 
-        field_index['CompoundingMethod'] = self.field['Cashflows'].get('Compounding_Method', 'None')
-        field_index['AveragingMethod'] = self.field['Cashflows'].get('Averaging_Method', 'None')
+        field_index['CompoundingMethod'] = self.field['Cashflows']['Compounding_Method']
+        field_index['AveragingMethod'] = self.field['Cashflows']['Averaging_Method']
 
         if field_index['CompoundingMethod'] is None:
             field_index['CompoundingMethod'] = 'None'
@@ -2933,9 +2931,6 @@ class YieldInflationCashflowListDeal(Deal):
     fields = [ADMIN, PRICING, CASHFLOWLISTDEAL, own('YieldInflationCashflowListDeal', [
         F('Index', 'Text', default='', factors=['InflationRate']),
         F('Index_Reference', 'Container',
-          default={
-              'Months_Lag': 1, 'Quarters_Lag': 0, 'Quarter_Reference_Month': 1, 'Reference_Type': 'Interpolated',
-              'Reference_Day': 1, 'Days_In_Period': 0},
           sub_fields=[
               F('Months_Lag', 'Integer', default=1),
               F('Quarters_Lag', 'Integer', default=0),
@@ -2943,7 +2938,7 @@ class YieldInflationCashflowListDeal(Deal):
               F('Reference_Type', 'Text', default='Interpolated', values=['Single', 'Interpolated', 'Average']),
               F('Reference_Day', 'Integer', default=1),
               F('Days_In_Period', 'Integer', default=0)]),
-        F('Cashflows', 'Container', default={'Items': []},
+        F('Cashflows', 'Container',
           sub_fields=[
               F('Items', 'Table', default='null', row=Row([
                   F('Payment_Date', 'Date'), F('Notional', 'Float', sized=True), F('Base_Reference_Date', 'Date'),
@@ -5455,7 +5450,7 @@ class EquitySwapletListDeal(Deal):
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Amount_Type', 'Text', default='Principal', convention=True, description='Amount_Type',
           values=['Principal', 'Shares']),
-        F('Cashflows', 'Container', default={'Items': []},
+        F('Cashflows', 'Container',
           sub_fields=[
               F('Items', 'Table', default='null', row=Row([
                   F('Start_Date', 'Date'), F('End_Date', 'Date'), F('Payment_Date', 'Date'),
@@ -7007,7 +7002,7 @@ class FloatingEnergyDeal(Deal):
         F('FX_Sampling_Type', 'Text', default='', convention=True, factors=['ForwardPriceSample']),
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
-        F('Payments', 'Container', default={'Items': []},
+        F('Payments', 'Container',
           sub_fields=[
               F('Items', 'Table', default='null', row=Row([
                   F('Payment_Date', 'Date'), F('Period_Start', 'Date'), F('Period_End', 'Date'),
@@ -7106,7 +7101,7 @@ class FixedEnergyDeal(Deal):
     fields = [ADMIN, PRICING, own('FixedEnergyDeal', [
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
-        F('Payments', 'Container', default={'Items': []},
+        F('Payments', 'Container',
           sub_fields=[
               F('Items', 'Table', default='null',
                 row=Row([F('Payment_Date', 'Date'), F('Volume', 'Float', sized=True), F('Fixed_Price', 'Float')]))])

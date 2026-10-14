@@ -1007,9 +1007,6 @@ class Credit_Monte_Carlo(Calculation):
                       'segment\'s intermediates and redrawing its shocks in backward() instead of '
                       'taping them'),
         F('Credit_Valuation_Adjustment', 'Container',
-          default={"Calculate": "No", "Counterparty": "", "Bank": "",
-                   "Deflate_Stochastically": "Yes", "Stochastic_Hazard_Rates": "No",
-                   "Gradient": "No"},
           sub_fields=[
               F('Calculate', 'Text', default='No', values=['Yes', 'No']),
               F('Counterparty', 'Text', default=''),
@@ -1024,9 +1021,6 @@ class Credit_Monte_Carlo(Calculation):
                 description='Tenors in years to add to the survival curve so CDS rates can be '
                             'interpolated off it')]),
         F('Funding_Valuation_Adjustment', 'Container',
-          default={"Calculate": "No", "Counterparty": "", "Bank": "", "Risk_Free_Curve": "",
-                   "Funding_Cost_Interest_Curve": "", "Funding_Benefit_Interest_Curve": "",
-                   "Deflate_Stochastically": "Yes", "Stochastic_Funding": "No", "Gradient": "No"},
           sub_fields=[
               F('Calculate', 'Text', default='No', values=['Yes', 'No']),
               F('Counterparty', 'Text', default=''),
@@ -1038,8 +1032,6 @@ class Credit_Monte_Carlo(Calculation):
               F('Stochastic_Funding', 'Text', default='No', values=['Yes', 'No']),
               F('Gradient', 'Text', default='No', values=['Yes', 'No'])]),
         F('Collateral_Valuation_Adjustment', 'Container',
-          default={"Calculate": "No", "Collateral_Curve": "", "Funding_Curve": "",
-                   "Collateral_Spread": 0, "Funding_Spread": 0, "Gradient": "No"},
           sub_fields=[
               F('Calculate', 'Text', default='No', values=['Yes', 'No']),
               F('Collateral_Curve', 'Text', default=''),
@@ -1048,8 +1040,6 @@ class Credit_Monte_Carlo(Calculation):
               F('Funding_Spread', 'Integer', default=0),
               F('Gradient', 'Text', default='No', values=['Yes', 'No'])]),
         F('Initial_Margin', 'Container',
-          default={"Calculate": "No", "Liquidity_Weights": "", "IRS_Weights": "",
-                   "Local_Currency": "", "IM_Currency": "", "Delta_Factor": 1.0},
           description='The LCH-style initial margin add-on',
           sub_fields=[
               F('Calculate', 'Text', default='No', values=['Yes', 'No']),
@@ -2788,7 +2778,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       'as `type.name` strings'),
         F('Observed_Scenario', 'Text', default='', convention=True,
           description='Path to an npz of realized factor paths that replace the simulated draw'),
-        F('Hedging_Problem', 'Container', default={},
+        F('Hedging_Problem', 'Container',
           description='The hedging problem itself - tradables, liabilities, objective, solver',
           sub_fields=[
               F('History_Lookback_Business_Days', 'Integer', default=30),
@@ -2802,7 +2792,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                 description='Deal blocks keyed by Object then by Reference'),
               F('Portfolio_State', 'Container', default={},
                 description='Opening positions, cash balances and posted margin'),
-              F('Objective', 'Container', default={},
+              F('Objective', 'Container',
                 description='The utility SHAPE and its parameters, dispatched on Object',
                 sub_fields=[
                     F('Object', 'Text', default=REQUIRED,
@@ -2839,7 +2829,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Knee beyond which the gain arm goes linear, in units of c'),
                     F('CARA_Gamma', 'Float', default=1.0,
                       description='Absolute risk aversion of u = (1-exp(-gamma x))/gamma')]),
-              F('Evaluator', 'Container', default={},
+              F('Evaluator', 'Container',
                 description='Accounting mode and cash instruments, dispatched on Object',
                 sub_fields=[
                     F('Accounting_Mode', 'Text', default='futures',
@@ -2891,7 +2881,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
                       description='Piecewise-constant split of the NET cover across the hedge '
                                   'legs, by decision step; absent, the argmax searches the product '
                                   'of per-leg levels')]),
-              F('Solver', 'Container', default={},
+              F('Solver', 'Container',
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[
                     F('Object', 'Text', default=REQUIRED,

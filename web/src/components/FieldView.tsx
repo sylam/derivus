@@ -36,8 +36,14 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
   for (const list of ['.DateList', '.DateEqualList', '.CreditSupportList'] as const) {
     const rows = token(value, list);
     if (Array.isArray(rows)) {
-      return <DataTable columns={descriptor?.col_names ?? []} index={[]} data={rows} />;
+      // a credit support row travels [rating, amount], the reverse of the columns it declares
+      const data = list === '.CreditSupportList' ? rows.map((row) => [...row].reverse()) : rows;
+      return <DataTable columns={descriptor?.col_names ?? []} index={[]} data={data} />;
     }
+  }
+  // 'null' is the wire blank of every table, what a table widget writes for an empty one
+  if (value === 'null' && descriptor?.widget === 'Table') {
+    return <DataTable columns={descriptor.col_names ?? []} index={[]} data={[]} />;
   }
   const params = token(value, '.ModelParams');
   if (isObject(params)) {

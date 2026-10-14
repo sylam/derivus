@@ -4384,10 +4384,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
                       'refused, as the 2-norm of J\'r'),
         F('Generate_Instruments', 'Text', default='No', values=['Yes', 'No'],
           description='Unbuilt: generate the definitions from Generation_Parameters instead'),
-        F('Generation_Parameters', 'Container', default={
-            'First_Start': '1Y', 'Last_Start': '9Y', 'First_Tenor': '1Y', 'Last_Tenor': '9Y',
-            'First_Maturity': '10Y', 'Last_Maturity': '10Y', 'Fixed_Frequency': '6M',
-            'Floating_Frequency': '6M', 'Day_Count': 'ACT_365', 'Index_Offset': 0},
+        F('Generation_Parameters', 'Container',
           sub_fields=[
               F('First_Start', 'Text', default='1Y'), F('Last_Start', 'Text', default='9Y'),
               F('First_Tenor', 'Text', default='1Y'), F('Last_Tenor', 'Text', default='9Y'),
@@ -5154,9 +5151,7 @@ class InterestRateCurveParameters(Construction):
         F('Drift_Tolerance', 'Float', default=1e-3,
           description='How far out of par, in percent of quote, a Linear ride may leave this '
                       'block\'s own benchmarks before a refit is asked for'),
-        F('Points', 'Container', default={
-            'Use': 'Yes', 'Deal': {}, 'Descriptor': '', 'DealType': 'DepositDeal',
-            'Quote_Type': 'Par_Rate', 'Quoted_Market_Value': 0.0},
+        F('Points', 'Container',
           sub_fields=[
               F('Use', 'Text', default='Yes', values=['Yes', 'No'],
                 description='Whether this quote enters the solve'),
@@ -5173,7 +5168,7 @@ class InterestRateCurveParameters(Construction):
                 description='The instrument type the quote is a price for'),
               F('Quote_Type', 'Text', default='Par_Rate', values=['Par_Rate'],
                 description='What Quoted_Market_Value is; the solve holds the instrument at par'),
-              F('Quoted_Market_Value', 'Float',
+              F('Quoted_Market_Value', 'Float', default=0.0,
                 description='The quote, in the unit its DealType reads: percent for a rate '
                             'benchmark, the outright in Buy_Currency per unit of '
                             'Sell_Currency for an FXForwardDeal'),

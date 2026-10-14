@@ -391,16 +391,20 @@ def test_every_top_level_field_declares_a_default():
     assert schema.undeclared(schema.mapping) == []
 
 
-def test_a_containers_default_spells_only_the_keys_its_children_declare():
-    """A container's default is what a panel writes for the whole block, so a key in it that no
-    child declares is one nothing reads, standing where the key the pricer indexes should be.
+def test_a_containers_default_is_what_its_children_offer():
+    """A container's published value is its children's, each child's own value under the rule a
+    block is completed by - a required child offering nothing, a null child nothing unless omission
+    means it - nested containers included, so a panel writing the block and a reader completing it
+    read one spelling.
 
-    Killing mutation: the inflation deal's `Index_Reference` default keyed `Index_Reference_Type`
-    again, the alias its `Reference_Type` child once carried."""
-    stray = {key: sorted(set(d['value']) - set(d['sub_fields']))
-             for key, d in every_descriptor() if 'sub_fields' in d and isinstance(d['value'], dict)
-             and set(d['value']) - set(d['sub_fields'])}
-    assert not stray, stray
+    Killing mutations: a container's own dict declared again (the hedging problem's `{}`, against
+    its nine children); a required child offered (the solver's `Object`)."""
+    def offered(children):
+        return {key: child['value'] for key, child in children.items()
+                if not child.get('required') and (child['value'] is not None or child.get('convention'))}
+    wrong = {key: d['value'] for key, d in every_descriptor()
+             if 'sub_fields' in d and d['value'] != offered(d['sub_fields'])}
+    assert not wrong, wrong
 
 
 def test_no_class_is_hidden_from_the_create_menu():

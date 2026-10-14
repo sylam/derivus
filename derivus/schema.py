@@ -139,7 +139,8 @@ class F(object):
     `convention` says the declared default is what OMISSION MEANS - `Pay_Timing: End`, a null
     calendar, a blank `Discount_Rate` - so a deal completes it on a read by name. Unflagged, a
     default is a PLACEHOLDER: a number the panel shows that nobody means by leaving it out, and a
-    deal missing one is refused by name rather than priced at it.
+    deal missing one is refused by name rather than priced at it. A container declares none: its
+    default is what its children offer (`offered`), a nested container's included.
 
     `bind` is STRUCTURAL by default. `bind='value'` says the engine reads this field's CONTENT and
     that nothing about discovery, tenor grids, process wiring, correlation or the code paths depends
@@ -173,7 +174,8 @@ class F(object):
                  factors=()):
         self.name = name
         self.type = type
-        self.default = BLANK.get(type) if default is None else default
+        self.default = offered(sub_fields) if sub_fields is not None else (
+            BLANK.get(type) if default is None else default)
         self.description = description if description is not None else name.replace('_', ' ')
         self.values = values
         self.row = row
@@ -359,14 +361,18 @@ def instrument_fields(deal_type):
                   for key in mapping['Instrument']['sections'][section])
 
 
+def offered(fields):
+    """`{key: default}` for every field among `fields` that offers one: `REQUIRED` has nothing to
+    offer, and a null is offered where the declaration says omission means it (`convention=True`)."""
+    return {f.key: f.default for f in fields
+            if f.default is not REQUIRED and (f.default is not None or f.convention)}
+
+
 def declared_defaults(cls, params):
     """A block completed by its own declarations - the `F` default under every key the author
-    omitted, so a reader may index directly.
-
-    Mutable defaults are deep-copied per call. `REQUIRED` has nothing to offer, and a null is
-    offered where the declaration says omission means it (`convention=True`)."""
-    merged = {f.key: copy.deepcopy(f.default) for f in cls.fields
-              if f.default is not REQUIRED and (f.default is not None or f.convention)}
+    omitted that `offered` offers, so a reader may index directly. Mutable defaults are deep-copied
+    per call."""
+    merged = {key: copy.deepcopy(default) for key, default in offered(cls.fields).items()}
     merged.update(params)
     return merged
 
@@ -374,10 +380,17 @@ def declared_defaults(cls, params):
 def engine_default(field):
     """One declared default in the form the ENGINE reads, not the form a widget shows.
 
-    A blank table is the string `'null'`, a period `'3M'`, a rate a whole number of percent, so a
-    default reaching a pricer is converted exactly as the loader converts that field's wire form. A
-    blank Text or Date stays blank: `Expiry_Date` declares `''` and reaches a comparison as a `str`.
+    A blank table is the string `'null'`, a period `'3M'`, a rate a whole number of percent, a
+    credit support list its wire token, so a default reaching a pricer is converted exactly as the
+    loader converts that field's wire form. A blank Text or Date stays blank: `Expiry_Date`
+    declares `''` and reaches a comparison as a `str`. A container's is its children's, each
+    converted.
     """
+    if field.sub_fields is not None:
+        return {child.key: engine_default(child) for child in field.sub_fields
+                if child.key in field.default}
+    if field.type == 'CreditSupportList':
+        return utils.CreditSupportList(field.default['.CreditSupportList'])
     if field.type in BLANK_TABLE:
         return BLANK_TABLE[field.type]() if field.default == 'null' else copy.deepcopy(field.default)
     if field.type == 'Period':
@@ -394,30 +407,35 @@ def deal_defaults(cls):
 
     A placeholder is absent here: its declared default is what a blank panel shows, and answering
     `FXBarrierOption.Strike_Price` 0.0 turns a schema-invalid block into a plausible wrong number -
-    741.53 against the 78.93 the author meant. Built once per class, kept on it, and never handed
-    out directly.
+    741.53 against the 78.93 the author meant. Built once per class, kept on it beside each
+    container's children's conventions (`_child_defaults`), and never handed out directly.
     """
     if '_convention_defaults' not in cls.__dict__:
-        cls._convention_defaults = {f.key: engine_default(f)
-                                    for group in getattr(cls, 'fields', []) or []
-                                    for f in group.fields if f.convention}
+        fields = [f for group in getattr(cls, 'fields', []) or [] for f in group.fields]
+        cls._convention_defaults = {f.key: engine_default(f) for f in fields if f.convention}
+        cls._child_defaults = {f.key: {c.key: engine_default(c) for c in f.sub_fields if c.convention}
+                               for f in fields if any(c.convention for c in f.sub_fields or ())}
     return cls._convention_defaults
 
 
 class DealFields(dict):
     """A deal's authored block, completed on a READ BY NAME from its own class's declarations.
 
-    `field[key]` falls through to `deal_defaults` for a CONVENTION the author omitted. A placeholder
-    still raises, because completing one silently prices a schema-invalid block - which is what
-    `validate_instrument` refuses by name at booking instead. Everything else is exactly what the
-    author wrote - `get`, `in`, iteration, `len`, the JSON round trip, and therefore `plan_hash` and
-    the factor universe. A default answers a read; it does not enter the program.
+    `field[key]` falls through to `deal_defaults` for a CONVENTION the author omitted, and a stated
+    container's to its children's. A placeholder still raises, because completing one silently
+    prices a schema-invalid block - which is what `validate_instrument` refuses by name at booking
+    instead. Everything else is exactly what the author wrote - `get`, `in`, iteration, `len`, the
+    JSON round trip, and therefore `plan_hash` and the factor universe. A default answers a read;
+    it does not enter the program.
     """
 
-    def __init__(self, params=(), cls=None):
+    def __init__(self, params=(), cls=None, declared=None):
         super(DealFields, self).__init__(params)
-        self.declared = deal_defaults(cls) if cls is not None else {}
+        self.declared = deal_defaults(cls) if cls is not None else declared or {}
         self.furnished = {}
+        for key, children in getattr(cls, '_child_defaults', {}).items():
+            if isinstance(self.get(key), dict):
+                self[key] = DealFields(self[key], declared=children)
 
     def __missing__(self, key):
         if key not in self.declared:

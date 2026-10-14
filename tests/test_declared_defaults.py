@@ -511,6 +511,26 @@ def test_an_omitted_floating_margin_completes_to_the_basis_its_reader_takes():
         'Floating_Margin']['obj'] == 'Basis'
 
 
+def test_a_stated_container_completes_the_conventions_its_children_declare():
+    """A container the author states answers a read of a child it omits as the deal answers one of a
+    field: a floating list whose `Cashflows` state no `Averaging_Method` or `Compounding_Method`,
+    and a fixed list stating no `Compounding`, mark to the bit as stating `Average_Rate`, `None` and
+    `No`, and the container still holds exactly the keys authored.
+
+    Killing mutation: a stated container left uncompleted, the floating list's read of its
+    averaging method raising and the deal skipped."""
+    legs = {leg['Reference']: leg for deal in BOOK for leg in deal.get('Children', ())}
+    stated = [dict(legs['SWPT_FLOAT'], Reference='FLOAT'), dict(legs['NS_FIXED'], Reference='FIXED')]
+    omitted = [dict(leg, Cashflows={key: value for key, value in leg['Cashflows'].items() if key not in (
+        'Averaging_Method', 'Compounding_Method', 'Compounding')}) for leg in stated]
+    (lean, lean_stats), (full, full_stats) = marks(omitted), marks(stated)
+    assert 'Deals Skipped' not in lean_stats and 'Deals Skipped' not in full_stats, lean_stats
+    assert lean == full and {'FLOAT', 'FIXED'} <= set(lean), (lean, full)
+    field = schema.DealFields(omitted[0], instruments.CFFloatingInterestListDeal)
+    assert field['Cashflows']['Averaging_Method'] == 'Average_Rate'
+    assert set(field['Cashflows']) == set(omitted[0]['Cashflows'])
+
+
 def test_a_commodity_forward_omitting_its_forward_date_is_read_at_the_spot():
     """`Forward_Date` is a convention: left out, the forward is read at the spot and carried to its
     maturity, so on a zero-carry commodity the trial's forward validates and marks `Units S D(T)`,
@@ -840,8 +860,11 @@ def test_a_blank_date_default_keeps_its_named_refusal():
 # a sparse document and a full one are ONE document
 # --------------------------------------------------------------------------------------------
 def reading(value):
-    """The value a reader sees - a utils container by its rows, a scaled rate by its amount. Two
-    completions of one declaration are equal by this and not by identity."""
+    """The value a reader sees - a utils container by its rows, a scaled rate by its amount, a
+    container by its children's. Two completions of one declaration are equal by this and not by
+    identity."""
+    if isinstance(value, dict):
+        return {key: reading(child) for key, child in value.items()}
     return getattr(value, 'data', getattr(value, 'amount', value))
 
 
@@ -1126,9 +1149,13 @@ def wire_default(field):
     `engine_default` - the whole point being that the two are different paths to one value.
 
     A Period is `{'.DateOffset': '3M'}`, a rate `{'.Percent': 0}`, a blank Table its own empty
-    container; everything else is the literal a panel shows. A widget also writes a blank Table as
-    JSON `null`, which the loader reads as `None` - a different value a reader takes alike.
+    container, a container its children's; everything else is the literal a panel shows. A widget
+    also writes a blank Table as JSON `null`, which the loader reads as `None` - a different value a
+    reader takes alike.
     """
+    if field.sub_fields is not None:
+        return {child.key: wire_default(child) for child in field.sub_fields
+                if child.key in field.default}
     if schema.F.WIDGET[field.type] == 'Table' and field.default == 'null':
         tag = {'DateList': '.DateList', 'DateEqualList': '.DateEqualList',
                'CreditSupportList': '.CreditSupportList'}.get(field.type)

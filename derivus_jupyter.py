@@ -647,10 +647,15 @@ class PortfolioPage(TreePanel):
 
         # load defaults for the new object
         fields = self.instrument_fields.get(instrument_type)
+        declared = rf.schema.declared_fields(getattr(rf.instruments, instrument_type))
         ins = {}
 
         for value in fields.values():
-            self.set_value_from_widget(ins, value, value['value'])
+            if 'sub_fields' in value:
+                # a container publishes its children's wire defaults; the deal holds their engine form
+                ins[value['name']] = rf.schema.engine_default(declared[value['name']])
+            else:
+                self.set_value_from_widget(ins, value, value['value'])
 
         # set it up
         ins['Object'] = instrument_type
