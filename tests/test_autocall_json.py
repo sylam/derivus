@@ -211,20 +211,55 @@ def test_a_put_dated_on_a_printed_fixing_pays_on_its_coupon(tmp_path):
     assert on_fixings == on_coupons, (on_fixings, on_coupons)
 
 
+def test_a_note_a_past_print_called_is_expired_and_skipped(tmp_path):
+    """A coupon behind the base date whose window printed at or above its threshold times the
+    strike called the note on that date, so nothing is left to value. Booked beside a note whose
+    first print sat a cent under that level, the called one - its print exactly ON it - is skipped
+    as expired: counted under `Deals Skipped`, absent from the marks, the run raising nothing. The
+    other marks the put it owes two days later, -3.99912, as every print under the level priced
+    before; stated a cent under too, the first marks the same, bit for bit.
+
+    Killing mutations: the compile-time call test removed - the called note marks -3.99912 and
+    nothing is skipped; the level read strictly (`>`) - the print on it prices.
+    """
+    job, _, _ = _seasoned('2025-06-25', ['2024-12-24', '2025-06-24'])
+    called = _deal_of(job)
+    printed = called['Price_Fixing']
+    under = dict(called, Reference='AC2', Price_Fixing=[[printed[0][0], 99.99], printed[1]])
+    job['Calc']['Deals']['Deals']['Children'].append({'Instrument': {'.Deal': under}})
+    called['Price_Fixing'] = [[printed[0][0], 1.0 * STRIKE], printed[1]]
+    out = _run(job, tmp_path, 'called')[0]
+    loss = -UNITS * (1.0 - 60.0 / STRIKE) * math.exp(-R_USD * 2 / DAYS)
+    assert out['Stats'].get('Deals Skipped') == 1, out['Stats']
+    assert list(out['Results']['mtm']['Reference']) == ['root', 'AC2']
+    assert abs(_mtm(out, 'AC2') - loss) < 1e-9 * UNITS, (_mtm(out, 'AC2'), loss)
+
+    called['Price_Fixing'] = under['Price_Fixing']
+    out = _run(job, tmp_path, 'under')[0]
+    assert 'Deals Skipped' not in out['Stats'], out['Stats']
+    assert _mtm(out) == _mtm(out, 'AC2'), (_mtm(out), _mtm(out, 'AC2'))
+
+
 @pytest.mark.parametrize('shape', ['barrier on no fixing', 'fixing after the last coupon',
-                                   'BarrierIsHit'])
+                                   'past coupon with no print', 'BarrierIsHit'])
 def test_a_put_or_a_window_the_fixings_do_not_carry_refuses_by_name(shape, tmp_path):
     """Every coupon decides on a window of fixings and a barrier observes a print, so a barrier
-    dated on no coupon and no fixing, and a fixing no coupon reads, refuse the document by name -
-    as does a `BarrierIsHit` stated on the deal, the put's state being its barrier date's print. A
-    blank `BarrierIsHit`, which a book carries, is no statement and prices.
+    dated on no coupon and no fixing, a fixing no coupon reads, and a coupon behind the base date
+    whose window holds no print - which decides whether the note called - refuse the document by
+    name, as does a `BarrierIsHit` stated on the deal, the put's state being its barrier date's
+    print. A blank `BarrierIsHit`, which a book carries, is no statement and prices.
 
     Killing mutation: each refusal dropped - the barrier read off the row's stale spot, the
-    unpaired fixings crashing the compile into a skip, the stated flag priced past.
+    unpaired fixings crashing the compile into a skip, the past coupon priced as if it had not
+    called, the stated flag priced past.
     """
     job, coupons, fixings = _seasoned('2024-06-28', ['2025-06-27'])
     deal = _deal_of(job)
-    if shape == 'barrier on no fixing':
+    if shape == 'past coupon with no print':
+        job = _seasoned('2025-06-25', ['2025-06-27'])[0]
+        del _deal_of(job)['Price_Fixing'][0]
+        said = r'do not give each coupon .* a window of its own'
+    elif shape == 'barrier on no fixing':
         deal['Barrier_Dates'] = [{'.Timestamp': '2025-03-31'}]
         said = r'barrier dated 2025-03-31 falls on no coupon date and no price fixing'
     elif shape == 'fixing after the last coupon':

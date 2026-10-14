@@ -92,8 +92,9 @@ class DealStructure(object):
                               valuation_options=None, exclude=True):
         """Compile `deal` into this structure, the history fold first. A deal the compile cannot
         read is skipped and counted, or kept and marked at zero on every date where `exclude` is
-        False; a framework fault or a schedule refused by name (`utils.is_fatal_pricing_error`)
-        is never swallowed."""
+        False, the exception stamped on it either way (`unpriced_because`, which the diary reads);
+        a framework fault or a schedule refused by name (`utils.is_fatal_pricing_error`) is never
+        swallowed."""
         try:
             deal = deal.resolve_history(base_date, calendars, valuation_options or {})
             deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
@@ -110,9 +111,9 @@ class DealStructure(object):
             if utils.is_fatal_pricing_error(e):
                 raise
             stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
+            deal.unpriced_because = e
             if exclude:
                 return
-            deal.unpriced_because = e
             deal_time_dep, factor_dep = utils.DealTimeDependencies(
                 time_grid.mtm_time_grid, np.arange(time_grid.mtm_time_grid.size)), None
         self.dependencies.append(utils.DealDataType(
@@ -2406,9 +2407,11 @@ class Diary(Base_Revaluation):
                 if live(node) and not node.get('Children'))
 
     def _expired(self, base_date, deal):
-        """Whether the compile left this deal out because it has EXPIRED - the engine's own expiry
-        answer, and the only one used."""
-        return DealStructure.calc_time_dependency(base_date, deal, self.time_grid) is None
+        """Whether the compile left this deal out because it has EXPIRED - its last date behind the
+        base date, or the compile's own verdict, `utils.InstrumentExpired` - the engine's own
+        expiry answer, and the only one used."""
+        return isinstance(getattr(deal, 'unpriced_because', None), utils.InstrumentExpired) or (
+            DealStructure.calc_time_dependency(base_date, deal, self.time_grid) is None)
 
     @classmethod
     def _dropped_rows(cls, deal):

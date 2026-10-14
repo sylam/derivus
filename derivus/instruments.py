@@ -4054,8 +4054,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         date up to and including its own (`pricing.oss_window_ends`), and where every window after
         the first holds exactly ONE fixing the deal fixes once per coupon, so the fixings before
         the first coupon's own observation are its strike observation and no coupon's and are
-        dropped. `ends` is None where the fixings do not partition into one non-empty window per
-        coupon, which the document is refused for.
+        dropped. Fixings that do not partition into one non-empty window per coupon are refused.
         """
         declared = dict(self.field.get('Coupon_Observations', []))
         if declared:
@@ -4099,7 +4098,16 @@ class QEDI_CustomAutoCallSwap(Deal):
             return named, np.arange(len(coupons))
 
         ends = pricing.oss_window_ends(fixings, coupons)
-        step = np.diff(ends) if ends is not None else np.empty(0)
+        if ends is None:
+            raise utils.UnpriceableSchedule(
+                '{}: the price fixings {} do not give each coupon {} a window of its own - every '
+                'coupon decides on at least one fixing after the coupon before it, and no fixing '
+                'falls after the last coupon. Add the fixing a coupon observes, or delete the one '
+                'no coupon reads'.format(
+                    self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
+                    [x.strftime('%Y-%m-%d') for x in fixings],
+                    [x.strftime('%Y-%m-%d') for x in coupons]))
+        step = np.diff(ends)
         return ((fixings[ends[0]:], ends - ends[0]) if step.size and (step == 1).all()
                 else (fixings, ends))
 
@@ -4118,9 +4126,12 @@ class QEDI_CustomAutoCallSwap(Deal):
         THE FIXING-TO-COUPON PAIRING is `coupon_windows`, declared or derived from the schedule
         with no free parameter: which fixings are observations, and which coupon's trigger level
         each fixing's vol strip is read at. Only the PAST coupons filter the fixings - a coupon
-        before the base date closes every window it opened. A BARRIER DATE IS A FIXING: dated on a
-        coupon it names that coupon, dated on a fixing - printed or not - it names the coupon whose
-        window holds it, and either way it is observed on the window and settled on the coupon date.
+        before the base date closes every window it opened - and the first of them whose window
+        printed at or above its trigger (`pricing.autocall_called`) called the note, which raises
+        `InstrumentExpired` naming that date, the skip of an expired deal. A BARRIER DATE IS A
+        FIXING: dated on a coupon it names that coupon, dated on a fixing - printed or not - it
+        names the coupon whose window holds it, and either way it is observed on the window and
+        settled on the coupon date.
 
         THE ZERO-COUPON ROW IS THE FATAL REFUSAL (`UnpriceableSchedule`, per
         `utils.is_fatal_pricing_error`): it says the DOCUMENT is wrong, not that the engine cannot
@@ -4150,6 +4161,23 @@ class QEDI_CustomAutoCallSwap(Deal):
         at = dict(self.field['Autocall_Thresholds'])
         floats = self.floating_dates()
         ab = set(self.field.get('Barrier_Dates', []))
+        # a threshold row is the coupon row of its own POSITION whatever date it carries - the
+        # book dates them on the observation and the repo on the coupon
+        tl = {c: at[t] for c, t in zip(ac, at)}
+        if min(tl.values()) <= 0.0:
+            logging.error(
+                'AutoCall has some thresholds <=0 - please map the correct thresholds (defaulting to 1.0)')
+            tl = {k: v if v else 1.0 for k, v in tl.items()}
+
+        # A COUPON BEHIND THE BASE DATE THAT CALLED ended the note on its date: its window's prints
+        # decide it as the pricer decides an observed coupon, and nothing is left to value
+        fixings, ends = self.coupon_windows(sorted(pf), sorted(ac))
+        for coupon, window in zip(sorted(x for x in ac if x < base_date), np.split(
+                np.array([pf[x] for x in fixings]), ends[:-1] + 1)):
+            if pricing.autocall_called(window.sum() / window.size, tl[coupon],
+                                       self.field['Strike_Price']):
+                raise utils.InstrumentExpired('{}: autocalled on {:%Y-%m-%d}'.format(
+                    self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'), coupon))
 
         # DISABLED: warn when max(all_dates) > self.field['Expiry_Date'] - see docstring
 
@@ -4160,15 +4188,6 @@ class QEDI_CustomAutoCallSwap(Deal):
         prior = [x for x in ac if x < min(ac_dates)]
         pf_dates = sorted([x for x in pf if not prior or x > max(prior)])
         pf_dates, ends = self.coupon_windows(pf_dates, ac_dates)
-        if ends is None:
-            raise utils.UnpriceableSchedule(
-                '{}: the price fixings {} do not give each coupon {} a window of its own - every '
-                'coupon decides on at least one fixing after the coupon before it, and no fixing '
-                'falls after the last coupon. Add the fixing a coupon observes, or delete the one '
-                'no coupon reads'.format(
-                    self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
-                    [x.strftime('%Y-%m-%d') for x in pf_dates],
-                    [x.strftime('%Y-%m-%d') for x in ac_dates]))
         # A BARRIER DATE IS A FIXING: observed on its coupon's window, settled on the coupon date.
         # A row dated on a coupon names that coupon; one dated on a fixing names the coupon whose
         # window holds it - printed or not - and its flag lands on the coupon's row
@@ -4237,17 +4256,8 @@ class QEDI_CustomAutoCallSwap(Deal):
                         self.field.get('Reference', 'this QEDI_CustomAutoCallSwap'),
                         coupon_date, ac[coupon_date], stale))
 
-        # a threshold row is the coupon row of its own POSITION whatever date it carries - the
-        # book dates them on the observation and the repo on the coupon
-        tl = {c: at[t] for c, t in zip(ac, at)}
-
         if np.any([k <= base_date and v == 0 for k, v in pf.items() if k in pf_dates]):
             logging.error('AutoCall has past fixing set to 0 - please map the correct fixing')
-
-        if min(tl.values()) <= 0.0:
-            logging.error(
-                'AutoCall has some thresholds <=0 - please map the correct thresholds (defaulting to 1.0)')
-            tl = {k: v if v else 1.0 for k, v in tl.items()}
 
         field_index.update({
             'Price_Fixing': utils.TensorResets.from_observations(

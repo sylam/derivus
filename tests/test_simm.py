@@ -50,6 +50,26 @@ OPTION = {'Object': 'FXOptionDeal', 'Reference': 'FXO', 'Currency': 'ZAR',
           'Strike_Price': 18.5, 'Underlying_Amount': NOTIONAL,
           'Expiry_Date': BASE + pd.DateOffset(years=1)}
 
+#: An index autocall whose coupon a month behind the base date printed a tenth over its trigger,
+#: and the index it reads.
+CALLED = {'Object': 'QEDI_CustomAutoCallSwap', 'Reference': 'AC', 'Currency': 'USD',
+          'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD-OIS',
+          'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Strike_Price': 100.0, 'Units': 10.0,
+          'Barrier': 0.0, 'Expiry_Date': BASE + pd.DateOffset(years=1),
+          'Price_Fixing': [[BASE - pd.DateOffset(days=33), 110.0],
+                           [BASE + pd.DateOffset(days=362), 0.0]],
+          'Autocall_Coupons': [[BASE - pd.DateOffset(days=30), 0.04],
+                               [BASE + pd.DateOffset(years=1), 0.04]],
+          'Autocall_Thresholds': [[BASE - pd.DateOffset(days=30), 1.0],
+                                  [BASE + pd.DateOffset(years=1), 1.0]]}
+INDEX = {
+    'EquityPrice.EQ': {'Spot': 100.0, 'Currency': 'USD', 'Interest_Rate': 'USD-OIS', 'Issuer': '',
+                       'Respect_Default': 'No', 'Jump_Level': 0.0},
+    'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
+                        'Curve': utils.Curve([], [[0.0, 0.01], [5.0, 0.01]])},
+    'EquityPriceVol.EQ': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+                          'Surface': utils.Curve([], [[1.0, 2.0, 0.25]])}}
+
 #: The SIMM calculation each document carries, a valuation of one inner path the option needs not.
 SIMM = {'Object': 'SIMM', 'Base_Date': BASE, 'Currency': 'USD', 'Mapping': MAPPING,
         'Parameters': PARAMETERS, 'MCMC_Simulations': 1, 'Random_Seed': 1}
@@ -96,9 +116,10 @@ def benchmark(prices, years=5):
 
 
 def world(calculation=None, prices=None, option=None, configuration=None, system=None,
-          extra=None):
-    """A context loaded with the swap and the option under one netting set, on the true curves,
-    with `prices` - the generated quote set unless given - and the curve family configured."""
+          extra=None, deals=()):
+    """A context loaded with the swap, the option and `deals` under one netting set, on the true
+    curves, with `prices` - the generated quote set unless given - and the curve family
+    configured."""
     prices = blocks() if prices is None else prices
     _, swap = benchmark(blocks())
     document = {'Calc': {
@@ -107,8 +128,8 @@ def world(calculation=None, prices=None, option=None, configuration=None, system
             'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': 'NS',
                                      'Netted': 'True', 'Collateralized': 'False',
                                      'Post_Regulations': 'SEC', 'Collect_Regulations': 'SEC'}},
-            'Children': [{'Instrument': {'.Deal': swap}},
-                         {'Instrument': {'.Deal': dict(OPTION, **(option or {}))}}]}]}},
+            'Children': [{'Instrument': {'.Deal': deal}} for deal in [
+                swap, dict(OPTION, **(option or {}))] + list(deals)]}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': dict({'Base_Currency': 'USD', 'Base_Date': BASE}, **(system or {})),
             'Valuation Configuration': {}, 'Price Factors': dict(factors(), **(extra or {})),
@@ -248,6 +269,24 @@ def test_the_sharded_run_equals_the_serial_run_to_the_bit(serial):
         assert mine.drop(columns=floats).equals(theirs.drop(columns=floats)), table
         for column in floats:
             assert [x.hex() for x in mine[column]] == [x.hex() for x in theirs[column]], column
+
+
+def test_an_autocall_a_past_print_called_writes_no_rows():
+    """An autocall whose coupon a month behind the base date printed over its trigger was called
+    then, and every valuation of it is skipped as expired - so it writes no CRIF row: the trade is
+    reported unvalued in the engine's own sentence, and the swap and the option beside it write
+    theirs.
+
+    Killing mutation: the compile-time call test removed - the note is valued live and writes its
+    equity, vega and rate rows.
+    """
+    output = world(deals=[CALLED], extra=INDEX).run_job()[1]
+    crif, trades = output['Results']['CRIF'], output['Results']['Trades']
+    assert set(crif['TradeID']) == {'SWAP', 'FXO'}
+    called = trades[trades['TradeID'] == 'AC']
+    assert called['Written'].item() == 0 and np.isnan(called['Value'].item())
+    assert 'AC: autocalled on {:%Y-%m-%d}'.format(
+        BASE - pd.DateOffset(days=30)) in called['Skipped'].item()
 
 
 def test_a_curve_no_quote_set_stands_behind_is_refused_by_name():

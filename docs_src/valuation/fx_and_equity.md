@@ -279,11 +279,12 @@ those draws. A fixing already observed is an exact indicator.
 
 Refused by name at compile: a stated `BarrierIsHit`; a **Coupon_Observations** table that leaves a coupon
 out, names a fixing not in **Price_Fixing** or after its coupon, or does not run in coupon order; fixings
-that do not give each coupon a non-empty window of its own (or fall after the last coupon); a barrier date
-on no coupon and no fixing; an `Average` barrier whose window holds no fixing; an **Autocall_Coupons** row
-of zero or less; a **Steps_Per_Year** differing from the fitted parameter factor's. Skipped by name: `Compo`
-under `LogVar2FJ`, `Quanto` under `LogVar2FJ` without the `Correlation` factor, `LogVar2FJ` without its
-parameter factor, an equity with no model.
+that do not give each coupon, past ones included, a non-empty window of its own (or fall after the last
+coupon); a barrier date on no coupon and no fixing; an `Average` barrier whose window holds no fixing; an
+**Autocall_Coupons** row of zero or less; a **Steps_Per_Year** differing from the fitted parameter
+factor's. Skipped as expired, naming the date: a note a coupon before the base date called, its window's
+printed mean at or above $h_jK$. Skipped by name: `Compo` under `LogVar2FJ`, `Quanto` under `LogVar2FJ`
+without the `Correlation` factor, `LogVar2FJ` without its parameter factor, an equity with no model.
 
 - Logged and not refused: a threshold of zero or less is replaced by 1; a past fixing of 0 is priced as 0.
 - **Option_Type**, **Option_Style**, **Settlement_Style** and **Option_On_Forward** are accepted and not read.

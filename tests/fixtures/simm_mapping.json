@@ -2,7 +2,8 @@
 	"Product_Class": {
 		"Instruments": {
 			"SwapInterestDeal": "RatesFX",
-			"FXOptionDeal": "RatesFX"
+			"FXOptionDeal": "RatesFX",
+			"QEDI_CustomAutoCallSwap": "Equity"
 		},
 		"Structures": {}
 	},
@@ -47,6 +48,26 @@
 			"SIMM": {
 				"RiskType": "Risk_FXVol",
 				"Qualifier": "USDZAR"
+			},
+			"FRTB_SA": null
+		},
+		"EquityPrice.EQ": {
+			"SIMM": {
+				"RiskType": "Risk_Equity",
+				"Qualifier": "EQ",
+				"Bucket": "11"
+			},
+			"FRTB_SA": null
+		},
+		"DividendRate.EQ": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"EquityPriceVol.EQ": {
+			"SIMM": {
+				"RiskType": "Risk_EquityVol",
+				"Qualifier": "EQ",
+				"Bucket": "11"
 			},
 			"FRTB_SA": null
 		}

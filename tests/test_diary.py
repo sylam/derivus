@@ -1140,6 +1140,39 @@ def test_an_option_that_expired_yesterday_still_blocks_the_close(name, deal, rec
     assert cleared['legal'] is True, (name, cleared['outstanding'])
 
 
+#: An index autocall whose first coupon, half a year behind the book's date, printed exactly on its
+#: trigger - the note called then - with a 70% put dated on both fixings.
+CALLED = {'Object': 'QEDI_CustomAutoCallSwap', 'Reference': 'AC', 'Currency': 'ZAR',
+          'Payoff_Currency': 'ZAR', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'ZAR',
+          'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Strike_Price': 100.0, 'Units': 10.0,
+          'Barrier': 0.7, 'Expiry_Date': BASE + pd.DateOffset(days=2),
+          'Price_Fixing': [[BASE - pd.DateOffset(days=183), 100.0],
+                           [BASE - pd.DateOffset(days=1), 60.0]],
+          'Autocall_Coupons': [[BASE - pd.DateOffset(days=180), 0.04],
+                               [BASE + pd.DateOffset(days=2), 0.04]],
+          'Autocall_Thresholds': [[BASE - pd.DateOffset(days=180), 1.0],
+                                  [BASE + pd.DateOffset(days=2), 1.0]],
+          'Barrier_Dates': [BASE - pd.DateOffset(days=183), BASE - pd.DateOffset(days=1)]}
+
+
+def test_an_autocall_a_past_print_called_is_expired_and_blocks_no_close(recorded, tmp_path):
+    """A NOTE THAT CALLED IS EXPIRED, NOT UNREADABLE. The compile skips an autocall a past print
+    called with `utils.InstrumentExpired`, the verdict it stamps on the deal, and the diary reads
+    that verdict as it reads a last date behind the base date: the note announces its expiry,
+    `expired`, no `unreadable` row stands, and a close on the book's own date is legal.
+
+    Killing mutation: `Diary._expired` ignoring the compile's verdict - the note is one
+    `unreadable` row, outstanding on every day.
+    """
+    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [CALLED])],
+            factors=dict(FACTORS, **EQUITY))
+    rows = diary_rows()['rows']
+    assert not [row for row in rows if row['kind'] == Diary.UNREADABLE], rows
+    assert [row['state'] for row in rows if row['kind'] == Diary.EXPIRY] == [Diary.EXPIRED]
+    verdict = CLIENT.get('/book/close/check', params={'date': str(BASE.date())}).json()
+    assert verdict['legal'] is True and verdict['outstanding'] == [], verdict
+
+
 def test_a_deal_the_compile_could_not_read_is_named_and_blocks_the_close(recorded, tmp_path):
     """A CLEAN BILL NOBODY EARNED IS WORSE THAN A REFUSAL. A deal skipped for a price factor the
     market data has no block for leaves no schedule, no expiry and no trace, so a close check that

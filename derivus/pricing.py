@@ -350,6 +350,12 @@ def oss_window_ends(fixings, coupons):
                     and ends[-1] == len(fixings) - 1) else None
 
 
+def autocall_called(average, threshold, strike):
+    """Whether a coupon window's average calls the note: at or above its threshold times the
+    strike."""
+    return average >= threshold * strike
+
+
 def cash_settle(shared, currency, time_index, value):
     """Book `value` against `currency` at `time_index`, if that date is a settlement point. A leg
     pricer books through its `settle_cash`: this, False, or its caller's own where the caller gates it."""
@@ -4462,7 +4468,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         decided = obs / n_win
                         if n_obs == n_win:
                             seen = past_fixings[obs_lo + n_obs - 1].unsqueeze(1)
-                        p = torch.where(K > decided, 1.0, 0.0)
+                        p = torch.where(autocall_called(decided, thresh, strike), 0.0, 1.0)
                         put_p = p
                         if row_at[j] == 0.0:
                             # stamp the latch: the coupon's date IS this row, the decision is
