@@ -76,7 +76,6 @@ FACTORS = {
                           'Curve': utils.Curve([], [[46237.0, 80.0], [46602.0, 84.0]])},
     'ForwardPriceSample.FUEL': {'Offset': 0, 'Holiday_Calendar': '',
                                 'Sampling_Convention': 'ForwardPriceSampleDaily'},
-    'ReferenceVol.FUEL': {'ForwardPriceVol': 'FUEL', 'ReferencePrice': 'FUEL'},
     'CommodityPriceVol.FUEL': {
         'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
         'Surface': utils.Curve([], [[m, t, 0.30] for m in (0.5, 1.0, 1.5)

@@ -282,21 +282,23 @@ def test_a_commodity_digital_paid_in_another_currency_is_a_compo_or_a_quanto():
     with the pair's; under Quanto the local forward is carried by `-rho sigma_S sigma_X` and the
     EUR payoff is paid at one. The correlation is read under the name the energy family declares,
     `Correlation.FxRate.USD.EUR/ReferencePrice.OIL.USD`, oriented local to payoff, so +0.35 is
-    +0.35. The commodity smile is the collinear skew and the
+    +0.35, and the deal's reference registers it beside the pair's vol: each document validates
+    with no factor missing. The commodity smile is the collinear skew and the
     FX surface flat, so every read is exact: the compo's local vol at the translated strike's
     moneyness, which is the composed forward over the EUR strike, the quanto's at the local
     forward's with the ATM vol in its carry, and under the spread each leg composed at its own.
 
     Killing mutations: the correlation read with the equity's sorted-pair sign - the compo reads
     514.30 against 504.08; the strike untranslated under the compo, the local smile read at a EUR
-    level's moneyness - 486.92 against 504.08.
+    level's moneyness - 486.92 against 504.08; the correlation dropped from the forward's
+    conditional row, the compo priced uncorrelated - 509.67 against 504.08; a second type declared
+    on `Reference_Volatility` beside the surface, a block no document authors, named missing.
     """
     oil = 90.0
     factors = dict(RATES, **{
         'ReferencePrice.OIL': {'ForwardPrice': 'OIL',
                                'Fixing_Curve': utils.Curve([], [[40000.0, 40000.0], [60000.0, 60000.0]])},
         'ForwardPrice.OIL': {'Currency': 'USD', 'Curve': utils.Curve([], [[40000.0, oil], [60000.0, oil]])},
-        'ReferenceVol.OIL': {'ForwardPriceVol': 'OIL', 'ReferencePrice': 'OIL'},
         'CommodityPriceVol.OIL': _surface(VOL_ATM, SKEW),
         'FXVol.EUR.USD': _surface(FX_SIGMA, 0.0),
         'Correlation.FxRate.USD.EUR/ReferencePrice.OIL.USD': {'Value': CORR}})
@@ -322,7 +324,11 @@ def test_a_commodity_digital_paid_in_another_currency_is_a_compo_or_a_quanto():
             ({'Strike_Price': strike_usd, 'Payoff_Type': 'Quanto'}, None, quanto),
             ({'Strike_Price': strike_eur, 'Payoff_Type': 'Compo'},
              {'CommodityDigitalOption': {'Relative_Digital_Spread': EPS}}, spread)):
-        out, _ = _run(_job([dict(deal, **terms)], factors, valuation=valuation))
+        job = _job([dict(deal, **terms)], factors, valuation=valuation)
+        cx = derivus.Context()
+        cx.load_json((json.dumps(job, cls=CustomJsonEncoder), 'digital'))
+        assert cx.validate()['factors'] == [], (terms, cx.validate()['factors'])
+        out, _ = _run(job)
         assert abs(_mtm(out, 'CDG') - expected) / expected < 1e-9, (terms, _mtm(out, 'CDG'), expected)
 
 

@@ -1018,7 +1018,7 @@ COMMODITY_TOUCH = own('CommodityOneTouchOption', [
     BARRIER_SIDE,
     F('Expiry_Date', 'Date', default='', settles=Cash('Currency')),
     F('Reference_Type', 'Text', default='', factors=['ReferencePrice']),
-    F('Reference_Volatility', 'Text', default='', factors=['ReferenceVol', 'CommodityPriceVol'])
+    F('Reference_Volatility', 'Text', default='', factors=['CommodityPriceVol'])
 ])
 
 FX_TOUCH = own('FXOneTouchOption', [

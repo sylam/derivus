@@ -369,8 +369,6 @@ def traverse_dependents(x, adj):
 dependant_fields = {'FxRate': [('Interest_Rate', 'InterestRate')],
                     'ForwardPrice': [('Currency', 'FxRate')],
                     'ReferencePrice': [('ForwardPrice', 'ForwardPrice')],
-                    'ReferenceVol': [('ForwardPriceVol', 'ForwardPriceVol'),
-                                     ('ReferencePrice', 'ReferencePrice')],
                     'InflationRate': [('Price_Index', 'PriceIndex')],
                     'CommodityPrice': [('Interest_Rate', 'InterestRate'),
                                        ('Forward_Rate', 'ForwardRate'), ('Currency', 'FxRate')],
@@ -379,16 +377,16 @@ dependant_fields = {'FxRate': [('Interest_Rate', 'InterestRate')],
 #: conditional fields need to potentially include correlation and fx vol surfaces (e.g. reference
 #: prices). Each reads the instrument, its own loaded block and the whole `params` the walk is over
 conditional_fields = {
-    'ReferenceVol': lambda instrument, factor_fields, params:
-    [utils.Factor('Correlation', tuple('FxRate.{0}.{1}/ReferencePrice.{2}.{0}'.format(
-        params['Price Factors'][utils.check_tuple_name(utils.Factor(
-            'ForwardPrice', (instrument.field['Reference_Type'],)))]
-        ['Currency'], instrument.field['Currency'], instrument.field['Reference_Type']).split('.')))] if
-    instrument.field['Currency'] != params['Price Factors'][utils.check_tuple_name(
-        utils.Factor('ForwardPrice', (instrument.field['Reference_Type'],)))]['Currency'] else [],
-    'ForwardPrice': lambda instrument, factor_fields, params: [utils.Factor('FXVol', tuple(
-        sorted([instrument.field['Currency'], factor_fields['Currency']])))] if
-    instrument.field['Currency'] != factor_fields['Currency'] else [],
+    # a compo or quanto paid off a reference's forward in another currency, as `check_option_data`
+    # reads it: the pair's vol and its correlation with the reference, named local to payoff. Only
+    # a stated `Reference_Type` reaches a ForwardPrice, through `dependant_fields['ReferencePrice']`
+    'ForwardPrice': lambda instrument, factor_fields, params: [
+        utils.Factor('FXVol', tuple(sorted([instrument.field['Currency'], factor_fields['Currency']]))),
+        utils.Factor('Correlation', tuple('FxRate.{0}.{1}/ReferencePrice.{2}.{0}'.format(
+            factor_fields['Currency'], instrument.field['Currency'],
+            instrument.field['Reference_Type']).split('.')))
+        ] if instrument.payoff_type != 'Standard'
+        and instrument.field['Currency'] != factor_fields['Currency'] else [],
     # SpotModel params, plus a quanto or compo payoff's pair vol and correlation. Keyed on the
     # UNDERLYING like ForwardPrice above; the surface these two name is the CURRENCY PAIR's, so
     # it is an FXVol whatever asset class the underlying belongs to.

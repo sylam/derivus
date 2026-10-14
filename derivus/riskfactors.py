@@ -818,25 +818,6 @@ class ForwardPriceSample(Factor0D):
         return self.param.get('Sampling_Convention')
 
 
-class ReferenceVol(object):
-    """Pairs a forward-price vol space with the reference-price lookup it is quoted against."""
-    fields = [
-        F('ForwardPriceVol', 'Text', default='',
-          description='Name of the ForwardPriceVol price factor to use'),
-        F('ReferencePrice', 'Text', default='',
-          description='Name of the ReferencePrice price factor that defines the reference lookup')
-    ]
-
-    def __init__(self, param):
-        self.param = param
-
-    def get_forwardprice_vol(self):
-        return utils.check_rate_name(self.param['ForwardPriceVol'])
-
-    def get_forwardprice(self):
-        return utils.check_rate_name(self.param['ReferencePrice'])
-
-
 class InterestRateJacobian(object):
     def __init__(self, param):
         self.param = param

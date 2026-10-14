@@ -149,7 +149,7 @@ Partition = namedtuple('Partition', 'DealMTMs Collateral_Cash Funding_Cost Cashf
 Collateral = namedtuple('Collateral', 'Haircut Amount Currency Funding_Rate Collateral_Rate Collateral')
 
 # define 1, 2 and 3d risk factors - add more as development proceeds
-DimensionLessFactors = ['ReferenceVol', 'Correlation']
+DimensionLessFactors = ['Correlation']
 OneDimensionalFactors = ['InterestRate', 'InflationRate', 'DividendRate', 'SurvivalProb', 'ForwardPrice', 'ForwardRate']
 #: Every (moneyness, expiry) vol surface: ONE implementation, `riskfactors.VolatilityGrid`, with an
 #: asset-class TAG per member, so the risk-class partition below is a pure function of the type.
@@ -167,7 +167,7 @@ FactorRiskClass = {
     'EquityPrice': 'Equity', 'EquityPriceVol': 'Equity', 'DividendRate': 'Equity',
     'CommodityPrice': 'Commodity', 'CommodityPriceVol': 'Commodity', 'FuturesPrice': 'Commodity',
     'ForwardPrice': 'Commodity', 'ForwardRate': 'Commodity', 'ForwardPriceVol': 'Commodity',
-    'ForwardPriceSample': 'Commodity', 'ReferencePrice': 'Commodity', 'ReferenceVol': 'Commodity',
+    'ForwardPriceSample': 'Commodity', 'ReferencePrice': 'Commodity',
     'CSForwardPriceModelParameters': 'Commodity',
     'SurvivalProb': 'Credit',
     'Correlation': 'CrossClass', 'ObservedBasis': 'CrossClass',

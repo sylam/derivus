@@ -4808,7 +4808,7 @@ class CommodityDigitalOption(Deal):
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Reference_Type', 'Text', default='', factors=['ReferencePrice']),
-        F('Reference_Volatility', 'Text', default='', factors=['ReferenceVol', 'CommodityPriceVol']),
+        F('Reference_Volatility', 'Text', default='', factors=['CommodityPriceVol']),
         EXPIRY_PRINT
     ])]
 
@@ -7176,7 +7176,7 @@ class EnergySingleOption(Deal):
         F('FX_Realized_Average', 'Float', default=0.0),
         F('Volume', 'Float', default=0.0, sized=True),
         F('Reference_Type', 'Text', default='', factors=['ReferencePrice']),
-        F('Reference_Volatility', 'Text', default='', factors=['ReferenceVol', 'CommodityPriceVol']),
+        F('Reference_Volatility', 'Text', default='', factors=['CommodityPriceVol']),
         F('Payoff_Type', 'Text', default='Compo', convention=True, values=['Compo', 'Quanto']),
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate'])
     ])]

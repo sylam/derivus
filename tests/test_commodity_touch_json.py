@@ -31,7 +31,6 @@ def reference(name, fixing_curve=IDENTITY):
         'ReferencePrice.' + name: {'Fixing_Curve': fixing_curve, 'ForwardPrice': name},
         'ForwardPrice.' + name: {'Currency': 'USD', 'Curve': utils.Curve(
             [], [[BASE, SPOT], [EXPIRY, SPOT * np.exp(CARRY * YEARS)]])},
-        'ReferenceVol.' + name: {'ForwardPriceVol': name, 'ReferencePrice': name},
         'CommodityPriceVol.' + name: book.world()['EquityPriceVol.EQ']}
 
 
