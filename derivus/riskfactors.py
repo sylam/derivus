@@ -414,20 +414,42 @@ class Factor2D(object):
         return [[x, T, vol] for T, nodes in grid.items()
                 for x, vol in zip(nodes, cls.malz_sigma(skews[T], T, nodes))]
 
+    @staticmethod
+    def svi_variance(x, a, b, rho, m, sigma):
+        """An SVI slice's variance at log-moneyness `x` - its vol squared, not its total variance."""
+        return a + b * (rho * (x - m) + np.sqrt((x - m) ** 2 + sigma ** 2))
+
+    @classmethod
+    def vol_point(cls, block, point):
+        """What a point of vol adds to the level column a vol surface `block` holds: the point on a
+        vol column, `(vol + point)^2 - vol^2` on an SVI slice's variance `a`, `vol` the slice's
+        at-the-money vol."""
+        if block.get('Surface_Type', 'Explicit') != 'SVI':
+            return point
+        vol = np.sqrt(cls.svi_variance(0.0, *(block[x].array[:, 1] for x in cls.svi_params[1:])))
+        return point * (2.0 * vol + point)
+
     @classmethod
     def augmented(cls, block, years):
         """`block`, a vol surface, with a pillar at each expiry of `years` it lacks, read off its
         own interpolation in expiry so it prices as it stood: linear in vol on an Explicit surface,
         in variance on a Malz one - solved first, its bootstrapped form - and in each parameter on
-        a Skew one, which reproduces its central regions and not, between two pillars, its wings."""
-        if block.get('Surface_Type', 'Explicit') == 'Skew':
+        a Skew one, which reproduces its central regions and not, between two pillars, its wings.
+        Between two slices an SVI surface blends their variances, which no slice is, so it gains
+        a slice only past either end, where it reads its edge slice."""
+        surface = block.get('Surface_Type', 'Explicit')
+        if surface == 'SVI':
+            tenors = block['a'].array[:, 0]
+            years = [t for t in years if t < tenors[0] or t > tenors[-1]]
+        parameters = {'Skew': cls.skew_params, 'SVI': cls.svi_params}.get(surface)
+        if parameters:
             def augment(curve):
                 rows = curve.array
                 return utils.Curve(curve.meta, rows.tolist() + [
                     [t, np.interp(t, rows[:, 0], rows[:, 1])] for t in years if t not in rows[:, 0]])
 
-            return dict(block, **{name: augment(block[name]) for name in cls.skew_params})
-        variance = block.get('Surface_Type') == 'Malz'
+            return dict(block, **{name: augment(block[name]) for name in parameters})
+        variance = surface == 'Malz'
         if variance and 'Delta_Surface' in block:
             deltas = block['Delta_Surface'].array
             skews = cls.malz_skews(deltas, np.unique(deltas[:, 1]))
@@ -500,8 +522,7 @@ class Factor2D(object):
                 # loop over params and calculate the vols
                 for t, atm_ref, a, b, rho, m, sigma in np.array(
                         [self.get_tenor()] + [self.param[x].array[:, 1] for x in self.svi_params]).T:
-                    x = (tenors - m)
-                    variance = a + b * (rho * x + np.sqrt(x ** 2 + sigma ** 2))
+                    variance = self.svi_variance(tenors, a, b, rho, m, sigma)
                     surf.extend([[m, t, v] for m, v in zip(tenors, np.sqrt(variance))])
                 return utils.Curve([2, 'default'], surf)
 

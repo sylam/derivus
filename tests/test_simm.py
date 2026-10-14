@@ -398,6 +398,77 @@ def test_vega_lands_on_the_options_own_expiry(months, split):
     assert sum(vega.values()) == pytest.approx(worth(0.01) - base, rel=5e-3)
 
 
+def svi(tenors, **slices):
+    """A USDZAR SVI surface, a slice per tenor: `slices` names each of `a`, `b`, `rho`, `m` and
+    `sigma` per slice, the variance at log-moneyness x `a + b(rho(x - m) + sqrt((x - m)^2 +
+    sigma^2))`."""
+    return dict({'Surface_Type': 'SVI', 'Moneyness_Rule': 'Sticky_Moneyness',
+                 'ATM_Ref': utils.Curve([], [[t, SPOT] for t in tenors])}, **{
+        name: utils.Curve([], [[t, value] for t, value in zip(tenors, values)])
+        for name, values in slices.items()})
+
+
+@pytest.mark.parametrize('days, label', [(14, '2w'), (365, '1y'), (1095, '3y')])
+def test_a_flat_svi_surface_moves_as_the_explicit_surface_stating_its_vol(days, label):
+    """An SVI surface with no smile, `b` 0, at one vol on slices at 6m, 1y and 2y is the Explicit
+    surface stating that vol, and a point of vega moves the two alike: a vanilla expiring on a
+    vertex - before the first slice, on one, past the last - writes one vega row on that vertex on
+    either, the same to 1e-12, the option priced in closed form. Each slice's `a` moves by
+    what moves its vol by the point, and the surface gains a slice at each vertex past either
+    end, where it reads its edge slice.
+
+    Killing mutations: the level shift dropped - the SVI writes no vega row; no slice added past
+    the ends - the 2w and 3y options' vega lands on 6m and 2y.
+    """
+    tenors, vol = (0.5, 1.0, 2.0), 0.15
+    flat = svi(tenors, a=[vol ** 2] * 3, b=[0.0] * 3, rho=[0.0] * 3, m=[0.0] * 3, sigma=[0.1] * 3)
+    explicit = dict(factors()['FXVol.USD.ZAR'], Surface=utils.Curve(
+        [], [[m, t, vol] for m in (0.8, 1.0, 1.2) for t in tenors]))
+    option = {'Expiry_Date': BASE + pd.DateOffset(days=days)}
+    vega = [rows(world(option=option, extra={'FXVol.USD.ZAR': surface}).run_job()[1], 'FXO',
+                 'Risk_FXVol') for surface in (flat, explicit)]
+    assert set(vega[0]) == set(vega[1]) == {label}, vega
+    assert vega[0][label] == pytest.approx(vega[1][label], rel=1e-12)
+
+
+def test_an_svi_vertex_moves_the_slices_its_tent_reaches_off_the_standing_surface():
+    """Between two slices an SVI surface blends their variances, which no slice is, so a vertex
+    there inserts none: its point moves the `a` of each slice its tent reaches by what moves that
+    slice's at-the-money vol by the point times the tent, and the row is taken off the surface as
+    it stands. On a smile sliced at 0.04, 0.4, 0.8 and 1.5 years, a 0.6-year call struck over the
+    forward writes 3m, 6m and 1y rows, each a base valuation of the same book on the surface so
+    moved less its standing value, to 1e-9.
+
+    Killing mutation: a slice inserted at the 6m vertex off each parameter's own interpolation,
+    as a Skew surface gains one - the call's base moves by 0.24% and its vega lands on 6m and 1y
+    alone, the 6m row 1,656 against 1,023.
+    """
+    tenors = (0.04, 0.4, 0.8, 1.5)
+    smile = svi(tenors, a=[0.020, 0.018, 0.017, 0.016], b=[0.08, 0.06, 0.05, 0.04],
+                rho=[-0.5, -0.4, -0.35, -0.3], m=[0.02, 0.03, 0.04, 0.05],
+                sigma=[0.10, 0.15, 0.20, 0.25])
+    option = {'Expiry_Date': BASE + pd.DateOffset(days=219), 'Strike_Price': 21.0}
+    vega = rows(world(option=option, extra={'FXVol.USD.ZAR': smile}).run_job()[1], 'FXO',
+                'Risk_FXVol')
+
+    def worth(a):
+        moved = dict(smile, a=utils.Curve([], list(zip(tenors, a))))
+        return valued(world(VALUATION, option=option, configuration={},
+                            extra={'FXVol.USD.ZAR': moved}))['FXO']
+
+    a, b, rho, m, sigma = (smile[name].array[:, 1] for name in ('a', 'b', 'rho', 'm', 'sigma'))
+    atm = np.sqrt(a + b * (rho * -m + np.sqrt(m ** 2 + sigma ** 2)))
+    vertices = list(zip(('2w', '1m', '3m', '6m', '1y', '2y'),
+                        (14 / 365.0, 1 / 12.0, 0.25, 0.5, 1.0, 2.0)))
+    base = worth(a)
+    assert set(vega) == {'3m', '6m', '1y'}, vega
+    for label, amount in vega.items():
+        point = 0.01 * np.array([dict(utils.vertex_weights(t, vertices)).get(label, 0.0)
+                                 for t in tenors])
+        assert amount == pytest.approx(worth((atm + point) ** 2 - atm ** 2 + a) - base,
+                                       rel=1e-9), label
+
+
 def test_a_curve_discounting_on_another_gets_a_fra_in_front():
     """`knot_prices` on a forecast curve discounting on the overnight one: its front knot, inside
     one float period, is a FRA from the base date projecting off the curve being solved - a deposit

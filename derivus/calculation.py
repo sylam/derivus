@@ -3747,7 +3747,9 @@ class SIMM(Calculation):
     node of a cross-currency basis; a percent of a spot or of a currency's price in the calculation
     currency; and a point of vol in a TENT on each vertex - the surface given a pillar at every
     vertex expiry it lacks, read off its own interpolation, then each vertex alone moved, so an
-    option's vega lands on its own expiry and the rows sum to the parallel move. Where the rows
+    option's vega lands on its own expiry and the rows sum to the parallel move. An SVI surface
+    gains a slice only past its ends (`Factor2D.augmented`), so an option expiring between two
+    slices has its vega land on the vertices whose tents reach them. Where the rows
     land - risk type, qualifier, bucket, labels - and a trade's product class are the bank's
     `Mapping`, held to `utils.FactorRiskClass`; the vertices are the regime's `Parameters`; the
     regimes margin is posted and collected under are the agreement's own terms, declared on the
@@ -3762,14 +3764,16 @@ class SIMM(Calculation):
     #: a basis point on each benchmark quote of the curve's block or on every node of a basis, a
     #: percent of a currency's price in the calculation currency or of a spot, a point of vol per
     #: vertex; the curve benchmarks quoted as a price, which no basis point moves; and per
-    #: `Surface_Type` the block a point of vega moves and the column its expiry is in, the vol
-    #: being the last - a Skew smile is added to its ATM level, so moving the level holds its skew.
+    #: `Surface_Type` the block a point of vega moves and the column its expiry is in, the level
+    #: being the last - a Skew smile is added to its ATM level, so moving the level holds its skew,
+    #: and the factor owns what a point adds to a level (`Factor2D.vol_point`).
     MOVES = {'Risk_IRCurve': ('InterestRate', 'quote'),
              'Risk_XCcyBasis': ('InterestRate', 'parallel'),
              'Risk_FX': ('FX', 'fx'), 'Risk_Equity': ('Equity', 'spot'),
              'Risk_FXVol': ('FX', 'vega'), 'Risk_EquityVol': ('Equity', 'vega')}
     OUTRIGHTS = ('FXForwardDeal',)
-    VOL_PILLARS = {'Skew': ('ATM_Vol', 0), 'Malz': ('Surface', 1), 'Explicit': ('Surface', 1)}
+    VOL_PILLARS = {'Skew': ('ATM_Vol', 0), 'Malz': ('Surface', 1), 'Explicit': ('Surface', 1),
+                   'SVI': ('a', 0)}
     #: What the margin calculation reads off a CRIF, in the order it is written, `Amount` in the
     #: calculation currency.
     CRIF_COLUMNS = ('TradeID', 'Counterparty', 'PostRegulations', 'CollectRegulations',
@@ -4073,9 +4077,10 @@ class SIMM(Calculation):
                 block = self.move(('augmented', name))[name]
                 held, column = self.VOL_PILLARS[block.get('Surface_Type', 'Explicit')]
                 rows = block[held].array.copy()
-                rows[:, -1] += self.params['Vol_Shift'] * 0.01 * np.array([dict(
+                point = self.params['Vol_Shift'] * 0.01 * np.array([dict(
                     utils.vertex_weights(t, self.vertices)).get(move[2], 0.0)
                     for t in rows[:, column]])
+                rows[:, -1] += riskfactors.Factor2D.vol_point(block, point)
                 moved = {name: dict(block, **{held: utils.Curve(block[held].meta, rows)})}
             self.moved[move] = moved
         return self.moved[move]
