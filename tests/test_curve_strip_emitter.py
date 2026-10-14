@@ -1045,7 +1045,7 @@ def test_a_standing_block_stating_every_convention_is_reauthored_once():
         declared = declared_deal_fields(row['DealType'])
         row['Deal'] = dict({key: value for key, value in ir_curve.DECLARED.items()
                             if key in declared}, **row['Deal'])
-    assert sum(len(row['Deal']) for row in standing['instrument']['Points']) == 132
+    assert sum(len(row['Deal']) for row in standing['instrument']['Points']) == 133
     assert sum(len(row['Deal']) for row in block['instrument']['Points']) == 45
 
     document = job_document()

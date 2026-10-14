@@ -2372,6 +2372,8 @@ class DepositDeal(Deal):
         F('Payment_Frequency', 'Period', default='3M', convention=True),
         F('Interest_Frequency', 'Period', default='3M', convention=True),
         F('Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
+        F('Compounding_Method', 'Text', default='None', convention=True,
+          values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
         F('FX_Reset_Offset', 'Integer', default=0, convention=True),
         F('Known_FX_Rates', 'DateList', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float')])),
@@ -2456,7 +2458,7 @@ class DepositDeal(Deal):
 
         field_index['Cashflows'] = cashflows
         field_index['Compounding'] = self.field['Compounding'] == 'Yes'
-        field_index['CompoundingMethod'] = self.field.get('Compounding_Method', 'None')
+        field_index['CompoundingMethod'] = self.field['Compounding_Method']
 
         return field_index
 
@@ -5820,7 +5822,7 @@ class FXPartialTimeBarrierOption(Deal):
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXPartialTimeBarrierOption', [
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
-        F('Payoff_Currency', 'Text', default='', convention=True),
+        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Barrier_Price', 'Float', default=0.0,
           description=FX_AXIS.format('Barrier price')),
         F('Barrier_Type', 'Text', default='Down_And_In',

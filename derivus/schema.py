@@ -473,8 +473,8 @@ def unreadable(deal):
     """Whether any value this deal carries is not what its own declaration says it must be.
 
     What a walk over a deal's dates and amounts cannot be taken over: a date that stayed a string
-    compares against no Timestamp, a string amount concatenates. A REQUIRED field left out is not
-    one of these - it is absent, and every reader tests the value rather than the key.
+    compares against no Timestamp, a string amount concatenates. A field left out is not one of
+    these - it is absent, and the walk leaves out a deal whose dates read one by name.
     """
     declared = declared_fields(type(deal))
     return any(value_message(declared[key], value)
@@ -1200,10 +1200,9 @@ QUOTE_TWO_WAY = [
       description='The bid side of this quote, in the same unit as the mid, optional and never '
                   'read by the fit'),
     F('Quoted_Ask', 'Float',
-      description='The offer side, the pair of Quoted_Bid, and optional on the same terms'),
+      description='The offer side, the pair of Quoted_Bid, optional and never read by the fit'),
     F('Timestamp', 'Date', default='',
-      description='When this quote was seen, the contract\'s own last print, stored and reported '
-                  'but never read by the fit')]
+      description='When this quote was seen, stored and reported but never read by the fit')]
 
 
 # ---------------------------------------------------------------------------------------

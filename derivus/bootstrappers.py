@@ -5171,16 +5171,7 @@ class InterestRateCurveParameters(Construction):
               F('Quoted_Market_Value', 'Float', default=0.0,
                 description='The quote, in the unit its DealType reads: percent for a rate '
                             'benchmark, the outright in Buy_Currency per unit of '
-                            'Sell_Currency for an FXForwardDeal'),
-              F('Quoted_Bid', 'Float',
-                description='The bid side of this quote, in the same unit as the mid; optional '
-                            'and never read by the solve'),
-              F('Quoted_Ask', 'Float',
-                description='The offer side, the pair of Quoted_Bid; optional '
-                            'and never read by the solve'),
-              F('Timestamp', 'Date', default='',
-                description='When this quote was observed; stored and reported, never read '
-                            'by the solve')],
+                            'Sell_Currency for an FXForwardDeal')] + QUOTE_TWO_WAY,
           description='One market quote: an instrument, what kind of number is quoted, the number, '
                       'its two-way sides where the source printed them, and when it was seen')
     ]
@@ -5779,16 +5770,7 @@ class FXVolSurfaceParameters(Construction):
                           'wing pair\'s average over ATM)'),
             F('Quoted_Market_Value', 'Float',
               description='The quote, in the surface\'s own units: 0.12 for 12 vols, and a risk '
-                          'reversal of -0.35 vols is -0.0035'),
-            F('Quoted_Bid', 'Float',
-              description='The bid side of this quote, in the surface\'s own units; optional and '
-                          'never read by the surface or its marks'),
-            F('Quoted_Ask', 'Float',
-              description='The offer side, the pair of Quoted_Bid, which a structure reads to '
-                          'quote a client two-sided and without which it quotes at mid'),
-            F('Timestamp', 'Date', default='',
-              description='When this quote was observed; stored and reported, the surface carrying '
-                          'the latest, and never read by pricing')]),
+                          'reversal of -0.35 vols is -0.0035')] + QUOTE_TWO_WAY),
           description='One quote: an expiry, a delta pillar, what kind of number is quoted, the '
                       'number, and when it was seen')
     ]

@@ -759,6 +759,42 @@ def test_an_equity_option_omitting_its_surface_is_refused_by_name_and_does_not_p
     assert block['Reference'] not in marks([omitted])[0]
 
 
+def test_a_share_omitting_its_currency_is_refused_by_name_and_the_want_list_walks_on():
+    """`EquityDeal.reset` reads the share's `Currency` by name, so a share omitting it raised in the
+    factor walk and `validate` died on `KeyError: 'Currency'`. The want-list walk leaves such a deal
+    out, its declarations naming the field: `validate` answers by name, and the option booked after
+    the share still reaches its surface.
+
+    Killing mutation: the want-list walk re-raising a deal's `KeyError`, under which `validate`
+    raises."""
+    share, key = BLANKED[1]
+    context = derivus.Context()
+    context.load_json((json.dumps(book([{k: v for k, v in share.items() if k != key}, BLANKED[0][0]]),
+                                  cls=CustomJsonEncoder), 'omitted'))
+    assert context.validate() == {'deals': {'SHR': ['Currency is not stated']}, 'factors': [],
+                                  'calculation': []}
+    assert 'EquityPriceVol.EQ' in context.describe()['factors']['resolved']
+
+
+def test_a_partial_time_barrier_paid_in_a_third_currency_reaches_its_rate():
+    """A partial-time barrier on EUR/USD paid in sterling settles in sterling, so discovery reaches
+    the pound's rate and its curve, as for every type declaring a `Payoff_Currency`; unreached, a
+    collateralised set converting that settlement was skipped on `Cannot find FxRate.GBP`.
+
+    Killing mutation: the barrier's `Payoff_Currency` declared without `factors=['FxRate']`, under
+    which neither is discovered."""
+    deal = fx_leg('FXPartialTimeBarrierOption', 'PKO', Expiry_Date=WORLD_EXPIRY, Payoff_Currency='GBP',
+                  Barrier_Type='Down_And_Out', Barrier_Price=1.15,
+                  Barrier_Limit_Date=WORLD_BASE + pd.DateOffset(months=6))
+    job = book([deal])
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update({
+        'FxRate.GBP': {'Domestic_Currency': None, 'Interest_Rate': 'GBP', 'Spot': 1.3},
+        'InterestRate.GBP': dict(FACTORS['InterestRate.USD'], Currency='GBP')})
+    context = derivus.Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'sterling'))
+    assert {'FxRate.GBP', 'InterestRate.GBP'} <= set(context.describe()['factors']['resolved'])
+
+
 def test_a_calculation_omitting_a_blank_default_is_refused_unless_the_blank_means_none():
     """A calculation is completed before it is judged, so a placeholder declared blank completes to
     a blank that states nothing: a hedging run omitting its `Base_Date` is refused by name, and one
@@ -980,7 +1016,7 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
             dropped(child) for child in deal.get('Children', ()))
 
     lean, full = [stripped(deal) for deal in BOOK], [furnished(deal) for deal in BOOK]
-    assert sum(dropped(deal) for deal in BOOK) == 168
+    assert sum(dropped(deal) for deal in BOOK) == 170
 
     lean_marks, lean_stats = marks(lean)
     full_marks, full_stats = marks(full)

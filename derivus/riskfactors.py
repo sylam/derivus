@@ -690,7 +690,7 @@ class PriceIndex(Factor0D):
         F('Next_Publication_Date', 'Date', default=''),
         F('Last_Period_Start', 'Date', default=''),
         F('Publication_Period', 'Text', default='Monthly', values=['Monthly', 'Quarterly']),
-        F('Currency', 'Text', default='')
+        F('Currency', 'Text', default='', description='The currency this factor is denominated in')
     ]
 
     def __init__(self, param):
@@ -728,7 +728,7 @@ class EquityPrice(Factor0D):
         F('Issuer', 'Text', default=''),
         F('Respect_Default', 'Text', default='Yes', values=['Yes', 'No']),
         F('Jump_Level', 'Percent', default=0.0),
-        F('Currency', 'Text', default=''),
+        F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Interest_Rate', 'Text', default='', description='The equity repo curve'),
         F('Spot', 'Float', default=0.0, bind='value',
           description='Spot price in the specified Currency')
@@ -756,7 +756,7 @@ class CommodityPrice(EquityPrice):
     fields = [
         F('Spot', 'Float', default=0.0, bind='value',
           description='Spot price in the specified Currency'),
-        F('Currency', 'Text', default=''),
+        F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Interest_Rate', 'Text', default='',
           description='The repo/lease (carry funding) curve'),
         F('Forward_Rate', 'Text', default='',
@@ -870,7 +870,7 @@ class DividendRate(Factor1D):
     Represents the Dividend Yield risk factor
     """
     fields = [
-        F('Currency', 'Text', default=''),
+        F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Curve', 'Curve', bind='value', description='Continuous dividend yield')
     ]
 
@@ -964,7 +964,7 @@ class InterestRate(Factor1D):
         F('Day_Count', 'Text', default='ACT_365', description='Daycount convention for this curve',
           values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
         F('Accrual_Calendar', 'Text', default=''),
-        F('Currency', 'Text', default='', description='The associated currency for this curve'),
+        F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Curve', 'Curve', bind='value', description='Continuously compounded interest rate'),
         F('Near_Interpolation', 'Text', default='',
           description='Interpolation to use up to Near Date, when the near end is quoted differently'),
@@ -1003,7 +1003,7 @@ class InflationRate(Factor1D):
         F('Day_Count', 'Text', default='ACT_365', description='Daycount convention for this curve',
           values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
         F('Accrual_Calendar', 'Text', default=''),
-        F('Currency', 'Text', default='', description='The associated currency for this curve'),
+        F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Curve', 'Curve', bind='value', description='Continuously compounded inflation growth rate')
     ]
 
@@ -1025,7 +1025,7 @@ class ForwardPrice(Factor1D):
     Used to represent things like Futures prices on OIL/GOLD/Platinum etc.
     """
     fields = [
-        F('Currency', 'Text', default='', description='The associated currency for this curve'),
+        F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Curve', 'Curve', bind='value',
           description='(excel date, price) pairs giving the forward price at each contract expiry'),
         F('Fixings', 'Text', default='')
@@ -1054,7 +1054,7 @@ class ForwardRate(ForwardPrice):
     curvature term wherever a contract trades in front of the first knot."""
     interpolation_methods = ('Linear', 'LinearExtrapolate')
     fields = [
-        F('Currency', 'Text', default='', description='The associated currency for this curve'),
+        F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Curve', 'Curve', bind='value',
           description='(excel date, rate) pairs giving the rate at each contract expiry')
     ]
@@ -1488,7 +1488,7 @@ VOL_SURFACE = [
     F('rho', 'Curve', description='Skew and SVI parameter'),
     F('m', 'Curve', description='SVI parameter'),
     F('sigma', 'Curve', description='SVI parameter'),
-    F('Currency', 'Text', default=''),
+    F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
     # bind='value' because it TRAVELS WITH THE VOLS: a tick delivers new numbers and the time
     # it saw them, and a stamp that invalidated the plan would recompile on every tick
     F('Quote_Timestamp', 'Date', default='', bind='value',

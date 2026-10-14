@@ -1500,8 +1500,10 @@ class HullWhite1FactorInterestRateModel(StochasticProcess):
         F('Alpha', 'Float', default=0.0),
         F('Lambda', 'Float', default=0.0),
         F('Sigma', 'Curve'),
-        F('Quanto_FX_Correlation', 'Float', default=0.0),
-        F('Quanto_FX_Volatility', 'Curve')
+        F('Quanto_FX_Correlation', 'Float', default=0.0,
+          description='Correlation between the factor and the payoff-currency FX rate'),
+        F('Quanto_FX_Volatility', 'Curve',
+          description='Vol of the payoff-currency FX rate, read only when quanto')
     ]
 
     def __init__(self, factor, param, implied_factor=None):

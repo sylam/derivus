@@ -887,7 +887,8 @@ class Config(object):
         A deal whose values are not what it declares they are is left out of the walk
         (`readable`): discovery reads the block's own dates and amounts, so a bare-string date or a
         string amount dies inside it, and a want-list is a question only a readable block can be
-        asked. A deal merely MISSING a required field is walked and still reports what it lacks.
+        asked. A deal merely MISSING a field it must state is walked and still reports what it
+        lacks, unless its dates read that field by name, which raises: then it is left out too.
 
         A `Calculation` block its declarations refuse is not walked either - the walk cannot name a
         report currency the block does not state - so both halves are empty and its messages come
@@ -941,8 +942,9 @@ class Config(object):
         Keyed by the deal's `Reference`, with the walk position appended where that is blank or
         repeated. A deal whose VALUES are not what it declares them to be does not reach the factor
         walk (`factor_universe`) - discovery reads the block's own dates and amounts, and one that
-        never parsed is what it died on - and neither does any deal under a refused calculation.
-        Nothing here raises, and a message never stops a deal pricing.
+        never parsed is what it died on - nor does one whose dates read a field it omits, which its
+        messages name, nor any deal under a refused calculation. Nothing here raises, and a message
+        never stops a deal pricing.
         """
         deals, nameless = {}, self.nameless_deals()
         for position, instrument in enumerate(self.walk_deals()):
@@ -996,8 +998,9 @@ class Config(object):
         discovered happily and fails later, in `construct_factor`. Reads the market data, writes
         nothing.
 
-        `readable` walks only the deals whose values are what their declarations say - what
-        `factor_universe` asks, a run asking over the book as it is.
+        `readable` walks only the deals whose values are what their declarations say and whose
+        dates read no field they omit - what `factor_universe` asks, a run asking over the book as
+        it is.
         """
         def update_nested_rates(factor, rates_to_add):
             # tail periods take the mapped nested type, linked to their parent prefix; a type switch
@@ -1162,29 +1165,30 @@ class Config(object):
                         readable and schema.unreadable(instrument)):
                     continue
 
-                children.append(instrument)
-
                 if node.get('Children'):
                     node_children, node_resets, node_settlements = walk_groups(
                         node['Children'], price_factors, factor_tenors)
+                else:
+                    node_children, node_resets, node_settlements = None, resets, settlement_currencies
 
+                try:
                     instrument.reset(self.holidays)
+                except KeyError:
+                    # its dates read a field it omits, which its declarations name to `validate`
+                    if readable:
+                        continue
+                    raise
 
-                    if calc_dates:
-                        instrument.finalize_dates(
-                            self.parse_grid, base_date, base_MTM_dates, node_children, node_resets, node_settlements)
-                    get_price_factors(price_factors, factor_tenors, instrument)
+                children.append(instrument)
+                if calc_dates:
+                    instrument.finalize_dates(
+                        self.parse_grid, base_date, base_MTM_dates, node_children, node_resets, node_settlements)
+                get_price_factors(price_factors, factor_tenors, instrument)
 
+                if node_children is not None:
                     resets.update(node_resets)
                     for key, value in node_settlements.items():
                         settlement_currencies.setdefault(key, set()).update(value)
-                else:
-                    instrument.reset(self.holidays)
-
-                    if calc_dates:
-                        instrument.finalize_dates(
-                            self.parse_grid, base_date, base_MTM_dates, None, resets, settlement_currencies)
-                    get_price_factors(price_factors, factor_tenors, instrument)
 
             return children, resets, settlement_currencies
 
