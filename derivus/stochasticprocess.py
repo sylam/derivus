@@ -498,6 +498,10 @@ REVEAL_SUFFICIENT = 'sufficient'
 class StochasticProcess(object):
     """Base class for all stochastic processes"""
 
+    #: The types this process reads on an equity it drives beyond the equity's own block, each on
+    #: the equity's name - registered by discovery wherever `Model Configuration` names the process
+    reads = ()
+
     def __init__(self, factor, param):
         self.factor = factor
         self.param = param
@@ -806,6 +810,7 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         ])
 
     factor_types = ('EquityPrice', 'FxRate')
+    reads = ('DividendRate',)
     fields = [
         F('Risk_Premium', 'Curve')
     ]
@@ -6064,6 +6069,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         'declared row and a cross-factor correlation is realised as it is declared.'])
 
     factor_types = ('EquityPrice', 'FxRate')
+    reads = ('DividendRate',)
     fields = []
 
     #: The pricer's own mixer draw and shock stream, bound here as methods: outer == inner ==

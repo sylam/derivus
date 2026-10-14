@@ -393,6 +393,7 @@ conditional_fields = {
     # UNDERLYING like ForwardPrice above; the surface these two name is the CURRENCY PAIR's, so
     # it is an FXVol whatever asset class the underlying belongs to.
     'EquityPrice': lambda instrument, factor_fields, params:
+    process_reads(instrument.field.get('Equity'), factor_fields, params) +
     ([utils.spot_model_factor(instrument.options['SpotModel'],
                               utils.check_rate_name(instrument.field['Equity']))]
      if instrument.options.get('SpotModel', 'None') != 'None'
@@ -431,6 +432,22 @@ def spot_model_factors(instrument, params):
                                             utils.check_rate_name(
                                                 params['System Parameters']['Base_Currency'])))]
     except (ValueError, KeyError):
+        return []
+
+
+def process_reads(equity, block, params):
+    """What the process `Model Configuration` names for `equity`'s primary declares it reads there
+    (`StochasticProcess.reads`), as factors on the primary, or `[]`.
+
+    NEVER REFUSES, as `spot_model_factors`: a name no process answers to is `find_models`' refusal.
+    """
+    if not equity:
+        return []
+    primary = utils.Factor('EquityPrice', utils.check_rate_name(equity)[:1])
+    try:
+        model = params['Model Configuration'].search(primary, block)
+        return [utils.Factor(kind, primary.name) for kind in process_class(model).reads] if model else []
+    except ValueError:
         return []
 
 
@@ -1137,11 +1154,17 @@ class Config(object):
 
                 reval_dates = instrument.get_reval_dates()
                 max_reval = max(reval_dates) if reval_dates else None
+                # a field stating a type on its own names what the deal reads in place of the one
+                # riding its spot, which is then none of this deal's factors
+                stated = {kinds[0] for key, kinds in instrument.factor_fields.items()
+                          if len(kinds) == 1 and utils.get_fieldname(key, instrument.field)}
                 for field_name, factor_types in instrument.factor_fields.items():
                     # a type declared beside a composable spot is the spot's own, on its primary
                     spot = any(kind in utils.BASIS_COMPOSABLE_TYPES for kind in factor_types)
                     for factor_type in factor_types:
                         companion = spot and factor_type not in utils.BASIS_COMPOSABLE_TYPES
+                        if companion and factor_type in stated:
+                            continue
                         for factor in iter_factors(field_name, factor_type, companion):
                             if max_reval is not None:
                                 rate_tenors.setdefault(factor, set()).add(max_reval)

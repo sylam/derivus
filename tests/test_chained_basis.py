@@ -237,25 +237,37 @@ def test_a_composed_equity_reads_the_dividend_curve_it_states_whole():
     """An equity option on the composed `EQ.ADR` stating `Dividends: EQ.ADR` reads that curve,
     whole, and its twin stating none reads the primary's `DividendRate.EQ`: at 4% against the
     primary's 1% the two mark apart, and the stated one marks to the bit what the twin marks once
-    the primary's curve is the 4% one.
+    the primary's curve is the 4% one. Alone in a world holding no `DividendRate.EQ`, the stated
+    option's universe holds its own curve and neither resolves nor names missing the primary's, and
+    its booking verdict names no factor.
 
     Killing mutations: `get_dividend_rate_factor` truncating the name it is handed to its first
     period - the stated option reads `DividendRate.EQ` and marks its twin's value; the option's
     fallback naming the whole equity - the twin reads `DividendRate.EQ.ADR`, which discovery never
-    registers, and is skipped.
+    registers, and is skipped; discovery registering the curve riding the equity whatever the deal
+    states - `DividendRate.EQ` named missing.
     """
     _, _, name, tail, block = COMPOSED['EquityPrice']
     deal = next(deal for deal in trials.CORE.DEALS if deal['Reference'] == 'EQO')
     curve = {'Floor': None, 'Currency': 'USD', 'Curve': utils.Curve([], [[0.0, 0.04], [5.0, 0.04]])}
 
-    def marks(dividends, *deals):
-        return trials.marks(trials.document(SimpleNamespace(
-            DEALS=list(deals), CONFIGURATION={}, FACTORS={tail + '.' + name: block, dividends: curve})))
+    def document(dividends, *deals):
+        return trials.document(SimpleNamespace(
+            DEALS=list(deals), CONFIGURATION={}, FACTORS={tail + '.' + name: block, dividends: curve}))
 
     stated = dict(deal, Reference='STATED', Equity=name, Dividends=name)
     primary = dict(deal, Reference='PRIMARY', Equity=name)
-    apart, alike = marks('DividendRate.' + name, stated, primary), marks('DividendRate.EQ', primary)
+    apart = trials.marks(document('DividendRate.' + name, stated, primary))
+    alike = trials.marks(document('DividendRate.EQ', primary))
     assert apart['STATED'] == alike['PRIMARY'] != apart['PRIMARY'], (apart, alike)
+
+    job = document('DividendRate.' + name, stated)
+    del job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['DividendRate.EQ']
+    context = rf.Context().load_json((json.dumps(job), 'stated'))
+    described = context.describe()['factors']
+    assert 'DividendRate.' + name in described['resolved'], described
+    assert 'DividendRate.EQ' not in set(described['resolved']) | set(described['missing']), described
+    assert not context.validate()['factors'], context.validate()
 
 
 @pytest.mark.parametrize('head,reference,field', [

@@ -1,6 +1,8 @@
 """`GBMAssetPriceTSModelParameters`: a vol surface's ATM column as the instantaneous vol curve
 `GBMAssetPriceTSModelImplied` integrates, built by a job document's bootstrap and read back as the
-process reads it - piecewise linear between knots, flat outside, its square integrated exactly."""
+process reads it - piecewise linear between knots, flat outside, its square integrated exactly. And
+the carry the process drifts an equity on: its dividend curve, in the universe of every credit
+Monte Carlo simulating the equity whatever its deals read."""
 import json
 import os
 import sys
@@ -11,6 +13,8 @@ import numpy as np
 import pytest
 
 import derivus
+import test_declared_defaults as book
+import test_position_scaling as trials
 from derivus import utils
 from derivus.config import CustomJsonEncoder
 
@@ -67,3 +71,38 @@ def test_a_falling_total_variance_is_repaired_to_a_zero_vol():
     knots = built([0.5, 1.0, 2.0], [0.30, 0.20, 0.10])
     assert knots[1:, 1].tolist() == [0.0] * 4
     assert implied(knots, 2.0) == pytest.approx(0.30 * np.sqrt((0.5 + 1.0 / 365.0 / 3.0) / 2.0), rel=1e-12)
+
+
+@pytest.mark.parametrize('reference,stated', [('EQO', {'Dividends': 'OWN'}), ('EQS', {})],
+                         ids=['option stating its dividends', 'holding'])
+def test_a_simulated_equity_holds_the_dividend_curve_its_process_reads(reference, stated):
+    """The declared-defaults `EQ` simulated under `GBMAssetPriceTSModelImplied`, which drifts it on
+    its own dividend curve, in a credit Monte Carlo whose one deal is the trial option valued off the
+    `DividendRate.OWN` it states, or the trial holding, which names no dividend curve: the universe
+    holds `DividendRate.EQ` beside what the deal names, the booking verdict is clean, and the run
+    values the deal.
+
+    Killing mutation: the process's `reads` dropped - neither deal registers `DividendRate.EQ`, and
+    the run stops at "Cannot find DividendRate.EQ".
+    """
+    deal = next(dict(deal, **stated) for family in trials.FAMILIES.values()
+                for deal in family.DEALS if deal['Reference'] == reference)
+    job = json.loads(json.dumps(book.book([deal]), cls=CustomJsonEncoder))
+    job['Calc']['Calculation'] = dict(
+        job['Calc']['Calculation'], Object='CreditMonteCarlo', Time_Grid='0d 3m(3m)',
+        Batch_Size=256, Deflation_Interest_Rate='USD')
+    market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors'].update({
+        'DividendRate.OWN': {'Floor': None, 'Currency': 'USD', 'Curve': {'.Curve': {
+            'meta': [], 'data': [[0.0, 0.04], [5.0, 0.04]]}}},
+        'GBMAssetPriceTSModelParameters.EQ': {
+            'Quanto_FX_Volatility': None, 'Quanto_FX_Correlation': 0.0,
+            'Vol': {'.Curve': {'meta': [], 'data': [[0.0, 0.2], [5.0, 0.2]]}}}})
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'EquityPrice': 'GBMAssetPriceTSModelImplied'}, 'modelfilters': {}}}
+    context = derivus.Context().load_json((json.dumps(job), 'simulated'))
+    named = {'DividendRate.EQ', 'DividendRate.' + stated.get('Dividends', 'EQ')}
+    assert named <= set(context.describe()['factors']['resolved']), context.describe()
+    assert context.validate() == {'deals': {}, 'factors': [], 'calculation': []}, context.validate()
+    _, out = context.run_job()
+    assert out['Stats'].get('Deals Skipped', 0) == 0 and len(out['Results']['mtm']), out['Stats']
