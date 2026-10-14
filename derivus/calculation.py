@@ -2757,7 +2757,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default=REQUIRED),
         F('Time_Grid', 'Text', default='0d 1d(1d) 4m'),
-        F('Calendar', 'Text', default='',
+        F('Calendar', 'Text', default='', convention=True,
           description='Holiday calendar naming the business day the roll steps on'),
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
@@ -2784,7 +2784,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         F('Scenario_Factors', 'Container', default=[],
           description='Price factors no deal reaches but the scenario set must simulate, named '
                       'as `type.name` strings'),
-        F('Observed_Scenario', 'Text', default='',
+        F('Observed_Scenario', 'Text', default='', convention=True,
           description='Path to an npz of realized factor paths that replace the simulated draw'),
         F('Hedging_Problem', 'Container', default={},
           description='The hedging problem itself - tradables, liabilities, objective, solver',
@@ -3817,9 +3817,8 @@ class SIMM(Calculation):
         from .bootstrappers import market_prices_for
 
         params = declared_defaults(type(self), self.judged(params))
-        missing = [] if params['Base_Date'] else ['Base_Date']
-        missing += ['a non-zero ' + name for name in ('Rate_Shift', 'Spot_Shift', 'Vol_Shift')
-                    if not params[name]]
+        missing = ['a non-zero ' + name for name in ('Rate_Shift', 'Spot_Shift', 'Vol_Shift')
+                   if not params[name]]
         if missing:
             raise ValueError('SIMM: the calculation states no {}'.format(', '.join(missing)))
         self.params = params

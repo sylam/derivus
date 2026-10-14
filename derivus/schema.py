@@ -474,17 +474,17 @@ def validate_block(cls, block):
 
     The declarations give the fields an author MUST STATE and what every authored value has to BE.
     A REQUIRED field is missing when FALSY, having no default to be confused with; a PLACEHOLDER -
-    any other declared default the class does not call a convention - is missing when it is ABSENT
-    OR NULL, because `Swap_Rate: 0.0` is a rate a benchmark states while a null is what a front end
-    round-trips for nothing at all, and `Swap_Rate` unsaid is a swap with no fixed leg. A falsy
-    value is checked against nothing else, having nothing to state.
+    any other declared default the class does not call a convention - is missing when it is ABSENT,
+    NULL OR A BLANK STRING, because `Swap_Rate: 0.0` is a rate a benchmark states while a null or a
+    blank is what a front end round-trips for an empty box, and `Swap_Rate` unsaid is a swap with no
+    fixed leg. A falsy value is checked against nothing else, having nothing to state.
     """
     messages = []
     for key, field in declared_fields(cls).items():
         value = block.get(key)
         if not value and field.default is REQUIRED:
             message = '{} is required'.format(key)
-        elif value is None and field.default is not None and not field.convention:
+        elif value in (None, '') and field.default is not None and not field.convention:
             message = '{} is not stated'.format(key)
         else:
             message = value_message(field, value)
@@ -954,7 +954,8 @@ EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', 'Equity option', [
     F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
     F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
     F('Strike_Price', 'Float', default=0.0),
-    F('Dividends', 'Text', default='', convention=True, obj='Tuple', factors=['DividendRate'])
+    F('Dividends', 'Text', default='', convention=True, obj='Tuple', factors=['DividendRate'],
+      description='The dividend curve the option reads, the base equity\'s own when blank')
 ])
 
 #: The print an option's expiry fixed at, `[[Expiry_Date, print]]` - stated where the expiry is

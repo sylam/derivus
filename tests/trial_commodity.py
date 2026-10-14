@@ -43,7 +43,7 @@ DEALS = [
          Carry='METAL_CARRY', Units=250.0, Fixed_Price=990.0, Settlement_Date=paid(5),
          Sampling_Data=[[month(-1), 1005.0, 1.0]] + [[month(n), 0.0, 1.0] for n in range(1, 7)]),
     dict(FUEL, Object='FloatingEnergyDeal', Reference='FUEL_FLOAT', Payer_Receiver='Receiver',
-         Reference_Volatility='', Payments={'Items': [
+         Payments={'Items': [
              dict(period(n), Payment_Date=paid(n), Volume=5000.0 * n, Fixed_Basis=2.5,
                   Price_Multiplier=1.0, Realized_Average=0.0, FX_Realized_Average=0.0)
              for n in (2, 3)]}),

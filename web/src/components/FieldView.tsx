@@ -144,7 +144,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
             </div>
           ) : (
             <FieldRow key={key} name={key} descriptor={descriptor} value={value}
-                      stated={values[key] !== undefined && values[key] !== null}
+                      stated={values[key] !== undefined && values[key] !== null && values[key] !== ''}
                       declared={!!descriptor || !undeclared.includes(key)}
                       onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
                         ? onAmend : undefined} />
@@ -157,10 +157,10 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
 
 /** `stated` is whether the DOCUMENT says this key, which is not whether the row has a value: a
  * field that must be stated shows what it would default to, and the red `*` is the difference
- * between a term the author wrote and a placeholder standing in for one. A `null` is what a form
- * round-trips for nothing, so it is not a statement here either - which is what the engine's own
- * booking verdict says. `required` is the Instrument store's reading, MUST BE STATED; on every
- * other store it is still `default=REQUIRED`, and this panel renders both. */
+ * between a term the author wrote and a placeholder standing in for one. A `null` or a blank is
+ * what a form round-trips for nothing, so it is not a statement here either - which is what the
+ * engine's own booking verdict says. `required` is the Instrument store's reading, MUST BE
+ * STATED; on every other store it is still `default=REQUIRED`, and this panel renders both. */
 function FieldRow({ name, descriptor, value, stated, declared, onAmend }: {
   name: string; descriptor?: Descriptor; value: unknown; stated?: boolean; declared: boolean;
   onAmend?: AmendField;

@@ -31,7 +31,7 @@ What follows from that order:
 
 | Rule | Why |
 |---|---|
-| `Base_Date` must be stated, as a date | the runners read it before any default applies; its declared default is blank |
+| `Base_Date` must be stated, as a date | the runners read it before any default applies; its declared default is blank, which `cx.validate()` names as not stated |
 | `Currency` must be stated | it is the currency the run reports in, and no default names one: a block stating none is refused at step 5 |
 | The valuation date of `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` is `Run_Date` | step 1 copies it from the document's `Base_Date`, so an override must name `Run_Date`: overriding `Base_Date` alone does not move the date. `SIMM` reads `Base_Date` itself |
 | `CreditMonteCarlo` reads its grid from `Time_grid`, `HedgeMonteCarlo` from `Time_Grid` | so an override of the grid names `Time_grid` for the first and `Time_Grid` for the second |

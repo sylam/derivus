@@ -689,12 +689,63 @@ def test_a_deal_is_refused_a_blank_or_missing_currency(block):
     one books.
 
     Killing mutation: the pricing block's `Currency` declared with a blank placeholder, under which
-    a blank currency books."""
+    neither is refused as required."""
     def said(stated):
         return schema.validate_instrument(construct_instrument(dict(stated), {}))
     assert said(block) == []
     assert 'Currency is required' in said(dict(block, Currency=''))
     assert 'Currency is required' in said({k: v for k, v in block.items() if k != 'Currency'})
+
+
+#: Two placeholders a front end round-trips blank, each on a deal stating its other terms: an
+#: option's surface and a share's currency.
+BLANKED = [
+    ({'Object': 'EquityOptionDeal', 'Reference': 'OPT', 'Currency': 'USD', 'Discount_Rate': 'USD',
+      'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+      'Strike_Price': 100.0, 'Units': 10.0, 'Expiry_Date': WORLD_EXPIRY}, 'Equity_Volatility'),
+    ({'Object': 'EquityDeal', 'Reference': 'SHR', 'Currency': 'USD', 'Equity': 'EQ',
+      'Buy_Sell': 'Buy', 'Units': 10.0, 'Investment_Horizon': WORLD_EXPIRY}, 'Currency')]
+
+
+@pytest.mark.parametrize('block,key', BLANKED, ids=[block['Object'] for block, _ in BLANKED])
+def test_a_placeholder_stated_blank_is_refused_by_name_and_does_not_price(block, key):
+    """A placeholder stated as the blank a front end sends for an empty box states nothing: the
+    deal is refused by name at booking and the run leaves it no row, while the same deal stating
+    the field books clean and marks.
+
+    Killing mutation: `schema.validate_block` taking a placeholder as unstated on `value is None`
+    alone, under which the blank books clean and the run skips it."""
+    def refused(stated):
+        context = derivus.Context()
+        context.load_json((json.dumps(book([stated]), cls=CustomJsonEncoder), 'blank'))
+        return context.validate()['deals']
+
+    reference, blank = block['Reference'], dict(block, **{key: ''})
+    assert refused(block) == {} and reference in marks([block])[0]
+    assert refused(blank) == {reference: ['{} is not stated'.format(key)]}
+    assert reference not in marks([blank])[0]
+
+
+def test_a_calculation_omitting_a_blank_default_is_refused_unless_the_blank_means_none():
+    """A calculation is completed before it is judged, so a placeholder declared blank completes to
+    a blank that states nothing: a hedging run omitting its `Base_Date` is refused by name, and one
+    omitting its `Calendar` or `Observed_Scenario`, whose blank means none, is judged clean.
+
+    Killing mutations: `schema.validate_block` taking a placeholder as unstated on `value is None`
+    alone, under which the block omitting its date is judged clean and `validate` dies in the factor
+    walk on `KeyError: 'Base_Date'`; either of the two declared without `convention=True`, under
+    which omitting it is refused as not stated."""
+    def refused(*omitted):
+        with open(os.path.join(FIXTURES, 'policy_test_simulate_only.json')) as f:
+            document = json.load(f)
+        for key in omitted:
+            document['Calc']['Calculation'].pop(key, None)
+        context = derivus.Context()
+        context.load_json((json.dumps(document), 'hedge'))
+        return context.validate()['calculation']
+
+    assert refused('Calendar', 'Observed_Scenario') == []
+    assert refused('Base_Date') == ['Base_Date is not stated']
 
 
 #: The three types whose equity surface only a compo or quanto reads, each stated in full, beside

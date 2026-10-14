@@ -112,7 +112,7 @@ class ConstructMarkdown(object):
     #: What a stated default MEANS differs by store, so every generated page opens with its own.
     STORE_NOTES = {
         'Instrument': (
-            'A **Required** field must be stated: `validate()` reports one that is missing, and the '
+            'A **Required** field must be stated: `validate()` reports one missing or blank, and the '
             'deal is never completed from the panel value shown. Every other field is a convention: '
             'omitted, it reads as its default. An undeclared key is kept in the block but read by '
             'nothing, so a misspelt convention silently takes its default.'),

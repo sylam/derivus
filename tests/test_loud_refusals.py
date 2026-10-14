@@ -257,7 +257,7 @@ XCCY_FACTORS = {
 ENERGY_LEG = {'Instrument': {'.Deal': {
     'Object': 'FloatingEnergyDeal', 'Reference': 'PLAT_FEB26', 'Currency': 'USD',
     'Payoff_Currency': 'USD', 'Sampling_Type': 'USD', 'FX_Sampling_Type': '', 'Commodity': '',
-    'Discount_Rate': 'USD-SOFR', 'Reference_Type': 'PLATINUM', 'Reference_Volatility': '',
+    'Discount_Rate': 'USD-SOFR', 'Reference_Type': 'PLATINUM',
     'Payer_Receiver': 'Receiver', 'Average_FX': 'No', 'Payments': {'Items': [{
         'Payment_Date': pd.Timestamp('2026-03-05'), 'Period_Start': pd.Timestamp('2025-12-15'),
         'Period_End': pd.Timestamp('2026-02-27'), 'Volume': 2500.0, 'Fixed_Basis': -1600.0,

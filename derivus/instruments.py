@@ -7008,7 +7008,7 @@ class FloatingEnergyDeal(Deal):
     vernacular = 'floating energy leg, floating-price energy swap'
     fields = [ADMIN, PRICING, own('FloatingEnergyDeal', [
         F('Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
-        F('FX_Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
+        F('FX_Sampling_Type', 'Text', default='', convention=True, obj='Tuple', factors=['ForwardPriceSample']),
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),
         F('Energy_Cashflows', 'Container', default={'Items': []}, description='Payments', json_name='Payments',
@@ -7019,7 +7019,6 @@ class FloatingEnergyDeal(Deal):
                   F('Realized_Average_Date', 'Date'), F('Realized_Average', 'Float'), F('FX_Period_Start', 'Date'),
                   F('FX_Period_End', 'Date'), F('FX_Realized_Average', 'Float')]))]),
         F('Reference_Type', 'Text', default='', obj='Tuple', factors=['ReferencePrice']),
-        F('Reference_Volatility', 'Text', default='', obj='Tuple'),
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Commodity', 'Text', default='', obj='Tuple', factors=['CommodityPrice'])
     ])]
@@ -7159,7 +7158,7 @@ class EnergySingleOption(Deal):
     fields = [ADMIN, PRICING, own('EnergySingleOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
-        F('FX_Sampling_Type', 'Text', default='', obj='Tuple', factors=['ForwardPriceSample']),
+        F('FX_Sampling_Type', 'Text', default='', convention=True, obj='Tuple', factors=['ForwardPriceSample']),
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Settlement_Date', 'Date', default=''),
         F('Period_Start', 'Date', default=''),
