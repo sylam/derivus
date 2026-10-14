@@ -1438,7 +1438,7 @@ def test_what_a_client_cannot_be_quoted_refuses_before_a_leg_is_priced(book):
             structures.quote(book, 'ZeroCostCollar', ask)
         refusals[label] = str(refusal.value)
 
-    assert refusals['none'].startswith('ZeroCostCollar states no pair, expiry, notional')
+    assert refusals['none'].startswith('pair is required; expiry is required; notional is required')
     assert refusals['unquoted'].startswith('EURZAR is not a pair this book quotes')
     assert 'USDZAR' in refusals['unquoted']
     assert 'on or before the base date' in refusals['expired']
@@ -2390,17 +2390,21 @@ def test_what_a_variation_takes_is_required_and_what_no_form_takes_refuses(book)
     invisible. A parameter belonging to the OTHER variation is the selection rule's to refuse, in
     its own words, which is a different sentence about a different mistake.
 
-    Killing mutation: a parameter no form takes accepted in silence.
+    And a value is judged as a deal's is (`schema.validate_block`): a notional posted as text is
+    no number, whatever `float` would make of it.
+
+    Killing mutations: a parameter no form takes accepted in silence; the ticket's values judged
+    against nothing, under which the text notional quotes.
     """
-    with pytest.raises(ValueError, match='Seagull states no upper_cap'):
+    with pytest.raises(ValueError, match='upper_cap is required'):
         structures.declared(structures.Seagull, params(cap=SPOT * 1.02))
-    with pytest.raises(ValueError, match='ForwardExtra states no cap'):
+    with pytest.raises(ValueError, match='cap is required'):
         structures.quote(book, 'ForwardExtra', params(buy_currency='USD'))
 
     with pytest.raises(ValueError) as unknown:
         structures.quote(book, 'Accumulator', dict(
             accrual_params(knockout=SPOT * 1.10), leverage_ratio=3.0))
-    assert 'Accumulator takes no leverage_ratio' in str(unknown.value)
+    assert 'Accumulator declares no leverage_ratio' in str(unknown.value)
     assert 'leverage' in str(unknown.value), 'a refusal that never says what it does take'
 
     # and the roster is the whole vocabulary, the OTHER variation's level included - a client on a
@@ -2414,8 +2418,10 @@ def test_what_a_variation_takes_is_required_and_what_no_form_takes_refuses(book)
     with pytest.raises(ValueError) as pointless:
         structures.quote(book, 'Strangle', dict(
             params(floor=SPOT * 0.95, cap=SPOT * 1.05), buy_currency='JPY'))
-    assert 'Strangle takes no buy_currency' in str(pointless.value)
+    assert 'Strangle declares no buy_currency' in str(pointless.value)
     assert 'floor' in str(pointless.value) and 'cap' in str(pointless.value)
+    with pytest.raises(ValueError, match="notional must be a number, not '1e6'"):
+        structures.declared(structures.Straddle, params(strike=SPOT, notional='1e6'))
 
 
 def test_a_stated_level_on_the_dead_side_of_its_own_direction_refuses(accrual_book):

@@ -415,7 +415,7 @@ class TargetRedemptionForward(Structure):
               F('target', 'Float', default=REQUIRED,
                 description='The accrual cap that redeems the strip, in the PAIR\'s own units - '
                             '1.5 on USDZAR is 1.50 rand of cumulative favourable move'),
-              F('leverage', 'Float', default=2.0,
+              F('leverage', 'Float', default=2.0, convention=True,
                 description='The loss-side gearing: how many notionals the client deals on an '
                             'unfavourable fixing, against one on a favourable one')]
     variations = {'buy': Variation('base', [], [
@@ -450,7 +450,7 @@ class Accumulator(Structure):
                             'Base_Date to the tenor'),
               Structure.strike('knockout',
                                'The level that cancels the strip when a fixing observes it'),
-              F('leverage', 'Float', default=2.0,
+              F('leverage', 'Float', default=2.0, convention=True,
                 description='The loss-side gearing: how many notionals the client deals on an '
                             'unfavourable fixing, against one on a favourable one')]
     variations = {'buy': Variation('base', [], [
@@ -656,8 +656,8 @@ def variation_for(structure, params):
 
 
 def declared(structure, params):
-    """`params` completed by the structure's OWN declared defaults, or a refusal naming what is
-    missing beside everything the structure takes.
+    """`params` completed by the structure's OWN declared defaults, or a refusal naming what
+    `schema.validate_block` says they must state, else what `schema.stated_messages` says of them.
 
     Almost every parameter is `REQUIRED` - a strike a client did not name is a strike nobody
     agreed - and the SELECTED variation's own are required exactly as the shared ones are, here,
@@ -675,24 +675,18 @@ def declared(structure, params):
     nor the id they are hashed into, nor the pending file, nor the ticket.
     """
     fields = list(structure.fields)
-    missing = [f.key for f in fields if f.default is REQUIRED and not stated(params, f.key)]
-    if not missing:
+    if not schema.validate_block(schema.Group(structure.__name__, None, fields), params):
         variation = variation_for(structure, params)[1]
         fields += variation.fields if variation else []
-        missing = [f.key for f in fields if f.default is REQUIRED and not stated(params, f.key)]
-    if missing:
-        raise ValueError('{} states no {} - a structure is quoted on its declared parameters, and '
-                         'these carry no default'.format(structure.__name__, ', '.join(missing)))
     others = {f.key for form in getattr(structure, 'variations', {}).values()
               for f in form.fields}.difference(f.key for f in fields)
-    unknown = sorted(set(params).difference(others, (f.key for f in fields)))
-    if unknown:
-        raise ValueError('{} takes no {} - it is quoted on {}'.format(
-            structure.__name__, ', '.join(unknown),
-            ', '.join(sorted(others.union(f.key for f in fields)))))
-    declarations = {f.key: f.default for f in fields
-                    if f.default is not REQUIRED and f not in structure.SELECTORS}
-    return {key: value for key, value in dict(declarations, **params).items()
+    refused = (schema.validate_block(schema.Group(structure.__name__, None, fields), params)
+               or schema.stated_messages(structure.__name__, fields, params, others))
+    if refused:
+        raise ValueError('; '.join(refused))
+    completed = schema.declared_defaults(schema.Group(structure.__name__, None, [
+        f for f in fields if f not in structure.SELECTORS]), params)
+    return {key: value for key, value in completed.items()
             if stated(params, key) or key not in others}
 
 

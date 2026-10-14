@@ -29,7 +29,9 @@ anything runs, the block - overrides merged, completed as `declared_defaults` co
 judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a
 `ValueError` names every field it refuses at once: `run_baseval` and `run_cmc` judge the merged
 block, `HedgeMonteCarlo`, `SIMM` and the diary where they complete it. `Config.validate` reports the
-same messages under `calculation`, and a refused block is not walked for factors.
+same messages under `calculation`, and a refused block is not walked for factors. A service override
+is judged on what it states before it queues (`schema.stated_messages`), an undeclared key refused
+([Conventions](conventions.md#declared-defaults)).
 **Held by** `tests/test_loud_refusals.py::test_a_calculation_stating_no_currency_is_refused_by_name`.
 
 ## Compile phase 1 — `calculate_dependencies` {#compile-phase-1-calculate_dependencies}

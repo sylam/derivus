@@ -109,10 +109,10 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from . import (Context, bootstrappers, content_hash, instruments, riskfactors, solve_deal_field,
                spine, structures, utils)
-from .schema import (PRICES_KEY, mapping, deal_at, instrument_of, job_children, quote_plan,
-                     quote_stamps, remove_deal, settlement_days, sniff_indent, splice_deal, tables_of,
-                     tenor_fields, update_market_quote, validate_instrument, value_message,
-                     walk_job_deals)
+from .schema import (PRICES_KEY, mapping, deal_at, declared_fields, instrument_of, job_children,
+                     quote_plan, quote_stamps, remove_deal, settlement_days, sniff_indent,
+                     splice_deal, stated_messages, tables_of, tenor_fields, update_market_quote,
+                     validate_instrument, value_message, walk_job_deals)
 from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire
 from .instruments import construct_instrument
@@ -1338,33 +1338,27 @@ def booked_again(outcome, booked, written, what):
     return written, dict(outcome, _validated=outcome['validate'], **answer) if written else answer
 
 
-def judge_fields(owner, declared, stated):
-    """Refuse by name the first key of `stated` that `declared` does not declare, or a value outside
-    its menu - a container's own keys judged one level down against its sub-fields."""
-    for field, value in sorted(stated.items()):
-        if field not in declared:
-            raise ValueError('{} declares no {} - it declares {}'.format(
-                owner, field, ', '.join(sorted(declared))))
-        menu = declared[field].get('values')
-        if menu is not None and value not in menu:
-            raise ValueError('{} is {!r}, not one of {}'.format(field, value, ', '.join(menu)))
-        if declared[field].get('sub_fields') and isinstance(value, dict):
-            judge_fields(field, declared[field]['sub_fields'], value)
+def judge_calculation(calculation, stated):
+    """Refuse by name what the calculation `calculation` names declares against what `stated`
+    states, decoded as a run reads it (`schema.stated_messages`), `Object` being the type token."""
+    cls = calculation_class(calculation.get('Object'))
+    decoded = json.loads(json.dumps(stated), object_hook=lambda wire: decode_wire(
+        wire, lambda deal: deal))
+    refused = stated_messages(cls.calc_type, declared_fields(cls).values(), decoded, ('Object',))
+    if refused:
+        raise ValueError('; '.join(refused))
 
 
 def with_overrides(document, overrides):
-    """`calculation_overrides` merged into the book's `Calculation` block IN PLACE, each judged
-    against the calculation's OWN declarations: a field it does not declare, or a value outside
-    that field's menu, refuses by name.
+    """`calculation_overrides` merged into the book's `Calculation` block IN PLACE, judged against
+    the calculation's OWN declarations (`judge_calculation`).
 
     The class judged is the one the MERGED block names, so an override switching `Object` is read
     against the calculation it switches to. `Object` is the type token rather than a field of the
     type, so it is the one key judged by naming a calculation.
     """
     calculation = dict(document['Calc']['Calculation'], **overrides)
-    calc_type = calculation_class(calculation.get('Object')).calc_type
-    judge_fields(calc_type, mapping['Calculation']['types'][calc_type],
-                 {field: value for field, value in overrides.items() if field != 'Object'})
+    judge_calculation(calculation, overrides)
     document['Calc']['Calculation'] = calculation
 
 
@@ -1373,9 +1367,9 @@ def book_price(request: dict):
     """The what-if verb: `{deal?, parent_reference?, calculation_overrides?}` prices the book plus
     an optional candidate on an in-memory copy - the file never moves. Overrides merge into
     `Calc.Calculation` against the calculation's own declarations - an undeclared field or a value
-    outside its menu refuses 422 - so "with Greeks" or "as a CMC" needs no second write surface and
-    a misspelt dial is not silently ignored. Answers `{result_id, status}` exactly like `/execute`,
-    and the same content addressing applies: the same what-if twice is one run.
+    that is not what it declares refuses 422 - so "with Greeks" or "as a CMC" needs no second write
+    surface and a misspelt dial is not silently ignored. Answers `{result_id, status}` exactly like
+    `/execute`, and the same content addressing applies: the same what-if twice is one run.
 
     THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
     candidate naming market data the book does not carry would load and then be DROPPED by
@@ -1439,10 +1433,9 @@ def calculations():
 def save_calculation(request: dict):
     """`{name, calculation}` - the block kept under `name` in the desk's own file, a null
     `calculation` removing it. The block is judged against its own type's declarations before
-    anything is written - an unknown type, a field the type does not declare, a value outside a
-    field's menu, a container key its container does not declare - and a judged block is a normal
-    answer, `{written: false, refused: [...]}` with the file untouched, because the next move is to
-    fix what it names. Local to this workstation: the book and the record never move."""
+    anything is written (`judge_calculation`), and a judged block is a normal answer, `{written:
+    false, refused: [...]}` with the file untouched, because the next move is to fix what it names.
+    Local to this workstation: the book and the record never move."""
     name = str(request.get('name') or '').strip()
     if not name:
         raise HTTPException(422, 'a calculation is saved under a name - name it')
@@ -1452,9 +1445,7 @@ def save_calculation(request: dict):
         saved.pop(name, None)
     else:
         try:
-            calc_type = calculation_class(calculation.get('Object')).calc_type
-            judge_fields(calc_type, mapping['Calculation']['types'][calc_type], {
-                field: value for field, value in calculation.items() if field != 'Object'})
+            judge_calculation(calculation, calculation)
         except ValueError as error:
             return {'written': False, 'name': name, 'refused': [str(error)]}
         saved[name] = calculation

@@ -237,12 +237,12 @@ def resolve_discrete_barrier(deal, base_date, calendars, valuation_options, vani
         return deal
     if 'In' in barrier_type:
         return became(deal, vanilla_type, calendars, valuation_options,
-                      Settlement_Date=deal.field.get('Settlement_Date') or deal.field['Expiry_Date'],
+                      Settlement_Date=deal.field.read('Settlement_Date', deal.field['Expiry_Date']),
                       **vanilla)
     # the rebate is per DEAL and signed by Buy_Sell, which `FixedCashflowDeal` reads off `Amount`
     return became(deal, 'FixedCashflowDeal', calendars, valuation_options,
                   Currency=deal.payoff_ccy,
-                  Discount_Rate=deal.field['Discount_Rate'] or deal.field['Currency'],
+                  Discount_Rate=deal.field.read('Discount_Rate', deal.field['Currency']),
                   Amount=(1.0 if deal.field['Buy_Sell'] == 'Buy' else -1.0) *
                          float(deal.field.get('Cash_Rebate', 0.0)),
                   Payment_Date=hit_on)
@@ -417,8 +417,8 @@ def unnamed_surface(deal, paid_in):
     deal's own currency - that names no Equity_Volatility, which `equity_fx_correlation` refuses at
     compile; the surface is otherwise optional on a deal pricing no option of its own."""
     currency = deal.field.get('Currency')
-    crossed = (deal.field.get(paid_in) or currency) != currency
-    if deal.payoff_type != 'Standard' and crossed and not deal.field.get('Equity_Volatility'):
+    crossed = deal.field.read(paid_in, currency) != currency
+    if deal.payoff_type != 'Standard' and crossed and not deal.check_factor_name('Equity_Volatility'):
         yield 'Equity_Volatility is not stated, and a {} payoff reads the pair\'s correlation off it'.format(
             deal.payoff_type)
 
@@ -765,8 +765,8 @@ class Deal(object):
             self.settlement_currencies.setdefault(currency, set()).update(dates)
 
     def check_factor_name(self, key, otherwise=None):
-        """The factor `key` names, normalised to its tuple, or `otherwise` where it is blank."""
-        value = self.field[key]
+        """The factor `key` names (`DealFields.read`), normalised to its tuple, or `otherwise`."""
+        value = self.field.read(key)
         return utils.check_rate_name(value) if value else otherwise
 
     def closeout_window(self):
@@ -776,15 +776,13 @@ class Deal(object):
 
     @property
     def payoff_ccy(self):
-        """The currency the payoff is paid in: `Payoff_Currency` where it states one, an omitted key
-        and a blank alike reading the deal's own `Currency`."""
-        return self.field.get('Payoff_Currency') or self.field['Currency']
+        """The currency the payoff is paid in: `Payoff_Currency`, else the deal's own `Currency`."""
+        return self.field.read('Payoff_Currency', self.field['Currency'])
 
     @property
     def payoff_type(self):
-        """How the payoff reaches `payoff_ccy`: the `Payoff_Type` stated, else the convention the
-        type declares, else `Standard` for a type declaring none."""
-        return self.field.get('Payoff_Type') or self.field.declared.get('Payoff_Type', 'Standard')
+        """How the payoff reaches `payoff_ccy`: `Payoff_Type`, else `Standard`."""
+        return self.field.read('Payoff_Type', 'Standard')
 
     def add_settlement_dates(self):
         """Register every day the deal's own declaration settles on under the currency its `settles`
@@ -792,7 +790,7 @@ class Deal(object):
         marker names in its place."""
         for _, _, cash, _, day in settlement_days(self.field, declared_settlements(type(self))):
             if day is not None:
-                self.add_reval_dates({day}, self.field.get(cash.currency) or self.field['Currency'])
+                self.add_reval_dates({day}, self.field.read(cash.currency, self.field['Currency']))
 
     def get_reval_dates(self, clip_expiry=False):
         if clip_expiry and bool(self.settlement_currencies):
@@ -3908,8 +3906,7 @@ class EquityOptionDeal(Deal):
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
                  'Payoff_Currency': utils.check_rate_name(self.payoff_ccy),
-                 'Equity_Volatility': utils.check_rate_name(
-                     self.field['Equity_Volatility']) if self.field.get('Equity_Volatility') is not None else None}
+                 'Equity_Volatility': utils.check_rate_name(self.field['Equity_Volatility'])}
 
         expiry, settlement, forward_settlement = option_date_info(self, base_date, calendars)
         if self.path_dependent and self.field['Settlement_Date']:
@@ -3931,9 +3928,8 @@ class EquityOptionDeal(Deal):
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Dividend_Yield': get_dividend_rate_factor(
                 field['Dividends'], static_offsets, stochastic_offsets, all_tenors),
-            'Volatility': get_vol_factor('EquityPriceVol',
-                                         field['Equity_Volatility'], static_offsets,
-                                         stochastic_offsets, all_tenors) if field['Equity_Volatility'] else None,
+            'Volatility': get_vol_factor('EquityPriceVol', field['Equity_Volatility'], static_offsets,
+                                         stochastic_offsets, all_tenors),
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field.get('Buy_Sell', 'Buy') == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field.get('Option_Type', 'Call') == 'Call' else -1.0,
@@ -5306,8 +5302,7 @@ class EquityForwardDeal(Deal):
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Payoff_Currency': utils.check_rate_name(self.payoff_ccy),
                  'Equity': utils.check_rate_name(self.field['Equity']),
-                 'Equity_Volatility': utils.check_rate_name(
-                     self.field['Equity_Volatility']) if self.field.get('Equity_Volatility') else None}
+                 'Equity_Volatility': self.check_factor_name('Equity_Volatility')}
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
 
         field_index = {
@@ -5493,8 +5488,7 @@ class EquitySwapletListDeal(Deal):
                           calendars):
         field = {'Currency': utils.check_rate_name(self.field['Currency']),
                  'Equity': utils.check_rate_name(self.field['Equity']),
-                 'Equity_Volatility': utils.check_rate_name(
-                     self.field['Equity_Volatility']) if self.field.get('Equity_Volatility') else None}
+                 'Equity_Volatility': self.check_factor_name('Equity_Volatility')}
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
 
         current_spot = get_equity_spot(field['Equity'], static_offsets, stochastic_offsets, all_factors)
@@ -5584,10 +5578,8 @@ class EquitySwapLeg(Deal):
 
     def reset(self, calendars):
         super(EquitySwapLeg, self).reset()
-        # the declared blank IS the accrual calendar, so an omitted key and a stated '' are one
-        # document - a `.get` fallback here would make them two
         self.bus_pay_day = calendars.get(
-            self.field['Payment_Calendars'] or self.field['Accrual_Calendars'],
+            self.field.read('Payment_Calendars', self.field['Accrual_Calendars']),
             {'businessday': pd.offsets.BDay(1)})['businessday']
         paydates = {self.field['Maturity_Date'] + self.bus_pay_day * int(self.field['Payment_Offset'])}
         self.add_reval_dates(paydates, self.payoff_ccy)
@@ -5598,8 +5590,7 @@ class EquitySwapLeg(Deal):
             'Currency': utils.check_rate_name(self.field['Currency']),
             'Payoff_Currency': utils.check_rate_name(self.payoff_ccy),
             'Equity': utils.check_rate_name(self.field['Equity']),
-            'Equity_Volatility': utils.check_rate_name(
-                self.field['Equity_Volatility']) if self.field.get('Equity_Volatility') else None
+            'Equity_Volatility': self.check_factor_name('Equity_Volatility')
         }
 
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
@@ -6427,7 +6418,7 @@ class FXExtendableForwardDeal(Deal):
             raise ValueError('FXExtendableForwardDeal requires positive K1 and K2 strikes')
 
         style = str(self.field['Extension_Style']).strip().lower()
-        exercised_by = str(self.field.get('Exercised_By') or 'Bank').strip()
+        exercised_by = str(self.field.read('Exercised_By', 'Bank')).strip()
         if exercised_by not in ('Bank', 'Counterparty'):
             raise ValueError(
                 'Exercised_By must be Bank or Counterparty, not {!r} - book the mirror side as '
@@ -6853,7 +6844,7 @@ class DealDefaultSwap(Deal):
 
         self.add_reval_dates(self.resetdates, self.field['Currency'])
         # the upfront is paid on its own day, the premium leg's effective date where none is stated
-        self.upfront_day = self.field['Upfront_Date'] or self.field['Effective_Date']
+        self.upfront_day = self.field.read('Upfront_Date', self.field['Effective_Date'])
         if self.percent('Upfront'):
             self.add_reval_dates({self.upfront_day}, self.field['Currency'])
 

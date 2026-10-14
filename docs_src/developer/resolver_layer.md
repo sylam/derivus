@@ -4,7 +4,7 @@ The generic `get_*` layer in `instruments.py` is the **only** place a factor nam
 
 ## Name normalization
 
-`utils.check_rate_name` (a tuple is upper-cased; a dotted string is split as written) and `check_tuple_name` (its inverse) are the sole string↔tuple bridge; `check_tuple_name` also builds every fail-loud error string and every `Price Factors` / `Price Models` lookup key. `Deal.check_factor_name` reads a field through `check_rate_name`, answering a fallback where the field is blank. `BASIS_COMPOSABLE_TYPES`, derived from `utils.NESTED` as the heads whose tail is `ObservedBasis` (`FxRate`, `EquityPrice`, `CommodityPrice`), marks the 0D spot types whose name may carry a composed `primary + ObservedBasis…` chain.
+`utils.check_rate_name` (a tuple is upper-cased; a dotted string is split as written) and `check_tuple_name` (its inverse) are the sole string↔tuple bridge; `check_tuple_name` also builds every fail-loud error string and every `Price Factors` / `Price Models` lookup key. `Deal.check_factor_name` normalises through `check_rate_name` what `DealFields.read` reads, answering its fallback where the field names none ([Conventions](conventions.md#declared-defaults)). `BASIS_COMPOSABLE_TYPES`, derived from `utils.NESTED` as the heads whose tail is `ObservedBasis` (`FxRate`, `EquityPrice`, `CommodityPrice`), marks the 0D spot types whose name may carry a composed `primary + ObservedBasis…` chain.
 
 ## The code tuple
 

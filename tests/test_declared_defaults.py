@@ -726,6 +726,19 @@ def test_a_placeholder_stated_blank_is_refused_by_name_and_does_not_price(block,
     assert reference not in marks([blank])[0]
 
 
+def test_an_equity_option_omitting_its_surface_is_refused_by_name_and_does_not_price():
+    """The option base's `Equity_Volatility` is a placeholder the option reads by name: omitted, it
+    is refused by name at booking and the compile skips the option naming the field, leaving no row.
+
+    Killing mutation: `EquityOptionDeal` reading its surface behind a `.get` again, under which the
+    omitted option compiles to no surface and marks NaN."""
+    block, key = BLANKED[0]
+    omitted = {k: v for k, v in block.items() if k != key}
+    assert '{} is not stated'.format(key) in schema.validate_instrument(
+        construct_instrument(dict(omitted), {}))
+    assert block['Reference'] not in marks([omitted])[0]
+
+
 def test_a_calculation_omitting_a_blank_default_is_refused_unless_the_blank_means_none():
     """A calculation is completed before it is judged, so a placeholder declared blank completes to
     a blank that states nothing: a hedging run omitting its `Base_Date` is refused by name, and one

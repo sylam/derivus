@@ -74,8 +74,9 @@ consistent with everything the ticket states. `buy_currency` / `sell_currency` m
 pair and fix which side the client buys; a stated parameter that is some variation's own admits only
 the variations declaring it. None consistent refuses naming the contradiction; more than one refuses
 naming what to state — a structure quoted on the desk's guess of which way round it went is a
-booking nobody agreed. "Stated" is one predicate, `stated()`: a blank (`0.0`, `''`) is not a
-statement, because a front end round-trips unfilled fields that way. **Held by**
+booking nobody agreed. "Stated" is one predicate, `stated()`, the falsy rule a `REQUIRED` field is
+held to: a blank (`0.0`, `''`) is not a statement, because a front end round-trips unfilled fields
+that way. **Held by**
 `test_the_selection_rule_answers_every_way_a_ticket_can_state_it`, `test_a_blank_is_not_a_statement`.
 
 The selectors are published with no value and `selector: 'required' | 'optional'`, computed in
@@ -91,9 +92,10 @@ variation rather than the ticket, so the booking and the account of it agree.
 1. `check_netting_set` — a quote is for a client, and a client is a `NettingCollateralSet` (the CSA
    and the CVA projection live there), so a set the book does not carry refuses before anything is
    priced; then `margin_value`; then `declared()` completes the parameters from their declared
-   defaults and refuses a missing `REQUIRED` one (a strike the client did not name is a strike
-   nobody agreed) or a parameter no form takes (a misspelt gearing would quote at a default nobody
-   agreed).
+   defaults and refuses what the schema's judges say against them, as they say it of a deal: a
+   missing `REQUIRED` one (`schema.validate_block`: a strike the client did not name is a strike
+   nobody agreed), then a value that is not what its field declares or a parameter no form takes
+   (`schema.stated_messages`: a misspelt gearing would quote at a default nobody agreed).
 2. `materialize` turns each leg into a wire-form deal ([axes](#axes), [accruals](#accrual)).
 3. `run_recipe` runs the steps at mid. Each step prices one leg alone (`alone`: a deep copy of the
    book with its deal tree emptied and the calculation set by `priced_job`) — a leg's base-valuation
@@ -187,14 +189,16 @@ at the next valuation and nothing says so. A pin whose factor is no longer on th
 ### Refusals before anything prices
 
 A number a client could be handed for a trade nobody can book is worse than a refusal, so
-`materialize`, `declared` and `quote` refuse by name: a missing required or unknown parameter; a pair
-the book quotes no surface for (naming those it does — otherwise every leg is dropped at load); an
-expiry that does not parse or lands on or before the base date (a zero-day option); a non-positive
-notional (premiums with the sign reversed); a stated barrier on or through the spot on its own side
-(a level on the spot is through already, and a decumulator knocking out above the market solves an
-attractive rate for a strip that is dead where it stands); a TARF on the quote currency; a strip
-whose frequency does not divide its tenor; an unknown netting set; a margin in a currency with no
-`FxRate`; and a margin on a recipe solving more than one coordinate. **Held by**
+`materialize`, `declared` and `quote` refuse by name: a missing required or unknown parameter, or
+one that is not what it declares; a pair the book quotes no surface for (naming those it does —
+otherwise every leg is dropped at load); an expiry that does not parse or lands on or before the
+base date (a zero-day option); a non-positive notional (premiums with the sign reversed); a stated
+barrier on or through the spot on its own side (a level on the spot is through already, and a
+decumulator knocking out above the market solves an attractive rate for a strip that is dead where
+it stands); a TARF on the quote currency; a strip whose frequency does not divide its tenor; an
+unknown netting set; a margin in a currency with no `FxRate`; and a margin on a recipe solving more
+than one coordinate. **Held by**
+`test_what_a_variation_takes_is_required_and_what_no_form_takes_refuses`,
 `test_what_a_client_cannot_be_quoted_refuses_before_a_leg_is_priced`,
 `test_an_unparsed_tenor_refuses_rather_than_expiring_today`,
 `test_a_stated_level_on_the_dead_side_of_its_own_direction_refuses`,

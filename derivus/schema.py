@@ -425,6 +425,11 @@ class DealFields(dict):
         # deep-copied on first read, so a mutable default is this deal's own and never the class's
         return self.furnished.setdefault(key, copy.deepcopy(self.declared[key]))
 
+    def read(self, key, otherwise=None):
+        """What `key` states, else the convention its type declares, else `otherwise`: an omitted
+        key and a blank alike, on a type declaring the key or none."""
+        return self.get(key) or self.declared.get(key) or otherwise
+
 
 def value_message(field, value):
     """What one authored value gets wrong against its own declaration, or None.
@@ -481,6 +486,26 @@ def validate_block(cls, block):
         if message:
             messages.append(message)
     return messages
+
+
+def stated_messages(owner, fields, block, known=()):
+    """What `block` states that its declarations refuse: a key `owner` does not declare, nor
+    `known` admits, a blank where a menu wants a choice, a value that is not what its field
+    declares, and a container's keys against its children - the judge of a block laid over
+    another, whose absences are the other's."""
+    declared = {f.key: f for f in fields}
+    roster = ', '.join(sorted(set(declared).union(known)))
+    messages = ['{} declares no {} - it declares {}'.format(owner, key, roster)
+                for key in sorted(set(block).difference(declared, known))]
+    for key in sorted(set(block).intersection(declared)):
+        field, value = declared[key], block[key]
+        if field.sub_fields and isinstance(value, dict):
+            messages += stated_messages(key, field.sub_fields, value)
+        elif not value and field.values is not None:
+            messages.append('{} is blank, not one of {}'.format(key, ', '.join(field.values)))
+        else:
+            messages.append(value_message(field, value))
+    return [message for message in messages if message]
 
 
 def validate_instrument(deal):

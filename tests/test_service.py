@@ -779,17 +779,24 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
 
 
 def test_a_calculation_override_is_judged_against_its_own_declarations(book):
-    """An override is a dial of a declared calculation, so a field it does not declare and a value
-    outside that field's menu each refuse 422 naming it - and the book still prices with the dials
-    it does declare.
+    """An override is a dial of a declared calculation, so a field it does not declare, a value
+    outside that field's menu - a blank among them, which overwrites the book's - and a date posted
+    as a bare string each refuse 422 naming it, and the book still prices with the dials it does
+    declare.
 
-    KILLING MUTATION: both RAN, the value simply ignored, so a model asking for Greeks got a run
-    with no gradient in it and no way to tell.
+    KILLING MUTATIONS: the first two RAN, the value simply ignored, so a model asking for Greeks got
+    a run with no gradient in it and no way to tell; a blank override read against nothing, under
+    which it queues; the verb judging menus alone, under which the bare date queues and the run
+    dies on it (`'str' object has no attribute 'strftime'`).
     """
     unknown = CLIENT.post('/book/price', content=dump(
         {'calculation_overrides': {'Nope': 1}}), headers=JSON)
     outside = CLIENT.post('/book/price', content=dump(
         {'calculation_overrides': {'Greeks': 'Maybe'}}), headers=JSON)
+    blank = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': {'Greeks': ''}}), headers=JSON)
+    bare = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': {'Base_Date': '2029-01-01'}}), headers=JSON)
     declared = CLIENT.post('/book/price', content=dump(
         {'calculation_overrides': {'Greeks': 'First'}}), headers=JSON)
     service.EXECUTOR.queue.join()
@@ -798,6 +805,8 @@ def test_a_calculation_override_is_judged_against_its_own_declarations(book):
         'detail']
     assert outside.status_code == 422
     assert outside.json()['detail'] == "Greeks is 'Maybe', not one of All, First, No"
+    assert blank.json() == {'detail': 'Greeks is blank, not one of All, First, No'}
+    assert bare.status_code == 422 and bare.json()['detail'].startswith('Base_Date must be')
     assert declared.status_code == 200
     assert CLIENT.get('/results/{}'.format(
         declared.json()['result_id'])).json()['status'] == 'done'
