@@ -1010,9 +1010,6 @@ EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', 'Equity option', [
 EXPIRY_PRINT = F('Price_Fixing', 'DateValueList', default='null', convention=True,
                  row=Row([F('Date', 'Date'), F('Value', 'Float')]))
 
-#: Which side of the spot a touch's barrier sits, written as `Barrier_Type`.
-BARRIER_SIDE = F('Barrier_Type', 'Text', default='Up', values=['Up', 'Down'])
-
 #: An FX strike or barrier is a level of the rate the ENGINE prices, never the pair's market
 #: quote - said on every FX field that carries one, since the declarations are what a model reads
 #: before it books.
@@ -1031,61 +1028,60 @@ FXOPTIONBASE = Group('FXOptionBase.Fields', 'FX option', [
     F('Strike_Price', 'Float', default=REQUIRED, description=FX_AXIS.format('Strike price'))
 ])
 
-#: What a one-touch and a no-touch on an equity share both are - every field but when a one-touch
-#: pays, a no-touch paying at expiry alone.
+#: How an option is exercised and settled, and whether it is written on the forward.
+OPTION_STYLE = Group('OptionStyle', 'Exercise and settlement', [
+    F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
+    F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
+    F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No'])
+])
+
+#: What every touch is, whatever it watches: the side, the cash it pays and the barrier's side and
+#: monitoring - a one-touch also declaring when it pays, a no-touch paying at expiry alone.
+TOUCH = Group('Touch', 'Touch terms', [
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
+    F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+    F('Barrier_Type', 'Text', default='Up', values=['Up', 'Down'])
+])
+
+#: What a touch on an equity share watches: the share, its surface and the barrier on it.
 EQUITY_TOUCH = own('EquityOneTouchOption', [
     F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
     F('Equity', 'Text', default='', factors=['EquityPrice', 'DividendRate']),
-    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
-    F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
     F('Barrier_Price', 'Float', default=0.0),
-    BARRIER_SIDE,
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
     F('Equity_Volatility', 'Text', default='', factors=['EquityPriceVol'])
 ])
 
-#: What a one-touch and a no-touch on an exchange rate both are - every field but when a one-touch
-#: pays, a no-touch paying at expiry alone.
-#: What a one-touch and a no-touch on a commodity reference price both are - the equity touch's
-#: terms on the reference's fixing, paid in `Currency`.
+#: What a touch on a commodity reference price watches: the equity touch's barrier on the
+#: reference's fixing, paid in `Currency`.
 COMMODITY_TOUCH = own('CommodityOneTouchOption', [
-    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
     F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
-    F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
     F('Barrier_Price', 'Float', default=0.0),
-    BARRIER_SIDE,
     F('Expiry_Date', 'Date', default='', settles=Cash('Currency')),
     F('Reference_Type', 'Text', default='', factors=['ReferencePrice']),
     F('Reference_Volatility', 'Text', default='', factors=['CommodityPriceVol'])
 ])
 
+#: What a touch on an exchange rate watches: the pair, its surface and a barrier on the engine axis.
 FX_TOUCH = own('FXOneTouchOption', [
     F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
     F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-    F('Cash_Payoff', 'Float', default=REQUIRED, sized=True),
-    F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
     F('Barrier_Price', 'Float', default=0.0,
       description=FX_AXIS.format('Barrier price')),
-    BARRIER_SIDE,
     F('Expiry_Date', 'Date', default=''),
     F('FX_Volatility', 'Text', default='', factors=['FXVol'])
 ])
 
 QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall terms', [
     F('Price_Fixing', 'DateValueList', default='null', row=Row([F('Date', 'Date'), F('Value', 'Float')])),
-    F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-    F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
     F('Barrier', 'Float', default=0.0, convention=True),
     F('Rebate', 'Float', default=0.0, convention=True,
       description='The fraction of the strike a breached put gives back, the put paying '
                   'S/K - 1 + Rebate of the notional, so 0 owes the whole loss below the strike'),
-    F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
     F('Units', 'Float', default=0.0, sized=True),
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')]),
       description="The put barrier's observation dates, each a coupon date or a price fixing in a "
@@ -1159,6 +1155,26 @@ COUPON_SCHEDULE = Group('CouponSchedule', 'Coupon schedule', [
     F('Penultimate_Coupon_Date', 'Date', default='', convention=True),
     F('Amortisation', 'DateList', default='null', convention=True,
       row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')]))
+])
+
+#: What a cap and a floor both are - every term but the strike, which each names (`optionlet`).
+CAP_FLOOR = Group('CapFloor', 'Cap/floor terms', [
+    F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+    F('Index_Frequency', 'Period', default='0M', convention=True),
+    F('Forecast_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
+    F('Known_Rates', 'DateList', default='null', convention=True,
+      row=Row([F('Date', 'Date'), F('Amount', 'Float')])),
+    F('Maturity_Date', 'Date', default=''),
+    F('Effective_Date', 'Date', default=''),
+    F('Averaging_Method', 'Text', default='Average_Rate', convention=True,
+      values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
+    F('Payment_Interval', 'Period', default='3M', convention=True),
+    F('Reset_Frequency', 'Period', default='3M', convention=True),
+    F('Discount_Rate_Volatility', 'Text', default='', convention=True,
+      factors=['InterestRateVol', 'InterestYieldVol']),
+    F('Forecast_Rate_Volatility', 'Text', default='', convention=True,
+      factors=['InterestRateVol', 'InterestYieldVol']),
+    F('Principal', 'Float', default=1000000.0, convention=True, sized=True)
 ])
 
 FX_ADMIN = Group('FXAdmin', 'FX conventions', [

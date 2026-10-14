@@ -155,7 +155,8 @@ SHARED_TITLES = {
     'Admin': 'Admin', 'Pricing': 'Pricing', 'FXAdmin': 'FX conventions', 'FXOptionBase.Fields': 'FX option',
     'EquityOptionBase.Fields': 'Equity option', 'CashflowListDeal.Fields': 'Cashflow list',
     'QEDI_CustomAutoCallSwap.Fields': 'Autocall terms', 'QEDI_CustomSwap.Fields': 'Swap leg',
-    'FloatingIndex': 'Floating index', 'CouponSchedule': 'Coupon schedule'}
+    'FloatingIndex': 'Floating index', 'CouponSchedule': 'Coupon schedule', 'CapFloor': 'Cap/floor terms',
+    'Touch': 'Touch terms', 'OptionStyle': 'Exercise and settlement'}
 
 
 def test_every_published_section_carries_the_title_the_desk_sees():
@@ -458,15 +459,17 @@ def test_one_name_may_carry_two_descriptors_in_different_types():
 @pytest.mark.parametrize('family', FAMILIES)
 def test_no_type_declares_a_key_twice(family):
     """A section or a type is a dict keyed by the JSON name, so a name declared twice in one loses a
-    descriptor outright. `Net_Cashflows` was declared twice verbatim on `StructuredDeal`, and the
-    option family builds its eight factor-reference fields from `factor_types`, which is exactly
-    the shape that can produce one. No cross-type version: two SECTIONS may key the same name
-    differently, which is the point.
+    descriptor outright - and a deal type's panel is its sections merged, so a name declared in two
+    groups one type lists is declared twice. `Net_Cashflows` was declared twice verbatim on
+    `StructuredDeal`, and the option family builds its eight factor-reference fields from
+    `factor_types`, which is exactly the shape that can produce one. No cross-type version: two
+    types may key the same name differently, which is the point.
 
-    Killing mutation: `Greeks` declared twice on the base valuation."""
+    Killing mutations: `Greeks` declared twice on the base valuation; `Buy_Sell` left on the equity
+    touch's own block beside the `Touch` group its types list."""
     keys = {
-        'Instrument': lambda: {f'{c}.{g.name}': [f.key for f in g.fields]
-                               for c, groups in declared_classes().items() for g in groups},
+        'Instrument': lambda: {c: [f.key for g in groups for f in g.fields]
+                               for c, groups in declared_classes().items()},
         'Factor': lambda: {c: [f.key for f in fields] for c, fields in factor_classes().items()},
         'Process': lambda: {c: [f.key for f in fields] for c, fields in process_classes().items()},
         'Calculation': lambda: {t: [f.key for f in c.__dict__['fields']]

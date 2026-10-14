@@ -20,7 +20,7 @@ from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
     settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
-    FX_TOUCH, FXOPTIONBASE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE,
+    FX_TOUCH, FXOPTIONBASE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, OPTION_STYLE, TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -3056,24 +3056,8 @@ class CapDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate cap, cap, caplets'
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, own('CapDeal', [
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Index_Frequency', 'Period', default='0M', convention=True),
-        F('Forecast_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
-        F('Known_Rates', 'DateList', default='null', convention=True,
-          row=Row([F('Date', 'Date'), F('Amount', 'Float')])),
-        F('Maturity_Date', 'Date', default=''),
-        F('Effective_Date', 'Date', default=''),
-        F('Averaging_Method', 'Text', default='Average_Rate', convention=True,
-          values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
-        F('Cap_Rate', 'Float', default=0.0),
-        F('Payment_Interval', 'Period', default='3M', convention=True),
-        F('Reset_Frequency', 'Period', default='3M', convention=True),
-        F('Discount_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Forecast_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Principal', 'Float', default=1000000.0, convention=True, sized=True)
+    fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, own('CapDeal', [
+        F('Cap_Rate', 'Float', default=0.0)
     ])]
 
     #: what each period is an option on: the strike the schedule reads and the pricer it takes
@@ -3160,24 +3144,8 @@ class FloorDeal(CapDeal):
     vernacular = 'interest rate floor, floor, floorlets'
     # the schema reads each type's own declarations, never a parent's
     observes = Observes('Forecast_Rate', 'InterestRate')
-    fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, own('FloorDeal', [
-        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-        F('Index_Frequency', 'Period', default='0M', convention=True),
-        F('Forecast_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
-        F('Known_Rates', 'DateList', default='null', convention=True,
-          row=Row([F('Date', 'Date'), F('Amount', 'Float')])),
-        F('Maturity_Date', 'Date', default=''),
-        F('Floor_Rate', 'Float', default=0.0),
-        F('Effective_Date', 'Date', default=''),
-        F('Averaging_Method', 'Text', default='Average_Rate', convention=True,
-          values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
-        F('Payment_Interval', 'Period', default='3M', convention=True),
-        F('Reset_Frequency', 'Period', default='3M', convention=True),
-        F('Discount_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Forecast_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Principal', 'Float', default=1000000.0, convention=True, sized=True)
+    fields = [ADMIN, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, own('FloorDeal', [
+        F('Floor_Rate', 'Float', default=0.0)
     ])]
 
     optionlet = ('Floor_Rate', pricing.pricer_floor)
@@ -3838,10 +3806,7 @@ class EquityOptionDeal(Deal):
     vernacular = 'equity option, stock option, vanilla call or put'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, elects='Settlement_Style',
                         expires='Expiry_Date')
-    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityOptionDeal', [
-        F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No']),
-        F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, OPTION_STYLE, own('EquityOptionDeal', [
         F('Units', 'Float', default=0.0, sized=True),
         F('Forward_Price_Date', 'Date', default='', convention=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
@@ -4032,7 +3997,7 @@ class EquityBinaryOption(EquityOptionDeal):
 class QEDI_CustomAutoCallSwap(Deal):
     vernacular = 'autocall, autocallable, phoenix, snowball'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, monitors=True)
-    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, QEDI_CUSTOMAUTOCALLSWAP]
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, OPTION_STYLE, QEDI_CUSTOMAUTOCALLSWAP]
 
     spot_models = ('None', 'LogVar2FJ')
 
@@ -4346,7 +4311,7 @@ class QEDI_CustomAutoCallSwap(Deal):
 class QEDI_CustomAutoCallSwap_V2(QEDI_CustomAutoCallSwap):
     vernacular = 'autocall swap, autocallable swap, phoenix swap'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, monitors=True)
-    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, QEDI_CUSTOMSWAP, QEDI_CUSTOMAUTOCALLSWAP]
+    fields = [ADMIN, PRICING, EQUITYOPTIONBASE, OPTION_STYLE, QEDI_CUSTOMSWAP, QEDI_CUSTOMAUTOCALLSWAP]
 
     documentation = ('Fx And Equity', [
         'The autocall of `QEDI_CustomAutoCallSwap` written as a swap: the same coupons, put, windows,',
@@ -4456,7 +4421,7 @@ class TouchLifecycle:
 
 class EquityOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'equity one-touch, one touch, touch option'
-    fields = [ADMIN, PRICING, EQUITY_TOUCH, own('EquityOneTouchOption', [
+    fields = [ADMIN, PRICING, EQUITY_TOUCH, TOUCH, own('EquityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing', title='Payment timing')]
 
@@ -4536,7 +4501,7 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
 
 class EquityNoTouchOption(EquityOneTouchOption):
     vernacular = 'equity no-touch, no touch'
-    fields = [ADMIN, PRICING, EQUITY_TOUCH]
+    fields = [ADMIN, PRICING, EQUITY_TOUCH, TOUCH]
 
     no_touch = True
     #: paid at expiry alone, where the barrier was never touched
@@ -4900,7 +4865,7 @@ class CommodityDigitalOption(Deal):
 
 class CommodityOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'commodity one-touch, energy one-touch, one touch on a reference price'
-    fields = [ADMIN, PRICING, COMMODITY_TOUCH, own('CommodityOneTouchOption', [
+    fields = [ADMIN, PRICING, COMMODITY_TOUCH, TOUCH, own('CommodityOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing', title='Payment timing')]
 
@@ -4982,7 +4947,7 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
 
 class CommodityNoTouchOption(CommodityOneTouchOption):
     vernacular = 'commodity no-touch, energy no-touch, no touch on a reference price'
-    fields = [ADMIN, PRICING, COMMODITY_TOUCH]
+    fields = [ADMIN, PRICING, COMMODITY_TOUCH, TOUCH]
 
     no_touch = True
     #: paid at expiry alone, where the barrier was never touched
@@ -5671,7 +5636,7 @@ class EquitySwapLeg(Deal):
 
 class FXOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'FX one-touch, one touch, touch option'
-    fields = [ADMIN, PRICING, FX_ADMIN, FX_TOUCH, own('FXOneTouchOption', [
+    fields = [ADMIN, PRICING, FX_ADMIN, FX_TOUCH, TOUCH, own('FXOneTouchOption', [
         F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
     ], role='Timing', title='Payment timing')]
 
@@ -5736,7 +5701,7 @@ class FXOneTouchOption(TouchLifecycle, Deal):
 
 class FXNoTouchOption(FXOneTouchOption):
     vernacular = 'FX no-touch, no touch'
-    fields = [ADMIN, PRICING, FX_ADMIN, FX_TOUCH]
+    fields = [ADMIN, PRICING, FX_ADMIN, FX_TOUCH, TOUCH]
 
     no_touch = True
     #: paid at expiry alone, where the barrier was never touched
@@ -6520,13 +6485,10 @@ class FXOptionDeal(Deal):
     vernacular = 'FX option, currency option, vanilla call or put'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', elects='Settlement_Style',
                         expires='Expiry_Date')
-    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXOptionDeal', [
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, OPTION_STYLE, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
-        F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
         F('Expiry_Date', 'Date', default=''),
-        F('Forward_Price_Date', 'Date', default='', convention=True),
-        F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No'])
+        F('Forward_Price_Date', 'Date', default='', convention=True)
     ])]
 
     documentation = (
