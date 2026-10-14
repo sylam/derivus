@@ -98,7 +98,8 @@ chain. For a curve `head == tail == InterestRate` (so `get_interest_factor` is j
 case); for a 0D spot `head` is the spot type and `tail = ObservedBasis`. The resulting multi-element
 code is summed by `calc_time_grid_spot_rate` (composed spot = primary + Σ bases). A plain
 single-period name yields a one-element code — bit-identical to the pre-chain lookup. Repo / carry /
-dividend / currency lookups take the head (`fieldname[:1]`), since those live on the primary.
+dividend / currency lookups take the head (`fieldname[:1]`), since those live on the primary; a
+dividend curve the deal states in `Dividends` is read whole.
 
 **Discovery is the existing curve mechanism, generalized as data.** `utils.NESTED` is a
 `{head type: tail type}` map (identity for the curves, `ObservedBasis` for the 0D spot types), the

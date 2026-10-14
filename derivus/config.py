@@ -1113,11 +1113,12 @@ class Config(object):
 
             def get_price_factors(rates_to_add, rate_tenors, instrument):
 
-                def iter_factors(field_name, factor_type):
+                def iter_factors(field_name, factor_type, companion):
                     for raw in utils.get_fieldname(field_name, instrument.field):
                         values = raw if isinstance(raw, list) else [raw]
                         for v in values:
-                            yield utils.Factor(factor_type, utils.check_rate_name(v))
+                            name = utils.check_rate_name(v)
+                            yield utils.Factor(factor_type, name[:1] if companion else name)
 
                 def add_rates_for_factor(factor):
                     try:
@@ -1137,8 +1138,11 @@ class Config(object):
                 reval_dates = instrument.get_reval_dates()
                 max_reval = max(reval_dates) if reval_dates else None
                 for field_name, factor_types in instrument.factor_fields.items():
+                    # a type declared beside a composable spot is the spot's own, on its primary
+                    spot = any(kind in utils.BASIS_COMPOSABLE_TYPES for kind in factor_types)
                     for factor_type in factor_types:
-                        for factor in iter_factors(field_name, factor_type):
+                        companion = spot and factor_type not in utils.BASIS_COMPOSABLE_TYPES
+                        for factor in iter_factors(field_name, factor_type, companion):
                             if max_reval is not None:
                                 rate_tenors.setdefault(factor, set()).add(max_reval)
                             if factor not in rates_to_add or factor.type in conditional_fields:

@@ -479,8 +479,8 @@ def get_equity_currency_factor(fieldname, static_offsets, stochastic_offsets, al
 
 
 def get_dividend_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors):
-    """Read the index of the dividend rate price factor (off the primary spot = first period)"""
-    return [calc_factor_index(utils.Factor('DividendRate', fieldname[:1]), static_offsets,
+    """Read the index of the dividend rate price factor"""
+    return [calc_factor_index(utils.Factor('DividendRate', fieldname), static_offsets,
                               stochastic_offsets, all_tenors)]
 
 
@@ -502,9 +502,9 @@ def get_commodity_zero_rate_factor(fieldname, static_offsets, stochastic_offsets
 
 
 def get_fx_zero_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors, all_factors):
-    """Read the Currency's interest rate price factor"""
-    fx_factor = all_factors.get(utils.Factor('FxRate', fieldname))
-    ir_curve = (fx_factor.factor if hasattr(fx_factor, 'factor') else fx_factor).get_repo_curve_name(fieldname)
+    """Read the Currency's interest rate price factor (off the primary spot)"""
+    ir_curve = get_factor_component(
+        utils.Factor('FxRate', fieldname), all_factors).get_repo_curve_name(fieldname[:1])
     return get_interest_factor(ir_curve, static_offsets, stochastic_offsets, all_tenors)
 
 
@@ -3669,7 +3669,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
                  'Equity': utils.check_rate_name(self.field['Equity']),
                  'Equity_Volatility': utils.check_rate_name(self.field['Equity_Volatility'])}
 
-        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'])
+        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'][:1])
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
 
         field_index = {
@@ -3767,7 +3767,7 @@ class EquityBarrierBinaryOption(Deal):
                  'Equity': utils.check_rate_name(self.field['Equity']),
                  'Equity_Volatility': utils.check_rate_name(self.field['Equity_Volatility'])}
 
-        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'])
+        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'][:1])
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
 
         ab = {d for d, _ in barrier_monitoring_rows(self.field.get('Barrier_Dates', []))}
@@ -3911,7 +3911,7 @@ class EquityOptionDeal(Deal):
                 '{}: an American option settles on the day it is exercised, so Settlement_Date is not '
                 'its to state'.format(self.field.get('Reference', 'EquityOptionDeal')))
 
-        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'])
+        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'][:1])
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
 
         field_index = {
@@ -4167,7 +4167,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         }
 
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
-        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'])
+        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'][:1])
 
         coupon_dates = [x[0] for x in self.field['Autocall_Coupons']]
         fixing_dates = [x[0] for x in self.field['Price_Fixing']]
@@ -4496,7 +4496,7 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
             'Equity_Zero': get_equity_zero_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Dividend_Yield': get_dividend_rate_factor(
-                field['Equity'], static_offsets, stochastic_offsets, all_tenors),
+                field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
             'Volatility': get_vol_factor(
                 'EquityPriceVol', field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Barrier_Underlying': get_equity_barrier_underlying(field['Equity']),
@@ -4698,7 +4698,7 @@ class EquityBarrierOption(Deal):
                  'Payoff_Currency': utils.check_rate_name(self.payoff_ccy)}
 
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
-        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'])
+        field['Dividends'] = self.check_factor_name('Dividends', field['Equity'][:1])
 
         field_index = {'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
                        'Payoff_Currency': get_fxrate_factor(
@@ -5313,7 +5313,7 @@ class EquityForwardDeal(Deal):
             'Equity_Zero': get_equity_zero_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Dividend_Yield': get_dividend_rate_factor(
-                field['Equity'], static_offsets, stochastic_offsets, all_tenors),
+                field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
             'Expiry': (self.field['Maturity_Date'] - base_date).days
             }
 
@@ -5504,7 +5504,7 @@ class EquitySwapletListDeal(Deal):
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
             'Dividend_Yield': get_dividend_rate_factor(
-                field['Equity'], static_offsets, stochastic_offsets, all_tenors),
+                field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
             'Equity_Zero': get_equity_zero_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Expiry': max((x['Payment_Date'] - base_date).days for x in self.field['Cashflows']['Items'])
@@ -5657,7 +5657,7 @@ class EquitySwapLeg(Deal):
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
             'Dividend_Yield': get_dividend_rate_factor(
-                field['Equity'], static_offsets, stochastic_offsets, all_tenors),
+                field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
             'Equity_Zero': get_equity_zero_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Expiry': (field['cashflow']['Items'][0]['Payment_Date'] - base_date).days

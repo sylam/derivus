@@ -32,10 +32,10 @@ A vol code reads the same tail positions under its own names (`FACTOR_INDEX_Mone
 
 ## Object-graph hops — `get_factor_component`
 
-`get_factor_component(componentname, all_factors)` implements the **primary-spot** rule — `primary = name[:1] if type in BASIS_COMPOSABLE_TYPES else name` — returning the underlying factor **object**. Repo/carry/currency read off it (`get_equity_currency_factor`, `get_equity_zero_rate_factor`, `get_commodity_zero_rate_factor` → `.get_repo_curve_name()` / `.get_currency()` → `get_interest_factor`).
+`get_factor_component(componentname, all_factors)` implements the **primary-spot** rule — `primary = name[:1] if type in BASIS_COMPOSABLE_TYPES else name` — returning the underlying factor **object**. Repo/carry/currency read off it (`get_equity_currency_factor`, `get_equity_zero_rate_factor`, `get_commodity_zero_rate_factor`, `get_fx_zero_rate_factor` → `.get_repo_curve_name()` / `.get_currency()` → `get_interest_factor`), an FX block's blank `Interest_Rate` naming the primary's curve. The dividend curve is no object and rides the primary too: `get_dividend_rate_factor` reads the name it is handed whole, the curve a deal states in `Dividends` or else, `Deal.check_factor_name`'s fallback, its equity's primary `name[:1]`, and discovery registers exactly that pair ([Dependency System](dependency_system.md#the-walk)). **Held by** `tests/test_chained_basis.py::test_discovery_and_the_resolver_read_one_chain_registry` (the trial equity forward and FX option on a composed name) and `::test_a_composed_equity_reads_the_dividend_curve_it_states_whole`. Not gated: a composed FX name whose block leaves `Interest_Rate` blank.
 
 !!! warning "Invariant — two distinct parent rules, both correct"
-    Object lookups (repo/carry/dividend/currency) resolve off the **ultimate** primary `name[:1]` via `get_factor_component`. The `ObservedBasis` process links off its **immediate** parent `name[:-1]` (`BasisLinkedSpotModel.calc_references`). Both are correct for their jobs; do not conflate them.
+    Object lookups (repo/carry/currency) and an unstated dividend curve resolve off the **ultimate** primary `name[:1]`, the objects via `get_factor_component`. The `ObservedBasis` process links off its **immediate** parent `name[:-1]` (`BasisLinkedSpotModel.calc_references`). Both are correct for their jobs; do not conflate them.
 
 ## Getter taxonomy
 

@@ -20,7 +20,7 @@ import pytest
 import derivus as rf
 import test_position_scaling as trials
 import trial_rates
-from derivus import utils
+from derivus import instruments, utils
 
 BASE = pd.Timestamp('2026-01-15')
 
@@ -189,15 +189,17 @@ def test_the_same_row_entry_orders_its_link_first():
 
 
 #: Per head the chain registry names: a trial deal, its field naming that head, the composed name,
-#: the tail type its second period is and the tail's block - a curve's spread, a spot's basis.
+#: the tail type its second period is and the tail's block - a curve's spread, a spot's basis. A
+#: spot's deal reads what rides its primary, the FX option the pair's repo curve and the equity
+#: forward the dividend curve.
 COMPOSED = {
     'InterestRate': ('CF', 'Discount_Rate', 'USD.FUNDING', 'InterestRate', {
         'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
         'Curve': utils.Curve([], [[0.0, 0.002], [5.0, 0.002]])}),
     'InflationRate': ('LINKER', 'Index', 'INFL.SPREAD', 'InflationRate', dict(
         trial_rates.FACTORS['InflationRate.INFL'], Curve=utils.Curve([], [[0.0, 0.003], [10.0, 0.003]]))),
-    'FxRate': ('FWD', 'Buy_Currency', 'EUR.ONSHORE', 'ObservedBasis', {'Spot': 0.01}),
-    'EquityPrice': ('EQS', 'Equity', 'EQ.ADR', 'ObservedBasis', {'Spot': 0.5}),
+    'FxRate': ('FXO', 'Underlying_Currency', 'EUR.ONSHORE', 'ObservedBasis', {'Spot': 0.01}),
+    'EquityPrice': ('EQF', 'Equity', 'EQ.ADR', 'ObservedBasis', {'Spot': 0.5}),
     'CommodityPrice': ('METAL_FUT', 'Commodity', 'METAL.LBMA', 'ObservedBasis', {'Spot': 2.0})}
 
 
@@ -205,36 +207,72 @@ COMPOSED = {
 def test_discovery_and_the_resolver_read_one_chain_registry(head):
     """For every head `utils.NESTED` names, one trial deal naming it composed: the universe holds the
     head on the primary and the tail on the whole name - the full name a factor only where it is the
-    tail - and the deal prices, its compile finding each link of its chain in that universe by name.
-    A head added to the registry with no row here fails by name.
+    tail - and a type the field declares beside a spot, the equity's dividend curve, on the primary
+    and never on the whole name; and the deal prices, its compile finding each link of its chain and
+    what rides the primary in that universe by name. A head added to the registry with no row here
+    fails by name.
 
-    Killing mutation: `calc_factor_code_chain` reading a tail of its own for one head - `InterestRate`
+    Killing mutations: `calc_factor_code_chain` reading a tail of its own for one head - `InterestRate`
     for `EquityPrice` - names `InterestRate.EQ.ADR`, which discovery never registers, and the equity
-    deal is skipped.
+    deal is skipped; discovery registering a type declared beside a spot on the whole name again
+    names `DividendRate.EQ.ADR` and not the `DividendRate.EQ` the forward reads, which is skipped;
+    `get_fx_zero_rate_factor` looking the pair up on the whole name finds no `FxRate.EUR.ONSHORE`
+    and the FX option is skipped.
     """
     reference, field, name, tail, block = COMPOSED[head]
     deal, factors = next((deal, family.FACTORS) for family in trials.FAMILIES.values()
                          for deal in family.DEALS if deal['Reference'] == reference)
     job = trials.document(SimpleNamespace(DEALS=[dict(deal, **{field: name})], CONFIGURATION={},
                                           FACTORS=dict(factors, **{tail + '.' + name: block})))
-    universe = rf.Context().load_json((json.dumps(job), 'chain')).describe()['factors']['resolved']
-    assert {head + '.' + name.split('.')[0], tail + '.' + name} <= set(universe), universe
-    assert (head + '.' + name in universe) == (tail == head), universe
+    described = rf.Context().load_json((json.dumps(job), 'chain')).describe()['factors']
+    universe, primary = set(described['resolved']), name.split('.')[0]
+    beside = [kind for kind in getattr(instruments, deal['Object']).factor_fields[field] if kind != head]
+    assert {head + '.' + primary, tail + '.' + name} | {k + '.' + primary for k in beside} <= universe, described
+    assert not {k + '.' + name for k in beside} & universe.union(described['missing']), described
+    assert (head + '.' + name in universe) == (tail == head), described
     assert reference in trials.marks(job), 'the deal did not resolve its chain'
 
 
+def test_a_composed_equity_reads_the_dividend_curve_it_states_whole():
+    """An equity option on the composed `EQ.ADR` stating `Dividends: EQ.ADR` reads that curve,
+    whole, and its twin stating none reads the primary's `DividendRate.EQ`: at 4% against the
+    primary's 1% the two mark apart, and the stated one marks to the bit what the twin marks once
+    the primary's curve is the 4% one.
+
+    Killing mutations: `get_dividend_rate_factor` truncating the name it is handed to its first
+    period - the stated option reads `DividendRate.EQ` and marks its twin's value; the option's
+    fallback naming the whole equity - the twin reads `DividendRate.EQ.ADR`, which discovery never
+    registers, and is skipped.
+    """
+    _, _, name, tail, block = COMPOSED['EquityPrice']
+    deal = next(deal for deal in trials.CORE.DEALS if deal['Reference'] == 'EQO')
+    curve = {'Floor': None, 'Currency': 'USD', 'Curve': utils.Curve([], [[0.0, 0.04], [5.0, 0.04]])}
+
+    def marks(dividends, *deals):
+        return trials.marks(trials.document(SimpleNamespace(
+            DEALS=list(deals), CONFIGURATION={}, FACTORS={tail + '.' + name: block, dividends: curve})))
+
+    stated = dict(deal, Reference='STATED', Equity=name, Dividends=name)
+    primary = dict(deal, Reference='PRIMARY', Equity=name)
+    apart, alike = marks('DividendRate.' + name, stated, primary), marks('DividendRate.EQ', primary)
+    assert apart['STATED'] == alike['PRIMARY'] != apart['PRIMARY'], (apart, alike)
+
+
 @pytest.mark.parametrize('head,reference,field', [
-    ('FxRate', 'FWD', 'Buy_Currency'), ('EquityPrice', 'EQF', 'Equity')])
+    ('FxRate', 'FWD', 'Buy_Currency'), ('FxRate', 'FXO', 'Underlying_Currency'),
+    ('EquityPrice', 'EQF', 'Equity')])
 def test_a_composed_name_beside_its_primary_marks_the_same_in_either_order(head, reference, field):
-    """A trial forward and its twin on the registry's composed name, booked in one document, each
-    mark the same whichever is booked first, and the two differ: the FX cross and the equity forward
-    are cached on every element of every chain they read, so the composed name never reads its
-    primary's entry. The basis is non-zero, else the twins agree and no key can be told apart.
+    """A trial forward or FX option and its twin on the registry's composed name, booked in one
+    document, each mark the same whichever is booked first, and the two differ: the FX cross, the FX
+    forward and the equity forward are cached on every element of every chain they read, so the
+    composed name never reads its primary's entry. The basis is non-zero, else the twins agree and
+    no key can be told apart.
 
     Killing mutations: `calc_fx_cross` keying each chain on its first element - the FX forward
-    booked second marks the first's value, the plain one 11.9% below the composed; `calc_eq_forward`
-    keying the equity on its first element - the equity forward booked second marks the first's,
-    the plain one 9.3% below the composed.
+    booked second marks the first's value, the plain one 11.9% below the composed; `calc_fx_forward`
+    keying each spot on its first element - the FX option booked second marks the first's, the plain
+    one 6.4% below the composed; `calc_eq_forward` keying the equity on its first element - the
+    equity forward booked second marks the first's, the plain one 9.3% below the composed.
     """
     _, _, name, tail, block = COMPOSED[head]
     deal, factors = next((deal, family.FACTORS) for family in trials.FAMILIES.values()
