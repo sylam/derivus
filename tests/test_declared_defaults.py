@@ -1133,6 +1133,57 @@ def test_a_swaption_on_its_legs_compiles_no_swap_of_its_own(caplog):
         running['Swap_Effective_Date'])) == 1
 
 
+def test_a_swap_on_its_legs_is_their_sum_and_compiles_no_legs_of_its_own(caplog):
+    """A swap booked over its legs, its `Children`, prices each on its grid and marks their sum:
+    over the swaption's fixed and floating lists, and over that floating list and one paying the
+    discount curve, each marks under a base valuation the legs booked alone added, to the bit. Its
+    terms are a swap seven months seasoned whose resets state no rate, the basis swap stating no
+    Swap_Rate; on its legs it compiles no legs of its own, so neither warns of a reset nor misses the
+    rate, while the same terms booked alone warn by name.
+
+    Killing mutations: the children left unpriced, `post_process` returning nothing - the run fails
+    at resolve; the swap on its legs compiling its own legs again - the seasoned one warns and the
+    basis swap is skipped on its rate."""
+    fixed, floating = next(deal for deal in BOOK if deal['Reference'] == 'SWPT')['Children']
+    basis = dict(floating, Reference='BASIS', Forecast_Rate='USD', Buy_Sell='Sell')
+    seasoned = dict(BOOK[0], Effective_Date=WORLD_BASE - pd.DateOffset(months=7),
+                    Maturity_Date=WORLD_BASE + pd.DateOffset(months=29))
+    pairs = {'FIXED_FLOAT': (fixed, floating), 'FLOAT_FLOAT': (floating, basis)}
+    swaps = [dict(seasoned, Reference=name, Children=[
+                 dict(leg, Reference='{}_{}'.format(name, leg['Reference'])) for leg in legs])
+             for name, legs in pairs.items()]
+    swaps[1].pop('Swap_Rate')
+    with caplog.at_level(logging.WARNING):
+        valued, stats = marks(swaps)
+        alone, _ = marks([fixed, floating, basis, dict(seasoned, Reference='ALONE')])
+    assert 'Deals Skipped' not in stats and 'Structs Skipped' not in stats
+    for name, legs in pairs.items():
+        assert float.fromhex(valued[name]) == sum(
+            float.fromhex(alone[leg['Reference']]) for leg in legs) != 0.0
+        assert '{}: the reset fixing'.format(name) not in caplog.text
+    assert caplog.text.count('ALONE: the reset fixing') == 1
+
+
+def test_a_swap_on_its_legs_revalues_on_their_days():
+    """Under a credit Monte Carlo a swap on its legs revalues on their days, as a cap on its list
+    does: its terms ending nineteen months before a fixed and a floating list on one quarterly
+    schedule, the netting set holding it reports the exposure the set holding the legs alone
+    reports, on every row and path to the bit, and no row past the terms' end is flat.
+
+    Killing mutation: the swap keeping its own dates - its resets join the grid and its mark holds
+    flat past its maturity."""
+    fixed, floating = next(deal for deal in BOOK if deal['Reference'] == 'SWPT')['Children']
+    fixed = dict(fixed, Cashflows={'Compounding': 'No', 'Items': fixed_items(4.5, months=3)})
+    maturity = WORLD_BASE + pd.DateOffset(months=29)
+    swap = dict(BOOK[0], Effective_Date=WORLD_BASE - pd.DateOffset(months=7), Maturity_Date=maturity,
+                Children=[fixed, floating])
+    exposure, legs = (simulated(deals, ('USD', 'USD-PROJ'), Generate_Cashflows='No')[1]['Results']['mtm']
+                      for deals in ([swap], [fixed, floating]))
+    assert exposure.equals(legs)
+    past = exposure[exposure.index > maturity].mean(axis=1)
+    assert len(past) > 1 and past.nunique() == len(past)
+
+
 def test_a_convention_whose_fallback_is_another_field_still_means_its_declared_value():
     """THE ONE READER SHAPE A FLAG CANNOT FIX BY ITSELF. `dict.get` never reaches `__missing__`, so
     `self.field.get('Payment_Calendars', self.field['Accrual_Calendars'])` made an OMITTED key mean

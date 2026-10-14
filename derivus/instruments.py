@@ -846,6 +846,29 @@ class Deal(object):
                 shared.calc_stats['Deals Skipped'] = shared.calc_stats.get('Deals Skipped', 0) + 1
             return 0.0 * shared.one
 
+    def sum_children(self, accum, shared, time_grid, deal_data, child_dependencies):
+        """The `post_process` of a deal booked as the sum of its `Children`: each child priced on
+        this deal's grid, the sum interpolated onto it."""
+        mtm_list = []
+
+        for child in child_dependencies:
+            # make the child price to the same grid as the parent
+            child.Time_dep.assign(deal_data.Time_dep)
+            mtm_list.append(child.Instrument.calculate(shared, time_grid, child))
+
+        mtm = torch.sum(torch.stack(mtm_list), dim=0)
+
+        return pricing.interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=False)
+
+    def children_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
+        """The `finalize_dates` of a deal booked as the sum of its `Children`: over them it takes
+        their settlement dates, stated by its terms it keeps its own."""
+        if node_children is not None:
+            Deal.reset(self)
+            for currency, dates in node_settlements.items():
+                self.add_reval_dates(dates, currency)
+        return Deal.finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements)
+
     def build_features(self, shared, time_grid, deal_data):
         try:
             return self.hedge_features(shared, time_grid, deal_data)
@@ -2525,8 +2548,8 @@ class SwapInterestDeal(Deal):
         'receives the floating leg on the `Receive_` schedule; `Floating` the reverse.',
         '',
         'An **Interest_Rate** curve in a currency other than **Currency** (a quanto swap) is not built:',
-        'the deal is skipped. The type accepts `Children` but does not aggregate them, so a deal booked',
-        'under a swap fails when the structure resolves; book legs under a `StructuredDeal`.'])
+        'the deal is skipped. Booked over `Children`, its legs, it is their sum, revalued on their',
+        'days, and builds no legs of its own.'])
 
     def reset(self, calendars):
         super(SwapInterestDeal, self).reset()
@@ -2545,8 +2568,8 @@ class SwapInterestDeal(Deal):
         # this swap could be quantoed - TODO
         self.isQuanto = None
 
-    def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
-        logging.warning('SwapInterestDeal {0} - TODO'.format(self.field['Reference']))
+    finalize_dates = Deal.children_dates
+    post_process = Deal.sum_children
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -2566,6 +2589,10 @@ class SwapInterestDeal(Deal):
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors)
             field_index['Currency'] = get_fx_and_zero_rate_factor(
                 field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors)
+
+        # on its legs it prices them (`post_process`): legs of its own would go unread
+        if self.has_children:
+            return field_index
 
         if self.field['Pay_Rate_Type'] == 'Fixed':
             field_index['FixedCashflows'] = utils.TensorCashFlows.generate_fixed(
@@ -3076,26 +3103,8 @@ class CapDeal(Deal):
         # this swap could be quantoed
         self.isQuanto = None
 
-    def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
-        # a cap or floor on its optionlet list takes the list's dates; stated by its terms it keeps its own
-        if node_children is not None:
-            super(CapDeal, self).reset()
-            for currency, dates in node_settlements.items():
-                self.add_reval_dates(dates, currency)
-        return super(CapDeal, self).finalize_dates(
-            parser, base_date, grid, node_children, node_resets, node_settlements)
-
-    def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
-        mtm_list = []
-
-        for child in child_dependencies:
-            # make the child price to the same grid as the parent
-            child.Time_dep.assign(deal_data.Time_dep)
-            mtm_list.append(child.Instrument.calculate(shared, time_grid, child))
-
-        mtm = torch.sum(torch.stack(mtm_list), dim=0)
-
-        return pricing.interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=False)
+    finalize_dates = Deal.children_dates
+    post_process = Deal.sum_children
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
