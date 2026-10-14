@@ -8,7 +8,8 @@ both read.
 
 Each chained-basis gate is a credit Monte Carlo document through `Context.load_json`, read at its
 own factor discovery - the walk `run_job` takes before any model is asked for; the registry's is a
-one-deal base valuation per head, described and priced.
+one-deal base valuation per head, described and priced, and a composed FX rate and equity are each
+priced beside their primary.
 """
 import json
 from types import SimpleNamespace
@@ -220,3 +221,30 @@ def test_discovery_and_the_resolver_read_one_chain_registry(head):
     assert {head + '.' + name.split('.')[0], tail + '.' + name} <= set(universe), universe
     assert (head + '.' + name in universe) == (tail == head), universe
     assert reference in trials.marks(job), 'the deal did not resolve its chain'
+
+
+@pytest.mark.parametrize('head,reference,field', [
+    ('FxRate', 'FWD', 'Buy_Currency'), ('EquityPrice', 'EQF', 'Equity')])
+def test_a_composed_name_beside_its_primary_marks_the_same_in_either_order(head, reference, field):
+    """A trial forward and its twin on the registry's composed name, booked in one document, each
+    mark the same whichever is booked first, and the two differ: the FX cross and the equity forward
+    are cached on every element of every chain they read, so the composed name never reads its
+    primary's entry. The basis is non-zero, else the twins agree and no key can be told apart.
+
+    Killing mutations: `calc_fx_cross` keying each chain on its first element - the FX forward
+    booked second marks the first's value, the plain one 11.9% below the composed; `calc_eq_forward`
+    keying the equity on its first element - the equity forward booked second marks the first's,
+    the plain one 9.3% below the composed.
+    """
+    _, _, name, tail, block = COMPOSED[head]
+    deal, factors = next((deal, family.FACTORS) for family in trials.FAMILIES.values()
+                         for deal in family.DEALS if deal['Reference'] == reference)
+    world = dict(factors, **{tail + '.' + name: block})
+
+    def marks(*deals):
+        return trials.marks(trials.document(SimpleNamespace(
+            DEALS=list(deals), CONFIGURATION={}, FACTORS=world)))
+
+    plain, composed = dict(deal, Reference='PLAIN'), dict(deal, Reference='COMPOSED', **{field: name})
+    together = marks(plain, composed)
+    assert together == marks(composed, plain) and together['PLAIN'] != together['COMPOSED'], together

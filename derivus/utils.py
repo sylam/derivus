@@ -4628,7 +4628,8 @@ def split_counts(rates, counts, shared):
 
 
 def calc_fx_cross(rate1, rate2, time_grid, shared):
-    key_code = ('fxcross', rate1[0], rate2[0], time_grid[:, TIME_GRID_MTM].tobytes())
+    key_code = ('fxcross', tuple(tuple(x[:2] for x in code) for code in (rate1, rate2)),
+                time_grid[:, TIME_GRID_MTM].tobytes())
     if rate1 != rate2:
         if key_code not in shared.t_Buffer:
             shared.t_Buffer[key_code] = calc_time_grid_spot_rate(
@@ -4709,7 +4710,7 @@ def curve_spread(plus, minus, weights, time_grid, shared, multiply_by_time=True)
 
 def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=False):
     T_scalar = isinstance(T, int)
-    key_code = ('eqforward', equity[0], div_yield[0][:2], only_diag,
+    key_code = ('eqforward', tuple(tuple(x[:2] for x in code) for code in (equity, repo, div_yield)), only_diag,
                 T if T_scalar else tuple(T),
                 time_grid[:, TIME_GRID_MTM].tobytes())
 
@@ -4733,7 +4734,7 @@ def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=Fal
 
 def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False):
     T_scalar = isinstance(T, int)
-    key_code = ('fxforward', local[0][0], other[0][0], only_diag,
+    key_code = ('fxforward', tuple(tuple(x[:2] for x in code) for code in (*local, *other)), only_diag,
                 T if T_scalar else tuple(T),
                 time_grid[:, TIME_GRID_MTM].tobytes())
     if key_code not in shared.t_Buffer:
