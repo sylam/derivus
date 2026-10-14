@@ -1871,8 +1871,7 @@ def join_resets(blocks, dim, deal_data, codes):
 
 
 def unstated_reset(reference, day):
-    """Warn that a rate reset fixed by the base date states no rate and is fixed at 0% - almost
-    always a container's own terms, whose children carry the rates that price."""
+    """Warn that a rate reset fixed by the base date states no rate and is fixed at 0%."""
     logging.warning(
         '%s: the reset fixing %s has fixed by the base date and its document states no rate for it, '
         'so it is fixed at 0%%. State the rate it fixed at where it prices: a Known_Rates row, a '

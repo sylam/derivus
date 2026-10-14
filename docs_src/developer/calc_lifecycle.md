@@ -150,7 +150,13 @@ worker count on one device type, and a different draw of the same law from an un
 
 `Factor_dep` is a deal's compiled factor lookup, consumed unchanged by `generate`
 ([Resolver Layer](resolver_layer.md)); `Time_dep` maps its dates onto the MTM grid, where
-`pricing.interpolate` puts its price (zero past its last date) and saves `Calc_res`.
+`pricing.interpolate` puts its price (zero past its last date) and saves `Calc_res`. A deal
+booked over `Children` whose `post_process` prices them (a cap, floor or swaption on its legs)
+compiles no legs off its own terms, which nothing would read (`Deal.has_children`, stamped by
+`set_deal_structures`), so a reset they leave unstated warns nobody; a leaf's is fixed at 0% with
+a warning naming it (`utils.unstated_reset`). **Held by**
+`tests/test_declared_defaults.py::test_a_cap_on_its_optionlet_list_states_no_principal_or_known_rates`,
+`::test_a_swaption_on_its_legs_compiles_no_swap_of_its_own`.
 
 ### The schedule lifecycle {#the-schedule-lifecycle}
 

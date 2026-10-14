@@ -966,8 +966,8 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
 
 def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states(caplog):
     """A reset behind the base date reads the rate its document states and is fixed at 0% with a
-    warning naming the deal where it states none - almost always a container's own terms; one ON the
-    base date reads the stated rate where there is one and the curve where not. By hand, each stated fixing at its rate and the rest
+    warning naming the deal where it states none; one ON the base date reads the stated rate where
+    there is one and the curve where not. By hand, each stated fixing at its rate and the rest
     at the simple ACT/360 forward off USD-PROJ, a coupon's fixings averaged, discounted on USD:
 
         a one-year 4.5% swap on quarterly coupons seasoned a month, its 6% stated   4,204.67

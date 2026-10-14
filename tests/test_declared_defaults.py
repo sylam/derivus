@@ -1007,27 +1007,58 @@ def test_a_cap_stated_by_its_terms_prices_its_caplets():
 def test_a_cap_on_its_optionlet_list_states_no_principal_or_known_rates(kind, caplog):
     """A cap or floor on its optionlet list is the list's sum, its own terms only what the list was
     generated from: seasoned seven months and stating neither a principal - a convention of a
-    million - nor the rates its terms fixed at, it books with nothing to say, warns that those
-    resets are fixed at 0%, and marks its list to the bit.
+    million - nor the rates its terms fixed at, it books with nothing to say, compiles no caplets
+    of its own and so warns of no reset, and marks its list to the bit. The same terms booked
+    alone are those caplets, and warn by name that the one fixed three months ago is fixed at 0%.
 
     Killing mutations: the principal's convention flag dropped - booking refuses the cap and the
-    compile skips it with its whole list; an unstated past reset refused - the run fails."""
+    compile skips it with its whole list; the cap on its list compiling its own caplets again - it
+    warns; an unstated past reset refused - the run fails."""
     import trial_rates
     held = trial_rates.optioned(kind, 'HELD', 2.0)
     bare = dict({key: value for key, value in held.items() if key != 'Principal'}, Reference='BARE',
                 Effective_Date=WORLD_BASE - pd.DateOffset(months=7))
     bare['Children'] = [dict(child, Reference='BARE_LETS') for child in held['Children']]
-    job = book([held, bare])
+    alone = dict({key: value for key, value in bare.items() if key != 'Children'}, Reference='ALONE')
+    job = book([held, bare, alone])
     job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(trial_rates.FACTORS)
     context = derivus.Context()
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'lists'))
     assert context.validate()['deals'] == {}
     with caplog.at_level(logging.WARNING):
         _, answer = context.run_job()
-    assert 'BARE: the reset fixing' in caplog.text
+    fixed = 'ALONE: the reset fixing {:%Y-%m-%d}'.format(WORLD_BASE - pd.DateOffset(months=3))
+    assert 'BARE: the reset fixing' not in caplog.text
+    assert caplog.text.count('ALONE: the reset fixing') == caplog.text.count(fixed) == 1
     frame = answer['Results']['mtm']
     valued = dict(zip(frame['Reference'], frame['Value']))
     assert valued['BARE'] == valued['BARE_LETS'] == valued['HELD'] != 0.0
+
+
+def test_a_swaption_on_its_legs_compiles_no_swap_of_its_own(caplog):
+    """A swaption prices its legs, its `Children`, and reads off its own terms only the option's
+    market and the underlying's tenor. Written on a swap already running, its terms' floating leg
+    reset before the base date at a rate its compile reads from no field; on its legs it compiles
+    no such leg, so warns of none, and marks as the book's swaption, whose legs it holds and whose
+    underlying runs as many days. The same terms booked alone compile that leg and warn by name.
+
+    Killing mutation: the swaption on its legs compiling its own swap again - it warns."""
+    swaption = next(deal for deal in BOOK if deal['Reference'] == 'SWPT')
+    early = pd.Timedelta(days=400)
+    running = dict(swaption, Reference='RUNNING',
+                   Swap_Effective_Date=swaption['Swap_Effective_Date'] - early,
+                   Swap_Maturity_Date=swaption['Swap_Maturity_Date'] - early,
+                   Children=[dict(leg, Reference='RUNNING_' + leg['Reference'])
+                             for leg in swaption['Children']])
+    alone = dict({key: value for key, value in running.items() if key != 'Children'},
+                 Reference='ALONE')
+    with caplog.at_level(logging.WARNING):
+        valued, stats = marks([swaption, running])
+        marks([alone])
+    assert 'Deals Skipped' not in stats and valued['RUNNING'] == valued['SWPT'] != float(0).hex()
+    assert 'RUNNING: the reset fixing' not in caplog.text
+    assert caplog.text.count('ALONE: the reset fixing {:%Y-%m-%d}'.format(
+        running['Swap_Effective_Date'])) == 1
 
 
 def test_a_convention_whose_fallback_is_another_field_still_means_its_declared_value():

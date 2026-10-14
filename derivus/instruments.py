@@ -679,6 +679,11 @@ class Deal(object):
     #: against is known. The one seam by which base-vs-foreign reaches a deal's compile surface.
     base_currency = None
 
+    #: Whether the deal is booked over `Children`, stamped by the compile driver as `base_currency`
+    #: is: a type whose `post_process` prices its children compiles no legs off its own terms then,
+    #: so a reset those terms leave unstated warns nobody.
+    has_children = False
+
     #: The field a market quote of this type lands in, in that field's own unit - a benchmark's
     #: declaration of itself, None for a type no quote set authors. `quote` writes it; a type
     #: whose quote reaches more than one place says how.
@@ -3140,12 +3145,14 @@ class CapDeal(Deal):
             field_index['VolSurface'] = get_interest_vol_factor(
                 field['Forecast_Rate_Volatility'], self.field['Payment_Interval'],
                 static_offsets, stochastic_offsets, all_tenors)
-            field_index['Cashflows'] = utils.TensorCashFlows.generate_float(
-                base_date, time_grid, self.resetdates,
-                (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
-                Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
-                utils.DayCount.code(self.field['Accrual_Day_Count']), self.field[strike] / 100.0,
-                self.field.get('Reference'))
+            # on its optionlet list it prices the list (`post_process`): its own caplets go unread
+            if not self.has_children:
+                field_index['Cashflows'] = utils.TensorCashFlows.generate_float(
+                    base_date, time_grid, self.resetdates,
+                    (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
+                    Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
+                    utils.DayCount.code(self.field['Accrual_Day_Count']), self.field[strike] / 100.0,
+                    self.field.get('Reference'))
             field_index.update(
                 SettleCurrency=self.field['Currency'], CompoundingMethod='None',
                 AveragingMethod=self.field['Averaging_Method'], Model=pricer)
@@ -3331,6 +3338,13 @@ class SwaptionDeal(Deal):
         if self.field['Settlement_Style'] == 'Cash':
             # the day it pays, the one its reset registered
             field_index['Settlement'] = (max(self.settlement_currencies[self.field['Currency']]) - base_date).days
+        field_index['Cash_Settled'] = self.field['Settlement_Style'] != 'Physical'
+        field_index['Underlying_Swap_maturity'] = utils.DayCount.accrual(
+            base_date, (self.field['Swap_Maturity_Date'] - self.field['Swap_Effective_Date']).days,
+            utils.DayCount.code(self.field.get('Index_Day_Count', 'ACT_365')))
+        # on its legs it prices them (`post_process`): the swap its own terms spell goes unread
+        if self.has_children:
+            return field_index
 
         Principal = self.field['Principal']
         Pay_Amortisation = self.field.get('Pay_Amortisation')
@@ -3338,7 +3352,6 @@ class SwaptionDeal(Deal):
         Receive_Day_Count = self.field.get('Receive_Day_Count', 'ACT_365')
         Pay_Day_Count = self.field.get('Pay_Day_Count', 'ACT_365')
         Floating_Margin = self.field.get('Floating_Margin', 0.0)
-        Index_Day_Count = self.field.get('Index_Day_Count', 'ACT_365')
 
         if self.field['Payer_Receiver'] == 'Payer':
             field_index['FixedCashflows'] = utils.TensorCashFlows.generate_fixed(
@@ -3357,8 +3370,6 @@ class SwaptionDeal(Deal):
                 self.field['Pay_Frequency'], self.field['Index_Tenor'],
                 utils.DayCount.code(Pay_Day_Count), Floating_Margin / 10000.0, self.field.get('Reference'))
 
-        field_index['Cash_Settled'] = self.field['Settlement_Style'] != 'Physical'
-
         if self.field['Settlement_Style'] == 'Physical':
             # remember to potentially deliver the underlying swap if it's in the money
             field_index['FixedStartIndex'] = field_index['FixedCashflows'].get_cashflow_start_index(time_grid.time_grid)
@@ -3366,10 +3377,6 @@ class SwaptionDeal(Deal):
         else:
             field_index['FixedStartIndex'] = np.zeros(1, dtype=np.int32)
             field_index['FloatStartIndex'] = np.zeros(1, dtype=np.int32)
-
-        field_index['Underlying_Swap_maturity'] = utils.DayCount.accrual(
-            base_date, (self.field['Swap_Maturity_Date'] - self.field['Swap_Effective_Date']).days,
-            utils.DayCount.code(Index_Day_Count))
 
         return field_index
 

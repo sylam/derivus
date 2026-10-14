@@ -491,8 +491,9 @@ class Calculation(object):
     def set_deal_structures(self, deals, output, unit, deal_level_mtm=False, exclude=None):
         """Compile the deal tree, binding each deal's schedules to `unit`, the calculation's dtype
         and device. The base currency is stamped here, a deal being constructed before the book it
-        prices against is known; `Exclude_Deals_With_Missing_Market_Data` is read once, at the
-        top: `Yes`, the default, drops a deal that cannot be read, `No` keeps it marked at zero,
+        prices against is known, and so is whether it has children, which its node carries and its
+        block does not; `Exclude_Deals_With_Missing_Market_Data` is read once, at the top: `Yes`,
+        the default, drops a deal that cannot be read, `No` keeps it marked at zero,
         and a compile that only reads the book drops one whatever the document says. The job's
         `Valuation Configuration` is handed down for the history fold's substitute type. A node
         that never became a `Deal` refuses here, naming every such node at once."""
@@ -511,6 +512,7 @@ class Calculation(object):
                 raise ValueError('; '.join(self.config.nameless_deals().values()))
 
             instrument.base_currency = base_currency
+            instrument.has_children = bool(node.get('Children'))
             logging.root.name = instrument.field.get('Reference', '<undefined>')
             if node.get('Children'):
                 struct = DealStructure(instrument, store_results=deal_level_mtm)
