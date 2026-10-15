@@ -1,0 +1,636 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>body{margin:0;font-size:14px}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>The Spine in Motion</title>
+</head>
+<body>
+<style>
+  /* Layout: one stage (SVG scene: the hub with its log and blob folder in the centre, the record's
+     folds on the left, the trading day on the right, seats along the bottom) over a narration bar
+     and a chapter rail; the closing "what is different" cards sit below, visible at rest.
+     Self-contained so the file travels by email: system faces, no network. */
+  :root {
+    --bg: #f4f6f8; --fg: #182230; --muted: #5d6b7a; --panel: #ffffff; --line: #d6dde6;
+    --hub: #0f4c5c; --hub-fill: #e3eef1; --log: #fbf3e4; --fact: #a8681a; --blob: #4a5d73;
+    --trader: #2f5bea; --ipv: #0b8a7a; --settlement: #c47a12; --confo: #c0397b; --credit: #7a4ed8; --risk: #3a8f3a;
+    --good: #2e8b57; --warn: #d08700; --bad: #c43d3d; --packet: #ff9f1c;
+    --display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --body: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f151c; --fg: #e8edf3; --muted: #9aabbd; --panel: #161e27; --line: #2a3642;
+      --hub: #7cc4d1; --hub-fill: #12242a; --log: #2a2418; --fact: #e2a84a; --blob: #9fb0c3;
+      --trader: #7f9cff; --ipv: #3fc2af; --settlement: #f0a63a; --confo: #f06aa8; --credit: #b391ff; --risk: #6fcf6f;
+      --good: #5fc488; --warn: #f0b429; --bad: #ef6b6b; --packet: #ffb547; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f151c; --fg: #e8edf3; --muted: #9aabbd; --panel: #161e27; --line: #2a3642;
+    --hub: #7cc4d1; --hub-fill: #12242a; --log: #2a2418; --fact: #e2a84a; --blob: #9fb0c3;
+    --trader: #7f9cff; --ipv: #3fc2af; --settlement: #f0a63a; --confo: #f06aa8; --credit: #b391ff; --risk: #6fcf6f;
+    --good: #5fc488; --warn: #f0b429; --bad: #ef6b6b; --packet: #ffb547; color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: var(--body); line-height: 1.45; }
+  .wrap { max-width: 1220px; margin: 0 auto; padding-block: 20px 48px; padding-inline: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; margin-bottom: 12px; }
+  h1 { font-family: var(--display); font-weight: 650; font-size: clamp(1.4rem, 2.6vw, 2rem); letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+  .sub { color: var(--muted); margin: 0; max-width: 64ch; }
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  svg { display: block; width: 100%; height: auto; max-width: 100%; }
+  svg text { font-family: var(--body); fill: var(--fg); }
+  svg .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  svg .muted { fill: var(--muted); }
+  svg .label { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; fill: var(--muted); }
+  .bar { display: grid; grid-template-columns: auto 1fr auto; gap: 12px 16px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); }
+  .controls { display: flex; gap: 6px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 0.9rem; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--hub); }
+  button:focus-visible { outline: 2px solid var(--hub); outline-offset: 2px; }
+  button.primary { background: var(--hub); color: var(--panel); border-color: var(--hub); min-width: 84px; }
+  select { font: inherit; font-size: 0.9rem; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  .caption { min-width: 0; }
+  .caption .kicker { font-size: 0.74rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .caption h2 { font-family: var(--display); font-size: 1.1rem; margin: 2px 0 2px; font-weight: 650; }
+  .caption p { margin: 0; color: var(--fg); max-width: 86ch; font-size: 0.95rem; }
+  .progress { height: 3px; background: var(--line); }
+  .progress > div { height: 100%; width: 0; background: var(--hub); transition: width 0.25s linear; }
+  .rail { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; padding: 0; list-style: none; }
+  .rail button { font-size: 0.82rem; padding: 5px 10px; }
+  .rail button[aria-current="step"] { background: var(--hub-fill); border-color: var(--hub); color: var(--fg); }
+  .rail .n { font-family: var(--mono); color: var(--muted); margin-right: 6px; }
+  .why { margin-top: 32px; }
+  .why h2 { font-family: var(--display); font-size: 1.25rem; margin: 0 0 4px; font-weight: 650; }
+  .why .lede { color: var(--muted); margin: 0 0 14px; max-width: 72ch; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-width: 0; }
+  .card h3 { margin: 0 0 6px; font-size: 0.98rem; font-family: var(--display); font-weight: 650; }
+  .card p { margin: 0; font-size: 0.92rem; }
+  .card .was { display: block; margin-top: 8px; font-size: 0.82rem; color: var(--muted); }
+  code { font-family: var(--mono); font-size: 0.86em; background: var(--hub-fill); padding: 1px 5px; border-radius: 4px; }
+  footer { margin-top: 24px; color: var(--muted); font-size: 0.82rem; }
+  @media (max-width: 720px) { .bar { grid-template-columns: 1fr; } }
+  @media (prefers-reduced-motion: reduce) { .progress > div { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>The Spine in Motion</h1>
+      <p class="sub">One hub appends every fact. Every seat reads the same log and folds its own view: positions, the diary, P&amp;L, the reports. Press play.</p>
+    </div>
+  </header>
+
+  <div class="stage">
+    <svg id="scene" viewBox="0 0 1200 700" role="img" aria-label="Animated architecture of the spine: a hub holding the event log and the blob folder, the record's folds, the trading day, and the seats around it."></svg>
+    <div class="progress"><div id="progress"></div></div>
+    <div class="bar">
+      <div class="controls">
+        <button id="play" class="primary" type="button">Play</button>
+        <button id="prev" type="button" aria-label="Previous chapter">&#8249; Back</button>
+        <button id="next" type="button" aria-label="Next chapter">Next &#8250;</button>
+        <button id="restart" type="button">Restart</button>
+      </div>
+      <div class="caption">
+        <div class="kicker" id="kicker"></div>
+        <h2 id="title"></h2>
+        <p id="text"></p>
+      </div>
+      <label>Speed <select id="speed"><option value="1">1x</option><option value="1.6" selected>1.6x</option><option value="2.5">2.5x</option></select></label>
+    </div>
+  </div>
+  <ul class="rail" id="rail"></ul>
+
+  <section class="why">
+    <h2>What is different, and why it scales</h2>
+    <p class="lede">A trading system is usually a database every application edits and a set of reports that reconcile against it. The spine is one log of facts and as many readers as a bank needs.</p>
+    <div class="cards">
+      <div class="card"><h3>One writer, one order</h3><p>The hub appends every fact in sequence, chained by hash and sealed. Every seat sees the same history in the same order, so there is nothing to reconcile between desks.</p><span class="was">Before: each application keeps its own table, and a nightly job explains the differences.</span></div>
+      <div class="card"><h3>Facts, never edits</h3><p>A correction is another fact. A restatement wins by its as-of date, and what it replaced stays readable. A copy with no keys still verifies the whole chain.</p><span class="was">Before: a row is overwritten and the audit trail is whatever the application chose to log.</span></div>
+      <div class="card"><h3>A view is a fold</h3><p>Positions, cash, the diary, P&amp;L, collateral calls and exposure are each a fold over the facts up to a point. A report is a fold read at an LSN, so two seats asking the same question on the same head get the same answer.</p><span class="was">Before: a new report is a new pipeline, a new schema and a new feed to keep in step.</span></div>
+      <div class="card"><h3>A booking is a ticket</h3><p>A fill hashes the plan the book has with the trade's fields. The tiers policy routes it: automatic within its limits, four eyes above them, where it lands pending until a second seat's verdict is filed. A changed plan needs a new approval.</p><span class="was">Before: approval is a flag on a row that anyone with the screen can set.</span></div>
+      <div class="card"><h3>The close is a fact</h3><p>A close is legal only when nothing due by its day still waits. The marks run on it is a standing run, attested with its replay tuple, and the folds are cached at the close as seeds, so the next day starts from the close, not from genesis.</p><span class="was">Before: end of day is a batch nobody can rerun to the same number.</span></div>
+      <div class="card"><h3>Seats are replicas</h3><p>A seat pulls frames from the hub, verifies them and stands at the head before it acts. Reads never block the writer, so adding a seat costs the hub one more subscriber, not a design.</p><span class="was">Before: every user shares one database connection pool and one set of locks.</span></div>
+      <div class="card"><h3>Content, cited by hash</h3><p>Terms, markets, jobs and results live once in the shared folder under their hash. Every number a seat sees carries its replay tuple: plan, values, engine version and seed.</p><span class="was">Before: a valuation is a number in a column, and reproducing it means finding the inputs.</span></div>
+      <div class="card"><h3>Permission is a document</h3><p>Who may book, mark, settle, document or approve, and at which node of the portfolio tree, is a declared document in the log. The question "could this seat do that in March" replays.</p><span class="was">Before: roles live in application configuration and change without a record.</span></div>
+      <div class="card"><h3>The engine is a function</h3><p>A job document and the market that stands are the whole input, so a run executes on any box and its result is attested back into the log. Compute scales out; the record stays one.</p><span class="was">Before: the valuation engine and the position keeping are one process with one state.</span></div>
+      <div class="card"><h3>A bank is declarations</h3><p>Seats, the portfolio tree, approval tiers, close times, market names and fixing sources are data the bank declares. The mechanism never changes to add a desk.</p><span class="was">Before: a new desk is a project.</span></div>
+    </div>
+  </section>
+  <footer>The sequence shown is the record's own order of events: mint, declare, enrol, sync, the day's facts, the close, the folds. Nothing in it is a database row.</footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var NS = 'http://www.w3.org/2000/svg';
+  var svg = document.getElementById('scene');
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  // ------------------------------------------------------------------ scene geometry
+  var HUB = { x: 300, y: 56, w: 600, h: 344 };
+  var LOG = { x: 322, y: 104, w: 262, h: 276 };
+  var BLOB = { x: 616, y: 104, w: 262, h: 176 };
+  var BELL = { x: 600, y: 400 };
+  var FOLDS = { x: 20, y: 104, w: 256, h: 300 };
+  var DAY = { x: 924, y: 104, w: 256, h: 300 };
+  var SEAT_W = 166, SEAT_H = 104, SEAT_Y = 560;
+  var SEATS = [
+    { id: 'credit', name: 'Credit', verb: 'approve', node: 'BANK', view: 'exposure by agreement', x: 102, later: true },
+    { id: 'trader', name: 'Trader', verb: 'book', node: 'BANK/FX', view: 'positions, P&L', x: 300 },
+    { id: 'ipv', name: 'IPV', verb: 'mark', node: '*', view: 'markets and closes', x: 500 },
+    { id: 'settlement', name: 'Settlement', verb: 'settle', node: '*', view: 'diary of payments', x: 700 },
+    { id: 'confo', name: 'Confo', verb: 'document', node: '*', view: 'confirmations', x: 900 },
+    { id: 'risk', name: 'Market risk', verb: 'validate', node: 'BANK', view: 'P&L explain, VaR', x: 1098, later: true }
+  ];
+  var PROJECTORS = ['positions', 'costs', 'cash', 'lifecycle', 'markets', 'attestations', 'decisions', 'quotes',
+                    'denials', 'blotter', 'entities', 'agreements', 'portfolios', 'activity'];
+  var PHASES = ['market declared (SOD)', 'fixings printed', 'bookings and quotes', 'marks, settlements, confirmations',
+                'close check: nothing waits', 'marks run, attested', 'settlement file struck', 'official close declared', 'seeds minted'];
+
+  function el(name, attrs, parent) {
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) { if (attrs.hasOwnProperty(k)) { e.setAttribute(k, attrs[k]); } }
+    (parent || svg).appendChild(e);
+    return e;
+  }
+  function text(x, y, s, attrs, parent) {
+    var t = el('text', Object.assign({ x: x, y: y }, attrs || {}), parent);
+    t.textContent = s;
+    return t;
+  }
+  function color(name) { return 'var(--' + name + ')'; }
+  function hash(n) { var h = 2166136261 ^ (n * 2654435761); h = (h ^ (h >>> 13)) * 16777619; return ('0000000' + (h >>> 0).toString(16)).slice(-7); }
+
+  // ------------------------------------------------------------------ static scene
+  var gLines = el('g');
+  var gHub = el('g');
+  var gSide = el('g');
+  var gSeats = el('g');
+  var gPackets = el('g');
+  var gFx = el('g');
+
+  // hub
+  el('rect', { x: HUB.x, y: HUB.y, width: HUB.w, height: HUB.h, rx: 14, fill: color('hub-fill'), stroke: color('hub'), 'stroke-width': 2 }, gHub);
+  text(HUB.x + 20, HUB.y + 26, 'HUB', { 'class': 'label', 'font-weight': 700 }, gHub);
+  text(HUB.x + 62, HUB.y + 26, 'the single writer', { 'class': 'muted', 'font-size': 12 }, gHub);
+  var hubState = text(HUB.x + HUB.w - 20, HUB.y + 26, '', { 'class': 'mono', 'font-size': 12, 'text-anchor': 'end', fill: color('muted') }, gHub);
+  var gPolicies = el('g', {}, gHub);
+  el('rect', { x: LOG.x, y: LOG.y, width: LOG.w, height: LOG.h, rx: 8, fill: color('log'), stroke: color('fact'), 'stroke-width': 1.2 }, gHub);
+  text(LOG.x + 12, LOG.y + 20, 'EVENT LOG', { 'class': 'label' }, gHub);
+  var headLabel = text(LOG.x + LOG.w - 12, LOG.y + 20, 'head 0', { 'class': 'mono', 'font-size': 12, 'text-anchor': 'end', fill: color('fact') }, gHub);
+  var gFrames = el('g', {}, gHub);
+  el('rect', { x: BLOB.x, y: BLOB.y, width: BLOB.w, height: BLOB.h, rx: 8, fill: color('panel'), stroke: color('blob'), 'stroke-width': 1.2, 'stroke-dasharray': '5 4' }, gHub);
+  text(BLOB.x + 12, BLOB.y + 20, 'SHARED FOLDER OF BLOBS', { 'class': 'label' }, gHub);
+  text(BLOB.x + 12, BLOB.y + 38, 'content addressed, write once', { 'class': 'muted', 'font-size': 11 }, gHub);
+  text(BLOB.x + BLOB.w - 12, BLOB.y + 20, 'hub: read + write', { 'class': 'mono', 'font-size': 11, 'text-anchor': 'end', fill: color('blob') }, gHub);
+  var gBlobs = el('g', {}, gHub);
+  var gKeys = el('g', {}, gHub);
+  el('rect', { x: BLOB.x, y: BLOB.y + BLOB.h + 14, width: BLOB.w, height: 86, rx: 8, fill: color('panel'), stroke: color('line') }, gKeys);
+  text(BLOB.x + 12, BLOB.y + BLOB.h + 34, 'KEYS AND SEAL', { 'class': 'label' }, gKeys);
+  var keyLines = [
+    text(BLOB.x + 12, BLOB.y + BLOB.h + 54, '', { 'class': 'mono', 'font-size': 11 }, gKeys),
+    text(BLOB.x + 12, BLOB.y + BLOB.h + 72, '', { 'class': 'mono', 'font-size': 11 }, gKeys),
+    text(BLOB.x + 12, BLOB.y + BLOB.h + 90, '', { 'class': 'mono', 'font-size': 11 }, gKeys)
+  ];
+  var bell = el('g', { transform: 'translate(' + BELL.x + ' ' + BELL.y + ')' }, gHub);
+  el('circle', { r: 16, fill: color('panel'), stroke: color('hub'), 'stroke-width': 2 }, bell);
+  el('path', { d: 'M-6 4 L-6 -2 A6 6 0 0 1 6 -2 L6 4 L8 7 L-8 7 Z M-2 9 L2 9', fill: 'none', stroke: color('hub'), 'stroke-width': 1.8, 'stroke-linejoin': 'round' }, bell);
+  text(BELL.x, BELL.y + 34, 'doorbell: {lsn, head} to every seat, who pull what they lack', { 'class': 'muted', 'font-size': 11, 'text-anchor': 'middle' }, gHub);
+
+  // folds panel (left)
+  el('rect', { x: FOLDS.x, y: FOLDS.y, width: FOLDS.w, height: FOLDS.h, rx: 8, fill: color('panel'), stroke: color('line') }, gSide);
+  text(FOLDS.x + 12, FOLDS.y + 20, 'FOLDS', { 'class': 'label', 'font-weight': 700 }, gSide);
+  text(FOLDS.x + 62, FOLDS.y + 20, 'every view is a fold of the facts', { 'class': 'muted', 'font-size': 11 }, gSide);
+  var foldEls = {};
+  PROJECTORS.forEach(function (p, i) {
+    var cx = FOLDS.x + 14 + (i % 2) * 124, cy = FOLDS.y + 44 + Math.floor(i / 2) * 24;
+    var dot = el('circle', { cx: cx + 5, cy: cy - 4, r: 4.5, fill: color('line') }, gSide);
+    var t = text(cx + 16, cy, p, { 'font-size': 12, fill: color('muted') }, gSide);
+    foldEls[p] = { dot: dot, t: t };
+  });
+  var foldsAt = text(FOLDS.x + 12, FOLDS.y + FOLDS.h - 42, '', { 'class': 'mono', 'font-size': 11, fill: color('hub') }, gSide);
+  var foldsNote = text(FOLDS.x + 12, FOLDS.y + FOLDS.h - 24, 'reports read the folds at an LSN', { 'font-size': 11, fill: color('muted') }, gSide);
+  var foldsNote2 = text(FOLDS.x + 12, FOLDS.y + FOLDS.h - 10, 'P&L, collateral, exposure, worklist', { 'font-size': 11, fill: color('muted') }, gSide);
+
+  // the day panel (right)
+  el('rect', { x: DAY.x, y: DAY.y, width: DAY.w, height: DAY.h, rx: 8, fill: color('panel'), stroke: color('line') }, gSide);
+  text(DAY.x + 12, DAY.y + 20, 'THE DAY', { 'class': 'label', 'font-weight': 700 }, gSide);
+  text(DAY.x + 76, DAY.y + 20, 'start of day to the close', { 'class': 'muted', 'font-size': 11 }, gSide);
+  var phaseEls = [];
+  PHASES.forEach(function (p, i) {
+    var y = DAY.y + 46 + i * 27;
+    var box = el('rect', { x: DAY.x + 12, y: y - 13, width: DAY.w - 24, height: 20, rx: 5, fill: 'none', stroke: 'none' }, gSide);
+    var t = text(DAY.x + 22, y + 1, p, { 'font-size': 12, fill: color('muted') }, gSide);
+    phaseEls.push({ box: box, t: t });
+  });
+  var dayNote = text(DAY.x + 12, DAY.y + DAY.h - 10, '', { 'class': 'mono', 'font-size': 11, fill: color('hub') }, gSide);
+
+  // seats
+  var seatEls = {};
+  SEATS.forEach(function (s) {
+    var g = el('g', { opacity: s.later ? 0 : 0.35 }, gSeats);
+    var left = s.x - SEAT_W / 2;
+    el('line', { x1: s.x, y1: SEAT_Y, x2: BELL.x, y2: BELL.y + 16, stroke: color('line'), 'stroke-width': 1, 'stroke-dasharray': '3 5' }, gLines).setAttribute('data-line', s.id);
+    var rect = el('rect', { x: left, y: SEAT_Y, width: SEAT_W, height: SEAT_H, rx: 10, fill: color('panel'), stroke: color(s.id), 'stroke-width': 2, 'stroke-dasharray': '6 4' }, g);
+    el('rect', { x: left, y: SEAT_Y, width: 6, height: SEAT_H, rx: 3, fill: color(s.id) }, g);
+    text(left + 16, SEAT_Y + 22, s.name, { 'font-weight': 700, 'font-size': 14 }, g);
+    text(left + SEAT_W - 10, SEAT_Y + 22, s.verb + ' @ ' + s.node, { 'class': 'mono', 'font-size': 10.5, 'text-anchor': 'end', fill: color('muted') }, g);
+    text(left + 16, SEAT_Y + 40, s.view, { 'font-size': 11.5, fill: color('muted') }, g);
+    text(left + 16, SEAT_Y + 60, 'log', { 'class': 'label', 'font-size': 10 }, g);
+    el('rect', { x: left + 44, y: SEAT_Y + 52, width: SEAT_W - 60, height: 8, rx: 4, fill: color('line') }, g);
+    var meter = el('rect', { x: left + 44, y: SEAT_Y + 52, width: 0, height: 8, rx: 4, fill: color(s.id) }, g);
+    var status = text(left + 16, SEAT_Y + 84, '', { 'class': 'mono', 'font-size': 11, fill: color('muted') }, g);
+    var fold = text(left + SEAT_W - 10, SEAT_Y + 84, '', { 'font-size': 11, 'text-anchor': 'end', fill: color(s.id) }, g);
+    seatEls[s.id] = { g: g, rect: rect, meter: meter, status: status, fold: fold, cfg: s };
+  });
+
+  // ------------------------------------------------------------------ state and rendering
+  var state;
+  function reset() {
+    state = { head: 0, frames: [], blobs: 0, policies: [], seats: {}, phase: -1, lit: {} };
+    SEATS.forEach(function (s) { state.seats[s.id] = { enrolled: false, online: false, lsn: 0, fold: '' }; });
+    gFrames.innerHTML = ''; gBlobs.innerHTML = ''; gPolicies.innerHTML = ''; gPackets.innerHTML = ''; gFx.innerHTML = '';
+    headLabel.textContent = 'head 0'; hubState.textContent = ''; keyLines.forEach(function (k) { k.textContent = ''; });
+    foldsAt.textContent = ''; dayNote.textContent = '';
+    gHub.setAttribute('opacity', 0.25);
+    SEATS.forEach(function (s) { renderSeat(s.id); });
+    renderFolds(); renderDay();
+  }
+  function renderSeat(id) {
+    var e = seatEls[id], st = state.seats[id], cfg = e.cfg, width = SEAT_W - 60;
+    e.g.setAttribute('opacity', st.enrolled ? 1 : (cfg.later ? 0 : 0.35));
+    e.rect.setAttribute('stroke-dasharray', st.online ? '0' : '6 4');
+    e.meter.setAttribute('width', state.head ? Math.round(width * Math.min(1, st.lsn / state.head)) : 0);
+    var line = gLines.querySelector('[data-line="' + id + '"]');
+    line.setAttribute('stroke', st.online ? color(id) : color('line'));
+    line.setAttribute('stroke-dasharray', st.online ? '0' : '3 5');
+    line.setAttribute('opacity', st.enrolled ? 1 : (cfg.later ? 0 : 0.4));
+    if (!st.enrolled) { e.status.textContent = cfg.later ? '' : 'not enrolled'; e.status.setAttribute('fill', color('muted')); }
+    else if (!st.online) { e.status.textContent = 'enrolled, offline'; e.status.setAttribute('fill', color('muted')); }
+    else if (st.lsn < state.head) { e.status.textContent = 'LSN ' + st.lsn + ' of ' + state.head + ' - behind'; e.status.setAttribute('fill', color('warn')); }
+    else { e.status.textContent = 'at head ' + state.head + ' ✓'; e.status.setAttribute('fill', color('good')); }
+    e.fold.textContent = st.fold;
+  }
+  function renderPolicies() {
+    gPolicies.innerHTML = '';
+    var x = HUB.x + 20;
+    state.policies.forEach(function (p) {
+      var w = p.length * 6.6 + 18;
+      el('rect', { x: x, y: HUB.y + 36, width: w, height: 20, rx: 10, fill: color('panel'), stroke: color('hub'), 'stroke-width': 1 }, gPolicies);
+      text(x + 9, HUB.y + 50, p, { 'class': 'mono', 'font-size': 11, fill: color('hub') }, gPolicies);
+      x += w + 6;
+    });
+  }
+  var ROW = 26, VISIBLE = 9;
+  function renderLog() {
+    gFrames.innerHTML = '';
+    var rows = state.frames.slice(Math.max(0, state.frames.length - VISIBLE));
+    rows.forEach(function (f, i) {
+      var y = LOG.y + 38 + i * ROW;
+      var g = el('g', {}, gFrames);
+      el('rect', { x: LOG.x + 10, y: y - 14, width: LOG.w - 20, height: 22, rx: 5, fill: color('panel'), stroke: f.pending ? color('warn') : color('fact'), 'stroke-width': 1 }, g);
+      text(LOG.x + 18, y + 2, String(f.lsn).padStart(3, ' '), { 'class': 'mono', 'font-size': 11.5, fill: color('fact') }, g);
+      text(LOG.x + 50, y + 2, f.type, { 'font-size': 11.5 }, g);
+      text(LOG.x + LOG.w - 18, y + 2, hash(f.lsn), { 'class': 'mono', 'font-size': 10.5, 'text-anchor': 'end', fill: color('muted') }, g);
+      if (i > 0) { el('line', { x1: LOG.x + 24, y1: y - 14, x2: LOG.x + 24, y2: y - 18, stroke: color('fact'), 'stroke-width': 2 }, g); }
+      if (f.by) { el('rect', { x: LOG.x + 44, y: y - 11, width: 3, height: 16, fill: color(f.by) }, g); }
+    });
+    headLabel.textContent = 'head ' + state.head;
+  }
+  function renderBlobs() {
+    gBlobs.innerHTML = '';
+    var cols = 5, size = 42, gap = 8;
+    for (var i = 0; i < state.blobs; i++) {
+      var cx = BLOB.x + 14 + (i % cols) * (size + gap), cy = BLOB.y + 50 + Math.floor(i / cols) * (size + gap + 4);
+      el('rect', { x: cx, y: cy, width: size, height: size, rx: 6, fill: color('hub-fill'), stroke: color('blob'), 'stroke-width': 1 }, gBlobs);
+      text(cx + size / 2, cy + size / 2 + 4, hash(100 + i).slice(0, 5), { 'class': 'mono', 'font-size': 9.5, 'text-anchor': 'middle', fill: color('blob') }, gBlobs);
+    }
+  }
+  function renderFolds() {
+    PROJECTORS.forEach(function (p) {
+      var lit = state.lit[p];
+      foldEls[p].dot.setAttribute('fill', lit ? color('hub') : color('line'));
+      foldEls[p].t.setAttribute('fill', lit ? color('fg') : color('muted'));
+      foldEls[p].t.setAttribute('font-weight', lit === 2 ? 700 : 400);
+    });
+  }
+  function renderDay() {
+    phaseEls.forEach(function (p, i) {
+      var on = i === state.phase, done = i < state.phase;
+      p.box.setAttribute('fill', on ? color('hub-fill') : 'none');
+      p.box.setAttribute('stroke', on ? color('hub') : 'none');
+      p.t.setAttribute('fill', on ? color('fg') : (done ? color('hub') : color('muted')));
+      p.t.setAttribute('font-weight', on ? 700 : 400);
+    });
+  }
+
+  // ------------------------------------------------------------------ clock, playback, motion
+  var playing = false, speed = 1.6, clockBase = 0, clockAcc = 0, instant = false, token = 0;
+  function now() { return clockAcc + (playing ? (performance.now() - clockBase) : 0); }
+  function setPlaying(p) {
+    if (p === playing) { return; }
+    if (p) { clockBase = performance.now(); } else { clockAcc = now(); }
+    playing = p;
+    document.getElementById('play').textContent = p ? 'Pause' : 'Play';
+  }
+  function cancelled() { return new Error('cancelled'); }
+  function wait(ms) {
+    var mine = token;
+    if (instant || reduced) { return Promise.resolve(); }
+    var until = now() + ms / speed;
+    return new Promise(function (resolve, reject) {
+      (function tick() {
+        if (mine !== token) { reject(cancelled()); return; }
+        if (now() >= until) { resolve(); } else { requestAnimationFrame(tick); }
+      })();
+    });
+  }
+  function point(id) { return { x: seatEls[id].cfg.x, y: SEAT_Y }; }
+  var HUB_IN = { x: BELL.x, y: BELL.y + 16 };
+  var LOG_OUT = { x: LOG.x + LOG.w / 2, y: LOG.y + LOG.h };
+  function fly(from, to, ms, fill, labelText) {
+    var mine = token;
+    if (instant || reduced) { return Promise.resolve(); }
+    var g = el('g', {}, gPackets);
+    el('circle', { r: 7, fill: fill || color('packet'), stroke: color('panel'), 'stroke-width': 1.5 }, g);
+    if (labelText) { text(10, 4, labelText, { 'class': 'mono', 'font-size': 10.5, fill: color('fg') }, g); }
+    var start = now(), dur = ms / speed;
+    return new Promise(function (resolve, reject) {
+      (function tick() {
+        if (mine !== token) { g.remove(); reject(cancelled()); return; }
+        var p = Math.min(1, (now() - start) / dur);
+        var e = p < 0.5 ? 2 * p * p : -1 + (4 - 2 * p) * p;
+        g.setAttribute('transform', 'translate(' + (from.x + (to.x - from.x) * e) + ' ' + (from.y + (to.y - from.y) * e) + ')');
+        if (p >= 1) { g.remove(); resolve(); } else { requestAnimationFrame(tick); }
+      })();
+    });
+  }
+  function ring(center, radiusTo, ms, stroke) {
+    var mine = token;
+    if (instant || reduced) { return Promise.resolve(); }
+    var c = el('circle', { cx: center.x, cy: center.y, r: 4, fill: 'none', stroke: stroke || color('hub'), 'stroke-width': 2 }, gFx);
+    var start = now(), dur = ms / speed;
+    return new Promise(function (resolve, reject) {
+      (function tick() {
+        if (mine !== token) { c.remove(); reject(cancelled()); return; }
+        var p = Math.min(1, (now() - start) / dur);
+        c.setAttribute('r', 4 + radiusTo * p); c.setAttribute('opacity', 1 - p);
+        if (p >= 1) { c.remove(); resolve(); } else { requestAnimationFrame(tick); }
+      })();
+    });
+  }
+  function flash(id, textValue, fill) {
+    var t = text(seatEls[id].cfg.x, SEAT_Y - 12, textValue, { 'class': 'mono', 'font-size': 11, 'text-anchor': 'middle', fill: fill || color('bad') }, gFx);
+    return wait(1400).then(function () { t.remove(); }, function (err) { t.remove(); throw err; });
+  }
+  function judge(stages) {
+    var chain = Promise.resolve();
+    stages.forEach(function (s) { chain = chain.then(function () { hubState.textContent = s; return wait(420); }); });
+    return chain;
+  }
+
+  // ------------------------------------------------------------------ record verbs
+  function append(type, by, pending) {
+    state.head += 1;
+    state.frames.push({ lsn: state.head, type: type, by: by, pending: !!pending });
+    renderLog();
+    SEATS.forEach(function (s) { renderSeat(s.id); });
+  }
+  function putBlob(n) { state.blobs = Math.min(15, state.blobs + (n || 1)); renderBlobs(); }
+  function policy(name) { state.policies.push(name); renderPolicies(); }
+  function enrol(id) { state.seats[id].enrolled = true; renderSeat(id); }
+  function setFold(id, v) { state.seats[id].fold = v; renderSeat(id); }
+  function light(names, strong) {
+    names.forEach(function (n) { state.lit[n] = strong ? 2 : 1; });
+    foldsAt.textContent = 'folded at LSN ' + state.head;
+    renderFolds();
+  }
+  function phase(i, note) { state.phase = i; renderDay(); if (note !== undefined) { dayNote.textContent = note; } }
+
+  function broadcast() {
+    var online = SEATS.filter(function (s) { return state.seats[s.id].online; });
+    return ring(BELL, 120, 700).then(function () {
+      return Promise.all(online.map(function (s) { return fly(HUB_IN, point(s.id), 650, color('fact'), null); }));
+    }).then(function () {
+      online.forEach(function (s) { state.seats[s.id].lsn = state.head; renderSeat(s.id); });
+    });
+  }
+  function syncSeat(id, fromSeed) {
+    var st = state.seats[id];
+    st.online = true; renderSeat(id);
+    var steps = fromSeed ? 2 : Math.min(6, Math.max(1, state.head - st.lsn));
+    var chain = Promise.resolve();
+    for (var i = 1; i <= steps; i++) {
+      (function (k) {
+        chain = chain.then(function () {
+          return fly(LOG_OUT, point(id), 420, color('fact')).then(function () {
+            st.lsn = k < steps ? Math.round(state.head * k / steps) : state.head;
+            renderSeat(id);
+          });
+        });
+      })(i);
+    }
+    return chain;
+  }
+  function request(id, verb, type, opts) {
+    opts = opts || {};
+    var st = state.seats[id];
+    if (st.lsn < state.head) {
+      return fly(point(id), HUB_IN, 700, color(id), verb).then(function () { return flash(id, 'refused: behind the head', color('bad')); });
+    }
+    return fly(point(id), HUB_IN, 700, color(id), verb)
+      .then(function () { return judge(opts.judge || ['judge: vocabulary', 'judge: grant at node', 'judge: scope']); })
+      .then(function () {
+        hubState.textContent = 'append LSN ' + (state.head + 1) + ' · seal';
+        (opts.frames || [type]).forEach(function (f, i) { append(f, id, opts.pending && i === (opts.frames || [type]).length - 1); });
+        if (opts.blobs) { putBlob(opts.blobs); }
+        if (opts.light) { light(opts.light); }
+        return wait(500);
+      })
+      .then(function () { hubState.textContent = ''; return broadcast(); })
+      .then(function () { if (opts.folds) { Object.keys(opts.folds).forEach(function (k) { setFold(k, opts.folds[k]); }); } });
+  }
+
+  // ------------------------------------------------------------------ chapters
+  var chapters = [
+    { title: 'The home is minted',
+      text: 'The hub creates its home: a signing key and a class key, the genesis facts, and a first checkpoint signed over the head. From here on it is the only process that writes. Every frame it appends is chained to the one before by hash, sealed, and tagged so a retry lands once.',
+      run: function () {
+        gHub.setAttribute('opacity', 1);
+        hubState.textContent = 'init';
+        keyLines[0].textContent = 'Ed25519 checkpoint key · AES class key';
+        return wait(700).then(function () { append('genesis'); return wait(500); })
+          .then(function () { append('admin grant'); return wait(500); })
+          .then(function () { append('checkpoint, signed'); keyLines[1].textContent = 'frame: prev_hash → event_hash'; keyLines[2].textContent = 'body sealed · idempotency tag'; hubState.textContent = ''; return wait(600); });
+      } },
+    { title: 'Policies are declared',
+      text: 'Who may do what is a document in the log, not a setting in an application. Capabilities grant verbs at nodes of the portfolio tree. Tiers say which tickets are approved automatically and which need four eyes. Firmness, fixings and tolerance are declared the same way, and the last declaration stands.',
+      run: function () {
+        var chain = Promise.resolve();
+        ['capabilities', 'tiers', 'firmness', 'fixings', 'tolerance'].forEach(function (n) {
+          chain = chain.then(function () { policy(n); append('policy: ' + n); putBlob(1); return wait(480); });
+        });
+        return chain.then(function () { light(['decisions']); return wait(200); });
+      } },
+    { title: 'Seats and paper are enrolled',
+      text: 'Each seat is a fact too: enrolled with its own key and granted its verb at its node. A trader books at BANK/FX, IPV marks, settlement settles, confo documents. The counterparty and its agreement, the netting set an exposure is priced on, are declared as paper. The class key is wrapped to each seat that may read.',
+      run: function () {
+        var chain = Promise.resolve();
+        ['trader', 'ipv', 'settlement', 'confo'].forEach(function (id) {
+          chain = chain.then(function () { enrol(id); append('seat enrolled: ' + seatEls[id].cfg.name); return wait(360); })
+            .then(function () { append('grant: ' + seatEls[id].cfg.verb + ' @ ' + seatEls[id].cfg.node); return wait(360); });
+        });
+        return chain.then(function () { append('entity and agreement declared'); putBlob(1); light(['entities', 'agreements', 'portfolios']); return wait(420); })
+          .then(function () { append('key wrapped x4'); return wait(400); });
+      } },
+    { title: 'Seats come online, and catch up first',
+      text: 'A seat that comes online pulls the log from the hub and verifies every link before it does anything. It acts only from the head it has verified: a request sent from behind the head is refused, never merged. Every seat is a replica, so reads never wait on the writer.',
+      run: function () {
+        return syncSeat('trader').then(function () { return syncSeat('ipv'); })
+          .then(function () {
+            state.seats.confo.online = true; state.seats.confo.lsn = 3; renderSeat('confo');
+            return Promise.all([syncSeat('settlement'), request('confo', 'document', null)]);
+          })
+          .then(function () { return syncSeat('confo'); });
+      } },
+    { title: 'Start of day: the market is declared',
+      text: 'IPV snaps the market and declares it under a name: the values land once in the shared folder and the declaration cites them by hash. Fixings are printed under their index, date and source. Every seat folds the same market, and each worklist shows what waits on that seat today.',
+      run: function () {
+        phase(0, 'day 1');
+        return request('ipv', 'market', 'market declared: EOD.USD', { blobs: 1, light: ['markets'], judge: ['judge: vocabulary', 'judge: mark @ *'],
+            folds: { ipv: 'market: stands', trader: 'marked to market' } })
+          .then(function () { phase(1); return request('ipv', 'print', 'fixing observed: 3 indices', { light: ['lifecycle'], judge: ['judge: mark @ *'], folds: { settlement: 'worklist: 0' } }); });
+      } },
+    { title: 'A trade is booked',
+      text: 'The trader quotes a client; the quote records nothing. On acceptance the hub files the quote and routes a ticket: the hash of the plan the book has with the trade as filed. The tiers policy admits it, the hub approves in its own voice, and the fill lands with the instrument terms stored by hash. Every seat pulls the frame: a position for the trader, a payment in the diary, a confirmation to chase, a mark to make. A larger ticket needs four eyes and lands pending until a second seat files its verdict.',
+      run: function () {
+        phase(2);
+        return request('trader', 'accept', null, { frames: ['quote filed', 'ticket: tier automatic', 'approval (hub)', 'fill: FX option @ BANK/FX'], blobs: 2,
+            judge: ['judge: vocabulary', 'judge: book @ BANK/FX', 'ticket: hash(plan, trade)', 'tier: automatic'],
+            light: ['quotes', 'positions', 'costs', 'blotter', 'activity'],
+            folds: { trader: '+1 position, basis', settlement: 'diary: 1 due', confo: '1 to confirm', ipv: '1 to mark' } })
+          .then(function () {
+            return request('trader', 'fill', null, { frames: ['ticket: four eyes', 'fill: pending'], pending: true, blobs: 1,
+              judge: ['judge: book @ BANK/FX', 'ticket: hash(plan, trade)', 'tier: four eyes → pending'],
+              light: ['positions', 'blotter'], folds: { trader: '+1 pending approval' } });
+          });
+      } },
+    { title: 'Through the day: mark, settle, confirm',
+      text: 'IPV marks the new trade off the standing market. Settlement files the payment against its diary row, with the amount and the settlement reference. Confo files the match. Each is one fact through one path, judged by the same grants, and every other seat folds it into its own view.',
+      run: function () {
+        phase(3);
+        return request('ipv', 'mark', 'mark declared', { light: ['markets'], judge: ['judge: mark @ *'], folds: { ipv: 'marks: current' } })
+          .then(function () { return request('settlement', 'settle', 'status: settled, amount', { light: ['cash', 'lifecycle'], judge: ['judge: settle @ *'], folds: { settlement: 'diary: clear', trader: 'cash in' } }); })
+          .then(function () { return request('confo', 'match', 'status: confirmed', { light: ['lifecycle'], judge: ['judge: document @ *'], folds: { confo: 'all confirmed' } }); });
+      } },
+    { title: 'End of day: the close',
+      text: 'A close is legal only when nothing due by its day still waits: no fixing unprinted, no payment unsettled, no expiry unelected. The marks run on the designated market is a standing run: its job, values and result land in the folder and the run is attested with its replay tuple. The settlement file is struck for the day, the official close is declared, and the folds are cached at the close as seeds.',
+      run: function () {
+        phase(4, 'close check: legal');
+        return wait(700).then(function () { phase(5); return request('ipv', 'close', null, { frames: ['marks: standing run', 'run completed (plan, values, engine, seed)'], blobs: 3,
+            judge: ['close check: nothing waits', 'marks run on EOD.USD', 'attest: replay tuple'], light: ['attestations', 'markets'], folds: { ipv: 'marks: attested', trader: 'P&L today' } }); })
+          .then(function () { phase(6); return request('settlement', 'file', 'settlement file struck', { light: ['cash'], judge: ['judge: settle @ *'], folds: { settlement: 'file: day 1' } }); })
+          .then(function () { phase(7); return request('ipv', 'close', 'official close declared: day 1', { light: ['markets', 'decisions'], judge: ['judge: mark @ *'], folds: { ipv: 'close: day 1' } }); })
+          .then(function () { phase(8, 'seeds: 13 folds at the close'); append('seeds minted at LSN ' + state.head); putBlob(1); return wait(600); });
+      } },
+    { title: 'Folds and projections: P&L and the reports',
+      text: 'Every report is a fold read at a point in the record. P&L between two closes is the marks’ move plus the cash: value at the end less value at the start, plus premiums, payments and fees, each filed in the window it was filed in and converted at that day’s close. Explain splits it into carry, market moves times the start’s sensitivities, and the residual. The collateral call is the agreement’s CSA folded over the marks. Two seats reading the same head get the same number, and tomorrow starts from the seed, not from genesis.',
+      run: function () {
+        light(PROJECTORS, true);
+        foldsAt.textContent = 'folded at LSN ' + state.head + ' · day 1 close';
+        setFold('trader', 'P&L: marks move + cash');
+        setFold('ipv', 'marks: one per instrument');
+        setFold('settlement', 'cash: reconciled');
+        setFold('confo', 'blotter: confirmed');
+        return ring({ x: FOLDS.x + FOLDS.w / 2, y: FOLDS.y + FOLDS.h / 2 }, 180, 1200).then(function () {
+          dayNote.textContent = 'day 2 starts from the seed';
+          return wait(500);
+        });
+      } },
+    { title: 'Later: credit and market risk join',
+      text: 'A new role is a new seat. Credit and market risk are enrolled, come online, replay from the seed to the head, and compute their views from the same facts: exposure per agreement, P&L explained per quote, the four-eyes ticket now approved by the seat that holds that verb. No new feed, no new schema, no new pipeline.',
+      run: function () {
+        enrol('credit'); append('seat enrolled: Credit'); append('grant: approve @ BANK');
+        return wait(500).then(function () { enrol('risk'); append('seat enrolled: Market risk'); append('grant: validate @ BANK'); return wait(500); })
+          .then(function () { return Promise.all([syncSeat('credit', true), syncSeat('risk', true)]); })
+          .then(function () { return request('credit', 'approve', 'approval: four-eyes ticket', { light: ['decisions', 'positions'], judge: ['judge: approve @ BANK', 'ticket: still the same plan'], folds: { credit: 'exposure: 1 agreement', trader: 'position: live', risk: 'explain: carry, market' } }); })
+          .then(function () { state.frames.forEach(function (f) { f.pending = false; }); renderLog(); return wait(300); });
+      } },
+    { title: 'What scales',
+      text: 'Add a seat and the hub gains a subscriber. Add a desk and the bank declares a node and a grant. Add a report and someone writes a fold. Every copy verifies the chain without a key, every number carries its replay tuple, and the writer is never waited on by a reader.',
+      run: function () {
+        return ring(BELL, 160, 900).then(function () { return ring(BELL, 220, 1100, color('fact')); })
+          .then(function () { hubState.textContent = 'head ' + state.head + ' · ' + SEATS.filter(function (s) { return state.seats[s.id].online; }).length + ' seats at head'; return wait(600); });
+      } }
+  ];
+
+  // ------------------------------------------------------------------ driver
+  var current = 0, running = false;
+  var railEl = document.getElementById('rail');
+  chapters.forEach(function (c, i) {
+    var li = document.createElement('li');
+    var b = document.createElement('button'); b.type = 'button';
+    b.innerHTML = '<span class="n">' + (i + 1) + '</span>' + c.title;
+    b.addEventListener('click', function () { if (playing) { play(i); } else { show(i); } });
+    li.appendChild(b); railEl.appendChild(li);
+  });
+  function caption(i) {
+    document.getElementById('kicker').textContent = 'Chapter ' + (i + 1) + ' of ' + chapters.length;
+    document.getElementById('title').textContent = chapters[i].title;
+    document.getElementById('text').textContent = chapters[i].text;
+    Array.prototype.forEach.call(railEl.querySelectorAll('button'), function (b, k) {
+      if (k === i) { b.setAttribute('aria-current', 'step'); } else { b.removeAttribute('aria-current'); }
+    });
+    document.getElementById('progress').style.width = Math.round(100 * (i + 1) / chapters.length) + '%';
+  }
+  function settle(i) {
+    // the scene as it stands at the START of chapter i: the chapters before it replayed instantly
+    token += 1; instant = true; reset();
+    for (var k = 0; k < i; k++) { chapters[k].run(); }
+    instant = false; gPackets.innerHTML = ''; gFx.innerHTML = '';
+  }
+  function show(i) {
+    // paused: the scene at the END of chapter i, with its caption
+    current = Math.max(0, Math.min(chapters.length - 1, i));
+    settle(current + 1); caption(current); running = false;
+  }
+  function play(i) {
+    current = Math.max(0, Math.min(chapters.length - 1, i));
+    caption(current); settle(current);
+    var mine = token; running = true;
+    chapters[current].run().then(function () {
+      running = false;
+      if (mine !== token) { return; }
+      if (playing && current + 1 < chapters.length) { play(current + 1); }
+      else if (current + 1 >= chapters.length) { setPlaying(false); }
+    }, function () { running = false; });
+  }
+  document.getElementById('play').addEventListener('click', function () {
+    if (playing) { setPlaying(false); return; }
+    setPlaying(true);
+    if (!running) { play(current); }
+  });
+  document.getElementById('next').addEventListener('click', function () { if (playing) { play(current + 1); } else { show(current + 1); } });
+  document.getElementById('prev').addEventListener('click', function () { if (playing) { play(current - 1); } else { show(current - 1); } });
+  document.getElementById('restart').addEventListener('click', function () { setPlaying(true); play(0); });
+  document.getElementById('speed').addEventListener('change', function (e) { speed = parseFloat(e.target.value); });
+  document.addEventListener('keydown', function (e) {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') { return; }
+    if (e.key === ' ') { e.preventDefault(); document.getElementById('play').click(); }
+    if (e.key === 'ArrowRight') { document.getElementById('next').click(); }
+    if (e.key === 'ArrowLeft') { document.getElementById('prev').click(); }
+  });
+
+  // at rest: the whole story's end state, so the first frame already shows the architecture
+  show(chapters.length - 1);
+  current = 0; caption(0);
+})();
+</script>
+
+</body>
+</html>

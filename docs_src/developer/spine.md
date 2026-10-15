@@ -34,6 +34,12 @@ them or a composition of them, so state a need in these four before adding a fif
 - **The engine.** A function of a job document and its market: the record compiles the document
   ([`compiled_job`](#the-plan)), the engine prices it, the result is filed by address.
 
+[The Spine in Motion](../animations/spine_in_motion.html) animates the whole of it, from the hub
+minting its home to the folds producing the day's P&L: play it here or open it full-page.
+
+<iframe src="../../animations/spine_in_motion.html" title="The Spine in Motion" loading="lazy"
+        style="width:100%;height:860px;border:1px solid var(--md-default-fg-color--lightest);border-radius:6px"></iframe>
+
 A `fill` says who booked what, against whom and where, so one fold has two views: by portfolio it
 is the book, where risk and P&L are owned; by agreement it is the credit view, the netting set an
 exposure is priced on. The market a run reads is what stands, and `load_json` merges each load over

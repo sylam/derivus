@@ -161,7 +161,7 @@ class ConstructMarkdown(object):
         self.docs_src_dir = self.project_dir / 'docs_src'
         self.doc_build_dir = self.project_dir / 'docs'
         self.package_name = 'derivus'
-        self.static_dirs = ['stylesheets']
+        self.static_dirs = ['stylesheets', 'animations']
         # Sub‑folders inside docs_src that must be copied wholesale
         if not self.docs_src_dir.is_dir():
             logging.error(f"'docs_src' directory not found at {self.docs_src_dir}")
