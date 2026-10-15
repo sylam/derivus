@@ -115,6 +115,10 @@ the quote-delta buckets are the benchmark maturities.
 - **Several resets per coupon fold by the leg's declaration**: `None` averages, the OIS methods
   compound, undefined combinations refuse; a reset count differing from the cashflow count is the only
   signal. **Held by** `::test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them`.
+- **A quoted deposit is pinned whatever its schedule**: `DepositDeal.quote` writes the rate on each
+  period's unadjusted start, the day it can name with no calendar, and the deposit reads its rows
+  there, so a stub or an accrual calendar leaves the benchmark off the curve it solves. **Held by**
+  `::test_a_quoted_deposit_is_pinned_on_the_schedule_its_stub_and_calendar_spell`.
 
 ## The IFT contract {#the-ift-contract}
 

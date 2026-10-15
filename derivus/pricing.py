@@ -5632,7 +5632,9 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 # the vol surface's tenor axis: averaged because the cashflows are meant to share
                 # one year fraction, which in practice they do not exactly
                 tenor = cashflows.np[:, utils.CASHFLOW_INDEX_Year_Frac].mean()
-                expiries = cashflows.np[:, utils.CASHFLOW_INDEX_Start_Day] - time_slice
+                # an optionlet expires on the day its rate fixes, its first reset's
+                counts = reset_cashflows.np[:, utils.CASHFLOW_INDEX_NumResets].astype(np.int64)
+                expiries = reset_block.np[np.cumsum(counts) - counts, utils.RESET_INDEX_Reset_Day] - time_slice
                 if factor_dep['AveragingMethod'] == 'Pre_Aggregation' and needs_aggregation:
                     # each reset in the period is its own optionlet - its own dates, accrual and a
                     # strike broadcast from its parent cashflow - rather than one option on the

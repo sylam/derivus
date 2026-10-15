@@ -15,9 +15,9 @@ The close-out list. Each row names its fix and sizes it (S, M, L); a landing del
 found later is added here or, where it moves a validator's number, on Model Limitations.
 
 **The model rows**, on [Model Limitations](../limitations.md): the Skew vega tent lands as a fix
-(S-M), and one row a synthetic document measures in an afternoon gets its number and then
-closes: the rate leg's conventions. The declared fields not yet read are features kept ahead of
-their build, not rows to close.
+(S-M), and the rate leg's residual conventions - `Advance`, `Discounted`, the index publication
+calendar and the equity swap leg's periods, each measured there - close as each is built. The
+declared fields not yet read are features kept ahead of their build, not rows to close.
 
 **The record and the service.**
 

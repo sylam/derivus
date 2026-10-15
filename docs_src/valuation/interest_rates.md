@@ -77,8 +77,8 @@ $$P\mathcal B_\delta(L(t),K,\sigma\sqrt{t_0-t})\alpha D(t,T)$$
 
 where $\mathcal B_\delta(F,K,v)$ is the Black function (Bachelier under a `Normal` factor). $\sigma$ is read
 from the cap surface at moneyness $100(K-L(t))$ (strike less forward, in percentage points), expiry the
-cashflow's accrual start, and tenor the mean accrual year fraction of the leg's cashflows; the Black time
-is the discount curve's day count to that expiry. If $T\neq t_2$ the same formula is used with no
+reset date $t_0$ (the day the cashflow's first reset fixes), and tenor the mean accrual year fraction of
+the leg's cashflows; the Black time is the discount curve's day count to that expiry. If $T\neq t_2$ the same formula is used with no
 convexity correction (error unmeasured).
 
 #### Averaging
@@ -88,6 +88,26 @@ nominal tenor $\tau$. Each rate $r_k$ has a positive weight $\omega_k$. Let $t_{
 date of $r_k$. The average rate $R$ at time $T$ is
 
 $$R=\frac{\sum_{k=1}^m \omega_k r_k(t_{0,k})}{\sum_{k=1}^m \omega_k}$$
+
+### Coupon Schedules
+
+A swap's legs, a cap's or floor's periods, a swaption's underlying swap and a deposit's periods are
+generated from their terms. The accrual dates run back from the maturity by the leg's frequency, a
+short first period where they do not land on the effective date; a **First_Coupon_Date** runs them
+forward from that date instead, a short last period where they do not land on the maturity, and a
+**Penultimate_Coupon_Date** runs them back from that date. Every date rolls Modified Following on the
+accrual calendar. A period pays at its end, or at its start under **Payment_Timing** `Begin`,
+**Payment_Offset** business days of the payment calendar later; a blank calendar reads the other
+one, and an offset on neither counts weekdays. `Discounted` values as `End`. A swap's and a
+swaption's legs prefix each field `Pay_` or `Receive_`, the timing being `Pay_Timing` and a
+swaption's accrual calendar `Pay_Calendars`.
+
+A floating period resets at its start over the index tenor from there, or over the period itself
+where the tenor is zero; **Reset_Type** `Arrears` takes each reset one reset period later, the
+period's end where it holds one reset, and `Advance` reads as `Standard`. A reset fixes
+**Index_Offset** business days of **Index_Calendars** before its window (weekdays where blank), a
+known rate being the row stated for that day, and its rate accrues on **Index_Day_Count** ($\alpha_2$
+above) while the coupon accrues on the leg's own day count.
 
 ### Cashflow Lists
 

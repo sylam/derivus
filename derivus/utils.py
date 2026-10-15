@@ -148,6 +148,10 @@ DealDataType = namedtuple('DealDataType', 'Instrument Factor_dep Time_dep Calc_r
 Partition = namedtuple('Partition', 'DealMTMs Collateral_Cash Funding_Cost Cashflows')
 Collateral = namedtuple('Collateral', 'Haircut_Posted Haircut_Received Amount Currency Funding_Rate '
                                       'Collateral_Rate Collateral')
+#: How a floating index fixes: the day-count code its rate accrues on, whether each reset fixes a
+#: reset period late (in arrears), and how many business days of `business_day` (weekdays where
+#: None) before its window it fixes.
+FloatIndex = namedtuple('FloatIndex', 'day_count arrears offset business_day')
 
 # define 1, 2 and 3d risk factors - add more as development proceeds
 DimensionLessFactors = ['Correlation']
@@ -1992,15 +1996,19 @@ class TensorCashFlows(TensorSchedule):
                              nominal, fixed_amount, spread_or_rate, 0, 0])
 
     @staticmethod
-    def periods(reference_date, reset_dates, nominal, amort, daycount_code, spread_or_rate):
+    def periods(reference_date, reset_dates, nominal, amort, daycount_code, spread_or_rate,
+                pay_dates=None):
         """Start_day, End_day, Pay_day, Year_Frac, Nominal, FixedAmount (=0) and rate/spread, as
-        days and nominals relative to the reference date. The nominal array must be one shorter
-        than `reset_dates` (there is no nominal on the effective date), or a single number for a
-        constant profile.
+        days and nominals relative to the reference date, for every period still to pay. The nominal
+        array must be one shorter than `reset_dates` (there is no nominal on the effective date), or
+        a single number for a constant profile; `pay_dates`, one per period, are the days each pays,
+        its end where None.
         """
 
         amort_offsets = np.array([((k - reference_date).days, v) for k, v in amort.data.items()] if amort else [])
         day_offsets = np.array([(x - reference_date).days for x in reset_dates])
+        pay_offsets = day_offsets[1:] if pay_dates is None else np.array(
+            [(x - reference_date).days for x in pay_dates])
 
         nominal_amount, nominal_sign = [np.abs(nominal)], 1 if nominal > 0 else -1
         amort_index = 0
@@ -2012,11 +2020,9 @@ class TensorCashFlows(TensorSchedule):
             nominal_amount.append(nominal_amount[-1] - amort_to_add)
         nominal_amount = nominal_sign * np.array(nominal_amount)
 
-        # we want the earliest negative number
-        last_payment = np.where(day_offsets >= 0)[0]
-
-        # calculate the index of the earliest cashflow
-        previous_index = max(last_payment[0] - 1 if last_payment.size else day_offsets.size, 0)
+        # the earliest period still to pay
+        owed = np.where(pay_offsets >= 0)[0]
+        previous_index = owed[0] if owed.size else day_offsets.size
         cashflows_left = day_offsets[previous_index:]
         rates = spread_or_rate if isinstance(nominal, np.ndarray) else [spread_or_rate] * (reset_dates.size - 1)
         ref_date = (reference_date + pd.offsets.Day(cashflows_left[0])) \
@@ -2024,7 +2030,7 @@ class TensorCashFlows(TensorSchedule):
 
         # order is start_day, end_day, pay_day, daycount_accrual, nominal, fixed amount, FxResetDate, FXResetValue
 
-        return zip(cashflows_left[:-1], cashflows_left[1:], cashflows_left[1:],
+        return zip(cashflows_left[:-1], cashflows_left[1:], pay_offsets[previous_index:],
                    DayCount.accrual(ref_date, np.diff(cashflows_left), daycount_code),
                    nominal_amount[previous_index:], np.zeros(cashflows_left.size - 1), rates[previous_index:],
                    np.zeros(cashflows_left.size - 1), np.zeros(cashflows_left.size - 1))
@@ -2065,11 +2071,15 @@ class TensorCashFlows(TensorSchedule):
 
     @classmethod
     def generate_float(cls, reference_date, time_grid, reset_dates, nominal, amort, known_rate_list,
-                       reset_tenor, reset_frequency, daycount_code, spread, reference=None):
+                       reset_tenor, reset_frequency, daycount_code, spread, reference=None,
+                       pay_dates=None, index=None):
         """`periods`' schedule plus the reset structure. The nominal array must be one shorter
         than `reset_dates`, or a single number for a constant profile; `reference` names the deal
-        a reset behind the base date with no known rate is fixed at 0% for, with a warning.
+        a reset behind the base date with no known rate is fixed at 0% for, with a warning. `index`,
+        a `FloatIndex`, says how each reset fixes: in the leg's own day count, on its window's
+        start, where None; a known rate is the row stated for the day it fixes.
         """
+        index = index or FloatIndex(daycount_code, False, 0, None)
         # prepare to consume reset dates
         known_rates = known_rate_list if known_rate_list is not None else DateList({})
         known_rates.prepare_dates()
@@ -2078,32 +2088,36 @@ class TensorCashFlows(TensorSchedule):
         def resets(cashflow):
             nonlocal min_date, reset_tenor
             r = []
+            start = reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_Start_Day]))
+            end = reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_End_Day]))
             if next(iter(reset_frequency.kwds.values())) == 0.0:
-                reset_days = np.array([reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_Start_Day]))])
+                reset_days = np.array([end if index.arrears else start])
                 reset_tenor = pd.offsets.Day(cashflow[CASHFLOW_INDEX_End_Day] - cashflow[CASHFLOW_INDEX_Start_Day])
             else:
-                reset_days = pd.date_range(reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_Start_Day])),
-                                           reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_End_Day])),
-                                           freq=reset_frequency, inclusive='left')
+                reset_days = pd.date_range(start, end, freq=reset_frequency, inclusive='left')
+                if index.arrears:
+                    reset_days = pd.DatetimeIndex([day + reset_frequency for day in reset_days])
                 reset_tenor = reset_frequency if next(iter(reset_tenor.kwds.values())) == 0.0 else reset_tenor
 
             for reset_day in reset_days:
-                Reset_Day = (reset_day - reference_date).days
+                fixing = reset_day - index.offset * (index.business_day or pd.offsets.BDay()) \
+                    if index.offset else reset_day
+                Reset_Day = (fixing - reference_date).days
                 Start_Day = (reset_day - reference_date).days
                 End_Day = (reset_day + reset_tenor - reference_date).days
-                Accrual = DayCount.accrual(reference_date, End_Day - Start_Day, daycount_code)
+                Accrual = DayCount.accrual(reference_date, End_Day - Start_Day, index.day_count)
                 Weight = 1.0 / reset_days.size
                 Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
 
                 # match the closest reset
-                closest_date, Value = known_rates.consume(min_date, reset_day)
+                closest_date, Value = known_rates.consume(min_date, fixing)
                 if closest_date is not None:
                     min_date = closest_date if min_date is None else max(min_date, closest_date)
 
                 # a reset on or before the base date reads the row stated for it, a known reset
                 stated = Reset_Day <= 0 and closest_date is not None and closest_date <= reference_date
                 if Reset_Day < 0 and not stated:
-                    unstated_reset(reference, reset_day)
+                    unstated_reset(reference, fixing)
                 r.append(([Time_Grid, Reset_Day, -1, Start_Day, End_Day, Weight,
                            Value / 100.0 if stated else 0.0, Accrual], -1 if stated else Scenario))
 
@@ -2113,16 +2127,17 @@ class TensorCashFlows(TensorSchedule):
 
         # assume each cashflow is a settled one (not accumulated)
         return cls.from_items(
-            list(cls.periods(reference_date, reset_dates, nominal, amort, daycount_code, spread)),
+            list(cls.periods(reference_date, reset_dates, nominal, amort, daycount_code, spread, pay_dates)),
             None, lambda cashflow: cashflow, resets=resets, settled=1)
 
     @classmethod
-    def generate_fixed(cls, reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate):
+    def generate_fixed(cls, reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate,
+                       pay_dates=None):
         """`periods`' schedule with null resets. The nominal array must be one shorter than
         `reset_dates`, or a single number for a constant profile.
         """
         cashflow_schedule = list(
-            cls.periods(reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate))
+            cls.periods(reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate, pay_dates))
         # Add the null resets to the end
         return cls(cashflow_schedule, np.zeros((len(cashflow_schedule), 3)))
 
@@ -2830,6 +2845,19 @@ def generate_dates_forward(end_date, start_date, date_offset, bus_day=None, clip
         dates.append(adjust_date(bus_day, modified, new_date))
         i += 1
     return pd.DatetimeIndex(dates)
+
+
+def coupon_dates(end_date, start_date, date_offset, bus_day=None, first=None, penultimate=None):
+    """A leg's accrual dates, rolled Modified Following on `bus_day`: backward from `penultimate`
+    (the end where None) to `first` (the start where None), or forward from `first` where it alone
+    is stated, a stated stub date being one of the dates."""
+    if first and not penultimate:
+        dates = generate_dates_forward(end_date, first, date_offset, bus_day, modified=True)
+    else:
+        dates = generate_dates_backward(penultimate or end_date, first or start_date, date_offset,
+                                        bus_day, modified=True)
+    return pd.DatetimeIndex([adjust_date(bus_day, True, start_date)] * bool(first) + list(dates) +
+                            [adjust_date(bus_day, True, end_date)] * bool(penultimate))
 
 
 def cds_dates(base, num_months):

@@ -1088,3 +1088,186 @@ def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states(caplo
     assert {BASE + pd.DateOffset(months=3 * k) for k in range(5)} <= set(read)
     for at, paths in zip(read, profile):
         assert paths.mean() == pytest.approx(value(flows, at), rel=1e-9, abs=1e-6), at
+
+
+#: The rate-leg conventions' world: USD-PROJ's zero rates rising from 2% to 6% over five years and
+#: USD 25bp under it, since a flat curve reads a reset taken a period late as the same rate.
+SLOPED = {'InterestRate.' + name: {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                                   'Curve': utils.Curve([], [(t, 0.02 - shift + 0.008 * t)
+                                                             for t in (0, 0.5, 1, 2, 3, 4, 5)])}
+          for name, shift in (('USD-PROJ', 0.0), ('USD', 0.0025))}
+START, END, QUARTER = pd.Timestamp('2026-12-16'), pd.Timestamp('2028-12-16'), pd.DateOffset(months=3)
+#: the quarterly dates from a Johannesburg holiday, rolled Modified Following on Johannesburg
+ROLLED = [pd.Timestamp(day) for day in (
+    '2026-12-17', '2027-03-16', '2027-06-17', '2027-09-16', '2027-12-17', '2028-03-16', '2028-06-19',
+    '2028-09-18', '2028-12-18')]
+
+
+def year(start, end, day_count='ACT_360'):
+    return utils.DayCount.accrual(start, (end - start).days, utils.DayCount.code(day_count))
+
+
+def periods(dates, pay=lambda s, e: e, fixing=lambda s, e: s, window=lambda s, e: (s, e)):
+    """`(start, end, pay, fixing, window start, window end)` per period of `dates`."""
+    return [(s, e, pay(s, e), fixing(s, e)) + window(s, e) for s, e in zip(dates[:-1], dates[1:])]
+
+
+def listed(reference, rows, index='ACT_360', known=None):
+    """A swap paying 4% ACT/360 on a million as the two cashflow lists its `rows` spell, the
+    fixings behind the base date reading `known`."""
+    fixed = [{'Payment_Date': pay, 'Notional': 1e6, 'Rate': utils.Percent(4.0),
+              'Accrual_Start_Date': s, 'Accrual_End_Date': e, 'Accrual_Day_Count': 'ACT_360',
+              'Accrual_Year_Fraction': year(s, e), 'Fixed_Amount': 0.0, 'Discounted': 'No',
+              'FX_Reset_Date': None, 'Known_FX_Rate': 0.0} for s, e, pay, *_ in rows]
+    floating = [{'Payment_Date': pay, 'Notional': 1e6, 'Accrual_Start_Date': s, 'Accrual_End_Date': e,
+                 'Accrual_Day_Count': 'ACT_360', 'Accrual_Year_Fraction': year(s, e), 'Resets': [
+                     [fixing, w0, w1, year(w0, w1, index), pd.DateOffset(days=1), index, '0D', 0.0,
+                      'No', utils.Percent((known or {}).get(fixing, 0.0))]],
+                 'Margin': utils.Basis(0.0), 'Fixed_Amount': 0.0, 'FX_Reset_Date': None,
+                 'Known_FX_Rate': 0.0} for s, e, pay, fixing, w0, w1 in rows]
+    return [trial_rates.fixed_list(reference + '_FIXED', 'Sell', fixed),
+            trial_rates.float_list(reference + '_FLOAT', 'Buy', floating)]
+
+
+def test_a_swap_leg_is_the_schedule_its_conventions_spell():
+    """A two-year quarterly swap from 16 December 2026, a million paying 4% ACT/360 against the
+    sloped index, each convention stated against the two cashflow lists it means, authored by hand,
+    to the bit: `Payment_Offset` 2 pays every coupon two weekdays after its period ends; `Begin`
+    timing pays it on its start; a Johannesburg accrual calendar rolls the dates Modified Following
+    (eight of nine move) and pays on the rolled ends; with the payment calendar too and an offset of
+    five the payment counts Johannesburg business days; a `First_Coupon_Date` of 16 June 2027 makes
+    a long first period, one of 16 January rolls the schedule forward from it to a short first and
+    a short last period, and a `Penultimate_Coupon_Date` of 16 November 2028 rolls it back from that
+    day; `Arrears` fixes each coupon on its period's end over the window of its length from there;
+    `Index_Day_Count` ACT_365 accrues the index rate on its own basis; and a swap seasoned from 17
+    June 2026 fixing one Johannesburg business day before each start reads the 6% stated for 15 June,
+    the 16th being a holiday.
+
+    KILLING MUTATIONS, each the convention unread again, by the mark it reads against the hand's:
+    the payment offset, +2.87; the timing, -67.66; the accrual calendar (the dates rolled on the
+    payment one alone), -129.47; the offset counted in weekdays, +1.37; the first coupon date, -77.06
+    (and +22.97 short); the penultimate, +22.90; arrears, -7,742.34; the index day count, -1,113.95;
+    the fixing offset or its calendar, or the known rate looked up by the window's start, each reading
+    the 5% stated for the 16th, -2,549.74.
+    """
+    dates = [END - QUARTER * k for k in range(9)][::-1]
+    first, penultimate, seasoned = (pd.Timestamp(day) for day in ('2027-01-16', '2028-11-16', '2026-06-17'))
+    jhb = {'Pay_Accrual_Calendars': book.CALENDAR, 'Receive_Accrual_Calendars': book.CALENDAR}
+    paid = [pd.Timestamp(day) for day in ('2027-03-24', '2027-06-24', '2027-09-23', '2027-12-24',
+                                          '2028-03-24', '2028-06-26', '2028-09-26', '2028-12-27')]
+    cases = {
+        'OFFSET': ({'Pay_Payment_Offset': 2, 'Receive_Payment_Offset': 2},
+                   periods(dates, pay=lambda s, e: e + pd.offsets.BDay(2))),
+        'BEGIN': ({'Pay_Timing': 'Begin', 'Receive_Timing': 'Begin'}, periods(dates, pay=lambda s, e: s)),
+        'ACCRUAL': (jhb, periods(ROLLED)),
+        'PAYMENT': (dict(jhb, Pay_Payment_Calendars=book.CALENDAR, Receive_Payment_Calendars=book.CALENDAR,
+                         Pay_Payment_Offset=5, Receive_Payment_Offset=5),
+                    periods(ROLLED, pay=lambda s, e: paid[ROLLED.index(e) - 1])),
+        'LONG': ({'Pay_First_Coupon_Date': dates[2], 'Receive_First_Coupon_Date': dates[2]},
+                 periods([START] + dates[2:])),
+        'SHORT': ({'Pay_First_Coupon_Date': first, 'Receive_First_Coupon_Date': first},
+                  periods([START] + [first + QUARTER * k for k in range(8)] + [END])),
+        'BACK': ({'Pay_Penultimate_Coupon_Date': penultimate,
+                  'Receive_Penultimate_Coupon_Date': penultimate},
+                 periods([START] + [penultimate - QUARTER * k for k in range(8)][::-1] + [END])),
+        'ARREARS': ({'Reset_Type': 'Arrears'},
+                    periods(dates, fixing=lambda s, e: e, window=lambda s, e: (e, e + (e - s)))),
+        'INDEX': ({'Index_Day_Count': 'ACT_365'}, periods(dates))}
+    documents = []
+    for reference, (conventions, rows) in cases.items():
+        documents += [dict(par_swap(reference, 'USD', 'USD-PROJ', 'USD', 2, 4.0, fixed_frequency=3,
+                                    float_frequency=3), Effective_Date=START, Maturity_Date=END,
+                           **conventions)]
+        documents += listed('HAND_' + reference, rows, conventions.get('Index_Day_Count', 'ACT_360'))
+    fixed = {pd.Timestamp('2026-06-15'): 6.0, pd.Timestamp('2026-06-16'): 5.0}
+    documents += [dict(par_swap('SEASONED', 'USD', 'USD-PROJ', 'USD', 2, 4.0, fixed_frequency=3,
+                                float_frequency=3), Effective_Date=seasoned,
+                       Maturity_Date=seasoned + pd.DateOffset(years=2), Index_Offset=1,
+                       Index_Calendars=book.CALENDAR, Known_Rates=utils.DateList(fixed))]
+    # a fixing still to come forecasts its window whatever day it fixes on
+    documents += listed('HAND_SEASONED', periods(
+        [seasoned + QUARTER * k for k in range(9)],
+        fixing=lambda s, e: pd.Timestamp('2026-06-15') if s == seasoned else s - pd.offsets.BDay(1)),
+        known=fixed)
+    marks, stats = book.marks(documents, factors=SLOPED)
+    assert 'Deals Skipped' not in stats, stats
+    for reference in list(cases) + ['SEASONED']:
+        hand = float.fromhex(marks['HAND_{}_FIXED'.format(reference)]) + float.fromhex(
+            marks['HAND_{}_FLOAT'.format(reference)])
+        assert float.fromhex(marks[reference]) == hand, (reference, float.fromhex(marks[reference]) - hand)
+
+
+def test_a_caplet_expires_on_the_day_its_rate_fixes():
+    """A two-year quarterly cap at 4% on a million from 16 December 2026, Black at 20% on the sloped
+    index, stated `Arrears` and stated an `Index_Offset` of two against the caplet lists they mean,
+    to the bit: each caplet's rate fixes on its period's end over the three months from there, or
+    two weekdays before its start, and the caplet expires on that fixing. A list row whose accrual
+    starts on its fixing expires there however the expiry is read; and a list whose reset fixes two
+    weekdays before its accrual start is that row, its year fraction its own.
+
+    KILLING MUTATIONS: arrears unread, -4,974.97; the fixing offset unread, +10.56; and a caplet
+    expiring on its accrual start rather than its fixing, -482.68 on the arrears cap and +10.56 on
+    the lagged list.
+    """
+    optionlet = {'Digital_Payoff_Rate': None, 'Cap_Multiplier': 1.0, 'Cap_Strike': utils.Percent(4.0),
+                 'Floor_Multiplier': 0.0, 'Floor_Strike': utils.Percent(4.0)}
+
+    def caplets(reference, rows):
+        """Caplets on `(accrual start, pay, fixing, window start, window end, year fraction)`."""
+        return trial_rates.float_list(reference, 'Buy', [{
+            'Payment_Date': pay, 'Notional': 1e6, 'Accrual_Start_Date': s, 'Accrual_End_Date': w1,
+            'Accrual_Day_Count': 'ACT_365', 'Accrual_Year_Fraction': a, 'Resets': [
+                [fixing, w0, w1, year(w0, w1, 'ACT_365'), pd.DateOffset(days=1), 'ACT_365', '0D', 0.0,
+                 'No', utils.Percent(0.0)]], 'Margin': utils.Basis(0.0), 'Fixed_Amount': 0.0,
+            'FX_Reset_Date': None, 'Known_FX_Rate': 0.0} for s, pay, fixing, w0, w1, a in rows],
+            optionlet=optionlet)
+
+    cap = {'Object': 'CapDeal', 'Reference': 'CAP', 'Currency': 'USD', 'Discount_Rate': 'USD',
+           'Forecast_Rate': 'USD-PROJ', 'Forecast_Rate_Volatility': 'USD-PROJ', 'Buy_Sell': 'Buy',
+           'Effective_Date': START, 'Maturity_Date': END, 'Cap_Rate': 4.0, 'Principal': 1e6}
+    dates = [END - QUARTER * k for k in range(9)][::-1]
+    spans = list(zip(dates[:-1], dates[1:]))
+    lag = [s - pd.offsets.BDay(2) for s, _ in spans]
+    marks, stats = book.marks([
+        dict(cap, Reference='ARREARS', Reset_Type='Arrears'), dict(cap, Reference='LAGGED', Index_Offset=2),
+        caplets('HAND_ARREARS', [(e, e, e, e, e + QUARTER, year(s, e, 'ACT_365')) for s, e in spans]),
+        caplets('HAND_LAGGED', [(f, e, f, s, e, year(s, e, 'ACT_365')) for (s, e), f in zip(spans, lag)]),
+        caplets('LISTED', [(s, e, f, s, e, year(s, e, 'ACT_365')) for (s, e), f in zip(spans, lag)])],
+        factors=SLOPED)
+    assert 'Deals Skipped' not in stats, stats
+    assert marks['ARREARS'] == marks['HAND_ARREARS'], (float.fromhex(marks['ARREARS']) - float.fromhex(
+        marks['HAND_ARREARS']))
+    assert marks['LAGGED'] == marks['HAND_LAGGED'] == marks['LISTED'], (
+        float.fromhex(marks['LAGGED']) - float.fromhex(marks['HAND_LAGGED']),
+        float.fromhex(marks['LISTED']) - float.fromhex(marks['HAND_LAGGED']))
+
+
+def test_a_quoted_deposit_is_pinned_on_the_schedule_its_stub_and_calendar_spell():
+    """A year's deposit of a million from the base date paying 4.2% ACT/360 every six months between
+    a first coupon on 10 August 2026, a Johannesburg holiday, and a penultimate one on 10 May 2027,
+    accruing on Johannesburg, as a curve authors its benchmark at the quote. `quote` pins the rate
+    on each period's unadjusted start, the day it can name with no calendar, so the deposit reads no
+    forecast curve, and it accrues and pays on its rolled schedule - 3 and 11 August and 10 November
+    2026, 10 May and 3 August 2027 - by hand
+
+        -1,000,000 + sum_k 1,000,000 0.042 a_k D(T_k) + 1,000,000 D(T_4)
+
+    on the declared-defaults world's flat 4%.
+
+    KILLING MUTATIONS, by the mark against the hand's 2,230.43: the quote's starts written without
+    either stub, or the pinned rows looked up on the rolled starts, each leaving a start unpinned so
+    the deposit forecasts off USD-PROJ, +2,784.09; the first coupon date unread, -9.25; the
+    penultimate, +2,680.93; the accrual calendar, -1.07.
+    """
+    block = completed(dict(deposit('STUB', 'USD', 'USD', 12, 0.0), Interest_Rate='USD-PROJ',
+                           Payment_Frequency=pd.DateOffset(months=6),
+                           Interest_Frequency=pd.DateOffset(months=6),
+                           First_Coupon_Date=pd.Timestamp('2026-08-10'),
+                           Penultimate_Coupon_Date=pd.Timestamp('2027-05-10'), Accrual_Calendars=book.CALENDAR))
+    author_quote(block, 4.2, 'USD')
+    dates = [pd.Timestamp(day) for day in ('2026-08-03', '2026-08-11', '2026-11-10', '2027-05-10', '2027-08-03')]
+    hand = -1e6 + 1e6 * discount(dates[-1]) + sum(
+        1e6 * 0.042 * (e - s).days / 360.0 * discount(e) for s, e in zip(dates[:-1], dates[1:]))
+    marks, stats = book.marks([dict(block)])
+    assert 'Deals Skipped' not in stats, stats
+    assert float.fromhex(marks['STUB']) == pytest.approx(hand, rel=1e-12)

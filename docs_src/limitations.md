@@ -112,12 +112,18 @@ Grouped by where a validator meets them.
 
 ### The engine {#the-engine}
 
-- **A rate leg ignores eight of its conventions** (2026-09-30). `Reset_Type` (`Arrears`, `Advance`),
-  `Payment_Timing`, `Payment_Offset`, `Index_Day_Count`, `Index_Offset`, the calendars and
-  `First_Coupon_Date` are declared on the swap, cap, floor and swaption and move no leg: the swap
-  reads only its payment calendars, the swaption reads `Index_Day_Count` only for its vol tenor.
-  UNMEASURED. The fix is reading each in the schedule generator the four share, which the deposit's
-  and the equity swap leg's `First_Coupon_Date` also wait on.
+- **A rate leg reads `Advance` as `Standard` and `Discounted` as `End`, and an equity swap leg
+  prices one period** (2026-09-30). Measured on a two-year quarterly swap of a million on a curve
+  rising from 2% to 6%: `Reset_Type: Advance` fixes at the period start, so if it means a reset one
+  period earlier the swap is 77.3 bp of notional high; `Payment_Timing: Discounted` values from the
+  period end, as the FRA's does, but books its cash there rather than discounted at the start, and
+  against $L\alpha/(1+L\alpha)$ paid at the start the floating leg is 0.50 bp high under a 25 bp
+  basis, exact on one curve. `Index_Publication_Calendars` is unread, so a leg resetting daily fixes
+  on every calendar day: 0.03 bp low on a one-year averaged leg, exact compounded. An
+  `EquitySwapLeg` prices one period from its effective date to its maturity whatever its
+  `Payment_Frequency` and `First_Coupon_Date`: 20.3 bp low on a two-year leg of a million against
+  the quarterly periods its default frequency declares, 3.5 bp low for a two-month first coupon
+  alone; building its periods moves every leg longer than its frequency (M).
 - **A fitted structure leg's two-way charge uses its lognormal vega** (2026-09-21). A leg under a
   fitted spot model publishes no FX vol quote sensitivity, so the charge reads the same leg as a
   lognormal (`spread_source` says so): a vega a desk could hedge, but not the quoted price's.
