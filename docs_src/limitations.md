@@ -6,8 +6,9 @@ The methods a validator prices against are on the Theory, Valuation and Bootstra
 ([the LogVar2FJ fit](bootstrapping/fx_and_equity.md#logvar2fjmodelparameters) among them), and the
 tests that hold each rule are named on the developer page that states it. A row leaves this page
 when the fix that closes it lands; what was built, and the numbers it was measured to, is in the
-commit messages, and what is designed but not built is on the
-[roadmap](developer/roadmap.md#designed-not-built).
+commit messages. What is designed but not built, and what the record, the service and the engine's
+speed owe before the next release, is on the [roadmap](developer/roadmap.md): this page holds only
+what moves a number a validator reads.
 
 **Reading a row.** The bold lead says what goes wrong; the text says what the piece is for, how big
 the error is and what would fix it. A size is a measurement, stated with what it was measured on,
@@ -100,6 +101,12 @@ Grouped by where a validator meets them.
 - **An Asian carries one flat rate, and the double Asian one vol** (2026-10-11). The discrete Asian
   forwards every sample at the carry $\log(F(t,T)/S)/\tau$; the double Asian reads one ATM vol at
   expiry for both strips. UNMEASURED on a sloped curve or a term-structured surface.
+- **A seasoned Asian reads its smile at the reduced strike against the full forward** (2026-10-15).
+  `pv_energy_option` nets the realised samples off the strike and reads each remaining forward's vol
+  at that reduced strike's moneyness: on a half-realised Brent call, −59% where the remaining
+  average's own strike, the reduced strike over the remaining weight, sits at −16%. On a flat smile
+  nothing moves; on the trade's exported surface the read lands on the clamped wing and moves the
+  mark by 0.7%. S: the moneyness of the effective strike. UNMEASURED on the equity and FX Asians.
 - **A cash-settled swaption is priced on the physical annuity** (2026-10-11), without the cash
   annuity's convexity; an amortising or forward-start swaption prices on the vanilla expiry and
   tenor, unrefused. UNMEASURED.
@@ -146,29 +153,11 @@ Grouped by where a validator meets them.
   width and the thread count (within 4 ulps, bit-identical on a GPU, seen in no end-to-end result).
   A replay across boxes compares for equality, so a home replaying host-priced results needs a
   declared tolerance policy.
-- **The record does not declare the files a job names** (2026-10-05). Market data and calendar files
-  are named by path, so a replay reads whatever the file holds then, and outside the XVA tab the
-  calendar is in no hash (two jobs differing only in a calendar priced 1.1e-3 apart under one result
-  id). The fix uses what exists ([the design](developer/architecture.md#market-data-context-job)):
-  the hub declares each file under a name and a job names the standing blob: S. Meanwhile the XVA
-  tab re-hashes a file only when its size or modified time moves, missing a rewrite inside one tick,
-  and a set refused for a file that moved in the queue keeps the refusal if the file is put back.
-- **The service reads the market off the book's own page** (2026-10-05). Some forty readers take the
-  base currency and date, factors, prices and bootstrapper configuration from the book's explicit
-  block, against [the design](developer/architecture.md#market-data-context-job). A book naming a
-  market data file therefore answers 500 on its status and curves, refuses survival curves and date
-  rolls on a bare key, and writes the whole file's factors into itself when one spot is patched;
-  every request but the XVA tab's builds its own context, and a market edit makes the XVA tab
-  re-parse the file. M: the readers through a loaded context.
 - **A credit Monte Carlo writes into the config it runs on** (2026-10-06). `run_cmc` re-knots the
   counterparty's survival curve for `CDS_Tenors` and writes flat `.FUNDING` and `.COLLATERAL`
   curves into the price factors over any of that name the market file carries: a later set on a
   kept context read a fifth of a fresh context's funding. The XVA tab drops its context after such a
   run. The write belongs on the run's own copy: S.
-- **A SIMM run re-solves each benchmark move in every worker** (2026-10-07). The `SIMM` calculation
-  re-solves the curve or surface each move feeds, per trade and per worker, so four workers give
-  1.3x over one on a 19-trade set; solving each move once is estimated at 2.5x. The dependency walk
-  also hands each trade its FX chains, about seven repricings per CRIF row. M.
 - **A SIMM vega vertex on a Skew surface moves its base** (2026-10-07). A vertex bump inserts a
   pillar where the surface lacks one, read off its own interpolation. Explicit and Malz surfaces
   price unchanged, but no smile at an inserted pillar equals a Skew surface's expiry blend (14.5 vol
@@ -178,95 +167,12 @@ Grouped by where a validator meets them.
   vertex rows differ from one parallel point by -0.8% to +13% (0.1% to 1.2% on FX), stable across
   seeds and path counts, a tenth of a point cutting it tenfold. It is the regulation's definition,
   so stated, not fixed. Rate vega, credit, commodity and inflation sensitivities refuse by name.
-- **The inner Monte Carlo is launch-bound** (2026-10-07). A one-step-survival step is about fifty
-  elementwise kernels on `[batch, 2 x inner]`; a value batch kept the device 45% busy on the
-  autocall and 64% to 79% elsewhere, measured before the per-batch host syncs were removed and not
-  re-measured since. Fusing the step is the lever past about 16k inner paths (`torch.compile` needs
-  Triton). M.
-- **The LogVar2FJ walk's cumsum is slow on its 21-step axis** (2026-10-07). It takes about a fifth
-  of a value batch; a matmul by a 21 x 21 upper-triangular ones matrix is about thirty times faster
-  and equal to 2.3e-7 relative, so the LogVar2FJ documents would re-bank (S). The inverse-Gaussian
-  root runs in double, about 45% of the batch on a GPU with 1/64-rate double (M). Under a gradient
-  the walk holds 79% of peak memory in its checkpoint segments.
-- **A dense reporting grid holds a block of rows at once** (2026-10-07). The streamed strip holds
-  every time-grid row of a block together, so memory grows with the rows per fixing interval and a
-  daily grid can exceed a device that holds a weekly one. One row per block past about twelve rows
-  per interval: S.
-- **A legacy trade closed before migration prices short** (2026-09-26). A book-file node no fill
-  booked prices as written, one unit; closing it through the verbs files a fill of -1, and the
-  compile writes the node at that net, the mirror trade. The designed migration, a fill of one under
-  every legacy node, makes the close net to nothing; until then such a node sits outside the desk's
-  P&L.
-- **A consolidated risk read refits its quote blocks, and one refusal drops it to factors**
-  (2026-09-24). `/book/risk` refits, with `Quote_Sensitivity` on, every block the book's factors
-  stand on, cached on the deals and the market, so a spot-model block pays its warm polish on every
-  uncached read; one block that cannot carry a quote derivative (an FX forward outright, a polish
-  above `Stationarity_Tol`) returns the whole book in factor space, named. UNMEASURED on a desk book.
-  The fix is the connected bootstrap cached by the market's hash, and a per-block retry with the
-  refusing block off prices.
-- **Every read of the record scans the log** (2026-09-23). `SpineLog.__init__` streams every segment
-  to build the head, the tag index and the per-LSN offsets, linear in the log, once per read (twice
-  on a strip's first paint; once per submitted job for admission, under a fiftieth of the cheapest
-  job). The fix is a checkpointed index beside `log/`, derived and verified like a seed, so an open
-  scans only the tail and the doctored-middle-line refusal moves to `verify_home`: M.
-- **The oracle judges old frames by today's verb map** (2026-09-29). A type moved between verbs (a
-  settlement to `settle`) makes every frame filed under the old verb read as outside its seat, while
-  the desk runs unchanged. No home outside the gates predates a move. The fix is the map in force
-  declared on the record at an LSN, read like a policy, one read in `verb_for`.
-- **A forged hub approval passes the oracle under a mixed tiers policy** (2026-09-29). Under a policy
-  with both an automatic and a four-eyes tier, a copy forging an approval of a ticket only the
-  four-eyes tier would admit is caught only by copies agreeing with the hub. Recording the tier on
-  the approval closes it: M. Signed history ends at the last checkpoint either way.
-- **Two reads skip the queue's admission** (2026-10-11). `GET /book/risk` and
-  `GET /book/pnl?explain=` run valuations on the request thread for any caller, seated or not, and
-  `/book/bloomberg` and `/book/securities/verify` queue under the hub's seat whoever asks. An
-  admission on each: S.
-- **A checkpoint key rotation is trusted on chain integrity alone** (2026-10-11). `verify_home`
-  accepts any `checkpoint_verifying_key` declaration on an intact chain without asking that the key
-  then in force signed it, and the signing key sits in the hub's `keys/`. Against the hub's own
-  operator, tamper-evidence holds only with a genesis hash and key obtained out of band, or an
-  agreeing replica ([Spine](developer/spine.md#trust-limits)). A design call.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
-  `No`, so bit-for-bit replay holds only on one build, stack and device. UNMEASURED across devices
-  beyond the host-curve row.
-- **A settlement names no agreement** (2026-09-28). A payment the diary cannot determine is shared
-  across its instrument's positions by holdings: exact when every position's settlement is filed,
-  smeared when one is filed alone, named and unshared over positions netting to zero. One filed
-  against a payment the diary has dropped is matched within the business week before its value
-  date; past that, its day and a window reaching back over it stop summing. UNMEASURED. The fix: the
-  transition names its agreement, required where the instrument sits under more than one; about
-  twenty lines over seven files.
-- **Two live deals under one reference get no diary key** (2026-09-28). `POST /book/deals` accepts a
-  second live deal under an existing reference, the diary keys neither, and the close waits on them
-  for good. The key needs the deal's path beside its reference: M.
-- **A floating coupon settled for another amount books the difference a day late** (2026-09-28).
-  Its known-rate table is not filled from the record, so the coupon is never determined: a different
-  settled amount lands the next day, and a swap bought ex-coupon on its coupon day carries the
-  engine's coupon for that day. Each month sums right. The fix is fixings as market data
-  ([designed, not built](developer/roadmap.md#designed-not-built)): M.
-- **The market, the date and the file move under no seat** (2026-09-30). `POST /book/market`,
-  `/book/date`, `/book/configure`, `/book/curve`, `/book/bloomberg`, `/book/securities`,
-  `/calculations`, `/book/setup` (admitted under `validate`, yet it re-solves the market) and a
-  delete take no `actor`, so under a capabilities document any client can move the board a close is
-  declared over, roll the date or drop a deal. The tick is the deployment's poll path and
-  `delete_deal` takes no seat by design, so this is a design call first. M-L: an `actor` and an
-  admission on each (`mark` for the market and the date, `book` for the file).
-- **Six types announce fixings under no index** (2026-09-30). A fixing row is answered by a print
-  under the index its type's `observes` names; a row naming none blocks `close_check` for ever, so
-  its day gets no close, marks or P&L. The double Asian, the equity swap leg and swaplet list and the
-  two energy deals (and a composite equity Asian) read a table the fill cannot write yet (M), the
-  inflation list M-L; a swaption announces no expiry of its own, a design call. The rate deals name
-  their index, but a blank one still announces under none, and a past reset their table does not
-  state fixes at 0% with a warning until fixings are market data
-  ([designed, not built](developer/roadmap.md#designed-not-built)). `UNOBSERVED` in
-  `tests/test_diary.py` lists the open types.
-- **The pricer branch census names 38 arcs no test executes** (2026-10-11). The LogVar2FJ
-  discrete-barrier arcs are worth a fixture; the rest are diagnostics, completeness elses and new
-  code. `gates/pricer_branch_census.py` lists them.
-- **Three checks are ungated** (2026-08-21): the vol term structure reaching the monitoring, the
-  payoff's forward against the vol surface's, and rate units
-  ([Conventions](developer/conventions.md#what-holds-today-and-what-the-purge-left-open)).
+  `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only
+  under `Yes`: on one device a base valuation's first-order greeks table moved run to run at 1e-14
+  relative while every value was bit-identical (2026-10-15). UNMEASURED across devices beyond the
+  host-curve row.
 
 ## Decisions waiting on the desk {#decisions-waiting-on-the-desk}
 
@@ -312,6 +218,20 @@ listed.
 - **20. The recompute segment length.** The LogVar2FJ walk checkpoints every 21 steps, trading
   memory for a second forward pass; the mixer's per-draw checkpoint raised peak memory by about a
   fifth. The residual's granularity is the dial if that headroom is wanted.
+- **21. Who may move the market, the date and the file** (2026-09-30). `POST /book/market`,
+  `/book/date`, `/book/configure`, `/book/curve`, `/book/bloomberg`, `/book/securities`,
+  `/calculations`, `/book/setup` (admitted under `validate`, yet it re-solves the market) and a
+  delete take no `actor`, so under a capabilities document any client can move the board a close is
+  declared over, roll the date or drop a deal. The tick is the deployment's poll path and
+  `delete_deal` takes no seat by design, so which verbs take a seat is a desk's call before the
+  build (M-L: an `actor` and an admission on each, `mark` for the market and the date, `book` for
+  the file).
+- **22. A checkpoint key rotation trusted on chain integrity alone** (2026-10-11). `verify_home`
+  accepts any `checkpoint_verifying_key` declaration on an intact chain without asking that the key
+  then in force signed it, and the signing key sits in the hub's `keys/`. Against the hub's own
+  operator, tamper-evidence holds only with a genesis hash and key obtained out of band, or an
+  agreeing replica ([Spine](developer/spine.md#trust-limits)). Whether a rotation must be signed by
+  the key it retires is a desk's call.
 
 ## Hull-White 2F, decided {#model-punchlist}
 
@@ -336,9 +256,9 @@ neither.
 - A foreign-curve θ\* solved before the domestic-measure fix re-solves to a different θ\*.
 - A θ\* solved before 2026-09-02 re-marks on the seed and premium-clock change.
 - A θ\* solved before 2026-09-17 re-marks on the basin search's generator (numpy's default in place
-  of the legacy one, same seed): on the four-quote document the mean reversions move 14% and 8%, the
-  correlation from −0.04 to −0.16 and the 1Y×1Y quote delta 4%, along directions four quotes do not
-  identify.
+  of the legacy one, same seed): on the four-quote document the mean reversions move 14% and 8%,
+  the correlation from −0.04 to −0.16 and the 1Y×1Y quote delta 4%, along directions four quotes do
+  not identify.
 
 `Quanto_FX_Correlation_1/2` and every locus recorded downstream of a fit move with θ\*. The Monte
 Carlo's numeraire bias comes from the curve's tenor grid, not discretisation: adding 1D, 1M, 3M and

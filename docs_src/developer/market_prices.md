@@ -475,6 +475,6 @@ snapshots survive a save.
 ## Open
 
 The surrogate vanilla pricer ([limitations](../limitations.md#the-calibration)); the outright that
-cannot carry a quote derivative ([limitations](../limitations.md#the-engine)); whether a missing
+cannot carry a quote derivative ([before 0.5.0](roadmap.md#before-0-5-0)); whether a missing
 `Prices` refuses in process, the nominal leverage weight, the correlation as a leaf
 ([desk decisions](../limitations.md#decisions-waiting-on-the-desk)).

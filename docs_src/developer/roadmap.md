@@ -1,13 +1,133 @@
 # Roadmap
 
-The build plan and the engineering status of derivus, for whoever builds on it next: what is
-designed but not built, how a change is verified, and the tidy-ups the code owes itself. What was
-built, and the numbers it was measured to, is in the commit messages; the tests that hold each rule
-are named on the developer page that states it.
+The build plan and the engineering status of derivus, for whoever builds on it next: what is to be
+closed before 0.5.0, what is designed but not built, and how a change is verified. What was built,
+and the numbers it was measured to, is in the commit messages; the tests that hold each rule are
+named on the developer page that states it.
 
-Open limitations, with their measured sizes, and the decisions waiting on a desk are on
-[Model Limitations](../limitations.md), the validator's page; a fix that lands deletes its row
-there.
+Open limitations that move a number a validator reads, with their measured sizes, and the decisions
+waiting on a desk are on [Model Limitations](../limitations.md), the validator's page. A fix that
+lands deletes its row there and here.
+
+## Before 0.5.0 {#before-0-5-0}
+
+The close-out list. Each row names its fix and sizes it (S, M, L); a landing deletes it, and a row
+found later is added here or, where it moves a validator's number, on Model Limitations.
+
+**The model rows**, on [Model Limitations](../limitations.md): six rows marked S land as fixes - the
+already-hit knock-in's expiry clamp, the FX option's expiry print table, the declared fields nothing
+reads, the credit Monte Carlo's write into its config, the seasoned Asian's effective strike and,
+at S-M, the Skew vega tent - and five rows a synthetic document measures in an afternoon each get
+their numbers: the American FX premium, the Asian's flat carry, the cash swaption's annuity, the
+rate leg's conventions and the haircut's side.
+
+**The record and the service.**
+
+- **The files a job names declared in the record** (2026-10-05, S). Market data and calendar files
+  are named by path, so a replay reads whatever the file holds then, and outside the XVA tab the
+  calendar is in no hash (two jobs differing only in a calendar priced 1.1e-3 apart under one result
+  id). The fix uses what exists ([the design](architecture.md#market-data-context-job)): the hub
+  declares each file under a name and a job names the standing blob. Meanwhile the XVA tab
+  re-hashes a file only when its size or modified time moves, missing a rewrite inside one tick, and
+  a set refused for a file that moved in the queue keeps the refusal if the file is put back.
+- **The service's readers through a loaded context** (2026-10-05, M). Some forty readers take the
+  base currency and date, factors, prices and bootstrapper configuration from the book's explicit
+  block, against [the design](architecture.md#market-data-context-job). A book naming a market data
+  file therefore answers 500 on its status and curves, refuses survival curves and date rolls on a
+  bare key, and writes the whole file's factors into itself when one spot is patched; every request
+  but the XVA tab's builds its own context, and a market edit makes the XVA tab re-parse the file.
+- **Two reads under admission** (2026-10-11, S). `GET /book/risk` and `GET /book/pnl?explain=` run
+  valuations on the request thread for any caller, seated or not, and `/book/bloomberg` and
+  `/book/securities/verify` queue under the hub's seat whoever asks.
+- **A settlement names its agreement** (2026-09-28, about twenty lines over seven files). A payment
+  the diary cannot determine is shared across its instrument's positions by holdings: exact when
+  every position's settlement is filed, smeared when one is filed alone, named and unshared over
+  positions netting to zero. One filed against a payment the diary has dropped is matched within
+  the business week before its value date; past that, its day and a window reaching back over it
+  stop summing. UNMEASURED. The transition names its agreement, required where the instrument sits
+  under more than one.
+- **Two live deals under one reference get a diary key** (2026-09-28, M). `POST /book/deals`
+  accepts a second live deal under an existing reference, the diary keys neither, and the close
+  waits on them for good. The key needs the deal's path beside its reference.
+- **The tier recorded on an approval** (2026-09-29, M). Under a policy with both an automatic and a
+  four-eyes tier, a copy forging an approval of a ticket only the four-eyes tier would admit is
+  caught only by copies agreeing with the hub. Signed history ends at the last checkpoint either
+  way.
+- **The verb map in force declared at an LSN** (2026-09-29). The oracle judges old frames by today's
+  verb map, so a type moved between verbs (a settlement to `settle`) makes every frame filed under
+  the old verb read as outside its seat, while the desk runs unchanged. No home outside the gates
+  predates a move. The map read like a policy, one read in `verb_for`.
+- **A checkpointed index beside `log/`** (2026-09-23, M). `SpineLog.__init__` streams every segment
+  to build the head, the tag index and the per-LSN offsets, linear in the log, once per read (twice
+  on a strip's first paint; once per submitted job for admission, under a fiftieth of the cheapest
+  job). Derived and verified like a seed, so an open scans only the tail and the
+  doctored-middle-line refusal moves to `verify_home`.
+- **The legacy migration, a fill of one under every legacy node** (2026-09-26). A book-file node no
+  fill booked prices as written, one unit; closing it through the verbs files a fill of -1, and the
+  compile writes the node at that net, the mirror trade. Until the migration such a node sits
+  outside the desk's P&L.
+- **A consolidated risk read cached by the market's hash** (2026-09-24). `/book/risk` refits, with
+  `Quote_Sensitivity` on, every block the book's factors stand on, cached on the deals and the
+  market, so a spot-model block pays its warm polish on every uncached read; one block that cannot
+  carry a quote derivative (an FX forward outright, a polish above `Stationarity_Tol`) returns the
+  whole book in factor space, named. UNMEASURED on a desk book. The fix is the connected bootstrap
+  cached by the market's hash, and a per-block retry with the refusing block off prices.
+
+**Speed and memory.**
+
+- **Each SIMM benchmark move solved once** (2026-10-07, M). The `SIMM` calculation re-solves the
+  curve or surface each move feeds, per trade and per worker: on one autocall structure the curve
+  re-solves are 60 of 67 seconds of wall, 32 damped Newton solves on the host beside 3 seconds of
+  pricing, and four workers give 1.3x over one on a 19-trade set. The dependency walk also hands
+  each trade its FX chains, about seven repricings per CRIF row.
+- **The inner Monte Carlo's step fused** (2026-10-07, re-measured 2026-10-15, M). A one-step-survival
+  step is about fifty elementwise kernels on `[batch, 2 x inner]`, and one batch of a 58-leg credit
+  Monte Carlo keeps the device 38% busy at 1,024 paths and 63% at 4,096, with 343,000 kernel
+  launches, 7,200 host syncs and 6,200 pageable host-to-device copies per batch. A CUDA graph of the
+  pure step replays bit-identically to eager and is worth 7.6x on one row of 32,768 paths, 1.9x at
+  256 rows of 4,096 and 1.1x at 2,048 rows, so the ceiling is 2.6x at 1,024 paths and 1.6x at 4,096,
+  and the syncs and copies go first; `torch.compile` is not bit-identical (5e-6 relative) and is out.
+- **The LogVar2FJ walk's cumsum as a matmul** (2026-10-07, S). It takes about a fifth of a value
+  batch on its 21-step axis; a matmul by a 21 x 21 upper-triangular ones matrix is about thirty
+  times faster and equal to 2.3e-7 relative, so the LogVar2FJ documents would re-bank. The
+  inverse-Gaussian root runs in double, about 45% of the batch on a GPU with 1/64-rate double (M).
+  Under a gradient the walk holds 79% of peak memory in its checkpoint segments.
+- **One row per block on a dense reporting grid** (2026-10-07, S). The streamed strip holds every
+  time-grid row of a block together, so memory grows with the rows per fixing interval and a daily
+  grid can exceed a device that holds a weekly one; one row per block past about twelve rows per
+  interval.
+
+**The code.**
+
+- `Context.run_job`'s four-way branch and the `run_*` functions fold into the calculation classes
+  they dispatch to, one entry per class.
+- The retired family keys (`config.RETIRED_FAMILY_KEYS`: `InterestRateCurveParameters` and
+  `FXVolSurfaceParameters` read as `InterestRate` and `FXVol`) are carried through this release and
+  go the release after. A book keyed by them hashes to a new plan once its keys move, so a quote
+  pinned before the move asks for a re-quote.
+- `derivus_jupyter.py` (tracked, not in the wheel) stays until the web UI exports a calculation as
+  a job and links each result table for download, as it does; it then retires. It raises on three
+  field names outside its write allowlist and on multi-column Tables outside a four-name allowlist,
+  and fourteen output-shaped descriptors have no widget.
+- `pv_float_cashflow_list` decides a coupon's resets need folding by comparing their count with the
+  cashflows', a shape; an explicit mark on the compiled cashflows would replace it.
+
+**The tests.**
+
+- **What is left of the test fold** (2026-10-09). The record and service modules (635 tests) are
+  `fsync`-bound: most mint a home per test where a copy of the session's (`recorded`,
+  `tests/conftest.py`) would do, as the diary, P&L and engine modules do. 146 of these tests name a
+  mutation nobody has run red, and fourteen, twelve in `test_service.py` and two in `test_mcp.py`,
+  patch `session.BloombergSession` or the `blpapi` module where a declared canned-terminal entry
+  would do (S); `test_bloomberg_session.py` already drives a scripted fake of the SDK as data.
+  `test_notebooks` needs a world file that is not in the repository.
+- **The pricer branch census names 38 arcs no test executes** (2026-10-11). The LogVar2FJ
+  discrete-barrier arcs are worth a fixture; the rest are diagnostics, completeness elses and new
+  code. `gates/pricer_branch_census.py` lists them.
+- **Three checks are ungated** (2026-08-21): the vol term structure reaching the monitoring, the
+  payoff's forward against the vol surface's, and rate units
+  ([Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open)).
+- **A declared-versus-read gate on the `Hedging_Problem` knobs**, lost with the mock-built suite.
 
 ## Designed, not built
 
@@ -47,11 +167,21 @@ there.
 - **Fixings as a price factor, the deal keeping its dates.** The compile writes prints into each
   deal's table and `plan_hash` hashes deals whole, so a monitored barrier is a new plan every day. A
   static `Fixings` factor per index, fed by the prints fold, moves `values_hash` alone: deals stay as
-  booked, two deals on one index cannot disagree, a missing print is a missing factor by name, and
-  the six-types row of [the engine's limitations](../limitations.md#the-engine) retires. Every
-  pricer reading a past fixing changes (barrier, TARF, accumulator, autocall, the Asians, the swap
-  family's known rates, inflation), the banked numbers bit-identical. Two steps: fill today's
-  tables from the factor, then move the reads and drop the value columns. L.
+  booked, two deals on one index cannot disagree, and a missing print is a missing factor by name.
+  It closes two rows of the diary as it lands. Six types announce fixings under no index
+  (2026-09-30): the double Asian, the equity swap leg and swaplet list and the two energy deals (and
+  a composite equity Asian) read a table the fill cannot write yet, the inflation list M-L, and a
+  swaption announces no expiry of its own, a design call; the rate deals name their index, but a
+  blank one still announces under none, and a past reset their table does not state fixes at 0%
+  with a warning. A row naming none blocks `close_check` for ever, so its day gets no close, marks or
+  P&L; `UNOBSERVED` in `tests/test_diary.py` lists the open types. And a floating coupon settled
+  for another amount books the difference a day late (2026-09-28): its known-rate table is not
+  filled from the record, so the coupon is never determined, a different settled amount lands the
+  next day, and a swap bought ex-coupon on its coupon day carries the engine's coupon for that day,
+  each month summing right. Every pricer reading a past fixing changes (barrier, TARF, accumulator,
+  autocall, the Asians, the swap family's known rates, inflation), the banked numbers
+  bit-identical. Two steps: fill today's tables from the factor, then move the reads and drop the
+  value columns. L.
 - **What a product controller's P&L carries beside the marks.** `GET /book/pnl` explains the held
   positions' moves (carry, market per factor, residual) but carries no reserves, no day-one sales
   margin transfer, no interest earned on collateral and no futures variation margin, which no future
@@ -86,8 +216,6 @@ there.
   read by nothing).
 - **Quote-sensitivity non-goals** ([the page](quote_sensitivities.md#non-goals)): no report format
   for a quote delta, no second derivative in quote space, no SABR or SSVI.
-- **A declared-versus-read gate on the `Hedging_Problem` knobs**, lost with the mock-built suite
-  (`test_hmc_declared_knobs`).
 
 ## How a change is verified
 
@@ -124,22 +252,6 @@ there.
 - **A fixture must not zero the quantity its gate tests** (the checklist and plugin are on
   [Conventions](conventions.md#fixture-degeneracy)): a surviving mutant means the fixture is wrong,
   not that the code is right.
-
-## Tidy-ups
-
-- **What is left of the test fold** (2026-10-09). The record and service modules (635 tests) are
-  `fsync`-bound: most mint a home per test where a copy of the session's (`recorded`,
-  `tests/conftest.py`) would do, as the diary, P&L and engine modules do. 146 of these tests name a
-  mutation nobody has run red, and fourteen, twelve in `test_service.py` and two in `test_mcp.py`,
-  patch `session.BloombergSession` or the `blpapi` module where a declared canned-terminal entry
-  would do (S); `test_bloomberg_session.py` already drives a scripted fake of the SDK as data.
-  `test_notebooks` needs a world file that is not in the repository.
-- `derivus_jupyter.py` (tracked, not in the wheel) stays until the web UI exports a calculation as
-  a job and links each result table for download, as it does; it then retires. It raises on three
-  field names outside its write allowlist and on multi-column Tables outside a four-name allowlist,
-  and fourteen output-shaped descriptors have no widget.
-- `pv_float_cashflow_list` decides a coupon's resets need folding by comparing their count with the
-  cashflows', a shape; an explicit mark on the compiled cashflows would replace it.
 
 ## What this list is for
 

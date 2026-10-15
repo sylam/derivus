@@ -627,10 +627,12 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 ## Open {#open}
 
 Unbuilt parts of the design: a job's files are named by path, not declared in the record
-([the engine](../limitations.md#the-engine)); the deal tree is the book file with nets written on,
+([before 0.5.0](roadmap.md#before-0-5-0)); the deal tree is the book file with nets written on,
 not composed from the fold; and a print is not yet one fact feeding both a calibration's archive and
-a deal's fixings ([designed, not built](roadmap.md#designed-not-built)).
-[The engine](../limitations.md#the-engine) lists the record's other open rows - the log open's full
-scan, the rotation and replay limits, the oracle's blind spots, reads outside admission, verbs under
-no seat, settlements naming no agreement, unindexed fixings, legacy trades. One `settle` verb is a
-[desk decision](../limitations.md#decisions-waiting-on-the-desk).
+a deal's fixings ([designed, not built](roadmap.md#designed-not-built)). The record's other open
+rows - the log open's full scan, the oracle's blind spots, reads outside admission, settlements
+naming no agreement, legacy trades - are [before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
+the rotation and replay limits are [trust limits](#trust-limits) and the replay tuple's reach is on
+[Model Limitations](../limitations.md#the-engine); one `settle` verb, which verbs take a seat and
+whether a rotation is signed by the key it retires are
+[desk decisions](../limitations.md#decisions-waiting-on-the-desk).
