@@ -14,6 +14,12 @@ page follows that walk in code order; entry points and output are on
 
 **Held by** names the test a broken rule turns red; **Not gated**, that none does.
 
+[A Job Through the Machine](../animations/job_through_the_machine.html) animates this page, from
+the dispatch to the inner fork and its recompute node: play it here or open it full-page.
+
+<iframe src="../../animations/job_through_the_machine.html" title="A Job Through the Machine" loading="lazy"
+        style="width:100%;height:860px;border:1px solid var(--md-default-fg-color--lightest);border-radius:6px"></iframe>
+
 ## Dispatch
 
 `Context.run_job` branches on `Calculation['Object']` to `run_cmc` (through

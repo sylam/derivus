@@ -1,0 +1,704 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<style>body{margin:0;font-size:14px}img{max-width:100%}[hidden]{display:none!important}</style>
+<title>A Job Through the Machine</title>
+</head>
+<body>
+<style>
+  /* Layout: one stage (SVG scene: the job on the left, the factor graph in the centre, the state on
+     the right, the batch pipeline along the bottom, which the inner fork overlays) over a narration
+     bar and a chapter rail; the closing cards sit below, visible at rest. Self-contained so the
+     file travels by email: system faces, no network. Same scaffold as the spine animation. */
+  :root {
+    --bg: #f4f6f8; --fg: #182230; --muted: #5d6b7a; --panel: #ffffff; --line: #d6dde6;
+    --hub: #0f4c5c; --hub-fill: #e3eef1; --log: #fbf3e4; --fact: #a8681a; --blob: #4a5d73;
+    --stoch: #0b8a7a; --static: #7b8794; --implied: #7a4ed8; --deal: #2f5bea; --grad: #c0397b; --packet: #ff9f1c;
+    --good: #2e8b57; --warn: #d08700; --bad: #c43d3d;
+    --display: "Segoe UI Variable Display", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --body: "Segoe UI Variable Text", "Segoe UI", system-ui, -apple-system, "Helvetica Neue", Arial, sans-serif;
+    --mono: ui-monospace, "Cascadia Mono", Consolas, "SF Mono", Menlo, monospace;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root:not([data-theme="light"]) {
+      --bg: #0f151c; --fg: #e8edf3; --muted: #9aabbd; --panel: #161e27; --line: #2a3642;
+      --hub: #7cc4d1; --hub-fill: #12242a; --log: #2a2418; --fact: #e2a84a; --blob: #9fb0c3;
+      --stoch: #3fc2af; --static: #8a97a6; --implied: #b391ff; --deal: #7f9cff; --grad: #f06aa8; --packet: #ffb547;
+      --good: #5fc488; --warn: #f0b429; --bad: #ef6b6b; color-scheme: dark;
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: #0f151c; --fg: #e8edf3; --muted: #9aabbd; --panel: #161e27; --line: #2a3642;
+    --hub: #7cc4d1; --hub-fill: #12242a; --log: #2a2418; --fact: #e2a84a; --blob: #9fb0c3;
+    --stoch: #3fc2af; --static: #8a97a6; --implied: #b391ff; --deal: #7f9cff; --grad: #f06aa8; --packet: #ffb547;
+    --good: #5fc488; --warn: #f0b429; --bad: #ef6b6b; color-scheme: dark;
+  }
+  body { background: var(--bg); color: var(--fg); font-family: var(--body); line-height: 1.45; }
+  .wrap { max-width: 1220px; margin: 0 auto; padding-block: 20px 48px; padding-inline: 16px; }
+  header { display: flex; flex-wrap: wrap; align-items: baseline; justify-content: space-between; gap: 8px 24px; margin-bottom: 12px; }
+  h1 { font-family: var(--display); font-weight: 650; font-size: clamp(1.4rem, 2.6vw, 2rem); letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+  .sub { color: var(--muted); margin: 0; max-width: 66ch; }
+  .stage { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; overflow: hidden; }
+  svg { display: block; width: 100%; height: auto; max-width: 100%; }
+  svg text { font-family: var(--body); fill: var(--fg); }
+  svg .mono { font-family: var(--mono); font-variant-numeric: tabular-nums; }
+  svg .muted { fill: var(--muted); }
+  svg .label { font-size: 12px; letter-spacing: 0.06em; text-transform: uppercase; fill: var(--muted); }
+  .bar { display: grid; grid-template-columns: auto 1fr auto; gap: 12px 16px; align-items: center; padding: 12px 16px; border-top: 1px solid var(--line); }
+  .controls { display: flex; gap: 6px; flex-wrap: wrap; }
+  button { font: inherit; font-size: 0.9rem; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 12px; cursor: pointer; }
+  button:hover { border-color: var(--hub); }
+  button:focus-visible { outline: 2px solid var(--hub); outline-offset: 2px; }
+  button.primary { background: var(--hub); color: var(--panel); border-color: var(--hub); min-width: 84px; }
+  select { font: inherit; font-size: 0.9rem; color: var(--fg); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 5px 8px; }
+  .caption { min-width: 0; }
+  .caption .kicker { font-size: 0.74rem; letter-spacing: 0.08em; text-transform: uppercase; color: var(--muted); }
+  .caption h2 { font-family: var(--display); font-size: 1.1rem; margin: 2px 0 2px; font-weight: 650; }
+  .caption p { margin: 0; color: var(--fg); max-width: 86ch; font-size: 0.95rem; }
+  .progress { height: 3px; background: var(--line); }
+  .progress > div { height: 100%; width: 0; background: var(--hub); transition: width 0.25s linear; }
+  .rail { display: flex; flex-wrap: wrap; gap: 6px; margin: 14px 0 0; padding: 0; list-style: none; }
+  .rail button { font-size: 0.82rem; padding: 5px 10px; }
+  .rail button[aria-current="step"] { background: var(--hub-fill); border-color: var(--hub); color: var(--fg); }
+  .rail .n { font-family: var(--mono); color: var(--muted); margin-right: 6px; }
+  .why { margin-top: 32px; }
+  .why h2 { font-family: var(--display); font-size: 1.25rem; margin: 0 0 4px; font-weight: 650; }
+  .why .lede { color: var(--muted); margin: 0 0 14px; max-width: 72ch; }
+  .cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); gap: 12px; }
+  .card { background: var(--panel); border: 1px solid var(--line); border-radius: 8px; padding: 14px 16px; min-width: 0; }
+  .card h3 { margin: 0 0 6px; font-size: 0.98rem; font-family: var(--display); font-weight: 650; }
+  .card p { margin: 0; font-size: 0.92rem; }
+  code { font-family: var(--mono); font-size: 0.86em; background: var(--hub-fill); padding: 1px 5px; border-radius: 4px; }
+  footer { margin-top: 24px; color: var(--muted); font-size: 0.82rem; }
+  @media (max-width: 720px) { .bar { grid-template-columns: 1fr; } }
+  @media (prefers-reduced-motion: reduce) { .progress > div { transition: none; } }
+</style>
+
+<div class="wrap">
+  <header>
+    <div>
+      <h1>A Job Through the Machine</h1>
+      <p class="sub">A job document is a program. The engine compiles it into a factor graph, a state and a deal tree, then executes it batch by batch against simulated paths. Press play.</p>
+    </div>
+  </header>
+
+  <div class="stage">
+    <svg id="scene" viewBox="0 0 1200 700" role="img" aria-label="Animated walk of a job through the derivus engine: the job document, the factor graph, the state, and the batch pipeline with its inner fork."></svg>
+    <div class="progress"><div id="progress"></div></div>
+    <div class="bar">
+      <div class="controls">
+        <button id="play" class="primary" type="button">Play</button>
+        <button id="prev" type="button" aria-label="Previous chapter">&#8249; Back</button>
+        <button id="next" type="button" aria-label="Next chapter">Next &#8250;</button>
+        <button id="restart" type="button">Restart</button>
+      </div>
+      <div class="caption">
+        <div class="kicker" id="kicker"></div>
+        <h2 id="title"></h2>
+        <p id="text"></p>
+      </div>
+      <label>Speed <select id="speed"><option value="1">1x</option><option value="1.6" selected>1.6x</option><option value="2.5">2.5x</option></select></label>
+    </div>
+  </div>
+  <ul class="rail" id="rail"></ul>
+
+  <section class="why">
+    <h2>What the design buys</h2>
+    <p class="lede">The engine is a virtual machine: the job is the program, the compile is table-driven, and the execute loop is the same four verbs for every model. Each property below is what one of the chapters shows.</p>
+    <div class="cards">
+      <div class="card"><h3>One <code>Factor</code> keys everything</h3><p>A factor is a <code>(type, name)</code> pair, the one identity across the discovery graph, the offset maps, the object graph, the tenor payloads and the runtime buffers. Layers compose without a translation table.</p></div>
+      <div class="card"><h3>The compile is idempotent</h3><p>Discovery and the model split read the configuration and write nothing, so a validate, a want-list and a run see the same universe, and no placeholder ever pollutes saved market data.</p></div>
+      <div class="card"><h3>Registries, not functions</h3><p>Which factors exist is three plain dictionaries: the edges a factor type embeds, the name-prefix chain, and the instrument-conditional lambdas. A new factor type is a row, never an edit to a dispatcher.</p></div>
+      <div class="card"><h3>Canonical order</h3><p>The sort visits factors by type and name, so the rows each process draws from are a function of the graph alone, never of the order deals were booked. That is what makes a refactor provable bit for bit.</p></div>
+      <div class="card"><h3>Publish as you go</h3><p>Each process writes its path to the scenario buffer as it generates, under its own key, so a linked factor reads its parent's finished path and the loop never names a model.</p></div>
+      <div class="card"><h3>Two memos, two lifetimes</h3><p><code>t_Buffer</code> is cleared every batch and by every fork; <code>t_PreCalc</code> holds what every batch reads unchanged and is uploaded once per calculation.</p></div>
+      <div class="card"><h3>The inner block is canonical</h3><p>Every inner simulation reads one scrambled Sobol block, a function of its shape alone, so a trade's value does not depend on what is booked before it and a book shards with nothing to anchor.</p></div>
+      <div class="card"><h3>The position is the storage</h3><p>The recompute node saves where the generator stood, never what it drew, and re-runs the same simulation in backward one block at a time, trading the tape for a second forward pass.</p></div>
+      <div class="card"><h3>A correction worth zero forward</h3><p>A decision on simulated state registers its gap with its graph; the boundary correction adds the flux the indicator loses and changes nothing reported.</p></div>
+      <div class="card"><h3>The reconciled core</h3><p>The batch loop's reductions and the base valuation's execute are what everything downstream reconciles against; they are not touched, and the one wiring into them is the correction above.</p></div>
+    </div>
+  </section>
+  <footer>The example job is a netting set of three deals on a USD book: a swap, an FX option and an index autocall, the autocall under a fitted spot model. Counts and names are illustrative.</footer>
+</div>
+
+<script>
+(function () {
+  'use strict';
+  var NS = 'http://www.w3.org/2000/svg';
+  var svg = document.getElementById('scene');
+  var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+
+  function el(name, attrs, parent) {
+    var e = document.createElementNS(NS, name);
+    for (var k in attrs) { if (attrs.hasOwnProperty(k)) { e.setAttribute(k, attrs[k]); } }
+    (parent || svg).appendChild(e);
+    return e;
+  }
+  function text(x, y, s, attrs, parent) {
+    var t = el('text', Object.assign({ x: x, y: y }, attrs || {}), parent);
+    t.textContent = s;
+    return t;
+  }
+  function color(name) { return 'var(--' + name + ')'; }
+  function panel(box, title, sub, parent) {
+    el('rect', { x: box.x, y: box.y, width: box.w, height: box.h, rx: 8, fill: color('panel'), stroke: color('line') }, parent);
+    text(box.x + 12, box.y + 20, title, { 'class': 'label', 'font-weight': 700 }, parent);
+    if (sub) { text(box.x + 12 + title.length * 8.6 + 10, box.y + 20, sub, { 'class': 'muted', 'font-size': 11 }, parent); }
+  }
+
+  // ------------------------------------------------------------------ geometry
+  var JOB = { x: 20, y: 56, w: 272, h: 280 };
+  var GRAPH = { x: 308, y: 56, w: 580, h: 280 };
+  var STATE = { x: 904, y: 56, w: 276, h: 280 };
+  var EXEC = { x: 20, y: 352, w: 1160, h: 332 };
+
+  var gBack = el('g'), gJob = el('g'), gGraph = el('g'), gState = el('g'), gExec = el('g'), gFork = el('g'), gPackets = el('g'), gFx = el('g');
+
+  // ------------------------------------------------------------------ the job
+  panel(JOB, 'THE JOB', 'a document is the whole program', gJob);
+  var jobLines = ['Object: CreditMonteCarlo', 'Base_Date 2026-10-09 · Currency USD', 'Time_Grid 0d 2d 1w(1w) 3m(1m) 2y(3m)',
+                  'Batch_Size 1024 · Simulation_Batches 4', 'Random_Seed 5120 · Gradient_Variables All'];
+  var jobCalc = el('g', {}, gJob);
+  text(JOB.x + 12, JOB.y + 42, 'CALCULATION', { 'class': 'label', 'font-size': 10 }, jobCalc);
+  jobLines.forEach(function (l, i) { text(JOB.x + 12, JOB.y + 58 + i * 15, l, { 'class': 'mono', 'font-size': 10.5 }, jobCalc); });
+  var gInjected = el('g', {}, gJob);
+  var DEALS = [
+    { id: 'set', label: 'NettingCollateralSet CPTY', depth: 0 },
+    { id: 'swap', label: 'SwapInterestDeal USD 3M', depth: 1 },
+    { id: 'fxo', label: 'FXOptionDeal EUR/USD', depth: 1 },
+    { id: 'auto', label: 'QEDI_CustomAutoCallSwap SPX', depth: 1 }
+  ];
+  text(JOB.x + 12, JOB.y + 158, 'DEALS', { 'class': 'label', 'font-size': 10 }, gJob);
+  var dealEls = {};
+  DEALS.forEach(function (d, i) {
+    var y = JOB.y + 166 + i * 20, x = JOB.x + 12 + d.depth * 14;
+    var r = el('rect', { x: x - 4, y: y, width: JOB.w - 24 - d.depth * 14 + 4, height: 17, rx: 4, fill: 'none', stroke: 'none' }, gJob);
+    var t = text(x + 2, y + 12, d.label, { 'class': 'mono', 'font-size': 10.5 }, gJob);
+    dealEls[d.id] = { rect: r, text: t, x: x + JOB.w - 40 - d.depth * 14, y: y + 8 };
+  });
+  text(JOB.x + 12, JOB.y + 258, 'MergeMarketData: file + calendar named', { 'font-size': 11, fill: color('muted') }, gJob);
+  var jobStatus = text(JOB.x + 12, JOB.y + 272, '', { 'class': 'mono', 'font-size': 11, fill: color('hub') }, gJob);
+
+  // ------------------------------------------------------------------ the factor graph
+  panel(GRAPH, 'THE FACTOR GRAPH', '', gGraph);
+  var NODES = [
+    { id: 'fxusd', name: 'FxRate.USD', x: 372, y: 112, kind: 'static', note: 'base, static anchor', order: 8 },
+    { id: 'irusd', name: 'InterestRate.USD', x: 516, y: 112, kind: 'stoch', proc: 'HW1F', order: 5 },
+    { id: 'ireur', name: 'InterestRate.EUR', x: 660, y: 112, kind: 'stoch', proc: 'HW1F', order: 4 },
+    { id: 'surv', name: 'SurvivalProb.CPTY', x: 812, y: 112, kind: 'static', order: 7 },
+    { id: 'fxeur', name: 'FxRate.EUR', x: 372, y: 192, kind: 'stoch', proc: 'GBM', order: 10 },
+    { id: 'spx', name: 'EquityPrice.SPX', x: 516, y: 192, kind: 'stoch', proc: 'LogVar2FJ', order: 9 },
+    { id: 'lv', name: 'LogVar2FJModelParameters.SPX', x: 740, y: 192, kind: 'implied', order: 6 },
+    { id: 'fxvol', name: 'FXVol.EUR.USD', x: 372, y: 272, kind: 'static', order: 3 },
+    { id: 'spxvol', name: 'EquityPriceVol.SPX', x: 530, y: 272, kind: 'static', order: 2 },
+    { id: 'div', name: 'DividendRate.SPX', x: 700, y: 272, kind: 'static', order: 1 }
+  ];
+  var EDGES = [['fxusd', 'irusd'], ['fxeur', 'ireur'], ['fxeur', 'fxusd'], ['fxeur', 'fxvol'],
+               ['spx', 'irusd'], ['spx', 'fxusd'], ['spx', 'lv'], ['spx', 'spxvol']];
+  var nodeEls = {}, edgeEls = {};
+  var gEdges = el('g', {}, gGraph), gNodes = el('g', {}, gGraph);
+  NODES.forEach(function (n) {
+    var w = Math.min(196, n.name.length * 6.3 + 18), h = 26;
+    var g = el('g', { opacity: 0 }, gNodes);
+    var r = el('rect', { x: n.x - w / 2, y: n.y - h / 2, width: w, height: h, rx: 13, fill: color('panel'), stroke: color('line'), 'stroke-width': 1.5 }, g);
+    var t = text(n.x, n.y + 4, n.name, { 'class': 'mono', 'font-size': 10.5, 'text-anchor': 'middle' }, g);
+    var badge = el('g', { opacity: 0 }, g);
+    el('circle', { cx: n.x - w / 2, cy: n.y - h / 2 + 2, r: 8, fill: color('fact') }, badge);
+    text(n.x - w / 2, n.y - h / 2 + 5.5, String(n.order), { 'class': 'mono', 'font-size': 9.5, 'text-anchor': 'middle', fill: color('panel'), 'font-weight': 700 }, badge);
+    var proc = text(n.x, n.y + 24, n.proc ? n.proc : '', { 'class': 'mono', 'font-size': 9.5, 'text-anchor': 'middle', fill: color('stoch'), opacity: 0 }, g);
+    nodeEls[n.id] = { g: g, rect: r, text: t, badge: badge, proc: proc, w: w, cfg: n };
+  });
+  EDGES.forEach(function (e) {
+    var a = nodeEls[e[0]].cfg, b = nodeEls[e[1]].cfg;
+    edgeEls[e.join('>')] = el('line', { x1: a.x, y1: a.y, x2: b.x, y2: b.y, stroke: color('line'), 'stroke-width': 1.4, opacity: 0 }, gEdges);
+  });
+  var REG = [{ id: 'dep', label: 'dependant_fields' }, { id: 'nested', label: 'NESTED' }, { id: 'cond', label: 'conditional_fields' }];
+  var regEls = {};
+  REG.forEach(function (r, i) {
+    var x = GRAPH.x + 12 + i * 124, y = GRAPH.y + GRAPH.h - 22;
+    var box = el('rect', { x: x, y: y - 12, width: 116, height: 18, rx: 9, fill: color('panel'), stroke: color('line') }, gGraph);
+    var t = text(x + 58, y + 1, r.label, { 'class': 'mono', 'font-size': 10, 'text-anchor': 'middle', fill: color('muted') }, gGraph);
+    regEls[r.id] = { box: box, t: t };
+  });
+  var graphStatus = text(GRAPH.x + GRAPH.w - 12, GRAPH.y + 20, '', { 'class': 'mono', 'font-size': 11, 'text-anchor': 'end', fill: color('hub') }, gGraph);
+  var legend = el('g', {}, gGraph);
+  [['stoch', 'stochastic'], ['static', 'static'], ['implied', 'implied']].forEach(function (k, i) {
+    el('circle', { cx: GRAPH.x + GRAPH.w - 188 + i * 64, cy: GRAPH.y + GRAPH.h - 26, r: 4.5, fill: color(k[0]) }, legend);
+    text(GRAPH.x + GRAPH.w - 180 + i * 64, GRAPH.y + GRAPH.h - 22, k[1], { 'font-size': 10.5, fill: color('muted') }, legend);
+  });
+
+  // ------------------------------------------------------------------ the state
+  panel(STATE, 'THE STATE', 'leaves, cholesky, grids', gState);
+  var stateLines = [];
+  for (var i = 0; i < 13; i++) {
+    stateLines.push(text(STATE.x + 12, STATE.y + 44 + i * 18, '', { 'class': 'mono', 'font-size': 10.5 }, gState));
+  }
+
+  // ------------------------------------------------------------------ the batch pipeline
+  panel(EXEC, 'EXECUTE', 'one batch, then the next', gExec);
+  var gRuler = el('g', {}, gExec);
+  var RULER = { x: EXEC.x + 40, y: EXEC.y + 48, w: EXEC.w - 80 };
+  el('line', { x1: RULER.x, y1: RULER.y, x2: RULER.x + RULER.w, y2: RULER.y, stroke: color('line'), 'stroke-width': 1.5 }, gRuler);
+  var rulerLabel = text(RULER.x + RULER.w, RULER.y - 14, '', { 'class': 'label', 'font-size': 10, 'text-anchor': 'end' }, gRuler);
+  var gTicks = el('g', {}, gRuler);
+  // stage boxes
+  var gPipe = el('g', {}, gExec);
+  function stage(x, w, title, lines, y) {
+    y = y || EXEC.y + 70;
+    var g = el('g', { opacity: 0.45 }, gPipe);
+    el('rect', { x: x, y: y, width: w, height: 112, rx: 8, fill: color('hub-fill'), stroke: color('hub'), 'stroke-width': 1.2 }, g);
+    text(x + 10, y + 18, title, { 'class': 'label', 'font-size': 10 }, g);
+    var ts = lines.map(function (l, i) { return text(x + 10, y + 36 + i * 15, l, { 'class': 'mono', 'font-size': 10.5 }, g); });
+    return { g: g, lines: ts, x: x, w: w, y: y, h: 112 };
+  }
+  var S = {};
+  S.seed = stage(EXEC.x + 16, 108, 'SEED', ['batch_seed(', '  5120, b)', 'quasi: anchor', '  1024 + b·span']);
+  S.draw = stage(EXEC.x + 136, 116, 'DRAW', ['randn(7, T·n)', 'L · Z', '→ (7, T, n)', 't_random_numbers']);
+  S.gen = stage(EXEC.x + 264, 186, 'GENERATE, IN ORDER', ['HW1F  IR.EUR', 'HW1F  IR.USD', 'LogVar2FJ  SPX', 'GBM  FX.EUR']);
+  S.buf = stage(EXEC.x + 462, 186, 'T_SCENARIO_BUFFER', ['IR.EUR', 'IR.USD', 'SPX', 'FX.EUR']);
+  S.price = stage(EXEC.x + 660, 300, 'PRICE THE TREE', ['Swap', 'FX option', 'Autocall', 'the set']);
+  S.reduce = stage(EXEC.x + 972, 172, 'REDUCE', ['CollVA', 'IM', 'FVA', 'CVA']);
+  // progress bars beside the generate and buffer rows
+  var genBars = [], bufBars = [], priceMarks = [], reduceMarks = [];
+  for (var r = 0; r < 4; r++) {
+    genBars.push(el('rect', { x: S.gen.x + 110, y: S.gen.y + 28 + r * 15, width: 0, height: 8, rx: 4, fill: color('stoch') }, gPipe));
+    bufBars.push(el('rect', { x: S.buf.x + 60, y: S.buf.y + 28 + r * 15, width: 0, height: 8, rx: 4, fill: color('stoch') }, gPipe));
+    priceMarks.push(text(S.price.x + 92, S.price.y + 36 + r * 15, '', { 'class': 'mono', 'font-size': 9.5, fill: color('deal') }, gPipe));
+    reduceMarks.push(text(S.reduce.x + 70, S.reduce.y + 36 + r * 15, '', { 'class': 'mono', 'font-size': 10, fill: color('hub') }, gPipe));
+  }
+  // the MTM grid heatmap and the tape line
+  var gMtm = el('g', {}, gExec);
+  var MTM = { x: EXEC.x + 16, y: EXEC.y + 204, cols: 24, rows: 3, cell: 20 };
+  text(MTM.x, MTM.y - 6, 'MTM GRID', { 'class': 'label', 'font-size': 10 }, gMtm);
+  var mtmCells = [];
+  for (var rr = 0; rr < MTM.rows; rr++) {
+    mtmCells.push([]);
+    for (var cc = 0; cc < MTM.cols; cc++) {
+      mtmCells[rr].push(el('rect', { x: MTM.x + cc * MTM.cell, y: MTM.y + rr * MTM.cell, width: MTM.cell - 2, height: MTM.cell - 2, rx: 2, fill: color('line'), opacity: 0.5 }, gMtm));
+    }
+  }
+  ['Swap', 'FX option', 'Autocall'].forEach(function (n, i) {
+    text(MTM.x + MTM.cols * MTM.cell + 6, MTM.y + i * MTM.cell + 14, n, { 'font-size': 10.5, fill: color('muted') }, gMtm);
+  });
+  var tape = el('g', { opacity: 0 }, gExec);
+  var TAPE_Y = EXEC.y + 244;
+  el('line', { x1: S.reduce.x + 40, y1: TAPE_Y, x2: EXEC.x + 640, y2: TAPE_Y, stroke: color('grad'), 'stroke-width': 2, 'stroke-dasharray': '6 4' }, tape);
+  el('path', { d: 'M' + (EXEC.x + 640) + ' ' + TAPE_Y + ' l10 -5 l0 10 z', fill: color('grad') }, tape);
+  text(EXEC.x + 652, TAPE_Y - 8, 'backward(): the gradient to every leaf, the boundary correction worth zero forward', { 'font-size': 10.5, fill: color('grad') }, tape);
+  var execStatus = text(EXEC.x + EXEC.w - 12, EXEC.y + 20, '', { 'class': 'mono', 'font-size': 11, 'text-anchor': 'end', fill: color('hub') }, gExec);
+  var statsLine = text(EXEC.x + 16, EXEC.y + EXEC.h - 12, '', { 'class': 'mono', 'font-size': 11, fill: color('muted') }, gExec);
+
+  // ------------------------------------------------------------------ the fork overlay
+  gFork.setAttribute('opacity', 0);
+  var FORK_Y = EXEC.y + 70;
+  function forkBox(x, w, title, lines, stroke) {
+    var g = el('g', {}, gFork);
+    el('rect', { x: x, y: FORK_Y, width: w, height: 150, rx: 8, fill: color('panel'), stroke: stroke || color('implied'), 'stroke-width': 1.4 }, g);
+    text(x + 10, FORK_Y + 18, title, { 'class': 'label', 'font-size': 10 }, g);
+    var ts = lines.map(function (l, i) { return text(x + 10, FORK_Y + 36 + i * 15, l, { 'class': 'mono', 'font-size': 10.5 }, g); });
+    return { g: g, lines: ts, x: x, w: w };
+  }
+  var F = {};
+  F.outer = forkBox(EXEC.x + 16, 190, 'OUTER PATH AT t', ['one row of the', 'scenario buffer:', 'spot, vol state,', 'curves at t', '', 'state at t → fork'], color('stoch'));
+  F.block = forkBox(EXEC.x + 222, 236, 'THE CANONICAL INNER BLOCK', ['inner_block(rows, sims)', '= (u, 1 - u), scrambled Sobol', 'row k fixes k · 2,048 points', 'chunk c of 64 rows =', '  dimensions 64c on', 'prefix-stable, broadcast'], color('implied'));
+  F.strip = forkBox(EXEC.x + 474, 236, 'THE STREAMED STRIP', ['oss_stream over K fixings', 'step: survive, draw, settle', 'under a gradient every 4', '  fixings = one checkpoint', 'a row’s tape: its edges +', '  one chunk’s intermediates'], color('implied'));
+  F.source = forkBox(EXEC.x + 726, 216, 'PRICED ONCE', ['Batch_Size x Inner_Sub_Batch', 'published as ScenarioSource:', '  the outer past at B_outer', '  the forked rows flattened', 'every series the row carries', 'marks → the solver'], color('stoch'));
+  F.node = forkBox(EXEC.x + 958, 206, 'INNERMCRECOMPUTE', ['forward: no_grad', '  saves theta + rng position', 'backward: re-run under', '  enable_grad, one block', 'second derivative refused', 'settle outside the callable'], color('grad'));
+  var forkBars = [];
+  for (var fb = 0; fb < 6; fb++) { forkBars.push(el('rect', { x: F.strip.x + 10, y: FORK_Y + 128, width: 0, height: 8, rx: 4, fill: color('implied') }, gFork)); }
+  var forkStatus = text(EXEC.x + 16, EXEC.y + 250, '', { 'class': 'mono', 'font-size': 11, fill: color('implied') }, gFork);
+
+  // ------------------------------------------------------------------ state and rendering
+  var state;
+  function reset() {
+    state = { dispatched: false, nodes: {}, edges: {}, stamped: false, split: false, stateLines: [], ticks: 0, deals: {},
+              batch: 0, gen: [0, 0, 0, 0], price: ['', '', '', ''], reduce: ['', '', '', ''], mtm: 0, tape: false, fork: false, strip: 0,
+              status: { job: '', graph: '', exec: '', stats: '', fork: '' }, injected: false, regs: {} };
+    gPackets.innerHTML = ''; gFx.innerHTML = ''; gInjected.innerHTML = ''; gTicks.innerHTML = '';
+    rulerLabel.textContent = '';
+    render();
+  }
+  function render() {
+    jobStatus.textContent = state.status.job;
+    graphStatus.textContent = state.status.graph;
+    execStatus.textContent = state.status.exec;
+    statsLine.textContent = state.status.stats;
+    forkStatus.textContent = state.status.fork;
+    gJob.setAttribute('opacity', state.dispatched ? 1 : 0.55);
+    DEALS.forEach(function (d) {
+      var e = dealEls[d.id], on = state.deals[d.id];
+      e.rect.setAttribute('fill', on ? color('hub-fill') : 'none');
+      e.rect.setAttribute('stroke', on ? color('deal') : 'none');
+    });
+    NODES.forEach(function (n) {
+      var e = nodeEls[n.id], st = state.nodes[n.id];
+      e.g.setAttribute('opacity', st ? 1 : 0);
+      var kind = state.split ? n.kind : null;
+      e.rect.setAttribute('stroke', kind ? color(kind) : color('line'));
+      e.rect.setAttribute('stroke-width', kind === 'stoch' || kind === 'implied' ? 2.2 : 1.5);
+      e.rect.setAttribute('fill', kind === 'stoch' ? color('hub-fill') : color('panel'));
+      e.badge.setAttribute('opacity', state.stamped ? 1 : 0);
+      e.proc.setAttribute('opacity', state.split && n.proc ? 1 : 0);
+    });
+    Object.keys(edgeEls).forEach(function (k) { edgeEls[k].setAttribute('opacity', state.edges[k] ? 1 : 0); });
+    REG.forEach(function (r) {
+      var on = state.regs[r.id];
+      regEls[r.id].box.setAttribute('stroke', on ? color('hub') : color('line'));
+      regEls[r.id].t.setAttribute('fill', on ? color('fg') : color('muted'));
+    });
+    stateLines.forEach(function (t, i) { t.textContent = state.stateLines[i] || ''; });
+    Object.keys(S).forEach(function (k) { S[k].g.setAttribute('opacity', state.batch > 0 || state.dispatched && k === 'seed' && state.batch > 0 ? 1 : 0.45); });
+    genBars.forEach(function (b, i) { b.setAttribute('width', 74 * state.gen[i]); });
+    bufBars.forEach(function (b, i) { b.setAttribute('width', 112 * state.gen[i]); });
+    priceMarks.forEach(function (t, i) { t.textContent = state.price[i]; });
+    reduceMarks.forEach(function (t, i) { t.textContent = state.reduce[i]; });
+    for (var rr = 0; rr < MTM.rows; rr++) {
+      for (var cc = 0; cc < MTM.cols; cc++) {
+        var filled = cc < state.mtm;
+        mtmCells[rr][cc].setAttribute('fill', filled ? color('deal') : color('line'));
+        mtmCells[rr][cc].setAttribute('opacity', filled ? 0.35 + 0.5 * Math.abs(Math.sin((cc + 1) * (rr + 2) * 0.9)) : 0.5);
+      }
+    }
+    tape.setAttribute('opacity', state.tape ? 1 : 0);
+    gPipe.setAttribute('opacity', state.fork ? 0 : 1); gMtm.setAttribute('opacity', state.fork ? 0 : 1); gRuler.setAttribute('opacity', state.fork ? 0 : 1);
+    tape.setAttribute('opacity', state.tape && !state.fork ? 1 : 0);
+    gFork.setAttribute('opacity', state.fork ? 1 : 0);
+    forkBars.forEach(function (b, i) { b.setAttribute('width', i < state.strip ? 34 : 0); b.setAttribute('x', F.strip.x + 10 + i * 37); });
+  }
+  function renderTicks() {
+    gTicks.innerHTML = '';
+    var level = state.ticks;
+    if (level >= 1) {
+      // the parsed grid: dense near, sparse far
+      var days = [0, 2, 7, 14, 21, 28, 35, 42, 49, 56, 63, 70, 77, 84, 91, 121, 152, 182, 213, 243, 274, 304, 335, 365, 456, 547, 639, 730];
+      days.forEach(function (d) {
+        var x = RULER.x + RULER.w * d / 730;
+        el('line', { x1: x, y1: RULER.y - 5, x2: x, y2: RULER.y + 5, stroke: color('muted'), 'stroke-width': 1 }, gTicks);
+      });
+      ['0d', '3m', '1y', '2y'].forEach(function (l, i) {
+        text(RULER.x + RULER.w * [0, 91, 365, 730][i] / 730, RULER.y + 18, l, { 'class': 'mono', 'font-size': 9.5, 'text-anchor': 'middle', fill: color('muted') }, gTicks);
+      });
+    }
+    if (level >= 2) {
+      [[95, 'deal'], [186, 'deal'], [277, 'deal'], [369, 'deal'], [460, 'deal'], [551, 'deal'], [642, 'deal'], [400, 'deal'], [230, 'deal']].forEach(function (d) {
+        var x = RULER.x + RULER.w * d[0] / 730;
+        el('line', { x1: x, y1: RULER.y - 9, x2: x, y2: RULER.y + 9, stroke: color(d[1]), 'stroke-width': 2 }, gTicks);
+      });
+    }
+    if (level >= 3) {
+      [10, 40, 70, 100, 130, 160, 190, 220, 250, 280, 310, 340, 370].forEach(function (d) {
+        var x = RULER.x + RULER.w * d / 730;
+        el('circle', { cx: x, cy: RULER.y - 14, r: 2.5, fill: color('fact') }, gTicks);
+      });
+    }
+  }
+
+  // ------------------------------------------------------------------ clock, playback, motion
+  var playing = false, speed = 1.6, clockBase = 0, clockAcc = 0, instant = false, token = 0;
+  function now() { return clockAcc + (playing ? (performance.now() - clockBase) : 0); }
+  function setPlaying(p) {
+    if (p === playing) { return; }
+    if (p) { clockBase = performance.now(); } else { clockAcc = now(); }
+    playing = p;
+    document.getElementById('play').textContent = p ? 'Pause' : 'Play';
+  }
+  function cancelled() { return new Error('cancelled'); }
+  function wait(ms) {
+    var mine = token;
+    if (instant || reduced) { return Promise.resolve(); }
+    var until = now() + ms / speed;
+    return new Promise(function (resolve, reject) {
+      (function tick() {
+        if (mine !== token) { reject(cancelled()); return; }
+        if (now() >= until) { resolve(); } else { requestAnimationFrame(tick); }
+      })();
+    });
+  }
+  function fly(from, to, ms, fill, labelText) {
+    var mine = token;
+    if (instant || reduced) { return Promise.resolve(); }
+    var g = el('g', {}, gPackets);
+    el('circle', { r: 6, fill: fill || color('packet'), stroke: color('panel'), 'stroke-width': 1.5 }, g);
+    if (labelText) { text(9, 4, labelText, { 'class': 'mono', 'font-size': 10, fill: color('fg') }, g); }
+    var start = now(), dur = ms / speed;
+    return new Promise(function (resolve, reject) {
+      (function tick() {
+        if (mine !== token) { g.remove(); reject(cancelled()); return; }
+        var p = Math.min(1, (now() - start) / dur);
+        var e = p < 0.5 ? 2 * p * p : -1 + (4 - 2 * p) * p;
+        g.setAttribute('transform', 'translate(' + (from.x + (to.x - from.x) * e) + ' ' + (from.y + (to.y - from.y) * e) + ')');
+        if (p >= 1) { g.remove(); resolve(); } else { requestAnimationFrame(tick); }
+      })();
+    });
+  }
+  function ring(center, radiusTo, ms, stroke) {
+    var mine = token;
+    if (instant || reduced) { return Promise.resolve(); }
+    var c = el('circle', { cx: center.x, cy: center.y, r: 4, fill: 'none', stroke: stroke || color('hub'), 'stroke-width': 2 }, gFx);
+    var start = now(), dur = ms / speed;
+    return new Promise(function (resolve, reject) {
+      (function tick() {
+        if (mine !== token) { c.remove(); reject(cancelled()); return; }
+        var p = Math.min(1, (now() - start) / dur);
+        c.setAttribute('r', 4 + radiusTo * p); c.setAttribute('opacity', 1 - p);
+        if (p >= 1) { c.remove(); resolve(); } else { requestAnimationFrame(tick); }
+      })();
+    });
+  }
+  function pulse(id) {
+    var n = nodeEls[id].cfg;
+    return ring({ x: n.x, y: n.y }, 40, 600, color(n.kind === 'static' ? 'static' : n.kind));
+  }
+  function center(sbox) { return { x: sbox.x + sbox.w / 2, y: sbox.y + sbox.h / 2 }; }
+  function nodePoint(id) { return { x: nodeEls[id].cfg.x, y: nodeEls[id].cfg.y }; }
+  function dealPoint(id) { return { x: dealEls[id].x, y: dealEls[id].y }; }
+
+  // ------------------------------------------------------------------ chapters
+  function discover(dealId, nodeIds, edges, regs, status) {
+    state.deals[dealId] = true; render();
+    var chain = wait(250);
+    nodeIds.forEach(function (id) {
+      chain = chain.then(function () {
+        return fly(dealPoint(dealId), nodePoint(id), 650, color('deal')).then(function () {
+          state.nodes[id] = true; render(); return pulse(id);
+        });
+      });
+    });
+    return chain.then(function () {
+      (edges || []).forEach(function (e) { state.edges[e] = true; });
+      (regs || []).forEach(function (r) { state.regs[r] = true; });
+      if (status) { state.status.graph = status; }
+      render();
+      return wait(500);
+    }).then(function () { REG.forEach(function (r) { state.regs[r.id] = false; }); render(); });
+  }
+  var chapters = [
+    { title: 'Dispatch: the job is judged',
+      text: 'The document names a calculation by its class, and nothing else is injected but the run date and the time grid. Before anything runs, the block is completed from its declarations and judged by them, every refusal named at once. The device is the box’s choice, never the trade’s.',
+      run: function () {
+        state.dispatched = true; state.status.job = 'run_cmc → CreditMonteCarlo'; render();
+        return wait(600).then(function () {
+          ['Run_Date', 'Time_grid'].forEach(function (c, i) {
+            var x = JOB.x + 12 + i * 84, y = JOB.y + 136;
+            el('rect', { x: x, y: y - 12, width: 76, height: 18, rx: 9, fill: color('panel'), stroke: color('hub') }, gInjected);
+            text(x + 38, y + 1, c, { 'class': 'mono', 'font-size': 10, 'text-anchor': 'middle', fill: color('hub') }, gInjected);
+          });
+          text(JOB.x + 184, JOB.y + 137, 'injected', { 'font-size': 10, fill: color('muted') }, gInjected);
+          return wait(500);
+        }).then(function () { state.status.job = 'judged: nothing refused · device: cuda'; render(); return wait(500); });
+      } },
+    { title: 'Discovery: the deal tree is walked',
+      text: 'The base currency’s FX rate is seeded first and stays static, the anchor every other FX rate depends on. Then the tree is walked depth first, children before parent. Each deal’s declared fields name the factors it reads; a factor type that embeds others adds its edges from one registry, a composed name is split by the prefix chain, and an instrument-conditional factor, a surface or a model’s parameters, comes from a lambda that reads the deal. Nothing self-heals: a factor with no block is skipped and reported.',
+      run: function () {
+        state.nodes.fxusd = true; state.status.graph = 'base currency seeded first'; render();
+        return pulse('fxusd').then(function () { state.edges['fxusd>irusd'] = true; state.nodes.irusd = true; state.regs.dep = true; render(); return pulse('irusd'); })
+          .then(function () { state.regs.dep = false; return discover('swap', ['irusd'], [], [], 'Swap: InterestRate.USD'); })
+          .then(function () { return discover('fxo', ['fxeur', 'ireur', 'fxvol'], ['fxeur>ireur', 'fxeur>fxusd', 'fxeur>fxvol'], ['dep', 'nested', 'cond'], 'FX option: FxRate.EUR → its curve, the base, FXVol'); })
+          .then(function () { return discover('auto', ['spx', 'div', 'spxvol', 'lv'], ['spx>irusd', 'spx>fxusd', 'spx>spxvol', 'spx>lv'], ['dep', 'cond'], 'Autocall: EquityPrice.SPX → curve, base, vol, model'); })
+          .then(function () { return discover('set', ['surv'], [], [], 'CVA: SurvivalProb.CPTY'); })
+          .then(function () { state.status.graph = '10 factors, 8 edges · none missing'; render(); return wait(400); });
+      } },
+    { title: 'Order and split',
+      text: 'The edges are sorted topologically, each pass visiting factors by type and name, so the order is a function of the graph and not of the book. Then each factor is matched to a process through the model configuration: a factor with a process and its parameters is stochastic, one without is static and frozen at its value, and a model that implies its law off a calibrated factor pulls that factor in as implied. The base currency’s FX stays static whatever is declared.',
+      run: function () {
+        var order = NODES.slice().sort(function (a, b) { return a.order - b.order; });
+        var chain = Promise.resolve();
+        order.forEach(function (n) {
+          chain = chain.then(function () { state.stamped = true; nodeEls[n.id].badge.setAttribute('opacity', 1); return wait(220); });
+        });
+        return chain.then(function () { state.status.graph = 'topological_sort: canonical'; render(); return wait(500); })
+          .then(function () { state.split = true; state.status.graph = 'find_models: 4 stochastic, 5 static, 1 implied'; render(); return wait(300); })
+          .then(function () { return pulse('ireur'); }).then(function () { return pulse('irusd'); }).then(function () { return pulse('spx'); }).then(function () { return pulse('fxeur'); })
+          .then(function () { return pulse('lv'); });
+      } },
+    { title: 'Build the state',
+      text: 'Every factor becomes a tensor leaf, static, stochastic or implied, with its gradient switched on by the job’s choice; a calibrated factor carries its quotes’ graph as a splice worth zero forward. The correlation matrix is assembled over every process’s sub-factors and factored, and each process is handed the random rows it reads from. Then precalculate runs in topological order, and only after it the cross-process references, so a linked process finds what its parent set.',
+      run: function () {
+        var lines = ['LEAVES', '  static_var 5 · stoch_var 4 · implied_var 1', '  requires_grad: Gradient_Variables All', '  LV params: leaf + (θ* - detach θ*)', '',
+                     'CORRELATION', '  7 sub-factors → Cholesky L (7x7)', '  process_ofs: IR.EUR 0 · IR.USD 1', '    SPX 2-5 · FX.EUR 6', '',
+                     'PRECALCULATE → CALC_REFERENCES', '  in topological order', '  Deterministic_Kernels: No'];
+        var chain = Promise.resolve();
+        lines.forEach(function (l, i) { chain = chain.then(function () { state.stateLines[i] = l; render(); return wait(l ? 180 : 60); }); });
+        return chain.then(function () { return pulse('ireur'); }).then(function () { return pulse('irusd'); }).then(function () { return pulse('spx'); }).then(function () { return pulse('fxeur'); });
+      } },
+    { title: 'Compile the deals',
+      text: 'Each deal’s compile turns its factor keys into code tuples through the resolver, the one place a name is decomposed: the stochastic flag, the factor, its subtype and a tenor payload. Its dates map onto the MTM grid, and its schedules are bound to the device once. A deal that cannot compile is skipped by name and counted, or kept at zero if the job says so; a pricing failure later marks zero unless it is one of the fatal kinds.',
+      run: function () {
+        var codes = [['Swap', '[T, IR.USD, tenor]'], ['FX option', '[T, FX.EUR] [F, FXVol.EUR.USD]'], ['Autocall', '[T, SPX, LogVar2FJ params]']];
+        var chain = Promise.resolve();
+        codes.forEach(function (c, i) {
+          chain = chain.then(function () {
+            state.deals[DEALS[i + 1].id] = true; state.price[i] = c[1]; state.status.exec = 'calc_dependencies: ' + c[0] + ' → Factor_dep, Time_dep'; render();
+            return fly(dealPoint(DEALS[i + 1].id), { x: S.price.x + 80, y: S.price.y + 32 + i * 15 }, 700, color('deal')).then(function () { return wait(250); });
+          });
+        });
+        return chain.then(function () { state.status.exec = 'bind_schedules · Deals Skipped 0'; state.status.stats = 'deals 3 · structures 1 · Deals Skipped 0'; render(); return wait(500); });
+      } },
+    { title: 'The grids',
+      text: 'The time grid is parsed as steps, dense near and sparse far, with a trailing repeat to the book’s last date. The MTM grid adds every later date a deal revalues on, and a collateralised set its call, settlement and liquidation dates. Under dynamic scenario dates the scenario grid is the MTM grid; between scenario dates a factor is read linearly. The report rows are each top-level structure’s dates to its last revaluation, and the xVA reductions run on them.',
+      run: function () {
+        rulerLabel.textContent = 'Time_Grid 0d 2d 1w(1w) 3m(1m) 2y(3m)';
+        state.ticks = 1; renderTicks();
+        return wait(900).then(function () { rulerLabel.textContent = 'MTM grid: + deal dates'; state.ticks = 2; renderTicks(); return wait(900); })
+          .then(function () { rulerLabel.textContent = 'scenario grid = MTM · report rows per set'; state.ticks = 3; renderTicks(); return wait(600); });
+      } },
+    { title: 'A batch: draw, correlate, generate in order',
+      text: 'Each batch reseeds from the job’s seed and its index, so a sharded run covers the same batches in the same order. One normal draw for every sub-factor row is correlated through the Cholesky factor into the random block; the quasi-random stream for the inner draws keeps its own fixed seed. Then each process generates in topological order and publishes its path to the scenario buffer under its own key as it finishes, so the FX rate reads its curve’s finished path. The per-batch memo is cleared first.',
+      run: function () {
+        state.batch = 1; state.status.exec = 'batch 1 of 4 · batch_seed(5120, 0) · t_Buffer cleared'; state.status.stats = 'deals 3 · Deals Skipped 0 · batches 0/4'; render();
+        return fly(center(S.seed), center(S.draw), 600).then(function () { return fly(center(S.draw), { x: S.gen.x + 20, y: S.gen.y + 32 }, 600); })
+          .then(function () {
+            var chain = Promise.resolve();
+            [0, 1, 2, 3].forEach(function (i) {
+              chain = chain.then(function () {
+                state.gen[i] = 0.5; render(); return wait(260);
+              }).then(function () {
+                state.gen[i] = 1; render();
+                return fly({ x: S.gen.x + S.gen.w, y: S.gen.y + 32 + i * 15 }, { x: S.buf.x + 20, y: S.buf.y + 32 + i * 15 }, 450, color('stoch'));
+              });
+            });
+            return chain;
+          }).then(function () { state.status.exec = 'published: 4 paths, (T, 1024) each'; render(); return wait(400); });
+      } },
+    { title: 'Price the tree',
+      text: 'The structure is resolved deal by deal. A pricer reads a spot as the sum of its components and a curve as its parent plus spreads, through the codes the compile stored, and each read is cached for the batch under its factor and time. The price lands on the MTM grid, zero past the deal’s last date. A netting set’s post-process runs the collateral chain over its children, a set marked to flip is negated, one that priced NaN is dropped, and every decision on simulated state registers its gap with its graph.',
+      run: function () {
+        var chain = Promise.resolve();
+        [0, 1, 2].forEach(function (i) {
+          chain = chain.then(function () {
+            state.status.exec = 'resolve_structure: ' + ['Swap', 'FX option', 'Autocall'][i] + ' reads t_Scenario_Buffer'; render();
+            return fly({ x: S.buf.x + S.buf.w, y: S.buf.y + 32 + i * 15 }, { x: S.price.x + 20, y: S.price.y + 32 + i * 15 }, 500, color('stoch'));
+          }).then(function () {
+            var steps = Promise.resolve();
+            for (var c = 1; c <= 8; c++) { (function (k) { steps = steps.then(function () { state.mtm = Math.max(state.mtm, i * 8 + k); render(); return wait(45); }); })(c); }
+            return steps;
+          });
+        });
+        return chain.then(function () { state.price[3] = 'post_process: collateral chain'; state.status.exec = 'post_process: the set · boundary sets stamped'; render(); return wait(600); });
+      } },
+    { title: 'Reduce, then the tape, then the next batch',
+      text: 'The reductions run in one order: collateral valuation, initial margin, funding, credit. Under sensitivities the backward pass carries the gradient to every leaf, with the boundary correction added at the objective, exactly zero forward, and the cashflows are harvested only after it. The batch’s memo is dropped and the next batch begins from its own seed; the per-calculation memo stands.',
+      run: function () {
+        var chain = Promise.resolve();
+        ['CollVA', 'IM', 'FVA', 'CVA'].forEach(function (r, i) {
+          chain = chain.then(function () { state.reduce[i] = '✓ ' + ['reduced', 'reduced', 'reduced', 'reduced'][i]; state.status.exec = r + ' on the report rows'; render(); return wait(350); });
+        });
+        return chain.then(function () { state.tape = true; state.status.exec = 'backward() · cashflows harvested after'; render(); return wait(900); })
+          .then(function () {
+            var batches = Promise.resolve();
+            [2, 3, 4].forEach(function (b) {
+              batches = batches.then(function () {
+                state.batch = b; state.gen = [0, 0, 0, 0]; state.mtm = 0; state.tape = false; state.reduce = ['', '', '', '']; state.status.exec = 'batch ' + b + ' of 4 · t_Buffer cleared'; state.status.stats = 'deals 3 · Deals Skipped 0 · batches ' + (b - 1) + '/4'; render();
+                return wait(220).then(function () { state.gen = [1, 1, 1, 1]; state.mtm = 24; render(); return wait(220); })
+                  .then(function () { state.reduce = ['✓ reduced', '✓ reduced', '✓ reduced', '✓ reduced']; state.tape = true; render(); return wait(260); });
+              });
+            });
+            return batches;
+          }).then(function () { state.status.exec = 'done: 4 batches, 4,096 paths'; state.status.stats = 'deals 3 · Deals Skipped 0 · batches 4/4 · Device_Memory reported'; render(); return wait(400); });
+      } },
+    { title: 'The inner fork and the canonical block',
+      text: 'Some pricers simulate inside a path: a barrier, a target redemption, an autocall. At a date the outer state is forked and one pass is run at the batch size times the inner sub-batch. Every inner simulation reads one canonical block, row k for fixing k, each inner path one scrambled Sobol point over the strip, so a trade’s value does not depend on its neighbours and the book shards with nothing to anchor. The strip streams fixing by fixing, and under a gradient every four fixings are one checkpoint.',
+      run: function () {
+        state.fork = true; state.strip = 0; state.status.fork = '_run_inner_mc_at_t: fork at t'; render();
+        return fly(center({ x: F.outer.x, w: F.outer.w, y: FORK_Y, h: 150 }), center({ x: F.block.x, w: F.block.w, y: FORK_Y, h: 150 }), 700, color('stoch'))
+          .then(function () { state.status.fork = 'inner_block: (u, 1 - u) · chunks of 64 rows'; render(); return fly(center({ x: F.block.x, w: F.block.w, y: FORK_Y, h: 150 }), { x: F.strip.x + 10, y: FORK_Y + 132 }, 600, color('implied')); })
+          .then(function () {
+            var chain = Promise.resolve();
+            for (var k = 1; k <= 6; k++) { (function (kk) { chain = chain.then(function () { state.strip = kk; state.status.fork = 'oss_stream: fixing ' + kk + (kk % 4 === 0 ? ' · checkpoint' : ''); render(); return wait(260); }); })(k); }
+            return chain;
+          })
+          .then(function () { state.status.fork = 'priced once → ScenarioSource blocks'; render(); return fly({ x: F.strip.x + F.strip.w, y: FORK_Y + 75 }, center({ x: F.source.x, w: F.source.w, y: FORK_Y, h: 150 }), 600, color('stoch')); })
+          .then(function () { return wait(400); });
+      } },
+    { title: 'The recompute node',
+      text: 'The tape of every inner pricing is what does not fit; the simulation is cheap. With the switch on, the forward runs untaped and keeps nothing but its inputs and where the generator stood, and the backward re-runs the same callable under a graph one block at a time, contracting the cotangent through it. A decision the simulation made is an output, so the boundary correction’s coefficient arrives as its cotangent. A second derivative through the node is refused, and a cashflow is settled outside it.',
+      run: function () {
+        state.status.fork = 'InnerMCRecompute.forward: no_grad · rng_position saved'; render();
+        return fly(center({ x: F.source.x, w: F.source.w, y: FORK_Y, h: 150 }), center({ x: F.node.x, w: F.node.w, y: FORK_Y, h: 150 }), 600, color('stoch'))
+          .then(function () { state.status.fork = 'backward: rng_position restored · simulate again under enable_grad'; render(); return fly(center({ x: F.node.x, w: F.node.w, y: FORK_Y, h: 150 }), center({ x: F.strip.x, w: F.strip.w, y: FORK_Y, h: 150 }), 700, color('grad')); })
+          .then(function () { state.status.fork = 'autograd.grad through one block · cotangent out'; render(); return fly(center({ x: F.strip.x, w: F.strip.w, y: FORK_Y, h: 150 }), center({ x: F.outer.x, w: F.outer.w, y: FORK_Y, h: 150 }), 700, color('grad')); })
+          .then(function () { state.status.fork = 'create_graph refused · settle outside the callable'; render(); return wait(500); });
+      } },
+    { title: 'What it adds up to',
+      text: 'One identity keys every layer, the compile reads and never writes, the order is canonical, each process publishes as it goes, and the inner block is a function of its shape. That is what lets a change be proven in minutes: the same job, the same bits, or a named difference with a test.',
+      run: function () {
+        state.fork = false; render();
+        return ring(center({ x: GRAPH.x, w: GRAPH.w, y: GRAPH.y, h: GRAPH.h }), 300, 1200).then(function () { return ring(center({ x: EXEC.x, w: EXEC.w, y: EXEC.y, h: EXEC.h }), 600, 1400, color('fact')); });
+      } }
+  ];
+
+  // ------------------------------------------------------------------ driver (the spine page's)
+  var current = 0, running = false;
+  var railEl = document.getElementById('rail');
+  chapters.forEach(function (c, i) {
+    var li = document.createElement('li');
+    var b = document.createElement('button'); b.type = 'button';
+    b.innerHTML = '<span class="n">' + (i + 1) + '</span>' + c.title;
+    b.addEventListener('click', function () { if (playing) { play(i); } else { show(i); } });
+    li.appendChild(b); railEl.appendChild(li);
+  });
+  function caption(i) {
+    document.getElementById('kicker').textContent = 'Chapter ' + (i + 1) + ' of ' + chapters.length;
+    document.getElementById('title').textContent = chapters[i].title;
+    document.getElementById('text').textContent = chapters[i].text;
+    Array.prototype.forEach.call(railEl.querySelectorAll('button'), function (b, k) {
+      if (k === i) { b.setAttribute('aria-current', 'step'); } else { b.removeAttribute('aria-current'); }
+    });
+    document.getElementById('progress').style.width = Math.round(100 * (i + 1) / chapters.length) + '%';
+  }
+  function settle(i) {
+    var minted = ++token;
+    instant = true; reset();
+    var chain = Promise.resolve();
+    for (var k = 0; k < i; k++) {
+      (function (c) { chain = chain.then(function () { if (minted !== token) { throw cancelled(); } return c.run(); }); })(chapters[k]);
+    }
+    return chain.then(function () {
+      if (minted !== token) { throw cancelled(); }
+      instant = false; gPackets.innerHTML = ''; gFx.innerHTML = '';
+      return minted;
+    });
+  }
+  function show(i) {
+    current = Math.max(0, Math.min(chapters.length - 1, i));
+    running = false; caption(current);
+    return settle(current + 1).then(null, function () {});
+  }
+  function play(i) {
+    var idx = Math.max(0, Math.min(chapters.length - 1, i));
+    current = idx; caption(idx); running = true;
+    var mine;
+    settle(idx).then(function (minted) { mine = minted; return chapters[idx].run(); }).then(function () {
+      if (mine !== token) { return; }
+      running = false;
+      if (playing && idx + 1 < chapters.length) { play(idx + 1); }
+      else if (idx + 1 >= chapters.length) { setPlaying(false); }
+    }, function () { if (mine === token) { running = false; } });
+  }
+  document.getElementById('play').addEventListener('click', function () {
+    if (playing) { setPlaying(false); return; }
+    setPlaying(true);
+    if (!running) { play(current); }
+  });
+  document.getElementById('next').addEventListener('click', function () { if (playing) { play(current + 1); } else { show(current + 1); } });
+  document.getElementById('prev').addEventListener('click', function () { if (playing) { play(current - 1); } else { show(current - 1); } });
+  document.getElementById('restart').addEventListener('click', function () { setPlaying(true); play(0); });
+  document.getElementById('speed').addEventListener('change', function (e) { speed = parseFloat(e.target.value); });
+  document.addEventListener('keydown', function (e) {
+    if (e.target.tagName === 'SELECT' || e.target.tagName === 'INPUT' || e.target.tagName === 'BUTTON') { return; }
+    if (e.key === ' ') { e.preventDefault(); document.getElementById('play').click(); }
+    if (e.key === 'ArrowRight') { document.getElementById('next').click(); }
+    if (e.key === 'ArrowLeft') { document.getElementById('prev').click(); }
+  });
+
+  // at rest: the end of the batch chapters, so the first frame shows the whole machine
+  var deep = /^#c(\d+)$/.exec(location.hash || '');
+  if (deep) { show(parseInt(deep[1], 10) - 1); }
+  else { show(8).then(function () { current = 0; caption(0); }); }
+})();
+</script>
+
+</body>
+</html>
