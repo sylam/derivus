@@ -302,8 +302,7 @@ class ConstructMarkdown(object):
         section_dir, module_name = self.METHODOLOGY[store]
         module = importlib.import_module(module_name, package=self.package_name)
         for name, cls in inspect.getmembers(module, inspect.isclass):
-            declared = cls.__dict__.get(
-                'calc_type' if store == 'Calculation' else
+            declared = name if store == 'Calculation' else cls.__dict__.get(
                 'market_factor_type' if store == 'MarketPrices' else 'price_factor_type')
             doc = cls.__dict__.get('documentation')
             if declared == item_type and cls.__module__ == module.__name__ and doc:
@@ -754,10 +753,8 @@ class ConstructMarkdown(object):
                   for name in sorted(schema.mapping['Calibration']['types'])]
         lines += ['', '## Calculations', '', '| calculation | method | tests |',
                   '| --- | --- | --- |']
-        classes = {cls.__dict__.get('calc_type', cls.__name__): cls
-                   for cls in vars(calculation).values() if isinstance(cls, type)}
         for name in sorted(schema.mapping['Calculation']['types']):
-            lines.append(f"| `{name}` | {published('.calculation', classes.get(name))} | "
+            lines.append(f"| `{name}` | {published('.calculation', vars(calculation)[name])} | "
                          f"{tested(name)} |")
         (self.doc_build_dir / 'model_inventory.md').write_text('\n'.join(lines) + '\n',
                                                               encoding='utf-8')

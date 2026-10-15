@@ -41,7 +41,7 @@ THE PUBLISHED TABLES WERE READ AT 131,072 PATHS, and that is NOT this file's def
 is the sample the reported half-B tables came off, and a bare `--snapshot DIR` doubles it (and the
 wall clock with it) rather than reproducing them.
 
-WHAT THE ENGINE DOES NOT REPORT, and how this reads it anyway. `Credit_Monte_Carlo` reports the
+WHAT THE ENGINE DOES NOT REPORT, and how this reads it anyway. `CreditMonteCarlo` reports the
 exposure profile UNDEFLATED (`Results['mtm']`, reporting currency, report grid) and applies
 `Deflation_Interest_Rate` only inside the CVA/FVA/CollVA reductions, which are scalars - there is
 no deflator series and no deflated profile among its output keys, so a deflated expiry-row EPE
@@ -641,7 +641,7 @@ def forward_par_swap(reference, currency, curve, effective, maturity, strike,
 def unit_cashflow(reference, currency, curve, payment_date):
     """One unit of `currency` paid at `payment_date`, discounting on `curve`.
 
-    ITS ROW-ZERO MARK IS THE DEFLATOR. `Credit_Monte_Carlo` publishes no deflator series and no
+    ITS ROW-ZERO MARK IS THE DEFLATOR. `CreditMonteCarlo` publishes no deflator series and no
     deflated profile (see the module docstring), so `D(0,T)` is read off the engine's own reported
     table by putting a deal in the book whose t0 value is exactly that number. Notional is zero and
     the whole payment rides `Fixed_Amount`, so no rate, accrual or day count reaches the answer.
@@ -679,7 +679,7 @@ def netting_set(reference, children):
     """An uncollateralised, netted set over `children` - the container whose own `Calc_res` block
     carries a per-benchmark profile.
 
-    A BARE DEAL REPORTS ONE ROW. `Credit_Monte_Carlo` sums every netting set into the reported
+    A BARE DEAL REPORTS ONE ROW. `CreditMonteCarlo` sums every netting set into the reported
     `mtm` table, so a book of three benchmarks in ONE set would report their sum and nothing else;
     a set per benchmark is what makes each profile separately readable, off `Netting`, which the
     calculation returns beside `Results`.
@@ -785,7 +785,7 @@ def composition_config(fitted, ir_curve, fx_currency, fx_spot, benchmarks, base_
 def run_composition(config, grid, batch_size, batches, seed, prec=DTYPE):
     """One `CreditMonteCarlo` run; the per-netting-set profiles, the report dates and the stats.
 
-    THE PER-SET PROFILES ARE THE ENGINE'S OWN. `Credit_Monte_Carlo` returns `Netting` - the root
+    THE PER-SET PROFILES ARE THE ENGINE'S OWN. `CreditMonteCarlo` returns `Netting` - the root
     `DealStructure` - beside `Results`, and each sub-structure carries its own `Calc_res['Value']`:
     one array per batch, written by `pricing.interpolate` on the way out of the netting set's
     `post_process`. Nothing is re-priced or re-derived here; the arrays are concatenated along the

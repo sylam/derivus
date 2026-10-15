@@ -1158,8 +1158,8 @@ def furnish_accrual(structure, deal, params, document, base_date, underlying, in
 
 def declared_paths():
     """The inner path count a base valuation DECLARES - one number, read where it is stated."""
-    from .calculation import Base_Revaluation
-    return int(schema.declared_defaults(Base_Revaluation, {})['MCMC_Simulations'])
+    from .calculation import BaseValuation
+    return int(schema.declared_defaults(BaseValuation, {})['MCMC_Simulations'])
 
 
 def thin_paths(calculation):

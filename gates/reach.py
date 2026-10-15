@@ -22,7 +22,7 @@ is not:
   * an unnamed receiver CALLING a protocol verb (a name defined only inside one consumer family -
     `.calculate` is a Deal's by construction) or a name with exactly one definition in the package;
   * registries read as DATA: the five `construct_*` reach WHOLE what their store selects
-    (`calc_type`, `market_factor_type`, `factor_types`, `model_type`, `Deal` subclasses), and so
+    (`fields`, `market_factor_type`, `factor_types`, `model_type`, `Deal` subclasses), and so
     does every module-level `UPPER = {key: symbol}` dict, found by shape rather than by name
     (`OSS_SPOT_MODEL_KITS`);
   * a class -> its bases and its `__init__` (plus an autograd `Function`'s `forward`/`backward`,
@@ -328,7 +328,7 @@ class Graph:
         fams = [set(self.classes('instruments', base='Deal')), set(self.processes()),
                 set(self.classes('riskfactors')),
                 set(self.classes('bootstrappers', 'market_factor_type')),
-                set(self.classes('calculation', 'calc_type'))]
+                set(self.calculations())]
         fams = [f | {b for m in f for b in self._all_bases(m)} for f in fams]
         return {name for name, keys in self.short.items()
                 if all(self.node[k]['cls'] for k in keys)
@@ -346,7 +346,7 @@ class Graph:
     def _registries(self):
         """`globals()` dispatch: each `construct_*` edges to WHAT its store selects, whole."""
         for fn, targets in (
-                ('calculation.construct_calculation', self.classes('calculation', 'calc_type')),
+                ('calculation.construct_calculation', self.calculations()),
                 ('bootstrappers.construct_bootstrapper',
                  self.classes('bootstrappers', 'market_factor_type')),
                 ('instruments.construct_instrument', self.classes('instruments', base='Deal')),
@@ -361,6 +361,12 @@ class Graph:
         return [k for k in self.classes('stochasticprocess')
                 if _declared(self.node[k]['ast'], 'factor_types') is not None
                 or k + '.generate' in self.node]
+
+    def calculations(self):
+        """The calculation types: the classes of `calculation` declaring their own `fields`."""
+        return [k for k in self.classes('calculation')
+                if any(isinstance(st, ast.Assign) and getattr(st.targets[0], 'id', '') == 'fields'
+                       for st in self.node[k]['ast'].body)]
 
     def kits(self):
         """`OSS_SPOT_MODEL_KITS` read as data: model family -> kit class key."""
@@ -385,8 +391,7 @@ class Graph:
                   'factors': {k.split('.')[-1]: [k] for k in self.classes('riskfactors')},
                   'bootstrappers': {_declared(self.node[k]['ast'], 'market_factor_type'): [k]
                                     for k in boots},
-                  'calculations': {_declared(self.node[k]['ast'], 'calc_type'): [k]
-                                   for k in self.classes('calculation', 'calc_type')}}
+                  'calculations': {k.split('.')[-1]: [k] for k in self.calculations()}}
         kits, families = self.kits(), {}
         for d in deals:
             for m in _declared(self.node[d]['ast'], 'spot_models') or ():

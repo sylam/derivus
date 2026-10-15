@@ -1344,7 +1344,7 @@ def judge_calculation(calculation, stated):
     cls = calculation_class(calculation.get('Object'))
     decoded = json.loads(json.dumps(stated), object_hook=lambda wire: decode_wire(
         wire, lambda deal: deal))
-    refused = stated_messages(cls.calc_type, declared_fields(cls).values(), decoded, ('Object',))
+    refused = stated_messages(cls.__name__, declared_fields(cls).values(), decoded, ('Object',))
     if refused:
         raise ValueError('; '.join(refused))
 
@@ -3401,7 +3401,7 @@ def funding_curves(deal, risk_free):
 
 
 def xva_document(document, node, counterparty):
-    """A `Credit_Monte_Carlo` job over the book carrying ONE netting set's subtree, priced for BOTH
+    """A `CreditMonteCarlo` job over the book carrying ONE netting set's subtree, priced for BOTH
     adjustments the projection carries.
 
     The book's market data, calendars, bootstrappers and report currency travel WHOLE - the CVA
@@ -3556,7 +3556,7 @@ def book_xva(request: dict):
     own cost class, each writing its own row on completion - so a partial recalc moves the rows it
     names and the desk's quotes keep jumping the queue while the sets drain.
 
-    Each job composes a `Credit_Monte_Carlo` over the book carrying THAT set's subtree, with both
+    Each job composes a `CreditMonteCarlo` over the book carrying THAT set's subtree, with both
     adjustment blocks on against the counterparty the set's own `Credit_Support_Amounts` names, so
     `cva` and `fva` share an `as_of` and a replay tuple. A reference that names no netting set
     refuses BY NAME and queues nothing at all.

@@ -729,8 +729,8 @@ class SecondOrderRefused(Exception):
     """A second-order block will not be answered on this portfolio, because the answer would be a
     plausible wrong number rather than a failure.
 
-    Three sites raise it: `Base_Revaluation.execute` refuses `Greeks: 'All'` on a registered
-    `BoundarySet`; `Credit_Monte_Carlo.execute` refuses `Hessian: 'Yes'` on the same thing, and
+    Three sites raise it: `BaseValuation.execute` refuses `Greeks: 'All'` on a registered
+    `BoundarySet`; `CreditMonteCarlo.execute` refuses `Hessian: 'Yes'` on the same thing, and
     `pricing.exposure_kink_term` on a reporting row whose bandwidth ladder DIVERGES.
 
     Named so a caller can FALL BACK rather than lose the run: the value and the first-order block
@@ -1511,7 +1511,7 @@ class Calculation_State(object):
         self.gamma = False
         # THE SMOOTH ESTIMATOR (`Branch_And_Weight`, the base valuation's default): each fixing's
         # fired branch integrated against its interval's own law, and a SWAP - a deal on it
-        # registers no `BoundarySet`. False HERE keeps `Credit_Monte_Carlo` on the crisp path.
+        # registers no `BoundarySet`. False HERE keeps `CreditMonteCarlo` on the crisp path.
         self.branch_and_weight = False
 
     def upload(self, array, dtype=None):

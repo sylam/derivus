@@ -380,7 +380,7 @@ class Calculation(object):
         """`params`, or a `ValueError` naming every one of its `refusals` at once."""
         refused = cls.refusals(params)
         if refused:
-            raise ValueError('{}: {}'.format(cls.calc_type, '; '.join(refused)))
+            raise ValueError('{}: {}'.format(cls.__name__, '; '.join(refused)))
         return params
 
     def factor_leaf(self, factor, current_val, requires_grad, offset=0.0):
@@ -809,7 +809,7 @@ class CMC_State_Inner(CMC_State):
         self.t_Buffer.clear()
 
 
-class Credit_Monte_Carlo(Calculation):
+class CreditMonteCarlo(Calculation):
     documentation = ('Calculations', [
         'A credit Monte Carlo simulates every price factor that has a model along `Batch_Size` x',
         '`Simulation_Batches` paths, values the book on each path at each date of its grid, and reduces the',
@@ -964,7 +964,6 @@ class Credit_Monte_Carlo(Calculation):
         '   [xVA](../theory/valuation_adjustments.md#inputs-and-defaults) page'
     ])
 
-    calc_type = 'CreditMonteCarlo'
     fields = [
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default=REQUIRED),
@@ -1057,7 +1056,7 @@ class Credit_Monte_Carlo(Calculation):
     ]
 
     def __init__(self, config, **kwargs):
-        super(Credit_Monte_Carlo, self).__init__(config, **kwargs)
+        super(CreditMonteCarlo, self).__init__(config, **kwargs)
         self.reset_dates = None
         self.settlement_currencies = None
         self.jacobians = {}
@@ -1959,7 +1958,7 @@ class Base_Reval_State(utils.Calculation_State):
             output[k] = np.float64(v) if isinstance(v, float) else v.detach().cpu().numpy().astype(np.float64)
 
 
-class Base_Revaluation(Calculation):
+class BaseValuation(Calculation):
     """Simple deal revaluation - use this to reconcile with the source system.
 
     SECOND DERIVATIVES LIVE HERE AND NOWHERE ELSE. `Greeks: 'All'` asks the reverse sweep for
@@ -2011,7 +2010,6 @@ class Base_Revaluation(Calculation):
         'The output is a dictionary containing the DealStructure and the calculation computation statistics.'
     ])
 
-    calc_type = 'BaseValuation'
     fields = [
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default=REQUIRED),
@@ -2038,7 +2036,7 @@ class Base_Revaluation(Calculation):
     ]
 
     def __init__(self, config, **kwargs):
-        super(Base_Revaluation, self).__init__(config, **kwargs)
+        super(BaseValuation, self).__init__(config, **kwargs)
         self.base_date = None
         self.correlation_deltas = {}
 
@@ -2329,7 +2327,7 @@ class Base_Revaluation(Calculation):
         return {'Netting': self.netting_sets, 'Stats': self.calc_stats, 'Results': self.report()}
 
 
-class Diary(Base_Revaluation):
+class Diary(BaseValuation):
     """The diary - every payment, fixing and expiry the book's own compile announces, as JSON rows.
 
     THE COMPILE'S SCHEDULE RE-EMITTED. The deals are constructed and their schedules bound exactly
@@ -2371,7 +2369,7 @@ class Diary(Base_Revaluation):
 
     def execute(self, params):
         """Every payment, fixing and expiry this job's deals carry, as rows naming each deal by its
-        `Reference`, unsorted: `Base_Revaluation.execute`'s compile half, READ rather than priced.
+        `Reference`, unsorted: `BaseValuation.execute`'s compile half, READ rather than priced.
 
         A deal the compile LEFT OUT is read off the loaded tree instead: expired, and it announces
         what a live one of its type announces, or unreadable, and it announces why. The compiled
@@ -2637,9 +2635,9 @@ class Diary(Base_Revaluation):
         return next(iter(settlement)) if len(settlement) == 1 else None
 
 
-class HedgeMonteCarlo(Credit_Monte_Carlo):
+class HedgeMonteCarlo(CreditMonteCarlo):
     documentation = ('Calculations', [
-        'A specialisation of `Credit_Monte_Carlo` that wires the same simulated scenario',
+        'A specialisation of `CreditMonteCarlo` that wires the same simulated scenario',
         'engine into a dynamic-hedging solver. Instead of producing exposure profiles, the',
         'calculation solves for a hedge of a portfolio of liabilities, trading a configured',
         'set of futures (or other instruments) over time. The Monte Carlo engine is unchanged',
@@ -2739,7 +2737,7 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         '',
         '### Reusing the inherited Credit Monte Carlo simulator',
         '',
-        'Because this class inherits from `Credit_Monte_Carlo`, the underlying scenario',
+        'Because this class inherits from `CreditMonteCarlo`, the underlying scenario',
         'engine — random factor generation, instrument valuation across paths, calendar',
         'handling, AAD graph construction — is identical. Anything that can be priced for',
         'a credit-exposure run can be priced as a hedging-problem leg or tradable. The only',
@@ -2747,7 +2745,6 @@ class HedgeMonteCarlo(Credit_Monte_Carlo):
         'feed into a learning loop.'
     ])
 
-    calc_type = 'HedgeMonteCarlo'
     fields = [
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default=REQUIRED),
@@ -3759,7 +3756,6 @@ class SIMM(Calculation):
     bootstraps, and that is no child of one that does, refuses by name. A leg the engine skips is
     reported per trade in its own sentence and the trade's rows written regardless.
     """
-    calc_type = 'SIMM'
     #: The CRIF risk types the run moves: the risk class each belongs to and how its factor moves -
     #: a basis point on each benchmark quote of the curve's block or on every node of a basis, a
     #: percent of a currency's price in the calculation currency or of a spot, a point of vol per
@@ -4197,19 +4193,18 @@ class SIMM(Calculation):
         frame.to_csv(path, sep='\t', index=False, columns=list(cls.CRIF_COLUMNS))
 
 
-def construct_calculation(calc_type, config, **kwargs):
-    return globals().get(calc_type)(config, **kwargs)
+def construct_calculation(name, config, **kwargs):
+    return calculation_class(name)(config, **kwargs)
 
 
-def calculation_class(calc_type):
-    """The calculation a job's `Object` names - the class declaring it as its own `calc_type` -
-    refused by name where none does."""
-    declared = {cls.__dict__['calc_type']: cls for cls in globals().values()
-                if isinstance(cls, type) and 'calc_type' in cls.__dict__}
-    if calc_type not in declared:
+def calculation_class(name):
+    """The calculation a job's `Object` names - the class of that name the Calculation store
+    publishes - refused by name where it publishes none."""
+    types = schema.mapping['Calculation']['types']
+    if name not in types:
         raise ValueError('{!r} is no calculation - this engine runs {}'.format(
-            calc_type, ', '.join(sorted(declared))))
-    return declared[calc_type]
+            name, ', '.join(sorted(types))))
+    return globals()[name]
 
 
 if __name__ == '__main__':

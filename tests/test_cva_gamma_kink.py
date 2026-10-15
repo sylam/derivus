@@ -2,7 +2,7 @@
 
 What second-order AAD drops at `relu(V)` is `delta(V)·V_θV_θᵀ`. `pricing.exposure_kink_term` puts it
 back as a term worth an exact zero forward and a bit-identical zero at first order, and
-`Credit_Monte_Carlo.execute` rides it through the CVA's own trapezoid under `Hessian: 'Yes'`.
+`CreditMonteCarlo.execute` rides it through the CVA's own trapezoid under `Hessian: 'Yes'`.
 
 THE FIXTURE IS THE MUTATION DETECTOR, and that is the whole reason it is an `EquityForwardDeal`. A
 LINEAR payoff's pathwise gamma is IDENTICALLY ZERO - `V_t = S_t·e^{-q(T-t)} - K·e^{-r(T-t)}` has
@@ -357,7 +357,7 @@ def test_a_netted_mirror_contributes_nothing_rather_than_refusing(tmp_path):
 # ---------------------------------------------------------------- decision products
 
 def test_a_decision_product_refuses_the_hessian_and_keeps_its_gradient(tmp_path):
-    """`Base_Revaluation`'s posture, adopted one calculation over. An autocall registers a
+    """`BaseValuation`'s posture, adopted one calculation over. An autocall registers a
     `BoundarySet`, which is what makes its FIRST derivative right: `(gap - gap.detach())` times a
     DETACHED coefficient. Differentiate twice and the coefficient cannot move, so what comes back is
     the smooth part with the density-derivative flux block silently absent. Refused by name, naming

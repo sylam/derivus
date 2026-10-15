@@ -1,6 +1,6 @@
 ## xVA: what a credit Monte Carlo reports
 
-A `CreditMonteCarlo` calculation (`Credit_Monte_Carlo` in `calculation.py`) simulates the book's
+A `CreditMonteCarlo` calculation (in `calculation.py`) simulates the book's
 value along $N$ paths and reduces those paths to an exposure profile and two adjustments: the
 credit valuation adjustment (CVA) and the funding valuation adjustment (FVA), each switched on by its
 own block in the `Calculation`. The `Collateral_Valuation_Adjustment` and `Initial_Margin` blocks are
@@ -94,7 +94,7 @@ $s^{b}$ is the same with `Funding_Benefit_Interest_Curve`. FVA weights the expos
 counterparty's survival: while the block is on, every netting set multiplies its reported value by
 $S(0,t)$ of its own `Credit_Support_Amounts.Counterparty` (a set naming none is left at 1 with a
 WARNING). Summed at the root, $U$ is then $\sum_s S_s(0,t)V_s(t)$, the bank-wide form of the
-API page ([`Credit_Monte_Carlo`](../api_usage/calculations.md#credit_monte_carlo)). A CVA in the
+API page ([`CreditMonteCarlo`](../api_usage/calculations.md#creditmontecarlo)). A CVA in the
 same run divides its exposure by the CVA counterparty's $S(0,t)$ to undo the scaling - the run's one
 counterparty (see the scope above). The block's `Counterparty` only adds that
 survival curve to the factor universe; `Bank` and `Stochastic_Funding` are not read. Funding

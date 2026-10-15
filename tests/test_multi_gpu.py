@@ -561,7 +561,7 @@ def test_a_batch_reads_back_and_uploads_only_what_it_simulated(device):
 
 # ------------------------------------------------------------------ what a batch held
 
-class OnASmallCard(calculation.Credit_Monte_Carlo):
+class OnASmallCard(calculation.CreditMonteCarlo):
     """A credit Monte Carlo that measured a peak past its device, wherever it runs."""
 
     def device_memory(self):
@@ -582,7 +582,7 @@ def test_a_run_reports_what_it_held_and_warns_where_it_passed_the_device(caplog)
     assert stats['Device_Memory'] == {'Peak_GB': 2.0, 'Device_GB': 1.0}
     assert 'Batch_Size %d held 2.00 GB at its peak on a 1.00 GB device' % BATCH_SIZE in caplog.text
     caplog.clear()
-    plain = calculation.Credit_Monte_Carlo(job, prec=torch.float32, device=torch.device('cpu'))
+    plain = calculation.CreditMonteCarlo(job, prec=torch.float32, device=torch.device('cpu'))
     plain.report_device_memory(stats := {})
     assert stats == {} and not caplog.text
     if torch.cuda.is_available():

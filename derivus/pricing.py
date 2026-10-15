@@ -934,7 +934,7 @@ def exposure_kink_term(shared, V, n_paths_axis=1):
 
     The collateralised case this refusal was written for cannot reach here: a
     ``NettingCollateralSet`` with ``Collateralized: 'True'`` registers an ``MTABoundarySet``, so
-    ``Hessian: 'Yes'`` is refused in ``Credit_Monte_Carlo.execute``. Estimating through a margin
+    ``Hessian: 'Yes'`` is refused in ``CreditMonteCarlo.execute``. Estimating through a margin
     period, which would smear such an atom into a density, is future work.
 
     DECLARED LIMITATION: the O(eps^2) bandwidth bias shows on volga, so this is a gamma-and-vanna

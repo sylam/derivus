@@ -56,7 +56,7 @@ from copy import deepcopy
 
 from . import Context, content_hash, instruments, riskfactors
 from ._version import __version__
-from .calculation import Base_Revaluation, Diary, construct_calculation
+from .calculation import BaseValuation, Diary
 from . import schema
 from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
                      tables_of, walk_job_deals, without_clocks)
@@ -593,7 +593,7 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
         return document
     held = _nets(lsn, book_name(document))
     balances = {} if runs is False else _balances(document, lsn, folds)
-    if (runs or document['Calc']['Calculation'].get('Object')) == Base_Revaluation.calc_type:
+    if (runs or document['Calc']['Calculation'].get('Object')) == BaseValuation.__name__:
         balances = {}
     if not held and not balances and not _observing(document):
         return document
@@ -1664,7 +1664,7 @@ def diary(context, instruments=None):
     config = context.current_cfg
     declared = config.deals['Calculation']
     named, rows = instruments or {}, []
-    for row in construct_calculation('Diary', config).execute(dict(
+    for row in Diary(config).execute(dict(
             declared, Run_Date=declared['Base_Date'].strftime('%Y-%m-%d'))):
         instrument = named.get(row.pop('reference'))
         rows.append(dict(key=_key(instrument, row['leg'], row['kind'], row['due_date']),

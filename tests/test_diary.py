@@ -50,7 +50,7 @@ import rates_world
 import derivus
 import test_position_scaling as trials
 from derivus import instruments, schema, service, spine, utils
-from derivus.calculation import Diary, construct_calculation
+from derivus.calculation import Diary
 from derivus.config import CustomJsonEncoder
 from derivus_spine import SpineLog, capability, policy, vocabulary
 
@@ -347,7 +347,7 @@ def test_a_swap_compiles_the_compounding_its_fixed_leg_declares():
     """
     swaps = [node(dict(swap('SWAP_YES'), Fixed_Compounding='Yes')), node(swap('SWAP_NO'))]
     context = derivus.Context().load_json((dump(job(swaps)), 'compounding'))
-    compiled = construct_calculation('Diary', context.current_cfg)
+    compiled = Diary(context.current_cfg)
     compiled.execute(dict(context.current_cfg.deals['Calculation'], Run_Date=str(BASE.date())))
     assert {deal.Instrument.field['Reference']: deal.Factor_dep.get('Compounding')
             for deal in compiled.netting_sets.deals()} == {'SWAP_YES': True, 'SWAP_NO': False}

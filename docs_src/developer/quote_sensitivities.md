@@ -49,7 +49,7 @@ A severance raises nothing and moves no value; it reports a zero gradient. The c
 
 | where | severs | avoided by |
 | --- | --- | --- |
-| `_build_factor_state`, `Base_Revaluation.update_factors` | every leaf is minted from numpy | θ goes straight into `t_Static_Buffer`, where pricers read a static curve |
+| `_build_factor_state`, `BaseValuation.update_factors` | every leaf is minted from numpy | θ goes straight into `t_Static_Buffer`, where pricers read a static curve |
 | `Factor1D.current_value` | numpy end to end | used for constants only; θ follows the knot order `get_tenor` leaves on the constructed factor |
 | `Factor1D.check_interpolation` | the Hermite pair from numpy | `utils.Interpolation.build` re-derives it from the tensor (no test per kind) |
 | `TensorSchedule.bind` | `new_tensor` copies the fixed rate | [the overlay](#the-quote-side) |
@@ -355,8 +355,8 @@ clamp rows and guards are held by no test.
 
 ## The attachment {#the-attachment}
 
-`Calculation.factor_leaf` mints every leaf — the three branches of `Credit_Monte_Carlo._build_factor_state`
-and `Base_Revaluation.update_factors` — and offers a factor with a connected θ\* as
+`Calculation.factor_leaf` mints every leaf — the three branches of `CreditMonteCarlo._build_factor_state`
+and `BaseValuation.update_factors` — and offers a factor with a connected θ\* as
 $\text{leaf} + (\theta^* - \texttt{detach}(\theta^*))$, the [boundary
 correction](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem)'s shape: `retain_grad` on
 the sum keeps the factor greek and lands `dV/dq` on the quote leaves in the same pass. A model

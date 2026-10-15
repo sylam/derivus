@@ -452,7 +452,7 @@ def test_a_ladder_with_no_wings_reads_its_skew_as_silent(silent_fit):
 # ------------------------------------------------------------------------------------------
 def test_a_fit_forced_onto_a_box_names_it_and_the_mark_reports_it():
     """A parameter a BOX stopped is not a fitted one, so `On_Guard` names the box on the factor and
-    `Base_Revaluation` reports it in `Stats` under the same key.
+    `BaseValuation` reports it in `Stats` under the same key.
 
     Forced with `Sigma_S_Bounds` 0.5,0.6 - a vol-of-vol window this ladder cannot fit inside - on
     the two-rung ladder at `Paths` 512 and `Max_Iterations` 3: enough to land ON the edge, not

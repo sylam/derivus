@@ -106,7 +106,7 @@ variation rather than the ticket, so the booking and the account of it agree.
 5. `compose` builds the bookable `StructuredDeal`; the outcome carries the legs, `net`, `net_mid`,
    `edge`, `charged_on`, `spot`, `risk`, `notes`, `valuation_configuration` and the `deal`.
 
-A quote prices simulated legs at the inner path count `Base_Revaluation` declares or the book's,
+A quote prices simulated legs at the inner path count `BaseValuation` declares or the book's,
 whichever is larger (`priced_job`): a booked strip is later marked by an ordinary base valuation, and
 the quote and the mark have to be one estimator. A book stating fewer gets a `notes` entry
 (`thin_paths`).

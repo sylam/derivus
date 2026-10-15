@@ -6,10 +6,10 @@ what it returns is on [API Overview](../api_overview.md), every field each reads
 [Calculations](../json/calculations.md) in the JSON reference, and how a job reaches each and where
 they part on [Calc Lifecycle](../developer/calc_lifecycle.md#valuation-modes).
 
-- **`BaseValuation`** ([`Base_Revaluation`](#base_revaluation)) answers what each deal is worth at
+- **`BaseValuation`** ([`BaseValuation`](#basevaluation)) answers what each deal is worth at
   the valuation date: the book at one date on the `Price Factors` it reaches as they stand, none
   simulated, with AAD sensitivities to them under `Greeks`.
-- **`CreditMonteCarlo`** ([`Credit_Monte_Carlo`](#credit_monte_carlo)) answers what the book may
+- **`CreditMonteCarlo`** ([`CreditMonteCarlo`](#creditmontecarlo)) answers what the book may
   be worth at each future date: it simulates every factor `Price Models` gives a model, correlated
   as `Correlations` declares and the rest held constant, values the book on every path and reduces
   the paths to an exposure profile and, where its blocks ask, the CVA and FVA.

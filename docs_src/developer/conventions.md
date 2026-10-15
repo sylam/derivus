@@ -25,7 +25,7 @@ Extension points are data: a new type is a row or a class attribute the engine a
 
 - Factor discovery is three dicts in `config.py` ([Dependency System](dependency_system.md)); process wiring and calibration are registered in `Model Configuration` and `calibration_config.json`.
 - Every JSON schema is a per-class `fields` list, and every store but `System` is the view `schema.emit_*` builds from those declarations at import, never a second copy.
-- Where a store's key is not the class name, **the class declares the bridge**: `factor_types` on a process, `calc_type` on a calculation (`Base_Revaluation` is authored as `BaseValuation`), `model_type` on a calibration, `market_factor_type` and `price_factor_type` on a bootstrapper (`FXVolSurfaceParameters` reads `FXVolPrices` and writes `FXVol`, its `Bootstrapper Configuration` key). No rule recovers one name from another.
+- Where a store's key is not the class name, **the class declares the bridge**: `factor_types` on a process, `model_type` on a calibration, `market_factor_type` and `price_factor_type` on a bootstrapper (`FXVolSurfaceParameters` reads `FXVolPrices` and writes `FXVol`, its `Bootstrapper Configuration` key). No rule recovers one name from another.
 - `Process_factor_map` and `Interpolation_factor_map` are the same declarations read sideways; a market-price quote references the `Instrument` declarations rather than restating them ([Market Prices](market_prices.md)).
 
 **Held by** `tests/test_schema_emission.py::test_every_store_is_the_emitted_view`, `::test_the_calculation_types_are_what_run_job_dispatches`.
@@ -57,7 +57,7 @@ Before adding a helper, **search `utils.py` and the package for an existing equi
 
 ## Change scope {#change-scope}
 
-`Credit_Monte_Carlo` and `Base_Revaluation` are **do-not-touch** — above all the CVA/FVA/CollVA/IM block in `Credit_Monte_Carlo.execute`, specified on [xVA](../theory/valuation_adjustments.md) — because they are the production valuation paths everything downstream reconciles against. The `HedgeMonteCarlo` / solver stack is free to redesign. Inside `Deal` methods, reuse pre-processed data (`field_index['Cashflows']`) rather than re-walking `self.field`.
+`CreditMonteCarlo` and `BaseValuation` are **do-not-touch** — above all the CVA/FVA/CollVA/IM block in `CreditMonteCarlo.execute`, specified on [xVA](../theory/valuation_adjustments.md) — because they are the production valuation paths everything downstream reconciles against. The `HedgeMonteCarlo` / solver stack is free to redesign. Inside `Deal` methods, reuse pre-processed data (`field_index['Cashflows']`) rather than re-walking `self.field`.
 
 The one thing wired into that block is [boundary-correction assembly](calc_lifecycle.md#boundary-corrections-the-sensitivity-subsystem), and its terms are the terms for anything else: it changes what reaches `backward()` and **nothing** reported, being worth exactly zero forward. **Held by** `tests/test_boundary_pricer_events.py::test_asking_for_sensitivities_does_not_move_the_autocall_exposure` (exposure `np.array_equal`, CVA `==`, sensitivities on against off) and `tests/test_cva_gamma_kink.py::test_asking_for_the_hessian_moves_nothing_the_run_already_reported`. A per-factor scaling of the correlation matrix before the Cholesky fails those terms: a declared correlation is the correlation of the innovations for every process, and nothing scales it. **Held by**, for LogVar2FJ, `tests/test_logvar2fj_json.py::test_a_logvar2fj_equity_realises_the_rows_its_four_sub_factors_declare`.
 

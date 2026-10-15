@@ -4710,7 +4710,7 @@ class BenchmarkInstruments(object):
     **The graph audit.** The factor-construction path severs autograd in four places, every one on
     the way IN to `t_Static_Buffer`:
 
-    - `Calculation._build_factor_state` and `Base_Revaluation.update_factors` mint every leaf off a
+    - `Calculation._build_factor_state` and `BaseValuation.update_factors` mint every leaf off a
       numpy array. This class writes theta straight into the buffer and never calls `current_value`
       for a curve it is solving.
     - `riskfactors.Factor1D.current_value` is numpy end to end, and `Factor1D.get_tenor` REWRITES

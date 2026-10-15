@@ -95,7 +95,7 @@ compo correlation under common random numbers (`Correlation_Bump`, 0.025).
 
 ## The batch loop
 
-`Credit_Monte_Carlo.execute` compiles the deal tree (`set_deal_structures`), then per batch:
+`CreditMonteCarlo.execute` compiles the deal tree (`set_deal_structures`), then per batch:
 
 1. Under `deterministic_batches`, `batch_seed(Random_Seed, b)` reseeds and `set_quasi_batch(b)`
    anchors the quasi stream, `b` the global batch.
@@ -196,7 +196,7 @@ dates are on the grid ([xVA](../theory/valuation_adjustments.md#notation-and-the
 
 ## Valuation modes {#valuation-modes}
 
-**`Base_Revaluation`** is one date, every factor static, no Cholesky or generate loop:
+**`BaseValuation`** is one date, every factor static, no Cholesky or generate loop:
 `resolve_structure` runs once, `pricing.greeks` reports `Greeks_First`, and `Greeks: 'All'` adds the
 full Hessian `Greeks_Second`, reported nowhere else. A Monte Carlo pricer still simulates inside
 (`MCMC_Simulations` 16,384; 2,048 on the credit Monte Carlo).

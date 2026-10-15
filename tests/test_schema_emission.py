@@ -554,9 +554,9 @@ def test_the_process_menu_is_every_factor_type_by_the_declared_processes():
 
 
 def calculation_classes():
-    """Calculation classes carrying their own `fields`, keyed by the `Object` string a job writes
-    rather than by the class name - `Base_Revaluation` is authored as `BaseValuation`."""
-    return {c.__dict__['calc_type']: c for c in vars(calculation).values()
+    """Calculation classes carrying their own `fields`, keyed by the class name, the `Object` a job
+    writes."""
+    return {c.__name__: c for c in vars(calculation).values()
             if isinstance(c, type) and isinstance(c.__dict__.get('fields'), list)}
 
 
@@ -581,9 +581,8 @@ def test_the_calculation_types_are_what_run_job_dispatches():
     type naming no branch is a calculation the create menu offers and the engine refuses to run;
     and the converse was where the drift was - `HedgeMonteCarlo` had a `run_job` branch, a
     documented contract and two shipped fixtures, and no schema row, so opening a job that used it
-    raised KeyError in `CalculationPage.load_items`. The type is the `Object` string, not the class
-    name (`Base_Revaluation` is authored as `BaseValuation`), which the class states with
-    `calc_type` because no rule recovers one word from the other.
+    raised KeyError in `CalculationPage.load_items`. The type is the class name, the `Object`
+    string a job writes.
 
     Killing mutation: `run_job`'s HedgeMonteCarlo branch keyed on another string."""
     undispatchable = sorted(set(CALCULATION['types']) - dispatched_calculations())
@@ -596,7 +595,7 @@ def calculation_fallback_reads(cls_name, module_ast):
     """`{key: fallback}` for every calc knob read as `params.get('Key', <constant>)`.
 
     Scoped to the class AND its bases in this module, the way `fallback_reads` is: the exposure
-    engine reads most of its knobs on `Credit_Monte_Carlo` and a subclass declaring one of them
+    engine reads most of its knobs on `CreditMonteCarlo` and a subclass declaring one of them
     would otherwise publish two defaults with nothing holding them together.
     """
     classes = {n.name: n for n in module_ast.body if isinstance(n, ast.ClassDef)}
@@ -610,8 +609,8 @@ def calculation_fallback_reads(cls_name, module_ast):
             and len(n.args) == 2 and all(isinstance(a, ast.Constant) for a in n.args)}
 
 
-@pytest.mark.parametrize('calc_type', sorted(calculation_classes()))
-def test_a_declared_calculation_default_is_the_default_the_engine_falls_back_to(calc_type):
+@pytest.mark.parametrize('name', sorted(calculation_classes()))
+def test_a_declared_calculation_default_is_the_default_the_engine_falls_back_to(name):
     """A knob read with `.get(key, fallback)` publishes TWO defaults, and they have to be one: the
     panel gives the DECLARED value, an omitted key gives the FALLBACK, and where they disagree the
     same job means two things with nothing raising.
@@ -623,12 +622,11 @@ def test_a_declared_calculation_default_is_the_default_the_engine_falls_back_to(
     falls back to `No`.
     """
     module_ast = ast.parse(inspect.getsource(calculation))
-    cls_name = calculation_classes()[calc_type].__name__
-    declared = declared_values(CALCULATION['types'][calc_type])
+    declared = declared_values(CALCULATION['types'][name])
     drift = {key: (declared[key], fallback)
-             for key, fallback in calculation_fallback_reads(cls_name, module_ast).items()
+             for key, fallback in calculation_fallback_reads(name, module_ast).items()
              if key in declared and declared[key] != fallback}
-    assert not drift, f'{calc_type} declares one default and falls back to another: {drift}'
+    assert not drift, f'{name} declares one default and falls back to another: {drift}'
 
 
 def declared_menus(descriptors):
@@ -681,8 +679,8 @@ def compared_constants(cls_name, module_ast):
     return out
 
 
-@pytest.mark.parametrize('calc_type', sorted(calculation_classes()))
-def test_every_value_the_engine_tests_for_is_one_the_menu_offers(calc_type):
+@pytest.mark.parametrize('name', sorted(calculation_classes()))
+def test_every_value_the_engine_tests_for_is_one_the_menu_offers(name):
     """A `values` list IS the menu, so a setting the engine acts on but the menu does not offer is
     UNREACHABLE from the schema - no panel, no validator, no schema-authored job.
 
@@ -696,13 +694,12 @@ def test_every_value_the_engine_tests_for_is_one_the_menu_offers(calc_type):
     Killing mutation: `'All'` dropped from the `Greeks` menu again.
     """
     module_ast = ast.parse(inspect.getsource(calculation))
-    cls_name = calculation_classes()[calc_type].__name__
-    menus = declared_menus(CALCULATION['types'][calc_type])
+    menus = declared_menus(CALCULATION['types'][name])
     unreachable = {key: sorted(set(constants) - set(menus[key]))
-                   for key, constants in compared_constants(cls_name, module_ast).items()
+                   for key, constants in compared_constants(name, module_ast).items()
                    if key in menus and not set(constants) <= set(menus[key])}
     assert not unreachable, (
-        f'{calc_type} acts on settings its menu cannot author: {unreachable}')
+        f'{name} acts on settings its menu cannot author: {unreachable}')
 
 
 #: Switches a run reads, each declared where it reads it and nowhere else, at the default and menu
@@ -733,12 +730,12 @@ def test_a_switch_is_declared_where_the_run_reads_it():
 
     Killing mutations: `Greeks` defaulting to `All`; the TARF's `Barrier` withdrawn from its
     section; `Recompute_Inner_MC` defaulting to `Yes` on the credit Monte Carlo."""
-    for (calc_type, key), declared in DECLARED_SWITCHES.items():
-        found = CALCULATION['types'][calc_type].get(key)
+    for (name, key), declared in DECLARED_SWITCHES.items():
+        found = CALCULATION['types'][name].get(key)
         if declared is None:
-            assert found is None, (calc_type, key, 'declared where nothing reads it')
+            assert found is None, (name, key, 'declared where nothing reads it')
         else:
-            assert (found['value'], found.get('values')) == declared, (calc_type, key, found)
+            assert (found['value'], found.get('values')) == declared, (name, key, found)
     assert 'Barrier' in INSTRUMENT['sections']['FXTARFOptionDeal.Fields']
 
 

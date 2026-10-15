@@ -22,8 +22,8 @@ rule held by nothing says **Not gated**.
 - **JSON is the contract.** A job document is the whole program. No monkeypatching and no reaching
   into internals from a script or a test: a test is a JSON document through the public verbs with
   a defined outcome, and its docstring names the mutation that turns it red.
-- **Do not touch** `Credit_Monte_Carlo.execute` (above all its CVA/FVA/CollVA/IM block) or
-  `Base_Revaluation.execute`: everything downstream reconciles against them. The one wiring into
+- **Do not touch** `CreditMonteCarlo.execute` (above all its CVA/FVA/CollVA/IM block) or
+  `BaseValuation.execute`: everything downstream reconciles against them. The one wiring into
   that block is the boundary correction, worth exactly zero forward.
 - **Registries, not functions.** A new type is a class or a row the engine already iterates; a
   class's `fields` are its schema; one class per concept, dispatched by name.

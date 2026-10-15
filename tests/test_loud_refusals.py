@@ -40,7 +40,7 @@ def authored(tmp_path, name, document):
 
 
 def marks(out):
-    """The root row of a `Credit_Monte_Carlo` report - one number per document."""
+    """The root row of a `CreditMonteCarlo` report - one number per document."""
     return float(out['Results']['mtm'].values.sum())
 
 
@@ -390,7 +390,7 @@ def test_a_calculation_stating_no_currency_is_refused_by_name(tmp_path):
     'Currency'`. The same document stating one is the control: nothing is said against its block,
     and it prices.
 
-    Killing mutations: `Base_Revaluation`'s `Currency` declared `default='ZAR'` again, which judges
+    Killing mutations: `BaseValuation`'s `Currency` declared `default='ZAR'` again, which judges
     the block clean and walks it into `KeyError: 'Currency'`; the factor walk run on a refused block,
     the same `KeyError`."""
     document = frozen_world(ENERGY_LEG, ENERGY_FACTORS, base_valuation=True)

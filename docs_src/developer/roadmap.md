@@ -67,7 +67,7 @@ there.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,
   forward-over-reverse, first for `dSIMM/dtheta` and FVA's splits.
 - **Incremental XVA as risk-impact v2**: `CVA(book + mirror) − CVA(book)` through
-  `Credit_Monte_Carlo` on the same two-run seam, with a ratio-solve primitive for participating
+  `CreditMonteCarlo` on the same two-run seam, with a ratio-solve primitive for participating
   forwards.
 - **Service layer, what remains**: progress over SSE, a cost estimate from the real grid, per-seat
   budget caps, and screens for the dependency walk and the set-up, which only the MCP binding serves

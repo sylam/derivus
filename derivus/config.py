@@ -877,7 +877,7 @@ class Config(object):
         for it: `resolved` is what a run would build, `missing` is the want-list.
 
         Calls `discover_factors` rather than `calculate_dependencies` because the want-list needs no
-        model resolution; dates are taken as `Base_Revaluation` takes them (`calc_dates=False`).
+        model resolution; dates are taken as `BaseValuation` takes them (`calc_dates=False`).
 
         A factor goes missing in two ways and the want-list is their union: a type carrying
         dependants raises `KeyError` on the absent block and is SKIPPED before `dependent_factors`,

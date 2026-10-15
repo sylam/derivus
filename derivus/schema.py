@@ -634,13 +634,9 @@ def emit_interpolation(module):
 
 
 def emit_calculation(module):
-    """The `types` of `mapping['Calculation']` - each calculation TYPE holding its own.
-
-    Keyed by the `Object` string a job document writes, which is NOT the class name (`run_job`
-    branches on `CreditMonteCarlo`, the class is `Credit_Monte_Carlo`), so the class states its own
-    as `calc_type`.
-    """
-    return {cls.__dict__['calc_type']: {f.key: f.descriptor() for f in cls.__dict__['fields']}
+    """The `types` of `mapping['Calculation']` - each calculation TYPE holding its own, keyed by
+    its class name, the `Object` a job document writes."""
+    return {cls.__name__: {f.key: f.descriptor() for f in cls.__dict__['fields']}
             for cls in vars(module).values()
             if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)}
 

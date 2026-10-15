@@ -225,7 +225,7 @@ def run_baseval(context, prec=torch.float64, overrides=None):
     if overrides is not None:
         update_dict(params_bv, overrides)
 
-    calc = construct_calculation('Base_Revaluation', context, device=device, prec=prec)
+    calc = construct_calculation('BaseValuation', context, device=device, prec=prec)
     out = calc.execute(calc.judged(params_bv))
     return calc, out
 
@@ -305,7 +305,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
         worker once, so the job is deterministic in the number of workers - the same document
         sharded n ways and run on one device produce bit-identical batches. Set by the
         `runparallel` dispatch and by nothing else: off is the historical stream, bit for bit.
-        See `Credit_Monte_Carlo.execute` for the semantics and the one boundary it refuses at.
+        See `CreditMonteCarlo.execute` for the semantics and the one boundary it refuses at.
     :param device: the device to run on, overriding the choice below. Lives here rather than in the
         job document for the same reason `prec` does: which silicon runs a calculation is a
         property of the box, not of the trade. `None` keeps the historical choice - `cuda` when it
@@ -313,7 +313,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
         which is what makes the deterministic sharding testable without one.
     :return: a tuple containing the calculation object, output dictionary and exposure profile
     """
-    from .calculation import construct_calculation, Credit_Monte_Carlo
+    from .calculation import construct_calculation, CreditMonteCarlo
     from .riskfactors import SurvivalProb
     from .schema import declared_defaults
     calc_params = context.deals.get(
@@ -324,7 +324,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     device = utils.calculation_device(device, job_id)
 
     rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
-    time_grid = str(declared_defaults(Credit_Monte_Carlo, calc_params)['Time_Grid'])
+    time_grid = str(declared_defaults(CreditMonteCarlo, calc_params)['Time_Grid'])
 
     # only the runtime-derived keys are injected; every declared default comes from the schema
     params_mc = {'Time_grid': time_grid, 'Run_Date': rundate}
@@ -334,7 +334,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     if overrides is not None:
         update_dict(params_mc, overrides)
 
-    Credit_Monte_Carlo.judged(params_mc)
+    CreditMonteCarlo.judged(params_mc)
     if params_mc.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
         cva_sect = params_mc['Credit_Valuation_Adjustment']
         if cva_sect.get('CDS_Tenors'):
@@ -380,7 +380,7 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
             # make sure we just take the first definition
             ns['Collateral_Assets']['Cash_Collateral'] = [ns['Collateral_Assets']['Cash_Collateral'][0]]
 
-    calc = construct_calculation('Credit_Monte_Carlo', context, device=device, prec=prec)
+    calc = construct_calculation('CreditMonteCarlo', context, device=device, prec=prec)
     out = calc.execute(params_mc, job_id, num_jobs, deterministic_batches)
     calc.report_device_memory(out['Stats'])
     out['Results']['exposure_profile'] = summarize_data(

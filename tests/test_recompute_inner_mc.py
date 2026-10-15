@@ -137,7 +137,7 @@ def test_the_exposure_its_cashflows_and_the_cva_gradient_are_bit_identical_with_
     """The whole profile, the settled cashflows and the whole CVA gradient, with sensitivities ON:
     the simulation is called TWICE under the node, so a cashflow accrued inside it rather than
     returned would settle twice, and only with a gradient asked for does the replay run.
-    `Credit_Monte_Carlo` harvests `t_Cashflows` AFTER the batch's backward, so a booking made in the
+    `CreditMonteCarlo` harvests `t_Cashflows` AFTER the batch's backward, so a booking made in the
     replay is still in the frame when it is read. Both boundary registrations are live - the
     latched redemption, whose gaps are built OUTSIDE the node, and the knock-in.
 
@@ -161,7 +161,7 @@ def test_the_exposure_its_cashflows_and_the_cva_gradient_are_bit_identical_with_
 STREAM_PEAK_MIB = 265.0
 
 
-class Unstreamed(calculation.Credit_Monte_Carlo):
+class Unstreamed(calculation.CreditMonteCarlo):
     """A credit Monte Carlo whose pricers walk every fixing strip unstreamed."""
 
     def _init_shared_mem(self, *args, **kwargs):
@@ -170,7 +170,7 @@ class Unstreamed(calculation.Credit_Monte_Carlo):
         return shared
 
 
-def streamed(calc=calculation.Credit_Monte_Carlo, batch=16, inner=4096):
+def streamed(calc=calculation.CreditMonteCarlo, batch=16, inner=4096):
     """(cva, CVA gradient, the run's peak in MiB above its floor) of a 24-fixing knock-in TARF
     reported monthly, its gradient replayed by `Recompute_Inner_MC`, float32 on the device."""
     deal = tarf._tarf(tarf.UNREACHABLE_TARGET, [30 * (i + 1) for i in range(24)],
