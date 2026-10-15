@@ -3604,8 +3604,9 @@ class FXDiscreteExplicitAsianOption(Deal):
             deal_data.Factor_dep['Expiry'], deal_time, shared)
 
         mtm = self.pricer(
-            shared, time_grid, deal_data, self.field['Underlying_Amount'], spot,
-            forward, [deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0]],
+            shared, time_grid, deal_data, self.field['Underlying_Amount'], spot, forward,
+            (deal_data.Factor_dep['Currency'][1], deal_data.Factor_dep['Underlying_Currency'][1]),
+            [deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0]],
             invert_moneyness=deal_data.Factor_dep['Invert_Moneyness'], use_forwards=True) * FX_rep
 
         return mtm
@@ -3721,8 +3722,9 @@ class EquityDiscreteExplicitAsianOption(Deal):
             deal_data.Factor_dep['Dividend_Yield'], deal_data.Factor_dep['Expiry'], deal_time, shared)
 
         mtm = pricing.pv_discrete_asian_option(
-            shared, time_grid, deal_data, self.field['Units'],
-            spot, forward, [deal_data.Factor_dep['Equity']]) * FX_rep
+            shared, time_grid, deal_data, self.field['Units'], spot, forward,
+            (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
+            [deal_data.Factor_dep['Equity']]) * FX_rep
 
         return mtm
 

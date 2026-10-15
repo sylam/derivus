@@ -243,8 +243,9 @@ def _one_touch_closed(barrier, up, spot, carry, sigma, rate):
 
 
 def _moment_matched(weights, taus, carry, sigma, spot):
-    """`pv_discrete_asian_option`'s two-moment match, recomputed here on the composite."""
-    ft = np.array([w * math.exp(carry * t) for w, t in zip(weights, taus)])
+    """`pv_discrete_asian_option`'s two-moment match, recomputed here: `carry` and `sigma` are one
+    number for every sample or one per sample."""
+    ft = np.array(weights) * np.exp(np.multiply(carry, taus))
     m1 = ft.sum()
     product = ft * np.exp(np.array(taus) * sigma * sigma)
     running = np.concatenate([[0.0], np.cumsum(product[:-1])])
@@ -482,6 +483,46 @@ def test_the_composite_asian_moment_matches_on_the_composite(option_type, fx_ske
     forward, sd = _moment_matched([0.25] * 4, taus, R_EUR - Q_EQ, _compo_sigma(STRIKE), CMP_SPOT)
     ref = UNITS * _black(forward, STRIKE, sd, option_type == 'Call') * math.exp(-R_EUR * T)
     assert abs(_mtm(out, 'AS') - ref) / abs(ref) < 1e-9, (_mtm(out, 'AS'), ref)
+
+
+#: zero rates and vols linear between three months and two years, and flat outside
+SLOPE_T, SLOPE_R, SLOPE_V = [0.25, 2.0], [0.01, 0.08], [0.20, 0.35]
+
+
+def test_on_a_sloped_curve_every_asian_sample_is_forwarded_to_its_own_date():
+    """An equity and an FX Asian call and put on the quarterly samples, struck at the spot, on a
+    USD curve rising from 1% at three months to 8% at two years against the flat 1% dividend and 2%
+    EUR curve, on surfaces rising from 20% to 35% over the same tenors: each is the two-moment
+    match recomputed here on every sample's own forward `S exp((r(t_i) - q) t_i)` and own vol
+    `sigma(t_i)`, discounted at `r(T)`. Measured within 1.3e-14 relative.
+
+    Killing mutation: every sample forwarded at the one carry to the expiry, `log(F(t,T)/S)/T`, 3%
+    on the equity where its samples carry 0% to 3%: the equity call reads 5.1% over and its put
+    4.9% under, the FX call 5.2% over and its put 4.8% under.
+    """
+    curve = utils.Curve([], [[0.0, 0.01], [0.25, 0.01], [2.0, 0.08], [5.0, 0.08]])
+    surface = {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+               'Surface': utils.Curve([], [[m, t, v] for m in (0.8, 1.0, 1.2)
+                                           for t, v in zip(SLOPE_T, SLOPE_V)])}
+    factors = dict(_factors(), **{'InterestRate.USD': dict(RATES['InterestRate.USD'], Curve=curve),
+                                  'EquityPriceVol.EQ': surface, 'FXVol.EUR.USD': surface})
+    fx = {'Object': 'FXDiscreteExplicitAsianOption', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
+          'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy',
+          'Strike_Price': FX_SPOT, 'Underlying_Amount': UNITS, 'Expiry_Date': EXPIRY,
+          'Sampling_Data': [[d, 0.0, 1.0] for d in SAMPLES]}
+    kinds = ('Call', 'Put')
+    out = _run(_job([_asian('EQ' + k, k, payoff=None, strike=SPOT) for k in kinds] +
+                    [dict(fx, Reference='FX' + k, Option_Type=k) for k in kinds],
+                    factors, currency='USD'))
+    taus = np.array([(d - BASE).days / 365.0 for d in SAMPLES])
+    rate, sigma = np.interp(taus, SLOPE_T, SLOPE_R), np.interp(taus, SLOPE_T, SLOPE_V)
+    discount = math.exp(-np.interp(T, SLOPE_T, SLOPE_R) * T)
+    for name, spot, carry in (('EQ', SPOT, rate - Q_EQ), ('FX', FX_SPOT, rate - R_EUR)):
+        forward, sd = _moment_matched([0.25] * 4, taus, carry, sigma, spot)
+        for kind in kinds:
+            expected = UNITS * _black(forward, spot, sd, kind == 'Call') * discount
+            assert _mtm(out, name + kind) == pytest.approx(expected, rel=1e-12), (
+                name + kind, _mtm(out, name + kind), expected)
 
 
 # --------------------------------------------------------------------------------------------

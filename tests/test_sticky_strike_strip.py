@@ -153,10 +153,10 @@ FX_SKEW = {'Surface_Type': 'Skew', 'Moneyness_Rule': 'Sticky_Strike', 'ATM_Ref':
            'C': curve(-1.0), 'D': curve(1.0), 'lam': curve(0.0), 'rho': curve(0.0)}
 
 
-def fx_grid(vol):
-    """`FXVol.EUR.USD` as an explicit grid flat at `vol`."""
+def fx_grid(vol, slope=0.0):
+    """`FXVol.EUR.USD` as an explicit grid flat in moneyness at `vol + slope * t`, `t` the tenor."""
     return {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': utils.Curve(
-        [], [[m, t, vol] for m in (0.6, 1.0, 1.4) for t in (0.02, 2.0)])}
+        [], [[m, t, vol + slope * t] for m in (0.6, 1.0, 1.4) for t in (0.02, 2.0)])}
 
 
 def test_a_skew_fx_surface_mints_its_parameters_and_prices_at_its_own_read():
@@ -182,7 +182,8 @@ def test_the_fx_averages_and_the_extendable_forward_read_the_smile_where_the_fx_
     transition vol at its extension strike, both through `calc_moneyness`. On the Skew above the
     double Asian reads 15% at the 1.25 spot and the forward `0.15 + 0.5 log(1.28 / 1.25)` at every
     fixing; on a Malz smile, 10% at the money and 30% from |x| = 0.5, the double Asian reads
-    `0.1 + 0.4 log(F / S)`, the 2% carry - each within an ulp of the deal on a grid flat there.
+    `0.1 + 0.4 log(F(t) / S)` at each sample's own tenor `t`, the 2% carry over it - each within an
+    ulp of the deal on a grid flat in moneyness at that vol, tenor by tenor.
 
     Killing mutation: the double Asian's read back to its own ratio, which lands on the Malz
     wing's 30%.
@@ -196,11 +197,11 @@ def test_the_fx_averages_and_the_extendable_forward_read_the_smile_where_the_fx_
     def mark(surface, reference):
         return float.fromhex(book.marks(deals, {'FXVol.EUR.USD': surface})[0][reference])
 
-    for surface, reference, vol in ((FX_SKEW, 'FXDASN', 0.15),
-                                    (FX_SKEW, 'FXEXT', 0.15 + 0.5 * np.log(1.28 / 1.25)),
-                                    (malz, 'FXDASN', 0.1 + 0.4 * (book.R_USD - book.R_EUR))):
+    for surface, reference, vol, slope in ((FX_SKEW, 'FXDASN', 0.15, 0.0),
+                                           (FX_SKEW, 'FXEXT', 0.15 + 0.5 * np.log(1.28 / 1.25), 0.0),
+                                           (malz, 'FXDASN', 0.1, 0.4 * (book.R_USD - book.R_EUR))):
         assert mark(surface, reference) == pytest.approx(
-            mark(fx_grid(vol), reference), rel=1e-15), (reference, vol)
+            mark(fx_grid(vol, slope), reference), rel=1e-15), (reference, vol, slope)
 
 
 def test_the_strip_is_read_the_same_way_at_every_reporting_row():

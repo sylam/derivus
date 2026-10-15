@@ -410,6 +410,18 @@ def forward_carry_rate(carry_rate, cum_t, dt):
                       torch.where(step > 0, step, torch.ones_like(step))], dim=-2)
 
 
+def zero_carry_rate(carry, days, times, time_grid, shared):
+    """The annualised carry to each date ``days`` ahead of its row: the log forward the two curves of
+    ``carry`` read to it, as ``utils.calc_fx_forward`` and ``utils.calc_eq_forward`` read an
+    expiry's, over ``times``, its year fraction. A date on its row's own day carries nothing.
+
+    It is the ZERO carry ``forward_vol_strip`` takes, ``F_j = S * exp(c_j * T_j)``.
+    """
+    # read with its time, as a forward is: read unscaled, a static curve under NoModel RiskNeutral
+    # answers the difference of two rates
+    return utils.curve_spread(*carry, days, time_grid, shared) / times.clamp(min=1e-5).unsqueeze(-1)
+
+
 def total_log_forward(carry_rate, times):
     """``log F(t,T) / S(t)``: the interval carry strip integrated over a fixing strip - the sum
     telescopes to ``c_N*T_N``.
@@ -4951,12 +4963,13 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     return mtm
 
 
-def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forward,
+def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forward, carry,
                              past_factor_list, invert_moneyness=False, use_forwards=False):
     """Discretely sampled Asian option by two-moment matching: the average of the remaining samples
-    is fitted to a lognormal and priced by Black against a strike net of the realised average. Past
-    the averaging period it is the intrinsic on the realised average, at a token maturity so the AAD
-    graph stays defined.
+    is fitted to a lognormal and priced by Black against a strike net of the realised average. Each
+    sample is forwarded to its own date on `carry`, the two curves whose spread carries the
+    underlying, and reads its vol at its own tenor. Past the averaging period it is the intrinsic on
+    the realised average, at a token maturity so the AAD graph stays defined.
 
     A compo averages S*X, so the deal's own fixings already ARE composite prices and nothing
     converts them; only a SIMULATED past sample, read off the local spot factor, takes the cross.
@@ -4966,11 +4979,6 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
-
-    expiry = daycount_fn(factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-    # clamped away from zero: the carry below divides by it
-    safe_expiry = spot.new(expiry.reshape(-1, 1)).clamp(min=1e-5)
-    b = torch.log(forward / spot) / safe_expiry
     eps = torch.finfo(shared.one.dtype).eps
     samples = factor_dep['Samples']
     known_resets = samples.known_resets(shared.simulation_batch)
@@ -4999,8 +5007,8 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
 
     start_index, counts = np.unique(start_idx, return_counts=True)
 
-    for index, (discount_block, spot_block, forward_block, carry_block) in enumerate(
-            utils.split_counts([discount, spot, forward, b], counts, shared)):
+    for index, (discount_block, spot_block) in enumerate(
+            utils.split_counts([discount, spot], counts, shared)):
         t_block = discount_block.time_grid
         sample_index_t = start_index[index]
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
@@ -5008,7 +5016,7 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
         sample_days = (dual_samples.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
                        t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         sample_tau = daycount_fn(sample_days)
-        sample_ts = carry_block.new(sample_tau)
+        sample_ts = spot_block.new(sample_tau)
 
         weight_t = dual_samples.tn[sample_index_t:, utils.RESET_INDEX_Weight].reshape(1, -1, 1)
         normalize = dual_samples.tn[sample_index_t:, utils.RESET_INDEX_Weight].sum()
@@ -5021,14 +5029,11 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             # the strike net of the realised average, negative once that passes the strike: the
             # surface and Black read it clamped, and below zero it is exercised for certain
             strike_bar = factor_dep['Strike'] - average.reshape(1, -1).expand(counts[index], -1)
-            sample_fwd = spot_block.unsqueeze(1) * torch.exp(carry_block.unsqueeze(1) * sample_ts.unsqueeze(2))
-            moneyness = calc_moneyness(
-                (compo_strike(factor_dep, t_block, shared, strike_bar.clamp(min=1e-5)) /
-                 normalize.clamp(min=eps)).unsqueeze(1),
-                spot_block.unsqueeze(1), sample_fwd, deal_data, use_forwards, invert_moneyness)
-            # the vol at each sample's own tenor (TODO: generalise if vols become time-dependent)
-            vols = torch.stack([utils.VolSurface.rate(
-                factor_dep['Volatility'], mon, s_tau, shared) for mon, s_tau in zip(moneyness, sample_tau)])
+            carry_block = zero_carry_rate(carry, sample_days, sample_ts, t_block, shared)
+            vols = forward_vol_strip(
+                deal_data, (compo_strike(factor_dep, t_block, shared, strike_bar.clamp(min=1e-5)) /
+                            normalize.clamp(min=eps)).unsqueeze(1),
+                spot_block, carry_block, sample_tau, shared, invert_moneyness, use_forwards)
             if factor_dep.get('Check_Payoff_Type', False):
                 adj = [calc_vol_adjustment(
                     factor_dep, deal_time, s_tau, vol, shared) for s_tau, vol in zip(sample_tau, vols)]
@@ -5038,8 +5043,6 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
                 carry_block = torch.stack(
                     [cb + x['b_adj'] for cb, x in zip(carry_block, adj)]) + geo['fx_carry']
                 spot_block = spot_block * geo['spot_scale']
-            else:
-                carry_block = torch.unsqueeze(carry_block, dim=1)
 
             sample_ft = weight_t * torch.exp(carry_block * torch.unsqueeze(sample_ts, dim=2))
 
@@ -5086,21 +5089,17 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
     return mtm
 
 
-def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot, forward,
+def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot, forward, carry,
                                     past_factor_list, invert_moneyness=False, use_forwards=False):
     """Spread option on two discretely sampled averages, by two-moment matching on each leg and
-    Bjerksund-Stensland on the pair. Past both averaging periods it is the intrinsic on the
-    realised spread."""
+    Bjerksund-Stensland on the pair, every sample forwarded on `carry` as the single Asian's is and
+    reading the at-the-money vol at its own tenor. Past both averaging periods it is the intrinsic
+    on the realised spread."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
-
-    expiry = daycount_fn(factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-    # clamped away from zero: the carry below divides by it
-    safe_expiry = spot.new(expiry.reshape(-1, 1)).clamp(min=1e-5)
-    b = torch.log(forward / spot) / safe_expiry
     # the alpha multipliers, usually just 1
     alphas = [factor_dep['Alpha_1'], factor_dep['Alpha_2']]
     # the resets of both samples merged, so a block boundary serves either schedule
@@ -5144,8 +5143,8 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
         # this sample's index relative to the merged resets above
         start_samples.append({x: y for x, y in zip(start_idx, sample_idx)})
 
-    for index, (discount_block, spot_block, forward_block, carry_block) in enumerate(
-            utils.split_counts([discount, spot, forward, b], counts, shared)):
+    for index, (discount_block, spot_block) in enumerate(
+            utils.split_counts([discount, spot], counts, shared)):
         t_block = discount_block.time_grid
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
         # each leg's samples fixed by this block, keyed by the block's merged sample count
@@ -5158,26 +5157,25 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
 
         # moment matching only applies before expiry, and to a leg with samples still to fix
         if tenor_block.any() and any(live):
-            # the at-the-money vol: the smile read at the spot, in the surface's own coordinate
-            moneyness = calc_moneyness(spot_block, spot_block, forward_block, deal_data, use_forwards,
-                                       invert_moneyness)
-            vols = utils.VolSurface.rate(factor_dep['Volatility'], moneyness, daycount_fn(tenor_block), shared)
-
-            mu, sigma, sample_fts, sample_tss = {}, {}, {}, {}
+            mu, sigma, sample_fts, sample_tss, variances = {}, {}, {}, {}, {}
             for leg, (dual_sample, sample_index_t) in enumerate(zip(dual_samples, fixed)):
                 if not live[leg]:
                     continue
-                sample_ts = carry_block.new(
-                    daycount_fn(dual_sample.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
-                                t_block[:, utils.TIME_GRID_MTM, np.newaxis]))
+                sample_days = (dual_sample.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
+                               t_block[:, utils.TIME_GRID_MTM, np.newaxis])
+                sample_tau = daycount_fn(sample_days)
+                sample_ts = spot_block.new(sample_tau)
+                carry_block = zero_carry_rate(carry, sample_days, sample_ts, t_block, shared)
+                # the at-the-money vol: the smile read at the spot, in the surface's own coordinate
+                vols = forward_vol_strip(deal_data, spot_block.unsqueeze(1), spot_block, carry_block,
+                                         sample_tau, shared, invert_moneyness, use_forwards)
 
                 weight_t = dual_sample.tn[sample_index_t:, utils.RESET_INDEX_Weight].reshape(1, -1, 1)
-                sample_ft = weight_t * torch.exp(
-                    torch.unsqueeze(carry_block, dim=1) * torch.unsqueeze(sample_ts, dim=2))
+                sample_ft = weight_t * torch.exp(carry_block * torch.unsqueeze(sample_ts, dim=2))
                 M1 = torch.sum(sample_ft, dim=1)
 
-                product_t = sample_ft * torch.exp(
-                    torch.unsqueeze(sample_ts, dim=2) * torch.unsqueeze(vols * vols, dim=1))
+                variances[leg] = torch.unsqueeze(sample_ts, dim=2) * (vols * vols)
+                product_t = sample_ft * torch.exp(variances[leg])
                 sum_t = F.pad(torch.cumsum(product_t[:, :-1], dim=1), [0, 0, 1, 0, 0, 0])
                 M2 = torch.sum(sample_ft * (product_t + 2.0 * sum_t), dim=1)
 
@@ -5188,10 +5186,11 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
                 sample_fts[leg], sample_tss[leg] = sample_ft, sample_ts
 
             if all(live):
-                min_ts = torch.minimum(sample_tss[0].unsqueeze(2), sample_tss[1].unsqueeze(1))  # [T, N1, N2]
+                # two samples covary by the variance to the earlier of them, [T, N1, N2, 1]
+                earlier = (sample_tss[0].unsqueeze(2) <= sample_tss[1].unsqueeze(1)).unsqueeze(3)
                 sum_rho = torch.sum(
-                    sample_fts[0].unsqueeze(2) * sample_fts[1].unsqueeze(1) *
-                    torch.exp(min_ts.unsqueeze(3) * vols.pow(2).unsqueeze(1).unsqueeze(1)), dim=1)
+                    sample_fts[0].unsqueeze(2) * sample_fts[1].unsqueeze(1) * torch.exp(
+                        torch.where(earlier, variances[0].unsqueeze(2), variances[1].unsqueeze(1))), dim=1)
 
                 M_rho = torch.sum(sum_rho, dim=1)
                 MM_rho = (torch.log(M_rho) - torch.log(mu[0]) - torch.log(mu[1])) / (sigma[0] * sigma[1])

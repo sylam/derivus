@@ -165,8 +165,8 @@ $$F=\mathbb E_t[A]=\sum_{i>m}\omega_iF(t,t_i),\qquad F^2e^{v^2}=\sum_{i,j>m}\ome
 with $\tau_i=t_i-t$ and $i\wedge j=\min(i,j)$, and the option is $\mathcal B_\delta(F,\bar K,v)D(t,T)$ (a
 digital $\Phi(\delta d_2)D(t,T)$). The inputs are
 
-- $F(t,t_i)=S(t)e^{b\tau_i}$ with ONE carry $b=\log(F(t,T)/S(t))/\tau$ to the expiry for every sample: an
-  approximation on a carry curve that is not flat, unmeasured;
+- $F(t,t_i)$, the forward to each sample's own date on the discount and dividend (equity) or foreign
+  (FX) curves, read as the deal's forward to its expiry is;
 - $\sigma_i=\sigma(K',\tau_i)$, each sample's vol at its own tenor and at the moneyness of
   $K'=\bar K/\sum_{i>m}\omega_i$ against that sample's forward.
 
@@ -185,10 +185,12 @@ $$\max\big(\delta(\alpha_1\bar S_1-\alpha_2\bar S_2-\alpha_0K),0\big)$$
 with $\alpha_0$ **Strike_Multiplier**, $\alpha_1$ **Sampling_Multiplier_1** and $\alpha_2$
 **Sampling_Multiplier_2**. Realised samples fold into the strike,
 $\bar K=\alpha_0K-\alpha_1\sum_{\text{past}}\omega^1_iS(t_i)+\alpha_2\sum_{\text{past}}\omega^2_iS(t_i)$, and each
-strip's remaining average is moment-matched as for the single Asian, giving $F_1,v_1$ and $F_2,v_2$. Their
-log-correlation is matched from the cross moment:
+strip's remaining average is moment-matched as for the single Asian, giving $F_1,v_1$ and $F_2,v_2$, every
+sample forwarded to its own date with its vol read at its own tenor and at the strike equal to today's
+spot. Their log-correlation is matched from the cross moment, $\sigma_{ij}^2\tau_{ij}$ being the variance
+to whichever of $t^1_i$ and $t^2_j$ is earlier:
 
-$$M_\rho=\sum_{i,j}\omega^1_i\omega^2_jF(t,t^1_i)F(t,t^2_j)e^{\sigma^2\min(\tau^1_i,\tau^2_j)},\qquad \rho=\frac{\log M_\rho-\log F_1-\log F_2}{v_1v_2}$$
+$$M_\rho=\sum_{i,j}\omega^1_i\omega^2_jF(t,t^1_i)F(t,t^2_j)e^{\sigma_{ij}^2\tau_{ij}},\qquad \rho=\frac{\log M_\rho-\log F_1-\log F_2}{v_1v_2}$$
 
 - Both strips live: the Bjerksund-Stensland spread formula [@bjerksund2014] on $(\alpha_1F_1,\alpha_2F_2,\bar K,v_1,v_2,\rho)$,
   discounted from the expiry.
@@ -197,8 +199,6 @@ $$M_\rho=\sum_{i,j}\omega^1_i\omega^2_jF(t,t^1_i)F(t,t^2_j)e^{\sigma^2\min(\tau^
   positive.
 - Both fixed, or at expiry: the intrinsic, smoothed within $\pm0.005$ of the strike (a quadratic blend,
   in price units).
-- ONE vol $\sigma$, read at the strike equal to today's spot and the deal's expiry, prices every sample of
-  both strips, and both strips share one carry to expiry: approximations, unmeasured.
 - The spread formula needs $\alpha_2F_2+\bar K>0$; outside that domain the value is undefined (not
   guarded).
 
