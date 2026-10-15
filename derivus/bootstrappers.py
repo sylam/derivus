@@ -5654,7 +5654,8 @@ class FXVol(Construction):
          '| `ATM_Convention` | `Delta_Neutral_Straddle` | the premium-adjusted delta-neutral straddle, $K_{ATM}=Fe^{-\\sigma_{ATM}^2T/2}$, at $\\lvert\\Delta\\rvert=\\tfrac12e^{-\\sigma_{ATM}^2T/2}$ |',
          '',
          'A spot delta, a premium-unadjusted delta or an ATM-forward quote needs different algebra and',
-         'cannot be declared.',
+         'cannot be declared. An authored `Delta_Surface` states a plain delta in its factor\'s',
+         'own `Premium_Adjusted`.',
          '',
          '**Quotes to wing vols.** Per expiry $T$ and pillar $\\Delta$ (`Pillar`, a magnitude; 0.5 refuses):',
          '',
@@ -5848,6 +5849,7 @@ class FXVol(Construction):
         straddle sits and so MOVING the two ATM nodes of the delta grid. What is read off the
         numbers rather than differentiated is the LAYOUT - the ordering, which node carries the
         +-0.5 label, which side had its ATM node mirrored in - a permutation having no derivative.
+        Premium-adjusted only: the family declares `Premium_Adjusted` `Yes` alone.
         """
         d = np.asarray(delta, dtype=float)
         order = np.argsort(d)
@@ -6004,7 +6006,8 @@ class FXVol(Construction):
                 quotes = self.used(block, market_price)
                 delta_surface = self.smile(quotes)
                 expiries = np.unique(delta_surface[:, 1])
-                skews = riskfactors.Factor2D.malz_skews(delta_surface, expiries)
+                skews = riskfactors.Factor2D.malz_skews(
+                    delta_surface, expiries, block['Premium_Adjusted'] == 'Yes')
 
                 grid = self.pinned_grid(price_factors.get(vol_name), expiries, tolerance)
                 pinned = grid is not None
@@ -6016,6 +6019,7 @@ class FXVol(Construction):
                 price_factors[vol_name] = {
                     'Property_Aliases': None, 'Surface_Type': self.surface_type,
                     'Moneyness_Rule': self.moneyness_rule,
+                    'Premium_Adjusted': block['Premium_Adjusted'],
                     'Currency': block['Currency'],
                     'Grid_Tolerance': tolerance,
                     'Quote_Timestamp': max(stamps) if stamps else '',

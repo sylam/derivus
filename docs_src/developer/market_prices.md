@@ -438,7 +438,14 @@ refinement does not terminate, so that bound is `Grid_Tolerance`'s declared doma
 **Each convention offers one value**, because the solve implements one: a premium-adjusted forward
 delta and the delta-neutral straddle ATM [@reiswich2010]. `BF` is the smile strangle; a broker's
 market strangle is a different number [@clark2011]. "Malz" is a label: the wings are piecewise linear
-in delta, not Malz's quadratic [@malz1997].
+in delta, not Malz's quadratic [@malz1997]. The family writes its surface with `Premium_Adjusted:
+Yes`; an authored `Delta_Surface` states its own on the factor, the asset class's convention by
+default — `Yes` on `FXVol`, the plain forward delta `No` on `EquityPriceVol` and
+`CommodityPriceVol` ([the two conventions](../theory/asset_pricing.md#delta-convention)).
+**Held by** `tests/test_delta_convention.py::test_a_commodity_delta_surface_is_placed_by_a_plain_delta_unless_it_states_otherwise`,
+`::test_a_commodity_delta_surface_stating_a_premium_adjusted_delta_is_placed_by_it`,
+`::test_a_plain_atm_node_sits_at_a_true_half_delta`,
+`::test_an_fx_delta_surface_keeps_the_premium_adjusted_delta`.
 
 **The ATM row is the surface's ATM vol.** `Factor2D.malz_skew` places it at the delta-neutral
 straddle strike, so the written ATM vol is the quoted number, and `GBMAssetPriceTSModelPrices` takes

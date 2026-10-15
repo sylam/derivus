@@ -4067,8 +4067,8 @@ class SIMM(Calculation):
             elif kind in ('fx', 'spot'):
                 moved = {name: dict(factors[name], Spot=factors[name]['Spot'] * spot)}
             elif kind == 'augmented':
-                moved = {name: riskfactors.Factor2D.augmented(factors[name],
-                                                              [t for _, t in self.vertices])}
+                moved = {name: getattr(riskfactors, utils.check_rate_name(name)[0]).augmented(
+                    factors[name], [t for _, t in self.vertices])}
             else:
                 block = self.move(('augmented', name))[name]
                 held, column = self.VOL_PILLARS[block.get('Surface_Type', 'Explicit')]

@@ -252,11 +252,14 @@ A moneyness surface on the relative forward moneyness $(K-F)/F$ (ATM at 0), othe
 ### Malz (Delta-Quoted) Surfaces
 
 FX volatility surfaces are commonly quoted in terms of the option *delta* rather than strike or
-log-moneyness [@malz1997]. The convention here labels each vol quote (**Delta_Surface**) with
-its **percentage-of-foreign-forward delta**, the premium-adjusted forward delta
-[@reiswich2010]. Derivus converts this delta-quoted surface into a log-moneyness surface on
-initialisation; it is then read linearly in log-moneyness, as an `Explicit` one is, but across
-expiry in total variance.
+log-moneyness [@malz1997]. Each vol quote (**Delta_Surface**) is labelled with a forward delta,
+and the surface's **Premium_Adjusted** field names which: `Yes`, the
+**percentage-of-foreign-forward delta**, the premium-adjusted forward delta [@reiswich2010] of a
+pair whose premium is paid in the foreign currency; `No`, the plain forward delta of an option
+whose premium is paid in the pricing currency. `FXVol` defaults to `Yes`, `EquityPriceVol` and
+`CommodityPriceVol` to `No`. Derivus converts this delta-quoted surface into a log-moneyness
+surface on initialisation; it is then read linearly in log-moneyness, as an `Explicit` one is, but
+across expiry in total variance.
 
 #### Delta Convention
 
@@ -272,20 +275,25 @@ and for a **put**
 $$\Delta_{\text{put}}(x,\sigma,T) = -\frac{K}{F}\,\mathcal{N}(-d_2)$$
 
 Note the $K/F = e^{-x}$ prefactor distinguishes percentage-of-foreign from the more common
-spot delta.
+spot delta. The plain forward delta drops it and reads $d_1$:
+
+$$\Delta_{\text{call}}(x,\sigma,T) = \mathcal{N}(d_1), \qquad
+  \Delta_{\text{put}}(x,\sigma,T) = -\mathcal{N}(-d_1), \qquad
+  d_1 = \frac{x + \tfrac{1}{2}\sigma^2 T}{\sigma\sqrt{T}}$$
 
 #### ATM Correction
 
-Vendor surfaces are typically delivered with the ATM node labelled as $\Delta = \pm 0.5$. However,
-the true delta-neutral ATM strike satisfies $\Delta_{\text{call}} = \Delta_{\text{put}}$, which
-under this convention gives
+Vendor surfaces are typically delivered with the ATM node labelled as $\Delta = \pm 0.5$, the
+delta-neutral straddle, where $\Delta_{\text{call}} = -\Delta_{\text{put}}$. Premium-adjusted,
+that strike is $K = F e^{-\sigma_{\text{ATM}}^2 T/2}$ and its delta
 
 $$\delta_{\text{ATM}} = \tfrac{1}{2}\exp\!\left(-\tfrac{1}{2}\sigma_{\text{ATM}}^2 T\right)$$
 
-rather than exactly $0.5$. The implementation replaces the vendor $\pm 0.5$ nodes with
-the corrected $\pm\delta_{\text{ATM}}$ before any interpolation is performed ($\sigma_{\text{ATM}}$
+rather than exactly $0.5$, so the implementation replaces the vendor $\pm 0.5$ nodes with
+the corrected $\pm\delta_{\text{ATM}}$ before any interpolation is performed. Plain, the strike is
+$K = F e^{\sigma_{\text{ATM}}^2 T/2}$ at a true $\delta_{\text{ATM}} = 0.5$. ($\sigma_{\text{ATM}}$
 is the $+0.5$ quote where both are present; a smile quoted on one side only gets the ATM node on
-the other). Quoted vols are floored at $10^{-4}$.
+the other.) Quoted vols are floored at $10^{-4}$.
 
 #### Self-Consistency Inversion
 
@@ -302,9 +310,11 @@ solved by bisection (64 halvings), separately for calls ($x \le x_{\text{ATM}}$)
 bracket, $\delta^*$ is the bracket end with the smaller residual, so the smile is flat beyond its
 widest quoted delta.
 
-The ATM dividing point in log-moneyness is
+The ATM dividing point in log-moneyness is the straddle's own,
 
-$$x_{\text{ATM}} = \tfrac{1}{2}\sigma_{\text{ATM}}^2 T$$
+$$x_{\text{ATM}} = \pm\tfrac{1}{2}\sigma_{\text{ATM}}^2 T$$
+
+$+$ premium-adjusted and $-$ plain.
 
 #### Total-Variance Grid and Adaptive Refinement
 

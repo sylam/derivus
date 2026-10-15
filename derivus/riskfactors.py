@@ -18,7 +18,7 @@ import numpy as np
 import pandas as pd
 
 from . import utils
-from .schema import F, declared_defaults
+from .schema import F, declared_defaults, offered
 from scipy.interpolate import RectBivariateSpline
 from scipy.special import ndtr
 
@@ -246,7 +246,8 @@ class Factor2D(object):
             # a block carrying deltas is UNSOLVED: solve here, on a grid refined against these
             # numbers. One bootstrapped by `bootstrappers.FXVol` arrives solved on its pinned
             # grid and falls straight through
-            skews = self.malz_skews(self.param['Delta_Surface'].array, self.expiry)
+            skews = self.malz_skews(self.param['Delta_Surface'].array, self.expiry,
+                                    self.premium_adjusted(self.param))
             self.param['Surface'] = utils.Curve([], self.malz_surface(skews, self.malz_grid(skews)))
 
         self.moneyness = self.get_moneyness()
@@ -277,23 +278,32 @@ class Factor2D(object):
         return self.get_subtype()[0] == 'Malz' and deltas is not None and deltas.array.any()
 
     @classmethod
-    def malz_skews(cls, delta_surface, expiries):
+    def premium_adjusted(cls, block):
+        """Whether `block`'s delta pillars are premium-adjusted: its stated `Premium_Adjusted`, else
+        the one this class declares, a blank reading as omitted."""
+        return (block.get('Premium_Adjusted') or offered(cls.fields)['Premium_Adjusted']) == 'Yes'
+
+    @classmethod
+    def malz_skews(cls, delta_surface, expiries, premium_adjusted):
         """`{T: skew}` - one prepared wing pair per expiry of a (delta, expiry, vol) surface.
 
         Vols are clipped to 1e-4 so a zero or negative quote cannot divide by zero downstream.
         """
         return {T: cls.malz_skew(delta_surface[delta_surface[:, 1] == T][:, 0],
-                                 delta_surface[delta_surface[:, 1] == T][:, 2].clip(min=1e-4), T)
+                                 delta_surface[delta_surface[:, 1] == T][:, 2].clip(min=1e-4), T,
+                                 premium_adjusted)
                 for T in expiries}
 
     @staticmethod
-    def malz_skew(delta, vol, T):
+    def malz_skew(delta, vol, T, premium_adjusted):
         """One expiry's delta smile, split into the two wings `malz_sigma` interpolates over.
 
-        THE DELTA CONVENTION: a premium-adjusted FORWARD delta ((K/F)N(d2) for a call), with an ATM
-        quote at that convention's delta-neutral straddle, K = F exp(-sigma^2 T/2), hence
-        |delta| = 0.5 exp(-sigma^2 T/2). So +-0.5 is a LABEL rather than a delta and is replaced
-        here by the delta it stands for. A wing missing its ATM node gets it mirrored.
+        The pillars are FORWARD deltas: premium-adjusted ((K/F)N(d2) for a call) where
+        `premium_adjusted`, else plain (N(d1)). +-0.5 labels that convention's delta-neutral
+        straddle, |delta| = 0.5 exp(-sigma^2 T/2) at K = F exp(-sigma^2 T/2) premium-adjusted and a
+        true 0.5 at K = F exp(sigma^2 T/2) plain, so the label is replaced here by the delta it
+        stands for and `x_atm` is that strike's log(F/K). A wing missing its ATM node gets it
+        mirrored.
 
         A smile carrying both labels at different vols quotes two ATM numbers and the +0.5 one
         wins, setting `delta_atm` and hence where every other node sits; the -0.5 vol is still read
@@ -307,7 +317,8 @@ class Factor2D(object):
         if not atm.any():
             raise ValueError('Malz skew missing ATM label (+-0.5).')
         sigma_atm = float(v[atm][-1])  # ascending d, so [-1] is the PREFERRED +0.5 label
-        delta_atm = 0.5 * np.exp(-0.5 * sigma_atm * sigma_atm * T)
+        x_atm = 0.5 * sigma_atm * sigma_atm * T
+        delta_atm = 0.5 * np.exp(-x_atm) if premium_adjusted else 0.5
         d = np.where(atm, np.sign(d) * delta_atm, d)
 
         # both wings need the ATM node - a smile quoted on one side only is mirrored onto the other
@@ -319,17 +330,20 @@ class Factor2D(object):
 
         return {'d_put': d[d <= 0.0], 'v_put': v[d <= 0.0],
                 'd_call': d[d >= 0.0], 'v_call': v[d >= 0.0],
-                'sigma_atm': sigma_atm, 'delta_atm': delta_atm}
+                'sigma_atm': sigma_atm, 'delta_atm': delta_atm, 'premium_adjusted': premium_adjusted,
+                'x_atm': x_atm if premium_adjusted else -x_atm}
 
     @staticmethod
     def malz_delta(skew, T, x, iterations=64):
         """The delta each log-moneyness x = log(F/K) resolves to, as `(delta*, is_call, bracketed)`.
 
         The vol at x is the fixed point of sigma = skew(delta(sigma, x)): the wing is piecewise
-        linear in delta and the delta of the strike x names depends on the vol looked up.
-        x <= sigma_atm^2 T / 2 is the call wing, and each side is bracketed by its own extreme
-        deltas - where the fixed point falls outside, the wing is CLAMPED to the nearer endpoint,
-        which flat-extrapolates the smile beyond its widest quoted delta. Vectorised bisection.
+        linear in delta and the delta of the strike x names depends on the vol looked up, in the
+        skew's convention - (K/F)N(d2) for a call and -(K/F)N(-d2) for a put premium-adjusted,
+        N(d1) and -N(-d1) plain. x <= `x_atm` is the call wing, and each side is bracketed by its
+        own extreme deltas - where the fixed point falls outside, the wing is CLAMPED to the nearer
+        endpoint, which flat-extrapolates the smile beyond its widest quoted delta. Vectorised
+        bisection.
 
         NOT DIFFERENTIABLE: a bisection's iterates are dyadic combinations of the bracket
         ENDPOINTS, so a tape through this loop reports the bracket's derivative rather than the
@@ -337,14 +351,15 @@ class Factor2D(object):
         """
         x = np.asarray(x, dtype=float)
         sqrt_t = np.sqrt(T)
-        is_call = x <= 0.5 * skew['sigma_atm'] * skew['sigma_atm'] * T
-        k_over_f = np.exp(-x)
+        is_call = x <= skew['x_atm']
+        # premium-adjusted (K/F)N(+-d2), d2 = (x - sigma^2 T/2)/(sigma sqrt T); plain N(+-d1)
+        half, scale = (-0.5, np.exp(-x)) if skew['premium_adjusted'] else (0.5, 1.0)
 
         def residual(delta):
             sigma = np.where(is_call, np.interp(delta, skew['d_call'], skew['v_call']),
                              np.interp(delta, skew['d_put'], skew['v_put']))
-            d2 = (x - 0.5 * sigma * sigma * T) / (sigma * sqrt_t)
-            return k_over_f * np.where(is_call, ndtr(d2), -ndtr(-d2)) - delta
+            d = (x + half * sigma * sigma * T) / (sigma * sqrt_t)
+            return scale * np.where(is_call, ndtr(d), -ndtr(-d)) - delta
 
         lo = np.where(is_call, max(0.0, skew['d_call'].min()), skew['d_put'].min())
         hi = np.where(is_call, skew['d_call'].max(), min(0.0, skew['d_put'].max()))
@@ -452,7 +467,7 @@ class Factor2D(object):
         variance = surface == 'Malz'
         if variance and 'Delta_Surface' in block:
             deltas = block['Delta_Surface'].array
-            skews = cls.malz_skews(deltas, np.unique(deltas[:, 1]))
+            skews = cls.malz_skews(deltas, np.unique(deltas[:, 1]), cls.premium_adjusted(block))
             block = dict({key: value for key, value in block.items() if key != 'Delta_Surface'},
                          Surface=utils.Curve([], cls.malz_surface(skews, cls.malz_grid(skews))))
         rows = block['Surface'].array
@@ -1482,8 +1497,9 @@ class HullWhite2FactorModelParameters(Factor1D):
         return params
 
 
-#: What every vol surface declares, whatever its asset class; the three tags below declare it, the
-#: base none, so the store offers the tags and never the base.
+#: What every vol surface declares, whatever its asset class; the three tags below declare it with
+#: their asset class's `delta_convention`, the base none, so the store offers the tags and never
+#: the base.
 VOL_SURFACE = [
     F('Surface_Type', 'Text', default='Explicit',
       values=['Explicit', 'SVI', 'Skew', 'Malz', 'Relative_Forward']),
@@ -1523,6 +1539,15 @@ VOL_SURFACE = [
 ]
 
 
+def delta_convention(default):
+    """The `Premium_Adjusted` field a vol surface declares, `default` its asset class's own."""
+    return F('Premium_Adjusted', 'Text', default=default, convention=True, values=['Yes', 'No'],
+             description='The delta a Delta_Surface pillar names, read when Surface Type is Malz: '
+                         'Yes the premium-adjusted forward delta (K/F)N(d2) with its ATM at '
+                         'K = F exp(-sigma^2 T/2), No the plain forward delta N(d1) with its ATM '
+                         'at delta 0.5')
+
+
 class VolatilityGrid(Factor2D):
     """A (moneyness, expiry) vol surface - the ONE implementation, shared by every asset class.
 
@@ -1537,22 +1562,22 @@ class VolatilityGrid(Factor2D):
 
 
 # The asset-class tags: the type a deal's vol surface is authored and keyed under, and what
-# `utils.FactorRiskClass` partitions on; each declares the one surface, own-attr, as the
-# store reads.
+# `utils.FactorRiskClass` partitions on; each declares the one surface and its own delta
+# convention, own-attr, as the store reads.
 
 class FXVol(VolatilityGrid):
     """The vol surface of an FX pair - CRIF `Risk_FXVol`."""
-    fields = VOL_SURFACE
+    fields = VOL_SURFACE + [delta_convention('Yes')]
 
 
 class EquityPriceVol(VolatilityGrid):
     """The vol surface of an equity or equity index - CRIF `Risk_EquityVol`."""
-    fields = VOL_SURFACE
+    fields = VOL_SURFACE + [delta_convention('No')]
 
 
 class CommodityPriceVol(VolatilityGrid):
     """The vol surface of a commodity or energy reference price - CRIF `Risk_CommodityVol`."""
-    fields = VOL_SURFACE
+    fields = VOL_SURFACE + [delta_convention('No')]
 
 
 class InterestYieldVol(Factor3D):
