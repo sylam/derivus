@@ -132,13 +132,13 @@
   var reduced = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
 
   // ------------------------------------------------------------------ scene geometry
-  var HUB = { x: 300, y: 56, w: 600, h: 344 };
-  var LOG = { x: 322, y: 104, w: 262, h: 276 };
-  var BLOB = { x: 616, y: 104, w: 262, h: 176 };
-  var BELL = { x: 600, y: 400 };
-  var FOLDS = { x: 20, y: 104, w: 256, h: 300 };
-  var DAY = { x: 924, y: 104, w: 256, h: 300 };
-  var SEAT_W = 166, SEAT_H = 104, SEAT_Y = 560;
+  var HUB = { x: 300, y: 56, w: 600, h: 356 };
+  var LOG = { x: 322, y: 124, w: 262, h: 270 };
+  var BLOB = { x: 616, y: 124, w: 262, h: 160 };
+  var BELL = { x: 600, y: 412 };
+  var FOLDS = { x: 20, y: 124, w: 256, h: 300 };
+  var DAY = { x: 924, y: 124, w: 256, h: 300 };
+  var SEAT_W = 166, SEAT_H = 116, SEAT_Y = 556;
   var SEATS = [
     { id: 'credit', name: 'Credit', verb: 'approve', node: 'BANK', view: 'exposure by agreement', x: 102, later: true },
     { id: 'trader', name: 'Trader', verb: 'book', node: 'BANK/FX', view: 'positions, P&L', x: 300 },
@@ -185,12 +185,12 @@
   var headLabel = text(LOG.x + LOG.w - 12, LOG.y + 20, 'head 0', { 'class': 'mono', 'font-size': 12, 'text-anchor': 'end', fill: color('fact') }, gHub);
   var gFrames = el('g', {}, gHub);
   el('rect', { x: BLOB.x, y: BLOB.y, width: BLOB.w, height: BLOB.h, rx: 8, fill: color('panel'), stroke: color('blob'), 'stroke-width': 1.2, 'stroke-dasharray': '5 4' }, gHub);
-  text(BLOB.x + 12, BLOB.y + 20, 'SHARED FOLDER OF BLOBS', { 'class': 'label' }, gHub);
-  text(BLOB.x + 12, BLOB.y + 38, 'content addressed, write once', { 'class': 'muted', 'font-size': 11 }, gHub);
+  text(BLOB.x + 12, BLOB.y + 20, 'BLOB FOLDER', { 'class': 'label' }, gHub);
+  text(BLOB.x + 12, BLOB.y + 38, 'shared, content addressed, write once', { 'class': 'muted', 'font-size': 11 }, gHub);
   text(BLOB.x + BLOB.w - 12, BLOB.y + 20, 'hub: read + write', { 'class': 'mono', 'font-size': 11, 'text-anchor': 'end', fill: color('blob') }, gHub);
   var gBlobs = el('g', {}, gHub);
   var gKeys = el('g', {}, gHub);
-  el('rect', { x: BLOB.x, y: BLOB.y + BLOB.h + 14, width: BLOB.w, height: 86, rx: 8, fill: color('panel'), stroke: color('line') }, gKeys);
+  el('rect', { x: BLOB.x, y: BLOB.y + BLOB.h + 14, width: BLOB.w, height: 98, rx: 8, fill: color('panel'), stroke: color('line') }, gKeys);
   text(BLOB.x + 12, BLOB.y + BLOB.h + 34, 'KEYS AND SEAL', { 'class': 'label' }, gKeys);
   var keyLines = [
     text(BLOB.x + 12, BLOB.y + BLOB.h + 54, '', { 'class': 'mono', 'font-size': 11 }, gKeys),
@@ -200,7 +200,7 @@
   var bell = el('g', { transform: 'translate(' + BELL.x + ' ' + BELL.y + ')' }, gHub);
   el('circle', { r: 16, fill: color('panel'), stroke: color('hub'), 'stroke-width': 2 }, bell);
   el('path', { d: 'M-6 4 L-6 -2 A6 6 0 0 1 6 -2 L6 4 L8 7 L-8 7 Z M-2 9 L2 9', fill: 'none', stroke: color('hub'), 'stroke-width': 1.8, 'stroke-linejoin': 'round' }, bell);
-  text(BELL.x, BELL.y + 34, 'doorbell: {lsn, head} to every seat, who pull what they lack', { 'class': 'muted', 'font-size': 11, 'text-anchor': 'middle' }, gHub);
+  text(BELL.x + 24, BELL.y - 5, 'doorbell: {lsn, head} to every seat', { 'class': 'muted', 'font-size': 11 }, gHub);
 
   // folds panel (left)
   el('rect', { x: FOLDS.x, y: FOLDS.y, width: FOLDS.w, height: FOLDS.h, rx: 8, fill: color('panel'), stroke: color('line') }, gSide);
@@ -223,7 +223,7 @@
   text(DAY.x + 76, DAY.y + 20, 'start of day to the close', { 'class': 'muted', 'font-size': 11 }, gSide);
   var phaseEls = [];
   PHASES.forEach(function (p, i) {
-    var y = DAY.y + 46 + i * 27;
+    var y = DAY.y + 46 + i * 25;
     var box = el('rect', { x: DAY.x + 12, y: y - 13, width: DAY.w - 24, height: 20, rx: 5, fill: 'none', stroke: 'none' }, gSide);
     var t = text(DAY.x + 22, y + 1, p, { 'font-size': 12, fill: color('muted') }, gSide);
     phaseEls.push({ box: box, t: t });
@@ -238,14 +238,14 @@
     el('line', { x1: s.x, y1: SEAT_Y, x2: BELL.x, y2: BELL.y + 16, stroke: color('line'), 'stroke-width': 1, 'stroke-dasharray': '3 5' }, gLines).setAttribute('data-line', s.id);
     var rect = el('rect', { x: left, y: SEAT_Y, width: SEAT_W, height: SEAT_H, rx: 10, fill: color('panel'), stroke: color(s.id), 'stroke-width': 2, 'stroke-dasharray': '6 4' }, g);
     el('rect', { x: left, y: SEAT_Y, width: 6, height: SEAT_H, rx: 3, fill: color(s.id) }, g);
-    text(left + 16, SEAT_Y + 22, s.name, { 'font-weight': 700, 'font-size': 14 }, g);
-    text(left + SEAT_W - 10, SEAT_Y + 22, s.verb + ' @ ' + s.node, { 'class': 'mono', 'font-size': 10.5, 'text-anchor': 'end', fill: color('muted') }, g);
-    text(left + 16, SEAT_Y + 40, s.view, { 'font-size': 11.5, fill: color('muted') }, g);
-    text(left + 16, SEAT_Y + 60, 'log', { 'class': 'label', 'font-size': 10 }, g);
-    el('rect', { x: left + 44, y: SEAT_Y + 52, width: SEAT_W - 60, height: 8, rx: 4, fill: color('line') }, g);
-    var meter = el('rect', { x: left + 44, y: SEAT_Y + 52, width: 0, height: 8, rx: 4, fill: color(s.id) }, g);
-    var status = text(left + 16, SEAT_Y + 84, '', { 'class': 'mono', 'font-size': 11, fill: color('muted') }, g);
-    var fold = text(left + SEAT_W - 10, SEAT_Y + 84, '', { 'font-size': 11, 'text-anchor': 'end', fill: color(s.id) }, g);
+    text(left + 16, SEAT_Y + 21, s.name, { 'font-weight': 700, 'font-size': 14 }, g);
+    text(left + 16, SEAT_Y + 37, s.verb + ' @ ' + s.node, { 'class': 'mono', 'font-size': 10.5, fill: color('muted') }, g);
+    text(left + 16, SEAT_Y + 52, s.view, { 'font-size': 11.5, fill: color('muted') }, g);
+    text(left + 16, SEAT_Y + 71, 'log', { 'class': 'label', 'font-size': 10 }, g);
+    el('rect', { x: left + 44, y: SEAT_Y + 63, width: SEAT_W - 60, height: 8, rx: 4, fill: color('line') }, g);
+    var meter = el('rect', { x: left + 44, y: SEAT_Y + 63, width: 0, height: 8, rx: 4, fill: color(s.id) }, g);
+    var status = text(left + 16, SEAT_Y + 90, '', { 'class': 'mono', 'font-size': 11, fill: color('muted') }, g);
+    var fold = text(left + 16, SEAT_Y + 106, '', { 'font-size': 11, fill: color(s.id) }, g);
     seatEls[s.id] = { g: g, rect: rect, meter: meter, status: status, fold: fold, cfg: s };
   });
 
@@ -401,7 +401,7 @@
     renderLog();
     SEATS.forEach(function (s) { renderSeat(s.id); });
   }
-  function putBlob(n) { state.blobs = Math.min(15, state.blobs + (n || 1)); renderBlobs(); }
+  function putBlob(n) { state.blobs = Math.min(10, state.blobs + (n || 1)); renderBlobs(); }
   function policy(name) { state.policies.push(name); renderPolicies(); }
   function enrol(id) { state.seats[id].enrolled = true; renderSeat(id); }
   function setFold(id, v) { state.seats[id].fold = v; renderSeat(id); }
@@ -532,7 +532,7 @@
       text: 'A close is legal only when nothing due by its day still waits: no fixing unprinted, no payment unsettled, no expiry unelected. The marks run on the designated market is a standing run: its job, values and result land in the folder and the run is attested with its replay tuple. The settlement file is struck for the day, the official close is declared, and the folds are cached at the close as seeds.',
       run: function () {
         phase(4, 'close check: legal');
-        return wait(700).then(function () { phase(5); return request('ipv', 'close', null, { frames: ['marks: standing run', 'run completed (plan, values, engine, seed)'], blobs: 3,
+        return wait(700).then(function () { phase(5); return request('ipv', 'close', null, { frames: ['marks: standing run', 'run completed: replay tuple'], blobs: 3,
             judge: ['close check: nothing waits', 'marks run on EOD.USD', 'attest: replay tuple'], light: ['attestations', 'markets'], folds: { ipv: 'marks: attested', trader: 'P&L today' } }); })
           .then(function () { phase(6); return request('settlement', 'file', 'settlement file struck', { light: ['cash'], judge: ['judge: settle @ *'], folds: { settlement: 'file: day 1' } }); })
           .then(function () { phase(7); return request('ipv', 'close', 'official close declared: day 1', { light: ['markets', 'decisions'], judge: ['judge: mark @ *'], folds: { ipv: 'close: day 1' } }); })
@@ -589,26 +589,39 @@
     document.getElementById('progress').style.width = Math.round(100 * (i + 1) / chapters.length) + '%';
   }
   function settle(i) {
-    // the scene as it stands at the START of chapter i: the chapters before it replayed instantly
-    token += 1; instant = true; reset();
-    for (var k = 0; k < i; k++) { chapters[k].run(); }
-    instant = false; gPackets.innerHTML = ''; gFx.innerHTML = '';
+    // the scene as it stands at the START of chapter i: the chapters before it replayed with every
+    // wait and flight resolved at once, one after another, so their facts land in order
+    var minted = ++token;
+    instant = true; reset();
+    var chain = Promise.resolve();
+    for (var k = 0; k < i; k++) {
+      (function (c) { chain = chain.then(function () { if (minted !== token) { throw cancelled(); } return c.run(); }); })(chapters[k]);
+    }
+    return chain.then(function () {
+      if (minted !== token) { throw cancelled(); }
+      instant = false; gPackets.innerHTML = ''; gFx.innerHTML = '';
+      return minted;
+    });
   }
   function show(i) {
     // paused: the scene at the END of chapter i, with its caption
     current = Math.max(0, Math.min(chapters.length - 1, i));
-    settle(current + 1); caption(current); running = false;
+    running = false; caption(current);
+    return settle(current + 1).then(null, function () {});
   }
   function play(i) {
-    current = Math.max(0, Math.min(chapters.length - 1, i));
-    caption(current); settle(current);
-    var mine = token; running = true;
-    chapters[current].run().then(function () {
-      running = false;
+    var idx = Math.max(0, Math.min(chapters.length - 1, i));
+    current = idx; caption(idx); running = true;
+    var mine;
+    settle(idx).then(function (minted) {
+      mine = minted;
+      return chapters[idx].run();
+    }).then(function () {
       if (mine !== token) { return; }
-      if (playing && current + 1 < chapters.length) { play(current + 1); }
-      else if (current + 1 >= chapters.length) { setPlaying(false); }
-    }, function () { running = false; });
+      running = false;
+      if (playing && idx + 1 < chapters.length) { play(idx + 1); }
+      else if (idx + 1 >= chapters.length) { setPlaying(false); }
+    }, function () { if (mine === token) { running = false; } });
   }
   document.getElementById('play').addEventListener('click', function () {
     if (playing) { setPlaying(false); return; }
@@ -627,8 +640,7 @@
   });
 
   // at rest: the whole story's end state, so the first frame already shows the architecture
-  show(chapters.length - 1);
-  current = 0; caption(0);
+  show(chapters.length - 1).then(function () { current = 0; caption(0); });
 })();
 </script>
 
