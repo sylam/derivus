@@ -585,6 +585,18 @@ def oss_stream(step, state, n, chunk):
     return state, outputs
 
 
+def oss_rows(shared, *rowed):
+    """A block's row-indexed arrays whole, or ``shared.oss_rows`` rows at a time past that many:
+    each piece is priced as a block of its own rows. A row's strip reads its own row of each and
+    draws as it would in the whole block, so the pieces price the block's rows to the bit."""
+    n, k = len(rowed[0]), shared.oss_rows
+    if n <= k:
+        yield rowed
+        return
+    for lo in range(0, n, k):
+        yield tuple(x[lo:lo + k] for x in rowed)
+
+
 def oss_truncated_draw(u, z_bound, survive_below):
     """Survival probability and the survival-truncated standard normal draw - one spelling.
 
@@ -2121,11 +2133,13 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # THE OSS, run even where every row has resolved if a walking kit's hit leg is inside it
         run_oss = not all_hit or (kit is not None and direction == BARRIER_IN)
         if run_oss:
-            simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims, row_times)
-            theta = (spot_block, interval_vols, sd_to_expiry, sample_ts, fwd_drifts,
-                     discount_rates) + scalars
-            # the SAME callable either way: under the node it is called twice
-            oss_result, *parity = InnerMCRecompute.run(shared, simulate, *theta)
+            pieces = []
+            for times, *theta in oss_rows(shared, row_times, spot_block, interval_vols,
+                                          sd_to_expiry, sample_ts, fwd_drifts, discount_rates):
+                simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims, times)
+                # the SAME callable either way: under the node it is called twice
+                pieces.append(InnerMCRecompute.run(shared, simulate, *theta, *scalars))
+            oss_result, *parity = (x[0] if len(x) == 1 else torch.cat(x) for x in zip(*pieces))
             oss_result = nominal * oss_result
 
         # vanilla European for already-hit scenarios (KI) or zeros (KO); also built when a
@@ -3046,52 +3060,54 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not scalars else spot_block.new_empty(0)
 
-        simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol,
-                           shared.MCMC_sims, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
-        theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
-                 discount_rates, vols, all_samples) + scalars
-        # the SAME callable either way: under the node it is called twice
-        block_mtm, block_alive, block_settled, settle_rows, settle_cols = InnerMCRecompute.run(
-            shared, simulate, *theta)
-        theo_price = buy_sell * block_mtm
+        for t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols in oss_rows(
+                shared, t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
+            simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol,
+                               shared.MCMC_sims, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
+            theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
+                     discount_rates, vols, all_samples) + scalars
+            # the SAME callable either way: under the node it is called twice
+            block_mtm, block_alive, block_settled, settle_rows, settle_cols = InnerMCRecompute.run(
+                shared, simulate, *theta)
+            theo_price = buy_sell * block_mtm
 
-        # the by-products, performed once off the forward's result
-        for row, col, value in zip(settle_rows, settle_cols, block_settled):
-            index = int(np.searchsorted(time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]))
-            cash_settle(shared, factor_dep['SettleCurrency'], index, buy_sell * value)
+            # the by-products, performed once off the forward's result
+            for row, col, value in zip(settle_rows, settle_cols, block_settled):
+                index = int(np.searchsorted(time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]))
+                cash_settle(shared, factor_dep['SettleCurrency'], index, buy_sell * value)
+                if boundary_aad:
+                    # the settled fixing as a payment fact, gated by its OWN breach test: a crossing
+                    # there pays nothing, and every LATER fixing is killed with it
+                    fxr = report_fx(fx_rep, row_ofs + row)
+                    amount = (fxr * fixing_cash(col)).detach()
+                    b_cash.append((index, col, torch.zeros_like(amount), amount,
+                                   (fxr * buy_sell * value).detach()))
+
             if boundary_aad:
-                # the settled fixing as a payment fact, gated by its OWN breach test: a crossing
-                # there pays nothing, and every LATER fixing is killed with it
-                fxr = report_fx(fx_rep, row_ofs + row)
-                amount = (fxr * fixing_cash(col)).detach()
-                b_cash.append((index, col, torch.zeros_like(amount), amount,
-                               (fxr * buy_sell * value).detach()))
-
-        if boundary_aad:
-            # `obs_before` is stamped PER ROW off the block's LAST row: blocks are cut on the union
-            # of fixing and settlement dates, so a fixing date is routinely a block's last row and a
-            # count taken at its first is short by exactly that decision. A row's own fixing COUNTS
-            rows_obs = np.searchsorted(fixing_days, t_block[:, utils.TIME_GRID_MTM], side='right')
-            while len(b_gaps) < int(rows_obs[-1]):
-                s_k = all_samples[len(b_gaps)]
-                b_gaps.append(torch.log(s_k / barrier) * (1.0 if barrier_up else -1.0))
-                b_crossed.append(~survives(s_k).detach())
-            b_obs_before.extend(rows_obs.tolist())
-            alive_blocks.append(block_alive)
-            # the pending head, per row: fixings this row has OBSERVED whose settlements have not
-            # landed. Blocks break on every schedule date, so the block's unsettled window is
-            # every row's window
-            for r_local in range(len(t_block)):
-                j_hi = int(rows_obs[r_local])
-                if j_hi > settle_index_local:
-                    pay = torch.stack([fixing_cash(j) for j in range(settle_index_local, j_hi)])
-                    d_settle = discount_rates[r_local][:j_hi - settle_index_local].reshape(
-                        j_hi - settle_index_local, -1)
-                    b_pending.append((settle_index_local, (d_settle * pay).detach()))
-                else:
-                    b_pending.append(None)
-        row_ofs += theo_price.shape[0]
-        mtm_list.append(theo_price)
+                # `obs_before` is stamped PER ROW off the block's LAST row: blocks are cut on the union
+                # of fixing and settlement dates, so a fixing date is routinely a block's last row and a
+                # count taken at its first is short by exactly that decision. A row's own fixing COUNTS
+                rows_obs = np.searchsorted(fixing_days, t_block[:, utils.TIME_GRID_MTM], side='right')
+                while len(b_gaps) < int(rows_obs[-1]):
+                    s_k = all_samples[len(b_gaps)]
+                    b_gaps.append(torch.log(s_k / barrier) * (1.0 if barrier_up else -1.0))
+                    b_crossed.append(~survives(s_k).detach())
+                b_obs_before.extend(rows_obs.tolist())
+                alive_blocks.append(block_alive)
+                # the pending head, per row: fixings this row has OBSERVED whose settlements have not
+                # landed. Blocks break on every schedule date, so the block's unsettled window is
+                # every row's window
+                for r_local in range(len(t_block)):
+                    j_hi = int(rows_obs[r_local])
+                    if j_hi > settle_index_local:
+                        pay = torch.stack([fixing_cash(j) for j in range(settle_index_local, j_hi)])
+                        d_settle = discount_rates[r_local][:j_hi - settle_index_local].reshape(
+                            j_hi - settle_index_local, -1)
+                        b_pending.append((settle_index_local, (d_settle * pay).detach()))
+                    else:
+                        b_pending.append(None)
+            row_ofs += theo_price.shape[0]
+            mtm_list.append(theo_price)
 
     mtm = torch.cat(mtm_list, dim=0)
 
@@ -4081,59 +4097,61 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not scalars else spot_block.new_empty(0)
 
-        simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims,
-                           settle_index_local, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
-        theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
-                 discount_rates, vols, all_samples) + scalars
-        # the SAME callable either way: under the node it is called twice
-        outputs = InnerMCRecompute.run(shared, simulate, *theta)
-        (block_mtm, block_alive, block_settled, settle_rows, knock_rows,
-         obs_depth, block_pend) = outputs[:7]
-        theo_price = buy_sell * block_mtm
+        for t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols in oss_rows(
+                shared, t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
+            simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims,
+                               settle_index_local, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
+            theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
+                     discount_rates, vols, all_samples) + scalars
+            # the SAME callable either way: under the node it is called twice
+            outputs = InnerMCRecompute.run(shared, simulate, *theta)
+            (block_mtm, block_alive, block_settled, settle_rows, knock_rows,
+             obs_depth, block_pend) = outputs[:7]
+            theo_price = buy_sell * block_mtm
 
-        # the by-products, performed once off the forward's result. The settled cash carries the
-        # deal's direction as the mtm does, or a sold TARF books its fixing as a receipt
-        for row, value in zip(settle_rows, block_settled):
-            cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
-                time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), buy_sell * value)
+            # the by-products, performed once off the forward's result. The settled cash carries the
+            # deal's direction as the mtm does, or a sold TARF books its fixing as a receipt
+            for row, value in zip(settle_rows, block_settled):
+                cash_settle(shared, factor_dep['SettleCurrency'], np.searchsorted(
+                    time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM]), buy_sell * value)
 
-        if boundary_aad:
-            alive.append(block_alive)
-            # one knock-in decision per (row, fixing), each with the row it was taken on; `fixed`
-            # names the tuple's fixed prefix - adding an output means moving it
-            fixed, n_inner = 7, len(knock_rows)
-            b_inner.extend([[row_ofs + row, outputs[fixed + k], outputs[fixed + n_inner + k]]
-                            for k, row in enumerate(knock_rows)])
-            # THE REDEMPTION CHAIN IS DENSE IN THE ACCRUAL INDEX: a block's rows walk different
-            # lengths of the OBSERVED prefix, each reporting the decision at its own last fixing;
-            # `expand` because block 0's accrual is the HISTORIC one, a number, not a tensor
-            if not b_gaps:
-                b_first = settle_index_local
-            deepest = min(settle_index_local + max(obs_depth, default=0), len(raw) - 1)
-            while b_first + len(b_gaps) <= deepest:
-                n = b_first + len(b_gaps)
-                b_gaps.append((raw[n] - targetValue).squeeze(dim=1).expand(
-                    shared.simulation_batch))
-                b_fired.append((targetValue - accumulation[n] == 0.0).squeeze(
-                    dim=1).expand(shared.simulation_batch).detach())
-            b_obs_before.extend([min(settle_index_local + depth, deepest) - b_first + 1
-                                 for depth in obs_depth])
-            b_pending.extend([(settle_index_local - b_first, buy_sell * block_pend[row].detach())
-                              if block_pend.dim() == 3 else None
-                              for row in range(theo_price.shape[0])])
-            # the settled fixing as a payment fact gated by an earlier redemption: the strip's head
-            # at weight one (tau == 0, undiscounted), CLAMPED to the realised R of `untriggered`;
-            # a post-cross row's nonzero if_not is inert only because fired stays fired
-            if block_pend.dim() == 3:
-                for row, value in zip(settle_rows, block_settled):
-                    fxr = report_fx(fx_rep, row_ofs + row)
-                    amount = (fxr * buy_sell * block_pend[row][0]).detach()
-                    b_cash.append((int(np.searchsorted(
-                        time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
-                        int(settle_index_local), torch.zeros_like(amount), amount,
-                        (fxr * buy_sell * value).detach()))
-        row_ofs += theo_price.shape[0]
-        mtm_list.append(theo_price)
+            if boundary_aad:
+                alive.append(block_alive)
+                # one knock-in decision per (row, fixing), each with the row it was taken on; `fixed`
+                # names the tuple's fixed prefix - adding an output means moving it
+                fixed, n_inner = 7, len(knock_rows)
+                b_inner.extend([[row_ofs + row, outputs[fixed + k], outputs[fixed + n_inner + k]]
+                                for k, row in enumerate(knock_rows)])
+                # THE REDEMPTION CHAIN IS DENSE IN THE ACCRUAL INDEX: a block's rows walk different
+                # lengths of the OBSERVED prefix, each reporting the decision at its own last fixing;
+                # `expand` because block 0's accrual is the HISTORIC one, a number, not a tensor
+                if not b_gaps:
+                    b_first = settle_index_local
+                deepest = min(settle_index_local + max(obs_depth, default=0), len(raw) - 1)
+                while b_first + len(b_gaps) <= deepest:
+                    n = b_first + len(b_gaps)
+                    b_gaps.append((raw[n] - targetValue).squeeze(dim=1).expand(
+                        shared.simulation_batch))
+                    b_fired.append((targetValue - accumulation[n] == 0.0).squeeze(
+                        dim=1).expand(shared.simulation_batch).detach())
+                b_obs_before.extend([min(settle_index_local + depth, deepest) - b_first + 1
+                                     for depth in obs_depth])
+                b_pending.extend([(settle_index_local - b_first, buy_sell * block_pend[row].detach())
+                                  if block_pend.dim() == 3 else None
+                                  for row in range(theo_price.shape[0])])
+                # the settled fixing as a payment fact gated by an earlier redemption: the strip's head
+                # at weight one (tau == 0, undiscounted), CLAMPED to the realised R of `untriggered`;
+                # a post-cross row's nonzero if_not is inert only because fired stays fired
+                if block_pend.dim() == 3:
+                    for row, value in zip(settle_rows, block_settled):
+                        fxr = report_fx(fx_rep, row_ofs + row)
+                        amount = (fxr * buy_sell * block_pend[row][0]).detach()
+                        b_cash.append((int(np.searchsorted(
+                            time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
+                            int(settle_index_local), torch.zeros_like(amount), amount,
+                            (fxr * buy_sell * value).detach()))
+            row_ofs += theo_price.shape[0]
+            mtm_list.append(theo_price)
 
     mtm = torch.cat(mtm_list, dim=0)
 
@@ -4857,71 +4875,76 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         for t, dt in zip(row_times, sample_ts)]
                 quanto = torch.stack([F.pad(x, (0, max(y.shape[0] for y in rows) - x.shape[0]))
                                       for x in rows])
-            simulate = partial(sim_spot, sample_index_t, sample_ts, steps, all_fixings, row_times,
-                               windows, sobol, shared.MCMC_sims)
-            theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
-                     floating_leg, all_eq_samples, quanto, put_vols) + scalars
-            # the SAME callable either way: under the node it is called twice
-            outputs = InnerMCRecompute.run(shared, simulate, *theta)
-            # `terminationDate` comes back stamped by this block's observed fixing and is handed to
-            # the NEXT block's theta - an autocalled path pays once and is worth nothing after
-            (theo_cashflow, block_settled, settle_rows, event_rows, terminationDate, block_alive,
-             bar_rows, due_fired, due_survived) = outputs[:9]
-            # the by-products, performed once off the forward's result. `nominal` is
-            # `Buy_Sell * Units` and scales the MARK below, so the settled cash carries it too
-            settle_at = [np.searchsorted(time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])
-                         for row in settle_rows]
-            for t, value in zip(settle_at, block_settled):
-                cash_settle(shared, factor_dep['SettleCurrency'], t, nominal * value)
-            fixed, n_events = 9, len(event_rows)
-            if boundary_aad:
-                b_alive.append(block_alive)
-                # every row observing a coupon's decision forks it - a LAGGED coupon's, decided off
-                # one observed fixing, in whichever block they fall - and the decision registers
-                # once, on the coupon's own row: gap, flag (`gap >= 0` IS the trigger), its forks
-                owner = {}
-                for m, (r, coupon_at, own) in enumerate(event_rows):
-                    b_forks.setdefault(coupon_at, []).append(
-                        (row_ofs + r, outputs[fixed + n_events + m],
-                         outputs[fixed + 2 * n_events + m]))
-                    if own:
-                        owner[r] = (m, coupon_at)
-                # an OBSERVED put's breach is the scenario's own, so it is ONE decision per barrier
-                # date the same way: forked on every row observing it, registered on its payment row
-                b0, n_bars, put_owner = fixed + 3 * n_events, len(bar_rows), {}
-                for m, (r, barrier_at, own) in enumerate(bar_rows):
-                    b_put_forks.setdefault(barrier_at, []).append(
-                        (row_ofs + r, outputs[b0 + n_bars + m], outputs[b0 + 2 * n_bars + m]))
-                    if own:
-                        put_owner[r] = (m, barrier_at)
-                for t, row, *cash in zip(settle_at, settle_rows, block_settled, due_fired,
-                                         due_survived):
-                    if row in owner:
-                        k, coupon_at = owner[row]
-                        gap = outputs[fixed + k]
-                        b_latch.append([gap, (gap >= 0).detach(), b_forks.pop(coupon_at)])
-                    # the row's whole cash, gated by the decision taken on it or the last before it
-                    fxr = report_fx(fx_rep, row_ofs + row)
-                    booked, on, off = ((nominal * fxr * x).detach() for x in cash)
-                    b_cash.append((int(t), len(b_latch) - 1, on, off, booked))
-                    if row in put_owner:
-                        # the row's cash with the put breached and not, the rest as booked
-                        m, barrier_at = put_owner[row]
-                        gap = outputs[b0 + m]
-                        jump = (nominal * fxr * outputs[b0 + 3 * n_bars + m]).detach()
-                        flag = (gap >= 0).detach()
-                        held = booked - flag * jump
-                        b_puts.append((gap, flag, b_put_forks.pop(barrier_at),
-                                       (int(t), 0, held + jump, held, booked)))
+            for (t_block, sample_ts, steps, all_fixings, row_times, spot_block, interval_vols,
+                 fwd_drifts, discount_rates, floating_leg, quanto, put_vols) in oss_rows(
+                    shared, t_block, sample_ts, steps, all_fixings, row_times, spot_block,
+                    interval_vols, fwd_drifts, discount_rates, floating_leg, quanto, put_vols):
+                simulate = partial(sim_spot, sample_index_t, sample_ts, steps, all_fixings, row_times,
+                                   windows, sobol, shared.MCMC_sims)
+                theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
+                         floating_leg, all_eq_samples, quanto, put_vols) + scalars
+                # the SAME callable either way: under the node it is called twice
+                outputs = InnerMCRecompute.run(shared, simulate, *theta)
+                # `terminationDate` comes back stamped by this block's observed fixing and is handed to
+                # the NEXT block's theta - an autocalled path pays once and is worth nothing after
+                (theo_cashflow, block_settled, settle_rows, event_rows, terminationDate, block_alive,
+                 bar_rows, due_fired, due_survived) = outputs[:9]
+                # the by-products, performed once off the forward's result. `nominal` is
+                # `Buy_Sell * Units` and scales the MARK below, so the settled cash carries it too
+                settle_at = [np.searchsorted(time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])
+                             for row in settle_rows]
+                for t, value in zip(settle_at, block_settled):
+                    cash_settle(shared, factor_dep['SettleCurrency'], t, nominal * value)
+                fixed, n_events = 9, len(event_rows)
+                if boundary_aad:
+                    b_alive.append(block_alive)
+                    # every row observing a coupon's decision forks it - a LAGGED coupon's, decided off
+                    # one observed fixing, in whichever block they fall - and the decision registers
+                    # once, on the coupon's own row: gap, flag (`gap >= 0` IS the trigger), its forks
+                    owner = {}
+                    for m, (r, coupon_at, own) in enumerate(event_rows):
+                        b_forks.setdefault(coupon_at, []).append(
+                            (row_ofs + r, outputs[fixed + n_events + m],
+                             outputs[fixed + 2 * n_events + m]))
+                        if own:
+                            owner[r] = (m, coupon_at)
+                    # an OBSERVED put's breach is the scenario's own, so it is ONE decision per barrier
+                    # date the same way: forked on every row observing it, registered on its payment row
+                    b0, n_bars, put_owner = fixed + 3 * n_events, len(bar_rows), {}
+                    for m, (r, barrier_at, own) in enumerate(bar_rows):
+                        b_put_forks.setdefault(barrier_at, []).append(
+                            (row_ofs + r, outputs[b0 + n_bars + m], outputs[b0 + 2 * n_bars + m]))
+                        if own:
+                            put_owner[r] = (m, barrier_at)
+                    for t, row, *cash in zip(settle_at, settle_rows, block_settled, due_fired,
+                                             due_survived):
+                        if row in owner:
+                            k, coupon_at = owner[row]
+                            gap = outputs[fixed + k]
+                            b_latch.append([gap, (gap >= 0).detach(), b_forks.pop(coupon_at)])
+                        # the row's whole cash, gated by the decision taken on it or the last before it
+                        fxr = report_fx(fx_rep, row_ofs + row)
+                        booked, on, off = ((nominal * fxr * x).detach() for x in cash)
+                        b_cash.append((int(t), len(b_latch) - 1, on, off, booked))
+                        if row in put_owner:
+                            # the row's cash with the put breached and not, the rest as booked
+                            m, barrier_at = put_owner[row]
+                            gap = outputs[b0 + m]
+                            jump = (nominal * fxr * outputs[b0 + 3 * n_bars + m]).detach()
+                            flag = (gap >= 0).detach()
+                            held = booked - flag * jump
+                            b_puts.append((gap, flag, b_put_forks.pop(barrier_at),
+                                           (int(t), 0, held + jump, held, booked)))
+                row_ofs += len(t_block)
+                mtm_list.append(nominal * theo_cashflow)
         else:
             theo_cashflow = drifts.new_zeros((len(t_block), shared.simulation_batch))
             if boundary_aad:
                 # every scenario resolved: both branches are the same zero, so the rows carry no
                 # counterfactual - the barrier's all_hit discipline
                 b_alive.append(theo_cashflow)
-        theo_price = nominal * theo_cashflow
-        row_ofs += theo_price.shape[0]
-        mtm_list.append(theo_price)
+            row_ofs += len(t_block)
+            mtm_list.append(nominal * theo_cashflow)
 
     mtm = torch.cat(mtm_list, dim=0)
 

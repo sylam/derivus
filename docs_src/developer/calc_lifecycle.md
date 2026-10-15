@@ -315,6 +315,15 @@ detached (the alive branch, the pending payment, the autocall's counterfactual) 
 `tests/test_recompute_inner_mc.py::test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient`
 (CUDA only).
 
+**A dense grid is priced in pieces.** A pricer prices the time-grid rows sharing a fixing interval
+together, and a recompute's backward replays a node's rows at once, so `pricing.oss_rows` hands the
+node a block past `oss_rows` rows (12) that many rows at a time, each piece's by-products performed
+as a block's: a daily grid's replay holds no more rows than that. A row's strip reads only its own
+row of the block's arrays and draws what it would in the whole block, so the pieces price its rows,
+and under `Deterministic_Kernels` their gradient, to the bit. **Held by**
+`tests/test_recompute_inner_mc.py::test_a_daily_grid_marks_the_weekly_dates_within_the_weekly_peak`
+(CUDA only). **Not gated:** the gradient.
+
 ## Recomputing the inner Monte Carlo {#recompute-inner-mc}
 
 The terminal `backward()` holds every Monte Carlo pricing's graph, while the simulation is cheap.

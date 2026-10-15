@@ -44,6 +44,8 @@ import torch
 import derivus
 from derivus import calculation, run_baseval, utils
 from derivus.instruments import construct_instrument
+import test_barrier_bridge as bb
+import test_boundary_pricer_events as bp
 import test_boundary_tarf_events as tarf
 
 DTYPE = torch.float64
@@ -170,14 +172,13 @@ class Unstreamed(calculation.CreditMonteCarlo):
         return shared
 
 
-def streamed(calc=calculation.CreditMonteCarlo, batch=16, inner=4096):
-    """(cva, CVA gradient, the run's peak in MiB above its floor) of a 24-fixing knock-in TARF
-    reported monthly, its gradient replayed by `Recompute_Inner_MC`, float32 on the device."""
-    deal = tarf._tarf(tarf.UNREACHABLE_TARGET, [30 * (i + 1) for i in range(24)],
-                      barrier=tarf.BARRIER, buy_sell='Sell')
+def replayed(calc, config, grid, batch, inner):
+    """(the run's results, its peak in MiB above its floor) of `config` reported on `grid`, its CVA
+    gradient replayed by `Recompute_Inner_MC`, float32 on the device."""
+    base = config.params['System Parameters']['Base_Date']
     params = {
-        'Base_Date': tarf.BASE, 'Run_Date': tarf.BASE.strftime('%Y-%m-%d'), 'Currency': 'USD',
-        'Time_grid': '0d 1m(1m)', 'Batch_Size': batch, 'Simulation_Batches': 1, 'Random_Seed': 1,
+        'Base_Date': base, 'Run_Date': base.strftime('%Y-%m-%d'), 'Currency': 'USD',
+        'Time_grid': grid, 'Batch_Size': batch, 'Simulation_Batches': 1, 'Random_Seed': 1,
         'Tenor_Offset': 0.0, 'MCMC_Simulations': inner, 'Deflation_Interest_Rate': 'USD',
         'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': 'Yes',
         'Credit_Valuation_Adjustment': {
@@ -188,11 +189,18 @@ def streamed(calc=calculation.CreditMonteCarlo, batch=16, inner=4096):
     torch.cuda.empty_cache()
     floor = torch.cuda.memory_allocated()
     torch.cuda.reset_peak_memory_stats()
-    out = calc(tarf._cfg(deal, tarf.SPOT, counterparty=True, simulate_fx=True),
-               device=utils.calculation_device(None, 0), prec=torch.float32).execute(params)
-    peak = (torch.cuda.max_memory_allocated() - floor) / 2.0 ** 20
-    return (float(out['Results']['cva']),
-            out['Results']['grad_cva']['Gradient'].values.astype(np.float64), peak)
+    out = calc(config, device=utils.calculation_device(None, 0), prec=torch.float32).execute(params)
+    return out['Results'], (torch.cuda.max_memory_allocated() - floor) / 2.0 ** 20
+
+
+def streamed(calc=calculation.CreditMonteCarlo, batch=16, inner=4096):
+    """(cva, CVA gradient, the run's peak in MiB above its floor) of a 24-fixing knock-in TARF
+    reported monthly."""
+    deal = tarf._tarf(tarf.UNREACHABLE_TARGET, [30 * (i + 1) for i in range(24)],
+                      barrier=tarf.BARRIER, buy_sell='Sell')
+    results, peak = replayed(calc, tarf._cfg(deal, tarf.SPOT, counterparty=True, simulate_fx=True),
+                             '0d 1m(1m)', batch, inner)
+    return float(results['cva']), results['grad_cva']['Gradient'].values.astype(np.float64), peak
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
@@ -213,6 +221,60 @@ def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient():
     assert peak < STREAM_PEAK_MIB < whole_peak, (
         'peak {:.1f} MiB streamed, {:.1f} unstreamed, bound {}'.format(
             peak, whole_peak, STREAM_PEAK_MIB))
+
+
+#: The bound on `dense`'s daily replay peak over its weekly one, at 64 x 4096, float32.
+DENSE_PEAK_FACTOR = 1.75
+
+
+def dense(grid):
+    """(the marks on each reported date, the run's peak in MiB above its floor) of a twelve-coupon
+    monthly autocall with a put at 70, reported on `grid`. Its equity's GBM has no vol, so the spot
+    is the base spot on every date and a row's mark is a function of its date alone; the sloped
+    curves and smile give each row its own discounts, carry and vols; 64 scenarios take the
+    canonical inner block."""
+    monthly = [bb.BASE + pd.Timedelta(days=30 * (i + 1)) for i in range(12)]
+    deal = dict(bp.AUTOCALL, Expiry_Date=monthly[-1], Price_Fixing=[[d, 0.0] for d in monthly],
+                Autocall_Coupons=[[d, 0.05] for d in monthly],
+                Autocall_Thresholds=[[d, 1.02] for d in monthly], Barrier=70.0,
+                Barrier_Dates=monthly[-1:])
+    config = bb._cfg()
+    config.params['Price Models']['GBMAssetPriceModel.EQ']['Vol'] = 0.0
+    factors = config.params['Price Factors']
+    factors['InterestRate.USD']['Curve'] = utils.Curve([], [[0.0, 0.02], [2.0, 0.05]])
+    factors['DividendRate.EQ']['Curve'] = utils.Curve([], [[0.0, 0.01], [2.0, 0.03]])
+    factors['EquityPriceVol.EQ']['Surface'] = utils.Curve([], [
+        [m, t, 0.25 - 0.2 * (m - 1.0) + 0.02 * t] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)])
+    factors['SurvivalProb.CPTY'] = {
+        'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
+    config.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})}]
+    results, peak = replayed(calculation.CreditMonteCarlo, config, grid, 64, 4096)
+    return results['mtm'], peak
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
+def test_a_daily_grid_marks_the_weekly_dates_within_the_weekly_peak():
+    """A pricer prices the rows sharing a fixing interval as one block: a weekly grid puts four or
+    five of `dense`'s rows in an interval, a daily one thirty, past `oss_rows` (12), so the daily
+    block is priced twelve rows at a time. A row's strip reads only its own row and draws what it
+    would in the whole block, so the daily grid marks every weekly date to the bit, and its replay
+    peaks within `DENSE_PEAK_FACTOR` of the weekly one's.
+
+    Readings: weekly 216 MiB, 248 as a process's first run (cuBLAS's workspace), daily 294.
+
+    Killing mutations: the block priced whole, every row at once - daily 529 MiB, 2.45 times the
+    weekly; the vol strip handed to every piece whole - a weekly date moves by 6.4e-05 on marks
+    spread 5e-03.
+    """
+    weekly, weekly_peak = dense('0d 1w(1w)')
+    daily, daily_peak = dense('0d 1d(1d)')
+    shared = daily.loc[weekly.index].values
+    assert weekly.values.std() > 0.0 and np.array_equal(weekly.values, shared), (
+        'the daily grid moved a weekly date by {:.6g}'.format(
+            float(np.abs(weekly.values - shared).max())))
+    assert daily_peak < DENSE_PEAK_FACTOR * weekly_peak, (
+        'peak {:.1f} MiB daily, {:.1f} weekly, bound {}x'.format(
+            daily_peak, weekly_peak, DENSE_PEAK_FACTOR))
 
 
 # ---------------------------------------------------------------- (g) a trade's draws are its own

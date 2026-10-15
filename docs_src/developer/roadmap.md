@@ -85,10 +85,6 @@ declared fields not yet read are features kept ahead of their build, not rows to
 - **The LogVar2FJ walk's inverse-Gaussian root** (2026-10-07, M). It runs in double, about 45% of
   a value batch on a GPU with 1/64-rate double. Under a gradient the walk holds 79% of peak memory
   in its checkpoint segments.
-- **One row per block on a dense reporting grid** (2026-10-07, S). The streamed strip holds every
-  time-grid row of a block together, so memory grows with the rows per fixing interval and a daily
-  grid can exceed a device that holds a weekly one; one row per block past about twelve rows per
-  interval.
 
 **The code.**
 

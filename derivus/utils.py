@@ -1511,6 +1511,9 @@ class Calculation_State(object):
         # Fixings per checkpoint of a one-step-survival strip under a gradient
         # (`pricing.oss_stream`); 0 walks the strip unstreamed
         self.oss_chunk = 4
+        # Rows of a one-step-survival block priced at once, a denser block this many at a time, so
+        # a recompute's backward replays at most this many rows' strips (`pricing.oss_rows`)
+        self.oss_rows = 12
         # Second derivatives are wanted (`Greeks: 'All'`, base valuation only), so the reverse
         # sweep runs with `create_graph`. Declared here for the same reason as the switch above.
         self.gamma = False
