@@ -123,13 +123,12 @@ Grouped by where a validator meets them.
   lognormal (`spread_source` says so): a vega a desk could hedge, but not the quoted price's.
   UNMEASURED, and not measurable from a quote: the fit's own `dV/dq` needs `Quote_Sensitivity`
   through `LogVar2FJModelParameters`, the calibration live in the session.
-- **Haircuts are read on one side, and a floating list refuses its settlement** (2026-09-22). The
-  engine and the collateral call apply `Haircut_Posted` whichever side holds the asset, and the
-  single-asset haircut cancels in the engine's own formula. UNMEASURED on a collateralised exposure.
-  The fix (M, with the spine's collateral kit): held collateral credited at one less
-  `Haircut_Received`, posted collateral delivered at face over one less `Haircut_Posted`, and a cash
-  row with no `Haircut_Posted` (a `KeyError` at compile today) read the same way. A floating
-  cashflow list refuses a stated `Settlement_Date` or `Settlement_Amount` until it reads them: M.
+- **A floating cashflow list refuses its settlement** (2026-09-22). `CFFloatingInterestListDeal`
+  refuses a stated `Settlement_Date`, `Settlement_Amount`, `Repo_Rate` or `Settlement_Rate` by name
+  at booking, so a forward-settled floating note cannot be booked; nothing is mispriced. Reading
+  them is a pricer change, not a diary row: the leg carried to the settlement date on repo, the
+  amount paid there and the cashflows before it dropped, as `pricing.pv_fixed_cashflows` and
+  `utils.TensorCashFlows.fixed` do for the fixed list, through the plain, cap and floor pricers: M.
 - **Rating-dependent credit support is read at its first row** (2026-10-11).
   `utils.CreditSupportList.value` returns the first row's threshold, minimum transfer or independent
   amount whatever the counterparty's rating, in the engine and the spine's collateral call. Exact

@@ -18,7 +18,7 @@ from functools import partial, reduce
 from . import utils, pricing
 from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
-    settlement_days,
+    engine_default, settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
     FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, OPTION_STYLE, TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
@@ -956,12 +956,41 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
     return torch.stack(path), gaps
 
 
+def collateral_bands(required, face, cut, fx, min_received, min_posted):
+    """`(balance, recv_band, post_band)` for `scan_collateral_balance`: the units of the collateral
+    the support `required` asks for and the two edges past which it is transferred, each in the
+    unit of the side it falls on - support held counting at `face`, support posted at `face` less
+    `cut`, what one less `Haircut_Posted` takes off a unit."""
+    side = (required < 0).to(face.dtype)
+    unit = face - cut * side
+    balance, per_unit = required / unit, fx / unit
+
+    def carried(edge, amount):
+        # the ratio of the two sides' units, spelled as one plus the cut's share so that it is
+        # exactly one, gradient and all, where nothing is cut
+        other = (amount < 0).to(face.dtype)
+        return edge * (1.0 + cut * (other - side) / (face - cut * other))
+
+    return (balance, carried(balance - min_received * per_unit, required - min_received * fx),
+            carried(min_posted * per_unit + balance, required + min_posted * fx))
+
+
+def collateral_credit(balance, face, cut):
+    """What `balance` units of the collateral are credited at a closeout: held at `face` less `cut`,
+    what one less `Haircut_Received` takes off a unit, and posted at `face`, the bank's own asset
+    in full."""
+    return balance * (face - cut * (balance > 0))
+
+
 class NettingCollateralSet(Deal):
     accepts_children = True
     vernacular = 'netting set, CSA, client, counterparty agreement'
     #: One row of a credit support list, rating 1 at amount 0, as the wire spells it: no threshold,
     #: no minimum transfer and no independent amount.
     ZERO_SUPPORT = {'.CreditSupportList': [[1, 0.0]]}
+    #: The two haircuts every collateral row declares, a row stating neither cutting nothing.
+    HAIRCUTS = (F('Haircut_Posted', 'Percent', default=0.0, convention=True),
+                F('Haircut_Received', 'Percent', default=0.0, convention=True))
     fields = [ADMIN, own('NettingCollateralSet', [
         F('Agreement_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Apply_Closeout_When_Uncollateralized', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -972,22 +1001,22 @@ class NettingCollateralSet(Deal):
         F('Collateral_Assets', 'Container',
           convention=True, sub_fields=[
               F('Cash_Collateral', 'Table', default='null', row=Row([
-                  F('Currency', 'Text', factors=['FxRate']), F('Amount', 'Float'), F('Haircut_Posted', 'Percent'),
-                  F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text', factors=['InterestRate']),
+                  F('Currency', 'Text', factors=['FxRate']), F('Amount', 'Float'), *HAIRCUTS,
+                  F('Collateral_Rate', 'Text', factors=['InterestRate']),
                   F('Funding_Rate', 'Text', factors=['InterestRate']), F('Liquidation_Period', 'Integer')])),
               F('Bond_Collateral', 'Table', default='null', row=Row([
-                  F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Liquidation_Period', 'Integer'),
+                  *HAIRCUTS, F('Liquidation_Period', 'Integer'),
                   F('Issuer', 'Text'), F('Currency', 'Text', factors=['FxRate']),
                   F('Discount_Rate', 'Text', factors=['InterestRate']), F('Maturity', 'Period'),
                   F('Principal', 'Float'), F('Coupon_Rate', 'Percent'), F('Coupon_Interval', 'Period'),
                   F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text')])),
               F('Equity_Collateral', 'Table', default='null', row=Row([
                   F('Equity', 'Text', factors=['EquityPrice', 'DividendRate']), F('Units', 'Float'),
-                  F('Haircut_Posted', 'Percent'), F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'),
+                  *HAIRCUTS, F('Collateral_Rate', 'Text'),
                   F('Funding_Rate', 'Text'), F('Liquidation_Period', 'Integer')])),
               F('Commodity_Collateral', 'Table', default='null', row=Row([
-                  F('Commodity', 'Text'), F('Units', 'Float'), F('Haircut_Posted', 'Percent'),
-                  F('Haircut_Received', 'Percent'), F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'),
+                  F('Commodity', 'Text'), F('Units', 'Float'), *HAIRCUTS,
+                  F('Collateral_Rate', 'Text'), F('Funding_Rate', 'Text'),
                   F('Liquidation_Period', 'Integer')]))]),
         F('Collateral_Call_Frequency', 'Period', default='1D', convention=True),
         F('Collateralized', 'Text', default='False', convention=True, values=['True', 'False']),
@@ -1067,11 +1096,15 @@ class NettingCollateralSet(Deal):
         '',
         'The collateralized portfolio at time $t$ is the difference between the sum of the liquidated',
         'portfolio value and the cash accumulated during the closeout period $C(t_s,t_e)$ and the',
-        'liquidated value, after haircuts, of the $B$ units of the collateral portfolio held:',
+        'credit for the $\\underline B=\\min\\{B(u):t_s\\le u\\le t_l\\}$ units of the collateral',
+        'portfolio: collateral held is credited at its liquidated value less its received haircuts,',
+        'and collateral posted stays the bank\'s asset at its full value:',
         '',
-        '$$\\hat V(t)=V(t_e)+C(t_s,t_e)-\\min\\{B(u):t_s\\le u\\le t_l\\}S_h(t_e)$$',
+        '$$\\hat V(t)=V(t_e)+C(t_s,t_e)-\\underline B\\,S_c(t_e),\\qquad S_c=\\begin{cases}S_r, '
+        '&\\underline B>0\\\\ S, &\\text{otherwise}\\end{cases}$$',
         '',
-        'The calculation of $C(t_s,t_e), B(t)$ and $S_h(t)$ is described below.',
+        'The calculation of $C(t_s,t_e)$, $B(t)$, $S(t)$ and $S_r(t)$ is described below; the',
+        'collateral reported is the balance at its full value, $B(t)S(t)$.',
         '',
         '### Standard and Forward looking closeout',
         '',
@@ -1159,7 +1192,8 @@ class NettingCollateralSet(Deal):
         'the increase is more than this amount.',
         '- $M_p(t)$ the minimum posted transfer amount. The collateral posted will not increase unless '
         'the increase is more than this amount.',
-        '- $S_h(t)$ is the value in base currency of one unit of the collateral portfolio after haircuts.',
+        '- $W_t(b)$ the credit support a balance of $b$ units counts for at $t$: $bS(t)$ where it is',
+        'held, at face, and $bS_p(t)$ where it is posted, at one less its posted haircuts.',
         '- $t_i, i>0$ are collateral call dates. Note that $t_0=0$ and that in general, $t_0$ need not be'
         ' a collateral call date.',
         '',
@@ -1173,10 +1207,10 @@ class NettingCollateralSet(Deal):
         'as such, is not a simple function of $A(t_i)$. Instead, it can be expressed via the following',
         'recurrence:',
         '',
-        '$$B(t_i)=\\begin{cases} \\frac{A(0)}{S_h(0)}, &\\text{if } i=0\\\\',
-        '\\frac{A(t_i)}{S_h(t_i)}, &\\text{if } A(t_i)-S_h(t_i)B(t_{i-1})>M_r(t_i)X(t_i)'
+        '$$B(t_i)=\\begin{cases} W_0^{-1}(A(0)), &\\text{if } i=0\\\\',
+        'W_{t_i}^{-1}(A(t_i)), &\\text{if } A(t_i)-W_{t_i}(B(t_{i-1}))>M_r(t_i)X(t_i)'
         '\\text{ and } i>0,\\\\',
-        '&\\text{or if } S_h(t_i)B(t_{i-1})-A(t_i)>M_p(t_i)X(t_i)\\text{ and } i>0\\\\',
+        '&\\text{or if } W_{t_i}(B(t_{i-1}))-A(t_i)>M_p(t_i)X(t_i)\\text{ and } i>0\\\\',
         'B(t_{i-1}), &\\text{otherwise}\\end{cases}$$',
         '',
         'Since $B(t_i)$ is constant between call dates, $B(t)=B(t_{i^*})$, where $t_{i^*}$ is the closest',
@@ -1201,10 +1235,13 @@ class NettingCollateralSet(Deal):
         'The relative amounts of the assets are held constant, so each asset\'s share of the portfolio',
         'moves with its price. The value of the portfolio is:',
         '',
-        '$$S(t)=\\sum_i a_i S_i(t),\\qquad S_h(t)=\\sum_i (1-h_i)a_iS_i(t)$$',
+        '$$S(t)=\\sum_i a_i S_i(t),\\qquad S_p(t)=\\sum_i (1-h^p_i)a_iS_i(t),\\qquad '
+        'S_r(t)=\\sum_i (1-h^r_i)a_iS_i(t)$$',
         '',
-        'where $h_i$ is the row\'s **Haircut_Posted**, applied whichever way the collateral moves;',
-        '**Haircut_Received** is declared and not read. Haircuts must be strictly less than one.',
+        'where $h^p_i$ and $h^r_i$ are the row\'s **Haircut_Posted** and **Haircut_Received**, nothing',
+        'where it states none: collateral the bank posts is delivered at face over one less its',
+        'posted haircut, and collateral it holds is delivered at face and credited at one less its',
+        'received haircut. Haircuts must be strictly less than one.',
     ])
 
     option_defaults = {'Cash_Settlement_Risk': utils.CASH_SETTLEMENT_Received_Only,
@@ -1324,6 +1361,13 @@ class NettingCollateralSet(Deal):
                 yield ('Collateral_Assets.Cash_Collateral[{}]: Collateral_Rate is set, so '
                        'Funding_Rate is required'.format(i))
 
+    @classmethod
+    def haircuts(cls, row):
+        """A collateral row's `{Haircut_Posted, Haircut_Received}` as fractions, one it states none
+        of read as the convention its column declares."""
+        row = DealFields(row, declared={f.key: engine_default(f) for f in cls.HAIRCUTS})
+        return {f.key: float(row[f.key]) for f in cls.HAIRCUTS}
+
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
         field = {}
@@ -1369,7 +1413,7 @@ class NettingCollateralSet(Deal):
                     for col_equity in collateral_equity:
                         equity_rate = utils.check_rate_name(col_equity['Equity'])
                         field_index['Equity_Collateral'].append(
-                            utils.Collateral(Haircut=float(col_equity['Haircut_Posted']),
+                            utils.Collateral(**self.haircuts(col_equity),
                                              Amount=col_equity['Units'],
                                              Currency=get_equity_currency_factor(
                                                  equity_rate, static_offsets, stochastic_offsets, all_factors),
@@ -1398,7 +1442,7 @@ class NettingCollateralSet(Deal):
                         time_index = np.searchsorted(time_grid.mtm_time_grid, (max(reset_dates) - base_date).days)
 
                         field_index['Bond_Collateral'].append(
-                            utils.Collateral(Haircut=float(col_bond['Haircut_Posted']),
+                            utils.Collateral(**self.haircuts(col_bond),
                                              Amount=1,
                                              Currency=get_fxrate_factor(
                                                  utils.check_rate_name(col_bond['Currency']),
@@ -1424,7 +1468,7 @@ class NettingCollateralSet(Deal):
                                              'among several collateral assets'.format(
                                 self.field.get('Reference')))
                         field_index['Cash_Collateral'].append(
-                            utils.Collateral(Haircut=float(col_cash['Haircut_Posted']),
+                            utils.Collateral(**self.haircuts(col_cash),
                                              Amount=1.0 if col_cash.get('Amount') is None
                                              else col_cash['Amount'],
                                              Currency=get_fxrate_factor(
@@ -1447,7 +1491,7 @@ class NettingCollateralSet(Deal):
             if not collateral_defined:
                 # default the collateral to the balance currency
                 field_index['Cash_Collateral'] = [
-                    utils.Collateral(Haircut=0.0,
+                    utils.Collateral(Haircut_Posted=0.0, Haircut_Received=0.0,
                                      Amount=1.0,
                                      Currency=get_fxrate_factor(
                                          field['Balance_Currency'], static_offsets, stochastic_offsets),
@@ -1565,23 +1609,28 @@ class NettingCollateralSet(Deal):
             # The time_grid is global (across all potential netting sets) - the local grid is just this netting set
             local_time_grid = time_grid.time_grid[
                 time_grid.time_grid[:, utils.TIME_GRID_MTM] <= deal_time[-1][utils.TIME_GRID_MTM]]
-            St = shared.one.new_zeros(len(local_time_grid), shared.simulation_batch)
             local_accum = accum[:len(local_time_grid)]
 
-            for cash_col in factor_dep['Cash_Collateral']:
-                St = St + (1.0 - cash_col.Haircut) * cash_col.Amount * utils.calc_time_grid_spot_rate(
-                    cash_col.Currency, local_time_grid, shared)
+            assets = [(cash_col, cash_col.Amount * utils.calc_time_grid_spot_rate(
+                cash_col.Currency, local_time_grid, shared)) for cash_col in factor_dep['Cash_Collateral']]
 
             for bond_col in factor_dep['Bond_Collateral']:
                 bond = pricing.pv_fixed_cashflows(shared, time_grid, bond_col.Collateral, settle_cash=False)
                 padding = local_time_grid.shape[0] - bond.shape[0]
-                St = St + (1.0 - bond_col.Haircut) * utils.calc_time_grid_spot_rate(
-                    bond_col.Currency, local_time_grid, shared) * Fn.pad(bond, [0, 0, 0, padding])
+                assets.append((bond_col, utils.calc_time_grid_spot_rate(
+                    bond_col.Currency, local_time_grid, shared) * Fn.pad(bond, [0, 0, 0, padding])))
 
             for equity_col in factor_dep['Equity_Collateral']:
-                St = St + (1.0 - equity_col.Haircut) * equity_col.Amount * utils.calc_time_grid_spot_rate(
+                assets.append((equity_col, equity_col.Amount * utils.calc_time_grid_spot_rate(
                     equity_col.Currency, local_time_grid, shared) * utils.calc_time_grid_spot_rate(
-                    equity_col.Collateral, local_time_grid, shared)
+                    equity_col.Collateral, local_time_grid, shared)))
+
+            # one unit of the collateral at face, and what one less each haircut takes off it
+            St = posted_cut = held_cut = shared.one.new_zeros(len(local_time_grid), shared.simulation_batch)
+            for col, value in assets:
+                St = St + value
+                posted_cut = posted_cut + col.Haircut_Posted * value
+                held_cut = held_cut + col.Haircut_Received * value
 
             fx_base = utils.calc_time_grid_spot_rate(shared.Report_Currency, local_time_grid, shared)
             fx_agreement = utils.calc_time_grid_spot_rate(factor_dep['Agreement_Currency'], local_time_grid, shared)
@@ -1603,13 +1652,10 @@ class NettingCollateralSet(Deal):
 
             At = factor_dep['Independent_Amount'] * fx_agreement + (Vt - H) * (Vt > H) + (Vt - G) * (Vt < G)
 
-            Bt = self.field['Opening_Balance'] * utils.calc_time_grid_spot_rate(
-                factor_dep['Balance_Currency'], np.array([[0, 0, 0]]), shared) / St[0]
-
-            fx_St = fx_agreement / St
-            Bt_new = At / St
-            Mr = Bt_new - min_received * fx_St
-            Mp = min_posted * fx_St + Bt_new
+            opening = self.field['Opening_Balance'] * utils.calc_time_grid_spot_rate(
+                factor_dep['Balance_Currency'], np.array([[0, 0, 0]]), shared)
+            Bt = opening / (St[0] - posted_cut[0] * (opening < 0))
+            Bt_new, Mr, Mp = collateral_bands(At, St, posted_cut, fx_agreement, min_received, min_posted)
 
             # one recursion for both cases: an all-True call mask IS the daily schedule
             boundary_aad = getattr(shared, 'boundary_aad', False)
@@ -1656,7 +1702,7 @@ class NettingCollateralSet(Deal):
                           (Cf_Pay[factor_dep['Te']] - Cf_Pay[factor_dep['Tl']])
 
             # note that this should be the minimum Bt from factor_dep['Ts'] to factor_dep['Tl']
-            Ste = St[factor_dep['Te']]
+            Ste, held_cut_te = St[factor_dep['Te']], held_cut[factor_dep['Te']]
             Bte = Bt[factor_dep['Te']]
             base_i = factor_dep['Ts'][:-1]
             delta_T = factor_dep['Tl'][:-1] - base_i
@@ -1671,7 +1717,7 @@ class NettingCollateralSet(Deal):
             min_Bt = Fn.pad(min_Bt, [0, 0, 0, 1])
             expected_collateral = Bte * Ste / fx_base
 
-            net_accum = (Vte + C_ts_te - min_Bt * Ste) / fx_base
+            net_accum = (Vte + C_ts_te - collateral_credit(min_Bt, Ste, held_cut_te)) / fx_base
 
             if len(factor_dep['Cash_Collateral']) == 1 and factor_dep['Cash_Collateral'][0].Collateral_Rate is not None:
                 cash_col = factor_dep['Cash_Collateral'][0]
@@ -1712,7 +1758,7 @@ class NettingCollateralSet(Deal):
 
             if boundary_aad:
                 # Balance-independent, detached captures for the MTA replay (see docstring).
-                b_Vte, b_C, b_Ste = Vte.detach(), C_ts_te.detach(), Ste.detach()
+                b_Vte, b_C, b_Ste, b_cut = Vte.detach(), C_ts_te.detach(), Ste.detach(), held_cut_te.detach()
                 b_fx, b_surv = fx_base.detach(), St_T.detach() if surv else None
 
                 def replay_net_mtm(balance_path, vte=None, c_delta=None, base_i=base_i,
@@ -1729,7 +1775,7 @@ class NettingCollateralSet(Deal):
                     running = Fn.pad(running, [0, 0, 0, 1])
                     out = ((b_Vte if vte is None else vte) +
                            (b_C if c_delta is None else b_C + c_delta) -
-                           running * b_Ste) / b_fx
+                           collateral_credit(running, b_Ste, b_cut)) / b_fx
                     if b_surv is not None:
                         out = out * b_surv
                     return reported(out)
@@ -1747,7 +1793,7 @@ class NettingCollateralSet(Deal):
                 # Gross-independent, detached captures for the whole gross->net chain
                 # (At, required balance, bands, scan) - see docstring.
                 g_fx, g_fx_local = fx_base.detach(), fx_base_local.detach()
-                g_St, g_fxSt = St.detach(), (fx_agreement / St).detach()
+                g_St, g_cut, g_fxa = St.detach(), posted_cut.detach(), fx_agreement.detach()
                 g_H, g_G, g_IA = H.detach(), G.detach(), (
                         factor_dep['Independent_Amount'] * fx_agreement).detach()
                 g_Vt, g_B0, g_Te = Vt.detach(), Bt[0].detach(), factor_dep['Te']
@@ -1798,9 +1844,8 @@ class NettingCollateralSet(Deal):
                     delta = delta[:g_Vt.shape[0]]
                     Vt_cf = g_Vt + delta * g_fx_local
                     At_cf = g_IA + (Vt_cf - g_H) * (Vt_cf > g_H) + (Vt_cf - g_G) * (Vt_cf < g_G)
-                    req = At_cf / g_St
-                    balance, _ = scan_collateral_balance(
-                        g_B0, req, req - min_received * g_fxSt, min_posted * g_fxSt + req, g_mask)
+                    balance, _ = scan_collateral_balance(g_B0, *collateral_bands(
+                        At_cf, g_St, g_cut, g_fxa, min_received, min_posted), g_mask)
                     # Vte from the REPORTED b_Vte, never re-indexed off g_Vt (see docstring). g_fx
                     # is already the Te-grid fx, so only the delta takes the Te index here.
                     vte = b_Vte + delta[g_Te] * g_fx

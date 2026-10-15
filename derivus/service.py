@@ -2783,10 +2783,11 @@ def book_collateral(date: str = None, actor: str = None):
     under the agreement at that close - a pending trade among them, since it prices and settles
     like any other, and one whose last day it is held through it - with the day's payments added
     back where the set holds them (`Exclude_Paid_Today` off, the engine's default). THE CALL IS ONE
-    FORMULA with that recursion at one date: the support required less the collateral held after
-    `Haircut_Posted`, moving only where it clears the minimum transfer on its side strictly. `call`
-    is what the settlement moves, received positive, and `direction` whether the bank calls or
-    posts; it is settled through `POST /book/transition` as `collateral` against the agreement.
+    FORMULA with that recursion at one date: the support required less the collateral held, what
+    the bank posted counted at one less its `Haircut_Posted`, moving only where it clears the
+    minimum transfer on its side strictly. `call` is what the settlement moves, received positive,
+    and `direction` whether the bank calls or posts; it is settled through `POST /book/transition`
+    as `collateral` against the agreement.
     THE BALANCE IS HELD AS OF THE DAY - the movements the record holds at its head, `lsn`, value
     dated on or before it - so a read replays; the worklist counts every movement filed. `held` and
     `margin` are kept apart, the call reading the first. `actor` is the seat reading, which sees

@@ -640,10 +640,11 @@ def _nets(lsn=None, book=None):
 def _balances(document, lsn=None, folds=None):
     """`{agreement: balance}` - the `Opening_Balance` of each collateralised netting set of
     `document` the record holds collateral under at `lsn`: what it holds by the job's base date,
-    after haircuts (`CSA.valued`), in the set's `Balance_Currency`, every other asset crossed at
-    the job's own spots (`PnL.rates`). The `cash` fold is ADVANCED in `folds`, and folded only
-    where such a set exists. A set holding an asset those spots cannot cross REFUSES by name, a
-    plan and a read alike: the book lacks that market, and nothing is valued on a zero."""
+    counted as the call counts it (`CSA.valued`), in the set's `Balance_Currency`, every other
+    asset crossed at the job's own spots (`PnL.rates`). The `cash` fold is ADVANCED in `folds`,
+    and folded only where such a set exists. A set holding an asset those spots cannot cross
+    REFUSES by name, a plan and a read alike: the book lacks that market, and nothing is valued on
+    a zero."""
     sets = {deal.get('Reference'): deal for deal in (
         node['Instrument']['.Deal'] for _, node in walk_job_deals(document))
         if deal.get('Object') == 'NettingCollateralSet' and deal.get('Collateralized') == 'True'}

@@ -561,23 +561,28 @@ residual. **Held by**
 ## Collateral {#collateral}
 
 `projections.CSA` reads a set's terms as the engine does - each `CreditSupportList` at its first
-value, `Haircut_Posted` on either side - and `required` is the engine's `At`. `call` is that less
-the collateral held after haircuts, moving only strictly past the minimum transfer on its side, as
-`scan_collateral_balance` does; margin is a separate balance. Being pure, the oracle replays it.
+value - and `required` is the engine's `At`. `call` is that less the collateral held, what the bank
+holds counted at face and what it posted at one less its `Haircut_Posted`, as the engine's balance
+counts each side (`collateral_bands`), moving only strictly past the minimum transfer on its side,
+as `scan_collateral_balance` does; `Haircut_Received` is the closeout's credit on what is held
+(`collateral_credit`), which no call reads. Margin is a separate balance. Being pure, the oracle
+replays it.
 `GET /book/collateral` answers each agreement on a marked close, its exposure the P&L's value of its
 positions with the day's payment added back where the set holds it (`Exclude_Paid_Today` off); an
 unknown mark makes the call null, never zero. **Held by**
 `test_collateral.py::test_the_support_required_is_the_engine_s_own_at`,
 `::test_a_call_clears_its_minimum_strictly_on_the_side_it_falls`,
+`::test_what_the_bank_holds_counts_at_face_and_what_it_posted_one_less_its_haircut`,
+`::test_each_side_is_cut_by_its_own_haircut_and_the_call_is_the_engine_s_transfer`,
 `::test_a_mark_nobody_has_is_named_and_calls_nothing`.
 
 `compiled_job` writes a collateralised set's `Opening_Balance` - collateral held by the base date,
-after haircuts, in its `Balance_Currency` - for a run with a collateral recursion; a base valuation
-has none, so a settlement moves neither its plan nor its cache. An asset without a spot refuses
-every valuing compile rather than count as zero. **Held by**
+counted as the call counts it, in its `Balance_Currency` - for a run with a collateral recursion; a
+base valuation has none, so a settlement moves neither its plan nor its cache. An asset without a
+spot refuses every valuing compile rather than count as zero. **Held by**
 `test_collateral.py::test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_transfer`.
-Not carried: interest, `Haircut_Received`, securities as collateral, rating-dependent support,
-and the hedge simulation's opening state.
+Not carried: interest, securities as collateral, rating-dependent support, and the hedge
+simulation's opening state.
 
 ## The oracle {#the-oracle}
 

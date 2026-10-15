@@ -610,12 +610,14 @@ class CSA:
     the exposure's excess over the received threshold where it is above it, plus its excess below
     the posted threshold where it is below it - the engine's `At`, thresholds and independent amount
     stated in the agreement currency and crossed from it. The CALL is that less the balance held,
-    each asset valued after its `Haircut_Posted`, the one haircut the engine reads, and it moves
-    only where it clears the minimum transfer on its side STRICTLY, as `scan_collateral_balance`
-    transfers: the bank calls where it is short by more than `Minimum_Received`, and posts where it
-    holds more than `Minimum_Posted` over what is required. Nothing is rounded, the netting set
-    declaring no rounding. COLLATERAL AND MARGIN ARE TWO BALANCES: the call reads the collateral
-    alone. Pure functions over plain data, so the service and the oracle run one spelling.
+    what the bank holds counted at face and what it posted at one less its `Haircut_Posted`, as the
+    engine's balance counts each (`Haircut_Received` is the closeout's credit on what is held,
+    which no call reads), and it moves only where it clears the minimum transfer on its side
+    STRICTLY, as `scan_collateral_balance` transfers: the bank calls where it is short by more than
+    `Minimum_Received`, and posts where it holds more than `Minimum_Posted` over what is required.
+    Nothing is rounded, the netting set declaring no rounding. COLLATERAL AND MARGIN ARE TWO
+    BALANCES: the call reads the collateral alone. Pure functions over plain data, so the service
+    and the oracle run one spelling.
     """
 
     #: The two sides of a call, from the bank's: it calls collateral in, or posts it out.
@@ -668,9 +670,10 @@ class CSA:
     @staticmethod
     def valued(holding, csa, fx):
         """What `holding` (`{asset: amount}`) is worth to the CSA in the currency `fx` values every
-        asset in: each amount crossed, less its `Haircut_Posted` on whichever side it is held - the
-        engine reads no other - and an asset held at nothing worth nothing, crossed or not."""
-        return sum((amount * fx[asset] * (1.0 - csa['haircuts'].get(asset, 0.0))
+        asset in: each amount crossed, at face where the bank holds it and at one less its
+        `Haircut_Posted` where the bank posted it, and an asset held at nothing worth nothing,
+        crossed or not."""
+        return sum((amount * fx[asset] * (1.0 - csa['haircuts'].get(asset, 0.0) if amount < 0 else 1.0)
                     for asset, amount in sorted(holding.items()) if amount), 0.0)
 
     @staticmethod

@@ -64,8 +64,7 @@ TERMS = {'Object': 'NettingCollateralSet', 'Reference': 'CSA-1', 'Netted': 'True
              'Posted_Threshold': listed((1, -1_600_000.0)),
              'Minimum_Received': listed((1, 320_000.0)),
              'Minimum_Posted': listed((1, 480_000.0))}}
-#: The same CSA declaring dollars at half off posted and a quarter off received - the engine reading
-#: the first alone, whichever side holds them.
+#: The same CSA declaring dollars at half off posted and a quarter off received.
 HAIRCUTS = dict(TERMS, Collateral_Assets={'Cash_Collateral': [
     {'Currency': 'USD', 'Haircut_Posted': {'.Percent': 50.0},
      'Haircut_Received': {'.Percent': 25.0}}]})
@@ -145,19 +144,68 @@ def test_a_call_clears_its_minimum_strictly_on_the_side_it_falls():
     assert said['call'] == CSA.required(144_000.123, dials, FX) != round(said['call'], 2)
 
 
-def test_a_haircut_is_the_engine_s_haircut_posted_on_either_side():
-    """A HAIRCUT IS `Haircut_Posted`, WHICHEVER SIDE HOLDS THE ASSET, as the engine's balance reads
-    every cash row: what the bank holds and what it posted are each worth their crossed amount less
-    it, `Haircut_Received` read by neither, and an asset the terms declare no haircut for is worth
-    its crossed amount.
+def test_what_the_bank_holds_counts_at_face_and_what_it_posted_one_less_its_haircut():
+    """A CALL CUTS ONLY WHAT THE BANK POSTED, as the engine's balance counts each side: what it holds
+    is worth its crossed amount and what it posted its crossed amount less `Haircut_Posted`, so a
+    posting is delivered at face over one less it; `Haircut_Received` is the closeout's credit on
+    what is held, which no call reads. An asset the terms declare no haircut for is worth its
+    crossed amount on either side.
 
-    Killing mutation: `Haircut_Received` taken on what the bank holds, which values 100,000 dollars
-    held at 75,000.
+    Killing mutation: `Haircut_Posted` taken on what the bank holds too, which values 100,000
+    dollars held at 50,000.
     """
     dials = CSA.of(HAIRCUTS)
-    assert CSA.valued({'USD': 100_000.0}, dials, FX) == 50_000.0
+    assert CSA.valued({'USD': 100_000.0}, dials, FX) == 100_000.0
     assert CSA.valued({'USD': -100_000.0}, dials, FX) == -50_000.0
-    assert CSA.valued({'EUR': 8.0, 'USD': 4.0}, dials, FX) == 12.0
+    assert CSA.valued({'EUR': 8.0, 'USD': 4.0}, dials, FX) == 14.0
+    assert CSA.valued({'EUR': -8.0, 'USD': -4.0}, dials, FX) == -12.0
+
+
+def test_each_side_is_cut_by_its_own_haircut_and_the_call_is_the_engine_s_transfer():
+    """HAIRCUTS PER DIRECTION, the engine's balance and the spine's call alike. Dollars cut by half
+    where posted and a quarter where held, the bank opening on 30,000 of them posted: a day on, on
+    every one of 4,096 paths, the call moves the balance where the engine's scan moves it and to
+    the support it requires, counted as the call counts it - what the bank holds at face and what
+    it posted at one less `Haircut_Posted`, a posting being delivered at twice the support it
+    meets. With nothing to close out but the day, the set's value is its gross less the
+    collateral's credit, by hand: what the bank holds at three quarters, one less
+    `Haircut_Received`, and what it posted in full, the bank's own asset. The paths hold every
+    side - 871 moves to support held, 659 to support posted, 2,566 keeping the posting - and the
+    posting kept sits between a receiving edge counted held and the same edge counted posted, the
+    support between the thresholds being 1,000 dollars held against a 20,000 minimum.
+
+    Killing mutations, each one haircut applied on both sides: `Haircut_Posted` counting support
+    held too, which holds twice the support the call requires on the 871 paths moved to support
+    held; `Haircut_Received` crediting what was posted too, which reads the 3,225 posted paths'
+    value off by a quarter of their collateral; and an edge left in the unit of the support
+    required, which transfers on 2,185 paths the call does not.
+    """
+    holding, dials = {'USD': -30_000.0}, CSA.of(HAIRCUTS)
+    job = engine_job(HAIRCUTS)
+    job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']['Opening_Balance'] = \
+        CSA.valued(holding, dials, FX) / FX['EUR']
+    context = derivus.Context()
+    context.load_json((json.dumps(job), 'haircuts'))
+    calc, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
+    result = out['Netting'].sub_structures[0].obj.Calc_res
+    dates = sorted(calc.time_grid.mtm_dates)
+    reported = list(np.array(dates)[calc.time_grid.report_index])
+    opened, later = (reported.index(pd.Timestamp(day)) for day in (BASE, NEXT))
+    held, value = (np.asarray(result[key][0][later]) for key in ('Collateral', 'Value'))
+    gross = np.asarray(result['GrossMTM'][0][dates.index(pd.Timestamp(NEXT))])
+    assert np.array_equal(np.asarray(result['Collateral'][0][opened]), np.full(gross.shape, -30_000.0))
+
+    said = [CSA.call(float(exposure), holding, dials, FX) for exposure in gross]
+    moved = held != -30_000.0
+    assert np.array_equal(moved, [call['direction'] is not None for call in said]), \
+        'the spine calls where the engine does not transfer, or the other way'
+    assert np.array_equal(np.where(held < 0, held / 2, held)[moved],
+                          np.array([call['required'] for call in said])[moved]), \
+        'the engine holds other support than the call requires'
+    assert np.array_equal(value, gross - np.where(held > 0, 0.75 * held, held)), \
+        'the closeout credits the collateral at another haircut than its side'
+    for side in (moved & (held > 0), moved & (held < 0), ~moved):
+        assert side.sum() >= 200, 'the paths do not hold every side of the call'
 
 
 def test_collateral_and_margin_are_two_balances_and_the_call_reads_the_first():
@@ -426,10 +474,13 @@ def test_a_set_omitting_its_support_amounts_and_assets_holds_a_zero_csa():
     independent amount, each one row at rating 1 of nothing, and no collateral asset - so a
     collateralised set stating neither marks and holds bit for bit as the set stating those zeros
     and four empty asset tables, where it once failed the run on the support it could not read.
+    No asset is cash in the balance currency cut by nothing, so a sole cash row stating only that
+    currency, neither haircut, marks and holds bit for bit the same.
 
     KILLING MUTATIONS: the support amounts' completion back to empty lists, whose `.value()` fails
     the set; a container's completion handed over as its children's wire defaults, the tables as
-    the four characters `'null'` read as assets."""
+    the four characters `'null'` read as assets; a haircut read off the row by name with no
+    convention, which fails the set's compile on the row stating none."""
     zeros = {dial: listed((1, 0.0)) for dial in (
         'Independent_Amount', 'Received_Threshold', 'Posted_Threshold', 'Minimum_Received',
         'Minimum_Posted')}
@@ -437,13 +488,14 @@ def test_a_set_omitting_its_support_amounts_and_assets_holds_a_zero_csa():
     runs = []
     for terms in (omitted, dict(omitted, Credit_Support_Amounts=zeros, Collateral_Assets={
             table: [] for table in ('Cash_Collateral', 'Bond_Collateral', 'Equity_Collateral',
-                                    'Commodity_Collateral')})):
+                                    'Commodity_Collateral')}),
+                  dict(omitted, Collateral_Assets={'Cash_Collateral': [{'Currency': 'EUR'}]})):
         context = derivus.Context()
         context.load_json((json.dumps(engine_job(terms)), 'zero csa'))
         _, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
         result = out['Netting'].sub_structures[0].obj.Calc_res
         runs.append([np.asarray(result[key][0]) for key in ('Value', 'Collateral')])
-    assert all(np.array_equal(omits, states) for omits, states in zip(*runs))
+    assert all(np.array_equal(a, b) for run_ in runs[1:] for a, b in zip(runs[0], run_))
     assert np.unique(runs[0][1]).size > 1, 'the balance never moves, so the CSA reads nothing'
 
 

@@ -146,7 +146,8 @@ CalibrationInfo = namedtuple('CalibrationInfo', 'param correlation delta')
 ARX1Fit = namedtuple('ARX1Fit', 'phi mu sigma gamma resid garch')
 DealDataType = namedtuple('DealDataType', 'Instrument Factor_dep Time_dep Calc_res')
 Partition = namedtuple('Partition', 'DealMTMs Collateral_Cash Funding_Cost Cashflows')
-Collateral = namedtuple('Collateral', 'Haircut Amount Currency Funding_Rate Collateral_Rate Collateral')
+Collateral = namedtuple('Collateral', 'Haircut_Posted Haircut_Received Amount Currency Funding_Rate '
+                                      'Collateral_Rate Collateral')
 
 # define 1, 2 and 3d risk factors - add more as development proceeds
 DimensionLessFactors = ['Correlation']

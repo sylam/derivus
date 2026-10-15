@@ -173,7 +173,7 @@ A correlation is not a leaf; its delta is a bump ([decision 12](../limitations.m
 | counterparty default, deterministic or simulated hazard | the bank's own default: no DVA, no bilateral CVA |
 | wrong-way risk through a declared correlation with a simulated hazard | wrong-way risk with a deterministic hazard, or any jump-at-default |
 | netting of everything in the run | several counterparties in one run |
-| thresholds, minimum transfers, independent amount, cash, bond and equity collateral, a margin period of risk split into settlement and liquidation | `Haircut_Received`, `Commodity_Collateral`, `Netted`, `Apply_Closeout_When_Uncollateralized`; rating-dependent CSA amounts (the first entry is read); interest on collateral over the closeout |
+| thresholds, minimum transfers, independent amount, cash, bond and equity collateral, a haircut per direction (collateral posted delivered at face over one less `Haircut_Posted`, collateral held credited at one less `Haircut_Received`), a margin period of risk split into settlement and liquidation | `Commodity_Collateral`, `Netted`, `Apply_Closeout_When_Uncollateralized`; rating-dependent CSA amounts (the first entry is read); interest on collateral over the closeout |
 | funding cost and benefit over a risk-free curve, survival-weighted | funding of initial margin (MVA), capital (KVA) |
 | exposure, PFE and CVA off one outer model, the run's `Model Configuration` | a historical outer for PFE beside a risk-neutral one for CVA in the same run ([decision 7](../limitations.md#decisions-waiting-on-the-desk)) |
 
@@ -181,7 +181,6 @@ A correlation is not a leaf; its delta is a bump ([decision 12](../limitations.m
 
 | limitation | size |
 | --- | --- |
-| one haircut, `Haircut_Posted`, is applied whichever side holds the asset | [Model Limitations](../limitations.md#the-engine), UNMEASURED |
 | collateral is called only on simulation dates | unmeasured; a finer grid reduces it ([Container](../valuation/container.md#nettingcollateralset)) |
 | the collateralised autocall's CVA delta reads short of its ladder below 16,384 paths | 8.0% short at 1,024 paths to within 1.4% at 16,384, four seeds ([Model Limitations](../limitations.md#the-autocall-tarf-and-barrier-pricers)) |
 | the boundary correction holds still over its bandwidth only at the declared path count | no dependence resolved over bandwidths 0.00125 to 0.08 at 16,384 paths; a 24% fall at 2,048 ([Model Limitations](../limitations.md#the-autocall-tarf-and-barrier-pricers)) |
