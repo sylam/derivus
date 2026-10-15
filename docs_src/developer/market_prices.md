@@ -285,7 +285,8 @@ and is judged on the smile alone. Each segment is a damped Newton (`Xi_Solve_Ite
 `test_logvar2fj_json.py::test_the_fit_reprices_its_atm_strip_fits_its_wings_and_writes_every_field`.
 
 **The walk is a closed form on the quotes' own grid.** Both factors are linear in their shocks, so a
-block's path is one cumulative sum (`utils.LogVar2FJ.ou_path`); under `Invert_Spot` the measure shift
+block's path is one prefix sum of its shocks, a product with a triangular ones matrix
+(`utils.LogVar2FJ.ou_path`); under `Invert_Spot` the measure shift
 is the state's own `√V`, so that case keeps the recursion. A block ends at every quoted maturity,
 forward window end and bucket knot, so the fit reads at a maturity what a pricer reads there.
 

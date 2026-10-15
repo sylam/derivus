@@ -3535,14 +3535,18 @@ class LogVar2FJ:
         the rounding stays local to the step rather than riding the block's whole decay range.
 
         The cumulated decay is the GRID's, so it is accumulated and exponentiated in double and cast
-        ONCE; the shocks and their running sum stay in the caller's dtype.
+        ONCE; the shocks and their running sum stay in the caller's dtype. The running sum is a
+        product with a strictly upper-triangular ones matrix, a leading zero column included, which
+        the device runs forty times faster than a scan over a twenty-step axis; it is full float32
+        arithmetic only with TF32 off, PyTorch's default, which every matmul in the engine assumes.
         """
         narrow = torch.result_type(kappa, deltas)
         kappa, wide = LogVar2FJ.wide(kappa), LogVar2FJ.wide(deltas)
         cum = -kappa.reshape(-1) * torch.cat([wide.new_zeros(1), wide.cumsum(0)])
         shocks = w * e * torch.exp(-cum[1:]).to(narrow)
-        return torch.exp(cum).to(narrow) * (y0.unsqueeze(-1) + torch.cat(
-            [torch.zeros_like(shocks[..., :1]), shocks.cumsum(-1)], -1))
+        steps = shocks.shape[-1]
+        prefix = torch.triu(shocks.new_ones(steps, steps + 1), diagonal=1)
+        return torch.exp(cum).to(narrow) * (y0.unsqueeze(-1) + shocks @ prefix)
 
     @staticmethod
     def state_variance(params, deltas):

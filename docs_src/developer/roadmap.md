@@ -83,11 +83,9 @@ to close.
   pure step replays bit-identically to eager and is worth 7.6x on one row of 32,768 paths, 1.9x at
   256 rows of 4,096 and 1.1x at 2,048 rows, so the ceiling is 2.6x at 1,024 paths and 1.6x at 4,096,
   and the syncs and copies go first; `torch.compile` is not bit-identical (5e-6 relative) and is out.
-- **The LogVar2FJ walk's cumsum as a matmul** (2026-10-07, S). It takes about a fifth of a value
-  batch on its 21-step axis; a matmul by a 21 x 21 upper-triangular ones matrix is about thirty
-  times faster and equal to 2.3e-7 relative, so the LogVar2FJ documents would re-bank. The
-  inverse-Gaussian root runs in double, about 45% of the batch on a GPU with 1/64-rate double (M).
-  Under a gradient the walk holds 79% of peak memory in its checkpoint segments.
+- **The LogVar2FJ walk's inverse-Gaussian root** (2026-10-07, M). It runs in double, about 45% of
+  a value batch on a GPU with 1/64-rate double. Under a gradient the walk holds 79% of peak memory
+  in its checkpoint segments.
 - **One row per block on a dense reporting grid** (2026-10-07, S). The streamed strip holds every
   time-grid row of a block together, so memory grows with the rows per fixing interval and a daily
   grid can exceed a device that holds a weekly one; one row per block past about twelve rows per
