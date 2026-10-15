@@ -1679,16 +1679,17 @@ def consolidated_risk(document):
 
 
 @app.get('/book/risk', summary="The book's consolidated risk - every counterparty at once")
-def book_risk():
+def book_risk(actor: str = None):
     """The consolidated view's feed: the book's mark and its whole-book gradient, in one answer.
 
     Counterparties do not matter here - the greeks are aggregated over the entire book and there is
     nothing to slice by; the per-set reading is `/book/xva`.
 
-    Computed on a MISS and kept on the live `Book` under `etag`, a hash of everything the run
-    reads, so a blotter polls this on the same beat it polls `/book`. An empty book answers zeros
-    without running anything; a book that will not price answers 422 naming the cause and caches
-    nothing.
+    Under a home the seat `actor` is asked the queue's question for a what-if first - `validate`
+    over the book or a node under it - and a refusal is a 422 in the record's own words. Computed
+    on a MISS and kept on the live `Book` under `etag`, a hash of everything the run reads, so a
+    blotter polls this on the same beat it polls `/book`. An empty book answers zeros without
+    running anything; a book that will not price answers 422 naming the cause and caches nothing.
 
     `mtm` is the sum of `per_deal`, one row per top-level trade; `greeks` is `{factor, tenor?,
     value}` flattened off the gradient frame, trimmed at the last non-zero coordinate; `quotes` is
@@ -1697,6 +1698,9 @@ def book_risk():
     """
     live = live_book()
     document = priced(live.read()[0], 'BaseValuation')
+    if spine.configured():
+        # before the cache: a warm answer served to a seat the cold one refuses is no admission
+        spine.admit(spine.CURIOSITY, actor, book_name(document))
     etag = risk_etag(document)
     answer = live.risk_cache.get(etag)
     if answer is None:
@@ -2476,11 +2480,16 @@ def book_pnl(start: str = None, end: str = None, portfolio: str = None, agreemen
     `explain` adds WHY the positions the window started with made what they made (`PnL.explain`):
     the carry of the start's book rolled to the end's day at its own quotes, the market move per
     risk factor off the start's own sensitivities, and the residual neither explains - three more
-    valuations, run here and recorded nowhere. Refused where the day asked for has no marks. 404
-    where no home is configured.
+    valuations, run here and recorded nowhere, which the seat is first admitted to as the queue
+    admits a what-if (`/book/risk`); a read to now marks the book as it stands and is admitted
+    the same way. Refused where the day asked for has no marks. 404 where no home is configured.
     """
     document, _ = recording().read()
     book = book_name(document)
+    if explain or end is None:
+        # a read to now marks the book as it stands and the explain values it three times more,
+        # on this thread: both are a what-if's work and ask its question first
+        spine.admit(spine.CURIOSITY, actor, book)
     if portfolio is not None and not spine.under(portfolio, book):
         raise HTTPException(422, 'portfolio {!r} is not under book {!r} - a portfolio is a path '
                                  'whose top node is the book'.format(portfolio, book))
@@ -4655,13 +4664,14 @@ class BloombergJob:
             PROGRESS.pop(self.result_id, None)
 
 
-def submit_bloomberg(scope, routine=False):
+def submit_bloomberg(scope, routine=False, actor=None):
     """The terminal round trip as a queued job - the ONE seam `/book/bloomberg` and the metronome
     both ride.
 
     Same job class, same single-worker queue, same result store, so a posted tick and a beat of the
-    cadence are indistinguishable downstream. `routine` is the only thing that separates them, and
-    all it says is "do not provision".
+    cadence are indistinguishable downstream. `routine` says "do not provision", and `actor` is the
+    seat the queue admits the trip under: the one that asked, else the deployment's own
+    (`spine.hub()`), which is the metronome's.
     """
     live = live_book()
     document, etag = live.read()
@@ -4674,7 +4684,7 @@ def submit_bloomberg(scope, routine=False):
     # the tick is TELEMETRY - a repaint superseded by the next one before anything could cite it -
     # and the lane is declared rather than left blank so the absence is a readable decision
     submitted = Job(result_id, BloombergJob(live, scope, result_id, routine), {}, spine.TELEMETRY,
-                    actor=spine.hub(), book=book_name(document))
+                    actor=actor or spine.hub(), book=book_name(document))
     # light, or the book stops ticking for a whole-book recalc and then drains a burst of stale beats
     return {'result_id': result_id,
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
@@ -4682,8 +4692,8 @@ def submit_bloomberg(scope, routine=False):
 
 @app.post('/book/bloomberg', summary="Fetch the desk's surfaces and curve rows and tick the book")
 def book_bloomberg(request: dict):
-    """`{pairs?: [PAIR], expiries?: [LABEL], pillars?: [DELTA]}` - the whole tick, terminal to
-    book, as one queued job.
+    """`{pairs?: [PAIR], expiries?: [LABEL], pillars?: [DELTA], actor?}` - the whole tick,
+    terminal to book, as one queued job.
 
     `DV_Service --tick SECONDS` submits this same job on a cadence, so on a ticking service this
     verb is what FORCES a refresh between beats - and what provisions the workstation, since the
@@ -4710,10 +4720,12 @@ def book_bloomberg(request: dict):
 
     Answers `{result_id, status}` like `/execute`, a terminal round trip being minutes of work:
     `/results/{result_id}` carries `progress` while it runs and the outcome under `stats.Bloomberg`.
-    The id names the ACT rather than the numbers, so two ticks are two fetches.
+    The id names the ACT rather than the numbers, so two ticks are two fetches. `actor` is the seat
+    the queue admits it under, as for every job a request queues.
     """
     return submit_bloomberg(
-        {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request})
+        {key: request[key] for key in ('pairs', 'expiries', 'pillars') if key in request},
+        actor=spine.actor(request.get('actor')) if spine.configured() else None)
 
 
 #: What a verification refuses on where this workstation cannot reach a terminal at all: the map is
@@ -4994,10 +5006,20 @@ class VerifyJob:
             PROGRESS.pop(self.result_id, None)
 
 
+def submit_verify(scope, actor=None):
+    """The verification of `scope` as a queued job, admitted under the seat `actor` that asked."""
+    # a verification is an ACT against the terminal rather than a function of the files, so the
+    # submission clock names it: two verifications of one scope are two trips
+    result_id = content_hash({'securities': scope, 'at': time.perf_counter()})
+    submitted = Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY, actor=actor)
+    return {'result_id': result_id,
+            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
+
+
 @app.post('/book/securities/verify', summary='Re-verify the ticker vocabulary against the terminal')
 def book_securities_verify(request: dict):
-    """`{block?, key?, securities?}` - the named scope re-verified against THIS workstation's
-    terminal, as one queued job.
+    """`{block?, key?, securities?, actor?}` - the named scope re-verified against THIS
+    workstation's terminal, as one queued job admitted under the seat `actor`.
 
     Every entry the map already carries in that scope is re-probed and answered under `verified`,
     anything that has DRIFTED - renamed, unpriced, gone stale, gone entirely - named under
@@ -5026,13 +5048,8 @@ def book_securities_verify(request: dict):
         scope = verify_scope(request)
     except (BloombergFXError, ValueError) as error:
         raise HTTPException(422, str(error))
-    # a verification is an ACT against the terminal rather than a function of the files, so the
-    # submission clock names it: two verifications of one scope are two trips
-    result_id = content_hash({'securities': scope, 'at': time.perf_counter()})
-    submitted = Job(result_id, VerifyJob(scope, result_id), {}, spine.TELEMETRY,
-                    actor=spine.hub())
-    return {'result_id': result_id,
-            'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
+    return submit_verify(
+        scope, actor=spine.actor(request.get('actor')) if spine.configured() else None)
 
 
 #: Which vocabulary block spells the securities a missing price factor is supplied from, by the

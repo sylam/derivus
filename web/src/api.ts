@@ -90,7 +90,7 @@ export const patchMarket = (factor: string, fields: Record<string, unknown>) =>
 export const tickMarket = (quotes: Record<string, unknown>) => postMarket({ quotes });
 // the desk's own scope, fetched and installed as a queued job - polled like an execute
 export const tickBloomberg = () =>
-  call<{ result_id: string; status: string }>('POST', '/book/bloomberg', {});
+  call<{ result_id: string; status: string }>('POST', '/book/bloomberg', signed({}));
 // the bootstrap's own dials: merged into one declared entry, then the market re-bootstrapped
 export const configureBook = (section: string, entry: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/configure', { section, entry, fields });
@@ -107,7 +107,7 @@ export const getSecurities = () => call<SecuritiesAnswer>('GET', '/book/securiti
 export const configureSecurities = (request: Record<string, unknown>) =>
   call<SeedOutcome>('POST', '/book/securities', request);
 export const verifySecurities = (scope: Record<string, unknown>) =>
-  call<{ result_id: string; status: string }>('POST', '/book/securities/verify', scope);
+  call<{ result_id: string; status: string }>('POST', '/book/securities/verify', signed(scope));
 // the desk's two data views. Both are GETs: the risk verb runs the book on a cache miss and
 // answers from the cache afterwards, and the XVA verb never runs anything at all - a recalc is
 // asked for through the MCP verbs, and this client does not have that vocabulary on purpose.

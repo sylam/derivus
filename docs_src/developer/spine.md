@@ -487,11 +487,15 @@ is the next day's. **Held by** `test_pnl.py::test_a_ticket_booked_while_the_mark
 
 `ComputeExecutor.submit` asks before anything runs: `mark` over its book for a standing run,
 `validate` over the book or a node under it otherwise; a refusal files a denial and queues nothing.
-Poll paths (a read's diary, the tick) run under `spine.hub()`, `DV_SPINE_ACTOR`, which a ticking
-desk must grant `validate`. Admission precedes the diary cache, so a settlement file never depends
-on who asked first. **Held by**
+The two reads that value on the request thread, `/book/risk` and the P&L's `explain`, ask a
+what-if's question before they value. A posted tick and a securities verification queue under the
+seat that asked; the poll paths (a read's diary, the metronome's beat) run under `spine.hub()`,
+`DV_SPINE_ACTOR`, which a ticking desk must grant `validate`. Admission precedes the risk and diary
+caches, so no cached answer depends on who asked first. **Held by**
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
-`::test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat`.
+`::test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat`,
+`::test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question`,
+`::test_the_tick_and_the_verification_queue_under_the_seat_that_asked`.
 
 ## The replica and the doorbell {#replica}
 
@@ -630,8 +634,8 @@ Unbuilt parts of the design: a job's files are named by path, not declared in th
 ([before 0.5.0](roadmap.md#before-0-5-0)); the deal tree is the book file with nets written on,
 not composed from the fold; and a print is not yet one fact feeding both a calibration's archive and
 a deal's fixings ([designed, not built](roadmap.md#designed-not-built)). The record's other open
-rows - the log open's full scan, the oracle's blind spots, reads outside admission, settlements
-naming no agreement, legacy trades - are [before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
+rows - the log open's full scan, the oracle's blind spots, settlements naming no agreement,
+legacy trades - are [before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
 the rotation and replay limits are [trust limits](#trust-limits) and the replay tuple's reach is on
 [Model Limitations](../limitations.md#the-engine); one `settle` verb, which verbs take a seat and
 whether a rotation is signed by the key it retires are

@@ -2154,7 +2154,7 @@ def test_a_home_written_before_the_seats_retired_still_books_exports_marks_and_v
         assert answer.status_code == 200, (path, answer.text)
         if path == '/book/marks':
             assert drained(answer.json())['status'] == 'done'
-    assert CLIENT.get('/book/pnl').status_code == 200
+    assert CLIENT.get('/book/pnl', params={'actor': ACTOR}).status_code == 200
     assert oracle.failed(oracle.report(recorded)) == []
 
 
@@ -3771,6 +3771,107 @@ def test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat(recorde
                     str(pytest.raises(spine.SpineRefused, service.submit_bloomberg, {}).value)):
         assert ACTOR in refused and 'validate' in refused, refused
     assert facts(recorded, 'capability_denied')[-1][2]['attempted_type'] == spine.TELEMETRY
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded, desk):
+    """THE TWO READS THAT VALUE ON THE REQUEST THREAD ASK WHAT THE QUEUE ASKS. `/book/risk` values
+    the book on a miss and `/book/pnl?explain=` three times, neither through the queue, so each
+    asks the request's seat a what-if's question - `validate` over the book - before it values:
+    the refusal is a 422 in the record's own words, both reads land on ONE `capability_denied`,
+    and the cold cache stays empty. A RISK ANSWER ALREADY CACHED IS ASKED ABOUT AGAIN: the desk's
+    own read warms it and the stranger is still refused. The seat granted `validate` over the book
+    reads both - the risk off the cache, the explain valuing the position the marks held - and a
+    request naming no seat under a document is refused by name. A P&L read to now marks the book
+    as it stands on this thread too, so it is asked the same question; one to a marked end is not.
+
+    Killing mutations: the admission asked after the cache is read, which serves the stranger the
+    answer the desk's read warmed; the explain's admission dropped, which values the book for a
+    seat holding nothing; and the read to now admitted, which marks the book for one.
+    """
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'},
+                                                 designations={'pnl': 'official'}))
+    assert ticketed('EXEC-RISK').json()['written'] is True
+    for path in ('/book/close', '/book/marks'):
+        answer = CLIENT.post(path, content=dump({'actor': ACTOR}), headers=JSON)
+        assert answer.status_code == 200, answer.text
+    assert drained(answer.json())['status'] == 'done'
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
+    before = head(recorded)
+
+    def risk(**params):
+        return CLIENT.get('/book/risk', params=params)
+
+    def explained(**params):
+        return CLIENT.get('/book/pnl', params=dict(explain='true', **params))
+
+    cold = risk(actor=STRANGER)
+    assert cold.status_code == 422 and not service.BOOK.risk_cache.entries, cold.text
+    said = cold.json()['detail']
+    assert STRANGER in said and 'validate' in said and 'spine-desk' in said, said
+    denials = facts(recorded, 'capability_denied')
+    assert [row[2] for row in denials] == [{'subject': STRANGER, 'verb': 'validate',
+                                            'book': 'spine-desk',
+                                            'attempted_type': spine.CURIOSITY}]
+    assert head(recorded) == before + 1, 'a refused read filed more than the refusal'
+
+    warm = risk(actor=ACTOR)
+    assert warm.status_code == 200, warm.text
+    for again in (risk(actor=STRANGER), explained(actor=STRANGER),
+                  CLIENT.get('/book/pnl', params=dict(actor=STRANGER))):
+        assert again.status_code == 422 and STRANGER in again.json()['detail'], again.text
+    assert facts(recorded, 'capability_denied') == denials, 'a repeated refusal is a second fact'
+    for unnamed in (risk(), explained(), CLIENT.get('/book/pnl')):
+        assert unnamed.status_code == 422 and 'no actor for this act' in unnamed.json()['detail']
+
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')]
+            + [(STRANGER, 'validate', 'spine-desk')])
+    assert risk(actor=STRANGER).json() == warm.json()
+    told = explained(actor=STRANGER)
+    assert told.status_code == 200, told.text
+    assert told.json()['rows'] and told.json()['explain']['carry'] is not None, told.json()
+    assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_the_tick_and_the_verification_queue_under_the_seat_that_asked(recorded, quoting):
+    """A POSTED TICK AND A VERIFICATION ARE THE CALLER'S; the metronome's beat alone is the
+    deployment's. Under a document granting the hub's seat `validate`, a tick posted for a seat
+    holding nothing is refused naming it, the denial's attempted type the TELEMETRY lane, and so is
+    a verification queued for it, whose job names no book and so asks over `*`; a tick or a
+    verification naming no seat is refused by name rather than run as the hub; and the executor's
+    store is exactly what it was. The beat, which names no seat, is still admitted under
+    `DV_SPINE_ACTOR` and runs, refusing the unprovisioned home before it opens a session. The
+    verification is queued through `submit_verify`, since its verb refuses a box with no terminal
+    before it asks.
+
+    Killing mutations: the helper ignoring its `actor`, which queues the stranger's verification
+    under the hub; and the verb passing the hub's seat, which admits the stranger's tick.
+    """
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
+    service.EXECUTOR.queue.join()
+    before = dict(service.EXECUTOR.results)
+
+    posted = CLIENT.post('/book/bloomberg', content=dump({'actor': STRANGER}), headers=JSON)
+    assert posted.status_code == 422, posted.text
+    for said in (posted.json()['detail'], str(pytest.raises(
+            spine.SpineRefused, service.submit_verify, {}, actor=STRANGER).value)):
+        assert STRANGER in said and 'validate' in said, said
+    assert [row[2] for row in facts(recorded, 'capability_denied')] == [
+        {'subject': STRANGER, 'verb': 'validate', 'book': book, 'attempted_type': spine.TELEMETRY}
+        for book in ('spine-desk', '*')]
+    unnamed = CLIENT.post('/book/bloomberg', content=dump({}), headers=JSON)
+    assert unnamed.status_code == 422 and 'no actor for this act' in unnamed.json()['detail']
+    assert 'no actor for this act' in str(
+        pytest.raises(spine.SpineRefused, service.submit_verify, {}).value)
+    assert dict(service.EXECUTOR.results) == before, 'a refused trip reached the queue'
+
+    metronome = service.Metronome(60.0)
+    metronome.beat()
+    service.EXECUTOR.queue.join()
+    beat = CLIENT.get('/results/{}'.format(metronome.pending)).json()
+    assert beat['status'] == 'done', beat
+    assert 'a routine tick never provisions' in beat['stats']['Bloomberg']['refused'][0]
     assert verify_home(recorded)['events'] == head(recorded)
 
 

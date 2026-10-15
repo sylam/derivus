@@ -35,9 +35,6 @@ to close.
   file therefore answers 500 on its status and curves, refuses survival curves and date rolls on a
   bare key, and writes the whole file's factors into itself when one spot is patched; every request
   but the XVA tab's builds its own context, and a market edit makes the XVA tab re-parse the file.
-- **Two reads under admission** (2026-10-11, S). `GET /book/risk` and `GET /book/pnl?explain=` run
-  valuations on the request thread for any caller, seated or not, and `/book/bloomberg` and
-  `/book/securities/verify` queue under the hub's seat whoever asks.
 - **A settlement names its agreement** (2026-09-28, about twenty lines over seven files). A payment
   the diary cannot determine is shared across its instrument's positions by holdings: exact when
   every position's settlement is filed, smeared when one is filed alone, named and unshared over

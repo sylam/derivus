@@ -204,7 +204,7 @@ def actor(named=None, log=None):
 
 def hub():
     """The deployment's own seat, `DV_SPINE_ACTOR`, or None where it names none - what the jobs no
-    request signs run under: the diary read, the tick and the securities verification."""
+    request signs run under: the diary read and the metronome's tick."""
     return os.environ.get(SPINE_ACTOR) or None
 
 

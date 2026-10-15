@@ -383,10 +383,11 @@ standing`, default `curiosity`) and `actor`, the seat the QUEUE admits the job u
 home carries a capabilities document; the lane decides the scope asked for, a standing run being
 the only one that files anything. **`actor` rides every verb that queues work for a caller** —
 `/book/price`, `/book/solve`, `/book/model`, `/book/xva`, `/book/setup`, `/book/structure`,
-`/book/close` and `/book/settlements` — and the poll paths (the diary read, the Bloomberg tick, the
-securities verification) name none and run under `DV_SPINE_ACTOR`. An `actor?` is optional only on
-a home declaring no capabilities document, where an unnamed request runs under `DV_SPINE_ACTOR`;
-under one, a request naming no seat is refused 422:
+`/book/close`, `/book/settlements`, `/book/bloomberg` and `/book/securities/verify`, and as
+`?actor=` the two reads that value, `/book/risk` and `/book/pnl?explain=true`, which are admitted
+as a what-if is — and the poll paths (the diary read, the metronome's tick) name none and run under
+`DV_SPINE_ACTOR`. An `actor?` is optional only on a home declaring no capabilities document, where
+an unnamed request runs under `DV_SPINE_ACTOR`; under one, a request naming no seat is refused 422:
 
 ```json
 {"Calc": {"...": "..."}, "Patch": {"FxRate.ZAR": {"Spot": 19.0}}}

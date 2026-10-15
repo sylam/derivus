@@ -122,7 +122,7 @@ against the terminal. `derivus_bloomberg/README.md` covers the map and the seed.
 | --- | --- | --- | --- |
 | `DV_HOME` | `DV_Service`, `DV_Bloomberg` | `~/.derivus` | the directory holding a desk's own files ([below](#what-lives-on-disk)) |
 | `DV_SPINE_HOME` | `DV_Service`, `DV_Spine` | unset | the spine home to record to, minted by `DV_Spine init`; needs the `enterprise` extra. Unset, the service records nothing and behaves as a plain desk; it never falls back to `DV_Spine`'s default home |
-| `DV_SPINE_ACTOR` | `DV_Service`, `DV_Spine init` | unset; `init` uses the account name | the deployment's own seat: the jobs no request signs (the diary read, the tick, the securities verification) run under it, and so does an unnamed request where no capabilities document is in force |
+| `DV_SPINE_ACTOR` | `DV_Service`, `DV_Spine init` | unset; `init` uses the account name | the deployment's own seat: the jobs no request signs (the diary read, the metronome's tick) run under it, and so does an unnamed request where no capabilities document is in force |
 | `DV_SPINE_SEEDS` | `DV_Service` | the home's `seeds/` | the folder readers start their folds from |
 | `DV_SPINE_JWKS` | `DV_Service` | unset | the path of a JSON Web Key Set file. Set, every request but `/spine/doorbell` must carry an ID token that set verifies; unset, no token is checked |
 | `DV_SPINE_ISSUER` | `DV_Service` | unset | the issuer a token must name; with a key set named, an unset issuer or audience refuses every token |
