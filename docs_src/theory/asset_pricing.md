@@ -157,7 +157,7 @@ surface at the tenor measured from each row. Between quoted expiries and beyond 
 | Surface_Type | Moneyness coordinate | Across expiry | Beyond the quotes |
 |---|---|---|---|
 | `Explicit` | ratio $S/K$ or $F/K$ as the deal declares ($K/S$, $K/F$ inverted); ATM $=1$ | linear in vol | flat in moneyness and expiry |
-| `Relative_Forward` | $(K-F)/F$; ATM $=0$ | linear in vol | flat |
+| `Relative_Forward` | $(K-F)/F$ as a fraction ($-0.1$, never $-10$); ATM $=0$ | linear in vol | flat |
 | `Malz` | $\ln(F/K)$ (or $\ln(S/K)$ as the deal declares); ATM $=0$ | linear in total variance $\sigma^2T$ | flat in moneyness; before the first expiry its vol; after the last its total variance $\sigma_n^2T_n$, so the vol falls as $\sigma_n\sqrt{T_n/T}$ and the forward variance there is zero |
 | `SVI` | $x$ of the sticky rule below | linear in variance $\sigma^2$ | expiry flat |
 | `Skew` | $x$ of the sticky rule below | linear in vol, between the two expiries' smiles | expiry flat; wings as tabled |
@@ -246,8 +246,8 @@ axis must be strictly positive; volatility is linear in moneyness and flat beyon
 
 ### Relative_Forward Surfaces
 
-A moneyness surface on the relative forward moneyness $(K-F)/F$ (ATM at 0), otherwise read as an
-`Explicit` one.
+A moneyness surface on the relative forward moneyness $(K-F)/F$ as a fraction (ATM at 0), otherwise
+read as an `Explicit` one.
 
 ### Malz (Delta-Quoted) Surfaces
 

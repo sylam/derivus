@@ -1,4 +1,5 @@
-"""A Malz `Delta_Surface` names its pillars in the delta its vol surface declares.
+"""A vol surface's moneyness axis means what its type declares: a Malz `Delta_Surface` names its
+pillars in the delta the surface declares, and a `Relative_Forward` axis is (K - F)/F as a fraction.
 
 `Premium_Adjusted` says which: `Yes` the premium-adjusted forward delta (K/F)N(d2), whose
 delta-neutral straddle sits at K = F exp(-sigma^2 T/2), `No` the plain forward delta N(d1), whose
@@ -147,6 +148,20 @@ def test_a_plain_atm_node_sits_at_a_true_half_delta():
     the read there moves to 0.3736.
     """
     assert implied_vol(commodity, malz(), FORWARD, MID_X) == pytest.approx(MID_SIGMA, abs=5e-4)
+
+
+RELATIVE_FORWARD = {'Surface_Type': 'Relative_Forward', 'Surface': utils.Curve([], [
+    [m, t, v] for t in (T, 2 * T) for m, v in ((-0.4, 0.5), (0.0, 0.35), (0.4, 0.5))])}
+
+
+def test_a_relative_forward_axis_is_a_fraction():
+    """A `Relative_Forward` surface is read at (K - F)/F as a fraction: struck at -0.2, the option
+    reprices at the smile's 0.425 there, halfway between the ATM and the -0.4 node.
+
+    Killing mutation: the read at (K - F)/F in percent, which lands on the clamped wing's 0.5.
+    """
+    x = -np.log(0.8)  # (K - F)/F = -0.2
+    assert implied_vol(commodity, RELATIVE_FORWARD, FORWARD, x) == pytest.approx(0.425, abs=1e-6)
 
 
 def test_an_fx_delta_surface_keeps_the_premium_adjusted_delta():
