@@ -3175,6 +3175,10 @@ class SwaptionDeal(Deal):
         F('Rate_Schedule', 'DateList', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float')])),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
+        F('Cash_Settlement_Method', 'Text', default='Cash_Price', convention=True,
+          values=['Cash_Price', 'Par_Yield_Curve'],
+          description='The annuity a cash settlement is struck on: the swap\'s own, or its fixed '
+                      'coupons discounted at the swap rate.'),
         F('Swap_Rate', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Expiry_Date', 'Date', default=''),
@@ -3241,15 +3245,29 @@ class SwaptionDeal(Deal):
         '',
         '#### Cash Settled Swaptions',
         '',
-        '**Settlement_Style** `Cash` pays the option\'s expiry value on **Settlement_Date** (the expiry where',
-        'blank): $V(t)D(t,T)/D(t,t_0)$, held at its expiry value after $t_0$. Cash settlement uses the',
-        'physical annuity $A$; the cash (par-yield) annuity\'s convexity is not modelled, error unmeasured.',
+        '**Settlement_Style** `Cash` pays the option\'s expiry value on **Settlement_Date** $T$ (the expiry',
+        'where blank), held at that value after $t_0$, struck on the annuity **Cash_Settlement_Method** names.',
+        '`Cash_Price` is the swap\'s own annuity $A$, ISDA\'s Cash Price (Collateralized Cash Price where the',
+        'discount curve is the collateral\'s), and the deal is $V(t)D(t,T)/D(t,t_0)$. `Par_Yield_Curve`',
+        'discounts the fixed leg\'s own coupons at the swap rate,',
+        '$A_c(s)=\\sum_k N_k\\tau_k\\prod_{j\\le k}(1+\\tau_j s)^{-1}$, which on a regular 30/360 leg is ISDA\'s',
+        'unadjusted par yield annuity, and is',
+        '',
+        '$$V(t)=\\omega\\,D(t,T)\\,A_c\\big(s(t)\\big)\\,\\mathcal B_\\delta\\big(s(t),k,\\sigma\\sqrt{t_0-t}\\big),$$',
+        '',
+        'the market formula, $A_c$ frozen at the forward swap rate. Against a one-factor Hull-White fitted',
+        'to the same vol, a 1Y into 5Y payer at the money and 100bp either side reads 0.1% to 0.3% of its',
+        'value low (under 0.6bp of notional) on a curve sloped from 1% to 6%, where the swap\'s own annuity',
+        'reads it 2.3% to 2.4% high.',
         '',
         '#### Limitations',
         '',
         'An expiry before the base date is refused by name. A swap effective after the expiry (forward',
-        'start) or amortising reads the surface at the vanilla expiry and tenor above; neither is refused',
-        'and neither is adjusted, error unmeasured.'])
+        'start) or amortising exercises into exactly the swap its legs make, but reads its vol at the',
+        'vanilla point above, expiry $t_0$ and tenor $T_2-T_1$, unadjusted. Against a one-factor Hull-White',
+        'fitted to that point at 5% mean reversion, a 1Y option on a 5Y swap amortising to a tenth marks',
+        '3.5% low and one on a 5Y swap starting a year after its expiry 5.1% high on a flat 4% curve, and',
+        '21% low and 29% high on a curve sloped from 1% to 6%.'])
 
     def reset(self, calendars):
         super(SwaptionDeal, self).reset()
@@ -3310,6 +3328,7 @@ class SwaptionDeal(Deal):
         if self.field['Settlement_Style'] == 'Cash':
             # the day it pays, the one its reset registered
             field_index['Settlement'] = (max(self.settlement_currencies[self.field['Currency']]) - base_date).days
+            field_index['Par_Yield'] = self.field['Cash_Settlement_Method'] == 'Par_Yield_Curve'
         field_index['Cash_Settled'] = self.field['Settlement_Style'] != 'Physical'
         field_index['Underlying_Swap_maturity'] = utils.DayCount.accrual(
             base_date, (self.field['Swap_Maturity_Date'] - self.field['Swap_Effective_Date']).days,
@@ -3418,7 +3437,17 @@ class SwaptionDeal(Deal):
                 torch.squeeze(utils.calc_discount_rate(discount, days.clip(min=0).reshape(-1, 1), shared), dim=1)
                 for days in (factor_dep['Settlement'] - deal_time[:, utils.TIME_GRID_MTM], tenor_in_days)
                 )
-            value = utils.held_past_expiry(pvbp * theo_price, tenor_in_days, None) * to_settlement / to_expiry
+            if factor_dep['Par_Yield']:
+                # the fixed coupons discounted at the swap rate, compounded period by period, frozen
+                # at the forward: Black on the cash annuity, the market formula
+                fixed = child_map['CFFixedInterestListDeal'].Factor_dep['Cashflows'].dual()
+                accrual = fixed.tn[:, utils.CASHFLOW_INDEX_Year_Frac]
+                annuity = torch.sum(
+                    buy_sell['CFFixedInterestListDeal'] * fixed.tn[:, utils.CASHFLOW_INDEX_Nominal] * accrual *
+                    torch.exp(-torch.cumsum(torch.log1p(st.unsqueeze(-1) * accrual), dim=-1)), dim=-1)
+                value = utils.held_past_expiry(annuity * theo_price, tenor_in_days, None) * to_settlement
+            else:
+                value = utils.held_past_expiry(pvbp * theo_price, tenor_in_days, None) * to_settlement / to_expiry
             pricing.cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], value[-1])
 
             mtm = FX_rep * value

@@ -95,9 +95,15 @@ Grouped by where a validator meets them.
 - **An Asian carries one flat rate, and the double Asian one vol** (2026-10-11). The discrete Asian
   forwards every sample at the carry $\log(F(t,T)/S)/\tau$; the double Asian reads one ATM vol at
   expiry for both strips. UNMEASURED on a sloped curve or a term-structured surface.
-- **A cash-settled swaption is priced on the physical annuity** (2026-10-11), without the cash
-  annuity's convexity; an amortising or forward-start swaption prices on the vanilla expiry and
-  tenor, unrefused. UNMEASURED.
+- **An amortising or forward-start swaption reads the vanilla vol** (2026-10-11). It exercises into
+  exactly the swap its legs make, within 4e-11 on a float64 Hull-White run, but reads the surface at
+  its expiry and the tenor from `Swap_Effective_Date` to `Swap_Maturity_Date`, unadjusted. Against a
+  one-factor Hull-White fitted to that point's at-the-money vol at 5% mean reversion, a 1Y option
+  on a 5Y swap amortising to a tenth marks 3.5% of its value low and one on a 5Y swap starting a
+  year after its expiry 5.1% high on a flat 4% curve, both nil at no reversion; on a curve sloped
+  from 1% to 6%, 21% low and 29% high (25 and 54bp of notional), 18% and 23% at no reversion, the
+  normal model's lognormal vol moving with the shape's own rate level. The fix is a model choice: a
+  basket or co-terminal calibration for the amortising, a mid-curve vol for the forward start.
 
 ### The engine {#the-engine}
 

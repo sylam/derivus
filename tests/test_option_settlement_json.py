@@ -27,6 +27,7 @@ import torch
 
 import derivus
 import test_declared_defaults as book
+import trial_rates
 from derivus import utils
 from derivus.config import CustomJsonEncoder
 
@@ -233,22 +234,38 @@ SWPT = next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT')
 SWPT_PAID = book.WORLD_EXPIRY + pd.DateOffset(days=40)
 CASH_SWPT = dict(SWPT, Reference='CSWPT', Settlement_Style='Cash', Settlement_Date=SWPT_PAID,
                  Children=[dict(leg, Reference='C' + leg['Reference']) for leg in SWPT['Children']])
+#: The rates trial's amortising swaption settled in cash on the par yield annuity, paid with the twin
+AMORT = next(deal for deal in trial_rates.DEALS if deal['Reference'] == 'SWPT_AMORT')
+YIELD_SWPT = dict(AMORT, Reference='YSWPT', Settlement_Style='Cash', Settlement_Date=SWPT_PAID,
+                  Cash_Settlement_Method='Par_Yield_Curve',
+                  Children=[dict(leg, Reference='Y' + leg['Reference']) for leg in AMORT['Children']])
+
+
+def cash_annuity(rate, items):
+    """A fixed leg's coupons discounted at `rate`, compounded period by period, by hand."""
+    tau = np.array([row['Accrual_Year_Fraction'] for row in items])
+    coupons = np.array([row['Notional'] for row in items]) * tau
+    rate = np.asarray(rate, dtype=float)[..., None]
+    return (coupons * np.exp(-np.cumsum(np.log1p(tau * rate), axis=-1))).sum(axis=-1)
 
 
 @functools.lru_cache(maxsize=None)
 def swaptions():
     """One float64 credit Monte Carlo of the declared-defaults world, a Hull-White on both curves:
-    the swaption, its cash twin, and the swap it delivers beside a unit paid on the twin's day, each
-    in a netting set of its own - `(dates, {set: ledger}, {reference: profile})`."""
+    the swaption, its cash twin, the swap it delivers beside a unit paid on the twin's day, and the
+    amortising par yield swaption beside the swap it becomes, each in a netting set of its own -
+    `(dates, {set: ledger}, {reference: profile})`."""
     def held(reference, deals):
         return {'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
                 'Collateralized': 'False', 'Children': deals}
 
     swap = [dict(leg, Reference='SWAP' + leg['Reference'][4:]) for leg in SWPT['Children']]
+    amortised = [dict(leg, Reference='AMORTISED' + leg['Reference'][10:]) for leg in AMORT['Children']]
     unit = {'Object': 'FixedCashflowDeal', 'Reference': 'UNIT', 'Currency': 'USD',
             'Discount_Rate': 'USD', 'Amount': 1.0, 'Payment_Date': SWPT_PAID}
     calc, out = book.simulated(
-        [held('PHYSICAL', [SWPT]), held('CASH', [CASH_SWPT]), held('SWAP', swap + [unit])],
+        [held('PHYSICAL', [SWPT]), held('CASH', [CASH_SWPT]), held('SWAP', swap + [unit]),
+         held('YIELD', [YIELD_SWPT]), held('AMORTISED', amortised)],
         ('USD', 'USD-PROJ'), prec=torch.float64, Generate_Cashflows='Yes'
         )
     sets = calc.netting_sets.sub_structures[0].sub_structures
@@ -327,6 +344,60 @@ def test_a_cash_swaption_is_discounted_on_to_its_settlement_and_either_style_exp
             context.run_job()
         message = str(refusal.value)
         assert all(word in message for word in (deal['Reference'], 'Option_Expiry_Date', '2027-08-03', needs)), message
+
+
+def test_a_par_yield_swaption_is_black_on_its_coupons_discounted_at_the_swap_rate():
+    """Settled in cash on `Par_Yield_Curve`, the swaption is struck on its fixed coupons discounted
+    at the swap rate s, `A_c(s) = sum N tau prod (1 + tau s)^-1`, and marks the market formula
+    `D(0, T) A_c(s) Black(s, k, sigma, t0)`: the declared-defaults swaption struck at its forward,
+    payer and receiver, paid 40 days after the expiry, against that by hand off the world's flat
+    4% discount and 4.5% projection curves and its flat 20% surface, to 1e-12. The projection
+    above the discount is what parts the annuities: on one flat curve they agree to 1e-6.
+
+    Killing mutation: the swap's own annuity restored, 9,707.85 for the payer where it marks
+    9,625.17.
+    """
+    years = lambda day: (day - book.WORLD_BASE).days / 365.0
+    discount = lambda day: math.exp(-book.DISCOUNT[0] * years(day))
+    fixed, floating = (leg['Cashflows']['Items'] for leg in SWPT['Children'])
+    forward = sum(row['Notional'] * math.expm1(book.PROJECTION[0] * row['Accrual_Year_Fraction'])
+                  * discount(row['Payment_Date']) for row in floating) / sum(
+        row['Notional'] * row['Accrual_Year_Fraction'] * discount(row['Payment_Date']) for row in fixed)
+    struck = book.fixed_items(100.0 * forward)
+    payer = dict(CASH_SWPT, Reference='PAYER', Cash_Settlement_Method='Par_Yield_Curve',
+                 Swap_Rate=100.0 * forward, Children=[
+                     dict(SWPT['Children'][0], Reference='PAYER_FIXED',
+                          Cashflows=dict(SWPT['Children'][0]['Cashflows'], Items=struck)),
+                     dict(SWPT['Children'][1], Reference='PAYER_FLOAT')])
+    receiver = dict(payer, Reference='RECEIVER', Payer_Receiver='Receiver', Children=[
+        dict(leg, Reference='RECEIVER' + leg['Reference'][5:],
+             Buy_Sell={'Buy': 'Sell', 'Sell': 'Buy'}[leg['Buy_Sell']]) for leg in payer['Children']])
+    marked, _ = book.marks([payer, receiver])
+    black = forward * math.erf(0.20 * math.sqrt(years(book.WORLD_EXPIRY)) / math.sqrt(8.0))
+    by_hand = discount(SWPT_PAID) * cash_annuity(forward, struck) * black
+    for reference in ('PAYER', 'RECEIVER'):
+        assert float.fromhex(marked[reference]) == pytest.approx(by_hand, rel=1e-12), reference
+
+
+def test_an_amortising_par_yield_swaption_pays_the_cash_annuity_of_the_swap_it_becomes():
+    """Settled in cash on `Par_Yield_Curve`, the amortising swaption pays `A_c(S) max(S - k, 0)` on
+    its settlement date, path by path, and nothing on any other day. S is the swap rate of the swap
+    it becomes on the expiry row - its legs held alone beside it, the floating leg's mark over the
+    fixed leg's annuity - and A_c the fixed leg's own coupons, stepping down with its principal,
+    discounted at S.
+
+    Killing mutation: the swap's own annuity restored, paying `max(U(t0), 0)`, 22,145.52 on the
+    first path that exercises where it owes 21,810.59.
+    """
+    dates, ledgers, profiles = swaptions()
+    expiry, strike = dates.index(book.WORLD_EXPIRY), YIELD_SWPT['Swap_Rate'] / 100.0
+    annuity = -profiles['AMORTISED_FIXED'][expiry] / strike
+    rate = profiles['AMORTISED_FLOAT'][expiry] / annuity
+    paid = np.asarray(ledgers['YIELD'].loc[SWPT_PAID].values, dtype=float)
+    owed = cash_annuity(rate, YIELD_SWPT['Children'][0]['Cashflows']['Items']) * np.maximum(rate - strike, 0.0)
+    assert np.allclose(paid, owed, rtol=1e-12, atol=1e-8)
+    assert (paid > 0.0).any() and (paid == 0.0).any(), 'in and out of the money across the paths'
+    assert not np.asarray(ledgers['YIELD'].drop(SWPT_PAID).values, dtype=float).any()
 
 
 #: Four equity types paying in the payoff currency at the expiry, none stating it
