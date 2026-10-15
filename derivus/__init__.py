@@ -36,7 +36,6 @@ from ._version import version_info, __version__
 # schema FIRST: it assembles `mapping` from the declaring modules, and importing one of those
 # first would have it read a half-initialised module
 from . import schema
-from . import fields
 from . import utils
 from .instruments import construct_instrument
 from .schema import deal_at

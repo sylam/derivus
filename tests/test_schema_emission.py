@@ -200,18 +200,6 @@ def test_every_deal_type_names_the_days_its_tenor_is_read_off():
     assert schema.tenor_fields(instruments.FXForwardDeal)[0][0] == 'Settlement_Date'
 
 
-def test_the_fields_shim_serves_the_same_objects():
-    """`derivus.fields` is deprecated for one release and holds nothing of its own. `fields.mapping`
-    was the documented surface and the package is on PyPI, so an external caller that bound it keeps
-    working - on the same object, not a copy, which is the whole point of the retirement.
-
-    Killing mutation: the shim binding a copy of the store."""
-    assert derivus.fields.mapping is schema.mapping
-    assert derivus.fields.default is schema.default
-    src = inspect.getsource(derivus.fields)
-    assert 'mapping = {' not in src, 'the shim has grown a store of its own'
-
-
 FAMILIES = ('Instrument', 'Factor', 'Process', 'Calculation', 'MarketPrices', 'Calibration')
 
 
