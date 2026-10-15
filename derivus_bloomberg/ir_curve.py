@@ -66,7 +66,7 @@ QUOTE_FIELDS = ('PX_LAST', 'PX_BID', 'PX_ASK', 'LAST_UPDATE_DT')
 BATCH = 50
 
 #: The family this emitter writes for, and the `Quote_Type` it declares. `Par_Rate` is the single
-#: convention `InterestRateCurveParameters` builds: the solve holds every benchmark at PV zero.
+#: convention the `InterestRate` family builds: the solve holds every benchmark at PV zero.
 FAMILY = 'InterestRatePrices'
 QUOTE_TYPE = 'Par_Rate'
 
@@ -1098,7 +1098,7 @@ def reauthor(market_prices, name, block):
 def quote_census(strip):
     """The strip's own account of what the terminal served, for a caller with a screen or a report.
 
-    DECLARED LIMITATION: it is not written into the block. `InterestRateCurveParameters` declares
+    DECLARED LIMITATION: it is not written into the block. The `InterestRate` family declares
     no `Quote_Source` and no `Quote_Timestamp` where the option and HW2F families do, so the
     only block-level provenance a curve block carries is the per-point `Descriptor`, which names
     the ticker and nothing about the census. The per-point EVIDENCE is declared: `Quoted_Bid`,

@@ -648,7 +648,7 @@ def test_the_practical_loop_quotes_to_a_booked_structure(tmp_path):
     from test_service import FX_OPTION, fx_vol_quotes
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        sections={'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         ticked = mcp_server.update_market_quotes(json.loads(dump(fx_vol_quotes())))
@@ -689,7 +689,7 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2),
+        sections={'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2),
         newline='\n')
     service.BOOK = service.Book(str(path))
     try:
@@ -787,7 +787,7 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(tmp_path, monkeyp
               'Funding_Rate': 'USD', 'Liquidation_Period': 0.0, 'Settlement_Period': 0.0,
               'Credit_Support_Amounts': {'Counterparty': 'CPTY_A'}}
     document = json.loads(dump(job(
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}})))
+        sections={'Bootstrapper Configuration': {'FXVol': {}}})))
     document['Calc']['Deals']['Deals']['Children'].append(
         {'Instrument': {'.Deal': client}, 'Children': []})
     path = tmp_path / 'book.json'
@@ -844,10 +844,13 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(tmp_path, monkeyp
 def test_the_configuration_is_declared_and_one_dial_is_set(tmp_path):
     """The two configuration tools end to end, through the in-process service: the store read as
     the declarations with the menu it NAMES resolved beside it, one dial set on the live book, and
-    a dial that will not build refused by name with the file untouched. The entry is asked for by
-    the factor the family writes and lands under the class name the book spells it by.
+    a dial that will not build refused by name with the file untouched. A family's entry is
+    published under its name and carries its dials alone, the curve family's under `InterestRate`.
+    The book keys the FX surface family by the retired `FXVolSurfaceParameters` and the dial lands
+    under `FXVol`.
 
-    Killing mutation: `configure_book` posting no dials, which re-bootstraps the entry as it stood.
+    Killing mutations: `configure_book` posting no dials, which re-bootstraps the entry as it stood;
+    the store publishing `aliases` beside an entry's dials.
     """
     from test_service import configured_book, surface_nodes
 
@@ -855,17 +858,19 @@ def test_the_configuration_is_declared_and_one_dial_is_set(tmp_path):
     configured_book(path, {'FXVolSurfaceParameters': {}})
     try:
         declared = mcp_server.describe_configuration()
-        entry = declared['sections']['Bootstrapper Configuration']['types']['FXVol']
-        assert entry['aliases'] == ['FXVolSurfaceParameters']
-        assert entry['fields']['Grid_Tolerance']['value'] == 1e-4, 'not the declared default'
+        families = declared['sections']['Bootstrapper Configuration']['types']
+        assert set(families['InterestRate']) == {'fields'}, 'an entry publishes more than its dials'
+        assert families['InterestRate']['fields']['Prices']['value'] == 'InterestRate'
+        assert 'Tol' in families['InterestRate']['fields']
+        assert families['FXVol']['fields']['Grid_Tolerance']['value'] == 1e-4, (
+            'not the declared default')
         assert 'HermiteRT' in declared['interpolations']['InterestRate']
 
         outcome = mcp_server.configure_book(
             'Bootstrapper Configuration', 'FXVol', {'Grid_Tolerance': 0.5})
         assert outcome['written'] is True and outcome['rewrote'] == ['FXVol.USD.ZAR']
         assert json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
-            'Bootstrapper Configuration'] == {
-                'FXVolSurfaceParameters': {'Prices': 'FXVol', 'Grid_Tolerance': 0.5}}
+            'Bootstrapper Configuration'] == {'FXVol': {'Prices': 'FXVol', 'Grid_Tolerance': 0.5}}
         assert surface_nodes(path)
 
         before = path.read_bytes()

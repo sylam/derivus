@@ -29,7 +29,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import pytest
 
 import derivus
-from derivus import schema, structures, utils
+from derivus import bootstrappers, schema, structures, utils
 from test_service import BASE, FACTORS, SPOT, dump, fx_vol_quotes, job
 
 #: The client's numbers, in the market's own terms - USDZAR, a rand notional, a one-year tenor.
@@ -110,7 +110,7 @@ def book():
     factors['FxRate.ZAR'] = dict(FACTORS['FxRate.ZAR'], Spot=1.0 / SPOT)
     document = json.loads(dump(job(
         deals=(), factors=factors,
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}},
+        sections={'Bootstrapper Configuration': {'FXVol': {}},
                   'Market Prices': json.loads(dump(fx_vol_quotes()))})))
     context = derivus.Context().load_json((json.dumps(document), 'book'))
     context.bootstrap()
@@ -697,12 +697,10 @@ def test_a_two_sided_quote_charges_the_spread_and_leaves_the_book_at_mid(book, t
 def with_pillar_moved(document, pillar, delta):
     """The book with ONE quoted pillar's MID moved by `delta`, re-bootstrapped - so the written
     surface is the one those quotes build and the move is the market's, not a shift."""
-    from derivus.bootstrappers import FXVolSurfaceParameters
     out = copy.deepcopy(document)
     points = out['Calc']['MergeMarketData']['ExplicitMarketData'][
         'Market Prices']['FXVolPrices.USD.ZAR']['instrument']['Points']
-    hit = [point for point in points
-           if FXVolSurfaceParameters.descriptor(point) == pillar]
+    hit = [point for point in points if bootstrappers.FXVol.descriptor(point) == pillar]
     assert len(hit) == 1, (pillar, len(hit))
     hit[0]['Quoted_Market_Value'] = float(hit[0]['Quoted_Market_Value']) + delta
     context = derivus.Context().load_json((json.dumps(out), 'moved'))

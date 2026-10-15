@@ -9,7 +9,7 @@ the web screens and order the run, so the three cannot drift. Each family's meth
 
 | where | what |
 | --- | --- |
-| `bootstrappers.py` | the families, `FAMILIES`, `WRITERS`, `bootstrap_order`, `bootstrap_dependents` |
+| `bootstrappers.py` | the families, `FAMILIES`, `family_class`, `bootstrap_order`, `bootstrap_dependents` |
 | `config.py` | `Config.bootstrap(only, wanted)` |
 | `schema.py` | `emit_market_prices`, `emit_configuration`, `MARKET_QUOTE_VALUES`, `update_market_quote` |
 | `service.py` | the verbs that author market data ([below](#verbs)) |
@@ -49,28 +49,29 @@ What the split buys is on [Quote Propagation](quote_propagation.md#protocol).
 A family subclasses `Construction` (a closed form or a square system of roots, repricing its quotes
 exactly) or `ImpliedCalibration` (a least-squares fit); both are `Family`, which completes the
 configured entry from the declarations. The six are tabled on [General](../bootstrapping/general.md).
-A family declares:
+A family is named for the `Price Factors` type it writes under each block's name, which is its
+`Bootstrapper Configuration` key, and declares:
 
 | attribute | what |
 | --- | --- |
 | `market_factor_type` | the `Market Prices` type it reads; declared because it differs from the class name |
-| `price_factor_type` | the `Price Factors` type it writes under each block's name, and its `Bootstrapper Configuration` key |
 | `reads` | the factor types it prices on, which order a run |
 | `fields` | the block's schema as `schema.F`, the quote table included |
 | `quote_instruments` | the instrument types a quote may be, where quotes are instruments |
 | `documentation` | its generated methodology page |
 
 `mapping['MarketPrices']` carries the families and the value plane, so a client ticks what the guard
-admits without spelling it; `mapping['Configuration']` is one entry per family, its dials the
-declarations less the quote block's Tables and Containers, its class name under `aliases`. **Held by**
+admits without spelling it; `mapping['Configuration']` is one entry per family, keyed by its name,
+its dials the declarations less the quote block's Tables and Containers. **Held by**
 `test_schema_emission.py::test_the_configuration_store_is_the_families_own_declarations`.
 
-**Extending.** Declare the attributes, implement `bootstrap(...)` writing
-`price_factors['<price_factor_type>.<name>']`, and add the class to `FAMILIES`, which the registry
-and the schema read. Read the family's own written factor as its [warm start](#warm-starts); declare
-the four value keys on the quote row (`schema.QUOTE_TWO_WAY`) if a tick should move it without a
-recompile; for `Quote_Sensitivity`, leave the connected parameters in `calibrated` and the leaves in
-`quote_leaves` for `Config.bootstrap` to harvest. The schema gates are parametrised over families
+**Extending.** Name the class for the type it writes, declare the attributes, implement
+`bootstrap(...)` writing `price_factors['<ClassName>.<name>']`, and add the class to `FAMILIES`,
+which `family_class` and the schema read. Read the family's own written factor as its [warm
+start](#warm-starts); declare the four value keys on the quote row (`schema.QUOTE_TWO_WAY`) if a
+tick should move it without a recompile; for `Quote_Sensitivity`, leave the connected parameters in
+`calibrated` and the leaves in `quote_leaves` for `Config.bootstrap` to harvest. The schema gates
+are parametrised over families
 (`test_schema_emission.py::test_the_quote_block_declares_what_the_bootstrapper_reads`); the
 partition gate spells them by hand and fails until the new one is added
 (`test_market_prices_partition.py::test_every_family_partitions_by_the_one_rule_and_round_trips_exactly`).
@@ -103,8 +104,13 @@ Construction types every dial, so a malformed value refuses by name before a quo
 `Config.bootstrap` raises naming the entry: a bad entry writes no factor rather than a wrong one.
 **Held by** `test_loud_refusals.py::test_a_family_refusing_at_construction_is_refused_by_name`.
 
-**Keyed by what a family writes** (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`), so a
-section reads as the factors a run writes; class names stay aliases in `WRITERS`. `Prices` is the
+**Keyed by what a family writes** (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`), the
+family's class name, so a section reads as the factors a run writes. The loader files an entry keyed
+`InterestRateCurveParameters` or `FXVolSurfaceParameters` under `InterestRate` or `FXVol`
+(`config.family_entries`), logged naming both, and so does the service's read of its book, whose
+next write carries the family's name. **Held by**
+`test_interest_rate_prices.py::test_a_book_keying_a_family_by_its_retired_name_writes_the_same_factors`,
+`test_service.py::test_a_configured_dial_re_bootstraps_the_factor_it_sizes`. `Prices` is the
 stem of the `Market Prices` type an entry routes on: `derivus_bootstrap` routes blocks to workers
 off it and refuses an entry without it, while in process a missing one is a warning, the family
 knowing its type.
@@ -198,7 +204,7 @@ discounts on it, and a surface is held with whichever leg is not coming; the res
 ## `InterestRatePrices` — a curve solved from its quotes {#interestrateprices}
 
 The residual, solver and refusals are on
-[Interest Rates](../bootstrapping/interest_rates.md#interestratecurveparameters).
+[Interest Rates](../bootstrapping/interest_rates.md#interestrate).
 
 **The block is the curve's definition.** Beside the quotes it declares the conventions they were
 authored under (`Calendar`, `Spot_Days`, each leg's frequency and day count, `Compounding`), and
@@ -419,7 +425,7 @@ Limits of the market data available, not of the engine:
 
 An FX smile ticks in as ATM, risk-reversal and butterfly quotes by delta, and the pricers read a
 log-moneyness surface; this family converts one into the other
-([specification](../bootstrapping/fx_and_equity.md#fxvolsurfaceparameters)).
+([specification](../bootstrapping/fx_and_equity.md#fxvol)).
 
 **The grid is pinned, because refinement is compile-time work.** The solve refines a log-moneyness
 grid until it resolves the smile to `Grid_Tolerance`, so the grid is a function of the quotes;

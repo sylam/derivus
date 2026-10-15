@@ -764,7 +764,7 @@ def test_the_quote_is_never_authored_into_the_deal():
 
 def test_the_two_way_and_the_stamp_ride_beside_the_mid():
     """`Quoted_Bid`, `Quoted_Ask` and `Timestamp` are `schema.MARKET_QUOTE_VALUES` - the plane a
-    tick may move - and `InterestRateCurveParameters.Points` declares all three as optional columns
+    tick may move - and the `InterestRate` family's `Points` declares all three as optional columns
     on the value side, read by nothing in the solve.
 
     Killing mutation: the bid left off the row."""
@@ -1200,8 +1200,8 @@ def test_every_authored_shape_solves_to_par():
     """
     import pandas as pd
     import torch
-    from derivus.bootstrappers import (BenchmarkInstruments, InterestRateCurveParameters,
-                                       author_quote)
+    from derivus import bootstrappers
+    from derivus.bootstrappers import BenchmarkInstruments, author_quote
     from derivus.instruments import deal_node
     from derivus.schema import completed
     from derivus.config import ModelParams
@@ -1214,7 +1214,7 @@ def test_every_authored_shape_solves_to_par():
         currency = block['Currency']
         price_factors = {'FxRate.{}'.format(currency): {
             'Domestic_Currency': None, 'Interest_Rate': curve, 'Priority': 1, 'Spot': 1.0}}
-        InterestRateCurveParameters({}, device, torch.float32).bootstrap(
+        bootstrappers.InterestRate({}, device, torch.float32).bootstrap(
             {'Base_Date': base, 'Base_Currency': currency}, {}, price_factors, ModelParams(),
             {name: {'instrument': copy.deepcopy(block), 'Children': []}}, {})
         assert 'InterestRate.{}'.format(curve) in price_factors

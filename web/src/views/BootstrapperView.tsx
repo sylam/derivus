@@ -15,11 +15,6 @@ function menuOf(schema: Schema, name?: string): Record<string, string[]> {
   return (name ? stores[name] : undefined) ?? {};
 }
 
-/** Which declared entry a book's key files under - its own spelling, or the one whose aliases
- * carry it, so an older book's class-name key finds its family. */
-const declarationFor = (types: NonNullable<ConfigSection['types']>, key: string) =>
-  types[key] ?? Object.values(types).find((type) => type.aliases.includes(key));
-
 /** A family the book does not configure yet, added from the store's own list: the verb completes
  * the empty entry with the family's routing stem and re-bootstraps, so the entry appears at every
  * declared default. */
@@ -153,12 +148,11 @@ function sectionPages(schema: Schema, name: string, declared: ConfigSection, val
   }
   const types = declared.types;
   const stated = Object.keys(isObject(value) ? value : {});
-  const missing = Object.keys(types).filter((family) =>
-    !stated.some((key) => declarationFor(types, key) === types[family]));
+  const missing = Object.keys(types).filter((family) => !stated.includes(family));
   return [
     ...stated.map((key) => ({ id: `${name}/${key}`, folder: name, label: key, content: (
       <DescriptorPanel
-        title={`${name} — ${key}`} fields={declarationFor(types, key)?.fields}
+        title={`${name} — ${key}`} fields={types[key]?.fields}
         values={isObject(value) && isObject(value[key]) ? value[key] : {}}
         onAmend={configure && ((field, wire) => configure(key, { [field]: wire }))} />
     ) })),

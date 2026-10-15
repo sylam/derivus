@@ -166,7 +166,7 @@ def book(base, order=('EUR', 'ZAR'), deals=(), **sections):
             'System Parameters': {'Base_Currency': base, 'Base_Date': BASE},
             'Price Factors': factors(base),
             'Market Prices': fx_vol_quotes(order),
-            'Bootstrapper Configuration': {'FXVolSurfaceParameters': {'Prices': 'FXVol'}}},
+            'Bootstrapper Configuration': {'FXVol': {'Prices': 'FXVol'}}},
             **sections)}}}
 
 

@@ -186,7 +186,7 @@ def fx_vol_block(currency, atm, expiries=(0.25, 0.5, 1.0, 2.0, 5.0)):
     smile is small and symmetric on purpose - the composition reads only the ATM column - so the
     wings make the block complete rather than being priced against.
 
-    EVERY ROW CARRIES A `Timestamp`, which is not optional in practice: `FXVolSurfaceParameters`
+    EVERY ROW CARRIES A `Timestamp`, which is not optional in practice: `bootstrappers.FXVol`
     reads `point['Timestamp']` by direct subscript, so a block without one raises `KeyError` from
     inside the surface build rather than refusing by name. A finding; authored around here.
     """

@@ -2,7 +2,7 @@
 
 `derivus_bloomberg` reads a caller-configured Bloomberg FX volatility snapshot and writes the
 existing Derivus `FXVolPrices` market-price block. It does not construct a smile or price a deal;
-`FXVolSurfaceParameters` remains the owner of those operations.
+the `FXVol` price family remains the owner of those operations.
 
 It also reads a listed **equity option chain** and writes an option quote block
 (`equity_chain`, below). The two halves share one discipline and nothing else: FX calibrates off

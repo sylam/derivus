@@ -200,7 +200,7 @@ def job(nodes, factors=None, **calculation):
                 'InterestRate': 'HullWhite1FactorInterestRateModel'}}},
             'Price Models': {'HullWhite1FactorInterestRateModel.ZAR': dict(HW1F),
                              'HullWhite1FactorInterestRateModel.USD': dict(HW1F)},
-            'Bootstrapper Configuration': {'InterestRateCurveParameters': {}},
+            'Bootstrapper Configuration': {'InterestRate': {}},
             'Valuation Configuration': {}, 'Price Factors': factors or FACTORS}}}}
 
 

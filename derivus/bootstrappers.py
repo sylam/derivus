@@ -130,9 +130,9 @@ class Construction(Family):
     lognormal term structure. Deterministic - closed form or a chain of one-dimensional roots, no
     fitted parameters - and cheap enough to run on every tick.
 
-    Every family declares `market_factor_type` (the `Market Prices` type it selects work by),
-    `price_factor_type` (the `Price Factors` block it writes, which keys its `Bootstrapper
-    Configuration` entry) and `reads` (what orders a run against what other families write).
+    Every family is named for the `Price Factors` type it writes, which keys its `Bootstrapper
+    Configuration` entry, and declares `market_factor_type` (the `Market Prices` type it selects
+    work by) and `reads` (what orders a run against what other families write).
     """
 
 
@@ -142,7 +142,7 @@ class ImpliedCalibration(Family):
     ladder, Clewlow-Strickland off energy futures options. Seconds rather than milliseconds, and
     only worth running when what it reads has moved.
 
-    Declares the same three as a construction.
+    Named and declared as a construction is.
     """
 
 
@@ -222,9 +222,6 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
     )
 
     market_factor_type = 'CSForwardPriceModelPrices'
-    #: The `Price Factors` type this family writes, which is what a `Bootstrapper
-    #: Configuration` entry names it by - here, its own class name.
-    price_factor_type = 'CSForwardPriceModelParameters'
     #: The `Price Factors` types this family READS, which is what orders a run against
     #: what other families write: `Energy`, `Forward_Volatility` and `Discount_Rate`.
     reads = ('ForwardPrice', 'ForwardPriceVol', 'InterestRate')
@@ -668,7 +665,7 @@ class OptionQuoteFamily(ImpliedCalibration):
     def fx_atm_coordinate(vol_at, T, iterations=64):
         """`(x, vol)` of the delta-neutral straddle on a Malz surface at expiry `T`.
 
-        The ATM convention `FXVolSurfaceParameters` writes and `Factor2D.malz_skew` places the +-0.5
+        The ATM convention `FXVol` writes and `Factor2D.malz_skew` places the +-0.5
         label's vol at: `K = F exp(-sigma^2 T/2)`, so `x = sigma^2 T / 2` with `sigma` the surface's
         own vol at that x. Reading at `x = 0` would be the ATMF vol, a different number on a skewed
         smile. Iterated as a fixed point - a contraction, slope of order 1e-2 here.
@@ -2739,9 +2736,6 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
     )
 
     market_factor_type = 'LogVar2FJModelPrices'
-    #: The `Price Factors` type this family writes, which is what a `Bootstrapper
-    #: Configuration` entry names it by - here, its own class name.
-    price_factor_type = 'LogVar2FJModelParameters'
 
     identification_note = ('the forward-smile targets: the later buckets of Rho_S and Beta are '
                            'identified by them and by nothing else')
@@ -3053,7 +3047,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             LVReport(fit).log()
 
             if connect:
-                factor = utils.Factor(self.price_factor_type,
+                factor = utils.Factor(type(self).__name__,
                                       utils.check_rate_name(market_price)[1:])
                 self.calibrated.update({
                     utils.Factor(factor.type, factor.name + (name,)): value
@@ -3063,7 +3057,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
     def factor_name(self, market_price):
         """The `Price Factors` key one block's fit reads its warm start off and writes back to."""
         return utils.check_tuple_name(
-            utils.Factor(self.price_factor_type, utils.check_rate_name(market_price)[1:]))
+            utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:]))
 
     def fit_for(self, market_price, implied_params, sys_params, price_models, price_factors,
                 factor_interp, declared=None):
@@ -3574,9 +3568,6 @@ class GBMAssetPriceTSModelParameters(Construction):
     )
 
     market_factor_type = 'GBMAssetPriceTSModelPrices'
-    #: The `Price Factors` type this family writes, which is what a `Bootstrapper
-    #: Configuration` entry names it by - here, its own class name.
-    price_factor_type = 'GBMAssetPriceTSModelParameters'
     factor_types = {'Asset_Price_Volatility': utils.TwoDimensionalFactors}
     #: What this family READS: the surface `Asset_Price_Volatility` names, whose ATM column the vol
     #: curve is built from - and which `FXVolPrices` may have written in the same run.
@@ -3612,7 +3603,7 @@ class GBMAssetPriceTSModelParameters(Construction):
         delta-neutral straddle strike), so they are taken straight off it.
 
         Provenance is evidence, not a name: a hand-authored surface can sit under a name a quote
-        block also uses. What is checked is the fingerprint `FXVolSurfaceParameters` leaves and
+        block also uses. What is checked is the fingerprint `FXVol` leaves and
         `pinned_grid` reads back - the `Malz` subtype beside its `Grid_Tolerance`.
 
         Anything else is authored data, and the ATM column is `np.interp` at moneyness 1. Where the
@@ -3621,7 +3612,7 @@ class GBMAssetPriceTSModelParameters(Construction):
         KNOWN LIMITATION: moneyness 1 is the ATM coordinate of a RATIO surface, while a `Malz`
         axis is log(F/K), whose ATM is at 0 - so a hand-authored Malz surface reads a wing.
         """
-        family = FXVolSurfaceParameters
+        family = FXVol
         quoted_name = utils.check_tuple_name(utils.Factor(
             family.market_factor_type, vol_factor.name))
         quoted = market_prices.get(quoted_name)
@@ -4314,9 +4305,6 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
     )
 
     market_factor_type = 'HullWhite2FactorModelPrices'
-    #: The `Price Factors` type this family writes, which is what a `Bootstrapper
-    #: Configuration` entry names it by - here, its own class name.
-    price_factor_type = 'HullWhite2FactorModelParameters'
     #: What this family READS: the curve its swaptions price off, the surface
     #: `Swaption_Volatility` names, and the quanto FX vol `implied_process` takes off the
     #: GBM family's own written block where the rate currency is not the base.
@@ -4946,7 +4934,7 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
     rate = utils.check_rate_name(curve)
     name = '.'.join(rate)
     factor = price_factors[utils.check_tuple_name(utils.Factor('InterestRate', rate))]
-    stated = declared_defaults(InterestRateCurveParameters, dict(
+    stated = declared_defaults(InterestRate, dict(
         {'Currency': factor['Currency'], 'Day_Count': factor['Day_Count']}, **dict(conventions)))
     block = dict({key: stated[key] for key in (
         'Currency', 'Day_Count', 'Discount_Rate', 'Fixed_Day_Count', 'Float_Day_Count',
@@ -5006,11 +4994,11 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
             points, block['Discount_Rate'] or name, block['Currency'], price_factors, factor_interp,
             base_date, calendars)):
         point['Quoted_Market_Value'] = float(quote)
-    return '{}.{}'.format(InterestRateCurveParameters.market_factor_type, name), {
+    return '{}.{}'.format(InterestRate.market_factor_type, name), {
         'instrument': dict(block, Points=points)}
 
 
-class InterestRateCurveParameters(Construction):
+class InterestRate(Construction):
     """A zero curve solved from deposit, FRA, swap and FX forward quotes, priced by the engine's
     own pricers.
 
@@ -5029,9 +5017,6 @@ class InterestRateCurveParameters(Construction):
     Two blocks make a multi-curve set - an OIS discount curve, then a projection curve discounting
     on it - and `Discount_Rate` is what orders them. A blank `Discount_Rate` discounts on the curve
     being built, the single-curve configuration and the harder solve.
-
-    Unlike the other families this writes an `InterestRate` price factor rather than a
-    `<ClassName>` parameter block, which is what `price_factor_type` declares.
     """
     documentation = (
         'Interest Rates',
@@ -5088,9 +5073,6 @@ class InterestRateCurveParameters(Construction):
          ]
     )
     market_factor_type = 'InterestRatePrices'
-    #: The `Price Factors` type this family writes. The others write a block named for their own
-    #: class, so the emitter recovers it; no rule recovers `InterestRate` from this class name.
-    price_factor_type = 'InterestRate'
     #: What this family READS, off the benchmark deals its own discovery pulls: the curves a block
     #: forecasts and discounts on, and the reporting `FxRate` a cross-currency benchmark crosses at.
     #: `InterestRate` is what it also WRITES, which orders its blocks among themselves and is what
@@ -5574,7 +5556,7 @@ class InterestRateCurveParameters(Construction):
         tolerance is the SET's strictest, so a coupled set rides or refuses whole, and `slot`
         rechecks that the artifact's plan is the one still standing.
         """
-        if factor.type != cls.price_factor_type:
+        if factor.type != cls.__name__:
             return None
         market_price = utils.check_tuple_name(utils.Factor(cls.market_factor_type, factor.name))
         block = market_prices.get(market_price, {}).get('instrument')
@@ -5626,7 +5608,7 @@ class InterestRateCurveParameters(Construction):
         return artifact.nodes(theta, factor), artifact.artifact_id
 
 
-class FXVolSurfaceParameters(Construction):
+class FXVol(Construction):
     """An `FXVol` surface bootstrapped from the ATM / risk-reversal / butterfly quotes it ticks in as.
 
     An FX smile is quoted in DELTA - one ATM vol per expiry and, per delta pillar, the risk reversal
@@ -5654,9 +5636,6 @@ class FXVolSurfaceParameters(Construction):
     **A point may carry a two-way, and nothing here reads it.** `Quoted_Bid`/`Quoted_Ask` ride the
     row beside the mid for `derivus.structures` to charge a spread on. Every line below addresses
     `Quoted_Market_Value` by name, so what this writes is the mid surface either way.
-
-    Like `InterestRatePrices` this writes a typed price factor rather than a `<ClassName>`
-    parameter block, which is what `price_factor_type` declares.
     """
     documentation = (
         'Fx And Equity',
@@ -5718,9 +5697,6 @@ class FXVolSurfaceParameters(Construction):
          ]
     )
     market_factor_type = 'FXVolPrices'
-    #: The `Price Factors` type this family writes - a `Malz` `FXVol`, minus the delta surface: it
-    #: arrives SOLVED, so `Factor2D.solves_delta_surface` is false and the pinned grid survives.
-    price_factor_type = 'FXVol'
     #: What this family READS out of `Price Factors`: nothing. The quotes are the block's own and
     #: the only factor it looks at is the `FXVol` it wrote last time, for the pinned grid.
     reads = ()
@@ -6015,7 +5991,7 @@ class FXVolSurfaceParameters(Construction):
                 # the quote's own instrument wins on conflict
                 block = dict(self.param, **implied_params['instrument'])
                 vol_name = utils.check_tuple_name(
-                    utils.Factor(self.price_factor_type, market_factor.name))
+                    utils.Factor(type(self).__name__, market_factor.name))
 
                 tolerance = float(block['Grid_Tolerance'])
                 # the one bounds= the engine reads: outside it there is no grid to refine to
@@ -6054,7 +6030,7 @@ class FXVolSurfaceParameters(Construction):
                     # so the twin is put in the same order rather than assumed to be in it
                     rows = np.array(surface)
                     order = np.lexsort((rows[:, 0], rows[:, 1]))
-                    self.calibrated[utils.Factor(self.price_factor_type, market_factor.name)] = \
+                    self.calibrated[utils.Factor(type(self).__name__, market_factor.name)] = \
                         torch.tensor(rows[order, 2], dtype=self.dtype) + (
                                 carried[order] - carried[order].detach())
                     self.quote_leaves[market_price] = (
@@ -6073,35 +6049,28 @@ class FXVolSurfaceParameters(Construction):
 
 
 def family_class(btype):
-    """The price family a `Bootstrapper Configuration` entry names: the `Price Factors` TYPE it
-    writes, or its class name, which stays an alias for every book written before that. An unknown
-    name refuses by name, listing both spellings."""
-    cls = WRITERS.get(btype)
-    if cls is None:
-        raise ValueError(
-            'Bootstrapper Configuration names {}, which is no price family; the families are {} '
-            '(or, as older books spell them, {})'.format(
-                btype, ', '.join(sorted(x.price_factor_type for x in FAMILIES)),
-                ', '.join(sorted(x.__name__ for x in FAMILIES))))
-    return cls
+    """The price family a `Bootstrapper Configuration` entry names - the class of that name, the
+    `Price Factors` type it writes - refused by name where `FAMILIES` holds none."""
+    names = [cls.__name__ for cls in FAMILIES]
+    if btype not in names:
+        raise ValueError('Bootstrapper Configuration names {}, which is no price family; the '
+                         'families are {}'.format(btype, ', '.join(sorted(names))))
+    return globals()[btype]
 
 
 def bootstrap_order(section):
     """The `Bootstrapper Configuration` entries in the order they must RUN: a topological sort over
-    what each family writes (`price_factor_type`) against what it reads (`reads`), so a curve is
-    solved before the fit that prices on it whatever order the file gives, and both the in-process
-    and the multiprocessing path take the same order.
+    what each family writes, its name, against what it reads (`reads`), so a curve is solved before
+    the fit that prices on it whatever order the file gives, and both the in-process and the
+    multiprocessing path take the same order.
 
     A read no CONFIGURED family writes carries no edge - that factor is already in `Price Factors`,
     which is the ordinary case - and a family reading what it writes orders only its own blocks,
     which is its own job. Independent entries keep the file's order, `topological_sort` walking the
     mapping as it was built. A cycle refuses by name.
     """
-    writes = {}
-    for name in section:
-        writes.setdefault(family_class(name).price_factor_type, []).append(name)
-    graph = {name: sorted({writer for kind in family_class(name).reads
-                           for writer in writes.get(kind, ()) if writer != name})
+    graph = {name: sorted(kind for kind in family_class(name).reads
+                          if kind in section and kind != name)
              for name in section}
     unresolved = dict(graph)
     try:
@@ -6128,14 +6097,14 @@ def block_readers(market_prices):
     writer = {cls.market_factor_type: cls for cls in FAMILIES}
     blocks = {name: writer[utils.check_rate_name(name)[0]] for name in market_prices
               if utils.check_rate_name(name)[0] in writer}
-    curves = InterestRateCurveParameters
+    curves = InterestRate
     named = {name: {block.get('Discount_Rate')} | curves.benchmark_curves(block, name)
              for name, cls in blocks.items() if cls is curves
              for block in [market_prices[name].get('instrument', {})]}
     readers = {}
     for reader, cls in blocks.items():
         for written, wrote in blocks.items():
-            if written != reader and wrote.price_factor_type in cls.reads and (
+            if written != reader and wrote.__name__ in cls.reads and (
                     cls is not curves or wrote is not curves
                     or '.'.join(utils.check_rate_name(written)[1:]) in named[reader]):
                 readers.setdefault(written, []).append(reader)
@@ -6160,9 +6129,9 @@ def bootstrap_precedents(market_prices, wanted):
 
 
 def bootstrap_writers(market_prices, factors):
-    """The blocks writing one of the price factors named in `factors` - a block writes its family's
-    `price_factor_type` under its own name."""
-    writes = {cls.market_factor_type: cls.price_factor_type for cls in FAMILIES}
+    """The blocks writing one of the price factors named in `factors` - a block writes the type
+    its family is named for under its own name."""
+    writes = {cls.market_factor_type: cls.__name__ for cls in FAMILIES}
     return {name for name in market_prices
             for rate in [utils.check_rate_name(name)] if rate[0] in writes
             and utils.check_tuple_name(utils.Factor(writes[rate[0]], rate[1:])) in factors}
@@ -6199,13 +6168,7 @@ def construct_bootstrapper(btype, param, dtype=torch.float32):
     return family_class(btype)(param, device, dtype)
 
 
-#: THE SIX PRICE FAMILIES: the registry below and every refusal naming them read this one tuple.
+#: THE SIX PRICE FAMILIES: `family_class` and every refusal naming them read this one tuple.
 FAMILIES = (CSForwardPriceModelParameters, LogVar2FJModelParameters,
             GBMAssetPriceTSModelParameters, HullWhite2FactorModelParameters,
-            InterestRateCurveParameters, FXVolSurfaceParameters)
-
-#: THE REGISTRY: what a `Bootstrapper Configuration` entry may name a family by -> the family, in
-#: both spellings - the `Price Factors` type it writes, so a section reads as the factors it
-#: produces, and the class name every book written before that spells it by.
-WRITERS = dict([(x.price_factor_type, x) for x in FAMILIES]
-               + [(x.__name__, x) for x in FAMILIES])
+            InterestRate, FXVol)

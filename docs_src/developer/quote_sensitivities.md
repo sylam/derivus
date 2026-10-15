@@ -29,7 +29,7 @@ the family's:
 | `utils.damped_newton`, `CalibrationSolve`, `residual_jacobians` | the curve solve and its backward |
 | `utils.LeastSquaresSolve`, `utils.Residual`, `utils.active_set` | the least-squares node and its operand |
 | `SwaptionCalibration`, `utils.create_market_swaps`, `utils.market_swap_class` | the HW2F operand and splice |
-| `GBMAssetPriceTSModelParameters.integrated_vol`, `FXVolSurfaceParameters.carried_sigma` | the constructions' tapes |
+| `GBMAssetPriceTSModelParameters.integrated_vol`, `bootstrappers.FXVol.carried_sigma` | the constructions' tapes |
 | `Calculation.factor_leaf`, `Config.bootstrap` | the attachment and the harvest |
 | `structures.vol_risk`, `service.quote_rows` | the readers of `dV/dq` |
 
@@ -300,7 +300,7 @@ off the grid. Otherwise the column is the surface at moneyness 1.
 
 ## The delta solve {#the-delta-solve}
 
-`FXVolSurfaceParameters` turns ATM, RR and BF into a log-moneyness surface — the strangle pair
+`bootstrappers.FXVol` turns ATM, RR and BF into a log-moneyness surface — the strangle pair
 `ATM + BF ± RR/2` (its twin bit-identical), the wing pair, a bisection per pinned node ([Equity and
 FX](../bootstrapping/fx_and_equity.md)) — so `dV/d(RR)` and `dV/d(BF)` exist.
 

@@ -27,9 +27,10 @@ import pandas as pd
 from ._version import __version__
 from . import utils
 from . import schema
+from . import bootstrappers
 from .bootstrappers import (bootstrap_dependents, bootstrap_order, bootstrap_precedents,
                             bootstrap_writers, construct_bootstrapper, family_class,
-                            market_prices_for, InterestRateCurveParameters, FAMILIES)
+                            market_prices_for, FAMILIES)
 from .calculation import calculation_class
 from .instruments import construct_instrument, deal_node, Deal
 from .stochasticprocess import construct_calibration_config, construct_process, process_class
@@ -119,6 +120,21 @@ def correlation_names(pairs):
     for (rate1, rate2), value in pairs.items():
         nested.setdefault(rate1, {}).setdefault(rate2, value)
     return nested
+
+
+#: Retired `Bootstrapper Configuration` keys and the family each names, so a book written before
+#: the families took the names of what they write reads as it did, for one release
+RETIRED_FAMILY_KEYS = {'InterestRateCurveParameters': 'InterestRate',
+                       'FXVolSurfaceParameters': 'FXVol'}
+
+
+def family_entries(section):
+    """A `Bootstrapper Configuration` section with each entry under a retired key filed under its
+    family's name, logged naming both."""
+    for key in sorted(RETIRED_FAMILY_KEYS.keys() & section.keys()):
+        logging.info('Bootstrapper Configuration: {} is read as {}'.format(
+            key, RETIRED_FAMILY_KEYS[key]))
+    return {RETIRED_FAMILY_KEYS.get(key, key): entry for key, entry in section.items()}
 
 
 class CustomJsonEncoder(json.JSONEncoder):
@@ -631,7 +647,7 @@ class Config(object):
 
         A bootstrapper handed blocks that leaves no `<type>.*` price factor behind silently did
         nothing (misnamed Market Prices block), so every family handed blocks is checked against
-        its own declared `price_factor_type`; one handed none is logged and passed over.
+        the type it writes, its own name; one handed none is logged and passed over.
         """
         prices = self.params.get('Market Prices')
         if prices is None:
@@ -683,10 +699,9 @@ class Config(object):
             except Exception as refusal:
                 raise ValueError(
                     'Bootstrapper Configuration {0} refuses the declarations it was given, so no '
-                    '{1} price factor is written and the first deal that wants one fails on a '
-                    'missing factor instead. Fix the entry or remove it - {2}'.format(
-                        bootstrapper_name, family_class(bootstrapper_name).price_factor_type,
-                        refusal)) from refusal
+                    '{0} price factor is written and the first deal that wants one fails on a '
+                    'missing factor instead. Fix the entry or remove it - {1}'.format(
+                        bootstrapper_name, refusal)) from refusal
 
             bootstrapper.bootstrap(self.params['System Parameters'],
                                    self.params['Price Models'],
@@ -699,7 +714,7 @@ class Config(object):
             # `_build_factor_state`. A WHOLE run drops its OWN keys first, so one that stops
             # publishing leaves no stale connected tensor standing; a narrowed run replaces what it
             # covered and leaves every block it did not look at standing.
-            written, block = bootstrapper.price_factor_type, bootstrapper.market_factor_type
+            written, block = bootstrapper_name, bootstrapper.market_factor_type
             if selected is None:
                 self.calibrated_factors = {
                     factor: theta for factor, theta in self.calibrated_factors.items()
@@ -728,7 +743,7 @@ class Config(object):
         them, so two EXECUTEs over one `(artifact, quotes)` mint the same leaf. One family answers
         today: the one whose operator has a unique fixed point.
         """
-        return InterestRateCurveParameters.propagate(
+        return bootstrappers.InterestRate.propagate(
             self.artifacts, factor, self.params['Market Prices'],
             self.params['Price Factor Interpolation'], self.params['System Parameters']['Base_Date'])
 
@@ -1316,8 +1331,11 @@ class Config(object):
 
     def merge_section(self, name, data):
         """One loaded section merged onto the section of that name: `Correlations` re-keyed by the
-        `(name, name)` pair the cholesky looks it up under, a `ModelParams` by its own last-wins
-        verb. Both load sites read it, the market-data file and a job's explicit block."""
+        `(name, name)` pair the cholesky looks it up under, `Bootstrapper Configuration` by
+        `family_entries`, a `ModelParams` by its own last-wins verb. Both load sites read it, the
+        market-data file and a job's explicit block."""
+        if name == 'Bootstrapper Configuration':
+            data = family_entries(data)
         self.params[name].update(correlation_pairs(data) if name == 'Correlations' else data)
 
     def parse_json(self, filename):

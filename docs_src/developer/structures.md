@@ -235,7 +235,7 @@ the runner is that data's only reader.
 
 - `quote_two_way` reads each used pillar's half-spread `max(0, (ask − bid)/2)` — a crossed print
   reads zero-wide, a desk never paying a client for a broken print — keyed by
-  `FXVolSurfaceParameters.descriptor`, the name its `dV/dq` leaf is published under. A pillar is a
+  `bootstrappers.FXVol.descriptor`, the name its `dV/dq` leaf is published under. A pillar is a
   bucket; nothing is interpolated.
 - `leg_vega` runs one first-order greeks valuation of the leg alone, on the client's paper, with
   `Quote_Sensitivity` on the `FXVolPrices` block (`vol_risk`). A leg walking a fitted spot model

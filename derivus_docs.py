@@ -302,8 +302,7 @@ class ConstructMarkdown(object):
         section_dir, module_name = self.METHODOLOGY[store]
         module = importlib.import_module(module_name, package=self.package_name)
         for name, cls in inspect.getmembers(module, inspect.isclass):
-            declared = name if store == 'Calculation' else cls.__dict__.get(
-                'market_factor_type' if store == 'MarketPrices' else 'price_factor_type')
+            declared = cls.__dict__.get('market_factor_type') if store == 'MarketPrices' else name
             doc = cls.__dict__.get('documentation')
             if declared == item_type and cls.__module__ == module.__name__ and doc:
                 # the anchor mkdocs gives the `## `Class`` heading the section page writes
@@ -440,7 +439,7 @@ class ConstructMarkdown(object):
                 content = [f"# {item_type}", f"JSON configuration for the `{item_type}` type.", ""]
 
                 # A store HOLDS its descriptors: an instrument type composes the sections that hold
-                # them, a bootstrapper entry carries its aliases beside them, and a factor, process,
+                # them, a bootstrapper entry files them under `fields`, and a factor, process,
                 # quote family or calculation type IS them
                 if store == 'Instrument':
                     actual_fields = {}
@@ -448,11 +447,8 @@ class ConstructMarkdown(object):
                         actual_fields.update(mapping_data.get('sections', {}).get(group_name, {}))
                 elif store == 'Bootstrapper Configuration':
                     actual_fields = field_identifiers.get('fields', {})
-                    aliases = field_identifiers.get('aliases', [])
-                    content.append('An entry of the `Bootstrapper Configuration` section, keyed '
-                                   f'`{item_type}`' + (' (an older book may key it '
-                                   f"`{'`, `'.join(aliases)}`)" if aliases else '') + '.')
-                    content.append('')
+                    content.extend(['An entry of the `Bootstrapper Configuration` section, keyed '
+                                    f'`{item_type}`.', ''])
                 else:
                     actual_fields = field_identifiers
 
@@ -737,11 +733,11 @@ class ConstructMarkdown(object):
             lines.append(f"| `{name}` | {drives} | {published('.stochasticprocess', cls)} | "
                          f"{tested(name)} |")
         lines += ['', '## Calibration to market prices', '',
-                  '| family | quotes | writes | method | tests |', '| --- | --- | --- | --- | --- |']
+                  '| family, the type it writes | quotes | method | tests |',
+                  '| --- | --- | --- | --- |']
         for cls in bootstrappers.FAMILIES:
             lines.append(f"| `{cls.__name__}` | `{cls.market_factor_type}` | "
-                         f"`{cls.price_factor_type}` | {published('.bootstrappers', cls)} | "
-                         f"{tested(cls.market_factor_type)} |")
+                         f"{published('.bootstrappers', cls)} | {tested(cls.market_factor_type)} |")
         lines += ['', '## Calibration to history', '',
                   'Each estimator fits a model to an archive of observed prices; the methods are on '
                   '[Historical Calibration](calibration/general.md).', '',

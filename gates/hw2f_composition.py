@@ -230,7 +230,7 @@ def run_bootstrappers(config, families):
     """Run exactly `families`, in the order given, through the Context bootstrap verb.
 
     ORDER IS NOT ALPHABETICAL AND HAS TO BE FORCED. `Config.bootstrap` iterates
-    `sorted(self.params['Bootstrapper Configuration'])`, which puts `InterestRateCurveParameters`
+    `sorted(self.params['Bootstrapper Configuration'])`, which puts `InterestRate`
     LAST - behind the swaption fit that reads the curve it builds. So the section is set to one
     family at a time and the verb is called once per stage: the curves, then the FX surface and its
     GBM parameters, then the swaption fit. Every stage is the library's own bootstrap; nothing here
@@ -277,7 +277,7 @@ def solve_curve(config, market_price):
     twice: in the block's own currency units, and as the PAR-RATE move that would close it. The
     second reading needs no root find, because a benchmark's PV is AFFINE in its quote: pricing the
     set once at the quotes and once at the quotes plus one percent locates the par rate exactly,
-    which is the same identity `InterestRateCurveParameters.seed` leans on.
+    which is the same identity `bootstrappers.InterestRate.seed` leans on.
 
     THE BOOTSTRAP VERB RUNS THE WHOLE FAMILY, not one block, so calling this once per block
     re-solves every block each time. That is deliberate rather than tolerated: selecting a single
@@ -286,7 +286,7 @@ def solve_curve(config, market_price):
     strip (12.5 s USD, 7.8 s ZAR live), and the solve is idempotent.
     """
     block = config.params['Market Prices'][market_price]['instrument']
-    run_bootstrappers(config, ['InterestRateCurveParameters'])
+    run_bootstrappers(config, ['InterestRate'])
 
     curve = utils.Factor('InterestRate', utils.check_rate_name(market_price)[1:])
     discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
@@ -992,7 +992,7 @@ def build_and_fit(base_date, blocks, ir_market_prices, swaption_market_price, vo
     curves = {name: solve_curve(config, name) for name in ir_market_prices}
 
     if fxvol_market_price is not None:
-        run_bootstrappers(config, ['FXVolSurfaceParameters'])
+        run_bootstrappers(config, ['FXVol'])
         surface = '.'.join(utils.check_rate_name(fxvol_market_price)[1:])
         config.params['Market Prices'][
             'GBMAssetPriceTSModelPrices.{}'.format(fx_currency)] = fx_gbm_block(surface)

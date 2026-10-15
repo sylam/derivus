@@ -3949,14 +3949,14 @@ class SIMM(Calculation):
     def walk(self, index):
         """The price factors trade `index` reads, refused by name where one is missing or an
         interest rate no configured family bootstraps - a curve pasted in as nodes is no margin."""
-        from .bootstrappers import InterestRateCurveParameters
+        from . import bootstrappers
 
         reference = self.booked(index)
         universe = self.config.factor_universe()
         if universe['missing']:
             raise ValueError('SIMM: trade {} reads {}, which the market data does not '
                              'carry'.format(reference, ', '.join(universe['missing'])))
-        family = InterestRateCurveParameters.market_factor_type + '.'
+        family = bootstrappers.InterestRate.market_factor_type + '.'
 
         def quoted(rate):
             return family + '.'.join(rate[1:]) in self.claimed or (
@@ -3976,13 +3976,13 @@ class SIMM(Calculation):
     def bumps(self, index):
         """Every move ISDA defines a sensitivity of trade `index` by, in a fixed order: each
         benchmark quote of every curve block the walk stands on, then each other mapped factor."""
-        from .bootstrappers import (InterestRateCurveParameters, bootstrap_precedents,
-                                    bootstrap_writers, quote_nodes)
+        from . import bootstrappers
+        from .bootstrappers import bootstrap_precedents, bootstrap_writers, quote_nodes
 
         walk = self.walk(index)
         reference = self.trades[index][1]['Instrument'].field.get('Reference')
         prices, factors = self.config.params['Market Prices'], self.config.params['Price Factors']
-        family, writers = InterestRateCurveParameters.market_factor_type + '.', \
+        family, writers = bootstrappers.InterestRate.market_factor_type + '.', \
             bootstrap_writers(prices, walk)
         others = sorted(name for name in writers if not name.startswith(family))
         if others:
@@ -3991,10 +3991,10 @@ class SIMM(Calculation):
         moves, base_date = [], self.config.params['System Parameters']['Base_Date']
         for block in sorted(bootstrap_precedents(prices, writers)):
             factor = utils.check_tuple_name(utils.Factor(
-                InterestRateCurveParameters.price_factor_type, utils.check_rate_name(block)[1:]))
+                bootstrappers.InterestRate.__name__, utils.check_rate_name(block)[1:]))
             stated = self.coordinates(factor, reference)
-            instrument = declared_defaults(InterestRateCurveParameters, prices[block]['instrument'])
-            used = InterestRateCurveParameters.used_quotes(instrument, block)
+            instrument = declared_defaults(bootstrappers.InterestRate, prices[block]['instrument'])
+            used = bootstrappers.InterestRate.used_quotes(instrument, block)
             if instrument['Quote_Propagation'] != 'No':
                 raise ValueError(
                     'SIMM: {} declares Quote_Propagation {} - every valuation rides its '
@@ -4003,7 +4003,7 @@ class SIMM(Calculation):
                         block, instrument['Quote_Propagation']))
             # what moves a price factor in place re-solves no block, so no block may read one
             read = sorted(curve for curve in {instrument['Discount_Rate']} |
-                          InterestRateCurveParameters.benchmark_curves(instrument, block)
+                          bootstrappers.InterestRate.benchmark_curves(instrument, block)
                           if curve and family + curve not in prices)
             if read or any(point['DealType'] in self.OUTRIGHTS for point in used) or (
                     stated is not None and self.MOVES[stated['RiskType']][1] != 'quote'):
@@ -4016,7 +4016,7 @@ class SIMM(Calculation):
             if stated is None:
                 continue
             discount = instrument['Discount_Rate'] or '.'.join(utils.check_rate_name(block)[1:])
-            tenors = InterestRateCurveParameters.quote_knots(
+            tenors = bootstrappers.InterestRate.quote_knots(
                 quote_nodes(used, discount), base_date, 'ACT_365', self.config.holidays)
             positions = [position for position, point in enumerate(instrument['Points'])
                          if any(point is quote for quote in used)]

@@ -114,7 +114,7 @@ from .schema import (PRICES_KEY, mapping, deal_at, declared_fields, instrument_o
                      splice_deal, stated_messages, tables_of, tenor_fields, update_market_quote,
                      validate_instrument, value_message, walk_job_deals)
 from ._version import __version__
-from .config import Config, ModelParams, as_json, decode_wire
+from .config import Config, ModelParams, as_json, decode_wire, family_entries
 from .instruments import construct_instrument
 from .calculation import Diary, calculation_class
 from .spine import SETTLED, Collateral, PnL, book_name, diary, export_settlements, replay
@@ -563,7 +563,14 @@ class Book:
 
     def _read(self):
         etag = self._current()
-        return json.loads(self._cache[3]), etag
+        document = json.loads(self._cache[3])
+        # a retired family key reads under the family's name: every verb sees one spelling, and
+        # the next write carries it
+        market = document['Calc'].get('MergeMarketData', {}).get('ExplicitMarketData') or {}
+        if 'Bootstrapper Configuration' in market:
+            market['Bootstrapper Configuration'] = family_entries(
+                market['Bootstrapper Configuration'])
+        return document, etag
 
     def read(self):
         """`(wire document, etag)` - a fresh parse, safe for the caller to mutate."""
@@ -1549,13 +1556,8 @@ def quote_blocks(prices, universe):
     and every block one of those stands on - a curve discounting on another is one system with it,
     so the other's quotes move the book too. A block the book reaches through nothing is left out,
     so a market file carrying a few hundred fitted names refits the ones this book prices."""
-    writes = {cls.market_factor_type: cls.price_factor_type for cls in bootstrappers.FAMILIES}
-    factors = {name: utils.check_tuple_name(utils.Factor(writes[family], tuple(rest)))
-               for name in prices for family, *rest in [utils.check_rate_name(name)]
-               if family in writes}
-    read = set(universe)
     return bootstrappers.bootstrap_precedents(
-        prices, [name for name, factor in factors.items() if factor in read])
+        prices, bootstrappers.bootstrap_writers(prices, set(universe)))
 
 
 def quote_context(run):
@@ -3855,27 +3857,25 @@ def book_survival(request: dict):
 
 
 def bootstrapper_entry(market, entry, fields):
-    """One `Bootstrapper Configuration` entry with `fields` merged in, under the key the BOOK uses:
-    an older book's class-name spelling is kept rather than renamed. An entry stating no `Prices`
-    is completed with the stem its family routes on - the one key `derivus_bootstrap` cannot route
-    without - while one stating another family's keeps it and is refused for it. A dial is read
-    against the family's own declaration first, so a number posted as text names the dial rather
-    than the cast; constructing the family off the result is the rest of the validation, before a
-    quote is read."""
+    """One `Bootstrapper Configuration` entry, the family named `entry`, with `fields` merged in.
+    An entry stating no `Prices` is completed with the stem its family routes on - the one key
+    `derivus_bootstrap` cannot route without - while one stating another family's keeps it and is
+    refused for it. A dial is read against the family's own declaration first, so a number posted
+    as text names the dial rather than the cast; constructing the family off the result is the rest
+    of the validation, before a quote is read."""
     section = market.setdefault('Bootstrapper Configuration', {})
     family = bootstrappers.family_class(entry)
-    key = next((name for name in section if bootstrappers.family_class(name) is family), entry)
     declared = {f.key: f for f in family.fields}
     for field, value in sorted(fields.items()):
         message = value_message(declared[field], value) if field in declared else None
         if message:
-            raise ValueError('{}: {}'.format(key, message))
-    current = section.get(key)
+            raise ValueError('{}: {}'.format(entry, message))
+    current = section.get(entry)
     merged = {PRICES_KEY: family.market_factor_type[:-len('Prices')],
               **(current if isinstance(current, dict) else {}), **fields}
-    bootstrappers.construct_bootstrapper(key, merged)
-    section[key] = merged
-    return key, merged
+    bootstrappers.construct_bootstrapper(entry, merged)
+    section[entry] = merged
+    return entry, merged
 
 
 def interpolation_method(factor_type, method):
@@ -3967,7 +3967,7 @@ def configure_edit(document, section, entry, fields):
     write, refusal = market_edit(document, {}, {}, bootstrap='Yes')
     if not write:
         return write, refusal
-    written = amend is bootstrapper_entry and bootstrappers.family_class(key).price_factor_type
+    written = amend is bootstrapper_entry and key
     if written and not any(name.startswith(written + '.') for name in market['Price Factors']):
         return False, {'written': False, 'refused': [
             'Bootstrapper {0} wrote no {1}.* price factor - check the Market Prices section'.format(
@@ -3979,10 +3979,10 @@ def configure_edit(document, section, entry, fields):
 @app.post('/book/configure', summary='Set one bootstrapping dial - validated, then re-bootstrapped')
 def book_configure(request: dict):
     """`{section, entry, fields}` - `fields` MERGED into one entry of `Bootstrapper Configuration`
-    (keyed by the price factor a family writes, or the class name an older book spells it by) or of
-    `Price Factor Interpolation`, whose entry is a routed factor TYPE and whose fields are
-    `{method}` for what every factor of it is built with and `{id, method}` for one factor's own
-    rule, a blank method clearing it. A curve's rule is ordinarily set by `POST /book/curve`.
+    (keyed by the family, the price factor it writes) or of `Price Factor Interpolation`, whose
+    entry is a routed factor TYPE and whose fields are `{method}` for what every factor of it is
+    built with and `{id, method}` for one factor's own rule, a blank method clearing it. A curve's
+    rule is ordinarily set by `POST /book/curve`.
 
     A book states every bootstrapping hyperparameter ONCE, in that entry, and every quote block of
     the family is read over it. The change is validated by building what reads it - a malformed
@@ -4008,12 +4008,12 @@ CURVE_FIELDS = ('curve', 'currency', 'discount_rate', 'rows', 'interpolation')
 
 #: The quote blocks a curve verb and the tick both read, and the `Bootstrapper Configuration` entry
 #: that solves one - the family's own declarations, so neither can drift from what it writes.
-CURVE_FAMILY = bootstrappers.InterestRateCurveParameters.market_factor_type
-CURVE_BOOTSTRAPPER = bootstrappers.InterestRateCurveParameters.price_factor_type
+CURVE_FAMILY = bootstrappers.InterestRate.market_factor_type
+CURVE_BOOTSTRAPPER = bootstrappers.InterestRate.__name__
 
 #: The entry that turns a quoted smile into a surface, read off the same declaration, so a set-up
 #: installing one configures what solves it without spelling a family name.
-VOL_BOOTSTRAPPER = bootstrappers.FXVolSurfaceParameters.price_factor_type
+VOL_BOOTSTRAPPER = bootstrappers.FXVol.__name__
 
 
 def curve_interpolation(market, curve):
@@ -5730,7 +5730,7 @@ def spot_model_edit(document, pair, family):
     THE FAMILY ENTRY IS BORROWED FOR THIS RUN AND HANDED BACK: every market tick is a bootstrap, so
     a book left declaring this family would refit on every tick. It is added if missing and removed
     once the fit has run; a book declaring the family itself keeps it. Families run in
-    `bootstrap_order`, what each writes before what reads it, so `FXVolSurfaceParameters` rebuilds
+    `bootstrap_order`, what each writes before what reads it, so `FXVol` rebuilds
     the surface before the fit reads it.
     """
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -5739,7 +5739,7 @@ def spot_model_edit(document, pair, family):
     calibrator = spot_model_family(family)
     params = load(document).current_cfg.params
     # the section is keyed by what a family writes, and its entry names the stem it routes on
-    entry = calibrator.price_factor_type
+    entry = calibrator.__name__
     # the seed turns its own number onto the axis the fit will describe, which is the pair's rule
     fitted = utils.spot_model_pair(
         *structures.split_pair(pair), params['System Parameters'].get('Base_Currency', 'USD'))[0]
@@ -5843,7 +5843,7 @@ def book_model(request: dict):
         block_name, _ = calibrator.fx_surface_block(
             pair, params['Price Factors'], params['System Parameters'],
             params['Price Factor Interpolation'], None,
-            params['Bootstrapper Configuration'].get(calibrator.price_factor_type))
+            params['Bootstrapper Configuration'].get(calibrator.__name__))
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))
     # content addressed on the book it fits: the same calibration over an unmoved book is one

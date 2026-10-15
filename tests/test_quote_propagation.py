@@ -32,8 +32,7 @@ import pytest
 import torch
 
 import derivus
-from derivus import utils
-from derivus.bootstrappers import InterestRateCurveParameters
+from derivus import bootstrappers, utils
 from derivus.config import Config, CustomJsonEncoder, ModelParams
 from derivus.instruments import construct_instrument
 
@@ -84,7 +83,7 @@ def bootstrapped(market_prices, currency=CCY, spot_curve=CURVE, interpolation=No
     if interpolation is not None:
         config.params['Price Factor Interpolation'] = interpolation
     config.params['Market Prices'] = market_prices
-    config.params['Bootstrapper Configuration'] = {'InterestRateCurveParameters': {}}
+    config.params['Bootstrapper Configuration'] = {'InterestRate': {}}
     config.bootstrap()
     return config
 
@@ -92,7 +91,7 @@ def bootstrapped(market_prices, currency=CCY, spot_curve=CURVE, interpolation=No
 def key_of(config, *names):
     """The artifact SLOT a set of blocks in this config addresses."""
     market_prices = config.params['Market Prices']
-    return InterestRateCurveParameters.plan_key(
+    return bootstrappers.InterestRate.plan_key(
         [(name, market_prices[name]['instrument']) for name in (names or (BLOCK,))],
         config.params['Price Factor Interpolation'],
         config.params['System Parameters']['Base_Date'])
@@ -140,7 +139,7 @@ def quotes_of(config, *names):
                      if names[0] in found.members), None)
     return torch.tensor(
         [point['Quoted_Market_Value'] for name in names
-         for point in InterestRateCurveParameters.used_quotes(
+         for point in bootstrappers.InterestRate.used_quotes(
              market_prices[name]['instrument'], name)],
         dtype=DTYPE, device='cpu' if artifact is None else artifact.quotes.device)
 
@@ -153,7 +152,7 @@ def fitted_quotes(prepared, block=BLOCK):
                     if block in found.members)
     start = 0
     for name in artifact.members:
-        used = len(InterestRateCurveParameters.used_quotes(
+        used = len(bootstrappers.InterestRate.used_quotes(
             market_prices[name]['instrument'], name))
         if name == block:
             return artifact.quotes[start:start + used].cpu().numpy()
@@ -464,7 +463,7 @@ def x_world():
         price_factors[curve_of(market_price)] = {
             'Property_Aliases': None, 'Sub_Type': None, 'Currency': 'XXX',
             'Day_Count': 'ACT_365', 'Curve': utils.Curve([], list(zip(
-                InterestRateCurveParameters.quote_knots(knots, BASE, 'ACT_365', {}), truth[curve_of(market_price)])))}
+                bootstrappers.InterestRate.quote_knots(knots, BASE, 'ACT_365', {}), truth[curve_of(market_price)])))}
     for market_price, block in blocks.items():
         for point, quote in zip(block['Points'], par_quotes(
                 block, discount_of(market_price, block), price_factors)):

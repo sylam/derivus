@@ -658,11 +658,10 @@ def emit_configuration(module, interpolation_default):
     """`mapping['Configuration']` - one declaration per market-data SECTION a book states its
     bootstrap in, keyed by the section's own name.
 
-    A `Bootstrapper Configuration` entry is keyed by what its family WRITES, the key the registry
-    resolves, and its dials are `Prices` - the stem of the `Market Prices` type it routes on - plus
-    every scalar the family declares. A Table or a Container is the quote BLOCK's (the ladders and
-    the instrument definitions), never the section's. `aliases` is what else the registry answers
-    to for that family, so an older book's class-name key files under the right entry.
+    A `Bootstrapper Configuration` entry is keyed by its family's name, the type it WRITES, and its
+    dials are `Prices` - the stem of the `Market Prices` type it routes on - plus every scalar the
+    family declares. A Table or a Container is the quote BLOCK's (the ladders and the instrument
+    definitions), never the section's.
 
     `Price Factor Interpolation` REFERENCES the menu beside it rather than restating it, names both
     `ModelParams` halves - the `entry` one method per routed type is written in and the `rules` one
@@ -677,10 +676,7 @@ def emit_configuration(module, interpolation_default):
                                ).descriptor()}
         dials.update({f.key: f.descriptor() for f in cls.fields
                       if f.type not in ('Table', 'Container')})
-        entries[cls.price_factor_type] = {
-            'aliases': sorted(name for name, family in module.WRITERS.items()
-                              if family is cls and name != cls.price_factor_type),
-            'fields': dials}
+        entries[cls.__name__] = {'fields': dials}
     return {'Bootstrapper Configuration': {'types': entries},
             'Price Factor Interpolation': {'entry': 'modeldefaults', 'rules': 'modelfilters',
                                            'key': 'id', 'menu': 'Interpolation_factor_map',

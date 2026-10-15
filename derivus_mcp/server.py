@@ -452,13 +452,13 @@ def describe_factor_type(factor_type: str) -> dict:
 def describe_configuration() -> dict:
     """Every dial the book's bootstrap can be set with, per section - what `configure_book` writes.
 
-    `Bootstrapper Configuration` holds one entry per price family, keyed by the price factor that
-    family WRITES (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`, ...) with the class name an
-    older book spells it by beside it as an alias; the entry's dials are the boxes a fit is solved
-    in, the seeds it starts from and the budgets it stops on, each with the default it stands at
-    where the book states nothing. `Price Factor Interpolation` sets one method per routed curve
-    type, and `interpolations` is that menu. Quote ladders and instrument tables are NOT dials -
-    they belong to the quote block and move through `update_market_quotes`."""
+    `Bootstrapper Configuration` holds one entry per price family, keyed by the family, the price
+    factor it WRITES (`InterestRate`, `FXVol`, `LogVar2FJModelParameters`, ...); the entry's dials
+    are the boxes a fit is solved in, the seeds it starts from and the budgets it stops on, each
+    with the default it stands at where the book states nothing. `Price Factor Interpolation` sets
+    one method per routed curve type, and `interpolations` is that menu. Quote ladders and
+    instrument tables are NOT dials - they belong to the quote block and move through
+    `update_market_quotes`."""
     schema = service().call('GET', '/schema')
     return {'sections': schema['Configuration'],
             'interpolations': schema['Interpolation_factor_map']}
@@ -739,13 +739,13 @@ def configure_book(section: str, entry: str, fields: dict) -> dict:
     """Set the dials the live book bootstraps its market with - `fields` MERGED into one entry
     `describe_configuration` declares, everything else in it standing.
 
-    `section` is `Bootstrapper Configuration` (`entry` the price factor a family writes, or the
-    class name the book spells it by) or `Price Factor Interpolation` (`entry` a routed factor
-    type, `fields` `{"method": ...}` for what every factor of it is built with or `{"id": "<curve
-    name>", "method": ...}` for that one curve's own rule, a blank method clearing it - though a
-    curve's rule is ordinarily set by `configure_curve`). A book states each hyperparameter ONCE
-    here and every quote block of that family is read over it, so this is where a fit's box, seed
-    or budget moves - never inside a quote.
+    `section` is `Bootstrapper Configuration` (`entry` the family, the price factor it writes) or
+    `Price Factor Interpolation` (`entry` a routed factor type, `fields` `{"method": ...}` for what
+    every factor of it is built with or `{"id": "<curve name>", "method": ...}` for that one curve's
+    own rule, a blank method clearing it - though a curve's rule is ordinarily set by
+    `configure_curve`). A book states each hyperparameter ONCE here and every quote block of that
+    family is read over it, so this is where a fit's box, seed or budget moves - never inside a
+    quote.
 
     The change is checked by building what reads it, so a malformed dial is refused by name before
     a quote is read; the whole market is then re-bootstrapped in the same atomic write, and a

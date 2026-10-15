@@ -95,7 +95,7 @@ def canonical(obj):
 def loaded(market_prices, deals=None):
     """A `Context` over a real job carrying `market_prices`, posted as text and rebuilt by the
     decoder, so the blocks these gates hash are the ones a job holds."""
-    document = job(sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}},
+    document = job(sections={'Bootstrapper Configuration': {'FXVol': {}},
                              'Market Prices': market_prices})
     return derivus.Context().load_json((dump(document), 'partition'))
 

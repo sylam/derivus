@@ -212,7 +212,7 @@ class Factor2D(object):
     skew_params = ['ATM_Vol', 'ATM_Ref', 's', 'L', 'R', 'C', 'D', 'lam', 'rho']
     #: The log-moneyness nodes every Malz x-grid refines FROM.
     malz_seed_grid = np.array([-0.5, -0.25, -0.1, 0.0, 0.1, 0.25, 0.5], dtype=float)
-    #: The vol error the refinement drives each midpoint below. `FXVolSurfaceParameters` lets a
+    #: The vol error the refinement drives each midpoint below. `bootstrappers.FXVol` lets a
     #: block override it and falls back to THIS, so the two cannot be different numbers.
     malz_tol = 1e-4
 
@@ -244,7 +244,7 @@ class Factor2D(object):
         self.expiry = self.get_expiry()
         if self.solves_delta_surface():
             # a block carrying deltas is UNSOLVED: solve here, on a grid refined against these
-            # numbers. One bootstrapped by `FXVolSurfaceParameters` arrives solved on its pinned
+            # numbers. One bootstrapped by `bootstrappers.FXVol` arrives solved on its pinned
             # grid and falls straight through
             skews = self.malz_skews(self.param['Delta_Surface'].array, self.expiry)
             self.param['Surface'] = utils.Curve([], self.malz_surface(skews, self.malz_grid(skews)))
@@ -270,7 +270,7 @@ class Factor2D(object):
         `Surface_Type` says two things and only one is about the solver: it names the moneyness
         convention the engine reads at (log(F/K), term-interpolated in total variance), and it says
         a delta smile is the form the block was authored in. A block bootstrapped by
-        `FXVolSurfaceParameters` is the first without the second - it carries the solved
+        `bootstrappers.FXVol` is the first without the second - it carries the solved
         log-moneyness `Surface` on a pinned x-grid, and re-solving would move it on every tick.
         """
         deltas = self.param.get('Delta_Surface')
@@ -333,7 +333,7 @@ class Factor2D(object):
 
         NOT DIFFERENTIABLE: a bisection's iterates are dyadic combinations of the bracket
         ENDPOINTS, so a tape through this loop reports the bracket's derivative rather than the
-        root's. `FXVolSurfaceParameters.carried_sigma` is the derivative twin.
+        root's. `bootstrappers.FXVol.carried_sigma` is the derivative twin.
         """
         x = np.asarray(x, dtype=float)
         sqrt_t = np.sqrt(T)

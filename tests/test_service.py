@@ -919,12 +919,12 @@ def test_a_bloomberg_snapshot_reaches_a_solved_strike(tmp_path):
     surface as load-bearing - the option is unpriceable until the tick lands."""
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        sections={'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         with_option = json.loads(dump(job(
             deals=(CASHFLOW, FX_OPTION),
-            sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}})))
+            sections={'Bootstrapper Configuration': {'FXVol': {}}})))
         assert 'FXVol.USD.ZAR' in CLIENT.post('/validate', json=with_option).json()['factors']
 
         ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
@@ -961,7 +961,7 @@ def test_gamma_travels_the_served_path(tmp_path):
     """
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(
-        sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        sections={'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}), headers=JSON)
@@ -1004,7 +1004,7 @@ def test_a_quote_update_may_move_only_the_numbers(book):
     quotes = fx_vol_quotes()
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
+        'Bootstrapper Configuration'] = {'FXVol': {}}
     book.write_text(json.dumps(doc, indent=2), newline='\n')
 
     first = CLIENT.post('/book/market', content=dump({'quotes': quotes}), headers=JSON).json()
@@ -1046,7 +1046,7 @@ def test_a_two_way_ticks_beside_the_mid_and_a_moved_pillar_still_refuses(book):
         point['Quoted_Ask'] = point['Quoted_Market_Value'] + 0.002
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
+        'Bootstrapper Configuration'] = {'FXVol': {}}
     book.write_text(json.dumps(doc, indent=2), newline='\n')
 
     installed = CLIENT.post('/book/market', content=dump({'quotes': quotes}), headers=JSON).json()
@@ -1125,7 +1125,7 @@ def test_a_bootstrap_that_complains_writes_nothing(book):
     """
     doc = json.loads(book.read_text())
     doc['Calc']['MergeMarketData']['ExplicitMarketData'].update({
-        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {},
+        'Bootstrapper Configuration': {'FXVol': {},
                                        'HullWhite2FactorModelParameters': {}},
         'Market Prices': UNFITTABLE})
     book.write_text(json.dumps(doc, indent=2), newline='\n')
@@ -1169,18 +1169,18 @@ def surface_nodes(path):
 
 
 def test_a_configured_dial_re_bootstraps_the_factor_it_sizes(tmp_path):
-    """The write half of `/book/configure`: a dial merged into the entry the BOOK spells, the
-    market re-bootstrapped in the same atomic write, and the answer naming what moved.
+    """The write half of `/book/configure`: a dial merged into the family's entry, the market
+    re-bootstrapped in the same atomic write, and the answer naming what moved.
 
     `Grid_Tolerance` sizes the log-moneyness grid the FX surface is refined to, so it is the one
-    dial whose effect is countable on the file. The book declares the entry by its old class name
-    and the request names the factor the family writes: the same family either way, so the dial
-    lands in the entry that is there rather than a second one beside it - a desk file is never
-    renamed under a desk. A family the book carries no quotes for writes no price factor and
-    refuses in the bootstrap's own words, the file untouched.
+    dial whose effect is countable on the file. The book keys the entry by the retired
+    `FXVolSurfaceParameters`, and the service reads it as `FXVol`: the dial lands in that one entry
+    and the write carries the family's name. A family the book carries no quotes for writes no
+    price factor and refuses in the bootstrap's own words, the file untouched.
 
-    Killing mutation: the verb's own check dropped, which writes an entry nothing fits now that the
-    bootstrap passes over a family with no quote block.
+    Killing mutations: the verb's own check dropped, which writes an entry nothing fits now that the
+    bootstrap passes over a family with no quote block; the book read without
+    `config.family_entries`, which leaves the retired entry beside a second one.
     """
     path = tmp_path / 'book.json'
     configured_book(path, {'FXVolSurfaceParameters': {}})
@@ -1189,7 +1189,7 @@ def test_a_configured_dial_re_bootstraps_the_factor_it_sizes(tmp_path):
             'section': 'Bootstrapper Configuration', 'entry': 'FXVol',
             'fields': {'Grid_Tolerance': 1e-4}}).json()
 
-        assert fine['written'] is True and fine['entry'] == 'FXVolSurfaceParameters'
+        assert fine['written'] is True and fine['entry'] == 'FXVol'
         assert fine['rewrote'] == ['FXVol.USD.ZAR'], 'the re-bootstrap did not reach the surface'
         assert fine['dials'] == {'Prices': 'FXVol', 'Grid_Tolerance': 1e-4}
         refined = surface_nodes(path)
@@ -1202,8 +1202,7 @@ def test_a_configured_dial_re_bootstraps_the_factor_it_sizes(tmp_path):
         assert surface_nodes(path) < refined, (
             'a tenfold looser tolerance refined the same grid - the dial did not reach the fit')
         assert json.loads(path.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
-            'Bootstrapper Configuration'] == {
-                'FXVolSurfaceParameters': {'Prices': 'FXVol', 'Grid_Tolerance': 0.5}}
+            'Bootstrapper Configuration'] == {'FXVol': {'Prices': 'FXVol', 'Grid_Tolerance': 0.5}}
 
         before = path.read_bytes()
         unquoted = CLIENT.post('/book/configure', json={
@@ -1223,7 +1222,7 @@ def test_a_malformed_dial_refuses_by_name_before_a_quote_is_read(tmp_path):
     a quote is read, and the file is untouched - entry and all, the entry being created only if
     what it says builds."""
     path = tmp_path / 'book.json'
-    configured_book(path, {'FXVolSurfaceParameters': {}})
+    configured_book(path, {'FXVol': {}})
     try:
         before = path.read_bytes()
         refused = CLIENT.post('/book/configure', json={
@@ -1262,7 +1261,7 @@ def test_an_interpolation_the_engine_routes_nowhere_refuses_by_name(tmp_path):
     empty rule nothing resolves.
     """
     path = tmp_path / 'book.json'
-    configured_book(path, {'FXVolSurfaceParameters': {}})
+    configured_book(path, {'FXVol': {}})
     try:
         written = CLIENT.post('/book/configure', json={
             'section': 'Price Factor Interpolation', 'entry': 'InterestRate',
@@ -1820,7 +1819,7 @@ def test_a_concurrent_runs_critical_does_not_refuse_an_innocent_tick(tmp_path):
     deals = [CASHFLOW] + [skipped_netting_deal('NCS{}'.format(i)) for i in range(NOISY_DEALS)]
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(deals=deals, sections={
-        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     chatter = Chatter()
     stop = threading.Event()
@@ -1888,7 +1887,7 @@ def built_surface(path, quotes=None):
     the surface arrives by POSTing a quote block to `/book/market`. So the spot-model gates start
     from a surface the engine built, never one written by hand."""
     path.write_text(json.dumps(json.loads(dump(job(sections={
-        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     ticked = CLIENT.post('/book/market', content=dump(
         {'quotes': quotes if quotes is not None else fx_vol_quotes()}), headers=JSON).json()
@@ -2222,11 +2221,11 @@ def test_a_pair_with_no_built_surface_refuses_at_the_verb(tmp_path):
 
 @pytest.fixture
 def desk(tmp_path):
-    """A live book declaring the `FXVolSurfaceParameters` bootstrapper - what a market tick needs to
-    turn quotes into price factors."""
+    """A live book declaring the `FXVol` bootstrapper - what a market tick needs to turn quotes into
+    price factors."""
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(sections={
-        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     yield path
     service.BOOK = None
@@ -3276,7 +3275,7 @@ def desk_setup(tmp_path, monkeypatch):
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(sections={
-        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     yield path
     service.BOOK = None
@@ -3636,7 +3635,7 @@ def test_a_set_up_installs_no_curve_the_book_does_not_discount_on(tmp_path, monk
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(deals=(), factors=factors, sections={
-        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     try:
         scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'), ('rates', 'ZAR'))
@@ -4693,7 +4692,7 @@ def quoting(tmp_path, monkeypatch):
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(sections={
-        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}}))), indent=2), newline='\n')
+        'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
     service.BOOK = service.Book(str(path))
     ticked = CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
                          headers=JSON).json()
@@ -6258,7 +6257,7 @@ def quoting_client(tmp_path, monkeypatch):
     factors = dict(FACTORS, **{'SurvivalProb.CPTY_A': {
         'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.2]])}})
     document = job(factors=factors, sections={
-        'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}})
+        'Bootstrapper Configuration': {'FXVol': {}}})
     document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A', []))
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')

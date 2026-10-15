@@ -20,6 +20,7 @@ residual reading another currency's curve and spot as constants, an ordering dep
 `Discount_Rate` declares, and a quote that cannot reach the `Quote_Sensitivity` overlay and says so.
 """
 import copy
+import json
 import logging
 import math
 import os
@@ -34,11 +35,12 @@ import torch
 
 import test_declared_defaults as book
 import trial_rates
+import derivus
 from derivus import bootstrappers, utils
-from derivus.bootstrappers import InterestRateCurveParameters, author_quote
+from derivus.bootstrappers import author_quote
 from derivus.instruments import deal_node
 from derivus.schema import completed
-from derivus.config import Config, ModelParams
+from derivus.config import Config, CustomJsonEncoder, ModelParams
 
 from rates_world import BASE, deposit, fra, par_swap, ois_swap
 
@@ -208,7 +210,7 @@ def authored_world(world, interp=None):
     true_curves = {}
     for market_price, block in blocks.items():
         discount_rate = discount_of(market_price, block)
-        knots = InterestRateCurveParameters.quote_knots(
+        knots = bootstrappers.InterestRate.quote_knots(
             block_nodes(block, discount_rate, 0.0), BASE, block['Day_Count'], {})
         assert (np.diff(knots) > 0).all(), 'the quotes must be authored in maturity order'
         true_curves[curve_of(market_price)] = knots
@@ -242,7 +244,7 @@ def bootstrapped(market_prices, currency, spot_curve, interp=None, config=None):
         'Domestic_Currency': None, 'Interest_Rate': spot_curve, 'Priority': 1, 'Spot': 1.0}}
     config.params['Price Factor Interpolation'] = interp or INTERP
     config.params['Market Prices'] = market_prices
-    config.params['Bootstrapper Configuration'] = {'InterestRateCurveParameters': {}}
+    config.params['Bootstrapper Configuration'] = {'InterestRate': {}}
     config.bootstrap()
     return config.params['Price Factors']
 
@@ -253,8 +255,8 @@ def test_the_bootstrap_recovers_the_curve_its_quotes_came_from(world, caplog):
     `Config.bootstrap`. Float64 whatever the bootstrapper was built with - `construct_bootstrapper`
     defaults to float32, and a residual carried in float32 cannot be driven to a 1e-10 curve. The
     SEED is the quotes themselves, three or four basis points off the answer, so a solver returning
-    it fails. And the family writes an ordinary `InterestRate`, which `price_factor_type` declares,
-    or the check for a bootstrapper that silently did nothing logs one.
+    it fails. And the family writes an ordinary `InterestRate`, the type it is named for, or the
+    check for a bootstrapper that silently did nothing logs one.
 
     Killing mutation: the solver returning its seed.
     """
@@ -278,6 +280,49 @@ def test_the_bootstrap_recovers_the_curve_its_quotes_came_from(world, caplog):
         error = np.abs(recovered[:, 1] - expected[:, 1]).max()
         assert error < 1e-10, '{}: recovered to {:.3g}, not 1e-10\n{}\n{}'.format(
             curve_name, error, recovered[:, 1], expected[:, 1])
+
+
+def keyed_job(families):
+    """A job over the ZAR world's curve and the USD.ZAR smile, `families` keying the curve and the
+    FX surface families' `Bootstrapper Configuration` entries."""
+    from test_service import fx_vol_quotes
+
+    market_prices, _, _ = authored_world('zar')
+    return json.dumps({'Calc': {
+        'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'ZAR'},
+        'Deals': {'Reference': 'keyed', 'Deals': {'Children': []}},
+        'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
+            'System Parameters': {'Base_Currency': 'ZAR', 'Base_Date': BASE},
+            'Price Factors': {'FxRate.ZAR': {'Domestic_Currency': None, 'Priority': 1,
+                                             'Interest_Rate': 'ZAR-JIBAR-3M', 'Spot': 1.0}},
+            'Market Prices': dict(market_prices, **fx_vol_quotes()),
+            'Bootstrapper Configuration': {family: {} for family in families}}}}},
+        cls=CustomJsonEncoder)
+
+
+def test_a_book_keying_a_family_by_its_retired_name_writes_the_same_factors(caplog):
+    """A book written before the curve and FX surface families took the names of the types they
+    write keys them `InterestRateCurveParameters` and `FXVolSurfaceParameters`. The loader files
+    each entry under `InterestRate` and `FXVol` and logs both spellings, so the job bootstraps the
+    same curve and surface, bit for bit, as the one keyed by the families' names.
+
+    Killing mutation: the loader's table of retired keys dropped - the bootstrap refuses
+    `InterestRateCurveParameters` as no price family."""
+    written = []
+    for families in (('InterestRate', 'FXVol'),
+                     ('InterestRateCurveParameters', 'FXVolSurfaceParameters')):
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            config = derivus.Context().load_json((keyed_job(families), 'keyed')).current_cfg
+            config.bootstrap()
+        assert list(config.params['Bootstrapper Configuration']) == ['InterestRate', 'FXVol']
+        written.append(json.dumps(config.params['Price Factors'], cls=CustomJsonEncoder,
+                                  sort_keys=True))
+
+    assert {'InterestRate.ZAR-JIBAR-3M', 'FXVol.USD.ZAR'} <= set(config.params['Price Factors'])
+    assert written[1] == written[0], 'the retired keys wrote other factors'
+    assert 'InterestRateCurveParameters is read as InterestRate' in caplog.text
+    assert 'FXVolSurfaceParameters is read as FXVol' in caplog.text
 
 
 def test_the_blocks_are_solved_in_dependency_order():
@@ -598,7 +643,7 @@ def fx_world():
     price_factors['InterestRate.' + USD_CURVE] = {
         'Property_Aliases': None, 'Sub_Type': None, 'Currency': 'USD', 'Day_Count': 'ACT_365',
         'Curve': utils.Curve([], list(zip(
-            InterestRateCurveParameters.quote_knots(
+            bootstrappers.InterestRate.quote_knots(
                 block_nodes(usd_block, USD_CURVE, 0.0), BASE, 'ACT_365', {}),
             FX_USD_TRUE)))}
     for point, quote in zip(usd_block['Points'], par_quotes(usd_block, USD_CURVE, price_factors)):
@@ -613,7 +658,7 @@ def fx_bootstrapped(market_prices, price_factors=None, config=None):
     config.params['System Parameters']['Base_Date'] = BASE
     config.params['Price Factors'] = price_factors or fx_price_factors()
     config.params['Market Prices'] = market_prices
-    config.params['Bootstrapper Configuration'] = {'InterestRateCurveParameters': {}}
+    config.params['Bootstrapper Configuration'] = {'InterestRate': {}}
     config.bootstrap()
     return config.params['Price Factors']
 

@@ -17,7 +17,7 @@ The job JSON is the whole program: a script does `import derivus as rf`, `cx.loa
 
 ## `globals()` dispatch {#globals-dispatch}
 
-Constructors dispatch on class name through the module `globals()` — `construct_calculation`, `construct_instrument`, `construct_factor`, `process_class`, `construct_calibration_config` — so the class name is the dispatch key: **one class per concept in a file**, and a new type is a new class, never an edit to a dispatcher. An unknown deal `Object` loads as `{'Object': name}`, which `Config.validate` reports and the compile refuses.
+Constructors dispatch on class name through the module `globals()` — `construct_calculation`, `construct_instrument`, `construct_factor`, `process_class`, `construct_calibration_config`, `family_class` — so the class name is the dispatch key: **one class per concept in a file**, and a new type is a new class, never an edit to a dispatcher. An unknown deal `Object` loads as `{'Object': name}`, which `Config.validate` reports and the compile refuses.
 
 ## Registries, not functions {#registries-not-functions}
 
@@ -25,7 +25,7 @@ Extension points are data: a new type is a row or a class attribute the engine a
 
 - Factor discovery is three dicts in `config.py` ([Dependency System](dependency_system.md)); process wiring and calibration are registered in `Model Configuration` and `calibration_config.json`.
 - Every JSON schema is a per-class `fields` list, and every store but `System` is the view `schema.emit_*` builds from those declarations at import, never a second copy.
-- Where a store's key is not the class name, **the class declares the bridge**: `factor_types` on a process, `model_type` on a calibration, `market_factor_type` and `price_factor_type` on a bootstrapper (`FXVolSurfaceParameters` reads `FXVolPrices` and writes `FXVol`, its `Bootstrapper Configuration` key). No rule recovers one name from another.
+- Where a store's key is not the class name, **the class declares the bridge**: `factor_types` on a process, `model_type` on a calibration, `market_factor_type` on a bootstrapper (`FXVol` reads `FXVolPrices`). No rule recovers one name from another.
 - `Process_factor_map` and `Interpolation_factor_map` are the same declarations read sideways; a market-price quote references the `Instrument` declarations rather than restating them ([Market Prices](market_prices.md)).
 
 **Held by** `tests/test_schema_emission.py::test_every_store_is_the_emitted_view`, `::test_the_calculation_types_are_what_run_job_dispatches`.

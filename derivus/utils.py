@@ -740,7 +740,7 @@ class SecondOrderRefused(Exception):
 
 class CalibrationStale(Exception):
     """`Quote_Propagation: 'Linear'` will not carry this tick, for one of the two reasons a ride
-    can fail to be a number (`InterestRateCurveParameters.propagate`): the ridden theta no longer
+    can fail to be a number (`bootstrappers.InterestRate.propagate`): the ridden theta no longer
     reprices the set's own benchmarks inside its `Drift_Tolerance`, or NO ARTIFACT answers to the
     plan at all - a cold process, an evicted slot, a re-authored strip.
 

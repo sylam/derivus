@@ -121,7 +121,7 @@ def test_a_block_with_no_quote_table_is_refused_by_name(tmp_path):
     Killing mutation: the quote-table check dropped."""
     document = fixture('hw2f_four_quote_job.json')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    market['Bootstrapper Configuration'] = {'InterestRateCurveParameters': {}}
+    market['Bootstrapper Configuration'] = {'InterestRate': {}}
     market['Market Prices'] = {'InterestRatePrices.ZAR-JIBAR-3M': {'instrument': {
         'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': ''}}}
     context = derivus.Context()
@@ -136,7 +136,7 @@ def test_a_quote_carrying_no_timestamp_still_builds_its_surface(tmp_path):
     Killing mutation: every quote's `Timestamp` read by name."""
     document = fixture('hw2f_four_quote_job.json')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    market['Bootstrapper Configuration'] = {'FXVolSurfaceParameters': {}}
+    market['Bootstrapper Configuration'] = {'FXVol': {}}
     market['Price Factors']['FxRate.USD'] = {
         'Domestic_Currency': None, 'Interest_Rate': 'ZAR-JIBAR-3M', 'Priority': 1, 'Spot': 17.5}
     market['Market Prices'] = {'FXVolPrices.USD.ZAR': {'instrument': {

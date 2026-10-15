@@ -228,17 +228,15 @@ class Parent(object):
         # first and is read exactly as it always was. The order is the engine's own topological
         # sort over what each family writes against what it reads, as `Config.bootstrap` takes it.
         section = self.cx.params['Bootstrapper Configuration']
-        # `families` names the entries to run, in either spelling the registry resolves; the rest
-        # are skipped by name, and a name the section does not carry refuses before a worker exists
+        # `families` names the entries to run; the rest are skipped by name, and a name the
+        # section does not carry refuses before a worker exists
         wanted = None
         if families:
-            from derivus.bootstrappers import family_class
-            by_class = {family_class(name): name for name in section}
-            unknown = [name for name in families if family_class(name) not in by_class]
+            unknown = [name for name in families if name not in section]
             if unknown:
                 raise ValueError('{} not in this Bootstrapper Configuration, which carries {}'.format(
                     ', '.join(unknown), ', '.join(sorted(section))))
-            wanted = {by_class[family_class(name)] for name in families}
+            wanted = set(families)
         queued = []
         for bootstrapper_name in bootstrap_order(section):
             if wanted is not None and bootstrapper_name not in wanted:

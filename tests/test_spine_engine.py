@@ -186,7 +186,7 @@ def desk(tmp_path):
 def quoting(tmp_path):
     """A desk that can be quoted at: the one-cashflow book with a client's netting set on it and a
     real USDZAR surface ticked in through `/book/market`."""
-    document = job(sections={'Bootstrapper Configuration': {'FXVolSurfaceParameters': {}}})
+    document = job(sections={'Bootstrapper Configuration': {'FXVol': {}}})
     document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')

@@ -21,12 +21,12 @@ export type Descriptor = {
 export type Section = Record<string, Descriptor>;
 
 /** One market-data section the book states its bootstrap in, rendered by SHAPE: `types` is an
- * entry per declared key with the spellings an older book files it under, `menu` NAMES a sibling
- * store holding one list of values per key and `value` is what the engine uses where the book
- * says nothing. `entry` and `rules` are the two halves that shape writes - one value per key, and
- * a rule per factor named by `key` - and the configure verb takes the key itself. */
+ * entry per declared key, `menu` NAMES a sibling store holding one list of values per key and
+ * `value` is what the engine uses where the book says nothing. `entry` and `rules` are the two
+ * halves that shape writes - one value per key, and a rule per factor named by `key` - and the
+ * configure verb takes the key itself. */
 export type ConfigSection = {
-  types?: Record<string, { aliases: string[]; fields: Section }>;
+  types?: Record<string, { fields: Section }>;
   entry?: string;
   rules?: string;
   key?: string;

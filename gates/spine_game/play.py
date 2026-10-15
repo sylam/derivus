@@ -85,8 +85,7 @@ def book_at(path):
     first = pd.Timestamp(roles.D0)
     document = json.loads(dump(job(
         deals=(), factors=factors, Base_Date=first,
-        sections={'Bootstrapper Configuration': {
-            'FXVolSurfaceParameters': {'Prices': 'FXVol'}}})))
+        sections={'Bootstrapper Configuration': {'FXVol': {'Prices': 'FXVol'}}})))
     document['Calc']['Deals']['Reference'] = roles.BANK
     document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
         'Base_Date'] = json.loads(dump({'day': first}))['day']

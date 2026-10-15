@@ -882,7 +882,7 @@ def prices_block(surface):
 
 
 def quote_points(document, surface):
-    """The quotes `surface` was built from - `FXVolSurfaceParameters.used`'s filter over the
+    """The quotes `surface` was built from - `bootstrappers.FXVol.used`'s filter over the
     `FXVolPrices` block, and empty where the book carries no such block at all.
 
     One reader for the pillar-keyed halves and the skew's own rebuild: a spread charged off a row
@@ -912,17 +912,17 @@ def quote_two_way(document, surface):
     than negative, a stale bid through a live offer being a broken print a desk must never pay a
     client for.
 
-    The descriptor comes from `FXVolSurfaceParameters`, so these keys are the ones the bootstrap's
+    The descriptor comes from `bootstrappers.FXVol`, so these keys are the ones the bootstrap's
     leaves are published under; a second copy of the naming rule would drift into silently pricing
     no bucket at all.
     """
-    from .bootstrappers import FXVolSurfaceParameters
+    from . import bootstrappers
     halves = {}
     for point in quote_points(document, surface):
         bid, ask = point.get('Quoted_Bid'), point.get('Quoted_Ask')
         if bid is None or ask is None:
             continue
-        halves[FXVolSurfaceParameters.descriptor(point)] = max(
+        halves[bootstrappers.FXVol.descriptor(point)] = max(
             0.0, 0.5 * (float(ask) - float(bid)))
     return halves
 
@@ -1583,7 +1583,7 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full,
     if not (before or after):
         return dict(empty, charge_full=charge_full,
                     note='no FX vol quote leaves were published - the book carries no '
-                         'FXVolSurfaceParameters bootstrap, so there are no quote coordinates to '
+                         'FXVol bootstrap, so there are no quote coordinates to '
                          'measure the residual in and no tightening applies')
 
     rows, cost = risk_buckets(before, after, halves)

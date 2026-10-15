@@ -952,7 +952,7 @@ class SIMM(JOB):
 
         config = self.cx.current_cfg
         prices = config.params['Market Prices']
-        family = bootstrappers.InterestRateCurveParameters.market_factor_type
+        family = bootstrappers.InterestRate.market_factor_type
         for curve in sorted({utils.check_rate_name(name)[1]
                              for name in config.factor_universe()['resolved']
                              if utils.check_rate_name(name)[0] == 'InterestRate'}):

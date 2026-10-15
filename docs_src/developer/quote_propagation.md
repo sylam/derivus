@@ -15,7 +15,7 @@ function theorem is exact [@christianson1998; @henrard2014].
 | `Quote_Propagation`, `Drift_Tolerance` | the block's switch (`No`, `Linear`) and tolerance (1e-3 percent of quote) |
 | `utils.CalibrationArtifact` | one coupled set's `(θ*, J, q₀, timestamp)`: `ride`, `mispricing`, `replacing` |
 | `utils.ArtifactStore` | `Config.artifacts`: 32 slots, least-recently-used |
-| `InterestRateCurveParameters` | `coupled_sets`, `solve_set`, `plan_key`, `publish`, `propagate` |
+| `bootstrappers.InterestRate` | `coupled_sets`, `solve_set`, `plan_key`, `publish`, `propagate` |
 
 Tests named below are in `tests/test_quote_propagation.py` unless another module is given; the ZAR
 and USD worlds are the synthetic curve worlds of `tests/test_interest_rate_prices.py`.
@@ -73,7 +73,7 @@ the caller recomputes each `covering` candidate's slot, since two artifacts can 
 There is no `θ_current`: θ is derived per EXECUTE,
 
 ```
-Config.propagated_factor(factor) -> InterestRateCurveParameters.propagate -> artifact.ride(q_now)
+Config.propagated_factor(factor) -> bootstrappers.InterestRate.propagate -> artifact.ride(q_now)
 ```
 
 reading the market and a content-addressed slot and writing neither. Two EXECUTEs over one

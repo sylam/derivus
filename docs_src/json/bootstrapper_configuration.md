@@ -19,18 +19,20 @@ only if an entry names it.
 
 ## The six families
 
-| Entry key | Older key | `Prices` | Reads blocks | Writes price factor | Prices on (factor types) |
-|---|---|---|---|---|---|
-| `InterestRate` | `InterestRateCurveParameters` | `InterestRate` | `InterestRatePrices.<curve>` | `InterestRate.<curve>` | `InterestRate`, `FxRate` |
-| `FXVol` | `FXVolSurfaceParameters` | `FXVol` | `FXVolPrices.<pair>` | `FXVol.<pair>` | none |
-| `GBMAssetPriceTSModelParameters` | - | `GBMAssetPriceTSModel` | `GBMAssetPriceTSModelPrices.<name>` | `GBMAssetPriceTSModelParameters.<name>` | `FXVol`, `EquityPriceVol`, `CommodityPriceVol` |
-| `HullWhite2FactorModelParameters` | - | `HullWhite2FactorModel` | `HullWhite2FactorModelPrices.<curve>` | `HullWhite2FactorModelParameters.<curve>` | `InterestRate`, `InterestYieldVol`, `GBMAssetPriceTSModelParameters` |
-| `CSForwardPriceModelParameters` | - | `CSForwardPriceModel` | `CSForwardPriceModelPrices.<name>` | `CSForwardPriceModelParameters.<name>` | `ForwardPrice`, `ForwardPriceVol`, `InterestRate` |
-| `LogVar2FJModelParameters` | - | `LogVar2FJModel` | `LogVar2FJModelPrices.<name>` | `LogVar2FJModelParameters.<name>` | `CommodityPrice`, `CommodityPriceVol`, `DividendRate`, `EquityPrice`, `EquityPriceVol`, `FXVol`, `FuturesPrice`, `FxRate`, `InterestRate` |
+| Entry key | `Prices` | Reads blocks | Writes price factor | Prices on (factor types) |
+|---|---|---|---|---|
+| `InterestRate` | `InterestRate` | `InterestRatePrices.<curve>` | `InterestRate.<curve>` | `InterestRate`, `FxRate` |
+| `FXVol` | `FXVol` | `FXVolPrices.<pair>` | `FXVol.<pair>` | none |
+| `GBMAssetPriceTSModelParameters` | `GBMAssetPriceTSModel` | `GBMAssetPriceTSModelPrices.<name>` | `GBMAssetPriceTSModelParameters.<name>` | `FXVol`, `EquityPriceVol`, `CommodityPriceVol` |
+| `HullWhite2FactorModelParameters` | `HullWhite2FactorModel` | `HullWhite2FactorModelPrices.<curve>` | `HullWhite2FactorModelParameters.<curve>` | `InterestRate`, `InterestYieldVol`, `GBMAssetPriceTSModelParameters` |
+| `CSForwardPriceModelParameters` | `CSForwardPriceModel` | `CSForwardPriceModelPrices.<name>` | `CSForwardPriceModelParameters.<name>` | `ForwardPrice`, `ForwardPriceVol`, `InterestRate` |
+| `LogVar2FJModelParameters` | `LogVar2FJModel` | `LogVar2FJModelPrices.<name>` | `LogVar2FJModelParameters.<name>` | `CommodityPrice`, `CommodityPriceVol`, `DividendRate`, `EquityPrice`, `EquityPriceVol`, `FXVol`, `FuturesPrice`, `FxRate`, `InterestRate` |
 
-A block writes its family's factor under the block's own name. The four `*Parameters` factors are
-what the implied models read (see [Price Models](price_models.md#implied-models)). Every field an
-entry may carry, per family, is on the family's page under this section.
+An entry is keyed by the family, which is named for the factor it writes; an entry keyed
+`InterestRateCurveParameters` or `FXVolSurfaceParameters` loads as `InterestRate` or `FXVol`. A block
+writes its family's factor under the block's own name. The four `*Parameters` factors are what the
+implied models read (see [Price Models](price_models.md#implied-models)). Every field an entry may
+carry, per family, is on the family's page under this section.
 
 ## Entry form
 
@@ -39,7 +41,7 @@ entry may carry, per family, is on the family's page under this section.
 | An object with `Prices` | `Prices` is the stem of the family's `Market Prices` type (`<stem>Prices`). A stem belonging to another family refuses by name |
 | An object without `Prices` | runs, with a warning: in process the family is looked up, but the multiprocessing bootstrap routes without the engine and needs it |
 | A string (the older form) | accepted; the string itself is not read, and the family runs on its declared defaults |
-| A key naming no family | refused, listing both spellings of the six |
+| A key naming no family | refused, listing the six |
 
 ## Run order
 
