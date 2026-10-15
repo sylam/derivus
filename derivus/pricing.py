@@ -5303,9 +5303,13 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
             M1 = torch.sum(sample_ft, dim=1)
             strike_bar = factor_dep['Strike'] - average
 
+            # the smile is read at the remaining average's own strike, the net strike over the
+            # remaining weight, as the discrete Asian reads it; one less the past weight is exactly
+            # one on an unseasoned deal
+            remaining = 1.0 - dual_samples.tn[:start_index[index], utils.RESET_INDEX_Weight].sum()
             moneyness = calc_moneyness(
-                strike_bar.unsqueeze(0), None, future_resets * forwardfx,
-                deal_data, use_forward=True)
+                (strike_bar.clamp(min=1e-5) / remaining).unsqueeze(0), None,
+                future_resets * forwardfx, deal_data, use_forward=True)
 
             # the vol at each sample's own tenor (TODO: generalise if vols become time-dependent)
             vols = torch.stack([utils.VolSurface.rate(

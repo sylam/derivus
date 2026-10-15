@@ -14,10 +14,9 @@ lands deletes its row there and here.
 The close-out list. Each row names its fix and sizes it (S, M, L); a landing deletes it, and a row
 found later is added here or, where it moves a validator's number, on Model Limitations.
 
-**The model rows**, on [Model Limitations](../limitations.md): six rows marked S land as fixes - the
+**The model rows**, on [Model Limitations](../limitations.md): five rows marked S land as fixes - the
 already-hit knock-in's expiry clamp, the FX option's expiry print table, the declared fields nothing
-reads, the credit Monte Carlo's write into its config, the seasoned Asian's effective strike and,
-at S-M, the Skew vega tent - and five rows a synthetic document measures in an afternoon each get
+reads, the credit Monte Carlo's write into its config and, at S-M, the Skew vega tent - and five rows a synthetic document measures in an afternoon each get
 their numbers: the American FX premium, the Asian's flat carry, the cash swaption's annuity, the
 rate leg's conventions and the haircut's side.
 

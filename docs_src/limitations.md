@@ -101,12 +101,6 @@ Grouped by where a validator meets them.
 - **An Asian carries one flat rate, and the double Asian one vol** (2026-10-11). The discrete Asian
   forwards every sample at the carry $\log(F(t,T)/S)/\tau$; the double Asian reads one ATM vol at
   expiry for both strips. UNMEASURED on a sloped curve or a term-structured surface.
-- **A seasoned Asian reads its smile at the reduced strike against the full forward** (2026-10-15).
-  `pv_energy_option` nets the realised samples off the strike and reads each remaining forward's vol
-  at that reduced strike's moneyness: on a half-realised Brent call, −59% where the remaining
-  average's own strike, the reduced strike over the remaining weight, sits at −16%. On a flat smile
-  nothing moves; on the trade's exported surface the read lands on the clamped wing and moves the
-  mark by 0.7%. S: the moneyness of the effective strike. UNMEASURED on the equity and FX Asians.
 - **A cash-settled swaption is priced on the physical annuity** (2026-10-11), without the cash
   annuity's convexity; an amortising or forward-start swaption prices on the vanilla expiry and
   tenor, unrefused. UNMEASURED.

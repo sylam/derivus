@@ -91,9 +91,8 @@ def fx(surface, strike):
     return factors, deal
 
 
-def implied_vol(world, surface, forward, x):
-    """The Black vol the deal struck at log(F/K) = `x` prices at, through the JSON contract."""
-    strike = forward * np.exp(-x)
+def value(world, surface, strike):
+    """The deal's base valuation through the JSON contract."""
     factors, deal = world(surface, strike)
     factors.update({
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
@@ -109,13 +108,20 @@ def implied_vol(world, surface, forward, x):
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'delta'))
     _, output = context.run_job()
     rows = output['Results']['mtm']
-    value = rows[rows['Reference'] == 'OPT']['Value']
-    assert len(value) == 1, 'the deal left no row in Results: it was skipped, not priced'
+    row = rows[rows['Reference'] == 'OPT']['Value']
+    assert len(row) == 1, 'the deal left no row in Results: it was skipped, not priced'
+    return float(row.iloc[0])
+
+
+def implied_vol(world, surface, forward, x):
+    """The Black vol the deal struck at log(F/K) = `x` prices at."""
+    strike = forward * np.exp(-x)
+    priced = value(world, surface, strike)
 
     def black(sigma):
         d1 = (x + 0.5 * sigma * sigma * T) / (sigma * np.sqrt(T))
         return np.exp(-RATE * T) * (forward * ndtr(d1) - strike * ndtr(d1 - sigma * np.sqrt(T)))
-    return brentq(lambda sigma: black(sigma) - float(value.iloc[0]), 1e-3, 2.0, xtol=1e-12)
+    return brentq(lambda sigma: black(sigma) - priced, 1e-3, 2.0, xtol=1e-12)
 
 
 def test_a_commodity_delta_surface_is_placed_by_a_plain_delta_unless_it_states_otherwise():
@@ -162,6 +168,30 @@ def test_a_relative_forward_axis_is_a_fraction():
     """
     x = -np.log(0.8)  # (K - F)/F = -0.2
     assert implied_vol(commodity, RELATIVE_FORWARD, FORWARD, x) == pytest.approx(0.425, abs=1e-6)
+
+
+def seasoned(surface, strike):
+    """`(Price Factors, deal)`: the energy option averaging daily from two weeks before the base
+    date to two weeks after it, its realised average the forward's 100."""
+    factors, deal = commodity(surface, strike)
+    deal.update({'Period_Start': BASE - pd.DateOffset(days=14), 'Period_End': BASE + pd.DateOffset(days=14),
+                 'FX_Period_Start': BASE - pd.DateOffset(days=14), 'FX_Period_End': BASE + pd.DateOffset(days=14),
+                 'Settlement_Date': BASE + pd.DateOffset(days=16), 'Realized_Average': FORWARD})
+    return factors, deal
+
+
+def test_a_seasoned_asian_reads_its_smile_at_the_remaining_averages_strike():
+    """Half-way through its averaging, with the realised average at the forward and the strike at
+    the forward, the remaining average's own strike is the forward: the option on the smile prices
+    as the option on a surface flat at the smile's ATM vol, to the bit of the two-moment arithmetic.
+
+    Killing mutation: the smile read at the strike net of the realised average against the full
+    forward, -0.5 here, which lands on the clamped wing's 0.5 against the ATM 0.35.
+    """
+    flat = {'Surface_Type': 'Relative_Forward', 'Surface': utils.Curve([], [
+        [m, t, 0.35] for t in (T, 2 * T) for m in (-0.4, 0.0, 0.4)])}
+    on_smile, on_flat = (value(seasoned, surface, FORWARD) for surface in (RELATIVE_FORWARD, flat))
+    assert on_smile == pytest.approx(on_flat, rel=1e-12)
 
 
 def test_an_fx_delta_surface_keeps_the_premium_adjusted_delta():
