@@ -427,6 +427,31 @@ def test_a_row_every_scenario_has_crossed_is_what_the_barrier_became():
             assert np.abs(row.values - hand).max() <= 1e-12 * max(hand, 1.0), (barrier_type, at, hand)
 
 
+def test_an_already_hit_knock_in_at_the_money_is_worth_nothing_on_its_expiry_row():
+    """The same world, the knock-in struck at the expiry forward: on the expiry row the call it
+    became is its intrinsic, nothing, where the already-hit leg's standard deviation to expiry read
+    1e-4 years of vol and the row carried 0.10 of time value on a forward of 102. Every earlier row
+    is the call by hand.
+
+    Killing mutation: the expiry row's standard deviation left at the clamp's 1e-4 years.
+    """
+    forward = SPOT * math.exp((R_USD - Q_EQ) * EXPIRY_D / 365.0)
+    doc = job(dict(barrier('Up_And_In', [[day(d), ''] for d in FUTURE_DAYS]),
+                   Barrier_Price=95.0, Strike_Price=forward), dict(CMC_CALC, Time_grid='0d 1m(1m)'))
+    market = doc['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models'] = {'GBMAssetPriceModel.EQ': {'Vol': 0.0, 'Drift': 0.0}}
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+    cx = derivus.Context()
+    cx.load_json((json.dumps(doc, cls=CustomJsonEncoder), 'already_hit_atm'))
+    profile = derivus.run_cmc(cx.current_cfg, prec=torch.float64)[1]['Results']['mtm']
+    assert (profile.loc[day(EXPIRY_D)].values == 0.0).all(), 'the expiry row is the intrinsic, nothing'
+    before = profile[(profile.index >= day(FUTURE_DAYS[0])) & (profile.index < day(EXPIRY_D))]
+    for at, row in before.iterrows():
+        hand = call(at, forward)
+        assert np.abs(row.values - hand).max() <= 1e-12 * max(hand, 1.0), (at, hand)
+
+
 @pytest.mark.parametrize('barrier_type', ['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out'])
 def test_an_unaffected_document_is_bit_identical_under_a_credit_monte_carlo(barrier_type):
     """The other half of the rule: a document the fold does not touch must not move. A blank

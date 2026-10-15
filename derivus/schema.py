@@ -1027,6 +1027,12 @@ OPTION_STYLE = Group('OptionStyle', 'Exercise and settlement', [
     F('Option_On_Forward', 'Text', default='No', convention=True, values=['Yes', 'No'])
 ])
 
+#: An FX option is exercised at expiry, the one style the FX pricers price; a section of its own
+#: name, since the store files a section by it.
+FX_OPTION_STYLE = Group('FXOptionStyle', 'Exercise and settlement', [
+    F('Option_Style', 'Text', default='European', convention=True, values=['European'])
+] + OPTION_STYLE.fields[1:])
+
 #: What every touch is, whatever it watches: the side, the cash it pays and the barrier's side and
 #: monitoring - a one-touch also declaring when it pays, a no-touch paying at expiry alone.
 TOUCH = Group('Touch', 'Touch terms', [

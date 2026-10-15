@@ -2095,8 +2095,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             # asset's own interval strip composed with the fx expiry read
             interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
         # sigma(K, tau) * sqrt(tau): the ONE European standard deviation, marked by the already-hit
-        # leg below and by the in-out-parity vanilla inside sim_spot_oss
-        sd_to_expiry = expiry_vols * torch.sqrt(rem_exp.clamp(min=1e-4)) if kit is None else expiry_vols
+        # leg below and by the in-out-parity vanilla inside sim_spot_oss; zero on the expiry row,
+        # where Black reads the intrinsic, the root kept off zero so its gradient stays finite
+        sd_to_expiry = (expiry_vols * torch.sqrt(rem_exp.clamp(min=1e-4)) * (rem_exp > 0.0)
+                        if kit is None else expiry_vols)
 
         # discount rates per fixing: [N_block, N_fix, batch]
         discount_rates = utils.calc_discount_rate(discount_block, fixings, shared)

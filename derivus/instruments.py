@@ -20,7 +20,7 @@ from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
     settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
-    FX_TOUCH, FXOPTIONBASE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, OPTION_STYLE, TOUCH,
+    FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, OPTION_STYLE, TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
 
 import numpy as np
@@ -5947,7 +5947,7 @@ class FXTARFOptionDeal(Deal):
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Option_Style', 'Text', default='European', convention=True, values=['European', 'American']),
+        F('Option_Style', 'Text', default='European', convention=True, values=['European']),
         F('InvertedTarget', 'Text', default='', convention=True),
         F('LeverageNotional', 'Float', default=0.0, sized=True),
         F('TargetLevel', 'Float', default=0.0),
@@ -6506,7 +6506,7 @@ class FXOptionDeal(Deal):
     vernacular = 'FX option, currency option, vanilla call or put'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', elects='Settlement_Style',
                         expires='Expiry_Date')
-    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, OPTION_STYLE, own('FXOptionDeal', [
+    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, FX_OPTION_STYLE, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Expiry_Date', 'Date', default=''),
         F('Forward_Price_Date', 'Date', default='', convention=True)
@@ -6523,9 +6523,9 @@ class FXOptionDeal(Deal):
                           'The payoff is paid on **Delivery_Date**, the expiry where blank; past the expiry the',
                           'forward is held at what the expiry fixed.',
                           '',
-                          '**Option_Style** is accepted and NOT read: an `American` FX option is priced as',
-                          'the European. **Settlement_Style**, **Forward_Price_Date** and **Option_On_Forward**',
-                          'do not enter the price either.'])
+                          '**Option_Style** offers `European` alone, the one style this prices;',
+                          '**Settlement_Style**, **Forward_Price_Date** and **Option_On_Forward** do not enter',
+                          'the price.'])
 
     def reset(self, calendars):
         super(FXOptionDeal, self).reset()

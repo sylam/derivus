@@ -82,9 +82,6 @@ Grouped by where a validator meets them.
   16,384 and 32,768 paths six seeds resolve no dependence on `Boundary_AAD_Bandwidth` from 0.00125
   to 0.08 (within ±2% of the correction and ±0.5% of the CVA delta); at 2,048 paths the correction
   falls 24% across that range. Its scoping has no public seam a mutation gate could reach.
-- **An already-hit at-the-money knock-in carries time value on its expiry row** (2026-10-04).
-  `pv_discrete_barrier_option` clamps the remaining expiry to 1e-4 years, so the row reads 0.0997 on
-  a spot of 100 where the payoff is 0. S.
 - **The American equity option's approximation is to be retired, not patched** (2026-09-16).
   `pv_american_option` (Bjerksund-Stensland) never calls `calc_vol_adjustment`, so a composite or
   quanto American prices as the local asset. UNMEASURED, as is its error against a lattice. The fix
@@ -95,9 +92,6 @@ Grouped by where a validator meets them.
 
 ### The other pricers {#the-other-pricers}
 
-- **An American FX option prices as a European** (2026-10-11). `FXOptionDeal` and
-  `FXTARFOptionDeal` declare `Option_Style: American` and neither reads it, so any early-exercise
-  premium is lost. UNMEASURED; refusing it by name is S.
 - **An Asian carries one flat rate, and the double Asian one vol** (2026-10-11). The discrete Asian
   forwards every sample at the carry $\log(F(t,T)/S)/\tau$; the double Asian reads one ATM vol at
   expiry for both strips. UNMEASURED on a sloped curve or a term-structured surface.
@@ -133,11 +127,15 @@ Grouped by where a validator meets them.
   `utils.CreditSupportList.value` returns the first row's threshold, minimum transfer or independent
   amount whatever the counterparty's rating, in the engine and the spine's collateral call. Exact
   for one row; UNMEASURED otherwise.
-- **Declared fields nothing reads** (2026-10-11): `Commodity_Collateral` (netting set),
-  `Net_Cashflows` (structure), `Dividend_Timing` (equity swap leg; `Continuous` prices as
-  `Terminal`), `Average_FX` (floating energy deal, energy option), `Risk_Premium` (GBM
-  term-structure model) and `Distribution_Type` (PCA rate model, always lognormal). Refusing or
-  dropping each: S.
+- **Declared fields not yet read** (2026-10-11), each a feature declared ahead of its build and kept
+  so: `Average_FX` (floating energy deal, energy option) will average the fx and the reference
+  separately and multiply the two averages in place of the sum of products; `Net_Cashflows`
+  (structure) will convert each leg's cashflows to the structure's currency and net them;
+  `Risk_Premium` (GBM term-structure model) is the market price of risk a real-world measure adds to
+  a risk-neutral calibration; `Distribution_Type` (PCA rate model) will offer a normal process
+  beside the lognormal; `Dividend_Timing` (equity swap leg) will price `Continuous` apart from
+  `Terminal`; `Commodity_Collateral` (netting set) will join the collateral assets. Until each is
+  built a stated value prices as the default, unrefused.
 - **A factor read between scenario dates is interpolated** (2026-10-04). A fixing off the grid reads
   the factor linearly, 5e-7 of an FX level on a monthly grid; a price-index month in force on no
   scenario date reads between prints, a linker's payment row 1e-6 to 6e-6 high on a quarterly grid.

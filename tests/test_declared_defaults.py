@@ -776,6 +776,23 @@ def test_a_share_omitting_its_currency_is_refused_by_name_and_the_want_list_walk
     assert 'EquityPriceVol.EQ' in context.describe()['factors']['resolved']
 
 
+def test_an_fx_option_offers_the_one_exercise_style_it_prices():
+    """`FXOptionDeal` and `FXTARFOptionDeal` offer `Option_Style: European` alone, the style their
+    pricers price, so a deal stating `American` is refused by name rather than priced as the
+    European it would silently have been.
+
+    Killing mutation: `American` offered again on either type."""
+    for object_type, extra in (('FXOptionDeal', {}), ('FXTARFOptionDeal', {
+            'LeverageNotional': 2000.0, 'TargetLevel': 1e9, 'InvertedTarget': False, 'Barrier': 1.1,
+            'TARF_ExpiryDates': [[WORLD_EXPIRY, WORLD_EXPIRY + pd.DateOffset(days=2), 0.0]]})):
+        context = derivus.Context()
+        context.load_json((json.dumps(book([fx_leg(
+            object_type, 'FXO', Expiry_Date=WORLD_EXPIRY, Option_Style='American', **extra)]),
+            cls=CustomJsonEncoder), 'american'))
+        assert context.validate()['deals'] == {
+            'FXO': ["Option_Style is 'American', not one of European"]}, object_type
+
+
 def test_a_partial_time_barrier_paid_in_a_third_currency_reaches_its_rate():
     """A partial-time barrier on EUR/USD paid in sterling settles in sterling, so discovery reaches
     the pound's rate and its curve, as for every type declaring a `Payoff_Currency`; unreached, a
