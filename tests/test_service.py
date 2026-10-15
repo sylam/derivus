@@ -6034,22 +6034,20 @@ def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_na
         service.BOOK = None
 
 
-def test_what_a_run_writes_into_the_kept_context_moves_no_later_run(tmp_path, monkeypatch):
-    """A run writes into the context it runs on: `CDS_Tenors` re-knots the counterparty's survival
-    curve in place, and a collateral valuation adjustment writes its funding and collateral curves
-    into `Price Factors` - over the file's own `USD.FUNDING` here. On the kept context a block held
-    only by the FILE is never restated, so a write stays for the next run. The same set priced
-    again under a new result id - a value it does not read moved between - is the number a fresh
-    context over the same document reads, to the bit: on CPTY_0, whose curve only the file holds,
-    with the tenors on, again, and off; on CPTY_3, whose curve the book states. The re-knot stays
-    (2 knots to 23) and moves nothing: the new knots lie on the curve's own line. The adjustment's
-    write would move the next set, so a run with it on drops the kept context: NS_2, funding at
-    the file's `USD.FUNDING` after NS_1 wrote over it, and NS_4 after the adjustment goes off, read
-    the file's curve.
+def test_a_run_writes_nothing_into_the_kept_context(tmp_path, monkeypatch):
+    """A run writes nothing into the context it runs on: `CDS_Tenors` re-knots the counterparty's
+    survival curve on the run's own copy of the factor, and a collateral valuation adjustment reads
+    the cash collateral each set states, writing no curve of its own. On the kept context a block
+    held only by the FILE is never restated, so a write would stay for the next run; the kept
+    survival curve keeps its two knots and the file's own `USD.FUNDING` its 1% through every run,
+    and each set priced again under a new result id - a value it does not read moved between - is
+    the number a fresh context over the same document reads, to the bit: on CPTY_0, whose curve
+    only the file holds, with the tenors on, again, and off; on CPTY_3, whose curve the book
+    states; and on the sets stating their cash collateral under the adjustment, on, again, and off.
 
-    KILLING MUTATIONS: a re-knot that is not idempotent - its values scaled by 1.001 - which
-    compounds on the kept curve and moves CPTY_0's second run and the run after the tenors go off;
-    the drop after an adjustment removed, which prices NS_2's and NS_4's FVA off the written 20bp.
+    KILLING MUTATIONS: the re-knot written onto the context's factor, which the kept context then
+    carries (2 knots to 23) for the run after the tenors go off; a flat funding curve written over
+    the file's `USD.FUNDING`, which NS_2 and NS_4 then read.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     book, market, _ = named_book(tmp_path)
@@ -6062,11 +6060,12 @@ def test_what_a_run_writes_into_the_kept_context_moves_no_later_run(tmp_path, mo
     stated = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
     nodes = [deal_at(document, path)['Instrument']['.Deal']
              for path, _ in service.netting_sets(document)]
-    nodes[1]['Collateralized'] = 'True'
-    nodes[2].update(Funding_Rate='USD.FUNDING', Collateral_Assets={'Cash_Collateral': [{
-        'Currency': 'USD', 'Collateral_Rate': 'USD', 'Funding_Rate': 'USD', 'Haircut_Posted': 0.0,
-        'Amount': 1.0}]})
-    nodes[4]['Funding_Rate'] = 'USD.FUNDING'
+    cash = {'Currency': 'USD', 'Collateral_Rate': 'USD', 'Funding_Rate': 'USD',
+            'Haircut_Posted': 0.0, 'Amount': 1.0}
+    nodes[1].update(Collateralized='True', Collateral_Assets={'Cash_Collateral': [cash]})
+    nodes[2].update(Funding_Rate='USD.FUNDING', Collateral_Assets={'Cash_Collateral': [cash]})
+    nodes[4].update(Funding_Rate='USD.FUNDING', Collateral_Assets={'Cash_Collateral': [
+        dict(cash, Funding_Rate='USD.FUNDING')]})
     readings, writes = [], []
 
     def priced(step, *references):
@@ -6088,9 +6087,7 @@ def test_what_a_run_writes_into_the_kept_context_moves_no_later_run(tmp_path, mo
         priced('CDS tenors, again', 'NS_0', 'NS_3')
         del calculation['Credit_Valuation_Adjustment']
         priced('CDS tenors off', 'NS_0')
-        calculation['Collateral_Valuation_Adjustment'] = {
-            'Calculate': 'Yes', 'Collateral_Curve': 'USD', 'Funding_Curve': 'USD',
-            'Collateral_Spread': 10, 'Funding_Spread': 20, 'Gradient': 'No'}
+        calculation['Collateral_Valuation_Adjustment'] = {'Calculate': 'Yes', 'Gradient': 'No'}
         priced('collateral adjustment on', 'NS_1', 'NS_2', 'NS_4')
         stated['SurvivalProb.CPTY_9'] = wire(hazard(0.1))
         priced('collateral adjustment, again', 'NS_1', 'NS_2', 'NS_4')
@@ -6100,7 +6097,7 @@ def test_what_a_run_writes_into_the_kept_context_moves_no_later_run(tmp_path, mo
         service.BOOK = None
     assert [reading for reading in readings if reading[2] != 'done' or reading[3] != reading[4]] \
         == []
-    assert writes == [(2, True)] + [(23, True)] * 3 + [(2, False)] * 2 + [(2, True)]
+    assert writes == [(2, True)] * 7
 
 
 def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neither(

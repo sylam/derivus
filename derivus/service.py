@@ -3540,11 +3540,6 @@ class XvaJob:
             raise
         finally:
             logging.getLogger().removeHandler(captured)
-            # a collateral valuation adjustment writes its curves into the parse it runs on before
-            # the calculation is built (`run_cmc`), so the next set builds a context of its own
-            if (self.document['Calc']['Calculation'].get('Collateral_Valuation_Adjustment')
-                    or {}).get('Calculate') == 'Yes':
-                EXECUTOR.keyed = None
         write_row(self.reference, self.row(status='done', **landed))
         return None, out
 

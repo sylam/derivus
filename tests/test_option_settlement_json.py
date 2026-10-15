@@ -157,6 +157,37 @@ def test_expired_before_the_base_date_the_payoff_is_on_the_print_and_a_missing_o
         assert all(word in message for word in ('EQO', 'Price_Fixing', '2025-06-27')), message
 
 
+def test_an_fx_option_expired_before_the_base_date_marks_on_its_print_and_a_missing_one_refuses():
+    """The FX option and binary declare the `Price_Fixing` table the equity ones do, filled by the
+    record's prints of the pair: on a base date between the expiry and the delivery the vanilla
+    marks its print's intrinsic discounted to the delivery, exact, the cash binary its payoff
+    discounted, and one stating no print refuses by name, naming the deal, the table and the day.
+
+    Killing mutations: the table undeclared, under which every expired FX option refuses; the
+    print unread, today's spot pricing the call at nothing.
+    """
+    base, print_ = EXPIRY + pd.offsets.BDay(1), 1.40
+    fixed = [[EXPIRY, print_]]
+    binary = {'Object': 'FXBinaryOption', 'Reference': 'FXB', 'Currency': 'USD',
+              'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
+              'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': FX_SPOT, 'Payoff': CASH,
+              'Expiry_Date': EXPIRY, 'Delivery_Date': SETTLE}
+    marked = marks([dict(FX, Delivery_Date=SETTLE, Price_Fixing=fixed),
+                    dict(FX, Reference='PUT', Option_Type='Put', Delivery_Date=SETTLE,
+                         Price_Fixing=fixed),
+                    dict(binary, Price_Fixing=fixed)], base)
+    d = df((SETTLE - base).days)
+    assert marked['FXO'] == pytest.approx(UNITS * (print_ - FX_SPOT) * d, rel=1e-9)
+    assert marked['PUT'] == 0.0
+    assert marked['FXB'] == pytest.approx(CASH * d, rel=1e-9)
+    for unstated in (dict(FX, Delivery_Date=SETTLE),
+                     dict(FX, Delivery_Date=SETTLE, Price_Fixing=[[EXPIRY, '']])):
+        with pytest.raises(Exception) as refusal:
+            marks([unstated], base)
+        message = str(refusal.value)
+        assert all(word in message for word in ('FXO', 'Price_Fixing', '2025-06-27')), message
+
+
 def test_on_the_expiry_the_engine_fixes_the_level_and_before_it_the_lag_only_moves_the_discount():
     """A base date ON the expiry prices off the engine's own spot - the forward to the expiry's
     settlement at zero tenor, intrinsic - and reads no print, as a fixing dated today follows the

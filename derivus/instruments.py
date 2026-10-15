@@ -6504,12 +6504,13 @@ class FXExtendableForwardDeal(Deal):
 
 class FXOptionDeal(Deal):
     vernacular = 'FX option, currency option, vanilla call or put'
-    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', elects='Settlement_Style',
-                        expires='Expiry_Date')
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
+                        elects='Settlement_Style', expires='Expiry_Date')
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, FX_OPTION_STYLE, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Expiry_Date', 'Date', default=''),
-        F('Forward_Price_Date', 'Date', default='', convention=True)
+        F('Forward_Price_Date', 'Date', default='', convention=True),
+        EXPIRY_PRINT
     ])]
 
     documentation = (
@@ -6520,8 +6521,10 @@ class FXOptionDeal(Deal):
                           'two business days, the vol at the forward\'s moneyness and the expiry, discounted',
                           'on **Discount_Rate**.',
                           '',
-                          'The payoff is paid on **Delivery_Date**, the expiry where blank; past the expiry the',
-                          'forward is held at what the expiry fixed.',
+                          'The payoff is paid on **Delivery_Date**, the expiry where blank. Past the expiry the',
+                          'forward is held at what the expiry fixed: the path\'s own level on the expiry row or,',
+                          'where the expiry is behind the base date, the print **Price_Fixing** states for it,',
+                          'which it must.',
                           '',
                           '**Option_Style** offers `European` alone, the one style this prices;',
                           '**Settlement_Style**, **Forward_Price_Date** and **Option_On_Forward** do not enter',
@@ -6591,12 +6594,14 @@ class FXEuropeanOption(FXOptionDeal):
 
 class FXBinaryOption(FXOptionDeal):
     vernacular = 'FX digital, binary option, cash-or-nothing, asset-or-nothing'
-    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', expires='Expiry_Date')
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
+                        expires='Expiry_Date')
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
-        F('Expiry_Date', 'Date', default='')
+        F('Expiry_Date', 'Date', default=''),
+        EXPIRY_PRINT
     ])]
 
     documentation = (

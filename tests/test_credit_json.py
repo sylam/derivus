@@ -91,8 +91,8 @@ def test_a_survival_curve_ending_before_the_maturity_hazards_on_at_its_last_rate
         survival=lambda day: min(discount(day, 0.01), discount(day) * math.exp(0.03))), rel=1e-12)
 
 
-def cs01(base, curve=None):
-    """`Results['CS01']` of a credit Monte Carlo valued on `base` (a date string) beside its CVA
+def loaded(base, curve=None):
+    """A context loaded with a credit Monte Carlo valued on `base` (a date string) beside its CVA
     gradient: a million paid in a year under one netting set against ISSUER_A - a flat 2% hazard, or
     `curve` (years, negative log survival) - on the flat 4% USD curve, CDS tenors 1y, 3y and 5y."""
     factors = dict(trial_credit.FACTORS)
@@ -123,7 +123,28 @@ def cs01(base, curve=None):
         'Sigma': {'.Curve': {'meta': [], 'data': [[0.0, 0.01], [10.0, 0.01]]}}}}
     context = derivus.Context()
     context.load_json((json.dumps(job), 'cs01'))
-    return context.run_job()[1]['Results']['CS01']
+    return context
+
+
+def cs01(base, curve=None):
+    """`Results['CS01']` of the job `loaded` builds."""
+    return loaded(base, curve).run_job()[1]['Results']['CS01']
+
+
+def test_a_run_leaves_the_context_it_ran_on_as_it_was_loaded():
+    """`CDS_Tenors` re-knots the counterparty's survival curve to the CDS dates on the run's own
+    copy of the factor, so the context a job was loaded on keeps the curve it loaded, and a second
+    run on it reads the same CS01 to the bit.
+
+    Killing mutation: the re-knot written onto the context's factor, whose curve then carries the
+    CDS knots.
+    """
+    context = loaded('2026-03-20')
+    survival = context.current_cfg.params['Price Factors']['SurvivalProb.ISSUER_A']['Curve']
+    knots = survival.array.copy()
+    first = context.run_job()[1]['Results']['CS01']
+    assert np.array_equal(survival.array, knots), 'the run re-knotted the context\'s own curve'
+    assert context.run_job()[1]['Results']['CS01'].equals(first)
 
 
 def par_rates(frame):

@@ -13,10 +13,11 @@
 
 __author__ = "Shuaib Osman"
 __license__ = "Free for non-commercial use"
-__all__ = ['version_info', '__version__', '__author__', '__license__', 'Context', 'makeflatcurve', 'getpath',
+__all__ = ['version_info', '__version__', '__author__', '__license__', 'Context', 'getpath',
            'set_collateral', 'load_market_data', 'run_baseval', 'run_cmc', 'update_dict']
 
 import os
+import copy
 import json
 import torch
 import pickle
@@ -47,15 +48,6 @@ def update_dict(d, u):
     for k, v in u.items():
         d[k] = update_dict(d.get(k, {}), v) if isinstance(v, collections.abc.Mapping) else v
     return d
-
-
-def makeflatcurve(curr, bps, daycount='ACT_365', tenor=30):
-    """
-    generates a constant (flat) curve in basis points with the given daycount and tenor
-    :return: a dictionary containing the curve definition
-    """
-    return {'Currency': curr, 'Curve': utils.Curve([], [[0, bps * 0.01 * 0.01], [tenor, bps * 0.01 * 0.01]]),
-            'Day_Count': daycount, 'Property_Aliases': None, 'Sub_Type': 'None'}
 
 
 def getpath(pathlist):
@@ -337,47 +329,21 @@ def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, r
     if params_mc.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
         cva_sect = params_mc['Credit_Valuation_Adjustment']
         if cva_sect.get('CDS_Tenors'):
-            # add the CDS dates to the survival probability curve as the factor reads it, its last
-            # hazard going on past its last knot, to calculate CDS rates
-            survivalprob = context.params['Price Factors']['SurvivalProb.{}'.format(cva_sect['Counterparty'])]
+            # the CDS dates join the survival curve's knots, its last hazard carried on past them, so
+            # the CDS rates read a curve that runs to their dates - on the run's own copy of the
+            # factor, the context it runs on being written to by nothing
+            name = 'SurvivalProb.{}'.format(cva_sect['Counterparty'])
+            survivalprob = context.params['Price Factors'][name]
             daycount = lambda time_in_days: utils.DayCount.accrual(
                 params_mc['Base_Date'], time_in_days, utils.DayCount.ACT365)
             to_add = [daycount((x - params_mc['Base_Date']).days) for x in
                       utils.cds_dates(params_mc['Base_Date'], max(cva_sect.get('CDS_Tenors')) * 12)]
             new_terms = np.union1d(to_add, survivalprob['Curve'].array[:, 0])
-            survivalprob['Curve'].array = np.array(
-                list(zip(new_terms, SurvivalProb(survivalprob).current_value(new_terms))))
-
-    if params_mc.get('Collateral_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
-        ns = context.deals['Deals']['Children'][0]['Instrument'].field
-        collva_sect = context.deals['Calculation']['Collateral_Valuation_Adjustment']
-        calc_currency = ns.get('Balance_Currency', 'ZAR')
-
-        if 'Cash_Collateral' not in ns.get('Collateral_Assets', {}):
-            collateral_curve = collva_sect['Collateral_Curve']
-            funding_curve = collva_sect['Funding_Curve']
-
-            if collva_sect['Collateral_Spread']:
-                collateral_curve = '{}.COLLATERAL'.format(collateral_curve)
-                context.params['Price Factors']['InterestRate.{}'.format(collateral_curve)] = makeflatcurve(
-                    calc_currency, collva_sect['Collateral_Spread'])
-
-            if collva_sect['Funding_Spread']:
-                funding_curve = '{}.FUNDING'.format(funding_curve)
-                context.params['Price Factors']['InterestRate.{}'.format(funding_curve)] = makeflatcurve(
-                    calc_currency, collva_sect['Funding_Spread'])
-
-            ns['Collateral_Assets'] = {
-                'Cash_Collateral': [{
-                    'Currency': calc_currency,
-                    'Collateral_Rate': collateral_curve,
-                    'Funding_Rate': funding_curve,
-                    'Haircut_Posted': 0.0,
-                    'Amount': 1.0}]}
-
-        elif len(ns['Collateral_Assets']['Cash_Collateral']) > 1:
-            # make sure we just take the first definition
-            ns['Collateral_Assets']['Cash_Collateral'] = [ns['Collateral_Assets']['Cash_Collateral'][0]]
+            curve = utils.Curve(survivalprob['Curve'].meta, np.array(
+                list(zip(new_terms, SurvivalProb(survivalprob).current_value(new_terms)))))
+            context = copy.copy(context)
+            context.params = dict(context.params, **{'Price Factors': dict(
+                context.params['Price Factors'], **{name: dict(survivalprob, Curve=curve)})})
 
     calc = construct_calculation('CreditMonteCarlo', context, device=device, prec=prec)
     out = calc.execute(params_mc, job_id, num_jobs, deterministic_batches)

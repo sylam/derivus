@@ -1106,8 +1106,10 @@ def materialize(structure, params, document):
 
 
 def accrues(deal_type):
-    """Whether `deal_type` observes a fixing SCHEDULE - an accrual leg - rather than one expiry."""
-    return getattr(schema.OBSERVES.get(deal_type), 'table', None) is not None
+    """Whether `deal_type` observes a fixing SCHEDULE - an accrual leg - rather than one expiry,
+    whose table holds the expiry's own print."""
+    observes = schema.OBSERVES.get(deal_type)
+    return observes is not None and observes.table is not None and observes.expires is None
 
 
 def furnish_accrual(structure, deal, params, document, base_date, underlying, inverted):

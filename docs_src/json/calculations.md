@@ -50,7 +50,6 @@ consuming code falls back to. For the `CreditMonteCarlo` containers that is:
 | `Funding_Valuation_Adjustment.Deflate_Stochastically` | **`No`**, where the declaration says `Yes` |
 | `Credit_Valuation_Adjustment`: `Counterparty`, `Deflate_Stochastically`, `Stochastic_Hazard_Rates` | no fallback: a stated block with `Calculate: Yes` must carry them |
 | `Funding_Valuation_Adjustment`: the three curves | no fallback, as above |
-| `Collateral_Valuation_Adjustment`: both curves and both spreads | no fallback, read when the netting set holds no `Cash_Collateral` |
 | `Initial_Margin`: every field but `Calculate` | no fallback, read under `Calculate: Yes` |
 | `Bank` (CVA and FVA), `Stochastic_Funding` (FVA) | read by nothing |
 

@@ -1034,10 +1034,6 @@ class CreditMonteCarlo(Calculation):
         F('Collateral_Valuation_Adjustment', 'Container',
           sub_fields=[
               F('Calculate', 'Text', default='No', values=['Yes', 'No']),
-              F('Collateral_Curve', 'Text', default=''),
-              F('Funding_Curve', 'Text', default=''),
-              F('Collateral_Spread', 'Integer', default=0),
-              F('Funding_Spread', 'Integer', default=0),
               F('Gradient', 'Text', default='No', values=['Yes', 'No'])]),
         F('Initial_Margin', 'Container',
           description='The LCH-style initial margin add-on',

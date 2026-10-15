@@ -101,10 +101,6 @@ Grouped by where a validator meets them.
 
 ### The engine {#the-engine}
 
-- **The FX option has no table for its expiry print** (2026-10-09). The FX option and binary hold
-  their forward at the expiry's print until `Delivery_Date`, as the equity options do, but declare
-  no `Price_Fixing`, so one expired before the base date refuses by name for a print it cannot
-  state. The table and its `observes`: S.
 - **A rate leg ignores eight of its conventions** (2026-09-30). `Reset_Type` (`Arrears`, `Advance`),
   `Payment_Timing`, `Payment_Offset`, `Index_Day_Count`, `Index_Offset`, the calendars and
   `First_Coupon_Date` are declared on the swap, cap, floor and swaption and move no leg: the swap
@@ -145,11 +141,6 @@ Grouped by where a validator meets them.
   width and the thread count (within 4 ulps, bit-identical on a GPU, seen in no end-to-end result).
   A replay across boxes compares for equality, so a home replaying host-priced results needs a
   declared tolerance policy.
-- **A credit Monte Carlo writes into the config it runs on** (2026-10-06). `run_cmc` re-knots the
-  counterparty's survival curve for `CDS_Tenors` and writes flat `.FUNDING` and `.COLLATERAL`
-  curves into the price factors over any of that name the market file carries: a later set on a
-  kept context read a fifth of a fresh context's funding. The XVA tab drops its context after such a
-  run. The write belongs on the run's own copy: S.
 - **A SIMM vega vertex on a Skew surface moves its base** (2026-10-07). A vertex bump inserts a
   pillar where the surface lacks one, read off its own interpolation. Explicit and Malz surfaces
   price unchanged, but no smile at an inserted pillar equals a Skew surface's expiry blend (14.5 vol
