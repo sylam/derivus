@@ -30,7 +30,9 @@ severed, so `backward` refuses `create_graph` naming the switch. On this fixture
 refuses first, the TARF registering a boundary correction under the crisp estimator.
 """
 import gc
+import logging
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -159,28 +161,22 @@ def test_the_exposure_its_cashflows_and_the_cva_gradient_are_bit_identical_with_
 
 # ---------------------------------------------------------------- (f) the strip is streamed
 
-#: The replay's peak bound for `streamed` at 16 x 4096, float32.
+#: The replay's peak bound for `streamed` under `STREAM_CAP_MIB`, at 16 x 4096, float32.
 STREAM_PEAK_MIB = 265.0
+#: A per-process cap above the floor that the TARF's strips walked plain do not fit.
+STREAM_CAP_MIB = 300.0
 
 
-class Unstreamed(calculation.CreditMonteCarlo):
-    """A credit Monte Carlo whose pricers walk every fixing strip unstreamed."""
-
-    def _init_shared_mem(self, *args, **kwargs):
-        shared = super()._init_shared_mem(*args, **kwargs)
-        shared.oss_chunk = 0
-        return shared
-
-
-def replayed(calc, config, grid, batch, inner):
+def replayed(config, grid, batch, inner, cap=None, recompute='Yes'):
     """(the run's results, its peak in MiB above its floor) of `config` reported on `grid`, its CVA
-    gradient replayed by `Recompute_Inner_MC`, float32 on the device."""
+    gradient replayed by `Recompute_Inner_MC` (taped with `recompute` 'No'), float32 on the device,
+    under a per-process memory fraction leaving `cap` MiB above the floor where one is given."""
     base = config.params['System Parameters']['Base_Date']
     params = {
         'Base_Date': base, 'Run_Date': base.strftime('%Y-%m-%d'), 'Currency': 'USD',
         'Time_grid': grid, 'Batch_Size': batch, 'Simulation_Batches': 1, 'Random_Seed': 1,
         'Tenor_Offset': 0.0, 'MCMC_Simulations': inner, 'Deflation_Interest_Rate': 'USD',
-        'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': 'Yes',
+        'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': recompute,
         'Credit_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes'}}
@@ -189,50 +185,76 @@ def replayed(calc, config, grid, batch, inner):
     torch.cuda.empty_cache()
     floor = torch.cuda.memory_allocated()
     torch.cuda.reset_peak_memory_stats()
-    out = calc(config, device=utils.calculation_device(None, 0), prec=torch.float32).execute(params)
+    if cap:
+        torch.cuda.set_per_process_memory_fraction(
+            (torch.cuda.memory_reserved() + cap * 2.0 ** 20) / torch.cuda.mem_get_info()[1])
+    try:
+        out = calculation.CreditMonteCarlo(
+            config, device=utils.calculation_device(None, 0), prec=torch.float32).execute(params)
+    finally:
+        torch.cuda.set_per_process_memory_fraction(1.0)
     return out['Results'], (torch.cuda.max_memory_allocated() - floor) / 2.0 ** 20
 
 
-def streamed(calc=calculation.CreditMonteCarlo, batch=16, inner=4096):
+def logged(messages, pattern):
+    """The integers of every logged line `pattern` matches, a tuple a line."""
+    return [tuple(int(x) for x in m.groups())
+            for m in map(re.compile(pattern).match, messages) if m]
+
+
+def streamed(cap=None, batch=16, inner=4096):
     """(cva, CVA gradient, the run's peak in MiB above its floor) of a 24-fixing knock-in TARF
-    reported monthly."""
+    reported monthly, under `cap` where one is given."""
     deal = tarf._tarf(tarf.UNREACHABLE_TARGET, [30 * (i + 1) for i in range(24)],
                       barrier=tarf.BARRIER, buy_sell='Sell')
-    results, peak = replayed(calc, tarf._cfg(deal, tarf.SPOT, counterparty=True, simulate_fx=True),
-                             '0d 1m(1m)', batch, inner)
+    results, peak = replayed(tarf._cfg(deal, tarf.SPOT, counterparty=True, simulate_fx=True),
+                             '0d 1m(1m)', batch, inner, cap)
     return float(results['cva']), results['grad_cva']['Gradient'].values.astype(np.float64), peak
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
-def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient():
-    """The replay's strip checkpointed `oss_chunk` fixings at a time peaks under
-    `STREAM_PEAK_MIB` and reproduces the unstreamed loop's cva and gradient bit for bit.
+def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient(caplog):
+    """Uncapped, every strip of the replay walks plain; under a per-process memory fraction leaving
+    `STREAM_CAP_MIB` above the floor, which those strips do not fit, a strip is checkpointed from
+    the stretch its projected tape passes half of what is free, and the run peaks under
+    `STREAM_PEAK_MIB` and reproduces the uncapped run's cva and gradient bit for bit.
 
-    Readings: streamed 197 MiB, unstreamed 909; a process's first run carries cuBLAS's 32 MiB
-    workspace too. The alive branch back on the tape (the stream's `no_grad` blocks removed) reads
-    388 MiB.
+    Readings: uncapped 911 MiB, 943 as a process's first run (cuBLAS's 32 MiB workspace), all 48
+    strips plain and each two-row block one piece, a row-step's replay measured at 19.8 MB, 476 over
+    the probed row's 24 fixings; capped 232 MiB, 33 strips checkpointed and every block cut to one
+    row, the row-step 18.3 MB, its tape's, the probe's own replay having checkpointed.
 
-    Killing mutation: the strip walked as one piece, never checkpointed - 941 MiB.
+    Killing mutations: the projection ignored, every strip walked plain - out of memory under the
+    cap; every strip checkpointed past its first stretch - 44 of the uncapped run's 48 strips.
     """
-    cva, gradient, peak = streamed()
-    whole_cva, whole_gradient, whole_peak = streamed(Unstreamed)
+    walks = r'OSS_STREAM \S+ tape -?\d+ bytes, budget \S+: (\d+) of (\d+) fixings plain'
+    with caplog.at_level(logging.DEBUG):
+        whole_cva, whole_gradient, whole_peak = streamed()
+        whole = logged(caplog.messages, walks)
+        caplog.clear()
+        cva, gradient, peak = streamed(STREAM_CAP_MIB)
+        capped = logged(caplog.messages, walks)
+    assert whole and all(w == n for w, n in whole) and any(w < n for w, n in capped), (
+        'uncapped {} of {} strips plain, capped {} of {}'.format(
+            sum(w == n for w, n in whole), len(whole), sum(w == n for w, n in capped), len(capped)))
     assert cva == whole_cva and np.array_equal(gradient, whole_gradient), (
         'streaming moved the CVA or its gradient:\n{}\n{}'.format(gradient, whole_gradient))
     assert peak < STREAM_PEAK_MIB < whole_peak, (
-        'peak {:.1f} MiB streamed, {:.1f} unstreamed, bound {}'.format(
+        'peak {:.1f} MiB under the cap, {:.1f} without, bound {}'.format(
             peak, whole_peak, STREAM_PEAK_MIB))
 
 
-#: The bound on `dense`'s daily replay peak over its weekly one, at 64 x 4096, float32.
-DENSE_PEAK_FACTOR = 1.75
+#: A per-process cap above the floor that `dense`'s daily block replayed whole does not fit.
+DENSE_CAP_MIB = 300.0
 
 
-def dense(grid):
+def dense(grid, cap=None, recompute='Yes'):
     """(the marks on each reported date, the run's peak in MiB above its floor) of a twelve-coupon
-    monthly autocall with a put at 70, reported on `grid`. Its equity's GBM has no vol, so the spot
-    is the base spot on every date and a row's mark is a function of its date alone; the sloped
-    curves and smile give each row its own discounts, carry and vols; 64 scenarios take the
-    canonical inner block."""
+    monthly autocall with a put at 70, reported on `grid` under `cap` where one is given, its CVA
+    gradient replayed or, with `recompute` 'No', taped. Its
+    equity's GBM has no vol, so the spot is the base spot on every date and a row's mark is a
+    function of its date alone; the sloped curves and smile give each row its own discounts, carry
+    and vols; 64 scenarios take the canonical inner block."""
     monthly = [bb.BASE + pd.Timedelta(days=30 * (i + 1)) for i in range(12)]
     deal = dict(bp.AUTOCALL, Expiry_Date=monthly[-1], Price_Fixing=[[d, 0.0] for d in monthly],
                 Autocall_Coupons=[[d, 0.05] for d in monthly],
@@ -248,33 +270,67 @@ def dense(grid):
     factors['SurvivalProb.CPTY'] = {
         'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
     config.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})}]
-    results, peak = replayed(calculation.CreditMonteCarlo, config, grid, 64, 4096)
+    results, peak = replayed(config, grid, 64, 4096, cap, recompute)
     return results['mtm'], peak
 
 
 @pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
-def test_a_daily_grid_marks_the_weekly_dates_within_the_weekly_peak():
+def test_a_daily_grid_marks_the_weekly_dates_within_its_cap(caplog):
     """A pricer prices the rows sharing a fixing interval as one block: a weekly grid puts four or
-    five of `dense`'s rows in an interval, a daily one thirty, past `oss_rows` (12), so the daily
-    block is priced twelve rows at a time. A row's strip reads only its own row and draws what it
-    would in the whole block, so the daily grid marks every weekly date to the bit, and its replay
-    peaks within `DENSE_PEAK_FACTOR` of the weekly one's.
+    five of `dense`'s rows in an interval, a daily one thirty. Under a per-process memory fraction
+    leaving `DENSE_CAP_MIB` above the floor, which the daily block replayed whole does not fit, the
+    pricer measures one row's replay and prices each block in the pieces half of what is free
+    replays. A row's strip reads only its own row and draws what it would in the whole block, so
+    the daily grid marks every weekly date to the bit, peaking under the cap.
 
-    Readings: weekly 216 MiB, 248 as a process's first run (cuBLAS's workspace), daily 294.
+    Readings: weekly uncapped 1,855 MiB, 1,887 as a process's first run, every block whole and
+    every strip plain; daily under the cap 251 MiB, a row-step measured at 24.1 MB, 12 to a row,
+    and every block of 30 or 31 rows cut to one, 182 of its 362 strips checkpointed. Uncapped, the
+    daily grid replays its blocks whole and its strips plain at 9,544 MiB.
 
-    Killing mutations: the block priced whole, every row at once - daily 529 MiB, 2.45 times the
-    weekly; the vol strip handed to every piece whole - a weekly date moves by 6.4e-05 on marks
-    spread 5e-03.
+    Killing mutations: the measured row ignored, every block replayed whole - out of memory under
+    the cap; the vol strip handed to every piece whole - a weekly date moves by 7.3e-05 on marks
+    spread 5.1e-03.
     """
-    weekly, weekly_peak = dense('0d 1w(1w)')
-    daily, daily_peak = dense('0d 1d(1d)')
+    weekly, _ = dense('0d 1w(1w)')
+    with caplog.at_level(logging.DEBUG):
+        daily, peak = dense('0d 1d(1d)', DENSE_CAP_MIB)
+    pieces = logged(caplog.messages, r'OSS_ROWS \S+ (\d+) bytes a row-step x \d+ fixings, '
+                                     r'budget \S+: (\d+) rows a piece of (\d+)')
     shared = daily.loc[weekly.index].values
     assert weekly.values.std() > 0.0 and np.array_equal(weekly.values, shared), (
         'the daily grid moved a weekly date by {:.6g}'.format(
             float(np.abs(weekly.values - shared).max())))
-    assert daily_peak < DENSE_PEAK_FACTOR * weekly_peak, (
-        'peak {:.1f} MiB daily, {:.1f} weekly, bound {}x'.format(
-            daily_peak, weekly_peak, DENSE_PEAK_FACTOR))
+    assert pieces and all(row > 0 for row, _, _ in pieces) and any(
+        k < n for _, k, n in pieces), 'no block was cut to its measured row: {}'.format(pieces)
+    assert peak < DENSE_CAP_MIB, 'peak {:.1f} MiB daily, cap {}'.format(peak, DENSE_CAP_MIB)
+
+
+#: The bound on `dense`'s weekly run with its CVA gradient taped, at 64 x 4096, float32.
+TAPED_PEAK_MIB = 550.0
+
+
+@pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
+def test_a_taped_strip_that_fits_is_one_checkpoint(caplog):
+    """A taped run holds its checkpoints' edges to its batch's end, so a strip whose projected
+    tape, its fixings times the row-step the probe measured, fits half of what is free is one
+    checkpoint: `dense`'s weekly run with its CVA gradient taped peaks under `TAPED_PEAK_MIB`, every
+    strip but the probe's walked as one checkpoint.
+
+    Readings: 458 MiB, 490 as a process's first run, the row-step 27.6 MB taped; the chunk of four
+    fixings it replaces 610.
+
+    Killing mutation: the strip in `ceil(sqrt(n))` stretches whatever it projects - 718 MiB, 750 as
+    a first run, a strip of twelve fixings in stretches of four.
+    """
+    with caplog.at_level(logging.DEBUG):
+        _, peak = dense('0d 1w(1w)', recompute='No')
+    walks = logged(caplog.messages, r'OSS_STREAM \S+ tape -?\d+ bytes, budget \S+: (\d+) of '
+                                    r'(\d+) fixings plain, (\d+) a checkpoint')
+    held = [(n, c) for w, n, c in walks if w < n]
+    assert held and all(c == n for n, c in held) and peak < TAPED_PEAK_MIB, (
+        'peak {:.1f} MiB, bound {}; {} of {} strips one checkpoint'.format(
+            peak, TAPED_PEAK_MIB, sum(c == n for n, c in held), len(held)))
 
 
 # ---------------------------------------------------------------- (g) a trade's draws are its own

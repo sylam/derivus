@@ -303,7 +303,7 @@
   var F = {};
   F.outer = forkBox(EXEC.x + 16, 190, 'OUTER PATH AT t', ['one row of the', 'scenario buffer:', 'spot, vol state,', 'curves at t', '', 'state at t → fork'], color('stoch'));
   F.block = forkBox(EXEC.x + 222, 236, 'THE CANONICAL INNER BLOCK', ['inner_block(rows, sims)', '= (u, 1 - u), scrambled Sobol', 'row k fixes k · 2,048 points', 'chunk c of 64 rows =', '  dimensions 64c on', 'prefix-stable, broadcast'], color('implied'));
-  F.strip = forkBox(EXEC.x + 474, 236, 'THE STREAMED STRIP', ['oss_stream over K fixings', 'step: survive, draw, settle', 'under a gradient every 4', '  fixings = one checkpoint', 'a row’s tape: its edges +', '  one chunk’s intermediates'], color('implied'));
+  F.strip = forkBox(EXEC.x + 474, 236, 'THE STREAMED STRIP', ['oss_stream over K fixings', 'step: survive, draw, settle', 'every ⌈√K⌉ fixings = one', '  checkpoint: edges + chunk;', 'in a replay, a tape that', '  fits walks plain'], color('implied'));
   F.source = forkBox(EXEC.x + 726, 216, 'PRICED ONCE', ['Batch_Size x Inner_Sub_Batch', 'published as ScenarioSource:', '  the outer past at B_outer', '  the forked rows flattened', 'every series the row carries', 'marks → the solver'], color('stoch'));
   F.node = forkBox(EXEC.x + 958, 206, 'INNERMCRECOMPUTE', ['forward: no_grad', '  saves theta + rng position', 'backward: re-run under', '  enable_grad, one block', 'second derivative refused', 'settle outside the callable'], color('grad'));
   var forkBars = [];
@@ -599,14 +599,14 @@
           }).then(function () { state.status.exec = 'done: 4 batches, 4,096 paths'; state.status.stats = 'deals 3 · Deals Skipped 0 · batches 4/4 · Device_Memory reported'; render(); return wait(400); });
       } },
     { title: 'The inner fork and the canonical block',
-      text: 'Some pricers simulate inside a path: a barrier, a target redemption, an autocall. At a date the outer state is forked and one pass is run at the batch size times the inner sub-batch. Every inner simulation reads one canonical block, row k for fixing k, each inner path one scrambled Sobol point over the strip, so a trade’s value does not depend on its neighbours and the book shards with nothing to anchor. The strip streams fixing by fixing, and under a gradient every four fixings are one checkpoint.',
+      text: 'Some pricers simulate inside a path: a barrier, a target redemption, an autocall. At a date the outer state is forked and one pass is run at the batch size times the inner sub-batch. Every inner simulation reads one canonical block, row k for fixing k, each inner path one scrambled Sobol point over the strip, so a trade’s value does not depend on its neighbours and the book shards with nothing to anchor. The strip streams fixing by fixing: under a gradient every ⌈√K⌉ fixings are one checkpoint, and in a replay a tape that fits the device is held whole.',
       run: function () {
         state.fork = true; state.strip = 0; state.status.fork = '_run_inner_mc_at_t: fork at t'; render();
         return fly(center({ x: F.outer.x, w: F.outer.w, y: FORK_Y, h: 150 }), center({ x: F.block.x, w: F.block.w, y: FORK_Y, h: 150 }), 700, color('stoch'))
           .then(function () { state.status.fork = 'inner_block: (u, 1 - u) · chunks of 64 rows'; render(); return fly(center({ x: F.block.x, w: F.block.w, y: FORK_Y, h: 150 }), { x: F.strip.x + 10, y: FORK_Y + 132 }, 600, color('implied')); })
           .then(function () {
             var chain = Promise.resolve();
-            for (var k = 1; k <= 6; k++) { (function (kk) { chain = chain.then(function () { state.strip = kk; state.status.fork = 'oss_stream: fixing ' + kk + (kk % 4 === 0 ? ' · checkpoint' : ''); render(); return wait(260); }); })(k); }
+            for (var k = 1; k <= 6; k++) { (function (kk) { chain = chain.then(function () { state.strip = kk; state.status.fork = 'oss_stream: fixing ' + kk + (kk % 3 === 0 ? ' · checkpoint' : ''); render(); return wait(260); }); })(k); }
             return chain;
           })
           .then(function () { state.status.fork = 'priced once → ScenarioSource blocks'; render(); return fly({ x: F.strip.x + F.strip.w, y: FORK_Y + 75 }, center({ x: F.source.x, w: F.source.w, y: FORK_Y, h: 150 }), 600, color('stoch')); })

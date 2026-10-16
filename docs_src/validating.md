@@ -64,7 +64,7 @@ pricer logs about what it decided. `tests/*.py` modules not named `test_*` are s
 | Gates | Run only with |
 |---|---|
 | the CUDA arms of `tests/test_multi_gpu.py` | one visible CUDA device, or two for the arms that shard across devices; the same determinism is gated on CPU without a marker |
-| `test_deterministic_kernels_is_read_every_run_and_set_both_ways` and `test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient` in `tests/test_recompute_inner_mc.py` | a CUDA device: they read the GPU backward's atomics and the device allocator |
+| `test_deterministic_kernels_is_read_every_run_and_set_both_ways`, `test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient`, `test_a_daily_grid_marks_the_weekly_dates_within_its_cap` and `test_a_taped_strip_that_fits_is_one_checkpoint` in `tests/test_recompute_inner_mc.py` | a CUDA device: they read the GPU backward's atomics and the device allocator |
 | the last gate of `tests/test_curve_strip_emitter.py`, `tests/test_swaption_vol_emitter.py` and `tests/test_equity_chain.py` | a Bloomberg terminal and `blpapi`; the curve and swaption gates also need a verified security map, and the curve and chain gates `DERIVUS_LIVE_BLOOMBERG` set. Every other gate in those modules runs on canned terminal answers |
 | `tests/test_notebooks.py` | `nbformat` and `nbclient`, which the `interactive` extra brings |
 | one gate of `tests/test_structures.py` | Python 3.12 or later, since it observes through `sys.monitoring` |

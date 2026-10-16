@@ -13,6 +13,7 @@
 
 import logging
 import math
+import time
 from functools import partial
 
 import numpy as np
@@ -562,15 +563,38 @@ def mixer_uniform(pair):
     return torch.where(u <= 0.5, u, 1.0 - ubar)
 
 
-def oss_stream(step, state, n, chunk):
+def taped(values):
+    """Whether grad mode is on and a tensor of ``values``, or of a tuple among them, carries a
+    graph: what a value run, which has grad mode on too, does not."""
+    return torch.is_grad_enabled() and any(
+        torch.is_tensor(x) and x.requires_grad for v in values
+        for x in (v if isinstance(v, tuple) else (v,)))
+
+
+def device_budget(shared):
+    """Half the bytes this process may still allocate on its device: the driver's free memory and
+    the allocator's cached slack, or what a per-process memory fraction leaves if that is less."""
+    device = shared.one.device
+    free, total = torch.cuda.mem_get_info(device)
+    stats = torch.cuda.memory_stats(device)
+    held = stats['allocated_bytes.all.current']
+    # half: a replay's autograd buffers and the allocator's fragmentation take the other
+    return min(free + stats['reserved_bytes.all.current'] - held,
+               torch.cuda.get_per_process_memory_fraction(device) * total - held) / 2
+
+
+def oss_stream(step, state, n, shared, stream=True):
     """Walk ``step(j, *state) -> (state, outputs)`` over a strip's ``n`` fixings: the final state
     and every step's outputs in order.
 
-    Under a gradient - grad mode on and a tensor of the state or of the step's bound row carrying
-    one - each ``chunk`` fixings are ONE checkpoint, so a row's tape is its state at the chunk edges
-    and one chunk's intermediates; otherwise, or at ``chunk`` 0, it is the plain loop: a value run
-    has grad mode on too. The step must be PURE and bind its row's tensors as defaults - a
-    checkpoint replays it after the row loop moved on.
+    Under a gradient (`taped`: the state or the step's bound row carrying one) on the device with
+    ``stream`` on, the strip goes in stretches of ``ceil(sqrt(n))`` fixings, each one checkpoint
+    holding the state at its edges, or in a taped run as one checkpoint where its projected tape,
+    ``n`` times what a row-step of its pricer tapes (`oss_rows`), fits `device_budget`. In a replay
+    (`InnerMCRecompute`), whose tape dies with its block's backward, and in the probe measuring the
+    row-step, a stretch walks plain, the fastest walk, while the tape laid and the last stretch's
+    for each fixing still to walk fit the budget. Otherwise it is the plain loop. The step must be
+    PURE and bind its row's tensors as defaults - a checkpoint replays it after the loop moved on.
     """
     def run(lo, hi, *state):
         outputs = []
@@ -579,29 +603,86 @@ def oss_stream(step, state, n, chunk):
             outputs.append(out)
         return state, outputs
 
-    taped = torch.is_grad_enabled() and any(
-        torch.is_tensor(x) and x.requires_grad for v in state + (step.__defaults__ or ())
-        for x in (v if isinstance(v, tuple) else (v,)))
-    if not (chunk and taped):
+    if not (stream and n and shared.one.is_cuda and taped(state + (step.__defaults__ or ()))):
         return run(0, n, *state)
-    outputs = []
+    name = step.__qualname__.split('.')[0]
+    cost = shared.t_PreCalc.get(('oss_rows', name))
+    measure = cost is None or shared.recompute_inner_mc
+    device, chunk, outputs, walked = shared.one.device, math.ceil(math.sqrt(n)), [], 0
+    budget, tape = device_budget(shared), 0 if measure else n * cost[0]
+    # a taped run holds its checkpoints' edges to its batch's end, so a strip that fits is one
+    if not measure and tape <= budget:
+        chunk = n
+    held = last = torch.cuda.memory_allocated(device)
     for lo in range(0, n, chunk):
-        state, out = torch.utils.checkpoint.checkpoint(
-            run, lo, min(lo + chunk, n), *state, use_reentrant=False, preserve_rng_state=False)
+        hi = min(lo + chunk, n)
+        if measure and tape <= budget:
+            state, out = run(lo, hi, *state)
+            # a strip's first fixings can lay less than the rest, so the projection is re-read
+            now, walked = torch.cuda.memory_allocated(device), hi
+            tape, last = now - held + (n - hi) * (now - last) / (hi - lo), now
+        else:
+            state, out = torch.utils.checkpoint.checkpoint(
+                run, lo, hi, *state, use_reentrant=False, preserve_rng_state=False)
         outputs.extend(out)
+    if cost is None:
+        shared.t_PreCalc['oss_tape', name] = tape / n
+    logging.debug('OSS_STREAM %s tape %.0f bytes, budget %.0f: %d of %d fixings plain, '
+                  '%d a checkpoint', name, tape, budget, walked, n, chunk)
     return state, outputs
 
 
-def oss_rows(shared, *rowed):
-    """A block's row-indexed arrays whole, or ``shared.oss_rows`` rows at a time past that many:
-    each piece is priced as a block of its own rows. A row's strip reads its own row of each and
-    draws as it would in the whole block, so the pieces price the block's rows to the bit."""
-    n, k = len(rowed[0]), shared.oss_rows
-    if n <= k:
-        yield rowed
-        return
-    for lo in range(0, n, k):
-        yield tuple(x[lo:lo + k] for x in rowed)
+def row_step_bytes(shared, name, fixings, simulate, theta):
+    """What a row-step of ``simulate`` tapes and what its replay peaks at, in bytes: one row of
+    ``fixings`` walked taped on detached copies of ``theta``, so no outer graph is walked, its strip
+    measuring the tape (`oss_stream`), and under a recompute a backward of its marks as
+    `InnerMCRecompute`'s backward runs it; the plain generator put back and all it made dropped."""
+    device, position = shared.one.device, shared.rng_position()
+    theta = [x.detach().requires_grad_(x.requires_grad) for x in theta]
+    torch.cuda.synchronize(device)
+    start, held = time.perf_counter(), torch.cuda.memory_allocated(device)
+    marks = simulate(*theta)[0]
+    if shared.recompute_inner_mc and marks.requires_grad:
+        torch.autograd.grad(marks.sum(), [x for x in theta if x.requires_grad], allow_unused=True)
+    torch.cuda.synchronize(device)
+    shared.rng_position(position)
+    # the peak statistic is left to the run, so a probe under an earlier peak reads that, a bound
+    peak = (torch.cuda.max_memory_allocated(device) - held) / fixings
+    tape = shared.t_PreCalc.pop(('oss_tape', name), peak)
+    logging.debug('OSS_ROWS %s probe %.0f bytes a row-step taped, %.0f replayed, in %.1f ms', name,
+                  tape, max(peak, tape), 1e3 * (time.perf_counter() - start))
+    return tape, max(peak, tape)
+
+
+def oss_rows(shared, build, fixings, *rowed):
+    """A block's pieces as ``(rowed, simulate, theta)``, ``build(*rowed) -> (simulate, theta)``
+    building each. A row's strip reads its own row of each array and draws as it would in the whole
+    block, so the pieces price the block's rows to the bit.
+
+    Under a gradient on the device, what a row-step tapes and replays is measured by
+    `row_step_bytes` once per adopter per run, on the first row of the first block whose strip
+    streams ``fixings``, the longest in its block, and cached for `oss_stream`; under a recompute a
+    piece then holds the rows `device_budget` replays, each ``fixings`` row-steps, else the block is
+    one piece.
+    """
+    simulate, theta = build(*rowed)
+    n = len(rowed[0])
+    if fixings and shared.one.is_cuda and taped(theta):
+        name = simulate.func.__qualname__.split('.')[0]
+        if ('oss_rows', name) not in shared.t_PreCalc:
+            shared.t_PreCalc['oss_rows', name] = row_step_bytes(
+                shared, name, fixings, *build(*(x[:1] for x in rowed)))
+        if shared.recompute_inner_mc and n > 1:
+            replay, budget = shared.t_PreCalc['oss_rows', name][1], device_budget(shared)
+            k = max(1, int(budget // (fixings * replay)))
+            logging.debug('OSS_ROWS %s %.0f bytes a row-step x %d fixings, budget %.0f: %d rows a '
+                          'piece of %d', name, replay, fixings, budget, min(k, n), n)
+            if k < n:
+                for lo in range(0, n, k):
+                    piece = tuple(x[lo:lo + k] for x in rowed)
+                    yield (piece,) + build(*piece)
+                return
+    yield rowed, simulate, theta
 
 
 def oss_truncated_draw(u, z_bound, survive_below):
@@ -1953,8 +2034,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
                 return (Sj * torch.exp(r_j + sig_j * Z), P, L, surv_payoff), None
 
-            (Sj, P, L, surv_payoff), _ = oss_stream(fixing, (Sj, P, L, surv_payoff), N_fix,
-                                                    shared.oss_chunk)
+            (Sj, P, L, surv_payoff), _ = oss_stream(fixing, (Sj, P, L, surv_payoff), N_fix, shared)
 
             # terminal payoff on paths that survived all barrier dates; surv_payoff is already
             # L-weighted when the last step was integrated rather than sampled (GBM digitals)
@@ -2137,12 +2217,13 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # THE OSS, run even where every row has resolved if a walking kit's hit leg is inside it
         run_oss = not all_hit or (kit is not None and direction == BARRIER_IN)
         if run_oss:
-            pieces = []
-            for times, *theta in oss_rows(shared, row_times, spot_block, interval_vols,
-                                          sd_to_expiry, sample_ts, fwd_drifts, discount_rates):
-                simulate = partial(sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims, times)
-                # the SAME callable either way: under the node it is called twice
-                pieces.append(InnerMCRecompute.run(shared, simulate, *theta, *scalars))
+            build = lambda times, *theta: (partial(
+                sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims, times), theta + scalars)
+            # the SAME callable either way: under the node it is called twice
+            pieces = [InnerMCRecompute.run(shared, simulate, *theta)
+                      for _, simulate, theta in oss_rows(
+                          shared, build, discount_rates.shape[1], row_times, spot_block,
+                          interval_vols, sd_to_expiry, sample_ts, fwd_drifts, discount_rates)]
             oss_result, *parity = (x[0] if len(x) == 1 else torch.cat(x) for x in zip(*pieces))
             oss_result = nominal * oss_result
 
@@ -2947,8 +3028,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
             # a ledger is mutated step by step, so a smoothed row walks the plain loop
             (Sj, P, L, P_alive, L_alive), settles = oss_stream(
-                fixing, (Sj, P, L, P_alive, L_alive), reduced_samples,
-                shared.oss_chunk if ledger is None else 0)
+                fixing, (Sj, P, L, P_alive, L_alive), reduced_samples, shared, ledger is None)
             for j, settle in enumerate(settles):
                 if settle is not None:
                     settled.append(settle)
@@ -3062,12 +3142,17 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not scalars else spot_block.new_empty(0)
 
-        for t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols in oss_rows(
-                shared, t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
-            simulate = partial(sim_spot_accumulator, settlement, settle_index_local, sobol,
-                               shared.MCMC_sims, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
-            theta = (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
-                     discount_rates, vols, all_samples) + scalars
+        def build(t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
+            """A piece's callable and theta (`oss_rows`)."""
+            return (partial(sim_spot_accumulator, settlement, settle_index_local, sobol,
+                            shared.MCMC_sims, daycount_fn(t_block[:, utils.TIME_GRID_MTM])),
+                    (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
+                     discount_rates, vols, all_samples) + scalars)
+
+        # a smoothed row's ledger walks its strip plain, so it streams no fixings
+        for (t_block, *_, discount_rates, _), simulate, theta in oss_rows(
+                shared, build, 0 if smooth else sample_ts.shape[1], t_block, settlement,
+                spot_block, sample_ts, fwd_drifts, discount_rates, vols):
             # the SAME callable either way: under the node it is called twice
             block_mtm, block_alive, block_settled, settle_rows, settle_cols = InnerMCRecompute.run(
                 shared, simulate, *theta)
@@ -3946,8 +4031,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
             # a ledger is mutated step by step, so a smoothed row walks the plain loop
             (Sj, P, L, R, P_alive, L_alive), steps = oss_stream(
-                fixing, (Sj, P, L, R, P_alive, L_alive), reduced_samples,
-                shared.oss_chunk if ledger is None else 0)
+                fixing, (Sj, P, L, R, P_alive, L_alive), reduced_samples, shared, ledger is None)
             for settle, pend, knock in steps:
                 if pend is not None:
                     row_pend.append(pend)
@@ -4097,12 +4181,17 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not scalars else spot_block.new_empty(0)
 
-        for t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols in oss_rows(
-                shared, t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
-            simulate = partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims,
-                               settle_index_local, daycount_fn(t_block[:, utils.TIME_GRID_MTM]))
-            theta = (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
-                     discount_rates, vols, all_samples) + scalars
+        def build(t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
+            """A piece's callable and theta (`oss_rows`)."""
+            return (partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims, settle_index_local,
+                            daycount_fn(t_block[:, utils.TIME_GRID_MTM])),
+                    (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
+                     discount_rates, vols, all_samples) + scalars)
+
+        # a smoothed row's ledger walks its strip plain, so it streams no fixings
+        for (t_block, *_), simulate, theta in oss_rows(
+                shared, build, 0 if smooth else sample_ts.shape[1], t_block, settlement,
+                spot_block, sample_ts, fwd_drifts, discount_rates, vols):
             # the SAME callable either way: under the node it is called twice
             outputs = InnerMCRecompute.run(shared, simulate, *theta)
             (block_mtm, block_alive, block_settled, settle_rows, knock_rows,
@@ -4634,7 +4723,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
              coupon_count), steps = oss_stream(
                 fixing, (Sj, P, L, P_cf, L_cf, put_S, put_L, terminationDate, coupon_index,
-                         coupon_count), len(coupon), shared.oss_chunk if ledger is None else 0)
+                         coupon_count), len(coupon), shared, ledger is None)
             row_bars = []
             for event, settle, bar, declared in steps:
                 if event is not None:
@@ -4874,14 +4963,19 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         for t, dt in zip(row_times, sample_ts)]
                 quanto = torch.stack([F.pad(x, (0, max(y.shape[0] for y in rows) - x.shape[0]))
                                       for x in rows])
-            for (t_block, sample_ts, steps, all_fixings, row_times, spot_block, interval_vols,
-                 fwd_drifts, discount_rates, floating_leg, quanto, put_vols) in oss_rows(
-                    shared, t_block, sample_ts, steps, all_fixings, row_times, spot_block,
-                    interval_vols, fwd_drifts, discount_rates, floating_leg, quanto, put_vols):
-                simulate = partial(sim_spot, sample_index_t, sample_ts, steps, all_fixings, row_times,
-                                   windows, sobol, shared.MCMC_sims)
-                theta = (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
-                         floating_leg, all_eq_samples, quanto, put_vols) + scalars
+            def build(t_block, sample_ts, steps, all_fixings, row_times, spot_block, interval_vols,
+                      fwd_drifts, discount_rates, floating_leg, quanto, put_vols):
+                """A piece's callable and theta (`oss_rows`), the latch the last piece left."""
+                return (partial(sim_spot, sample_index_t, sample_ts, steps, all_fixings, row_times,
+                                windows, sobol, shared.MCMC_sims),
+                        (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
+                         floating_leg, all_eq_samples, quanto, put_vols) + scalars)
+
+            # a smoothed row's ledger walks its strip plain, so it streams no fixings
+            for (t_block, *_), simulate, theta in oss_rows(
+                    shared, build, 0 if smooth else len(Coupon) - sample_index_t, t_block,
+                    sample_ts, steps, all_fixings, row_times, spot_block, interval_vols,
+                    fwd_drifts, discount_rates, floating_leg, quanto, put_vols):
                 # the SAME callable either way: under the node it is called twice
                 outputs = InnerMCRecompute.run(shared, simulate, *theta)
                 # `terminationDate` comes back stamped by this block's observed fixing and is handed to
