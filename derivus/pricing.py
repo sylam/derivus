@@ -417,9 +417,16 @@ def zero_carry_rate(carry, days, times, time_grid, shared):
 
     It is the ZERO carry ``forward_vol_strip`` takes, ``F_j = S * exp(c_j * T_j)``.
     """
-    # read with its time, as a forward is: read unscaled, a static curve under NoModel RiskNeutral
-    # answers the difference of two rates
+    # the integral over the year fraction its consumer multiplies it by: a rate read off the curve
+    # unscaled is no carry under NoModel RiskNeutral, where a static curve answers the forward
     return utils.curve_spread(*carry, days, time_grid, shared) / times.clamp(min=1e-5).unsqueeze(-1)
+
+
+def deal_carry_rate(factor_dep, carry, days, time_grid, shared):
+    """`zero_carry_rate` over the year fraction a deal's pricer multiplies a carry by, its discount
+    curve's day count of `days`."""
+    years = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount](days)
+    return zero_carry_rate(carry, days, shared.one.new(years), time_grid, shared)
 
 
 def total_log_forward(carry_rate, times):
@@ -1660,9 +1667,8 @@ def calc_compo_geometry(factor_dep, deal_time, shared, fixings=None):
         return {'spot_scale': 1.0, 's_adj': 1.0, 'fx_carry': 0.0}
 
     tenor = (int(factor_dep['Expiry']) - deal_time[:, utils.TIME_GRID_MTM]).reshape(-1, 1)
-    fx_carry = utils.curve_spread(
-        factor_dep['Other'][1], factor_dep['Local'][1], tenor if fixings is None else fixings,
-        deal_time, shared, multiply_by_time=False)
+    fx_carry = deal_carry_rate(factor_dep, (factor_dep['Other'][1], factor_dep['Local'][1]),
+                               tenor if fixings is None else fixings, deal_time, shared)
     return {'spot_scale': utils.calc_fx_cross(
                 factor_dep['Local'][0], factor_dep['Other'][0], deal_time, shared),
             's_adj': utils.calc_fx_forward(
@@ -2076,12 +2082,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
         fixings = (dual_samples.np[np.newaxis, sample_index_t:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis])
-
-        drifts = utils.curve_spread(
-            deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield'],
-            fixings, t_block, shared, multiply_by_time=False)
-
         fixing_block = daycount_fn(fixings)
+        cum_t = spot_block.new(fixing_block)
+        drifts = zero_carry_rate(
+            (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
+            fixings, cum_t, t_block, shared)
         expiry = daycount_fn(tenor_block)
         # the EUROPEAN read: the surface's vol at (K, remaining expiry). Under a non-GBM spot model
         # the implied surface has no consumer, so neither vol quantity is built
@@ -2093,7 +2098,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         if factor_dep.get('Check_Payoff_Type', False):
             # a DEAL-LEVEL adjustment, so its vol input stays the expiry read. Barrier and strike
             # are payoff-currency quantities and compare against the scaled spot as authored
-            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings)
+            adj = calc_vol_adjustment(factor_dep, t_block, expiry, expiry_vols, shared, fixings)
             if adj['fx_vol'] is not None:
                 local = (spot_block, drifts, fixing_fx_forwards(adj, fixing_block))
             expiry_vols = adj['vol']
@@ -2102,7 +2107,6 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
-        cum_t = drifts.new(fixing_block)
         row_times = daycount_fn(t_block[:, utils.TIME_GRID_MTM])
         # the carry over each INTERVAL, which is not the zero carry to each fixing
         # (forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
@@ -2256,7 +2260,7 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
         rho = adj['rho'] if adj['fx_vol'] is not None else None
 
     barrierOption = getbarrierpayoff(direction, eta, phi, strike, barrier)
-    r = torch.squeeze(discounts.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
+    r = torch.squeeze(discounts.gather_weighted_curve(shared, tau.reshape(-1, 1)), dim=1) / expiry_years.clamp(min=1e-5)
 
     mtm_list = []
     prev_touched = 0.0
@@ -2363,7 +2367,7 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
         rho = adj['rho'] if adj['fx_vol'] is not None else None
 
     r = torch.squeeze(discounts.gather_weighted_curve(
-        shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
+        shared, tau.reshape(-1, 1)), dim=1) / expiry_years.clamp(min=1e-5)
 
     mtm_list = []
     prev_touched = 0.0
@@ -2503,15 +2507,14 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     else:
         adj_barrier = barrier
 
-    r = torch.squeeze(discounts.gather_weighted_curve(
-        shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
-
     # cache the expiry tenors
     expiry_years_key = ('Expiry_Years', tuple(expiry), tuple(limit))
     if expiry_years_key not in factor_dep:
         factor_dep[expiry_years_key] = (spot.new(expiry.reshape(-1, 1)), spot.new(limit.reshape(-1, 1)))
 
     expiry_years, limit_years = factor_dep[expiry_years_key]
+    r = torch.squeeze(discounts.gather_weighted_curve(
+        shared, tau.reshape(-1, 1)), dim=1) / expiry_years.clamp(min=1e-5)
 
     at_start = deal_data.Instrument.field['Barrier_At_Start'] == 'Yes'
     # `limit_years` goes SIGNED past the limit date and the payoff clamps it for the closed form
@@ -2652,8 +2655,7 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
     # clamped away from zero: the formulae below divide by tau
     tau = spot.new(expiry.reshape(-1, 1)).clamp(min=1e-5)
     b = torch.log(forward / spot) / tau
-    r = torch.squeeze(
-        discount.gather_weighted_curve(shared, tenor_in_days.reshape(-1, 1), multiply_by_time=False), dim=1)
+    r = torch.squeeze(discount.gather_weighted_curve(shared, tenor_in_days.reshape(-1, 1)), dim=1) / tau
     vol = sigma * torch.sqrt(tau)
     # a put is the call on the transposed (spot, strike) with the carry reflected
     if factor_dep['Option_Type'] > 0:
@@ -3042,16 +3044,16 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         t_block = discount_block.time_grid
         fixings = (fx_samples[np.newaxis, settle_index_local:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis]).clip(min=0)
-        drifts = utils.curve_spread(
-            factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1],
-            fixings, t_block, shared, multiply_by_time=False)
         fixing_block = daycount_fn(fixings)
+        cum_t = spot_block.new(fixing_block)
+        drifts = zero_carry_rate(
+            (factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1]), fixings, cum_t,
+            t_block, shared)
         settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -
                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
         discount_rates = utils.calc_discount_rate(discount_block, settlement, shared)
-        cum_t = drifts.new(fixing_block)
         # the interval carry and vol strips, both theta rather than loop state; both take the ZERO
         # carry `drifts`, a forward to each tenor being the cumulative integral
         fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
@@ -3251,12 +3253,10 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         fix_days = np.maximum(fixing_days[ids] - mtm_day, 0).reshape(1, -1)
         set_days = (settlement_days[ids] - mtm_day).reshape(1, -1)
         discount_row = utils.calc_time_grid_curve_rate(factor_dep['Discount'], t_row, shared)
-        carry = utils.curve_spread(
-            factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1],
-            fix_days, t_row, shared, multiply_by_time=False)[0]
+        log_fwd = utils.curve_spread(
+            factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1], fix_days, t_row, shared)[0]
         full_np = daycount_fn(fix_days)[0]
-        full = carry.new(full_np).reshape(-1, 1)
-        log_fwd = carry * full
+        full = log_fwd.new(full_np).reshape(-1, 1)
         s = spot[row_index]
         forward = s.unsqueeze(0) * torch.exp(log_fwd)
         moneyness = torch.as_tensor(
@@ -4078,16 +4078,16 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         t_block = discount_block.time_grid
         fixings = (fx_samples[np.newaxis, settle_index_local:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis]).clip(min=0)
-        drifts = utils.curve_spread(
-            factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1],
-            fixings, t_block, shared, multiply_by_time=False)
         fixing_block = daycount_fn(fixings)
+        cum_t = spot_block.new(fixing_block)
+        drifts = zero_carry_rate(
+            (factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1]), fixings, cum_t,
+            t_block, shared)
         settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -
                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         sample_ts = drifts.new(
             np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
         discount_rates = utils.calc_discount_rate(discount_block, settlement, shared)
-        cum_t = drifts.new(fixing_block)
         # the interval carry and vol strips, both theta rather than loop state. Both take the ZERO
         # carry `drifts`, a forward to each tenor being the cumulative integral. This pricer reads
         # the surface nowhere else, so the forward moneyness IS what it declares
@@ -4763,11 +4763,10 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                        t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         fixings = (equity_samples.schedule[np.newaxis, eq_start_index[index]:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis])
-
-        drifts = utils.curve_spread(
-            deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield'],
-            fixings, t_block, shared, multiply_by_time=False)
         fixing_block = daycount_fn(fixings)
+        drifts = zero_carry_rate(
+            (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
+            fixings, shared.upload(fixing_block, spot_block.dtype), t_block, shared)
 
         # the EXPIRY read - a deal-level quantity, all the quanto/compo adjustment wants. NOT what
         # the simulation steps on: that is the interval strip below
@@ -4779,7 +4778,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         if factor_dep.get('Check_Payoff_Type', False):
             # strike and thresholds are payoff-currency quantities, so they compare against the
             # scaled spot as authored
-            adj = calc_vol_adjustment(factor_dep, deal_time, expiry, expiry_vols, shared, fixings,
+            adj = calc_vol_adjustment(factor_dep, t_block, expiry, expiry_vols, shared, fixings,
                                       bool(scalars))
             if adj['fx_vol'] is not None:
                 local = (spot_block, drifts, fixing_fx_forwards(adj, fixing_block))

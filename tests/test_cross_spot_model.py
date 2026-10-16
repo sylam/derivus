@@ -736,7 +736,9 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     THE BANK WAS RE-TAKEN when a quote stopped pricing on the book's own count: the deal below is
     built from a quoted strip, whose strike is now solved on the count a base valuation declares
     rather than the 64 paths this document states. The claim is unmoved - only the strike the
-    exposure is measured at.
+    exposure is measured at. Re-taken again when the accumulator's carry became the curves'
+    integral over its year fraction (`pricing.zero_carry_rate`), which moves each inner path in
+    float32's last bit and the mean by 3.3e-7 of itself.
     """
     document = fitted('USD')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -768,7 +770,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     assert np.isfinite(exposure).all() and exposure.shape[0] > 1
     assert exposure.std() > 0.0, 'a skipped deal has no spread, so zero would pass anything'
     assert (float(exposure.mean()), float(exposure.std())) == pytest.approx(
-        (-5707.521670248359, 97839.41381526), rel=1e-9), (
+        (-5707.519785357018, 97839.4137998168), rel=1e-9), (
         'the cross re-seeds from its own level: this exposure moves if it inherits one')
 
 

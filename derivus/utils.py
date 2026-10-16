@@ -1374,7 +1374,9 @@ def build_interpolation(value, curve_tenor):
 
 
 class CurveTenor(object):
-    def __init__(self, tenor_points, interp='Linear'):
+    def __init__(self, tenor_points, interp='Linear', absolute=False):
+        # `absolute`: the tenors are dates, so the curve is its own forward from any row
+        self.absolute = absolute
         # linear interpolation by default
         points = np.array(tenor_points)
         min_tenor = points.min()
@@ -2752,10 +2754,11 @@ class TensorBlock(object):
         def calc_curve(time_multiplier, points):
             temp_curve = None
             for curve_tensor, curve_component in zip(self.curve_tensors, self.code):
-                # handle static curves
-                if not curve_component[FACTOR_INDEX_Stoch] and shared.riskneutral:
+                # a static curve rolls to its base-date forward; one keyed by date is that already
+                if not curve_component[FACTOR_INDEX_Stoch] and shared.riskneutral and not \
+                        curve_component[FACTOR_INDEX_Tenor_Index].absolute:
                     scaled_val = curve_tensor.interpolate_risk_neutral(
-                        curve_component, end_points, self.time_grid, time_multiplier)
+                        curve_component, points, self.time_grid, time_multiplier)
                 else:
                     scaled_val = curve_tensor.interpolate_curve(curve_component, points, time_multiplier)
 
@@ -4576,6 +4579,8 @@ def update_tenors(base_date, all_factors):
         if factor.type in OneDimensionalFactors or (
                 factor.type in TwoDimensionalFactors and risk_factor.get_subtype()[0] in ['SVI', 'Skew']):
             tenor_points = risk_factor.get_tenor()
+            daycount = risk_factor.get_day_count()
+            absolute = daycount == DayCount.NONE
 
             if factor.type == 'DividendRate':
                 tenor_data = CurveTenor(tenor_points, 'Dividend')
@@ -4584,13 +4589,12 @@ def update_tenors(base_date, all_factors):
                     interpolation_type = tuple([(x[0], x[1], x[2][0]) for x in risk_factor.interpolation])
                 else:
                     interpolation_type = risk_factor.interpolation[0][0]
-                tenor_data = CurveTenor(tenor_points, interpolation_type)
+                tenor_data = CurveTenor(tenor_points, interpolation_type, absolute)
             elif factor.type == 'SurvivalProb':
                 tenor_data = CurveTenor(tenor_points, 'Hazard')
             else:
-                tenor_data = CurveTenor(tenor_points)
+                tenor_data = CurveTenor(tenor_points, absolute=absolute)
 
-            daycount = risk_factor.get_day_count()
             all_tenors[factor] = [tenor_data, daycount_fn(base_date, daycount)]
 
         # this is a surface of some kind

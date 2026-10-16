@@ -86,14 +86,6 @@ Grouped by where a validator meets them.
   `pv_american_option` (Bjerksund-Stensland) never calls `calc_vol_adjustment`, so a composite or
   quanto American prices as the local asset. UNMEASURED, as is its error against a lattice. The fix
   is a different pricer.
-- **A static curve under `NoModel: RiskNeutral` carries the one-step-survival pricers wrong**
-  (2026-10-16). Their carry strip reads the curve unscaled by time (`utils.curve_spread` with
-  `multiply_by_time` off), which on a static curve rolled risk-neutrally answers the difference of
-  two zero rates rather than a rate: a discrete equity down-and-out on a flat 4% curve reads its
-  first row 14.6% under its `Constant` reading, where the two modes must agree on the base date; on
-  a steep curve the two readings agree. The Asians read the log forward with its time
-  (`pricing.zero_carry_rate`) and do not move. S: the strip read as the Asians read theirs, one
-  spelling, every adopter of `forward_carry_rate` re-banked under `RiskNeutral`.
 - **The closed-form barrier floors its vol at 5%** (2026-10-11). `pv_barrier_option` (the FX barrier,
   and an equity barrier without `Barrier_Dates`) lifts any lower vol to 5% before pricing and before
   the monitoring shift. UNMEASURED on low-vol pairs.
@@ -135,6 +127,11 @@ Grouped by where a validator meets them.
   them is a pricer change, not a diary row: the leg carried to the settlement date on repo, the
   amount paid there and the cashflows before it dropped, as `pricing.pv_fixed_cashflows` and
   `utils.TensorCashFlows.fixed` do for the fixed list, through the plain, cap and floor pricers: M.
+- **A deal sampling an unmodelled spot is skipped under a credit Monte Carlo** (2026-10-16). The FX
+  Asian and the average-price swap join their known samples, widened to the scenario count, to a
+  static spot's one column (`pv_discrete_asian_option`'s forward, `pv_average_price_swap`'s
+  realised strip), so the deal is skipped by name and marks zero on every row where a modelled spot
+  prices; the whole mark. S: the static column widened as the known ones are.
 - **Rating-dependent credit support is read at its first row** (2026-10-11).
   `utils.CreditSupportList.value` returns the first row's threshold, minimum transfer or independent
   amount whatever the counterparty's rating, in the engine and the spine's collateral call. Exact

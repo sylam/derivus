@@ -2,7 +2,7 @@
  "accumulator_gbm": {
   "mtm|0|Value": "0x0.0p+0",
   "mtm|1|Ref_MTM": "0x0.0p+0",
-  "mtm|1|Value": "0x1.f36e678d65e75p+5"
+  "mtm|1|Value": "0x1.f36e678d65e74p+5"
  },
  "accumulator_gbm_first": {
   "Greeks_First|('FXVol.EUR.USD', 1.0, 0.02, 0.0)|Value": "0x1.999999999999ap-4",
@@ -22,14 +22,14 @@
   "Greeks_First|('InterestRate.USD', 0.2493150684931507, 0.0, 0.0)|Value": "0x1.46e4fbb52659dp-4",
   "Greeks_First|('InterestRate.USD', 0.2493150684931507, 0.0, 0.0)|root": "0x1.7660d0f700b83p+8",
   "Greeks_First|('InterestRate.USD', 0.2547945205479452, 0.0, 0.0)|Value": "0x1.4d2dc1e2fdc8ap-4",
-  "Greeks_First|('InterestRate.USD', 0.2547945205479452, 0.0, 0.0)|root": "-0x1.b1bdbea4086c1p-2",
+  "Greeks_First|('InterestRate.USD', 0.2547945205479452, 0.0, 0.0)|root": "-0x1.b1bdbea4086d4p-2",
   "Greeks_First|('InterestRate.USD', 0.4986301369863014, 0.0, 0.0)|Value": "0x1.326a1a6d78456p-3",
   "Greeks_First|('InterestRate.USD', 0.4986301369863014, 0.0, 0.0)|root": "0x1.3d74c54ea4a77p+9",
   "Greeks_First|('InterestRate.USD', 0.5041095890410959, 0.0, 0.0)|Value": "0x1.358e7d8463fcdp-3",
   "Greeks_First|('InterestRate.USD', 0.5041095890410959, 0.0, 0.0)|root": "-0x1.ea20a4e8434bap+4",
   "mtm|0|Value": "0x0.0p+0",
   "mtm|1|Ref_MTM": "0x0.0p+0",
-  "mtm|1|Value": "0x1.f36e678d65e75p+5"
+  "mtm|1|Value": "0x1.f36e678d65e74p+5"
  },
  "autocall_gbm": {
   "mtm|0|Value": "0x0.0p+0",
@@ -58,7 +58,7 @@
  "tarf_gbm": {
   "mtm|0|Value": "0x0.0p+0",
   "mtm|1|Ref_MTM": "0x0.0p+0",
-  "mtm|1|Value": "0x1.f36e678d65e75p+5"
+  "mtm|1|Value": "0x1.f36e678d65e74p+5"
  },
  "tarf_gbm_first": {
   "Greeks_First|('FXVol.EUR.USD', 1.0, 0.02, 0.0)|Value": "0x1.999999999999ap-4",
@@ -78,13 +78,13 @@
   "Greeks_First|('InterestRate.USD', 0.2493150684931507, 0.0, 0.0)|Value": "0x1.46e4fbb52659dp-4",
   "Greeks_First|('InterestRate.USD', 0.2493150684931507, 0.0, 0.0)|root": "0x1.7660d0f700b83p+8",
   "Greeks_First|('InterestRate.USD', 0.2547945205479452, 0.0, 0.0)|Value": "0x1.4d2dc1e2fdc8ap-4",
-  "Greeks_First|('InterestRate.USD', 0.2547945205479452, 0.0, 0.0)|root": "-0x1.b1bdbea4086c1p-2",
+  "Greeks_First|('InterestRate.USD', 0.2547945205479452, 0.0, 0.0)|root": "-0x1.b1bdbea4086d4p-2",
   "Greeks_First|('InterestRate.USD', 0.4986301369863014, 0.0, 0.0)|Value": "0x1.326a1a6d78456p-3",
   "Greeks_First|('InterestRate.USD', 0.4986301369863014, 0.0, 0.0)|root": "0x1.3d74c54ea4a77p+9",
   "Greeks_First|('InterestRate.USD', 0.5041095890410959, 0.0, 0.0)|Value": "0x1.358e7d8463fcdp-3",
   "Greeks_First|('InterestRate.USD', 0.5041095890410959, 0.0, 0.0)|root": "-0x1.ea20a4e8434bap+4",
   "mtm|0|Value": "0x0.0p+0",
   "mtm|1|Ref_MTM": "0x0.0p+0",
-  "mtm|1|Value": "0x1.f36e678d65e75p+5"
+  "mtm|1|Value": "0x1.f36e678d65e74p+5"
  }
 }

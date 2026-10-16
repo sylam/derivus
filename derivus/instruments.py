@@ -3878,15 +3878,11 @@ class EquityBarrierBinaryOption(Deal):
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
 
-        eq_zer_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Equity_Zero'], deal_time, shared)
-        eq_div_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Dividend_Yield'], deal_time, shared)
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-
-        b = torch.squeeze(
-            eq_zer_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False) -
-            eq_div_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
+        b = torch.squeeze(pricing.deal_carry_rate(
+            deal_data.Factor_dep,
+            (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
+            tau.reshape(-1, 1), deal_time, shared), dim=1)
 
         spot = utils.spot_on_deal_grid(spot, deal_time, shared)
 
@@ -4585,15 +4581,11 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
 
-        eq_zer_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Equity_Zero'], deal_time, shared)
-        eq_div_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Dividend_Yield'], deal_time, shared)
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-
-        b = torch.squeeze(
-            eq_zer_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False) -
-            eq_div_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
+        b = torch.squeeze(pricing.deal_carry_rate(
+            deal_data.Factor_dep,
+            (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
+            tau.reshape(-1, 1), deal_time, shared), dim=1)
 
         spot = utils.spot_on_deal_grid(spot, deal_time, shared)
 
@@ -4832,15 +4824,11 @@ class EquityBarrierOption(Deal):
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
 
-        eq_zer_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Equity_Zero'], deal_time, shared)
-        eq_div_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Dividend_Yield'], deal_time, shared)
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-
-        b = torch.squeeze(
-            eq_zer_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False) -
-            eq_div_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
+        b = torch.squeeze(pricing.deal_carry_rate(
+            deal_data.Factor_dep,
+            (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
+            tau.reshape(-1, 1), deal_time, shared), dim=1)
 
         spot = utils.spot_on_deal_grid(spot, deal_time, shared)
 
@@ -5781,20 +5769,16 @@ class FXOneTouchOption(TouchLifecycle, Deal):
         fx_rep = utils.calc_fx_cross(deal_data.Factor_dep['Currency'][0],
                                      shared.Report_Currency, deal_time, shared)
 
-        curr_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Currency'][1], deal_time, shared)
-        und_curr_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Underlying_Currency'][1], deal_time, shared)
-
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
             deal_time, shared), deal_time, shared)
 
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
 
-        b = torch.squeeze(
-            curr_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False) -
-            und_curr_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
+        b = torch.squeeze(pricing.deal_carry_rate(
+            deal_data.Factor_dep,
+            (deal_data.Factor_dep['Currency'][1], deal_data.Factor_dep['Underlying_Currency'][1]),
+            tau.reshape(-1, 1), deal_time, shared), dim=1)
 
         pv = pricing.pv_one_touch_option(
             shared, time_grid, deal_data, nominal, spot, b, tau, payoff_currency,
@@ -5895,19 +5879,15 @@ class FXBarrierOption(Deal):
         nominal = self.field['Underlying_Amount']
         payoff_currency = self.payoff_ccy
 
-        curr_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Currency'][1], deal_time, shared)
-        und_curr_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Underlying_Currency'][1], deal_time, shared)
-
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
             deal_time, shared), deal_time, shared)
 
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-        b = torch.squeeze(
-            curr_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False) -
-            und_curr_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
+        b = torch.squeeze(pricing.deal_carry_rate(
+            deal_data.Factor_dep,
+            (deal_data.Factor_dep['Currency'][1], deal_data.Factor_dep['Underlying_Currency'][1]),
+            tau.reshape(-1, 1), deal_time, shared), dim=1)
 
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
@@ -5992,11 +5972,6 @@ class FXPartialTimeBarrierOption(Deal):
         nominal = self.field['Underlying_Amount']
         payoff_currency = self.payoff_ccy
 
-        curr_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Currency'][1], deal_time[:-1], shared)
-        und_curr_curve = utils.calc_time_grid_curve_rate(
-            deal_data.Factor_dep['Underlying_Currency'][1], deal_time[:-1], shared)
-
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
             deal_time, shared), deal_time, shared)
@@ -6009,9 +5984,10 @@ class FXPartialTimeBarrierOption(Deal):
             tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
             tau1 = (deal_data.Factor_dep['Limit_Date'] - deal_time[:, utils.TIME_GRID_MTM])
 
-        b = torch.squeeze(
-            curr_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False) -
-            und_curr_curve.gather_weighted_curve(shared, tau.reshape(-1, 1), multiply_by_time=False), dim=1)
+        b = torch.squeeze(pricing.deal_carry_rate(
+            deal_data.Factor_dep,
+            (deal_data.Factor_dep['Currency'][1], deal_data.Factor_dep['Underlying_Currency'][1]),
+            tau.reshape(-1, 1), deal_time[:tau.size], shared), dim=1)
 
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
