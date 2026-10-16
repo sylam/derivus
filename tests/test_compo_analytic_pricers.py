@@ -178,7 +178,8 @@ def _leg(ref, payoff='EUR'):
     return dict({
         'Object': 'EquitySwapLeg', 'Reference': ref, 'Currency': 'USD', 'Equity_Currency': 'USD',
         'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Effective_Date': SEASONED,
-        'Maturity_Date': EXPIRY, 'Principal_Fixed_Variable': 'Variable', 'Units': UNITS,
+        'Maturity_Date': EXPIRY, 'Payment_Frequency': pd.DateOffset(months=13),
+        'Principal_Fixed_Variable': 'Variable', 'Units': UNITS,
         'Include_Dividends': 'No', 'Known_Dividends': None,
         'Equity_Known_Prices': utils.DateEqualList([[SEASONED, 97.0, KNOWN_FX]])}, **_ccy(payoff))
 
@@ -561,9 +562,8 @@ def test_a_compo_and_a_quanto_price_return_swap_are_their_forwards_at_each_end()
     """The swaplet list and the swap leg through the same seam, on `UNITS` shares: a swaplet with
     both ends ahead pays the difference of its two ends' forwards - each at its own fx forward
     under Compo, each carried over its own tenor under Quanto - a seasoned one its end's forward
-    less the start's observed level at the fx rate stated beside it, and the leg is that seasoned
-    swaplet to the expiry, paid on the business day it rolls to. On the EUR curve, flat surfaces,
-    exact.
+    less the start's observed level at the fx rate stated beside it, and the leg paid in one
+    period is that seasoned swaplet to the expiry. On the EUR curve, flat surfaces, exact.
 
     Killing mutations: the cross left off the spot the forwards grow from (`spot_scale`) - 247.76
     against 198.21 on the both-ahead swaplet; the observed start's fx rate dropped - -16,432.29
@@ -575,13 +575,12 @@ def test_a_compo_and_a_quanto_price_return_swap_are_their_forwards_at_each_end()
     out = _run(_job([_swap('AHEAD', [ahead]), _swap('SEASONED', [seasoned]),
                      dict(_swap('QTO', [ahead]), Payoff_Type='Quanto'), _leg('LEG')], _factors(skew=0.0)))
     df2 = math.exp(-R_EUR * t2)
-    df = math.exp(-R_EUR * ((EXPIRY + pd.offsets.BDay(0)) - BASE).days / 365.0)
     expected = {
         'AHEAD': UNITS * (_eq_fwd(t2) * _fx_fwd(t2) - _eq_fwd(t1) * _fx_fwd(t1)) * df2,
         'SEASONED': UNITS * (_eq_fwd(t2) * _fx_fwd(t2) - 97.0 * KNOWN_FX) * df2,
         'QTO': UNITS * (_eq_fwd(t2) * math.exp(QUANTO_CARRY * t2)
                         - _eq_fwd(t1) * math.exp(QUANTO_CARRY * t1)) * df2,
-        'LEG': UNITS * (_eq_fwd(T) * _fx_fwd(T) - 97.0 * KNOWN_FX) * df}
+        'LEG': UNITS * (_eq_fwd(T) * _fx_fwd(T) - 97.0 * KNOWN_FX) * math.exp(-R_EUR * T)}
     for ref, value in expected.items():
         assert abs(_mtm(out, ref) - value) / abs(value) < 1e-12, (ref, _mtm(out, ref), value)
 

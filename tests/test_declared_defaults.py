@@ -430,7 +430,8 @@ def test_a_blank_table_reads_the_same_however_it_is_spelled():
 
 
 def test_an_equity_swap_leg_reads_its_payoff_currency_start_price_and_known_dividends():
-    """The trial's seasoned leg, ten thousand shares struck at 97, USD at 4% for discount and repo:
+    """The trial's seasoned leg paid in one period, ten thousand shares struck at 97, USD at 4% for
+    discount and repo:
 
     - a blank or omitted `Payoff_Currency` is the leg's own currency, to the bit of the stated one;
     - started on the base date with no `Equity_Known_Prices` it fixes at the spot and is worth
@@ -447,7 +448,7 @@ def test_an_equity_swap_leg_reads_its_payoff_currency_start_price_and_known_divi
     interval read reversed, 53.12 short.
     """
     import trial_equity_swaps
-    leg = trial_equity_swaps.equity_leg('EQL', 'Variable')
+    leg = dict(trial_equity_swaps.equity_leg('EQL', 'Variable'), Payment_Frequency=pd.DateOffset(years=2))
     end = WORLD_BASE - pd.DateOffset(days=2)
     ended = dict(leg, Reference='ENDED', Maturity_Date=end, Payment_Offset=5,
                  Equity_Known_Prices=utils.DateEqualList([[trial_equity_swaps.SEASONED, 97.0, 1.0],

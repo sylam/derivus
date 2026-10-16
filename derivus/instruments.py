@@ -61,7 +61,7 @@ def forward_settlement_date(date_to_roll, calendar_names, calendars, business_da
     """Return expiry plus settlement lag, rolled using the configured calendars."""
     bus_day_offsets = get_business_day_offsets(calendar_names, calendars, business_days=business_days)
     if len(bus_day_offsets) > 1:
-        return utils.adjust_date(bus_day_offsets[0], False, date_to_roll + bus_day_offsets[1])
+        return utils.adjust_date(bus_day_offsets[0], 'Following', date_to_roll + bus_day_offsets[1])
     else:
         return date_to_roll + bus_day_offsets[0]
 
@@ -143,14 +143,6 @@ def refuse_zero_payoff(field, deal_type, fieldname='Cash_Payoff'):
             'whole payoff. Author the amount the leg cancels (derivus_compact_autocalls.py names '
             'it on a six-leg structure), or delete the leg'.format(
                 field.get('Reference', deal_type), deal_type, fieldname))
-
-
-def refuse_reinvested_dividends(items, field_index, reference, deal_type):
-    """A compo or quanto equity swap is the forward calculation on its price return; one reinvesting
-    its dividends is not built, and refuses by name rather than growing them in the local measure."""
-    if field_index['Check_Payoff_Type'] and any(x.get('Dividend_Multiplier', 1.0) for x in items):
-        raise ValueError('{}: {} pays a compo or quanto on a swap reinvesting its dividends, which is not '
-                         'built - a price return states Dividend_Multiplier 0 on every row'.format(reference, deal_type))
 
 
 def became(source, deal_type, calendars, valuation_options, **overrides):
@@ -770,12 +762,13 @@ class Deal(object):
         return utils.check_rate_name(value) if value else otherwise
 
     def coupon_schedule(self, calendars, effective, maturity, frequency, leg='',
-                        accrual='Accrual_Calendars', timing='Payment_Timing'):
+                        accrual='Accrual_Calendars', timing='Payment_Timing', method='Modified_Following',
+                        forward=False):
         """A coupon leg's accrual dates and the day each of its periods pays, off the conventions
-        its fields (each prefixed `leg`) state: the dates rolled Modified Following on the accrual
-        calendar, a stub at each coupon date stated, and a period paying `Payment_Offset` business
-        days of the payment calendar after its end, or its start under `Begin`. A blank calendar
-        reads the other one, and an offset on neither counts weekdays."""
+        its fields (each prefixed `leg`) state: the dates `utils.coupon_dates` spells from its coupon
+        dates, `method` and `forward` on the accrual calendar, and a period paying `Payment_Offset`
+        business days of the payment calendar after its end, or its start under `Begin`. A blank
+        calendar reads the other one, and an offset on neither counts weekdays."""
         def read(key):
             return self.field.read(leg + key)
 
@@ -783,10 +776,11 @@ class Deal(object):
         rolls, pays = (calendars.get(name, {}).get('businessday') for name in (
             accrual_calendar, read('Payment_Calendars') or accrual_calendar))
         dates = utils.coupon_dates(maturity, effective, frequency, rolls, read('First_Coupon_Date'),
-                                   read('Penultimate_Coupon_Date'))
+                                   read('Penultimate_Coupon_Date'), method, forward)
         offset = int(read('Payment_Offset') or 0)
         return dates, pd.DatetimeIndex([
-            day + offset * (pays or pd.offsets.BDay()) if offset else utils.adjust_date(pays, True, day)
+            day + offset * (pays or pd.offsets.BDay()) if offset else
+            utils.adjust_date(pays, 'Modified_Following', day)
             for day in (dates[:-1] if read(timing) == 'Begin' else dates[1:])])
 
     def float_index(self, calendars):
@@ -796,6 +790,40 @@ class Deal(object):
             utils.DayCount.code(self.field.read('Index_Day_Count')), self.field.read('Reset_Type') == 'Arrears',
             int(self.field.read('Index_Offset', 0)),
             calendars.get(self.field.read('Index_Calendars'), {}).get('businessday'))
+
+    def equity_swaplets(self, field, paid, items, principal, settlement_days, base_date, static_offsets,
+                        stochastic_offsets, all_factors, all_tenors, time_grid, calendars):
+        """The factor index `pricing.pv_equity_leg` prices the swaplet rows `items` off, paid in
+        `paid` on `field`'s `Currency` and `Payoff_Currency` pair (a compo or quanto through
+        `check_option_data`) and discounted on its `Discount_Rate`: on a principal where `principal`,
+        else on shares, each forward read `settlement_days` business days of the accrual calendar
+        after its day. A compo or quanto reinvesting its dividends is not built and refuses by name."""
+        field.update(Equity=utils.check_rate_name(self.field['Equity']),
+                     Equity_Volatility=self.check_factor_name('Equity_Volatility'))
+        bus_day = calendars.get(
+            self.field.get('Accrual_Calendars'), {'businessday': pd.offsets.Day(0)})['businessday']
+        field_index = {
+            'PrincipleNotShares': int(principal),
+            'SettleCurrency': paid,
+            'Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
+            'Discount': get_interest_factor(field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
+            'Dividend_Yield': get_dividend_rate_factor(
+                field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
+            'Equity_Zero': get_equity_zero_rate_factor(
+                field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'Expiry': max((x['Payment_Date'] - base_date).days for x in items)}
+        field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
+            base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1, {'Items': items},
+            get_equity_spot(field['Equity'], static_offsets, stochastic_offsets, all_factors),
+            settlement_days * bus_day)
+        self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
+                               equity_fx_correlation, vol_field='Equity_Volatility')
+        if field_index['Check_Payoff_Type'] and any(x.get('Dividend_Multiplier', 1.0) for x in items):
+            raise ValueError('{}: {} pays a compo or quanto on a swap reinvesting its dividends, which is not '
+                             'built - a price return states Dividend_Multiplier 0 on every row'.format(
+                                 self.field.get('Reference'), type(self).__name__))
+        return field_index
 
     def closeout_window(self):
         """The liquidation and settlement periods this deal closes out over, None where it holds no
@@ -1336,7 +1364,7 @@ class NettingCollateralSet(Deal):
             if call_freq.kwds != {'days': 1}:
                 coll_dates = utils.generate_dates_forward(
                     max(grid_dates), base_call_date, call_freq,
-                    bus_day=self.calendar, modified=True)
+                    bus_day=self.calendar, method='Modified_Following')
                 grid_dates.update(coll_dates)
 
             full_grid = grid_dates.union({x for x in node_resets if x >= base_date})
@@ -1550,7 +1578,7 @@ class NettingCollateralSet(Deal):
             if call_freq.kwds != {'days': 1}:
                 all_call_days = utils.generate_dates_forward(
                     max(self.get_reval_dates()), base_call_date, call_freq,
-                    bus_day=self.calendar, modified=True)
+                    bus_day=self.calendar, method='Modified_Following')
                 approx_calls = pd.DatetimeIndex(sorted(time_grid.mtm_dates)).intersection(all_call_days)
                 mod_call_dates = np.array([(x - base_date).days for x in approx_calls])
 
@@ -5515,7 +5543,8 @@ class EquitySwapletListDeal(Deal):
                   F('Start_Date', 'Date'), F('End_Date', 'Date'), F('Payment_Date', 'Date'),
                   F('Amount', 'Float', sized=True), F('Start_Multiplier', 'Float'), F('End_Multiplier', 'Float'),
                   F('Dividend_Multiplier', 'Float'), F('Known_Start_Price', 'Float'), F('Known_End_Price', 'Float'),
-                  F('Known_Start_FX_Rate', 'Float'), F('Known_End_FX_Rate', 'Float'), F('Quanto_FX_Rate', 'Float')]))]),
+                  F('Known_Start_FX_Rate', 'Float'), F('Known_End_FX_Rate', 'Float'), F('Quanto_FX_Rate', 'Float'),
+                  F('Known_Dividend_Sum', 'Float')]))]),
         F('Equity_Volatility', 'Text', default='', convention=True, factors=['EquityPriceVol'])
     ])]
 
@@ -5540,44 +5569,15 @@ class EquitySwapletListDeal(Deal):
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-        field = {'Currency': utils.check_rate_name(self.field['Currency']),
-                 'Equity': utils.check_rate_name(self.field['Equity']),
-                 'Equity_Volatility': self.check_factor_name('Equity_Volatility')}
-        field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
-
-        current_spot = get_equity_spot(field['Equity'], static_offsets, stochastic_offsets, all_factors)
-        # check if we need to adjust the settlement days
-        bus_day_offset = calendars.get(
-            self.field.get('Accrual_Calendars'), {'businessday': pd.offsets.Day(0)})['businessday']
-
-        field_index = {
-            'PrincipleNotShares': 1 if self.field.get('Amount_Type', 'Principal') == 'Principal' else 0,
-            'SettleCurrency': self.field['Currency'],
-            'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
-            'Discount': get_interest_factor(
-                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
-            'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
-            'Dividend_Yield': get_dividend_rate_factor(
-                field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
-            'Equity_Zero': get_equity_zero_rate_factor(
-                field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-            'Expiry': max((x['Payment_Date'] - base_date).days for x in self.field['Cashflows']['Items'])
-            }
-        field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
-            base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
-            self.field['Cashflows'], current_spot, self.field.get('Settlement_Days', 0) * bus_day_offset)
-
         # the option seam's roles: `Currency` the equity's own, `Payoff_Currency` the swap's
-        pair = dict(
-            field, Currency=get_equity_component(field['Equity'], all_factors).get_currency(),
-            Payoff_Currency=field['Currency'])
-        self.check_option_data(
-            pair, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation,
-            vol_field='Equity_Volatility')
-        refuse_reinvested_dividends(
-            self.field['Cashflows']['Items'], field_index, self.field.get('Reference'), 'EquitySwapletListDeal')
-
-        return field_index
+        paid = utils.check_rate_name(self.field['Currency'])
+        equity = get_equity_component(utils.check_rate_name(self.field['Equity']), all_factors)
+        field = {'Currency': equity.get_currency(), 'Payoff_Currency': paid,
+                 'Discount_Rate': self.check_factor_name('Discount_Rate', paid)}
+        return self.equity_swaplets(
+            field, self.field['Currency'], self.field['Cashflows']['Items'], self.field['Amount_Type'] == 'Principal',
+            self.field['Settlement_Days'], base_date, static_offsets, stochastic_offsets, all_factors, all_tenors,
+            time_grid, calendars)
 
     def generate(self, shared, time_grid, deal_data):
         return pricing.pv_equity_leg(shared, time_grid, deal_data)
@@ -5619,12 +5619,21 @@ class EquitySwapLeg(Deal):
     ])]
 
     documentation = ('Fx And Equity', [
-        'Described [here](#equity-swaps)',
+        'The [equity swaplets](#equity-swaps) of its schedule\'s periods, on **Units** shares where',
+        '**Principal_Fixed_Variable** is `Variable` and on **Principal** where it is `Principal`, with $b=1$',
+        'where **Include_Dividends** is `Yes`. The periods are the',
+        '[coupon schedule](interest_rates.md#coupon-schedules) **Payment_Frequency** and the coupon dates',
+        'spell, but **Roll_Direction** `Forward` runs the dates forward from the **Effective_Date**, a short',
+        'last period where they do not land on the **Maturity_Date**, and `Backward` back from it; and the',
+        'dates roll on the accrual calendar by the business-day convention **Rate_Adjustment_Method** names,',
+        '`None` leaving them unrolled. A period fixes its start and end **Reset_Offset** business days of',
+        '**Reset_Calendars** before its accrual dates (the accrual calendar where blank, weekdays where both',
+        'are). A fixing reads the **Equity_Known_Prices** row stated on its day, else, before the base date,',
+        'the latest stated before it, refusing by name where there is none, and on the base date the spot;',
+        'a period carries the **Known_Dividends** paid between its start and the base date.',
         '',
-        'Paid in a **Payoff_Currency** other than its **Currency**, **Payoff_Type** says how, as for the',
-        'swaplet list: `Compo` prices the product $S\\cdot X$, `Quanto` carries the forward by',
-        '$-\\rho\\sigma_S\\sigma_X$ and pays at one, and either is the forward calculation on a price',
-        'return, so a leg including its dividends refuses by name.'])
+        'Paid in a **Payoff_Currency** other than its **Currency**, **Payoff_Type** reads as the swaplet',
+        'list\'s, so a compo or quanto leg states **Include_Dividends** `No`.'])
 
     def validate(self):
         """A Quanto or Compo paid in a Payoff_Currency other than its Currency names its surface."""
@@ -5632,97 +5641,54 @@ class EquitySwapLeg(Deal):
 
     def reset(self, calendars):
         super(EquitySwapLeg, self).reset()
-        self.bus_pay_day = calendars.get(
-            self.field.read('Payment_Calendars', self.field['Accrual_Calendars']),
-            {'businessday': pd.offsets.BDay(1)})['businessday']
-        paydates = {self.field['Maturity_Date'] + self.bus_pay_day * int(self.field['Payment_Offset'])}
-        self.add_reval_dates(paydates, self.payoff_ccy)
+        dates, self.pays = self.coupon_schedule(
+            calendars, self.field['Effective_Date'], self.field['Maturity_Date'], self.field['Payment_Frequency'],
+            method=self.field['Rate_Adjustment_Method'], forward=self.field['Roll_Direction'] == 'Forward')
+        offset = int(self.field['Reset_Offset'])
+        resets = calendars.get(self.field['Reset_Calendars'] or self.field['Accrual_Calendars'] or
+                               self.field['Payment_Calendars'], {}).get('businessday') or pd.offsets.BDay()
+        # no offset is no move: a zero multiple of a business day rolls a holiday forward
+        self.fixings = [day - offset * resets for day in dates] if offset else list(dates)
+        self.add_reval_dates(set(self.pays), self.payoff_ccy)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
-        field = {
-            'Currency': utils.check_rate_name(self.field['Currency']),
-            'Payoff_Currency': utils.check_rate_name(self.payoff_ccy),
-            'Equity': utils.check_rate_name(self.field['Equity']),
-            'Equity_Volatility': self.check_factor_name('Equity_Volatility')
-        }
-
+        field = {'Currency': utils.check_rate_name(self.field['Currency']),
+                 'Payoff_Currency': utils.check_rate_name(self.payoff_ccy)}
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
+        known = self.field['Equity_Known_Prices'].data if self.field['Equity_Known_Prices'] else {}
+        spot = get_equity_spot(utils.check_rate_name(self.field['Equity']), static_offsets, stochastic_offsets,
+                               all_factors)
+        cross = 1.0 if field['Currency'] == field['Payoff_Currency'] else get_fxrate_spot(
+            field['Currency'], static_offsets, stochastic_offsets, all_factors) / get_fxrate_spot(
+            field['Payoff_Currency'], static_offsets, stochastic_offsets, all_factors)
 
-        # Implicitly we assume that units is the number of shares (Principle is 0) and that Dividend Timing is
-        # "Terminal" - need to add support for dividends..
-        start_prices = self.field['Equity_Known_Prices'].data.get(self.field['Effective_Date'], (None, None)) if \
-            self.field['Equity_Known_Prices'] else (None, None)
-        end_prices = self.field['Equity_Known_Prices'].data.get(self.field['Maturity_Date'], (None, None)) if \
-            self.field['Equity_Known_Prices'] else (None, None)
-        start_dividend_sum = self.field['Known_Dividends'].sum_range(base_date, self.field['Effective_Date'], 0) if \
-            self.field['Known_Dividends'] else 0.0
-        current_price = get_equity_spot(field['Equity'], static_offsets, stochastic_offsets, all_factors)
+        def fixed(day):
+            """The price and fx rate a fixing reads: the row stated on its day, else, before the base
+            date, the latest stated before it, and from the base date on the spot and the fx cross."""
+            if day >= base_date and day not in known:
+                return spot, cross
+            stated = [date for date in known if date <= day]
+            return known[max(stated)] if stated else (None, None)
 
-        # sometimes the equity price is listed but in the past - need to check for this
-        if self.field['Equity_Known_Prices']:
-            if start_prices == (None, None):
-                earlier_dates = [x for x in self.field['Equity_Known_Prices'].data.keys() if
-                                 x < self.field['Effective_Date']]
-                start_prices = self.field['Equity_Known_Prices'].data[
-                    max(earlier_dates)] if earlier_dates else (None, None)
-            # if the end price is not provided, use the current spot price as a proxy
-            if end_prices == (None, None):
-                fx_reset = 1.0 if field['Currency'] == field['Payoff_Currency'] else get_fxrate_spot(
-                    field['Currency'], static_offsets, stochastic_offsets, all_factors) / get_fxrate_spot(
-                    field['Payoff_Currency'], static_offsets, stochastic_offsets, all_factors)
-
-                end_prices = [current_price, fx_reset]
-        if start_prices[0] is None and self.field['Effective_Date'] < base_date:
-            raise ValueError('Equity_Known_Prices states no price on or before the Effective_Date '
-                             '{:%Y-%m-%d}, before the base date'.format(self.field['Effective_Date']))
-
-        field['cashflow'] = {'Items':
-            [{
-                'Payment_Date': self.field['Maturity_Date'] + self.bus_pay_day * int(self.field['Payment_Offset']),
-                'Start_Date': self.field['Effective_Date'],
-                'End_Date': self.field['Maturity_Date'],
-                'Start_Multiplier': 1.0,
-                'End_Multiplier': 1.0,
-                'Known_Start_Price': start_prices[0],
-                'Known_Start_FX_Rate': start_prices[1],
-                'Known_End_Price': end_prices[0],
-                'Known_End_FX_Rate': end_prices[1],
-                'Known_Dividend_Sum': start_dividend_sum,
+        items = []
+        for start, end, pay in zip(self.fixings[:-1], self.fixings[1:], self.pays):
+            (start_price, start_fx), (end_price, end_fx) = fixed(start), fixed(end)
+            if start_price is None:
+                raise ValueError('Equity_Known_Prices states no price on or before the fixing {:%Y-%m-%d}, '
+                                 'before the base date'.format(start))
+            items.append({
+                'Start_Date': start, 'End_Date': end, 'Payment_Date': pay, 'Start_Multiplier': 1.0,
+                'End_Multiplier': 1.0, 'Known_Start_Price': start_price, 'Known_Start_FX_Rate': start_fx,
+                'Known_End_Price': end_price, 'Known_End_FX_Rate': end_fx,
+                'Known_Dividend_Sum': self.field['Known_Dividends'].sum_range(base_date, start, 0)
+                if self.field['Known_Dividends'] else 0.0,
                 'Dividend_Multiplier': 1.0 if self.field['Include_Dividends'] == 'Yes' else 0.0,
-                'Amount': self.field['Units']
-                if self.field['Principal_Fixed_Variable'] == 'Variable' else self.field['Principal']
-            }]
-        }
-
-        # check if we need to adjust the settlement days
-        bus_day = calendars.get(
-            self.field.get('Accrual_Calendars'), {'businessday': pd.offsets.Day(0)})['businessday']
-
-        field_index = {
-            'PrincipleNotShares': 1 if self.field['Principal_Fixed_Variable'] == 'Principal' else 0,
-            'SettleCurrency': self.payoff_ccy,
-            'Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
-            'Discount': get_interest_factor(
-                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
-            'Equity': get_equity_rate_factor(field['Equity'], static_offsets, stochastic_offsets),
-            'Dividend_Yield': get_dividend_rate_factor(
-                field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
-            'Equity_Zero': get_equity_zero_rate_factor(
-                field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-            'Expiry': (field['cashflow']['Items'][0]['Payment_Date'] - base_date).days
-            }
-        field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
-            base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1,
-            field['cashflow'], current_price, self.field.get('Settlement_Days', 0) * bus_day)
-
-        self.check_option_data(
-            field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, equity_fx_correlation,
-            vol_field='Equity_Volatility')
-        refuse_reinvested_dividends(
-            field['cashflow']['Items'], field_index, self.field.get('Reference'), 'EquitySwapLeg')
-
-        return field_index
+                'Amount': self.field['Units'] if self.field['Principal_Fixed_Variable'] == 'Variable'
+                else self.field['Principal']})
+        return self.equity_swaplets(
+            field, self.payoff_ccy, items, self.field['Principal_Fixed_Variable'] == 'Principal', 0, base_date,
+            static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid, calendars)
 
     def generate(self, shared, time_grid, deal_data):
         return pricing.pv_equity_leg(shared, time_grid, deal_data)

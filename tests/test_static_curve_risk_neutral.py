@@ -95,7 +95,7 @@ def test_a_static_curve_reads_the_same_on_the_base_date_under_either_no_model(re
     against the mutant. The risk-neutral branch of `gather_weighted_curve` reading its end points
     for the start points, which forecasts every floating reset at 0% and grows no forward between
     two tenors: the swap 10,878.41 against -116,525.27, the FRA 10,409.80 against -769.53, the
-    equity leg 80,138.48 against 39,715.14, the autocall swap -2,804.51 against 20,582.74.
+    equity leg 80,138.63 against 40,721.77, the autocall swap -2,804.51 against 20,582.74.
     `zero_carry_rate` reading the curve unscaled, which a static curve under `RiskNeutral` answers
     with a difference of two zero rates, zero on this flat world: the TARF 9,927.68 against
     9,866.39, the discrete barrier 10,884.44 against 10,754.61, the barrier 10,078.93 against

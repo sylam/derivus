@@ -2818,47 +2818,56 @@ class DerivedForwardCurve(object):
 
 # date generation utils
 
-def adjust_date(bus_day, modified, date):
-    adj_date = bus_day.rollforward(date) if bus_day else date
-    return bus_day.rollback(date) if (modified and adj_date.month != date.month) else adj_date
+def adjust_date(bus_day, method, date):
+    """`date` rolled onto a business day of `bus_day` by `method`, a business-day convention by name:
+    a `Modified_` one rolls the other way where its roll leaves the month, and `None` or no calendar
+    leaves the date."""
+    if not bus_day or method == 'None':
+        return date
+    forward = method.endswith('Following')
+    rolled = bus_day.rollforward(date) if forward else bus_day.rollback(date)
+    if method.startswith('Modified') and rolled.month != date.month:
+        return bus_day.rollback(date) if forward else bus_day.rollforward(date)
+    return rolled
 
 
-def generate_dates_backward(end_date, start_date, date_offset, bus_day=None, clip=True, modified=False):
+def generate_dates_backward(end_date, start_date, date_offset, bus_day=None, clip=True, method='Following'):
     i, new_date = 1, end_date
-    dates = [adjust_date(bus_day, modified, new_date)]
+    dates = [adjust_date(bus_day, method, new_date)]
     date_kwds = date_offset.kwds.items()
     while new_date > start_date:
         period = pd.DateOffset(**{k: i * v for k, v in date_kwds})
         new_date = max(start_date, end_date - period) if clip else end_date - period
-        dates.append(adjust_date(bus_day, modified, new_date))
+        dates.append(adjust_date(bus_day, method, new_date))
         i += 1
     dates.reverse()
     return pd.DatetimeIndex(dates)
 
 
-def generate_dates_forward(end_date, start_date, date_offset, bus_day=None, clip=True, modified=False):
+def generate_dates_forward(end_date, start_date, date_offset, bus_day=None, clip=True, method='Following'):
     i, new_date = 1, start_date
-    dates = [adjust_date(bus_day, modified, new_date)]
+    dates = [adjust_date(bus_day, method, new_date)]
     date_kwds = date_offset.kwds.items()
     while new_date < end_date:
         period = pd.DateOffset(**{k: i * v for k, v in date_kwds})
         new_date = min(end_date, start_date + period) if clip else start_date + period
-        dates.append(adjust_date(bus_day, modified, new_date))
+        dates.append(adjust_date(bus_day, method, new_date))
         i += 1
     return pd.DatetimeIndex(dates)
 
 
-def coupon_dates(end_date, start_date, date_offset, bus_day=None, first=None, penultimate=None):
-    """A leg's accrual dates, rolled Modified Following on `bus_day`: backward from `penultimate`
-    (the end where None) to `first` (the start where None), or forward from `first` where it alone
-    is stated, a stated stub date being one of the dates."""
-    if first and not penultimate:
-        dates = generate_dates_forward(end_date, first, date_offset, bus_day, modified=True)
+def coupon_dates(end_date, start_date, date_offset, bus_day=None, first=None, penultimate=None,
+                 method='Modified_Following', forward=False):
+    """A leg's accrual dates, rolled on `bus_day` by `method`: backward from `penultimate` (the end
+    where None) to `first` (the start where None), or forward from `first` (the start where None)
+    where it alone is stated or `forward` is, a stated stub date being one of the dates."""
+    if not penultimate and (first or forward):
+        dates = generate_dates_forward(end_date, first or start_date, date_offset, bus_day, method=method)
     else:
         dates = generate_dates_backward(penultimate or end_date, first or start_date, date_offset,
-                                        bus_day, modified=True)
-    return pd.DatetimeIndex([adjust_date(bus_day, True, start_date)] * bool(first) + list(dates) +
-                            [adjust_date(bus_day, True, end_date)] * bool(penultimate))
+                                        bus_day, method=method)
+    return pd.DatetimeIndex([adjust_date(bus_day, method, start_date)] * bool(first) + list(dates) +
+                            [adjust_date(bus_day, method, end_date)] * bool(penultimate))
 
 
 def cds_dates(base, num_months):
