@@ -4301,6 +4301,9 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
          'correlation of $W_i$ with the normalised total rate shock $(\\bar\\sigma_1dW_1+\\bar\\sigma_2dW_2)/N$, so the',
          'FX shock\'s correlation with that total shock is exactly $C$:',
          '$(\\bar\\sigma_1\\tilde\\rho_1+\\bar\\sigma_2\\tilde\\rho_2)/N=C$.',
+         'The price factor is the mark the quanto correlations are derived from, and the bootstrap writes',
+         'no `Correlations` row: the paths carry this covariance from the rows',
+         '[the process](../theory/interest_rates.md#hullwhite2factorimpliedinterestratemodel) states.',
          ]
     )
 

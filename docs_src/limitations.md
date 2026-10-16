@@ -29,13 +29,18 @@ Grouped by where a validator meets them.
   buckets. Separately, past 8.3 standard deviations (one draw in 1e16) the mixer's distribution
   function rounds to 1 in double and the inverse-Gaussian root returns its bracket's top; named,
   not guarded.
-- **A quanto correlation has two bases, and nothing checks which.** The Hull-White 2F writer emits
-  `Quanto_FX_Correlation_1/2` against each rate factor's own Brownian, while the correlation
-  section's rows are the independent normals the Cholesky consumes. Copying one into the other
-  silently changes the rate covariance: 0.5 in the second factor's row realises 0.58. The fix is
-  one matrix on the driving innovations: the drift reads the section through the loadings (M) and
-  the writer emits one basis (L). UNMEASURED beside it: a calibrated market can carry the quanto
-  number with no section row, so the simulated FX ignores the rates the drift reads.
+- **The Hull-White 2F quanto drift assumes an FX covariance the paths carry only where it is
+  authored.** The `Correlation.FxRate.<pair>/InterestRate.<currency>` price factor is the desk's
+  mark of the curve against the currency, from which the bootstrap derives
+  `Quanto_FX_Correlation_1/2`, the drift's change of measure in each factor's own Brownian; the
+  paths correlate the FX with the curve through the `Correlations` rows on
+  `HWImpliedInterestRate.<curve>.F1` and `.F2`, innovation correlations the bootstrap does not
+  write. [The process](theory/interest_rates.md#hullwhite2factorimpliedinterestratemodel) states
+  the rows that carry what the drift assumes. Without them, on the composition gate's world (a 0.8
+  mark, a 55% FX vol, 6M and 1Y expiries into 1Y swaps, 32,768 paths), the deflated expected
+  positive exposure at expiry reads 12.2% and 16.6% of the analytic price above its reading with
+  them, 10 and 12 standard errors, while the payoff-free numeraire identity moves within its
+  noise; near linear in the mark times the FX vol, 1.2% and 1.5% at a 0.3 mark and a 15% vol.
 - **The quasi-random draws ignore `Random_Seed`** (2026-10-11). One Sobol sequence at a fixed seed
   (`Calculation_State.QUASI_SEED`) feeds the inner block, the Markov-regime, GARCH and basis-linked
   spot models, the LogVar2FJ knot mixers and the hedging fork (unless `Inner_Draws: random`). A
