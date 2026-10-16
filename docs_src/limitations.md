@@ -47,7 +47,13 @@ Grouped by where a validator meets them.
   study across seeds cannot see that error, and the inner block's error is common to every outer
   path rather than averaged over them. UNMEASURED.
 - **A Hull-White 2F step that is not positive definite reuses the previous step's Cholesky factor**
-  (2026-10-11), silently. UNMEASURED, and how often it fires is not reported.
+  (2026-10-11), reported at WARNING with the curve and the count. An increment is positive definite
+  wherever |ρ| < 1 and both σ are positive, so it fires at ρ = ±1, at a σ of zero, or past about
+  32Y at a reversion speed of −0.5 where the integrals saturate; there the reused factor sits 24%
+  to 100% from the step's covariance. At ρ = −1 with flat σ nothing diffuses (a 5Y payer swap's
+  expected positive exposure at 1Y reads 488.43 against 10,380.83 with ρ a hair off −1), and with
+  σ1 falling to zero at 1Y it reads 4% low at 2Y and 21% at 4Y. S: the nearest positive-definite
+  factor.
 
 ### The calibration {#the-calibration}
 
@@ -128,11 +134,6 @@ Grouped by where a validator meets them.
   them is a pricer change, not a diary row: the leg carried to the settlement date on repo, the
   amount paid there and the cashflows before it dropped, as `pricing.pv_fixed_cashflows` and
   `utils.TensorCashFlows.fixed` do for the fixed list, through the plain, cap and floor pricers: M.
-- **A deal sampling an unmodelled spot is skipped under a credit Monte Carlo** (2026-10-16). The FX
-  Asian and the average-price swap join their known samples, widened to the scenario count, to a
-  static spot's one column (`pv_discrete_asian_option`'s forward, `pv_average_price_swap`'s
-  realised strip), so the deal is skipped by name and marks zero on every row where a modelled spot
-  prices; the whole mark. S: the static column widened as the known ones are.
 - **Rating-dependent credit support is read at its first row** (2026-10-11).
   `utils.CreditSupportList.value` returns the first row's threshold, minimum transfer or independent
   amount whatever the counterparty's rating, in the engine and the spine's collateral call. Exact

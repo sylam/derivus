@@ -107,7 +107,7 @@ where the tenor is zero; **Reset_Type** `Arrears` takes each reset one reset per
 period's end where it holds one reset, and `Advance` reads as `Standard`. A reset fixes
 **Index_Offset** business days of **Index_Calendars** before its window (weekdays where blank), a
 known rate being the row stated for that day, and its rate accrues on **Index_Day_Count** ($\alpha_2$
-above) while the coupon accrues on the leg's own day count.
+above), the leg's own day count where blank.
 
 ### Cashflow Lists
 

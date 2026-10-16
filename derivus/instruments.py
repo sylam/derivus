@@ -783,12 +783,12 @@ class Deal(object):
             utils.adjust_date(pays, 'Modified_Following', day)
             for day in (dates[:-1] if read(timing) == 'Begin' else dates[1:])])
 
-    def float_index(self, calendars):
-        """How the deal's floating index fixes (`utils.FloatIndex`), off its `Index_Day_Count`,
-        `Reset_Type`, `Index_Offset` and `Index_Calendars`."""
+    def float_index(self, calendars, day_count):
+        """How the deal's floating index fixes (`utils.FloatIndex`), off its `Index_Day_Count`, the
+        floating leg's `day_count` where blank, `Reset_Type`, `Index_Offset` and `Index_Calendars`."""
         return utils.FloatIndex(
-            utils.DayCount.code(self.field.read('Index_Day_Count')), self.field.read('Reset_Type') == 'Arrears',
-            int(self.field.read('Index_Offset', 0)),
+            utils.DayCount.code(self.field.read('Index_Day_Count', day_count)),
+            self.field.read('Reset_Type') == 'Arrears', int(self.field.read('Index_Offset', 0)),
             calendars.get(self.field.read('Index_Calendars'), {}).get('businessday'))
 
     def equity_swaplets(self, field, paid, items, principal, settlement_days, base_date, static_offsets,
@@ -2705,7 +2705,7 @@ class SwapInterestDeal(Deal):
             base_date, time_grid, dates, -sign * self.field['Principal'], self.field['Amortisation'],
             self.field['Known_Rates'], self.field[floating + 'Interest_Frequency'], self.field['Index_Tenor'],
             utils.DayCount.code(self.field[floating + 'Day_Count']), self.field['Floating_Margin'] / 10000.0,
-            self.field.get('Reference'), pays, self.float_index(calendars))
+            self.field.get('Reference'), pays, self.float_index(calendars, self.field[floating + 'Day_Count']))
 
         field_index['Compounding'] = self.field['Fixed_Compounding'] == 'Yes'
         field_index['CompoundingMethod'] = self.field['Compounding_Method']
@@ -3235,7 +3235,7 @@ class CapDeal(Deal):
                     (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
                     Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
                     utils.DayCount.code(self.field['Accrual_Day_Count']), self.field[strike] / 100.0,
-                    self.field.get('Reference'), self.pays, self.float_index(calendars))
+                    self.field.get('Reference'), self.pays, self.float_index(calendars, self.field['Accrual_Day_Count']))
             field_index.update(
                 SettleCurrency=self.field['Currency'], CompoundingMethod='None',
                 AveragingMethod=self.field['Averaging_Method'], Model=pricer)
@@ -3331,7 +3331,7 @@ class SwaptionDeal(Deal):
         'own rate, while the moneyness the vol is read at is $s(t)-K(t)$. $\\mathcal B_\\delta$ is Black on a',
         '`Lognormal` surface (displaced by its **Shift**) and Bachelier on a `Normal` one. $\\sigma$ is the',
         '**Forecast_Rate_Volatility** surface at moneyness $s-K$ (decimal), expiry $t_0-t$ in the discount',
-        'curve\'s day count, and tenor $T_2-T_1$ in **Index_Day_Count**.',
+        'curve\'s day count, and tenor $T_2-T_1$ in **Index_Day_Count**, the floating leg\'s where blank.',
         '',
         '#### Physically Settled Swaptions',
         '',
@@ -3423,15 +3423,16 @@ class SwaptionDeal(Deal):
             field_index['Settlement'] = (max(self.settlement_currencies[self.field['Currency']]) - base_date).days
             field_index['Par_Yield'] = self.field['Cash_Settlement_Method'] == 'Par_Yield_Curve'
         field_index['Cash_Settled'] = self.field['Settlement_Style'] != 'Physical'
+        fixed, floating, sign = ('Pay_', 'Receive_', -1) if self.field['Payer_Receiver'] == 'Payer' else (
+            'Receive_', 'Pay_', 1)
+        index = self.float_index(calendars, self.field[floating + 'Day_Count'])
         field_index['Underlying_Swap_maturity'] = utils.DayCount.accrual(
             base_date, (self.field['Swap_Maturity_Date'] - self.field['Swap_Effective_Date']).days,
-            utils.DayCount.code(self.field['Index_Day_Count']))
+            index.day_count)
         # on its legs it prices them (`post_process`): the swap its own terms spell goes unread
         if self.has_children:
             return field_index
 
-        fixed, floating, sign = ('Pay_', 'Receive_', -1) if self.field['Payer_Receiver'] == 'Payer' else (
-            'Receive_', 'Pay_', 1)
         dates, pays = self.legs[fixed]
         field_index['FixedCashflows'] = utils.TensorCashFlows.generate_fixed(
             base_date, dates, sign * self.field['Principal'], self.field[fixed + 'Amortisation'],
@@ -3441,7 +3442,7 @@ class SwaptionDeal(Deal):
             base_date, time_grid, dates, -sign * self.field['Principal'], self.field[floating + 'Amortisation'],
             None, self.field[floating + 'Frequency'], self.field['Index_Tenor'],
             utils.DayCount.code(self.field[floating + 'Day_Count']), self.field['Floating_Margin'] / 10000.0,
-            self.field.get('Reference'), pays, self.float_index(calendars))
+            self.field.get('Reference'), pays, index)
 
         if self.field['Settlement_Style'] == 'Physical':
             # remember to potentially deliver the underlying swap if it's in the money

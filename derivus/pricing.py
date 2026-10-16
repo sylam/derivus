@@ -2714,8 +2714,8 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
     """American option by the Bjerksund-Stensland trigger approximation, floored at Black.
 
     Rows where the carry is at or above the rate hold no early exercise premium and take Black
-    directly. A scenario whose spot reaches the exercise trigger settles its intrinsic on that date
-    and is worth nothing after.
+    directly. A scenario whose spot reaches the exercise trigger, or is in the money at expiry,
+    settles its intrinsic on that date and is worth nothing after.
     """
     def phi(gamma, H, I):
         kappa = (2.0 * safe_b) / sigma2 + 2.0 * gamma - 1.0
@@ -2780,7 +2780,8 @@ def pv_american_option(shared, time_grid, deal_data, nominal, moneyness, spot, f
     C_BS = torch.maximum(Black, C_BS)
 
     theo_price = (b >= r) * Black + (b < r) * ((S < I) * C_BS + (S >= I) * (S - K))
-    early_exercise = (b < r) * (S >= I)
+    expired = shared.one.new_tensor(tenor_in_days <= 0, dtype=torch.bool).reshape(-1, 1)
+    early_exercise = ((b < r) & (S >= I)) | (expired & (S > K))
 
     knocked_out = early_exercise.cumsum(axis=0) > 0
     first_knockout = torch.concat([knocked_out[0].reshape(1, -1), knocked_out[1:] ^ knocked_out[:-1]])
@@ -5103,16 +5104,15 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
         (samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
         (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
 
-    # an unsimulated spot is held flat across the samples
-    if spot.shape != forward.shape:
-        past_samples = spot.expand(sim_samples.shape[0], shared.simulation_batch)
-        spot = spot.expand(*forward.shape)
-    else:
-        past_sample_factor = [utils.calc_time_grid_spot_rate(
-            past_factor, sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
-            for past_factor in past_factor_list]
-        past_samples = past_sample_factor[0] if len(
-            past_sample_factor) == 1 else past_sample_factor[0] / past_sample_factor[1]
+    past_sample_factor = [utils.calc_time_grid_spot_rate(
+        past_factor, sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
+        for past_factor in past_factor_list]
+    # a static spot answers one row and one column, so it is held flat across the samples and the
+    # paths the known samples carry
+    past_samples = (past_sample_factor[0] if len(past_sample_factor) == 1 else
+                    past_sample_factor[0] / past_sample_factor[1]).expand(
+        sim_samples.shape[0], shared.simulation_batch)
+    spot = spot.expand(forward.shape[0], shared.simulation_batch)
 
     # a simulated past sample is a LOCAL price, so a compo's takes the cross at its own date
     past_samples = past_samples * calc_compo_geometry(
@@ -6276,7 +6276,7 @@ def pv_average_price_swap(shared, time_grid, deal_data):
         (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
     simulated = utils.calc_time_grid_spot_rate(
         factor_dep['Commodity'], sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
-    realised = torch.cat([torch.cat(known, dim=0), simulated], dim=0) if known else simulated
+    realised = utils.concat_resets([torch.cat(known, dim=0), simulated], 0) if known else simulated
 
     # the split is a MASK over (row, fixing) rather than a block loop - the payoff has no branch for
     # a block boundary to serve, and every projected term is well defined at a realised fixing

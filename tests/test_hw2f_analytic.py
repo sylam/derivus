@@ -169,6 +169,30 @@ def test_a_reversion_speed_through_zero_is_the_closed_form_short_rate(model, spe
         assert abs(mean - short - convexity) <= 1e-7, (date, mean - short - convexity)
 
 
+def test_a_step_reusing_the_previous_cholesky_factor_is_reported(caplog):
+    """At correlation -1 with equal reversions and flat sigmas of 1% and 0.5%, no step's increment
+    covariance is positive definite: a five-year EUR cashflow's credit Monte Carlo says so once at
+    WARNING, naming the curve and that 20 of its 20 steps reuse the previous Cholesky factor.
+
+    Killing mutation: the line removed.
+    """
+    flat = utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])
+    factors = {'HullWhite2FactorModelParameters.EUR': {
+        'Alpha_1': 0.05, 'Alpha_2': 0.05, 'Correlation': -1.0,
+        'Sigma_1': utils.Curve([], [[0.0, 0.01], [10.0, 0.01]]),
+        'Sigma_2': utils.Curve([], [[0.0, 0.005], [10.0, 0.005]]),
+        'Quanto_FX_Correlation_1': 0.0, 'Quanto_FX_Correlation_2': 0.0, 'Quanto_FX_Volatility': flat}}
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF5Y', 'Currency': 'EUR',
+                'Discount_Rate': 'EUR', 'Amount': 1e6,
+                'Payment_Date': book.WORLD_BASE + pd.DateOffset(years=5)}
+    with caplog.at_level(logging.WARNING):
+        book.simulated([cashflow], (), factors=factors, prec=torch.float64, Generate_Cashflows='No',
+                       models={'InterestRate.EUR': ('HullWhite2FactorImpliedInterestRateModel',
+                                                    {'Lambda_1': 0.0, 'Lambda_2': 0.0})})
+    assert [r.getMessage() for r in caplog.records if 'Cholesky' in r.getMessage()] == [
+        'InterestRate.EUR: 20 of 20 steps not positive definite reuse the previous Cholesky factor']
+
+
 # ---------------------------------------------------------------------- the four-quote document
 
 #: theta* of the four-quote block under the analytic objective, CPU float64, `Random_Seed` 5120:

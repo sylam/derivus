@@ -1134,7 +1134,7 @@ PRICING = Group('Pricing', 'Pricing', [
 #: the offset to the fixing and whether it resets in advance or in arrears.
 FLOATING_INDEX = Group('FloatingIndex', 'Floating index', [
     F('Index_Tenor', 'Period', default='3M', convention=True),
-    F('Index_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
+    F('Index_Day_Count', 'Text', default='', convention=True, values=('',) + DAY_COUNTS),
     F('Index_Calendars', 'Text', default='', convention=True),
     F('Index_Publication_Calendars', 'Text', default='', convention=True),
     F('Index_Offset', 'Integer', default=0, convention=True),

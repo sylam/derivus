@@ -5181,9 +5181,9 @@ class VolSurface:
         return shared.t_Buffer[time_code]
 
     @staticmethod
-    def _interp(surface, code, expiry, shared, calc_std):
-        # cache the time surface interpolation matrix
-        time_code = ('surface_interp', code[:2], tuple(expiry), calc_std)
+    def _interp(surface, code, expiry, shared, calc_std, tenor):
+        # the blend is the vol tenor's, so two tenors on one surface and expiry are two entries
+        time_code = ('surface_interp', code[:2], tuple(expiry), tenor, calc_std)
 
         if time_code not in shared.t_Buffer:
             index, index_next, alpha = code[FACTOR_INDEX_Expiry_Index].device_index(expiry, surface)
@@ -5333,7 +5333,7 @@ class VolSurface:
             spread = VolSurface._tenor_blend(code, tenor, shared)
 
             surface = spread.reshape(-1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size)
-            flat_vol_time = VolSurface._interp(surface, code[0], expiry, shared, calc_std).reshape(-1, )
+            flat_vol_time = VolSurface._interp(surface, code[0], expiry, shared, calc_std, tenor).reshape(-1, )
 
             shared.t_Buffer[key_code] = (flat_vol_time, code[0], code[0][FACTOR_INDEX_Moneyness_Index])
 
@@ -5353,7 +5353,7 @@ class VolSurface:
             time_exp = key_code[:-1] + tuple(exp)
             if time_exp not in shared.t_Buffer:
                 flat_vol_time = VolSurface._interp(
-                    surface, code[0], exp, shared, calc_std).reshape(-1)
+                    surface, code[0], exp, shared, calc_std, tenor).reshape(-1)
                 shared.t_Buffer[time_exp] = (flat_vol_time, code[0], code[0][FACTOR_INDEX_Moneyness_Index])
             result.append(VolSurface._moneyness(mon, exp, time_exp, shared))
 

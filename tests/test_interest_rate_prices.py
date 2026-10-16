@@ -1197,6 +1197,61 @@ def test_a_swap_leg_is_the_schedule_its_conventions_spell():
         assert float.fromhex(marks[reference]) == hand, (reference, float.fromhex(marks[reference]) - hand)
 
 
+#: Each reader of `Index_Day_Count` on ACT/360 legs stating none: the two-year quarterly swap, a
+#: cap at 4% on a million from 16 December 2026, and the declared-defaults swaption, whose underlying
+#: tenor the index's day count reads, on a surface rising a vol point a year of tenor.
+INDEXED = {
+    'swap': dict({key: value for key, value in par_swap(
+        'SWAP', 'USD', 'USD-PROJ', 'USD', 2, 4.0, fixed_frequency=3, float_frequency=3).items()
+        if key != 'Index_Day_Count'}, Effective_Date=START, Maturity_Date=END),
+    'cap': {'Object': 'CapDeal', 'Reference': 'CAP', 'Currency': 'USD', 'Discount_Rate': 'USD',
+            'Forecast_Rate': 'USD-PROJ', 'Forecast_Rate_Volatility': 'USD-PROJ', 'Buy_Sell': 'Buy',
+            'Effective_Date': START, 'Maturity_Date': END, 'Cap_Rate': 4.0, 'Principal': 1e6,
+            'Accrual_Day_Count': 'ACT_360'},
+    'swaption': dict(next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT'),
+                     Receive_Day_Count='ACT_360')}
+RISING = {'InterestYieldVol.USD-PROJ': {
+    'Property_Aliases': None, 'Distribution_Type': 'Lognormal', 'Shift': utils.Percent(0.0),
+    'Surface': utils.Curve([], [(m, e, t, 0.20 + 0.01 * t) for m in (-0.02, 0.0, 0.02)
+                                for e in (0.25, 1.0, 2.0, 5.0) for t in (1.0, 3.0, 5.0)])}}
+
+
+@pytest.mark.parametrize('reader', list(INDEXED))
+def test_a_blank_index_day_count_is_the_floating_legs_own(reader):
+    """A deal on ACT/360 legs stating no `Index_Day_Count` prices bit-identically to the one stating
+    `ACT_360`, on the sloped index, each in a run of its own.
+
+    Killing mutation: a blank read as ACT/365, the swap +1,113.95 (11.1 bp of notional), the cap
+    +654.90 and the swaption -10.36 against the stated.
+    """
+    readings = []
+    for deal in (INDEXED[reader], dict(INDEXED[reader], Index_Day_Count='ACT_360')):
+        marks, stats = book.marks([deal], factors=dict(SLOPED, **RISING))
+        assert 'Deals Skipped' not in stats, stats
+        readings.append(float.fromhex(marks[deal['Reference']]))
+    assert readings[0] == readings[1], readings[0] - readings[1]
+
+
+def test_two_swaptions_on_one_surface_and_expiry_each_read_their_own_tenor():
+    """The declared-defaults swaption beside a copy restated to read a five-year tenor, on the surface
+    rising a vol point a year of tenor, marks in either order as each marks alone, to the bit.
+
+    Killing mutation: the tenor dropped from `VolSurface._interp`'s cache key, every later read on
+    the surface and expiry taking the first deal's blend: the five-year beside the three-year
+    11,809.53 against 12,771.77 alone, and the three-year beside the five-year 12,771.77 against
+    11,809.53.
+    """
+    three = next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT')
+    five = dict(three, Reference='S5Y', Children=[dict(leg, Reference='S5Y' + leg['Reference'])
+                                                   for leg in three['Children']],
+                Swap_Maturity_Date=three['Swap_Effective_Date'] + pd.DateOffset(years=5))
+    alone = {deal['Reference']: book.marks([deal], factors=RISING)[0][deal['Reference']] for deal in (three, five)}
+    assert alone['SWPT'] != alone['S5Y']
+    for deals in ((three, five), (five, three)):
+        marks, _ = book.marks(list(deals), factors=RISING)
+        assert {reference: marks[reference] for reference in alone} == alone, marks
+
+
 def test_a_caplet_expires_on_the_day_its_rate_fixes():
     """A two-year quarterly cap at 4% on a million from 16 December 2026, Black at 20% on the sloped
     index, stated `Arrears` and stated an `Index_Offset` of two against the caplet lists they mean,

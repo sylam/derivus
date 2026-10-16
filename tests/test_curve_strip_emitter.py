@@ -701,7 +701,6 @@ def test_the_jibar_strip_is_a_vanilla_swap_on_its_declared_conventions():
     assert deal['Receive_Frequency'] == {'.DateOffset': '3M'}
     assert deal['Pay_Day_Count'] == 'ACT_365' and deal['Receive_Day_Count'] == 'ACT_365'
     assert deal['Index_Tenor'] == {'.DateOffset': '0M'}
-    assert deal['Index_Day_Count'] == 'ACT_365'
     assert deal['Compounding_Method'] == 'None'
     assert deal['Principal'] == 1000000.0
     # spot_days is ZERO for ZAR, so the strip starts at the as-of itself

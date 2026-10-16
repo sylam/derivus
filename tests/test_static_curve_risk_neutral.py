@@ -6,7 +6,8 @@ swap, a FRA and an autocall swap forecast and the forwards an equity leg grows b
 settlement and its period ends, read between two tenors through `gather_weighted_curve`'s start
 points; and the carries the one-step-survival pricers (the TARF, the discrete barrier, the
 autocall), the closed-form barrier, the one-touch, the partial-time barrier, the extendable forward
-and the compo geometry read as a rate, now `pricing.zero_carry_rate` through `deal_carry_rate`.
+and the compo geometry read as a rate, now `pricing.zero_carry_rate` through `deal_carry_rate`;
+and the FX Asian and the average-price swap, which join their known samples to a static spot.
 Every curve is static on a flat world, the one modelled factor a spot at no vol; the trial deals
 sit beside the trial equity, the one deal of the pair that reaches it.
 """
@@ -79,6 +80,8 @@ READERS = {
     'extendable forward': lambda: trial('fx', 'FXEXT'),
     'commodity forward': lambda: trial('commodity', 'METAL_FWD'),
     'energy option': lambda: trial('commodity', 'FUEL_OPT'),
+    'fx asian': lambda: trial('fx', 'FXASN'),
+    'average price swap': lambda: trial('commodity', 'METAL_APS'),
     'compo one touch': lambda: composite(compo._one_touch('CT', 'Down', compo.DOWN)),
     'compo discrete barrier': lambda: composite(dict(
         compo._barrier('CB', 'Down_And_Out', compo.DOWN),
@@ -116,3 +119,20 @@ def test_a_static_curve_reads_the_same_on_the_base_date_under_either_no_model(re
     scale = np.abs(constant[0]).max()
     gap = np.abs(risk_neutral - constant).max()
     assert gap <= 1e-5 * scale, (reader, constant[0].mean(), risk_neutral[0].mean(), gap / scale)
+
+
+@pytest.mark.parametrize('reader, reference', [('fx asian', 'FXASN'), ('average price swap', 'METAL_APS')])
+def test_a_deal_sampling_an_unmodelled_spot_marks_its_base_valuation_on_the_first_row(reader, reference):
+    """The FX Asian on its static FX and the average-price swap on its static commodity, one fixing
+    known, each beside the trial equity: the first row's mean under `Constant` is the two deals'
+    base valuation marks within float32 rounding of the row's scale, 10,057.64 for the Asian and
+    16,161.31 against 16,161.29 for the swap.
+
+    Killing mutation: the static spot's one column left unwidened where the known samples carry the
+    paths, so each deal is skipped by name and the row reads the equity's 10,000.00 alone.
+    """
+    job, models = READERS[reader]()
+    first = credit_monte_carlo(job, 'Constant', models)[0]
+    marks = trials.marks(job)
+    mark = float.fromhex(marks[reference]) + float.fromhex(marks['EQS'])
+    assert abs(first.mean() - mark) <= 1e-5 * np.abs(first).max(), (reader, first.mean(), mark)

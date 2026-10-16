@@ -1090,7 +1090,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         '$$L=\\begin{pmatrix} \\sqrt{C_{11}} & 0 \\\\ \\frac{C_{12}}{\\sqrt{C_{11}}} & \\sqrt{C_{22}-\\frac{C_{12}^2}{C_{11}}} \\end{pmatrix}$$',
         '',
         "Where an increment covariance is not positive definite, that step reuses the previous step's",
-        'factor and the process marks its parameters not OK; the size of that approximation is unmeasured.',
+        'factor, reported at WARNING with the curve and the count of such steps.',
         ])
 
     factor_types = ('InterestRate',)
@@ -1245,13 +1245,14 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         if self.params_ok:
             C = nnf.pad(torch.linalg.cholesky(delta_CtT.reshape(-1, 2, 2)), (0, 0, 0, 0, 1, 0))
         else:
-            # need to fix the cholesky
+            # a step whose increment is not positive definite reuses the previous step's factor
+            definite = (delta_CtT[:, 0] > 0.0) & (delta_CtT[:, 3] > 0.0) & (
+                delta_CtT[:, 1] * delta_CtT[:, 2] < delta_CtT[:, 0] * delta_CtT[:, 3])
+            logging.warning('%s: %d of %d steps not positive definite reuse the previous Cholesky factor',
+                            utils.check_tuple_name(self.factor_key), int((~definite).sum()), definite.numel())
             cholesky = [tensor.new_zeros((2, 2), dtype=torch.float64)]
-            for i, C in enumerate(delta_CtT):
-                if (C[0] > 0.0) & (C[3] > 0.0) & (C[1] * C[2] < C[0] * C[3]):
-                    cholesky.append(torch.linalg.cholesky(C.reshape(2, 2)))
-                else:
-                    cholesky.append(cholesky[-1])
+            for C, fine in zip(delta_CtT, definite):
+                cholesky.append(torch.linalg.cholesky(C.reshape(2, 2)) if fine else cholesky[-1])
             C = torch.stack(cholesky)
 
         self.BtT = [Bi.type(shared.one.dtype).reshape(-1, 1) for Bi in BtT]
