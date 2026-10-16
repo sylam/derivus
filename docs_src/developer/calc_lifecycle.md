@@ -96,8 +96,8 @@ Below an eigenvalue of `1e-8` the matrix is repaired with a WARNING, its size un
 `Eigenvalue_Raising` (default) floors eigenvalues at `1e-4` and rescales to a unit diagonal;
 `Alternating_Projections` is Higham's method [@higham2002] without Dykstra's correction (100 passes
 at most, to a relative `1e-8`), a nearby matrix, not provably the nearest. The matrix is no AAD leaf
-([decision 12](../limitations.md#decisions-waiting-on-the-desk)); a base valuation bumps a quanto or
-compo correlation under common random numbers (`Correlation_Bump`, 0.025).
+([decision 12](../limitations.md#decisions-waiting-on-the-desk)); a base valuation bumps a quanto,
+compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 0.025).
 
 ## The batch loop
 
@@ -161,7 +161,9 @@ worker count on one device type, and a different draw of the same law from an un
 `pricing.interpolate` puts its price (zero past its last date) and saves `Calc_res`. A deal
 booked over `Children` whose `post_process` prices them (a swap, cap, floor or swaption on its
 legs) compiles no legs off its own terms, which nothing would read (`Deal.has_children`, stamped by
-`set_deal_structures`), so a reset they leave unstated warns nobody; a leaf's is fixed at 0% with
+`set_deal_structures`), so a reset they leave unstated warns nobody; a swaption reads off them only
+its vol's geometry, the fixed schedule its tenor is measured on and, starting after its expiry, the
+gap's legs, which reset after the base date. A leaf's unstated reset is fixed at 0% with
 a warning naming it (`utils.unstated_reset`). A swap, cap or floor on its legs revalues on their
 days (`Deal.children_dates`) and is their sum, each priced on the parent's grid
 (`Deal.sum_children`).
@@ -169,7 +171,9 @@ days (`Deal.children_dates`) and is their sum, each priced on the parent's grid
 `tests/test_declared_defaults.py::test_a_cap_on_its_optionlet_list_states_no_principal_or_known_rates`,
 `::test_a_swaption_on_its_legs_compiles_no_swap_of_its_own`,
 `::test_a_swap_on_its_legs_is_their_sum_and_compiles_no_legs_of_its_own`,
-`::test_a_swap_on_its_legs_revalues_on_their_days`.
+`::test_a_swap_on_its_legs_revalues_on_their_days`,
+`tests/test_swaption_exercise_boundary.py::test_an_amortising_swap_reads_its_vol_at_its_duration_equivalent_tenor`,
+`::test_a_forward_start_swap_reads_the_mid_curve_vol_of_two_co_starting_swaps`.
 
 ### The schedule lifecycle {#the-schedule-lifecycle}
 

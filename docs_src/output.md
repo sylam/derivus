@@ -23,8 +23,8 @@ calc, out = cx.Base_Valuation(overrides={})
 - `mtm` — the mark-to-market of all instruments loaded, along with any tagged data
 - `Greeks_First` — AAD sensitivities of the portfolio by risk factor, when `Greeks` is `First` or
   `All`; `Greeks_Second`, the factor Hessian, under `All`
-- `Correlation_Bump` — under `Greeks: First` with a non-zero `Correlation_Bump`, each quanto or compo
-  correlation delta, by a common-random-numbers bump rather than AAD
+- `Correlation_Bump` — under `Greeks: First` with a non-zero `Correlation_Bump`, each quanto, compo
+  or mid-curve correlation delta, by a common-random-numbers bump rather than AAD
 
 ## Credit Monte Carlo
 

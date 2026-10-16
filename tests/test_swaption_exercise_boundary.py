@@ -37,8 +37,14 @@ the first post-expiry row is `relu(Ut_swap[0])` for a bought payer, so the flip 
 structurally zero and the consistency gate fails on 59 of 4096 paths for each swaption - the SAME
 59. With the decision right and only the GAP from `Ut_swap[0]`, nothing reported moves - profile,
 exposure and CVA bit-identical - and only `gap_disagrees` sees it: 10 of 512 at seed 1, 59 of 4096.
+
+THE VOL THE OPTION READS, gated last on base valuations of job documents against Black and
+Bachelier by hand: an amortising swap at its duration-equivalent tenor, one starting after the
+expiry at its mid-curve vol.
 """
+import json
 import logging
+import math
 import os
 import re
 import sys
@@ -53,10 +59,11 @@ import torch
 
 import derivus
 from derivus import utils
-from derivus.config import Config
+from derivus.config import Config, CustomJsonEncoder
 from derivus.instruments import construct_instrument
 
 import rates_world as rw
+import test_declared_defaults as book
 
 DTYPE = torch.float64
 BASE = rw.BASE
@@ -430,3 +437,221 @@ def test_the_registration_moves_the_cva_gradient_and_not_the_cva():
     assert np.linalg.norm(delta) / scale > 0.1, (
         'suppressing the boundary correction moved the CVA gradient by only {:.3%} of its own '
         'norm - the registration is decorative'.format(np.linalg.norm(delta) / scale))
+
+
+# ------------------------------------------------------------------------ the vol the option reads
+
+#: The declared-defaults base date under curves sloped from 1% to 6%, the projection 20bp over the
+#: discount, and swaption surfaces linear in tenor, flat in moneyness and expiry.
+SLOPE_KNOTS = [0.25, 1.0, 3.0, 5.0, 10.0]
+SLOPE_DISCOUNT = [0.010, 0.015, 0.030, 0.045, 0.060]
+SLOPE_PROJECTION = [0.012, 0.018, 0.033, 0.048, 0.063]
+VOL_TENORS = [0.5, 1.0, 2.0, 3.0, 5.0, 10.0]
+MID_CURVE = 'Correlation.InterestYieldVol.USD-PROJ/InterestYieldVol.USD-PROJ'
+
+
+def years(day):
+    return (day - book.WORLD_BASE).days / 365.0
+
+
+def growth(day, zeros):
+    """A curve's zero rate times its ACT_365 years to `day`, linear in rate between its knots."""
+    return float(np.interp(years(day), SLOPE_KNOTS, zeros)) * years(day)
+
+
+def coupons(start, end, months):
+    """Coupon dates back from `end` every `months` months to `start`, as the deal's terms roll them."""
+    dates = [end]
+    while dates[-1] > start:
+        dates.append(end - pd.DateOffset(months=months * len(dates)))
+    return dates[::-1]
+
+
+def sloped(distribution, vol, shift=0.0, tenors=VOL_TENORS, **factors):
+    """The sloped world under the surface `vol(tenor)`, `factors` beside it."""
+    world = rw.market('USD', {'USD': (SLOPE_KNOTS, SLOPE_DISCOUNT),
+                              'USD-PROJ': (SLOPE_KNOTS, SLOPE_PROJECTION)}, 'USD')
+    world['InterestYieldVol.USD-PROJ'] = {
+        'Property_Aliases': None, 'Distribution_Type': distribution,
+        'Shift': utils.Percent(100.0 * shift), 'Surface': utils.Curve([], [
+            (m, e, t, vol(t)) for m in (-0.02, 0.0, 0.02) for e in (0.25, 1.0, 2.0, 5.0)
+            for t in tenors])}
+    return dict(world, **factors)
+
+
+def payer(reference, expiry, effective, maturity, rate, months, cut=0.0):
+    """A bought payer on its legs, fixed every `months` months and floating every quarter, the
+    principal stepping down by `cut` at each fixed coupon, as its terms and its legs both say."""
+    fixed_dates, float_dates = coupons(effective, maturity, months), coupons(effective, maturity, 3)
+    principal = lambda day: 1e6 - cut * sum(start <= day for start in fixed_dates[1:-1])
+    rows = lambda dates: [(a, b, principal(a), (b - a).days / 365.0) for a, b in zip(dates[:-1], dates[1:])]
+    fixed = [{'Payment_Date': b, 'Notional': n, 'Rate': utils.Percent(rate), 'Accrual_Start_Date': a,
+              'Accrual_End_Date': b, 'Accrual_Day_Count': 'ACT_365', 'Accrual_Year_Fraction': year,
+              'Fixed_Amount': 0.0, 'Discounted': 'No', 'FX_Reset_Date': None, 'Known_FX_Rate': 0.0}
+             for a, b, n, year in rows(fixed_dates)]
+    floating = [{'Payment_Date': b, 'Notional': n, 'Accrual_Start_Date': a, 'Accrual_End_Date': b,
+                 'Accrual_Day_Count': 'ACT_365', 'Accrual_Year_Fraction': year,
+                 'Resets': [[a, a, b, year, pd.DateOffset(days=1), 'ACT_365', '0D', 0.0, 'No',
+                             utils.Percent(0.0)]],
+                 'Margin': utils.Basis(0.0), 'Fixed_Amount': 0.0, 'FX_Reset_Date': None,
+                 'Known_FX_Rate': 0.0} for a, b, n, year in rows(float_dates)]
+    amortisation = utils.DateList({day: cut for day in fixed_dates[1:-1]}) if cut else None
+    return dict(swaption(reference, 'Payer'), Currency='USD', Discount_Rate='USD',
+                Forecast_Rate='USD-PROJ', Forecast_Rate_Volatility='USD-PROJ',
+                Option_Expiry_Date=expiry, Settlement_Date=expiry, Swap_Effective_Date=effective,
+                Swap_Maturity_Date=maturity, Principal=1e6, Swap_Rate=rate,
+                Pay_Frequency=pd.DateOffset(months=months), Pay_Amortisation=amortisation,
+                Receive_Amortisation=amortisation, Children=[
+                    rw._cashflow_leg('CFFixedInterestListDeal', reference + '_FIXED', 'USD', 'USD', 'Sell',
+                                     {'Compounding': 'No', 'Items': fixed}, Calendars=None, Rate_Currency=''),
+                    rw._cashflow_leg('CFFloatingInterestListDeal', reference + '_FLOAT', 'USD', 'USD', 'Buy',
+                                     {'Compounding_Method': 'None', 'Averaging_Method': 'Average_Rate',
+                                      'Properties': [], 'Items': floating}, Forecast_Rate='USD-PROJ')])
+
+
+def priced(deal):
+    """`(annuity, forward swap rate)` of a swaption's legs off the sloped curves, by hand."""
+    fixed, floating = (leg['Cashflows']['Items'] for leg in deal['Children'])
+    discount = lambda day: math.exp(-growth(day, SLOPE_DISCOUNT))
+    annuity = sum(row['Notional'] * row['Accrual_Year_Fraction'] * discount(row['Payment_Date']) for row in fixed)
+    return annuity, sum(row['Notional'] * math.expm1(
+        growth(row['Accrual_End_Date'], SLOPE_PROJECTION) - growth(row['Accrual_Start_Date'], SLOPE_PROJECTION))
+        * discount(row['Payment_Date']) for row in floating) / annuity
+
+
+def option(distribution, forward, strike, vol, shift=0.0):
+    """A payer's undiscounted value to the declared-defaults expiry: Black, displaced by `shift`, or
+    Bachelier."""
+    deviation = vol * math.sqrt(years(book.WORLD_EXPIRY))
+    cdf = lambda x: 0.5 * math.erfc(-x / math.sqrt(2.0))
+    if distribution == 'Normal':
+        d = (forward - strike) / deviation
+        return (forward - strike) * cdf(d) + deviation * math.exp(-0.5 * d * d) / math.sqrt(2.0 * math.pi)
+    d = math.log((forward + shift) / (strike + shift)) / deviation + 0.5 * deviation
+    return (forward + shift) * cdf(d) - (strike + shift) * cdf(d - deviation)
+
+
+def duration_tenor(deal):
+    """A swaption's fixed leg's duration-equivalent tenor by hand: on the axis its stated tenor
+    spans, the point its Macaulay duration takes among those of the bullets it holds at constant
+    principal to each accrual end."""
+    rows = deal['Children'][0]['Cashflows']['Items']
+    days = np.array([(row['Accrual_End_Date'] - deal['Swap_Effective_Date']).days for row in rows], dtype=float)
+    axis = (deal['Swap_Maturity_Date'] - deal['Swap_Effective_Date']).days / 365.0 * (days / days[-1])
+    coupon = np.array([row['Rate'].amount * row['Accrual_Year_Fraction'] for row in rows])
+    discount = np.array([math.exp(-growth(row['Accrual_End_Date'], SLOPE_DISCOUNT)) for row in rows])
+    principal = np.array([row['Notional'] for row in rows] + [0.0]) / rows[0]['Notional']
+    bullet = lambda i: (coupon[:i + 1] + (np.arange(i + 1) == i)) * discount[:i + 1]
+    knots = [(axis[:i + 1] * bullet(i)).sum() / bullet(i).sum() for i in range(len(rows))]
+    leg = (principal[:-1] * coupon + principal[:-1] - principal[1:]) * discount
+    duration = (axis * leg).sum() / leg.sum()
+    k = int(np.searchsorted(knots, duration))
+    w = (duration - knots[k - 1]) / (knots[k] - knots[k - 1])
+    return (1.0 - w) * axis[k - 1] + w * axis[k]
+
+
+def test_an_amortising_swap_reads_its_vol_at_its_duration_equivalent_tenor():
+    """A 1Y into 5Y payer, quarterly, amortising linearly to a tenth, under the sloped curves and a
+    Lognormal surface `30% - 2% x tenor`, marks Black at the vol of its duration-equivalent tenor,
+    2.660 of its stated 5.005, by hand off its legs and the curve, to 1e-10: 38,427.45. The same
+    swaption not amortising, and one into 4Y9M, priced beside it, each mark to the bit what they
+    mark on the surface held flat at their stated tenor's vol: a swap that does not amortise reads
+    today's tenor exactly, which the surface sees, a node at each stated tenor a nanoyear from
+    nodes off the line, so that an ulp of tenor moves the vol by 4e-8.
+
+    Killing mutations: the tenor unadjusted, 37,882.70 (-1.4%); the expiry read of one tenor's
+    blend cached for every tenor at that expiry (`VolSurface._interp`), the bullet reading the
+    amortising swap's tenor, 96,252.66 where it marks 95,907.16; the tenor axis spelled
+    `stated * days / days`, an ulp off over the 4Y9M bullet's 1,735 days, 89,542.06496 where it
+    marks 89,542.06474.
+    """
+    expiry = book.WORLD_EXPIRY
+    amortising = payer('AMORT', expiry, expiry, expiry + pd.DateOffset(years=5), 3.5, 3, cut=0.9e6 / 19)
+    bullets = [payer(reference, expiry, expiry, expiry + term, 3.5, 3) for reference, term in (
+        ('BULLET', pd.DateOffset(years=5)), ('BULLET_4Y9M', pd.DateOffset(years=4, months=9)))]
+    stated = [(deal['Swap_Maturity_Date'] - expiry).days / 365.0 for deal in bullets]
+    off = [tenor + side * 1e-9 for tenor in stated for side in (-1.0, 1.0)]
+    line = lambda tenor: 0.30 - 0.02 * tenor
+    marked, _ = book.marks([amortising] + bullets, factors=sloped(
+        'Lognormal', lambda tenor: line(tenor) + 0.05 * (tenor in off), tenors=sorted(VOL_TENORS + stated + off)))
+    annuity, forward = priced(amortising)
+    by_hand = annuity * option('Lognormal', forward, 0.035, line(duration_tenor(amortising)))
+    assert float.fromhex(marked['AMORT']) == pytest.approx(by_hand, rel=1e-10)
+    for deal, tenor in zip(bullets, stated):
+        flat, _ = book.marks([deal], factors=sloped('Lognormal', lambda _: line(tenor)))
+        assert marked[deal['Reference']] == flat[deal['Reference']], deal['Reference']
+
+
+def mid_curve(distribution, deal, gap, sigma_1, sigma_2, rho, shift):
+    """The vol of a forward-start swap's rate s = omega s_2 - (omega - 1) s_1 by hand, s_1 the gap's
+    from the expiry to its start and s_2 the co-starting swap's to its maturity, omega that swap's
+    annuity over the deal's: the variance of the difference, or under a Lognormal surface its
+    displaced second moment matched."""
+    annuity, rate = priced(deal)
+    gap_annuity, gap_rate = priced(gap)
+    omega = (annuity + gap_annuity) / annuity
+    if distribution == 'Normal':
+        return math.sqrt(omega ** 2 * sigma_2 ** 2 - 2.0 * omega * (omega - 1.0) * rho * sigma_1 * sigma_2
+                         + (omega - 1.0) ** 2 * sigma_1 ** 2)
+    t = years(book.WORLD_EXPIRY)
+    s, s_1 = rate + shift, gap_rate + shift
+    s_2 = (rate * annuity + gap_rate * gap_annuity) / (annuity + gap_annuity) + shift
+    second = ((omega * s_2) ** 2 * math.exp(sigma_2 ** 2 * t) + ((omega - 1.0) * s_1) ** 2 * math.exp(
+        sigma_1 ** 2 * t) - 2.0 * omega * (omega - 1.0) * s_1 * s_2 * math.exp(rho * sigma_1 * sigma_2 * t))
+    return math.sqrt(math.log(second / s ** 2) / t)
+
+
+@pytest.mark.parametrize('distribution, level, slope, shift', [
+    ('Lognormal', 0.30, -0.02, 0.01), ('Normal', 0.012, -0.0004, 0.0)])
+def test_a_forward_start_swap_reads_the_mid_curve_vol_of_two_co_starting_swaps(distribution, level, slope, shift):
+    """A 1Y option on a 5Y swap effective a year after the expiry, semi-annual fixed at 4.5%, under
+    the sloped curves and a surface `level + slope x tenor` (Lognormal displaced 1%, and Normal),
+    with the mid-curve correlation stated 0.8: it marks Black or Bachelier at the vol its rate has
+    as `omega` swaps from the expiry to its maturity less `omega - 1` swaps from the expiry to its
+    start, the surface read at 6.005 and 1.003 from the expiry, the gap's annuity and swap rate by
+    hand off its own terms' coupons, to 1e-10: 85,538.16 Lognormal and 85,168.42 Normal, omega
+    1.236. With the correlation absent it reads 1, and on the surface held flat in tenor the option
+    marks the plain read, Black or Bachelier at that one vol, to 1e-12.
+
+    Killing mutations: the gap ignored, today's read at the tenor from its start to its maturity,
+    86,137.27 and 85,202.32; the correlation not discovered (`config.conditional_fields`), reading
+    1, 85,371.98 and 85,066.96; an absent correlation reading the quanto's 0, the flat surface's
+    option at a vol of omega and omega - 1 in quadrature, 93,228.94 and 87,315.28 where the plain
+    read marks 90,670.37 and 85,753.59.
+    """
+    expiry = book.WORLD_EXPIRY
+    effective, maturity = expiry + pd.DateOffset(years=1), expiry + pd.DateOffset(years=6)
+    deal = payer('FWD', expiry, effective, maturity, 4.5, 6)
+    gap = payer('GAP', expiry, expiry, effective, 4.5, 6)
+    annuity, rate = priced(deal)
+    marked, _ = book.marks([deal], factors=sloped(
+        distribution, lambda tenor: level + slope * tenor, shift, **{MID_CURVE: {'Value': 0.8}}))
+    sigma_1, sigma_2 = (level + slope * (day - expiry).days / 365.0 for day in (effective, maturity))
+    vol = mid_curve(distribution, deal, gap, sigma_1, sigma_2, 0.8, shift)
+    assert float.fromhex(marked['FWD']) == pytest.approx(
+        annuity * option(distribution, rate, 0.045, vol, shift), rel=1e-10)
+    flat, _ = book.marks([deal], factors=sloped(distribution, lambda _: level, shift))
+    assert float.fromhex(flat['FWD']) == pytest.approx(
+        annuity * option(distribution, rate, 0.045, level, shift), rel=1e-12)
+
+
+def test_the_mid_curve_correlation_reports_its_bump():
+    """Under `Greeks: First` a base valuation bumps the correlation the forward-start swaption
+    reads, as it does a quanto's: its one `Correlation_Bump` row is the deal marked at 0.825 less
+    marked at 0.775 over 0.05, -576.50 under the Normal surface, to 1e-9.
+
+    Killing mutation: the swaption's own block unscanned, its legs being the structure's leaves -
+    no row.
+    """
+    expiry = book.WORLD_EXPIRY
+    deal = payer('FWD', expiry, expiry + pd.DateOffset(years=1), expiry + pd.DateOffset(years=6), 4.5, 6)
+    world = lambda rho: sloped('Normal', lambda tenor: 0.012 - 0.0004 * tenor, **{MID_CURVE: {'Value': rho}})
+    job = book.book([deal])
+    job['Calc']['Calculation']['Greeks'] = 'First'
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(world(0.8))
+    context = derivus.Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'bump'))
+    bumped = context.run_job()[1]['Results']['Correlation_Bump']
+    up, down = (float.fromhex(book.marks([deal], factors=world(rho))[0]['FWD']) for rho in (0.825, 0.775))
+    assert len(bumped) == 1 and bumped['Bump'].iloc[0] == 0.025
+    assert bumped['Gradient'].iloc[0] == pytest.approx((up - down) / 0.05, rel=1e-9)

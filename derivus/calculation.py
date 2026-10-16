@@ -2001,7 +2001,7 @@ class BaseValuation(Calculation):
         '- **Recompute Inner MC** (default `No`) re-simulates a Monte Carlo pricer\'s inner paths in the',
         '  backward pass rather than taping them',
         '- **Correlation Bump** (default 0.025) the half-width of the common-random-number bump that reports',
-        '  a quanto or compo correlation delta; 0 turns it off',
+        '  a quanto, compo or mid-curve correlation delta; 0 turns it off',
         '',
         'The output is a dictionary containing the DealStructure and the calculation computation statistics.'
     ])
@@ -2027,8 +2027,8 @@ class BaseValuation(Calculation):
                       'autocall) with the SMOOTH estimator, each fixing\'s fired branch integrated '
                       'analytically; `No` is the crisp estimator'),
         F('Correlation_Bump', 'Float', default=0.025,
-          description='Half-width of the CRN bump reporting a quanto or compo correlation delta; '
-                      '0 turns it off')
+          description='Half-width of the CRN bump reporting a quanto, compo or mid-curve correlation '
+                      'delta; 0 turns it off')
     ]
 
     def __init__(self, config, **kwargs):
@@ -2081,8 +2081,8 @@ class BaseValuation(Calculation):
         return shared_mem
 
     def correlation_bump(self, params, width):
-        """Every quanto or compo correlation a priced deal read, as a CENTRAL CRN bump of the
-        marked value: the book is re-compiled and re-valued once each side on the job's own seed,
+        """Every quanto, compo or mid-curve correlation a priced deal read, as a CENTRAL CRN bump of
+        the marked value: the book is re-compiled and re-valued once each side on the job's own seed,
         so the difference is the bump and nothing else.
 
         `Correlation` is a `DimensionLessFactor` - it mints no leaf, so this delta has no tape to
@@ -2096,9 +2096,10 @@ class BaseValuation(Calculation):
         while stack:
             node = stack.pop()
             stack.extend(node.sub_structures)
-            for deal in node.dependencies:
+            # a container's own block too: a swaption prices its legs and reads its correlation itself
+            for deal in [node.obj] + node.dependencies:
                 wanted.update(named[id(deal.Factor_dep[key])] for key in
-                              ('QuantoImpliedCorrelation', 'CompoImpliedCorrelation')
+                              ('QuantoImpliedCorrelation', 'CompoImpliedCorrelation', 'Mid_Curve_Correlation')
                               if id((deal.Factor_dep or {}).get(key)) in named)
         for factor in sorted(wanted, key=utils.check_tuple_name):
             marked = market[utils.check_tuple_name(factor)]

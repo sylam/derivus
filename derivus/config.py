@@ -422,6 +422,12 @@ conditional_fields = {
     # FX analogue, keyed on the pair by the same `utils.spot_model_currency` rule the deal's own
     # lookup takes, or discovery loads a block the compile will not ask for
     'FxRate': lambda instrument, factor_fields, params: spot_model_factors(instrument, params),
+    # a swaption starting after its expiry: the correlation of the two co-starting swap rates its
+    # mid-curve vol reads, named on the surface (`SwaptionDeal.gap`)
+    'InterestYieldVol': lambda instrument, factor_fields, params: [
+        utils.Factor('Correlation', tuple('InterestYieldVol.{0}/InterestYieldVol.{0}'.format(
+            instrument.field['Forecast_Rate_Volatility']).split('.')))
+        ] if getattr(instrument, 'gap', None) else [],
 }
 
 
