@@ -32,7 +32,6 @@ import torch
 # For dealing with excel dates and dataframes
 excel_offset = pd.Timestamp('1899-12-30 00:00:00')
 
-
 FACTOR_INDEX_Stoch = 0  # either True for stochastic or False for static
 FACTOR_INDEX_Offset = 1  # index to get the factor name
 FACTOR_INDEX_SubType = 2  # index to get the factor subtype (if any)
@@ -102,7 +101,6 @@ CASHFLOW_METHOD_Compounding_None = 5
 
 CASHFLOW_METHOD_Fixed_Compounding_No = 0
 CASHFLOW_METHOD_Fixed_Compounding_Yes = 1
-
 
 # reset codes - note that the first 3 fields correspond with the TIME_GRID
 # (so that a reset can be treated as a timepoint)
@@ -201,9 +199,9 @@ class MTABoundarySet:
     are built inside post_process, so they capture only what does not depend on the balance.
     """
     events: list
-    replay: object                  # callable: balance path -> netting-set MTM
-    balance: object                 # the realised path, detached; the prefix a replay keeps
-    rescan: object                  # callable: (opening, start) -> the balance path from there on
+    replay: object  # callable: balance path -> netting-set MTM
+    balance: object  # the realised path, detached; the prefix a replay keeps
+    rescan: object  # callable: (opening, start) -> the balance path from there on
 
     # Who registered it - `BoundarySet.deal`'s slot, carried here too because this is not one of
     # those (it shares only `objective_jumps`) and `boundary_sets` holds both. A netting SET stamps
@@ -272,9 +270,9 @@ class BoundarySet:
     own map onto the MTM grid - `fx_rep` then INTERPOLATION, never a tail pad, since another deal's
     mtm date inside this deal's life inserts a row in the middle.
     """
-    gaps: list                      # per decision, tensors, graph retained
-    report_index: object            # MTM grid -> report grid, for the additive route only
-    to_mtm: object                  # pricer-grid profile -> MTM-grid rows, detached
+    gaps: list  # per decision, tensors, graph retained
+    report_index: object  # MTM grid -> report grid, for the additive route only
+    to_mtm: object  # pricer-grid profile -> MTM-grid rows, detached
 
     # The netting set this registration sits beneath stamps its own gross-to-net chain here; None
     # (the class default, and what an ADDITIVE set leaves alone) means the counterfactual is the
@@ -353,10 +351,10 @@ class LatchedBoundarySet(BoundarySet):
     jump of J(fired) - J(did not). Everything else is DETACHED: it seeds a counterfactual whose
     result is a coefficient, not a differentiated quantity.
     """
-    fired: list                     # per decision, detached bool (B,)
-    obs_before: object              # (T,) int: decisions strictly before each row, PRICER grid
-    untriggered: object             # (T, B) detached, PRICER grid: value while it has not fired
-    triggered: object               # (T, B) detached, PRICER grid: value once it has
+    fired: list  # per decision, detached bool (B,)
+    obs_before: object  # (T,) int: decisions strictly before each row, PRICER grid
+    untriggered: object  # (T, B) detached, PRICER grid: value while it has not fired
+    triggered: object  # (T, B) detached, PRICER grid: value once it has
     # The rows a decision forks that `obs_before` does not reach: None, or per decision a LIST of
     # `(pricer_row, value_if_fired, value_if_not)`, detached. A LAGGED settlement forks every row
     # of its block, not only the observation's. One decision is still ONE counterfactual.
@@ -537,11 +535,11 @@ class InnerBoundarySet(BoundarySet):
     sensitivity is read off one backward pass over `score(...).sum()`, and that is the per-scenario
     derivative only because scenario b's objective depends on column b alone.
     """
-    rows: list                      # per event, int: the PRICER-grid row the jump lands on
-    jumps: list                     # per event, (B, n_inner) detached: the change in that row's
-                                    # own accumulator if THAT inner path's trigger flips,
-                                    # J(fired) - J(did not), undivided by n
-    reported: object                # (T, B) detached, PRICER grid: the value as reported
+    rows: list  # per event, int: the PRICER-grid row the jump lands on
+    jumps: list  # per event, (B, n_inner) detached: the change in that row's
+    # own accumulator if THAT inner path's trigger flips,
+    # J(fired) - J(did not), undivided by n
+    reported: object  # (T, B) detached, PRICER grid: the value as reported
 
     def objective_jumps(self, score):
         """Per decision, the gap and the objective's response to that inner path's jump.
@@ -573,10 +571,10 @@ class MTABoundaryEvent:
     whose result is a coefficient, not a differentiated quantity.
     """
     call_index: int
-    side: str                       # 'receive' | 'post'
-    gap: object                     # tensor, graph retained
-    previous_balance: object        # tensor, detached
-    required_balance: object        # tensor, detached
+    side: str  # 'receive' | 'post'
+    gap: object  # tensor, graph retained
+    previous_balance: object  # tensor, detached
+    required_balance: object  # tensor, detached
     # Per scenario, whether THIS call is the one its run of held balance registers - stamped by
     # `mark_binding_calls` over the whole series, no call being able to decide it alone.
     live: object = None
@@ -699,6 +697,7 @@ class DayCount:
         elif code == DayCount.NONE:
             return time_in_days
 
+
 # factor codes
 
 
@@ -773,7 +772,7 @@ def is_fatal_pricing_error(e):
     answer would otherwise be a quiet zero."""
     return isinstance(e, (MemoryError, torch.cuda.OutOfMemoryError, ScheduleLifecycleError,
                           UnpriceableSchedule)) or (
-        isinstance(e, RuntimeError) and 'out of memory' in str(e).lower())
+                   isinstance(e, RuntimeError) and 'out of memory' in str(e).lower())
 
 
 def log_exception(func):
@@ -1139,7 +1138,7 @@ class Interpolation(UnroutedInterpolation):
         rows the advanced index walks element by element - 2.3x at a production batch - and the
         advanced index on the card, which runs it faster."""
         if tensor.device.type != 'cpu':
-            return tensor[index, ]
+            return tensor[index,]
         return tensor.index_select(0, index.reshape(-1)).reshape(index.shape + tensor.shape[1:])
 
     def read_at(self, tenor_data, rows, i1, i2, w2):
@@ -1344,6 +1343,7 @@ class RoutedInterpolation(object):
     def gather_rows(self, index, index_next, alpha, route):
         """Whole-row gather — the 0D spot path. The same block routing as `eval`, on the
         scenario-row axis rather than the flattened (row, tenor) one."""
+
         def group(pos, at_t, at_t1):
             b0, b1 = self.blocks[at_t], self.blocks[at_t1]
             if alpha is None:
@@ -1352,7 +1352,7 @@ class RoutedInterpolation(object):
             return torch.lerp(
                 b0.project(self.strategies[at_t].tensor[self.local(self.select_rows(index, pos), b0)]),
                 b1.project(self.strategies[at_t1].tensor[
-                    self.local(self.select_rows(index_next, pos), b1)]), self.select_rows(alpha, pos))
+                               self.local(self.select_rows(index_next, pos), b1)]), self.select_rows(alpha, pos))
 
         return self.routed(route, index.shape[0], group)
 
@@ -2307,7 +2307,8 @@ class TensorCashFlows(TensorSchedule):
                     if cashflow.get('Final_Reference_Date') else base_date
 
                 cash.append([Accrual_Start_Date, Accrual_End_Date, Pay_Date, cashflow['Accrual_Year_Fraction'],
-                             position * cashflow['Notional'], cashflow['Rate_Multiplier'], cashflow['Yield'].amount, 0.0,
+                             position * cashflow['Notional'], cashflow['Rate_Multiplier'], cashflow['Yield'].amount,
+                             0.0,
                              0.0])
 
                 # attach the stated base and final reference levels to the cashflow, and whether each
@@ -2762,7 +2763,7 @@ class TensorBlock(object):
                     temp_curve += scaled_val
 
             return temp_curve
-        
+
         local_cache_key = (end_points.shape, end_points.tobytes(),
                            (start_points.shape, start_points.tobytes()) if start_points is not None else None,
                            multiply_by_time)
@@ -2811,7 +2812,7 @@ class DerivedForwardCurve(object):
         cost_of_carry = self.carry.gather_weighted_curve(
             shared, end_points, multiply_by_time=False) * self.spot.new_tensor(
             tenor_in_days / DayCount.DAYS_IN_YEAR).unsqueeze(-1) + \
-            self.repo.gather_weighted_curve(shared, tenor_in_days)
+                        self.repo.gather_weighted_curve(shared, tenor_in_days)
         return self.spot.unsqueeze(1) * torch.exp(cost_of_carry)
 
 
@@ -2880,6 +2881,7 @@ def calc_cds_rates(R, survival, discount, base_date, CDS_tenors, all_factors, bu
     default, the accrued since the last standard date subtracted - and with `bump` the log-survival
     curve each tenor's rate bumped ALONE implies: the hazard rate shifted over that tenor's
     segment and carried beyond it, every later segment re-solved so its own rate holds."""
+
     def calc_par_cds(S_vals, cds_tenor):
         h = (S_vals[1:] - S_vals[:-1]) / (S_ti[1:] - S_ti[:-1])
         S = np.exp(-S_vals)
@@ -2948,24 +2950,24 @@ def calc_cds_rates(R, survival, discount, base_date, CDS_tenors, all_factors, bu
 
 
 def index_cds_par_spread(
-    H0_names, tau, D, R, f, S_ti, hazard_scale, eps=1e-14
+        H0_names, tau, D, R, f, S_ti, hazard_scale, eps=1e-14
 ):
-    H = hazard_scale * H0_names                 # (N,M)
+    H = hazard_scale * H0_names  # (N,M)
     N, M = H.shape
 
-    dt = S_ti[1:] - S_ti[:-1]                   # (M-1,)
-    h = (H[:, 1:] - H[:, :-1]) / dt             # (N,M-1)
+    dt = S_ti[1:] - S_ti[:-1]  # (M-1,)
+    h = (H[:, 1:] - H[:, :-1]) / dt  # (N,M-1)
 
-    S = np.exp(-H)                               # (N,M)
-    F = S * D[None, :]                           # (N,M)
+    S = np.exp(-H)  # (N,M)
+    F = S * D[None, :]  # (N,M)
 
     hp = h + f[None, :]
     hp = np.where(np.abs(hp) < eps, np.sign(hp) * eps + eps, hp)
 
-    V_prot = ((F[:, :-1] - F[:, 1:]) * h) / hp   # (N,M-1)
+    V_prot = ((F[:, :-1] - F[:, 1:]) * h) / hp  # (N,M-1)
 
     alpha = tau[1:] - tau[:-1]
-    n = S_ti.searchsorted(tau[1:])               # match calc_par_cds
+    n = S_ti.searchsorted(tau[1:])  # match calc_par_cds
     # Optional: assert tau points are on-grid (safer)
     # (need to check indices bounds first)
     if np.any(n >= len(S_ti)):
@@ -3134,15 +3136,15 @@ def _bivn_genz(P, Q, rho):
     c, d = (4.0 - hkt) / 8.0, (12.0 - hkt) / 16.0
     asr = -0.5 * (bs / var + hkt)
     tail = torch.where(asr > -100.0, a * torch.exp(asr.clamp(min=-100.0)) * (
-        1.0 - c * (bs - var) * (1.0 - 0.2 * d * bs) / 3.0 + 0.2 * c * d * var * var), 0.0)
+            1.0 - c * (bs - var) * (1.0 - 0.2 * d * bs) / 3.0 + 0.2 * c * d * var * var), 0.0)
     tail = tail - torch.where(-hkt < 100.0, 2.5066282746310002 * b * norm_cdf(-b / a) * (
-        1.0 - c * bs * (1.0 - 0.2 * d * bs) / 3.0) * torch.exp(-0.5 * hkt.clamp(min=-100.0)), 0.0)
+            1.0 - c * bs * (1.0 - 0.2 * d * bs) / 3.0) * torch.exp(-0.5 * hkt.clamp(min=-100.0)), 0.0)
     xs = 0.25 * var.unsqueeze(-1) * (node * node)
     rs = torch.sqrt(1.0 - xs)
     asr = -0.5 * (bs.unsqueeze(-1) / xs + hkt.unsqueeze(-1))
     quad = torch.exp(asr.clamp(min=-100.0)) * (
-        torch.exp((-0.5 * hkt.unsqueeze(-1) * (1.0 - rs) / (1.0 + rs)).clamp(max=100.0)) / rs
-        - (1.0 + c.unsqueeze(-1) * xs * (1.0 + d.unsqueeze(-1) * xs)))
+            torch.exp((-0.5 * hkt.unsqueeze(-1) * (1.0 - rs) / (1.0 + rs)).clamp(max=100.0)) / rs
+            - (1.0 + c.unsqueeze(-1) * xs * (1.0 + d.unsqueeze(-1) * xs)))
     tail = -(tail + 0.5 * a * (torch.where(asr > -100.0, quad, 0.0) @ weight)) / 6.283185307179586
     lim = norm_cdf(kt) - norm_cdf(h)
     tail = torch.where(r > 0.0, tail + norm_cdf(-torch.maximum(h, kt)),
@@ -3791,7 +3793,7 @@ class LogVar2FJ:
         # own Cov(A, Lev) and Var(Lev) per unit, which invert to rho in closed form and rescale the
         # clock's leverage share so the variance comes back to E[B] and the mean to zero
         roll = e_a * sqrt_or_zero(e_b) * spread * (
-            1.5 * torch.exp(0.375 * spread * spread) - 0.5 * torch.exp(-0.125 * spread * spread))
+                1.5 * torch.exp(0.375 * spread * spread) - 0.5 * torch.exp(-0.125 * spread * spread))
         tilt = spread * spread * (1.0 - 0.25 * torch.exp(-0.25 * spread * spread))
         live = roll != 0.0
         q = torch.where(live, cross / torch.where(live, roll, torch.ones_like(roll)),
@@ -4016,7 +4018,7 @@ def substep_schedule(f):
         whole = int(x)
         rem = float(x) - whole
         steps = (1.0,) * whole + ((rem,) if rem > 1e-9 else ())
-        schedule.append(steps or (float(x),))       # dt == 0 (the t=0 anchor) stays one null step
+        schedule.append(steps or (float(x),))  # dt == 0 (the t=0 anchor) stays one null step
     return schedule
 
 
@@ -4047,7 +4049,7 @@ def garch_correlated_substeps(h, z_fw, sub_dt, omega, alpha, beta, nu):
     interval's Gaussian kernel.  Same fractional recursion as the fine grid.
     """
     var_bar, mean = [], h
-    for dt in sub_dt:                                        # E[h_{j+1}] adds alpha*E[r^2] = alpha*h*dt
+    for dt in sub_dt:  # E[h_{j+1}] adds alpha*E[r^2] = alpha*h*dt
         var_bar.append(mean * dt)
         mean = mean + dt * (omega - (1.0 - beta) * mean) + alpha * mean * dt
     z = substep_normals(torch.stack(var_bar).sqrt(), z_fw)
@@ -4070,7 +4072,6 @@ def bs_call_np(S, K, r, n, total_var):
     ``black_european_option_price`` (F = S*e^{r*n}; vol=sqrt(tv), tenor=1 so stddev^2 = tv)."""
     return float(black_european_option_price(
         S * np.exp(r * n), K, r * n, np.sqrt(total_var), 1.0, 1.0, 1.0))
-
 
 
 def bs_implied_total_var(price, S, K, r, n, lo=1e-12, hi=25.0, tol=1e-14, iters=200):
@@ -4175,6 +4176,7 @@ def bachelier_european_option(F, X, vol, tenor, buyorsell, callorput, shared, ca
 
     return buyorsell * torch.where(guard, prem, value)
 
+
 def black_european_option(F, X, vol, tenor, buyorsell, callorput, shared,
                           cash_payoff=0.0, asset_payoff=0.0, shift=0.0):
     # calculates the black function WITHOUT discounting
@@ -4214,7 +4216,7 @@ def black_european_option(F, X, vol, tenor, buyorsell, callorput, shared,
     else:
         # handle shifted vol surfaces
         if shift:
-            forward = torch.clamp(F, min=1e-5-shift) + shift
+            forward = torch.clamp(F, min=1e-5 - shift) + shift
             strike = strike + shift
         d1 = torch.log(forward / strike) / stddev + 0.5 * stddev
         d2 = d1 - stddev
@@ -4339,7 +4341,6 @@ class market_swap_class(namedtuple('market_swap', 'deal_data price weight schedu
 PREMIUM_CONVENTIONS = {
     'Lognormal': (black_european_option_price, black_european_option),
     'Normal': (bachelier_european_option_price, bachelier_european_option)}
-
 
 #: The bracket the `Volatility_Delta` implied-vol re-solve runs in, as a function of the row's own
 #: quoted vol. Co-keyed with `PREMIUM_CONVENTIONS` off the same declared `Distribution_Type`, so the
@@ -4509,7 +4510,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
                 try:
                     implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
                         shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price,
-                        *bracket)
+                                                        *bracket)
                 except:
                     modified_k = vol_surface.get_strike_from_premiums(
                         offset_string(instrument['Start']), offset_string(instrument['Tenor']))
@@ -4519,7 +4520,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
                     shifted_strike = modified_k + shift_parameter
                     implied_vol = scipy.optimize.brentq(lambda v: pvbp * price_option(
                         shifted_strike, shifted_strike, 0.0, v, expiry, 1.0, 1.0) - swaption_price,
-                        *bracket)
+                                                        *bracket)
 
                 swaption_price = pvbp * price_option(
                     shifted_strike, shifted_strike, 0.0, implied_vol + vol_surface.delta, expiry, 1.0, 1.0)
@@ -4579,7 +4580,7 @@ def update_tenors(base_date, all_factors):
             if factor.type == 'DividendRate':
                 tenor_data = CurveTenor(tenor_points, 'Dividend')
             elif factor.type in ['InterestRate', 'InflationRate', 'ForwardRate']:
-                if len(risk_factor.interpolation)>1:
+                if len(risk_factor.interpolation) > 1:
                     interpolation_type = tuple([(x[0], x[1], x[2][0]) for x in risk_factor.interpolation])
                 else:
                     interpolation_type = risk_factor.interpolation[0][0]
@@ -4938,7 +4939,7 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, 
 
     def calculate_interp_params(tnr, tnr_d, time_grid, span):
         """Vectorized calculation of interpolation indices and weights."""
-        #get the max index
+        # get the max index
         max_tnr_index = tnr.size()[0] - 1
         # Batch calculate all time + tenor combinations
         time_tenor = time_grid.view(-1, 1) + span.view(1, -1)
@@ -5001,7 +5002,7 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, 
 
         return interp
 
-    def calc_fwd_interpolated_new(method, l_tnr,  l_tensor, full_tnr=None):
+    def calc_fwd_interpolated_new(method, l_tnr, l_tensor, full_tnr=None):
         is_rt = method.endswith('RT')
         is_hermite = method.startswith('Hermite')
 
@@ -5016,7 +5017,7 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, 
             return linear_interpolation_new(tensor, l_tnr, is_rt, mul_time, extrapolate, full_tnr=full_tnr)
 
     # Preprocess tensors
-    if len(factor.interpolation)>1:
+    if len(factor.interpolation) > 1:
         interp_method = [x[-1] for x in factor.interpolation]
         extrapolate = 'Extrapolate' in interp_method[-1][0]
     else:
@@ -5045,12 +5046,12 @@ def calc_curve_forwards(factor, tensor, time_grid_years, shared, mul_time=True, 
     def across(span, key):
         """The curve's rate x tenor at t + span less at t, every row and knot."""
         M, indices = once(('plan', key), lambda: plan(span))
-        if len(factor.interpolation)==1:
+        if len(factor.interpolation) == 1:
             f = calc_fwd_interpolated_new(interp_method, tnr, tensor)
             # insert the tenor axis: (T,) -> (T, 1) calibrated, (T, B) -> (T, 1, B) batched
             t_leg = f(time_grid, indices[1])
             return f(M, indices[0]) - t_leg.reshape(t_leg.shape[0], 1, *t_leg.shape[1:])
-        elif len(factor.interpolation)==2:
+        elif len(factor.interpolation) == 2:
             near, far, mask_near, mask_t = indices
             n = calc_fwd_interpolated_new(interp_method[0][0], tnr[:cut + 1], tensor[:cut + 1])
             f = calc_fwd_interpolated_new(interp_method[1][0], tnr[cut:], tensor[cut:])
@@ -5155,11 +5156,11 @@ class VolSurface:
             if terms is not None:
                 # interpolate along variance for term
                 term_prior, term_post, t_expiry = terms
-                var_prior = term_prior * read(tenor_money_indices)**2
-                var_post = term_post * read(tenor_money_indices_next)**2
+                var_prior = term_prior * read(tenor_money_indices) ** 2
+                var_post = term_post * read(tenor_money_indices_next) ** 2
                 var_surface = time_modifier * torch.sum(torch.lerp(
                     var_prior * tenor_money_alpha, var_post * tenor_money_alpha_next, alpha), dim=1)
-                surface = torch.sqrt(var_surface/t_expiry)
+                surface = torch.sqrt(var_surface / t_expiry)
             else:
                 # interpolate along volatility
                 surface = time_modifier * torch.sum(torch.lerp(
@@ -5211,24 +5212,26 @@ class VolSurface:
 
             # the 6 regions of the skew - check for 0 lam and rho - hold flat
             r1 = torch.ones_like(x) * (
-                (alpha + C * (beta * (1.0 + lam) + gamma * (1.0 + lam) ** 2 * C)) if lam_ok else (atm_vol + C * (s + L * C)))
+                (alpha + C * (beta * (1.0 + lam) + gamma * (1.0 + lam) ** 2 * C)) if lam_ok else (
+                            atm_vol + C * (s + L * C)))
             r2 = alpha + x * (beta + gamma * x) if lam_ok else atm_vol + C * (s + L * C)
             r3 = atm_vol + x * (s + L * x)
             r4 = atm_vol + x * (s + R * x)
             r5 = alpha_r + x * (beta_r + gamma_r * x) if rho_ok else atm_vol + D * (s + R * D)
             r6 = torch.ones_like(x) * (
-                (alpha_r + D * (beta_r * (1.0 + rho) + gamma_r * (1.0 + rho) ** 2 * D)) if rho_ok else (atm_vol + D * (s + R * D)))
+                (alpha_r + D * (beta_r * (1.0 + rho) + gamma_r * (1.0 + rho) ** 2 * D)) if rho_ok else (
+                            atm_vol + D * (s + R * D)))
 
             return torch.where(
                 x <= (1 + lam) * C, r1,
-                    torch.where(x <= C, r2,
-                                torch.where(x<=0, r3,
-                                            torch.where(x<=D, r4,
-                                                        torch.where(x<(1+rho)*D, r5, r6)
-                                                        )
-                                            )
-                                )
-                    )
+                torch.where(x <= C, r2,
+                            torch.where(x <= 0, r3,
+                                        torch.where(x <= D, r4,
+                                                    torch.where(x < (1 + rho) * D, r5, r6)
+                                                    )
+                                        )
+                            )
+            )
 
         if key_code[0] == 'vol_time_grid' and key_code[FACTOR_INDEX_Offset][0][0] in ['SVI', 'Skew']:
             surface, rate_code, calc_std = shared.t_Buffer[key_code]
@@ -5297,7 +5300,8 @@ class VolSurface:
                     raise Exception("Stochastic vol surfaces not yet implemented")
                 else:
                     if rate[FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
-                        spread = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1) for x in rate[FACTOR_INDEX_Offset]}
+                        spread = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1) for x in
+                                  rate[FACTOR_INDEX_Offset]}
                     else:
                         spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
                     break
@@ -5531,10 +5535,6 @@ def implied_correlation(factor, sign=1.0):
     `sign` is the reverse-pair flip `check_fx_name` resolved at compile: a correlation is named on
     the sorted currency pair, so a deal running the other way reads -rho off the same factor."""
     return sign * factor.current_value()[0] if factor is not None else 0.0
-
-
-if __name__ == '__main__':
-    pass
 
 
 # The least-squares calibration node: the box algebra, the damped Newton, the implicit-function backward and the artifact
@@ -6022,7 +6022,7 @@ class LeastSquaresSolve(torch.autograd.Function):
                     'first is zero'.format(
                         gradient, float(residual.detach().norm()), residual.numel(), x.numel(),
                         '' if not held else ', {} of them HELD by the box ({}), whose quote '
-                        'derivative is zero'.format(len(held), ', '.join(held))))
+                                            'derivative is zero'.format(len(held), ', '.join(held))))
                 if gradient > ctx.stationarity:
                     raise Exception(
                         'Calibration: theta* is not stationary - ||J^T r|| is {:.6g} against a '
@@ -6031,8 +6031,8 @@ class LeastSquaresSolve(torch.autograd.Function):
                 scaled, norms = LeastSquaresSolve.column_scale(inner)
                 columns = torch.cat([column.reshape(residual.numel(), -1)
                                      for column in torch.autograd.grad(
-                                         residual, ctx.quotes, eye, is_grads_batched=True,
-                                         retain_graph=True)], 1).double()
+                        residual, ctx.quotes, eye, is_grads_batched=True,
+                        retain_graph=True)], 1).double()
                 pseudo = torch.linalg.pinv(scaled, rtol=ctx.rcond)
                 ctx.memo = (residual, free, norms, pseudo.t(),
                             -(pseudo @ columns) / norms[:, None],
@@ -6056,3 +6056,7 @@ class LeastSquaresSolve(torch.autograd.Function):
                 residual, ctx.quotes, retain_graph=True,
                 grad_outputs=-(contraction @ (v / norms)).to(residual.dtype))
         return (None, None, None) + grads
+
+
+if __name__ == '__main__':
+    pass
