@@ -63,7 +63,9 @@ Grouped by where a validator meets them.
   the curve's re-solve. On a sold 4.5Y CDS the 1Y to 5Y swap quote deltas read -818.19, -1,240.24,
   -2,438.81 and -1,395.79 against -692.83, -1,205.85, -2,737.55 and -1,747.40 with both curves
   re-bootstrapped, and the 10Y 0 against 4.14; the leaf equals the revaluation with the survival
-  curve held to 1e-10. M: the survival curve solved in the coupled set of the curve it discounts on.
+  curve held to 1e-10. The dependence runs one way, so no joint solve is wanted: S-M, the credit
+  residual read on the connected discount curve and the implicit-function backward passing its
+  cotangent into it, the chain rule through the two solves in turn.
 
 ### The autocall, TARF and barrier pricers {#the-autocall-tarf-and-barrier-pricers}
 
