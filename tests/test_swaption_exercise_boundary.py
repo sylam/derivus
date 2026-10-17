@@ -531,10 +531,19 @@ def option(distribution, forward, strike, vol, shift=0.0):
     return (forward + shift) * cdf(d) - (strike + shift) * cdf(d - deviation)
 
 
+def bullet_to(deal, end):
+    """The swap a swaption's legs hold at their first principal to `end`."""
+    first = deal['Children'][0]['Cashflows']['Items'][0]['Notional']
+    return dict(deal, Children=[dict(leg, Cashflows=dict(leg['Cashflows'], Items=[
+        dict(row, Notional=first) for row in leg['Cashflows']['Items'] if row['Accrual_End_Date'] <= end]))
+        for leg in deal['Children']])
+
+
 def duration_tenor(deal):
-    """A swaption's fixed leg's duration-equivalent tenor by hand: on the axis its stated tenor
-    spans, the point its Macaulay duration takes among those of the bullets it holds at constant
-    principal to each accrual end."""
+    """A swaption's fixed leg's duration-equivalent tenor by hand, and the bullets' forward there:
+    on the axis its stated tenor spans, the point its Macaulay duration takes among those of the
+    bullets it holds at constant principal to each accrual end, and their par rates interpolated
+    with the same weights."""
     rows = deal['Children'][0]['Cashflows']['Items']
     days = np.array([(row['Accrual_End_Date'] - deal['Swap_Effective_Date']).days for row in rows], dtype=float)
     axis = (deal['Swap_Maturity_Date'] - deal['Swap_Effective_Date']).days / 365.0 * (days / days[-1])
@@ -545,25 +554,33 @@ def duration_tenor(deal):
     knots = [(axis[:i + 1] * bullet(i)).sum() / bullet(i).sum() for i in range(len(rows))]
     leg = (principal[:-1] * coupon + principal[:-1] - principal[1:]) * discount
     duration = (axis * leg).sum() / leg.sum()
+    forwards = [priced(bullet_to(deal, row['Accrual_End_Date']))[1] for row in rows]
     k = int(np.searchsorted(knots, duration))
     w = (duration - knots[k - 1]) / (knots[k] - knots[k - 1])
-    return (1.0 - w) * axis[k - 1] + w * axis[k]
+    return (1.0 - w) * axis[k - 1] + w * axis[k], (1.0 - w) * forwards[k - 1] + w * forwards[k]
 
 
-def test_an_amortising_swap_reads_its_vol_at_its_duration_equivalent_tenor():
+@pytest.mark.parametrize('distribution, level, slope, shift', [
+    ('Lognormal', 0.30, -0.02, 0.01), ('Normal', 0.012, -0.0004, 0.0)])
+def test_an_amortising_swap_reads_its_vol_at_its_duration_equivalent_tenor(distribution, level, slope, shift):
     """A 1Y into 5Y payer, quarterly, amortising linearly to a tenth, under the sloped curves and a
-    Lognormal surface `30% - 2% x tenor`, marks Black at the vol of its duration-equivalent tenor,
-    2.660 of its stated 5.005, by hand off its legs and the curve, to 1e-10: 38,427.45. The same
-    swaption not amortising, and one into 4Y9M, priced beside it, each mark to the bit what they
-    mark on the surface held flat at their stated tenor's vol: a swap that does not amortise reads
-    today's tenor exactly, which the surface sees, a node at each stated tenor a nanoyear from
-    nodes off the line, so that an ulp of tenor moves the vol by 4e-8.
+    surface `level + slope x tenor` (Lognormal displaced 1%, and Normal), marks Black or Bachelier
+    at the vol of its duration-equivalent tenor, 2.660 of its stated 5.005, by hand off its legs
+    and the curve, to 1e-10: 39,025.65 Lognormal, that vol being the co-starting bullets' and so
+    scaled by their displaced forward there, 4.53% interpolated as the tenor is, over the swap's,
+    5.00%, and 38,644.28 Normal, unscaled. The same swaption not amortising, and one into 4Y9M,
+    priced beside it, each mark to the bit what they mark on the surface held flat at their stated
+    tenor's vol: a swap that does not amortise reads today's tenor and a scale of one exactly, which
+    the surface sees, nodes a nanoyear either side of each stated tenor reading double, so that an
+    ulp of tenor moves the vol by 9e-7 of itself.
 
-    Killing mutations: the tenor unadjusted, 37,882.70 (-1.4%); the expiry read of one tenor's
-    blend cached for every tenor at that expiry (`VolSurface._interp`), the bullet reading the
-    amortising swap's tenor, 96,252.66 where it marks 95,907.16; the tenor axis spelled
-    `stated * days / days`, an ulp off over the 4Y9M bullet's 1,735 days, 89,542.06496 where it
-    marks 89,542.06474.
+    Killing mutations, Lognormal then Normal: the scale dropped, 39,499.67; the shift on one side of
+    the ratio only, 40,236.77 on the bullets' and 38,217.12 on the swap's; the scale applied on the
+    Normal surface, 38,281.95; the tenor unadjusted, 38,183.98 and 38,307.83; the expiry read of
+    one tenor's blend cached for every tenor at that expiry (`VolSurface._interp`), the 5Y bullet
+    reading the amortising swap's tenor, 97,158.56 and 96,214.32 where it marks 96,234.66 and
+    96,030.50; the tenor axis spelled `stated * days / days`, an ulp off over the 4Y9M bullet's
+    1,735 days, 89,935.10558 and 89,675.07538 where it marks 89,935.10284 and 89,675.07378.
     """
     expiry = book.WORLD_EXPIRY
     amortising = payer('AMORT', expiry, expiry, expiry + pd.DateOffset(years=5), 3.5, 3, cut=0.9e6 / 19)
@@ -571,14 +588,17 @@ def test_an_amortising_swap_reads_its_vol_at_its_duration_equivalent_tenor():
         ('BULLET', pd.DateOffset(years=5)), ('BULLET_4Y9M', pd.DateOffset(years=4, months=9)))]
     stated = [(deal['Swap_Maturity_Date'] - expiry).days / 365.0 for deal in bullets]
     off = [tenor + side * 1e-9 for tenor in stated for side in (-1.0, 1.0)]
-    line = lambda tenor: 0.30 - 0.02 * tenor
+    line = lambda tenor: level + slope * tenor
     marked, _ = book.marks([amortising] + bullets, factors=sloped(
-        'Lognormal', lambda tenor: line(tenor) + 0.05 * (tenor in off), tenors=sorted(VOL_TENORS + stated + off)))
+        distribution, lambda tenor: line(tenor) * (1.0 + (tenor in off)), shift,
+        tenors=sorted(VOL_TENORS + stated + off)))
     annuity, forward = priced(amortising)
-    by_hand = annuity * option('Lognormal', forward, 0.035, line(duration_tenor(amortising)))
+    tenor, at_tenor = duration_tenor(amortising)
+    scale = (at_tenor + shift) / (forward + shift) if distribution == 'Lognormal' else 1.0
+    by_hand = annuity * option(distribution, forward, 0.035, line(tenor) * scale, shift)
     assert float.fromhex(marked['AMORT']) == pytest.approx(by_hand, rel=1e-10)
     for deal, tenor in zip(bullets, stated):
-        flat, _ = book.marks([deal], factors=sloped('Lognormal', lambda _: line(tenor)))
+        flat, _ = book.marks([deal], factors=sloped(distribution, lambda _: line(tenor), shift))
         assert marked[deal['Reference']] == flat[deal['Reference']], deal['Reference']
 
 

@@ -3345,8 +3345,11 @@ class SwaptionDeal(Deal):
         '\\qquad P_{n+1}=0,$$',
         '',
         'is its Macaulay duration, and the tenor is the $\\delta$ at which $\\Delta$ falls among the',
-        'durations of the bullets the leg holds at constant principal to each $t_i$, linear between them. The',
-        'tenor is a number of the compile, so no curve sensitivity runs through it.',
+        'durations of the bullets the leg holds at constant principal to each $t_i$, linear between them. A',
+        '`Lognormal` vol read there is the bullets\', so it is scaled by their par rate, interpolated as the',
+        'tenor is, over the leg\'s, each plus the **Shift** and both of the base date; a `Normal` one, a vol',
+        'in basis points, carries over unscaled. The tenor and the scale are numbers of the compile, so no',
+        'curve sensitivity runs through them.',
         '',
         'A swap starting after the expiry, $T_1>t_0$, reads a mid-curve vol. Its rate is',
         '$s=\\omega s_2-(\\omega-1)s_1$, $s_1$ that of the gap swap from $t_0$ to $T_1$ on the frequencies, day',
@@ -3391,11 +3394,11 @@ class SwaptionDeal(Deal):
         'reversion valued exactly, the surface its own at-the-money vols fitted to 20% lognormal at 1Y into',
         '5Y, a 1Y option on a 5Y swap amortising to a tenth marks 1.7% high on a flat 4% curve and one on a',
         '5Y swap starting a year after its expiry 0.02% low. On a curve sloped from 1% to 6% they mark 2.7%',
-        'high and 2.4% low on a `Normal` surface, and 15% high and 2.8% low on a `Lognormal` one, whose vol',
-        'at the amortising swap\'s tenor is the co-starting swap\'s, struck at its 4.35% forward where the',
-        'amortising swap\'s is 4.88%. Both at once, the duration-equivalent tenor read from the expiry,',
-        'marks 1.7% high on the flat curve and 1.2% and 12% high on the sloped one. $\\rho$ is one number',
-        'per surface, coarser than a correlation by expiry and the two tenors.'])
+        'high and 2.4% low on a `Normal` surface and 2.9% high and 2.8% low on a `Lognormal` one; the',
+        'amortising swap\'s residual is the duration method\'s own on either, nil on the flat curve at no',
+        'reversion. Both at once, the duration-equivalent tenor read from the expiry, marks 1.7% high on the',
+        'flat curve and 1.2% and 0.9% high on the sloped one. $\\rho$ is one number per surface, coarser',
+        'than a correlation by expiry and the two tenors.'])
 
     def reset(self, calendars):
         super(SwaptionDeal, self).reset()
@@ -3464,11 +3467,11 @@ class SwaptionDeal(Deal):
             'Receive_', 'Pay_', 1)
         index = self.float_index(calendars, self.field[floating + 'Day_Count'])
 
-        def fixed_leg(legs):
-            dates, pays = legs[fixed]
+        def fixed_leg(legs, leg=fixed):
+            dates, pays = legs[leg]
             return utils.TensorCashFlows.generate_fixed(
-                base_date, dates, sign * self.field['Principal'], self.field[fixed + 'Amortisation'],
-                utils.DayCount.code(self.field[fixed + 'Day_Count']), self.field['Swap_Rate'] / 100.0, pays)
+                base_date, dates, sign * self.field['Principal'], self.field[leg + 'Amortisation'],
+                utils.DayCount.code(self.field[leg + 'Day_Count']), self.field['Swap_Rate'] / 100.0, pays)
 
         def floating_leg(legs):
             dates, pays = legs[floating]
@@ -3481,17 +3484,25 @@ class SwaptionDeal(Deal):
         def tenor(start, end):
             return utils.DayCount.accrual(base_date, (end - start).days, index.day_count)
 
+        def growth(rate, days):
+            curve = get_factor_component(utils.Factor('InterestRate', field[rate][:1]), all_factors)
+            years = curve.get_day_count_accrual(base_date, days)
+            return curve.current_value(years) * years
+
         expiry, effective, maturity = (self.field[key] for key in (
             'Option_Expiry_Date', 'Swap_Effective_Date', 'Swap_Maturity_Date'))
         swap, gap = fixed_leg(self.legs), fixed_leg(self.gap) if self.gap else None
         # the vol's tenor is the fixed leg's, from the expiry where the gap's coupons run before it
         start, schedule = (expiry, np.vstack([gap.schedule, swap.schedule])) if self.gap else (
             effective, swap.schedule)
-        curve = get_factor_component(utils.Factor('InterestRate', field['Discount_Rate'][:1]), all_factors)
-        years = curve.get_day_count_accrual(base_date, schedule[:, utils.CASHFLOW_INDEX_End_Day])
-        field_index['Underlying_Swap_maturity'] = self.duration_tenor(
+        dist, shift = field_index['VolSurface'][0][utils.FACTOR_INDEX_SubType]
+        # a Lognormal vol there is the bullet's, relative to its rate, and a Normal one carries over;
+        # the floating periods without their resets, which a swaption on its legs never fixes
+        level = (np.vstack([fixed_leg(legs, floating).schedule for legs in (self.gap, self.legs) if legs]),
+                 partial(growth, 'Forecast_Rate'), shift.amount) if dist == 'Lognormal' else ()
+        field_index['Underlying_Swap_maturity'], field_index['Level_Scale'] = self.duration_tenor(
             tenor(start, maturity), (start - base_date).days, schedule,
-            np.exp(-curve.current_value(years) * years))
+            lambda days: np.exp(-growth('Discount_Rate', days)), *level)
 
         # on its legs it prices them (`post_process`), reading off its terms only the vol's geometry:
         # the gap's legs, which no leaf carries
@@ -3576,7 +3587,7 @@ class SwaptionDeal(Deal):
             its rate s = omega s_2 - (omega - 1) s_1 (`documentation`). A row with no time left
             reads s_2's, its option being its intrinsic."""
             read = partial(utils.VolSurface.tenor_rate, factor_dep['VolSurface'], moneyness, years)
-            long_vol = read(factor_dep['Underlying_Swap_maturity'], shared)
+            long_vol = read(factor_dep['Underlying_Swap_maturity'], shared) * factor_dep['Level_Scale']
             live = np.count_nonzero(years > 0.0)
             if 'Gap' not in factor_dep or not live:
                 return long_vol
@@ -3666,22 +3677,38 @@ class SwaptionDeal(Deal):
         return pricing.interpolate(mtm, shared, time_grid, deal_data)
 
     @staticmethod
-    def duration_tenor(stated, start, schedule, discount):
-        """The tenor a fixed leg's vol is read at, on the axis `stated` at its last accrual end and
-        proportional before it to the days from `start`: where the leg's Macaulay duration on that
-        axis falls among those of the bullets it holds at constant principal to each accrual end,
-        each cashflow weighted by `discount`, the base date's discount factor to its accrual end. A
-        leg that does not amortise reads `stated` to the bit."""
+    def duration_tenor(stated, start, schedule, discount, floating=None, growth=None, shift=0.0):
+        """`(tenor, scale)` of a fixed leg's vol read. The tenor is on the axis `stated` at the leg's
+        last accrual end and proportional before it to the days from `start`: where its Macaulay
+        duration on that axis falls among those of the bullets it holds at constant principal to
+        each accrual end, each cashflow weighted by `discount`, the base date's discount factor to a
+        day, at its accrual end. Given the leg's `floating` schedule and `growth`, the base date's
+        forecast zero rate times its years to a day, the scale is the bullets' par rate there,
+        interpolated as the tenor is, over the leg's, each plus `shift`; without, it is 1.0. A leg
+        that does not amortise reads `stated` and 1.0 to the bit."""
         ends = schedule[:, utils.CASHFLOW_INDEX_End_Day]
         axis = stated * ((ends - start) / (ends[-1] - start))
-        coupon = schedule[:, utils.CASHFLOW_INDEX_FixedRate] * schedule[:, utils.CASHFLOW_INDEX_Year_Frac]
+        accrual = schedule[:, utils.CASHFLOW_INDEX_Year_Frac]
+        coupon = schedule[:, utils.CASHFLOW_INDEX_FixedRate] * accrual
         # the bullets to each end, then the leg: at constant principal its steps are exact zeros but
         # the last, so its row and its last bullet's are one number
         held = np.vstack([np.tri(ends.size, ends.size + 1), np.append(
             schedule[:, utils.CASHFLOW_INDEX_Nominal] / schedule[0, utils.CASHFLOW_INDEX_Nominal], 0.0)])
-        weight = (held[:, :-1] * coupon + (held[:, :-1] - held[:, 1:])) * discount
+        weight = (held[:, :-1] * coupon + (held[:, :-1] - held[:, 1:])) * discount(ends)
         duration = (weight * axis).sum(axis=1) / weight.sum(axis=1)
-        return np.interp(duration[-1], duration[:-1], axis)
+        at_duration = partial(np.interp, duration[-1], duration[:-1])
+        if floating is None:
+            return at_duration(axis), 1.0
+        # a floating row is held by the bullets ending after its middle, which neither leg's
+        # calendar moves across an accrual end
+        start_day, end_day = floating[:, utils.CASHFLOW_INDEX_Start_Day], floating[:, utils.CASHFLOW_INDEX_End_Day]
+        nominal = floating[:, utils.CASHFLOW_INDEX_Nominal]
+        float_held = np.vstack([0.5 * (start_day + end_day) <= ends[:, np.newaxis], nominal / nominal[0]])
+        annuity = (held[:, :-1] * accrual * discount(schedule[:, utils.CASHFLOW_INDEX_Pay_Day])).sum(axis=1)
+        value = (float_held * np.expm1(growth(end_day) - growth(start_day)) * discount(
+            floating[:, utils.CASHFLOW_INDEX_Pay_Day])).sum(axis=1)
+        rate = value / annuity + shift
+        return at_duration(axis), at_duration(rate[:-1]) / rate[-1]
 
     @staticmethod
     def register_exercise_boundary(shared, time_grid, deal_data, fx_rep, option, swap, gap, exercised, swap_cash):

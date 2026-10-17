@@ -162,8 +162,9 @@ worker count on one device type, and a different draw of the same law from an un
 booked over `Children` whose `post_process` prices them (a swap, cap, floor or swaption on its
 legs) compiles no legs off its own terms, which nothing would read (`Deal.has_children`, stamped by
 `set_deal_structures`), so a reset they leave unstated warns nobody; a swaption reads off them only
-its vol's geometry, the fixed schedule its tenor is measured on and, starting after its expiry, the
-gap's legs, which reset after the base date. A leaf's unstated reset is fixed at 0% with
+its vol's geometry, the periods its tenor and its rate's level are measured on, which fix nothing,
+and, starting after its expiry, the gap's legs, which reset after the base date. A leaf's
+unstated reset is fixed at 0% with
 a warning naming it (`utils.unstated_reset`). A swap, cap or floor on its legs revalues on their
 days (`Deal.children_dates`) and is their sum, each priced on the parent's grid
 (`Deal.sum_children`).
