@@ -169,28 +169,54 @@ def test_a_reversion_speed_through_zero_is_the_closed_form_short_rate(model, spe
         assert abs(mean - short - convexity) <= 1e-7, (date, mean - short - convexity)
 
 
-def test_a_step_reusing_the_previous_cholesky_factor_is_reported(caplog):
-    """At correlation -1 with equal reversions and flat sigmas of 1% and 0.5%, no step's increment
-    covariance is positive definite: a five-year EUR cashflow's credit Monte Carlo says so once at
-    WARNING, naming the curve and that 20 of its 20 steps reuse the previous Cholesky factor.
+#: Two worlds whose increments are not positive definite, each `(repaired, twin, steps repaired of
+#: 20)`, a world being its `(Correlation, Sigma_1)` and its twin a hair away and positive definite.
+SINGULAR = {
+    'rho at -1': ((-1.0, [[0.0, 0.01], [10.0, 0.01]]), (-1.0 + 1e-9, [[0.0, 0.01], [10.0, 0.01]]), 20),
+    'Sigma_1 to zero': ((0.0, [[0.0, 0.01], [1.0, 0.0], [10.0, 0.0]]),
+                        (0.0, [[0.0, 0.01], [1.0, 1e-6], [10.0, 1e-6]]), 16)}
 
-    Killing mutation: the line removed.
+
+@pytest.mark.parametrize('case', sorted(SINGULAR))
+def test_a_step_not_positive_definite_is_floored_to_positive_semi_definite(case, caplog):
+    """Two worlds whose increments are not positive definite, on equal reversions of 5% and a flat
+    Sigma_2 of 0.5%, each beside a definite twin a hair away: rho at -1 with a flat Sigma_1 of 1%,
+    every increment of rank one, against rho at -1 + 1e-9; and Sigma_1 falling to zero at 1Y, every
+    later increment the second factor's alone, against 1e-6 there. The second is at rho 0 because
+    the factor is discontinuous at a zero sigma otherwise, the definite side loading the second
+    factor on the first normal by rho, so the laws would agree and the paths not. A five-year EUR
+    cashflow's credit Monte Carlo profile under the repair is its twin's path for path, within 1e-4
+    of the largest value (2.7e-6 and 9.3e-6), and the run says once at WARNING how many of its 20
+    steps it repaired, 20 and 16, the twin nothing.
+
+    Killing mutations: the previous step's factor reused, 5.9e-2 and 1.2e-2, nothing diffusing at
+    rho -1 (the cross-path spread at 1Y 0.00 against the twin's 21,052.13); l21 read where l11 is
+    zero, or l22's argument not floored at zero, NaN, and the run refuses.
     """
-    flat = utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])
-    factors = {'HullWhite2FactorModelParameters.EUR': {
-        'Alpha_1': 0.05, 'Alpha_2': 0.05, 'Correlation': -1.0,
-        'Sigma_1': utils.Curve([], [[0.0, 0.01], [10.0, 0.01]]),
-        'Sigma_2': utils.Curve([], [[0.0, 0.005], [10.0, 0.005]]),
-        'Quanto_FX_Correlation_1': 0.0, 'Quanto_FX_Correlation_2': 0.0, 'Quanto_FX_Volatility': flat}}
+    def profile(correlation, sigma_1):
+        caplog.clear()
+        factors = {'HullWhite2FactorModelParameters.EUR': {
+            'Alpha_1': 0.05, 'Alpha_2': 0.05, 'Correlation': correlation,
+            'Sigma_1': utils.Curve([], sigma_1), 'Sigma_2': utils.Curve([], [[0.0, 0.005], [10.0, 0.005]]),
+            'Quanto_FX_Correlation_1': 0.0, 'Quanto_FX_Correlation_2': 0.0,
+            'Quanto_FX_Volatility': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]])}}
+        with caplog.at_level(logging.WARNING):
+            calc, _ = book.simulated(
+                [cashflow], (), factors=factors, prec=torch.float64, Generate_Cashflows='No',
+                models={'InterestRate.EUR': ('HullWhite2FactorImpliedInterestRateModel',
+                                             {'Lambda_1': 0.0, 'Lambda_2': 0.0})})
+        [deal] = calc.netting_sets.deals()
+        return np.concatenate(deal.Calc_res['Value'], axis=-1), [
+            r.getMessage() for r in caplog.records if 'positive definite' in r.getMessage()]
+
     cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF5Y', 'Currency': 'EUR',
                 'Discount_Rate': 'EUR', 'Amount': 1e6,
                 'Payment_Date': book.WORLD_BASE + pd.DateOffset(years=5)}
-    with caplog.at_level(logging.WARNING):
-        book.simulated([cashflow], (), factors=factors, prec=torch.float64, Generate_Cashflows='No',
-                       models={'InterestRate.EUR': ('HullWhite2FactorImpliedInterestRateModel',
-                                                    {'Lambda_1': 0.0, 'Lambda_2': 0.0})})
-    assert [r.getMessage() for r in caplog.records if 'Cholesky' in r.getMessage()] == [
-        'InterestRate.EUR: 20 of 20 steps not positive definite reuse the previous Cholesky factor']
+    singular, twin, steps = SINGULAR[case]
+    (repaired, said), (definite, quiet) = profile(*singular), profile(*twin)
+    assert said == ['InterestRate.EUR: {} of 20 steps not positive definite are floored to positive '
+                    'semi-definite'.format(steps)] and quiet == []
+    assert np.abs(repaired - definite).max() <= 1e-4 * np.abs(definite).max()
 
 
 # ---------------------------------------------------------------------- the four-quote document

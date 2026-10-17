@@ -46,14 +46,6 @@ Grouped by where a validator meets them.
   spot models, the LogVar2FJ knot mixers and the hedging fork (unless `Inner_Draws: random`). A
   study across seeds cannot see that error, and the inner block's error is common to every outer
   path rather than averaged over them. UNMEASURED.
-- **A Hull-White 2F step that is not positive definite reuses the previous step's Cholesky factor**
-  (2026-10-11), reported at WARNING with the curve and the count. An increment is positive definite
-  wherever |ρ| < 1 and both σ are positive, so it fires at ρ = ±1, at a σ of zero, or past about
-  32Y at a reversion speed of −0.5 where the integrals saturate; there the reused factor sits 24%
-  to 100% from the step's covariance. At ρ = −1 with flat σ nothing diffuses (a 5Y payer swap's
-  expected positive exposure at 1Y reads 488.43 against 10,380.83 with ρ a hair off −1), and with
-  σ1 falling to zero at 1Y it reads 4% low at 2Y and 21% at 4Y. S: the nearest positive-definite
-  factor.
 
 ### The calibration {#the-calibration}
 
@@ -163,7 +155,7 @@ Grouped by where a validator meets them.
 ## Decisions waiting on the desk {#decisions-waiting-on-the-desk}
 
 Choices the library leaves to a desk; nothing here is blocked on work. Commit messages and the model
-pages cite these numbers, so closed decisions (2, 3, 4, 5, 10, 11, 13, 15) keep theirs and are not
+pages cite these numbers, so closed decisions (2, 3, 4, 5, 8, 10, 11, 13, 15) keep theirs and are not
 listed.
 
 - **1. The per-fixing smile read**: sticky-forward moneyness or the deal's declared moneyness. Both
@@ -174,8 +166,6 @@ listed.
 - **7. Exposure versus credit-valuation measure.** CVA wants the risk-neutral, market-calibrated
   outer; PFE a real-world, historically estimated one. One run reports both off one outer measure,
   so a book wanting each in its own runs twice under two model configurations.
-- **8. Two single-caller wrappers around the implied-correlation read**, kept against the rule of no
-  abstraction ahead of a second caller until a third correlation pair appears.
 - **9. Flagged, not authorised**: the hedge runtime's free functions over the bundle (two clusters,
   a duplicated utility table) and the deal structure's recursions, the shape
   [Conventions](developer/conventions.md#registries-not-functions) calls a class waiting to happen.

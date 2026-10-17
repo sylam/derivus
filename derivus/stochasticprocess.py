@@ -1089,8 +1089,9 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         '',
         '$$L=\\begin{pmatrix} \\sqrt{C_{11}} & 0 \\\\ \\frac{C_{12}}{\\sqrt{C_{11}}} & \\sqrt{C_{22}-\\frac{C_{12}^2}{C_{11}}} \\end{pmatrix}$$',
         '',
-        "Where an increment covariance is not positive definite, that step reuses the previous step's",
-        'factor, reported at WARNING with the curve and the count of such steps.',
+        'Where an increment covariance is not positive definite, that step takes $L$ with $C_{22}-C_{12}^2/C_{11}$',
+        'floored at zero and $C_{12}/\\sqrt{C_{11}}$ zero where $C_{11}$ is, reported at WARNING with the curve and',
+        'the count of such steps.',
         ])
 
     factor_types = ('InterestRate',)
@@ -1245,15 +1246,21 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
         if self.params_ok:
             C = nnf.pad(torch.linalg.cholesky(delta_CtT.reshape(-1, 2, 2)), (0, 0, 0, 0, 1, 0))
         else:
-            # a step whose increment is not positive definite reuses the previous step's factor
+            # a step that is not positive definite takes its factor by the closed form with the second
+            # factor's residual variance floored at zero: singular, which `cholesky` refuses
             definite = (delta_CtT[:, 0] > 0.0) & (delta_CtT[:, 3] > 0.0) & (
                 delta_CtT[:, 1] * delta_CtT[:, 2] < delta_CtT[:, 0] * delta_CtT[:, 3])
-            logging.warning('%s: %d of %d steps not positive definite reuse the previous Cholesky factor',
+            logging.warning('%s: %d of %d steps not positive definite are floored to positive semi-definite',
                             utils.check_tuple_name(self.factor_key), int((~definite).sum()), definite.numel())
-            cholesky = [tensor.new_zeros((2, 2), dtype=torch.float64)]
-            for C, fine in zip(delta_CtT, definite):
-                cholesky.append(torch.linalg.cholesky(C.reshape(2, 2)) if fine else cholesky[-1])
-            C = torch.stack(cholesky)
+            cov = delta_CtT.reshape(-1, 2, 2)
+            c = cov[~definite]
+            l11 = c[:, 0, 0].sqrt()
+            l21 = torch.where(l11 > 0.0, c[:, 1, 0] / l11, 0.0)
+            l22 = (c[:, 1, 1] - l21 * l21).clamp(min=0.0).sqrt()
+            C = torch.empty_like(cov)
+            C[definite] = torch.linalg.cholesky(cov[definite])
+            C[~definite] = torch.stack([l11, torch.zeros_like(l11), l21, l22], 1).view(-1, 2, 2)
+            C = nnf.pad(C, (0, 0, 0, 0, 1, 0))
 
         self.BtT = [Bi.type(shared.one.dtype).reshape(-1, 1) for Bi in BtT]
         self.YtT = [torch.exp(-alpha[i] * t).type(shared.one.dtype) for i in range(2)]
