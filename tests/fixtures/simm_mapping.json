@@ -63,6 +63,26 @@
 			"SIMM": null,
 			"FRTB_SA": null
 		},
+		"EquityPrice.EQ2": {
+			"SIMM": {
+				"RiskType": "Risk_Equity",
+				"Qualifier": "EQ2",
+				"Bucket": "11"
+			},
+			"FRTB_SA": null
+		},
+		"DividendRate.EQ2": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"EquityPriceVol.EQ2": {
+			"SIMM": {
+				"RiskType": "Risk_EquityVol",
+				"Qualifier": "EQ2",
+				"Bucket": "11"
+			},
+			"FRTB_SA": null
+		},
 		"EquityPriceVol.EQ": {
 			"SIMM": {
 				"RiskType": "Risk_EquityVol",

@@ -3729,11 +3729,17 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
 
 class SIMM(Calculation):
-    """ISDA SIMM sensitivities by bump and revaluation: a CRIF, one booked trade at a time.
+    """ISDA SIMM sensitivities by bump and revaluation: the CRIF of a book of netting sets, one
+    valuation per market move.
 
-    MARKET PRICES -> PRICE FACTORS -> MTM. Each trade of each netting set - the booked structure,
-    never its legs - is valued, one market input its own dependency walk names is moved by ISDA's
-    definition of the sensitivity to it and the trade revalued: the difference is a CRIF row. A
+    MARKET PRICES -> PRICE FACTORS -> MTM. A trade is a booked structure under a netting set, never
+    its legs. One market input a trade's own dependency walk names is moved by ISDA's definition of
+    the sensitivity to it and the whole book revalued, each trade read off its own structure: a
+    trade's difference over the shift is a CRIF row, so the run costs a valuation per move, not per
+    trade and move. Every valuation books every trade in one order and a move changes no draw count,
+    so each trade draws the same inner paths throughout and each difference is one of common random
+    numbers; a base valuation draws a Monte Carlo pricer's paths off one stream in booking order, so
+    such a trade booked after another is valued as the book values it, not as it is valued alone. A
     moved benchmark quote rides its curve family's calibration Jacobian, `theta* + J (q - q0)`, off
     one solve per coupled set at the run's bootstrap, exact to first order in the move.
 
@@ -3788,7 +3794,7 @@ class SIMM(Calculation):
           description='Path to the ISDA SIMM parameters file, whose interest-rate weights name the '
                       'vertices the rows land on'),
         F('Workers', 'Integer', default=1,
-          description='Processes the trades are dealt over, each on a context of its own; 1 values '
+          description='Processes the moves are dealt over, each on a context of its own; 1 values '
                       'them in this one'),
         F('Rate_Shift', 'Float', default=1.0,
           description='Basis points a benchmark quote, a curve node or a basis moves by, ISDA\'s '
@@ -3853,10 +3859,11 @@ class SIMM(Calculation):
         self.moved = {}
 
     def execute(self, params):
-        """The run in this process alone; `run_simm` deals the trades over workers."""
+        """The run in this process alone; `run_simm` deals the moves over workers."""
         self.setup(params)
         with self.prepared():
-            return self.report([self.trade(index) for index in range(len(self.trades))])
+            base = self.base()
+            return self.report(base, self.values(self.reach(base).items()))
 
     @contextlib.contextmanager
     def prepared(self):
@@ -3864,21 +3871,21 @@ class SIMM(Calculation):
         date, the curves its market prices solve (`calibrate`), each trade's moves, classes and
         agreements - put back as it stood on the way out."""
         config = self.config
-        deals, calculation = config.deals['Deals'], config.deals['Calculation']
+        calculation = config.deals['Calculation']
         authored = dict(config.params['Market Prices'])
         try:
             config.deals['Calculation'] = self.valuation
             config.params['System Parameters']['Base_Date'] = self.valuation['Base_Date']
             self.calibrate()
+            self.bumped = []
             for index, (agreement, node) in enumerate(self.trades):
-                self.bumps(index)
+                self.bumped.append(self.bumps(index))
                 self.product_class(node)
                 self.agreement(agreement['Instrument'].field.get('Reference'))
-            config.deals['Deals'] = deals
             yield
         finally:
             config.params['Market Prices'].update(authored)
-            config.deals['Deals'], config.deals['Calculation'] = deals, calculation
+            config.deals['Calculation'] = calculation
 
     def calibrate(self):
         """The curves the book reads solved from their quotes, each coupled set publishing its
@@ -3901,8 +3908,10 @@ class SIMM(Calculation):
         self.config.bootstrap(wanted=self.universe)
         declaring('No')
 
-    def report(self, trades):
-        """The run's results off its valued `trades`: the CRIF and a row per trade."""
+    def report(self, base, values):
+        """The run's results off the book's `base` and the `values` its moves wrote: the CRIF and a
+        row per trade."""
+        trades = [self.trade(index, base, values) for index in range(len(self.trades))]
         self.output = {'CRIF': self.frame(trades), 'Trades': pd.DataFrame(
             [dict({key: value for key, value in trade.items() if key != 'Rows'},
                   Skipped='; '.join(trade['Skipped']), Written=len(trade['Rows']))
@@ -3959,21 +3968,29 @@ class SIMM(Calculation):
                                  reference, ' or '.join(blank)))
         return dict(regimes, Counterparty=reference)
 
-    def booked(self, index):
-        """Install trade `index` alone under its netting set as the config's book, valued as the
-        run values it, and name it."""
-        agreement, node = self.trades[index]
-        self.config.deals.update(Deals={'Children': [dict(agreement, Children=[node])]},
-                                 Calculation=self.valuation)
-        return node['Instrument'].field.get('Reference')
+    @contextlib.contextmanager
+    def booked(self, indices):
+        """Trades `indices`, in book order, under their own netting sets as the config's book,
+        valued as the run values it, the book put back on the way out."""
+        deals = self.config.deals['Deals']
+        sets = [list(trades) for _, trades in itertools.groupby(
+            (self.trades[index] for index in indices), key=lambda trade: id(trade[0]))]
+        self.config.deals.update(Deals={'Children': [
+            dict(trades[0][0], Children=[node for _, node in trades]) for trades in sets]},
+            Calculation=self.valuation)
+        try:
+            yield
+        finally:
+            self.config.deals['Deals'] = deals
 
     def walk(self, index):
         """The price factors trade `index` reads, refused by name where one is missing or an
         interest rate no configured family bootstraps - a curve pasted in as nodes is no margin."""
         from . import bootstrappers
 
-        reference = self.booked(index)
-        universe = self.config.factor_universe()
+        reference = self.trades[index][1]['Instrument'].field.get('Reference')
+        with self.booked([index]):
+            universe = self.config.factor_universe()
         if universe['missing']:
             raise ValueError('SIMM: trade {} reads {}, which the market data does not '
                              'carry'.format(reference, ', '.join(universe['missing'])))
@@ -4118,9 +4135,10 @@ class SIMM(Calculation):
             factors[name], Curve=family.solved_curve(artifact.benchmarks, theta, curve))
             for curve in artifact.factors}
 
-    def value(self, index, moved):
-        """`(value, skipped)` - trade `index` valued in the calculation currency with `moved` over
-        the standing price factors, and the engine's sentences for what it skipped."""
+    def value(self, moved):
+        """`{index: (value, skipped)}` - every trade of the book valued in the calculation currency
+        with `moved` over the standing price factors, each off its own structure, and the engine's
+        sentences for what it skipped inside each, the distinct ones spoken at its deals."""
         from . import run_baseval
 
         factors = self.config.params['Price Factors']
@@ -4129,8 +4147,8 @@ class SIMM(Calculation):
         heard = utils.CapturedErrors()
         logging.getLogger().addHandler(heard)
         try:
-            self.booked(index)
-            calc, _ = run_baseval(self.config)
+            with self.booked(range(len(self.trades))):
+                calc, _ = run_baseval(self.config)
         finally:
             logging.getLogger().removeHandler(heard)
             for name, block in standing.items():
@@ -4139,34 +4157,62 @@ class SIMM(Calculation):
                 else:
                     factors[name] = block
         # the engine says so in so many words, wherever it skips a deal or a structure
-        skipped = [said for said in heard.messages if 'skipp' in said.lower()]
-        held = [deal for agreement in calc.netting_sets.sub_structures for deal in
-                [structure.obj for structure in agreement.sub_structures] + agreement.dependencies]
-        if not held or 'Value' not in held[0].Calc_res:
-            return None, skipped + ['the trade itself was not valued']
-        return held[0].Calc_res['Value'].item(), skipped
+        skipped = [(deal, said) for deal, said in heard.said if 'skipp' in said.lower()]
+        held = {(agreement.obj.Instrument, deal.Instrument.field.get('Reference')): deal.Calc_res
+                for agreement in calc.netting_sets.sub_structures for deal in
+                [structure.obj for structure in agreement.sub_structures] + agreement.dependencies}
+        found = {}
+        for index, (agreement, node) in enumerate(self.trades):
+            references = {deal['Instrument'].field.get('Reference')
+                          for _, deal in schema.walk([node])}
+            mine = list(dict.fromkeys(said for deal, said in skipped if deal in references))
+            result = held.get((agreement['Instrument'], node['Instrument'].field.get('Reference')), {})
+            found[index] = (result['Value'].item(), mine) if 'Value' in result else (
+                None, mine + ['the trade itself was not valued'])
+        return found
 
-    def trade(self, index):
-        """Trade `index`'s CRIF rows, its base value, the moves it took and what the engine skipped
-        inside it - its rows written regardless. A vega move is taken against the surface given
-        its vertex pillars, which is the base to its rounding."""
+    def base(self):
+        """`{index: (value, skipped)}` - every trade of the book off one valuation of it."""
+        return self.value({})
+
+    def reach(self, base):
+        """`{move: [index]}` - every move and vega base the trades valued in `base` take, in a fixed
+        order, and the trades whose rows it writes."""
+        reach = {}
+        for index, bumps in enumerate(self.bumped):
+            if base[index][0] is not None:
+                for move in dict.fromkeys(move for bump in bumps for move in (bump.base, bump.move)
+                                          if move is not None):
+                    reach.setdefault(move, []).append(index)
+        return reach
+
+    def values(self, moves):
+        """`{(index, move): value}` - each `(move, indices)` of `moves` one valuation of the book,
+        read for the trades `indices`, each refused by name where it values to nothing finite."""
+        found = {}
+        for move, indices in moves:
+            valued = self.value(self.move(move))
+            for index in indices:
+                value = valued[index][0]
+                if value is None or not math.isfinite(value):
+                    raise ValueError(
+                        '{}: moving {} values the trade to {}, off which no sensitivity can be '
+                        'read'.format(self.trades[index][1]['Instrument'].field.get('Reference'),
+                                      '/'.join(map(str, move)), value))
+                found[index, move] = value
+        return found
+
+    def trade(self, index, base, values):
+        """Trade `index`'s CRIF rows off the book's `base` and the `values` its moves wrote, its
+        base value, the moves it took and what the engine skipped inside it - its rows written
+        regardless. A vega move is taken against the surface given its vertex pillars, which is
+        the base to its rounding."""
         agreement, node = self.trades[index]
-        bumps = self.bumps(index)
-        base, skipped = self.value(index, {})
-
-        def valued(move):
-            value = self.value(index, self.move(move))[0]
-            if value is None or not math.isfinite(value):
-                raise ValueError('{}: moving {} values the trade to {}, off which no sensitivity '
-                                 'can be read'.format(node['Instrument'].field.get('Reference'),
-                                                      '/'.join(map(str, move)), value))
-            return value
-
-        values, rows = {None: base}, {}
-        for bump in bumps if base is not None else []:
-            if bump.base not in values:
-                values[bump.base] = valued(bump.base)
-            delta = (valued(bump.move) - values[bump.base]) / self.shifts[bump.move[0]]
+        value, skipped = base[index]
+        rows = {}
+        for bump in self.bumped[index] if value is not None else []:
+            against = value if bump.base is None else values[index, bump.base]
+            delta = (values[index, bump.move] - against) / self.shifts[bump.move[0]]
             stated = bump.coordinates
             for label, weight in bump.split:
                 key = (stated['RiskType'], stated['Qualifier'], stated['Bucket'],
@@ -4175,7 +4221,7 @@ class SIMM(Calculation):
         return {'TradeID': node['Instrument'].field.get('Reference'),
                 'NettingSet': agreement['Instrument'].field.get('Reference'),
                 'ProductClass': self.product_class(node),
-                'Value': base, 'Moves': len(bumps), 'Skipped': skipped,
+                'Value': value, 'Moves': len(self.bumped[index]), 'Skipped': skipped,
                 'Rows': [key + (amount,) for key, amount in rows.items() if amount != 0.0]}
 
     def frame(self, trades):

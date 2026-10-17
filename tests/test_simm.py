@@ -115,29 +115,36 @@ def benchmark(prices, years=5):
                           Swap_Rate=points[position]['Quoted_Market_Value'])
 
 
-def world(calculation=None, prices=None, option=None, configuration=None, system=None,
-          extra=None, deals=()):
-    """A context loaded with the swap, the option and `deals` under one netting set, on the true
-    curves, with `prices` - the generated quote set unless given - and the curve family
-    configured."""
+def job(calculation=None, prices=None, option=None, configuration=None, system=None,
+          extra=None, deals=(), book=None):
+    """The job document of the swap, the option and `deals` under one netting set - or under `book`
+    the trades each set reference names, under that set - on the true curves, with `prices` - the
+    generated quote set unless given - and the curve family configured, in wire form."""
     prices = blocks() if prices is None else prices
     _, swap = benchmark(blocks())
+    trades = [swap, dict(OPTION, **(option or {}))] + list(deals)
+    book = {'NS': [deal['Reference'] for deal in trades]} if book is None else book
     document = {'Calc': {
         'Calculation': dict(SIMM, **(calculation or {})),
         'Deals': {'Reference': 'simm', 'Deals': {'Children': [{
-            'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': 'NS',
+            'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': reference,
                                      'Netted': 'True', 'Collateralized': 'False',
                                      'Post_Regulations': 'SEC', 'Collect_Regulations': 'SEC'}},
-            'Children': [{'Instrument': {'.Deal': deal}} for deal in [
-                swap, dict(OPTION, **(option or {}))] + list(deals)]}]}},
+            'Children': [{'Instrument': {'.Deal': deal}} for deal in trades
+                         if deal['Reference'] in held]} for reference, held in book.items()]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': dict({'Base_Currency': 'USD', 'Base_Date': BASE}, **(system or {})),
             'Valuation Configuration': {}, 'Price Factors': dict(factors(), **(extra or {})),
             'Market Prices': prices,
             'Bootstrapper Configuration': {'InterestRate': {'Prices': 'InterestRate'}}
             if configuration is None else configuration}}}}
+    return json.loads(json.dumps(document, cls=CustomJsonEncoder))
+
+
+def world(*args, **kwargs):
+    """A context loaded with the `job` of `args` and `kwargs`."""
     context = derivus.Context()
-    context.load_json((json.dumps(document, cls=CustomJsonEncoder), 'simm'), compress=False)
+    context.load_json((json.dumps(job(*args, **kwargs)), 'simm'), compress=False)
     return context
 
 
@@ -148,6 +155,16 @@ def valued(context):
 
 
 VALUATION = {'Object': 'BaseValuation'}
+
+
+def identical(mine, theirs):
+    """Two runs' CRIF and trades report, `{table: frame}`, the same to the bit, row for row."""
+    for table in ('CRIF', 'Trades'):
+        floats = [column for column in ('Amount', 'AmountUSD', 'Value') if column in mine[table]]
+        assert mine[table].drop(columns=floats).equals(theirs[table].drop(columns=floats)), table
+        for column in floats:
+            assert [x.hex() for x in mine[table][column]] == [
+                x.hex() for x in theirs[table][column]], (table, column)
 
 
 def rows(output, trade, risk_type):
@@ -255,20 +272,119 @@ def test_the_crif_is_isdas_format(serial, tmp_path):
 
 
 def test_the_sharded_run_equals_the_serial_run_to_the_bit(serial):
-    """Two workers spawned on contexts of their own, the trades dealt between them, against the
-    serial run in-process: the same CRIF to the bit, row for row, and the same trades report.
+    """Two workers spawned on contexts of their own, the book valued here and its moves dealt
+    between them, against the serial run in-process: the same CRIF to the bit, row for row, and the
+    same trades report.
 
-    Killing mutation: a worker keying each trade by its place in its own share rather than in the
-    book - both workers answer for trade 0 and the merge has no trade 1.
+    Killing mutation: a worker valuing its moves on its context uncalibrated - the first quote
+    move finds no calibration to ride and refuses `CalibrationStale` naming the USD curve.
     """
-    output = serial[1]
-    sharded = world({'Workers': 2}).run_job()[1]
-    for table in ('CRIF', 'Trades'):
-        mine, theirs = sharded['Results'][table], output['Results'][table]
-        floats = [column for column in ('Amount', 'AmountUSD', 'Value') if column in mine]
-        assert mine.drop(columns=floats).equals(theirs.drop(columns=floats)), table
-        for column in floats:
-            assert [x.hex() for x in mine[column]] == [x.hex() for x in theirs[column]], column
+    identical(world({'Workers': 2}).run_job()[1]['Results'], serial[1]['Results'])
+
+
+@pytest.mark.parametrize('book', [{'NS': ('SWAP', 'FXO')}, {'NS': ('SWAP',), 'NT': ('FXO',)}])
+def test_a_netting_set_s_crif_is_its_trades_own_to_the_bit(book):
+    """A BOOK IS VALUED PER MOVE. The swap and the option, under one netting set or each under its
+    own, are valued as one book once per move, 32 valuations where valuing each trade per move took
+    43 (2.1 a CRIF row of 15 against 2.9), and write the CRIF rows and the trades report the two
+    write each alone in a one-trade document, to the bit. That holds because both price in closed
+    form and says nothing of a Monte Carlo trade: a base valuation draws a Monte Carlo pricer's
+    paths off one stream in booking order, so such a trade booked after another is valued as the
+    book values it, not as it is valued alone, which the Monte Carlo gate below measures.
+
+    Killing mutations: a trade read off the structure of the next trade the valuation holds - the
+    swap valued at the option's 66,209.81 and missing its 5y row of 443.41; a book's trades booked
+    under its first set - on the two-set book the option, found under no set of its own, values to
+    nothing and writes none of the 10 rows it writes alone.
+    """
+    output = world(book=book).run_job()[1]['Results']
+    alone = [world(book={reference: (trade,)}).run_job()[1]['Results']
+             for reference, held in book.items() for trade in held]
+    identical(output, {table: pd.concat([run[table] for run in alone], ignore_index=True)
+                       for table in ('CRIF', 'Trades')})
+
+
+def test_a_crif_s_trades_revalued_off_their_own_documents_merge_back_to_the_bit(serial, tmp_path):
+    """THE EXTRACT UTILITY. `experiments/simm_from_crif.py` reads this world as a source system
+    exports it - each trade in a one-trade document of its own under a set named for nothing, and a
+    CRIF of the module's run in the source's layout stating a counterparty and regulations of its
+    own - books one netting set of the counterparty's trades off the union of the documents' market
+    data, runs it, and writes the module's CRIF to the bit, the counterparty and regulations the
+    source's, and merged back into the source CRIF the source's own bytes.
+
+    Killing mutation: the set's regulations taken from the documents' own sets rather than the
+    source's rows - every merged row posts under SEC where the source states CFTC.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    'experiments'))
+    import simm_from_crif
+
+    stated = {'Counterparty': 'CP', 'PostRegulations': 'CFTC'}
+    crif = serial[1]['Results']['CRIF'].assign(**stated)
+    folder, output = tmp_path / 'documents', tmp_path / 'output'
+    folder.mkdir()
+    for trade in crif['TradeID'].unique():
+        with open(folder / '{}.json'.format(trade), 'wt') as f:
+            json.dump(job(book={'SET-' + trade: (trade,)}), f)
+    source = crif.assign(IMModel='SIMM', AmountCurrency='USD', CSANumber='CSA', PortfolioID='BOOK',
+                         ValuationDate='{:%Y-%m-%d}'.format(BASE), EndDate='')[
+        ['IMModel', 'ProductClass', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2', 'Amount',
+         'AmountCurrency', 'AmountUSD', 'Counterparty', 'CSANumber', 'TradeID', 'PortfolioID',
+         'CollectRegulations', 'PostRegulations', 'ValuationDate', 'EndDate']]
+    source.to_csv(tmp_path / 'source.tsv', sep='\t', index=False)
+    simm_from_crif.main([str(tmp_path / 'source.tsv'), str(folder), '--mapping', MAPPING,
+                         '--parameters', PARAMETERS, '--output', str(output)])
+    date = '{:%Y-%m-%d}'.format(BASE)
+    ran = pd.read_csv(output / 'CRIF_{}.tsv'.format(date), sep='\t', dtype={'Bucket': str},
+                      keep_default_na=False, float_precision='round_trip')
+    identical({'CRIF': ran, 'Trades': serial[1]['Results']['Trades']},
+              {'CRIF': crif, 'Trades': serial[1]['Results']['Trades']})
+    assert (output / 'CRIF_REVAL_{}.tsv'.format(date)).read_bytes() == (
+        tmp_path / 'source.tsv').read_bytes()
+
+
+#: Two index autocalls, observed a half year and a year out, the second on an index of its own.
+AUTOCALLS = [dict(CALLED, Reference=reference, Equity=index, Dividends=index,
+                  Equity_Volatility=index,
+                  Price_Fixing=[[BASE + pd.DateOffset(days=days - 3), 0.0] for days in (182, 365)],
+                  Autocall_Coupons=[[BASE + pd.DateOffset(days=days), 0.04] for days in (182, 365)],
+                  Autocall_Thresholds=[[BASE + pd.DateOffset(days=days), 1.0]
+                                       for days in (182, 365)])
+             for reference, index in (('AC1', 'EQ'), ('AC2', 'EQ2'))]
+INDICES = dict(INDEX, **{name + '2': dict(block) for name, block in INDEX.items()})
+
+
+def test_monte_carlo_trades_draw_one_stream_through_every_valuation():
+    """Two autocalls a Monte Carlo pricer values, under one set, the second on an index the first
+    does not read: every valuation of the run books both in one order and a move changes no draw
+    count, so each draws the same paths through the base and every move. The second's equity row
+    is the difference of two base valuations of the book, its index's spot a percent up and as it
+    stands, to 1e-9, and the run with its moves dealt over two workers writes the serial run's CRIF
+    and trades report to the bit. A base valuation draws its paths off one stream in booking order,
+    so the second, drawing after the first, is valued as the book values it: at 256 inner paths its
+    base sits 5.5e-3 off its own one-trade document's and its rows up to 4.7e-3 of its largest,
+    where the first writes its own document's to the bit.
+
+    Killing mutation: a move valuing only the trades it writes rows for - the second autocall draws
+    from the seed under its own index's moves and after the first at the base, and its equity row
+    reads 8.807e-3 against the difference of the book's valuations, 7.488e-3.
+    """
+    calculation = {'MCMC_Simulations': 256}
+    serial, sharded = (world(dict(calculation, **workers), extra=INDICES, deals=AUTOCALLS,
+                             book={'NS': ('AC1', 'AC2')}).run_job()[1]['Results']
+                       for workers in ({}, {'Workers': 2}))
+    identical(sharded, serial)
+
+    def worth(spot):
+        moved = dict(INDICES['EquityPrice.EQ2'], Spot=spot)
+        return valued(world(dict(VALUATION, **calculation), configuration={}, deals=AUTOCALLS,
+                            extra=dict(INDICES, **{'EquityPrice.EQ2': moved}),
+                            book={'NS': ('AC1', 'AC2')}))['AC2']
+
+    spot = INDICES['EquityPrice.EQ2']['Spot']
+    crif = serial['CRIF']
+    row = crif[(crif['TradeID'] == 'AC2') & (crif['RiskType'] == 'Risk_Equity')]['Amount'].item()
+    assert row == pytest.approx(worth(spot * 1.01) - worth(spot), rel=1e-9)
 
 
 def test_an_autocall_a_past_print_called_writes_no_rows():

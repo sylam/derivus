@@ -70,28 +70,53 @@ def rename_factor(cx, old_name, new_name):
             old_local_param]
 
 
-def merge_crif(original, crif):
-    """`original` with every row of each trade `crif` carries replaced by `crif`'s rows, both read
-    as text: each takes the original's columns that are terms of its trade, its amount in the
-    original's currency at the rate the original's two amounts state, and its vertex spelled as
-    the original spells it. A trade the original does not carry is left out."""
-    computed = ['RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2', 'Amount', 'AmountUSD']
-    terms = original.drop(columns=computed).groupby('TradeID', sort=False).first()
+def merge_crif(original, crif, currency, valued=None):
+    """`original` with every row of each `valued` trade - each trade `crif` carries unless named -
+    replaced by `crif`'s rows, both read as text, in the original's column layout: the columns the
+    run writes are its own, its vertex spelled as the original spells it, and the rest the trade's
+    own original terms. Amount is in the trade's AmountCurrency, the run's own where that is the
+    calculation `currency` and its AmountUSD at the rate the original's two amounts state where it
+    is not. A trade the original does not carry is left out."""
+    terms = original.drop(columns=[column for column in crif.columns if column != 'TradeID']
+                          ).groupby('TradeID', sort=False).first()
     amounts = original[['Amount', 'AmountUSD']].astype(float)
     rates = (amounts['Amount'] / amounts['AmountUSD'])[amounts['AmountUSD'] != 0.0].groupby(
         original['AmountCurrency']).median()
     spelled = {label.lower(): label for label in original['Label1']}
-    mine = crif[crif['TradeID'].isin(terms.index)]
+    valued = terms.index.intersection(crif['TradeID'] if valued is None else valued)
+    mine = crif[crif['TradeID'].isin(valued)]
     usd = mine['AmountUSD'].astype(float)
-    rate = terms['AmountCurrency'].map(rates).reindex(mine['TradeID']).to_numpy()
-    rows = mine[['TradeID'] + computed[:5]].assign(
+    held = terms['AmountCurrency'].reindex(mine['TradeID']).to_numpy()
+    amount = np.where(held == currency, mine['Amount'].astype(float), usd * pd.Series(held).map(
+        rates).to_numpy())
+    rows = mine.assign(
         Label1=mine['Label1'].map(lambda label: spelled.get(label.lower(), label)),
-        Amount=[repr(float(amount)) for amount in usd * rate],
-        AmountUSD=[repr(float(amount)) for amount in usd]).join(terms, on='TradeID')
+        Amount=[repr(float(value)) for value in amount],
+        AmountUSD=[repr(float(value)) for value in usd]).join(terms, on='TradeID')
     order = {trade: index for index, trade in enumerate(terms.index)}
-    merged = pd.concat([original[~original['TradeID'].isin(mine['TradeID'])], rows])
+    merged = pd.concat([original[~original['TradeID'].isin(valued)], rows])
     return merged.sort_values('TradeID', key=lambda trades: trades.map(order), kind='stable')[
         list(original.columns)]
+
+
+def quote_curves(config, base_date):
+    """Par quotes on each curve's own knots for every curve `config`'s book reads that no block
+    quotes, under the curve family's declared conventions and configured, so the bootstrap returns
+    the curve as it stands and a basis point moves a market rate."""
+    from derivus import bootstrappers, utils
+
+    prices = config.params['Market Prices']
+    family = bootstrappers.InterestRate.market_factor_type
+    for curve in sorted({utils.check_rate_name(name)[1]
+                         for name in config.factor_universe()['resolved']
+                         if utils.check_rate_name(name)[0] == 'InterestRate'}):
+        if '{}.{}'.format(family, curve) not in prices:
+            name, block = bootstrappers.knot_prices(
+                curve, config.params['Price Factors'],
+                config.params['Price Factor Interpolation'], base_date, config.holidays)
+            prices[name] = block
+            config.params['Bootstrapper Configuration'].setdefault(
+                'InterestRate', {'Prices': 'InterestRate'})
 
 
 class JOB(object):
@@ -939,30 +964,11 @@ class SIMM(JOB):
             {key: stated[key] for key in ('Random_Seed',) if key in stated}, Object='SIMM',
             Base_Date=stated['Base_Date'], Currency=os.environ.get('DERIVUS_SIMM_CURRENCY', 'USD'),
             Mapping=os.environ['DERIVUS_SIMM_MAPPING'], Parameters=os.environ['DERIVUS_SIMM_PARAMETERS'])
-        self.quote(stated['Base_Date'])
+        quote_curves(config, stated['Base_Date'])
         if os.environ.get('DERIVUS_SIMM_CRIF'):
             self.regulations(pd.read_csv(
                 os.environ['DERIVUS_SIMM_CRIF'], sep='\t', dtype=str, keep_default_na=False,
                 usecols=['TradeID', 'PostRegulations', 'CollectRegulations']))
-
-    def quote(self, base_date):
-        """Par quotes on each curve's own knots for every curve the book reads that no block quotes,
-        so the bootstrap returns the curve as it stands and a basis point moves a market rate."""
-        from derivus import bootstrappers, utils
-
-        config = self.cx.current_cfg
-        prices = config.params['Market Prices']
-        family = bootstrappers.InterestRate.market_factor_type
-        for curve in sorted({utils.check_rate_name(name)[1]
-                             for name in config.factor_universe()['resolved']
-                             if utils.check_rate_name(name)[0] == 'InterestRate'}):
-            if '{}.{}'.format(family, curve) not in prices:
-                name, block = bootstrappers.knot_prices(
-                    curve, config.params['Price Factors'],
-                    config.params['Price Factor Interpolation'], base_date, config.holidays)
-                prices[name] = block
-                config.params['Bootstrapper Configuration'].setdefault(
-                    'InterestRate', {'Prices': 'InterestRate'})
 
     def regulations(self, original):
         """The regimes a netting set declaring none posts and collects margin under, where the
@@ -1014,7 +1020,8 @@ class SIMM(JOB):
         crif.to_csv(stem + '_Total.tsv', sep='\t', index=False)
         if os.environ.get('DERIVUS_SIMM_CRIF'):
             merge_crif(pd.read_csv(os.environ['DERIVUS_SIMM_CRIF'], sep='\t', dtype=str,
-                                   keep_default_na=False), crif).to_csv(
+                                   keep_default_na=False), crif,
+                       os.environ.get('DERIVUS_SIMM_CURRENCY', 'USD')).to_csv(
                 stem + '_Merged.tsv', sep='\t', index=False)
 
 

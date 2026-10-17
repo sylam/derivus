@@ -88,6 +88,9 @@ seed, and pending quotes with their tickets live in `DV_HOME` (`~/.derivus` unle
 says otherwise).
 
 Scripts under `experiments/` are run from the repo root, e.g. `python experiments/production_solver.py`.
+`experiments/simm_from_crif.py` revalues the trades of a source CRIF through the `SIMM` calculation,
+each loaded from its own job document, as one netting set per counterparty, and merges the run's
+rows back into the source CRIF.
 
 ## Market data
 

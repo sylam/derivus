@@ -3054,7 +3054,8 @@ def vertex_weights(tenor, vertices):
 class CapturedErrors(logging.Handler):
     """What the engine has to say for itself on this thread while it runs - a bootstrap reporting
     a family that could not run, a run skipping a deal - the ERROR channel on the root logger,
-    captured and nothing else.
+    captured and nothing else, each sentence with the logger's name, which a run sets to the deal
+    it is at.
 
     IT CAPTURES ITS OWN THREAD AND NOTHING ELSE. The root logger is every thread's - a queued
     `/book/price` logging a CRITICAL inside a tick's window turned a good tick into
@@ -3064,12 +3065,16 @@ class CapturedErrors(logging.Handler):
 
     def __init__(self):
         super().__init__(level=logging.ERROR)
-        self.messages = []
+        self.said = []
         self.thread = threading.get_ident()
+
+    @property
+    def messages(self):
+        return [message for _, message in self.said]
 
     def emit(self, record):
         if record.thread == self.thread:
-            self.messages.append(record.getMessage())
+            self.said.append((record.name, record.getMessage()))
 
 
 # Math Type stuff

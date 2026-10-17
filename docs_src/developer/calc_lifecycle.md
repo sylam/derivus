@@ -27,8 +27,14 @@ the dispatch to the inner fork and its recompute node: play it here or open it f
 `run_hedgemontecarlo` or `run_simm`, each calling `construct_calculation`. The first three pick the
 device and inject only `Run_Date` (and `Time_grid` for the Monte Carlo modes); every other default
 comes from the class's `fields` through `declared_defaults`. `run_simm` injects nothing and picks no
-device: `SIMM` values each booked trade through `run_baseval`, once per market input moved by ISDA's
-definition, all on one seed.
+device: `SIMM` values the book through `run_baseval` once per market input moved by ISDA's
+definition, every netting set and every trade in one booking order on one seed, and reads each
+trade off its own structure, so a trade's difference is one of common random numbers. A base
+valuation draws a Monte Carlo pricer's paths off one stream in booking order, so such a trade
+booked after another is valued as the book values it, not as it is valued alone. **Held by**
+`tests/test_simm.py::test_a_netting_set_s_crif_is_its_trades_own_to_the_bit`,
+`::test_monte_carlo_trades_draw_one_stream_through_every_valuation`,
+`::test_the_sharded_run_equals_the_serial_run_to_the_bit`.
 
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
