@@ -366,7 +366,7 @@ class Markets(Projector):
 
 
 class Attestations(Projector):
-    """Every standing attestation, under the four coordinates a reported number replays from.
+    """Every standing attestation, under the five coordinates a reported number replays from.
 
     The FIRST row under a tuple stands, which is what `verbs.attestation` answers, so this reading
     and that one cannot disagree about which attestation a number replays from. `result_pinned` is
@@ -375,6 +375,7 @@ class Attestations(Projector):
     """
 
     name = 'attestations'
+    version = 2
     reads = ('run_completed',)
 
     def initial(self):

@@ -457,7 +457,7 @@ def every_numbers_replay_tuple(log, script):
     A run is recorded IFF its output will be cited by a fact, so the LANE is the whole question and
     the script is where it is written down. Asked as a SET rather than per ask, because content
     addressing dedupes numbers and not standing: an identical what-if after a standing run arrives
-    at the same four coordinates and must not read as a second attestation. So a standing ask with
+    at the same five coordinates and must not read as a second attestation. So a standing ask with
     no row is a number nothing can replay, and a row no standing ask names is a lane that minted
     where it should have minted nothing - which is the whole of what telemetry and curiosity claim.
     The lookup is under the key the fold files rows by, so this reading and the verb's cannot

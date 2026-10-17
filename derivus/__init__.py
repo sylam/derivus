@@ -721,11 +721,11 @@ class Context:
     def plan_hash(self):
         """The content hash of the PROGRAM: everything a run compiles, market values excluded.
 
-        A plan is `params` and `deals` less the THREE things that are replay coordinates of their
-        own - every `bind='value'` field of a price factor, `schema.MARKET_QUOTE_VALUES` on a
-        `Market Prices` row that DECLARES them (`schema.MARKET_QUOTE_CONTAINERS`, derived from the
-        families rather than `Points` by name), both of which `values_hash` carries, and
-        `Random_Seed`.
+        A plan is `params` and `deals` less what are replay coordinates of their own - every
+        `bind='value'` field of a price factor, `schema.MARKET_QUOTE_VALUES` on a `Market Prices`
+        row that DECLARES them (`schema.MARKET_QUOTE_CONTAINERS`, derived from the families rather
+        than `Points` by name), both of which `values_hash` carries, and the two seeds,
+        `Random_Seed` and `Quasi_Seed`, which the replay tuple carries.
         Everything else is in, `Batch_Size` and `Simulation_Batches` included: they change the
         realized numbers, so a replay has to pin them. A vol tick therefore moves `values_hash` and
         leaves this bit-identical; a moved pillar, a flipped `Use` or a re-authored benchmark lands
@@ -749,7 +749,8 @@ class Context:
             name: schema.partition_market_price(block)[0]
             for name, block in cfg.params.get('Market Prices', {}).items()}
         params['Correlations'] = correlation_names(cfg.params['Correlations'])
-        calculation = {k: v for k, v in cfg.deals['Calculation'].items() if k != 'Random_Seed'}
+        calculation = {k: v for k, v in cfg.deals['Calculation'].items()
+                       if k not in ('Random_Seed', 'Quasi_Seed')}
         calendars = {location: [calendar['weekends'], sorted(calendar['holidays'])]
                      for location, calendar in cfg.holidays.items()}
         return content_hash({'params': params, 'deals': dict(cfg.deals, Calculation=calculation),
@@ -759,9 +760,9 @@ class Context:
         """The content hash of `market_patch()` less its clocks - the market VALUES, and nothing
         else.
 
-        With `plan_hash`, `__version__` and the seed this is the replay identity: two runs agreeing
-        on all four report the same numbers. A MARKET'S IDENTITY IS ITS NUMBERS, so the stamps go
-        out (`schema.without_clocks`): when a board was read is data on the row, nothing in pricing
+        With `plan_hash`, `__version__` and the two seeds this is the replay identity: two runs
+        agreeing on all five report the same numbers. A MARKET'S IDENTITY IS ITS NUMBERS, so the
+        stamps go out (`schema.without_clocks`): when a board was read is data on the row, nothing in pricing
         reads it, and a hash that moved on a stamp alone would call one market two.
         """
         return content_hash(schema.without_clocks(self.market_patch()))

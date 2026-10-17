@@ -215,13 +215,14 @@ PROVENANCE_TYPES = {
     # on the row so the record is self-describing, and the verb refuses any lane but standing.
     'run_completed': _validator('run_completed', (
         ('plan_hash', HASH), ('values_hash', HASH), ('engine_version', TEXT),
-        ('seed', MAYBE_INTEGER), ('lane', TEXT), ('job', HASH), ('result', HASH))),
+        ('seed', MAYBE_INTEGER), ('quasi_seed', INTEGER), ('lane', TEXT), ('job', HASH),
+        ('result', HASH))),
     # Promotion across lanes after the fact: a tuple the hub did not witness, attested only once it
     # re-executed and the bytes reproduced within `tolerance_policy`, which names the hashed policy
     # the comparison was held to. Whether the pin was a cache hit is a fold, not a body field.
     'result_pinned': _validator('result_pinned', (
         ('plan_hash', HASH), ('values_hash', HASH), ('engine_version', TEXT),
-        ('seed', MAYBE_INTEGER), ('job', HASH), ('result', HASH),
+        ('seed', MAYBE_INTEGER), ('quasi_seed', INTEGER), ('job', HASH), ('result', HASH),
         ('tolerance_policy', HASH))),
     # The quoting act, filed when the client ACCEPTS the price. It pins two hashes: the values
     # vector it was struck on, which the booking reports, and the book plan its marginal charge was

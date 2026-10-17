@@ -253,7 +253,8 @@ def test_the_writers_own_voice_is_forged_under_a_seat_and_a_seat_is_forged_under
         log.close()
     assert oracle.report(home)['nothing_outside_its_seat']['held'] is True
 
-    attested = dict(plan_hash=PLAN, engine_version='2.0', seed=1, lane=STANDING, **cited)
+    attested = dict(plan_hash=PLAN, engine_version='2.0', seed=1, quasi_seed=1234, lane=STANDING,
+                    **cited)
     for name, event_type, body, actor in (
             ('seat-attests', 'run_completed', attested, ACTOR),
             ('writer-books', 'fill', fill('EXEC-WRITER'), 'writer')):
@@ -596,16 +597,18 @@ def test_a_close_no_validating_writer_wrote_is_named(tmp_path):
 def test_a_standing_run_without_its_attestation_is_named(tmp_path):
     """EVERY NUMBER'S REPLAY TUPLE. The attestations are exactly the standing runs the script asked
     for: a standing ask with no row is a number nothing can replay, and a row no standing ask names
-    is a lane that mints nothing having minted.
+    is a lane that mints nothing having minted. An ask is matched on all five coordinates, either
+    seed moved naming no row.
 
-    Killing mutation: the asks counted rather than matched, which passes any script with as many
-    standing runs in it as the record has attestations.
+    Killing mutations: the asks counted rather than matched, which passes any script with as many
+    standing runs in it as the record has attestations; the replay fields without `quasi_seed`,
+    under which the ask at quasi seed 99 matches the row at 1234.
     """
     home, log = synthetic_book(tmp_path)[:2]
     try:
         cited = dict(values_hash=log.store.put(b'{"EURUSD":1.09}'),
                      job=log.store.put(b'{"Calc":{}}'), result=log.store.put(b'{"mtm":1.0}'))
-        tuple_ = dict(plan_hash=PLAN, engine_version='2.0', seed=1,
+        tuple_ = dict(plan_hash=PLAN, engine_version='2.0', seed=1, quasi_seed=1234,
                       values_hash=cited['values_hash'])
         log.own('run_completed', dict(tuple_, lane=STANDING, **cited),
                 blob_refs=tuple(cited.values()))
@@ -615,11 +618,13 @@ def test_a_standing_run_without_its_attestation_is_named(tmp_path):
     assert oracle.report(home, script=script(
         {'lane': STANDING, 'replay': tuple_}))['every_numbers_replay_tuple']['held'] is True
 
-    missing = oracle.report(home, script=script(
-        {'lane': STANDING, 'replay': dict(tuple_, seed=99)}))['every_numbers_replay_tuple']
-    assert missing['held'] is False
-    assert 'the record holds no attestation' in missing['evidence'][0]
-    assert 'no standing run asked for' in missing['evidence'][1], 'the other direction went unread'
+    for moved in ({'seed': 99}, {'quasi_seed': 99}):
+        missing = oracle.report(home, script=script(
+            {'lane': STANDING, 'replay': dict(tuple_, **moved)}))['every_numbers_replay_tuple']
+        assert missing['held'] is False, moved
+        assert 'the record holds no attestation' in missing['evidence'][0]
+        assert 'no standing run asked for' in missing['evidence'][1], (
+            'the other direction went unread')
 
     quiet = oracle.report(home, script=script({'lane': 'curiosity', 'replay': tuple_}))
     assert 'a lane that mints nothing minted' in quiet['every_numbers_replay_tuple']['evidence'][0]
@@ -754,7 +759,7 @@ def marked(log, day, rate, reference=None, market='official'):
                      'Deals': {'Reference': reference or 'marks:{}@{}'.format(BOOK, closed['lsn'])},
                      'Calculation': {'Base_Date': {'.Timestamp': day}}}})))
     log.own('run_completed', dict(cited, plan_hash=PLAN, engine_version='2.0', seed=1,
-                                  lane=STANDING), blob_refs=tuple(cited.values()))
+                                  quasi_seed=1234, lane=STANDING), blob_refs=tuple(cited.values()))
     return dict(cited, day=day, lsn=closed['lsn'])
 
 

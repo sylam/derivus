@@ -348,8 +348,7 @@ def test_discrete_monitoring_prices_to_an_independent_simulation():
 
     3e-3 is 2.6x the gap, and the slack is the inner QMC count's rather than the reference's: at
     inception every outer path reads the same inner rows, so the reading is ONE inner sample's -
-    +1.34% at 256 inner paths, +0.64% at 1024, -0.12% at 4096, -0.05% at 65536 - and the batch
-    is the Sobol arm's smallest.
+    +1.34% at 256 inner paths, +0.64% at 1024, -0.12% at 4096, -0.05% at 65536.
 
     The OSS monitoring expiry SURVIVES, the barrier at 90 being below the strike at 100, so a path
     the extra observation knocks out already pays zero and only a rebate would reveal it.
@@ -369,7 +368,7 @@ def test_a_strip_longer_than_a_block_chunk_prices_to_an_independent_simulation()
     antithetic paths in float64, V_0 = 7.6649 +- 0.0008, against a reading of 7.650688 (-0.185%).
 
     5e-3 is the inner QMC count's slack, not the reference's: one inner sample at inception reads
-    -0.185% at 8192 paths, -0.17% at 32768 and -0.11% at 131072, the pseudo-random arm +0.03%.
+    -0.185% at 8192 paths, -0.17% at 32768 and -0.11% at 131072.
 
     Killing mutation: every chunk of the inner block read off the first 64 dimensions, so row
     64 + k repeats row k - -14.2% when it was read `c * sims` points further along one engine.

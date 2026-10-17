@@ -159,7 +159,7 @@ def fx_vol_quotes(order):
 def book(base, order=('EUR', 'ZAR'), deals=(), **sections):
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': base,
-                        'MCMC_Simulations': 1, 'Random_Seed': 1},
+                        'MCMC_Simulations': 1, 'Quasi_Seed': 1},
         'Deals': {'Reference': 'cross',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': dict({
@@ -738,7 +738,10 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     rather than the 64 paths this document states. The claim is unmoved - only the strike the
     exposure is measured at. Re-taken again when the accumulator's carry became the curves'
     integral over its year fraction (`pricing.zero_carry_rate`), which moves each inner path in
-    float32's last bit and the mean by 3.3e-7 of itself.
+    float32's last bit and the mean by 3.3e-7 of itself. Re-taken when a base valuation's inner
+    paths became the canonical block's, which moves the strike it solves, and a pricer's walk drew
+    its shocks off `Quasi_Seed`: mean -5,707.52 to -3,503.11, standard deviation 97,839.41 to
+    97,503.69.
     """
     document = fitted('USD')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -770,7 +773,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     assert np.isfinite(exposure).all() and exposure.shape[0] > 1
     assert exposure.std() > 0.0, 'a skipped deal has no spread, so zero would pass anything'
     assert (float(exposure.mean()), float(exposure.std())) == pytest.approx(
-        (-5707.519785357018, 97839.4137998168), rel=1e-9), (
+        (-3503.1133801403143, 97503.68654057696), rel=1e-9), (
         'the cross re-seeds from its own level: this exposure moves if it inherits one')
 
 

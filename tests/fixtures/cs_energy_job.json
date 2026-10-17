@@ -6,8 +6,7 @@
    },
    "Currency": "USD",
    "MCMC_Simulations": 1,
-   "Object": "BaseValuation",
-   "Random_Seed": 1
+   "Object": "BaseValuation"
   },
   "Deals": {
    "Deals": {

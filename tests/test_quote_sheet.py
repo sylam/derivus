@@ -52,7 +52,7 @@ DEAL_REFERENCE = 'ZeroCostCollar-' + QUOTE_ID[:8]
 #: the market number the desk says out loud, USDZAR 18.5, is the ratio of the two.
 BOOK = {'Calc': {
     'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': BASE},
-                    'Currency': 'USD', 'MCMC_Simulations': 1, 'Random_Seed': 1},
+                    'Currency': 'USD', 'MCMC_Simulations': 1, 'Quasi_Seed': 1},
     'Deals': {'Reference': 'desk', 'Deals': {'Children': [
         {'Instrument': {'.Deal': {
             'Object': 'FixedCashflowDeal', 'Reference': 'CF1', 'Currency': 'ZAR',

@@ -338,6 +338,16 @@ class Calculation(object):
                     "gradient's last bits repeat between runs on one machine and one build, at "
                     'about 1.03x the wall clock')
 
+    #: `Random_Seed`, declared once for the calculations that simulate scenarios.
+    RANDOM_SEED = F('Random_Seed', 'Integer', default=5120,
+                    description='Seed of the scenario stream the simulated processes draw from')
+
+    #: `Quasi_Seed`, declared once for the calculations whose pricers draw a quasi-random stream.
+    QUASI_SEED = F(
+        'Quasi_Seed', 'Integer', default=utils.Calculation_State.QUASI_SEED, convention=True,
+        description='Scramble seed of every quasi-random draw: the inner Monte Carlo paths, the '
+                    'Sobol-driven processes and the walks keyed off it')
+
     def __init__(self, config, prec=torch.float32, device=torch.device('cpu')):
         """Construct a new calculation - all calculations set up their own tensors."""
 
@@ -549,13 +559,6 @@ def batch_seed(random_seed, batch_index):
 
 
 class CMC_State(utils.Calculation_State):
-    #: The canonical inner block's chunk: an inner path is one Sobol point over all its fixings,
-    #: read this many dimensions at a time - chunk c from dimension 64c of an engine 64(c+1) wide.
-    INNER_CHUNK = 64
-
-    #: The inner block's distance from 0 and 1 in units of 2^-30, the stream's 1e-6 margin.
-    INNER_MARGIN = 1074
-
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
                  seed, job_id, num_jobs, scale_survival=False, nomodel='Constant', keep_tensor=False):
         """Per-calculation Monte Carlo state: correlated random numbers, scenario buffers and the
@@ -576,8 +579,6 @@ class CMC_State(utils.Calculation_State):
         self.t_random_numbers = None
         self.t_Scenario_Buffer = {}
         self.t_quasi_rng_batch = {}
-        # the canonical inner block per inner path count - see `inner_block`
-        self.t_inner_block = {}
         # Where each REQUESTED width's stream stands, and separately the engine cached per ENGINE
         # width with its own standing position - a chunked draw's two keys are not the same number.
         # Tracking position is what lets one `quasi_rng` serve both arms - see there.
@@ -595,12 +596,12 @@ class CMC_State(utils.Calculation_State):
     def quasi_rng(self, dimension, sample_size):
         """One quasi-random draw of `sample_size` points in `dimension` dimensions.
 
-        SHARDING CHANGES ONLY WHERE THE DRAW IS TAKEN FROM. The stream is a fixed scrambled Sobol
-        sequence at a fixed offset, neither derived from `Random_Seed`, so it is reproducible; what
-        is not is POSITION. The historical arm indexes by THIS PROCESS's own draw count and reads
-        wherever its engine has reached, so a worker holding part of a job reads the points an
-        earlier batch should have had. The anchored arm (`set_quasi_batch`, deterministic sharding
-        only) indexes by the GLOBAL batch and reads `QUASI_ANCHOR + index * sample_size`.
+        SHARDING CHANGES ONLY WHERE THE DRAW IS TAKEN FROM. The stream is a scrambled Sobol sequence
+        seeded by `Quasi_Seed` at a fixed offset, so it is reproducible; what is not is POSITION.
+        The historical arm indexes by THIS PROCESS's own draw count and reads wherever its engine
+        has reached, so a worker holding part of a job reads the points an earlier batch should
+        have had. The anchored arm (`set_quasi_batch`, deterministic sharding only) indexes by the
+        GLOBAL batch and reads `QUASI_ANCHOR + index * sample_size`.
 
         The two agree on an unsharded run of one draw per batch per shape - the engine advances by
         `sample_size` a batch, landing exactly on the anchored position - so anchoring is a
@@ -666,35 +667,11 @@ class CMC_State(utils.Calculation_State):
         engine, standing = self.sobol_engine.get(dimension, (None, self.QUASI_ANCHOR))
         if engine is None or position < standing:
             engine = torch.quasirandom.SobolEngine(
-                dimension=dimension, scramble=True, seed=self.QUASI_SEED)
+                dimension=dimension, scramble=True, seed=self.quasi_seed)
             engine.fast_forward(position)
         elif position > standing:
             engine.fast_forward(position - standing)
         return engine
-
-    def inner_block(self, rows, sims):
-        """The canonical inner block, `(u, 1 - u)`, each `[rows, sims]` in the job's dtype.
-
-        Row k is fixing k and column j inner path j, each path ONE scrambled Sobol point over the
-        fixings: chunk c of `INNER_CHUNK` rows is dimensions `64c` on of an engine `64(c + 1)` wide,
-        at the same points from `QUASI_ANCHOR`. A longer strip is more dimensions of one point set,
-        never more points of one engine - point `i + 2^k` is point `i` with a constant XORed in, so
-        those rows would repeat the first chunk's. So it is a function of the row and the path count
-        alone - every product, outer path, batch and worker reads the same rows, the inner error
-        common to the outer paths rather than averaged over them - and the complement is taken on
-        the integer, `2^30 - m`, so each half keeps its own tail."""
-        block = self.t_inner_block.get(sims)
-        have = 0 if block is None else block[0].shape[0]
-        if have < rows:
-            halves = [[], []] if block is None else [[block[0]], [block[1]]]
-            chunk, margin = self.INNER_CHUNK, self.INNER_MARGIN
-            for c in range(have // chunk, -(-rows // chunk)):
-                m = self.sobol_points(chunk * (c + 1), self.QUASI_ANCHOR, sims, self.one.device,
-                                      chunk * c).T.clamp(margin, 2 ** 30 - margin)
-                halves[0].append(m.to(self.one.dtype) * 2.0 ** -30)
-                halves[1].append(((1 << 30) - m).to(self.one.dtype) * 2.0 ** -30)
-            block = self.t_inner_block[sims] = (torch.cat(halves[0]), torch.cat(halves[1]))
-        return block[0][:rows], block[1][:rows]
 
     def set_quasi_batch(self, batch_num):
         """Anchor the quasi stream to a GLOBAL batch index (deterministic sharding only).
@@ -974,7 +951,8 @@ class CreditMonteCarlo(Calculation):
         F('MCMC_Simulations', 'Integer', default=2048),
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
-        F('Random_Seed', 'Integer', default=5120),
+        Calculation.RANDOM_SEED,
+        Calculation.QUASI_SEED,
         Calculation.DETERMINISTIC_KERNELS,
         F('Tenor_Offset', 'Float', default=0.0,
           description='Years to shift every factor tenor by before the run'),
@@ -1214,6 +1192,7 @@ class CreditMonteCarlo(Calculation):
             params['Currency'], params['MCMC_Simulations'],
             job_id, num_jobs, calc_greeks=sensitivities if greeks else None)
         shared_mem.calc_stats, shared_mem.unpriced = self.calc_stats, self.unpriced
+        shared_mem.quasi_seed = self.calc_stats['Quasi_Seed'] = int(params['Quasi_Seed'])
 
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
@@ -1989,8 +1968,9 @@ class BaseValuation(Calculation):
         '  `Run_Date`, which an override may set.',
         '- **MCMC Simulations** the number of inner Monte Carlo paths a deal that requires Monte Carlo',
         '  pricing (e.g. Autocalls, TARF\'s etc.) spends per reporting row, mirrored $(z,-z)$ (default 16,384)',
-        '- **Random Seed** the seed for the Monte Carlo Pricer (default 5120); **Deterministic Kernels** pins',
-        '  the GPU backward pass to deterministic kernels',
+        '- **Quasi Seed** the scramble seed of the inner paths, which every trade draws as its own',
+        '  whatever is booked beside it; **Deterministic Kernels** pins the GPU backward pass to',
+        '  deterministic kernels',
         '- **Greeks** `First` calculates all first order sensitivities (partial derivatives) of the portfolio',
         '  with respect to the relevant Price Factors; `All` adds the second order block (the full factor',
         '  Hessian, reported as `Greeks_Second`). Default `No`.',
@@ -2013,7 +1993,7 @@ class BaseValuation(Calculation):
         F('MCMC_Simulations', 'Integer', default=1 << 14,
           description='Inner Monte Carlo paths a simulated pricer spends per reporting row, '
                       'mirrored (z, -z); an analytic deal never reads it'),
-        F('Random_Seed', 'Integer', default=5120),
+        Calculation.QUASI_SEED,
         Calculation.DETERMINISTIC_KERNELS,
         F('Greeks', 'Text', default='No', values=['All', 'First', 'No'],
           description='First order factor sensitivities, or `All` for the second order block '
@@ -2074,8 +2054,9 @@ class BaseValuation(Calculation):
                     self.static_var[key] = self.factor_leaf(key, current_val, calc_grad)
 
         shared_mem = self.__init_shared_mem(
-            params['Currency'], params['MCMC_Simulations'], calc_grad, params['Random_Seed'])
+            params['Currency'], params['MCMC_Simulations'], calc_grad)
         shared_mem.calc_stats, shared_mem.unpriced = self.calc_stats, self.unpriced
+        shared_mem.quasi_seed = self.calc_stats['Quasi_Seed'] = int(params['Quasi_Seed'])
 
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
@@ -2083,8 +2064,8 @@ class BaseValuation(Calculation):
 
     def correlation_bump(self, params, width):
         """Every quanto, compo or mid-curve correlation a priced deal read, as a CENTRAL CRN bump of
-        the marked value: the book is re-compiled and re-valued once each side on the job's own seed,
-        so the difference is the bump and nothing else.
+        the marked value: the book is re-compiled and re-valued once each side on the job's own
+        draws, so the difference is the bump and nothing else.
 
         `Correlation` is a `DimensionLessFactor` - it mints no leaf, so this delta has no tape to
         come off and the alternative to a bump is reporting zero for a number the engine has. The
@@ -2134,10 +2115,8 @@ class BaseValuation(Calculation):
         # know the grid its counterfactual lands on, and reads its absence as "not reportable"
         self.time_grid.set_report_dates(base_date, {base_date})
 
-    def __init_shared_mem(self, reporting_currency, mcmc_sim, calc_greeks, random_seed):
-        # fix the seed if we need to price mc instruments
-        torch.manual_seed(random_seed)
-        # beside the seed, and set BOTH ways every run - the switch is process-global
+    def __init_shared_mem(self, reporting_currency, mcmc_sim, calc_greeks):
+        # set BOTH ways every run - the switch is process-global
         torch.use_deterministic_algorithms(
             self.params['Deterministic_Kernels'] == 'Yes', warn_only=True)
 
@@ -2751,7 +2730,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
           description='Holiday calendar naming the business day the roll steps on'),
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
-        F('Random_Seed', 'Integer', default=5120),
+        Calculation.RANDOM_SEED,
+        Calculation.QUASI_SEED,
         Calculation.DETERMINISTIC_KERNELS,
         F('Tenor_Offset', 'Float', default=0.0,
           description='Years to shift every factor tenor by before the run'),
@@ -3735,14 +3715,13 @@ class SIMM(Calculation):
 
     MARKET PRICES -> PRICE FACTORS -> MTM. A trade is a booked structure under a netting set, never
     its legs. One market input a trade's own dependency walk names is moved by ISDA's definition of
-    the sensitivity to it and the whole book revalued, each trade read off its own structure: a
+    the sensitivity to it and the trades it reaches revalued, each read off its own structure: a
     trade's difference over the shift is a CRIF row, so the run costs a valuation per move, not per
-    trade and move. Every valuation books every trade in one order and a move changes no draw count,
-    so each trade draws the same inner paths throughout and each difference is one of common random
-    numbers; a base valuation draws a Monte Carlo pricer's paths off one stream in booking order, so
-    such a trade booked after another is valued as the book values it, not as it is valued alone. A
-    moved benchmark quote rides its curve family's calibration Jacobian, `theta* + J (q - q0)`, off
-    one solve per coupled set at the run's bootstrap, exact to first order in the move.
+    trade and move. A Monte Carlo pricer draws a trade's inner paths off `Quasi_Seed` alone,
+    whatever is booked beside it, so each trade draws the same paths through the base and every
+    move and each difference is one of common random numbers. A moved benchmark quote rides its
+    curve family's calibration Jacobian, `theta* + J (q - q0)`, off one solve per coupled set at the
+    run's bootstrap, exact to first order in the move.
 
     How a factor moves is the methodology and lives here: a basis point on each benchmark quote of
     a curve, split linearly between the vertices either side of its maturity; a basis point on every
@@ -3807,9 +3786,9 @@ class SIMM(Calculation):
           description='Points of implied vol a vertex moves by, ISDA\'s one; another is scaled to it'),
         F('MCMC_Simulations', 'Integer', default=1 << 14,
           description='Inner Monte Carlo paths of each valuation, as a BaseValuation reads them'),
-        F('Random_Seed', 'Integer', default=5120,
-          description='The seed every valuation of a trade runs on, so each move is a '
-                      'common-random-numbers difference')
+        F('Quasi_Seed', 'Integer', default=utils.Calculation_State.QUASI_SEED, convention=True,
+          description="The scramble seed every valuation's quasi-random draws run on, so each move "
+                      'is a common-random-numbers difference')
     ]
 
     def setup(self, params):
@@ -3836,13 +3815,14 @@ class SIMM(Calculation):
         self.vertices = sorted(((label, int(label[:-1]) * {'w': 7.0, 'm': 365 / 12.0, 'y': 365.0}[
             label[-1].lower()] / 365.0) for label in weights), key=lambda vertex: vertex[1])
         self.calc_stats['Parameters'] = parameters.get('version', '')
+        self.calc_stats['Quasi_Seed'] = params['Quasi_Seed']
         self.shifts = {'quote': params['Rate_Shift'], 'parallel': params['Rate_Shift'],
                        'spot': params['Spot_Shift'], 'fx': params['Spot_Shift'],
                        'vega': params['Vol_Shift']}
         self.valuation = {
             'Object': 'BaseValuation', 'Base_Date': params['Base_Date'],
             'Currency': params['Currency'], 'MCMC_Simulations': params['MCMC_Simulations'],
-            'Random_Seed': params['Random_Seed'], 'Greeks': 'No', 'Deterministic_Kernels': 'Yes'}
+            'Quasi_Seed': params['Quasi_Seed'], 'Greeks': 'No', 'Deterministic_Kernels': 'Yes'}
         book = self.config.deals['Deals']['Children']
         loose = [node['Instrument'].field.get('Reference') for node in book
                  if node['Instrument'].field['Object'] != 'NettingCollateralSet']
@@ -4136,9 +4116,9 @@ class SIMM(Calculation):
             factors[name], Curve=family.solved_curve(artifact.benchmarks, theta, curve))
             for curve in artifact.factors}
 
-    def value(self, moved):
-        """`{index: (value, skipped)}` - every trade of the book valued in the calculation currency
-        with `moved` over the standing price factors, each off its own structure, and the engine's
+    def value(self, moved, indices):
+        """`{index: (value, skipped)}` - trades `indices` valued in the calculation currency with
+        `moved` over the standing price factors, each off its own structure, and the engine's
         sentences for what it skipped inside each, the distinct ones spoken at its deals."""
         from . import run_baseval
 
@@ -4148,7 +4128,7 @@ class SIMM(Calculation):
         heard = utils.CapturedErrors()
         logging.getLogger().addHandler(heard)
         try:
-            with self.booked(range(len(self.trades))):
+            with self.booked(indices):
                 calc, _ = run_baseval(self.config)
         finally:
             logging.getLogger().removeHandler(heard)
@@ -4163,7 +4143,8 @@ class SIMM(Calculation):
                 for agreement in calc.netting_sets.sub_structures for deal in
                 [structure.obj for structure in agreement.sub_structures] + agreement.dependencies}
         found = {}
-        for index, (agreement, node) in enumerate(self.trades):
+        for index in indices:
+            agreement, node = self.trades[index]
             references = {deal['Instrument'].field.get('Reference')
                           for _, deal in schema.walk([node])}
             mine = list(dict.fromkeys(said for deal, said in skipped if deal in references))
@@ -4174,7 +4155,7 @@ class SIMM(Calculation):
 
     def base(self):
         """`{index: (value, skipped)}` - every trade of the book off one valuation of it."""
-        return self.value({})
+        return self.value({}, range(len(self.trades)))
 
     def reach(self, base):
         """`{move: [index]}` - every move and vega base the trades valued in `base` take, in a fixed
@@ -4188,11 +4169,11 @@ class SIMM(Calculation):
         return reach
 
     def values(self, moves):
-        """`{(index, move): value}` - each `(move, indices)` of `moves` one valuation of the book,
-        read for the trades `indices`, each refused by name where it values to nothing finite."""
+        """`{(index, move): value}` - each `(move, indices)` of `moves` one valuation of the trades
+        `indices`, each refused by name where it values to nothing finite."""
         found = {}
         for move, indices in moves:
-            valued = self.value(self.move(move))
+            valued = self.value(self.move(move), indices)
             for index in indices:
                 value = valued[index][0]
                 if value is None or not math.isfinite(value):

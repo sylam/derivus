@@ -90,7 +90,7 @@ def contract(tenor, coupon, upfront=0.0, day_count='ACT_360', reference=None, **
 
 
 #: The calculation a document runs unless it states another.
-VALUATION = {'Object': 'BaseValuation', 'MCMC_Simulations': 1, 'Random_Seed': 1}
+VALUATION = {'Object': 'BaseValuation', 'MCMC_Simulations': 1}
 
 
 def document(deals=(), factors=None, market_prices=None, entries=None, calculation=VALUATION):

@@ -5,12 +5,11 @@ once, while the simulation that built them is cheap. `pricing.InnerMCRecompute` 
 a second forward: the node's forward runs under `no_grad`, its backward re-runs the SAME callable
 under `enable_grad` and contracts the cotangent through one graph that dies immediately.
 
-THE POSITION IS THE STORAGE. What is saved is where the regular generator stood
-(`rng_position`), never what it drew, and its state is restored for the replay; the Sobol rows
-are the canonical inner block's, a function of their shape, with no position to save. `pv_MC_Tarf`
-takes Sobol above 16 scenarios, so base valuation's one scenario reads `torch.rand` - the generator
-one draw ahead moves its gradient by 5.73e+03 - and the 512-scenario exposure reads the block, its
-replay bit-identical with the generator and the quasi counter both a draw ahead.
+NOTHING DRAWN IS STORED. The pricer's inner rows are the canonical inner block's, a function of
+their shape and `Quasi_Seed` at every outer batch size, so the replay reads them again with nothing
+to rewind: base valuation's one scenario and the 512-scenario exposure read the same block. A base
+valuation draws nothing else, so a trade's mark is its own whatever is booked beside it, and a
+second `Quasi_Seed` moves it by its Monte Carlo error.
 
 THE GRADIENT GATE IS `array_equal` AND NOT A TOLERANCE. The replay is the same kernels on the same
 inputs in the same order, and a tolerance would let a desynchronised stream through as "close
@@ -58,9 +57,8 @@ KNOCK_IN, KNOCK_IN_CMC, PIN_CMC = tarf.KNOCK_IN, tarf.KNOCK_IN_CMC, tarf.PIN_CMC
 
 def baseval(deal, greeks=False, sims=1 << 12, recompute='No'):
     """(price, the WHOLE first-order gradient vector). One scenario, so the pricer's inner Monte
-    Carlo is the entire simulation and `quasi_rng` is not reached - this is the `torch.rand` half
-    of the stream contract."""
-    overrides = {'MCMC_Simulations': sims, 'Random_Seed': 1, 'Recompute_Inner_MC': recompute,
+    Carlo, the canonical block's rows, is the entire simulation."""
+    overrides = {'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Recompute_Inner_MC': recompute,
                  'Greeks': 'First' if greeks else 'No'}
     _, out = run_baseval(tarf._cfg(deal, tarf.SPOT), overrides=overrides)
     rows = out['Results']['mtm']
@@ -75,9 +73,8 @@ def baseval(deal, greeks=False, sims=1 << 12, recompute='No'):
 
 def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128,
         deterministic='No'):
-    """(cva, mtm profile, the WHOLE CVA gradient vector, cashflows). 512 scenarios, so the pricer
-    takes the Sobol branch - the inner block's half of the stream contract - and the boundary
-    correction has a population to fit a kernel to."""
+    """(cva, mtm profile, the WHOLE CVA gradient vector, cashflows). 512 scenarios, so the
+    boundary correction has a population to fit a kernel to."""
     overrides = {
         'Run_Date': tarf.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2m(2m)', 'Batch_Size': batch,
         'Simulation_Batches': batches, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
@@ -125,7 +122,9 @@ def test_the_base_price_and_gradient_are_bit_identical_with_the_node_on():
     different numbers would still converge to the same price at 4096 paths and be wrong in every
     digit that matters.
 
-    Killing mutation: the replay one draw ahead on the regular generator.
+    Killing mutation: the pseudo-random draw restored below 16 outer paths with no position to
+    replay it from - the replay draws the generator's next numbers and the spot gradient reads
+    3,802,184.70 against the taped 3,796,451.71.
     """
     price_off, grad_off = baseval(KNOCK_IN, greeks=True)
     price_on, grad_on = baseval(KNOCK_IN, greeks=True, recompute='Yes')
@@ -219,10 +218,10 @@ def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient(caplog):
     the stretch its projected tape passes half of what is free, and the run peaks under
     `STREAM_PEAK_MIB` and reproduces the uncapped run's cva and gradient bit for bit.
 
-    Readings: uncapped 911 MiB, 943 as a process's first run (cuBLAS's 32 MiB workspace), all 48
-    strips plain and each two-row block one piece, a row-step's replay measured at 19.8 MB, 476 over
-    the probed row's 24 fixings; capped 232 MiB, 33 strips checkpointed and every block cut to one
-    row, the row-step 18.3 MB, its tape's, the probe's own replay having checkpointed.
+    Readings: uncapped 922 MiB as a process's first run (cuBLAS's 32 MiB workspace among it), all
+    48 strips plain and each two-row block one piece, a row-step's replay measured at 19.4 MB, 466
+    over the probed row's 24 fixings; capped 224 MiB, 33 strips checkpointed and every block cut to
+    one row, the row-step 18.3 MB, its tape's, the probe's own replay having checkpointed.
 
     Killing mutations: the projection ignored, every strip walked plain - out of memory under the
     cap; every strip checkpointed past its first stretch - 44 of the uncapped run's 48 strips.
@@ -335,19 +334,25 @@ def test_a_taped_strip_that_fits_is_one_checkpoint(caplog):
 
 # ---------------------------------------------------------------- (g) a trade's draws are its own
 
+def accumulator():
+    """An accumulator fixing on the TARF's first three bimonthly dates, which asks the inner draws
+    for other strip lengths than the TARF's."""
+    dates = [tarf.BASE + pd.Timedelta(days=d) for d in tarf.BIMONTHLY[:3]]
+    return {'Instrument': construct_instrument({
+        'Object': 'FXAccumulatorOptionDeal', 'Reference': 'ACC1', 'Currency': 'USD',
+        'Underlying_Currency': 'AUD', 'Discount_Rate': 'USD', 'FX_Volatility': 'AUD.USD',
+        'Buy_Sell': 'Sell', 'Option_Type': 'Call', 'Strike_Price': tarf.STRIKE,
+        'Underlying_Amount': tarf.N1, 'LeverageNotional': tarf.N2,
+        'Barrier_Type': 'Up_And_Out', 'Barrier_Price': 0.75,
+        'Accumulator_ExpiryDates': [[d, d, None] for d in dates]}, {})}
+
+
 def knock_in_tensor(neighbour):
-    """The knock-in TARF's own exposure tensor at 64 x 128, booked alone or after an accumulator
-    fixing on its first three dates, which asks the inner draws for other strip lengths first."""
+    """The knock-in TARF's own exposure tensor at 64 x 128, booked alone or after the
+    accumulator."""
     config = tarf._cfg(KNOCK_IN_CMC, tarf.SPOT, counterparty=True, simulate_fx=True)
     if neighbour:
-        dates = [tarf.BASE + pd.Timedelta(days=d) for d in tarf.BIMONTHLY[:3]]
-        config.deals['Deals']['Children'].insert(0, {'Instrument': construct_instrument({
-            'Object': 'FXAccumulatorOptionDeal', 'Reference': 'ACC1', 'Currency': 'USD',
-            'Underlying_Currency': 'AUD', 'Discount_Rate': 'USD', 'FX_Volatility': 'AUD.USD',
-            'Buy_Sell': 'Sell', 'Option_Type': 'Call', 'Strike_Price': tarf.STRIKE,
-            'Underlying_Amount': tarf.N1, 'LeverageNotional': tarf.N2,
-            'Barrier_Type': 'Up_And_Out', 'Barrier_Price': 0.75,
-            'Accumulator_ExpiryDates': [[d, d, None] for d in dates]}, {})})
+        config.deals['Deals']['Children'].insert(0, accumulator())
     calc, _ = derivus.run_cmc(config, prec=DTYPE, overrides={
         'Run_Date': tarf.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 2m(2m)', 'Batch_Size': 64,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'MCMC_Simulations': 128,
@@ -367,3 +372,44 @@ def test_a_trade_is_valued_on_its_own_draws_whatever_is_booked_before_it():
     alone, beside = knock_in_tensor(False), knock_in_tensor(True)
     assert alone.std() > 0.0 and np.array_equal(alone, beside), (
         'a neighbour moved the TARF by {:.6g}'.format(float(np.abs(alone - beside).max())))
+
+
+def booked(order, **calculation):
+    """The knock-in TARF's base valuation mark in a book of `order` - `T` the TARF, `A` the
+    accumulator - at `calculation`'s dials."""
+    config = tarf._cfg(KNOCK_IN, tarf.SPOT)
+    held = {'T': config.deals['Deals']['Children'][0], 'A': accumulator()}
+    config.deals['Deals']['Children'] = [held[name] for name in order]
+    rows = run_baseval(config, overrides=calculation)[1]['Results']['mtm']
+    return float(rows[rows['Reference'] == 'TARF1']['Value'].iloc[0])
+
+
+def test_a_base_valuation_values_a_trade_on_its_own_draws_in_any_book():
+    """A base valuation draws a Monte Carlo trade's inner paths off `Quasi_Seed` alone, so the
+    TARF marks the same alone, after the accumulator and before it, to the bit, at -8,262.65.
+
+    Killing mutation: the pseudo-random draw restored below 16 outer paths, seeded once a valuation
+    - alone the TARF reads -8,378.22, after the accumulator -7,851.62.
+    """
+    alone = booked('T', MCMC_Simulations=1 << 12)
+    assert alone == booked('AT', MCMC_Simulations=1 << 12) == booked('TA', MCMC_Simulations=1 << 12)
+
+
+#: The knock-in TARF's inner Monte Carlo error at the declared 16,384 paths: the standard
+#: deviation of its base valuation mark over `Quasi_Seed` 1 to 32.
+TARF_INNER_ERROR = 3.68
+
+
+def test_a_second_quasi_seed_moves_the_mark_by_its_monte_carlo_error():
+    """`Quasi_Seed` scrambles the inner block, so a second seed is an independent randomisation of
+    the same points: at the declared path count the TARF reads -8,268.63 at seed 1 and -8,274.89
+    at seed 2, 6.27 apart, where its marks over seeds 1 to 32 average -8,271.45 and spread
+    `TARF_INNER_ERROR`. The difference is asserted non-zero and inside four standard deviations of
+    the difference of two seeds.
+
+    Killing mutations: the scramble seeded by the constant whatever the calculation states - the
+    two marks equal at -8,268.29; the pseudo-random draw restored below 16 outer paths - the two
+    seeds read -8,227.49 and -8,334.62, 107.12 apart.
+    """
+    one, two = booked('T', Quasi_Seed=1), booked('T', Quasi_Seed=2)
+    assert 0.0 < abs(one - two) < 4.0 * 2.0 ** 0.5 * TARF_INNER_ERROR, (one, two)

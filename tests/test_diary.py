@@ -192,7 +192,7 @@ def job(nodes, factors=None, **calculation):
     the same book runs as a credit Monte Carlo as well as a base valuation."""
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'ZAR',
-                             'MCMC_Simulations': 1, 'Random_Seed': 1}, **calculation),
+                             'MCMC_Simulations': 1}, **calculation),
         'Deals': {'Reference': 'diary-desk', 'Deals': {'Children': nodes}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'ZAR', 'Base_Date': BASE},
@@ -280,9 +280,9 @@ def payments(rows):
 def realized(deal, tmp_path):
     """The book priced under a credit Monte Carlo with `Generate_Cashflows` on, in float64: what
     the engine says it actually paid, per currency and day."""
-    run = dict(job([])['Calc']['Calculation'], Object='CreditMonteCarlo', Batch_Size=32,
-               Simulation_Batches=1, Time_grid='0d 24m(3m)', Deflation_Interest_Rate='ZAR',
-               Generate_Cashflows='Yes')
+    run = dict(job([])['Calc']['Calculation'], Object='CreditMonteCarlo', Random_Seed=1,
+               Batch_Size=32, Simulation_Batches=1, Time_grid='0d 24m(3m)',
+               Deflation_Interest_Rate='ZAR', Generate_Cashflows='Yes')
     context = derivus.Context().load_json((dump(job([node(deal)], **run)), 'diary-cashflows'))
     _, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
     return {(currency, str(day.date())): float(frame.loc[day].iloc[0])
@@ -1210,7 +1210,7 @@ def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_keeps_the_de
     for seed, switch in ((2, 'Yes'), (3, 'No')):
         # a seed of its own: the diary's etag is the deals and the calculation, so the second
         # compile would otherwise be the first one's stored result
-        document = job([node(dict(FX_OPTION, Reference='NOVOL'))], FACTORS, Random_Seed=seed)
+        document = job([node(dict(FX_OPTION, Reference='NOVOL'))], FACTORS, Quasi_Seed=seed)
         document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
             'Exclude_Deals_With_Missing_Market_Data'] = switch
         path = tmp_path / 'book.json'

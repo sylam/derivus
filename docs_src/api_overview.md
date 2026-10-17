@@ -59,7 +59,7 @@ reference:
 | `cx.Base_Valuation(overrides)` | `BaseValuation` | Single-point MTM revaluation |
 | `cx.Credit_Monte_Carlo(overrides)` | `CreditMonteCarlo` | Path-dependent simulation (CVA / FVA / PFE) |
 | `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolver) |
-| `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, the book revalued once per market move |
+| `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, the trades a market move reaches revalued once per move |
 | `cx.run_job(overrides)` | (any of the above) | Dispatches based on the loaded JSON's `Calculation.Object` |
 | `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |
 | `cx.describe()` | (any of the above) | Reports what the engine made of the loaded job, without running it |
@@ -250,23 +250,27 @@ names the quote-update path (which bootstraps atomically) as the remedy.
 
 | Verb | What it hashes |
 |---|---|
-| `cx.plan_hash()` | the program — `params` and `deals`, less every value-bound field and `Random_Seed`, and the calendar's weekend rules and holidays |
+| `cx.plan_hash()` | the program — `params` and `deals`, less every value-bound field, `Random_Seed` and `Quasi_Seed`, and the calendar's weekend rules and holidays |
 | `cx.values_hash()` | exactly what `cx.market_patch()` emits |
 
 Both are sha256 over a canonical dump and pure functions of the loaded config: they run nothing,
 price nothing and change nothing. The plan covers the `Calculation` block too, so `Batch_Size` and
 `Simulation_Batches` move it — they change the realized numbers.
 
-A reported number is replayable from four coordinates:
+A reported number is replayable from five coordinates:
 
 ```python
-(cx.plan_hash(), cx.values_hash(), rf.__version__, calculation['Random_Seed'])
+(cx.plan_hash(), cx.values_hash(), rf.__version__, calculation.get('Random_Seed'),
+ calculation['Quasi_Seed'])
 ```
 
-`rf.__version__` is the engine version, and the seed is its own coordinate because it belongs to
-neither hash. Two runs agreeing on all four report the same numbers, so one plan can be compiled
-once and re-run against many value sets — and a run whose engine version differs is not a replay,
-because a code change may legitimately reassign the RNG substreams.
+`rf.__version__` is the engine version, and the two seeds are coordinates of their own because
+they belong to neither hash: `Random_Seed` seeds a credit or hedging Monte Carlo's scenarios, null
+for a base valuation and a SIMM, which declare none, and `Quasi_Seed`, which every calculation
+declares, its quasi-random draws, a pricer's inner paths among them. Two runs agreeing on all five
+report the same numbers, so one plan can be compiled once and re-run against many value sets — and
+a run whose engine version differs is not a replay, because a code change may legitimately
+reassign the RNG substreams.
 
 ## Overrides
 
@@ -277,7 +281,9 @@ just before execution. Common overrides:
   document's `Base_Date` before overrides apply, so overriding `Base_Date` alone does not move the
   date (a `SIMM` run is the exception: it reads `Base_Date`)
 - `Currency` — change the reporting currency
-- `Random_Seed`, `Batch_Size`, `Simulation_Batches` — control Monte Carlo reproducibility and size;
+- `Quasi_Seed`, `Random_Seed`, `Batch_Size`, `Simulation_Batches` — control Monte Carlo
+  reproducibility and size, `Quasi_Seed` a pricer's inner paths under every calculation and
+  `Random_Seed` a Monte Carlo's scenarios;
   on a CUDA device a credit Monte Carlo reports what it held at its peak beside what the device
   has (`Stats.Device_Memory`), and warns where the peak passed the device, since the driver pages
   such a batch over the bus rather than refusing it
@@ -314,8 +320,9 @@ Monte Carlo returns the same three plus a fourth; a `SIMM` run returns `Stats` a
 `HedgeRuntimeExecutionResult` instead of a dict — see [Hedge Monte Carlo](#hedge-monte-carlo).)
 
 - `'Netting'` — the internal `DealStructure` tree. Useful for developers walking the hierarchy.
-- `'Stats'` — a dict of timing and counter statistics from the run, and under `Files` the sha256
-  of the market data file and the calendar the job named.
+- `'Stats'` — a dict of timing and counter statistics from the run, under `Files` the sha256 of
+  the market data file and the calendar the job named, and the `Quasi_Seed` it drew on beside the
+  `Random_Seed` a Monte Carlo reports.
 - `'Results'` — the user-facing dataframes / arrays. Keys vary by calculation type; see the
   [Output](output.md) page.
 - `'Jacobians'` — credit Monte Carlo only: the harvested Jacobians keyed by variable name, `{}`
@@ -454,18 +461,19 @@ queue. `/describe` reports that class under `cost`, with a crude size estimate b
 scenario grid and labelled as an estimate because that is what it is.
 
 **One job, one execution.** `result_id` is the content hash of the replay tuple `(plan_hash,
-values_hash, engine_version, seed)`. Submitting the same job twice returns the same id without
+values_hash, engine_version, seed, quasi_seed)`. Submitting the same job twice returns the same id without
 re-running — while it is still queued, while it is running, and after it has finished — so dedupe
 and retry-idempotency are one feature, and two clients patching to the same market share a result.
 
-**Never the whole cube.** A `done` result is a SUMMARY: the four replay coordinates, and every
+**Never the whole cube.** A `done` result is a SUMMARY: the five replay coordinates, and every
 table the run produced named with its row count and column labels. No cells — a credit Monte Carlo's
 exposure is dates by scenarios and does not fit in an answer anyone wants to hold. A client reads
 the shapes and fetches the one table it is showing:
 
 ```
 GET /results/{result_id}
-{"status": "done", "plan_hash": …, "values_hash": …, "engine_version": …, "seed": 1,
+{"status": "done", "plan_hash": …, "values_hash": …, "engine_version": …, "seed": null,
+ "quasi_seed": 1234,
  "tables": {"mtm": {"rows": 240, "columns": ["Reference", "Object", "Value", …]}}}
 
 GET /results/{result_id}/mtm?offset=0&limit=100

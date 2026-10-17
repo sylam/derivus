@@ -90,7 +90,7 @@ def _deal(barrier_type, barrier, strike=1.25, at_start='No', option_type='Call',
 def _job(deal, calc=None):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
-                             'MCMC_Simulations': 1, 'Random_Seed': 1}, **(calc or {})),
+                             'MCMC_Simulations': 1}, **(calc or {})),
         'Deals': {'Reference': 'pb',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
@@ -102,7 +102,8 @@ def _job(deal, calc=None):
 def _cmc_job(deal, **calc):
     """`deal` under a credit Monte Carlo on a GBM EUR drifting at the USD-EUR carry."""
     job = _job(deal, calc=dict(
-        {'Object': 'CreditMonteCarlo', 'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD'}, **calc))
+        {'Object': 'CreditMonteCarlo', 'MCMC_Simulations': 1, 'Random_Seed': 1,
+         'Deflation_Interest_Rate': 'USD'}, **calc))
     md = job['Calc']['MergeMarketData']['ExplicitMarketData']
     md['Price Models'] = {'GBMAssetPriceModel.EUR': {'Vol': SIGMA, 'Drift': R_USD - R_EUR}}
     md['Model Configuration'] = {'.ModelParams': {

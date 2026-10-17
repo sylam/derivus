@@ -1464,18 +1464,25 @@ class Calculation_State(object):
     should inherit from this calculation state and extend accordingly
     """
 
-    #: The quasi-random stream's identity, shared by every state that draws from it: the scramble
-    #: seed of each Sobol engine and the position it starts at, fixed rather than the job's seed.
+    #: The quasi-random stream's identity: `Quasi_Seed`'s convention default, the scramble seed of
+    #: each Sobol engine, and the position every engine starts at.
     QUASI_SEED = 1234
     QUASI_ANCHOR = 1024
 
-    @classmethod
-    def sobol_points(cls, dimension, position, n, device, first=0):
+    #: The canonical inner block's chunk: an inner path is one Sobol point over all its fixings,
+    #: read this many dimensions at a time - chunk c from dimension 64c of an engine 64(c+1) wide.
+    INNER_CHUNK = 64
+
+    #: The inner block's distance from 0 and 1 in units of 2^-30, the stream's 1e-6 margin.
+    INNER_MARGIN = 1074
+
+    def sobol_points(self, dimension, position, n, first=0):
         """`n` points of the scrambled Sobol stream from `position`, dimensions `first` on, as
-        30-bit integers on `device`: `SobolEngine`'s own points bit for bit, at any position,
-        without stepping and without a double."""
+        30-bit integers on this state's device: `SobolEngine`'s own points bit for bit, at any
+        position, without stepping and without a double."""
+        device = self.one.device
         engine = torch.quasirandom.SobolEngine(dimension=dimension, scramble=True,
-                                               seed=cls.QUASI_SEED)
+                                               seed=self.quasi_seed)
         directions = engine.sobolstate[first:].to(device)
         index = torch.arange(position, position + n, dtype=torch.int64, device=device)
         gray = (index ^ (index >> 1)).reshape(-1, 1)
@@ -1483,6 +1490,30 @@ class Calculation_State(object):
         for bit in range(engine.MAXBIT):
             points = points ^ (((gray >> bit) & 1) * directions[:, bit])
         return points
+
+    def inner_block(self, rows, sims):
+        """The canonical inner block, `(u, 1 - u)`, each `[rows, sims]` in the job's dtype.
+
+        Row k is fixing k and column j inner path j, each path ONE scrambled Sobol point over the
+        fixings: chunk c of `INNER_CHUNK` rows is dimensions `64c` on of an engine `64(c + 1)` wide,
+        at the same points from `QUASI_ANCHOR`. A longer strip is more dimensions of one point set,
+        never more points of one engine - point `i + 2^k` is point `i` with a constant XORed in, so
+        those rows would repeat the first chunk's. So it is a function of the row, the path count
+        and the quasi seed alone - every product, outer path, batch and worker reads the same rows,
+        the inner error common to the outer paths rather than averaged over them - and the
+        complement is taken on the integer, `2^30 - m`, so each half keeps its own tail."""
+        block = self.t_inner_block.get(sims)
+        have = 0 if block is None else block[0].shape[0]
+        if have < rows:
+            halves = [[], []] if block is None else [[block[0]], [block[1]]]
+            chunk, margin = self.INNER_CHUNK, self.INNER_MARGIN
+            for c in range(have // chunk, -(-rows // chunk)):
+                m = self.sobol_points(chunk * (c + 1), self.QUASI_ANCHOR, sims,
+                                      chunk * c).T.clamp(margin, 2 ** 30 - margin)
+                halves[0].append(m.to(self.one.dtype) * 2.0 ** -30)
+                halves[1].append(((1 << 30) - m).to(self.one.dtype) * 2.0 ** -30)
+            block = self.t_inner_block[sims] = (torch.cat(halves[0]), torch.cat(halves[1]))
+        return block[0][:rows], block[1][:rows]
 
     def __init__(self, static_buffer, unit, mcmc_sims, report_currency: List[Tuple[bool, int]],
                  nomodel: str, simulation_batch: int, keep_tensor: bool):
@@ -1517,6 +1548,11 @@ class Calculation_State(object):
         # fired branch integrated against its interval's own law, and a SWAP - a deal on it
         # registers no `BoundarySet`. False HERE keeps `CreditMonteCarlo` on the crisp path.
         self.branch_and_weight = False
+        # The scramble seed of every quasi-random draw (`Quasi_Seed`), which a calculation sets;
+        # the convention here, so a state no calculation seeds draws without a fallback.
+        self.quasi_seed = self.QUASI_SEED
+        # the canonical inner block per inner path count - see `inner_block`
+        self.t_inner_block = {}
 
     def upload(self, array, dtype=None):
         """Numpy `array` on this state's device in `dtype`, the job's by default: copied once a
@@ -1525,19 +1561,6 @@ class Calculation_State(object):
         if key not in self.t_PreCalc:
             self.t_PreCalc[key] = self.one.new_tensor(array, dtype=dtype or self.one.dtype)
         return self.t_PreCalc[key]
-
-    def rng_position(self, position=None):
-        """Where the plain generator stands, seeking to `position` first where one is given, so
-        one call both rewinds and records where to rewind back to; the device generator's state
-        copies back to the host, hence once per pricing block."""
-        was = (torch.get_rng_state(),
-               torch.cuda.get_rng_state(self.one.device) if self.one.is_cuda else None)
-        if position is not None:
-            cpu_state, device_state = position
-            torch.set_rng_state(cpu_state)
-            if device_state is not None:
-                torch.cuda.set_rng_state(device_state, self.one.device)
-        return was
 
 
 def calculation_device(requested=None, job_id=0):

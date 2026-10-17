@@ -64,7 +64,7 @@ BINARY = dict({k: v for k, v in VANILLA.items() if k != 'Units'},
 FX = {'Object': 'FXOptionDeal', 'Reference': 'FXO', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
       'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
       'Strike_Price': FX_SPOT, 'Underlying_Amount': UNITS, 'Expiry_Date': EXPIRY}
-CMC = {'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 256,
+CMC = {'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 256, 'Random_Seed': 1,
        'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes'}
 
 
@@ -84,7 +84,7 @@ def run(deals, base=BASE, calc=None):
             'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
     job = {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
-                             'MCMC_Simulations': 1, 'Random_Seed': 1}, **(calc or {})),
+                             'MCMC_Simulations': 1}, **(calc or {})),
         'Deals': {'Reference': 'settle', 'Deals': {'Children': [node(d) for d in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
     cx = derivus.Context()

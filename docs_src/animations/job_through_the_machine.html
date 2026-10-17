@@ -545,7 +545,7 @@
           .then(function () { rulerLabel.textContent = 'scenario grid = MTM · report rows per set'; state.ticks = 3; renderTicks(); return wait(600); });
       } },
     { title: 'A batch: draw, correlate, generate in order',
-      text: 'Each batch reseeds from the job’s seed and its index, so a sharded run covers the same batches in the same order. One normal draw for every sub-factor row is correlated through the Cholesky factor into the random block; the quasi-random stream for the inner draws keeps its own fixed seed. Then each process generates in topological order and publishes its path to the scenario buffer under its own key as it finishes, so the FX rate reads its curve’s finished path. The per-batch memo is cleared first.',
+      text: 'Each batch reseeds from the job’s seed and its index, so a sharded run covers the same batches in the same order. One normal draw for every sub-factor row is correlated through the Cholesky factor into the random block; the quasi-random stream for the inner draws keeps its own seed, Quasi_Seed. Then each process generates in topological order and publishes its path to the scenario buffer under its own key as it finishes, so the FX rate reads its curve’s finished path. The per-batch memo is cleared first.',
       run: function () {
         state.batch = 1; state.status.exec = 'batch 1 of 4 · batch_seed(5120, 0) · t_Buffer cleared'; state.status.stats = 'deals 3 · Deals Skipped 0 · batches 0/4'; render();
         return fly(center(S.seed), center(S.draw), 600).then(function () { return fly(center(S.draw), { x: S.gen.x + 20, y: S.gen.y + 32 }, 600); })

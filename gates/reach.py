@@ -78,7 +78,8 @@ MAIN = os.path.dirname(subprocess.run(
 MAP = os.path.join(MAIN, 'artifacts', 'reach', 'document_map.json')
 CAP = 180
 DOC_DIRS = ('tests/fixtures', 'artifacts')             # walked recursively, in the MAIN checkout
-SIZE_KEYS = ('Base_Date', 'Random_Seed', 'Batch_Size', 'Simulation_Batches', 'MCMC_Simulations')
+SIZE_KEYS = ('Base_Date', 'Random_Seed', 'Quasi_Seed', 'Batch_Size', 'Simulation_Batches',
+             'MCMC_Simulations')
 
 
 # ======================================================================================

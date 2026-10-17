@@ -95,7 +95,7 @@ def job(deals=(CASHFLOW,), factors=FACTORS, sections={}, **calculation):
     """
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
-                             'MCMC_Simulations': 1, 'Random_Seed': 1}, **calculation),
+                             'MCMC_Simulations': 1, 'Quasi_Seed': 1}, **calculation),
         'Deals': {'Reference': 'service',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': dict({
@@ -178,15 +178,16 @@ def test_a_job_priced_over_http_is_the_job_priced_in_process():
 
 
 def test_the_result_carries_the_replay_tuple():
-    """The four replay coordinates travel with the result, and the two hashes are the loaded job's
-    own rather than something the service re-derived."""
+    """The five replay coordinates travel with the result, and the two hashes are the loaded job's
+    own rather than something the service re-derived: a base valuation's `seed` null, since it
+    declares no `Random_Seed`, and its `quasi_seed` the one it states."""
     context = in_process(job())
     _, result = run(job())
 
     assert result['plan_hash'] == context.plan_hash()
     assert result['values_hash'] == context.values_hash()
     assert result['engine_version'] == derivus.__version__
-    assert result['seed'] == 1
+    assert result['seed'] is None and result['quasi_seed'] == 1
 
 
 def test_the_schema_endpoint_is_the_declarations_plus_the_version():
@@ -779,18 +780,21 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
 
 
 def test_a_calculation_override_is_judged_against_its_own_declarations(book):
-    """An override is a dial of a declared calculation, so a field it does not declare, a value
-    outside that field's menu - a blank among them, which overwrites the book's - and a date posted
-    as a bare string each refuse 422 naming it, and the book still prices with the dials it does
-    declare.
+    """An override is a dial of a declared calculation, so a field it does not declare - a base
+    valuation's `Random_Seed` among them, its draws being `Quasi_Seed`'s - a value outside that
+    field's menu - a blank among them, which overwrites the book's - and a date posted as a bare
+    string each refuse 422 naming it, and the book still prices with the dials it does declare.
 
     KILLING MUTATIONS: the first two RAN, the value simply ignored, so a model asking for Greeks got
     a run with no gradient in it and no way to tell; a blank override read against nothing, under
     which it queues; the verb judging menus alone, under which the bare date queues and the run
-    dies on it (`'str' object has no attribute 'strftime'`).
+    dies on it (`'str' object has no attribute 'strftime'`); the base valuation declaring
+    `Random_Seed` again, under which the seed queues and the run ignores it.
     """
     unknown = CLIENT.post('/book/price', content=dump(
         {'calculation_overrides': {'Nope': 1}}), headers=JSON)
+    seeded = CLIENT.post('/book/price', content=dump(
+        {'calculation_overrides': {'Random_Seed': 1}}), headers=JSON)
     outside = CLIENT.post('/book/price', content=dump(
         {'calculation_overrides': {'Greeks': 'Maybe'}}), headers=JSON)
     blank = CLIENT.post('/book/price', content=dump(
@@ -802,6 +806,8 @@ def test_a_calculation_override_is_judged_against_its_own_declarations(book):
     service.EXECUTOR.queue.join()
 
     assert unknown.status_code == 422 and 'BaseValuation declares no Nope' in unknown.json()[
+        'detail']
+    assert seeded.status_code == 422 and 'BaseValuation declares no Random_Seed' in seeded.json()[
         'detail']
     assert outside.status_code == 422
     assert outside.json()['detail'] == "Greeks is 'Maybe', not one of All, First, No"
@@ -1832,7 +1838,7 @@ def test_a_concurrent_runs_critical_does_not_refuse_an_innocent_tick(tmp_path):
         while not stop.is_set():
             seed += 1
             submitted.append(CLIENT.post('/book/price', content=dump(
-                {'calculation_overrides': {'Random_Seed': seed}}), headers=JSON).json()['status'])
+                {'calculation_overrides': {'Quasi_Seed': seed}}), headers=JSON).json()['status'])
             time.sleep(0.001)
 
     pricer = threading.Thread(target=keep_pricing, daemon=True)
@@ -4425,7 +4431,7 @@ def test_describe_is_the_parse_and_it_never_runs_anything():
     logged it and returned the bare `{'Object': name}`, and `/validate` is where that node is
     reported.
     """
-    document = job(deals=(CASHFLOW, dict(CASHFLOW, Reference='CF2')), Random_Seed=23)
+    document = job(deals=(CASHFLOW, dict(CASHFLOW, Reference='CF2')), Quasi_Seed=23)
     described = CLIENT.post('/describe', content=dump(document), headers=JSON).json()
     plan_id = CLIENT.post('/prepare', content=dump(document), headers=JSON).json()['plan_id']
     from_document, _ = run(document)
@@ -4469,7 +4475,7 @@ def test_a_plan_id_execute_is_the_document_execute():
 
     Killing mutation: every submission queued anew, which runs one job twice under one name.
     """
-    document = job(Random_Seed=13)
+    document = job(Quasi_Seed=13)
     prepared = CLIENT.post('/prepare', content=dump(document), headers=JSON).json()
     from_document, _ = run(document)
     from_plan = CLIENT.post('/execute', json={'plan_id': prepared['plan_id']}).json()
@@ -4488,7 +4494,7 @@ def test_a_patched_execute_leaves_the_plan_as_it_found_it():
     Killing mutation: the plan cache handing out its own parse rather than a copy, which lets a
     patch reach the plan.
     """
-    document = job(Random_Seed=17)
+    document = job(Quasi_Seed=17)
     plan_id = CLIENT.post('/prepare', content=dump(document), headers=JSON).json()['plan_id']
     unpatched_id, _ = run(document)
 
@@ -4531,7 +4537,7 @@ def test_an_unknown_plan_result_or_table_is_a_404():
     Killing mutation: an unknown result read through rather than refused, which 500s a client asking
     after a run the service never held.
     """
-    result_id, _ = run(job(Random_Seed=19))
+    result_id, _ = run(job(Quasi_Seed=19))
 
     assert CLIENT.post('/execute', json={'plan_id': 'nosuchplan'}).status_code == 404
     assert CLIENT.post('/describe', json={'plan_id': 'nosuchplan'}).status_code == 404
@@ -4603,7 +4609,7 @@ def test_an_identical_submission_is_one_result_id():
 
     Killing mutation: every submission queued anew, which runs one job twice under one name.
     """
-    document = job(Random_Seed=11)
+    document = job(Quasi_Seed=11)
     first, _ = run(document)
     second = submit(document)
 
@@ -4661,7 +4667,7 @@ def test_a_failing_job_is_an_error_status_and_the_worker_survives():
     rather than the wrapper refusing. The message travels, nothing else does, and the next job
     still prices."""
     _, failed = run(job(Currency='GBP'))
-    after_id, after = run(job(Random_Seed=7))
+    after_id, after = run(job(Quasi_Seed=7))
 
     assert failed['status'] == 'error'
     assert 'FxRate.GBP' in failed['error']
@@ -5581,7 +5587,7 @@ def test_the_xva_projection_is_a_mosaic_a_partial_recalc_moves_one_row_of(desk_x
         assert row['status'] == 'done', row['error']
         assert row['cva'] > 0.0, 'a CVA of nothing makes every comparison below vacuous'
         assert row['result_id'] == entry['result_id']
-        assert row['plan_hash'] and row['values_hash'] and row['seed'] == 1
+        assert row['plan_hash'] and row['values_hash'] and row['quasi_seed'] == 1
     assert before['NS_A']['counterparty'] == 'CPTY_A'
     assert before['NS_A']['collateralized'] is False
     assert before['NS_B']['cva'] > before['NS_A']['cva'], 'the worse credit must cost more'
@@ -5808,9 +5814,9 @@ def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
     `Funding_Valuation_Adjustment.Calculate` sets `CMC_State.scale_survival`, so every set reports
     its MTM already multiplied by the counterparty's survival probability. That factor is positive
     and deterministic per bucket, so `relu` commutes with it and the CVA integrand divides it back
-    out. Both of the projection's sets, 1024 paths, seed 1: 0 ULP. Un-divided the same two runs read
-    119.676 against 120.845 (-0.967%, 2% hazard) and 290.646 against 297.741 (-2.383%, 5% hazard),
-    tracking the hazard as a survival scaling must.
+    out. Both of the projection's sets, 1024 paths, on the book's own seeds: 0 ULP. Un-divided the
+    same two runs read 124.026 against 125.264 (-0.988%, 2% hazard) and 301.023 against 308.532
+    (-2.434%, 5% hazard), tracking the hazard as a survival scaling must.
 
     `fva` is the other half and is NOT compared, because there is nothing to compare it against: a
     CVA-only run reports no `fva` key at all. It keeps the scaled cube it is defined on.
@@ -5827,7 +5833,7 @@ def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
     for node in document['Calc']['Deals']['Deals']['Children']:
         deal = node['Instrument']['.Deal']
         both = service.xva_document(document, node, deal['Credit_Support_Amounts']['Counterparty'])
-        both['Calc']['Calculation'].update(Batch_Size=1024, Simulation_Batches=1, Random_Seed=1)
+        both['Calc']['Calculation'].update(Batch_Size=1024, Simulation_Batches=1)
         off = json.loads(json.dumps(both))
         off['Calc']['Calculation']['Funding_Valuation_Adjustment']['Calculate'] = 'No'
 

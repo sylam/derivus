@@ -72,9 +72,8 @@ def _ulps(a, b):
 
 
 def cmc(pricer, gradient=False, recompute='No', batch=256, mcmc=64, collateralised=False):
-    """(cva, mtm profile, the WHOLE CVA gradient vector, cashflows). 256 scenarios, so the pricer
-    takes the Sobol branch - the inner block's half of the stream contract - and the boundary
-    registration has a population to fit a kernel to."""
+    """(cva, mtm profile, the WHOLE CVA gradient vector, cashflows). 256 scenarios, so the
+    boundary registration has a population to fit a kernel to."""
     overrides = {
         'Run_Date': bb.BASE.strftime('%Y-%m-%d'), 'Time_grid': '0d 3m(3m)', 'Batch_Size': batch,
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
@@ -93,10 +92,10 @@ def cmc(pricer, gradient=False, recompute='No', batch=256, mcmc=64, collateralis
 
 
 def baseval(pricer, greeks=False, sims=1 << 12, recompute='No'):
-    """(price, the WHOLE first-order gradient vector). One scenario, so `quasi_rng` is not reached
-    and this is the `torch.rand` half of the stream contract."""
+    """(price, the WHOLE first-order gradient vector). One scenario, the pricer's inner rows the
+    canonical block's."""
     _, out = run_baseval(_cfg(pricer), overrides={
-        'MCMC_Simulations': sims, 'Random_Seed': 1, 'Recompute_Inner_MC': recompute,
+        'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Recompute_Inner_MC': recompute,
         'Greeks': 'First' if greeks else 'No'})
     rows = out['Results']['mtm']
     price = float(rows[rows['Reference'] == DEALS[pricer]['Reference']]['Value'].iloc[0])
@@ -114,7 +113,7 @@ def base_hessian(pricer, recompute, sims=1 << 10, estimator='Yes'):
     differentiated twice. `estimator` is `Branch_And_Weight`: its default registers nothing to
     refuse, so a gate about the registration declares the crisp one."""
     _, out = run_baseval(_cfg(pricer), overrides={
-        'MCMC_Simulations': sims, 'Random_Seed': 1, 'Greeks': 'All',
+        'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Greeks': 'All',
         'Recompute_Inner_MC': recompute, 'Branch_And_Weight': estimator})
     return out['Results']['Greeks_Second'].values.astype(np.float64)
 
@@ -166,10 +165,11 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
 def test_the_base_price_and_gradient_are_bit_identical_with_the_node_on(pricer):
     """The price and the WHOLE vector (`Greeks: First` is what turns `boundary_aad` on), on a fixture
     small enough that the full tape fits - which is the only place the two paths can be compared.
-    One scenario, so `quasi_rng` is not reached: this is the `torch.rand` half of the stream
-    contract, the generator one draw ahead moving it.
+    One scenario, its inner rows the canonical block's, which the replay reads again.
 
-    Killing mutation: the replay one draw ahead on the regular generator.
+    Killing mutation: the pseudo-random draw restored below 16 outer paths with no position to
+    replay it from - the autocall's second entry reads -6.069e-2 against the taped -6.115e-2, the
+    barrier's -48.93 against -49.36.
     """
     price_off, grad_off = baseval(pricer, greeks=True)
     price_on, grad_on = baseval(pricer, greeks=True, recompute='Yes')

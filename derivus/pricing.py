@@ -138,9 +138,9 @@ class LogVar2FJKit(object):
 
         REGENERATED, NEVER STORED: the checkpoint's backward re-draws them where a stored tape
         would have held them, so no tensor of the whole grid's shape exists at any point. The key
-        is the row's ``base`` - one int64 off the plain generator, which `rng_position`
-        replays under `InnerMCRecompute` - plus the segment's index. ``antithetic`` mirrors along
-        the SIMS axis, ``-eta``; the mixer's uniforms are the PRICER's, mirrored there.
+        is the caller's: the pricer's is its quasi seed and the segment's index (`blocks`), the
+        outer walk's an int64 off its scenario stream and the segment's. ``antithetic`` mirrors
+        along the SIMS axis, ``-eta``; the mixer's uniforms are the PRICER's, mirrored there.
         """
         gen = torch.Generator(device=deltas.device).manual_seed(key)
         z = torch.randn([2] + shape, dtype=torch.float32, device=deltas.device, generator=gen)
@@ -250,9 +250,9 @@ class LogVar2FJKit(object):
                      dict(self.params, Sigma_S=levers['Sigma_S']),
                      utils.LogVar2FJ.wide(delta))).to(delta.dtype)
         shape = [shared.simulation_batch, num_sims]
-        # the row's own stream key, off the plain generator so the position bookkeeping replays
-        # it; shifted clear of the segment index, which counts up from it
-        base = int(torch.randint(1 << 42, (1,)).item()) << 20
+        # the quasi seed shifted clear of the segment index, which counts up from it, so a walk is
+        # a function of the seed and the segment whatever is booked or drawn beside it
+        base = shared.quasi_seed << 20
         zero = delta.new_zeros([shape[0], num_sims * (2 if antithetic else 1)])
         state = self.carried(row_t, shared)
         l, s = (zero + curve[0], zero) if state is None else (zero + state[0], zero + state[1])
@@ -526,32 +526,22 @@ def quanto_step_loading(kit, factor_dep, rho, row_t, deltas, shared):
     return rho * forward_vol_rate(vols, delta.new(cum), delta)[:, 0] * torch.sqrt(delta)
 
 
-def oss_uniforms(shared, n_fix, num_sims, sobol, extra=0):
+def oss_uniforms(shared, n_fix, num_sims, extra=0):
     """Antithetic uniforms for a one-step-survival loop, as ``(oss, mixers)``: the OSS rows
-    ``[n_fix, batch or 1, 2 * num_sims]`` in the job's dtype and the ``extra`` mixer rows beside
-    them as exact pairs, ``[2, extra, batch or 1, 2 * num_sims]`` - each uniform and its own
-    complement.
+    ``[n_fix, 1, 2 * num_sims]`` in the job's dtype and the ``extra`` mixer rows beside them as
+    exact pairs, ``[2, extra, 1, 2 * num_sims]`` - each uniform and its own complement.
 
-    The antithetic half is the ``1 - u`` mirror, pairing an OSS step's truncated final draws with
-    the antithetic halves of the kit's own walk. Under Sobol the rows are the canonical inner
-    block's (`CMC_State.inner_block`), one per fixing broadcast over every outer path, its mirror
-    the complement taken on the integer. ``extra`` widens the request AFTER the OSS rows - a walking
-    kit's mixer uniform per residual draw - so a GBM deal asks for nothing new. The pseudo-random
-    arm draws a row carrying mixers in DOUBLE. NOT used by ``pv_MC_AutoCallSwap``'s no-averaging
+    The rows are the canonical inner block's (`Calculation_State.inner_block`), one per fixing
+    broadcast over every outer path, the antithetic half its complement taken on the integer,
+    pairing an OSS step's truncated final draws with the antithetic halves of the kit's own walk.
+    ``extra`` widens the request AFTER the OSS rows - a walking kit's mixer uniform per residual
+    draw - so a GBM deal asks for nothing new. NOT used by ``pv_MC_AutoCallSwap``'s no-averaging
     loop, which consumes the same rows raw.
     """
-    rows = n_fix + extra
-    if sobol:
-        u, ubar = (x.unsqueeze(1) for x in shared.inner_block(rows, num_sims))
-        both = torch.concat([u, ubar], dim=-1)
-        return both[:n_fix], torch.stack(
-            [both[n_fix:], torch.concat([ubar[n_fix:], u[n_fix:]], dim=-1)]) if extra else None
-    wide = torch.rand([rows, shared.simulation_batch, num_sims],
-                      dtype=torch.float64 if extra else shared.one.dtype, device=shared.one.device)
-    mirror = lambda x: torch.concat([x, 1.0 - x], dim=-1)
-    mixers = mirror(wide[n_fix:])
-    return mirror(wide[:n_fix].to(shared.one.dtype)), torch.stack(
-        [mixers, 1.0 - mixers]) if extra else None
+    u, ubar = (x.unsqueeze(1) for x in shared.inner_block(n_fix + extra, num_sims))
+    both = torch.concat([u, ubar], dim=-1)
+    return both[:n_fix], torch.stack(
+        [both[n_fix:], torch.concat([ubar[n_fix:], u[n_fix:]], dim=-1)]) if extra else None
 
 
 def mixer_uniform(pair):
@@ -636,8 +626,8 @@ def row_step_bytes(shared, name, fixings, simulate, theta):
     """What a row-step of ``simulate`` tapes and what its replay peaks at, in bytes: one row of
     ``fixings`` walked taped on detached copies of ``theta``, so no outer graph is walked, its strip
     measuring the tape (`oss_stream`), and under a recompute a backward of its marks as
-    `InnerMCRecompute`'s backward runs it; the plain generator put back and all it made dropped."""
-    device, position = shared.one.device, shared.rng_position()
+    `InnerMCRecompute`'s backward runs it; all it made dropped."""
+    device = shared.one.device
     theta = [x.detach().requires_grad_(x.requires_grad) for x in theta]
     torch.cuda.synchronize(device)
     start, held = time.perf_counter(), torch.cuda.memory_allocated(device)
@@ -645,7 +635,6 @@ def row_step_bytes(shared, name, fixings, simulate, theta):
     if shared.recompute_inner_mc and marks.requires_grad:
         torch.autograd.grad(marks.sum(), [x for x in theta if x.requires_grad], allow_unused=True)
     torch.cuda.synchronize(device)
-    shared.rng_position(position)
     # the peak statistic is left to the run, so a probe under an earlier peak reads that, a bound
     peak = (torch.cuda.max_memory_allocated(device) - held) / fixings
     tape = shared.t_PreCalc.pop(('oss_tape', name), peak)
@@ -1085,10 +1074,9 @@ class InnerMCRecompute(torch.autograd.Function):
     the SAME callable under ``enable_grad``, contracting the cotangent through one block's graph at
     a time. Subsystem documentation: calc_lifecycle.md#recompute-inner-mc.
 
-    THE POSITION IS THE STORAGE: what is saved is where the plain generator stood
-    (``rng_position``), never what it drew - its state is saved, restored and put back. The
-    Sobol rows are the canonical inner block's, a function of their shape, so the replay reads them
-    again with nothing to rewind.
+    NOTHING DRAWN IS STORED: the inner rows are the canonical inner block's, a function of their
+    shape and the quasi seed, and a walking kit's shocks are keyed by the quasi seed and their
+    segment, so the replay draws again what the forward drew with no stream to rewind.
 
     THE ADOPTER'S SHAPE: ``simulate(*bound)(*theta)`` - bound arguments are the block's shape, theta
     every graph-carrying tensor (anything read from a closure differentiates as a constant). It
@@ -1109,13 +1097,13 @@ class InnerMCRecompute(torch.autograd.Function):
     """
 
     @staticmethod
-    def forward(ctx, simulate, position, shared, *theta):
+    def forward(ctx, simulate, *theta):
         # undefined cotangents stay undefined: most outputs are coefficients nothing
         # differentiates, and materializing zeros allocates in backward what this node avoids
         ctx.set_materialize_grads(False)
         with torch.no_grad():
             outputs = simulate(*theta)
-        ctx.simulate, ctx.position, ctx.shared = simulate, position, shared
+        ctx.simulate = simulate
         ctx.save_for_backward(*theta)
         return outputs
 
@@ -1131,16 +1119,12 @@ class InnerMCRecompute(torch.autograd.Function):
                 'second-order block with the switch off.')
         wanted = [i for i, t in enumerate(ctx.saved_tensors) if t.requires_grad]
         if not wanted:
-            return (None, None, None) + (None,) * len(ctx.saved_tensors)
+            return (None,) * (1 + len(ctx.saved_tensors))
         theta = [t.detach() for t in ctx.saved_tensors]
         for i in wanted:
             theta[i].requires_grad_(True)
         with torch.enable_grad():
-            live = ctx.shared.rng_position(ctx.position)
-            try:
-                outputs = ctx.simulate(*theta)
-            finally:
-                ctx.shared.rng_position(live)
+            outputs = ctx.simulate(*theta)
             paired = [(out, cotangent) for out, cotangent in zip(outputs, cotangents)
                       if cotangent is not None and out.requires_grad]
             grads = torch.autograd.grad(
@@ -1149,7 +1133,7 @@ class InnerMCRecompute(torch.autograd.Function):
         theta_grads = [None] * len(theta)
         for i, grad in zip(wanted, grads):
             theta_grads[i] = grad
-        return (None, None, None) + tuple(theta_grads)
+        return (None,) + tuple(theta_grads)
 
     @classmethod
     def run(cls, shared, simulate, *theta):
@@ -1157,11 +1141,9 @@ class InnerMCRecompute(torch.autograd.Function):
 
         `Recompute_Inner_MC` is a property of the valuation engine and its machine, so it governs
         every adopter at once and no pricer carries a flag. Off, `simulate` is called and taped
-        directly; on, it goes through the node with the RNG position taken at the call site, where
-        the streams stand where the replay must find them.
+        directly; on, it goes through the node.
         """
-        return (cls.apply(simulate, shared.rng_position(), shared, *theta)
-                if shared.recompute_inner_mc else simulate(*theta))
+        return cls.apply(simulate, *theta) if shared.recompute_inner_mc else simulate(*theta)
 
 
 def cva_per_scenario(pv_exposure, prob, recovery):
@@ -1875,7 +1857,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     control lands within ~1.4% of Black.
     """
 
-    def sim_spot_oss(offset, sobol, num_sims, row_times,
+    def sim_spot_oss(offset, num_sims, row_times,
                      spot_prices, vols, sd_to_expiry, times, carry, discount_rates, *scalars):
         """Run the OSS inner Monte Carlo; returns ``(mtm,)``, the tuple being
         ``InnerMCRecompute``'s contract - plus, under a kit, the in-out-parity vanilla as a
@@ -1927,7 +1909,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
             # antithetic variates: [N_fix, batch, 2*num_sims] (shared OSS spelling, bit-identical)
             n_mix = 0 if kit is None else kit.mixers(row_times[blk], times[blk])
-            u, mix = oss_uniforms(shared, N_fix, num_sims, sobol, n_mix)
+            u, mix = oss_uniforms(shared, N_fix, num_sims, n_mix)
 
             D_T = D[-1].reshape(-1, 1)  # terminal discount: [batch, 1]
 
@@ -2093,8 +2075,6 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     scalars = oss_model_scalars(factor_dep, shared)
     kit = oss_model_kit(factor_dep, scalars)
 
-    sobol = shared.simulation_batch > 16
-
     expiry = daycount_fn(tau)
     expiry_years_key = ('Expiry_Years', tuple(expiry))
     if expiry_years_key not in factor_dep:
@@ -2218,7 +2198,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         run_oss = not all_hit or (kit is not None and direction == BARRIER_IN)
         if run_oss:
             build = lambda times, *theta: (partial(
-                sim_spot_oss, sample_index_t, sobol, shared.MCMC_sims, times), theta + scalars)
+                sim_spot_oss, sample_index_t, shared.MCMC_sims, times), theta + scalars)
             # the SAME callable either way: under the node it is called twice
             pieces = [InnerMCRecompute.run(shared, simulate, *theta)
                       for _, simulate, theta in oss_rows(
@@ -2938,7 +2918,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     def survives(s):
         return (s < barrier) if barrier_up else (s > barrier)
 
-    def sim_spot_accumulator(settlement, fixing_offset, sobol, num_sims, row_times,
+    def sim_spot_accumulator(settlement, fixing_offset, num_sims, row_times,
                              spot_prices, times, carry, prev_alive, discount_rates, vols_all,
                              past_fixings, *scalars):
         """OSS inner Monte Carlo over one block of MTM rows; mean PV and alive-branch PV per row.
@@ -2962,7 +2942,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                 continue
             vols = vols_all[i] if kit is None else None
             n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
-            u, mix = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
+            u, mix = oss_uniforms(shared, reduced_samples, num_sims, n_mix)
             law = None
             if kit is not None:
                 # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
@@ -3116,8 +3096,6 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         alive_seq.append(state)
     fixing_days = fx_samples.schedule[:, utils.RESET_INDEX_Reset_Day]
 
-    sobol = shared.simulation_batch > 16
-
     row_ofs = 0
     for b_idx, (discount_block, spot_block) in enumerate(
             utils.split_counts([discount, spot], counts, shared)):
@@ -3145,7 +3123,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
 
         def build(t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
             """A piece's callable and theta (`oss_rows`)."""
-            return (partial(sim_spot_accumulator, settlement, settle_index_local, sobol,
+            return (partial(sim_spot_accumulator, settlement, settle_index_local,
                             shared.MCMC_sims, daycount_fn(t_block[:, utils.TIME_GRID_MTM])),
                     (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
                      discount_rates, vols, all_samples) + scalars)
@@ -3511,8 +3489,6 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         alive_after.append(alive)
         fact_after.append(fact)
 
-    sobol = shared.simulation_batch > 16
-
     def oss_extend(prev_spot, log_inc, var_inc, barrier, u):
         """Continuation probability and the extended-branch draw at one decision."""
         var_inc = var_inc.reshape(-1).clamp(min=eps)
@@ -3619,7 +3595,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                 growth = torch.exp(log_fwd[tail] - log_fwd[m])
                 A = torch.sum(rel_pay * growth, dim=0)
                 B = torch.sum(rel_pay, dim=0)
-                u = oss_uniforms(shared, 1, shared.MCMC_sims, sobol)[0][0]
+                u = oss_uniforms(shared, 1, shared.MCMC_sims)[0][0]
                 prev = s0.reshape(-1, 1).expand(-1, u.shape[-1])
                 p_ext, s_ext = oss_extend(prev, log_fwd[m], total_var[m], H, u)
                 c_ext = forward_sign * notional * (A.reshape(-1, 1) * s_ext - k2 * B.reshape(-1, 1))
@@ -3645,7 +3621,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
             boundaries = extension_boundaries(row_index, first_decision) \
                 if first_decision is not None else {}
             n_future = len([j for j in decision_indices if fixing_days[j] > mtm_day])
-            u_all = oss_uniforms(shared, n_future, shared.MCMC_sims, sobol)[0] if n_future else None
+            u_all = oss_uniforms(shared, n_future, shared.MCMC_sims)[0] if n_future else None
             u_ptr = 0
             sims = 2 * shared.MCMC_sims
             L = shared.one.new_ones((shared.simulation_batch, sims))
@@ -3795,7 +3771,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         """The running accrual after one more fixing, clamped at the target."""
         return (accumulated + accrued(s, k, C, inverted)).clamp(max=targetValue)
 
-    def sim_spot_tarf(settlement, sobol, num_sims, settle_offset, row_times,
+    def sim_spot_tarf(settlement, num_sims, settle_offset, row_times,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
                       past_fixings, *scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
@@ -3839,7 +3815,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             u = law = None
             if reduced_samples:
                 n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
-                u, mix = oss_uniforms(shared, reduced_samples, num_sims, sobol, n_mix)
+                u, mix = oss_uniforms(shared, reduced_samples, num_sims, n_mix)
                 if kit is not None:
                     # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
                     law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True,
@@ -4155,8 +4131,6 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             # the same walk UNCLAMPED: the clamp kills the derivative AT the decision
             raw.append(raw[-1] + accrued(sample_val, strike, callOrPut, invertedTarget))
 
-    sobol = shared.simulation_batch > 16
-
     for b_idx, (discount_block, spot_block) in enumerate(
             utils.split_counts([discount, spot], counts, shared)):
         settle_index_local = settle_index[b_idx]
@@ -4184,7 +4158,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
 
         def build(t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
             """A piece's callable and theta (`oss_rows`)."""
-            return (partial(sim_spot_tarf, settlement, sobol, shared.MCMC_sims, settle_index_local,
+            return (partial(sim_spot_tarf, settlement, shared.MCMC_sims, settle_index_local,
                             daycount_fn(t_block[:, utils.TIME_GRID_MTM])),
                     (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
                      discount_rates, vols, all_samples) + scalars)
@@ -4365,7 +4339,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     exact. A coupon row of ``<= 0`` would be an inexact way; ``calc_dependencies`` refuses that
     document by name.
     """
-    def sim_spot(offset, times, steps, row_days, row_times, windows, sobol, num_sims,
+    def sim_spot(offset, times, steps, row_days, row_times, windows, num_sims,
                  spot_prices, vols, carry, terminationDate, discount_rates, floating_leg,
                  past_fixings, quanto, put_vols, *scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
@@ -4444,20 +4418,11 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
             if reduced_samples:
                 # the mixer columns come AFTER the OSS ones, so a GBM row asks for nothing new
                 n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
-                rows = reduced_samples + n_mix
-                if sobol:
-                    # the canonical block's rows, raw: one per fixing broadcast over every
-                    # outer path, each mixer beside its exact complement
-                    u, ubar = (x.unsqueeze(1) for x in shared.inner_block(rows, num_sims))
-                    mix = torch.stack([u[reduced_samples:], ubar[reduced_samples:]]
-                                      ) if n_mix else None
-                else:
-                    wide = torch.rand([rows, shared.simulation_batch, num_sims],
-                                      dtype=torch.float64 if n_mix else shared.one.dtype,
-                                      device=shared.one.device)
-                    mix = wide[reduced_samples:]
-                    u, mix = wide.to(shared.one.dtype), torch.stack(
-                        [mix, 1.0 - mix]) if n_mix else None
+                # the canonical block's rows, raw: one per fixing broadcast over every outer
+                # path, each mixer beside its exact complement
+                u, ubar = (x.unsqueeze(1) for x in shared.inner_block(
+                    reduced_samples + n_mix, num_sims))
+                mix = torch.stack([u[reduced_samples:], ubar[reduced_samples:]]) if n_mix else None
             # the walk starts from the ROW's own spot; a fixing already printed is read only by
             # the decision it observes
             Sj = torch.unsqueeze(s, 1)
@@ -4834,8 +4799,6 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # the declared model's parameter tensors, by ITS OWN canonical name tuple; () is GBM
     scalars = oss_model_scalars(factor_dep, shared)
 
-    sobol = shared.simulation_batch > 16
-
     # an autocall taken on the reporting row's own spot is a real redemption, so the value is not
     # wrong; what ordinary AAD drops is the flux of scenarios across the threshold
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
@@ -4968,7 +4931,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                       fwd_drifts, discount_rates, floating_leg, quanto, put_vols):
                 """A piece's callable and theta (`oss_rows`), the latch the last piece left."""
                 return (partial(sim_spot, sample_index_t, sample_ts, steps, all_fixings, row_times,
-                                windows, sobol, shared.MCMC_sims),
+                                windows, shared.MCMC_sims),
                         (spot_block, interval_vols, fwd_drifts, terminationDate, discount_rates,
                          floating_leg, all_eq_samples, quanto, put_vols) + scalars)
 

@@ -166,7 +166,7 @@ def attempts(log):
          BOOK_ONE),
         # approve: a tuple the hub did not witness acquiring standing is a second pair of eyes
         ('result_pinned', {'plan_hash': HASH_A, 'values_hash': values, 'engine_version': '0.1.0',
-                           'seed': None, 'job': job, 'result': produced,
+                           'seed': None, 'quasi_seed': 1234, 'job': job, 'result': produced,
                            'tolerance_policy': tolerance}, BOOK_ONE),
         # document: the paper the book trades under, declared firm-wide
         ('entity_declared', {'entity': 'LEI-5493001KJTIIGC8Y1R12', 'name': 'a counterparty'},
@@ -313,7 +313,8 @@ def test_the_writers_own_voice_is_no_seat_and_files_only_its_own(tmp_path):
     job, produced = log.store.put(b'{"Calc":{}}'), log.store.put(b'{"mtm":1.0}')
     theirs = (('capability_denied', body),
               ('run_completed', {'plan_hash': HASH_A, 'values_hash': values, 'seed': 1,
-                                 'engine_version': '0.1.0', 'lane': 'standing', 'job': job,
+                                 'quasi_seed': 1234, 'engine_version': '0.1.0',
+                                 'lane': 'standing', 'job': job,
                                  'result': produced}),
               ('snapshot_registered', {'blob': values}))
     head = log.head()

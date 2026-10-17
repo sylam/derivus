@@ -94,7 +94,7 @@ def _mirror(**kw):
 def _job(deal, base=BASE, calc=None):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
-                             'MCMC_Simulations': SIMS, 'Random_Seed': 1}, **(calc or {})),
+                             'MCMC_Simulations': SIMS}, **(calc or {})),
         'Deals': {'Reference': 'ext',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
@@ -109,7 +109,7 @@ def _profile_job(deal):
     """The CMC grid the lifecycle is reconstructed on, GBM spot off the same flat surface."""
     job = _job(deal, calc={
         'Object': 'CreditMonteCarlo', 'Time_grid': '0d 15m(3m)', 'Batch_Size': 512,
-        'Simulation_Batches': 2, 'MCMC_Simulations': 1 << 12,
+        'Simulation_Batches': 2, 'Random_Seed': 1, 'MCMC_Simulations': 1 << 12,
         'Deflation_Interest_Rate': 'USD'})
     md = job['Calc']['MergeMarketData']['ExplicitMarketData']
     md['Price Models'] = {'GBMAssetPriceModel.EUR': {'Vol': SIGMA, 'Drift': 0.0}}
@@ -360,7 +360,7 @@ def test_a_terminated_rolling_deal_needs_no_fabricated_lifecycle():
 def _cva_job(spot=None, gradient='No', deal=None):
     job = _job(deal if deal is not None else _deal(style='Rolling'), calc={
         'Object': 'CreditMonteCarlo', 'Time_grid': '0d 15m(1m)', 'Batch_Size': 1024,
-        'Simulation_Batches': 4, 'MCMC_Simulations': 1 << 10,
+        'Simulation_Batches': 4, 'Random_Seed': 1, 'MCMC_Simulations': 1 << 10,
         'Deflation_Interest_Rate': 'USD',
         'Credit_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',

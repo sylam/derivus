@@ -84,7 +84,7 @@ DEAL = {'Object': 'EquityBarrierOption', 'Reference': 'BR', 'Currency': 'USD',
         'Barrier_Dates': [[day(d), ''] for d in MONITOR_D]}
 
 BV = {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
-      'MCMC_Simulations': 8192, 'Random_Seed': 1}
+      'MCMC_Simulations': 8192, 'Quasi_Seed': 1}
 
 #: the equity alone is simulated, so a CreditMonteCarlo reports a profile with many rows
 CMC = {'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': 'USD',
@@ -120,11 +120,13 @@ def mtm(price_factors):
 
 
 def test_a_skew_surface_under_sticky_strike_prices_a_monitoring_strip():
-    """The row this file exists for: the barrier prices, and prices to its measured mark.
+    """The row this file exists for: the barrier prices, and prices to its measured mark,
+    re-measured when a base valuation's inner paths became the canonical block's: 10.088311 to
+    10.093277.
 
     Killing mutation: the strip's moneyness left unbroadcast onto its fixing axis.
     """
-    assert mtm(factors('Sticky_Strike', curve(SPOT))) == pytest.approx(10.088311, rel=1e-6)
+    assert mtm(factors('Sticky_Strike', curve(SPOT))) == pytest.approx(10.093277, rel=1e-6)
 
 
 def test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forward():

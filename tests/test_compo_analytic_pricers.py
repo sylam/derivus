@@ -198,8 +198,8 @@ def _job(deals, factors, calc=None, models=None, currency='EUR'):
             'modelfilters': {}}}
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE,
-                             'Currency': currency, 'MCMC_Simulations': 1,
-                             'Random_Seed': 1}, **(calc or {})),
+                             'Currency': currency, 'MCMC_Simulations': 1},
+                            **(calc or {})),
         'Deals': {'Reference': 'compo',
                   'Deals': {'Children': [{'Instrument': {'.Deal': d}} for d in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
@@ -610,7 +610,7 @@ def test_a_seasoned_asian_whose_fixings_pass_the_strike_is_exercised_for_certain
 # 5. the monitored path: the crossing is decided on the composite
 # --------------------------------------------------------------------------------------------
 CMC = {'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 2048,
-       'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'EUR'}
+       'Random_Seed': 1, 'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'EUR'}
 MC_BARRIER = 65.0                   # below the composite spot of 80, far below the local 100
 
 

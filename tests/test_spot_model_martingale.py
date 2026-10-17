@@ -73,7 +73,7 @@ def document(paths):
     market['Valuation Configuration'] = {'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': BASE},
-                        'Currency': 'USD', 'MCMC_Simulations': paths, 'Random_Seed': 1},
+                        'Currency': 'USD', 'MCMC_Simulations': paths, 'Quasi_Seed': 1},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market},
         'Deals': {'Reference': 'test', 'Deals': {'Children': []}}}}
 

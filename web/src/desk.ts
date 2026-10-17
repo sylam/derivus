@@ -269,5 +269,6 @@ export function replayRows(set: XvaSet): [string, string | null][] {
     ['Plan hash', set.plan_hash],
     ['Values hash', set.values_hash],
     ['Seed', set.seed === null ? null : String(set.seed)],
+    ['Quasi seed', set.quasi_seed === null ? null : String(set.quasi_seed)],
   ];
 }

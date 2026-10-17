@@ -27,13 +27,13 @@ the dispatch to the inner fork and its recompute node: play it here or open it f
 `run_hedgemontecarlo` or `run_simm`, each calling `construct_calculation`. The first three pick the
 device and inject only `Run_Date` (and `Time_grid` for the Monte Carlo modes); every other default
 comes from the class's `fields` through `declared_defaults`. `run_simm` injects nothing and picks no
-device: `SIMM` values the book through `run_baseval` once per market input moved by ISDA's
-definition, every netting set and every trade in one booking order on one seed, and reads each
-trade off its own structure, so a trade's difference is one of common random numbers. A base
-valuation draws a Monte Carlo pricer's paths off one stream in booking order, so such a trade
-booked after another is valued as the book values it, not as it is valued alone. **Held by**
+device: `SIMM` values the book through `run_baseval` once, and once per market input moved by
+ISDA's definition the trades that move reaches, each under its own netting set and read off its own
+structure. A base valuation draws a trade's Monte Carlo paths off `Quasi_Seed` alone, whatever is
+booked beside it, so a trade draws the same paths through every valuation and its difference is
+one of common random numbers. **Held by**
 `tests/test_simm.py::test_a_netting_set_s_crif_is_its_trades_own_to_the_bit`,
-`::test_monte_carlo_trades_draw_one_stream_through_every_valuation`,
+`::test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit`,
 `::test_the_sharded_run_equals_the_serial_run_to_the_bit`.
 
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
@@ -148,10 +148,17 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 
 | stream | seeded by | read by |
 | --- | --- | --- |
-| `t_random_numbers` and pseudo-random inner draws: Mersenne Twister on the host [@matsumoto1998], Philox on CUDA [@salmon2011] | `Random_Seed` (default 5120) plus `job_id`, or per batch `batch_seed`, one SplitMix64 round [@steele2014] | every `generate` |
-| `quasi_rng`: Sobol [@sobol1967], Joe–Kuo directions [@joe2008], scrambled [@owen1998] | `QUASI_SEED = 1234` from `QUASI_ANCHOR = 1024`, never `Random_Seed` | regime, GARCH and basis-linked spots, LogVar2FJ's extra mixers, `reset_inner` |
-| `inner_block`: those points as integers | its shape | pricers' [inner paths](#inner-block) above 16 outer paths |
-| a `torch.Generator` per LogVar2FJ walk segment | an integer off the default generator, plus the segment | the daily shocks, redrawn in backward |
+| `t_random_numbers`: Mersenne Twister on the host [@matsumoto1998], Philox on CUDA [@salmon2011] | `Random_Seed` (credit and hedging Monte Carlo, default 5120) plus `job_id`, or per batch `batch_seed`, one SplitMix64 round [@steele2014] | every `generate` |
+| `quasi_rng`: Sobol [@sobol1967], Joe–Kuo directions [@joe2008], scrambled [@owen1998] | `Quasi_Seed` (every calculation, default `Calculation_State.QUASI_SEED`) from `QUASI_ANCHOR = 1024` | regime, GARCH and basis-linked spots, LogVar2FJ's extra mixers, `reset_inner` |
+| `inner_block`: those points as integers | `Quasi_Seed` and its shape | pricers' [inner paths](#inner-block) at every outer batch size |
+| a `torch.Generator` per LogVar2FJ walk segment | the scenario walk: an integer off `Random_Seed`'s generator; a pricer's walk: `Quasi_Seed`; each plus the segment | the daily shocks, redrawn in backward |
+
+A base valuation has no scenario stream and declares no `Random_Seed`: every draw it reaches is
+`Quasi_Seed`'s, so a trade's mark is a function of the trade, the market and that seed whatever is
+booked beside it. **Held by**
+`tests/test_recompute_inner_mc.py::test_a_base_valuation_values_a_trade_on_its_own_draws_in_any_book`,
+`tests/test_logvar2fj_json.py::test_a_logvar2fj_autocall_is_valued_on_its_own_walk_in_any_book`,
+`tests/test_recompute_inner_mc.py::test_a_second_quasi_seed_moves_the_mark_by_its_monte_carlo_error`.
 
 `quasi_rng` keeps its position across batches. Under `deterministic_batches` (the `runparallel`
 dispatch only) batch `b` reads from `QUASI_ANCHOR + b · span · sample_size` on any worker, and a
@@ -305,14 +312,16 @@ what `Price Factor Interpolation` resolves), both `UnroutedInterpolation`s, or f
 
 ## The canonical inner block and the streamed strip {#inner-block}
 
-**One block.** `CMC_State.inner_block(rows, sims)` returns `(u, 1 − u)`, row `k` fixing `k`, each
-inner path one scrambled Sobol point over the strip. Chunk `c` of `INNER_CHUNK = 64` rows is
-dimensions `64c` on of a `64(c + 1)`-wide engine, so a longer strip reads more dimensions, never more
-points (point `i + 2^k` is point `i` XOR a constant). The complement is taken on the 30-bit integer,
-keeping each tail in the job's dtype. Cached per inner path count, prefix-stable and broadcast over
-the outer batch, the block makes a trade's value independent of what is booked before it and an
-inner-MC book shardable with nothing to anchor; the inner error is common to the outer paths,
-and only `MCMC_Simulations` reduces it [@gordy2010].
+**One block.** `Calculation_State.inner_block(rows, sims)` returns `(u, 1 − u)`, row `k` fixing `k`,
+each inner path one Sobol point over the strip scrambled by `Quasi_Seed`, taken by the five
+one-step-survival pricers under every calculation at every outer batch size. Chunk `c` of
+`INNER_CHUNK = 64` rows is dimensions `64c` on of a `64(c + 1)`-wide engine, so a longer strip
+reads more dimensions, never more points (point `i + 2^k` is point `i` XOR a constant). The
+complement is taken on the 30-bit integer, keeping each tail in the job's dtype. Cached per inner
+path count, prefix-stable and broadcast over the outer batch, the block makes a trade's value
+independent of what is booked beside it and an inner-MC book shardable with nothing to anchor;
+the inner error is common to the outer paths, and only `MCMC_Simulations` reduces it
+[@gordy2010].
 **Held by** `tests/test_recompute_inner_mc.py::test_a_trade_is_valued_on_its_own_draws_whatever_is_booked_before_it`,
 `tests/test_multi_gpu.py::test_an_inner_monte_carlo_book_is_bit_identical_in_the_worker_count`,
 `tests/test_barrier_bridge.py::test_a_strip_longer_than_a_block_chunk_prices_to_an_independent_simulation`.
@@ -338,7 +347,7 @@ under `no_grad`. **Held by**
 together, and a recompute's backward replays a node's rows at once. Under a gradient on the device
 `pricing.oss_rows` measures what a row-step of each pricer tapes and what its replay peaks at, once
 per run on the first row of the first block whose strip streams, the longest in its block, walked
-on detached copies with its draws put back; under a recompute it hands the node a block in pieces
+on detached copies; under a recompute it hands the node a block in pieces
 of as many rows as the budget replays at the block's own fixings, so a longer strip is cut on its
 own length, and a block that fits is one piece, as every block is without a recompute. Each
 piece's by-products are performed as a block's. A row's strip reads only its own row of the
@@ -367,9 +376,9 @@ the trade's. `run` uses `cls.apply`, so a subclassing gate gets its mutation. An
   at the call site and pass the spot model's scalars, and the autocall hoists its floating leg and
   past fixings (**Not gated:** those two).
 
-**The position is the storage.** The node saves where the plain generator stood (`rng_position`,
-host and device), not what it drew; the inner Sobol rows are the canonical block and have none.
-**Held by** the `…_bit_identical_with_the_node_on` tests in `tests/test_recompute_inner_mc.py` and
+**Nothing drawn is stored.** The node saves its inputs, not its draws: the inner rows are the
+canonical block's and a LogVar2FJ walk's shocks are keyed by `Quasi_Seed` and the segment, so the
+replay draws again what the forward drew. **Held by** the `…_bit_identical_with_the_node_on` tests in `tests/test_recompute_inner_mc.py` and
 `tests/test_recompute_equity_pricers.py`, by `array_equal`, since a desynchronised stream prices
 right and differentiates wrong.
 

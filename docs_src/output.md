@@ -8,9 +8,10 @@ top-level keys; a credit Monte Carlo adds a fourth, `Jacobians`; a `SIMM` run ca
 - **Netting** — the internal `DealStructure` tree, intended for developers walking the hierarchy.
 - **Stats** — timing and counter statistics (deals loaded/skipped, execution time), `Files`, the
   sha256 of the bytes of the market data file and the calendar the job named (`MarketDataFile`,
-  `CalendDataFile`, None where it named none), and — when a calibration was ridden rather than
-  refitted — the `Calibrations` entry naming the artifact each curve rode, which completes the
-  replay identity.
+  `CalendDataFile`, None where it named none), `Quasi_Seed`, the seed every quasi-random draw ran
+  on, beside the `Random_Seed` a credit or hedging Monte Carlo reports, and — when a calibration was
+  ridden rather than refitted — the `Calibrations` entry naming the artifact each curve rode, which
+  completes the replay identity.
 - **Results** — the user-facing tables. Keys vary by calculation; `out['Results'].keys()`
   enumerates what a run actually produced.
 

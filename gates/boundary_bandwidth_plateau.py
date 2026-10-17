@@ -27,10 +27,9 @@ per-bandwidth seed spread is the floor, and a plateau is the widest contiguous b
 whose spread sits under it. Spread is peak-to-peak over the median, the statistic
 `crn_ladder.Ladder.flatness` reads, so a bandwidth ladder and a bump ladder are quoted on one scale.
 
-THE SEED FLOOR IS A FLOOR ON PART OF THE NOISE, NOT ALL OF IT. `Random_Seed` moves the
-pseudo-random half only: `calculation.CMC_State.quasi_rng` states that its Sobol stream is "a fixed
-scrambled Sobol sequence starting at a fixed offset, neither derived from the job's `Random_Seed`",
-so every seed here reads the same quasi-random points and the floor is measured against a
+THE SEED FLOOR IS A FLOOR ON PART OF THE NOISE, NOT ALL OF IT. `Random_Seed` moves the scenario
+stream only: the inner paths and every other quasi-random draw are `Quasi_Seed`'s, held at its
+default here, so every seed reads the same quasi-random points and the floor is measured against a
 re-randomisation of what is left. It is a floor, and the plateau sits an order under it, but it
 understates the sampling noise rather than bounding it.
 

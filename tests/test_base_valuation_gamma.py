@@ -168,7 +168,7 @@ def valued(config, greeks='All', simulations=1, estimator='Yes'):
     `Branch_And_Weight`: only its crisp setting registers a boundary correction to refuse over.
     """
     _, out = run_baseval(config, prec=DTYPE, overrides={
-        'Greeks': greeks, 'Random_Seed': 1, 'MCMC_Simulations': simulations,
+        'Greeks': greeks, 'Quasi_Seed': 1, 'MCMC_Simulations': simulations,
         'Branch_And_Weight': estimator})
     rows = out['Results']['mtm']
     value = float(rows[rows['Parent'] == 'root']['Value'].sum())
@@ -385,7 +385,7 @@ def test_a_deal_that_registered_a_boundary_correction_is_refused_by_name():
     for recompute in ('No', 'Yes'):
         with pytest.raises(Exception) as raised:
             run_baseval(re_._cfg('barrier'), prec=DTYPE, overrides={
-                'Greeks': 'All', 'Random_Seed': 1, 'MCMC_Simulations': 1,
+                'Greeks': 'All', 'MCMC_Simulations': 1,
                 'Branch_And_Weight': 'No', 'Recompute_Inner_MC': recompute})
         message = str(raised.value)
         assert "Greeks: 'All' is refused" in message and 'BARR1' in message, message

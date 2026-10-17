@@ -91,7 +91,7 @@ def _world(template, greeks='No', sims=1 << 16, seed=1, spot=SPOT_FX, **calc):
     pf['InterestRate.EUR']['Curve'] = _flat(R_EUR)
     pf['FxRate.EUR']['Spot'] = spot
     job['Calc']['Calculation'].update(
-        {'Greeks': greeks, 'MCMC_Simulations': sims, 'Random_Seed': seed}, **calc)
+        {'Greeks': greeks, 'MCMC_Simulations': sims, 'Quasi_Seed': seed}, **calc)
     return job
 
 
@@ -562,7 +562,7 @@ def _barrier_config(barrier_price=90.0, digital=False, spot=None, **over):
 def _barrier_run(barrier_price=90.0, greeks='No', on=None, sims=1 << 15, **cfg_kwargs):
     """(value, results) off one base valuation. `on=None` leaves the switch ABSENT - a third state
     the byte-identity gate needs, not a spelling of 'No'."""
-    overrides = {'MCMC_Simulations': sims, 'Random_Seed': 1, 'Greeks': greeks}
+    overrides = {'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Greeks': greeks}
     if on is not None:
         overrides['Branch_And_Weight'] = 'Yes' if on else 'No'
     _, out = rf.run_baseval(_barrier_config(barrier_price, **cfg_kwargs), overrides=overrides)
@@ -764,7 +764,7 @@ def _autocall_doc(put_barrier=0.0, coupon_days=AC_DAYS, threshold=1.0, rebate=No
         deal['Autocall_Thresholds'] = [[d0, 1.02]] + deal['Autocall_Thresholds']
         deal['Price_Fixing'] = [[d0, spot]] + deal['Price_Fixing']
     job['Calc']['Calculation'].update(
-        {'Greeks': greeks, 'MCMC_Simulations': sims, 'Random_Seed': seed})
+        {'Greeks': greeks, 'MCMC_Simulations': sims, 'Quasi_Seed': seed})
     return job
 
 

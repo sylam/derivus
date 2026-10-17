@@ -20,7 +20,7 @@ generates the underlying ($l$-factor) source of randomness. The scenario generat
 standard normals (pseudo-random, seeded from `Random_Seed`), correlates them with the
 Cholesky factor of the configured correlation matrix and hands each model its own rows; under
 `Antithetic: Yes` the second half of a batch is the first half negated. Some models also draw
-uniforms of their own from a fixed scrambled Sobol stream, not seeded from `Random_Seed`:
+uniforms of their own from a scrambled Sobol stream seeded by `Quasi_Seed`, not `Random_Seed`:
 `MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel` and the LogVar2FJ residual's
 mixers.
 

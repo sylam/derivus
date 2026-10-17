@@ -319,8 +319,7 @@ def frozen_world(deal, factors, models=None, base_valuation=False):
     document['Calc']['Calculation'].update({'Batch_Size': 128, 'Simulation_Batches': 1})
     if base_valuation:
         document['Calc']['Calculation'] = {'Object': 'BaseValuation', 'Base_Date': BASE,
-                                           'Currency': 'USD', 'MCMC_Simulations': 1,
-                                           'Random_Seed': 1}
+                                           'Currency': 'USD', 'MCMC_Simulations': 1}
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Factors'].update(factors)
     for factor_type, model, params in models or ():

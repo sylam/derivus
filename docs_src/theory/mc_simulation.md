@@ -179,15 +179,20 @@ a crossed knock-out as its rebate cash flow.
 
 ### Sampling
 
-| | Sobol arm: calculation batch $>16$ (`CreditMonteCarlo`, `HedgeMonteCarlo` at default `Batch_Size` 1024) | Pseudo-random arm: batch $\le16$ (every `BaseValuation`) |
-|---|---|---|
-| uniforms $u_j$ | the canonical inner block `CMC_State.inner_block`: inner path $i$ is point $i$ of a scrambled Sobol sequence from point 1024, fixing $j$ its dimension $j$ (64 dimensions per chunk), clamped to $[1074,\,2^{30}-1074]\times2^{-30}$ | `torch.rand`, seeded from `Random_Seed` |
-| shared across outer paths | yes: every outer path, batch and worker reads the same rows | no: independent per outer path |
-| antithetic half [@hammersley1956; @glasserman2003] | $1-u$, taken on the 30-bit integer | $1-u$ |
+Every calculation, at every outer batch size, draws the same way:
+
+| | the canonical inner block `Calculation_State.inner_block` |
+|---|---|
+| uniforms $u_j$ | inner path $i$ is point $i$ of a scrambled Sobol sequence from point 1024, fixing $j$ its dimension $j$ (64 dimensions per chunk), clamped to $[1074,\,2^{30}-1074]\times2^{-30}$ |
+| shared | every trade, outer path, batch and worker reads the same rows, whatever is booked beside it |
+| antithetic half [@hammersley1956; @glasserman2003] | $1-u$, taken on the 30-bit integer |
 
 The Sobol stream [@sobol1967] is `torch.quasirandom.SobolEngine` (Joe-Kuo direction numbers [@joe2008], 30 bits,
-random linear matrix scramble with a digital shift [@owen1998], scramble seed 1234). Because the Sobol rows are shared,
-a row's inner error is common to all its outer paths and is not averaged away by more outer paths.
+random linear matrix scramble with a digital shift [@owen1998], its seed the calculation's `Quasi_Seed`). Because
+the Sobol rows are shared, a row's inner error is common to all its outer paths and is not averaged away by more
+outer paths; a second `Quasi_Seed` is an independent randomisation of the same points, so the spread of a mark
+over seeds measures its inner error. A LogVar2FJ pricer's daily shocks come from a generator per walk segment keyed
+by `Quasi_Seed` and the segment, so they too are the trade's own.
 
 Inner paths per row, $N=$ `MCMC_Simulations`:
 

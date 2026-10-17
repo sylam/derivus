@@ -41,11 +41,6 @@ Grouped by where a validator meets them.
   positive exposure at expiry reads 12.2% and 16.6% of the analytic price above its reading with
   them, 10 and 12 standard errors, while the payoff-free numeraire identity moves within its
   noise; near linear in the mark times the FX vol, 1.2% and 1.5% at a 0.3 mark and a 15% vol.
-- **The quasi-random draws ignore `Random_Seed`** (2026-10-11). One Sobol sequence at a fixed seed
-  (`Calculation_State.QUASI_SEED`) feeds the inner block, the Markov-regime, GARCH and basis-linked
-  spot models, the LogVar2FJ knot mixers and the hedging fork (unless `Inner_Draws: random`). A
-  study across seeds cannot see that error, and the inner block's error is common to every outer
-  path rather than averaged over them. UNMEASURED.
 
 ### The calibration {#the-calibration}
 

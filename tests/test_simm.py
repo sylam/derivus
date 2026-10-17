@@ -72,7 +72,7 @@ INDEX = {
 
 #: The SIMM calculation each document carries, a valuation of one inner path the option needs not.
 SIMM = {'Object': 'SIMM', 'Base_Date': BASE, 'Currency': 'USD', 'Mapping': MAPPING,
-        'Parameters': PARAMETERS, 'MCMC_Simulations': 1, 'Random_Seed': 1}
+        'Parameters': PARAMETERS, 'MCMC_Simulations': 1, 'Quasi_Seed': 1}
 
 
 def factors():
@@ -285,17 +285,17 @@ def test_the_sharded_run_equals_the_serial_run_to_the_bit(serial):
 @pytest.mark.parametrize('book', [{'NS': ('SWAP', 'FXO')}, {'NS': ('SWAP',), 'NT': ('FXO',)}])
 def test_a_netting_set_s_crif_is_its_trades_own_to_the_bit(book):
     """A BOOK IS VALUED PER MOVE. The swap and the option, under one netting set or each under its
-    own, are valued as one book once per move, 32 valuations where valuing each trade per move took
-    43 (2.1 a CRIF row of 15 against 2.9), and write the CRIF rows and the trades report the two
-    write each alone in a one-trade document, to the bit. That holds because both price in closed
-    form and says nothing of a Monte Carlo trade: a base valuation draws a Monte Carlo pricer's
-    paths off one stream in booking order, so such a trade booked after another is valued as the
-    book values it, not as it is valued alone, which the Monte Carlo gate below measures.
+    own, are valued as one book at the base and once per move as the trades the move reaches, 32
+    valuations pricing 43 trades where valuing the book per move priced 64, and write the CRIF rows
+    and the trades report the two write each alone in a one-trade document, to the bit. Both price
+    in closed form; the Monte Carlo gate below holds the same of two trades a Monte Carlo pricer
+    values.
 
     Killing mutations: a trade read off the structure of the next trade the valuation holds - the
-    swap valued at the option's 66,209.81 and missing its 5y row of 443.41; a book's trades booked
-    under its first set - on the two-set book the option, found under no set of its own, values to
-    nothing and writes none of the 10 rows it writes alone.
+    swap read at the option's value at the base and at its own where a move reaches it alone,
+    writing 17 rows against 15, a swap row of 66,264.23; a book's trades booked under its first set
+    - on the two-set book the option, found under no set of its own, values to nothing and writes
+    none of the 10 rows it writes alone.
     """
     output = world(book=book).run_job()[1]['Results']
     alone = [world(book={reference: (trade,)}).run_job()[1]['Results']
@@ -354,37 +354,27 @@ AUTOCALLS = [dict(CALLED, Reference=reference, Equity=index, Dividends=index,
 INDICES = dict(INDEX, **{name + '2': dict(block) for name, block in INDEX.items()})
 
 
-def test_monte_carlo_trades_draw_one_stream_through_every_valuation():
+def test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit():
     """Two autocalls a Monte Carlo pricer values, under one set, the second on an index the first
-    does not read: every valuation of the run books both in one order and a move changes no draw
-    count, so each draws the same paths through the base and every move. The second's equity row
-    is the difference of two base valuations of the book, its index's spot a percent up and as it
-    stands, to 1e-9, and the run with its moves dealt over two workers writes the serial run's CRIF
-    and trades report to the bit. A base valuation draws its paths off one stream in booking order,
-    so the second, drawing after the first, is valued as the book values it: at 256 inner paths its
-    base sits 5.5e-3 off its own one-trade document's and its rows up to 4.7e-3 of its largest,
-    where the first writes its own document's to the bit.
+    does not read: a base valuation draws each trade's inner paths off `Quasi_Seed` alone, so each
+    draws the same paths in the set as in a one-trade document of its own, through the base and
+    every move, and the set's CRIF and trades report are the two documents' to the bit; the run with
+    its moves dealt over two workers writes the serial run's to the bit. The two autocalls' terms
+    and indices agree, so each values at 0.245048 and writes the other's rows.
 
-    Killing mutation: a move valuing only the trades it writes rows for - the second autocall draws
-    from the seed under its own index's moves and after the first at the base, and its equity row
-    reads 8.807e-3 against the difference of the book's valuations, 7.488e-3.
+    Killing mutation: the pseudo-random draw restored below 16 outer paths - the second autocall's
+    base 5.5e-3 off its own document's, drawing after the first at the base and first at its own
+    index's moves, and its rows up to 0.18 of its largest.
     """
-    calculation = {'MCMC_Simulations': 256}
+    calculation = dict(MCMC_Simulations=256)
     serial, sharded = (world(dict(calculation, **workers), extra=INDICES, deals=AUTOCALLS,
                              book={'NS': ('AC1', 'AC2')}).run_job()[1]['Results']
                        for workers in ({}, {'Workers': 2}))
     identical(sharded, serial)
-
-    def worth(spot):
-        moved = dict(INDICES['EquityPrice.EQ2'], Spot=spot)
-        return valued(world(dict(VALUATION, **calculation), configuration={}, deals=AUTOCALLS,
-                            extra=dict(INDICES, **{'EquityPrice.EQ2': moved}),
-                            book={'NS': ('AC1', 'AC2')}))['AC2']
-
-    spot = INDICES['EquityPrice.EQ2']['Spot']
-    crif = serial['CRIF']
-    row = crif[(crif['TradeID'] == 'AC2') & (crif['RiskType'] == 'Risk_Equity')]['Amount'].item()
-    assert row == pytest.approx(worth(spot * 1.01) - worth(spot), rel=1e-9)
+    alone = [world(calculation, extra=INDICES, deals=AUTOCALLS, book={'NS': (trade,)}).run_job()[
+        1]['Results'] for trade in ('AC1', 'AC2')]
+    identical(serial, {table: pd.concat([run[table] for run in alone], ignore_index=True)
+                       for table in ('CRIF', 'Trades')})
 
 
 def test_an_autocall_a_past_print_called_writes_no_rows():

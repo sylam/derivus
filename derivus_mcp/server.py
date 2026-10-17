@@ -230,7 +230,8 @@ def _summary(raw, result_id):
     in it - stats, and each table's shape as one line. Never a column list and never a cell - those
     stay behind `fetch_table`."""
     trimmed = {'result_id': result_id, 'status': raw.get('status')}
-    for key in ('plan_hash', 'values_hash', 'engine_version', 'seed', 'stats', 'error'):
+    for key in ('plan_hash', 'values_hash', 'engine_version', 'seed', 'quasi_seed', 'stats',
+                'error'):
         if key in raw:
             trimmed[key] = raw[key]
     if 'tables' in raw:
@@ -1831,8 +1832,9 @@ def export_settlements(due_before: str, actor: str | None = None) -> dict:
 @MCP.tool(annotations=READ_ONLY)
 def poll_result(result_id: str) -> dict:
     """Where a run got to: `queued`/`running`, or `done` with the replay tuple (`plan_hash`,
-    `values_hash`, `engine_version`, `seed`), the run's stats and each table's SHAPE as one line
-    (fetch cells with `fetch_table`), or `error` with the message. Never the cells themselves."""
+    `values_hash`, `engine_version`, `seed`, `quasi_seed`), the run's stats and each table's SHAPE
+    as one line (fetch cells with `fetch_table`), or `error` with the message. Never the cells
+    themselves."""
     return _summary(_raw_result(result_id), result_id)
 
 

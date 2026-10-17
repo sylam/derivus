@@ -114,7 +114,7 @@ def vanilla(reference='BR'):
 def job(deal, calc=None):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
-                             'MCMC_Simulations': 1024, 'Random_Seed': 1}, **(calc or {})),
+                             'MCMC_Simulations': 1024}, **(calc or {})),
         'Deals': {'Reference': 'fold',
                   'Deals': {'Children': [{'Instrument': {'.Deal': d}}
                                          for d in (deal if isinstance(deal, list) else [deal])]}},
@@ -329,7 +329,7 @@ def test_the_digital_barrier_folds_to_its_own_vanilla():
 # the same fold under a credit Monte Carlo: the substitute walks its own document's profile
 # --------------------------------------------------------------------------------------------
 CMC_CALC = {'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 256,
-            'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'USD'}
+            'Random_Seed': 1, 'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'USD'}
 
 
 def cmc_profile(deal):

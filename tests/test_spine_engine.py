@@ -95,7 +95,7 @@ def job(deals=(CASHFLOW,), factors=FACTORS, sections={}, **calculation):
     """A job document as the objects a market data file holds - `test_service`'s own shape."""
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
-                             'MCMC_Simulations': 1, 'Random_Seed': 1}, **calculation),
+                             'MCMC_Simulations': 1, 'Quasi_Seed': 1}, **calculation),
         'Deals': {'Reference': 'spine-desk',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': dict({
@@ -407,10 +407,13 @@ def test_a_standing_run_attests_at_birth_and_the_other_lanes_mint_nothing(record
     """A run is recorded IFF its output will be cited by a fact. Telemetry and curiosity mint
     NOTHING and the assertion is ABSENCE - the head does not move - which is the only honest way to
     say so. A standing run appends `run_completed` with the whole replay tuple at birth and reports
-    the LSN it landed at, so a caller can cite it without folding for it.
+    the LSN it landed at, so a caller can cite it without folding for it: a base valuation's two
+    seeds, `seed` null since it declares no `Random_Seed` and `quasi_seed` the `Quasi_Seed` it
+    states.
 
-    Killing mutation: `attests` answering no for every job, which serves a standing run's numbers
-    with no `run_completed` behind them.
+    Killing mutations: `attests` answering no for every job, which serves a standing run's numbers
+    with no `run_completed` behind them; the replay tuple read without its `quasi_seed`, which the
+    record refuses as a claim with no `quasi_seed` and the run errors.
     """
     genesis = head(recorded)
     for silent in (spine.TELEMETRY, spine.CURIOSITY):
@@ -422,7 +425,7 @@ def test_a_standing_run_attests_at_birth_and_the_other_lanes_mint_nothing(record
     assert drained(submit(own_job('DEFAULT-LANE')))['status'] == 'done'
     assert head(recorded) == genesis, 'the default lane recorded something'
 
-    standing = drained(submit(own_job('STANDING-BIRTH', Random_Seed=7), lane=spine.STANDING))
+    standing = drained(submit(own_job('STANDING-BIRTH', Quasi_Seed=7), lane=spine.STANDING))
     assert standing['status'] == 'done', standing.get('error')
     assert head(recorded) == genesis + 1
     assert standing['attested']['lane'] == spine.STANDING
@@ -433,7 +436,8 @@ def test_a_standing_run_attests_at_birth_and_the_other_lanes_mint_nothing(record
     assert body['plan_hash'] == standing['plan_hash']
     assert body['values_hash'] == standing['values_hash']
     assert body['engine_version'] == standing['engine_version'] == derivus.__version__
-    assert body['seed'] == 7 and body['lane'] == spine.STANDING
+    assert body['seed'] is None and body['quasi_seed'] == standing['quasi_seed'] == 7
+    assert body['lane'] == spine.STANDING
     assert verify_home(recorded)['events'] == head(recorded)
 
 
@@ -690,7 +694,8 @@ def test_a_result_pinned_matching_a_known_tuple_cache_hits_without_re_executing(
     ran = []
 
     pinned = spine.pin_result(
-        {name: body[name] for name in ('plan_hash', 'values_hash', 'engine_version', 'seed')},
+        {name: body[name] for name in ('plan_hash', 'values_hash', 'engine_version', 'seed',
+                                       'quasi_seed')},
         blob(recorded, body['job']), blob(recorded, body['values_hash']),
         blob(recorded, body['result']),
         execute=lambda job_bytes, values, version: ran.append(1) or (version, b''))

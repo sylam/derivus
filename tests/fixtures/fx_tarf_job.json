@@ -8,7 +8,7 @@
       "Currency": "USD",
       "Greeks": "No",
       "MCMC_Simulations": 262144,
-      "Random_Seed": 1
+      "Quasi_Seed": 1
     },
     "MergeMarketData": {
       "ExplicitMarketData": {

@@ -226,7 +226,8 @@ function RunStrip({ origin, submit, extra }: {
               <span className="mono">{run.summary.plan_hash.slice(0, 12)}</span></span>
             <span className="chip" title="values hash">
               <span className="mono">{run.summary.values_hash?.slice(0, 12)}</span></span>
-            <span className="chip">seed {run.summary.seed}</span>
+            {run.summary.seed != null && <span className="chip">seed {run.summary.seed}</span>}
+            <span className="chip">quasi seed {run.summary.quasi_seed}</span>
           </>
         )}
       </div>

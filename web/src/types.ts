@@ -82,7 +82,8 @@ export type ResultSummary = {
   plan_hash?: string;
   values_hash?: string;
   engine_version?: string;
-  seed?: number;
+  seed?: number | null;
+  quasi_seed?: number;
   tables?: Record<string, TableShape>;
   /** A job that publishes its own, while it waits or runs. */
   progress?: { done: number; total: number; note: string };
@@ -185,6 +186,8 @@ export type XvaSet = {
   plan_hash: string | null;
   values_hash: string | null;
   seed: number | null;
+  /** Null on a row filed before the replay tuple carried it. */
+  quasi_seed: number | null;
   /** The engine's own wording, and a string only where `status` is 'failed'. */
   error: string | null;
   /** A recalc in flight for this set: {result_id, status: 'queued' | 'running'}. */

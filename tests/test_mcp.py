@@ -1251,7 +1251,7 @@ def test_a_run_comes_back_as_shapes_never_cells(book):
     """
     run = asyncio.run(mcp_server.execute_book())
     assert set(run) <= {'result_id', 'status', 'plan_hash', 'values_hash', 'engine_version',
-                        'seed', 'stats', 'tables', 'waited', 'error'}
+                        'seed', 'quasi_seed', 'stats', 'tables', 'waited', 'error'}
     for name, shape in run['tables'].items():
         assert isinstance(shape, str) and 'rows x' in shape, (name, shape)
 

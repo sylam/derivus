@@ -116,7 +116,7 @@ def _baseval(deal, spot=SPOT, greeks=False, sims=1 << 16):
     underneath, which is where the knock-in is decided."""
     # the CRISP estimator declared: this whole module is about the boundary correction, and
     # the default swaps the estimator rather than correcting it, registering nothing
-    overrides = {'MCMC_Simulations': sims, 'Random_Seed': 1, 'Branch_And_Weight': 'No',
+    overrides = {'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Branch_And_Weight': 'No',
                  'Greeks': 'First' if greeks else 'No'}
     _, out = run_baseval(_cfg(deal, spot), overrides=overrides)
     rows = out['Results']['mtm']
@@ -170,8 +170,8 @@ def test_asking_for_sensitivities_does_not_move_the_tarf_price_or_exposure():
     exactly zero forward, so this holds by construction - but the registration that feeds it does
     not: the target-pin counterfactual carries a SECOND survival weight through the same loop, and
     a second accumulator that consumed one random number would move the reported price. The base
-    valuation's one scenario reads `torch.rand`; under exposure the pin has rows to latch across
-    and the counterfactual weight runs the whole block loop beside the reported one.
+    valuation's one scenario reads the canonical inner block; under exposure the pin has rows to
+    latch across and the counterfactual weight runs the whole block loop beside the reported one.
 
     Killing mutation: the counterfactual's accumulator added to in place where it aliases the
     reported one.

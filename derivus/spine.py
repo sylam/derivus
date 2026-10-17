@@ -56,7 +56,7 @@ from copy import deepcopy
 
 from . import Context, content_hash, instruments, riskfactors
 from ._version import __version__
-from .calculation import BaseValuation, Diary
+from .calculation import BaseValuation, Diary, calculation_class
 from . import schema
 from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
                      tables_of, walk_job_deals, without_clocks)
@@ -851,12 +851,19 @@ def _observed(row, terms, level):
     return cells
 
 
+def replay_seeds(calculation):
+    """A job's two seeds off its `Calculation` block: `Random_Seed` as stated, null where it states
+    none, and the `Quasi_Seed` every calculation declares, completed."""
+    return {'seed': calculation.get('Random_Seed'), 'quasi_seed': int(schema.declared_defaults(
+        calculation_class(calculation['Object']), calculation)['Quasi_Seed'])}
+
+
 def replay(context):
-    """The four coordinates `context`'s numbers replay from. Hashed, they are also its `result_id`,
+    """The five coordinates `context`'s numbers replay from. Hashed, they are also its `result_id`,
     which is what makes an identical submission one execution."""
-    return {'plan_hash': context.plan_hash(), 'values_hash': context.values_hash(),
-            'engine_version': __version__,
-            'seed': context.current_cfg.deals['Calculation'].get('Random_Seed')}
+    return dict({'plan_hash': context.plan_hash(), 'values_hash': context.values_hash(),
+                 'engine_version': __version__},
+                **replay_seeds(context.current_cfg.deals['Calculation']))
 
 
 def values_of(context):

@@ -44,17 +44,17 @@ ROSTER = {'Straddle', 'Strangle', 'ZeroCostCollar', 'Seagull', 'ForwardExtra',
 
 #: Inner paths for an ACCRUAL structure. A TARF and an accumulator are Monte Carlo priced, so a
 #: zero-cost solve is a root find over an estimator, converging on the true root only as the paths
-#: grow. MEASURED: the accumulator's two orientations solve strikes 4.8e-4 apart at 1024 paths,
-#: 1.3e-4 at 4096, 2.5e-5 at 16384, 3.9e-5 at 65536. 16384 keeps the identity sharp at ~1 s a quote.
+#: grow. MEASURED: the accumulator's two orientations solve strikes 6.4e-6 apart at 16384 paths
+#: and 1.4e-6 at 65536. 16384 keeps the identity sharp at ~1 s a quote.
 ACCRUAL_SIMS = structures.declared_paths()
 
-#: The cross-axis band: eight times the measured 2.5e-5, which no axis error survives (the smallest
-#: of them, a barrier level inverted twice, moves the solved strike by percent).
+#: The cross-axis band: thirty times the measured 6.4e-6, which no axis error survives (the
+#: smallest of them, a barrier level inverted twice, moves the solved strike by percent).
 AXIS_TOLERANCE = 2e-4
 
-#: The same band under the fitted spot model, MEASURED on the FX gate's own book: 3.1e-4 apart at
-#: 16,384 paths against the lognormal's 2.5e-5 - the two shocks' estimator error, both orientations
-#: walking one law rather than reading a surface at two moneynesses.
+#: The same band under the fitted spot model, MEASURED on the FX gate's own book: 3.5e-4 apart at
+#: 16,384 paths and 5.9e-5 at 65,536 against the lognormal's 6.4e-6 - the two shocks' estimator
+#: error, both orientations walking one law rather than reading a surface at two moneynesses.
 MODEL_AXIS_TOLERANCE = 5e-4
 
 #: Every parameter in the store that is NOT required, and the value it must publish. A market
@@ -1627,7 +1627,7 @@ def test_a_strip_at_a_margin_strikes_further_from_the_client(accrual_book):
 
     The client accrues `(S - K)+`, so the desk's side is UP, and the direction is the claim: a sign
     error here quotes the client a BETTER strike for paying a margin. Measured on this book at
-    these paths: 9.2e-4 relative, against the 2.5e-5 the two zero-cost orientations differ by, so
+    these paths: 9.2e-4 relative, against the 6.4e-6 the two zero-cost orientations differ by, so
     the assertion is made at `AXIS_TOLERANCE` and clears it four times over.
 
     Killing mutation: the margin taken in its own currency rather than crossed into the pricing one.
@@ -1756,13 +1756,14 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
     A USDZAR TARF is forced onto the pair's BASE currency, so it used to look up a factor named for
     a NUMERAIRE, which can name no block - and rode GBM however many times the pair was calibrated.
     That showed as BIT-IDENTITY: the solved strike under the declared model and under none were the
-    same float, separation exactly 0.0. MEASURED under `MODEL_PARAMS`: 16.832891643626950 against
-    the same GBM 16.774620757621133, 0.347% apart - 139 times the solve floor of 2.5e-5 at this
-    path count, and the band below is forty times that floor.
+    same float, separation exactly 0.0. MEASURED under `MODEL_PARAMS`: 16.833791316661635 against
+    the same GBM 16.771812846924890, 0.370% apart - 580 times the solve floor of 6.4e-6 at this
+    path count, and the band below is 160 times that floor.
 
     THE ACCUMULATOR'S ORIENTATION ALREADY JOINED: its notional is the rand, so its underlying was
-    already the non-base token. Its strike is pinned to the digit at 17.390492998425863, so the
-    arm that never had the defect cannot lose the fit either.
+    already the non-base token. Its strike is pinned to the digit at 17.389901413377814, so the
+    arm that never had the defect cannot lose the fit either; re-pinned from 17.390492998425863
+    when a base valuation's inner paths became the canonical block's.
 
     Killing mutation: the spot model never pinned on a fitted pair, which prices the strip GBM.
     """
@@ -1782,7 +1783,7 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
     # the band is the accumulation order's, not the claim's - what a lost fit costs this arm is
     # 5.1e-2, and the strike it solves under the factor is pinned here to the digit
     assert leg(accumulator, 'accumulator')['strike_market'] == pytest.approx(
-        17.390492998425863, rel=1e-9), 'the orientation that already joined moved'
+        17.389901413377814, rel=1e-9), 'the orientation that already joined moved'
 
 
 def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accrual_book):
@@ -1794,8 +1795,8 @@ def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accr
     the two solve 3.7e-3 apart and the gap does NOT close with the path count: a Siegel drift, not
     noise.
 
-    MEASURED on the FX gate's book: 3.1e-4 apart at 16,384 paths against the lognormal's 2.5e-5 -
-    the shocks' estimator error rather than the numeraire. The band is 5e-4.
+    MEASURED on the FX gate's book: 3.5e-4 apart at 16,384 paths and 5.9e-5 at 65,536 against the
+    lognormal's 6.4e-6 - the shocks' estimator error rather than the numeraire. The band is 5e-4.
 
     Killing mutation: the spot model never pinned on a fitted pair, which prices the strip GBM.
     """

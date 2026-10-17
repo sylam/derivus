@@ -122,7 +122,7 @@ def closed_book(tmp_path):
     declare(log, ACTOR, TOLERANCE_POLICY, {'tolerances': {'mtm': 1e-9}})
     marks['tolerance'] = declare(log, ACTOR, TOLERANCE_POLICY, {'tolerances': {'mtm': 1e-6}})
     claim = {'plan_hash': marks['plan'], 'values_hash': marks['values'],
-             'engine_version': 'derivus-1.0', 'seed': 1}
+             'engine_version': 'derivus-1.0', 'seed': 1, 'quasi_seed': 1234}
     marks['attested'] = complete_run(log, STANDING, claim, b'{"Calc": {"first": true}}',
                                      values, b'{"mtm": 1.0}', book=BOOK)
     complete_run(log, STANDING, claim, b'{"Calc": {"second": true}}', values,
@@ -370,7 +370,7 @@ def test_a_fold_never_claims_the_home_and_sees_the_next_append(tmp_path):
     assert attestations.rows(fold(reader, attestations)) == []
 
     claim = {'plan_hash': marks['plan'], 'values_hash': marks['restated'],
-             'engine_version': 'derivus-1.0', 'seed': 1}
+             'engine_version': 'derivus-1.0', 'seed': 1, 'quasi_seed': 1234}
     complete_run(log, STANDING, claim, b'{"Calc": {}}', b'{"EURUSD":1.0857}',
                  b'{"mtm": 1.0}', book=BOOK)
 
@@ -491,7 +491,7 @@ def test_the_second_fixture_pins_what_the_synthetic_book_cannot_say(tmp_path):
     attested = PROJECTORS['attestations'].rows(fold(log, PROJECTORS['attestations']))
     assert canonical_bytes(attested) == canonical_bytes([{
         'plan_hash': marks['plan'], 'values_hash': marks['values'], 'engine_version': 'derivus-1.0',
-        'seed': 1, 'lane': STANDING, 'job': marks['attested']['job'],
+        'seed': 1, 'quasi_seed': 1234, 'lane': STANDING, 'job': marks['attested']['job'],
         'result': marks['attested']['result'], 'lsn': 14}])
 
     decided = PROJECTORS['decisions'].rows(fold(log, PROJECTORS['decisions']))

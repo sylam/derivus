@@ -114,7 +114,7 @@ def with_deals(config, book=None, currency=CCY, curve=CURVE, discount=CURVE,
 
 def run(config, greeks='No'):
     return derivus.run_baseval(
-        config, prec=DTYPE, overrides={'MCMC_Simulations': 1, 'Random_Seed': 1, 'Greeks': greeks})
+        config, prec=DTYPE, overrides={'MCMC_Simulations': 1, 'Greeks': greeks})
 
 
 def baseval(config, greeks='No'):

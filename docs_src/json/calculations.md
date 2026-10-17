@@ -9,7 +9,7 @@ every type, with its type, default and menu, is on the type's own page under thi
 | `BaseValuation` | `run_baseval` | `cx.Base_Valuation` | each deal's mark at the valuation date, and AAD factor sensitivities (`Greeks`) |
 | `CreditMonteCarlo` | `run_cmc` | `cx.Credit_Monte_Carlo` | the simulated portfolio mark, exposure profile, CVA and FVA (CollVA and an initial margin experimental) |
 | `HedgeMonteCarlo` | `run_hedgemontecarlo` | `cx.Hedge_Monte_Carlo` | the dynamic-hedging solve or simulation of [Hedging](../hedging/overview.md) |
-| `SIMM` | `run_simm` | none: `cx.run_job` or `derivus.run_simm(cx.current_cfg)` | an ISDA SIMM sensitivity file (CRIF) [@isdasimm] by bump and revaluation, the book revalued once per market move |
+| `SIMM` | `run_simm` | none: `cx.run_job` or `derivus.run_simm(cx.current_cfg)` | an ISDA SIMM sensitivity file (CRIF) [@isdasimm] by bump and revaluation, the trades a market move reaches revalued once per move |
 
 ## How a block is completed {#defaults}
 
@@ -64,7 +64,7 @@ For `CreditMonteCarlo` and `HedgeMonteCarlo`:
 | Outer paths | `Batch_Size × Simulation_Batches`. Sharded over `n` workers, each runs `Simulation_Batches // n` batches, so a remainder is not run |
 | Outer normals | `torch.randn`, correlated through the Cholesky factor of the matrix [Correlations](correlations.md) assembles. The generator is seeded once per worker with `Random_Seed + worker index`; a sharded run (`runparallel`) reseeds every batch from a SplitMix64 mix of `Random_Seed` and the batch's global index (`calculation.batch_seed`), so its batches do not depend on the worker count |
 | `Antithetic: Yes` | draws `Batch_Size // 2` correlated normals and appends their negatives. The path count is unchanged: the pairs are the two halves of the batch axis [@glasserman2003] |
-| Quasi-random stream | a scrambled Sobol sequence [@sobol1967; @owen1998; @joe2008] (`torch.quasirandom.SobolEngine`, scramble seed 1234, read from point 1024). Its consumers are the regime and mixer uniforms of `MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel` and `LogVar2FJImpliedSpotModel`, the inner normals of `HedgeMonteCarlo` under `Inner_Draws: sobol`, and the inner-path block of the simulated pricers. It is not derived from `Random_Seed` |
+| Quasi-random stream | a scrambled Sobol sequence [@sobol1967; @owen1998; @joe2008] (`torch.quasirandom.SobolEngine`, its scramble seed `Quasi_Seed`, read from point 1024). Its consumers are the regime and mixer uniforms of `MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel` and `LogVar2FJImpliedSpotModel`, the inner normals of `HedgeMonteCarlo` under `Inner_Draws: sobol`, and the inner-path block of the simulated pricers at every outer batch size, which with a LogVar2FJ pricer's walk, keyed by `Quasi_Seed` and its segment, is all a `BaseValuation` or a `SIMM` draws. It is not derived from `Random_Seed` |
 | Inner paths | `MCMC_Simulations` per simulated pricing: 2,048 by default here, 16,384 under `BaseValuation` and `SIMM` |
 | Precision | float32 by default (`run_cmc`, `run_hedgemontecarlo`); `run_baseval` defaults to float64 |
 | Model time | a scenario date's year fraction is its calendar days from `Base_Date` / 365.25 |

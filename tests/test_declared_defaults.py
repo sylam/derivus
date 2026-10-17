@@ -293,7 +293,7 @@ def price(block):
     """One deal through the JSON contract; its own row of `Results['mtm']`, not the book total."""
     job = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
-                        'MCMC_Simulations': 1, 'Random_Seed': 1},
+                        'MCMC_Simulations': 1},
         'Deals': {'Reference': 'defaults',
                   'Deals': {'Children': [{'Instrument': {'.Deal': block}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
@@ -581,15 +581,24 @@ def test_an_equity_binary_settles_at_its_expiry_where_it_states_no_settlement_da
 # --------------------------------------------------------------------------------------------
 @pytest.mark.parametrize('filename', sorted(PINNED))
 def test_a_job_document_keeps_its_plan_hash_and_its_factor_universe(filename):
-    """The HARD acceptance, per document: the program and the want-list are what they were.
+    """The HARD acceptance, per document: the program and the want-list are what they were, and a
+    `Quasi_Seed` stated on its calculation moves neither hash, a seed being a replay coordinate of
+    its own.
 
-    Killing mutation: the conventions written into the block at construction."""
+    Killing mutations: the conventions written into the block at construction; `Quasi_Seed` left in
+    the plan, which moves every pin."""
     context = derivus.Context()
     context.load_json(os.path.join(FIXTURES, filename))
     universe = context.current_cfg.factor_universe()
     plan, resolved, missing = PINNED[filename]
     assert context.plan_hash() == plan
     assert (len(universe['resolved']), len(universe['missing'])) == (resolved, missing)
+    with open(os.path.join(FIXTURES, filename)) as f:
+        document = json.load(f)
+    document['Calc']['Calculation']['Quasi_Seed'] = 7
+    seeded = derivus.Context()
+    seeded.load_json((json.dumps(document), filename))
+    assert (seeded.plan_hash(), seeded.values_hash()) == (plan, context.values_hash())
 
 
 def test_every_deal_in_every_job_document_holds_exactly_its_authored_block():
@@ -960,7 +969,7 @@ def book(deals):
 
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': WORLD_BASE, 'Currency': 'USD',
-                        'MCMC_Simulations': 1, 'Random_Seed': 1},
+                        'MCMC_Simulations': 1},
         'CalendDataFile': CALENDARS,
         'Deals': {'Reference': 'defaults',
                   'Deals': {'Children': [node(deal) for deal in deals]}},

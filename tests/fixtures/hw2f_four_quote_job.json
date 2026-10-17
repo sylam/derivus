@@ -6,8 +6,7 @@
     ".Timestamp": "2026-08-03"
    },
    "Currency": "ZAR",
-   "MCMC_Simulations": 1,
-   "Random_Seed": 1
+   "MCMC_Simulations": 1
   },
   "Deals": {
    "Reference": "hw2f",

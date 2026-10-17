@@ -120,6 +120,7 @@ reads `No`.
 | | `Deflate_Stochastically`, `Gradient` | `Yes`, `No` | as above |
 | | `Counterparty`, `Bank`, `Stochastic_Funding` | blank, blank, `No` | see FVA |
 | top level | `Batch_Size`, `Simulation_Batches`, `Random_Seed`, `Antithetic` | 1024, 1, 5120, `No` | paths and seed |
+| | `Quasi_Seed` | 1234 | the quasi-random draws: a pricer's inner paths and the Sobol-driven processes |
 | | `Time_Grid`, `Dynamic_Scenario_Dates` | `0d 2d 1w(1w) 3m(1m) 2y(3m)`, `Yes` | the grids |
 | | `MCMC_Simulations` | 2048 | inner paths of a Monte Carlo pricer |
 | | `Deflation_Interest_Rate`, `Currency`, `Percentile` | `ZAR-SWAP`, `ZAR`, `95` | the deflator, the reporting currency, the PFE |

@@ -263,7 +263,7 @@ def test_a_sobol_consuming_world_is_bit_identical_in_the_worker_count():
 
 def inner_pooled(n, device='cpu'):
     """A book priced by an inner Monte Carlo - a discretely monitored down-and-out call on the GBM
-    equity, 32 paths a batch and 64 inner, so the Sobol arm - its shards pooled in worker order."""
+    equity, 32 paths a batch and 64 inner - its shards pooled in worker order."""
     deal = dict(CALL, Object='EquityBarrierOption', Reference='EQDAO', Barrier_Type='Down_And_Out',
                 Barrier_Price=85.0, Cash_Rebate=0.0, Expiry_Date=BASE + pd.DateOffset(years=1),
                 Barrier_Dates=[BASE + pd.DateOffset(months=m) for m in range(1, 13)],

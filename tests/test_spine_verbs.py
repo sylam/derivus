@@ -110,7 +110,7 @@ def claim(values=VALUES, engine_version='0.1.0', seed=1, plan_hash=None):
     """A replay tuple over the values vector a gate is about to hand in. The values hash IS the
     address of those bytes, which is the composition the verb checks rather than believes."""
     return {'plan_hash': plan_hash or address(JOB + b'plan'), 'values_hash': address(values),
-            'engine_version': engine_version, 'seed': seed}
+            'engine_version': engine_version, 'seed': seed, 'quasi_seed': 1234}
 
 
 def executor_of(result, version='0.1.0', seen=None):
@@ -1301,19 +1301,20 @@ def test_no_attestation_appends_before_the_objects_it_cites_are_on_the_platter(t
     assert verify_home(home)['events'] == 5
 
 
-def test_a_replay_claim_is_four_coordinates_and_no_fifth(tmp_path):
+def test_a_replay_claim_is_five_coordinates_and_no_sixth(tmp_path):
     """The tuple names the numbers, so a claim with a coordinate missing names no result at all and
-    one with a fifth is not the tuple a result was filed under. A null seed is legal and a
+    one with a sixth is not the tuple a result was filed under. A null seed is legal and a
     substituted one is not: a job that declared no `Random_Seed` was hashed with a null there, and
-    a zero would record a tuple no result was ever filed under.
+    a zero would record a tuple no result was ever filed under. A null quasi seed is not legal:
+    every calculation declares a `Quasi_Seed`.
 
-    Killing mutation: a fifth coordinate let through.
+    Killing mutations: a sixth coordinate let through; a null quasi seed let through.
     """
     home, log = minted(tmp_path)
 
     for broken in ({'plan_hash': 'a' * 64}, dict(claim(), device='cuda'), 'a tuple',
                    dict(claim(), engine_version=''), dict(claim(), seed=1.5),
-                   dict(claim(), plan_hash='short')):
+                   dict(claim(), quasi_seed=None), dict(claim(), plan_hash='short')):
         with pytest.raises(MalformedEvent):
             verbs.complete_run(log, verbs.STANDING, broken, JOB, VALUES, RESULT, book=BOOK)
 

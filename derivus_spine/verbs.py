@@ -50,9 +50,9 @@ MINTING = (STANDING,)
 #: of these, so it is a projection rather than a fact.
 LIFECYCLE_TYPES = ('election', 'fixing_observed', 'determination')
 
-#: The four coordinates a reported number replays from, named here so the claim a verb is handed
+#: The five coordinates a reported number replays from, named here so the claim a verb is handed
 #: and the body it writes cannot part company.
-REPLAY_FIELDS = ('plan_hash', 'values_hash', 'engine_version', 'seed')
+REPLAY_FIELDS = ('plan_hash', 'values_hash', 'engine_version', 'seed', 'quasi_seed')
 
 #: What a settlement may move, and the one status money moves under. A `payment` settles the diary
 #: row its subject keys, as a bare `settled` does; a `fee` is money a trade cost that no row
@@ -425,7 +425,7 @@ def pin_result(log, actor, claim, job, values, result, executor, book=None, effe
     """Promote a tuple this hub did not witness, returning the envelope, the addresses, and the
     `resolution` that reached it.
 
-    A cache hit is a `run_completed` at or before this head carrying the same four coordinates; if
+    A cache hit is a `run_completed` at or before this head carrying the same five coordinates; if
     that attestation names a different result the claim is refused, since one replay tuple cannot
     have two. Otherwise the injected `executor` is called as `executor(job, values, engine_version)`
     and must answer `(version it ran at, result bytes)`, a version mismatch refusing by name.
@@ -480,7 +480,7 @@ def pin_result(log, actor, claim, job, values, result, executor, book=None, effe
 
 
 def attestation(log, claim, lsn=None):
-    """The `run_completed` body carrying `claim`'s four coordinates at or before `lsn`, with the LSN
+    """The `run_completed` body carrying `claim`'s five coordinates at or before `lsn`, with the LSN
     it sits at, or None.
 
     Located by envelope - only `run_completed` rows are opened - so this costs the length of the
@@ -501,8 +501,8 @@ def attestation(log, claim, lsn=None):
 # The pieces every verb above is made of.
 
 def _claim(claim):
-    """`claim` checked and returned as a body's four `REPLAY_FIELDS`. A claim is four coordinates
-    and no fifth."""
+    """`claim` checked and returned as a body's five `REPLAY_FIELDS`. A claim is five coordinates
+    and no sixth."""
     if not isinstance(claim, dict):
         raise MalformedEvent(
             'the replay claim is {}, not the {} tuple every reported number replays from'.format(
@@ -510,13 +510,13 @@ def _claim(claim):
     surplus = sorted(set(claim) - set(REPLAY_FIELDS))
     if surplus:
         raise MalformedEvent(
-            'the replay claim carries {} beyond {}: a tuple with a fifth coordinate is not the '
+            'the replay claim carries {} beyond {}: a tuple with a sixth coordinate is not the '
             'tuple a result was filed under'.format(', '.join(surplus), ', '.join(REPLAY_FIELDS)))
     body = {}
     for field in REPLAY_FIELDS:
         if field not in claim:
             raise MalformedEvent(
-                'the replay claim has no {}: the four coordinates are {}, and a tuple missing one '
+                'the replay claim has no {}: the five coordinates are {}, and a tuple missing one '
                 'of them names no result at all'.format(field, ', '.join(REPLAY_FIELDS)))
         body[field] = claim[field]
     for field in ('plan_hash', 'values_hash'):
@@ -531,11 +531,15 @@ def _claim(claim):
             'the replay claim names seed {!r}: a seed is a whole number, or null where the job '
             'declared none - a substituted zero would record a tuple no result was filed '
             'under'.format(body['seed']))
+    if not is_integer(body['quasi_seed']):
+        raise MalformedEvent(
+            'the replay claim names quasi_seed {!r}: every calculation declares one, so it is a '
+            'whole number and never null'.format(body['quasi_seed']))
     return body
 
 
 def _coordinates(claim):
-    """The four coordinates as a comparable, printable tuple - what a cache hit matches on."""
+    """The five coordinates as a comparable, printable tuple - what a cache hit matches on."""
     return tuple(claim.get(field) for field in REPLAY_FIELDS)
 
 

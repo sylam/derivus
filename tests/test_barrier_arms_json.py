@@ -81,7 +81,7 @@ def _deal(barrier_type, barrier, strike, option_type, rebate):
 def _run(deal):
     job = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
-                        'MCMC_Simulations': 1, 'Random_Seed': 1},
+                        'MCMC_Simulations': 1},
         'Deals': {'Reference': 'arms',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {

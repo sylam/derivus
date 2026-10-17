@@ -165,7 +165,7 @@ DOORBELL_SECONDS = 15.0
 #: token in `Deals.Deals.Children[].Instrument`. A complete job that loads, prices and validates.
 JOB_SKELETON = {'Calc': {
     'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': '2024-06-28'},
-                    'Currency': 'USD', 'Random_Seed': 1},
+                    'Currency': 'USD'},
     'Deals': {'Reference': 'skeleton', 'Deals': {'Children': [
         {'Instrument': {'.Deal': {
             'Object': 'FixedCashflowDeal', 'Reference': 'CF1', 'Currency': 'USD',
@@ -3484,6 +3484,7 @@ class XvaJob:
                      'cva': None, 'fva': None,
                      'result_id': self.result_id, 'plan_hash': self.stamp['plan_hash'],
                      'values_hash': self.stamp['values_hash'], 'seed': self.stamp['seed'],
+                     'quasi_seed': self.stamp['quasi_seed'],
                      'as_of': as_of()}, **fields)
 
     @staticmethod
@@ -3554,7 +3555,8 @@ def book_xva(request: dict):
     refuses BY NAME and queues nothing at all.
 
     NOTHING IS PARSED HERE. A set's stamp is the content hash of its document, the sha256 of the
-    market data and calendar files it names, the engine version and the seed; the worker loads it.
+    market data and calendar files it names, the engine version and the two seeds; the worker loads
+    it.
 
     Answers `{queued: [{reference, result_id}]}`. Content addressing applies: the same set over an
     unmoved book and unmoved files is one run, and asking twice hands back the id of the first.
@@ -3576,7 +3578,7 @@ def book_xva(request: dict):
         terms = set_terms(node['Instrument']['.Deal'])
         job = xva_document(document, node, terms[0])
         stamp = dict(plan_hash=content_hash(job), values_hash=files, engine_version=__version__,
-                     seed=job['Calc']['Calculation'].get('Random_Seed'))
+                     **spine.replay_seeds(job['Calc']['Calculation']))
         result_id = content_hash(stamp)
         run = XvaJob(job, reference, terms, result_id, stamp)
         status = EXECUTOR.submit(
@@ -3608,7 +3610,8 @@ def projection_entry(row, **book):
     entry.update(status=row.get('status', 'never run'), cva=row.get('cva'), fva=row.get('fva'),
                  as_of=row.get('as_of'), result_id=row.get('result_id'),
                  plan_hash=row.get('plan_hash'), values_hash=row.get('values_hash'),
-                 seed=row.get('seed'), error=row.get('error'), recalc=None)
+                 seed=row.get('seed'), quasi_seed=row.get('quasi_seed'), error=row.get('error'),
+                 recalc=None)
     pending = XVA_PENDING.get(entry['reference'])
     outcome = EXECUTOR.result(pending) if pending is not None else None
     if outcome is not None and outcome['status'] in ('queued', 'running'):

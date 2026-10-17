@@ -83,7 +83,7 @@ def _vanilla(ref, strike, buy_sell, units):
 def _job(deals, factors, valuation=None):
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
-                        'MCMC_Simulations': 1, 'Random_Seed': 1},
+                        'MCMC_Simulations': 1},
         'Deals': {'Reference': 'digital',
                   'Deals': {'Children': [{'Instrument': {'.Deal': d}} for d in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {

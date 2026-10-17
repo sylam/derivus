@@ -93,7 +93,7 @@ def _job(calc, deals=(), **sections):
 
 def _base(greeks='No', paths=8192, **extra):
     return dict({'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': BASE}, 'Currency': 'USD',
-                 'Greeks': greeks, 'MCMC_Simulations': paths, 'Random_Seed': 1}, **extra)
+                 'Greeks': greeks, 'MCMC_Simulations': paths, 'Quasi_Seed': 1}, **extra)
 
 
 def _curve(rows):
@@ -279,10 +279,10 @@ def test_the_reserve_is_per_deal_beside_the_portfolio():
     book quoting two sides.
 
     The reserve is a band times a SENSITIVITY, so the portfolio is the deals CONTRACTED and its
-    `|sum|` is at most their `sum |.|` - here 9.059e-4 against 1.608e-2, 5.6% of it, the two sides
-    cancelling. And a deal's number is its own rather than a share of the portfolio's: AC1 reads
-    the same 0x1.c527ee5221e24p-8 in this book as it does alone, where the one-deal book's
-    portfolio row IS that deal's, bit for bit.
+    `|sum|` is at most their `sum |.|` - here exactly 0 against 5.29e-2, the four legs one autocall
+    on one walk, two bought and two sold. And a deal's number is its own rather than a share of the
+    portfolio's: AC1 reads the same 0x1.b16f5855426f5p-7 in this book as it does alone, where the
+    one-deal book's portfolio row IS that deal's, bit for bit.
 
     Killing mutation: a deal's own reserve left unwritten.
     """
@@ -303,6 +303,25 @@ def test_the_reserve_is_per_deal_beside_the_portfolio():
     assert abs(book['root']) < 0.5 * sum(abs(x) for x in per), (book['root'], per)
     assert alone['root'].hex() == alone['AC1'].hex(), alone
     assert book['AC1'].hex() == alone['AC1'].hex(), (book['AC1'], alone['AC1'])
+
+
+def test_a_logvar2fj_autocall_is_valued_on_its_own_walk_in_any_book():
+    """A pricer's walk draws its daily shocks off generators keyed by `Quasi_Seed` and the
+    segment, and its inner rows off the canonical block, so AC1 under a live NIG factor marks the
+    same alone, after a sold autocall struck at 95 and before it, to the bit, at -0.840795.
+
+    Killing mutations: the walk's key drawn off the plain generator - AC1 reads -0.778858 alone and
+    -0.797431 after the sold autocall; the pseudo-random draw restored below 16 outer paths -
+    -0.863776 alone, -0.846961 after it.
+    """
+    other = _autocall(Reference='AC2', Buy_Sell='Sell', Strike_Price=95.0)
+
+    def mark(*deals):
+        return _mtm(_run(_job(_base(), [{'Instrument': {'.Deal': deal}} for deal in deals],
+                              **_priced(factor=LIVE_NIG)), 'booked'))
+
+    alone = mark(_autocall())
+    assert alone == mark(other, _autocall()) == mark(_autocall(), other)
 
 
 # ------------------------------------------------------------------------------------------
@@ -811,6 +830,9 @@ def test_a_banked_document_is_unmoved(name, document, overrides):
 
     BANKED ON AN RTX 3090, which is where a base valuation runs whenever CUDA is visible. The hex
     is the DEVICE's as much as the tree's; a CPU-only box re-banks rather than reading a defect.
+    Re-banked when a base valuation's inner paths became the canonical block's: the TARF and the
+    accumulator, one strip, 62.42891 to 62.49790 against the closed-form strip's 62.4979, their
+    eleven greeks by 3.3e-5 to 2.3e-2 of themselves; the autocall's one fixing draws nothing.
 
     Killing mutation: the first fixing interval's carry read a part in ten thousand high.
     """

@@ -208,10 +208,14 @@ assessed`, never a zero read as a count. Both refuse a thirteenth frame field, w
 
 ### What a replay tuple pins {#replay}
 
-`(plan_hash, values_hash, engine_version, seed)`. The two hashes cover the files a job names by
-what they hold - a market data file's sections and its calendar in the plan, the file's values in
-`values_hash` - so the tuple pins their content, never their path; the record keeps no file, so a
-replay needs the files that still hold it ([before 0.5.0](roadmap.md#before-0-5-0)).
+`(plan_hash, values_hash, engine_version, seed, quasi_seed)`. The two hashes cover the files a job
+names by what they hold - a market data file's sections and its calendar in the plan, the file's
+values in `values_hash` - so the tuple pins their content, never their path; the record keeps no
+file, so a replay needs the files that still hold it ([before 0.5.0](roadmap.md#before-0-5-0)).
+`seed` is the `Random_Seed` a job states, null where it states none, a base valuation and a SIMM
+declaring none; `quasi_seed` is the `Quasi_Seed` every calculation declares, its default where the
+job states none (`spine.replay_seeds`). Neither is in `plan_hash`. **Held by**
+`test_spine_engine.py::test_a_standing_run_attests_at_birth_and_the_other_lanes_mint_nothing`.
 `engine_version` is the hand-set `derivus/_version.py`; no commit, torch or CUDA version or device
 is recorded; and `Deterministic_Kernels` defaults to `No` (`Yes` calls
 `torch.use_deterministic_algorithms(True, warn_only=True)`, which warns rather than refuses).

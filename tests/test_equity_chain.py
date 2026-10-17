@@ -1018,7 +1018,7 @@ def job_document(market_prices=None, factors=None, surface=True, repo=None):
     price_factors.update(factors or {})
     return {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': AS_OF.isoformat()},
-                        'Currency': 'USD', 'MCMC_Simulations': 1, 'Random_Seed': 1},
+                        'Currency': 'USD', 'MCMC_Simulations': 1},
         'Deals': {'Reference': 'chain', 'Deals': {'Children': []}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD',

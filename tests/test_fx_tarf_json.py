@@ -186,9 +186,9 @@ def test_a_reachable_target_is_worth_less_than_an_unreachable_one(tmp_path):
 
 
 #: What the fixture as it stands marks - the control that the cap's mask is inert wherever the cap
-#: is live, the CALL side being the one where it never goes negative. Re-banked one unit in the
-#: last place when the carry became the curves' integral over its year fraction.
-BANKED_CALL = float.fromhex('0x1.f36e678d65e74p+5')
+#: is live, the CALL side being the one where it never goes negative. Re-banked when a base
+#: valuation's inner paths became the canonical block's: 62.42891 to 62.49790, the strip 62.4979.
+BANKED_CALL = float.fromhex('0x1.f3fbb14015e0bp+5')
 
 
 def test_a_put_target_above_its_strike_is_the_uncapped_strip(tmp_path):

@@ -959,9 +959,10 @@ class SIMM(JOB):
         super(SIMM, self).__init__(cx, rundate, input_path, outputdir, netting_set, stats, log)
         config = self.cx.current_cfg
         stated = config.deals['Calculation']
-        # the document's own seed, so trades' Monte Carlo errors stay independent across a book
+        # the document's own quasi seed, so trades' Monte Carlo errors stay independent across a
+        # book
         config.deals['Calculation'] = dict(
-            {key: stated[key] for key in ('Random_Seed',) if key in stated}, Object='SIMM',
+            {key: stated[key] for key in ('Quasi_Seed',) if key in stated}, Object='SIMM',
             Base_Date=stated['Base_Date'], Currency=os.environ.get('DERIVUS_SIMM_CURRENCY', 'USD'),
             Mapping=os.environ['DERIVUS_SIMM_MAPPING'], Parameters=os.environ['DERIVUS_SIMM_PARAMETERS'])
         quote_curves(config, stated['Base_Date'])
