@@ -13,7 +13,7 @@ the web screens and order the run, so the three cannot drift. Each family's meth
 | `config.py` | `Config.bootstrap(only, wanted)` |
 | `schema.py` | `emit_market_prices`, `emit_configuration`, `MARKET_QUOTE_VALUES`, `update_market_quote` |
 | `service.py` | the verbs that author market data ([below](#verbs)) |
-| `derivus_bloomberg/` | the seed, the security map, the curve strip, the surface and chain fetch |
+| `derivus_bloomberg/` | the seed, the security map, the curve strip, the CDS quotes, the surface and chain fetch |
 | `derivus_bootstrap.py` | the multiprocessing launcher |
 
 A rule marked **Held by** goes red under that test if it is broken.
@@ -48,7 +48,7 @@ What the split buys is on [Quote Propagation](quote_propagation.md#protocol).
 
 A family subclasses `Construction` (a closed form or a square system of roots, repricing its quotes
 exactly) or `ImpliedCalibration` (a least-squares fit); both are `Family`, which completes the
-configured entry from the declarations. The six are tabled on [General](../bootstrapping/general.md).
+configured entry from the declarations. The seven are tabled on [General](../bootstrapping/general.md).
 A family is named for the `Price Factors` type it writes under each block's name, which is its
 `Bootstrapper Configuration` key, and declares:
 
@@ -88,6 +88,7 @@ evidence that a basin was found, so an implied calibration skips the search and 
 | LogVar2FJ | the staged search | the joint polish alone ([below](#logvar2fj)) |
 | `FXVolPrices` | a refined grid | the [pinned grid](#fxvolprices) |
 | `InterestRatePrices` | the par rates | none: the par rates move with the tick, a previous θ\* does not |
+| `SurvivalProbPrices` | the quotes as flat hazards | none, for the curve family's reason |
 
 **Held by** `test_warm_starts.py::test_the_written_hull_white_factor_skips_the_search`,
 `test_warm_starts.py::test_the_written_energy_factor_seeds_the_minimisation`.
@@ -249,6 +250,66 @@ so the residual is written once and differentiated twice. A discount curve is so
 projection curve on it [@ametrano2013]; where a quote derivative or a ride asks, blocks reading each
 other's curves solve as one system ([multi-curve](quote_propagation.md#multi-curve)). **Held by**
 `test_interest_rate_prices.py::test_the_bootstrap_recovers_the_curve_its_quotes_came_from`.
+
+## `SurvivalProbPrices` — a survival curve solved from CDS quotes {#survivalprobprices}
+
+The residual, solver and refusals are on [Credit](../bootstrapping/credit.md#survivalprob).
+
+**A row is a tenor on the block's standard contract.** The block declares the contract its quotes
+are on - `Currency`, `Discount_Rate` (the currency's own where blank), `Recovery_Rate`,
+`Standard_Coupon`, `Pay_Frequency`, `Accrual_Day_Count` - and `SurvivalProb.contracts` authors each
+used row as that `DealDefaultSwap`, bought from the base date to the standard quarterly date its
+`Tenor` reaches (`utils.cds_dates`) with the accrued paid on default, on the curve the block is filed
+under, the row's own `Deal` replacing any term. The plan names no date, so a tick on a later day is
+a values patch, and a quote is still an instrument whose schema is its type's declarations. **Held
+by** `test_credit_prices.py::test_the_bootstrap_recovers_the_survival_curve_its_quotes_came_from`.
+
+**Two quote types, one landing each.** `Par_Spread` is the coupon in basis points with no upfront,
+`Upfront` the percent of principal the buyer pays on the effective date at `Standard_Coupon`.
+`DealDefaultSwap.quoted` names the field and its unit by quote type, which `Deal.quote` takes, and
+the value is affine in either. A conventional spread is no third type: stated as a `Par_Spread` it
+is an approximation its author owns. A type the default swap declares no landing for is logged by
+name and left out, the curve family's `takes`. **Held by**
+`test_credit_prices.py::test_a_quote_type_the_family_does_not_take_is_refused_by_name_and_left_out`.
+
+**The knot rule, anchored.** One knot per used quote at its contract's maturity on the factor's
+ACT/365 axis (`InterestRate.live_knots`), so the system is square, and a contract maturing on or
+before the base date refuses by name. A cumulative hazard is zero at tenor zero and a `SurvivalProb`
+curve is flat below its first knot, so the written curve carries that anchor, which
+`BenchmarkInstruments` holds (`held`): theta is the knots after it and the static buffer the whole
+curve. **Held by** `test_credit_prices.py::test_a_quote_maturing_at_the_base_date_refuses_by_name`.
+
+**The solve is the curve family's**: `utils.CalibrationSolve` over `damped_newton` in float64 on the
+host under the same `N_Iter`, `Tol` and `Damping_Halvings` declarations, seeded at each row's
+running spread as a flat hazard. The family `reads` `InterestRate`, so `bootstrap_order` solves the
+curves it discounts on first. **Held by**
+`test_credit_prices.py::test_the_solver_knobs_are_read_off_the_block_and_its_entry`,
+`test_credit_prices.py::test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it`.
+
+**The contract is the engine's, not the standard model's.** The default swap prices protection in
+the midpoint form, counts the maturity day in its last accrual and accrues its first coupon from the
+base date, so the ISDA standard model the credit Monte Carlo's `CDS_Tenors` runs reads the solved
+curve's par spreads within 5e-3 of their quotes on a block accruing on its ACT/365 year, the maturity
+day the most of it. **Held by**
+`test_credit_prices.py::test_the_standard_model_reprices_the_solved_curves_quotes_to_its_conventions`.
+
+**`Quote_Sensitivity`** leaves the connected curve, its anchor first, and the quote leaf for
+`Config.bootstrap` to harvest, as the curve family does; there is no `Quote_Propagation`, the ride
+being the curve family's. **Held by**
+`test_credit_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference`,
+`test_credit_prices.py::test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_greek`.
+The discount curve is a constant of the solve, so a curve quote's `dV/dq` on a deal reading the
+survival curve holds that curve where it stands: on the gate's world a sold 4.5-year default swap's
+delta to the 5Y swap quote is -1,395.79 where re-bootstrapping both curves moves it -1,747.40, and
+to the 10Y quote 0 against 4.14. **Not gated.**
+
+**The emitter** (`derivus_bloomberg.cds`) authors a block off the verified map: an `Upfront` row
+where the terminal answers `CDS_QUOTED_PRICE`, a hundred less the price, a `Par_Spread` row where it
+answers the spread alone, a print against a coupon other than the seed's refused `off-coupon` by
+name, and the seed's conventions beside the rows. **Held by**
+`test_credit_prices.py::test_the_terminal_authors_the_blocks_the_family_solves`,
+`test_credit_prices.py::test_a_re_tick_is_a_values_patch_and_a_row_changing_its_type_a_new_plan`,
+`test_credit_prices.py::test_a_seed_entry_without_its_conventions_refuses_by_name`.
 
 ## `LogVar2FJModelPrices` — a smile fit with a forward-skew term {#logvar2fj}
 
@@ -476,6 +537,8 @@ snapshots survive a save.
 ## Open
 
 The surrogate vanilla pricer ([limitations](../limitations.md#the-calibration)); the outright that
-cannot carry a quote derivative ([before 0.5.0](roadmap.md#before-0-5-0)); whether a missing
+cannot carry a quote derivative ([before 0.5.0](roadmap.md#before-0-5-0)); a survival curve's quote
+derivative stopping at its own quotes ([above](#survivalprobprices)); the tick, which re-prices
+curve blocks through `service.curve_quotes` and no credit block; whether a missing
 `Prices` refuses in process, the nominal leverage weight, the correlation as a leaf
 ([desk decisions](../limitations.md#decisions-waiting-on-the-desk)).

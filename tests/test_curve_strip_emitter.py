@@ -1221,7 +1221,7 @@ def test_every_authored_shape_solves_to_par():
         nodes = []
         for point in block['Points']:
             deal = completed(copy.deepcopy(dict(point['Deal'], Object=point['DealType'])))
-            author_quote(deal, point['Quoted_Market_Value'], curve)
+            author_quote(deal, point['Quoted_Market_Value'], curve, point['Quote_Type'])
             nodes.append(deal_node(deal, {}))
         priced = BenchmarkInstruments(nodes, price_factors, ModelParams(), base, currency, {}, [],
                                       device)({}).detach().numpy()

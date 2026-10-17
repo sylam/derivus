@@ -318,5 +318,18 @@ fix. What ships:
   and the swap strip as seeded. No FRAs, no FX-forward outrights, no cross-currency, no projection
   curve; `ACT_365` and `ACT_360` accruals only. No `/book` verb for either emitter yet.
 
+## The credit emitter — a name's CDS quotes
+
+`cds` turns one seeded name's verified default swaps into one `SurvivalProbPrices` block. A seed
+`credit` entry is the name's `security` pattern with `{tenor}` in it (`GS CDS USD SR {tenor} D14
+Corp`, `CDX IG CDSI GEN {tenor} Corp`), the NAME fragment discovery checks, its standard tenors
+and its `conventions` — currency, coupon, recovery, frequency, day count and, blank for the
+currency's own, the discount curve — and an entry without them refuses by name. Each contract is
+asked `PX_LAST`/`PX_BID`/`PX_ASK`, `CDS_QUOTED_PRICE`, `SW_SPREAD` and `LAST_UPDATE_DT`, screened
+as a strip is, and authored as an `Upfront` row (a hundred less the price) where the price answers
+and a `Par_Spread` row where the spread alone does; one quoted against another coupon is refused
+`off-coupon`. A row names its tenor and no date, so a re-tick on any day is a values patch. No
+`/book` verb and no tick carry it yet.
+
 Never commit Bloomberg values, credentials, or workstation-specific security maps - the map
 `DV_Bloomberg discover` writes belongs outside any repo.

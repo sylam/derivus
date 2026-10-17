@@ -8,6 +8,7 @@ reads refuses the bootstrap by name.
 | Block type | What it fits | Quote table | Writes |
 |---|---|---|---|
 | `InterestRatePrices` | a zero curve, holding its benchmarks (`DepositDeal`, `FRADeal`, `SwapInterestDeal`, `StructuredDeal`, `FXForwardDeal`) at par | `Points` | `InterestRate.<name>` |
+| `SurvivalProbPrices` | a name's survival curve, holding its standard default swaps (`DealDefaultSwap`) at par | `Points` | `SurvivalProb.<name>` |
 | `FXVolPrices` | an FX smile surface from ATM, risk-reversal and butterfly quotes | `Points` | `FXVol.<name>` |
 | `GBMAssetPriceTSModelPrices` | the vol curve of `GBMAssetPriceTSModelImplied`, off an ATM column | none: the named surface's ATM column | `GBMAssetPriceTSModelParameters.<name>` |
 | `HullWhite2FactorModelPrices` | the two-factor Hull-White model to ATM swaption vols | `Instrument_Definitions` | `HullWhite2FactorModelParameters.<name>` |
@@ -112,6 +113,38 @@ holding a quote out with `Use` drops its knot too. An OIS swap is a `StructuredD
             "Children": ["... the floating and fixed legs ..."]
           }
         }
+      ]
+    },
+    "Children": []
+  }
+}
+```
+
+## SurvivalProbPrices
+
+Each `Points` row is a `Tenor` and the number a CDS on the block's name is quoted at. The contract
+is the block's standard one - bought from the base date to the 20th of the March, June, September or
+December the tenor reaches, paying at `Pay_Frequency` on `Accrual_Day_Count` with the accrued paid
+on default, discounting on `Discount_Rate` (the currency's own where blank) - and the row's `Deal`
+replaces any of its terms. `Quote_Type` says what the number is: `Par_Spread`, basis points of
+running coupon with no upfront, or `Upfront`, percent of principal the buyer pays on the effective
+date at `Standard_Coupon`. A conventional spread quoted against a standard coupon is stated as a
+`Par_Spread`, an approximation its author owns. The solved curve carries one knot per used quote, at
+its contract's maturity, beside `Recovery_Rate`, which the contracts are priced at; it is solved
+after the curves it discounts on.
+
+```json
+{
+  "SurvivalProbPrices.GS": {
+    "instrument": {
+      "Currency": "USD",
+      "Recovery_Rate": 0.4,
+      "Standard_Coupon": 100.0,
+      "Points": [
+        {"Use": "Yes", "Tenor": "1Y", "DealType": "DealDefaultSwap", "Quote_Type": "Upfront",
+         "Quoted_Market_Value": -0.7, "Descriptor": "GS 1Y", "Deal": {}},
+        {"Use": "Yes", "Tenor": "7Y", "DealType": "DealDefaultSwap", "Quote_Type": "Par_Spread",
+         "Quoted_Market_Value": 92.0, "Descriptor": "GS 7Y", "Deal": {}}
       ]
     },
     "Children": []

@@ -8,6 +8,7 @@ only if an entry names it.
 {
   "Bootstrapper Configuration": {
     "InterestRate": {"Prices": "InterestRate"},
+    "SurvivalProb": {"Prices": "SurvivalProb"},
     "FXVol": {"Prices": "FXVol"},
     "GBMAssetPriceTSModelParameters": {"Prices": "GBMAssetPriceTSModel"},
     "HullWhite2FactorModelParameters": {"Prices": "HullWhite2FactorModel"},
@@ -17,11 +18,12 @@ only if an entry names it.
 }
 ```
 
-## The six families
+## The seven families
 
 | Entry key | `Prices` | Reads blocks | Writes price factor | Prices on (factor types) |
 |---|---|---|---|---|
 | `InterestRate` | `InterestRate` | `InterestRatePrices.<curve>` | `InterestRate.<curve>` | `InterestRate`, `FxRate` |
+| `SurvivalProb` | `SurvivalProb` | `SurvivalProbPrices.<name>` | `SurvivalProb.<name>` | `InterestRate` |
 | `FXVol` | `FXVol` | `FXVolPrices.<pair>` | `FXVol.<pair>` | none |
 | `GBMAssetPriceTSModelParameters` | `GBMAssetPriceTSModel` | `GBMAssetPriceTSModelPrices.<name>` | `GBMAssetPriceTSModelParameters.<name>` | `FXVol`, `EquityPriceVol`, `CommodityPriceVol` |
 | `HullWhite2FactorModelParameters` | `HullWhite2FactorModel` | `HullWhite2FactorModelPrices.<curve>` | `HullWhite2FactorModelParameters.<curve>` | `InterestRate`, `InterestYieldVol`, `GBMAssetPriceTSModelParameters` |
@@ -41,7 +43,7 @@ carry, per family, is on the family's page under this section.
 | An object with `Prices` | `Prices` is the stem of the family's `Market Prices` type (`<stem>Prices`). A stem belonging to another family refuses by name |
 | An object without `Prices` | runs, with a warning: in process the family is looked up, but the multiprocessing bootstrap routes without the engine and needs it |
 | A string (the older form) | accepted; the string itself is not read, and the family runs on its declared defaults |
-| A key naming no family | refused, listing the six |
+| A key naming no family | refused, listing the seven |
 
 ## Run order
 

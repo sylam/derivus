@@ -176,7 +176,8 @@ def block_nodes(block, discount_rate, quote=None):
     nodes = []
     for point in block['Points']:
         deal = completed(copy.deepcopy(dict(point['Deal'], Object=point['DealType'])))
-        author_quote(deal, point['Quoted_Market_Value'] if quote is None else quote, discount_rate)
+        author_quote(deal, point['Quoted_Market_Value'] if quote is None else quote, discount_rate,
+                     point['Quote_Type'])
         nodes.append(deal_node(deal, {}))
     return nodes
 
@@ -1319,7 +1320,7 @@ def test_a_quoted_deposit_is_pinned_on_the_schedule_its_stub_and_calendar_spell(
                            Interest_Frequency=pd.DateOffset(months=6),
                            First_Coupon_Date=pd.Timestamp('2026-08-10'),
                            Penultimate_Coupon_Date=pd.Timestamp('2027-05-10'), Accrual_Calendars=book.CALENDAR))
-    author_quote(block, 4.2, 'USD')
+    author_quote(block, 4.2, 'USD', 'Par_Rate')
     dates = [pd.Timestamp(day) for day in ('2026-08-03', '2026-08-11', '2026-11-10', '2027-05-10', '2027-08-03')]
     hand = -1e6 + 1e6 * discount(dates[-1]) + sum(
         1e6 * 0.042 * (e - s).days / 360.0 * discount(e) for s, e in zip(dates[:-1], dates[1:]))

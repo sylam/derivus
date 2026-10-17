@@ -678,7 +678,7 @@ class Deal(object):
 
     #: The field a market quote of this type lands in, in that field's own unit - a benchmark's
     #: declaration of itself, None for a type no quote set authors. `quote` writes it; a type
-    #: whose quote reaches more than one place says how.
+    #: whose quote reaches more than one place, or one place per quote type, says how.
     quoted = None
 
     #: valuation options this type reads, at the value an unstated one means
@@ -692,8 +692,9 @@ class Deal(object):
         cls.factor_fields = declared_factors(cls)
 
     @classmethod
-    def quote(cls, deal, value):
-        """Write `value`, a quote, into the authored block `deal` where `quoted` says."""
+    def quote(cls, deal, value, quote_type):
+        """Write `value`, a quote of `quote_type`, into the authored block `deal` where `quoted`
+        says."""
         deal[cls.quoted] = value
 
     def __init__(self, params, valuation_options):
@@ -2339,7 +2340,7 @@ class FXForwardDeal(Deal):
         '- $\\tilde X$ is the price of the buy currency in reporting currency'])
 
     @classmethod
-    def quote(cls, deal, value):
+    def quote(cls, deal, value, quote_type):
         """The quote is the FORWARD OUTRIGHT - units of `Buy_Currency` per one unit of
         `Sell_Currency` - and the amount it buys is where that number lands: with `Sell_Amount` and
         both discount curves fixed the value is exactly affine in it, an exact quote-space
@@ -2521,7 +2522,7 @@ class DepositDeal(Deal):
     ])
 
     @classmethod
-    def quote(cls, deal, value):
+    def quote(cls, deal, value, quote_type):
         """A deposit has no rate field of its own: the quote is pinned at every period's unadjusted
         start, which prices it as a fixed leg and keeps it off the forecast curve a solve builds -
         `reset` drops that dependency when the schedule covers every start."""
@@ -2753,7 +2754,7 @@ class CFFixedInterestListDeal(Deal):
         'Interest Rates', ['A series of fixed interest cashflows as described [here](#fixed-interest-cashflows)'])
 
     @classmethod
-    def quote(cls, deal, value):
+    def quote(cls, deal, value, quote_type):
         """The fixed leg of a two-leg benchmark carries the quote on every row of its schedule."""
         for item in deal['Cashflows']['Items']:
             item['Rate'] = utils.Percent(value)
@@ -6925,6 +6926,9 @@ class CreditNthToDefault(Deal):
 
 class DealDefaultSwap(Deal):
     vernacular = 'credit default swap, CDS, single-name CDS'
+    #: by quote type, the field and its unit: a running spread is the coupon, a standard
+    #: contract's points are the upfront the buyer pays at the coupon the contract states
+    quoted = {'Par_Spread': ('Pay_Rate', utils.Basis), 'Upfront': ('Upfront', utils.Percent)}
     fields = [ADMIN, PRICING, own('DealDefaultSwap', [
         F('Upfront_Date', 'Date', default='', convention=True),
         F('Upfront', 'Percent', default=0.0, convention=True),
@@ -6973,6 +6977,13 @@ class DealDefaultSwap(Deal):
         '**Accrue_Fee** `Yes` adds the fee accrued to default, $a_i=\\alpha^A_i+\\tfrac12\\alpha^R_i$, with',
         '$\\alpha^A_i$ the fraction of the period already accrued and $\\alpha^R_i=1-\\alpha^A_i$ the fraction',
         'remaining (so $a_i=\\tfrac12$ for a period not yet started); `No` sets $a_i=0$.'])
+
+    @classmethod
+    def quote(cls, deal, value, quote_type):
+        """A `Par_Spread` in basis points as the coupon, an `Upfront` in percent of principal as
+        the upfront, each where `quoted` names for its type; the value is affine in either."""
+        field, unit = cls.quoted[quote_type]
+        deal[field] = unit(value)
 
     def reset(self, calendars):
         super(DealDefaultSwap, self).reset()

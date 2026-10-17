@@ -15,6 +15,7 @@ the family's:
 | `Market Prices` type | the arrow | the backward |
 | --- | --- | --- |
 | `InterestRatePrices` | damped Newton on a square root | [implicit function theorem](#the-ift-contract), exact |
+| `SurvivalProbPrices` | the same solve, a block at a time | the same theorem, exact, its quotes alone |
 | `HullWhite2FactorModelPrices` | least squares, `Objective` `Analytic` by default | Gauss–Newton at a [stationary point](#the-stationarity-contract) |
 | `LogVar2FJModelPrices` | staged least squares | the same node, `Fit_Mode: Global` only |
 | `GBMAssetPriceTSModelPrices` | an [explicit map](#the-closed-form-map) | autograd through a twin |
@@ -42,6 +43,8 @@ the residual is the engine's own pricers held at par, $F_i(\theta, q_i) = PV_i(\
 `BenchmarkInstruments` compiles the benchmark nodes once and prices them at t0 off a `{Factor: tensor}`
 of curve nodes; a node with `Children` is one benchmark, with no netting rule on top. Every factor not
 being solved for — an `FXForwardDeal`'s other curve and `FxRate` included — is a detached constant.
+`held` knots at the front of a solved factor stay where `Price Factors` writes them, a survival
+curve's anchor at tenor zero being one, so theta is the knots after them.
 
 ### The graph audit {#the-graph-audit}
 
@@ -409,6 +412,10 @@ Each corner independent of the machinery it checks:
 | curves | $d\theta/dq$ against re-bootstraps, 1e-8 | `test_quote_propagation.py::test_the_artifact_holds_the_calibration_jacobian_the_solve_would_have_differenced` |
 | curves | `dV/dq` against a refitted book, 1e-6 | `test_service.py::test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from` |
 | curves | `dV/dq · dq` against the ride, first order | `test_quote_propagation.py::test_the_quote_delta_predicts_the_value_the_ride_reprices` |
+| credit | round trip, 1e-10 | `test_credit_prices.py::test_the_bootstrap_recovers_the_survival_curve_its_quotes_came_from` |
+| credit | par spreads against the ISDA standard model, 5e-3 | `test_credit_prices.py::test_the_standard_model_reprices_the_solved_curves_quotes_to_its_conventions` |
+| credit | $d\theta/dq$ against re-bootstraps, 1e-8 | `test_credit_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference` |
+| credit | `dV/dq` against the chain rule and a refitted deal, 1e-8 | `test_credit_prices.py::test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_greek` |
 | HW2F | θ\* and deltas pinned, 1e-6 | `test_hw2f_analytic.py::test_the_four_quote_job_document_pins_theta_and_its_quote_deltas` |
 | LogVar2FJ | factor hex-identical, switch on or off | `test_logvar2fj_json.py::test_the_quote_switch_writes_the_same_factor_and_publishes_its_leaves` |
 | FX vol | per-pillar `dV/dq`, 2% | `test_structures.py::test_each_pillars_charge_is_what_repricing_that_pillar_costs` |

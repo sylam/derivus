@@ -141,6 +141,14 @@ def swaption_candidates(currency, spec):
                             ('swaption', currency, '{} x {}Y'.format(expiry, tenor)), expect)
 
 
+def credit_candidates(name, spec):
+    """One seeded name's default swaps, a contract per standard tenor off the entry's `security`
+    pattern: a single name `GS CDS USD SR 5Y D14 Corp`, an index `CDX IG CDSI GEN 5Y Corp`."""
+    for tenor in spec['tenors']:
+        yield Candidate(spec['security'].format(tenor=tenor), ('credit', name, tenor),
+                        (spec['expect'],))
+
+
 def candidates_from_seed(seed):
     fx_vol = seed.get('fx_vol', {})
     for pair in fx_vol.get('pairs', []):
@@ -150,6 +158,8 @@ def candidates_from_seed(seed):
         yield from strip_candidates(curve, spec)
     for currency, spec in seed.get('swaption', {}).items():
         yield from swaption_candidates(currency, spec)
+    for name, spec in seed.get('credit', {}).items():
+        yield from credit_candidates(name, spec)
 
 
 def _squash(text):

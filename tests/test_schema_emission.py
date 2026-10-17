@@ -255,6 +255,7 @@ SHAPELESS = {
     ('HedgeMonteCarlo', 'Hedging_Problem.Portfolio_State'),
     ('HedgeMonteCarlo', 'Scenario_Factors'),
     ('InterestRatePrices', 'Points.Deal'),
+    ('SurvivalProbPrices', 'Points.Deal'),
 }
 
 
@@ -962,7 +963,8 @@ def test_a_quote_type_means_different_things_to_different_families():
                           'GBMAssetPriceTSModelPrices': None,
                           'HullWhite2FactorModelPrices': None,
                           'FXVolPrices': ['ATM', 'RR', 'BF'],
-                          'InterestRatePrices': ['Par_Rate']}, quote_type
+                          'InterestRatePrices': ['Par_Rate'],
+                          'SurvivalProbPrices': ['Par_Spread', 'Upfront']}, quote_type
     assert [t for t, v in quote_type.items() if 'ATM' in (v or ())] == ['FXVolPrices'], (
         'ATM belongs to the FX smile family and to no other')
 

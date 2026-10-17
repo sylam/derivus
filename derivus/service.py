@@ -5057,7 +5057,8 @@ def book_securities_verify(request: dict):
 #: factor TYPE that names it. A type absent here is one this desk seeds nothing for - written by a
 #: verb of its own where `WRITTEN_BY` names one, and by hand otherwise.
 SUPPLY_BLOCKS = {'InterestRate': 'rates', 'FxRate': 'fx_spot', 'FXVol': 'fx_vol'}
-WRITTEN_BY = {'SurvivalProb': 'the CVA desk writes it from its spread with POST /book/survival'}
+WRITTEN_BY = {'SurvivalProb': 'the CVA desk writes it from its spread with POST /book/survival, '
+                               'or its SurvivalProbPrices block of CDS quotes bootstraps it'}
 
 
 def supply_of(factor, base_currency, seed, mapped):

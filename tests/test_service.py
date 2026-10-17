@@ -1358,7 +1358,7 @@ def par_residuals(path, curve='ZAR', interp=None):
         # `completed` because a quote WRITER reads the block's conventions and a benchmark states
         # only what differs from its declaration - the same seam `quote_nodes` builds through
         deal = completed(dict(copy.deepcopy(point['Deal']), Object=point['DealType']))
-        author_quote(deal, point['Quoted_Market_Value'], curve)
+        author_quote(deal, point['Quoted_Market_Value'], curve, point['Quote_Type'])
         nodes.append(deal_node(deal, {}))
     return BenchmarkInstruments(
         nodes, market['Price Factors'],

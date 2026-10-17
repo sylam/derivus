@@ -130,5 +130,19 @@
           "conventions": {"fixed_frequency": "3M", "float_frequency": "3M",
                           "fixed_day_count": "ACT_365", "float_day_count": "ACT_365",
                           "distribution": "Normal", "quote_scale": 0.01, "weight": 1.0}}
+ },
+ "credit": {
+  "GS": {"security": "GS CDS USD SR {tenor} D14 Corp", "expect": "GOLDMAN",
+         "tenors": ["6M", "1Y", "2Y", "3Y", "4Y", "5Y", "7Y", "10Y"],
+         "conventions": {"currency": "USD", "coupon": 100.0, "recovery_rate": 0.4,
+                         "pay_frequency": "3M", "accrual_day_count": "ACT_360"}},
+  "REPSOU": {"security": "REPSOU CDS USD SR {tenor} D14 Corp", "expect": "SOUTH AFRICA",
+             "tenors": ["6M", "1Y", "2Y", "3Y", "4Y", "5Y", "7Y", "10Y"],
+             "conventions": {"currency": "USD", "coupon": 100.0, "recovery_rate": 0.4,
+                             "pay_frequency": "3M", "accrual_day_count": "ACT_360"}},
+  "CDX-IG": {"security": "CDX IG CDSI GEN {tenor} Corp", "expect": "CDX",
+             "tenors": ["3Y", "5Y", "10Y"],
+             "conventions": {"currency": "USD", "coupon": 100.0, "recovery_rate": 0.4,
+                             "pay_frequency": "3M", "accrual_day_count": "ACT_360"}}
  }
 }

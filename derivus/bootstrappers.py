@@ -4717,9 +4717,13 @@ class BenchmarkInstruments(object):
     from the first tensor that queries it. `all_tenors` is rebuilt per instance here, so a float64
     solve cannot inherit a float32 grid.
 
-    `quotes` and `bumped_nodes` are the quote side: the quotes the set was authored at, in percent,
-    and the same set authored one percent higher - the second says which schedule columns the quote
-    writes (see `_carry_quotes`).
+    `quotes` and `bumped_nodes` are the quote side: the quotes the set was authored at, in their
+    unit, and the same set authored one unit higher - the second says which schedule columns the
+    quote writes (see `_carry_quotes`).
+
+    `held` is how many leading knots of each solved factor stay where `Price Factors` writes them,
+    a survival curve's anchor at tenor zero being one: no quote identifies it, so theta is the
+    knots after it and the static buffer carries the whole curve.
     """
 
     #: The solve is float64 whatever the simulation runs in: a bootstrap converging to 1e-10 cannot
@@ -4727,7 +4731,7 @@ class BenchmarkInstruments(object):
     dtype = torch.float64
 
     def __init__(self, nodes, price_factors, factor_interp, base_date, currency, calendars,
-                 solve_for, device, quotes=None, bumped_nodes=None):
+                 solve_for, device, quotes=None, bumped_nodes=None, held=0):
         # `config` imports from this module, so the package edge runs one way only
         from .config import Config
 
@@ -4745,13 +4749,16 @@ class BenchmarkInstruments(object):
         self.factors = {factor: riskfactors.construct_factor(
             factor, price_factors, factor_interp, base_date=base_date) for factor in dependent_factors}
         self.solve_for = tuple(solve_for)
+        self.held = held
         # the knot grid theta is indexed by, read off the factor AFTER `get_tenor` has rewritten it
-        self.tenors = {factor: self.factors[factor].tenors for factor in self.solve_for}
+        self.tenors = {factor: self.factors[factor].tenors[held:] for factor in self.solve_for}
         self.all_tenors = utils.update_tenors(base_date, self.factors)
         self.time_grid = utils.TimeGrid({base_date}, {base_date}, {base_date})
         self.time_grid.set_base_date(base_date)
         self.time_grid.set_report_dates(base_date, {base_date})
         self.one = torch.ones([1, 1], dtype=self.dtype, device=device)
+        self.anchors = {factor: self._column(self.factors[factor].current_value()[:held])
+                        for factor in self.solve_for}
         self.report_currency = instruments.get_fxrate_factor(
             utils.check_rate_name(currency), self.factors, {})
         # every factor the solve is NOT solving for is a constant of it
@@ -4842,6 +4849,17 @@ class BenchmarkInstruments(object):
     def _column(self, values):
         return torch.tensor(values, dtype=self.dtype, device=self.one.device)
 
+    def written(self):
+        """theta as `Price Factors` holds it, the held knots left out: the seed a solve starts
+        from, in the knot order `get_tenor` left on the constructed factor."""
+        return {factor: self._column(self.factors[factor].current_value()[self.held:])
+                for factor in self.solve_for}
+
+    def nodes(self, theta):
+        """Every node of each solved factor at `theta`, the held knots before it - the curve the
+        static buffer carries and a solve writes."""
+        return {factor: torch.cat([self.anchors[factor], nodes]) for factor, nodes in theta.items()}
+
     def reads(self, theta):
         """The factors outside `solve_for` this residual actually reads, measured rather than
         declared - the coupling detector a multi-curve set is grouped by.
@@ -4868,28 +4886,36 @@ class BenchmarkInstruments(object):
 
     def __call__(self, theta):
         """The benchmark PV vector at curve nodes `theta`, a `{Factor: tensor}` over `solve_for`."""
-        shared = Benchmark_State({**self.constants, **theta}, self.one, self.report_currency)
+        shared = Benchmark_State({**self.constants, **self.nodes(theta)}, self.one,
+                                 self.report_currency)
         # one date and one path, so a leg's PV is a scalar - `reshape` says so and fails loud
         return torch.stack([
             sum(leg.Instrument.generate(shared, self.time_grid, leg).reshape(()) for leg in legs)
             for legs in self.benchmarks])
 
 
+def as_period(value):
+    """A period stated as the wire string a declared default carries, or already decoded."""
+    return utils.parse_period(value) if isinstance(value, str) else value
+
+
 def quote_nodes(points, discount_rate, shift=0.0):
-    """The used quotes as deal-tree nodes, each authored at its own quote plus `shift` percent.
+    """The used quotes as deal-tree nodes, each authored at its own quote plus `shift` in its unit.
 
     Deep-copied because authoring WRITES the quote and the discount curve into the block.
     """
     nodes = []
     for point in points:
         authored = completed(dict(copy.deepcopy(point['Deal']), Object=point['DealType']))
-        author_quote(authored, point['Quoted_Market_Value'] + shift, discount_rate)
+        author_quote(authored, point['Quoted_Market_Value'] + shift, discount_rate,
+                     point['Quote_Type'])
         nodes.append(instruments.deal_node(authored, {}))
     return nodes
 
 
-def author_quote(block, quote, discount_rate):
-    """Author an instrument block AT its quote, discounting on `discount_rate`, legs included.
+def author_quote(block, quote, discount_rate, quote_type):
+    """Author an instrument block AT its quote of `quote_type`, discounting on `discount_rate`,
+    legs included.
 
     What an instrument PROJECTS off it names itself; what the quote set DISCOUNTS on is a property
     of the curve set, stated once on the block. A type's `quote` runs before the deal is
@@ -4901,7 +4927,7 @@ def author_quote(block, quote, discount_rate):
         leg['Discount_Rate'] = discount_rate
         declared = getattr(instruments, leg['Object'], None)
         if declared is not None and declared.quoted:
-            declared.quote(leg, quote)
+            declared.quote(leg, quote, quote_type)
 
 
 def par_quotes(points, discount_rate, currency, price_factors, factor_interp, base_date,
@@ -4930,10 +4956,6 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
     period, any other a swap from the base date. `conventions` states block fields over the
     family's declarations; the near split is the curve's own. A knot no whole day lands on refuses.
     """
-
-    def period(value):
-        return utils.parse_period(value) if isinstance(value, str) else value
-
     rate = utils.check_rate_name(curve)
     name = '.'.join(rate)
     factor = price_factors[utils.check_tuple_name(utils.Factor('InterestRate', rate))]
@@ -4941,7 +4963,7 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
         {'Currency': factor['Currency'], 'Day_Count': factor['Day_Count']}, **dict(conventions)))
     block = dict({key: stated[key] for key in (
         'Currency', 'Day_Count', 'Discount_Rate', 'Fixed_Day_Count', 'Float_Day_Count',
-        'Front_Day_Count', 'Compounding')}, **{key: period(stated[key]) for key in (
+        'Front_Day_Count', 'Compounding')}, **{key: as_period(stated[key]) for key in (
         'Fixed_Frequency', 'Float_Frequency')})
     if factor.get('Near_Interpolation') and factor.get('Near_Date'):
         block['Near_Interpolation'] = riskfactors.factor_interp_map.get(
@@ -4963,7 +4985,7 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
             name, ', '.join(stray), base_date, block['Day_Count']))
 
     fixed, floating = block['Fixed_Frequency'], block['Float_Frequency']
-    fras_to, zero = period(fras_to), pd.DateOffset(months=0)
+    fras_to, zero = as_period(fras_to), pd.DateOffset(months=0)
     foreign = block['Discount_Rate'] not in ('', name)
     points = []
     for end in landed:
@@ -5197,6 +5219,23 @@ class InterestRate(Construction):
         return np.array([utils.DayCount.accrual(
             base_date, (maturity - base_date).days, code) for maturity in maturities])
 
+    @classmethod
+    def live_knots(cls, market_price, points, nodes, base_date, day_count, calendars):
+        """`quote_knots` of the used quotes `points` authored as `nodes`, refusing by name every
+        benchmark maturing on or before the base date: a knot at tenor zero identifies nothing,
+        and the Newton solve meets it as a singular Jacobian rather than a bad curve."""
+        knots = cls.quote_knots(nodes, base_date, day_count, calendars)
+        dead = ['{} (last cashflow {:%Y-%m-%d})'.format(
+            point['Descriptor'], max(max(leaf.get_reval_dates()) for leaf in leaf_deals(node)))
+            for point, node, knot in zip(points, nodes, knots) if knot <= 0.0]
+        if dead:
+            raise ValueError(
+                '{}: {} matured on or before the base date {:%Y-%m-%d}, so the knot each '
+                'identifies lands at tenor zero, which no quote identifies. Hold the quote out '
+                'with Use No, or move the base date'.format(market_price, '; '.join(dead),
+                                                            base_date))
+        return knots
+
     @staticmethod
     def benchmark_curves(block, market_price=None):
         """Every `InterestRate` curve this block's used benchmark deals NAME, read off each deal
@@ -5303,17 +5342,8 @@ class InterestRate(Construction):
         discount_rate = block['Discount_Rate'] or '.'.join(curve.name)
         points = self.used_quotes(block, market_price)
         nodes = quote_nodes(points, discount_rate)
-        knots = self.quote_knots(nodes, base_date, block['Day_Count'], calendars)
-        # a knot at tenor zero identifies nothing - the curve is flat below its shortest by
-        # clipping - and the Newton solve meets it as a singular Jacobian rather than a bad curve
-        dead = ['{} (last cashflow {:%Y-%m-%d})'.format(
-            point['Descriptor'], max(max(leaf.get_reval_dates()) for leaf in leaf_deals(node)))
-            for point, node, knot in zip(points, nodes, knots) if knot <= 0.0]
-        if dead:
-            raise ValueError(
-                '{}: {} matured on or before the base date {:%Y-%m-%d}, so the knot each '
-                'identifies lands at tenor zero, which no curve carries. Hold the quote out with '
-                'Use No, or move the base date'.format(market_price, '; '.join(dead), base_date))
+        knots = self.live_knots(market_price, points, nodes, base_date, block['Day_Count'],
+                                calendars)
         written = {
             'Property_Aliases': None, 'Sub_Type': None, 'Currency': block['Currency'],
             'Day_Count': block['Day_Count'], 'Curve': utils.Curve([], list(zip(
@@ -5358,9 +5388,7 @@ class InterestRate(Construction):
             benchmarks = BenchmarkInstruments(
                 nodes, price_factors, factor_interp, base_date,
                 entry['instrument']['Currency'], calendars, [curve], self.device)
-            reads = benchmarks.reads({curve: torch.tensor(
-                benchmarks.factors[curve].current_value(),
-                dtype=BenchmarkInstruments.dtype, device=self.device)})
+            reads = benchmarks.reads(benchmarks.written())
             for factor in reads & set(builds):
                 merged = components[market_price] | components[builds[factor]]
                 for name in merged:
@@ -5427,10 +5455,7 @@ class InterestRate(Construction):
             if carry else None)
         # seed theta off the constructed factor - see the docstring on grid alignment
         theta = utils.CalibrationSolve.apply(
-            benchmarks,
-            {curve: torch.tensor(benchmarks.factors[curve].current_value(),
-                                 dtype=BenchmarkInstruments.dtype, device=self.device)
-             for curve in curves},
+            benchmarks, benchmarks.written(),
             max(int(block['N_Iter']) for _, block in members),
             min(float(block['Tol']) for _, block in members),
             max(int(block['Damping_Halvings']) for _, block in members),
@@ -5629,6 +5654,225 @@ class InterestRate(Construction):
                 market_price, artifact.artifact_id[:12], artifact.timestamp, tick, drift,
                 tolerance, curve_units, artifact.jacobian_norm))
         return artifact.nodes(theta, factor), artifact.artifact_id
+
+
+class SurvivalProb(Construction):
+    """A survival curve solved from one name's CDS quotes, priced by the engine's own default swap.
+
+    Each used `Points` row is the block's STANDARD CONTRACT at the row's `Tenor` - bought from the
+    base date to the standard quarterly date the tenor reaches, on `PRINCIPAL` of the block's name,
+    paying the block's coupon at its frequency and day count with the accrued paid on default -
+    with the row's own `Deal` over it, so the plan names no date and a re-tick on a later day is a
+    values patch. `Quote_Type` says what the number is and `DealDefaultSwap.quoted` where it lands,
+    and the solve is the curve family's: a root of the benchmark PVs, one knot per quote, through
+    `BenchmarkInstruments` holding the curve's anchor at tenor zero.
+    """
+    documentation = (
+        'Credit',
+        ['A construction: the survival curve `SurvivalProb.<name>` - minus the log of survival on',
+         'ACT/365, linear between its knots, the last hazard carried past the last - whose default',
+         'swaps price every used quote of a `SurvivalProbPrices.<name>` block at par, each priced by',
+         'the engine\'s own `DealDefaultSwap` ([Credit](../valuation/credit.md#dealdefaultswap)). The',
+         'block and the reasoning behind each rule are on',
+         '[Market Prices](../developer/market_prices.md#survivalprobprices).',
+         '',
+         '**Residual.** Each used `Points` row is the block\'s standard contract at its `Tenor`, bought',
+         'from the base date to the 20th of March, June, September or December the tenor reaches, on',
+         'a principal of one million of the block\'s name, paying at `Pay_Frequency` on',
+         '`Accrual_Day_Count` with the accrued paid on default and discounting on `Discount_Rate` (the',
+         'currency\'s own curve where blank); the row\'s own `Deal` replaces any of it. `Quote_Type` is',
+         'what the number is:',
+         '',
+         '| `Quote_Type` | The contract | `Quoted_Market_Value` |',
+         '| --- | --- | --- |',
+         '| `Par_Spread` | running at the quote, no upfront | basis points a year |',
+         '| `Upfront` | running at `Standard_Coupon`, the quote paid by the buyer on the effective date | percent of principal |',
+         '',
+         'With $\\theta$ the cumulative hazard $H=-\\log S$ at the knots and $q$ the quotes,',
+         '',
+         '$$F_i(\\theta,q_i)=PV_i(\\theta,q_i)\\big|_{t_0}=0,\\qquad i=1,\\dots,n.$$',
+         '',
+         'A conventional spread quoted against a standard coupon is no third type: stated as a',
+         '`Par_Spread` it is an approximation its author owns.',
+         '',
+         '**Knots.** One per used quote, at its contract\'s maturity on ACT/365, so the system is',
+         'square; the anchor $H(0)=0$ is no quote\'s and the solve holds it. A quote maturing on or',
+         'before the base date refuses by name, and the output grid is the knot grid.',
+         '',
+         '**Solver.** The curve family\'s damped Newton in float64 on the host [@dennis1996], with',
+         'its `N_Iter`, `Tol` and `Damping_Halvings` ([Interest Rates](interest_rates.md#interestrate)),',
+         'seeded at each row\'s running spread $s_i$ as a flat hazard, $H_i=s_iT_i/(1-R)$, an upfront',
+         'adding its percent over the years it buys to the coupon. `Recovery_Rate` is the $R$ the',
+         'contracts are priced at, written onto the solved curve.',
+         '',
+         '**Quote derivatives.** At the root the implicit function theorem is exact',
+         '[@christianson1998; @henrard2014], so `Quote_Sensitivity` reports `dV/dq` beside `dV/dθ` on',
+         'the block\'s own quotes; the discount curve is a constant of the solve, so a curve quote\'s',
+         'delta holds the survival curve where it stands. An `Upfront` quoted at exactly zero moves no',
+         'cashflow schedule and refuses it by name. The ride is the curve family\'s: a survival curve',
+         'declares no `Quote_Propagation`.',
+         '',
+         '**Against the ISDA standard model** [@okane2008]. The default swap prices protection in the',
+         'midpoint form, counts the maturity day in its last accrual and accrues its first coupon from',
+         'the base date, where the standard model (`utils.calc_cds_rates`, the credit Monte Carlo\'s',
+         '`CDS_Tenors`) integrates protection and the accrued on default exactly and subtracts the',
+         'coupon accrued since the last standard date. On a block accruing on the model\'s ACT/365',
+         'year it reads the solved curve\'s par spreads within 5e-3 of their quotes, the maturity day',
+         'the most of it and the midpoint form about 1e-5 a period.',
+         '',
+         '**Gate.** `tests/test_credit_prices.py` prices the default swaps off a known hazard term',
+         'structure, bootstraps them back and asserts the round trip to 1e-10.'])
+    market_factor_type = 'SurvivalProbPrices'
+    #: the discount curves the default swaps price on, which the curve family writes first
+    reads = ('InterestRate',)
+    #: the instrument a quote is a price for, its schema the `Instrument` store's declaration
+    quote_instruments = ('DealDefaultSwap',)
+    #: the principal a benchmark is struck on, which scales its residual and nothing it solves
+    PRINCIPAL = 1e6
+    #: the axis a survival curve's knots lie on, `riskfactors.SurvivalProb.get_day_count`'s
+    DAY_COUNT = 'ACT_365'
+    fields = [
+        F('Currency', 'Text', default=REQUIRED,
+          description='The currency the default swaps are struck in'),
+        F('Discount_Rate', 'Text', default='', convention=True,
+          description='The curve the default swaps discount on, blank being the currency\'s own'),
+        F('Recovery_Rate', 'Float', default=0.4, convention=True,
+          description='The recovery the default swaps are priced at and the solved curve carries, '
+                      '0.4 for 40%'),
+        F('Standard_Coupon', 'Float', default=100.0, convention=True,
+          description='The running coupon of an Upfront row\'s contract, in basis points'),
+        F('Pay_Frequency', 'Period', default='3M', convention=True,
+          description='How often a default swap\'s coupon pays'),
+        F('Accrual_Day_Count', 'Text', default='ACT_360', convention=True, values=list(DAY_COUNTS),
+          description='Daycount a default swap\'s coupon accrues on'),
+    ] + [field for field in InterestRate.fields
+         if field.key in ('N_Iter', 'Tol', 'Damping_Halvings', 'Quote_Sensitivity')] + [
+        F('Points', 'Container',
+          sub_fields=[
+              F('Use', 'Text', default='Yes', values=['Yes', 'No'],
+                description='Whether this quote enters the solve'),
+              F('Deal', 'Container', default={},
+                description='The terms of this row\'s default swap that differ from the block\'s '
+                            'standard contract'),
+              F('Descriptor', 'Text', default='', description='Free text naming the quote'),
+              F('Tenor', 'Text', default='',
+                description='How long the contract runs, to the standard quarterly date it reaches '
+                            'from the base date'),
+              F('Security', 'Text', default='',
+                description='The security the row is quoted off, where it came from a market data '
+                            'source; stored and reported, never read by the solve'),
+              F('DealType', 'Text', default='DealDefaultSwap', values=list(quote_instruments),
+                description='The instrument type the quote is a price for'),
+              F('Quote_Type', 'Text', default='Par_Spread',
+                values=list(instruments.DealDefaultSwap.quoted),
+                description='What Quoted_Market_Value is; the solve holds the contract at par'),
+              F('Quoted_Market_Value', 'Float', default=0.0,
+                description='The quote: basis points of running spread for a Par_Spread, percent of '
+                            'principal paid up front for an Upfront')] + QUOTE_TWO_WAY,
+          description='One CDS quote: a tenor, what kind of number is quoted, the number, its '
+                      'two-way sides where the source printed them, and when it was seen')
+    ]
+
+    def __init__(self, param, device, dtype):
+        super().__init__(param, device, dtype)
+        # the curve family's reason: the solve is dispatch-bound, so it runs on the host
+        self.device = torch.device('cpu')
+        #: what `Quote_Sensitivity` leaves for `Config.bootstrap` to harvest, as the curve family's
+        self.calibrated = {}
+        self.quote_leaves = {}
+
+    @classmethod
+    def takes(cls, point, market_price):
+        """Whether this family prices the quote: a `Quote_Type` the default swap declares a
+        landing for, any other logged by name and left out."""
+        if point['Quote_Type'] in instruments.DealDefaultSwap.quoted:
+            return True
+        logging.error('{} quote {} - Quote_Type {} is no default swap quote; the family takes '
+                      '{}'.format(market_price, point['Descriptor'], point['Quote_Type'],
+                                  ' or '.join(instruments.DealDefaultSwap.quoted)))
+        return False
+
+    @classmethod
+    def used_quotes(cls, block, market_price):
+        """The quotes that enter the solve, in the order the residual and `q` are indexed by."""
+        return [point for point in quote_table(block, market_price)
+                if point['Use'] == 'Yes' and cls.takes(point, market_price)]
+
+    @classmethod
+    def contracts(cls, block, market_price, base_date):
+        """The used quotes, each carrying its default swap: the block's standard contract at the
+        row's `Tenor`, the row's `Deal` over it, on the curve the block is filed under."""
+        name = '.'.join(utils.check_rate_name(market_price)[1:])
+        standard = {'Currency': block['Currency'], 'Buy_Sell': 'Buy', 'Principal': cls.PRINCIPAL,
+                    'Effective_Date': base_date, 'Pay_Frequency': as_period(block['Pay_Frequency']),
+                    'Accrual_Day_Count': block['Accrual_Day_Count'], 'Accrue_Fee': 'Yes',
+                    'Pay_Rate': utils.Basis(block['Standard_Coupon'])}
+        points = []
+        for point in cls.used_quotes(block, market_price):
+            tenor = utils.parse_period(point['Tenor']).kwds
+            maturity = utils.cds_dates(
+                base_date, 12 * tenor.get('years', 0) + tenor.get('months', 0))[-1]
+            points.append(dict(point, Deal={
+                **standard, 'Reference': '{}_{}'.format(name, point['Tenor']),
+                'Maturity_Date': maturity, **point['Deal'], 'Name': name}))
+        return points
+
+    @staticmethod
+    def running_spread(point, block, years):
+        """The row's quote as the running spread it is worth, a fraction a year: an upfront adds
+        its share of principal over the `years` it buys to the coupon."""
+        if point['Quote_Type'] == 'Par_Spread':
+            return utils.Basis(point['Quoted_Market_Value']).amount
+        return utils.Basis(block['Standard_Coupon']).amount + utils.Percent(
+            point['Quoted_Market_Value']).amount / years
+
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
+                  calendars):
+        """Solve each block for the survival curve that holds its used quotes at par, one block at a
+        time: a block reads the discount curve the curve family wrote and no other block's curve."""
+        for market_price, implied_params in market_prices.items():
+            if utils.check_rate_name(market_price)[0] == self.market_factor_type:
+                # the quote's own instrument wins on conflict
+                self.solve(market_price, dict(self.param, **implied_params['instrument']),
+                           price_factors, factor_interp, sys_params['Base_Date'], calendars)
+
+    def solve(self, market_price, block, price_factors, factor_interp, base_date, calendars):
+        """Seed the curve as flat hazards at the knots, solve the knots after the anchor through
+        `utils.CalibrationSolve`, and write the curve with the block's recovery."""
+        factor = utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:])
+        points = self.contracts(block, market_price, base_date)
+        nodes = quote_nodes(points, block['Discount_Rate'])
+        knots = InterestRate.live_knots(market_price, points, nodes, base_date, self.DAY_COUNT,
+                                        calendars)
+        recovery = float(block['Recovery_Rate'])
+        name = utils.check_tuple_name(factor)
+        price_factors[name] = {'Recovery_Rate': recovery, 'Curve': utils.Curve([], [(0.0, 0.0)] + [
+            (knot, self.running_spread(point, block, knot) * knot / (1.0 - recovery))
+            for point, knot in zip(points, knots)])}
+
+        carry = block['Quote_Sensitivity'] == 'Yes'
+        time_now = time.monotonic()
+        benchmarks = BenchmarkInstruments(
+            nodes, price_factors, factor_interp, base_date, block['Currency'], calendars, [factor],
+            self.device, quotes=[point['Quoted_Market_Value'] for point in points] if carry else None,
+            bumped_nodes=quote_nodes(points, block['Discount_Rate'], 1.0) if carry else None, held=1)
+        theta = utils.CalibrationSolve.apply(
+            benchmarks, benchmarks.written(), int(block['N_Iter']), float(block['Tol']),
+            int(block['Damping_Halvings']), benchmarks.quotes)
+        solved = benchmarks.nodes(utils.split_theta(benchmarks, theta))[factor]
+        price_factors[name]['Curve'] = utils.Curve([], list(zip(
+            benchmarks.factors[factor].tenors, solved.detach().cpu().numpy())))
+        if carry:
+            self.calibrated[factor] = solved
+            self.quote_leaves[market_price] = ([point['Descriptor'] for point in points],
+                                               benchmarks.quotes)
+
+        residuals = benchmarks(utils.split_theta(benchmarks, theta.detach())).detach()
+        logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
+            name, len(points), time.monotonic() - time_now, float(residuals.abs().max())))
+        for point, residual in zip(points, residuals):
+            logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
+                point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
 
 
 class FXVol(Construction):
@@ -6195,7 +6439,7 @@ def construct_bootstrapper(btype, param, dtype=torch.float32):
     return family_class(btype)(param, device, dtype)
 
 
-#: THE SIX PRICE FAMILIES: `family_class` and every refusal naming them read this one tuple.
+#: THE SEVEN PRICE FAMILIES: `family_class` and every refusal naming them read this one tuple.
 FAMILIES = (CSForwardPriceModelParameters, LogVar2FJModelParameters,
             GBMAssetPriceTSModelParameters, HullWhite2FactorModelParameters,
-            InterestRate, FXVol)
+            InterestRate, SurvivalProb, FXVol)
