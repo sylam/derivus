@@ -246,11 +246,13 @@ def run_simm(context, overrides=None):
 
 
 def simm_shard(config, params, indices, job, queue):
-    """A worker's share of a SIMM run's trades, on a context of its own, each keyed by its place."""
+    """A worker's share of a SIMM run's trades, each keyed by its place, on a context of its own
+    calibrated once, an artifact crossing no process."""
     from .calculation import construct_calculation
 
     calc = construct_calculation('SIMM', config)
     calc.setup(params)
+    calc.calibrate()
     queue.put({'Job': job, 'Trades': [(index, calc.trade(index)) for index in indices]})
 
 

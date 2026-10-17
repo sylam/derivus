@@ -5444,8 +5444,8 @@ class InterestRate(Construction):
                        for (market_price, _), (_, block_points, _, _) in zip(members, seeded)
                        for point in block_points]
         for curve, (market_price, _), wants in zip(curves, members, connect):
-            price_factors[utils.check_tuple_name(curve)]['Curve'] = utils.Curve(
-                [], list(zip(benchmarks.tenors[curve], solved[curve].detach().cpu().numpy())))
+            price_factors[utils.check_tuple_name(curve)]['Curve'] = self.solved_curve(
+                benchmarks, theta, curve)
             if wants:
                 self.calibrated[curve] = solved[curve]
                 self.quote_leaves[market_price] = (descriptors, benchmarks.quotes)
@@ -5460,6 +5460,13 @@ class InterestRate(Construction):
         for point, residual in zip(points, residuals):
             logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
                 point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
+
+    @staticmethod
+    def solved_curve(benchmarks, theta, factor):
+        """Member `factor`'s zero curve off its set's solved `theta`: its slice on its knot grid, the
+        `Curve` its price factor carries."""
+        return utils.Curve([], list(zip(benchmarks.tenors[factor], utils.split_theta(
+            benchmarks, theta)[factor].detach().cpu().numpy())))
 
     @classmethod
     def takes(cls, point, market_price):
@@ -5543,6 +5550,37 @@ class InterestRate(Construction):
             benchmarks.quotes.detach(), benchmarks, min(float(block['Tol']) for _, block in members))
 
     @classmethod
+    def artifact(cls, artifacts, factor, market_prices, factor_interp, base_date):
+        """The artifact in `artifacts` covering `factor` whose slot is the plan standing in
+        `market_prices`, counted as a use of it, or `CalibrationStale` naming the miss."""
+        market_price = utils.check_tuple_name(utils.Factor(cls.market_factor_type, factor.name))
+        covering = artifacts.covering(factor)
+        artifact = next((found for found in covering if found.key == cls.slot(
+            found.members, market_prices, factor_interp, base_date)), None)
+        if artifact is None:
+            raise utils.CalibrationStale(
+                '{}: Quote_Propagation is Linear and no calibration artifact answers to this plan '
+                '- {}. Bootstrap the job and the same EXECUTE runs off the artifact that publishes; '
+                'an artifact holds tensors and a compiled benchmark set, so it cannot be serialised '
+                'and a fresh context has none. A plan the store cannot answer is a MISS, and a miss '
+                'is not permission to price off the curve the last bootstrap wrote.'.format(
+                    market_price, 'the store holds none for this curve' if not covering else
+                    '{} cover it, each fitted against a different plan ({})'.format(
+                        len(covering), '; '.join(' + '.join(found.members) for found in covering))))
+        # a ride is a USE: a ridden slot must not age out under one merely published beside it
+        artifacts.get(artifact.key)
+        return artifact
+
+    @classmethod
+    def quotes(cls, artifact, market_prices):
+        """The quotes standing in `market_prices` for `artifact`'s members, in percent and in the
+        order its theta, `J` and q0 index them."""
+        return torch.tensor(
+            [point['Quoted_Market_Value'] for name in artifact.members
+             for point in cls.used_quotes(market_prices[name]['instrument'], name)],
+            dtype=artifact.theta.dtype, device=artifact.theta.device)
+
+    @classmethod
     def propagate(cls, artifacts, factor, market_prices, factor_interp, base_date):
         """The curve `factor` RIDDEN to the quotes standing in `market_prices` now off the config's
         `artifacts`, or `None` where no block asks for one - the operator, evaluated per EXECUTE and
@@ -5566,29 +5604,11 @@ class InterestRate(Construction):
         if block is None or declared_defaults(cls, block)['Quote_Propagation'] != 'Linear':
             return None
 
-        covering = artifacts.covering(factor)
-        artifact = next((found for found in covering if found.key == cls.slot(
-            found.members, market_prices, factor_interp, base_date)), None)
-        if artifact is None:
-            raise utils.CalibrationStale(
-                '{}: Quote_Propagation is Linear and no calibration artifact answers to this plan '
-                '- {}. Bootstrap the job and the same EXECUTE runs off the artifact that publishes; '
-                'an artifact holds tensors and a compiled benchmark set, so it cannot be serialised '
-                'and a fresh context has none. A plan the store cannot answer is a MISS, and a miss '
-                'is not permission to price off the curve the last bootstrap wrote.'.format(
-                    market_price, 'the store holds none for this curve' if not covering else
-                    '{} cover it, each fitted against a different plan ({})'.format(
-                        len(covering), '; '.join(' + '.join(found.members) for found in covering))))
-        # a ride is a USE: a ridden slot must not age out under one merely published beside it
-        artifacts.get(artifact.key)
-
+        artifact = cls.artifact(artifacts, factor, market_prices, factor_interp, base_date)
         tolerance = min(
             float(declared_defaults(cls, market_prices[name]['instrument'])['Drift_Tolerance'])
             for name in artifact.members)
-        quotes = torch.tensor(
-            [point['Quoted_Market_Value'] for name in artifact.members
-             for point in cls.used_quotes(market_prices[name]['instrument'], name)],
-            dtype=artifact.theta.dtype, device=artifact.theta.device)
+        quotes = cls.quotes(artifact, market_prices)
         theta = artifact.ride(quotes)
         drift = float(artifact.mispricing(theta, quotes).abs().max())
         tick = float((quotes - artifact.quotes).abs().max())

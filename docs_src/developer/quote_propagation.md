@@ -15,7 +15,7 @@ function theorem is exact [@christianson1998; @henrard2014].
 | `Quote_Propagation`, `Drift_Tolerance` | the block's switch (`No`, `Linear`) and tolerance (1e-3 percent of quote) |
 | `utils.CalibrationArtifact` | one coupled set's `(θ*, J, q₀, timestamp)`: `ride`, `mispricing`, `replacing` |
 | `utils.ArtifactStore` | `Config.artifacts`: 32 slots, least-recently-used |
-| `bootstrappers.InterestRate` | `coupled_sets`, `solve_set`, `plan_key`, `publish`, `propagate` |
+| `bootstrappers.InterestRate` | `coupled_sets`, `solve_set`, `plan_key`, `publish`, `artifact`, `quotes`, `propagate` |
 
 Tests named below are in `tests/test_quote_propagation.py` unless another module is given; the ZAR
 and USD worlds are the synthetic curve worlds of `tests/test_interest_rate_prices.py`.
@@ -81,6 +81,11 @@ reading the market and a content-addressed slot and writing neither. Two EXECUTE
 survives a JSON round trip, or a reloaded job would miss its slot forever. **Held by**
 `test_an_execute_is_a_pure_function_of_the_artifact_and_the_tick`,
 `test_the_artifact_survives_a_job_document_round_trip_by_key`.
+
+The `SIMM` calculation is the operator's second reader: its bootstrap publishes every coupled set's
+artifact whatever the blocks declare, and `SIMM.requoted` rides one to a basis point on one quote,
+writing each member curve through `InterestRate.solved_curve` as `solve_set` writes a solved one.
+**Held by** `test_simm.py::test_a_quote_move_rides_the_jacobian_and_is_the_re_solve_to_first_order`.
 
 !!! danger "A miss is a refusal, never a different number"
     With no artifact answering the plan the ride raises `CalibrationStale` rather than pricing the

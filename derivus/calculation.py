@@ -3733,8 +3733,9 @@ class SIMM(Calculation):
 
     MARKET PRICES -> PRICE FACTORS -> MTM. Each trade of each netting set - the booked structure,
     never its legs - is valued, one market input its own dependency walk names is moved by ISDA's
-    definition of the sensitivity to it, what the move feeds is re-bootstrapped and the trade
-    revalued: the difference is a CRIF row. Deliberately the slow, obvious reading of the text.
+    definition of the sensitivity to it and the trade revalued: the difference is a CRIF row. A
+    moved benchmark quote rides its curve family's calibration Jacobian, `theta* + J (q - q0)`, off
+    one solve per coupled set at the run's bootstrap, exact to first order in the move.
 
     How a factor moves is the methodology and lives here: a basis point on each benchmark quote of
     a curve, split linearly between the vertices either side of its maturity; a basis point on every
@@ -3860,14 +3861,15 @@ class SIMM(Calculation):
     @contextlib.contextmanager
     def prepared(self):
         """The config as every valuation of the run reads it - the valuation calculation, its
-        date, the curves its market prices solve, each trade's moves, classes and agreements -
-        put back as it stood on the way out."""
+        date, the curves its market prices solve (`calibrate`), each trade's moves, classes and
+        agreements - put back as it stood on the way out."""
         config = self.config
         deals, calculation = config.deals['Deals'], config.deals['Calculation']
+        authored = dict(config.params['Market Prices'])
         try:
             config.deals['Calculation'] = self.valuation
             config.params['System Parameters']['Base_Date'] = self.valuation['Base_Date']
-            config.bootstrap(wanted=self.universe)
+            self.calibrate()
             for index, (agreement, node) in enumerate(self.trades):
                 self.bumps(index)
                 self.product_class(node)
@@ -3875,7 +3877,29 @@ class SIMM(Calculation):
             config.deals['Deals'] = deals
             yield
         finally:
+            config.params['Market Prices'].update(authored)
             config.deals['Deals'], config.deals['Calculation'] = deals, calculation
+
+    def calibrate(self):
+        """The curves the book reads solved from their quotes, each coupled set publishing its
+        calibration for a quote move to ride (`requoted`) whatever its blocks declare, which then
+        declare no ride, so a valuation reads the curves a move writes."""
+        from . import bootstrappers
+
+        prices = self.config.params['Market Prices']
+        curves = {name: block for name, block in prices.items()
+                  if utils.check_rate_name(name)[0] == bootstrappers.InterestRate.market_factor_type}
+
+        def declaring(propagation):
+            prices.update({name: dict(block, instrument=dict(
+                block['instrument'], Quote_Propagation=propagation))
+                for name, block in curves.items()})
+
+        # every set's operator must stand at once for the moves to ride, whatever the store held
+        self.config.artifacts.size = max(self.config.artifacts.size, len(curves))
+        declaring('Linear')
+        self.config.bootstrap(wanted=self.universe)
+        declaring('No')
 
     def report(self, trades):
         """The run's results off its valued `trades`: the CRIF and a row per trade."""
@@ -3992,12 +4016,6 @@ class SIMM(Calculation):
             stated = self.coordinates(factor, reference)
             instrument = declared_defaults(bootstrappers.InterestRate, prices[block]['instrument'])
             used = bootstrappers.InterestRate.used_quotes(instrument, block)
-            if instrument['Quote_Propagation'] != 'No':
-                raise ValueError(
-                    'SIMM: {} declares Quote_Propagation {} - every valuation rides its '
-                    'calibration to the quotes standing, so a re-solve with one quote moved is '
-                    'never read. Set it No for the run'.format(
-                        block, instrument['Quote_Propagation']))
             # what moves a price factor in place re-solves no block, so no block may read one
             read = sorted(curve for curve in {instrument['Discount_Rate']} |
                           bootstrappers.InterestRate.benchmark_curves(instrument, block)
@@ -4079,30 +4097,26 @@ class SIMM(Calculation):
         return self.moved[move]
 
     def requoted(self, block, position):
-        """The curves a basis point on one quote of `block` re-bootstraps, solved through the
-        configuration's own loop narrowed to what the book reads - the config left as it stood,
-        its calibration tape with it."""
-        config = self.config
+        """Every curve of `block`'s coupled set with a basis point on its quote `position`, ridden
+        off the calibration `calibrate` published, `theta* + J (q - q0)`, and written as the
+        family writes a solved curve - nothing solved and nothing on the config written."""
+        from . import bootstrappers
+
+        config, family = self.config, bootstrappers.InterestRate
         prices, factors = config.params['Market Prices'], config.params['Price Factors']
-        standing, before = prices[block], dict(factors)
-        tape = dict(config.calibrated_factors), dict(config.quote_leaves)
+        standing = prices[block]
         points = [dict(point, Quoted_Market_Value=point['Quoted_Market_Value'] +
                        self.params['Rate_Shift'] * 0.01) if at == position else point
                   for at, point in enumerate(standing['instrument']['Points'])]
-        prices[block] = dict(standing, instrument=dict(standing['instrument'], Points=points))
-        try:
-            config.bootstrap(only={block}, wanted=self.universe)
-            moved = {name: written for name, written in factors.items()
-                     if before.get(name) is not written}
-        finally:
-            prices[block] = standing
-            factors.clear()
-            factors.update(before)
-            config.calibrated_factors, config.quote_leaves = tape
-        if not moved:
-            raise ValueError('SIMM: a basis point on quote {} of {} re-solved nothing - no '
-                             'configured family solves the block'.format(position, block))
-        return moved
+        artifact = family.artifact(
+            config.artifacts, utils.Factor(family.__name__, utils.check_rate_name(block)[1:]),
+            prices, config.params['Price Factor Interpolation'],
+            config.params['System Parameters']['Base_Date'])
+        theta = artifact.ride(family.quotes(artifact, dict(prices, **{block: dict(
+            standing, instrument=dict(standing['instrument'], Points=points))})))
+        return {(name := utils.check_tuple_name(curve)): dict(
+            factors[name], Curve=family.solved_curve(artifact.benchmarks, theta, curve))
+            for curve in artifact.factors}
 
     def value(self, index, moved):
         """`(value, skipped)` - trade `index` valued in the calculation currency with `moved` over

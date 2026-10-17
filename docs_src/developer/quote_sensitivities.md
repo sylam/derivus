@@ -436,8 +436,8 @@ pseudo-inverse it is the projector onto the kept directions. No test holds it.
 
 Listed on the [roadmap](roadmap.md#designed-not-built).
 
-- **No aggregation off these deltas**; the `SIMM` calculation bumps and re-bootstraps on its own. No
-  wrong-way risk.
+- **No aggregation off these deltas**; the `SIMM` calculation bumps and revalues on its own, a
+  moved quote riding its curve's [calibration](quote_propagation.md#stateless). No wrong-way risk.
 - **No recalibration inside the simulation**; quote sensitivities are t0 risk.
 - **No new pricers**, and no pricer changes for the t0 closure — so far none.
 - **No SABR or SSVI**; a Malz smile is the one delta parameterisation, and a swaption quote is its

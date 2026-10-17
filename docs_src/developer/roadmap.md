@@ -70,11 +70,6 @@ not rows to close.
 
 **Speed and memory.**
 
-- **Each SIMM benchmark move solved once** (2026-10-07, M). The `SIMM` calculation re-solves the
-  curve or surface each move feeds, per trade and per worker: on one autocall structure the curve
-  re-solves are 60 of 67 seconds of wall, 32 damped Newton solves on the host beside 3 seconds of
-  pricing, and four workers give 1.3x over one on a 19-trade set. The dependency walk also hands
-  each trade its FX chains, about seven repricings per CRIF row.
 - **The inner Monte Carlo's step fused** (2026-10-07, re-measured 2026-10-15, M). A one-step-survival
   step is about fifty elementwise kernels on `[batch, 2 x inner]`, and one batch of a 58-leg credit
   Monte Carlo keeps the device 38% busy at 1,024 paths and 63% at 4,096, with 343,000 kernel

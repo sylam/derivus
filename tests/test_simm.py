@@ -185,11 +185,11 @@ def test_the_quotes_reprice_the_book_they_were_read_off():
 
 def test_a_swaps_pv01_is_its_annuity_times_a_basis_point(serial):
     """A PAR SWAP'S PV01 BY HAND. The swap is the five-year benchmark struck at its quote, so a
-    basis point on that quote re-solves the curve to price the benchmark at par a basis point up
-    and the swap is worth `N A' 1bp`, `A'` its fixed leg's annuity on the re-solved curve - the
-    same quote set with that quote a basis point up, bootstrapped, and read off its knots, every
-    coupon landing on one. Each other quote moves it by nothing a solve can see, so its rate rows
-    sum to that figure.
+    basis point on that quote moves the curve to price the benchmark at par a basis point up and
+    the swap is worth `N A' 1bp`, `A'` its fixed leg's annuity on the re-solved curve - the same
+    quote set with that quote a basis point up, bootstrapped, and read off its knots, every coupon
+    landing on one. Each other quote leaves it at par, so its rate rows sum to that figure but for
+    the second order a ride on the calibration Jacobian drops, 1.8e-4 of it.
 
     Killing mutation: the quote moved by the shift taken as a decimal, 1e-4 on a quote in percent -
     the rows sum to a hundredth of the hand figure.
@@ -209,7 +209,7 @@ def test_a_swaps_pv01_is_its_annuity_times_a_basis_point(serial):
     trades = output['Results']['Trades']
     assert abs(trades[trades['TradeID'] == 'SWAP']['Value'].item()) < 1e-6
     assert sum(rows(output, 'SWAP', 'Risk_IRCurve').values()) == pytest.approx(
-        NOTIONAL * annuity * 1e-4, rel=1e-9)
+        NOTIONAL * annuity * 1e-4, rel=2e-4)
 
 
 def test_the_crif_is_isdas_format(serial, tmp_path):
@@ -312,27 +312,66 @@ def test_a_quote_set_no_configured_family_solves_is_refused_by_name():
     from a CRIF that still wrote its FX and vega rows.
 
     Killing mutation: the condition reading the section's own keys - the run passes the walk and
-    refuses later, at the first quote move that re-solves nothing, never naming the condition.
+    refuses later, at the first quote move, which finds no calibration to ride, never naming the
+    condition.
     """
     with pytest.raises(ValueError, match='a configured family claims bootstraps') as refusal:
         world(configuration={}).run_job()
     assert 'InterestRate.USD-OIS' in str(refusal.value)
 
 
-def test_a_curve_riding_its_calibration_is_refused_by_name():
-    """A block declaring `Quote_Propagation: Linear` is valued by riding its calibration to the
-    quotes standing, so a re-solve with one quote moved is never read and its delta reads nothing:
-    refused by name before a trade is valued.
+def test_a_quote_move_rides_the_jacobian_and_is_the_re_solve_to_first_order(serial):
+    """A BASIS POINT RIDES THE CALIBRATION JACOBIAN. The run's bootstrap solves each coupled set
+    once and publishes `theta*` and `J = dtheta/dq`, and a quote's move is `theta* + J (q - q0)`.
+    Bootstrapping the block with that quote a basis point up and revaluing the book, quote by quote,
+    writes the same rate rows but for the second order the re-solve carries and the ride drops:
+    every row within 2e-4 of its trade's largest, the swap's 5y row departing most, by 1.67e-4 of
+    itself - 8.4e-5 at half the shift and 3.3e-4 at twice it, the order of the bump's own
+    one-sided error. A block declaring `Quote_Propagation: Linear` is valued off the curves the move
+    writes, its rows those of one declaring `No` to the bit. The serial run of this world takes
+    1.1 seconds where re-solving each quote took 4.5, and the sharded one 10 where it took 13.
 
-    Killing mutation: the refusal removed - the run writes the swap a rate delta of -0.08 where its
-    hand PV01 is +443.7.
+    Killing mutations: the Jacobian's sign flipped - every row the negative of the re-solve's, the
+    swap's 5y -443.64 against 443.48; the quote moved one place along - the rows land on the next
+    quote's vertices, the swap's PV01 halved onto 3y; the move added in basis points to a quote in
+    percent - the swap's 5y row 43,203 against 443.48; the run's declaration of no ride not held
+    through its valuations - every valuation rides the quotes standing and no rate row is written.
     """
-    prices = blocks()
+    calc, output = serial
+    trades = ('SWAP', 'FXO')
+
+    def rates(output):
+        crif = output['Results']['CRIF']
+        found = crif[crif['RiskType'] == 'Risk_IRCurve']
+        return dict(zip(zip(found['TradeID'], found['Qualifier'], found['Label1']), found['Amount']))
+
+    def bootstrapped(prices):
+        context = world(VALUATION, prices=prices)
+        context.bootstrap()
+        return valued(context)
+
+    ridden, prices = rates(output), blocks()
     for block in prices.values():
         block['instrument']['Quote_Propagation'] = 'Linear'
-    with pytest.raises(ValueError, match='Quote_Propagation Linear') as refusal:
-        world(prices=prices).run_job()
-    assert 'InterestRatePrices.USD-OIS' in str(refusal.value)
+    linear = rates(world(prices=prices).run_job()[1])
+    assert {key: amount.hex() for key, amount in linear.items()} == {
+        key: amount.hex() for key, amount in ridden.items()}
+    base, solved = bootstrapped(blocks()), {}
+    for block, qualifier, dates in (('InterestRatePrices.USD-OIS', 'USD', USD_DATES),
+                                    ('InterestRatePrices.ZAR-JIBAR', 'ZAR', ZAR_DATES)):
+        for position, date in enumerate(dates):
+            prices = blocks()
+            prices[block]['instrument']['Points'][position]['Quoted_Market_Value'] += 0.01
+            moved = bootstrapped(prices)
+            for trade in trades:
+                for label, weight in utils.vertex_weights((date - BASE).days / 365.0,
+                                                          calc.vertices):
+                    key = (trade, qualifier, label)
+                    solved[key] = solved.get(key, 0.0) + weight * (moved[trade] - base[trade])
+    for trade in trades:
+        scale = max(abs(amount) for key, amount in solved.items() if key[0] == trade)
+        for key in {key for key in set(ridden) | set(solved) if key[0] == trade}:
+            assert abs(ridden.get(key, 0.0) - solved.get(key, 0.0)) < 2e-4 * scale, key
 
 
 def test_a_worker_that_raises_surfaces_in_the_parent():
@@ -546,12 +585,13 @@ def test_a_curve_discounting_on_another_gets_a_fra_in_front():
 
 
 def test_the_context_keeps_its_base_calibration_tape():
-    """A run re-solves every quote it moves, and the config it leaves holds the BASE's calibration
-    tape - the quote leaves and the connected curves a quote-space Greeks run reads - as a fresh
-    bootstrap of the same document writes it, to the bit.
+    """A run rides every quote it moves and writes nothing, so the config it leaves holds the
+    BASE's calibration tape - the quote leaves and the connected curves a quote-space Greeks run
+    reads - and its curves as a fresh bootstrap of the same document writes them, to the bit.
 
-    Killing mutation: the tape not restored after a re-solve - the quote leaves read a basis point
-    off and the curves 1.1e-4.
+    Killing mutations: a move re-solved through the config's own loop and its tape left as the
+    re-solve wrote it - the quote leaves read a basis point off; the ride's curve written into the
+    standing block, as `solve_set` writes one - the USD curve's 10Y node left 1.1bp up.
     """
     prices = blocks()
     for block in prices.values():
@@ -569,3 +609,6 @@ def test_the_context_keeps_its_base_calibration_tape():
     for factor, theta in reference.calibrated_factors.items():
         assert np.array_equal(config.calibrated_factors[factor].detach().numpy(),
                               theta.detach().numpy()), factor
+        name = utils.check_tuple_name(factor)
+        assert np.array_equal(config.params['Price Factors'][name]['Curve'].array,
+                              reference.params['Price Factors'][name]['Curve'].array), name

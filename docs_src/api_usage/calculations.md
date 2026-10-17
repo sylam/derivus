@@ -18,7 +18,7 @@ they part on [Calc Lifecycle](../developer/calc_lifecycle.md#valuation-modes).
   `Hedging_Problem` block names against a book of liabilities, the solver being on
   [Hedging](../hedging/overview.md).
 - **`SIMM`** answers the ISDA SIMM sensitivities of each booked trade as a CRIF [@isdasimm]: it
-  moves one market input at a time by ISDA's definition, re-bootstraps from `Market Prices` what
-  the move feeds and revalues the trade as a `BaseValuation`, reading the regime `Mapping` and the
-  ISDA `Parameters` file the block names. Its tables are on
-  [Understanding Output](../output.md#simm).
+  moves one market input at a time by ISDA's definition, a benchmark quote's curve ridden on the
+  calibration Jacobian its bootstrap from `Market Prices` published, and revalues the trade as a
+  `BaseValuation`, reading the regime `Mapping` and the ISDA `Parameters` file the block names. Its
+  tables are on [Understanding Output](../output.md#simm).
