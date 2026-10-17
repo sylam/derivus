@@ -1,5 +1,5 @@
 {
-	"version": "synthetic - the vertices alone, no weight of the licensed parameters",
+	"version": "synthetic - the vertices and the interest-rate currency groups alone, no weight of the licensed parameters",
 	"horizons": {
 		"Horizon_10d": {
 			"ir": {
@@ -12,7 +12,11 @@
 							}
 						}
 					}
-				}
+				},
+				"ccy": {
+					"Weights": {"default": "High", "Currency": {"USD": "Regular"}}
+				},
+				"bucket_vol_map": {"1": "Regular", "2": "Low", "3": "High"}
 			}
 		}
 	}

@@ -89,8 +89,8 @@ says otherwise).
 
 Scripts under `experiments/` are run from the repo root, e.g. `python experiments/production_solver.py`.
 `experiments/simm_from_crif.py` revalues the trades of a source CRIF through the `SIMM` calculation,
-each loaded from its own job document, as one netting set per counterparty, and merges the run's
-rows back into the source CRIF.
+each loaded from its own job document, as one netting set per counterparty on the mapping the bank
+states completed from the CRIF's own rows, and merges the run's rows back into the source CRIF.
 
 ## Market data
 

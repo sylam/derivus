@@ -728,3 +728,98 @@ def test_the_context_keeps_its_base_calibration_tape():
         name = utils.check_tuple_name(factor)
         assert np.array_equal(config.params['Price Factors'][name]['Curve'].array,
                               reference.params['Price Factors'][name]['Curve'].array), name
+
+
+#: A structure of a year's call on each index, booked as its two legs: one trade reading two spots
+#: and two vols.
+PAIR = {'Instrument': {'.Deal': {'Object': 'StructuredDeal', 'Reference': 'PAIR',
+                                 'Currency': 'USD'}},
+        'Children': [{'Instrument': {'.Deal': {
+            'Object': 'EquityOptionDeal', 'Reference': 'PAIR-' + index, 'Currency': 'USD',
+            'Discount_Rate': 'USD-OIS', 'Equity': index, 'Equity_Volatility': index,
+            'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': 100.0, 'Units': 100.0,
+            'Expiry_Date': BASE + pd.DateOffset(years=1)}}} for index in ('EQ', 'EQ2')]}
+
+
+def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tmp_path):
+    """THE MAPPING OFF THE SOURCE'S ROWS. The module's world and the pair as a source system exports
+    them, handed a mapping that states the FX vol pair alone, as the module's mapping does, and a
+    parameters file putting ZAR in the low volatility group: the utility derives every other
+    coordinate off the CRIF's rows and the file and writes the module's CRIF to the bit, ZAR's
+    curve in bucket 2. The FX vol keeps the stated pair, the source's reversed one listed as a
+    disagreement; the swap and the option pin each curve's Label2; the spread rides its parent and
+    the dividends map null; the classes are the source's, the pair's by its reference. The pair
+    reads two spots and two vols and its rows carry one of each, so nothing pins them: they are
+    listed and left unstated, and the run refuses the pair by name and values the rest.
+
+    Killing mutations: a pin taken from a trade reading two factors of the type - the pair is
+    valued, both indices' deltas landing as one row of 120.68 under EQ and both vegas as one of
+    76.43; the bucket read off a hand table of ISDA's groups - ZAR's five rate rows in bucket 3; the
+    disagreement applied rather than listed - the option's vega row under ZARUSD.
+    """
+    sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
+                                    'experiments'))
+    import simm_from_crif
+
+    with open(MAPPING, 'rt', encoding='utf-8') as f:
+        module = json.load(f)
+    with open(PARAMETERS, 'rt', encoding='utf-8') as f:
+        parameters = json.load(f)
+    parameters['horizons']['Horizon_10d']['ir']['ccy']['Weights']['default'] = 'Low'
+    stated = {'Product_Class': {'Instruments': {}, 'Structures': {}},
+              'Factors': {'FXVol.USD.ZAR': module['Factors']['FXVol.USD.ZAR']}}
+    for name, content in (('mapping.json', stated), ('parameters.json', parameters)):
+        with open(tmp_path / name, 'wt', encoding='utf-8') as f:
+            json.dump(content, f)
+
+    crif = serial[1]['Results']['CRIF'].assign(Counterparty='CP')
+    folder, output = tmp_path / 'documents', tmp_path / 'output'
+    folder.mkdir()
+    for trade in crif['TradeID'].unique():
+        with open(folder / '{}.json'.format(trade), 'wt') as f:
+            json.dump(job(book={'SET-' + trade: (trade,)}), f)
+    pair = job(book={'SET-PAIR': ()}, extra=INDICES)
+    pair['Calc']['Deals']['Deals']['Children'][0]['Children'] = [
+        json.loads(json.dumps(PAIR, cls=CustomJsonEncoder))]
+    with open(folder / 'PAIR.json', 'wt') as f:
+        json.dump(pair, f)
+    rows = pd.DataFrame([dict(crif.iloc[0], TradeID='PAIR', ProductClass='Equity', RiskType=risk,
+                              Qualifier='EQ', Bucket='11', Label1=label, Label2='', Amount=amount,
+                              AmountUSD=amount)
+                         for risk, label, amount in (('Risk_Equity', '', 4.2e3),
+                                                     ('Risk_EquityVol', '1y', -1.3e3))])
+    source = pd.concat([crif.assign(Qualifier=crif['Qualifier'].where(
+        crif['RiskType'] != 'Risk_FXVol', 'ZARUSD')), rows]).assign(
+        IMModel='SIMM', AmountCurrency='USD', CSANumber='CSA', PortfolioID='BOOK',
+        ValuationDate='{:%Y-%m-%d}'.format(BASE), EndDate='')
+    source.to_csv(tmp_path / 'source.tsv', sep='\t', index=False)
+    simm_from_crif.main([str(tmp_path / 'source.tsv'), str(folder),
+                         '--mapping', str(tmp_path / 'mapping.json'),
+                         '--parameters', str(tmp_path / 'parameters.json'),
+                         '--output', str(output)])
+
+    date = '{:%Y-%m-%d}'.format(BASE)
+    ran = pd.read_csv(output / 'CRIF_{}.tsv'.format(date), sep='\t', dtype={'Bucket': str},
+                      keep_default_na=False, float_precision='round_trip')
+    zar = (crif['RiskType'] == 'Risk_IRCurve') & (crif['Qualifier'] == 'ZAR')
+    identical({'CRIF': ran, 'Trades': serial[1]['Results']['Trades']},
+              {'CRIF': crif.assign(Bucket=crif['Bucket'].where(~zar, '2')),
+               'Trades': serial[1]['Results']['Trades']})
+    with open(output / 'SIMM_MAPPING_{}.json'.format(date), 'rt', encoding='utf-8') as f:
+        completed = json.load(f)
+    unpinned = {'EquityPrice.EQ', 'EquityPrice.EQ2', 'EquityPriceVol.EQ', 'EquityPriceVol.EQ2'}
+    expected = {name: entry['SIMM'] for name, entry in module['Factors'].items()
+                if name not in unpinned}
+    expected['InterestRate.ZAR-JIBAR'] = dict(expected['InterestRate.ZAR-JIBAR'], Bucket='2')
+    assert {name: entry['SIMM'] for name, entry in completed['Factors'].items()} == expected
+    assert completed['Product_Class'] == {
+        'Instruments': {'SwapInterestDeal': 'RatesFX', 'FXOptionDeal': 'RatesFX'},
+        'Structures': {'PAIR': 'Equity'}}
+    notes = pd.read_csv(output / 'MAPPING_{}.txt'.format(date), sep='\t', keep_default_na=False)
+    outcomes = {outcome: set(found['Name']) for outcome, found in notes.groupby('Outcome')}
+    assert outcomes['unpinned'] == unpinned and outcomes['disagrees'] == {'FXVol.USD.ZAR'}
+    assert json.loads(notes[notes['Outcome'] == 'disagrees']['Derived'].item())[
+        'Qualifier'] == 'ZARUSD'
+    compare = pd.read_csv(output / 'COMPARE_{}.csv'.format(date), keep_default_na=False)
+    refused = compare[compare['TradeID'] == 'PAIR']
+    assert not refused['Valued'].item() and 'PAIR reads EquityPrice' in refused['Engine'].item()
