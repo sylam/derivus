@@ -29,8 +29,9 @@ cx.load_json('fxfwd.json')
 under — the same pre-rename initials the `RF_SERVICE_URL` wire variable keeps on purpose. The
 README says `dv`; both are `import derivus as`.)
 
-A context can hold *multiple* loaded configurations — `cx.config_cache` holds one `Config` per
-`MergeMarketData.MarketDataFile` path a job referenced, written only on a miss for that path. A job
+A context can hold *multiple* loaded configurations — `cx.parsed` holds one `Config` per content
+of a `MergeMarketData.MarketDataFile` a job referenced, keyed by the sha256 of the file's bytes and
+parsed only on a miss for those bytes, and `cx.digests` the digest each named file last read. A job
 carrying only inline `ExplicitMarketData` builds a fresh `Config` that is never cached, and a job
 with no `MergeMarketData` block reuses `cx.current_cfg` and mutates it in place. The most recently
 loaded config is always `cx.current_cfg`. All
@@ -43,8 +44,9 @@ The active configuration exposes:
   `'Price Factors'`, `'Price Models'`, `'Correlations'`, etc.). Mutate this directly to override
   loaded market data.
 - `cx.current_cfg.deals` — the deal hierarchy (`'Calculation'`, `'Deals'`, `'Attributes'`).
-- `cx.holiday_cfg_cache` — calendar definitions parsed from referenced XML calendar files (this
-  one lives on the context itself, since calendars are shared across configurations).
+- `cx.current_cfg.holidays` — the calendar definitions parsed from the XML calendar file the job
+  named, kept in `cx.parsed` by the file's sha256 like a market data file, since calendars are
+  shared across configurations.
 
 ## Running a calculation
 
@@ -248,7 +250,7 @@ names the quote-update path (which bootstraps atomically) as the remedy.
 
 | Verb | What it hashes |
 |---|---|
-| `cx.plan_hash()` | the program — `params` and `deals`, less every value-bound field and `Random_Seed` |
+| `cx.plan_hash()` | the program — `params` and `deals`, less every value-bound field and `Random_Seed`, and the calendar's weekend rules and holidays |
 | `cx.values_hash()` | exactly what `cx.market_patch()` emits |
 
 Both are sha256 over a canonical dump and pure functions of the loaded config: they run nothing,
@@ -312,7 +314,8 @@ Monte Carlo returns the same three plus a fourth; a `SIMM` run returns `Stats` a
 `HedgeRuntimeExecutionResult` instead of a dict — see [Hedge Monte Carlo](#hedge-monte-carlo).)
 
 - `'Netting'` — the internal `DealStructure` tree. Useful for developers walking the hierarchy.
-- `'Stats'` — a dict of timing and counter statistics from the run.
+- `'Stats'` — a dict of timing and counter statistics from the run, and under `Files` the sha256
+  of the market data file and the calendar the job named.
 - `'Results'` — the user-facing dataframes / arrays. Keys vary by calculation type; see the
   [Output](output.md) page.
 - `'Jacobians'` — credit Monte Carlo only: the harvested Jacobians keyed by variable name, `{}`

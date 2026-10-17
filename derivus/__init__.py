@@ -485,15 +485,15 @@ class Context:
         self.path_map = path_transform
         # needed if the name of the file referenced needs to be changed (e.g. from .dat to .json)
         self.file_map = file_transform
-        self.config_cache = {}
-        self.holiday_cfg_cache = {}
+        # a named file's parse by the sha256 of its bytes, and the digest each name last read
+        self.parsed, self.digests = {}, {}
         self.current_cfg = Config()
         # there may be a stressed config file attached to the context
         self.stressed_config_file = None
 
-    def load_config(self, path_name):
+    def load_config(self, path_name, data):
         new_cfg = Config()
-        new_cfg.parse_json(path_name)
+        new_cfg.parse_json(path_name, data)
 
         # check we need to set the base_date - the declared default is the empty string
         if not new_cfg.params['System Parameters'].get('Base_Date'):
@@ -510,6 +510,35 @@ class Context:
 
         path, filename = os.path.split(file_path)
         return os.path.join(self.path_map.get(path, path), self.file_map.get(filename, filename))
+
+    def digest(self, name):
+        """The bytes of the file `name` names and their sha256, which is the file's identity."""
+        data = pathlib.Path(self.parse_path(name)).read_bytes()
+        return data, hashlib.sha256(data).hexdigest()
+
+    def cached(self, name, parse):
+        """`parse(path, bytes)` of the file `name` names, kept by the sha256 of the bytes, which is
+        filed as the digest `name` last read: a file rewritten on disk is parsed anew however soon
+        after, and two holding one content are one parse."""
+        data, digest = self.digest(name)
+        if digest not in self.parsed:
+            self.parsed[digest] = parse(self.parse_path(name), data)
+        self.digests[name] = digest
+        return self.parsed[digest]
+
+    @staticmethod
+    def named(document):
+        """`{MarketDataFile, CalendDataFile}`: the file a job document names under each key, None
+        where it names none."""
+        calc = document['Calc']
+        return {'MarketDataFile': calc.get('MergeMarketData', {}).get('MarketDataFile') or None,
+                'CalendDataFile': calc.get('CalendDataFile') or None}
+
+    def files(self, document):
+        """`{MarketDataFile, CalendDataFile}`: the sha256 of each file `document` names as it stands,
+        None where it names none, read and not parsed - what a run of it reports in `Stats['Files']`
+        while the files hold still."""
+        return {key: name and self.digest(name)[1] for key, name in self.named(document).items()}
 
     def load_json(self, jobfilename, compress=True):
 
@@ -528,28 +557,22 @@ class Context:
         cfg = self.current_cfg
         # read the raw json data (skips deals) - needs to load later
         data = self.current_cfg.read_json(jobfilename)
+        named = self.named(data)
 
         if 'MergeMarketData' in data['Calc']:
             market_data = data['Calc']['MergeMarketData']
             # check if there's a stressed marketdata defined (record but don't load it)
             self.stressed_config_file = market_data.get('StressedMarketDataFile')
 
-            if market_data.get('MarketDataFile'):
-                if market_data['MarketDataFile'] not in self.config_cache:
-                    new_cfg = self.load_config(self.parse_path(market_data['MarketDataFile']))
-                    self.config_cache[market_data['MarketDataFile']] = new_cfg
-
-                cfg = self.config_cache[market_data['MarketDataFile']]
+            if named['MarketDataFile']:
+                cfg = self.cached(named['MarketDataFile'], self.load_config)
             else:
                 cfg = Config()
             for section, section_data in market_data.get('ExplicitMarketData', {}).items():
                 cfg.merge_section(section, section_data)
 
-        if data['Calc'].get('CalendDataFile'):
-            if data['Calc']['CalendDataFile'] not in self.holiday_cfg_cache:
-                cfg.parse_calendar_file(self.parse_path(data['Calc']['CalendDataFile']))
-                self.holiday_cfg_cache[data['Calc']['CalendDataFile']] = cfg.holidays
-            cfg.holidays = self.holiday_cfg_cache[data['Calc']['CalendDataFile']]
+        if named['CalendDataFile']:
+            cfg.holidays = self.cached(named['CalendDataFile'], cfg.parse_calendar_file)
 
         if 'Deals' in data['Calc']:
             cfg.deals = {'Attributes': {'Reference': data['Calc']['Deals'].get('Reference')}}
@@ -567,6 +590,7 @@ class Context:
 
         cfg.deals.update({'Deals': deals})
         cfg.deals.update({'Calculation': data['Calc']['Calculation']})
+        cfg.files = {key: name and self.digests[name] for key, name in named.items()}
 
         self.current_cfg = cfg
         return self
@@ -581,7 +605,8 @@ class Context:
         :return: None when a filename is given, otherwise the JSON string
         '''
         cfg = self.current_cfg
-        cal = next(iter(self.holiday_cfg_cache), '')
+        cal = next((name for name, digest in self.digests.items()
+                    if self.parsed[digest] is cfg.holidays), '')
 
         final_json = {
             "Calc":
@@ -710,6 +735,10 @@ class Context:
         a different thing entirely from the `Correlation` price factor a quanto reads. It is hashed
         in the nested form the file carries, JSON having no tuple key, and `sort_keys` makes that
         form as deterministic as a flat one.
+
+        The calendar the config reads is in as the plain data `Config.parse_calendar_file` keeps,
+        per location its weekend rule and its holiday dates sorted, so one calendar at two paths is
+        one plan and a holiday moved is another.
         """
         cfg = self.current_cfg
         params = dict(cfg.params)
@@ -721,7 +750,10 @@ class Context:
             for name, block in cfg.params.get('Market Prices', {}).items()}
         params['Correlations'] = correlation_names(cfg.params['Correlations'])
         calculation = {k: v for k, v in cfg.deals['Calculation'].items() if k != 'Random_Seed'}
-        return content_hash({'params': params, 'deals': dict(cfg.deals, Calculation=calculation)})
+        calendars = {location: [calendar['weekends'], sorted(calendar['holidays'])]
+                     for location, calendar in cfg.holidays.items()}
+        return content_hash({'params': params, 'deals': dict(cfg.deals, Calculation=calculation),
+                             'calendars': calendars})
 
     def values_hash(self):
         """The content hash of `market_patch()` less its clocks - the market VALUES, and nothing
@@ -933,11 +965,7 @@ class StressedContext(Context):
         :param rate_group: Rate group (InterestRate, FxRate etc.)
         :return: a tuple of the price factors and the price models to override
         '''
-        if self.stressed_config_file not in self.config_cache:
-            self.stressed_cfg = self.load_config(self.parse_path(self.stressed_config_file))
-            self.config_cache[self.stressed_config_file] = self.stressed_cfg
-
-        self.stressed_cfg = self.config_cache[self.stressed_config_file]
+        self.stressed_cfg = self.cached(self.stressed_config_file, self.load_config)
 
         factors_to_override = {}
         models_to_override = {}

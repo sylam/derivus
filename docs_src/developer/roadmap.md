@@ -21,13 +21,12 @@ not rows to close.
 
 **The record and the service.**
 
-- **The files a job names declared in the record** (2026-10-05, S). Market data and calendar files
-  are named by path, so a replay reads whatever the file holds then, and outside the XVA tab the
-  calendar is in no hash (two jobs differing only in a calendar priced 1.1e-3 apart under one result
-  id). The fix uses what exists ([the design](architecture.md#market-data-context-job)): the hub
-  declares each file under a name and a job names the standing blob. Meanwhile the XVA tab
-  re-hashes a file only when its size or modified time moves, missing a rewrite inside one tick, and
-  a set refused for a file that moved in the queue keeps the refusal if the file is put back.
+- **The files a job names declared in the record** (2026-10-05, S). A job names its market data
+  and calendar files by path; the replay tuple covers what they hold, but the record keeps neither,
+  so a replay reproduces only while the files on disk still hold it. The fix uses what exists
+  ([the design](architecture.md#market-data-context-job)): the hub declares each file under a name
+  and a job names the standing blob. Meanwhile a set the XVA tab refused for a file that moved in
+  the queue keeps the refusal if the file is put back.
 - **The service's readers through a loaded context** (2026-10-05, M). Some forty readers take the
   base currency and date, factors, prices and bootstrapper configuration from the book's explicit
   block, against [the design](architecture.md#market-data-context-job). A book naming a market data

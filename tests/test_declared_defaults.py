@@ -32,6 +32,7 @@ rather than against zero.
 """
 import copy
 import glob
+import hashlib
 import json
 import logging
 import math
@@ -121,13 +122,15 @@ BARRIERS = [('Down_And_Out', 1.12, 1.25, 'Call'), ('Down_And_In', 1.12, 1.25, 'C
 #: BEFORE declared defaults reached a deal. `(plan_hash, resolved factors, missing factors)` - a
 #: default entering the program moves the first and a default minting a factor moves the rest.
 #: The hash is taken over `Correlations` in the nested form the file carries, which is the only
-#: spelling of that section: a document declaring none hashes the same either way.
+#: spelling of that section: a document declaring none hashes the same either way. Every pin
+#: moved 2026-10-17 when the calendar entered the plan, empty for the four documents naming
+#: none; the hash without it is each pin before, to the bit.
 PINNED = {
     # re-pinned 2026-09-25, every document carrying a deal tree: `Tag_Titles` left the deals'
     # attributes and `Tags` every deal, keys no program read - the factor universes are unmoved and
     # the three documents priced here mark bit for bit
     'autocall_job.json': (
-        '824cd185cdee1ea9771c784b2d9679fd5c49d2ce3240ac05d3d00a63f73fcbb8', 5, 0),
+        '9cab0704014319055d73445a3f8db76e5f7a7875419f0cafc459e8ea8cf7041c', 5, 0),
     # re-pinned 2026-09-22: the only plan a declared default has ever moved, and it moved by a
     # constructor no longer WRITING one. `NettingCollateralSet.__init__` used to `setdefault`
     # `Settlement_Period`, `Liquidation_Period` and `Opening_Balance` into the authored block,
@@ -135,22 +138,22 @@ PINNED = {
     # seven and the program is the same one. Measured both ways: 65,584 reported floats, 0
     # mismatches, and the factor universe unmoved at (6, 0)
     'commodity_aps_world.json': (
-        '038c69eef5b5c933cc0ef41e5dd2194351385e02834117ea91442fba736766cf', 6, 0),
+        'abf762a7d6f3541c4f385d0ff31f3f8d4dffe028013e5e8ed1ba51580f7f73d0', 6, 0),
     # re-pinned 2026-09-03: the DOCUMENT changed, not the reading of it. `Barrier_Hit` retired -
     # the knock-out is a fold over the schedule - so the block lost a field and the plan is a
     # different program. The factor universe is untouched (5, 0) and the mark is bit-identical at
     # 62.428908447906807, which is the half of this pin that says nothing else moved
     'fx_accumulator_job.json': (
-        '4f022be39f1d4d49ebcf3e01a5901e9fcd4f63ec93e9d5d6b9bf782907d50e76', 5, 0),
+        '527697bee31bb2b4754ddc0ed1c193f4c5d546ae4a400a4c1db9c99dae5c40b8', 5, 0),
     'fx_tarf_job.json': (
-        '6e145cf5df2e9d2d79a0e21a9a13faf54115363ed1406d4d786f73eeb9ecd72d', 5, 0),
+        'd67e0afd059b2c5db7a2b8be15076633e9b4b6d94d236db834257adbbd664b5e', 5, 0),
     # re-pinned 2026-09-16: both market files carried a null Base_Date, which the loader fills
     # with the wall clock, so these two plans moved with the calendar. Each file now carries
     # its job's own base date; the runs are unmoved, the date being the calculation's to set
     'platinum_hedge_shipping.json': (
-        'aeb9c875021626cc15de29d15bc705d8d77a5b11a1b87b961332ba162a44b262', 2, 0),
+        'b66abdf6ba8bac152725ecb5b5cd0e78583544cbeade7f65de6591733bbac871', 2, 0),
     'policy_test_simulate_only.json': (
-        '343f82b4d57ef9136f7614eaca794fbe6b8dcdfa0669dce2099f1115d322b335', 2, 0),
+        'e12946b4d7e53cfc5d65bc34fd6f90b7d133bc18b4e6203be1971b0a54b79fb8', 2, 0),
 }
 
 
@@ -1247,6 +1250,42 @@ def test_a_location_stating_no_holidays_has_none(tmp_path):
         pd.Timestamp('2031-06-18'), pd.Timestamp('2031-06-17'), pd.Timestamp('2031-06-18')]
     assert three.holidays['Silent']['holidays'] == {} == shipped.holidays['LBMA']['holidays']
     assert shipped.holidays['Santiago']['holidays']
+
+
+def test_the_calendar_a_job_names_is_in_its_plan_by_what_it_holds(tmp_path):
+    """Two calendar files one holiday apart, loaded in turn on one context, are two plans: the
+    holiday moved onto a one-year deposit's maturity rolls it a business day, 1,703.0561 against
+    1,705.3663, 1.36e-3 of the mark. The first calendar again at a second path is the first plan
+    and its mark to the bit, the values hash is one throughout, the calendar being no value, and
+    each run names the sha256 of the calendar it read in `Stats['Files']`; a job naming no file
+    reports None for both.
+
+    Killing mutation: the calendar left out of `plan_hash` - one plan pricing 1.36e-3 apart."""
+    deal = dict(rates_world.deposit('DEP', 'USD', 'USD', 12, 4.2), Accrual_Calendars='Synth',
+                Payment_Calendars='Synth')
+    context, runs = derivus.Context(), []
+    for name, day in (('first.cal', '2027-08-05'), ('moved.cal', '2027-08-03'),
+                      ('again.cal', '2027-08-05')):
+        path = tmp_path / name
+        path.write_text('<Calendars><Calendar Location="Synth" Weekends="Saturday and Sunday" '
+                        'Holidays="{}|Closed"/></Calendars>'.format(day), encoding='utf-8')
+        job = book([deal])
+        job['Calc']['CalendDataFile'] = str(path)
+        context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'calendar'))
+        _, out = context.run_job()
+        frame = out['Results']['mtm']
+        assert out['Stats']['Files'] == {'MarketDataFile': None, 'CalendDataFile': hashlib.sha256(
+            path.read_bytes()).hexdigest()}
+        runs.append((context.plan_hash(), context.values_hash(),
+                     float(frame.loc[frame['Reference'] == 'DEP', 'Value'].iloc[0])))
+    (first, values, mark), (moved, _, rolled), again = runs
+    assert moved != first and again == runs[0] and {run[1] for run in runs} == {values}
+    assert (rolled - mark) / mark == pytest.approx(1.356e-3, rel=1e-3)
+
+    job = book([deal])
+    del job['Calc']['CalendDataFile']
+    _, out = derivus.Context().load_json((json.dumps(job, cls=CustomJsonEncoder), 'none')).run_job()
+    assert out['Stats']['Files'] == {'MarketDataFile': None, 'CalendDataFile': None}
 
 
 def wire_default(field):

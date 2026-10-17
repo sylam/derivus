@@ -89,7 +89,6 @@ doorbell carry an ID token that set verifies, whose subject IS the seat; narrow 
 """
 
 import asyncio
-import hashlib
 import json
 import logging
 import math
@@ -339,7 +338,7 @@ class ComputeExecutor:
     endpoints project, one serving their shapes and the other one table a page at a time.
 
     It also keeps the xVA tab's long-lived context (`session_for`), which its worker alone
-    touches, and the digests of the files a book names (`files`).
+    touches.
     """
 
     def __init__(self):
@@ -351,28 +350,15 @@ class ComputeExecutor:
         self.queue = queue.PriorityQueue()
         # arrival order breaks ties within a cost class, so the queue never compares two Jobs
         self.arrival = count()
-        self.session, self.keyed, self.digests = Context(), None, {}
+        self.session, self.keyed = Context(), None
         threading.Thread(target=self.work, daemon=True).start()
-
-    def files(self, document):
-        """`{market, calendar}`: the sha256 of each file `document` names, None where it names
-        none - a file read again only where its size or modified time moved."""
-        named = {'market': document['Calc']['MergeMarketData'].get('MarketDataFile'),
-                 'calendar': document['Calc'].get('CalendDataFile')}
-        for path in filter(None, named.values()):
-            stat = os.stat(path)
-            if self.digests.get(path, (None,))[0] != (stat.st_size, stat.st_mtime_ns):
-                with open(path, 'rb') as handle:
-                    self.digests[path] = ((stat.st_size, stat.st_mtime_ns),
-                                          hashlib.sha256(handle.read()).hexdigest())
-        return {kind: self.digests[path][1] if path else None for kind, path in named.items()}
 
     def session_for(self, document, files):
         """The xVA tab's long-lived context, worker thread only: it keeps the files a set's
         document names parsed, and each document's explicit block merges over them. Built anew
-        where `files`, the digests the job was stamped with, or the explicit market less the
-        factors' contents moved - a value restated merges over the last, a block withdrawn must
-        not stay behind - and where a job dropped it (`keyed = None`)."""
+        where `files`, the hash of `Context.files` the job was stamped with, or the explicit market
+        less the factors' contents moved - a value restated merges over the last, a block withdrawn
+        must not stay behind."""
         explicit = dict(document['Calc']['MergeMarketData'].get('ExplicitMarketData') or {})
         explicit['Price Factors'] = sorted(explicit.get('Price Factors') or {})
         key = (files, content_hash(explicit))
@@ -3532,9 +3518,8 @@ class XvaJob:
         try:
             session = EXECUTOR.session_for(self.document, self.stamp['values_hash'])
             session.load_json((json.dumps(self.document), 'posted'))
-            # checked once the files are parsed, so a parse of other bytes is refused, not kept
-            if content_hash(EXECUTOR.files(self.document)) != self.stamp['values_hash']:
-                EXECUTOR.keyed = None
+            # the digests the load parsed, so a parse of other bytes than the stamp's is refused
+            if content_hash(session.current_cfg.files) != self.stamp['values_hash']:
                 raise ValueError('a file this netting set names changed after its recalc was '
                                  'asked for - ask again')
             _, out = session.run_job()
@@ -3585,7 +3570,7 @@ def book_xva(request: dict):
                                  'are {}'.format(', '.join(map(repr, sorted(set(unknown)))),
                                                  ', '.join(sorted(found)) or 'none'))
 
-    queued, files = [], content_hash(EXECUTOR.files(document))
+    queued, files = [], content_hash(Context().files(document))
     for reference in references:
         node = found[reference]
         terms = set_terms(node['Instrument']['.Deal'])

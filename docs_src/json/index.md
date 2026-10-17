@@ -156,7 +156,7 @@ The usual split keeps models, correlations and configuration in the file and the
 | Rule | What the code does |
 |---|---|
 | Granularity | per entry: an `ExplicitMarketData` entry replaces the file's entry of the same key whole (a whole price factor, a whole model); `Correlations` merge per pair; `Model Configuration` and `Price Factor Interpolation` replace a type's default and its filter list |
-| Persistence | the merge writes into the cached configuration, so a later job in the same `Context` naming the same `MarketDataFile` starts from this one's overlay |
+| Persistence | the merge writes into the cached configuration, so a later job in the same `Context` naming a `MarketDataFile` of the same content starts from this one's overlay |
 | An unknown section in `ExplicitMarketData` | fails on load (a `KeyError` naming it) |
 
 `Context.save_json` writes the loaded job back as a self-contained document: every section of the
@@ -165,7 +165,8 @@ file is still named.
 
 ## CalendDataFile
 
-An XML file of business-day calendars, loaded once per `Context` and cached by its name:
+An XML file of business-day calendars, parsed once per `Context` and kept by the sha256 of its
+bytes; each location's weekend rule and holidays are part of the job's plan:
 
 ```xml
 <Calendars>

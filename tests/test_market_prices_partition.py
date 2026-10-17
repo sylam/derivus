@@ -38,6 +38,7 @@ ladder the engine EMITS off the surface that smile builds. The two families with
 stronger statement: a family declaring no `Points` field has no block with a values half.
 """
 import copy
+import hashlib
 import json
 import os
 import sys
@@ -375,6 +376,47 @@ def test_re_authoring_a_quote_set_moves_the_plan(case, plan_too, values_too):
 
     assert moves(context, before, edits[case]) == (plan_too, values_too), (
         '{} did not land where the plan/values line puts it'.format(case))
+
+
+def test_a_market_data_file_rewritten_inside_one_tick_is_read_anew(tmp_path):
+    """A market data file is known by its bytes, never by its path or its clock. Rewritten between
+    two loads on one context with its size and modified time held, the next load reads what it
+    holds: the ZAR spot moved from 18.5 to 19.5 moves `values_hash` alone and the cashflow's mark
+    by 19.5 / 18.5, a `Bootstrapper Configuration` dial moved from 8 to 9 moves `plan_hash` alone,
+    and each run names the sha256 of the bytes it read in `Stats['Files']`.
+
+    Killing mutations: the parse kept by the file's path, and the digest re-taken only where the
+    size or the modified time moved - either reads the first file again, both hashes and the mark
+    unmoved at the spot's rewrite."""
+    document = job()
+    market = dict(document['Calc']['MergeMarketData']['ExplicitMarketData'], **{
+        'Bootstrapper Configuration': {'LogVar2FJModelParameters': {'Minimum_Contracts': 8}}})
+    path = tmp_path / 'market.json'
+    path.write_text(dump({'MarketData': market}), encoding='utf-8')
+    held = os.stat(path)
+    document['Calc']['MergeMarketData'] = {'MarketDataFile': str(path), 'ExplicitMarketData': {}}
+    context, runs = derivus.Context(), []
+    for old, new in ((None, None), ('"Spot": 18.5', '"Spot": 19.5'),
+                     ('"Minimum_Contracts": 8', '"Minimum_Contracts": 9')):
+        if old:
+            text = path.read_text(encoding='utf-8')
+            assert text.count(old) == 1 and len(old) == len(new)
+            path.write_text(text.replace(old, new), encoding='utf-8')
+            os.utime(path, ns=(held.st_atime_ns, held.st_mtime_ns))
+            assert (os.stat(path).st_size, os.stat(path).st_mtime_ns) == (
+                held.st_size, held.st_mtime_ns)
+        context.load_json((dump(document), 'file'))
+        _, out = context.run_job()
+        frame = out['Results']['mtm']
+        runs.append((context.plan_hash(), context.values_hash(),
+                     float(frame.loc[frame['Reference'] == 'CF1', 'Value'].iloc[0]),
+                     out['Stats']['Files'], hashlib.sha256(path.read_bytes()).hexdigest()))
+    (plan, values, mark, *_), (spot_plan, spot_values, moved, *_), (dial_plan, dial_values, *_) = runs
+    assert spot_plan == plan and spot_values != values
+    assert moved / mark == pytest.approx(19.5 / 18.5, rel=1e-12)
+    assert dial_plan != plan and dial_values == spot_values
+    assert [run[3] for run in runs] == [
+        {'MarketDataFile': run[4], 'CalendDataFile': None} for run in runs]
 
 
 # ---------------------------------------------------------------------------------------------

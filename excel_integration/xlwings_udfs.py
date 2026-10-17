@@ -494,11 +494,8 @@ def RF_LOAD_PORTFOLIO(job_path: str = "") -> None:
     _write_table(calc_sheet, CALC_COLS, calc_rows)
 
     # Store the market data path so price/solve macros can find it.
-    try:
-        import json as _json
-        md_path = list(ctx.config_cache.keys())[0] if ctx.config_cache else job_path
-    except Exception:
-        md_path = job_path
+    md_path = next((name for name, digest in ctx.digests.items() if ctx.parsed[digest] is cfg),
+                   job_path)
     _save_state({"loaded_job": job_path, "market_data_path": md_path})
 
     logging.info(

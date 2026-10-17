@@ -359,8 +359,9 @@ class Calculation(object):
 
         self.netting_sets = None
 
-        # what the run reports, and the deals its pricers skipped, counted there once each
-        self.calc_stats, self.unpriced = {}, set()
+        # what the run reports, from the digests of the files its job named, and the deals its
+        # pricers skipped, counted there once each
+        self.calc_stats, self.unpriced = {'Files': config.files}, set()
         self.params = {}
         self.gradient_index = None
         self.output = {}

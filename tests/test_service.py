@@ -5980,6 +5980,11 @@ def adjustments():
             for reference, row in xva_rows().items()}
 
 
+def kept(session, path):
+    """What `session` parsed the file at `path` into, by the digest it last read there."""
+    return session.parsed[session.digests[str(path)]]
+
+
 def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_names(
         tmp_path, monkeypatch):
     """THE XVA TAB OVER A NAMED MARKET DATA FILE AND CALENDAR, ten netting sets.
@@ -5999,13 +6004,13 @@ def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_na
     try:
         recalc(['NS_0'])
         session = service.EXECUTOR.session
-        parsed = session.config_cache[str(market)]
+        parsed = kept(session, market)
         recalc()
         before = adjustments()
         assert before == fresh_xva(book)
         assert all(row['cva'] > 0.0 for row in before.values()), 'a CVA of nothing is vacuous'
-        assert service.EXECUTOR.session is session and session.config_cache[str(market)] is parsed
-        assert str(calendar) in session.holiday_cfg_cache
+        assert service.EXECUTOR.session is session and kept(session, market) is parsed
+        assert str(calendar) in session.digests
 
         document = json.loads(book.read_text())
         stated = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
@@ -6018,13 +6023,13 @@ def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_na
         assert after == fresh_xva(book)
         assert {reference for reference in after if after[reference] != before[reference]} == {
             'NS_0', 'NS_1', 'NS_2', 'NS_5', 'NS_6', 'NS_7', 'NS_8'}
-        assert service.EXECUTOR.session is session and session.config_cache[str(market)] is parsed
+        assert service.EXECUTOR.session is session and kept(session, market) is parsed
 
         held = [name for name, value in vars(service).items()
                 if isinstance(value, derivus.Context) or isinstance(value, dict) and (
                     str(market) in value or any(isinstance(v, derivus.Context)
                                                 for v in value.values()))]
-        assert held == [] and str(market) in service.EXECUTOR.digests
+        assert held == [] and str(market) in session.digests
 
         del stated['EquityPrice.EQ_0']
         book.write_text(json.dumps(document, indent=2), newline='\n')
@@ -6075,9 +6080,9 @@ def test_a_run_writes_nothing_into_the_kept_context(tmp_path, monkeypatch):
         for reference in references:
             readings.append((step, reference, rows[reference]['status'], {
                 'cva': rows[reference]['cva'], 'fva': rows[reference]['fva']}, fresh[reference]))
-        kept = service.EXECUTOR.session.config_cache[str(market)].params['Price Factors']
-        writes.append((len(kept['SurvivalProb.CPTY_0']['Curve'].array),
-                       kept['InterestRate.USD.FUNDING']['Curve'].array[0, 1] == 0.01))
+        factors = kept(service.EXECUTOR.session, market).params['Price Factors']
+        writes.append((len(factors['SurvivalProb.CPTY_0']['Curve'].array),
+                       factors['InterestRate.USD.FUNDING']['Curve'].array[0, 1] == 0.01))
 
     try:
         priced('file-held survival', 'NS_0')
@@ -6107,17 +6112,17 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
     file edited on disk, then the calendar, each gives every set a new id and the number a fresh
     context reads off the edited files. A file edited while the set waits in the queue - the job
     that builds the context, its stamp naming bytes the context never parsed - fails it rather than
-    pricing the new file under the old id, and its parse is not kept: with the file put back and
-    the book moved, every set reads the fresh context's number over the restored file. The request
+    pricing the new file under the old id, and its parse never prices the restored bytes: with the
+    file put back and the book moved, every set reads the fresh context's number. The request
     parses neither: a market data file that is not JSON still queues every set, and each row lands
     failed in the parser's words. A deal on an equity nothing carries is skipped by the engine, and
     its set lands failed naming it, never done at a smaller CVA.
 
     KILLING MUTATIONS: either digest dropped from the stamp, which serves the first run's numbers
-    under the first id; the worker's check of the stamped digests removed; the context kept on that
-    refusal, whose parse of the edited file then prices the restored one; a load on the request
-    thread, which raises on the broken file; the `Stats` check removed, which lands the set done
-    without its deal.
+    under the first id; the worker's check of the stamped digests removed; the context's parse kept
+    by the file's path, which the session kept across the refusal then prices the restored file
+    with; a load on the request thread, which raises on the broken file; the `Stats` check removed,
+    which lands the set done without its deal.
     """
     def ids(queued):
         return {entry['result_id'] for entry in queued}
@@ -6180,6 +6185,29 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
         service.EXECUTOR.queue.join()
         assert {row['status'] for row in xva_rows().values()} == {'failed'}
         assert all('Expecting value' in row['error'] for row in xva_rows().values())
+    finally:
+        service.BOOK = None
+
+
+def test_a_file_rewritten_inside_one_tick_is_a_new_run(tmp_path, monkeypatch):
+    """The XVA tab knows a named file by its bytes, never by its clock: the market data file
+    rewritten with its size and modified time held, EQ_3's spot moved from 115 to 116, gives NS_3
+    a new result id and the number a fresh context reads off the rewritten file.
+
+    KILLING MUTATION: the stamp's digests re-taken only where a file's size or modified time moved,
+    which files the rewrite under the first id and serves the first run's CVA."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    book, market, _ = named_book(tmp_path)
+    try:
+        first, before = recalc(['NS_3'])['queued'], adjustments()['NS_3']
+        held, text = os.stat(market), market.read_text()
+        assert text.count('"Spot": 115.0') == 1
+        market.write_text(text.replace('"Spot": 115.0', '"Spot": 116.0'))
+        os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
+        assert (os.stat(market).st_size, os.stat(market).st_mtime_ns) == (
+            held.st_size, held.st_mtime_ns)
+        assert recalc(['NS_3'])['queued'] != first
+        assert adjustments()['NS_3'] == fresh_xva(book, ['NS_3'])['NS_3'] != before
     finally:
         service.BOOK = None
 

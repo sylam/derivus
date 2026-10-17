@@ -19,7 +19,7 @@ import operator
 from collections import Counter, deque
 from functools import reduce
 
-from xml.etree.ElementTree import ElementTree
+from xml.etree.ElementTree import ElementTree, fromstring
 
 import numpy as np
 import pandas as pd
@@ -480,6 +480,8 @@ class Config(object):
         self._universe, self._universe_of = None, None
         self.calibrations = {'CalibrationConfig': {'MarketDataArchiveFile': {}, 'Calibrations': []}}
         self.holidays = {}
+        # the sha256 of each file the loaded job names, by the key it names it under
+        self.files = {}
         self.archive = None
         self.archive_columns = {}
 
@@ -583,17 +585,21 @@ class Config(object):
 
         return dates
 
-    def parse_calendar_file(self, filename):
-        """Parses the xml calendar file in filename."""
+    def parse_calendar_file(self, filename, data=None):
+        """The xml calendar in `filename`, or in `data` where the caller holds its bytes, as
+        `holidays`, which it answers: per location the business-day offset and the plain data it is
+        built from, the holidays by date and the weekend rule, which `Context.plan_hash` reads."""
         self.holidays = {}
-        for elem in ElementTree(file=filename).iter():
+        root = ElementTree(file=filename).getroot() if data is None else fromstring(data)
+        for elem in root.iter():
             if elem.attrib.get('Location'):
                 holidays = dict(tuple(x.split("|")) for x in
                                 elem.attrib['Holidays'].split(', ')) if elem.attrib['Holidays'] else {}
                 self.holidays[elem.attrib['Location']] = {
                     'businessday': pd.tseries.offsets.CustomBusinessDay(
                         holidays=holidays.keys(), weekmask=utils.WeekendMap[elem.attrib['Weekends']]),
-                    'holidays': holidays}
+                    'holidays': holidays, 'weekends': elem.attrib['Weekends']}
+        return self.holidays
 
     def fetch_all_calibration_factors(self, override={}):
         """`{'present': ..., 'absent': ...}` for `calibrate_factors` - the Price Factors entries
@@ -1344,18 +1350,21 @@ class Config(object):
             data = family_entries(data)
         self.params[name].update(correlation_pairs(data) if name == 'Correlations' else data)
 
-    def parse_json(self, filename):
-        """One market-data file MERGED onto the declared sections. Several files may be loaded onto
-        one config, each carrying the sections it has, so a section no file carries is empty rather
-        than missing; a section name this engine does not declare refuses by name."""
+    def parse_json(self, filename, data=None):
+        """One market-data file MERGED onto the declared sections, read from `filename` unless the
+        caller holds its bytes as `data`. Several files may be loaded onto one config, each carrying
+        the sections it has, so a section no file carries is empty rather than missing; a section
+        name this engine does not declare refuses by name."""
 
         def as_internal(dct):
             return decode_wire(dct, lambda block: construct_instrument(
                 block, self.params['Valuation Configuration']))
 
-        with open(filename, 'rt', encoding='utf-8') as f:
-            self.file_ref = os.path.splitext(os.path.split(filename)[-1])[0]
-            data = json.load(f, object_hook=as_internal)
+        if data is None:
+            with open(filename, 'rb') as f:
+                data = f.read()
+        self.file_ref = os.path.splitext(os.path.split(filename)[-1])[0]
+        data = json.loads(data, object_hook=as_internal)
 
         if 'MarketData' in data:
             for name, section in data['MarketData'].items():
