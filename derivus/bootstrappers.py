@@ -66,9 +66,10 @@ def reference_fields(factor_types, required_by_quote_type, notes):
 
 
 class RiskNeutralInterestRate_State(utils.Calculation_State):
-    def __init__(self, scenario_keys, batch_size, device, dtype, nomodel='Constant'):
+    def __init__(self, scenario_keys, batch_size, device, dtype, quasi_seed, nomodel='Constant'):
         super(RiskNeutralInterestRate_State, self).__init__(
-            None, torch.ones([1, 1], dtype=dtype, device=device), 2048, None, nomodel, batch_size, False)
+            None, torch.ones([1, 1], dtype=dtype, device=device), 2048, None, nomodel, batch_size, False,
+            quasi_seed)
         self.scenario_keys = scenario_keys
         self.t_random_batch = None
         self.batch_index = 0
@@ -96,7 +97,8 @@ class RiskNeutralInterestRate_State(utils.Calculation_State):
         if self.t_random_batch is None:
             # the sobol engine in torch > 1.8 goes up to dimension 21201 - so this should be fine
             self.sobol = torch.quasirandom.SobolEngine(
-                dimension=time_grid.time_grid_years.size * numfactors, scramble=True, seed=1234)
+                dimension=time_grid.time_grid_years.size * numfactors, scramble=True,
+                seed=self.quasi_seed)
             # skip this many samples
             self.sobol.fast_forward(2048)
             # make sure we don't include 1 or 0
@@ -1506,10 +1508,11 @@ class LVFit(utils.Residual):
         """Numbers as one tensor on the fit's own device and precision."""
         return torch.tensor([float(x) for x in xs], device=self.device, dtype=self.prec)
 
-    def draw(self, paths, steps, blocks, seed):
+    def draw(self, paths, steps, blocks):
         """The walk's two normals per step and the mixer's uniform per block, fixed for the whole
-        fit and antithetic; `Sampling` picks the stream, generated on the host so a seed names one
-        draw whatever device the fit runs on."""
+        fit and antithetic; `Sampling` picks the stream, Sobol scrambled by `Quasi_Seed` or the
+        generator seeded by `Random_Seed`, generated on the host so a seed names one draw whatever
+        device the fit runs on."""
         half = max(int(paths) // 2, 1)
         if self.sampling == 'Sobol':
             width, cap = 2 * int(steps) + int(blocks), torch.quasirandom.SobolEngine.MAXDIM
@@ -1519,14 +1522,16 @@ class LVFit(utils.Residual):
                     'block - against the {} one scrambled engine carries. Declare Sampling Pseudo, '
                     'or coarsen Steps_Per_Year.'.format(
                         self.market_price, width, cap))
-            engine = torch.quasirandom.SobolEngine(width, scramble=True, seed=int(seed))
+            engine = torch.quasirandom.SobolEngine(
+                width, scramble=True, seed=int(self.instrument['Quasi_Seed']))
             engine.fast_forward(utils.Calculation_State.QUASI_ANCHOR)
             draws = engine.draw(half, dtype=self.prec).clamp(1e-6, 1.0 - 1e-6)
             z_l, z_s = (utils.norm_icdf(draws[:, :steps]),
                         utils.norm_icdf(draws[:, steps:2 * steps]))
             u = draws[:, 2 * steps:]
         else:
-            kw = {'generator': torch.Generator().manual_seed(int(seed)), 'dtype': self.prec}
+            kw = {'generator': torch.Generator().manual_seed(int(self.instrument['Random_Seed'])),
+                  'dtype': self.prec}
             z_l, z_s = torch.randn(half, steps, **kw), torch.randn(half, steps, **kw)
             u = torch.rand(half, blocks, **kw)
         return tuple(torch.cat([x, y]).to(self.device)
@@ -2768,7 +2773,10 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                    description='Paths the fixed antithetic draws carry, which sets the noise floor '
                                'under every fitted number'),
                  F('Random_Seed', 'Integer', default=1,
-                   description='Seeds the fixed draws, the pseudo-random generator or the Sobol scramble'),
+                   description='Seeds the pseudo-random generator the fixed draws come off under '
+                               'Sampling Pseudo'),
+                 F('Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,
+                   description='The seed the fixed draws are scrambled by under Sampling Sobol'),
                  F('Sampling', 'Text', default='Pseudo', values=['Sobol', 'Pseudo'],
                    description='The stream the fixed draws come off: Sobol, a scrambled sequence '
                                'over two dimensions per internal step and one per block; Pseudo, '
@@ -3224,8 +3232,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         #: reads is a leaf indexed with it
         fit.grid = utils.TermStructure(fit.buckets, device=fit.device)
         fit.step_bucket = fit.grid.index(fit.times)
-        fit.draws = fit.draw(int(fit.instrument['Paths']), fit.n, len(ends),
-                             int(fit.instrument['Random_Seed']))
+        fit.draws = fit.draw(int(fit.instrument['Paths']), fit.n, len(ends))
         fit.knots = np.array([0.0] + [quote.T for quote in fit.atm])
         variance = np.array([quote.sigma ** 2 * quote.T for quote in fit.atm])
         fit.xi = np.diff(np.concatenate([[0.0], variance])) / np.diff(fit.knots)
@@ -4061,7 +4068,8 @@ class RiskNeutralInterestRateModel(ImpliedCalibration):
         curve_index = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['full']) + c_index[2:]]
         curve_index_reduced = [(c_index[utils.FACTOR_INDEX_Stoch], index_keys['reduced']) + c_index[2:]]
         # set up a common context - we leave out the random numbers and pass it in explicitly below
-        shared_mem = RiskNeutralInterestRate_State(index_keys, batch_size, device, self.prec)
+        shared_mem = RiskNeutralInterestRate_State(
+            index_keys, batch_size, device, self.prec, int(block['Quasi_Seed']))
         # the unit tensor switches the quote side on and puts its leaves on the right device
         market_swaps = utils.create_market_swaps(
             base_date, time_grid, curve_index, vol_surface, process.factor,
@@ -4244,7 +4252,7 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
          '| `Objective` | Model price | Residual $r_j$ | Minimised |',
          '| --- | --- | --- | --- |',
          '| `Analytic` (default) | Schrager-Pelsser [@schrager2006]: the swap rate\'s loadings $q_k$ frozen at t0, so $S(T_0)-S(0)$ is Gaussian with $\\mathrm{Var}_j=\\sum_{kl}\\rho_{kl}q_kq_lJ_{kl}(T_{0,j})$ and $\\sigma^{SP}_j=\\sqrt{\\mathrm{Var}_j/T_{0,j}}$ | $w_j\\big(\\sigma^{SP}_j(\\theta)-\\sigma^N_j\\big)$, with $\\sigma^N_j=P_j\\sqrt{2\\pi/T_{0,j}}/A_j$ the market premium as an ATM normal vol | $\\tfrac12\\sum_jw_j^2\\big(\\sigma^{SP}_j-\\sigma^N_j\\big)^2$, absolute normal vol |',
-         '| `Monte_Carlo` | $M_j(\\theta)$, the payer swaption on `Simulations` x `Batches` Sobol paths frozen for the whole solve | $w_j\\big(100(P_j/M_j(\\theta)-1)\\big)^2$, already squared | $\\tfrac12\\sum_jw_j^2\\big(100(P_j/M_j-1)\\big)^4$, a quartic in the relative premium error |',
+         '| `Monte_Carlo` | $M_j(\\theta)$, the payer swaption on `Simulations` x `Batches` Sobol paths scrambled by `Quasi_Seed` and frozen for the whole solve | $w_j\\big(100(P_j/M_j(\\theta)-1)\\big)^2$, already squared | $\\tfrac12\\sum_jw_j^2\\big(100(P_j/M_j-1)\\big)^4$, a quartic in the relative premium error |',
          '',
          'The weight $w_j$ (`Weight`) therefore enters SQUARED in the least-squares stage. The basin',
          'stage below minimises $\\sum_jr_j^2$ under `Analytic`, the same minimiser, but $\\sum_jr_j$ under',
@@ -4362,7 +4370,10 @@ class HullWhite2FactorModelParameters(RiskNeutralInterestRateModel):
                       'takes before the least-squares stage is handed its x0'),
         F('Random_Seed', 'Integer', default=5120,
           description='Seeds the basin-hopping random search, its step taker and Metropolis accept '
-                      'test alike; the Monte Carlo paths are frozen separately'),
+                      'test alike'),
+        F('Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,
+          description='The seed the Sobol paths every Monte Carlo pricing of the benchmarks runs '
+                      'on are scrambled by'),
         F('Quote_Sensitivity', 'Text', default='No', values=['Yes', 'No'],
           description='Keep each benchmark swaption connected to the quote it was '
                       'priced off, so the residual differentiates in the quote as well '
@@ -4678,7 +4689,8 @@ class Benchmark_State(utils.Calculation_State):
     fresh per evaluation because `t_Buffer` is memoized by `(stoch, Factor)`, not by identity.
 
     Boundary registration is off: a deposit, an FRA and a swap leg take no decision on simulated
-    state, so there is nothing for the correction to carry.
+    state, so there is nothing for the correction to carry. Nor does a benchmark draw, so the state
+    carries no quasi seed and a pricer that would draw fails naming it.
     """
 
     def __init__(self, static_buffer, one, report_currency):

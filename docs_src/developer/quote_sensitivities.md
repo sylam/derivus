@@ -161,7 +161,7 @@ process — so θ\* can be the seed — seeded by the declared `Random_Seed` alo
 ### The Monte Carlo loss is conditional on its draw {#the-mc-loss}
 
 Under `Monte_Carlo`, $r_i = w_i\big(100(P_i(q_i)/M_i(\theta) - 1)\big)^2$ with $M_i$ priced on Sobol
-paths. The sample is drawn once per closure and the memos cleared per evaluation, so every
+paths the block's `Quasi_Seed` scrambles. The sample is drawn once per closure and the memos cleared per evaluation, so every
 evaluation, Jacobian and backward prices the same paths: the reported derivative is the derivative of
 the reported number, where a re-drawn sample would have the optimizer differencing noise.
 

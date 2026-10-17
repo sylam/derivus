@@ -43,7 +43,7 @@ import numpy as np
 import pytest
 
 import derivus as rf
-from derivus import bootstrappers
+from derivus import bootstrappers, schema
 from derivus.config import CustomJsonEncoder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -665,6 +665,29 @@ def test_a_null_cap_fits_as_omitted_and_writes_the_corner():
     factor, _ = _fit(_ladder(Cap_A=None, **PRIORS_OFF), 'cap_null')
     with open(PRIORS_OFF_FILE) as handle:
         assert _floats_of(factor) == json.load(handle), factor.get('Cap_A')
+
+
+#: the priors-off ladder walking its vanillas on Sobol draws, so the fixed paths are quasi-random
+SOBOL_WALK = dict(PRIORS_OFF, Paths=1024, Sampling='Sobol', Vanilla_Pricer='Walk')
+
+
+def test_a_fit_walking_sobol_draws_is_scrambled_by_its_quasi_seed_alone():
+    """Under `Sampling: Sobol` the fixed paths are quasi-random draws scrambled by the block's
+    `Quasi_Seed` and by nothing else, `Random_Seed` seeding the pseudo-random stream alone: on the
+    two-rung ladder walking its vanillas, stating the convention or `Random_Seed` 2 writes the
+    factor omitting both writes, hex for hex, and `Quasi_Seed` 7 moves 7 of its 20
+    floats, `Rho_S` from -0.765 to -0.666 and `Alpha` from 96.1 to 143.0.
+
+    Killing mutations: the scramble read off `Random_Seed`, `Random_Seed` 2 moving `Alpha` from 260.8
+    to 48.3; the scramble read off a constant, `Quasi_Seed` 7 moving nothing.
+    """
+    omitted = _floats_of(_fit(_ladder(**SOBOL_WALK), 'sobol')[0])
+    for stated in ({'Quasi_Seed': schema.QUASI_SEED}, {'Random_Seed': 2}):
+        assert _floats_of(_fit(_ladder(**SOBOL_WALK, **stated), 'sobol')[0]) == omitted, stated
+    moved = _floats_of(_fit(_ladder(Quasi_Seed=7, **SOBOL_WALK), 'sobol')[0])
+    assert sorted(key for key in moved if moved[key] != omitted[key]) == [
+        'Alpha[0][1]', 'Beta[0][1]', 'Cap_A', 'Rho_S[0][1]', 'Sigma_S[0][1]', 'Xi_Curve[0][1]',
+        'Xi_Curve[1][1]'], moved
 
 
 # ------------------------------------------------------------------------------------------

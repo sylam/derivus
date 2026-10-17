@@ -60,6 +60,15 @@ A family is named for the `Price Factors` type it writes under each block's name
 | `quote_instruments` | the instrument types a quote may be, where quotes are instruments |
 | `documentation` | its generated methodology page |
 
+A fit that draws declares a seed per stream in `fields`: `Random_Seed` for pseudo-random draws, and
+`Quasi_Seed` for quasi-random ones, its convention `schema.QUASI_SEED` as on a calculation, handed
+to what draws: the Hull-White two-factor Monte Carlo pricing of the benchmarks and a LogVar2FJ
+fit's fixed paths under `Sampling: Sobol`. A fit drawing nothing declares neither. Both are the
+block's, so either moves the plan and neither a value. **Held by**
+`test_hw2f_analytic.py::test_the_monte_carlo_objective_prices_on_paths_its_quasi_seed_scrambles`,
+`test_logvar2fj_json.py::test_a_fit_walking_sobol_draws_is_scrambled_by_its_quasi_seed_alone`,
+`test_market_prices_partition.py::test_re_authoring_a_quote_set_moves_the_plan`.
+
 `mapping['MarketPrices']` carries the families and the value plane, so a client ticks what the guard
 admits without spelling it; `mapping['Configuration']` is one entry per family, keyed by its name,
 its dials the declarations less the quote block's Tables and Containers. **Held by**

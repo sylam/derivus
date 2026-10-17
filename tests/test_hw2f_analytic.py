@@ -31,7 +31,7 @@ import torch
 import derivus
 import test_declared_defaults as book
 import trial_fx
-from derivus import utils
+from derivus import schema, utils
 
 ID_BLOCK = 'HullWhite2FactorModelPrices.ZAR-JIBAR-3M'
 
@@ -305,7 +305,7 @@ def test_the_four_quote_job_document_pins_theta_and_its_quote_deltas(caplog):
 
 #: theta* of the four-quote block under `Objective: Monte_Carlo`, polished from `AN_FOUR_THETA`
 #: standing as the block's written factor - the draw, the device and the Sobol sample the block's
-#: own `Random_Seed` and `Simulations` freeze. Banked on an RTX 3090.
+#: own `Quasi_Seed` and `Simulations` freeze. Banked on an RTX 3090.
 MC_WARM_THETA = {
     'Alpha_1': ['0x1.524b5405891dep-2'],
     'Alpha_2': ['0x1.cc8c6e8261099p-6'],
@@ -322,35 +322,57 @@ MC_WARM_THETA = {
 SIGMA_KNOTS = [0.0, 1.0 / 12.0, 0.25, 0.5, 1.0, 2.0, 4.0, 6.0, 8.0, 10.0]
 
 
-def test_the_monte_carlo_objective_polishes_the_written_factor_to_its_bank(caplog):
-    """The block's own estimator, the one the analytic solve is audited against: the four-quote
-    document under `Objective: Monte_Carlo`, its `HullWhite2FactorModelParameters` factor already
-    standing at the analytic theta*, so the fit is a WARM START - the least squares alone from
-    that factor, no basin search - and lands on `MC_WARM_THETA` bit for bit. The Monte Carlo
-    residual is conditional on its draw, so the block's `Random_Seed` and `Simulations` are part of
-    the contract and the bank is the card's (a CPU-only box re-banks rather than reading a defect).
-    3 s, where the cold chain on the same block paid 73.
-
-    Killing mutations: the relative premium error inverted (model over market); the premium
-    convention swapped, the Lognormal surface priced as Normal.
-    """
+def mc_polished(**stated):
+    """theta, in hex as `MC_WARM_THETA` banks it, that the four-quote document writes under
+    `Objective: Monte_Carlo` with its block stating `stated`, its `HullWhite2FactorModelParameters`
+    factor standing at `AN_FOUR_THETA` so the fit is the warm polish."""
     def warm(market):
-        market['Market Prices'][ID_BLOCK]['instrument']['Objective'] = 'Monte_Carlo'
+        market['Market Prices'][ID_BLOCK]['instrument'].update(Objective='Monte_Carlo', **stated)
         factor = {name: AN_FOUR_THETA[name][0] for name in ('Alpha_1', 'Alpha_2', 'Correlation')}
         factor.update({name: {'.Curve': {'meta': [], 'data': [
             [t, v] for t, v in zip(SIGMA_KNOTS, AN_FOUR_THETA[name])]}} for name in ('Sigma_1', 'Sigma_2')})
         market['Price Factors']['HullWhite2FactorModelParameters.ZAR-JIBAR-3M'] = factor
 
     config = four_quote(warm)
+    config.bootstrap()
+    written = config.params['Price Factors']['HullWhite2FactorModelParameters.ZAR-JIBAR-3M']
+    read = {name: written[name].array[:, 1] if hasattr(written[name], 'array')
+            else np.atleast_1d(written[name]) for name in MC_WARM_THETA}
+    return {name: [float(x).hex() for x in values] for name, values in read.items()}
+
+
+def test_the_monte_carlo_objective_polishes_the_written_factor_to_its_bank(caplog):
+    """The block's own estimator, the one the analytic solve is audited against: the four-quote
+    document under `Objective: Monte_Carlo`, its `HullWhite2FactorModelParameters` factor already
+    standing at the analytic theta*, so the fit is a WARM START - the least squares alone from
+    that factor, no basin search - and lands on `MC_WARM_THETA` bit for bit. The Monte Carlo
+    residual is conditional on its draw, so the block's `Quasi_Seed` and `Simulations` are part of
+    the contract and the bank is the card's (a CPU-only box re-banks rather than reading a defect).
+    3 s, where the cold chain on the same block paid 73.
+
+    Killing mutations: the relative premium error inverted (model over market); the premium
+    convention swapped, the Lognormal surface priced as Normal.
+    """
     with caplog.at_level(logging.INFO, logger=''):
-        config.bootstrap()
+        theta = mc_polished()
     assert any('warm start off HullWhite2FactorModelParameters' in r.getMessage()
                for r in caplog.records), 'the written factor did not warm start the fit'
-    written = config.params['Price Factors']['HullWhite2FactorModelParameters.ZAR-JIBAR-3M']
-    for name, banked in MC_WARM_THETA.items():
-        value = written[name]
-        read = value.array[:, 1] if hasattr(value, 'array') else np.atleast_1d(value)
-        assert [float(x).hex() for x in read] == banked, (name, list(read))
+    assert theta == MC_WARM_THETA, theta
+
+
+def test_the_monte_carlo_objective_prices_on_paths_its_quasi_seed_scrambles():
+    """The block's `Quasi_Seed` scrambles the Sobol paths its benchmarks are priced on, and its
+    convention is the number those paths always ran on: the warm polish stating it at the
+    convention lands on `MC_WARM_THETA` bit for bit, as omitting it does, and stating 7 moves every
+    parameter, `Alpha_1` to 0.52862 against the bank's 0.33037 on a fit that interpolates four
+    quotes with 23 parameters.
+
+    Killing mutation: the scramble seed read off a constant rather than the block, 7 landing on the
+    bank.
+    """
+    assert mc_polished(Quasi_Seed=schema.QUASI_SEED) == MC_WARM_THETA
+    moved = mc_polished(Quasi_Seed=7)
+    assert all(moved[name] != banked for name, banked in MC_WARM_THETA.items()), moved
 
 
 def four_quote(edit=None):

@@ -1464,9 +1464,7 @@ class Calculation_State(object):
     should inherit from this calculation state and extend accordingly
     """
 
-    #: The quasi-random stream's identity: `Quasi_Seed`'s convention default, the scramble seed of
-    #: each Sobol engine, and the position every engine starts at.
-    QUASI_SEED = 1234
+    #: The position every engine of the quasi-random stream starts at.
     QUASI_ANCHOR = 1024
 
     #: The canonical inner block's chunk: an inner path is one Sobol point over all its fixings,
@@ -1516,7 +1514,7 @@ class Calculation_State(object):
         return block[0][:rows], block[1][:rows]
 
     def __init__(self, static_buffer, unit, mcmc_sims, report_currency: List[Tuple[bool, int]],
-                 nomodel: str, simulation_batch: int, keep_tensor: bool):
+                 nomodel: str, simulation_batch: int, keep_tensor: bool, quasi_seed=None):
         # these are tensors
         self.t_Buffer = {}
         # the per-CALCULATION memo `t_Buffer`'s per-batch clear leaves alone: what a run reads
@@ -1548,9 +1546,10 @@ class Calculation_State(object):
         # fired branch integrated against its interval's own law, and a SWAP - a deal on it
         # registers no `BoundarySet`. False HERE keeps `CreditMonteCarlo` on the crisp path.
         self.branch_and_weight = False
-        # The scramble seed of every quasi-random draw (`Quasi_Seed`), which a calculation sets;
-        # the convention here, so a state no calculation seeds draws without a fallback.
-        self.quasi_seed = self.QUASI_SEED
+        # The scramble seed of every quasi-random draw, the `Quasi_Seed` its builder read; a state
+        # whose reader never draws is built without one, so a draw on it fails by name.
+        if quasi_seed is not None:
+            self.quasi_seed = quasi_seed
         # the canonical inner block per inner path count - see `inner_block`
         self.t_inner_block = {}
 

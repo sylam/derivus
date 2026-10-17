@@ -344,7 +344,7 @@ class Calculation(object):
 
     #: `Quasi_Seed`, declared once for the calculations whose pricers draw a quasi-random stream.
     QUASI_SEED = F(
-        'Quasi_Seed', 'Integer', default=utils.Calculation_State.QUASI_SEED, convention=True,
+        'Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,
         description='Scramble seed of every quasi-random draw: the inner Monte Carlo paths, the '
                     'Sobol-driven processes and the walks keyed off it')
 
@@ -560,7 +560,8 @@ def batch_seed(random_seed, batch_index):
 
 class CMC_State(utils.Calculation_State):
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
-                 seed, job_id, num_jobs, scale_survival=False, nomodel='Constant', keep_tensor=False):
+                 seed, quasi_seed, job_id, num_jobs, scale_survival=False, nomodel='Constant',
+                 keep_tensor=False):
         """Per-calculation Monte Carlo state: correlated random numbers, scenario buffers and the
         caches a batched exposure run needs on top of `Calculation_State`.
 
@@ -569,7 +570,7 @@ class CMC_State(utils.Calculation_State):
         interval, not an implied vol.
         """
         super(CMC_State, self).__init__(
-            static_buffer, one, mcmc_sims, report_currency, nomodel, batch_size, keep_tensor=keep_tensor)
+            static_buffer, one, mcmc_sims, report_currency, nomodel, batch_size, keep_tensor, quasi_seed)
         # decisions taken on simulated state, recorded forward so their derivative can be restored
         # before the reverse sweep. Per BATCH like t_Buffer - backward() runs once per batch
         self.boundary_aad = False
@@ -729,10 +730,10 @@ class CMC_State_Inner(CMC_State):
     processes dispatch on `Z.ndim` to pick the outer or the inner path."""
 
     def __init__(self, cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
-                 seed, job_id, num_jobs, simulation_sub_batch=0,
+                 seed, quasi_seed, job_id, num_jobs, simulation_sub_batch=0,
                  scale_survival=False, nomodel='Constant', keep_tensor=False):
         super().__init__(cholesky, static_buffer, batch_size, one, mcmc_sims, report_currency,
-                         seed, job_id, num_jobs, scale_survival=scale_survival,
+                         seed, quasi_seed, job_id, num_jobs, scale_survival=scale_survival,
                          nomodel=nomodel, keep_tensor=keep_tensor)
         # 0 (default) = inner mode unused; base `reset()` works, `reset_inner()` raises.
         self.simulation_sub_batch = simulation_sub_batch
@@ -1187,12 +1188,12 @@ class CreditMonteCarlo(Calculation):
         # beside the seed, and set BOTH ways every run: the switch is process-global, so a job
         # that declared Yes must not leave the next job in the process pinned
         torch.use_deterministic_algorithms(params['Deterministic_Kernels'] == 'Yes', warn_only=True)
+        quasi_seed = self.calc_stats['Quasi_Seed'] = int(params['Quasi_Seed'])
         shared_mem = self._init_shared_mem(
-            int(params['Random_Seed']), params['NoModel'],
+            int(params['Random_Seed']), quasi_seed, params['NoModel'],
             params['Currency'], params['MCMC_Simulations'],
             job_id, num_jobs, calc_greeks=sensitivities if greeks else None)
         shared_mem.calc_stats, shared_mem.unpriced = self.calc_stats, self.unpriced
-        shared_mem.quasi_seed = self.calc_stats['Quasi_Seed'] = int(params['Quasi_Seed'])
 
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
@@ -1331,7 +1332,8 @@ class CreditMonteCarlo(Calculation):
             correlation_matrix, device=self.device, dtype=self.dtype, requires_grad=False)
         return torch.linalg.cholesky(correlation_matrix)
 
-    def _init_shared_mem(self, seed, nomodel, reporting_currency, mcmc_sim, job_id, num_jobs, calc_greeks=None):
+    def _init_shared_mem(self, seed, quasi_seed, nomodel, reporting_currency, mcmc_sim, job_id,
+                         num_jobs, calc_greeks=None):
         """Allocate the `CMC_State` for this run (correlation cholesky, static buffer, reporting FX)
         and, when greeks are requested, build the flat AAD variable index over `calc_greeks`.
 
@@ -1359,7 +1361,8 @@ class CreditMonteCarlo(Calculation):
             self.get_cholesky_decomp(), self.static_var, self.batch_size,
             torch.ones([1, 1], dtype=self.dtype, device=self.device), mcmc_sim, get_fxrate_factor(
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
-            seed, job_id, num_jobs, scale_by_survival, nomodel=self.params.get('NoModel', 'Constant'),
+            seed, quasi_seed, job_id, num_jobs, scale_by_survival,
+            nomodel=self.params.get('NoModel', 'Constant'),
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
         shared_mem.boundary_aad = calc_greeks is not None
         # the kink kernel's Silverman width is sized from this job's WHOLE path count, not a batch's
@@ -1912,7 +1915,8 @@ class CreditMonteCarlo(Calculation):
 
 
 class Base_Reval_State(utils.Calculation_State):
-    def __init__(self, static_buffer, one, mcmc_sims, report_currency, calc_greeks, gamma, nomodel='Constant'):
+    def __init__(self, static_buffer, one, mcmc_sims, report_currency, calc_greeks, gamma, quasi_seed,
+                 nomodel='Constant'):
         """Single-date, single-scenario valuation state (base MtM and its greeks).
 
         `boundary_aad` follows the same contract as `CMC_State`: a decision taken on simulated state
@@ -1922,7 +1926,7 @@ class Base_Reval_State(utils.Calculation_State):
         estimator are the same ones and only the objective is simpler.
         """
         super(Base_Reval_State, self).__init__(
-            static_buffer, one, mcmc_sims, report_currency, nomodel, 1, False)
+            static_buffer, one, mcmc_sims, report_currency, nomodel, 1, False, quasi_seed)
         self.calc_greeks = calc_greeks
         self.gamma = gamma
         self.boundary_aad = calc_greeks is not None
@@ -2053,10 +2057,10 @@ class BaseValuation(Calculation):
                 else:
                     self.static_var[key] = self.factor_leaf(key, current_val, calc_grad)
 
+        quasi_seed = self.calc_stats['Quasi_Seed'] = int(params['Quasi_Seed'])
         shared_mem = self.__init_shared_mem(
-            params['Currency'], params['MCMC_Simulations'], calc_grad)
+            params['Currency'], params['MCMC_Simulations'], calc_grad, quasi_seed)
         shared_mem.calc_stats, shared_mem.unpriced = self.calc_stats, self.unpriced
-        shared_mem.quasi_seed = self.calc_stats['Quasi_Seed'] = int(params['Quasi_Seed'])
 
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
 
@@ -2115,7 +2119,7 @@ class BaseValuation(Calculation):
         # know the grid its counterfactual lands on, and reads its absence as "not reportable"
         self.time_grid.set_report_dates(base_date, {base_date})
 
-    def __init_shared_mem(self, reporting_currency, mcmc_sim, calc_greeks):
+    def __init_shared_mem(self, reporting_currency, mcmc_sim, calc_greeks, quasi_seed):
         # set BOTH ways every run - the switch is process-global
         torch.use_deterministic_algorithms(
             self.params['Deterministic_Kernels'] == 'Yes', warn_only=True)
@@ -2131,7 +2135,7 @@ class BaseValuation(Calculation):
         shared_mem = Base_Reval_State(
             self.static_var, torch.ones([1, 1], dtype=self.dtype, device=self.device),
             mcmc_sim, get_fxrate_factor(utils.check_rate_name(reporting_currency), self.static_factors, {}),
-            all_vars_concat, self.params['Greeks'] == 'All')
+            all_vars_concat, self.params['Greeks'] == 'All', quasi_seed)
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
         # the SMOOTH estimator, declared on this calculation alone; `execute` has completed the
         # block, so the key is present and the read direct
@@ -2952,7 +2956,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
     def _factor_bundle_key(factor_key):
         return utils.check_tuple_name(factor_key) if hasattr(factor_key, 'type') and hasattr(factor_key, 'name') else factor_key
 
-    def _init_shared_mem(self, seed, nomodel, reporting_currency, mcmc_sim, job_id, num_jobs, calc_greeks=None):
+    def _init_shared_mem(self, seed, quasi_seed, nomodel, reporting_currency, mcmc_sim, job_id,
+                         num_jobs, calc_greeks=None):
         """Build the `CMC_State_Inner` this calculation runs on, so one shared_mem hosts both
         the outer mode (inherited `reset()`) and the inner one (`reset_inner()`).
         HedgeMonteCarlo computes neither greeks nor FVA, so the parent's factor-index and
@@ -2961,7 +2966,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             self.get_cholesky_decomp(), self.static_var, self.batch_size,
             torch.ones([1, 1], dtype=self.dtype, device=self.device), mcmc_sim, get_fxrate_factor(
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
-            seed, job_id, num_jobs,
+            seed, quasi_seed, job_id, num_jobs,
             simulation_sub_batch=int(self.params.get('Inner_Sub_Batch', 0)),
             keep_tensor=True)  # hedge stepper replays need the kept tensor, unconditionally
 
@@ -3786,7 +3791,7 @@ class SIMM(Calculation):
           description='Points of implied vol a vertex moves by, ISDA\'s one; another is scaled to it'),
         F('MCMC_Simulations', 'Integer', default=1 << 14,
           description='Inner Monte Carlo paths of each valuation, as a BaseValuation reads them'),
-        F('Quasi_Seed', 'Integer', default=utils.Calculation_State.QUASI_SEED, convention=True,
+        F('Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,
           description="The scramble seed every valuation's quasi-random draws run on, so each move "
                       'is a common-random-numbers difference')
     ]

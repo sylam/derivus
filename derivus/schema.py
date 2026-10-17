@@ -58,6 +58,9 @@ SHAPED = tuple(BLANK)
 #: once there.
 DAY_COUNTS = tuple(utils.DayCount.CODES)
 
+#: The convention every `Quasi_Seed` field declares: the scramble seed of a quasi-random draw.
+QUASI_SEED = 1234
+
 #: The one key of a `Bootstrapper Configuration` entry that is not a hyperparameter: the STEM of
 #: the `Market Prices` type the entry routes on, the type being that value plus `Prices`.
 PRICES_KEY = 'Prices'

@@ -348,7 +348,8 @@ def test_a_quote_tick_moves_the_values_hash_and_leaves_the_plan_bit_identical():
 @pytest.mark.parametrize('case,plan_too,values_too',
                          [('pillar', True, False), ('expiry', True, False), ('use', True, False),
                           ('weight', True, False), ('strike', True, False),
-                          ('option quote', False, True), ('new row', True, True)])
+                          ('option quote', False, True), ('new row', True, True),
+                          ('random seed', True, False), ('quasi seed', True, False)])
 def test_re_authoring_a_quote_set_moves_the_plan(case, plan_too, values_too):
     """The same rule from the other end. A moved pillar or expiry, a moved STRIKE, a quote held out
     with `Use`, a row appended: each re-authors the instrument set the solve is posed over.
@@ -359,6 +360,9 @@ def test_re_authoring_a_quote_set_moves_the_plan(case, plan_too, values_too):
     exactly as on `Points`, while the strike beside it stays a re-authoring.
 
     Appending a row moves BOTH, honestly: a new quote is a new node AND a number nobody had.
+
+    A fit's two seeds sit on one side of the line together: its draws are part of what it is posed
+    over, so `Random_Seed` and `Quasi_Seed` on its block each move the plan and no value.
 
     Killing mutation: the plan hash blind to Market Prices.
     """
@@ -372,7 +376,9 @@ def test_re_authoring_a_quote_set_moves_the_plan(case, plan_too, values_too):
              'weight': lambda: ladder[0].__setitem__('Weight', 0.5),
              'strike': lambda: ladder[0].__setitem__('Strike', 19.0),
              'new row': lambda: points.append(dict(points[0])),
-             'option quote': lambda: ladder[0].__setitem__('Quoted_Market_Value', 0.19)}
+             'option quote': lambda: ladder[0].__setitem__('Quoted_Market_Value', 0.19),
+             'random seed': lambda: prices[LV_BLOCK]['instrument'].__setitem__('Random_Seed', 7),
+             'quasi seed': lambda: prices[LV_BLOCK]['instrument'].__setitem__('Quasi_Seed', 7)}
 
     assert moves(context, before, edits[case]) == (plan_too, values_too), (
         '{} did not land where the plan/values line puts it'.format(case))

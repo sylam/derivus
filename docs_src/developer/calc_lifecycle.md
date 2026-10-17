@@ -149,9 +149,10 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 | stream | seeded by | read by |
 | --- | --- | --- |
 | `t_random_numbers`: Mersenne Twister on the host [@matsumoto1998], Philox on CUDA [@salmon2011] | `Random_Seed` (credit and hedging Monte Carlo, default 5120) plus `job_id`, or per batch `batch_seed`, one SplitMix64 round [@steele2014] | every `generate` |
-| `quasi_rng`: Sobol [@sobol1967], Joe–Kuo directions [@joe2008], scrambled [@owen1998] | `Quasi_Seed` (every calculation, default `Calculation_State.QUASI_SEED`) from `QUASI_ANCHOR = 1024` | regime, GARCH and basis-linked spots, LogVar2FJ's extra mixers, `reset_inner` |
+| `quasi_rng`: Sobol [@sobol1967], Joe–Kuo directions [@joe2008], scrambled [@owen1998] | `Quasi_Seed` (every calculation, its convention `schema.QUASI_SEED`) from `QUASI_ANCHOR = 1024` | regime, GARCH and basis-linked spots, LogVar2FJ's extra mixers, `reset_inner` |
 | `inner_block`: those points as integers | `Quasi_Seed` and its shape | pricers' [inner paths](#inner-block) at every outer batch size |
 | a `torch.Generator` per LogVar2FJ walk segment | the scenario walk: an integer off `Random_Seed`'s generator; a pricer's walk: `Quasi_Seed`; each plus the segment | the daily shocks, redrawn in backward |
+| a fit's fixed Sobol paths | the fitted block's own `Quasi_Seed`, the same convention | the Hull-White two-factor Monte Carlo pricing of its benchmarks, a LogVar2FJ fit under `Sampling: Sobol` |
 
 A base valuation has no scenario stream and declares no `Random_Seed`: every draw it reaches is
 `Quasi_Seed`'s, so a trade's mark is a function of the trade, the market and that seed whatever is
