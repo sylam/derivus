@@ -715,6 +715,8 @@ class Config(object):
                     'missing factor instead. Fix the entry or remove it - {1}'.format(
                         bootstrapper_name, refusal)) from refusal
 
+            # the connected factors standing when it runs, for a solve pricing on one of them
+            bootstrapper.connected = self.calibrated_factors
             bootstrapper.bootstrap(self.params['System Parameters'],
                                    self.params['Price Models'],
                                    self.params['Price Factors'],

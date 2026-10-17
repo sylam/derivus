@@ -118,6 +118,9 @@ class Family:
     LogVar2FJ fit is double whatever the job is - declares `prec` on the class and keeps it.
     """
     prec = None
+    #: The connected factors standing when this family runs, `{Factor: theta*}`, which
+    #: `Config.bootstrap` hands over so a solve pricing on one reads it through its graph.
+    connected = {}
 
     def __init__(self, param, device, dtype):
         self.param = declared_defaults(type(self), param)
@@ -4736,6 +4739,10 @@ class BenchmarkInstruments(object):
     `held` is how many leading knots of each solved factor stay where `Price Factors` writes them,
     a survival curve's anchor at tenor zero being one: no quote identifies it, so theta is the
     knots after it and the static buffer carries the whole curve.
+
+    `connected` is what other families left calibrated on the tape, `{Factor: theta*}`; a constant
+    among them is read through its graph, worth zero forward, so `utils.CalibrationSolve` hands the
+    solve's cotangent into it.
     """
 
     #: The solve is float64 whatever the simulation runs in: a bootstrap converging to 1e-10 cannot
@@ -4743,7 +4750,7 @@ class BenchmarkInstruments(object):
     dtype = torch.float64
 
     def __init__(self, nodes, price_factors, factor_interp, base_date, currency, calendars,
-                 solve_for, device, quotes=None, bumped_nodes=None, held=0):
+                 solve_for, device, quotes=None, bumped_nodes=None, held=0, connected={}):
         # `config` imports from this module, so the package edge runs one way only
         from .config import Config
 
@@ -4778,6 +4785,10 @@ class BenchmarkInstruments(object):
             obj.current_value(), dtype=self.dtype, device=device)
             for factor, obj in self.factors.items()
             if factor.type not in utils.DimensionLessFactors and factor not in self.solve_for}
+        self.connected = {factor: theta for factor, theta in connected.items()
+                          if factor in self.constants}
+        self.constants.update({factor: self.constants[factor] + (theta - theta.detach())
+                               for factor, theta in self.connected.items()})
 
         self.benchmarks = [[self._compile(leaf, base_date, calendars) for leaf in leaf_deals(node)]
                            for node in nodes]
@@ -5719,10 +5730,12 @@ class SurvivalProb(Construction):
          '',
          '**Quote derivatives.** At the root the implicit function theorem is exact',
          '[@christianson1998; @henrard2014], so `Quote_Sensitivity` reports `dV/dq` beside `dV/dθ` on',
-         'the block\'s own quotes; the discount curve is a constant of the solve, so a curve quote\'s',
-         'delta holds the survival curve where it stands. An `Upfront` quoted at exactly zero moves no',
-         'cashflow schedule and refuses it by name. The ride is the curve family\'s: a survival curve',
-         'declares no `Quote_Propagation`.',
+         'the block\'s own quotes, and a curve quote\'s delta carries the survival curve\'s re-solve on',
+         'the discount curve it moves, the two solves chained in turn. Each block\'s switch is its own:',
+         'where the discount curve\'s declares none no curve quote exists to carry a delta, and where',
+         'this block\'s declares none the survival curve is a constant of every quote. An `Upfront`',
+         'quoted at exactly zero moves no cashflow schedule and refuses it by name. The ride is the',
+         'curve family\'s: a survival curve declares no `Quote_Propagation`.',
          '',
          '**Against the ISDA standard model** [@okane2008]. The default swap prices protection in the',
          'midpoint form, counts the maturity day in its last accrual and accrues its first coupon from',
@@ -5850,7 +5863,9 @@ class SurvivalProb(Construction):
 
     def solve(self, market_price, block, price_factors, factor_interp, base_date, calendars):
         """Seed the curve as flat hazards at the knots, solve the knots after the anchor through
-        `utils.CalibrationSolve`, and write the curve with the block's recovery."""
+        `utils.CalibrationSolve`, and write the curve with the block's recovery. Under
+        `Quote_Sensitivity` the solve reads a connected discount curve through its graph, so a curve
+        quote's derivative carries this curve's re-solve."""
         factor = utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:])
         points = self.contracts(block, market_price, base_date)
         nodes = quote_nodes(points, block['Discount_Rate'])
@@ -5867,10 +5882,11 @@ class SurvivalProb(Construction):
         benchmarks = BenchmarkInstruments(
             nodes, price_factors, factor_interp, base_date, block['Currency'], calendars, [factor],
             self.device, quotes=[point['Quoted_Market_Value'] for point in points] if carry else None,
-            bumped_nodes=quote_nodes(points, block['Discount_Rate'], 1.0) if carry else None, held=1)
+            bumped_nodes=quote_nodes(points, block['Discount_Rate'], 1.0) if carry else None, held=1,
+            connected=self.connected if carry else {})
         theta = utils.CalibrationSolve.apply(
             benchmarks, benchmarks.written(), int(block['N_Iter']), float(block['Tol']),
-            int(block['Damping_Halvings']), benchmarks.quotes)
+            int(block['Damping_Halvings']), benchmarks.quotes, *benchmarks.connected.values())
         solved = benchmarks.nodes(utils.split_theta(benchmarks, theta))[factor]
         price_factors[name]['Curve'] = utils.Curve([], list(zip(
             benchmarks.factors[factor].tenors, solved.detach().cpu().numpy())))

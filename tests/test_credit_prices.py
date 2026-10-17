@@ -16,7 +16,8 @@ WHAT IS HELD:
   the refusals      a contract maturing at the base date; a quote type the family does not take
   the order         a block discounting on a curve another family solves is solved after it
   the quote side    dtheta/dq against re-bootstrapped differences, and a default swap's dV/dq
-                    beside its factor greek, the two one chain rule
+                    beside its factor greek, the two one chain rule, its swap quote deltas
+                    carrying the survival curve's re-solve
   the emitter       a scripted terminal authors the blocks the family solves, a re-tick is a
                     values patch, and a seed entry without its conventions refuses by name
 
@@ -24,6 +25,7 @@ NO MONKEYPATCHING: every block is a JSON document bootstrapped and priced throug
 the terminal is a `BloombergSession` subclass whose event walk yields canned rows.
 """
 import ast
+import copy
 import functools
 import json
 import logging
@@ -91,6 +93,14 @@ def contract(tenor, coupon, upfront=0.0, day_count='ACT_360', reference=None, **
 
 #: The calculation a document runs unless it states another.
 VALUATION = {'Object': 'BaseValuation', 'MCMC_Simulations': 1}
+
+#: Both families' `Bootstrapper Configuration` entries, the credit family's listed first.
+FAMILIES = {'SurvivalProb': {'Prices': 'SurvivalProb'}, 'InterestRate': {'Prices': 'InterestRate'}}
+
+#: Protection sold on five million of the name to 3 February 2031, a date no quote matures on, at
+#: a 250bp coupon.
+SOLD = dict(contract('5Y', 250.0, reference='SOLD'), Buy_Sell='Sell', Principal=5e6,
+            Maturity_Date=pd.Timestamp('2031-02-03'))
 
 
 def document(deals=(), factors=None, market_prices=None, entries=None, calculation=VALUATION):
@@ -320,9 +330,8 @@ def test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it
     name, curve_block = bootstrappers.knot_prices('USD', FACTORS, ModelParams(), B, {})
     stale = {'InterestRate.USD': dict(FACTORS['InterestRate.USD'],
                                       Curve=utils.Curve([], [[1.0, 0.01], [10.0, 0.01]]))}
-    entries = {'SurvivalProb': {'Prices': 'SurvivalProb'}, 'InterestRate': {'Prices': 'InterestRate'}}
     context = bootstrapped({BLOCK: block('Par_Spread'), name: curve_block}, factors=stale,
-                           entries=entries)
+                           entries=FAMILIES)
     solved = context.current_cfg.params['Price Factors']
     assert np.abs(solved['InterestRate.USD']['Curve'].array[:, 1] -
                   FACTORS['InterestRate.USD']['Curve'].array[:, 1]).max() < 1e-10
@@ -367,8 +376,7 @@ def test_the_quote_derivative_is_the_re_bootstrapped_difference(quote_type, step
 
 
 def test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_greek():
-    """A default swap on the bootstrapped name - protection sold on five million to 3 February
-    2031, a date no quote matures on, at a 250bp coupon - under `Greeks: First`: its `dV/dq` lands
+    """A default swap on the bootstrapped name, `SOLD`, under `Greeks: First`: its `dV/dq` lands
     on the block's quote leaf in the pass that reports its factor greek `dV/dtheta`, and the two
     are one chain rule on the 5Y quote, `dV/dq = sum_i dV/dtheta_i dtheta_i/dq` with `dtheta/dq`
     re-bootstrapped, and the difference of the deal re-valued on curves re-solved a thousandth of
@@ -378,9 +386,7 @@ def test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_gr
     KILLING MUTATIONS: the connected curve harvested with its anchor last rather than first, the
     5Y quote delta -847.64; the implicit function theorem's sign dropped, +1,606.76.
     """
-    deal = dict(contract('5Y', 250.0, reference='SOLD'), Buy_Sell='Sell', Principal=5e6,
-                Maturity_Date=pd.Timestamp('2031-02-03'))
-    context = bootstrapped({BLOCK: block('Par_Spread', Quote_Sensitivity='Yes')}, [deal],
+    context = bootstrapped({BLOCK: block('Par_Spread', Quote_Sensitivity='Yes')}, [SOLD],
                            Greeks='First')
     _, out = context.run_job()
     # a knot the deal reads nothing past is reported nowhere, its greek zero
@@ -399,9 +405,55 @@ def test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_gr
         market = {BLOCK: block('Par_Spread')}
         market[BLOCK]['instrument']['Points'][index]['Quoted_Market_Value'] += sign * step
         factors = {CURVE: bootstrapped(market).current_cfg.params['Price Factors'][CURVE]}
-        revalued.append(marks([deal], factors)[0]['SOLD'])
+        revalued.append(marks([SOLD], factors)[0]['SOLD'])
     difference = (revalued[0] - revalued[1]) / (2 * step)
     assert abs(quote_delta[index] / difference - 1.0) < 1e-8, (quote_delta[index], difference)
+
+
+def test_a_default_swaps_delta_to_a_swap_quote_carries_the_survival_curves_re_solve():
+    """`SOLD` with its discount curve bootstrapped too, from a block quoting the world's USD curve
+    on its own knots (`bootstrappers.knot_prices`), both blocks under `Quote_Sensitivity`: a swap
+    quote moves the deal through the discount curve and through the survival curve re-solved on
+    it, the credit residual reading the connected curve and `utils.CalibrationSolve` handing its
+    cotangent upstream. Each swap quote's `dV/dq` is the deal revalued on both curves
+    re-bootstrapped a thousandth of a percent either side, within 1e-6 of that difference:
+    -692.83, -1,205.85, -2,737.55 and -1,747.40 at 1Y to 5Y and 4.14 at 10Y, measured within
+    1e-10 at 1Y to 5Y and 2.1e-8 at 10Y. With the curve block's switch off its quotes carry
+    nothing and the credit quotes read the same deltas to the bit.
+
+    KILLING MUTATIONS: the connected curve not handed to the family, the survival curve held where
+    it stands, -818.19, -1,240.24, -2,438.81, -1,395.79 and 0; the cotangent not returned for the
+    connected curve, the same; its sign dropped, -943.56, -1,274.64, -2,140.07, -1,044.17 and -4.14.
+    """
+    name, curve_block = bootstrappers.knot_prices('USD', FACTORS, ModelParams(), B, {})
+
+    def market(sensitivity, index=None, step=0.0):
+        curve = copy.deepcopy(curve_block)
+        curve['instrument']['Quote_Sensitivity'] = sensitivity
+        if index is not None:
+            curve['instrument']['Points'][index]['Quoted_Market_Value'] += step
+        return {BLOCK: block('Par_Spread', Quote_Sensitivity='Yes'), name: curve}
+
+    deltas = {}
+    for sensitivity in ('Yes', 'No'):
+        context = bootstrapped(market(sensitivity), [SOLD], entries=FAMILIES, Greeks='First')
+        context.run_job()
+        deltas[sensitivity] = {market_price: leaf.grad.cpu().numpy() for market_price, (_, leaf)
+                               in context.current_cfg.quote_leaves.items()}
+    assert list(deltas['No']) == [BLOCK], list(deltas['No'])
+    assert np.array_equal(deltas['No'][BLOCK], deltas['Yes'][BLOCK])
+
+    step, difference = 1e-3, []
+    for index in range(len(curve_block['instrument']['Points'])):
+        revalued = []
+        for sign in (1.0, -1.0):
+            solved = bootstrapped(market('No', index, sign * step), entries=FAMILIES
+                                  ).current_cfg.params['Price Factors']
+            revalued.append(marks([SOLD], {key: solved[key] for key in (
+                CURVE, 'InterestRate.USD')})[0]['SOLD'])
+        difference.append((revalued[0] - revalued[1]) / (2 * step))
+    error = np.abs(deltas['Yes'][name] / np.array(difference) - 1.0)
+    assert error.max() < 1e-6, (deltas['Yes'][name], difference)
 
 
 # =============================================================================================

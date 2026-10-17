@@ -307,10 +307,11 @@ day the most of it. **Held by**
 being the curve family's. **Held by**
 `test_credit_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference`,
 `test_credit_prices.py::test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_greek`.
-The discount curve is a constant of the solve, so a curve quote's `dV/dq` on a deal reading the
-survival curve holds that curve where it stands: on the gate's world a sold 4.5-year default swap's
-delta to the 5Y swap quote is -1,395.79 where re-bootstrapping both curves moves it -1,747.40, and
-to the 10Y quote 0 against 4.14. **Not gated.**
+The solve reads a connected discount curve through its graph, so a curve quote's `dV/dq` on a deal
+reading the survival curve carries its re-solve: on the gate's world a sold 4.5-year default swap's
+delta to the 5Y swap quote is -1,747.40 and to the 10Y quote 4.14, the re-solve a fifth of the first
+and all of the second. **Held by**
+`test_credit_prices.py::test_a_default_swaps_delta_to_a_swap_quote_carries_the_survival_curves_re_solve`.
 
 **The emitter** (`derivus_bloomberg.cds`) authors a block off the verified map: an `Upfront` row
 where the terminal answers `CDS_QUOTED_PRICE`, a hundred less the price, a `Par_Spread` row where it

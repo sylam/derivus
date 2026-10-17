@@ -52,16 +52,6 @@ Grouped by where a validator meets them.
   points between 8,192 and 32,768 paths, rides the forward-start rows at the default `Paths` of
   8,192. No test re-checks either; UNMEASURED on other ladders. `Walk` is the alternative.
 
-- **A default swap's quote delta to its discount curve holds the survival curve where it stands**
-  (2026-10-17). The credit family solves its survival curve with the discount curve as a constant,
-  so under `Quote_Sensitivity` a swap quote's `dV/dq` on a CDS reading a bootstrapped curve misses
-  the curve's re-solve. On a sold 4.5Y CDS the 1Y to 5Y swap quote deltas read -818.19, -1,240.24,
-  -2,438.81 and -1,395.79 against -692.83, -1,205.85, -2,737.55 and -1,747.40 with both curves
-  re-bootstrapped, and the 10Y 0 against 4.14; the leaf equals the revaluation with the survival
-  curve held to 1e-10. The dependence runs one way, so no joint solve is wanted: S-M, the credit
-  residual read on the connected discount curve and the implicit-function backward passing its
-  cotangent into it, the chain rule through the two solves in turn.
-
 ### The autocall, TARF and barrier pricers {#the-autocall-tarf-and-barrier-pricers}
 
 - **The collateralised autocall's CVA delta under-reads below 16,384 outer paths** (2026-10-10). On

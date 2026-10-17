@@ -15,7 +15,7 @@ the family's:
 | `Market Prices` type | the arrow | the backward |
 | --- | --- | --- |
 | `InterestRatePrices` | damped Newton on a square root | [implicit function theorem](#the-ift-contract), exact |
-| `SurvivalProbPrices` | the same solve, a block at a time | the same theorem, exact, its quotes alone |
+| `SurvivalProbPrices` | the same solve, a block at a time | the same theorem, exact, chained into its discount curve's |
 | `HullWhite2FactorModelPrices` | least squares, `Objective` `Analytic` by default | Gauss–Newton at a [stationary point](#the-stationarity-contract) |
 | `LogVar2FJModelPrices` | staged least squares | the same node, `Fit_Mode: Global` only |
 | `GBMAssetPriceTSModelPrices` | an [explicit map](#the-closed-form-map) | autograd through a twin |
@@ -42,7 +42,8 @@ A quote names an instrument and carries a block of it ([Market Prices](market_pr
 the residual is the engine's own pricers held at par, $F_i(\theta, q_i) = PV_i(\theta, q_i)|_{t_0}$.
 `BenchmarkInstruments` compiles the benchmark nodes once and prices them at t0 off a `{Factor: tensor}`
 of curve nodes; a node with `Children` is one benchmark, with no netting rule on top. Every factor not
-being solved for — an `FXForwardDeal`'s other curve and `FxRate` included — is a detached constant.
+being solved for — an `FXForwardDeal`'s other curve and `FxRate` included — is a detached constant,
+or a [connected](#the-ift-contract) one where another family solved it on the tape.
 `held` knots at the front of a solved factor stay where `Price Factors` writes them, a survival
 curve's anchor at tenor zero being one, so theta is the knots after them.
 
@@ -140,13 +141,21 @@ q)^\top w$. `residual_jacobians` takes both from one backward per benchmark, rec
 the last Newton step was taken at the iterate before it. Every cotangent at once is
 `calibration_jacobian`, the operator [Quote Propagation](quote_propagation.md) rides.
 
+**A connected constant** is a factor another family solved on the tape, which `Config.bootstrap`
+hands each family as `Family.connected`: a residual reading one, a survival curve's discount curve,
+reads it through its graph, and the node takes it as a further input $c$ and returns
+$-(\partial F/\partial c)^\top w$ for it, so autograd carries the chain rule on through the solve
+that wrote $c$, the two solves in turn and never one system.
+
 !!! warning "Every `grad` in the backward retains the graph"
     The residual's subgraph is shared with the forward through `pv_fixed_cashflows`' memo, so freeing
     it would take the forward's graph.
 
 **Held by** `tests/test_quote_propagation.py::test_the_artifact_holds_the_calibration_jacobian_the_solve_would_have_differenced`,
 `tests/test_service.py::test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from`
-(red with the blocks solved one at a time).
+(red with the blocks solved one at a time),
+`tests/test_credit_prices.py::test_a_default_swaps_delta_to_a_swap_quote_carries_the_survival_curves_re_solve`
+(red with the connected curve's cotangent not returned).
 
 ## The stationarity contract {#the-stationarity-contract}
 
@@ -416,6 +425,7 @@ Each corner independent of the machinery it checks:
 | credit | par spreads against the ISDA standard model, 5e-3 | `test_credit_prices.py::test_the_standard_model_reprices_the_solved_curves_quotes_to_its_conventions` |
 | credit | $d\theta/dq$ against re-bootstraps, 1e-8 | `test_credit_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference` |
 | credit | `dV/dq` against the chain rule and a refitted deal, 1e-8 | `test_credit_prices.py::test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_greek` |
+| credit | a swap quote's `dV/dq` against both curves refitted, 1e-6 | `test_credit_prices.py::test_a_default_swaps_delta_to_a_swap_quote_carries_the_survival_curves_re_solve` |
 | HW2F | θ\* and deltas pinned, 1e-6 | `test_hw2f_analytic.py::test_the_four_quote_job_document_pins_theta_and_its_quote_deltas` |
 | LogVar2FJ | factor hex-identical, switch on or off | `test_logvar2fj_json.py::test_the_quote_switch_writes_the_same_factor_and_publishes_its_leaves` |
 | FX vol | per-pillar `dV/dq`, 2% | `test_structures.py::test_each_pillars_charge_is_what_repricing_that_pillar_costs` |

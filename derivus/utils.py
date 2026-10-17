@@ -5657,11 +5657,13 @@ def split_theta(benchmarks, theta):
 
 
 def residual_jacobians(benchmarks, theta):
-    """The residual at `theta` and both its Jacobians: `dF/dtheta` (n x n) and `dF/dq` (n x m).
+    """The residual at `theta` and its Jacobians: `dF/dtheta` (n x n), `dF/dq` (n x m) and after
+    them `dF/dc` for each connected factor `c` the residual reads (`benchmarks.connected`, none on a
+    curve set).
 
-    One backward pass per benchmark gives both. Materialising the whole `dF/dq` costs nothing over
-    contracting one cotangent through it, which is why `CalibrationSolve.backward`, the artifact's
-    calibration Jacobian and its drift metric all read this one function.
+    One backward pass per benchmark gives every one. Materialising the whole `dF/dq` costs nothing
+    over contracting one cotangent through it, which is why `CalibrationSolve.backward`, the
+    artifact's calibration Jacobian and its drift metric all read this one function.
 
     Every `grad` retains the graph: the residual's subgraph is shared with the forward pass
     (`pv_fixed_cashflows` memoizes its payment tensor in `Factor_dep`), so freeing it would take the
@@ -5669,10 +5671,9 @@ def residual_jacobians(benchmarks, theta):
     """
     x = torch.cat([theta[factor] for factor in benchmarks.solve_for]).detach().requires_grad_(True)
     residual = benchmarks(split_theta(benchmarks, x))
-    rows = [torch.autograd.grad(residual[i], [x, benchmarks.quotes], retain_graph=True)
-            for i in range(residual.numel())]
-    return (residual, torch.stack([row[0] for row in rows]),
-            torch.stack([row[1] for row in rows]))
+    rows = [torch.autograd.grad(residual[i], [x, benchmarks.quotes, *benchmarks.connected.values()],
+                                retain_graph=True) for i in range(residual.numel())]
+    return (residual, *(torch.stack(column) for column in zip(*rows)))
 
 
 def calibration_jacobian(benchmarks, theta):
@@ -5718,10 +5719,15 @@ class CalibrationSolve(torch.autograd.Function):
     differentiated twice, so the quote derivative cannot drift from the solve's own, nor from the
     `dtheta/dq` an artifact publishes. The Jacobian is recomputed at theta* rather than reused from
     the last Newton step, which was taken at the iterate before it.
+
+    A factor another family solved on the tape and the residual reads (`benchmarks.connected`) is a
+    further input `c`, its cotangent `-(dF/dc)^T w`, so autograd carries
+    `dtheta/dq_c = -(dF/dtheta)^-1 (dF/dc)(dc/dq_c)` on through the solve that wrote `c`: the two
+    solves in turn, not one system.
     """
 
     @staticmethod
-    def forward(ctx, benchmarks, seed, n_iter, tol, halvings, quotes):
+    def forward(ctx, benchmarks, seed, n_iter, tol, halvings, quotes, *connected):
         with torch.enable_grad():
             theta = damped_newton(benchmarks, seed, n_iter, tol, halvings)
         ctx.benchmarks, ctx.theta = benchmarks, theta
@@ -5730,9 +5736,9 @@ class CalibrationSolve(torch.autograd.Function):
     @staticmethod
     def backward(ctx, cotangent):
         with torch.enable_grad():
-            _, d_theta, d_quote = residual_jacobians(ctx.benchmarks, ctx.theta)
+            _, d_theta, *d_inputs = residual_jacobians(ctx.benchmarks, ctx.theta)
             w = torch.linalg.solve(d_theta.t(), cotangent)
-        return None, None, None, None, None, -(d_quote.t() @ w)
+        return (None,) * 5 + tuple(-(d_input.t() @ w) for d_input in d_inputs)
 
 
 class CalibrationArtifact(object):
