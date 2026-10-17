@@ -787,14 +787,17 @@ def main():
             print('#', r, file=sys.stderr)
         if picked is None:
             print(f'# FAIL OPEN: full suite - {sel.fail}', file=sys.stderr)
-    picked = {'tests'} if picked is None else \
-        {n.split('::')[0] for n in picked} if args.files else picked
+    if picked is None:                  # the whole suite, per file, so `run` homes each one
+        picked = {'tests/' + f for f in os.listdir(os.path.join(ROOT, 'tests'))
+                  if f.startswith('test_') and f.endswith('.py')}
+    elif args.files:
+        picked = {n.split('::')[0] for n in picked}
     if not picked:
         print('# no test reaches this change', file=sys.stderr)
         return 0
     if args.time and os.path.exists(MAP_PATH):
         total = sum(s for n, s in zip(imap['nodes'], imap['seconds'])
-                    if picked == {'tests'} or n in picked or n.split('::')[0] in picked)
+                    if n in picked or n.split('::')[0] in picked)
         print(f'# {len(picked)} selected over {len({n.split("::")[0] for n in picked})} files, '
               f'{total:.0f} s as instrumented', file=sys.stderr)
     print('\n'.join(sorted(picked)))

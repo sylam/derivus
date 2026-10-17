@@ -112,7 +112,7 @@ Before calling a gate done, say for each "varied" or "degenerate **because** …
 
 **Blast radius first:** `python gates/reach.py <Symbol>` (or `--dirty`) names the consumers, callers, documents and holes a change reaches ([limits](roadmap.md#how-a-change-is-verified)).
 
-**A landing runs the tests its diff reaches.** `python gates/impacted.py --dirty --time` names them, `--run` runs them (`--since BASE`, `--commit SHA`), and `--files` rounds up to whole files for a test reading another's cached value. Selection is line-granular off an execution map — a changed statement selects the tests that executed it, a comment nothing — and fails open, saying why, on `tests/conftest.py`, `derivus/__init__.py`, an unmapped path or no map. Beside it run the standing readings.
+**A landing runs the tests its diff reaches.** `python gates/impacted.py --dirty --time` names them, `--run` runs them (`--since BASE`, `--commit SHA`), and `--files` rounds up to whole files for a test reading another's cached value. Selection is line-granular off an execution map — a changed statement selects the tests that executed it, a comment nothing — and fails open to the whole suite, each file under its own home, saying why, on `tests/conftest.py`, `derivus/__init__.py`, an unmapped path or no map. Beside it run the standing readings.
 
 **A campaign boundary runs the full suite** with the tree held still, since a selection cannot see an order-sensitive statistical gate or a dependency gained since the map; then `python gates/impacted.py --measure DIR` rebuilds the local map, and `CUDA_VISIBLE_DEVICES=0 python gates/pricer_branch_census.py` traces the tests it says enter a census pricer (`--anchors`: the AST half alone).
 
