@@ -3741,13 +3741,13 @@ class SIMM(Calculation):
     node of a cross-currency basis; a percent of a spot or of a currency's price in the calculation
     currency; and a point of vol in a TENT on each vertex - the surface given a pillar at every
     vertex expiry it lacks, read off its own interpolation, then each vertex alone moved, so an
-    option's vega lands on its own expiry and the rows sum to the parallel move. An SVI surface
-    gains a slice only past its ends (`Factor2D.augmented`), so an option expiring between two
-    slices has its vega land on the vertices whose tents reach them. Where the rows
-    land - risk type, qualifier, bucket, labels - and a trade's product class are the bank's
-    `Mapping`, held to `utils.FactorRiskClass`; the vertices are the regime's `Parameters`; the
-    regimes margin is posted and collected under are the agreement's own terms, declared on the
-    netting set. A shift other than ISDA's is scaled to it.
+    option's vega lands on its own expiry and the rows sum to the parallel move. A Skew or an SVI
+    surface gains a pillar only past its ends (`Factor2D.augmented`), so a vertex moves the pillars
+    its tent reaches and an option expiring between two pillars has its vega land on the vertices
+    whose tents reach them. Where the rows land - risk type, qualifier, bucket, labels - and a
+    trade's product class are the bank's `Mapping`, held to `utils.FactorRiskClass`; the vertices
+    are the regime's `Parameters`; the regimes margin is posted and collected under are the
+    agreement's own terms, declared on the netting set. A shift other than ISDA's is scaled to it.
 
     MARKET PRICES ARE A CONDITION: an interest rate a trade reads that no configured family
     bootstraps, and that is no child of one that does, refuses by name. A leg the engine skips is

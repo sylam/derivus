@@ -136,11 +136,6 @@ Grouped by where a validator meets them.
   width and the thread count (within 4 ulps, bit-identical on a GPU, seen in no end-to-end result).
   A replay across boxes compares for equality, so a home replaying host-priced results needs a
   declared tolerance policy.
-- **A SIMM vega vertex on a Skew surface moves its base** (2026-10-07). A vertex bump inserts a
-  pillar where the surface lacks one, read off its own interpolation. Explicit and Malz surfaces
-  price unchanged, but no smile at an inserted pillar equals a Skew surface's expiry blend (14.5 vol
-  points apart deep in one wing), so two of five structures move, by 4.8e-4 and 1.5e-2 of the
-  trade. The rows agree with each other, not with the book's base. S-M: the tent through the blend.
 - **A one-point vol move carries cross-vertex convexity** (2026-10-07). On the autocalls the twelve
   vertex rows differ from one parallel point by -0.8% to +13% (0.1% to 1.2% on FX), stable across
   seeds and path counts, a tenth of a point cutting it tenfold. It is the regulation's definition,

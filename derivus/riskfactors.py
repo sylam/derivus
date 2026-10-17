@@ -448,20 +448,20 @@ class Factor2D(object):
     def augmented(cls, block, years):
         """`block`, a vol surface, with a pillar at each expiry of `years` it lacks, read off its
         own interpolation in expiry so it prices as it stood: linear in vol on an Explicit surface,
-        in variance on a Malz one - solved first, its bootstrapped form - and in each parameter on
-        a Skew one, which reproduces its central regions and not, between two pillars, its wings.
-        Between two slices an SVI surface blends their variances, which no slice is, so it gains
-        a slice only past either end, where it reads its edge slice."""
+        in variance on a Malz one - solved first, its bootstrapped form. Between two pillars a Skew
+        surface blends their vols at the strike read and an SVI one their variances, which no
+        pillar interpolated in its parameters is, so each gains a pillar only past either end,
+        where it reads its edge pillar."""
         surface = block.get('Surface_Type', 'Explicit')
-        if surface == 'SVI':
-            tenors = block['a'].array[:, 0]
-            years = [t for t in years if t < tenors[0] or t > tenors[-1]]
         parameters = {'Skew': cls.skew_params, 'SVI': cls.svi_params}.get(surface)
         if parameters:
+            tenors = block[parameters[0]].array[:, 0]
+            years = [t for t in years if t < tenors[0] or t > tenors[-1]]
+
             def augment(curve):
                 rows = curve.array
                 return utils.Curve(curve.meta, rows.tolist() + [
-                    [t, np.interp(t, rows[:, 0], rows[:, 1])] for t in years if t not in rows[:, 0]])
+                    [t, np.interp(t, rows[:, 0], rows[:, 1])] for t in years])
 
             return dict(block, **{name: augment(block[name]) for name in parameters})
         variance = surface == 'Malz'

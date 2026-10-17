@@ -398,14 +398,14 @@ def test_vega_lands_on_the_options_own_expiry(months, split):
     assert sum(vega.values()) == pytest.approx(worth(0.01) - base, rel=5e-3)
 
 
-def svi(tenors, **slices):
-    """A USDZAR SVI surface, a slice per tenor: `slices` names each of `a`, `b`, `rho`, `m` and
-    `sigma` per slice, the variance at log-moneyness x `a + b(rho(x - m) + sqrt((x - m)^2 +
-    sigma^2))`."""
-    return dict({'Surface_Type': 'SVI', 'Moneyness_Rule': 'Sticky_Moneyness',
+def parametric(kind, tenors, **pillars):
+    """A USDZAR surface of `Surface_Type` `kind`, a pillar per tenor about the spot: `pillars` names
+    each other parameter per pillar - on an SVI slice `a`, `b`, `rho`, `m` and `sigma`, the variance
+    at log-moneyness x `a + b(rho(x - m) + sqrt((x - m)^2 + sigma^2))`."""
+    return dict({'Surface_Type': kind, 'Moneyness_Rule': 'Sticky_Moneyness',
                  'ATM_Ref': utils.Curve([], [[t, SPOT] for t in tenors])}, **{
         name: utils.Curve([], [[t, value] for t, value in zip(tenors, values)])
-        for name, values in slices.items()})
+        for name, values in pillars.items()})
 
 
 @pytest.mark.parametrize('days, label', [(14, '2w'), (365, '1y'), (1095, '3y')])
@@ -421,7 +421,8 @@ def test_a_flat_svi_surface_moves_as_the_explicit_surface_stating_its_vol(days, 
     the ends - the 2w and 3y options' vega lands on 6m and 2y.
     """
     tenors, vol = (0.5, 1.0, 2.0), 0.15
-    flat = svi(tenors, a=[vol ** 2] * 3, b=[0.0] * 3, rho=[0.0] * 3, m=[0.0] * 3, sigma=[0.1] * 3)
+    flat = parametric('SVI', tenors, a=[vol ** 2] * 3, b=[0.0] * 3, rho=[0.0] * 3, m=[0.0] * 3,
+                      sigma=[0.1] * 3)
     explicit = dict(factors()['FXVol.USD.ZAR'], Surface=utils.Curve(
         [], [[m, t, vol] for m in (0.8, 1.0, 1.2) for t in tenors]))
     option = {'Expiry_Date': BASE + pd.DateOffset(days=days)}
@@ -444,9 +445,9 @@ def test_an_svi_vertex_moves_the_slices_its_tent_reaches_off_the_standing_surfac
     alone, the 6m row 1,656 against 1,023.
     """
     tenors = (0.04, 0.4, 0.8, 1.5)
-    smile = svi(tenors, a=[0.020, 0.018, 0.017, 0.016], b=[0.08, 0.06, 0.05, 0.04],
-                rho=[-0.5, -0.4, -0.35, -0.3], m=[0.02, 0.03, 0.04, 0.05],
-                sigma=[0.10, 0.15, 0.20, 0.25])
+    smile = parametric('SVI', tenors, a=[0.020, 0.018, 0.017, 0.016],
+                       b=[0.08, 0.06, 0.05, 0.04], rho=[-0.5, -0.4, -0.35, -0.3],
+                       m=[0.02, 0.03, 0.04, 0.05], sigma=[0.10, 0.15, 0.20, 0.25])
     option = {'Expiry_Date': BASE + pd.DateOffset(days=219), 'Strike_Price': 21.0}
     vega = rows(world(option=option, extra={'FXVol.USD.ZAR': smile}).run_job()[1], 'FXO',
                 'Risk_FXVol')
@@ -467,6 +468,55 @@ def test_an_svi_vertex_moves_the_slices_its_tent_reaches_off_the_standing_surfac
                                  for t in tenors])
         assert amount == pytest.approx(worth((atm + point) ** 2 - atm ** 2 + a) - base,
                                        rel=1e-9), label
+
+
+#: A USDZAR smile on four pillars, steeper at the short end: at log-moneyness x the `ATM_Vol` plus
+#: `x(s + L x)` down to the cut-off `C` and `x(s + R x)` up to `D`, a quadratic wing beyond each
+#: flattening `lam` and `rho` of the cut-off further out.
+SKEW = {'ATM_Vol': [0.16, 0.15, 0.145, 0.14], 's': [0.10, 0.08, 0.06, 0.05],
+        'L': [0.5, 0.4, 0.3, 0.3], 'R': [0.8, 0.6, 0.5, 0.4], 'C': [-0.06, -0.10, -0.14, -0.20],
+        'D': [0.06, 0.10, 0.14, 0.20], 'lam': [0.5] * 4, 'rho': [0.8, 0.6, 0.5, 0.5]}
+
+
+@pytest.mark.parametrize('tenors, labels', [((0.04, 0.4, 0.8, 1.5), {'3m', '6m', '1y'}),
+                                            ((0.25, 0.5, 1.0, 2.0), {'6m', '1y'})])
+def test_a_skew_vertex_moves_the_pillars_its_tent_reaches_off_the_standing_surface(tenors, labels):
+    """Between two pillars a Skew surface blends their vols at the strike, which a pillar
+    interpolated in its parameters reproduces in the centre and not in the wings, so a vertex there
+    inserts none: its point moves the `ATM_Vol` of each pillar its tent reaches, and with it that
+    pillar's whole smile, by the point times the tent, and the row is taken off the surface as it
+    stands. A 0.6-year call struck 13% over the forward, in the right wing of a 0.4-year pillar,
+    writes on pillars at 0.04, 0.4, 0.8 and 1.5 years 3m, 6m and 1y rows, each a base valuation of
+    the same book on the surface so moved less its standing value, to 1e-9; on pillars on the 3m,
+    6m, 1y and 2y vertices, which gain none inside the range under either rule, 6m and 1y rows,
+    each the move of its own pillar alone, what they wrote before to the bit. The rows sum to the
+    parallel point's move but for its convexity, 1.6% and 0.8% under it.
+
+    Killing mutations: a pillar inserted at each vertex inside the range off each parameter's own
+    interpolation, as before - the call's base moves by 0.64% and its vega lands on 6m and 1y
+    alone, the 6m row 1,622 against 1,003; the two tent weights swapped - the 3m row 599 against
+    398, and on the vertex pillars the vega lands on 3m and 6m.
+    """
+    smile = parametric('Skew', tenors, **SKEW)
+    option = {'Expiry_Date': BASE + pd.DateOffset(days=219), 'Strike_Price': 21.0}
+    vega = rows(world(option=option, extra={'FXVol.USD.ZAR': smile}).run_job()[1], 'FXO',
+                'Risk_FXVol')
+
+    def worth(atm):
+        moved = dict(smile, ATM_Vol=utils.Curve([], list(zip(tenors, atm))))
+        return valued(world(VALUATION, option=option, configuration={},
+                            extra={'FXVol.USD.ZAR': moved}))['FXO']
+
+    atm = np.array(SKEW['ATM_Vol'])
+    vertices = {'2w': 14 / 365.0, '1m': 1 / 12.0, '3m': 0.25, '6m': 0.5, '1y': 1.0, '2y': 2.0}
+    base = worth(atm)
+    assert set(vega) == labels, vega
+    for label, amount in vega.items():
+        # the tent spelt apart from the engine's: the hat on the vertex grid, one at its vertex
+        tent = np.interp(tenors, list(vertices.values()),
+                         [float(label == vertex) for vertex in vertices])
+        assert amount == pytest.approx(worth(atm + 0.01 * tent) - base, rel=1e-9), label
+    assert sum(vega.values()) == pytest.approx(worth(atm + 0.01) - base, rel=2e-2)
 
 
 def test_a_curve_discounting_on_another_gets_a_fra_in_front():
