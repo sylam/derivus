@@ -27,7 +27,8 @@ declared string must be non-empty.
 asked the same way by the writer and by a verifier over a log it did not write - not every 64-hex
 field is a blob. The closed set is in five parts by what each says (`FACT_TYPES`,
 `CUSTODY_TYPES`, `PROVENANCE_TYPES`, `REFERENCE_TYPES`, `WRITER_TYPES`), `EVENT_TYPES` is the
-union `validate` consults, and `EVENT_VERB` names the capability verb each type demands - with
+union `validate` consults, and `EVENT_VERB` names the capability verb each type demands - a
+transition's narrowed by its body - with
 `break_glass_used` answering to the genesis seat alone, and the types only the writer files, in
 its own voice (`WRITER`), never gated and never a seat's, wherever their part puts them.
 `classify` derives the entitlement class from provenance, so a reclassification is one declaration.
@@ -176,11 +177,13 @@ FACT_TYPES = {
     # A determination is a fact about a ruling, attributed to the actor the contract vests it in.
     'determination': _validator('determination', (
         ('subject', TEXT), ('ruling', TEXT))),
-    # A settlement that moved money says how much, of what, what kind of movement it was and the
-    # settlement system's own reference; a body carrying none of the four validates as it did.
+    # A settlement that moved money says how much, of what, what kind of movement it was, the
+    # settlement system's own reference and the agreement it was paid under where it names one; a
+    # body carrying none of them validates as it did.
     'status_transition': _validator('status_transition', (
         ('subject', TEXT), ('status', TEXT)),
-        optional=(('amount', NUMBER), ('asset', TEXT), ('kind', TEXT), ('reference', TEXT))),
+        optional=(('amount', NUMBER), ('asset', TEXT), ('kind', TEXT), ('reference', TEXT),
+                  ('agreement', TEXT))),
     # A market is a name resolved by a fold over these; officialness is a property of the name.
     'market_declared': _validator('market_declared', (
         ('name', TEXT), ('values_hash', HASH))),
@@ -282,9 +285,9 @@ EVENT_TYPES.update(WRITER_TYPES)
 #: The capability verbs a policy document grants, spelled once. `validate` names work that happens
 #: before the log - the queue asks for it - so no event type demands it. Each is an ACT: who
 #: performs it is the deployment's grant, never a name here.
-VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, SETTLE, ADMIN = (
-    'validate', 'book', 'approve', 'mark', 'document', 'settle', 'admin')
-VERBS = (VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, SETTLE, ADMIN)
+VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, SETTLE, CONFIRM, COLLATERAL, ADMIN = (
+    'validate', 'book', 'approve', 'mark', 'document', 'settle', 'confirm', 'collateral', 'admin')
+VERBS = (VALIDATE, BOOK, APPROVE, MARK, DOCUMENT, SETTLE, CONFIRM, COLLATERAL, ADMIN)
 
 #: The two authorizations that come from no policy document, named as pseudo-verbs so one evaluator
 #: answers every append. `RECOVERY` is the break-glass path, declared at genesis and answerable to
@@ -305,7 +308,8 @@ EVENT_VERB = {
     'amendment': BOOK,
     'election': BOOK,
     'quote_filed': BOOK,
-    # settle: what the back office moves - a payment, a confirmation, money held under paper.
+    # settle: what the back office pays. A transition's body narrows it - a confirmation is
+    # `confirm`, money held under paper `collateral` - read in one place, `capability.verb_for`.
     'status_transition': SETTLE,
     # approve: the second pair of eyes, and the only verb whose refusal is also a decision.
     'approval': APPROVE,

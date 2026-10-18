@@ -71,7 +71,7 @@ AMENDED = hashlib.sha256(RESTRUCK).hexdigest()
 WHEN = '2026-08-29T09:15:00.000000Z'
 
 #: Every type whose append demands one of the document verbs. Computed, not typed out: the sweep
-#: below asserts its own fixture covers exactly this set.
+#: below asserts its own fixture covers exactly this set, and every verb an append can demand.
 VERB_BEARING = frozenset(name for name, verb in EVENT_VERB.items() if verb in VERBS)
 #: A book, a node under it, and the two paths a prefix match without the slash would confuse.
 BANK, FX, OPTIONS, FXO, RATES = 'BANK', 'BANK/FX', 'BANK/FX/Options', 'BANK/FXO', 'BANK/Rates'
@@ -122,7 +122,8 @@ def denials(log):
 
 
 def attempts(log):
-    """One well-formed append per verb-bearing type: `(type, body, book)`.
+    """One well-formed append per verb-bearing type, and per body of a type whose body says which
+    verb it demands: `(type, body, book)`.
 
     Blobs are put first for the types whose bodies name them, so the same table drives the denial
     sweep (where closure is never reached) and the granted appends (where it is).
@@ -141,8 +142,12 @@ def attempts(log):
         ('fill', fill('EXEC-1'), BOOK_ONE),
         ('amendment', {'instrument': BOOKED, 'amended_to': AMENDED}, BOOK_ONE),
         ('election', {'instrument': HASH_A, 'choice': 'exercise'}, BOOK_ONE),
-        # settle: what the back office moves
+        # settle, confirm and collateral: what the back office pays, matches and holds - one
+        # type, its verb read off its body
+        ('status_transition', {'subject': HASH_A, 'status': 'settled'}, BOOK_ONE),
         ('status_transition', {'subject': HASH_A, 'status': 'confirmed'}, BOOK_ONE),
+        ('status_transition', {'subject': 'CSA-0007', 'status': 'settled', 'amount': 1.0,
+                               'asset': 'USD', 'kind': 'margin', 'reference': 'MRG-1'}, BOOK_ONE),
         ('approval', {'plan_hash': HASH_B}, BOOK_ONE),
         ('rejection', {'plan_hash': HASH_B, 'reason': 'the booker and the approver are one seat'},
          BOOK_ONE),
@@ -253,7 +258,8 @@ def test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refus
     turns the writer on for all of them - authorization is a document and a function, not a check
     bolted onto each verb - and each refusal is asserted twice: the raised `CapabilityDenied` naming
     subject, verb, book scope, attempted type and the denial's LSN, and the `capability_denied` fact
-    at that LSN. The document here grants nothing, so the sweep is total.
+    at that LSN. The document here grants nothing, so the sweep is total: every verb an append can
+    demand, `validate` being the queue's and no append's, a transition three times.
 
     Killing mutation: the denial raised and never appended.
     """
@@ -261,11 +267,13 @@ def test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refus
     table = attempts(log)
     assert set(name for name, _, _ in table) == VERB_BEARING, \
         'the fixture and the verb map have parted company'
+    assert {verb_for(event_type, body) for event_type, body, _ in table} == \
+        set(VERBS) - {VALIDATE}, 'a verb the sweep never refused'
     declare(log, MINT, document())
 
     expected = []
     for event_type, body, book in table:
-        verb = verb_for(event_type)
+        verb = verb_for(event_type, body)
         scope = scope_of(event_type, body, book) or ANY_BOOK
         head = log.head()[0]
         with pytest.raises(CapabilityDenied) as refusal:
@@ -822,13 +830,14 @@ def test_the_verb_map_is_closed_over_the_closed_vocabulary():
                                 | set(REFERENCE_TYPES) | set(WRITER_TYPES))
     assert set(EVENT_VERB) == set(EVENT_TYPES)
     assert set(EVENT_VERB.values()) <= set(VERBS) | {RECOVERY, WRITER}
+    assert len(VERBS) == len(set(VERBS)) == 9
     assert EVENT_VERB['break_glass_used'] == RECOVERY
     assert EVENT_VERB['status_transition'] == SETTLE
     writers = {'capability_denied', 'run_completed', 'snapshot_registered'}
     assert set(name for name, verb in EVENT_VERB.items() if verb == WRITER) == writers
     assert VERB_BEARING == set(EVENT_TYPES) - {'break_glass_used'} - writers
     # fails closed: a type nobody taught the map demands governance
-    assert verb_for('a_type_from_the_future') == ADMIN
+    assert verb_for('a_type_from_the_future', None) == ADMIN
 
 
 def test_the_custody_types_are_shaped_and_their_blob_fields_are_closed(tmp_path):

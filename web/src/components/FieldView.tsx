@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { failure } from '../api';
 import {
   curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, label, offsetText,
-  token,
+  supportRows, token,
 } from '../tokens';
 import type { Descriptor } from '../types';
 import { CurveChart } from './CurveChart';
@@ -36,8 +36,7 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
   for (const list of ['.DateList', '.DateEqualList', '.CreditSupportList'] as const) {
     const rows = token(value, list);
     if (Array.isArray(rows)) {
-      // a credit support row travels [rating, amount], the reverse of the columns it declares
-      const data = list === '.CreditSupportList' ? rows.map((row) => [...row].reverse()) : rows;
+      const data = list === '.CreditSupportList' ? supportRows(rows) : rows;
       return <DataTable columns={descriptor?.col_names ?? []} index={[]} data={data} />;
     }
   }

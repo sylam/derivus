@@ -41,10 +41,11 @@ from pathlib import Path
 from derivus import spine as seam
 from derivus_mcp import server as binding
 from derivus_spine import cli
+from derivus_spine import vocabulary
 from derivus_spine.capability import ANY_BOOK
 from derivus_spine.verbs import CONFIRMED, CURIOSITY, SETTLED, STANDING
 from derivus_spine.vocabulary import (
-    ADMIN, APPROVE, BOOK, DOCUMENT, FIRM_CLASS, MARK, SETTLE, VALIDATE)
+    ADMIN, APPROVE, BOOK, CONFIRM, DOCUMENT, FIRM_CLASS, MARK, SETTLE, VALIDATE)
 from mcp.server.mcpserver.exceptions import ToolError
 
 #: The book, and the desks declared as its nodes.
@@ -77,7 +78,7 @@ def node(desk, *below):
 #: What the founder grants the firm: the back office at `*`, each desk's head `admin` at its node.
 FIRM = dict({FOUNDER: (ADMIN,), HUB: (VALIDATE,), PRODUCT_CONTROL: (MARK, VALIDATE),
              LEGAL: (DOCUMENT,), SETTLEMENTS: (SETTLE, VALIDATE),
-             CONFIRMATIONS: (SETTLE, VALIDATE), COLLATERAL: (SETTLE, VALIDATE),
+             CONFIRMATIONS: (CONFIRM, VALIDATE), COLLATERAL: (vocabulary.COLLATERAL, VALIDATE),
              AUDIT: (VALIDATE,)})
 #: What a head grants the seats of its own desk, at its node.
 STAFF = {'trader': (BOOK, VALIDATE, APPROVE), 'sales': (VALIDATE,), 'approver': (APPROVE, VALIDATE)}

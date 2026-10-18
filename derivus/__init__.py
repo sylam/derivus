@@ -805,7 +805,7 @@ class Context:
                       effective_time=effective_time)
 
     def transition(self, subject, status, actor=None, book=None, effective_time=None, amount=None,
-                   asset=None, kind=None, reference=None):
+                   asset=None, kind=None, reference=None, agreement=None):
         """Move the operational state a party put a subject in - a settlement paid, a confirmation
         matched.
 
@@ -813,13 +813,14 @@ class Context:
         under. Whether the book still announces a row under that key is a FOLD's question: the
         record holds what it was told, and a state filed against a row that has been paid away is a
         fact rather than a refusal. A settlement that moved money also states the signed `amount`,
-        the `asset`, its `kind` and the settlement system's `reference`.
+        the `asset`, its `kind`, the settlement system's `reference` and the `agreement` it was
+        paid under where it names one.
         """
         from .spine import transition as record
 
         return record(subject, status, actor_name=actor, book_name=book,
                       effective_time=effective_time, amount=amount, asset=asset, kind=kind,
-                      reference=reference)
+                      reference=reference, agreement=agreement)
 
     def declare_market(self, name, actor=None, effective_time=None):
         """Point a market NAME at the values vector THIS context is carrying.

@@ -290,12 +290,24 @@ export type Reconcile = {
 };
 
 /** One row of `GET /book/worklist`: what waits, and `key` the fact that clears it is filed
- * against - a ticket, a diary key, a fill's own key, an agreement, a day; a call nobody can work
- * out carries what is not known. */
+ * against - a ticket, a diary key, a fill's own key, an agreement, a day; a payment carries its
+ * amount, currency and the agreement it is due under where it is one, a call the amount and
+ * currency it calls, and a call nobody can work out what is not known. */
 export type WorkRow = {
   kind: string; what: string; key: string; lsn: number | null; since: string | null;
+  amount?: number | null; currency?: string | null; agreement?: string | null;
   unknown?: { instrument: string | null; what: string }[];
 };
+
+/** `GET /book/close/check` - whether a close on `date` is legal, and the diary rows it waits on. */
+export type CloseVerdict = {
+  date: string; legal: boolean; due: number;
+  outstanding: { kind: string; leg: string; due_date: string | null; instrument: string | null;
+                 reason: string | null }[];
+};
+
+/** What a write to the record answers: the position it landed at, beside its own fields. */
+export type Recorded = { recorded: { lsn: number } };
 
 /** `GET /book/worklist` - six lists of what waits on the seat asking, read off what stands, so a
  * row leaves when its fact lands: how many each holds, and the newest of them. */

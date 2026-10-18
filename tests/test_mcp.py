@@ -230,7 +230,7 @@ def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeyp
     for row in answer['rows']:
         assert set(row) == {'key', 'instrument', 'leg', 'schedule_index', 'kind', 'due_date',
                             'currency', 'amount', 'determined', 'notional', 'index', 'source',
-                            'observed', 'needs', 'reason', 'state'}
+                            'observed', 'needs', 'reason', 'state', 'netting_set', 'agreement'}
         assert row['amount'] is None or row['determined'] is True
 
     day = min(row['due_date'] for row in answer['rows'])
@@ -327,11 +327,14 @@ def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_ve
     row's own derived key, and then the next file no longer carries it and the day is legal - which
     is the whole of what a settlement is for.
 
+    The money it moved names the agreement it was paid under, which the record holds the paper of
+    or refuses by name.
+
     Killing mutations: `declare_close` sending a market or a date the caller did not name, which
     closes a board nobody asked about or on a day nobody chose; `export_settlements` passing a
-    market through, which would let a model strike a settlement file on any board it can name; and
+    market through, which would let a model strike a settlement file on any board it can name;
     `file_status` filing under a reference rather than the row's key, which settles nothing the
-    export can see.
+    export can see; and `file_status` dropping the agreement, which files the payment under none.
     """
     from derivus_spine import SpineLog, init_home, policy
 
@@ -377,10 +380,19 @@ def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_ve
     assert mcp_server.close_check('2099-01-01')['legal'] is True, \
         'the close still waits on a payment the back office said had moved'
 
-    paid = mcp_server.file_status(exported['rows'][0]['key'], 'settled', actor=actor,
-                                  amount=AMOUNT, asset='ZAR', kind='payment',
-                                  reference='SETTLEMENT-1', value_date='2024-06-28')
+    money = dict(actor=actor, amount=AMOUNT, asset='ZAR', kind='payment',
+                 reference='SETTLEMENT-1', value_date='2024-06-28')
+    with pytest.raises(ToolError, match='declare the agreement first'):
+        mcp_server.file_status(exported['rows'][0]['key'], 'settled', agreement='CSA-1', **money)
+    mcp_server.declare_legal_entity('LEI-1', 'Client One', actor=actor)
+    mcp_server.declare_agreement('CSA-1', 'LEI-1', 'ISDA 2002', {
+        'Object': 'NettingCollateralSet', 'Netted': 'True', 'Collateralized': 'False',
+        'Credit_Support_Amounts': {'Counterparty': 'CPTY_A'}}, actor=actor)
+    paid = mcp_server.file_status(exported['rows'][0]['key'], 'settled', agreement='CSA-1',
+                                  **money)
     assert paid['amount'] == AMOUNT and paid['recorded']['lsn'] > settled['recorded']['lsn']
+    assert paid['agreement'] == 'CSA-1'
+    assert [row['agreement'] for row in mcp_server.book_cash()['movements']] == ['CSA-1']
     assert mcp_server.book_cash(date='2024-06-28')['balances'] == [
         {'kind': 'payment', 'subject': exported['rows'][0]['key'], 'asset': 'ZAR',
          'amount': AMOUNT, 'movements': 1}]

@@ -36,7 +36,9 @@ from os.path import commonprefix
 
 from .canon import canonical_bytes
 from .errors import CapabilityDenied, CollisionRefusal, MissingBlobRefusal
-from .vocabulary import ADMIN, EVENT_VERB, FIRM_CLASS, RECOVERY, VERBS, is_path, is_text
+from .verbs import CONFIRMED, HELD
+from .vocabulary import (
+    ADMIN, COLLATERAL, CONFIRM, EVENT_VERB, FIRM_CLASS, RECOVERY, VERBS, is_path, is_text)
 
 #: The policy names this fold reads. The first two are genesis's own, respelled here rather than
 #: imported: `genesis` imports the writer, and the writer imports this module.
@@ -56,6 +58,8 @@ ANY_BOOK = '*'
 PORTFOLIO_TYPES = ('fill', 'amendment', 'quote_filed', 'approval', 'rejection')
 #: The types `scope_of` opens a body for: those, and a declared node judged at its parent.
 SCOPED_TYPES = PORTFOLIO_TYPES + ('portfolio_declared',)
+#: The types `verb_for` opens a body for: a transition says which act of the back office it is.
+VERB_TYPES = ('status_transition',)
 #: The firm's own facts - said of every book at once, so judged at the firm whatever book an
 #: envelope names.
 FIRM_TYPES = ('policy_declared', 'market_declared', 'official_close_declared', 'fixing_observed',
@@ -89,12 +93,20 @@ class _Unreadable(object):
 UNREADABLE = _Unreadable()
 
 
-def verb_for(event_type):
-    """The verb an append of `event_type` demands.
+def verb_for(event_type, body):
+    """The verb an append of `event_type` saying `body` demands: a transition's read off its body -
+    a `confirmed` status `confirm`, money held under an agreement `collateral`, anything else the
+    back office files `settle` - and every other type's off `EVENT_VERB`. The writer and the oracle
+    both ask it, so no frame is judged by its type where its body says which act it is.
 
     Fails closed: a type absent from `EVENT_VERB` demands `admin`, so a forgotten entry costs a
     write that needs governance rather than one nobody is scoped for.
     """
+    if event_type in VERB_TYPES and isinstance(body, dict):
+        if body.get('status') == CONFIRMED:
+            return CONFIRM
+        if body.get('kind') in HELD:
+            return COLLATERAL
     return EVENT_VERB.get(event_type, ADMIN)
 
 

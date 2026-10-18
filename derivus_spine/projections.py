@@ -550,8 +550,8 @@ class Portfolios(Projector):
 
 class Cash(Projector):
     """Every movement of money a settlement filed, under the settlement system's own reference: what
-    it settled, its kind, the asset and the signed amount - received positive, paid or posted
-    negative - on the value date it states.
+    it settled, its kind, the asset, the signed amount - received positive, paid or posted
+    negative - on the value date it states, and the agreement it names or null.
 
     A second filing under one reference RESTATES the movement and stands by the as-of key, naming
     the filing it stood over, so a corrected amount replaces the one it corrects rather than
@@ -560,6 +560,7 @@ class Cash(Projector):
     """
 
     name = 'cash'
+    version = 2
     reads = ('status_transition',)
 
     def initial(self):
@@ -572,7 +573,8 @@ class Cash(Projector):
         standing = state.get(body['reference'])
         _stand(state, body['reference'], frame,
                {'subject': body['subject'], 'kind': body['kind'], 'asset': body['asset'],
-                'amount': float(body['amount']), 'actor': frame['actor'], 'book': frame['book'],
+                'amount': float(body['amount']), 'agreement': body.get('agreement'),
+                'actor': frame['actor'], 'book': frame['book'],
                 'supersedes_lsn': standing['lsn'] if standing else None})
 
     def rows(self, state):

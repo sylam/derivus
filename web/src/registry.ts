@@ -3,12 +3,14 @@
 // not functions) moved into the client.
 
 import type { ComponentType } from 'react';
+import { BackOfficeView } from './views/BackOfficeView';
 import { BlotterView } from './views/BlotterView';
 import { BootstrapperView } from './views/BootstrapperView';
 import { CalculationView } from './views/CalculationView';
 import { CurvesView } from './views/CurvesView';
 import { MarketDataView } from './views/MarketDataView';
 import { MarketPricesView } from './views/MarketPricesView';
+import { PaperView } from './views/PaperView';
 import { PnlView } from './views/PnlView';
 import { PortfolioView } from './views/PortfolioView';
 import { RiskView } from './views/RiskView';
@@ -26,6 +28,10 @@ export const WORKSPACES: Workspace[] = [
   { id: 'risk', label: 'Risk', view: RiskView },
   { id: 'xva', label: 'XVA', view: XvaView },
   { id: 'pnl', label: 'P&L', view: PnlView },
+  // the back office's seat over what waits on it and the day's close, and the paper the book trades
+  // under - its counterparties and their agreements
+  { id: 'backoffice', label: 'Back Office', view: BackOfficeView },
+  { id: 'paper', label: 'Paper', view: PaperView },
   // the market, in the order it is built: the quotes, the benchmark rows a curve is set up from,
   // the dials that turn them into factors, the factors themselves
   { id: 'prices', label: 'Market Prices', view: MarketPricesView },

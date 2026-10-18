@@ -5,8 +5,9 @@ import type { MarkedDays, Pnl } from './pnl';
 import type { Agreement, Entity, Position } from './positions';
 import type {
   ActivityPage, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva, CalculationOutcome,
-  CalculationsAnswer, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc, Reconcile,
-  ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage, ValidateResult, Worklist,
+  CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc,
+  Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage,
+  ValidateResult, Worklist,
 } from './types';
 
 /** Where this browser keeps who it acts as: the ID token a deployment's sign-in stored, else the
@@ -128,6 +129,13 @@ export const getBookMarkets = () => call<BookMarkets>('GET', '/book/markets');
 export const getBookReconcile = () => call<Reconcile>('GET', '/book/reconcile');
 // what waits on somebody, asked where the head or the file moved and never on the beat
 export const getWorklist = () => call<Worklist>('GET', '/book/worklist');
+// the back office: the fact that clears a row, whether a day's close is legal, and the close
+// itself - which the service declares only behind that same verdict
+export const postTransition = (fact: Record<string, unknown>) =>
+  call<Recorded>('POST', '/book/transition', signed(fact));
+export const getCloseCheck = (date: string) =>
+  call<CloseVerdict>('GET', `/book/close/check?date=${date}`);
+export const postClose = (date: string) => call<Recorded>('POST', '/book/close', signed({ date }));
 // the positions standing, each where the file holds it with the status its ticket reads, the paper
 // they sit under and the declared tree - the keys the grouped views file the book by
 export const getBookPositions = () => call<{ positions: Position[] }>('GET', '/book/positions');
@@ -139,6 +147,11 @@ export const getPnl = (query: string) => call<Pnl>('GET', `/book/pnl?${query}`);
 export const getBookEntities = () => call<{ entities: Entity[] }>('GET', '/book/entities');
 export const getBookAgreements = () =>
   call<{ agreements: Agreement[] }>('GET', '/book/agreements');
+// the paper, declared under the acting seat: an entity, and an agreement whose terms are its set
+export const declareEntity = (entity: Record<string, unknown>) =>
+  call<Recorded>('POST', '/book/entities', signed(entity));
+export const declareAgreement = (agreement: Record<string, unknown>) =>
+  call<Recorded>('POST', '/book/agreements', signed(agreement));
 // the desk's own named calculations: kept on this workstation beside the book, saved one at a time
 // (a null removes one), and run over the live book - whole or one subtree - in the curiosity lane
 export const getCalculations = () => call<CalculationsAnswer>('GET', '/calculations');

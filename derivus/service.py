@@ -1922,28 +1922,40 @@ def spine_block(document):
 
 
 def answered(rows, lsn=None):
-    """Every diary row as the RECORD answers it: a payment whose key a status transition moved
-    reads `settled`, a fixing the declared sources hold a print for carries the administrator that
-    printed it, and an expiry whose choice somebody elected needs nothing.
+    """Every diary row as the RECORD answers it: each carrying the `agreement` it is due under -
+    its netting set, where the record declares that agreement, else None - a payment whose key a
+    status transition moved reads `settled`, one due under an agreement only by a payment naming
+    it where a payment against its key names any, a fixing the declared sources hold a print for
+    carries the administrator that printed it, and an expiry whose choice somebody elected needs
+    nothing.
 
     ONE fold and one resolution for the whole diary, never one per row, and it asks for exactly the
     indices its own rows name. A READ REFUSES NOTHING: an index no `fixings` policy orders comes
     back unresolved and its rows read due with the reason on them, rather than taking the verb down;
-    a print for an index no deal here names is nothing to this read. Unchanged where no home is
-    configured - the compile's own answers are then the only ones there are.
+    a print for an index no deal here names is nothing to this read. Where no home is configured
+    the compile's own answers are the only ones there are, under no agreement.
     """
     if not spine.configured():
-        return rows
+        return [dict(row, agreement=None) for row in rows]
     state = spine.lifecycle(lsn)
     moved = {row['subject']: row['status'] for row in state['transitions']}
+    declared, paid = {row['agreement'] for row in spine.agreements(lsn)}, {}
+    payment = spine.package().verbs.PAYMENT
+    for row in spine.cash(lsn):
+        if row['kind'] == payment and row['agreement']:
+            paid.setdefault(row['subject'], set()).add(row['agreement'])
     elections = {row['instrument']: row['elections'] for row in state['instruments']}
     observed, unresolved = spine.observations(
         lsn, {row['index'] for row in rows if row['index']})
     answers = []
     for row in rows:
         printed = observed.get((row['index'], row['due_date']))
+        agreement = row['netting_set'] if row['netting_set'] in declared else None
+        # another agreement's payment against the key settles nothing due under this one
+        elsewhere = agreement is not None and agreement not in paid.get(row['key'], (agreement,))
         answers.append(dict(
-            row, state=moved.get(row['key']) or row['state'],
+            row, agreement=agreement,
+            state=row['state'] if elsewhere else moved.get(row['key']) or row['state'],
             needs=None if elections.get(row['instrument']) else row['needs'],
             source=printed['source'] if printed else row['source'],
             reason=UNRESOLVED.format(row['index']) if row['index'] in unresolved else row['reason'],
@@ -2286,8 +2298,8 @@ def book_market_declared(request: dict):
 
 @app.post('/book/transition', summary='Move the state a party put a subject in')
 def book_transition(request: dict):
-    """`{subject, status, actor, amount?, asset?, kind?, reference?, value_date?}` - file the
-    operational state a party moved a subject to.
+    """`{subject, status, actor, amount?, asset?, kind?, reference?, value_date?, agreement?}` -
+    file the operational state a party moved a subject to.
 
     `subject` is an ADDRESS: the derived cashflow key `GET /book/diary` carries on every row, or
     the instrument a trade books under. This is what a settlement and a confirmation say, and it is
@@ -2298,20 +2310,33 @@ def book_transition(request: dict):
     (received positive, paid or posted negative), the `asset` it is an amount of, its `kind` -
     `payment` against a diary row's key, `fee` against an instrument, `collateral` or `margin`
     against an agreement the record declares - the settlement system's own `reference`, and the
-    `value_date` it settled on. `GET /book/cash` reads them back.
+    `value_date` it settled on. `GET /book/cash` reads them back. A payment names the declared
+    `agreement` it was paid under - the one its diary row carries - which the P&L shares it
+    within, and must where its key is due under more than one netting set, refused by name here
+    otherwise, the diary being what knows where a row is due.
 
     A SUBJECT THE DIARY DOES NOT CARRY IS STILL A FACT. The record holds what it was told and a
     fold says what answers for it, so a state filed against a row the book has since paid away
     lands rather than refusing; what reads the two against each other is a projection. A seat the
-    capabilities document does not scope for `settle` is refused in the record's own words with the
-    denial landed, which this verb does not restate. 404 where no home is configured.
+    capabilities document does not scope for the act - `settle` a payment or a fee, `confirm` a
+    confirmation, `collateral` money held under paper - is refused in the record's own words with
+    the denial landed, which this verb does not restate. 404 where no home is configured.
     """
     document, _ = recording().read()
     value_date = request.get('value_date')
+    if request.get('kind') == spine.package().verbs.PAYMENT and request.get('agreement') is None:
+        under = sorted({row['netting_set'] for row in hub_diary(document)['rows']
+                        if row['key'] == request.get('subject')} - {None})
+        if len(under) > 1:
+            raise HTTPException(422, 'this payment names no agreement and its row is due under '
+                                     '{}: a payment is shared within the agreement it was paid '
+                                     'under - name it, declaring the paper first where only a '
+                                     'netting set names it'.format(', '.join(under)))
     filed = load(document).transition(
         request.get('subject'), request.get('status'), actor=request.get('actor'),
         book=book_name(document), amount=request.get('amount'), asset=request.get('asset'),
         kind=request.get('kind'), reference=request.get('reference'),
+        agreement=request.get('agreement'),
         effective_time=None if value_date is None else read_day(value_date) + MIDNIGHT)
     return dict({'recorded': {'lsn': filed['lsn']}, 'subject': request.get('subject'),
                  'status': request.get('status')},
@@ -2319,7 +2344,7 @@ def book_transition(request: dict):
 
 
 #: What a settlement that moved money adds to a state, and the instant a value date stands for.
-MOVED = ('amount', 'asset', 'kind', 'reference', 'value_date')
+MOVED = ('amount', 'asset', 'kind', 'reference', 'value_date', 'agreement')
 MIDNIGHT = 'T00:00:00.000000Z'
 
 
@@ -3047,18 +3072,20 @@ WORKLIST_ROWS = 200
 def book_worklist(actor: str = None):
     """`{date, counts, pending, payments, unconfirmed, calls, unmarked, rejected}` - six lists of
     what waits on THIS seat, each row `{kind, what, key, lsn, since}` with `key` what the fact that
-    clears it is filed against, `counts` how many each list holds and each list the newest
-    `WORKLIST_ROWS` of them. Nothing here is filed: every list is read off what stands, so a row
-    leaves the moment its fact lands.
+    clears it is filed against - a payment's also its `amount`, `currency` and the `agreement` it
+    is due under where it is one (`answered`), a call's its `amount` and `currency` - `counts`
+    how many each list holds and each list the newest `WORKLIST_ROWS` of them. Nothing here is
+    filed: every list is read off what stands, so a row leaves the moment its fact lands.
 
     Each list is what one verb acts on, where the seat holds it: `pending` the tickets awaiting a
     second seat's approval - a fill's or a restrike's, one row each (`spine.standing`) - for
     `approve`; `payments` the payments due by the book's own day no settlement was filed against
-    (`close_verdict` - a fee settles nothing), `unconfirmed` the clips no `confirmed` status filed
-    since their own ticket stands against, keyed as they were filled (`spine.fill_key`) - so a
-    restrike makes a re-confirmation due - and `calls` the collateral the marks of the book's day
-    call for or post, keyed by agreement, every movement filed counted whatever its value date, one
-    nobody can work out listed with its `unknown` (`collateral_calls`), for `settle`; `unmarked`
+    (`close_verdict` - a fee settles nothing), for `settle`; `unconfirmed` the clips no `confirmed`
+    status filed since their own ticket stands against, keyed as they were filled
+    (`spine.fill_key`) - so a restrike makes a re-confirmation due - for `confirm`; `calls` the
+    collateral the marks of the book's day call for or post, keyed by agreement, every movement
+    filed counted whatever its value date, one nobody can work out listed with its `unknown`
+    (`collateral_calls`), for `collateral`; `unmarked`
     the closes on the market designated for `pnl` on a DAY after the last one marked, and that
     day's standing close where it is not the one its marks were taken on - marks run forward, so no
     earlier day is owed - for `mark` over the book; and `rejected` the tickets
@@ -3110,9 +3137,9 @@ def book_worklist(actor: str = None):
                                     entry['lsn'], entry['at'])
         return list(found.values())
 
-    # a seat that settles nowhere pays nothing for calls it cannot see
-    due = [] if day not in marks or sight is not None and sight[vocabulary.SETTLE] == [] else (
-        collateral_calls(document, marks, day, market, sight, vocabulary.SETTLE, rows,
+    # a seat that posts collateral nowhere pays nothing for calls it cannot see
+    due = [] if day not in marks or sight is not None and sight[vocabulary.COLLATERAL] == [] else (
+        collateral_calls(document, marks, day, market, sight, vocabulary.COLLATERAL, rows,
                          filed=True)['calls'])
 
     def called(call):
@@ -3121,19 +3148,21 @@ def book_worklist(actor: str = None):
             call['agreement'], call['direction'], abs(call['call']), call['currency'])
             if call['direction'] else '{}: the call is not known - {}'.format(
                 call['agreement'], '; '.join(entry['what'] for entry in call['unknown'])),
-            call['agreement'], marks[day]['lsn'], day), unknown=call['unknown'])
+            call['agreement'], marks[day]['lsn'], day), amount=call['call'],
+            currency=call['currency'], unknown=call['unknown'])
 
     lists = {
         'pending': ticketed(vocabulary.APPROVE, 'pending', 'awaits a second seat\'s approval',
                             ticket, lambda position, entry, at: entry['status'] == 'pending'),
-        'payments': [row('payment', '{} {} pays {} {}'.format(
+        'payments': [dict(row('payment', '{} {} pays {} {}'.format(
             named(entry['instrument']), entry['leg'],
             'an undetermined amount' if entry['amount'] is None else entry['amount'],
-            entry['currency']), entry['key'], None, entry['due_date'])
+            entry['currency']), entry['key'], None, entry['due_date']), amount=entry['amount'],
+            currency=entry['currency'], agreement=entry['agreement'])
             for entry in close_verdict(answered(hub_diary(document)['rows']),
                                        day)['outstanding']
             if entry['kind'] == Diary.PAYMENT and see(entry['instrument'])],
-        'unconfirmed': ticketed(vocabulary.SETTLE, 'unconfirmed', 'is not confirmed', confirming,
+        'unconfirmed': ticketed(vocabulary.CONFIRM, 'unconfirmed', 'is not confirmed', confirming,
                                 unconfirmed, lambda position, entry: entry['execution_reference']),
         'calls': [called(call) for call in due if call['direction'] or call['unknown']],
         'unmarked': [row('unmarked', 'the close of {} on {} is not marked'.format(
@@ -3268,7 +3297,9 @@ def book_settlements(request: dict):
 
     The answer is the exporter's own plus two keys: `values_hash` is the BOARD the file was struck
     on, which is the exporter's statement, and `market` is the name it was resolved under with the
-    position that name stands at, which is the record's. 404 where no home is configured.
+    position that name stands at, which is the record's. A row carries the `agreement` it is due
+    under where it is one (`answered`), which its settlement names. 404 where no home is
+    configured.
     """
     document, _ = recording().read()
     if request.get('due_before') is None:

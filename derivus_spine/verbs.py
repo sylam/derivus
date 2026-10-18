@@ -55,10 +55,11 @@ LIFECYCLE_TYPES = ('election', 'fixing_observed', 'determination')
 REPLAY_FIELDS = ('plan_hash', 'values_hash', 'engine_version', 'seed', 'quasi_seed')
 
 #: What a settlement may move, and the one status money moves under. A `payment` settles the diary
-#: row its subject keys, as a bare `settled` does; a `fee` is money a trade cost that no row
-#: announced, filed on its instrument; `collateral` and `margin` move a balance held under an
-#: agreement. Only a payment moves a state - the other three move money and nothing else. A trade
-#: matched with its counterparty is `confirmed`, filed against its fill key.
+#: row its subject keys, as a bare `settled` does, under the agreement it names where it names one;
+#: a `fee` is money a trade cost that no row announced, filed on its instrument; `collateral` and
+#: `margin` move a balance held under an agreement. Only a payment moves a state - the other three
+#: move money and nothing else. A trade matched with its counterparty is `confirmed`, filed against
+#: its fill key.
 PAYMENT, FEE, COLLATERAL, MARGIN = 'payment', 'fee', 'collateral', 'margin'
 MOVEMENTS = (PAYMENT, FEE, COLLATERAL, MARGIN)
 HELD = (COLLATERAL, MARGIN)
@@ -219,7 +220,7 @@ def apply_lifecycle(log, actor, event_type, body, book=None, effective_time=None
 
 
 def transition(log, actor, subject, status, book=None, effective_time=None, amount=None,
-               asset=None, kind=None, reference=None):
+               asset=None, kind=None, reference=None, agreement=None):
     """Move the operational state a party put a subject in - a settlement paid, a confirmation
     matched - and return the envelope.
 
@@ -235,12 +236,14 @@ def transition(log, actor, subject, status, book=None, effective_time=None, amou
     A SETTLEMENT THAT MOVED MONEY SAYS HOW MUCH: the signed `amount` from the bank's side -
     received positive, paid or posted negative - the `asset` it is an amount of, its `kind`, and
     the settlement system's own `reference`, under which a retry is the same fact, two identical
-    movements are two, and a corrected amount restates the one it corrects. See `_movement`.
+    movements are two, and a corrected amount restates the one it corrects; and the `agreement` it
+    was paid under, which the cash fold shares it within. See `_movement`.
     """
     body = {'subject': subject, 'status': _name(status, 'status', 'transition')}
     if amount is None:
         stated = [field for field, value in (('asset', asset), ('kind', kind),
-                                             ('reference', reference)) if value is not None]
+                                             ('reference', reference), ('agreement', agreement))
+                  if value is not None]
         if stated:
             raise MalformedEvent(
                 'transition: {} describe money that moved and no amount was stated - file the '
@@ -249,7 +252,7 @@ def transition(log, actor, subject, status, book=None, effective_time=None, amou
         body['subject'] = _pinned(subject, 'subject')
     else:
         body.update(_movement(log, subject, status, amount, asset, kind, reference,
-                              effective_time))
+                              effective_time, agreement))
     return log.append('status_transition', body, actor=actor, book=book,
                       effective_time=effective_time)
 
@@ -633,14 +636,14 @@ def _placed(body, verb, **named):
     return body
 
 
-def _movement(log, subject, status, amount, asset, kind, reference, effective_time):
-    """The four fields a settlement that moved money adds to its body, each asserted.
+def _movement(log, subject, status, amount, asset, kind, reference, effective_time, agreement):
+    """The fields a settlement that moved money adds to its body, each asserted.
 
     Money moves under `settled` alone, on a value date the settlement states and never on the day
     the record heard about it. A `payment` or a `fee` names an address - the diary row it settles,
     or the instrument a fee was paid on - and `collateral` or `margin` names an agreement THE RECORD
-    DECLARES, the one place such a balance is held: an id nothing declared is a balance nobody can
-    read back under the paper it moved under.
+    DECLARES, the one place such a balance is held, as is the `agreement` a payment or a fee names:
+    an id nothing declared is money nobody can read back under the paper it moved under.
     """
     if not is_number(amount) or amount == 0:
         raise MalformedEvent(
@@ -659,19 +662,20 @@ def _movement(log, subject, status, amount, asset, kind, reference, effective_ti
         raise MalformedEvent(
             'transition: money moves on a value date, and this movement states none - file it with '
             'the effective time it settled on')
-    if kind in HELD:
+    paper = _name(subject, 'subject', 'transition') if kind in HELD else agreement
+    if kind not in HELD:
+        _pinned(subject, 'subject')
+    if paper is not None:
         from .projections import PROJECTORS, fold
 
-        _name(subject, 'subject', 'transition')
-        if subject not in fold(log, PROJECTORS['agreements']):
+        if _name(paper, 'agreement', 'transition') not in fold(log, PROJECTORS['agreements']):
             raise MalformedEvent(
-                'transition: {} is held under an agreement and {!r} is none the record declares - '
-                'declare the agreement first, since a balance is read back under the paper it '
-                'moved under'.format(kind, subject))
-    else:
-        _pinned(subject, 'subject')
-    return {'amount': amount, 'asset': _name(asset, 'asset', 'transition'), 'kind': kind,
-            'reference': _name(reference, 'reference', 'transition')}
+                'transition: a {} moves under an agreement and {!r} is none the record declares - '
+                'declare the agreement first, since money is read back under the paper it moved '
+                'under'.format(kind, paper))
+    moved = {'amount': amount, 'asset': _name(asset, 'asset', 'transition'), 'kind': kind,
+             'reference': _name(reference, 'reference', 'transition')}
+    return moved if agreement is None else dict(moved, agreement=agreement)
 
 
 def _day(value, verb):

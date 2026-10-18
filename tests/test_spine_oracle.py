@@ -194,6 +194,37 @@ def test_a_frame_under_a_seat_the_document_never_scoped_is_named(tmp_path):
     assert STRANGER in said and 'no book scope' in said and 'the writer would have refused' in said
 
 
+def test_a_confirmation_under_a_seat_that_only_settles_is_named(tmp_path):
+    """NOTHING OUTSIDE ITS SEAT, READ OFF THE BODY. A transition is one type and three acts, so the
+    oracle opens its body and asks the writer's own `verb_for`: a seat granted `settle` alone
+    paying a row holds, and the same seat's `confirmed` put on a copy by hand - which the writer
+    would have refused - is named as held under no `confirm` scope.
+
+    Killing mutation: the invariant reading the type's verb, which judges the confirmation under
+    `settle` and calls the copy clean.
+    """
+    settler, key = 'subject-settlements', 'c' * 64
+    home = seeded(tmp_path, 'bodied', clips=())
+    log = SpineLog(home)
+    try:
+        blob = log.store.put(canonical_document({'grants': [
+            {'subject': ACTOR, 'verb': 'admin', 'book': '*'},
+            {'subject': settler, 'verb': 'settle', 'book': BOOK}], 'read': []}))
+        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
+                   blob_refs=(blob,))
+        transition(log, settler, key, 'settled', book=BOOK)
+    finally:
+        log.close()
+    assert oracle.report(home)['nothing_outside_its_seat']['held'] is True
+
+    answers = oracle.report(planted(home, tmp_path, 'confirmed', 'status_transition',
+                                    {'subject': key, 'status': 'confirmed'}, actor=settler,
+                                    book_name=BOOK))
+    assert oracle.failed(answers) == ['nothing_outside_its_seat'], answers
+    said = answers['nothing_outside_its_seat']['evidence'][0]
+    assert settler in said and "no confirm scope over '{}'".format(BOOK) in said, said
+
+
 def test_a_node_seat_and_a_node_admin_are_judged_where_the_writer_judged_them(tmp_path):
     """NOTHING OUTSIDE ITS SCOPE: A FILL AT A NODE ITS ACTOR HOLDS NO GRANT AT. The writer judges a
     fill at the portfolio its body names and a node admin's capabilities declaration by what it
@@ -850,13 +881,16 @@ def test_a_pnl_this_record_did_not_make_is_named(tmp_path):
 
 def test_money_moved_under_paper_nobody_declared_is_named(tmp_path):
     """CASH RECONCILES: a fee is paid on an instrument a fill booked, collateral moves under a
-    declared agreement, a payment moves what the diary determines for its row and a row is paid
-    once, and every row a settlement file instructed is settled - by a payment, or by a bare
-    `settled` as the diary reads it. A copy carrying money the verb never saw is named at each.
+    declared agreement as a payment does under the agreement it names, a payment moves what the
+    diary determines for its row and a row is paid once under each agreement, and every row a
+    settlement file instructed is settled - by a payment, or by a bare `settled` as the diary reads
+    it. A copy carrying money the verb never saw is named at each.
 
-    Killing mutations: the paper not asked of collateral; the fee's instrument not asked; the
-    payment not held to the diary's amount and currency; a row paid under two references counted
-    once; and a bare `settled` read as unsettled, which names every row closed without money.
+    Killing mutations: the paper not asked of collateral, or of the agreement a payment names; the
+    fee's instrument not asked; the payment not held to the diary's amount and currency; a row
+    paid under two references counted once, or paid once under each of two agreements counted
+    twice (`paid 3 times`); and a bare `settled` read as unsettled, which names every row closed
+    without money.
     """
     key, owed, lost = 'c' * 64, 'd' * 64, 'e' * 64
     home = seeded(tmp_path, 'cash', clips=('EXEC-1',))
@@ -884,14 +918,20 @@ def test_money_moved_under_paper_nobody_declared_is_named(tmp_path):
         copy = planted(copy, tmp_path, name, 'status_transition', {
             'subject': subject, 'status': 'settled', 'amount': 1.0, 'asset': asset, 'kind': kind,
             'reference': name}, book_name=BOOK)
+    for name, agreement in (('under-paper', 'CSA-1'), ('under-nothing', 'CSA-NOBODY')):
+        copy = planted(copy, tmp_path, name, 'status_transition', {
+            'subject': key, 'status': 'settled', 'amount': 1_000.0, 'asset': 'USD',
+            'kind': 'payment', 'reference': name, 'agreement': agreement}, book_name=BOOK)
     answers = oracle.report(copy, script=script({'instructed': [key, owed, lost]}),
                             diary_keys=diary)
     assert oracle.failed(answers) == ['cash_reconciles'], answers
-    assert answers['cash_reconciles']['evidence'][:5] == [
+    assert answers['cash_reconciles']['evidence'][:6] == [
         'LSN {}: a collateral movement of 1 USD names CSA-NOBODY - no agreement the record '
         'declared by then'.format(head + 1),
         'LSN {}: a fee movement of 1 USD names {} - no instrument a fill booked by '
         'then'.format(head + 2, OTHER),
+        'LSN {}: a payment movement of 1000 USD names CSA-NOBODY - no agreement the record '
+        'declared by then'.format(head + 5),
         '{} is paid 2 times, under payment-1, twice - one row is paid once'.format(key),
         'twice moved 1.0 JPY against {}, which the diary determines at 1000.0 USD'.format(key),
         'the settlement file instructed {} and nothing settled it'.format(lost)]

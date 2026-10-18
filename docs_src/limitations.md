@@ -178,9 +178,6 @@ listed.
 - **18. Netting a package's legs before the two-way charge** (2026-09-21). Each leg pays its own
   spread, so a collar is charged as two tickets. Netting per pillar cuts the gate collar's edge by
   85% (the ATM row 95%, the butterfly 88%, the risk reversal not at all).
-- **19. One `settle` verb for the back office** (2026-09-30). Settlements, confirmations and
-  collateral share it, so each worklist shows the others' items and confirmations can pay or post
-  collateral; separation of duties wants narrower verbs.
 - **20. The recompute segment length.** The LogVar2FJ walk checkpoints every 21 steps, trading
   memory for a second forward pass; the mixer's per-draw checkpoint raised peak memory by about a
   fifth. The residual's granularity is the dial if that headroom is wanted.

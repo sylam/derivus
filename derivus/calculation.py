@@ -2315,7 +2315,8 @@ class Diary(BaseValuation):
     as a valuation binds them and then READ rather than priced, reached by `utils.walk_schedules` -
     the one walk the binding itself takes - so the diary and the pricer cannot disagree about a
     payment: they are the same schedule. Nothing here learns about users, workflow or storage: a
-    row names its deal's `Reference`, and `spine.diary` stamps its instrument and derived key.
+    row names its deal's `Reference` and the `netting_set` it sits in, and `spine.diary` stamps its
+    instrument and derived key.
 
     A NULL AMOUNT IS NEVER WRITTEN AS 0.0. A floating leg's amount is not determined until its
     resets fix, and a settlement file carrying 0.0 for one is an instruction to pay nothing - so the
@@ -2350,7 +2351,8 @@ class Diary(BaseValuation):
 
     def execute(self, params):
         """Every payment, fixing and expiry this job's deals carry, as rows naming each deal by its
-        `Reference`, unsorted: `BaseValuation.execute`'s compile half, READ rather than priced.
+        `Reference` and the netting set it sits in, unsorted: `BaseValuation.execute`'s compile
+        half, READ rather than priced.
 
         A deal the compile LEFT OUT is read off the loaded tree instead: expired, and it announces
         what a live one of its type announces, or unreadable, and it announces why. The compiled
@@ -2365,25 +2367,45 @@ class Diary(BaseValuation):
         self.set_deal_structures(self.config.deals['Deals']['Children'], self.netting_sets,
                                  shared.one, deal_level_mtm=True)
         rows, live = [], set()
-        for deal_data in self.netting_sets.deals():
+        for netting_set, deal_data in self._held(self.netting_sets):
             live.add(deal_data.Instrument.field.get('Reference'))
-            rows.extend(self._deal_rows(deal_data.Instrument, deal_data.Factor_dep, base_date))
-        for path, deal in self._leaves(self.config.deals['Deals']['Children']):
+            rows.extend(dict(row, netting_set=netting_set) for row in self._deal_rows(
+                deal_data.Instrument, deal_data.Factor_dep, base_date))
+        for path, netting_set, deal in self._leaves(self.config.deals['Deals']['Children']):
             if deal.field.get('Reference') in live:
                 continue
-            rows.extend(self._dropped_rows(deal) if self._expired(base_date, deal)
-                        else [self._unreadable_row(base_date, path, deal)])
+            rows.extend(dict(row, netting_set=netting_set) for row in (
+                self._dropped_rows(deal) if self._expired(base_date, deal)
+                else [self._unreadable_row(base_date, path, deal)]))
         return rows
 
     @staticmethod
-    def _leaves(children):
-        """Every LEAF deal of a compiled config's tree, as `(deal path, deal)`. A container is its
-        structure and carries no schedule of its own."""
-        def live(node):
-            return node.get('Ignore') != 'True' and isinstance(node.get('Instrument'), Deal)
+    def _within(deal, netting_set):
+        """The netting set a deal's children sit in: its own `Reference` where it is one."""
+        return deal.field.get('Reference') if deal.field.get('Object') == 'NettingCollateralSet' \
+            else netting_set
 
-        return ((path, node['Instrument']) for path, node in schema.walk(children, live)
-                if live(node) and not node.get('Children'))
+    @classmethod
+    def _held(cls, structure, netting_set=None):
+        """`(netting set, deal)` for every deal beneath a compiled `structure`, in `deals()`'s
+        order, the set the `Reference` of the one it sits in and None outside one."""
+        for inner in structure.sub_structures:
+            yield from cls._held(inner, cls._within(inner.obj.Instrument, netting_set))
+        for deal in structure.dependencies:
+            yield netting_set, deal
+
+    @classmethod
+    def _leaves(cls, children, netting_set=None, path=()):
+        """Every LEAF deal of a compiled config's tree, as `(deal path, netting set, deal)`, the set
+        as `_held` names it. A container is its structure and carries no schedule of its own."""
+        for position, node in enumerate(children):
+            deal, at = node.get('Instrument'), path + (position,)
+            if node.get('Ignore') == 'True' or not isinstance(deal, Deal):
+                continue
+            if node.get('Children'):
+                yield from cls._leaves(node['Children'], cls._within(deal, netting_set), at)
+            else:
+                yield '/'.join(map(str, at)), netting_set, deal
 
     def _expired(self, base_date, deal):
         """Whether the compile left this deal out because it has EXPIRED - its last date behind the

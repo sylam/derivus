@@ -1145,16 +1145,17 @@ def apply_lifecycle(event_type, body, actor_name=None, book_name=None, effective
 
 
 def transition(subject, status, actor_name=None, book_name=None, effective_time=None,
-               amount=None, asset=None, kind=None, reference=None):
+               amount=None, asset=None, kind=None, reference=None, agreement=None):
     """Move the state a party put a subject in - a settlement paid, a confirmation matched. The
     subject is a derived cashflow key or an instrument address; the diary's rows are a fold's
     question and not this verb's. A settlement that moved money states the amount, the asset, its
-    kind and the settlement system's reference - see `derivus_spine.verbs.transition`."""
+    kind, the settlement system's reference and the agreement it was paid under where it names
+    one - see `derivus_spine.verbs.transition`."""
     verbs = package().verbs
     with writing() as log:
         return verbs.transition(log, actor(actor_name, log), subject, status, book=book_name,
                                 effective_time=effective_time, amount=amount, asset=asset,
-                                kind=kind, reference=reference)
+                                kind=kind, reference=reference, agreement=agreement)
 
 
 def lifecycle(lsn=None):
@@ -1691,7 +1692,8 @@ def export_settlements(rows, official_values_hash, due_before):
     default: a settlement file is struck FOR a date, and one that exported every future payment
     would instruct the whole book. A row whose amount is UNDETERMINED refuses by name rather than
     exporting a zero: a floating amount is not known until its resets fix, and instructing a payment
-    of 0.0 for one is a wrong payment rather than a missing one.
+    of 0.0 for one is a wrong payment rather than a missing one. A row carries the `agreement` the
+    diary's row is due under, null where the record names none.
     """
     payments = [row for row in rows if row['kind'] == Diary.PAYMENT and row['state'] != SETTLED
                 and row['due_date'] and row['due_date'] <= due_before]
@@ -1720,7 +1722,7 @@ def export_settlements(rows, official_values_hash, due_before):
     return {'values_hash': official_values_hash, 'due_before': due_before, 'totals': totals,
             'rows': [{field: row[field] for field in
                       ('key', 'instrument', 'leg', 'schedule_index', 'due_date', 'currency',
-                       'amount')} for row in payments]}
+                       'amount', 'agreement')} for row in payments]}
 
 
 class PnL:
@@ -2099,8 +2101,8 @@ class PnL:
                 continue
             ended = last is not None and last <= end['day']
             u_start, u_end = start['units'].get(instrument), end['units'].get(instrument)
-            paid_start = (0.0, None) if closed else cls._paid(instrument, start, 'start', flows)
-            paid_end = (0.0, None) if ended else cls._paid(instrument, end, 'end', flows)
+            paid_start = (0.0, None) if closed else cls._paid(key, start, 'start', flows)
+            paid_end = (0.0, None) if ended else cls._paid(key, end, 'end', flows)
             # a unit at a close, less what it paid that day; nothing once its last day has come
             mark_start = 0.0 if closed else cls._worth(u_start, paid_start[0])
             mark_end = 0.0 if ended else cls._worth(u_end, paid_end[0])
@@ -2184,7 +2186,8 @@ class PnL:
             else:
                 quantities[row['instrument']] = (quantities.get(row['instrument'], 0.0)
                                                  + row['quantity_start'])
-                paid[row['instrument']] = _less(row['paid_start'], row['paid_end'])
+                paid[row['instrument']] = _sum(paid.get(row['instrument'], 0.0), _times(
+                    row['quantity_start'], _less(row['paid_start'], row['paid_end'])))
         answer = {'existing': existing, 'carry': carry, 'market': 0.0, 'residual': None,
                   'reserves': None, 'factors': [], 'unknown': unknown, 'note': None}
         quantities = {instrument: held for instrument, held in quantities.items() if held}
@@ -2196,8 +2199,7 @@ class PnL:
                                           'value for the explain: {}'.format(refused)})
                 answer['carry'] = answer['market'] = None
                 return answer
-            taken = _sum(*(_times(quantities[instrument], paid[instrument])
-                           for instrument in sorted(quantities)))
+            taken = _sum(*(paid[instrument] for instrument in sorted(quantities)))
             if taken is None:
                 answer['unknown'].append({'instrument': None, 'what': 'what a position paid on the '
                                           'day of a marks is not known, so neither is its carry'})
@@ -2287,15 +2289,15 @@ class PnL:
                     _less(0.0, released))
 
     @classmethod
-    def _paid(cls, instrument, marks, side, flows):
-        """`(per unit, why)` - what one unit of `instrument` paid on the day `marks` value it, which
-        the unit mark still carries, in the reporting currency at the close the marks stood on:
-        every payment the diary determines falling due that day, and every one it does not that a
-        settlement filed by the marks moved, per unit held when it fell due. None, with why, where
-        that is not known."""
-        if (instrument, side) not in flows['paid']:
+    def _paid(cls, key, marks, side, flows):
+        """`(per unit, why)` - what one unit the position `key` holds paid on the day `marks` value
+        it, which the unit mark still carries, in the reporting currency at the close the marks
+        stood on: every payment the diary determines falling due that day, and every one it does
+        not that a settlement shared to the position (`_carrying`) filed by the marks moved, per
+        unit held when it fell due. None, with why, where that is not known."""
+        if (key, side) not in flows['paid']:
             total, why, day = 0.0, None, marks['day']
-            for row in flows['diary'].get(instrument, []):
+            for row in flows['diary'].get(key[0], []):
                 if row['determined']:
                     moved = [(row['amount'], row['currency'])] if row['due_date'] == day else []
                 elif row['due_date'] < day:
@@ -2305,8 +2307,9 @@ class PnL:
                     for movement in flows['standing'][side].get(('payment', row['key']), []):
                         among = cls._carrying(row['key'], movement, flows)
                         held = cls._holdings(row, movement, flows)
-                        if not any(held.get(other) for other in among):
-                            # held by nobody here when it fell due: named in the window filed
+                        if key not in among or not any(held.get(other) for other in among):
+                            # another agreement's, or held by nobody here when it fell due: named
+                            # in the window filed
                             continue
                         net = sum(held.get(other, 0.0) for other in among)
                         if not net:
@@ -2323,8 +2326,8 @@ class PnL:
                     total += amount * marks['rates'][currency]
                 if why is not None:
                     break
-            flows['paid'][(instrument, side)] = (None, why) if why else (total, None)
-        return flows['paid'][(instrument, side)]
+            flows['paid'][(key, side)] = (None, why) if why else (total, None)
+        return flows['paid'][(key, side)]
 
     @staticmethod
     def _worth(unit, paid):
@@ -2347,10 +2350,11 @@ class PnL:
         the window moved against a row the diary leaves undetermined. Each at the close standing on
         its own day as the record stood at the end of the business day it counts in.
 
-        An undetermined payment is the book's until something settles it: it leaves the book's value
-        the day after it falls due, or on the position's last day where it is due then or after, and
-        a window it leaves before anything settled it is UNKNOWN, named. A settlement over positions
-        netting to nothing cannot be shared, a movement naming no agreement, and is named too."""
+        An undetermined payment is the book's until something settles it for this position (a
+        movement naming another agreement settling nothing here): it leaves the book's value the
+        day after it falls due, or on the position's last day where it is due then or after, and a
+        window it leaves before anything settled it is UNKNOWN, named. A settlement over positions
+        netting to nothing cannot be shared and is named too."""
         total, last = 0.0, flows['last_days'].get(key[0])
         for row in flows['diary'].get(key[0], []):
             due = row['due_date']
@@ -2364,7 +2368,7 @@ class PnL:
                 continue
             leaves = (flows['start'] <= due < flows['end'] if last is None or due < last
                       else flows['start'] < due <= flows['end'])
-            if (leaves and row['state'] != SETTLED
+            if (leaves and not cls._settles(key, row, flows)
                     and flows['days'](due)['through'].get(key, 0.0)):
                 unknown.append({'instrument': key[0], 'what': 'the {} payment due {} is not '
                                 'determined and nothing settled it'.format(row['leg'], due)})
@@ -2377,9 +2381,8 @@ class PnL:
                     continue
                 if not net:
                     unknown.append({'instrument': key[0], 'what': 'settlement {} moved a payment '
-                                    'of positions netting to nothing - a settlement names no '
-                                    'agreement, so whose it is is not known'.format(
-                                        movement['reference'])})
+                                    'of positions netting to nothing, so whose it is is not '
+                                    'known'.format(movement['reference'])})
                     return None
                 total = _sum(total, cls._converted(
                     movement['amount'] * mine / net, movement['asset'],
@@ -2390,9 +2393,19 @@ class PnL:
     @staticmethod
     def _booked(positions, movement):
         """The positions a movement is shared across: those under the book it was filed for, every
-        one where it names none."""
-        book = movement.get('book')
-        return [key for key in positions if not book or under(key[2], book)]
+        one where it names none, and under the agreement it names where it names one."""
+        book, agreement = movement.get('book'), movement['agreement']
+        return [key for key in positions if (not book or under(key[2], book))
+                and agreement in (None, key[1])]
+
+    @classmethod
+    def _settles(cls, key, row, flows):
+        """Whether the undetermined payment `row` is settled for the position `key` as the record
+        stands at the end: its row settled, and by a movement shared to the position where any
+        moved money - one naming another agreement settles nothing here."""
+        moved = flows['standing']['end'].get(('payment', row['key']), [])
+        return row['state'] == SETTLED and (not moved or any(
+            key in cls._carrying(row['key'], movement, flows) for movement in moved))
 
     @classmethod
     def _carrying(cls, key, movement, flows):

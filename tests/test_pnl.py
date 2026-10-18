@@ -1184,21 +1184,24 @@ LATE = cashflow('CF-H', 50_000.0, pd.Timestamp('2024-06-30'))
 
 
 def test_money_nobody_can_place_is_named(recorded, desk):
-    """NOTHING IS PLACED ON A GUESS. The same digital long with one client and short with another,
-    and the same short cashflow held both ways: the cashflow's payment, which the diary determines,
-    falls to each position by what it held, but the digital's payoff is two settlements against
-    ONE row of an instrument netting to nothing, and a settlement names no agreement - whose each
-    is cannot be known, so it is named on the positions rather than dropped. A fee filed on an
-    instrument the book never held falls to nobody, and money settled against a payment no position
-    held when it fell due belongs to nobody here: each is named.
+    """NOTHING IS PLACED ON A GUESS. The same digital long and short in two portfolios with one
+    client, and the same short cashflow held both ways with two: the cashflow's payment, which the
+    diary determines, falls to each position by what it held, but the digital's payoff is two
+    settlements against ONE row of positions netting to nothing - whose each is cannot be known, so
+    it is named on the positions rather than dropped. A fee filed on an instrument the book never
+    held falls to nobody, and money settled against a payment no position held when it fell due
+    belongs to nobody here: each is named.
 
     Killing mutations: a payoff over a flat net dropped as nothing; a fee nobody holds dropped; a
     settlement nobody held dropped.
     """
     designated(recorded)
     with_set(desk, 'CLIENT_B', 'CPTY_B')
+    booked(BINARY, 1.0, 'EXEC-Q/FX', BOOK + '/FX', 5_000.0)
+    # the digital's row, read while the book holds it at a net
+    payoff = due('EQ-BIN', '2024-07-02')['key']
+    booked(BINARY, -1.0, 'EXEC-Q/Hedge', BOOK + '/Hedge', 5_000.0)
     for sign, parent, portfolio in ((1.0, CLIENT_SET, '/FX'), (-1.0, 'CLIENT_B', '/Hedge')):
-        booked(BINARY, sign, 'EXEC-Q' + portfolio, BOOK + portfolio, 5_000.0, parent=parent)
         booked(EXPIRING, sign, 'EXEC-P' + portfolio, BOOK + portfolio, 1_845_000.0, parent=parent)
     closed_and_marked()
 
@@ -1210,7 +1213,6 @@ def test_money_nobody_can_place_is_named(recorded, desk):
     closed_and_marked()
 
     rolled(desk, THIRD, 17.5)
-    payoff = due('EQ-BIN', '2024-07-02')['key']
     for amount, reference in ((10_000.0, 'PAY-A'), (-10_000.0, 'PAY-B')):
         settle({'subject': payoff, 'amount': amount, 'asset': 'USD', 'kind': 'payment',
                 'reference': reference, 'value_date': '2024-07-02'})
@@ -1227,12 +1229,106 @@ def test_money_nobody_can_place_is_named(recorded, desk):
         '/FX', '/Hedge')] == [pytest.approx(100_000.0 * 18.5), pytest.approx(-100_000.0 * 18.5)]
     assert second['complete'] is False
     assert {'instrument': instrument_of('EQ-BIN'), 'what': 'settlement PAY-A moved a payment of '
-            'positions netting to nothing - a settlement names no agreement, so whose it is is not '
-            'known'} in second['unknown']
+            'positions netting to nothing, so whose it is is not known'} in second['unknown']
     assert [keyed(second)[(instrument_of('EQ-BIN'), BOOK + part)]['payments'] for part in (
         '/FX', '/Hedge')] == [None, None]
     assert {'instrument': instrument_of('CF-H'), 'what': 'settlement PAY-H moved a payment no '
             'position held when it fell due'} in second['unknown']
+
+
+#: A cashflow paying on the second marked day.
+PAID_END = cashflow('CF-S', 50_000.0, END)
+
+
+def test_a_payment_is_shared_within_the_agreement_it_names(recorded, desk):
+    """A SETTLEMENT NAMES ITS AGREEMENT. The same digital and the same cashflow are each bought from
+    two clients under the agreements legal declared for them - one unit with the first in one
+    portfolio, two with the second in another - so each payment is one key due under two
+    agreements: the settlement file and the worklist carry a row per agreement naming its own, and
+    a row leaves the worklist when its own agreement's payment lands. The cashflow, which the diary
+    determines, settles under each agreement at that agreement's amount with no break. A payment
+    against the digital's payoff naming no agreement is refused by name with nothing appended; the
+    first client's 10,000 named under its agreement is its position's payment exactly and leaves
+    the second's position unmoved, its payoff named unknown with nothing having settled it - where
+    the share by holdings this replaces read 3,333.33 to the first and 6,666.67 to the second -
+    until the second's own 20,000 lands on it. A fee named under the second agreement falls to its
+    position alone, where the share by holdings put a third of it on the first.
+
+    Killing mutations: the share left running beside the name (the cashflow's first settlement
+    breaks, 50,000 against 150,000, and the digital's first position reads the 3,333.33 it shares);
+    a row's state read off its key alone, or the agreement dropped on the way to the record (the
+    second agreement's cashflow row leaves the worklist with the first's payment).
+    """
+    log = SpineLog(recorded)
+    try:
+        policy.declare(log, ACTOR, policy.TIERS_POLICY, {
+            'tiers': [{'name': 'desk', 'four_eyes': True}],
+            'designations': {'pnl': 'official', 'settlement_export': 'official'}})
+        policy.declare(log, ACTOR, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
+    finally:
+        log.close()
+    agreed(CLIENT_SET, 'CPTY_A')
+    agreed('CLIENT_B', 'CPTY_B', entity='LEI-B')
+    with_set(desk, 'CLIENT_B', 'CPTY_B')
+    sets = ((CLIENT_SET, 1.0, '/FX'), ('CLIENT_B', 2.0, '/Hedge'))
+    for agreement, units, portfolio in sets:
+        booked(BINARY, units, 'EXEC-Q' + portfolio, BOOK + portfolio, 5_000.0, parent=agreement)
+        booked(PAID_END, units, 'EXEC-S' + portfolio, BOOK + portfolio, 2_700.0,
+               parent=agreement)
+    closed_and_marked()
+
+    rolled(desk, END, 18.0)
+    observe(recorded, 104.0, index=INDEX, date=pd.Timestamp('2024-06-30'))
+    filed = CLIENT.post('/book/settlements', json={'due_before': '2024-07-01'})
+    assert filed.status_code == 200, filed.text
+    instructed = [(row['agreement'], row['amount']) for row in filed.json()['rows']]
+    assert sorted(instructed) == [(CLIENT_SET, 50_000.0), ('CLIENT_B', 100_000.0)]
+    key = filed.json()['rows'][0]['key']
+
+    def owed():
+        return sorted((row['agreement'], row['amount'], row['currency'])
+                      for row in worklist()['payments'])
+
+    assert owed() == [(CLIENT_SET, 50_000.0, 'ZAR'), ('CLIENT_B', 100_000.0, 'ZAR')]
+    for agreement, units, _ in sets:
+        settle({'subject': key, 'amount': 50_000.0 * units, 'asset': 'ZAR', 'kind': 'payment',
+                'reference': 'PAY-S-' + agreement, 'value_date': '2024-07-01',
+                'agreement': agreement})
+        assert owed() == [(CLIENT_SET, 50_000.0, 'ZAR'), ('CLIENT_B', 100_000.0, 'ZAR')][
+            int(units):], 'a row left the worklist with another agreement\'s payment'
+    closed_and_marked()
+    assert between('2024-06-28', '2024-07-01')['breaks'] == []
+
+    rolled(desk, THIRD, 17.5)
+    payoff, digital = due('EQ-BIN', '2024-07-02')['key'], instrument_of('EQ-BIN')
+    unnamed = {'subject': payoff, 'status': 'settled', 'actor': ACTOR, 'amount': 10_000.0,
+               'asset': 'USD', 'kind': 'payment', 'reference': 'PAY-A', 'value_date': '2024-07-02'}
+    head = SpineLog(recorded).head()[0]
+    refused = CLIENT.post('/book/transition', content=dump(unnamed), headers=JSON)
+    assert refused.status_code == 422 and 'names no agreement and its row is due under ' \
+        'CLIENT_A, CLIENT_B' in refused.json()['detail'], refused.text
+    assert SpineLog(recorded).head()[0] == head, 'a refused payment recorded something'
+    settle(dict(unnamed, agreement=CLIENT_SET))
+    live = between('2024-07-01')
+    assert [keyed(live)[(digital, BOOK + part)]['payments'] for _, _, part in sets] == [
+        pytest.approx(10_000.0, rel=1e-12), None]
+    assert {'instrument': digital, 'what': 'the Settlement payment due 2024-07-02 is not '
+            'determined and nothing settled it'} in live['unknown']
+    settle(dict(unnamed, amount=20_000.0, reference='PAY-B', agreement='CLIENT_B'))
+    settle(dict(unnamed, subject=digital, amount=-30.0, kind='fee', reference='FEE-B',
+                agreement='CLIENT_B'))
+    closed_and_marked()
+    window = between('2024-07-01', '2024-07-02')
+    assert [keyed(window)[(digital, BOOK + part)]['payments'] for _, _, part in sets] == [
+        pytest.approx(10_000.0, rel=1e-12), pytest.approx(20_000.0, rel=1e-12)]
+    assert [keyed(window)[(digital, BOOK + part)]['fees'] for _, _, part in sets] == [
+        0.0, pytest.approx(-30.0, rel=1e-12)]
+    assert window['breaks'] == [] and digital not in {row['instrument']
+                                                      for row in window['unknown']}
+    assert sorted((row['reference'], row['agreement']) for row in CLIENT.get(
+        '/book/cash').json()['movements']) == [
+        ('FEE-B', 'CLIENT_B'), ('PAY-A', CLIENT_SET), ('PAY-B', 'CLIENT_B'),
+        ('PAY-S-CLIENT_A', CLIENT_SET), ('PAY-S-CLIENT_B', 'CLIENT_B')]
 
 
 #: An FX forward maturing on the second marked day; the same forward as a leg of a structure
@@ -1438,9 +1534,10 @@ def test_a_seat_marking_one_book_marks_it_and_the_hub_attests_the_marks(recorded
 
 
 #: The second pair of eyes, a seat reading the FX node of the book alone, and the seats that act on
-#: what waits: one approving at the Rates node, one settling the whole firm.
+#: what waits: one approving at the Rates node, and the back office's three across the firm.
 SECOND, FX_READER = 'subject-desk-two', 'subject-desk-fx'
 APPROVER, SETTLER = 'subject-rates-approver', 'subject-settlements'
+CONFIRMER, HOLDER = 'subject-confirmations', 'subject-collateral'
 
 
 def worklist(**params):
@@ -1462,14 +1559,18 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
     waits on its day's marks; a payment due by the book's day waits on its settlement - a FEE filed
     against it settling nothing; and a rejected trade that still stands waits on somebody closing
     it. Each row appears once and leaves the moment its fact lands, the close-out's own fill then
-    waiting in its place. And each list is what one verb acts on, where the seat asking holds it:
-    an approver at a node reads the tickets waiting there, a settlements seat the confirmations,
-    and a seat that only reads acts on nothing.
+    waiting in its place, and a payment row carries what its settlement files. And each list is
+    what one verb acts on, where the seat asking holds it: an approver at a node reads the tickets
+    waiting there, a seat holding `settle` the payments - which it then settles - and one holding
+    `confirm` the confirmations, each withheld from the seat holding the other two back-office
+    verbs, and a seat that only reads acts on nothing.
 
     Killing mutations: a fee's movement filed as the status of what it names, which clears a
     payment nobody paid; the last marked day's close left unread against the values its marks
-    were taken on, which leaves its restatement unmarked or its marks waiting; and the lists
-    narrowed by `validate` alone, which shows an approver nothing to approve.
+    were taken on, which leaves its restatement unmarked or its marks waiting; the lists narrowed
+    by `validate` alone, which shows an approver nothing to approve; and the back office's lists
+    narrowed by `settle` alone, which shows the confirming seat nothing and the paying seat the
+    fills.
     """
     designated(recorded, fixings=False)
     booked(EXPIRING, 1.0, 'EXEC-W', BOOK + '/FX', 1_000.0)
@@ -1495,13 +1596,11 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
 
     rolled(desk, END, 18.0)
     paid = due('CF-P', '2024-06-30')
-    assert waiting(worklist())['payments'] == [paid['key']]
+    assert [(row['key'], row['amount'], row['currency'], row['agreement'])
+            for row in worklist()['payments']] == [(paid['key'], 100_000.0, 'ZAR', None)]
     settle({'subject': paid['key'], 'amount': -5.0, 'asset': 'ZAR', 'kind': 'fee',
             'reference': 'FEE-W', 'value_date': '2024-06-30'})
     assert waiting(worklist())['payments'] == [paid['key']], 'a fee settled a payment'
-    settle({'subject': paid['key'], 'amount': 100_000.0, 'asset': 'ZAR', 'kind': 'payment',
-            'reference': 'PAY-W', 'value_date': '2024-06-30'})
-    assert waiting(worklist())['payments'] == []
 
     booked(LONG, 1.0, 'EXEC-R', BOOK + '/Rates', 17_800_000.0)
     rejected = fills(recorded)[-1]
@@ -1523,8 +1622,10 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
         blob = log.store.put(canonical_document({'grants': [
             {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
             {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'},
-            {'subject': APPROVER, 'verb': 'approve', 'book': BOOK + '/Rates'},
-            {'subject': SETTLER, 'verb': 'settle', 'book': '*'}], 'read': []}))
+            {'subject': APPROVER, 'verb': 'approve', 'book': BOOK + '/Rates'}] + [
+            {'subject': seat, 'verb': verb, 'book': '*'}
+            for seat, held in ((SETTLER, 'settle'), (CONFIRMER, 'confirm'))
+            for verb in (held, 'collateral')], 'read': []}))
         log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
                    blob_refs=(blob,))
     finally:
@@ -1532,8 +1633,14 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
     nothing = {'pending': [], 'payments': [], 'unconfirmed': [], 'unmarked': [], 'rejected': []}
     assert waiting(worklist(actor=FX_READER)) == waiting(worklist(actor=ACTOR)) == nothing
     assert waiting(worklist(actor=APPROVER)) == dict(nothing, pending=[closing['ticket']])
-    assert waiting(worklist(actor=SETTLER)) == dict(
+    assert waiting(worklist(actor=SETTLER)) == dict(nothing, payments=[paid['key']])
+    assert waiting(worklist(actor=CONFIRMER)) == dict(
         nothing, unconfirmed=waiting(everything)['unconfirmed'])
+    assert CLIENT.post('/book/transition', content=dump({
+        'subject': paid['key'], 'status': 'settled', 'actor': SETTLER, 'amount': 100_000.0,
+        'asset': 'ZAR', 'kind': 'payment', 'reference': 'PAY-W', 'value_date': '2024-06-30'}),
+        headers=JSON).status_code == 200
+    assert waiting(worklist(actor=SETTLER)) == nothing
 
 
 def test_a_seat_reading_a_node_is_answered_that_node_s_p_and_l_summed_over_it(recorded, desk):
@@ -1633,8 +1740,8 @@ def test_the_worklist_counts_everything_and_answers_the_newest(recorded, desk):
         'the page is not the newest'
 
 
-#: A seat settling at the Rates node and reading the FX node.
-RATES_SETTLER = 'subject-rates-settlements'
+#: A seat posting collateral at the Rates node and reading the FX node.
+RATES_HOLDER = 'subject-rates-collateral'
 
 
 def agreed_csa(agreement, counterparty, currency, received, posted, minimum):
@@ -1692,8 +1799,9 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     until it is returned. A day with no marks is refused by name, the book's own day by default; a
     seat acting at one node reads the agreements whose positions sit there, one acting everywhere
     every collateralised agreement, one nothing is held under included; a seat's worklist lists the
-    calls of the agreements whose positions sit where it settles, one that may not settle having
-    none; and the binding's `collateral_calls` answers what the verb does.
+    calls, each with the amount and currency it calls, of the agreements whose positions sit where
+    it posts collateral, one holding the back office's other two verbs having none; and the
+    binding's `collateral_calls` answers what the verb does.
 
     Killing mutations: the day's payment never added back, or added back under
     `Exclude_Paid_Today` too; a position closed on its last day rather than held through it; margin
@@ -1701,8 +1809,8 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     worklist's calls read as of the day; the calls read off every agreement, a CSA or none; the
     balance written into a base valuation; an uncrossable asset let through a run that values the
     book; a call nobody can work out dropped from the worklist; the narrowing dropped, or a seat
-    acting everywhere narrowed like a node seat; the worklist's calls not narrowed to `settle`; the
-    default day the last one marked; the binding dropping the day it was asked for.
+    acting everywhere narrowed like a node seat; the worklist's calls not narrowed to `collateral`;
+    the default day the last one marked; the binding dropping the day it was asked for.
     """
     designated(recorded, fixings=False)
     surviving(desk, 'CPTY_A', 'CPTY_B')
@@ -1731,7 +1839,8 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     assert b['exposure'] == pytest.approx(-unit(NEW, START, 18.5) / 18.5, rel=1e-12)
     assert b['call'] == pytest.approx(b['exposure'] + 50_000.0, rel=1e-12)
     assert (first['CSA-D']['exposure'], first['CSA-D']['direction']) == (0.0, None)
-    assert [row['key'] for row in worklist()['calls']] == ['CSA-A', 'CSA-B']
+    assert [(row['key'], row['amount'], row['currency']) for row in worklist()['calls']] == [
+        ('CSA-A', a['call'], 'USD'), ('CSA-B', b['call'], 'ZAR')]
 
     risk = CLIENT.get('/book/risk').json()
     cached = service.BOOK.risk_cache.get(risk['etag'])
@@ -1808,20 +1917,23 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
             {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
             {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'},
             {'subject': SETTLER, 'verb': 'settle', 'book': '*'},
-            {'subject': RATES_SETTLER, 'verb': 'settle', 'book': BOOK + '/Rates'},
-            {'subject': RATES_SETTLER, 'verb': 'validate', 'book': BOOK + '/FX'}], 'read': []}))
+            {'subject': SETTLER, 'verb': 'confirm', 'book': '*'},
+            {'subject': HOLDER, 'verb': 'collateral', 'book': '*'},
+            {'subject': RATES_HOLDER, 'verb': 'collateral', 'book': BOOK + '/Rates'},
+            {'subject': RATES_HOLDER, 'verb': 'validate', 'book': BOOK + '/FX'}], 'read': []}))
         log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
                    blob_refs=(blob,))
     finally:
         log.close()
-    for seat in (ACTOR, SETTLER):
+    for seat in (ACTOR, SETTLER, HOLDER):
         assert sorted(called(actor=seat)) == ['CSA-A', 'CSA-B', 'CSA-D'], seat
     assert sorted(called(actor=FX_READER)) == ['CSA-A'], 'a node seat read a client held elsewhere'
     calling = [name for name, row in sorted(third.items()) if row['direction']]
-    assert [row['key'] for row in worklist(actor=SETTLER)['calls']] == calling
-    assert [row['key'] for row in worklist(actor=RATES_SETTLER)['calls']] == [
+    assert [row['key'] for row in worklist(actor=HOLDER)['calls']] == calling
+    assert [row['key'] for row in worklist(actor=RATES_HOLDER)['calls']] == [
         name for name in calling if name == 'CSA-B'], 'a call listed where the seat only reads'
-    assert worklist(actor=FX_READER)['calls'] == [], 'a seat that may not settle has calls'
+    assert worklist(actor=SETTLER)['calls'] == worklist(actor=FX_READER)['calls'] == [], \
+        'a seat that may not post collateral has calls'
     binding.configure(base_url='http://testserver', session=CLIENT)
     try:
         assert binding.collateral_calls(date='2024-07-01', actor=FX_READER) == CLIENT.get(

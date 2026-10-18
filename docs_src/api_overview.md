@@ -422,6 +422,15 @@ doorbell carry `Authorization: Bearer <ID token>`, verified locally: the token's
 seat, a stated `actor` that differs is refused, and none or a bad token is a 401; a key set
 that does not read refuses the service at startup and a request by name.
 
+**The back office and the paper.** `POST /book/transition` files what the back office moved - a
+payment or a fee under `settle`, a confirmation under `confirm`, collateral or margin under
+`collateral`, the record reading which act a transition is off its body - and a payment names the
+declared `agreement` it was paid under, the one its diary row carries, which the service requires
+where the row's key is due under more than one netting set. The web client's Back Office
+workspace works `/book/worklist`, `/book/close/check` and `/book/close` under the acting seat, and
+its Paper workspace `/book/entities` and `/book/agreements`, an agreement's terms rendered off the
+`NettingCollateralSet` declaration `/schema` publishes.
+
 **The envelope, from the service.** `/schema` describes what goes *in* a `Calculation` block, a
 `Price Factors` block and a deal; it cannot describe where those blocks go, and that is not
 guessable from them — market data lives under `MergeMarketData.ExplicitMarketData` (or behind a

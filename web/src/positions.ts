@@ -31,7 +31,9 @@ export type Position = {
 };
 
 export type Entity = { entity: string; name: string; parent: string | null };
-export type Agreement = { agreement: string; entity: string; kind: string };
+export type Agreement = {
+  agreement: string; entity: string; kind: string; terms: Record<string, unknown>;
+};
 
 /** What the grouped views read: the positions standing, the paper they sit under, and the nodes
  * of the book's tree the record declares. */

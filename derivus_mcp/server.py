@@ -1589,9 +1589,11 @@ def declare_close(market: str | None = None, date: str | None = None,
 @MCP.tool()
 def file_status(subject: str, status: str, actor: str | None = None, amount: float | None = None,
                 asset: str | None = None, kind: str | None = None, reference: str | None = None,
-                value_date: str | None = None) -> dict:
-    """Say that a payment settled, a confirmation matched, or whatever else moved the state of one
-    row - the back office's half of the record.
+                value_date: str | None = None, agreement: str | None = None) -> dict:
+    """Say that a payment settled, a confirmation matched, or collateral moved - the back office's
+    half of the record, each act its own verb: `settled` with no money or with a `payment` or a
+    `fee` is the `settle` seat's, `confirmed` the `confirm` seat's, and `collateral` or `margin`
+    moved the `collateral` seat's.
 
     `subject` is the row's own `key`, which `book_diary` carries on every row and
     `export_settlements` carries on every row it instructs: it is a 64-hex address, so paste the
@@ -1603,8 +1605,10 @@ def file_status(subject: str, status: str, actor: str | None = None, amount: flo
     or posted negative), the `asset` it is an amount of (a currency, or a security for collateral),
     its `kind` - `payment` against a diary row's key, `fee` against an instrument, `collateral` or
     `margin` against an agreement the record declares - the settlement system's own `reference`
-    and the `value_date` (`YYYY-MM-DD`) it settled on, all under `settled`. Filed again under one
-    reference, a movement restates the one it corrects; `book_cash` reads them back.
+    and the `value_date` (`YYYY-MM-DD`) it settled on, all under `settled`; and for a payment the
+    `agreement` it was paid under, the one its row carries, required where the row's instrument
+    sits under more than one. Filed again under one reference, a movement restates the one it
+    corrects; `book_cash` reads them back.
 
     A key the book no longer announces a row for is still RECORDED: the record holds what it was
     told and the reading is a fold, so a late settlement against a paid-away row is a fact rather
@@ -1614,7 +1618,7 @@ def file_status(subject: str, status: str, actor: str | None = None, amount: flo
     return service().call('POST', '/book/transition', json=dict(
         {'subject': subject, 'status': status},
         **_stated(actor=actor, amount=amount, asset=asset, kind=kind, reference=reference,
-                  value_date=value_date)))
+                  value_date=value_date, agreement=agreement)))
 
 
 @MCP.tool()
@@ -1705,7 +1709,8 @@ def book_pnl(start: str | None = None, end: str | None = None, portfolio: str | 
 def describe_agreements() -> dict:
     """The paper the book trades under: every legal entity the record declares, with the parent it
     is grouped under, and every agreement with the entity it is with, the document's kind and the
-    netting-set terms its positions compile into. 404 on a box that records nothing.
+    netting-set terms its positions compile into - what the `document` seat declares with
+    `declare_legal_entity` and `declare_agreement`. 404 on a box that records nothing.
     """
     return dict(service().call('GET', '/book/entities'),
                 **service().call('GET', '/book/agreements'))
@@ -1732,12 +1737,15 @@ def worklist(actor: str | None = None) -> dict:
     """What waits on the seat asking, read off what stands - nothing here is filed, so a row leaves
     the moment its fact lands. Six lists, each what one verb acts on where `actor` holds it, each
     row `{kind, what, key, lsn, since}` with `key` what the clearing fact is filed against:
-    `pending` tickets to sign (`approve_ticket`, for an approve seat), `payments` due by the book's
-    day nobody settled, `unconfirmed` fills and the collateral `calls` the day's marks make, keyed
-    by agreement (`file_status` against the key, for a settle seat), `unmarked` closes
-    (`mark_book`, for a mark seat), and `rejected` trades still standing, which a book seat closes
-    out. `counts` says how many each list holds; each list answers the newest 200. 404 on a box
-    that records nothing.
+    `pending` tickets to sign (`approve_ticket`, for an approve seat); `payments` due by the book's
+    day nobody settled, each with its `amount`, `currency` and the `agreement` it is due under
+    where it is one, which a settle seat clears with `file_status` `settled`, kind `payment`;
+    `unconfirmed` fills, which a confirm seat clears with `file_status` `confirmed` against the
+    key; the collateral `calls` the day's marks make, keyed by agreement with the `amount` and
+    `currency` called, which a collateral seat clears with `file_status` `settled`, kind
+    `collateral` or `margin`, the agreement as subject; `unmarked` closes (`mark_book`, for a mark
+    seat); and `rejected` trades still standing, which a book seat closes out. `counts` says how
+    many each list holds; each list answers the newest 200. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/worklist', params=_stated(actor=actor))
 
@@ -1762,11 +1770,11 @@ def declare_portfolio(path: str, actor: str | None = None) -> dict:
 @MCP.tool()
 def declare_legal_entity(entity: str, name: str, parent: str | None = None,
                          actor: str | None = None) -> dict:
-    """Declare a legal entity the book may trade with - the credit unit a client is.
+    """Declare a legal entity the book may trade with - the credit unit a client is - as the
+    `document` seat, which files an `entity_declared`.
 
     `entity` is its id as the legal system knows it, `name` what a reader is shown, `parent` the
-    entity it is grouped under, if any. Declaring one is the `document` act, which only a seat
-    granted it may perform; a second declaration under one id restates it. Answers
+    entity it is grouped under, if any. A second declaration under one id restates it. Answers
     `{recorded: {lsn}, entity}`.
     """
     return service().call('POST', '/book/entities', json=dict(
@@ -1776,16 +1784,16 @@ def declare_legal_entity(entity: str, name: str, parent: str | None = None,
 @MCP.tool()
 def declare_agreement(agreement: str, entity: str, kind: str, terms: dict,
                       actor: str | None = None) -> dict:
-    """Declare an agreement with a declared legal entity: its id, the document's `kind` as you
-    label it (an ISDA with a CSA, a GMRA, a long-form confirmation), and its `terms` - a
-    `NettingCollateralSet` block (`describe_instrument_type`), which every position booked under
-    the agreement is compiled into.
+    """Declare an agreement with a declared legal entity as the `document` seat, which files an
+    `agreement_declared`: its id, the document's `kind` as you label it (an ISDA with a CSA, a
+    GMRA, a long-form confirmation), and its `terms` - a `NettingCollateralSet` block
+    (`describe_instrument_type`), which every position booked under the agreement is compiled into.
 
     The terms carry the paper and nothing else: no Children - a position is a fill booked against
     the agreement - and no balance or collateral amount, which arrive as settlements. The engine
-    judges them before anything is recorded and a refusal names what to fix. Declaring one is the
-    `document` act; a second declaration under one id restates it. Answers
-    `{recorded: {lsn}, agreement, terms}`, `terms` the address they are stored at.
+    judges them before anything is recorded and a refusal names what to fix. A second declaration
+    under one id restates the agreement. Answers `{recorded: {lsn}, agreement, terms}`, `terms` the
+    address they are stored at.
     """
     return service().call('POST', '/book/agreements', json=dict(
         {'agreement': agreement, 'entity': entity, 'kind': kind, 'terms': terms},
@@ -1812,7 +1820,9 @@ def declare_survival_curve(counterparty: str, spread: float | list[dict], recove
 @MCP.tool()
 def export_settlements(due_before: str, actor: str | None = None) -> dict:
     """The settlement file for one day: every payment due by `due_before` that nobody has settled,
-    each row with its key, deal, leg, currency and amount, and the totals by currency.
+    each row with its key, deal, leg, currency, amount and the `agreement` it is due under where it
+    is one, and the totals by currency - each row a settle seat clears with `file_status`
+    `settled`, kind `payment`, naming that agreement.
 
     `due_before` is required - a settlement file is struck FOR a day, and one carrying every future
     payment would instruct the whole book.

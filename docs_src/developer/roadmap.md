@@ -33,13 +33,6 @@ not rows to close.
   file therefore answers 500 on its status and curves, refuses survival curves and date rolls on a
   bare key, and writes the whole file's factors into itself when one spot is patched; every request
   but the XVA tab's builds its own context, and a market edit makes the XVA tab re-parse the file.
-- **A settlement names its agreement** (2026-09-28, about twenty lines over seven files). A payment
-  the diary cannot determine is shared across its instrument's positions by holdings: exact when
-  every position's settlement is filed, smeared when one is filed alone, named and unshared over
-  positions netting to zero. One filed against a payment the diary has dropped is matched within
-  the business week before its value date; past that, its day and a window reaching back over it
-  stop summing. UNMEASURED. The transition names its agreement, required where the instrument sits
-  under more than one.
 - **Two live deals under one reference get a diary key** (2026-09-28, M). `POST /book/deals`
   accepts a second live deal under an existing reference, the diary keys neither, and the close
   waits on them for good. The key needs the deal's path beside its reference.
@@ -48,9 +41,13 @@ not rows to close.
   caught only by copies agreeing with the hub. Signed history ends at the last checkpoint either
   way.
 - **The verb map in force declared at an LSN** (2026-09-29). The oracle judges old frames by today's
-  verb map, so a type moved between verbs (a settlement to `settle`) makes every frame filed under
-  the old verb read as outside its seat, while the desk runs unchanged. No home outside the gates
-  predates a move. The map read like a policy, one read in `verb_for`.
+  verb map, so a frame filed under a verb its act no longer demands - a confirmation or a
+  collateral movement under a `settle` grant - reads as outside its seat, while the desk runs
+  unchanged. The map read like a policy, one read in `verb_for`.
+- **A late settlement is matched within a business week** (2026-09-28). A settlement filed
+  against a payment the window's own diary no longer announces is looked for `LOOK_BACK` marks
+  back from its value date, a business week; past that, its day and a window reaching back over
+  it stop summing. UNMEASURED.
 - **A checkpointed index beside `log/`** (2026-09-23, M). `SpineLog.__init__` streams every segment
   to build the head, the tag index and the per-LSN offsets, linear in the log, once per read (twice
   on a strip's first paint; once per submitted job for admission, under a fiftieth of the cheapest

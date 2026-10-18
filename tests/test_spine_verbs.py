@@ -220,30 +220,54 @@ def test_a_settlement_is_filed_under_its_own_key_and_read_back_under_it(tmp_path
                                    'attempted_type': 'status_transition'}
 
 
-def test_the_back_office_settles_and_the_desk_books_and_neither_does_the_other(tmp_path):
-    """SETTLE IS ITS OWN VERB. What the back office moves - a payment, a confirmation, money held
-    under paper - is a `status_transition`, and a seat granted `settle` files it and is refused a
-    fill, while a seat granted `book` books and is refused the settlement with the denial naming
-    `settle`: the verbs imply nothing about each other.
+def test_the_back_office_is_three_seats_and_none_of_them_does_anothers_work(tmp_path):
+    """THE BACK OFFICE IS THREE VERBS. A `status_transition` is one type and three acts, the verb
+    read off its body: `settle` pays - a bare `settled`, a payment or a fee - `confirm` matches a
+    trade, and `collateral` moves money held under paper. On one home a seat granted each files its
+    own act and is refused the other two, each denial naming the verb that act demands; a seat
+    granted `book` books and is refused all three, and the settlements seat is refused the fill.
+    No verb implies another.
 
-    Killing mutation: `status_transition` left demanding `book`, which lets every trader settle
-    their own trades and turns the settlements seat away from its own work.
+    Killing mutation: the verb read off the type alone, every transition under `settle` - the
+    settlements seat then confirms and posts margin (no refusal raised for either), and the confirm
+    and collateral seats are refused their own work naming `settle`.
     """
     home, log = minted(tmp_path)
-    declare(log, MINT, document(grants=((DESK, 'book', BOOK), (STRANGER, 'settle', BOOK))))
+    verbs.declare_agreement(log, MINT, CLIENT, COUNTERPARTY, 'ISDA 2002 with CSA',
+                            b'{"Object":"NettingCollateralSet","Reference":"CSA-0007"}')
+    seats = {'settle': 'subject-settlements', 'confirm': 'subject-confirmations',
+             'collateral': 'subject-collateral'}
+    declare(log, MINT, document(grants=((DESK, 'book', BOOK),) + tuple(
+        (seat, verb, BOOK) for verb, seat in seats.items())))
     key = address(b'CF1/fixed/payment/2026-06-28')
+    acts = {
+        'settle': lambda seat: verbs.transition(
+            log, seat, key, 'settled', book=BOOK, effective_time=WHEN, amount=1250.0, asset='USD',
+            kind='payment', reference='PAY-1'),
+        'confirm': lambda seat: verbs.transition(
+            log, seat, verbs.fill_key(address(INSTRUMENT), 'E-1'), verbs.CONFIRMED, book=BOOK),
+        'collateral': lambda seat: verbs.transition(
+            log, seat, CLIENT, 'settled', book=BOOK, effective_time=WHEN, amount=-2_000_000.0,
+            asset='ZAR', kind='margin', reference='MRG-1')}
 
-    assert verbs.transition(log, STRANGER, key, 'settled', book=BOOK)['coalesced'] is False
-    with pytest.raises(CapabilityDenied):
-        verbs.book(log, STRANGER, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'E-1', book=BOOK)
+    refused = []
+    for verb, seat in list(seats.items()) + [(None, DESK)]:
+        if verb is not None:
+            assert acts[verb](seat)['coalesced'] is False, verb
+        for other, act in acts.items():
+            if other == verb:
+                continue
+            with pytest.raises(CapabilityDenied) as refusal:
+                act(seat)
+            assert "no {} scope over 'FX-VANILLA'".format(other) in str(refusal.value), seat
+            refused.append({'subject': seat, 'verb': other, 'book': BOOK,
+                            'attempted_type': 'status_transition'})
     assert verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'E-1',
                       book=BOOK)['coalesced'] is False
-    with pytest.raises(CapabilityDenied) as refusal:
-        verbs.transition(log, DESK, key, verbs.CONFIRMED, book=BOOK)
-    assert "no settle scope over 'FX-VANILLA'" in str(refusal.value)
-    assert [body for _, body in denials(log)] == [
-        {'subject': STRANGER, 'verb': 'book', 'book': BOOK, 'attempted_type': 'fill'},
-        {'subject': DESK, 'verb': 'settle', 'book': BOOK, 'attempted_type': 'status_transition'}]
+    with pytest.raises(CapabilityDenied):
+        verbs.book(log, seats['settle'], INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'E-2', book=BOOK)
+    assert [body for _, body in denials(log)] == refused + [
+        {'subject': seats['settle'], 'verb': 'book', 'book': BOOK, 'attempted_type': 'fill'}]
     log.close()
     assert verify_home(home)['events'] == log.head()[0]
 
@@ -255,14 +279,15 @@ def test_a_settlement_that_moved_money_says_how_much_and_the_cash_fold_keeps_it(
     identical movements under two references are two, and a corrected amount filed under the same
     reference REPLACES the one it corrects, naming the filing it stood over.
 
-    A payment settles its diary row exactly as a bare `settled` does. A fee, collateral and margin
-    move money and put nothing in a state, and a balance held under an agreement names one the
-    record declares.
+    A payment settles its diary row exactly as a bare `settled` does, under the agreement it names.
+    A fee, collateral and margin move money and put nothing in a state, and a balance held under an
+    agreement, or a payment naming one, names one the record declares.
 
     Killing mutations: the fold keyed by subject rather than reference, which merges two identical
     calls on one agreement into one; a restatement counted beside the movement it corrects; a
     collateral movement standing in the lifecycle as the agreement's status; an undeclared
-    agreement taken at its word.
+    agreement taken at its word, under collateral or named by a payment; the agreement dropped off
+    the fold's row.
     """
     home, log = minted(tmp_path)
     key, instrument = address(b'CF1/fixed/payment/2026-06-28'), address(INSTRUMENT)
@@ -270,11 +295,12 @@ def test_a_settlement_that_moved_money_says_how_much_and_the_cash_fold_keeps_it(
                             b'{"Object":"NettingCollateralSet","Reference":"CSA-0007"}')
     later = '2026-08-30T00:00:00.000000Z'
 
-    def moved(subject, amount, kind, reference, when=WHEN, asset='USD'):
+    def moved(subject, amount, kind, reference, when=WHEN, asset='USD', agreement=None):
         return verbs.transition(log, DESK, subject, 'settled', book=BOOK, effective_time=when,
-                                amount=amount, asset=asset, kind=kind, reference=reference)
+                                amount=amount, asset=asset, kind=kind, reference=reference,
+                                agreement=agreement)
 
-    paid = moved(key, 1250.0, 'payment', 'PAY-1')
+    paid = moved(key, 1250.0, 'payment', 'PAY-1', agreement=CLIENT)
     fee = moved(instrument, -25.0, 'fee', 'FEE-1')
     first = moved(CLIENT, 5_000_000.0, 'collateral', 'COL-1', when=later)
     assert moved(CLIENT, 5_000_000.0, 'collateral', 'COL-1', when=later)['coalesced'] is True
@@ -289,7 +315,9 @@ def test_a_settlement_that_moved_money_says_how_much_and_the_cash_fold_keeps_it(
     assert rows['COL-2']['amount'] == 4_000_000.0 and rows['COL-2']['lsn'] == corrected['lsn']
     assert rows['COL-2']['supersedes_lsn'] == call['lsn'] and rows['COL-1']['supersedes_lsn'] is None
     assert (rows['PAY-1']['subject'], rows['PAY-1']['kind'], rows['PAY-1']['amount'],
-            rows['PAY-1']['lsn']) == (key, 'payment', 1250.0, paid['lsn'])
+            rows['PAY-1']['agreement'], rows['PAY-1']['lsn']) == (
+        key, 'payment', 1250.0, CLIENT, paid['lsn'])
+    assert rows['FEE-1']['agreement'] is None
     assert rows['FEE-1']['effective_time'] == WHEN and rows['FEE-1']['lsn'] == fee['lsn']
     held = sum(row['amount'] for row in rows.values()
                if row['subject'] == CLIENT and row['kind'] == 'collateral')
@@ -317,6 +345,10 @@ def test_a_settlement_that_moved_money_says_how_much_and_the_cash_fold_keeps_it(
             ('undeclared', ('CSA-9999', 'settled', dict(amount=1.0, asset='USD',
                                                         kind='collateral', reference='X')),
              'declare the agreement first'),
+            ('unpapered', (key, 'settled', dict(amount=1.0, asset='USD', kind='payment',
+                                                reference='X', agreement='CSA-9999')),
+             'declare the agreement first'),
+            ('paper', (key, 'settled', dict(agreement=CLIENT)), 'no amount'),
             ('asset', (key, 'settled', dict(amount=1.0, kind='payment', reference='X')), 'asset'),
             ('reference', (key, 'settled', dict(amount=1.0, asset='USD', kind='payment')),
              'reference')):

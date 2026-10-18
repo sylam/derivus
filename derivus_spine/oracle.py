@@ -35,9 +35,9 @@ import math
 
 from .canon import canonical_bytes, content_hash
 from .capability import (
-    CAPABILITIES_POLICY, CAPABILITY_EVENTS, PORTFOLIO_TYPES, SCOPED_TYPES, apply_event,
-    declarable, deepest, evaluate, holders, initial_state, nodes, scope_of, stray, under,
-    verb_for)
+    CAPABILITIES_POLICY, CAPABILITY_EVENTS, PORTFOLIO_TYPES, SCOPED_TYPES, VERB_TYPES,
+    apply_event, declarable, deepest, evaluate, holders, initial_state, nodes, scope_of, stray,
+    under, verb_for)
 from .errors import SpineRefusal
 from .log import GENESIS_PREV, SpineLog, as_of_key
 from .policy import (
@@ -154,7 +154,7 @@ def nothing_outside_its_seat(log, entitled, judged=None):
     for row in judged:
         frame, body = row['frame'], row['body']
         event_type, actor = frame['event_type'], frame['actor']
-        verb, own = verb_for(event_type), actor == WRITER
+        verb, own = verb_for(event_type, body), actor == WRITER
         if event_type not in EVENT_VERB:
             failures.append(
                 'LSN {}: a {} demands no declared verb, so the append was gated by nothing'.format(
@@ -174,7 +174,7 @@ def nothing_outside_its_seat(log, entitled, judged=None):
         if event_type in TICKETED:
             booked[body.get('ticket')] = frame['lsn']
         if not row['held'] and not row['node']:
-            failures.append(_unscoped(frame, row['scope']))
+            failures.append(_unscoped(frame, row['scope'], body))
     failures.extend(
         'LSN {}: an approval of {} stands in the writer\'s own voice with {} - the hub signs a '
         'ticket only under an automatic tier in force and books it after, so this is that voice '
@@ -216,7 +216,7 @@ def nothing_outside_its_scope(log, judged=None):
         if row['node']:
             read += 1
             if not row['held']:
-                failures.append(_unscoped(frame, row['scope']))
+                failures.append(_unscoped(frame, row['scope'], body))
             failures.extend(_placed(frame, body, positions, declared))
             if event_type in ('approval', 'rejection'):
                 verdicts.append((frame['lsn'], event_type, body.get('plan_hash'), row['scope']))
@@ -261,8 +261,9 @@ def _judged(log, entitled):
             judged.append({'frame': frame, 'body': None, 'scope': None, 'held': None,
                            'node': False})
             continue
-        verb = verb_for(event_type)
-        body = log.open_body(frame) if event_type in CAPABILITY_EVENTS + SCOPED_TYPES else None
+        body = log.open_body(frame) if event_type in (
+            CAPABILITY_EVENTS + SCOPED_TYPES + VERB_TYPES) else None
+        verb = verb_for(event_type, body)
         doc, genesis = state['doc'], state['genesis']
         scope = scope_of(event_type, body, frame['book'])
         held = actor == WRITER or (doc is None and verb != RECOVERY) or evaluate(
@@ -296,11 +297,12 @@ def _workflow(log, lsn, blob):
     return lsn if any(not tier['four_eyes'] for tier in tiers) else 'no automatic tier in force'
 
 
-def _unscoped(frame, scope):
-    """The sentence for a frame whose actor held no scope where the writer judged it."""
+def _unscoped(frame, scope, body):
+    """The sentence for a frame saying `body` whose actor held no scope where the writer judged
+    it."""
     return ('LSN {}: {!r} held no {} scope over {!r} when the {} landed, so this frame is on the '
             'platter and the writer would have refused it'.format(
-                frame['lsn'], frame['actor'], verb_for(frame['event_type']), scope or '*',
+                frame['lsn'], frame['actor'], verb_for(frame['event_type'], body), scope or '*',
                 frame['event_type']))
 
 
@@ -733,16 +735,18 @@ def cash_reconciles(log, script, keys):
     determines and a row is paid once, and every row a settlement file instructed is settled.
 
     A fee is money a trade cost, so its subject is an instrument a fill booked by then; collateral
-    or margin is held under paper, so its subject is an agreement declared by then - the verb asks
-    the last when it files, and a copy can carry what the verb never saw. The diary is a COMPILE,
-    handed in as `keys`: a list of its keys, or key -> `{amount, currency}` with the amount null
-    where the diary does not determine it. The payment standing against a determined row carries
-    its amount in its currency within the declared `pnl` tolerance, one against an undetermined
-    row any amount, and two standing against one key under two references are one row paid twice.
+    or margin is held under paper, so its subject is an agreement declared by then, as is the
+    agreement a payment names - the verb asks the last two when it files, and a copy can carry what
+    the verb never saw. The diary is a COMPILE, handed in as `keys`: a list of its keys, or key ->
+    `{amount, currency}` with the amount null where the diary does not determine it. The payment
+    standing against a determined row carries its amount in its currency within the declared `pnl`
+    tolerance, one against an undetermined row any amount, and two standing against one key under
+    one agreement - or none - and two references are one row paid twice.
     An instructed row is settled where its status stands `settled` - a payment, or a bare
     `settled` that moved no money - exactly as the diary reads it.
     """
     positions, declared, failures, moved = POSITIONS.initial(), set(), [], 0
+    unplaced = 'LSN {}: a {} movement of {} {} names {} - no {} by then'
     for frame in log.frames():
         event_type = frame['event_type']
         if event_type in POSITIONS.reads:
@@ -752,13 +756,16 @@ def cash_reconciles(log, script, keys):
         elif event_type == 'status_transition':
             body = log.open_body(frame)
             kind, subject = body.get('kind'), body.get('subject')
+            paper = subject if kind in HELD else body.get('agreement')
             moved += 'amount' in body
-            if kind in HELD and subject not in declared or kind == FEE and \
-                    subject not in positions:
-                failures.append('LSN {}: a {} movement of {} {} names {} - no {} by then'.format(
-                    frame['lsn'], kind, body.get('amount'), body.get('asset'), subject,
-                    'agreement the record declared' if kind in HELD
-                    else 'instrument a fill booked'))
+            if paper is not None and paper not in declared:
+                failures.append(unplaced.format(frame['lsn'], kind, body.get('amount'),
+                                                body.get('asset'), paper,
+                                                'agreement the record declared'))
+            if kind == FEE and subject not in positions:
+                failures.append(unplaced.format(frame['lsn'], kind, body.get('amount'),
+                                                body.get('asset'), subject,
+                                                'instrument a fill booked'))
     try:
         tolerances = (in_force(log, TOLERANCE_POLICY)[1] or {}).get(TOLERANCE_SECTION, {})
     except SpineRefusal as unreadable:
@@ -767,8 +774,8 @@ def cash_reconciles(log, script, keys):
     owed, paid = keys if isinstance(keys, dict) else dict.fromkeys(keys or ()), {}
     for row in CASH.rows(fold(log, CASH)):
         if row['kind'] == PAYMENT:
-            paid.setdefault(row['subject'], []).append(row)
-    for subject, standing in sorted(paid.items()):
+            paid.setdefault((row['subject'], row['agreement'] or ''), []).append(row)
+    for (subject, _), standing in sorted(paid.items()):
         if len(standing) > 1:
             failures.append('{} is paid {} times, under {} - one row is paid once'.format(
                 subject, len(standing), ', '.join(row['reference'] for row in standing)))

@@ -82,7 +82,7 @@ tools and the writers to exactly those without the hint.
 | `book_markets`, `declare_market` | `GET`/`POST /book/markets`: the closes, names and snapshots; a name declared |
 | `book_reconcile`, `book_activity` | `GET /book/reconcile`, `/book/activity`: file against record; the record's strip |
 | `export_settlements` | `POST /book/settlements`: the settlement file for a day |
-| `file_status`, `file_lifecycle` | `POST /book/transition`, `/book/lifecycle`: a settlement or match; a fixing, election or ruling |
+| `file_status`, `file_lifecycle` | `POST /book/transition`, `/book/lifecycle`: a payment or a fee under the agreement it names, a confirmation, collateral moved - `settle`, `confirm`, `collateral`; a fixing, election or ruling |
 | `book_cash`, `collateral_calls` | `GET /book/cash`, `/book/collateral`: money moved; what each CSA calls |
 | `mark_book`, `book_pnl` | `POST /book/marks`, `GET /book/pnl`: the close's marks; the P&L between them |
 | `book_positions` | `GET /book/positions`: positions under agreement and portfolio |

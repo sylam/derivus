@@ -239,7 +239,7 @@ rather than file a name nobody chose. **Held by**
 
 **Capabilities.** A canonical blob under the reserved name `capabilities`, each declaration a
 complete replacement, folded at an LSN so "could X do Y in March" replays: `{"grants": [{subject,
-verb, book}], "read": [{subject, class}]}`. Seven verbs, none implying another:
+verb, book}], "read": [{subject, class}]}`. Nine verbs, none implying another:
 
 | verb | files |
 | --- | --- |
@@ -248,12 +248,24 @@ verb, book}], "read": [{subject, class}]}`. Seven verbs, none implying another:
 | `approve` | `approval`, `rejection`, `result_pinned` |
 | `mark` | `market_declared`, `official_close_declared`, `fixing_observed`, `determination` |
 | `document` | `entity_declared`, `agreement_declared` |
-| `settle` | `status_transition` |
+| `settle` | `status_transition` paying: `settled` moving no money, a `payment` or a `fee` |
+| `confirm` | `status_transition` matching a trade: `confirmed` |
+| `collateral` | `status_transition` moving `collateral` or `margin` under an agreement |
 | `admin` | `policy_declared`, `portfolio_declared`, `retention_declared`, `rehash_declared`, `checkpoint`, `seat_enrolled`, `key_wrapped` |
 
 A type missing from the map demands `admin`, so a forgotten entry costs governance, not an open
-write. A grant's `book` is a node reaching every path below it: `BANK/FX` covers `BANK/FX/Options`,
-not `BANK/FXO` or `BANK`. `capability.scope_of`, shared by writer and oracle, judges the firm's own
+write. A transition is one type and three acts, so its verb is read off its body in one place,
+`capability.verb_for(event_type, body)`, which the writer's hook and the oracle's seat invariant
+both ask: a seat granted `settle` alone is refused a confirmation with the denial naming
+`confirm`, and so for each pair. A home's `settle` grants keep paying and stop confirming and
+posting collateral until its admin declares `confirm` and `collateral` grants - the separation of
+duties, which no grant implying another would keep. **Held by**
+`test_spine_verbs.py::test_the_back_office_is_three_seats_and_none_of_them_does_anothers_work`,
+`test_spine_capability.py::test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refusal`,
+`test_spine_oracle.py::test_a_confirmation_under_a_seat_that_only_settles_is_named`.
+
+A grant's `book` is a node reaching every path below it: `BANK/FX` covers `BANK/FX/Options`, not
+`BANK/FXO` or `BANK`. `capability.scope_of`, shared by writer and oracle, judges the firm's own
 facts (policies, markets, prints, runs, the paper, custody) at the firm, which only `*` reaches; a
 fill, restrike, quote or verdict at its `portfolio`; a declared node at its parent; else the book.
 **Held by**
@@ -366,11 +378,15 @@ settlement file saying zero being a wrong payment. What a deal settles without a
 declared on its fields (`settles=schema.Cash(...)`); monitoring days are never payments. A
 cash-settled option waits for its expiry fixing and its payoff; an unreadable deal is an
 `unreadable` row. A row's key, `cashflow_key(instrument, leg, kind, date)`, uses the date, since
-positions renumber as paid rows drop. **Held by**
-`test_diary.py::test_every_payment_the_diary_announces_is_the_run_s_own_cashflow`,
+positions renumber as paid rows drop. A row carries the `netting_set` its deal sits in, and the
+record's answer (`service.answered`) the `agreement` that set is where the record declares it -
+what a settlement of the row names - so one instrument under two agreements is two rows under one
+key, each settled by a payment naming its own agreement once one against the key names any.
+**Held by** `test_diary.py::test_every_payment_the_diary_announces_is_the_run_s_own_cashflow`,
 `::test_a_floating_amount_is_null_and_the_exporter_refuses_it_by_name`,
 `::test_an_option_waits_for_its_fixing_and_its_settlement`,
-`::test_a_derived_key_is_the_same_key_thirty_days_later`.
+`::test_a_derived_key_is_the_same_key_thirty_days_later`,
+`test_pnl.py::test_a_payment_is_shared_within_the_agreement_it_names`.
 
 The book file keeps its content and gains `Spine: {lsn, head, hydrated_at}`, a sibling of `Calc`,
 so the pin cannot move a plan. A booking appends first and writes the file second. `GET
@@ -399,6 +415,19 @@ asking seat, each row keyed by what its clearing fact is filed against. **Held b
 `test_spine_engine.py::test_a_page_walks_the_record_forward_one_event_at_a_time`,
 `::test_what_the_file_lost_is_drift_under_a_pin_that_has_seen_every_position`,
 `test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`.
+
+The web client's Back Office workspace (`web/src/views/BackOfficeView.tsx`) is the seat that pays,
+confirms and posts: it reads the worklist at the record's head as the banner does, again at every
+move of it, and shows the `payments`, `unconfirmed` and `calls` lists - each the list of its own
+verb - every row beside the fact that clears it, with the day's close check and the close behind
+its verdict. The Paper workspace (`web/src/views/PaperView.tsx`) lists the entities and the
+agreements with their terms and declares both, an agreement's terms the netting set rendered off
+the `NettingCollateralSet` declaration `/schema` publishes. Each posts under the acting seat and
+shows a refusal in the service's own words. **Held by** what they read,
+`test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`,
+`test_diary.py::test_a_close_is_declared_only_on_a_day_the_check_calls_legal` and
+`test_spine_engine.py::test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under`,
+and the web's type check; the rendering is **Not gated**.
 
 ## Policies {#policies}
 
@@ -542,8 +571,14 @@ nodes, an expired one until it settles. A seat with grants at nodes reads only t
 A `settled` transition may carry a signed `amount` (received positive), `asset`, `kind` and the
 settlement system's `reference`: a `payment` settles its diary row, a `fee` sits on its instrument,
 `collateral` and `margin` move a balance under a declared agreement. The reference is the movement,
-so a correction under it restates the amount. `costs` keeps the open `basis` at average cost and
-what reductions `realised`; a fill with no price leaves the basis unknown, never zero. **Held by**
+so a correction under it restates the amount. A payment or a fee may name the declared `agreement`
+it was paid under, and `POST /book/transition` refuses a payment naming none by name where its
+key is due under more than one netting set: the P&L shares a movement among the positions under
+the agreement it names alone, a position no movement on its row reached reading that payment
+unknown until its own lands. **Held by**
+`test_pnl.py::test_a_payment_is_shared_within_the_agreement_it_names`. `costs` keeps the open
+`basis` at average cost and what reductions `realised`; a fill with no price leaves the basis
+unknown, never zero. **Held by**
 `test_spine_verbs.py::test_a_settlement_that_moved_money_says_how_much_and_the_cash_fold_keeps_it`,
 `test_spine_projections.py::test_a_position_costs_its_average_and_a_reduction_realises_against_it`.
 
@@ -611,7 +646,7 @@ question could not be put.
 | 9 duplicates coalesce | each tag on one line |
 | 10 nothing outside its scope | each node-judged frame held its verb there |
 | 11 the P&L is additive | days sum to windows and portfolios to the book within the `pnl` tolerance |
-| 12 cash reconciles | payments match the diary, a row is paid once |
+| 12 cash reconciles | payments match the diary, a row is paid once under each agreement |
 | 13 every close marked | each `pnl` close has marks while the book held anything |
 | 14 the call is the formula | each call read is `CSA.call` over the record |
 
@@ -646,9 +681,9 @@ Unbuilt parts of the design: a job's files are named by path, not declared in th
 ([before 0.5.0](roadmap.md#before-0-5-0)); the deal tree is the book file with nets written on,
 not composed from the fold; and a print is not yet one fact feeding both a calibration's archive and
 a deal's fixings ([designed, not built](roadmap.md#designed-not-built)). The record's other open
-rows - the log open's full scan, the oracle's blind spots, settlements naming no agreement,
-legacy trades - are [before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
+rows - the log open's full scan, the oracle's blind spots, legacy trades - are
+[before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
 the rotation and replay limits are [trust limits](#trust-limits) and the replay tuple's reach is on
-[Model Limitations](../limitations.md#the-engine); one `settle` verb, which verbs take a seat and
-whether a rotation is signed by the key it retires are
+[Model Limitations](../limitations.md#the-engine); which verbs take a seat and whether a rotation
+is signed by the key it retires are
 [desk decisions](../limitations.md#decisions-waiting-on-the-desk).

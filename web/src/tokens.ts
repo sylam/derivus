@@ -13,6 +13,10 @@ export function token(value: unknown, name: string): unknown {
 export const isObject = (value: unknown): value is Record<string, unknown> =>
   !!value && typeof value === 'object' && !Array.isArray(value);
 
+/** A credit support row travels [rating, amount], the reverse of the columns it declares; the
+ * map is its own inverse, so it reads the wire and writes it. */
+export const supportRows = (rows: unknown[][]): unknown[][] => rows.map((row) => [...row].reverse());
+
 /** A column, index or cell entry as text: tuples join, and every scalar wire token reads as what
  * it is - a date, a period, a percent or a basis with its unit. A table's cells carry the same
  * tokens a field does, so they are read in one place. */
