@@ -701,8 +701,7 @@ def spot_model(document, deal_type, underlying, settlement, model):
     SKIPS the deal and logs an ERROR, so the quote would return its only leg priced at nothing.
 
     A CROSS is keyed `<later>.<earlier>` alphabetically, one law per pair of currencies however
-    a desk spells its surface. A book declaring no `Base_Currency` REFUSES rather
-    than guessing a token, since the engine would then look the switch up under the other name.
+    a desk spells its surface.
 
     THE BOOK'S OWN SWITCH WINS. A book that already declares `SpotModel` for this deal type is
     marked under that family whatever the runner would have pinned, so the presence check and the
@@ -712,15 +711,14 @@ def spot_model(document, deal_type, underlying, settlement, model):
     Writes IN PLACE on the document the runner holds; every pricing deep-copies it through `alone`,
     so one write reaches every iterate of the solve.
     """
-    factors = market_data(document)
-    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    standing = (market.get('Valuation Configuration', {}).get(deal_type) or {}).get('SpotModel')
+    market = market_of(document)
+    factors = market_data(market)
+    standing = (market['Valuation Configuration'].get(deal_type) or {}).get('SpotModel')
     model = standing or model
-    token = utils.spot_model_currency(underlying, settlement, base_currency(document))
+    token = utils.spot_model_currency(underlying, settlement, base_currency(market))
     factor = utils.spot_model_factor(model, token)
     if factor in factors:
-        market.setdefault('Valuation Configuration', {}).setdefault(
-            deal_type, {})['SpotModel'] = model
+        valuation_entry(document, market, deal_type)['SpotModel'] = model
         return None
     return ('{} - a spot model is keyed off the pair, so this leg looked up {}, '
             'which this book does not carry. Calibrate {} under {} (/book/model)'.format(
@@ -728,22 +726,19 @@ def spot_model(document, deal_type, underlying, settlement, model):
                 else 'priced GBM', factor, token, model))
 
 
-def pinned_models(document):
-    """The `Valuation Configuration` a quote's own passes pinned on this document, or `None`.
-
-    `spot_model` writes the switch onto the document the runner holds; this reads it back so the
-    outcome can REPORT it. A leg priced under a spot model that books into a book marking it GBM is
-    a mark disagreeing with the price it was dealt at, and the approval is where that is fixed.
-    """
-    pinned = document.get('Calc', {}).get('MergeMarketData', {}).get(
-        'ExplicitMarketData', {}).get('Valuation Configuration')
-    return copy.deepcopy(pinned) if pinned else None
+def valuation_entry(document, market, deal_type):
+    """The `Valuation Configuration` entry for `deal_type` that `document`'s explicit block states,
+    stated there first as `market`'s own where it states none: the block's entry replaces a file's
+    whole, so an option written into it keeps every other option the type carries."""
+    return document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+        'Valuation Configuration', {}).setdefault(
+            deal_type, dict(market['Valuation Configuration'].get(deal_type) or {}))
 
 
 def pin_models(document, deal, pinned):
     """`pinned` merged into a document's `Valuation Configuration`, per deal TYPE, in place.
 
-    The booking half of `pinned_models`: an approval carries the quote's own pins onto the BOOK, so
+    The booking half of a quote's pins: an approval carries the quote's own pins onto the BOOK, so
     a leg dealt under a spot model re-marks under it. Merged per type and per key rather
     than assigned, because the block is the whole book's and a quote owns only what it pinned.
 
@@ -751,8 +746,9 @@ def pin_models(document, deal, pinned):
     factor since dropped raises inside the engine's dependency loop - the deal skipped, an ERROR
     logged, the trade marked at nothing - which is the outcome this pin exists to prevent.
     """
-    factors = market_data(document)
-    base = base_currency(document)
+    market = market_of(document)
+    factors = market_data(market)
+    base = base_currency(market)
     for leg in deal.get('Children') or []:
         block = leg['Instrument']['.Deal']
         entry = pinned.get(block.get('Object'))
@@ -769,31 +765,40 @@ def pin_models(document, deal, pinned):
                 'switch would skip the deal at the next valuation and mark it at nothing. Re-run '
                 'the {} calibration for {}, or re-quote'.format(
                     entry['SpotModel'], factor, entry['SpotModel'], token))
-    configuration = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
-        'Valuation Configuration', {})
     for deal_type, entry in pinned.items():
-        configuration.setdefault(deal_type, {}).update(entry)
-    return configuration
+        valuation_entry(document, market, deal_type).update(entry)
 
 
-def market_data(document):
-    """The document's `Price Factors`, or a refusal naming what a quote needs them for."""
-    factors = document.get('Calc', {}).get('MergeMarketData', {}).get(
-        'ExplicitMarketData', {}).get('Price Factors')
-    if not factors:
-        raise ValueError('the book carries no explicit Price Factors - a quote reads the spot off '
-                         'them to bracket its solves')
-    return factors
+def market_of(document, parses=None):
+    """The market `document` prices on, in the wire form an explicit block holds: the sections of
+    the file it names with its explicit block merged over them, as the loaded config carries them,
+    its deals not loaded and `Correlations` left out. `parses` is a store of the files' parses that
+    outlives the call (`Context.cached`)."""
+    from . import Context
+    from .config import CustomJsonEncoder, as_json
+    calc = {key: value for key, value in document['Calc'].items() if key != 'Deals'}
+    params = Context().load_json((json.dumps({'Calc': calc}, cls=CustomJsonEncoder), 'market'),
+                                 parses=parses).current_cfg.params
+    # no reader asks the simulation's correlations, a file's largest section by far
+    return as_json({name: section for name, section in params.items() if name != 'Correlations'})
 
 
-def engine_spot(document, underlying_currency, settlement_currency):
+def market_data(market):
+    """The `Price Factors` of a `market_of`, or a refusal naming what a quote needs them for."""
+    if not market['Price Factors']:
+        raise ValueError('the book carries no Price Factors - a quote reads the spot off them to '
+                         'bracket its solves')
+    return market['Price Factors']
+
+
+def engine_spot(market, underlying_currency, settlement_currency):
     """Today's rate on the DEAL's axis: units of `Currency` per unit of `Underlying_Currency`.
 
     The engine's `FxRate.<ccy>.Spot` is that currency in base-currency units, so the cross is the
-    ratio - `calc_fx_cross`'s own arithmetic, read off the document instead of a tensor. It is the
+    ratio - `calc_fx_cross`'s own arithmetic, read off the market instead of a tensor. It is the
     seed and the bracket centre for a strike solve; no price is taken from it.
     """
-    factors = market_data(document)
+    factors = market_data(market)
     spots = {}
     for currency in (underlying_currency, settlement_currency):
         name = 'FxRate.{}'.format(currency)
@@ -824,55 +829,60 @@ def margin_value(document, margin):
     except (KeyError, TypeError, ValueError):
         raise ValueError("a margin is {{'amount': 50000.0, 'currency': 'ZAR'}} - an amount and the "
                          'currency it is stated in, not {!r}'.format(margin)) from None
-    pricing = document['Calc']['Calculation'].get('Currency') or base_currency(document)
+    market = market_of(document)
+    pricing = document['Calc']['Calculation'].get('Currency') or base_currency(market)
     return {'amount': amount, 'currency': currency, 'pricing_currency': pricing,
-            'value': amount * engine_spot(document, currency, pricing)}
+            'value': amount * engine_spot(market, currency, pricing)}
 
 
-def base_currency(document):
-    """The reporting currency every `FxRate.<ccy>.Spot` in this document is quoted in, or `None`
-    where the document does not declare one.
-
-    Read off the EXPLICIT block alone, the half `market_data` reads and the only half a quote can
-    write, so a `MarketDataFile` not repeated here answers `None` rather than the engine's number.
-    A quote never resolves None into a token (`utils.spot_model_currency` refuses it); the fill reads
-    it as no base, so an FX table names no index and its cell stands as the desk wrote it.
-    """
-    return document.get('Calc', {}).get('MergeMarketData', {}).get(
-        'ExplicitMarketData', {}).get('System Parameters', {}).get('Base_Currency')
+def base_currency(market):
+    """The reporting currency every `FxRate.<ccy>.Spot` in a `market_of` is quoted in - the engine's
+    own where nothing states one, as the engine prices."""
+    return market['System Parameters']['Base_Currency']
 
 
-def with_live_spots(document, crosses):
-    """Live market crosses written onto the document's own `FxRate.<ccy>.Spot` blocks, IN PLACE -
-    the exact inverse of `engine_spot`, and the only thing a quote ever takes off a terminal.
+def crossed_spots(base, crosses):
+    """`{currency: spot}` for live market crosses on the engine's axis - the exact inverse of
+    `engine_spot`.
 
     `crosses` is `{PAIR: value}` as the MARKET quotes each one - `'USDZAR': 16.31` is ZAR per USD.
-    `FxRate.<ccy>.Spot` is one unit of that currency in the document's own `Base_Currency` units,
-    so a cross pins the leg the base does not: against a USD base, USDZAR writes `FxRate.ZAR` at
-    1/16.31 and leaves `FxRate.USD` at 1.0. A pair NEITHER of whose legs is the base refuses by
-    name rather than being triangulated - inventing a leg is a market view, not a tick.
-
-    A spot is `bind='value'` data, so this moves a number on a block that already exists and never
-    authors one. The caller owns the copy. Returns `{currency: spot}` for what it wrote.
+    `FxRate.<ccy>.Spot` is one unit of that currency in `base` units, so a cross pins the leg the
+    base does not: against a USD base, USDZAR is `ZAR` at 1/16.31 and `USD` stays 1.0. A pair
+    NEITHER of whose legs is the base refuses by name rather than being triangulated - inventing a
+    leg is a market view, not a tick.
     """
-    base = base_currency(document)
-    factors = market_data(document)
-    written = {}
+    spots = {}
     for pair, cross in sorted(crosses.items()):
         left, right = split_pair(pair)
         if right == base:
-            currency, spot = left, float(cross)
+            spots[left] = float(cross)
         elif left == base:
-            currency, spot = right, 1.0 / float(cross)
+            spots[right] = 1.0 / float(cross)
         else:
             raise ValueError('{} prices neither of its legs against {} - a live spot is written '
                              "against the book's own base currency".format(pair, base))
+    return spots
+
+
+def with_live_spots(document, crosses):
+    """Live market crosses (`crossed_spots`) written onto the document's `FxRate.<ccy>.Spot`
+    blocks, IN PLACE - the only thing a quote ever takes off a terminal.
+
+    A spot is `bind='value'` data, so this moves a number on a block the market already carries,
+    written into the explicit block as what moved, and never authors one. The caller owns the copy.
+    Returns `{currency: spot}` for what it wrote.
+    """
+    market = market_of(document)
+    factors = market_data(market)
+    stated = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+        'Price Factors', {})
+    written = crossed_spots(base_currency(market), crosses)
+    for currency, spot in written.items():
         name = 'FxRate.{}'.format(currency)
         if name not in factors:
             raise ValueError('{} is missing - a live spot moves a block the book already carries, '
                              'it does not author one'.format(name))
-        factors[name]['Spot'] = spot
-        written[currency] = spot
+        stated[name] = dict(factors[name], Spot=spot)
     return written
 
 
@@ -881,7 +891,7 @@ def prices_block(surface):
     return '{}Prices.{}'.format(Structure.SURFACE, surface)
 
 
-def quote_points(document, surface):
+def quote_points(market, surface):
     """The quotes `surface` was built from - `bootstrappers.FXVol.used`'s filter over the
     `FXVolPrices` block, and empty where the book carries no such block at all.
 
@@ -892,14 +902,12 @@ def quote_points(document, surface):
     The filter is spelled here for the DEFAULT alone: `Use` is stated to hold a row out, so its
     absence is 'Yes' and a hand-authored mid-only block must quote rather than raise.
     """
-    prices = document.get('Calc', {}).get('MergeMarketData', {}).get(
-        'ExplicitMarketData', {}).get('Market Prices', {})
-    block = (prices.get(prices_block(surface)) or {}).get('instrument')
+    block = (market['Market Prices'].get(prices_block(surface)) or {}).get('instrument')
     return [point for point in block['Points'] if point.get('Use', 'Yes') == 'Yes'] \
         if block and block.get('Points') else []
 
 
-def quote_two_way(document, surface):
+def quote_two_way(market, surface):
     """EVERY quoted pillar's half-spread for `surface`, keyed by the descriptor `dV/dq` reports
     that quote under - `{'ATM 1': 0.002, 'RR 0.25 1': 0.001, ...}`, in the surface's own vol units,
     and empty where the block carries no two-way at all.
@@ -918,7 +926,7 @@ def quote_two_way(document, surface):
     """
     from . import bootstrappers
     halves = {}
-    for point in quote_points(document, surface):
+    for point in quote_points(market, surface):
         bid, ask = point.get('Quoted_Bid'), point.get('Quoted_Ask')
         if bid is None or ask is None:
             continue
@@ -935,13 +943,11 @@ def without_spot_model(document, deal_type):
     leg at the same terms does, and it is the vega a desk would deal in the quotes it trades. The
     quote's own pin and the book's own are both dropped, on this copy alone.
     """
-    configuration = document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
-        'Valuation Configuration') or {}
-    if 'SpotModel' not in (configuration.get(deal_type) or {}):
+    market = market_of(document)
+    if 'SpotModel' not in (market['Valuation Configuration'].get(deal_type) or {}):
         return document
     bare = copy.deepcopy(document)
-    del bare['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'Valuation Configuration'][deal_type]['SpotModel']
+    del valuation_entry(bare, market, deal_type)['SpotModel']
     return bare
 
 
@@ -1032,7 +1038,8 @@ def materialize(structure, params, document):
     if notional <= 0.0:
         raise ValueError('a notional is a positive amount, not {:g} - the side the desk takes is '
                          "the structure's own".format(notional))
-    factors = market_data(document)
+    market = market_of(document)
+    factors = market_data(market)
     family = Structure.SURFACE + '.'
     spellings = ('{}.{}'.format(base, quote_ccy), '{}.{}'.format(quote_ccy, base))
     surface = next((pair for pair in spellings if family + pair in factors), None)
@@ -1048,7 +1055,7 @@ def materialize(structure, params, document):
     shared = {'Currency': settlement, 'Discount_Rate': settlement,
               'Underlying_Currency': underlying, 'Underlying_Amount': notional,
               'FX_Volatility': surface, 'Expiry_Date': expiry_date(base_date, params['expiry'])}
-    seed = engine_spot(document, underlying, settlement)
+    seed = engine_spot(market, underlying, settlement)
 
     out = []
     furnished = ('FXOptionDeal', 'FXBarrierOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal')
@@ -1388,11 +1395,12 @@ def risk_document(document, nodes, surface):
     run = copy.deepcopy(document)
     run['Calc']['Calculation'] = priced_job(run['Calc']['Calculation'], Greeks='First')
     schema.job_children(run).extend(nodes)
-    block = run['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'Market Prices'][prices_block(surface)]
+    block = market_of(document)['Market Prices'][prices_block(surface)]
     points = [dict(point, Use=point.get('Use', 'Yes'))
               for point in block['instrument'].get('Points') or []]
-    block['instrument'] = dict(block['instrument'], Points=points, Quote_Sensitivity='Yes')
+    run['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault('Market Prices', {})[
+        prices_block(surface)] = dict(block, instrument=dict(
+            block['instrument'], Points=points, Quote_Sensitivity='Yes'))
     return run
 
 
@@ -1432,9 +1440,10 @@ def book_risk(document, surface, cache):
     that does not depend on what is quoted, so a standing book pays one greeks run per quote."""
     if cache is None:
         return vol_risk(document, [], surface)
-    from . import content_hash
+    from . import Context, content_hash
     etag = content_hash({'deals': document['Calc']['Deals']['Deals'],
                          'market': document['Calc']['MergeMarketData'],
+                         'files': Context().files(document),
                          'calculation': document['Calc']['Calculation'],
                          'surface': surface})
     found = cache.get(etag)
@@ -1592,7 +1601,7 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full,
     # a bp of NOTIONAL in the report currency: the notional is in its own currency and the charge
     # is in the run's, so the ops floor crosses on the same FxRate ratio `engine_spot` reads
     min_ticket = float(policy['min_ticket_bp']) * 1e-4 * float(params['notional']) * \
-        engine_spot(document, str(params['notional_currency']).upper(),
+        engine_spot(market_of(document), str(params['notional_currency']).upper(),
                     document['Calc']['Calculation']['Currency'])
     scale, saving, effective, note = risk_scale(rows, cost, policy, charge_full, min_ticket)
     return {'coordinates': 'quote-space', 'buckets': rows, 'saving': saving,
@@ -1677,11 +1686,12 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     # authored objects and a file's wire form become one shape here, so every copy below is plain
     # JSON and a solve's own re-serialisation cannot trip over a Timestamp
     document = json.loads(json.dumps(document, cls=CustomJsonEncoder))
-    # what the BOOK already pinned, so what is reported below is what THIS quote pinned
-    already = pinned_models(document) or {}
     # the client is checked before the price: a quote nobody could approve is not worth the solves
     check_netting_set(document, netting_set)
     structure = structure_named(structure_name)
+    market = market_of(document)
+    # what the BOOK already pinned, so what is reported below is what THIS quote pinned
+    already = market['Valuation Configuration']
     margin = margin_value(document, margin)
     solves = [step for step in structure.recipe if isinstance(step, Solve)]
     if margin is not None and len(solves) > 1:
@@ -1696,15 +1706,13 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     side = dict(zip(Variation.BUYS.values, split_pair(params['pair'])))
     quote_id = content_hash({
         'structure': structure_name, 'params': params, 'netting_set': netting_set,
-        'margin': margin,
-        'market': document.get('Calc', {}).get('MergeMarketData', {}).get('ExplicitMarketData', {}),
-        'at': time.perf_counter()})
+        'margin': margin, 'market': market, 'at': time.perf_counter()})
     reference = '{}-{}'.format(structure_name, quote_id[:8])
 
     probe = materialize(structure, params, document)[0]
-    spot = engine_spot(document, probe.deal['Underlying_Currency'], probe.deal['Currency'])
+    spot = engine_spot(market, probe.deal['Underlying_Currency'], probe.deal['Currency'])
     surface = probe.deal['FX_Volatility']
-    halves = quote_two_way(document, surface)
+    halves = quote_two_way(market, surface)
 
     # the desk's own charge rides the coordinate the recipe SOLVES, or the premium where it solves
     # nothing; either way the client pays the margin and the two-way on top of the mid
@@ -1770,7 +1778,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         'spread_note': None if halves else '{} {} - there is no two-way to charge, so the quote '
         'is the mid'.format(prices_block(surface),
                             'carries no Quoted_Bid/Quoted_Ask'
-                            if quote_points(document, surface) else 'is not on this book'),
+                            if quote_points(market, surface) else 'is not on this book'),
         # what the RUNNER did to this job that the book did not say - the quote prices a simulated
         # leg on the declared count whatever the book states, and a thinner book is told so here
         'notes': [x for x in [thin_paths(document['Calc']['Calculation'])] if x] or None,
@@ -1780,8 +1788,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         # the MODEL these legs were priced under where it is not the book's own default - the pin
         # `spot_model` wrote on the quote's copy, which `/book/quote` merges into the book
         'valuation_configuration': {
-            deal_type: entry for deal_type, entry in (pinned_models(document) or {}).items()
-            if entry != already.get(deal_type)} or None,
+            deal_type: entry for deal_type, entry in market_of(document)[
+                'Valuation Configuration'].items() if entry != already.get(deal_type)} or None,
         'deal': compose(reference, legs, margin)}
     if margin:
         # the charge as declared and as converted. `net` above reads it back NEGATIVE, that being

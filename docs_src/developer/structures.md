@@ -167,9 +167,11 @@ discovery and the calibration all call — a second keying lets a book that cali
 another off it with no note. It is the non-base token for a pair with a base leg
 (`LogVar2FJModelParameters.ZAR` for USDZAR on a USD book), and for a cross the alphabetically later
 token priced in the earlier (`…ZAR.EUR` for EURZAR), however the deal or the surface is written, so
-one pair has one law. The base currency is read from the explicit `System Parameters`; a book
-declaring none refuses rather than guessing a token (**held by**
-`test_a_book_that_declares_no_base_currency_refuses_instead_of_pinning`). A base-leg pair is fitted
+one pair has one law. The base currency is the market's (`structures.base_currency` over
+`structures.market_of`, the file a book names with its explicit block merged over it), the engine's
+own where nothing states one, so the key a quote pins is the one the engine's lookup takes (**held
+by** `test_a_book_that_declares_no_base_currency_quotes_on_the_one_the_engine_prices_in`). A
+base-leg pair is fitted
 on its `FxRate`'s own axis, so two books with different base currencies fit reciprocal laws of one
 pair; only a cross is canonical.
 
@@ -331,7 +333,8 @@ in the curiosity lane: a desk quotes many times and the record holds only the on
 1. Stamp `quoted_at`; under a spine home, pin the book's `plan_hash`, `values_hash` and board age
    before anything changes the copy, since what an acceptance asks is whether the book has moved.
 2. `patch_live_spot` writes the terminal's spot onto the job's own copy through `with_live_spots`
-   (the inverse of `engine_spot`). Only the spot moves: a delta-quoted FX surface is sticky-delta,
+   (`crossed_spots`, the inverse of `engine_spot`), the moved `FxRate` block written into the copy's
+   explicit block. Only the spot moves: a delta-quoted FX surface is sticky-delta,
    read at whatever spot stands, and the surface and curves belong to the tick cadence. Any failure
    falls back to the book's spot with the reason in `spot.note` — one request bounded by
    `SPOT_TIMEOUT_MS`, a failure that reached the terminal remembered for `SPOT_BACKOFF_SECONDS` so

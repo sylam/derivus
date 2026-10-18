@@ -183,10 +183,15 @@ def holds(values, wanted):
     return any(value == pytest.approx(wanted, rel=1e-12, abs=1e-12) for value in values)
 
 
+def market(document):
+    """The market a book naming no market data file prices on: its explicit block."""
+    return document['Calc']['MergeMarketData']['ExplicitMarketData']
+
+
 def written(tmp_path, name='quote.xlsx', **kwargs):
     """One sheet written for real, from the fixture book, at a real path."""
     path = tmp_path / name
-    write_sheet(path, outcome(**kwargs), BOOK)
+    write_sheet(path, outcome(**kwargs), BOOK, market(BOOK))
     return path
 
 
@@ -312,7 +317,7 @@ def test_a_cell_excel_cannot_hold_is_named_not_skipped(tmp_path):
     path = tmp_path / 'refused.xlsx'
 
     with pytest.raises(QuoteSheetError) as refusal:
-        write_sheet(path, outcome(financing='X' * (CELL_LIMIT + 1)), BOOK)
+        write_sheet(path, outcome(financing='X' * (CELL_LIMIT + 1)), BOOK, market(BOOK))
 
     message = str(refusal.value)
     assert 'Quote!B' in message and '32767' in message
@@ -388,8 +393,8 @@ def test_a_book_loaded_in_process_renders_the_same_sheet(tmp_path):
 
     Killing mutation: a loaded `utils.Curve` not read as a curve.
     """
-    wire, live = written(tmp_path, 'wire.xlsx'), tmp_path / 'live.xlsx'
-    write_sheet(live, outcome(), loaded(BOOK))
+    wire, live, book = written(tmp_path, 'wire.xlsx'), tmp_path / 'live.xlsx', loaded(BOOK)
+    write_sheet(live, outcome(), book, market(book))
 
     for sheet in ('Quote', 'Legs', 'Market'):
         assert cells(wire, sheet) == cells(live, sheet)

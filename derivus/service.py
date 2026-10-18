@@ -33,6 +33,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `GET /ui` | a built web UI, when `DV_Service --ui` mounted one - a client, not a verb |
 | `GET /book` | the live job document the service serves - `DV_HOME/book.json` unless `--book` names another - and the etag naming its state |
 | `GET /book/status` | the desk in ONE read - the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether this workstation has a terminal |
+| `GET /book/market` | the market the book PRICES on - the file it names with its explicit block merged over it |
 | `POST /book/deals` | book or delete one deal - validated BEFORE an atomic write, refusal writes nothing |
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, validated before it queues, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
@@ -189,9 +190,17 @@ Job = namedtuple('Job', 'result_id context replay lane evidence actor book',
                  defaults=(None, None, None, None))
 
 
-def load(job):
-    """A Context over a posted job, built by the decoder that reads a job file."""
-    return Context().load_json((json.dumps(job), 'posted'))
+def load(job, context=None):
+    """`job` loaded onto `context`, a new Context by default, by the decoder that reads a job file,
+    each file it names taken from the live book's parses where a book is served."""
+    return (context or Context()).load_json((json.dumps(job), 'posted'),
+                                            parses=BOOK and BOOK.parses)
+
+
+def market_of(document):
+    """`structures.market_of` the document, each file it names taken from the live book's parses
+    where a book is served."""
+    return structures.market_of(document, BOOK and BOOK.parses)
 
 
 #: What `/execute` does with a lane it was never given. A run is recorded IFF its output will be
@@ -358,7 +367,7 @@ class ComputeExecutor:
         document names parsed, and each document's explicit block merges over them. Built anew
         where `files`, the hash of `Context.files` the job was stamped with, or the explicit market
         less the factors' contents moved - a value restated merges over the last, a block withdrawn
-        must not stay behind."""
+        must not stay behind - and a new one takes each file from the book's parses (`load`)."""
         explicit = dict(document['Calc']['MergeMarketData'].get('ExplicitMarketData') or {})
         explicit['Price Factors'] = sorted(explicit.get('Price Factors') or {})
         key = (files, content_hash(explicit))
@@ -516,6 +525,9 @@ class Book:
         # the record's folds a booking or a read advances rather than re-walks (`spine.advancing`),
         # kept as long as the book is served
         self.folds = {}
+        # each file the book names parsed once per content, for every context a request builds
+        # over it (`load`): the newest of the market data and the calendar and the ones before
+        self.parses = utils.LRUCache(4)
 
     def _current(self, strict=False):
         """The etag of the file as it stands. Its text is read where the stamp or the size moved,
@@ -1154,12 +1166,13 @@ def ticket_terms(document, stated, deal, values_hash):
     notional_in = {}
     if isinstance(amount, (int, float)) and not isinstance(amount, bool) and amount > 0 and currency:
         notional_in[currency] = float(amount)
-        for name in structures.market_data(document):
+        market = market_of(document)
+        for name in structures.market_data(market):
             if not name.startswith('FxRate.'):
                 continue
             other = name.split('.', 1)[1]
             try:
-                crossed = float(amount) * structures.engine_spot(document, currency, other)
+                crossed = float(amount) * structures.engine_spot(market, currency, other)
             except (KeyError, TypeError, ValueError, ZeroDivisionError):
                 continue
             if math.isfinite(crossed) and crossed > 0:
@@ -1487,12 +1500,13 @@ def as_of():
 def risk_etag(document):
     """What a consolidated risk run READS, hashed - the cache key, and the etag the answer carries.
 
-    The whole `Deals` section, the whole `MergeMarketData` (a `MarketDataFile` path is market data
-    too) and the `Calculation` block. Anything less serves yesterday's vector: a rolled `Base_Date`
-    over an unmoved deal tree is a different risk.
+    The whole `Deals` section, the whole `MergeMarketData`, the sha256 of each file it names
+    (`Context.files`) and the `Calculation` block. Anything less serves yesterday's vector: a
+    rolled `Base_Date` over an unmoved deal tree, or a file rewritten on disk, is a different risk.
     """
     return content_hash({'deals': document['Calc']['Deals'],
                          'market': document['Calc']['MergeMarketData'],
+                         'files': Context().files(document),
                          'calculation': document['Calc']['Calculation']})
 
 
@@ -1553,10 +1567,9 @@ def quote_context(run):
     as it stands and the sentence saying why not. The switch is worth zero forward, so the marks
     are the book's own; a refit that refuses leaves the risk in factor space rather than failing
     the read."""
-    market = run['Calc']['MergeMarketData']['ExplicitMarketData']
-    prices = market.get('Market Prices') or {}
-    blocks = quote_blocks(prices, load(run).current_cfg.factor_universe()['resolved']) \
-        if prices else set()
+    prices = market_of(run)['Market Prices']
+    universe = set(load(run).current_cfg.factor_universe()['resolved']) if prices else set()
+    blocks = quote_blocks(prices, universe)
     if not blocks:
         return load(run), None
     quoted = deepcopy(run)
@@ -1568,7 +1581,7 @@ def quote_context(run):
         else prices[name] for name in sorted(blocks)}
     context = load(quoted)
     try:
-        context.bootstrap()
+        context.current_cfg.bootstrap(wanted=universe)
     except Exception as refusal:
         return load(run), ('the quotes this book is built from did not refit, so its risk is read '
                            'on the factors alone: {}'.format(refusal))
@@ -2537,7 +2550,8 @@ def valued_between(first, last, document, marks, market, scope, through=False):
     netting set holds a deal until its cash moves."""
     book = book_name(document)
     calculation = first['document']['Calc']['Calculation']
-    reporting, base = calculation.get('Currency'), structures.base_currency(first['document'])
+    reporting = calculation.get('Currency')
+    base = structures.base_currency(market_of(first['document']))
     for marks_of in (first, last):
         marks_of['rates'] = PnL.rates(marks_of.pop('values', None) or json.loads(
             spine.stored(marks_of['values_hash']).decode('utf-8')), reporting, base)
@@ -2663,15 +2677,16 @@ def consideration(document, price, currency):
     book's own reporting currency, else that currency and what one unit of it is worth in the
     book's, at this booking's own board - or the 422 naming a currency the book carries no spot for.
     """
+    market = market_of(document)
     reporting = (document['Calc']['Calculation'].get('Currency')
-                 or structures.base_currency(document))
+                 or structures.base_currency(market))
     if currency is None or currency == reporting:
         return None, None
     if price is None:
         raise spine.SpineRefused('this booking states price_currency {!r} and no price - the '
                                  'currency is what the price is stated in'.format(currency))
     try:
-        return currency, structures.engine_spot(document, currency, reporting)
+        return currency, structures.engine_spot(market, currency, reporting)
     except ValueError as missing:
         raise spine.SpineRefused('a price in {} is crossed into {} at the booking\'s own board, '
                                  'and {}'.format(currency, reporting, missing))
@@ -3539,8 +3554,8 @@ class XvaJob:
         captured = CapturedErrors()
         logging.getLogger().addHandler(captured)
         try:
-            session = EXECUTOR.session_for(self.document, self.stamp['values_hash'])
-            session.load_json((json.dumps(self.document), 'posted'))
+            session = load(self.document,
+                           EXECUTOR.session_for(self.document, self.stamp['values_hash']))
             # the digests the load parsed, so a parse of other bytes than the stamp's is refused
             if content_hash(session.current_cfg.files) != self.stamp['values_hash']:
                 raise ValueError('a file this netting set names changed after its recalc was '
@@ -3725,7 +3740,7 @@ def bootstrap_selection(market, outcome, patch):
                                               outcome['updated'])
 
 
-def market_edit(document, quotes, patch, bootstrap=None):
+def market_edit(document, quotes, patch, bootstrap=None, authored=()):
     """The market tick as ONE edit closure over a wire document, for `Book.mutate`: quote blocks
     installed or value-updated, a values patch applied, the bootstrap run, `(write, outcome)` back.
 
@@ -3739,28 +3754,38 @@ def market_edit(document, quotes, patch, bootstrap=None):
     patchable value to the engine, but on the live book it moves through `quotes`, which
     bootstraps. See `QUOTE_NOT_A_PATCH`.
 
+    THE WRITE-BACK IS WHAT MOVED: the explicit block gains the factors the patch states and the
+    ones the bootstrap changed, and never a factor of the file's that stood still. A quote block
+    the market carries is ticked as the book's own wherever it is held, unless the caller names it
+    `authored` - re-authored here, so installed whatever the market carries under its name.
+
     THE BOOTSTRAP COVERS WHAT MOVED (`bootstrap_selection`) and names it under `bootstrapped`
     where it was narrowed, so a tick of one curve costs that curve and its dependents rather than
     the whole market.
     """
     outcome = {'installed': [], 'updated': []}
+    standing = market_of(document)['Market Prices'] if quotes else {}
     for name in sorted(quotes):
+        if name in standing and name not in authored:
+            # the market's own block is what a tick moves the values of, the tick replacing it
+            document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+                'Market Prices', {}).setdefault(name, standing[name])
         outcome[update_market_quote(document, name, quotes[name])].append(name)
     wants_bootstrap = (bootstrap if bootstrap is not None else
                        ('Yes' if quotes else 'No')) == 'Yes'
-    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    quoted = sorted(set(patch) & set(market.get('Market Prices', {})))
+    context = load(document)
+    params = context.current_cfg.params
+    quoted = sorted(set(patch) & set(params['Market Prices']))
     if quoted:
         raise ValueError(QUOTE_NOT_A_PATCH.format(', '.join(quoted)))
-    if wants_bootstrap and not market.get('Bootstrapper Configuration'):
+    if wants_bootstrap and not params['Bootstrapper Configuration']:
         raise ValueError(NO_BOOTSTRAPPER)
     if not (wants_bootstrap or patch):
         return bool(outcome['installed'] or outcome['updated']), dict(outcome, written=True)
 
-    context = load(document)
+    standing = as_json(params['Price Factors'])
     context.patch_market(patch)
-    before = set(market.get('Price Factors', {}))
-    only = bootstrap_selection(market, outcome, patch) if wants_bootstrap else None
+    only = bootstrap_selection(params, outcome, patch) if wants_bootstrap else None
     if wants_bootstrap:
         captured = CapturedErrors()
         logging.getLogger().addHandler(captured)
@@ -3770,11 +3795,14 @@ def market_edit(document, quotes, patch, bootstrap=None):
             logging.getLogger().removeHandler(captured)
         if captured.messages:
             return False, {'written': False, 'refused': captured.messages}
-    params = context.current_cfg.params
-    market['Price Factors'] = as_json(params['Price Factors'])
-    market['Market Prices'] = as_json(params['Market Prices'])
+    written = as_json(params['Price Factors'])
+    moved = set(patch).union(rewrote(standing, written))
+    if moved:
+        document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+            'Price Factors', {}).update((name, block) for name, block in written.items()
+                                        if name in moved)
     return True, dict(outcome, written=True, patched=sorted(patch),
-                      new_factors=sorted(set(market['Price Factors']) - before),
+                      new_factors=sorted(set(written) - set(standing)),
                       **({} if only is None else {'bootstrapped': sorted(only)}))
 
 
@@ -3861,8 +3889,9 @@ def book_survival(request: dict):
         if points[-1][0] < SURVIVAL_HORIZON:
             points.append([SURVIVAL_HORIZON, points[-1][1] / points[-1][0] * SURVIVAL_HORIZON])
         factor = 'SurvivalProb.' + counterparty
-        document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][factor] = \
-            as_json({'Recovery_Rate': recovery, 'Curve': utils.Curve([], points)})
+        document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+            'Price Factors', {})[factor] = as_json(
+                {'Recovery_Rate': recovery, 'Curve': utils.Curve([], points)})
         return True, {'written': True, 'factor': factor, 'recovery': recovery, 'curve': points}
 
     try:
@@ -3871,25 +3900,27 @@ def book_survival(request: dict):
         raise HTTPException(422, str(error))
 
 
-def bootstrapper_entry(market, entry, fields):
-    """One `Bootstrapper Configuration` entry, the family named `entry`, with `fields` merged in.
-    An entry stating no `Prices` is completed with the stem its family routes on - the one key
+def bootstrapper_entry(document, entry, fields):
+    """One `Bootstrapper Configuration` entry, the family named `entry`, with `fields` merged over
+    the entry the document's market states, and written into its explicit block where that moves
+    it. An entry stating no `Prices` is completed with the stem its family routes on - the one key
     `derivus_bootstrap` cannot route without - while one stating another family's keeps it and is
     refused for it. A dial is read against the family's own declaration first, so a number posted
     as text names the dial rather than the cast; constructing the family off the result is the rest
     of the validation, before a quote is read."""
-    section = market.setdefault('Bootstrapper Configuration', {})
     family = bootstrappers.family_class(entry)
     declared = {f.key: f for f in family.fields}
     for field, value in sorted(fields.items()):
         message = value_message(declared[field], value) if field in declared else None
         if message:
             raise ValueError('{}: {}'.format(entry, message))
-    current = section.get(entry)
+    current = market_of(document)['Bootstrapper Configuration'].get(entry)
     merged = {PRICES_KEY: family.market_factor_type[:-len('Prices')],
               **(current if isinstance(current, dict) else {}), **fields}
     bootstrappers.construct_bootstrapper(entry, merged)
-    section[entry] = merged
+    if merged != current:
+        document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+            'Bootstrapper Configuration', {})[entry] = merged
     return entry, merged
 
 
@@ -3906,18 +3937,27 @@ def interpolation_method(factor_type, method):
                          'offers {}'.format(method, factor_type, ', '.join(menu[factor_type])))
 
 
-def interpolation_rule(market, factor_type, name, method):
+def interpolation_rules(document):
+    """`{factor type: [[condition, method], ...]}`, the rules the document's market states."""
+    return market_of(document)['Price Factor Interpolation']['.ModelParams'][
+        mapping['Configuration']['Price Factor Interpolation']['rules']]
+
+
+def interpolation_rule(document, factor_type, name, method):
     """Set or CLEAR one factor's own interpolation - a `modelfilters` rule on the dotted factor
     name, which `ModelParams.search` resolves ahead of the type's default. One rule per name; a
-    blank method removes it, so the default applies again."""
+    blank method removes it, so the default applies again. The rules kept are the ones the
+    document's market states for the type, and its explicit block states the type's whole list,
+    which replaces a file's."""
     declared = mapping['Configuration']['Price Factor Interpolation']
     interpolation_method(factor_type, method)
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     stated = (market.get('Price Factor Interpolation') or {}).get('.ModelParams') or {}
-    rules = [rule for rule in (stated.get(declared['rules']) or {}).get(factor_type, [])
-             if list(rule[0]) != [declared['key'], name]]
+    standing = interpolation_rules(document).get(factor_type, [])
+    rules = [rule for rule in standing if list(rule[0]) != [declared['key'], name]]
     if method:
         rules.append([[declared['key'], name], method])
-    if not (rules or stated):
+    if not (rules or stated or standing):
         return                    # a book stating no section is left stating none
     # both halves, because the decoder reads each by direct subscript
     params = market.setdefault('Price Factor Interpolation', {}).setdefault(
@@ -3926,26 +3966,30 @@ def interpolation_rule(market, factor_type, name, method):
         params.setdefault(declared['rules'], {})[factor_type] = rules
     else:
         params.setdefault(declared['rules'], {}).pop(factor_type, None)
+        # a file's rules stand under a block stating none, so a list emptied over them is stated
+        if interpolation_rules(document).get(factor_type):
+            params[declared['rules']][factor_type] = []
 
 
-def interpolation_entry(market, entry, fields):
+def interpolation_entry(document, entry, fields):
     """One routed factor TYPE's interpolation, `entry` naming the type: `method` is what every
     factor of it is built with, and with an `id` it is that one factor's own rule instead, cleared
     by a blank method. The answer is what the section now states for the type."""
     declared = mapping['Configuration']['Price Factor Interpolation']
     method, named = fields.get('method') or '', fields.get(declared['key']) or ''
     if named:
-        interpolation_rule(market, entry, named, method)
+        interpolation_rule(document, entry, named, method)
     elif method:
         interpolation_method(entry, method)
-        params = market.setdefault('Price Factor Interpolation', {}).setdefault(
+        params = document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+            'Price Factor Interpolation', {}).setdefault(
             '.ModelParams', {'modeldefaults': {}, 'modelfilters': {}})
         params[declared['entry']] = dict(params.get(declared['entry']) or {}, **{entry: method})
     else:
         raise ValueError('Price Factor Interpolation: {} states no method to build its factors '
                          'with, and no {} naming the one factor a rule would be for'.format(
                              entry, declared['key']))
-    params = (market.get('Price Factor Interpolation') or {}).get('.ModelParams') or {}
+    params = market_of(document)['Price Factor Interpolation']['.ModelParams']
     return entry, {'method': (params.get(declared['entry']) or {}).get(entry, ''),
                    'rules': {rule[0][1]: rule[1] for rule
                              in (params.get(declared['rules']) or {}).get(entry, [])
@@ -3959,11 +4003,11 @@ CONFIGURED_SECTIONS = {'Bootstrapper Configuration': bootstrapper_entry,
                        'Price Factor Interpolation': interpolation_entry}
 
 
-def rewrote(before, market):
-    """The price factors a re-bootstrap CHANGED - what a verb that re-solves the market answers
-    with, where `market_edit`'s `new_factors` names only the ones that were not there at all."""
-    return sorted(name for name, block in market['Price Factors'].items()
-                  if before.get(name) != block)
+def rewrote(before, after):
+    """The price factors `after` states otherwise than `before`, both `{name: wire block}` - what
+    a write moved, and what a verb that re-solves the market answers with, where `market_edit`'s
+    `new_factors` names only the ones that were not there at all."""
+    return sorted(name for name, block in after.items() if before.get(name) != block)
 
 
 def configure_edit(document, section, entry, fields):
@@ -3977,18 +4021,19 @@ def configure_edit(document, section, entry, fields):
         raise ValueError('{} is no configuration section - this book configures {}'.format(
             section, ' and '.join(sorted(CONFIGURED_SECTIONS))))
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    key, dials = amend(market, entry, fields)
+    key, dials = amend(document, entry, fields)
     before = dict(market.get('Price Factors', {}))
     write, refusal = market_edit(document, {}, {}, bootstrap='Yes')
     if not write:
         return write, refusal
     written = amend is bootstrapper_entry and key
-    if written and not any(name.startswith(written + '.') for name in market['Price Factors']):
+    if written and not any(name.startswith(written + '.')
+                           for name in market_of(document)['Price Factors']):
         return False, {'written': False, 'refused': [
             'Bootstrapper {0} wrote no {1}.* price factor - check the Market Prices section'.format(
                 key, written)]}
     return True, {'written': True, 'section': section, 'entry': key, 'dials': dials,
-                  'rewrote': rewrote(before, market)}
+                  'rewrote': rewrote(before, market.get('Price Factors', {}))}
 
 
 @app.post('/book/configure', summary='Set one bootstrapping dial - validated, then re-bootstrapped')
@@ -4066,16 +4111,15 @@ def read_stamp(stated):
 def book_base_date(document):
     """The book's own base date as a `datetime.date` - what a curve's benchmarks are rolled off. A
     block authored on it moves its values alone; one authored before it re-rolls."""
-    return read_stamp(document['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'System Parameters']['Base_Date'])
+    return read_stamp(market_of(document)['System Parameters']['Base_Date'])
 
 
 def stamp_base_date(document, base_date):
     """The book's two base dates, set together: `System Parameters.Base_Date`, what a curve's
     benchmarks roll off, and `Calculation.Base_Date`, what the pricers run on."""
     stamp = {'.Timestamp': base_date.isoformat()}
-    document['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'System Parameters']['Base_Date'] = stamp
+    document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
+        'System Parameters', {})['Base_Date'] = stamp
     document['Calc']['Calculation']['Base_Date'] = stamp
 
 
@@ -4094,17 +4138,17 @@ def snap_date(rows, as_of):
 
 
 def curve_holidays(document, calendar):
-    """The dates a block's `Calendar` names, off the book's own calendar file - the holiday set the
-    emitter rolls against. No file, or a location it does not carry, is the weekday rule."""
+    """The dates a block's `Calendar` names, off the book's own calendar file, taken from the live
+    book's parses - the holiday set the emitter rolls against. No file, or a location it does not
+    carry, is the weekday rule."""
     import datetime
 
     path = document['Calc'].get('CalendDataFile')
     if not (calendar and path and os.path.isfile(path)):
         return ()
-    calendars = Config()
-    calendars.parse_calendar_file(path)
+    holidays = Context().cached(path, Config().parse_calendar_file, BOOK and BOOK.parses)
     return {datetime.date.fromisoformat(day)
-            for day in calendars.holidays.get(calendar, {}).get('holidays', ())}
+            for day in holidays.get(calendar, {}).get('holidays', ())}
 
 
 def live_rows(rows, as_of, conventions):
@@ -4184,18 +4228,19 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}):
     from derivus_bloomberg.ir_curve import reauthor
 
     stamp_base_date(document, base_date)
-    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market, loaded = document['Calc']['MergeMarketData']['ExplicitMarketData'], market_of(document)
     prices = market.setdefault('Market Prices', {})
-    reauthored = [name for name in sorted(curves)
-                  if name in prices and quote_plan(prices[name]) != quote_plan(curves[name])]
+    reauthored = [name for name in sorted(curves) if name in loaded['Market Prices']
+                  and quote_plan(loaded['Market Prices'][name]) != quote_plan(curves[name])]
     for name in reauthored:
         reauthor(prices, name, curves[name])
     before = dict(market.get('Price Factors', {}))
     outcome = market_edit(document, dict(quotes, **curves), patch,
-                          'Yes' if market.get('Bootstrapper Configuration') else 'No')[1]
+                          'Yes' if loaded['Bootstrapper Configuration'] else 'No')[1]
     write = outcome['written']
     return write, (dict(outcome, base_date=base_date.isoformat(), reauthored=reauthored,
-                        rewrote=rewrote(before, market)) if write else outcome)
+                        rewrote=rewrote(before, market.get('Price Factors', {}))) if write
+                   else outcome)
 
 
 def curve_quotes(source, document, base_date=None):
@@ -4218,7 +4263,7 @@ def curve_quotes(source, document, base_date=None):
     from derivus_bloomberg.errors import BloombergFXError
 
     as_of, read, quotes, held = base_date or book_base_date(document), {}, {}, []
-    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
+    prices = market_of(document)['Market Prices']
     for name in sorted(prices):
         if not name.startswith(CURVE_FAMILY + '.'):
             continue
@@ -4288,12 +4333,11 @@ def book_curve(request: dict):
         name, block, as_of = authored_curve(document, request)
 
         def edit(document, etag):
-            market = document['Calc']['MergeMarketData']['ExplicitMarketData']
             # a book that has never carried a curve configures the family that solves one
-            bootstrapper_entry(market, CURVE_BOOTSTRAPPER, {})
+            bootstrapper_entry(document, CURVE_BOOTSTRAPPER, {})
             # a request that says nothing about the scheme leaves the curve's rule as it stands
             if 'interpolation' in request:
-                interpolation_rule(market, CURVE_BOOTSTRAPPER, request['curve'],
+                interpolation_rule(document, CURVE_BOOTSTRAPPER, request['curve'],
                                    request['interpolation'] or '')
             dated = book_base_date(document)
             if as_of < dated:
@@ -4337,7 +4381,7 @@ def book_curves(curve: str = None):
     from derivus_bloomberg.errors import BloombergFXError
 
     document, etag = live_book().read()
-    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market = market_of(document)
     seed = {'rates': security_map.seeded_rates()}
     answer = {'etag': etag, 'base_date': book_base_date(document).isoformat(), 'curves': {}}
     for name in sorted(market.get('Market Prices', {})):
@@ -4427,7 +4471,7 @@ def book_status():
     sandboxed desk reads `terminal.present` False and prices on the market it last snapped.
     """
     document, etag = live_book().read()
-    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market = market_of(document)
     factors = market.get('Price Factors', {})
     calculation = document['Calc']['Calculation']
     return {
@@ -4456,6 +4500,15 @@ def book_status():
                 for row in book_xva_view()['sets']],
         'spine': spine_block(document),
         'terminal': terminal_status()}
+
+
+@app.get('/book/market', summary='The market the book prices on - its file, its block over it')
+def book_market_view():
+    """The market data the live book PRICES on, in wire form: the sections of the market data file
+    it names with its explicit block merged over them (`market_of`), `Correlations` aside - what
+    every reader here answers a market question off, where `GET /book` serves the document."""
+    document, etag = live_book().read()
+    return {'etag': etag, 'market': market_of(document)}
 
 
 def date_edit(document, base_date):
@@ -4496,21 +4549,6 @@ def book_date(request: dict):
     return written
 
 
-def engine_spots(base_currency, crosses):
-    """`{currency: one unit of it in base-currency units}` for market crosses - the ENGINE's axis.
-
-    `structures.with_live_spots` is the inversion, and this runs it over a bare factor list so the
-    arithmetic has ONE spelling: a caller that has not installed its block yet reaches it, and a
-    pair neither of whose legs is the base still refuses by name rather than being triangulated.
-    """
-    names = {'FxRate.{}'.format(currency): {}
-             for pair in crosses for currency in structures.split_pair(pair)}
-    return structures.with_live_spots(
-        {'Calc': {'MergeMarketData': {'ExplicitMarketData': {
-            'System Parameters': {'Base_Currency': base_currency},
-            'Price Factors': names}}}}, crosses)
-
-
 def spot_routes(mapped, document):
     """`({PAIR: security}, the currencies with no route)` - the verified pair that prices each
     `FxRate.<ccy>.Spot` the book carries against the base. A currency the map verified no pair for
@@ -4518,7 +4556,7 @@ def spot_routes(mapped, document):
     from derivus_bloomberg import security_map
     from derivus_bloomberg.errors import BloombergConfigurationError
 
-    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market = market_of(document)
     base = market['System Parameters']['Base_Currency']
     routes, unrouted = {}, []
     for name in sorted(market.get('Price Factors', {})):
@@ -4540,11 +4578,11 @@ def book_spots(source, routes, document):
     surfaces' - a spot is the number every deal in the book reprices off."""
     from derivus_bloomberg import security_map
 
-    base = document['Calc']['MergeMarketData']['ExplicitMarketData'][
-        'System Parameters']['Base_Currency']
+    base = market_of(document)['System Parameters']['Base_Currency']
     values = security_map.fetch_fx_spot(source, routes.values())
-    return {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot in engine_spots(
-        base, {pair: values[security] for pair, security in routes.items()}).items()}
+    return {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot in
+            structures.crossed_spots(base, {pair: values[security]
+                                            for pair, security in routes.items()}).items()}
 
 
 def refusal(error):
@@ -4686,8 +4724,7 @@ def submit_bloomberg(scope, routine=False, actor=None):
     """
     live = live_book()
     document, etag = live.read()
-    if not document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
-            'Bootstrapper Configuration'):
+    if not market_of(document)['Bootstrapper Configuration']:
         raise HTTPException(422, NO_BOOTSTRAPPER)
     # a fetch is an ACT against the terminal rather than a function of the book, so the submission
     # clock names it: two ticks against an unmoved book are two trips, never one coalesced result
@@ -4787,7 +4824,7 @@ def curve_securities(document, mapped):
                                     for key in ('name', 'last_update', 'verified')}
                 for _, entry in entries(mapped)}
     evidence.update(mapped.get('rejected', {}))
-    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
+    prices = market_of(document)['Market Prices']
     return [{'curve': name.split('.', 1)[1], 'tenor': row.get('Tenor', ''),
              'security': row.get('Security', ''), 'quote': row.get('Quoted_Market_Value'),
              'timestamp': (row.get('Timestamp') or {}).get('.Timestamp', ''),
@@ -5165,7 +5202,7 @@ def pair_factors(document, pair):
     """
     import datetime
 
-    factors = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Price Factors', {})
+    factors = market_of(document)['Price Factors']
     left, right = structures.split_pair(pair)
     expiry = {'.Timestamp': (book_base_date(document) + datetime.timedelta(365)).isoformat()}
     probe = dict(PAIR_PROBE, Currency=right, Underlying_Currency=left,
@@ -5186,8 +5223,7 @@ def dependency_answer(document, resolved, missing, seed=None, mapped=None, **nam
     would, never a guess. A job that has already read the vocabulary threads it in."""
     seed = desk_seed() if seed is None else seed
     mapped = desk_map()[0] if mapped is None else mapped
-    base = document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
-        'System Parameters', {}).get('Base_Currency')
+    base = market_of(document)['System Parameters']['Base_Currency']
     rows = []
     for factor in missing:
         supply, note = supply_of(factor, base, seed, mapped)
@@ -5282,7 +5318,7 @@ def setup_scope(request, document, baseline):
 def standing_pairs(document):
     """The pairs the book already carries a quoted surface for - what a roll re-prices, since what
     a set-up must not leave behind is the market the book was already valuing on."""
-    prices = document['Calc']['MergeMarketData']['ExplicitMarketData'].get('Market Prices', {})
+    prices = market_of(document)['Market Prices']
     return sorted(name.split('.', 1)[1].replace('.', '') for name in prices
                   if name.startswith('FXVolPrices.'))
 
@@ -5548,7 +5584,7 @@ class SetupJob:
         from derivus_bloomberg import ir_curve
         from derivus_bloomberg.errors import BloombergFXError
 
-        carried = document['Calc']['MergeMarketData']['ExplicitMarketData']
+        carried = market_of(document)
         base = carried['System Parameters']['Base_Currency']
         rates = seed['rates']
         as_of = snap_date([row for _, rows in strips.values() for row in rows],
@@ -5568,7 +5604,7 @@ class SetupJob:
                 not_supplied.append({'factor': 'InterestRate.' + curve,
                                      'reason': unsupplied_curve(curve, rows, dated, error)})
         spots = {'FxRate.{}'.format(currency): {'Spot': spot} for currency, spot
-                 in engine_spots(base, crosses).items()} if crosses else {}
+                 in structures.crossed_spots(base, crosses).items()} if crosses else {}
         not_supplied += held_with(not_supplied, spots, quotes, curves, discounts, named,
                                   carried.get('Price Factors', {}))
         own, repriced = dict(curves), []
@@ -5597,7 +5633,7 @@ class SetupJob:
                         'Interest_Rate': discounts.get(currency, currency)}
             for entry in ([CURVE_BOOTSTRAPPER] if curves else []) + (
                     [VOL_BOOTSTRAPPER] if quotes else []):
-                bootstrapper_entry(market, entry, {})
+                bootstrapper_entry(document, entry, {})
             # every standing block is re-rolled onto the new day off its own rows, and the ones the
             # roll re-priced overlay it - a block the terminal would not answer for is still dated
             # with the book rather than left behind it
@@ -5608,7 +5644,7 @@ class SetupJob:
             if not write:
                 return write, outcome
             return True, dict(outcome, installed=sorted(
-                set(factors) & set(market['Price Factors'])))
+                set(factors) & set(market.get('Price Factors', {}))))
 
         try:
             answer = dict({'installed': [], 'refused': []}, **self.book.mutate(edit))
@@ -5688,8 +5724,7 @@ def book_setup(request: dict):
 
     live = live_book()
     document, etag = live.read()
-    if not document['Calc']['MergeMarketData']['ExplicitMarketData'].get(
-            'Bootstrapper Configuration'):
+    if not market_of(document)['Bootstrapper Configuration']:
         raise HTTPException(422, NO_BOOTSTRAPPER)
     if not terminal_status()['present']:
         raise HTTPException(422, NO_TERMINAL)
@@ -5758,7 +5793,8 @@ def spot_model_edit(document, pair, family):
     the surface before the fit reads it.
     """
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    if not market.get('Bootstrapper Configuration'):
+    configured = market_of(document)['Bootstrapper Configuration']
+    if not configured:
         raise ValueError(NO_BOOTSTRAPPER)
     calibrator = spot_model_family(family)
     params = load(document).current_cfg.params
@@ -5770,13 +5806,15 @@ def spot_model_edit(document, pair, family):
     name, block = calibrator.fx_surface_block(
         pair, params['Price Factors'], params['System Parameters'],
         params['Price Factor Interpolation'], desk_leverage_prior(pair, fitted),
-        market['Bootstrapper Configuration'].get(entry))
+        configured.get(entry))
     market.get('Market Prices', {}).pop(name, None)
-    borrowed = entry not in market['Bootstrapper Configuration']
-    market['Bootstrapper Configuration'].setdefault(
-        entry, {'Prices': calibrator.market_factor_type[:-len('Prices')]})
+    borrowed = entry not in configured
+    if borrowed:
+        market.setdefault('Bootstrapper Configuration', {})[entry] = {
+            'Prices': calibrator.market_factor_type[:-len('Prices')]}
     try:
-        written, outcome = market_edit(document, {name: as_json(block)}, {}, 'Yes')
+        written, outcome = market_edit(document, {name: as_json(block)}, {}, 'Yes',
+                                       authored={name})
     except (ValueError, KeyError) as error:
         # what `/book/market` makes a 422 of, made into the refusal a queued job lands as - a
         # message under this run's own Stats, never an exception out of the worker
@@ -5787,7 +5825,7 @@ def spot_model_edit(document, pair, family):
     factor = spot_model_factor(family, name)
     # the parameters are read back off the WRITE - a refused bootstrap leaves the section as it was,
     # and reporting the standing block would report the previous fit as this one's answer
-    fitted = (market['Price Factors'].get(factor) or {}) if written else {}
+    fitted = (market_of(document)['Price Factors'].get(factor) or {}) if written else {}
     return written, dict(outcome, pair=pair, family=family, block=name, factor=factor,
                          quotes=len(block['instrument']['European_Options']),
                          source=block['instrument']['Quote_Source'],
@@ -6178,8 +6216,7 @@ def board_age(document, quoted_at):
     book has an age for the same reason it has an identity.
     """
     ages = [quote_age(structures.timestamp(stamp).isoformat(), quoted_at)
-            for stamp in quote_stamps(document.get('Calc', {}).get('MergeMarketData', {}).get(
-                'ExplicitMarketData') or {})]
+            for stamp in quote_stamps(market_of(document))]
     measured = [age for age in ages if age is not None]
     return max(measured) if measured else None
 
@@ -6333,11 +6370,7 @@ def patch_live_spot(document, params):
         currencies = structures.split_pair(params['pair'])
     except (KeyError, TypeError, ValueError) as error:
         return {'source': 'book', 'note': NO_LIVE_SPOT.format(error)}
-    base = structures.base_currency(document)
-    if not base:
-        return {'source': 'book', 'note': NO_LIVE_SPOT.format(
-            'the book declares no Base_Currency to read a cross against')}
-    crosses, note = live_spot_crosses(base, currencies)
+    crosses, note = live_spot_crosses(structures.base_currency(market_of(document)), currencies)
     if crosses is None:
         return {'source': 'book', 'note': note}
     try:
@@ -6409,7 +6442,7 @@ class StructureJob:
             return {'sheet': None,
                     'sheet_note': 'no quote sheet ({}) - pip install derivus[quote]'.format(error)}
         path = os.path.join(directory, outcome['quote_id'] + '.xlsx')
-        quote_sheet.write_sheet(path, outcome, self.document)
+        quote_sheet.write_sheet(path, outcome, self.document, market_of(self.document))
         return {'sheet': path}
 
     def run_job(self):

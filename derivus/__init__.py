@@ -516,13 +516,19 @@ class Context:
         data = pathlib.Path(self.parse_path(name)).read_bytes()
         return data, hashlib.sha256(data).hexdigest()
 
-    def cached(self, name, parse):
+    def cached(self, name, parse, parses=None):
         """`parse(path, bytes)` of the file `name` names, kept by the sha256 of the bytes, which is
         filed as the digest `name` last read: a file rewritten on disk is parsed anew however soon
-        after, and two holding one content are one parse."""
+        after, and two holding one content are one parse. `parses`, a `utils.LRUCache` outliving
+        this context, keeps each parse pickled under its digest, so a content another context
+        parsed is unpickled into this one's own copy rather than parsed again."""
         data, digest = self.digest(name)
         if digest not in self.parsed:
-            self.parsed[digest] = parse(self.parse_path(name), data)
+            kept = parses and parses.get(digest)
+            self.parsed[digest] = pickle.loads(kept) if kept else parse(self.parse_path(name), data)
+            if parses and not kept:
+                # pickled before a load merges onto it, so every copy starts from the file alone
+                parses.put(digest, pickle.dumps(self.parsed[digest]))
         self.digests[name] = digest
         return self.parsed[digest]
 
@@ -540,7 +546,7 @@ class Context:
         while the files hold still."""
         return {key: name and self.digest(name)[1] for key, name in self.named(document).items()}
 
-    def load_json(self, jobfilename, compress=True):
+    def load_json(self, jobfilename, compress=True, parses=None):
 
         def resolve_deferred_deals(obj, val_config):
             if isinstance(obj, utils.DeferredDeal):
@@ -565,14 +571,14 @@ class Context:
             self.stressed_config_file = market_data.get('StressedMarketDataFile')
 
             if named['MarketDataFile']:
-                cfg = self.cached(named['MarketDataFile'], self.load_config)
+                cfg = self.cached(named['MarketDataFile'], self.load_config, parses)
             else:
                 cfg = Config()
             for section, section_data in market_data.get('ExplicitMarketData', {}).items():
                 cfg.merge_section(section, section_data)
 
         if named['CalendDataFile']:
-            cfg.holidays = self.cached(named['CalendDataFile'], cfg.parse_calendar_file)
+            cfg.holidays = self.cached(named['CalendDataFile'], cfg.parse_calendar_file, parses)
 
         if 'Deals' in data['Calc']:
             cfg.deals = {'Attributes': {'Reference': data['Calc']['Deals'].get('Reference')}}

@@ -6000,10 +6000,13 @@ def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_na
     what it overrides - and loads onto the executor's one long-lived context, which parses the
     file once and serves every set. Every CVA and FVA is the number a fresh context over the same
     document reads, to the bit, and so is every one after the book restates the values it
-    overrides, and after it withdraws one. Nothing at module level holds a context or a digest.
+    overrides, and after it withdraws one - which builds the context anew, taking both files from
+    the book's parses and parsing neither again. Nothing at module level holds a context or a
+    digest.
 
     KILLING MUTATIONS: the context built anew per set; the names the book states left out of the
-    context's key, which goes on reading the withdrawn spot; a module-level cache of the digests.
+    context's key, which goes on reading the withdrawn spot; a module-level cache of the digests;
+    the context loading past the book's parses, which leaves them empty.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     book, market, calendar = named_book(tmp_path)
@@ -6017,6 +6020,8 @@ def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_na
         assert all(row['cva'] > 0.0 for row in before.values()), 'a CVA of nothing is vacuous'
         assert service.EXECUTOR.session is session and kept(session, market) is parsed
         assert str(calendar) in session.digests
+        taken = {id(blob) for blob in service.BOOK.parses.entries.values()}
+        assert len(taken) == 2
 
         document = json.loads(book.read_text())
         stated = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
@@ -6041,6 +6046,8 @@ def test_every_netting_set_prices_on_one_kept_context_over_the_files_the_book_na
         book.write_text(json.dumps(document, indent=2), newline='\n')
         recalc()
         assert adjustments() == fresh_xva(book), 'a spot the book withdrew was still read'
+        assert service.EXECUTOR.session is not session
+        assert {id(blob) for blob in service.BOOK.parses.entries.values()} == taken
     finally:
         service.BOOK = None
 
@@ -6265,6 +6272,341 @@ def test_the_context_keeps_the_file_and_what_a_bootstrap_wrote_across_loads(tmp_
     fresh = derivus.Context().load_json(swap_job(3))
     fresh.bootstrap()
     assert value(session) == value(fresh)
+
+
+# --------------------------------------------------------------------------------------------
+# a book naming a market data file is answered off the file
+# --------------------------------------------------------------------------------------------
+def outright(months, rate):
+    """One benchmark of a ZAR curve implied off USDZAR outrights: a million USD sold for ZAR at
+    `months`, at the outright a ZAR rate of `rate` implies over the book's own spot and USD curve.
+    Its forward reads `FxRate.ZAR`, so a moved spot re-solves the curve."""
+    forward = (1.0 + (rate - RATE) * months / 12.0) / SPOT
+    return {'Use': 'Yes', 'Descriptor': 'USDZAR {}M outright'.format(months),
+            'DealType': 'FXForwardDeal', 'Quote_Type': 'Par_Rate', 'Quoted_Market_Value': forward,
+            'Deal': {'Reference': 'FWD_{}M'.format(months), 'Sell_Currency': 'USD',
+                     'Sell_Amount': 1e6, 'Buy_Currency': 'ZAR', 'Buy_Amount': forward * 1e6,
+                     'Settlement_Date': BASE + pd.DateOffset(months=months),
+                     'Buy_Discount_Rate': 'ZAR-FX', 'Sell_Discount_Rate': 'USD'}}
+
+
+def file_world(tmp_path):
+    """`(book, market)` in `tmp_path`, the book served: the one-cashflow book's own world - its ZAR
+    curve set up from its rows, a ZAR curve implied off three outrights beside it, the USDZAR
+    surface ticked in, the surface's family configured to a 0.001 grid tolerance and the ZAR curve
+    to a HermiteRT rule, each solved through the verbs - written to a market data FILE, and the
+    book naming it with an EMPTY explicit block."""
+    book, market = tmp_path / 'book.json', tmp_path / 'market.json'
+    implied = {'InterestRatePrices.ZAR-FX': {'instrument': {
+        'Currency': 'ZAR', 'Day_Count': 'ACT_365', 'Discount_Rate': '',
+        'Points': [outright(months, rate) for months, rate in ((3, 0.07), (6, 0.072), (12, 0.075))]},
+        'Children': []}}
+    book.write_text(json.dumps(wire(job(sections={'Bootstrapper Configuration': {'FXVol': {}},
+                                                  'Market Prices': implied})), indent=2),
+                    newline='\n')
+    service.BOOK = service.Book(str(book))
+    assert set_up_curve().status_code == 200
+    assert CLIENT.post('/book/market', content=dump({'quotes': fx_vol_quotes()}),
+                       headers=JSON).json()['written'] is True
+    assert configure('Bootstrapper Configuration', 'FXVol', Grid_Tolerance=0.001)['written'] is True
+    assert configure('Price Factor Interpolation', 'InterestRate', id='ZAR',
+                     method='HermiteRT')['written'] is True
+    document = json.loads(book.read_text())
+    market.write_text(json.dumps({'MarketData': document['Calc']['MergeMarketData'][
+        'ExplicitMarketData']}))
+    document['Calc']['MergeMarketData'] = {'MarketDataFile': str(market), 'ExplicitMarketData': {}}
+    book.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(book))
+    return book, market
+
+
+@pytest.fixture
+def file_book(tmp_path, monkeypatch):
+    """`file_world` under the gate's own `DV_HOME`, taken down after."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    try:
+        yield file_world(tmp_path)
+    finally:
+        service.BOOK = None
+
+
+def block_of(book):
+    """What the book's own explicit block states."""
+    return json.loads(book.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
+
+
+def configure(section, entry, **fields):
+    """`POST /book/configure` of `fields` into one entry of `section`, answered."""
+    return CLIENT.post('/book/configure', json={'section': section, 'entry': entry,
+                                                'fields': fields}).json()
+
+
+def twin(book, market):
+    """The explicit TWIN of a book naming `market`: the same document stating the whole file in
+    its explicit block and naming none, written beside it."""
+    document = json.loads(book.read_text())
+    document['Calc']['MergeMarketData'] = {
+        'MarketDataFile': '', 'ExplicitMarketData': json.loads(market.read_text())['MarketData']}
+    path = book.with_name('twin.json')
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    return path
+
+
+def on_each(books, ask):
+    """`ask()` answered on each of `books` served in turn, its etags dropped - one book's state
+    against another's is a different hash of the same answer."""
+    answers = []
+    for path in books:
+        service.BOOK = service.Book(str(path))
+        answers.append(json.loads(json.dumps(ask()), object_hook=lambda block: {
+            key: value for key, value in block.items() if key != 'etag'}))
+    return answers
+
+
+def test_a_book_naming_a_market_data_file_is_read_off_the_file(file_book):
+    """A book stating NOTHING over the market data file it names is answered off the file: the
+    status names the file's base currency and date, both its curves and its surface; the curve
+    verb lists both curves; the consolidated risk reads the cashflow's six ZAR quotes off the
+    file's strip; and a counterparty's survival curve and the date verb answer as they do on the
+    book's explicit twin, the survival curve the one factor the bare block states and the roll
+    re-authoring the file's ZAR strip on the new day into it, re-solving that curve alone and
+    naming the implied one as left standing. Before, each read the block: the status and the curve
+    verb died on `KeyError: 'System Parameters'`, the risk read no quote, the survival curve
+    refused `'Price Factors'` and the roll `'System Parameters'`.
+
+    KILLING MUTATIONS: `book_base_date` back on the explicit block, which raises the status's
+    `KeyError` again; the risk's quote blocks read off the explicit block, which reads none; the
+    roll's re-authoring judged off the explicit block, which refuses the file's strip as a moved
+    plan.
+    """
+    book, market = file_book
+    status = CLIENT.get('/book/status').json()
+    assert (status['base_currency'], status['base_date']) == ('USD', '2024-06-28')
+    assert [(entry['curve'], entry['interpolation']) for entry in status['curves']] == [
+        ('ZAR', 'HermiteRT'), ('ZAR-FX', 'Linear')]
+    assert [entry['name'] for entry in status['surfaces']] == ['FXVol.USD.ZAR']
+    assert sorted(CLIENT.get('/book/curve').json()['curves']) == [
+        'InterestRatePrices.ZAR', 'InterestRatePrices.ZAR-FX']
+    risk = CLIENT.get('/book/risk').json()
+    assert (risk['quoted'], risk['quote_note']) == (['InterestRate.ZAR'], None)
+    assert [row['block'] for row in risk['quotes']] == ['InterestRatePrices.ZAR'] * 6
+
+    explicit, named = on_each((twin(book, market), book), lambda: [
+        CLIENT.post('/book/survival', json={'counterparty': 'CPTY_A', 'spread': 100.0}).json(),
+        CLIENT.post('/book/date', json={'base_date': '2024-07-01'}).json()])
+    assert named == explicit
+    survival, rolled = named
+    assert survival['written'] is True and rolled['written'] is True
+    assert (rolled['updated'], rolled['reauthored'], rolled['rewrote']) == (
+        ['InterestRatePrices.ZAR'], ['InterestRatePrices.ZAR'], ['InterestRate.ZAR'])
+    assert rolled['held_out'] == ["InterestRatePrices.ZAR-FX left as it stands - 'Spot_Days'"]
+    assert CLIENT.get('/book/status').json()['base_date'] == '2024-07-01'
+    assert {section: sorted(stated) for section, stated in block_of(book).items()} == {
+        'Price Factors': ['InterestRate.ZAR', 'SurvivalProb.CPTY_A'],
+        'System Parameters': ['Base_Date'], 'Market Prices': ['InterestRatePrices.ZAR']}
+
+
+def test_a_spot_patched_on_a_book_naming_a_file_writes_back_what_moved(file_book):
+    """A spot patched on a book naming a market data file writes what moved into its block and
+    nothing of the file's that stood still. Patched alone, the block states `FxRate.ZAR` at its
+    new spot and nothing else; patched and bootstrapped, it states the spot and
+    `InterestRate.ZAR-FX`, the curve the outrights re-solve off it - the 3M rate 6.93% to 22.70% -
+    and none of the file's four other factors or three quote blocks. Before, the plain patch
+    wrote all six of the file's factors and all three of its quote blocks into the block, and the
+    bootstrapped one refused as declaring no `Bootstrapper Configuration`.
+
+    KILLING MUTATIONS: the loaded config's whole `Price Factors` written back, six factors; the
+    patch written back alone, which leaves the market reading the file's ZAR-FX curve.
+    """
+    book, market = file_book
+    filed = json.loads(market.read_text())['MarketData']['Price Factors']
+    patched = CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 19.0}}})
+    assert patched.json()['written'] is True
+    assert block_of(book) == {'Price Factors': {'FxRate.ZAR': dict(filed['FxRate.ZAR'], Spot=19.0)}}
+
+    ticked = CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 19.25}},
+                                               'bootstrap': 'Yes'})
+    assert ticked.json()['written'] is True
+    factors = block_of(book)['Price Factors']
+    assert sorted(block_of(book)) == ['Price Factors']
+    assert sorted(factors) == ['FxRate.ZAR', 'InterestRate.ZAR-FX']
+    assert factors['FxRate.ZAR']['Spot'] == 19.25
+    front = [factors['InterestRate.ZAR-FX']['Curve']['.Curve']['data'][0][1],
+             filed['InterestRate.ZAR-FX']['Curve']['.Curve']['data'][0][1]]
+    assert [round(rate, 4) for rate in front] == [0.2270, 0.0693]
+
+
+def test_an_entry_configured_on_a_book_naming_a_file_is_merged_over_the_files(file_book):
+    """A configuration entry is merged over the one the book's MARKET states. The file configures
+    the surface's family to a 0.001 grid tolerance and the ZAR curve under a HermiteRT rule; on
+    the bare block a `Delta_Type` lands beside the tolerance, a Linear rule for ZAR-FX beside the
+    ZAR rule with no curve re-solved, and clearing both leaves the block stating an empty list for
+    the type, which the ZAR curve is re-solved and read under. Before, each was merged over the
+    block's nothing: the tolerance went, the ZAR-FX rule replaced the file's ZAR rule and
+    re-solved ZAR under the Linear default, and both clears answered no rule while the file's
+    HermiteRT rule stood.
+
+    KILLING MUTATIONS: `bootstrapper_entry` merging over the block's entry; the rules kept off the
+    block's; the emptied list popped rather than stated, which leaves the file's HermiteRT rule
+    standing under the block.
+    """
+    book, _ = file_book
+    dial = configure('Bootstrapper Configuration', 'FXVol', Delta_Type='Forward')
+    assert dial['dials'] == {'Prices': 'FXVol', 'Grid_Tolerance': 0.001, 'Delta_Type': 'Forward'}
+    assert block_of(book)['Bootstrapper Configuration'] == {'FXVol': dial['dials']}
+
+    added = configure('Price Factor Interpolation', 'InterestRate', id='ZAR-FX', method='Linear')
+    assert (added['dials']['rules'], added['rewrote']) == (
+        {'ZAR': 'HermiteRT', 'ZAR-FX': 'Linear'}, [])
+    assert configure('Price Factor Interpolation', 'InterestRate', id='ZAR-FX',
+                     method='')['dials']['rules'] == {'ZAR': 'HermiteRT'}
+    cleared = configure('Price Factor Interpolation', 'InterestRate', id='ZAR', method='')
+    assert (cleared['dials']['rules'], cleared['rewrote']) == ({}, ['InterestRate.ZAR'])
+    assert block_of(book)['Price Factor Interpolation']['.ModelParams']['modelfilters'] == {
+        'InterestRate': []}
+    zar = CLIENT.get('/book/curve', params={'curve': 'ZAR'}).json()['curves'][
+        'InterestRatePrices.ZAR']
+    assert (zar['interpolation'], zar['interpolation_source']) == ('Linear', 'default')
+
+
+def test_a_tick_of_the_files_own_quotes_is_an_update_as_on_its_explicit_twin(file_book):
+    """The USDZAR smile the file carries ticked again through `/book/market` is an UPDATE of that
+    block, bootstrapping what reads it alone, as the same tick on the book's explicit twin answers;
+    the bare block afterwards states the ticked block and nothing else, the surface it re-solves
+    standing where it stood. Before, the tick refused: "the book declares no Bootstrapper
+    Configuration - nothing can turn quotes into price factors".
+
+    KILLING MUTATION: the tick judged against the explicit block alone, which answers `installed`
+    with no narrowing - unchecked against the file's structure and re-solving the whole market.
+    """
+    book, market = file_book
+    explicit, named = on_each((twin(book, market), book), lambda: CLIENT.post(
+        '/book/market', content=dump({'quotes': fx_vol_quotes()}), headers=JSON).json())
+    assert named == explicit
+    assert (named['installed'], named['updated'], named['bootstrapped']) == (
+        [], ['FXVolPrices.USD.ZAR'], ['FXVolPrices.USD.ZAR'])
+    assert {section: sorted(stated) for section, stated in block_of(book).items()} == {
+        'Market Prices': ['FXVolPrices.USD.ZAR']}
+
+
+#: A LogVar2FJ ladder short enough to fit in seconds: ATM and the 25-delta wings at the canned
+#: surface's own two expiries, two iterations, weekly steps.
+SHORT_LADDER = {'Prices': 'LogVar2FJModel', 'ATM_Expiries': '3,12', 'Wing_Expiries': '3,12',
+                'Wing_Pillars': '0.25', 'Minimum_Contracts': 6, 'Max_Iterations': 2,
+                'Paths': 1024, 'Steps_Per_Year': 52.0, 'Stationary_Spread': 'Floor'}
+
+
+def test_a_quote_on_a_book_naming_a_file_is_the_quote_on_its_explicit_twin(file_book):
+    """A collar quoted on a book naming a market data file is the collar its explicit twin quotes,
+    leg for leg to the bit - sides, market strikes, premiums, the solved cap, the net and the spot
+    it was struck on - and its quote sheet's Market tab carries the file's own ZAR spot and the
+    ZAR curve's front rate. Before, the quote failed: "the book carries no explicit Price Factors
+    - a quote reads the spot off them to bracket its solves".
+
+    KILLING MUTATIONS: `structures.market_data` back on the explicit block, which refuses the
+    quote again; the sheet handed the explicit block, which carries no factor.
+    """
+    pytest.importorskip('derivus.quote_sheet', reason='the quote extra is not installed')
+    from test_quote_sheet import holds, numbers
+
+    book, market = file_book
+
+    def terms():
+        quote = quote_of('ZeroCostCollar', COLLAR)
+        return [[(leg['role'], leg['buy_sell'], leg['strike_market'], leg['premium'], leg['solved'])
+                 for leg in quote['legs']], quote['net'], quote['net_mid'],
+                quote['spot']['value_market'], quote['files']['sheet']]
+
+    explicit, named = on_each((twin(book, market), book), terms)
+    assert named[:-1] == explicit[:-1]
+    assert sum(leg[4] is not None for leg in named[0]) == 1 and abs(named[1]) < 1e-2
+    filed = json.loads(market.read_text())['MarketData']['Price Factors']
+    tab = numbers(named[-1], 'Market')
+    assert holds(tab, filed['FxRate.ZAR']['Spot'])
+    assert holds(tab, filed['InterestRate.ZAR']['Curve']['.Curve']['data'][0][1])
+
+
+def test_a_spot_model_fitted_on_a_book_naming_a_file_is_the_fit_on_its_explicit_twin(file_book):
+    """The LogVar2FJ family declared in the market data FILE on a short ladder, `/book/model`
+    fits USDZAR on a book naming the file to the parameters its explicit twin lands, and the bare
+    block afterwards states the block fitted and the factor written and nothing of the file's.
+    Before, the named book's fit failed: "the book declares no Bootstrapper Configuration -
+    nothing can turn quotes into price factors".
+
+    KILLING MUTATION: the spot model's configuration read off the explicit block, which refuses
+    the fit again.
+    """
+    book, market = file_book
+    data = json.loads(market.read_text())
+    data['MarketData']['Bootstrapper Configuration']['LogVar2FJModelParameters'] = SHORT_LADDER
+    market.write_text(json.dumps(data))
+
+    def fitted():
+        submitted = CLIENT.post('/book/model', json={'pair': 'USDZAR'}).json()
+        service.EXECUTOR.queue.join()
+        return CLIENT.get('/results/{}'.format(submitted['result_id'])).json()['stats']['SpotModel']
+
+    explicit, named = on_each((twin(book, market), book), fitted)
+    for answer in (explicit, named):
+        answer.pop('seconds')
+    assert named == explicit
+    assert named['written'] is True and named['installed'] == ['LogVar2FJModelPrices.ZAR']
+    assert named['quotes'] == 6 and named['parameters']['Alpha']
+    assert {section: sorted(stated) for section, stated in block_of(book).items()} == {
+        'Market Prices': ['LogVar2FJModelPrices.ZAR'],
+        'Price Factors': ['LogVar2FJModelParameters.ZAR']}
+
+
+def test_the_risk_of_a_book_naming_a_file_rewritten_inside_one_tick_is_read_anew(file_book):
+    """`/book/risk` is cached on what it reads, the bytes of the file the book names among them:
+    the file rewritten with its size and modified time held, the ZAR spot moved from 18.5 to
+    18.6, moves the etag and the mark by the spot's own ratio. Before, the cache was keyed on the
+    file's path and served the first mark. Every book's risk etag moves with the landing, since
+    the cache key now carries the files' digests.
+
+    KILLING MUTATION: `risk_etag` without the files' digests, which serves the cached mark.
+    """
+    _, market = file_book
+    before = CLIENT.get('/book/risk').json()
+    held, text = os.stat(market), market.read_text()
+    assert text.count('"Spot": 18.5') == 1
+    market.write_text(text.replace('"Spot": 18.5', '"Spot": 18.6'))
+    os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
+    after = CLIENT.get('/book/risk').json()
+    assert after['etag'] != before['etag']
+    assert after['mtm'] / before['mtm'] == pytest.approx(18.6 / 18.5, rel=1e-12)
+
+
+def test_the_book_parses_the_file_it_names_once_per_content(file_book):
+    """A request's context is its own and the parse of the file is the BOOK's: three rounds of the
+    status, the curve verb and the dependency walk, each read on contexts of its own, leave ONE
+    parse in `Book.parses`, the same bytes after every round; the file rewritten with its size and
+    modified time held, its ZAR 5Y quote moved from 8.55 to 8.56, is parsed anew and the curve
+    verb reads the new quote.
+
+    KILLING MUTATIONS: a parse cache per request, which leaves the book's empty; the parse kept by
+    the file's path, which reads 8.55 after the rewrite.
+    """
+    _, market = file_book
+
+    def five_year():
+        rows = CLIENT.get('/book/curve').json()['curves']['InterestRatePrices.ZAR']['rows']
+        return next(row['quote'] for row in rows if row['tenor'] == '5Y')
+
+    kept = []
+    for _ in range(3):
+        assert CLIENT.get('/book/status').status_code == 200
+        assert five_year() == 8.55
+        assert CLIENT.get('/book/dependencies').status_code == 200
+        kept.append(list(service.BOOK.parses.entries.values()))
+    assert len(kept[0]) == 1 and all(entry[0] is kept[0][0] for entry in kept)
+
+    held, text = os.stat(market), market.read_text()
+    assert text.count('"Quoted_Market_Value": 8.55') == 1
+    market.write_text(text.replace('"Quoted_Market_Value": 8.55', '"Quoted_Market_Value": 8.56'))
+    os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
+    assert five_year() == 8.56
+    assert len(service.BOOK.parses.entries) == 2
 
 
 # --------------------------------------------------------------------------------------------

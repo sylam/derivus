@@ -62,6 +62,8 @@ class ModelParams(object):
         for factor, model in defaults.items():
             self.append(factor, (), model)
         for factor, mappings in filters.items():
+            # a type stated with no rules has none, and replaces the rules a file states for it
+            self.modelfilters.setdefault(factor, [])
             for condition, model in mappings:
                 self.append(factor, tuple(condition), model)
 

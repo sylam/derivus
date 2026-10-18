@@ -31,7 +31,10 @@ README says `dv`; both are `import derivus as`.)
 
 A context can hold *multiple* loaded configurations — `cx.parsed` holds one `Config` per content
 of a `MergeMarketData.MarketDataFile` a job referenced, keyed by the sha256 of the file's bytes and
-parsed only on a miss for those bytes, and `cx.digests` the digest each named file last read. A job
+parsed only on a miss for those bytes, and `cx.digests` the digest each named file last read.
+`cx.load_json(job, parses=store)` takes each parse from a `utils.LRUCache` outliving the context,
+pickled there under its digest and unpickled into the context's own copy, which is how the
+service's live book parses a file once for every request over it. A job
 carrying only inline `ExplicitMarketData` builds a fresh `Config` that is never cached, and a job
 with no `MergeMarketData` block reuses `cx.current_cfg` and mutates it in place. The most recently
 loaded config is always `cx.current_cfg`. All
@@ -437,7 +440,12 @@ guessable from them — market data lives under `MergeMarketData.ExplicitMarketD
 `MarketDataFile` path instead of it), and a deal is a `.Deal` token inside
 `Deals.Deals.Children[].Instrument`, nested by each node's own `Children`. `GET /schema/job` serves
 a minimal job with exactly that shape, and it is a job rather than a description of one: post it to
-`/validate` or `/execute` unedited and it loads, validates clean and prices.
+`/validate` or `/execute` unedited and it loads, validates clean and prices. A live book naming a
+`MarketDataFile` is read as the engine loads it: every `/book` verb answers its market questions -
+the base currency and date, the factors, the quotes, the configuration - off the file's sections
+with the explicit block merged over them, and a verb that writes the market writes into the block
+what it moved, the factors a patch states and the ones its bootstrap changed, and never a factor of
+the file's that stood still. `GET /book/market` answers that market itself.
 
 **Plan then patch.** `POST /prepare` parses a job, names it by its `plan_hash` and keeps the parse
 under that name, so `/execute` takes either the whole document or the plan:

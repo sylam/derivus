@@ -27,12 +27,11 @@ not rows to close.
   ([the design](architecture.md#market-data-context-job)): the hub declares each file under a name
   and a job names the standing blob. Meanwhile a set the XVA tab refused for a file that moved in
   the queue keeps the refusal if the file is put back.
-- **The service's readers through a loaded context** (2026-10-05, M). Some forty readers take the
-  base currency and date, factors, prices and bootstrapper configuration from the book's explicit
-  block, against [the design](architecture.md#market-data-context-job). A book naming a market data
-  file therefore answers 500 on its status and curves, refuses survival curves and date rolls on a
-  bare key, and writes the whole file's factors into itself when one spot is patched; every request
-  but the XVA tab's builds its own context, and a market edit makes the XVA tab re-parse the file.
+- **The web client's market screens read the explicit block** (2026-10-18, S). The Market Data,
+  Market Prices, Curves, Bootstrapper and Settings views and the blotter's base date read
+  `ExplicitMarketData` off `GET /book`, so on a book naming a market data file they show only what
+  the block states over it. The screens edit the block, so the fix is to show the market
+  `GET /book/market` answers with the block's own entries marked, an edit landing on the block.
 - **The tier recorded on an approval** (2026-09-29, M). Under a policy with both an automatic and a
   four-eyes tier, a copy forging an approval of a ticket only the four-eyes tier would admit is
   caught only by copies agreeing with the hub. Signed history ends at the last checkpoint either

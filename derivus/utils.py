@@ -5517,7 +5517,7 @@ def spot_model_pair(underlying, currency, base):
         raise ValueError(
             'a spot model is keyed off the pair\'s NON-BASE token, and this book\'s base currency '
             'is not known here, so {}/{} cannot be resolved. A book declares it at System '
-            'Parameters.Base_Currency (in the ExplicitMarketData block a quote reads); a deal is '
+            'Parameters.Base_Currency, in its market data file or its explicit block; a deal is '
             'stamped with it by Calculation.set_deal_structures'.format(
                 '.'.join(check_rate_name(underlying)), '.'.join(check_rate_name(currency))))
     pair = check_rate_name(underlying) + check_rate_name(currency)

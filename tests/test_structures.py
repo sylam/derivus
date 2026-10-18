@@ -915,7 +915,7 @@ def test_a_book_that_never_states_use_quotes_rather_than_raising(book):
     ask = params(floor=SPOT * 0.95)
     quoted = structures.quote(useless, COLLAR, ask)
 
-    assert structures.quote_points(useless, 'USD.ZAR') == points
+    assert structures.quote_points(structures.market_of(useless), 'USD.ZAR') == points
     assert pillars_of(quoted) == {'ATM 0.25', 'ATM 1'}, 'a pillar this block does not quote'
     # the charged pass re-solves a bracket seeded on the mid root, so the cap is pinned to the
     # solve's own tolerance rather than to the bit
@@ -979,8 +979,8 @@ def test_a_seeded_solve_costs_less_and_a_missed_seed_still_answers_the_full_brac
         return legs
 
     protection = fresh()['protection']
-    spot = structures.engine_spot(document, protection.deal['Underlying_Currency'],
-                                  protection.deal['Currency'])
+    spot = structures.engine_spot(structures.market_of(document),
+                                  protection.deal['Underlying_Currency'], protection.deal['Currency'])
     target = -structures.run_price(document, protection.deal)
 
     def solve(seed):
@@ -1296,7 +1296,8 @@ def test_a_live_cross_lands_exactly_where_engine_spot_reads_it_back(book):
 
     assert written == {'ZAR': 1.0 / 16.31}
     assert factors['FxRate.USD']['Spot'] == 1.0, 'the base currency prices itself and is not moved'
-    assert structures.engine_spot(moved, 'USD', 'ZAR') == pytest.approx(16.31, rel=1e-15)
+    assert structures.engine_spot(structures.market_of(moved), 'USD', 'ZAR') == pytest.approx(
+        16.31, rel=1e-15)
 
     outcome = structures.quote(moved, 'Straddle', params(strike=16.31))
     assert outcome['spot'] == {'value_market': pytest.approx(16.31, rel=1e-15),
@@ -1725,29 +1726,25 @@ def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
         'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
 
 
-def test_a_book_that_declares_no_base_currency_refuses_instead_of_pinning(accrual_book):
-    """The base is the OTHER half of the token rule, and an unknown one may not be guessed.
+def test_a_book_that_declares_no_base_currency_quotes_on_the_one_the_engine_prices_in(
+        accrual_book):
+    """The base is the OTHER half of the token rule, and a quote reads it where the engine does:
+    off the book's market, whose `System Parameters` carry the engine's own USD where nothing
+    states one. So a book stating no `System Parameters` quotes the accumulator leg for leg as the
+    same book stating USD, the spot model pinned under the one key the engine's lookup takes.
+    Before, the quote read the explicit block alone and refused on a base it could not see.
 
-    A quote reads the base off the EXPLICIT block, so a book keeping its `System Parameters` behind
-    a `MarketDataFile` answers nothing here. Falling back to `Underlying_Currency` is the PRE-RULE
-    read: where the underlying is not the base the two agree by luck, and where it IS the base the
-    quote PINS a model the engine looks up under the other name - a dependency-loop raise, a skipped
-    deal, the trade marked at nothing on a job reporting success. So it refuses, naming the missing
-    declaration, and pins nothing.
-
-    Killing mutation: a crossed leg's `Option_Type` and `Barrier_Type` left unflipped, which deals
-    the other option on the engine axis.
+    Killing mutation: the base read off the explicit block, which finds none and refuses.
     """
-    document = calibrated(accrual_book)
-    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
-    del market['System Parameters']
-
-    with pytest.raises(ValueError) as refusal:
-        structures.quote(document, 'Accumulator', dict(
-            accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR'))
-    assert 'Base_Currency' in str(refusal.value), 'a refusal that does not name what is missing'
-    assert 'NON-BASE' in str(refusal.value), 'a refusal that does not name the rule it could not run'
-    assert 'Valuation Configuration' not in market, 'a model was pinned off a guessed base'
+    stated = calibrated(accrual_book)
+    bare = copy.deepcopy(stated)
+    del bare['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']
+    ask = dict(accrual_params(knockout=SPOT * 1.10), notional=NOTIONAL, notional_currency='ZAR')
+    quoted = [structures.quote(document, 'Accumulator', ask) for document in (stated, bare)]
+    terms = [([(leg['role'], leg['premium'], leg['solved']) for leg in quote['legs']],
+              quote['valuation_configuration']) for quote in quoted]
+    assert terms[1] == terms[0]
+    assert terms[1][1] == {'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
 
 
 def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):

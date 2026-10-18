@@ -918,8 +918,9 @@ def quote_stamps(market):
     What a reader asks how old a BOARD is, and it is EXACTLY what `without_clocks` projects out of
     the values patch: one declaration answers both questions, so a book whose stamps live on the
     surface rather than on quote rows has an age for the same reason it has an identity. `market` is
-    the explicit market-data section, whose two halves are read off `VALUE_CLOCKS` and
-    `MARKET_QUOTE_CLOCKS` at call time the way `quote_rows` reads its own containers.
+    market data in the wire form an explicit block holds, whose two halves are read off
+    `VALUE_CLOCKS` and `MARKET_QUOTE_CLOCKS` at call time the way `quote_rows` reads its own
+    containers.
     """
     stamps = [block[key] for name, block in (market.get('Price Factors') or {}).items()
               for key in VALUE_CLOCKS.get(utils.check_rate_name(name)[0], ()) if block.get(key)]

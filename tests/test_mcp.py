@@ -28,7 +28,7 @@ import derivus
 from derivus_mcp import server as mcp_server
 from derivus import service
 from test_service import (AMOUNT, BINARY, BOOKED, EQUITY, FACTORS, RATE, SPOT, VANILLA, Held, dump,
-                          job)
+                          file_world, job)
 
 SERVER_FILE = mcp_server.__file__
 
@@ -596,6 +596,29 @@ def test_the_structure_store_is_the_quoting_menu():
 
     with pytest.raises(ToolError, match='ZeroCostCollar'):
         mcp_server.describe_structure('collar')
+
+
+@pytest.fixture
+def file_book(tmp_path, monkeypatch):
+    """The service gates' book naming a market data file (`file_world`), taken down after."""
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    try:
+        yield file_world(tmp_path)
+    finally:
+        service.BOOK = None
+
+
+def test_the_book_read_lists_the_factors_of_the_file_it_names(file_book):
+    """`read_book` lists the price factors the book PRICES on: a book naming a market data file
+    and stating nothing over it lists the file's six. Before, it listed the empty block's none.
+
+    KILLING MUTATION: the factor list read off the document's explicit block, which lists none.
+    """
+    _, market = file_book
+    listed = mcp_server.read_book()['market_data']
+    assert listed['file'] == str(market)
+    assert listed['factors'] == sorted(json.loads(market.read_text())['MarketData'][
+        'Price Factors']) and listed['factor_count'] == 6
 
 
 def test_booking_a_deal_prices_it(book):

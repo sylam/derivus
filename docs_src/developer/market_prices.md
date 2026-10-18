@@ -150,8 +150,17 @@ everywhere.
 
 ## The verbs that author market data {#verbs}
 
-The [MCP tools](mcp.md#the-tools) and the web screens call these same verbs. A writing verb holds
-three invariants:
+The [MCP tools](mcp.md#the-tools) and the web screens call these same verbs. Every verb asks its
+market questions of the market the book prices on, the file it names with its explicit block merged
+over it (`structures.market_of`, which the service hands the live book's parses, the quote
+runner and the record reaching it too), and asks the block only what the book itself states; a
+tick judges a quote block against the market's. **Held by**
+`test_service.py::test_a_book_naming_a_market_data_file_is_read_off_the_file`,
+`::test_a_tick_of_the_files_own_quotes_is_an_update_as_on_its_explicit_twin`,
+`::test_a_quote_on_a_book_naming_a_file_is_the_quote_on_its_explicit_twin`,
+`::test_a_spot_model_fitted_on_a_book_naming_a_file_is_the_fit_on_its_explicit_twin`,
+`test_mcp.py::test_the_book_read_lists_the_factors_of_the_file_it_names`. A writing verb
+holds four invariants:
 
 - **One atomic write.** Blocks, entries, spots, dates and the bootstrap land in one `Book.mutate`
   edit, so the file never holds quotes and factors from two states.
@@ -162,6 +171,12 @@ three invariants:
   `test_service.py::test_a_set_up_a_bootstrap_complains_about_writes_nothing`.
 - **A terminal trip is an act.** The tick, a verification and a set-up are queued jobs whose id
   hashes the submission clock, so two asks are two trips.
+- **A write-back is what moved.** `market_edit` writes into the explicit block the factors the patch
+  states and the ones the bootstrap changed (`service.rewrote`), never a factor of the file's that
+  stood still, and a configuration entry is merged over the market's and written where that moves
+  it, a type's rules emptied over a file's stated as an empty list. **Held by**
+  `test_service.py::test_a_spot_patched_on_a_book_naming_a_file_writes_back_what_moved`,
+  `::test_an_entry_configured_on_a_book_naming_a_file_is_merged_over_the_files`.
 
 | verb | what it does | its own rule |
 | --- | --- | --- |

@@ -510,7 +510,8 @@ def read_book() -> dict:
     calc = live['document']['Calc']
     calculation = calc['Calculation']
     market = calc.get('MergeMarketData', {})
-    factors = sorted(market.get('ExplicitMarketData', {}).get('Price Factors', {}))
+    # what the book PRICES on, its market data file and its explicit block merged
+    factors = sorted(service().call('GET', '/book/market')['market']['Price Factors'])
     deals = [{'deal_path': deal_path,
               'object': node['Instrument']['.Deal'].get('Object'),
               'reference': node['Instrument']['.Deal'].get('Reference'),

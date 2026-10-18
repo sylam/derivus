@@ -104,7 +104,7 @@ Where the market data comes from. Three attributes:
 
 | Attribute | What it does |
 |---|---|
-| `MarketDataFile` | a market-data JSON file (a `MarketData` object of sections, below), loaded once per `Context` and cached by its path |
+| `MarketDataFile` | a market-data JSON file (a `MarketData` object of sections, below), parsed once per content of its bytes - per `Context`, or per live book serving it |
 | `ExplicitMarketData` | sections merged over that file's - or over an empty configuration where no file is named |
 | `StressedMarketDataFile` | recorded, not loaded: a `StressedContext` reads it when asked to stress, replacing the `Price Models` entries and implied parameter factors of the factor types it is given, and restores them after |
 

@@ -39,7 +39,7 @@ which run under `HullWhite1FactorInterestRateModel`.
 | Lookup key | the factor type, with `BasisSpread` appended for a factor whose `Sub_Type` is `BasisSpread` (so a basis curve is modelled apart from `InterestRate`) |
 | Filters first | the type's filter rules are tried in order and the first match wins; with none matching, the type's default applies; with neither, the factor is not simulated |
 | A match | the factor's `Price Factors` field named `attribute` (case-insensitive name) equals `value` exactly; `ID` matches the dotted factor name |
-| Merging | a later section (a second market-data file, or `ExplicitMarketData`) replaces a type's default and that type's whole filter list |
+| Merging | a later section (a second market-data file, or `ExplicitMarketData`) replaces a type's default and that type's whole filter list, an empty one included |
 
 A model also needs its parameters before the factor is simulated - see
 [Price Models](price_models.md#when-a-factor-is-simulated).

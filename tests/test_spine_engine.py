@@ -2060,7 +2060,9 @@ def test_the_board_is_aged_at_the_moment_the_quote_was_struck(recorded, quoting)
     # the snapshot's own 16:30, read half an hour later
     assert service.board_age(document, '2024-06-28T17:00:00.000+00:00') == pytest.approx(1800.0)
     assert service.board_age(document, None) > 1e7, 'the wall clock reads the same as the quote'
-    assert service.board_age({}, '2024-06-28T17:00:00.000+00:00') is None
+    bare = dict(document, Calc=dict(document['Calc'], MergeMarketData={
+        'MarketDataFile': '', 'ExplicitMarketData': {}}))
+    assert service.board_age(bare, '2024-06-28T17:00:00.000+00:00') is None
 
 
 def test_an_edited_pending_file_no_longer_says_what_was_quoted(recorded, quoting, tmp_path):

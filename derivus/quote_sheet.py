@@ -13,8 +13,9 @@
 
 """Write a priced structure outcome as an Excel quote sheet.
 
-`write_sheet(path, outcome, document)` is a pure function of the structure runner's outcome and
-the book it was priced against. It writes three worksheets: `Quote`, the ticket, with every strike
+`write_sheet(path, outcome, document, market)` is a pure function of the structure runner's
+outcome, the book it was priced against and the market that book prices on. It writes three
+worksheets: `Quote`, the ticket, with every strike
 in the market terms the trade was negotiated in; `Legs`, the deal about to be booked, field for
 field; and `Market`, the spots, vol surfaces and rate curves it was priced off.
 
@@ -66,19 +67,20 @@ class QuoteSheetError(Exception):
     with no base date to stamp it as of."""
 
 
-def write_sheet(path, outcome, document):
+def write_sheet(path, outcome, document, market):
     """Write `outcome` at `path` as a three-sheet workbook - `Quote`, `Legs`, `Market`.
 
     `outcome` is what the structure runner returned: `quote_id`, `structure`, `params`, the
     per-leg rows (`role`, `reference`, `deal_type`, `buy_sell`, `strike_market`, `premium`,
     `solved`), the `net`, and `deal` - the composed deal in wire form. `document` is the book it
-    was priced against; wire and in-process books are read by the same code, by shape, so
-    rendering a sheet never imports the engine.
+    was priced against and `market` the market that book prices on (`structures.market_of`);
+    wire and in-process forms are read by the same code, by shape, so rendering a sheet never
+    imports the engine.
 
     Nothing reaches the disk until every cell has been accepted: the workbook is assembled in
     memory and a refusal abandons it, so `path` either holds a whole sheet or holds nothing.
     """
-    base_date = _base_date(document)
+    base_date = _base_date(document, market)
     workbook = xlsxwriter.Workbook(str(path), dict(WORKBOOK_OPTIONS))
     try:
         # created is the book's date, not now: a clock here would move the file on every rewrite
@@ -92,7 +94,7 @@ def write_sheet(path, outcome, document):
                    'premium': workbook.add_format({'num_format': '0.00'})}
         _quote_sheet(_Sheet(workbook, 'Quote', formats), outcome, base_date)
         _legs_sheet(_Sheet(workbook, 'Legs', formats), outcome)
-        _market_sheet(_Sheet(workbook, 'Market', formats), outcome, document, base_date)
+        _market_sheet(_Sheet(workbook, 'Market', formats), outcome, market, base_date)
     except BaseException:
         # in_memory means nothing has reached the disk yet; the flag stops any destructor
         # finishing a workbook this refusal abandoned
@@ -207,9 +209,8 @@ def _fields_block(sheet, fields):
     sheet.blank()
 
 
-def _market_sheet(sheet, outcome, document, base_date):
-    """What the quote was priced off, read out of the book itself."""
-    market = _market_data(document)
+def _market_sheet(sheet, outcome, market, base_date):
+    """What the quote was priced off, read out of the book's market."""
     factors = market.get('Price Factors') or {}
     system = market.get('System Parameters') or {}
     deals = _deals(outcome.get('deal'))
@@ -272,8 +273,9 @@ def _factor_block(sheet, name, factor):
         sheet.blank()
 
 
-def _base_date(document):
-    """The book's base date, as a `datetime` to stamp the workbook `created` with.
+def _base_date(document, market):
+    """The book's base date - its calculation's, else its market's - as a `datetime` to stamp the
+    workbook `created` with.
 
     xlsxwriter stamps `dcterms:created` off the wall clock unless it is handed a datetime. A book
     naming no base date raises `QuoteSheetError` rather than being stamped now.
@@ -281,8 +283,7 @@ def _base_date(document):
     calc = document.get('Calc') or {}
     stamp = (calc.get('Calculation') or {}).get('Base_Date')
     if stamp is None:
-        stamp = ((calc.get('MergeMarketData') or {}).get('ExplicitMarketData') or {}).get(
-            'System Parameters', {}).get('Base_Date')
+        stamp = market.get('System Parameters', {}).get('Base_Date')
     text = stamp.get('.Timestamp') if isinstance(stamp, dict) else stamp
     if hasattr(text, 'year'):
         # a book loaded in process carries a real Timestamp where the wire carries the token
@@ -294,12 +295,6 @@ def _base_date(document):
             raise QuoteSheetError(
                 'quote sheet: the book Base_Date {!r} is not an ISO date'.format(text))
     raise QuoteSheetError('quote sheet: the book names no Base_Date to stamp the workbook with')
-
-
-def _market_data(document):
-    """The book's explicit market data block, or nothing when the document carries none."""
-    return ((document.get('Calc') or {}).get('MergeMarketData') or {}).get(
-        'ExplicitMarketData') or {}
 
 
 def _deals(node, found=None):

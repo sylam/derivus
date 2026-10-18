@@ -61,7 +61,7 @@ from . import schema
 from .schema import (declared_fields, flipped, index_named, instrument_of, job_children, mapping,
                      tables_of, walk_job_deals, without_clocks)
 from .config import Config, CustomJsonEncoder, as_json
-from .structures import base_currency, timestamp
+from .structures import base_currency, market_of, timestamp
 
 #: The whole switch, the actor beside it, and the folder a reader's folds start from. Read per
 #: call, like `DV_HOME` one module over.
@@ -603,9 +603,10 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
         deal = node['Instrument']['.Deal']
         if deal.get('Object') == 'NettingCollateralSet' and deal.get('Reference') in balances:
             deal['Opening_Balance'] = balances[deal['Reference']]
-    currency = base_currency(filled)
-    observing = [(deal, terms, index_named(deal, terms, currency))
-                 for deal, terms in _observing(filled)]
+    observing = _observing(filled)
+    # an index is named in the market's base currency, which only an observed deal asks
+    currency = base_currency(market_of(filled)) if observing else None
+    observing = [(deal, terms, index_named(deal, terms, currency)) for deal, terms in observing]
     named = {index for _, _, indices in observing for index in indices}
     observed = (fixings(lsn, indices=named) if strict else observations(lsn, named)[0])
     base = _base_day(filled)
@@ -654,14 +655,14 @@ def _balances(document, lsn=None, folds=None):
     cash = spine.projections.PROJECTORS['cash']
     held = spine.projections.CSA.held(folded(lambda log: cash.rows(advancing(
         log, cash, lsn, folds))), _base_day(document))
-    market = document['Calc'].get('MergeMarketData', {}).get('ExplicitMarketData') or {}
+    market = market_of(document)
     balances = {}
     for agreement, terms in sets.items():
         holding = held.get(agreement, spine.projections.CSA.NOTHING)[spine.verbs.COLLATERAL]
         dials = spine.projections.CSA.of(terms)
         currency = dials['Balance_Currency']
-        fx = dict(PnL.rates(market.get('Price Factors') or {}, currency, market.get(
-            'System Parameters', {}).get('Base_Currency')), **{currency: 1.0})
+        fx = dict(PnL.rates(market['Price Factors'], currency, base_currency(market)),
+                  **{currency: 1.0})
         uncrossed = sorted(asset for asset, amount in holding.items() if amount and asset not in fx)
         if uncrossed:
             raise SpineRefused(
@@ -2496,8 +2497,7 @@ class Collateral:
         """Whether the netting sets of `document` hold the day's payments in the exposure their
         recursion reads: `Exclude_Paid_Today` off - the engine's default - as a set reads it off the
         job's `Valuation Configuration`."""
-        options = (document['Calc']['MergeMarketData'].get('ExplicitMarketData') or {}).get(
-            'Valuation Configuration') or {}
+        options = market_of(document)['Valuation Configuration']
         return not options.get('NettingCollateralSet', {}).get('Exclude_Paid_Today', False)
 
     @staticmethod
