@@ -2315,8 +2315,8 @@ class Diary(BaseValuation):
     as a valuation binds them and then READ rather than priced, reached by `utils.walk_schedules` -
     the one walk the binding itself takes - so the diary and the pricer cannot disagree about a
     payment: they are the same schedule. Nothing here learns about users, workflow or storage: a
-    row names its deal's `Reference` and the `netting_set` it sits in, and `spine.diary` stamps its
-    instrument and derived key.
+    row names its deal's `Reference`, its `deal_path` and the `netting_set` it sits in, and
+    `spine.diary` stamps the instrument booked at that path and its derived key.
 
     A NULL AMOUNT IS NEVER WRITTEN AS 0.0. A floating leg's amount is not determined until its
     resets fix, and a settlement file carrying 0.0 for one is an instruction to pay nothing - so the
@@ -2351,13 +2351,13 @@ class Diary(BaseValuation):
 
     def execute(self, params):
         """Every payment, fixing and expiry this job's deals carry, as rows naming each deal by its
-        `Reference` and the netting set it sits in, unsorted: `BaseValuation.execute`'s compile
-        half, READ rather than priced.
+        `Reference`, its positional `deal_path` and the netting set it sits in, unsorted:
+        `BaseValuation.execute`'s compile half, READ rather than priced.
 
-        A deal the compile LEFT OUT is read off the loaded tree instead: expired, and it announces
-        what a live one of its type announces, or unreadable, and it announces why. The compiled
-        tree is matched to the loaded one by reference, so two deals sharing one - which the book's
-        own positional path is the answer to - are read as the live one.
+        The loaded tree is walked once and each leaf read off what the compile made of it, the
+        compiled deal being the leaf itself or the deal its history resolved it to: a deal the
+        compile LEFT OUT is expired, and announces what a live one of its type announces, or
+        unreadable, and announces why.
         """
         params = declared_defaults(type(self), self.judged(params))
         base_date = pd.Timestamp(params['Run_Date'])
@@ -2366,17 +2366,14 @@ class Diary(BaseValuation):
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(self.config.deals['Deals']['Children'], self.netting_sets,
                                  shared.one, deal_level_mtm=True)
-        rows, live = [], set()
-        for netting_set, deal_data in self._held(self.netting_sets):
-            live.add(deal_data.Instrument.field.get('Reference'))
-            rows.extend(dict(row, netting_set=netting_set) for row in self._deal_rows(
-                deal_data.Instrument, deal_data.Factor_dep, base_date))
+        rows, compiled = [], {held.Instrument.resolved_from or held.Instrument: held
+                              for held in self.netting_sets.deals()}
         for path, netting_set, deal in self._leaves(self.config.deals['Deals']['Children']):
-            if deal.field.get('Reference') in live:
-                continue
-            rows.extend(dict(row, netting_set=netting_set) for row in (
-                self._dropped_rows(deal) if self._expired(base_date, deal)
-                else [self._unreadable_row(base_date, path, deal)]))
+            held = compiled.get(deal)
+            rows.extend(dict(row, deal_path=path, netting_set=netting_set) for row in (
+                self._deal_rows(held.Instrument, held.Factor_dep, base_date) if held is not None
+                else self._dropped_rows(deal) if self._expired(base_date, deal)
+                else [self._unreadable_row(base_date, deal)]))
         return rows
 
     @staticmethod
@@ -2386,18 +2383,10 @@ class Diary(BaseValuation):
             else netting_set
 
     @classmethod
-    def _held(cls, structure, netting_set=None):
-        """`(netting set, deal)` for every deal beneath a compiled `structure`, in `deals()`'s
-        order, the set the `Reference` of the one it sits in and None outside one."""
-        for inner in structure.sub_structures:
-            yield from cls._held(inner, cls._within(inner.obj.Instrument, netting_set))
-        for deal in structure.dependencies:
-            yield netting_set, deal
-
-    @classmethod
     def _leaves(cls, children, netting_set=None, path=()):
         """Every LEAF deal of a compiled config's tree, as `(deal path, netting set, deal)`, the set
-        as `_held` names it. A container is its structure and carries no schedule of its own."""
+        the `Reference` of the one it sits in and None outside one. A container is its structure
+        and carries no schedule of its own."""
         for position, node in enumerate(children):
             deal, at = node.get('Instrument'), path + (position,)
             if node.get('Ignore') == 'True' or not isinstance(deal, Deal):
@@ -2434,9 +2423,8 @@ class Diary(BaseValuation):
         rows.extend(row for row in settled if row['due_date'] == last)
         return rows
 
-    def _unreadable_row(self, base_date, path, deal):
-        """The one row a deal the compile COULD NOT READ leaves: where it sits and what the engine
-        said.
+    def _unreadable_row(self, base_date, deal):
+        """The one row a deal the compile COULD NOT READ leaves: what the engine said.
 
         A deal skipped for a price factor the market data has no block for has no schedule, no
         expiry and, without this, no trace at all - and a close check answering `legal` on a book
@@ -2451,7 +2439,7 @@ class Diary(BaseValuation):
             said = 'the compile left this deal out and reading it again raised nothing'
         except Exception as error:
             said = '{}'.format(error)
-        return self._row(self.UNREADABLE, deal.field.get('Reference'), path, 0, None,
+        return self._row(self.UNREADABLE, deal.field.get('Reference'), None, 0, None,
                          state=self.UNREADABLE, reason='{} ({}): {}'.format(
                              deal.field.get('Reference'), deal.field.get('Object'), said))
 

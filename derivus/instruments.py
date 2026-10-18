@@ -159,7 +159,7 @@ def became(source, deal_type, calendars, valuation_options, **overrides):
     field = {k: v for k, v in field.items() if k in declared}
     field['Object'] = deal_type
     deal = construct_instrument(field, valuation_options)
-    deal.base_currency = source.base_currency
+    deal.base_currency, deal.resolved_from = source.base_currency, source
     deal.reset(calendars)
     return deal
 
@@ -675,6 +675,10 @@ class Deal(object):
     #: is: a type whose `post_process` prices its children compiles no legs off its own terms then,
     #: so a reset those terms leave unstated warns nobody.
     has_children = False
+
+    #: The booked deal whose observed history made this one (`became`), None for a booked deal: a
+    #: reader of the compile finds a substitute's node through it.
+    resolved_from = None
 
     #: The field a market quote of this type lands in, in that field's own unit - a benchmark's
     #: declaration of itself, None for a type no quote set authors. `quote` writes it; a type

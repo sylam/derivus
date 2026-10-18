@@ -198,9 +198,9 @@ def test_a_premium_is_announced_with_the_sign_its_cash_moves():
     context = derivus.Context()
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'signs'))
     signs = {}
-    for row in spine.diary(context, {deal['Reference']: deal['Reference'] for deal in deals}):
+    for row in spine.diary(context):
         if row['kind'] == 'payment':
-            signs.setdefault(row['instrument'], set()).add(math.copysign(1.0, row['amount']))
+            signs.setdefault(row['reference'], set()).add(math.copysign(1.0, row['amount']))
     assert signs == {'CDSBuy': {-1.0}, 'CDSSell': {1.0}, 'NTDBuy': {-1.0}, 'NTDSell': {1.0}}
 
     valued, _ = book.marks(deals, trial_credit.FACTORS)

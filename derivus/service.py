@@ -1750,28 +1750,16 @@ class DiaryJob:
         # orders can fill, and an index nobody ordered reads unresolved on its own rows
         compiled = spine.compiled_job(self.document, strict=False, runs=False)
         return None, {'Results': {}, 'Stats': {'Diary': {'as_of': as_of(), 'rows': diary(
-            load(compiled), booked_instruments(self.document, compiled))}}}
+            load(compiled), booked_instruments(self.document))}}}
 
 
-def booked_instruments(document, compiled=None):
-    """`{Reference: instrument address}` for every deal the file holds that `compiled` - the job
-    read off it - does not ignore: the address a fill names, so a diary row and the record's
-    position are the same instrument, and a clip left on terms a restrike moved names nothing. A
-    reference two live deals share maps to neither: guessing the address mis-labels a row."""
-    found = {}
-
-    def live(node):
-        return node.get('Ignore') != 'True'
-
-    # the compiled job keeps the file's paths, so the file's node is read at the compiled one's
-    for path, node in walk_job_deals(compiled or document, live):
-        if live(node):
-            held = deal_at(document, path)
-            reference = held['Instrument']['.Deal'].get('Reference')
-            address = content_hash(instrument_of(held))
-            # a partial unwind is a second node of the SAME terms, which names one instrument
-            found[reference] = address if found.get(reference, address) == address else None
-    return found
+def booked_instruments(document):
+    """`{deal path: instrument address}` for every deal the file holds: the address a fill names,
+    so a diary row and the record's position are the same instrument, keyed by path since
+    references are not unique in a book. A compiled job keeps the file's paths and announces
+    nothing for a node it ignores, so a clip left on terms a restrike moved names nothing, and a
+    partial unwind, a second node of the same terms, is the one instrument its first is."""
+    return {path: content_hash(instrument_of(node)) for path, node in walk_job_deals(document)}
 
 
 def file_positions(document, known):
@@ -2761,10 +2749,11 @@ def diary_rows(job, lsn):
     """`(rows, legs)` - the diary of a marks job's units as the record stood at `lsn`, every row
     keyed as the book's own diary keys it, and `{leg address: unit}` for every leg of a structure
     among them."""
-    units = {node['Instrument']['.Deal']['Reference'] for node in job_children(job)}
+    units = [node['Instrument']['.Deal']['Reference'] for node in job_children(job)]
     context = load(spine.compiled_job(job, lsn=lsn, strict=False, folds=folds()))
     return (diary(context, dict(booked_instruments(job), **{
-        address: address for address in units})), PnL.held_legs(job_children(job), units))
+        str(position): address for position, address in enumerate(units)})),
+        PnL.held_legs(job_children(job), set(units)))
 
 
 def clients_under(entity):
@@ -3044,9 +3033,10 @@ def book_diary(due_before: str = None, actor: str = None):
     trimming it to what is due by a day.
 
     THE COMPILE'S SCHEDULE, not a second one: the deals are constructed and their schedules bound
-    exactly as a valuation binds them, and then read. A row carries the leg it sits on, its due
-    date, its currency, its notional, its amount where the compile determines one and `null` where
-    it does not, and the derived key a settlement fact names it by. Under a home each row also
+    exactly as a valuation binds them, and then read. A row carries its deal's `reference` and
+    `deal_path`, the leg it sits on, its due date, its currency, its notional, its amount where the
+    compile determines one and `null` where it does not, and the derived key a settlement fact
+    names it by, taken off the instrument booked at that path. Under a home each row also
     carries what the record answers: `settled` where a transition moved its key, and the
     administrator whose print satisfied a fixing. `actor` is the seat reading, which sees the rows
     of the instruments held at the nodes it acts at (`sighted`), each the book's own compile at the
@@ -3098,7 +3088,8 @@ def book_worklist(actor: str = None):
     vocabulary, confirmed = spine.package().vocabulary, spine.package().verbs.CONFIRMED
     day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
     rows = [row for row in spine.standing(folds=folds()) if row['book'] == book]
-    names = {address: reference for reference, address in booked_instruments(document).items()}
+    names = {address: deal_at(document, path)['Instrument']['.Deal'].get('Reference')
+             for path, address in booked_instruments(document).items()}
     moved = {row['subject']: row for row in spine.lifecycle()['transitions']}
     market = spine.designation(spine.PNL)
     closes = [] if market is None else spine.closes(market)
@@ -3155,7 +3146,7 @@ def book_worklist(actor: str = None):
         'pending': ticketed(vocabulary.APPROVE, 'pending', 'awaits a second seat\'s approval',
                             ticket, lambda position, entry, at: entry['status'] == 'pending'),
         'payments': [dict(row('payment', '{} {} pays {} {}'.format(
-            named(entry['instrument']), entry['leg'],
+            entry['reference'], entry['leg'],
             'an undetermined amount' if entry['amount'] is None else entry['amount'],
             entry['currency']), entry['key'], None, entry['due_date']), amount=entry['amount'],
             currency=entry['currency'], agreement=entry['agreement'])

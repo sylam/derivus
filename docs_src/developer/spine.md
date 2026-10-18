@@ -377,15 +377,21 @@ so the two cannot disagree. An amount resets will fix reads `amount: null`, neve
 settlement file saying zero being a wrong payment. What a deal settles without a schedule is
 declared on its fields (`settles=schema.Cash(...)`); monitoring days are never payments. A
 cash-settled option waits for its expiry fixing and its payoff; an unreadable deal is an
-`unreadable` row. A row's key, `cashflow_key(instrument, leg, kind, date)`, uses the date, since
-positions renumber as paid rows drop. A row carries the `netting_set` its deal sits in, and the
-record's answer (`service.answered`) the `agreement` that set is where the record declares it -
-what a settlement of the row names - so one instrument under two agreements is two rows under one
-key, each settled by a payment naming its own agreement once one against the key names any.
+`unreadable` row. A row carries its deal's `reference`, its `deal_path` and the `netting_set` it
+sits in, and takes the instrument booked at that path (`service.booked_instruments`), references
+not being unique in a book: two live deals under one reference are two instruments, each row keyed
+under its own, and a deal its history resolved (`became`) is read at its node's path. A row's key,
+`cashflow_key(instrument, leg, kind, date)`, uses the date, since positions renumber as paid rows
+drop. The record's answer (`service.answered`) adds the `agreement` the row's set is where the
+record declares it - what a settlement of the row names - so one instrument under two agreements
+is two rows under one key, each settled by a payment naming its own agreement once one against
+the key names any.
 **Held by** `test_diary.py::test_every_payment_the_diary_announces_is_the_run_s_own_cashflow`,
 `::test_a_floating_amount_is_null_and_the_exporter_refuses_it_by_name`,
 `::test_an_option_waits_for_its_fixing_and_its_settlement`,
 `::test_a_derived_key_is_the_same_key_thirty_days_later`,
+`::test_two_live_deals_under_one_reference_are_two_instruments_each_settled_on_its_own_key`,
+`::test_a_barrier_its_history_knocked_in_is_read_as_the_vanilla_it_became`,
 `test_pnl.py::test_a_payment_is_shared_within_the_agreement_it_names`.
 
 The book file keeps its content and gains `Spine: {lsn, head, hydrated_at}`, a sibling of `Calc`,

@@ -409,6 +409,55 @@ def test_a_derived_key_attaches_a_settlement_fact(recorded, tmp_path):
     assert sum(1 for state in after.values() if state == spine.SETTLED) == 1
 
 
+def test_two_live_deals_under_one_reference_are_two_instruments_each_settled_on_its_own_key(
+        recorded, tmp_path):
+    """A REFERENCE IS NOT AN IDENTITY. Two fixed legs booked under one `Reference` at 7% and 8%
+    in one netting set are two instruments: a row carries its deal's `deal_path` and takes the
+    instrument booked there, so the two coupons due on one day are two payments under two keys,
+    each settled by its own transition, and the close is legal once both are. A partial unwind, a
+    second node of the 7% leg's terms, is that instrument and keys nothing new.
+
+    Before the landing every row of both read `key: null`, the map keyed by reference naming
+    neither, and the close waited on both for good. Killing mutation: the map keyed by reference
+    again, every row `key: null`.
+    """
+    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')])
+    eight = fixed_leg('TWIN')
+    for item in eight['Cashflows']['Items']:
+        item['Rate'] = utils.Percent(QUOTE + 1.0)
+
+    def booked(deal, quantity, execution):
+        answer = CLIENT.post('/book/deals', content=dump(
+            {'action': 'add', 'deal': deal, 'parent_reference': CLIENT_SET, 'quantity': quantity,
+             'execution_reference': execution}), headers=JSON).json()
+        assert answer['written'] is True, answer
+
+    booked(fixed_leg('TWIN'), 1.0, 'EXEC-TWIN-7')
+    booked(eight, 1.0, 'EXEC-TWIN-8')
+    rows = diary_rows()['rows']
+    assert all(row['key'] for row in rows), [row for row in rows if not row['key']]
+    assert {(row['reference'], row['deal_path']) for row in rows} == {
+        ('TWIN', '0/0'), ('TWIN', '0/1')}
+    day = str((COUPONS[0] + LAG).date())
+    first = {row['deal_path']: row for row in payments(rows) if row['due_date'] == day}
+    assert first['0/1']['amount'] == pytest.approx(first['0/0']['amount'] * (QUOTE + 1.0) / QUOTE)
+    waiting = {row['key'] for row in first.values()}
+    assert len(waiting) == 2, 'two instruments paying on one day share a key'
+
+    booked(fixed_leg('TWIN'), -0.5, 'EXEC-TWIN-UNWIND')
+    assert {(row['deal_path'], row['key']) for row in diary_rows()['rows']} == {
+        (row['deal_path'], row['key']) for row in rows}, 'the unwind keyed a row of its own'
+
+    after = str((COUPONS[0] + LAG + pd.DateOffset(days=1)).date())
+    for path in ('0/0', '0/1'):
+        verdict = CLIENT.get('/book/close/check', params={'date': after}).json()
+        assert verdict['legal'] is False and {
+            row['key'] for row in verdict['outstanding']} == waiting, verdict['outstanding']
+        settle(recorded, first[path]['key'])
+        waiting.remove(first[path]['key'])
+    assert CLIENT.get('/book/close/check', params={'date': after}).json()['legal'] is True
+
+
 # --------------------------------------------------------------------------------------------
 # What is not determined, and what the exporter will not say.
 
@@ -604,8 +653,8 @@ def test_every_fixing_names_the_index_its_type_declares():
                  for node in trials.nodes(document['Calc']['Deals']['Deals']['Children'])}
         context = derivus.Context()
         context.load_json((json.dumps(document), 'census'))
-        for row in spine.diary(context, {reference: reference for reference in deals}):
-            deal = deals.get(row['instrument'], {})
+        for row in spine.diary(context):
+            deal = deals.get(row['reference'], {})
             if row['kind'] in (Diary.FIXING, Diary.BARRIER) and row['index'] is None:
                 unnamed.add(deal.get('Object'))
             if row['kind'] == Diary.BARRIER:
@@ -630,11 +679,9 @@ def test_an_autocall_asks_for_prints_on_its_fixings_alone():
                         Price_Fixing=[[{'.Timestamp': day}, 0.0] for day in fixings],
                         Autocall_Coupons=[[{'.Timestamp': day}, 0.04] for day in coupons],
                         Autocall_Thresholds=[[{'.Timestamp': day}, 1.0] for day in coupons])
-    deal = job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']
     context = derivus.Context()
     context.load_json((json.dumps(job), 'autocall'))
-    asked = [row for row in spine.diary(context, {deal['Reference']: deal['Reference']})
-             if row['kind'] == Diary.FIXING]
+    asked = [row for row in spine.diary(context) if row['kind'] == Diary.FIXING]
     assert {row['due_date'] for row in asked} == set(fixings), asked
     assert {row['index'] for row in asked} == {'EquityPrice.EQ'}
 
@@ -756,7 +803,7 @@ def test_a_cross_is_the_ratio_of_its_legs_prints_and_waits_for_both(recorded):
     def asked(document):
         context = derivus.Context()
         context.load_json((json.dumps(document), 'cross'))
-        return service.answered([row for row in spine.diary(context, {'ACC': 'ACC'}) if row[
+        return service.answered([row for row in spine.diary(context, {'0': 'ACC'}) if row[
             'kind'] == Diary.FIXING and row['due_date'] == str(PAST.date())])
 
     def filed(index):
@@ -816,8 +863,9 @@ def test_an_fx_option_fixes_its_pair_at_expiry():
     context = derivus.Context()
     context.load_json((json.dumps(job), 'pairs'))
     references = [each['Instrument']['.Deal']['Reference'] for each in children]
-    rows = [row for row in spine.diary(context, dict(zip(references, references)))
-            if row['kind'] == Diary.FIXING]
+    rows = [row for row in spine.diary(context, {
+        str(position): reference for position, reference in enumerate(references)})
+        if row['kind'] == Diary.FIXING]
     for reference in references:
         asked = [row for row in rows if row['instrument'] == reference]
         assert {row['index'] for row in asked} == ({'FxRate.ZAR'} if 'ZAR' in reference else {
@@ -837,7 +885,7 @@ def declared(fixture, paid=None, base=None):
         document['Calc']['Calculation']['Base_Date'] = json.loads(dump({'day': base}))['day']
     context = service.load(document)
     (deal,) = [node['Instrument'] for node in context.current_cfg.deals['Deals']['Children']]
-    return deal, payments(spine.diary(context, {deal.field['Reference']: 'f' * 64}))
+    return deal, payments(spine.diary(context, {'0': 'f' * 64}))
 
 
 @pytest.mark.parametrize('fixture,table,column', [
@@ -1187,7 +1235,7 @@ def test_a_deal_the_compile_could_not_read_is_named_and_blocks_the_close(recorde
     serving(tmp_path, [node(dict(FX_OPTION, Reference='NOVOL'))], factors=FACTORS)
     rows = [row for row in diary_rows()['rows'] if row['kind'] == Diary.UNREADABLE]
     assert len(rows) == 1, diary_rows()['rows']
-    assert rows[0]['leg'] == '0' and rows[0]['state'] == Diary.UNREADABLE
+    assert rows[0]['deal_path'] == '0' and rows[0]['state'] == Diary.UNREADABLE
     assert rows[0]['due_date'] is None and rows[0]['amount'] is None and rows[0]['key'] is None
     assert 'NOVOL' in rows[0]['reason'] and 'FXOptionDeal' in rows[0]['reason']
     assert 'FXVol' in rows[0]['reason'], rows[0]['reason']
@@ -1195,6 +1243,23 @@ def test_a_deal_the_compile_could_not_read_is_named_and_blocks_the_close(recorde
     verdict = CLIENT.get('/book/close/check', params={'date': '2020-01-01'}).json()
     assert verdict['legal'] is False, 'a day with nothing due was still not legal'
     assert [row['kind'] for row in verdict['outstanding']] == [Diary.UNREADABLE]
+
+
+def test_a_barrier_its_history_knocked_in_is_read_as_the_vanilla_it_became(unrecorded, tmp_path):
+    """A DEAL ITS HISTORY RESOLVED IS STILL ITS NODE. An up-and-in call whose monitoring row closed
+    above its barrier compiles as the vanilla it became, a deal of its own (`became`), and the
+    diary reads that vanilla at the barrier's path: its expiry fixing, its settlement and its
+    expiry, each keyed, and no `unreadable` row.
+
+    Killing mutation: the substitute not naming the deal it was resolved from, under which the
+    barrier's node reads as one the compile could not read, its one row outstanding every day.
+    """
+    knocked = dict(BARRIER, Reference='KNOCKED', Barrier_Type='Up_And_In',
+                   Barrier_Dates=[[WATCHED, 120.0]])
+    serving(tmp_path, [node(knocked)], factors=dict(FACTORS, **EQUITY))
+    rows = diary_rows()['rows']
+    assert sorted(row['kind'] for row in rows) == [Diary.EXPIRY, Diary.FIXING, Diary.PAYMENT], rows
+    assert all(row['deal_path'] == '0' and row['key'] for row in rows), rows
 
 
 def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_keeps_the_deal(recorded, tmp_path):

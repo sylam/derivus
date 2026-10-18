@@ -1227,13 +1227,12 @@ def test_the_book_prices_every_position_at_its_net(recorded, desk):
     pricing a whole unit of it.
 
     A plan named off the book still runs once the record holds a position; another book's position
-    in the same terms is that book's; a partial unwind keeps its settlement key; and a book closed
-    out reads as an empty one rather than differentiating nothing.
+    in the same terms is that book's; and a book closed out reads as an empty one rather than
+    differentiating nothing.
 
     Killing mutations: the second node of the same terms priced beside the first, which reads the
     whole cashflow at a net of a half; the risk read off the file rather than the compiled book,
-    which prices both nodes as written; the compile summing every book's positions; and a clip's
-    shared reference mapped to no instrument, which leaves its payment nothing to settle against.
+    which prices both nodes as written; and the compile summing every book's positions.
     """
     document = json.loads(desk.read_text())
     document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
@@ -1262,7 +1261,6 @@ def test_the_book_prices_every_position_at_its_net(recorded, desk):
     assert held() == whole
     booked('EXEC-HALF', -0.5)
     assert held() == whole / 2
-    assert service.booked_instruments(json.loads(desk.read_text()))['CF-HELD'] is not None
     compiled = service.priced(json.loads(desk.read_text()))
     assert (deal_at(compiled, '1/0')['Instrument']['.Deal']['Amount'],
             deal_at(compiled, '1/1').get('Ignore')) == (125_000.0, 'True')
@@ -1295,9 +1293,7 @@ def test_a_structure_is_held_whole(recorded, desk):
 
     Killing mutations: the refusal dropped, which books the leg into the held structure; the
     amendment filed against the leg rather than the structure, which prices the edited structure
-    as written beside its old terms at half; the diary's references read off the file, which keys
-    the restruck leg nothing a settlement can name; and the stranded legs priced as their
-    structure's.
+    as written beside its old terms at half; and the stranded legs priced as their structure's.
     """
     document = json.loads(desk.read_text())
     document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
@@ -3999,7 +3995,8 @@ def test_a_seat_reads_the_rows_under_the_nodes_it_acts_at(recorded, desk):
     assert references() == references(DESK_FX) == ['CF-FX', 'CF-RATES'], 'no document narrows'
     entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'book', 'validate', 'settle')] + [
         (DESK_FX, 'validate', 'spine-desk/FX'), (RATES_SEAT, 'approve', 'spine-desk/Rates')])
-    fx = service.booked_instruments(json.loads(desk.read_text()))['CF-FX']
+    fx = next(row['instrument'] for row in read('/book/positions')['positions']
+              if row['reference'] == 'CF-FX')
     assert CLIENT.post('/book/transition', content=dump({
         'subject': fx, 'status': 'settled', 'amount': -100.0, 'asset': 'ZAR', 'kind': 'fee',
         'reference': 'FEE-FX', 'value_date': '2024-06-28', 'actor': ACTOR}),

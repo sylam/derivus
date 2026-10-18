@@ -1492,7 +1492,8 @@ def book_diary(due_before: str | None = None, actor: str | None = None) -> dict:
     """Everything the book OWES or is owed: every payment, fixing and expiry its deals carry.
 
     The compile's own schedule, so the diary and the pricer cannot disagree about a payment. A row
-    names its deal's instrument, the leg it sits on, its due date, its currency, its notional, and
+    names its deal's instrument, `reference` and `deal_path` - the path is the identity, since
+    references are not unique - the leg it sits on, its due date, its currency, its notional, and
     its amount where the compile determines one - one PAYMENT per leg and pay day, spelled by the
     pricer's own line, and a floating coupon reads `amount: null` and `determined: false` until its
     resets fix, which is not the same as owing nothing. `state` is `due`, `observed`, `settled` or

@@ -1664,18 +1664,19 @@ def _less(held, less):
 def diary(context, instruments=None):
     """The `Diary` calculation's rows over `context`, sorted, each with its instrument and key.
 
-    `instruments` maps a deal's `Reference` to the instrument address the record books it under,
-    which is what gives a row its key; a reference it does not name carries `instrument: null` and
-    `key: null`, so the diary reads on a book nothing was ever booked from. The precision and the
-    device are the defaults rather than a valuation's: the diary reads the numpy half of a
-    schedule, which is authoritative until the bind and unmoved by it.
+    `instruments` maps a row's `deal_path` to the instrument address the record books that deal
+    under, which is what gives a row its key, references not being unique in a book; a path it
+    does not name carries `instrument: null` and `key: null`, so the diary reads on a book nothing
+    was ever booked from. The precision and the device are the defaults rather than a valuation's:
+    the diary reads the numpy half of a schedule, which is authoritative until the bind and unmoved
+    by it.
     """
     config = context.current_cfg
     declared = config.deals['Calculation']
     named, rows = instruments or {}, []
     for row in Diary(config).execute(dict(
             declared, Run_Date=declared['Base_Date'].strftime('%Y-%m-%d'))):
-        instrument = named.get(row.pop('reference'))
+        instrument = named.get(row['deal_path'])
         rows.append(dict(key=_key(instrument, row['leg'], row['kind'], row['due_date']),
                          instrument=instrument, **row))
     return sorted(rows, key=lambda row: (row['due_date'] or '', row['kind'], row['leg'],
@@ -1816,12 +1817,11 @@ class PnL:
     @classmethod
     def apart(cls, units):
         """`units` in as few groups as leave every leaf to one unit of its group: a leaf two units
-        carry - the same terms, or one reference over other terms, as a restruck structure's legs
-        beside the ones it replaced - is read once per unit, each unit in a group of its own."""
+        carry - the same terms, as a restruck structure's untouched legs beside the ones it
+        replaced - is read once per unit, each unit in a group of its own."""
         groups = []
         for unit in units:
-            leaves = {part for leaf in schema.leaves([unit]) for part in (
-                leaf['Instrument']['.Deal'].get('Reference'), content_hash(instrument_of(leaf)))}
+            leaves = {content_hash(instrument_of(leaf)) for leaf in schema.leaves([unit])}
             group = next((group for group in groups if not group[1] & leaves), None)
             if group is None:
                 groups.append(([unit], leaves))

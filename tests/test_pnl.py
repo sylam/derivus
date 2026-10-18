@@ -12,7 +12,7 @@ import pytest
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from derivus import service, spine, utils
+from derivus import schema, service, spine, utils
 from derivus.config import as_json
 from derivus_mcp import server as binding
 from derivus_spine import SpineLog, oracle, policy, verbs
@@ -171,7 +171,11 @@ def due(reference, day, leg=None):
 def instrument_of(reference):
     """The address the record books `reference` under - its terms in the book file, hashed as the
     service hashes them, which a position that has rolled off still has."""
-    return service.booked_instruments(service.BOOK.read()[0])[reference]
+    document = service.BOOK.read()[0]
+    (address,) = {address for path, address in service.booked_instruments(document).items()
+                  if schema.deal_at(document, path)['Instrument']['.Deal'].get('Reference')
+                  == reference}
+    return address
 
 
 def held():
@@ -1695,8 +1699,7 @@ def test_a_node_seat_reads_the_legs_of_a_structure_held_at_its_node(recorded, de
     seat a diary without its structure's payments.
     """
     booked(PAIR, 1.0, 'EXEC-ST', BOOK + '/FX')
-    held = service.booked_instruments(json.loads(desk.read_text()))
-    legs = {held['LEG-A'], held['LEG-B']}
+    legs = {instrument_of('LEG-A'), instrument_of('LEG-B')}
     log = SpineLog(recorded)
     try:
         blob = log.store.put(canonical_document({'grants': [

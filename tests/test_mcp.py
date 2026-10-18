@@ -228,9 +228,10 @@ def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeyp
     assert answer['rows'], 'the one-cashflow book announces nothing'
     assert {row['kind'] for row in answer['rows']} <= {'payment', 'fixing', 'expiry', 'barrier'}
     for row in answer['rows']:
-        assert set(row) == {'key', 'instrument', 'leg', 'schedule_index', 'kind', 'due_date',
-                            'currency', 'amount', 'determined', 'notional', 'index', 'source',
-                            'observed', 'needs', 'reason', 'state', 'netting_set', 'agreement'}
+        assert set(row) == {'key', 'instrument', 'reference', 'deal_path', 'leg', 'schedule_index',
+                            'kind', 'due_date', 'currency', 'amount', 'determined', 'notional',
+                            'index', 'source', 'observed', 'needs', 'reason', 'state',
+                            'netting_set', 'agreement'}
         assert row['amount'] is None or row['determined'] is True
 
     day = min(row['due_date'] for row in answer['rows'])

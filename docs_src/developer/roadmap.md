@@ -33,9 +33,6 @@ not rows to close.
   file therefore answers 500 on its status and curves, refuses survival curves and date rolls on a
   bare key, and writes the whole file's factors into itself when one spot is patched; every request
   but the XVA tab's builds its own context, and a market edit makes the XVA tab re-parse the file.
-- **Two live deals under one reference get a diary key** (2026-09-28, M). `POST /book/deals`
-  accepts a second live deal under an existing reference, the diary keys neither, and the close
-  waits on them for good. The key needs the deal's path beside its reference.
 - **The tier recorded on an approval** (2026-09-29, M). Under a policy with both an automatic and a
   four-eyes tier, a copy forging an approval of a ticket only the four-eyes tier would admit is
   caught only by copies agreeing with the hub. Signed history ends at the last checkpoint either
@@ -44,6 +41,9 @@ not rows to close.
   verb map, so a frame filed under a verb its act no longer demands - a confirmation or a
   collateral movement under a `settle` grant - reads as outside its seat, while the desk runs
   unchanged. The map read like a policy, one read in `verb_for`.
+- **A knocked-out barrier past its rebate date blocks the close** (2026-10-18, S). The compile
+  leaves it out and the diary reads it `unreadable` rather than expired, so the close check waits
+  on it for good. Seen on one synthetic book; UNMEASURED elsewhere.
 - **A late settlement is matched within a business week** (2026-09-28). A settlement filed
   against a payment the window's own diary no longer announces is looked for `LOOK_BACK` marks
   back from its value date, a business week; past that, its day and a window reaching back over
