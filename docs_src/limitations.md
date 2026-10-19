@@ -126,7 +126,8 @@ Grouped by where a validator meets them.
 - **A one-point vol move carries cross-vertex convexity** (2026-10-07). On the autocalls the twelve
   vertex rows differ from one parallel point by -0.8% to +13% (0.1% to 1.2% on FX), stable across
   seeds and path counts, a tenth of a point cutting it tenfold. It is the regulation's definition,
-  so stated, not fixed. Rate vega, credit, commodity and inflation sensitivities refuse by name.
+  so stated, not fixed. ISDA's inflation and credit vol sensitivities refuse by name, the engine
+  carrying no factor type for either.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
   `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only

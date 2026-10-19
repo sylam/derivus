@@ -8,6 +8,7 @@ only if an entry names it.
 {
   "Bootstrapper Configuration": {
     "InterestRate": {"Prices": "InterestRate"},
+    "InflationRate": {"Prices": "InflationRate"},
     "SurvivalProb": {"Prices": "SurvivalProb"},
     "FXVol": {"Prices": "FXVol"},
     "GBMAssetPriceTSModelParameters": {"Prices": "GBMAssetPriceTSModel"},
@@ -18,11 +19,12 @@ only if an entry names it.
 }
 ```
 
-## The seven families
+## The eight families
 
 | Entry key | `Prices` | Reads blocks | Writes price factor | Prices on (factor types) |
 |---|---|---|---|---|
 | `InterestRate` | `InterestRate` | `InterestRatePrices.<curve>` | `InterestRate.<curve>` | `InterestRate`, `FxRate` |
+| `InflationRate` | `InflationRate` | `InflationRatePrices.<name>` | `InflationRate.<name>` | `InterestRate`, `PriceIndex` |
 | `SurvivalProb` | `SurvivalProb` | `SurvivalProbPrices.<name>` | `SurvivalProb.<name>` | `InterestRate` |
 | `FXVol` | `FXVol` | `FXVolPrices.<pair>` | `FXVol.<pair>` | none |
 | `GBMAssetPriceTSModelParameters` | `GBMAssetPriceTSModel` | `GBMAssetPriceTSModelPrices.<name>` | `GBMAssetPriceTSModelParameters.<name>` | `FXVol`, `EquityPriceVol`, `CommodityPriceVol` |
@@ -43,7 +45,7 @@ carry, per family, is on the family's page under this section.
 | An object with `Prices` | `Prices` is the stem of the family's `Market Prices` type (`<stem>Prices`). A stem belonging to another family refuses by name |
 | An object without `Prices` | runs, with a warning: in process the family is looked up, but the multiprocessing bootstrap routes without the engine and needs it |
 | A string (the older form) | accepted; the string itself is not read, and the family runs on its declared defaults |
-| A key naming no family | refused, listing the seven |
+| A key naming no family | refused, listing the eight |
 
 ## Run order
 

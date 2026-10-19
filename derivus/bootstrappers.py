@@ -5903,6 +5903,245 @@ class SurvivalProb(Construction):
                 point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
 
 
+class InflationRate(Construction):
+    """An inflation curve solved from its index's zero-coupon swap breakevens, each swap composed of
+    the engine's own inflation and fixed cashflow lists.
+
+    Each used `Points` row is the block's STANDARD SWAP at the row's `Tenor`: from the base date to
+    the tenor's whole years, the index ratio from the base date's reference to the maturity's paid
+    on `PRINCIPAL` against the breakeven compounded annually over the years, both at maturity, the
+    row's own `Deal` over the structure. The solve is the curve family's: a root of the benchmark
+    PVs through `BenchmarkInstruments`, one knot per quote at the latest month its final reference
+    reads.
+    """
+    documentation = (
+        'Inflation',
+        ['A construction: the inflation curve `InflationRate.<name>` - the continuously compounded',
+         'growth rate $r_I$ of its price index from the last print ([Inflation](../theory/inflation.md)) -',
+         'whose zero-coupon swaps price every used quote of an `InflationRatePrices.<name>` block at par,',
+         'each composed of the engine\'s own inflation and fixed cashflow lists. The block and the',
+         'reasoning behind each rule are on',
+         '[Market Prices](../developer/market_prices.md#inflationrateprices).',
+         '',
+         '**Residual.** Each used `Points` row is the block\'s swap at its `Tenor`, $T$ whole years from',
+         'the base date $t_0$ to the maturity $M$: a `YieldInflationCashflowListDeal` row paying a',
+         'principal $P$ of one million grown by the index ratio $I_R(M)/I_R(t_0)$, its references read',
+         'under the block\'s `Months_Lag` and `Reference_Type`, against a compounding',
+         '`CFFixedInterestListDeal` paying $P(1+b)^T$, both at $M$ and discounted on `Discount_Rate`',
+         '(the currency\'s own curve where blank); the row\'s own `Deal` replaces any term of the',
+         'structure, its legs included. `Quote_Type` is `Breakeven`, the quote $b$ in percent and a',
+         'fraction here. With $\\theta$ the growth rates at the knots,',
+         '',
+         '$$F_i(\\theta,b_i)=P\\,D(t_0,M_i)\\Big(\\frac{I_R(M_i)}{I_R(t_0)}-(1+b_i)^{T_i}\\Big)=0,'
+         '\\qquad i=1,\\dots,n.$$',
+         '',
+         'The breakeven lands on the fixed leg\'s rate column, which is affine in it; the power is the',
+         'list\'s own compounding, on the tape. The discount factor multiplies both legs, so the',
+         'solved curve does not move with the discount curve.',
+         '',
+         '**Knots.** One per used quote, at the latest month its final reference reads with a weight, on',
+         'the block\'s `Day_Count` from the index\'s last print, so the system is square and',
+         'triangular. The curve is flat below its first knot: at the last print the growth is one',
+         'whatever the rate, so no knot is held. A quote whose final reference reads only printed',
+         'months is a stated level, identifies nothing and refuses by name, and so does a',
+         '`Price_Index` the market carries no `PriceIndex` for.',
+         '',
+         '**Solver.** The curve family\'s damped Newton in float64 on the host [@dennis1996], with its',
+         '`N_Iter`, `Tol` and `Damping_Halvings` ([Interest Rates](interest_rates.md#interestrate)),',
+         'seeded at each breakeven as a continuous rate, $\\log(1+b_i)$. Where the base reference is the',
+         'last print and the final reference reads one month at $\\tau$ from it, the root is the closed',
+         'form $r_I(\\tau)=T\\log(1+b)/\\tau$; an interpolated reference mixes two months and a base',
+         'reference off the last print scales the ratio, so the closed form is then a reading, not the',
+         'curve.',
+         '',
+         '**Quote derivatives.** At the root the implicit function theorem is exact',
+         '[@christianson1998; @henrard2014], so `Quote_Sensitivity` reports `dV/dq` beside `dV/dθ` on',
+         'the block\'s own quotes. The discount curve is read connected, as the credit family reads',
+         'it, and its term in the chain rule is zero at the root, $\\partial F/\\partial D$ being the',
+         'residual itself. A survival curve declares no `Quote_Propagation` and neither does this one.',
+         '',
+         '**Gate.** `tests/test_inflation_prices.py` prices the swaps by hand off a known growth curve',
+         'on the inflation list\'s world, bootstraps them back and asserts the round trip to 1e-10.'])
+    market_factor_type = 'InflationRatePrices'
+    #: the discount curves the swaps price on, which the curve family writes first, and the index
+    #: whose prints set the base reference and the knots' origin
+    reads = ('InterestRate', 'PriceIndex')
+    #: the instrument a quote is a price for: the swap as a structure over its two legs
+    quote_instruments = ('StructuredDeal',)
+    #: the principal a swap is struck on, which scales its residual and nothing it solves
+    PRINCIPAL = 1e6
+    fields = [field for field in InterestRate.fields if field.key in ('Currency', 'Day_Count')] + [
+        F('Discount_Rate', 'Text', default='', convention=True,
+          description='The curve the swaps discount on, blank being the currency\'s own'),
+        F('Price_Index', 'Text', default=REQUIRED,
+          description='The PriceIndex factor whose prints the swaps reference'),
+        F('Months_Lag', 'Integer', default=3, convention=True,
+          description='How many months back an index reference reads, as the swaps are quoted'),
+        F('Reference_Type', 'Text', default='Interpolated', convention=True,
+          values=['Interpolated', 'Single'],
+          description='Whether a reference straddles two months\' prints or reads one'),
+    ] + [field for field in InterestRate.fields
+         if field.key in ('N_Iter', 'Tol', 'Damping_Halvings', 'Quote_Sensitivity')] + [
+        F('Points', 'Container',
+          sub_fields=[
+              F('Use', 'Text', default='Yes', values=['Yes', 'No'],
+                description='Whether this quote enters the solve'),
+              F('Deal', 'Container', default={},
+                description='The terms of this row\'s swap that differ from the block\'s standard '
+                            'one, its legs under Children'),
+              F('Descriptor', 'Text', default='', description='Free text naming the quote'),
+              F('Tenor', 'Text', default='',
+                description='How long the swap runs from the base date, in whole years'),
+              F('Security', 'Text', default='',
+                description='The security the row is quoted off, where it came from a market data '
+                            'source; stored and reported, never read by the solve'),
+              F('DealType', 'Text', default='StructuredDeal', values=list(quote_instruments),
+                description='The instrument type the quote is a price for'),
+              F('Quote_Type', 'Text', default='Breakeven', values=['Breakeven'],
+                description='What Quoted_Market_Value is; the solve holds the swap at par'),
+              F('Quoted_Market_Value', 'Float', default=0.0,
+                description='The breakeven: the fixed rate in percent the swap compounds annually '
+                            'against the index ratio')] + QUOTE_TWO_WAY,
+          description='One zero-coupon swap quote: a tenor, what kind of number is quoted, the '
+                      'number, its two-way sides where the source printed them, and when it was seen')
+    ]
+
+    def __init__(self, param, device, dtype):
+        super().__init__(param, device, dtype)
+        # the curve family's reason: the solve is dispatch-bound, so it runs on the host
+        self.device = torch.device('cpu')
+        #: what `Quote_Sensitivity` leaves for `Config.bootstrap` to harvest, as the curve family's
+        self.calibrated = {}
+        self.quote_leaves = {}
+
+    @classmethod
+    def takes(cls, point, market_price):
+        """Whether this family prices the quote: a `Breakeven`, any other logged by name and left
+        out."""
+        if point['Quote_Type'] == 'Breakeven':
+            return True
+        logging.error('{} quote {} - Quote_Type {} is no zero-coupon swap quote; the family takes '
+                      'Breakeven'.format(market_price, point['Descriptor'], point['Quote_Type']))
+        return False
+
+    @classmethod
+    def used_quotes(cls, block, market_price):
+        """The quotes that enter the solve, in the order the residual and `q` are indexed by."""
+        return [point for point in quote_table(block, market_price)
+                if point['Use'] == 'Yes' and cls.takes(point, market_price)]
+
+    @classmethod
+    def contracts(cls, block, market_price, base_date):
+        """The used quotes, each carrying its swap, the row's `Deal` over the structure: where it
+        states no legs, the index ratio from the base date's reference to the maturity's on
+        `PRINCIPAL`, against the breakeven compounded annually and the principal, both paid at
+        maturity."""
+        name = '.'.join(utils.check_rate_name(market_price)[1:])
+        reference = {key: block[key] for key in ('Months_Lag', 'Reference_Type')}
+        points = []
+        for point in cls.used_quotes(block, market_price):
+            terms = {'Currency': block['Currency'], 'Reference': '{}_{}'.format(name, point['Tenor'])}
+            deal = dict(terms, **point['Deal'])
+            if 'Children' not in deal:
+                years = [base_date + pd.DateOffset(years=year) for year in range(
+                    utils.parse_period(point['Tenor']).kwds['years'] + 1)]
+                maturity = years[-1]
+                index = dict(terms, Object='YieldInflationCashflowListDeal', Buy_Sell='Buy',
+                             Index=name, Index_Reference=reference, Cashflows={'Items': [{
+                                 'Payment_Date': maturity, 'Notional': cls.PRINCIPAL,
+                                 'Base_Reference_Date': base_date, 'Base_Reference_Value': 0.0,
+                                 'Final_Reference_Date': maturity, 'Final_Reference_Value': 0.0,
+                                 'Accrual_Start_Date': base_date, 'Accrual_End_Date': maturity,
+                                 'Accrual_Year_Fraction': 1.0, 'Yield': utils.Percent(100.0),
+                                 'Rate_Multiplier': 1.0}]})
+                # the breakeven compounds year by year and the principal comes back on the last
+                fixed = dict(terms, Object='CFFixedInterestListDeal', Buy_Sell='Sell', Cashflows={
+                    'Compounding': 'Yes', 'Items': [{
+                        'Payment_Date': maturity, 'Notional': cls.PRINCIPAL,
+                        'Rate': utils.Percent(0.0), 'Accrual_Start_Date': start,
+                        'Accrual_End_Date': end, 'Accrual_Year_Fraction': 1.0,
+                        'Fixed_Amount': cls.PRINCIPAL if end == maturity else 0.0}
+                        for start, end in zip(years[:-1], years[1:])]})
+                deal['Children'] = [index, fixed]
+            points.append(dict(point, Deal=deal))
+        return points
+
+    @staticmethod
+    def live_knots(market_price, points, nodes, last_print, day_count):
+        """One knot per benchmark, at the latest month its final references read with a weight, on
+        `day_count` from `last_print`, refusing by name every benchmark reading only printed months:
+        its reference is a stated level, and a knot at or before the last print identifies nothing.
+        """
+        months = [max(day for leaf in leaf_deals(node) if isinstance(
+            leaf, instruments.YieldInflationCashflowListDeal)
+            for item in leaf.field['Cashflows']['Items'] for day, weight in
+            utils.TensorCashFlows.index_reference_samples(
+                item['Final_Reference_Date'], *leaf.reference_rule()) if weight) for node in nodes]
+        printed = ['{} (reads {:%Y-%m})'.format(point['Descriptor'], month)
+                   for point, month in zip(points, months) if month <= last_print]
+        if printed:
+            raise ValueError(
+                '{}: {} reference only months the index printed by {:%Y-%m-%d}, so each is a stated '
+                'level and its knot identifies nothing. Hold the quote out with Use No'.format(
+                    market_price, '; '.join(printed), last_print))
+        code = utils.DayCount.code(day_count)
+        return np.array([utils.DayCount.accrual(last_print, (month - last_print).days, code)
+                         for month in months])
+
+    def bootstrap(self, sys_params, price_models, price_factors, factor_interp, market_prices,
+                  calendars):
+        """Solve each block for the inflation curve that holds its used quotes at par, one block at
+        a time: a block reads the discount curve the curve family wrote and its index's prints."""
+        for market_price, implied_params in market_prices.items():
+            if utils.check_rate_name(market_price)[0] == self.market_factor_type:
+                # the quote's own instrument wins on conflict
+                self.solve(market_price, dict(self.param, **implied_params['instrument']),
+                           price_factors, factor_interp, sys_params['Base_Date'], calendars)
+
+    def solve(self, market_price, block, price_factors, factor_interp, base_date, calendars):
+        """Seed the curve at the breakevens as continuous rates on the knots, solve them through
+        `utils.CalibrationSolve`, and write the curve on the block's index and day count. Under
+        `Quote_Sensitivity` the solve reads a connected discount curve through its graph."""
+        factor = utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:])
+        prints = price_factors.get(utils.check_tuple_name(utils.Factor(
+            'PriceIndex', utils.check_rate_name(block['Price_Index']))))
+        if prints is None:
+            raise ValueError('{}: Price_Index {} names no PriceIndex the market carries, and the '
+                             'swaps reference its prints'.format(market_price, block['Price_Index']))
+        points = self.contracts(block, market_price, base_date)
+        nodes = quote_nodes(points, block['Discount_Rate'])
+        knots = self.live_knots(market_price, points, nodes, prints['Last_Period_Start'],
+                                block['Day_Count'])
+        name = utils.check_tuple_name(factor)
+        price_factors[name] = {
+            'Price_Index': block['Price_Index'], 'Currency': block['Currency'],
+            'Day_Count': block['Day_Count'], 'Curve': utils.Curve([], list(zip(knots, np.log1p(
+                [point['Quoted_Market_Value'] / 100.0 for point in points]))))}
+
+        carry = block['Quote_Sensitivity'] == 'Yes'
+        time_now = time.monotonic()
+        benchmarks = BenchmarkInstruments(
+            nodes, price_factors, factor_interp, base_date, block['Currency'], calendars, [factor],
+            self.device, quotes=[point['Quoted_Market_Value'] for point in points] if carry else None,
+            bumped_nodes=quote_nodes(points, block['Discount_Rate'], 1.0) if carry else None,
+            connected=self.connected if carry else {})
+        theta = utils.CalibrationSolve.apply(
+            benchmarks, benchmarks.written(), int(block['N_Iter']), float(block['Tol']),
+            int(block['Damping_Halvings']), benchmarks.quotes, *benchmarks.connected.values())
+        price_factors[name]['Curve'] = InterestRate.solved_curve(benchmarks, theta, factor)
+        if carry:
+            self.calibrated[factor] = theta
+            self.quote_leaves[market_price] = ([point['Descriptor'] for point in points],
+                                               benchmarks.quotes)
+
+        residuals = benchmarks(utils.split_theta(benchmarks, theta.detach())).detach()
+        logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
+            name, len(points), time.monotonic() - time_now, float(residuals.abs().max())))
+        for point, residual in zip(points, residuals):
+            logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
+                point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
+
+
 class FXVol(Construction):
     """An `FXVol` surface bootstrapped from the ATM / risk-reversal / butterfly quotes it ticks in as.
 
@@ -6390,10 +6629,10 @@ def block_readers(market_prices):
     A block is read two ways and both are the families' own declarations. `reads` names the price
     factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
     curve family names the very curve, in `Discount_Rate` and inside its benchmark deals
-    (`benchmark_curves`), and the credit family the curve its default swaps discount on,
+    (`benchmark_curves`), and the credit and inflation families the curve their swaps discount on,
     `Discount_Rate` else the currency's own, so a curve is read by the curves discounting on it and
-    the survival curves solved on it and no others. A block of a type no family reads is nobody's
-    dependency.
+    the survival and inflation curves solved on it and no others. A block of a type no family reads
+    is nobody's dependency.
     """
     writer = {cls.market_factor_type: cls for cls in FAMILIES}
     blocks = {name: writer[utils.check_rate_name(name)[0]] for name in market_prices
@@ -6401,7 +6640,7 @@ def block_readers(market_prices):
     curves = InterestRate
     named = {name: {block.get('Discount_Rate')} | curves.benchmark_curves(block, name)
              if cls is curves else {block.get('Discount_Rate') or block.get('Currency')}
-             for name, cls in blocks.items() if cls in (curves, SurvivalProb)
+             for name, cls in blocks.items() if cls in (curves, SurvivalProb, InflationRate)
              for block in [market_prices[name].get('instrument', {})]}
     readers = {}
     for reader, cls in blocks.items():
@@ -6470,7 +6709,7 @@ def construct_bootstrapper(btype, param, dtype=torch.float32):
     return family_class(btype)(param, device, dtype)
 
 
-#: THE SEVEN PRICE FAMILIES: `family_class` and every refusal naming them read this one tuple.
+#: THE EIGHT PRICE FAMILIES: `family_class` and every refusal naming them read this one tuple.
 FAMILIES = (CSForwardPriceModelParameters, LogVar2FJModelParameters,
             GBMAssetPriceTSModelParameters, HullWhite2FactorModelParameters,
-            InterestRate, SurvivalProb, FXVol)
+            InterestRate, InflationRate, SurvivalProb, FXVol)

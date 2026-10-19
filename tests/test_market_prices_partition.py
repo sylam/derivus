@@ -9,7 +9,7 @@ WHICH TABLE IS THE QUOTE TABLE is DERIVED rather than listed: `schema.quote_cont
 table a quote table when its row declares all four value keys, so a family joins the value plane by
 DECLARING the columns rather than by being named somewhere.
 
-The rule is applied UNIFORMLY. Three of the seven declared families have an EMPTY values half and
+The rule is applied UNIFORMLY. Three of the eight declared families have an EMPTY values half and
 a tick on them is still a new plan - not an exemption per family, but what the one rule says about
 a block whose rows declare no value keys, asserted here BY NAME so a family that later declares
 them cannot arrive unpartitioned.
@@ -33,7 +33,7 @@ writes a STRING and `Config.parse_json` wanted a kwargs DICT, so a block this en
 not be read back by one of its own two decoders. Both read the string now.
 
 Every block here is real: the ZAR strip `test_interest_rate_prices` authors, the CDS quotes
-`test_credit_prices` authors, the USDZAR smile `derivus_bloomberg` normalises, and the option
+`test_credit_prices` authors, the breakevens `test_inflation_prices` authors, the USDZAR smile `derivus_bloomberg` normalises, and the option
 ladder the engine EMITS off the surface that smile builds. The two families with no fixture are held to their own declarations, which is the
 stronger statement: a family declaring no `Points` field has no block with a values half.
 """
@@ -58,6 +58,7 @@ from derivus.schema import update_market_quote
 from rates_world import BASE as RATES_BASE
 from test_interest_rate_prices import authored_world
 from test_credit_prices import block as credit_block
+from test_inflation_prices import block as inflation_block
 from test_quote_propagation import BLOCK as ZAR_BLOCK, bootstrapped, market, run, with_deals
 from test_service import CLIENT, JSON, desk, desk_smile, dump, fx_vol_quotes, job  # noqa: F401
 
@@ -71,13 +72,14 @@ FAMILIES = {cls.__dict__['market_factor_type']: cls
             if isinstance(cls, type) and isinstance(cls.__dict__.get('fields'), list)
             and 'market_factor_type' in cls.__dict__}
 
-#: Where each family's quotes live, BY NAME. Four of these tables carry the value plane; the other
+#: Where each family's quotes live, BY NAME. Five of these tables carry the value plane; the other
 #: three have an empty values half and stay wholly plan-side, which is the one rule and not three
 #: exceptions to it.
 QUOTE_CONTAINER = {'CSForwardPriceModelPrices': 'Energy_Futures_Options',
                    'FXVolPrices': 'Points',
                    'GBMAssetPriceTSModelPrices': None,
                    'HullWhite2FactorModelPrices': 'Instrument_Definitions',
+                   'InflationRatePrices': 'Points',
                    'InterestRatePrices': 'Points',
                    'LogVar2FJModelPrices': 'European_Options',
                    'SurvivalProbPrices': 'Points'}
@@ -112,7 +114,7 @@ def family_blocks():
     """One REAL block per declared family, built once and handed out as a DEEP COPY - a cached live
     reference is a fixture the session can edit.
 
-    Four come from fixtures the suite already builds. The other three have no fixture in this repo;
+    Five come from fixtures the suite already builds. The other three have no fixture in this repo;
     what stands for them is their own declarations completed by `schema.declared_defaults`, which
     is the stronger statement: none declares a `Points` field, so no block of them can carry a
     values half.
@@ -125,6 +127,7 @@ def family_blocks():
         _BLOCKS['InterestRatePrices'] = market_prices[ZAR_BLOCK]
         _BLOCKS['FXVolPrices'] = fx_vol_quotes()[FX_BLOCK]
         _BLOCKS['SurvivalProbPrices'] = credit_block(('Par_Spread', 'Upfront') * 2)
+        _BLOCKS['InflationRatePrices'] = inflation_block()
 
         # the smile a desk posts, bootstrapped into the surface every ladder is authored off
         surface = loaded(desk_smile()).current_cfg

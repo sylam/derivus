@@ -48,7 +48,7 @@ What the split buys is on [Quote Propagation](quote_propagation.md#protocol).
 
 A family subclasses `Construction` (a closed form or a square system of roots, repricing its quotes
 exactly) or `ImpliedCalibration` (a least-squares fit); both are `Family`, which completes the
-configured entry from the declarations. The seven are tabled on [General](../bootstrapping/general.md).
+configured entry from the declarations. The eight are tabled on [General](../bootstrapping/general.md).
 A family is named for the `Price Factors` type it writes under each block's name, which is its
 `Bootstrapper Configuration` key, and declares:
 
@@ -98,6 +98,7 @@ evidence that a basin was found, so an implied calibration skips the search and 
 | `FXVolPrices` | a refined grid | the [pinned grid](#fxvolprices) |
 | `InterestRatePrices` | the par rates | none: the par rates move with the tick, a previous θ\* does not |
 | `SurvivalProbPrices` | the quotes as flat hazards | none, for the curve family's reason |
+| `InflationRatePrices` | the breakevens as continuous rates | none, for the curve family's reason |
 
 **Held by** `test_warm_starts.py::test_the_written_hull_white_factor_skips_the_search`,
 `test_warm_starts.py::test_the_written_energy_factor_seeds_the_minimisation`.
@@ -141,11 +142,12 @@ refuses the write ([below](#verbs)).
 **A run narrows to what moved.** `Config.bootstrap(only=…)` covers the blocks whose numbers moved
 plus every block reading one of them (`bootstrap_dependents`): a family's `reads`, and for curves the
 very curve a block names, so a curve re-solves the curves discounting on it and no others; a
-survival block reads the curve its default swaps discount on, `Discount_Rate` else the currency's
-own, and no other. `wanted=` narrows to what named factors stand on, so a calculation bootstraps
-only what its book reads. **Held by**
+survival or inflation block reads the curve its swaps discount on, `Discount_Rate` else the
+currency's own, and no other. `wanted=` narrows to what named factors stand on, so a calculation
+bootstraps only what its book reads. **Held by**
 `test_service.py::test_a_moved_curve_re_solves_what_reads_it_and_nothing_else`,
-`test_simm.py::test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_other`.
+`test_simm.py::test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_other`,
+`test_inflation_prices.py::test_a_curve_move_re_solves_the_inflation_curve_solved_on_it_and_no_other`.
 
 **Outside `bootstrap`**, the swaption residual (`calc_loss`) and the curve ride (`propagate`,
 `plan_key`) complete their block from the declarations, so the declared default is the fallback
@@ -338,6 +340,61 @@ name, and the seed's conventions beside the rows. **Held by**
 `test_credit_prices.py::test_the_terminal_authors_the_blocks_the_family_solves`,
 `test_credit_prices.py::test_a_re_tick_is_a_values_patch_and_a_row_changing_its_type_a_new_plan`,
 `test_credit_prices.py::test_a_seed_entry_without_its_conventions_refuses_by_name`.
+
+## `InflationRatePrices` — an inflation curve solved from zero-coupon swap breakevens {#inflationrateprices}
+
+The residual, solver and refusals are on [Inflation](../bootstrapping/inflation.md#inflationrate).
+
+**A row is a tenor on the block's standard swap.** The block declares what its quotes are on -
+`Currency`, `Discount_Rate` (the currency's own where blank), `Price_Index`, and the reference rule
+`Months_Lag` and `Reference_Type`, three months interpolated by convention and spelt as a
+`YieldInflationCashflowListDeal`'s `Index_Reference`, which `reference_rule` reads - and
+`InflationRate.contracts` authors each used row as a `StructuredDeal` over the engine's own two
+legs, its `Tenor` whole years from the base date: an inflation list row paying a million grown by
+the index ratio from the base date's reference to the maturity's, against a compounding
+`CFFixedInterestListDeal` paying the million times $(1+b)^T$, both on the maturity. The row's own
+`Deal` replaces any term of the structure, its legs under `Children` included. The plan names no
+date, so a tick on a later day is a values patch. **Held by**
+`test_inflation_prices.py::test_the_bootstrap_recovers_the_inflation_curve_its_breakevens_came_from`,
+`::test_the_linker_on_the_solved_curve_marks_as_on_the_curve_it_came_from`.
+
+**The quote lands on a column the overlay carries.** `Breakeven` is the swap's fixed rate in
+percent, written by `CFFixedInterestListDeal.quote` on every annual row, a column affine in the
+quote; the list's own compounding raises it to the power on the tape. A fixed amount of
+$(1+b)^T$ would not be affine, and `_carry_quotes` would carry a one-percent secant for the
+derivative. **Held by** `test_inflation_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference`.
+
+**The knot rule, on the index's clock.** One knot per used quote, at the latest month its final
+reference reads with a weight, on the block's `Day_Count` from the index's `Last_Period_Start`, the
+origin `pv_index_cashflows` projects from, so the system is square and lower triangular. The
+curve is flat below its first knot as the curve family's is: at the last print the growth is one
+whatever the rate, so no knot is held where a survival curve holds its zero hazard. A quote whose
+final reference reads only printed months is a stated level that identifies nothing and refuses
+by name, as does a `Price_Index` the market carries no `PriceIndex` for. **Held by**
+`test_inflation_prices.py::test_a_quote_referencing_only_printed_months_is_refused_by_name`,
+`::test_a_price_index_the_market_does_not_carry_is_refused_by_name`.
+
+**The solve is the curve family's**, seeded at each breakeven as a continuous rate, $\log(1+b)$.
+The family `reads` `InterestRate` and `PriceIndex`, so `bootstrap_order` solves the curves it
+discounts on first and a patched print re-solves it. Where the base reference is the last print
+and the final one reads one month, the root is the closed form $r(\tau)=T\log(1+b)/\tau$; under
+the declared three-month interpolated rule the base reference reads May and June, 0.187% under the
+last print on the gate's world, and the closed form misses the solve by up to 2.0e-4. **Held by**
+`test_inflation_prices.py::test_the_bootstrap_recovers_the_inflation_curve_its_breakevens_came_from`,
+`::test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it`.
+
+**The discount curve does not reach the curve.** Both legs pay on one day, so the discount factor
+multiplies the residual and a swap prices the index ratio whatever it discounts on. Under
+`Quote_Sensitivity` the solve reads the discount curve connected, as the credit family's does, and
+its term in the chain rule is the residual itself, zero at the root: a swap quote's delta on a
+linker is the linker's own discounting. **Held by**
+`test_inflation_prices.py::test_a_linker_reports_its_quote_delta_beside_its_factor_greek`,
+`::test_a_linkers_delta_to_a_swap_quote_is_both_curves_refitted`. There is no
+`Quote_Propagation`, as the credit family declares none, and no emitter: a block is authored by
+hand. Under `SIMM` a basis point of inflation is one on the breakevens the curve is defined by,
+which here are the block's quotes: every one a basis point up and the block re-solved, one row
+([Calc Lifecycle](calc_lifecycle.md)). **Held by**
+`test_simm.py::test_a_quoted_inflation_curve_moves_on_its_blocks_breakevens_re_solved`.
 
 ## `LogVar2FJModelPrices` — a smile fit with a forward-skew term {#logvar2fj}
 
@@ -565,8 +622,7 @@ snapshots survive a save.
 ## Open
 
 The surrogate vanilla pricer ([limitations](../limitations.md#the-calibration)); the outright that
-cannot carry a quote derivative ([before 0.5.0](roadmap.md#before-0-5-0)); a survival curve's quote
-derivative stopping at its own quotes ([above](#survivalprobprices)); the tick, which re-prices
-curve blocks through `service.curve_quotes` and no credit block; whether a missing
+cannot carry a quote derivative ([before 0.5.0](roadmap.md#before-0-5-0)); the tick, which re-prices
+curve blocks through `service.curve_quotes` and no credit or inflation block; whether a missing
 `Prices` refuses in process, the nominal leverage weight, the correlation as a leaf
 ([desk decisions](../limitations.md#decisions-waiting-on-the-desk)).

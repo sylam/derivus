@@ -3742,7 +3742,8 @@ class SIMM(Calculation):
     a curve, split linearly between the vertices either side of its maturity, the survival curves
     solved on the curve re-solved on it; a basis point of spread on each quote of a survival curve,
     its block re-solved, split between the credit vertices either side of its tenor; a basis point
-    on every node of a cross-currency basis and on every node's breakeven of an inflation curve; a
+    on every node of a cross-currency basis; a basis point on the breakevens an inflation curve is
+    defined by, the quotes of the block that solves it re-solved, else its nodes' own, one row; a
     percent of a spot, of a currency's price in the calculation currency, or of every price factor
     of a commodity at once, its spot and each delivery of its forward curve, the factors a mapping
     states under one qualifier being one commodity; and a point of vol in a TENT on each vertex -
@@ -3766,7 +3767,7 @@ class SIMM(Calculation):
     """
     #: The CRIF risk types the run moves: the risk class each belongs to and how its factor moves -
     #: a basis point on each benchmark quote of the curve's block, on every node of a basis or on
-    #: every node's breakeven of an inflation curve, a basis point of spread on each quote of a
+    #: the breakevens an inflation curve is defined by, a basis point of spread on each quote of a
     #: survival curve's block, a percent of a currency's price in the calculation currency, of a
     #: spot or of a commodity's price factors together, a point of vol per vertex; the curve
     #: benchmarks quoted as a price, which no basis point moves; and per `Surface_Type` the block a
@@ -4049,13 +4050,16 @@ class SIMM(Calculation):
         curves = bootstrappers.InterestRate
         families = {family.market_factor_type: family for family in (
             curves, bootstrappers.SurvivalProb)}
+        # an inflation curve moves on all its breakevens at once, one row, so its block lists none
+        admitted = set(families) | {bootstrappers.InflationRate.market_factor_type}
         writers = bootstrap_writers(prices, walk)
-        others = sorted(name for name in writers if utils.check_rate_name(name)[0] not in families)
+        others = sorted(name for name in writers if utils.check_rate_name(name)[0] not in admitted)
         if others:
             raise ValueError('SIMM: trade {} reads what {} writes, and a move here re-solves the '
                              'curve and credit families alone'.format(reference, ', '.join(others)))
         moves, base_date = [], self.config.params['System Parameters']['Base_Date']
-        for block in sorted(bootstrap_precedents(prices, writers)):
+        for block in sorted(name for name in bootstrap_precedents(prices, writers)
+                            if utils.check_rate_name(name)[0] in families):
             rate = utils.check_rate_name(block)
             family = families[rate[0]]
             factor = utils.check_tuple_name(utils.Factor(family.__name__, rate[1:]))
@@ -4101,8 +4105,11 @@ class SIMM(Calculation):
                 raise ValueError('SIMM: {} maps to Risk_IRCurve, which moves a curve by its '
                                  'quotes, and no InterestRatePrices block quotes it - map it null '
                                  'where it rides on its parent'.format(factor))
-            elif kind in ('parallel', 'inflation', 'spot') or (
-                    kind == 'fx' and rate[1] != currency):
+            elif kind == 'inflation':
+                # the breakevens a curve is defined by are its block's quotes where one solves it
+                moves.append(self.Bump(factor, stated, [('', 1.0)], (kind, factor) + tuple(
+                    sorted(bootstrap_writers(prices, {factor}) & self.claimed))))
+            elif kind in ('parallel', 'spot') or (kind == 'fx' and rate[1] != currency):
                 moves.append(self.Bump(factor, stated, [('', 1.0)], (kind, factor)))
             elif kind == 'commodity' and not any(move.coordinates == stated for move in moves):
                 # the price factors a mapping states under one qualifier are one commodity
@@ -4132,6 +4139,8 @@ class SIMM(Calculation):
             curve = factors[name]['Curve']
             return {name: dict(factors[name], Curve=utils.Curve(
                 curve.meta, curve.array + np.array([0.0, self.params['Rate_Shift'] * 1e-4])))}
+        if kind == 'inflation' and move[2:]:
+            return self.reinflated(name, move[2])
         if kind == 'inflation':
             # each node is a growth rate r whose breakeven, exp(r) - 1, the basis point moves
             curve = factors[name]['Curve']
@@ -4224,6 +4233,23 @@ class SIMM(Calculation):
             solved.append(utils.check_tuple_name(utils.Factor(
                 family.__name__, utils.check_rate_name(block)[1:])))
         return {name: found[name] for name in solved}
+
+    def reinflated(self, name, block):
+        """The inflation curve `name` that `block` solves, solved by its family on the standing
+        curves with every breakeven a basis point up - nothing on the config written."""
+        from . import bootstrappers
+
+        config, family = self.config, bootstrappers.InflationRate
+        solver = bootstrappers.construct_bootstrapper(
+            family.__name__, config.params['Bootstrapper Configuration'][family.__name__])
+        instrument = dict(solver.param, **config.params['Market Prices'][block]['instrument'])
+        instrument['Points'] = [dict(point, Quoted_Market_Value=point['Quoted_Market_Value'] +
+                                     self.params['Rate_Shift'] * 0.01)
+                                for point in instrument['Points']]
+        found = dict(config.params['Price Factors'])
+        solver.solve(block, instrument, found, config.params['Price Factor Interpolation'],
+                     config.params['System Parameters']['Base_Date'], config.holidays)
+        return {name: found[name]}
 
     def base(self):
         """`[(value, skipped)]` per trade: the book compiled once as a base valuation compiles it,

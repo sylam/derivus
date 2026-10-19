@@ -16,6 +16,7 @@ the family's:
 | --- | --- | --- |
 | `InterestRatePrices` | damped Newton on a square root | [implicit function theorem](#the-ift-contract), exact |
 | `SurvivalProbPrices` | the same solve, a block at a time | the same theorem, exact, chained into its discount curve's |
+| `InflationRatePrices` | the same solve, a block at a time | the same theorem, exact; its discount curve's term is zero at the root |
 | `HullWhite2FactorModelPrices` | least squares, `Objective` `Analytic` by default | Gauss–Newton at a [stationary point](#the-stationarity-contract) |
 | `LogVar2FJModelPrices` | staged least squares | the same node, `Fit_Mode: Global` only |
 | `GBMAssetPriceTSModelPrices` | an [explicit map](#the-closed-form-map) | autograd through a twin |
@@ -142,8 +143,8 @@ the last Newton step was taken at the iterate before it. Every cotangent at once
 `calibration_jacobian`, the operator [Quote Propagation](quote_propagation.md) rides.
 
 **A connected constant** is a factor another family solved on the tape, which `Config.bootstrap`
-hands each family as `Family.connected`: a residual reading one, a survival curve's discount curve,
-reads it through its graph, and the node takes it as a further input $c$ and returns
+hands each family as `Family.connected`: a residual reading one, a survival or inflation curve's
+discount curve, reads it through its graph, and the node takes it as a further input $c$ and returns
 $-(\partial F/\partial c)^\top w$ for it, so autograd carries the chain rule on through the solve
 that wrote $c$, the two solves in turn and never one system.
 
@@ -426,6 +427,10 @@ Each corner independent of the machinery it checks:
 | credit | $d\theta/dq$ against re-bootstraps, 1e-8 | `test_credit_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference` |
 | credit | `dV/dq` against the chain rule and a refitted deal, 1e-8 | `test_credit_prices.py::test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_greek` |
 | credit | a swap quote's `dV/dq` against both curves refitted, 1e-6 | `test_credit_prices.py::test_a_default_swaps_delta_to_a_swap_quote_carries_the_survival_curves_re_solve` |
+| inflation | round trip, 1e-10; the closed form where it is the root | `test_inflation_prices.py::test_the_bootstrap_recovers_the_inflation_curve_its_breakevens_came_from` |
+| inflation | $d	heta/dq$ against re-bootstraps, 1e-8 | `test_inflation_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference` |
+| inflation | `dV/dq` against the chain rule and a refitted linker, 1e-8 | `test_inflation_prices.py::test_a_linker_reports_its_quote_delta_beside_its_factor_greek` |
+| inflation | a swap quote's `dV/dq` against both curves refitted, 1e-6 | `test_inflation_prices.py::test_a_linkers_delta_to_a_swap_quote_is_both_curves_refitted` |
 | HW2F | θ\* and deltas pinned, 1e-6 | `test_hw2f_analytic.py::test_the_four_quote_job_document_pins_theta_and_its_quote_deltas` |
 | LogVar2FJ | factor hex-identical, switch on or off | `test_logvar2fj_json.py::test_the_quote_switch_writes_the_same_factor_and_publishes_its_leaves` |
 | FX vol | per-pillar `dV/dq`, 2% | `test_structures.py::test_each_pillars_charge_is_what_repricing_that_pillar_costs` |

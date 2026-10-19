@@ -106,14 +106,22 @@ its forward curve (`ForwardPrice`) at once, one Risk_Commodity row a trade and n
 curve (`ForwardRate`) is a rate, a basis (`ObservedBasis`) cross-class, and a reference price, the
 delivery a fixing reads, and a sampling rule carry no price, so each is mapped null: a future on
 the platinum chain's CME level moves by its LME spot alone, a percent of the spot 1.0045% of the
-level, the basis held. A basis point of inflation is one on the breakeven of every node of the
-trade's `InflationRate` curve, each node a continuously compounded growth rate r whose breakeven is
-exp(r) - 1, so the node is written r + log1p(s exp(-r)), exact on the quote with nothing
-re-solved, the engine having no inflation family; an index's prints (`PriceIndex`) are mapped
-null. ISDA's Risk_InflationVol and Risk_CreditVol name vols the engine has no factor type for, and
-a mapping naming either is refused as one naming any risk type no move writes. **Held by**
+level, the basis held. A basis point of inflation is one on the breakevens the trade's
+`InflationRate` curve is defined by, one row: where an `InflationRatePrices` block solves the
+curve, its quotes, every one a basis point up and the block re-solved by its family (`reinflated`,
+nothing on the config written), the block a writer `bumps` admits and lists no quote of; where none
+does, the nodes' own, each a continuously compounded growth rate r whose breakeven is exp(r) - 1,
+written r + log1p(s exp(-r)). An index's prints (`PriceIndex`) are mapped null. The two agree where
+the curve is its quotes' strip, each knot its swap's whole years from the last print and the base
+reference that print, and part elsewhere: on the inflation module's six swaps a linker's row is
+4.8266 on the curve its block solves and 4.5499 on that curve pasted under the three-month
+interpolated rule, 4.5467 against 4.5499 under a single two-month one. ISDA's Risk_InflationVol and
+Risk_CreditVol name vols the engine has no factor type for, and a mapping naming either is refused
+as one naming any risk type no move writes. **Held by**
 `tests/test_simm.py::test_a_commodity_row_is_every_price_of_the_commodity_a_percent_up`,
 `::test_an_inflation_row_is_a_basis_point_on_every_breakeven_of_its_curve`,
+`::test_a_quoted_inflation_curve_moves_on_its_blocks_breakevens_re_solved`,
+`::test_an_inflation_curve_that_is_its_own_strip_moves_alike_quoted_or_pasted`,
 `::test_a_risk_type_no_factor_of_the_engine_carries_is_refused_by_name`.
 
 The calculation's `Currency` is required: no default names the currency a book reports in. Before

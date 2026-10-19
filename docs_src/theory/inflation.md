@@ -42,4 +42,6 @@ neither is the InflationRate factor's **Reference_Name**.
 
 Inflation rate price factors are similar to interest rate price factors [@brigo2006] but have an associated price
 index factor (**Price_Index**); their curve is the growth rate $r_I$ above, interpolated as an interest
-rate curve ([Asset Pricing](asset_pricing.md#interest-and-inflation-rate-interpolation)).
+rate curve ([Asset Pricing](asset_pricing.md#interest-and-inflation-rate-interpolation)). An
+`InflationRatePrices` block solves the curve from the index's zero-coupon swap breakevens, a swap
+pricing $I_R(T)/I_R(t_0)=(1+b)^T$ whatever it discounts on ([Bootstrapping](../bootstrapping/inflation.md)).

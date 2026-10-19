@@ -3116,6 +3116,12 @@ class YieldInflationCashflowListDeal(Deal):
                     yield ('Cashflows.Items[{}]: supply {}_Reference_Value or '
                            '{}_Reference_Date'.format(i, ref, ref))
 
+    def reference_rule(self):
+        """`(months_lag, interpolated)`: how many months back an index reference reads, and whether
+        it straddles two prints. Rule and lag stay separate, so any lag is valid."""
+        reference = self.field['Index_Reference']
+        return int(reference['Months_Lag']), reference['Reference_Type'] == 'Interpolated'
+
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
         field = {
@@ -3143,10 +3149,7 @@ class YieldInflationCashflowListDeal(Deal):
         }
 
         inflation_factor, index_factor = get_inflation_index_objects(field['Index'], field['PriceIndex'], all_factors)
-        # rule and lag stay separate: any lag is valid, and the pricer needs only how many index
-        # observations a cashflow carries
-        interpolated = self.field['Index_Reference']['Reference_Type'] == 'Interpolated'
-        months_lag = int(self.field['Index_Reference']['Months_Lag'])
+        months_lag, interpolated = self.reference_rule()
         field_index['Resets_Per_Cashflow'] = 2 if interpolated else 1
 
         field_index['Cashflows'], field_index['Base_Resets'], field_index['Final_Resets'] = utils.TensorCashFlows.index(

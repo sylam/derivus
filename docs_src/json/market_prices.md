@@ -9,6 +9,7 @@ reads refuses the bootstrap by name.
 |---|---|---|---|
 | `InterestRatePrices` | a zero curve, holding its benchmarks (`DepositDeal`, `FRADeal`, `SwapInterestDeal`, `StructuredDeal`, `FXForwardDeal`) at par | `Points` | `InterestRate.<name>` |
 | `SurvivalProbPrices` | a name's survival curve, holding its standard default swaps (`DealDefaultSwap`) at par | `Points` | `SurvivalProb.<name>` |
+| `InflationRatePrices` | an index's inflation curve, holding its zero-coupon swaps (a `StructuredDeal` of an inflation and a fixed cashflow list) at par | `Points` | `InflationRate.<name>` |
 | `FXVolPrices` | an FX smile surface from ATM, risk-reversal and butterfly quotes | `Points` | `FXVol.<name>` |
 | `GBMAssetPriceTSModelPrices` | the vol curve of `GBMAssetPriceTSModelImplied`, off an ATM column | none: the named surface's ATM column | `GBMAssetPriceTSModelParameters.<name>` |
 | `HullWhite2FactorModelPrices` | the two-factor Hull-White model to ATM swaption vols | `Instrument_Definitions` | `HullWhite2FactorModelParameters.<name>` |
@@ -145,6 +146,40 @@ after the curves it discounts on.
          "Quoted_Market_Value": -0.7, "Descriptor": "GS 1Y", "Deal": {}},
         {"Use": "Yes", "Tenor": "7Y", "DealType": "DealDefaultSwap", "Quote_Type": "Par_Spread",
          "Quoted_Market_Value": 92.0, "Descriptor": "GS 7Y", "Deal": {}}
+      ]
+    },
+    "Children": []
+  }
+}
+```
+
+## InflationRatePrices
+
+Each `Points` row is a `Tenor` in whole years and the `Breakeven` a zero-coupon swap on the block's
+`Price_Index` is quoted at, in percent. The swap is the block's standard one - from the base date
+to the tenor, the index ratio from the base date's reference to the maturity's on a million against
+the million compounded annually at the breakeven, $(1+b)^T$, both paid at maturity and discounted
+on `Discount_Rate` (the currency's own where blank) - its references read `Months_Lag` months back,
+`Interpolated` between two months' prints or `Single`, three months interpolated where the block
+states neither; the row's `Deal` replaces any term of the structure, its legs under `Children`
+included. The solved curve carries one knot per used quote, at the latest month its final
+reference reads, on `Day_Count` from the index's last print; it is solved after the curves it
+discounts on. A row whose reference reads only printed months, and an index the market carries no
+`PriceIndex` for, refuse by name.
+
+```json
+{
+  "InflationRatePrices.CPI": {
+    "instrument": {
+      "Currency": "USD",
+      "Price_Index": "CPI",
+      "Months_Lag": 3,
+      "Reference_Type": "Interpolated",
+      "Points": [
+        {"Use": "Yes", "Tenor": "1Y", "DealType": "StructuredDeal", "Quote_Type": "Breakeven",
+         "Quoted_Market_Value": 2.41, "Descriptor": "CPI 1Y", "Deal": {}},
+        {"Use": "Yes", "Tenor": "10Y", "DealType": "StructuredDeal", "Quote_Type": "Breakeven",
+         "Quoted_Market_Value": 2.38, "Descriptor": "CPI 10Y", "Deal": {}}
       ]
     },
     "Children": []

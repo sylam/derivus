@@ -34,6 +34,7 @@ from derivus import bootstrappers, calculation, utils
 from derivus.config import CustomJsonEncoder, ModelParams
 
 import test_credit_prices as credit
+import test_inflation_prices as inflation
 import trial_commodity
 import trial_rates
 from rates_world import BASE
@@ -847,6 +848,98 @@ def test_an_inflation_row_is_a_basis_point_on_every_breakeven_of_its_curve():
     up, down = (solved(holding(VALUATION, [LINKER], extra=breakeven(sign * shift * 1e-4)))[
         'LINKER'] for sign in (1, -1))
     assert found['Amount'].item() == pytest.approx((up - down) / (2 * shift), rel=1e-6)
+
+
+#: The inflation module's USD curve quoted on its own knots, `(name, block)`.
+INFLATION_CURVE = bootstrappers.knot_prices('USD', inflation.FACTORS, ModelParams(), inflation.B,
+                                            {})
+
+
+def linker(prices, factors=None, entries=inflation.FAMILIES):
+    """The SIMM results of the inflation module's linker under a netting set of its own, on its
+    world with `prices` beside the USD curve's block, `factors` over it and `entries` configured."""
+    document = inflation.document([], factors, dict([INFLATION_CURVE], **prices), entries, SIMM)
+    document['Calc']['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+        'Collateralized': 'False', 'Post_Regulations': 'SEC', 'Collect_Regulations': 'SEC'}},
+        'Children': [{'Instrument': {'.Deal': inflation.LINKER}}]}]
+    return inflation.loaded(document).run_job()[1]['Results']
+
+
+def re_inflated(block):
+    """The inflation module's linker on the curve `block` solves with every breakeven a basis point
+    up, less its mark on the curve `block` solves, and that curve."""
+    found = []
+    for shift in (0.0, 0.01):
+        moved = copy.deepcopy(block)
+        for point in moved['instrument']['Points']:
+            point['Quoted_Market_Value'] += shift
+        curve = inflation.bootstrapped({inflation.BLOCK: moved}).current_cfg.params[
+            'Price Factors'][inflation.CURVE]
+        found.append((inflation.marks([inflation.LINKER], {inflation.CURVE: curve})[0]['LINKER'],
+                      curve))
+    return found[1][0] - found[0][0], found[0][1]
+
+
+def inflation_row(results):
+    crif = results['CRIF']
+    return crif[crif['RiskType'] == 'Risk_Inflation']['Amount'].item()
+
+
+def pasted_linker(curve):
+    """`linker` on `curve` pasted, no inflation block and the curve family alone configured."""
+    return linker({}, {inflation.CURVE: curve}, {'InterestRate': {'Prices': 'InterestRate'}})
+
+
+@pytest.mark.parametrize('rule', [inflation.INTERPOLATED, inflation.SINGLE])
+def test_a_quoted_inflation_curve_moves_on_its_blocks_breakevens_re_solved(rule):
+    """THE BREAKEVENS A CURVE IS DEFINED BY ARE ITS BLOCK'S QUOTES. The inflation module's linker on
+    its six breakevens, both families configured: the block writes the curve and lists no quote of
+    its own, so the linker takes its discount curve's five quote moves and one inflation move,
+    every breakeven of the block a basis point up and the block re-solved by its family. Its
+    Risk_Inflation row is the linker revalued on that curve, 4.8266 under the three-month
+    interpolated rule and 4.5467 under the single two-month one, measured to the bit on both and
+    held to 1e-8. Its rate rows, -2.158, -2.750 and -0.0056, and its trade report are to the bit
+    those on the same curve pasted, a curve quote's ride re-solving no inflation curve, while the
+    pasted curve's row, its nodes' own breakevens moved, is 4.5499 under either rule: the re-solve
+    6.1% over it under the interpolated rule, whose 1Y reference reads May below its knot and whose
+    base reference is May's and June's prints, and 7.0e-4 under it under the single rule, whose 2Y
+    knot is 731 days on.
+
+    KILLING MUTATIONS: the quoted curve moved by its nodes, 4.5499 against 4.8266 and 4.5467; the
+    block refused as a writer, the run refusing the linker by name, `SIMM: trade LINKER reads what
+    InflationRatePrices.INFL writes`.
+    """
+    block = inflation.block(rule)
+    standing = linker({inflation.BLOCK: block})
+    moved, curve = re_inflated(block)
+    assert abs(inflation_row(standing) / moved - 1.0) < 1e-8, (inflation_row(standing), moved)
+    assert standing['Trades']['Moves'].item() == 6 and not standing['Trades']['Skipped'].item()
+
+    pasted = pasted_linker(curve)
+    rates = {name: dict(results, CRIF=results['CRIF'][results['CRIF']['RiskType'] != (
+        'Risk_Inflation')]) for name, results in (('standing', standing), ('pasted', pasted))}
+    assert list(rates['standing']['CRIF']['RiskType']) == ['Risk_IRCurve'] * 3
+    identical(rates['standing'], rates['pasted'])
+    assert abs(inflation_row(pasted) - inflation_row(standing)) > 1e-4 * abs(moved)
+
+
+def test_an_inflation_curve_that_is_its_own_strip_moves_alike_quoted_or_pasted():
+    """Where the curve IS the strip its quotes define - one 1Y swap under the single two-month
+    rule, its base reference the last print and its knot a whole year from it, so its growth rate
+    is log(1 + b) - the block's breakeven a basis point up and re-solved and the pasted curve's
+    node moved on its own breakeven are one move: the linker's CRIF and trade report on the
+    bootstrapped curve are to the bit what it writes on that curve pasted, Risk_Inflation 4.5454.
+
+    Killing mutation: the pasted node moved a basis point of growth rate, r + s, rather than of its
+    breakeven - its row 4.6421, 2.1% over the re-solve.
+    """
+    strip = inflation.block(inflation.SINGLE)
+    strip['instrument']['Points'] = strip['instrument']['Points'][:1]
+    standing = linker({inflation.BLOCK: strip})
+    _, curve = re_inflated(strip)
+    assert np.array_equal(curve['Curve'].array[:, 0], [1.0]), curve['Curve'].array
+    identical(standing, pasted_linker(curve))
 
 
 @pytest.mark.parametrize('risk_type', ['Risk_InflationVol', 'Risk_CreditVol'])

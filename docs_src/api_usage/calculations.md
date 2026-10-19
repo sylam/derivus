@@ -25,7 +25,8 @@ they part on [Calc Lifecycle](../developer/calc_lifecycle.md#valuation-modes).
   space a point of vol on one vertex's expiry slice, its Risk_IRVol rows on the option's expiry,
   the underlying tenor summed over, a commodity's spot and forward curve a percent together, its
   Risk_Commodity row, and its smile a point per vertex, its Risk_CommodityVol rows, and an
-  inflation curve a basis point on every node's breakeven, its Risk_Inflation row. The engine has
+  inflation curve a basis point on the breakevens it is defined by - its block's quotes, re-solved,
+  where one solves it, its nodes' own where none does - its Risk_Inflation row. The engine has
   no factor type for ISDA's Risk_InflationVol or Risk_CreditVol, and a mapping naming either is
   refused. The book is compiled once as a `BaseValuation` compiles it and priced again per move
   with the moved factors written into it, each trade read off its own structure, reading the
