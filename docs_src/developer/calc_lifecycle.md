@@ -80,6 +80,20 @@ reads that no configured family solves is refused by name, as an unquoted curve 
 `::test_a_default_swap_on_a_survival_curve_no_quotes_solve_is_refused_by_name`,
 `::test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_other`.
 
+A point of vega is a vertex's tent over a vol surface's expiry pillars, the surface given a pillar
+at each vertex expiry it lacks off its own interpolation, a Skew or an SVI one only past its ends
+(`Factor2D.augmented`). A rate vol space, `InterestYieldVol` or `InterestRateVol`, is written as
+the grid the engine reads, every moneyness, expiry and underlying tenor, with a slice at each vertex
+expiry it lacks read off that grid linearly in expiry and flat past either end
+(`Factor3D.augmented`), so it prices as it stood; a vertex moves every node of its slice, and a
+swaption's or a caplet's Risk_IRVol rows land on its expiry, the underlying tenor summed over, each
+row the difference of two full compiles on the space stating those slices. A factor mapped to a
+vega risk type that is no vol surface is refused by name: a model's parameters move by their
+family's fit, which a move re-solves for curves and credit alone.
+**Held by** `tests/test_simm.py::test_a_rate_vega_row_is_a_point_on_its_vertex_slice_of_the_space`,
+`::test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood`,
+`::test_a_point_of_vega_on_what_is_no_vol_surface_is_refused_by_name`.
+
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
 judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a

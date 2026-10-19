@@ -205,8 +205,9 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
     as the rows of a trade reading it alone of its currency pin it, and left unstated where none
     does, a rate row carrying no sub-curve being no row; a child
     of a curve that is a basis spread is Risk_XCcyBasis in its currency and any other rides its
-    parent, null; an FX rate is Risk_FX. A structure's product class is its trade's rows', by
-    reference, and another trade's by instrument type where every trade of the type carries one."""
+    parent, null; a rate vol surface is Risk_IRVol in the currency of the curve it is named for; an
+    FX rate is Risk_FX. A structure's product class is its trade's rows', by reference, and another
+    trade's by instrument type where every trade of the type carries one."""
     ir = next(iter(parameters['horizons'].values()))['ir']
     groups, buckets = ir['ccy']['Weights'], {group: bucket for bucket, group in ir[
         'bucket_vol_map'].items()}
@@ -261,6 +262,11 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
                 return 'basis', {'RiskType': 'Risk_XCcyBasis',
                                  'Qualifier': factors[factor]['Currency']}, 'a basis spread'
             return 'spread', None, 'a spread riding its parent, which its quotes move'
+        if kind[0] in utils.ThreeDimensionalFactors and (
+                utils.FactorRiskClass[kind[0]] == 'InterestRate'):
+            curve = utils.check_tuple_name(utils.Factor('InterestRate', kind[1:]))
+            return 'vol', {'RiskType': 'Risk_IRVol', 'Qualifier': factors[curve]['Currency']}, \
+                'the currency of ' + curve
         if kind[0] == 'FxRate':
             return 'fx', {'RiskType': 'Risk_FX', 'Qualifier': kind[1]}, ''
         if kind[0] in UNNAMED:

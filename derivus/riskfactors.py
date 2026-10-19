@@ -627,6 +627,24 @@ class Factor3D(object):
         """Gets the tenor points stored in the Surface attribute"""
         return np.unique(self.param['Surface'].array[:, self.TENOR_INDEX])
 
+    @classmethod
+    def vol_point(cls, block, point):
+        """What a point of vol adds to the vol column a vol space `block` holds: the point."""
+        return point
+
+    @classmethod
+    def augmented(cls, block, years):
+        """`block`, a vol space, written as the grid the engine reads - every moneyness, expiry and
+        tenor its nodes name - with a slice at each expiry of `years` it lacks, read off that grid
+        node by node linearly in expiry and flat past either end, so it prices as it stood."""
+        space = cls(block)
+        expiry = np.union1d(space.expiry, years)
+        vols = np.apply_along_axis(lambda node: np.interp(expiry, space.expiry, node), 1,
+                                   space.vols.reshape(space.tenor.size, space.expiry.size, -1))
+        return dict(block, Surface=utils.Curve(block['Surface'].meta, [
+            [x, t, tenor, vol] for (tenor, t, x), vol in zip(
+                itertools.product(space.tenor, expiry, space.moneyness), vols.ravel())]))
+
     def get_vols(self):
         """Uses flat extrapolation along moneyness and then linear interpolation along expiry"""
         vols = []

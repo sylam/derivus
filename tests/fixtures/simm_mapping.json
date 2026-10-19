@@ -2,6 +2,7 @@
 	"Product_Class": {
 		"Instruments": {
 			"SwapInterestDeal": "RatesFX",
+			"CapDeal": "RatesFX",
 			"FXOptionDeal": "RatesFX",
 			"FXExtendableForwardDeal": "RatesFX",
 			"QEDI_CustomAutoCallSwap": "Equity",
@@ -101,11 +102,17 @@
 			"FRTB_SA": null
 		},
 		"InterestYieldVol.USD-OIS": {
-			"SIMM": null,
+			"SIMM": {
+				"RiskType": "Risk_IRVol",
+				"Qualifier": "USD"
+			},
 			"FRTB_SA": null
 		},
 		"InterestRateVol.USD-OIS": {
-			"SIMM": null,
+			"SIMM": {
+				"RiskType": "Risk_IRVol",
+				"Qualifier": "USD"
+			},
 			"FRTB_SA": null
 		},
 		"InterestRate.USD": {

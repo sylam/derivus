@@ -3749,11 +3749,13 @@ class SIMM(Calculation):
     its own expiry and the rows sum to the parallel move. A Skew or an SVI surface gains a pillar
     only past its ends (`Factor2D.augmented`), so a vertex moves the pillars its tent reaches and an
     option expiring between two pillars has its vega land on the vertices whose tents reach them.
-    Where the rows land - risk type, qualifier, bucket, labels - and a trade's product class are the
-    bank's `Mapping`, held to `utils.FactorRiskClass`; the rate and vol vertices are the regime's
-    `Parameters`, the credit vertices the methodology's; the regimes margin is posted and collected
-    under are the agreement's own terms, declared on the netting set. A shift other than ISDA's is
-    scaled to it.
+    A rate vol space gains a slice at each vertex expiry it lacks, every moneyness and underlying
+    tenor of its grid (`Factor3D.augmented`), so a swaption's or a caplet's vega lands on its own
+    expiry, the underlying tenor summed over. Where the rows land - risk type, qualifier, bucket,
+    labels - and a trade's product class are the bank's `Mapping`, held to `utils.FactorRiskClass`;
+    the rate and vol vertices are the regime's `Parameters`, the credit vertices the methodology's;
+    the regimes margin is posted and collected under are the agreement's own terms, declared on the
+    netting set. A shift other than ISDA's is scaled to it.
 
     MARKET PRICES ARE A CONDITION: an interest rate or a survival curve a trade reads that no
     configured family bootstraps, and that is no child of a curve one does, refuses by name. A leg
@@ -3765,13 +3767,15 @@ class SIMM(Calculation):
     #: basis point of spread on each quote of a survival curve's block, a percent of a currency's
     #: price in the calculation currency or of a spot, a point of vol per vertex; the curve
     #: benchmarks quoted as a price, which no basis point moves; and per `Surface_Type` the block a
-    #: point of vega moves and the column its expiry is in, the level being the last - a Skew smile
-    #: is added to its ATM level, so moving the level holds its skew, and the factor owns what a
-    #: point adds to a level (`Factor2D.vol_point`).
+    #: point of vega moves and the column its expiry is in, the level being the last, a rate vol
+    #: space stating none and read as Explicit, its expiry the second of its four columns - a Skew
+    #: smile is added to its ATM level, so moving the level holds its skew, and the factor owns what
+    #: a point adds to a level (`Factor2D.vol_point`, `Factor3D.vol_point`).
     MOVES = {'Risk_IRCurve': ('InterestRate', 'quote'),
              'Risk_XCcyBasis': ('InterestRate', 'parallel'),
              'Risk_FX': ('FX', 'fx'), 'Risk_Equity': ('Equity', 'spot'),
-             'Risk_FXVol': ('FX', 'vega'), 'Risk_EquityVol': ('Equity', 'vega'),
+             'Risk_IRVol': ('InterestRate', 'vega'), 'Risk_FXVol': ('FX', 'vega'),
+             'Risk_EquityVol': ('Equity', 'vega'),
              'Risk_CreditQ': ('Credit', 'cds'), 'Risk_CreditNonQ': ('Credit', 'cds')}
     #: The vertices a credit spread's rows land on, the methodology's: the parameters file weighs
     #: credit by bucket and names none.
@@ -3937,7 +3941,7 @@ class SIMM(Calculation):
 
     def coordinates(self, factor, trade):
         """`factor`'s SIMM coordinates off the mapping, None where it carries no risk factor, held
-        to the engine's risk class of its type."""
+        to the engine's risk class of its type and a vega risk type to a vol surface."""
         if factor not in self.mapping['Factors']:
             raise ValueError('SIMM: trade {} reads {}, and the mapping states nothing for it - '
                              'state its SIMM coordinates, or null where ISDA names no risk factor '
@@ -3949,10 +3953,17 @@ class SIMM(Calculation):
         if kind is None:
             raise ValueError('SIMM: {} maps to {}, and the risk types moved here are {}'.format(
                 factor, stated.get('RiskType'), ', '.join(sorted(self.MOVES))))
-        risk_class = utils.FactorRiskClass[utils.check_rate_name(factor)[0]]
+        factor_type = utils.check_rate_name(factor)[0]
+        risk_class = utils.FactorRiskClass[factor_type]
         if risk_class != kind[0]:
             raise ValueError('SIMM: {} is a factor of the {} class and maps to {}, a risk type of '
                              'the {} class'.format(factor, risk_class, stated['RiskType'], kind[0]))
+        if kind[1] == 'vega' and factor_type not in (
+                utils.TwoDimensionalFactors + utils.ThreeDimensionalFactors):
+            raise ValueError('SIMM: {} maps to {}, and a point of vega moves a vol surface - a '
+                             'model\'s parameters move by their family\'s fit, which a move here '
+                             're-solves for curves and credit alone'.format(
+                                 factor, stated['RiskType']))
         return dict({'Qualifier': '', 'Bucket': '', 'Label1': '', 'Label2': ''}, **stated)
 
     def product_class(self, node):
@@ -4122,7 +4133,7 @@ class SIMM(Calculation):
         rows = block[held].array.copy()
         point = self.params['Vol_Shift'] * 0.01 * np.array([dict(
             utils.vertex_weights(t, self.vertices)).get(move[2], 0.0) for t in rows[:, column]])
-        rows[:, -1] += riskfactors.Factor2D.vol_point(block, point)
+        rows[:, -1] += getattr(riskfactors, utils.check_rate_name(name)[0]).vol_point(block, point)
         return {name: dict(block, **{held: utils.Curve(block[held].meta, rows)})}
 
     def requoted(self, block, position):

@@ -9,7 +9,9 @@ spread riding on the ZAR curve, and a USDZAR surface on three expiry pillars. Th
 five-year benchmark, struck at its own quote, so its PV01 has a hand figure; the option discounts
 on the spread. The vertices are read off a synthetic parameters file carrying no licensed number.
 The credit rows are gated on the credit module's world, its sold default swap on a name whose
-survival curve its CDS quotes solve on a USD curve quoted on its own knots.
+survival curve its CDS quotes solve on a USD curve quoted on its own knots. The rate vega rows are
+gated on an amortising swaption and a cap reading a swaption and a caplet space on the overnight
+curve, sloped in expiry and tenor.
 """
 import copy
 import functools
@@ -442,8 +444,16 @@ def test_a_compo_level_the_base_date_fixes_moves_with_the_pair():
 EXPIRY, MATURITY = BASE + pd.DateOffset(years=2), BASE + pd.DateOffset(years=7)
 COUPONS = [EXPIRY + pd.DateOffset(years=year) for year in range(6)]
 STEPS = utils.DateList({day: 1.5e6 for day in COUPONS[1:-1]})
-YIELD_VOLS = [(m, e, t, 0.2 + 0.02 * e - 0.01 * t) for m in (-0.02, 0.0, 0.02)
-              for e in (0.25, 1.0, 2.0, 5.0) for t in (1.0, 3.0, 5.0, 10.0)]
+
+
+def yield_vols(expiries=(0.25, 1.0, 2.0, 5.0), moved=(), size=0.0):
+    """A rate vol space's quads on slices at `expiries`, sloped in expiry and tenor, each slice at an
+    expiry of `moved` `size` points up on every node."""
+    return [(m, e, t, 0.2 + 0.02 * e - 0.01 * t + 0.01 * size * (e in moved))
+            for m in (-0.02, 0.0, 0.02) for e in expiries for t in (1.0, 3.0, 5.0, 10.0)]
+
+
+YIELD_VOLS = yield_vols()
 SWAPTION_VOLS = {
     'InterestYieldVol.USD-OIS': {'Property_Aliases': None, 'Distribution_Type': 'Lognormal',
                                  'Shift': utils.Percent(0.0), 'Surface': utils.Curve([], YIELD_VOLS)},
@@ -532,6 +542,126 @@ def test_an_amortising_swaptions_vol_moves_with_its_curves():
     largest = max(map(abs, exact.values()))
     assert all(abs(tape.get(('InterestRate.USD-OIS', tenor), 0.0) - delta) < 1e-6 * largest
                for tenor, delta in exact.items()), (tape, exact)
+
+
+#: A two-year cap at 4% on the overnight curve, its quarterly caplets read off the caplet space.
+CAP = {'Instrument': {'.Deal': {
+    'Object': 'CapDeal', 'Reference': 'CAP', 'Currency': 'USD', 'Discount_Rate': 'USD-OIS',
+    'Forecast_Rate': 'USD-OIS', 'Forecast_Rate_Volatility': 'USD-OIS', 'Buy_Sell': 'Buy',
+    'Effective_Date': BASE, 'Maturity_Date': BASE + pd.DateOffset(years=2), 'Cap_Rate': 4.0,
+    'Principal': 1e7}}}
+#: The expiries the two spaces carry a slice at once given one at each vertex inside their pillars.
+SLICES = (0.25, 0.5, 1.0, 2.0, 3.0, 5.0)
+
+
+def sliced(moved=(), size=0.0):
+    """The two spaces stating a slice at each of `SLICES` off their own line in expiry, as the run
+    compiles them, each slice at an expiry of `moved` `size` points up."""
+    return {name: dict(block, Surface=utils.Curve([], yield_vols(SLICES, moved, size)))
+            for name, block in SWAPTION_VOLS.items()}
+
+
+@pytest.fixture(scope='module')
+def rate_vega():
+    """The swaption and the cap under one set, their vega taken at a ten-thousandth of a point."""
+    return holding({'Vol_Shift': 1e-4}, [AMORTISING, CAP], extra=SWAPTION_VOLS).run_job()
+
+
+def test_a_rate_vega_row_is_a_point_on_its_vertex_slice_of_the_space(rate_vega):
+    """ISDA'S RATE VEGA IS THE OPTION'S EXPIRY. A rate vol space slices at 3m, 1y, 2y and 5y; given
+    a slice at each vertex expiry it lacks, every moneyness and underlying tenor read off its grid,
+    each vertex alone moves its own slice, a tent over the slices about it. The payer expiring two
+    years and a day out reads the swaption space between its 2y and 3y slices, so its vega lands on
+    2y and 3y in the split `vertex_weights` gives, 364/365 and 1/365; the cap reads the caplet space
+    at each caplet's expiry, its rows on 3m, 6m, 1y and 2y. At a ten-thousandth of a point each row
+    is the difference of two full compiles of the book on the space stating those slices off its
+    own line, that slice so moved and not, equal to the bit as measured; and the central difference
+    of two such compiles, the slice moved either side, within 5.0e-8 of the swaption's largest row
+    and 2.4e-7 of the cap's, the forward difference's second order, which falls with the shift.
+    Each trade's rows sum to the central difference of a parallel move of every slice, within
+    5.0e-8 and 1.7e-7.
+
+    Killing mutations: the slice moved at the space's first tenor alone - the swaption, reading
+    between its 3y and 5y tenors, writes no vega row; the expiry read off the space's tenor column -
+    the swaption's rows land on 3y and 5y, 4,981.14 and 1,492.09, and the cap's on 1y alone; the
+    split off the credit vertices - the cap's 3m and 6m rows fold into its 1y row, 1,748.33; the
+    space compiled on its own slices - the swaption's vega lands on 2y and 5y, 6,467.32 and 5.91,
+    and the cap's 6m row on its 3m and 1y.
+    """
+    calc, output = rate_vega
+    shift, years = 1e-4, dict(calc.vertices)
+    vega = {trade: rows(output, trade, 'Risk_IRVol') for trade in ('SWPT', 'CAP')}
+    assert set(vega['SWPT']) == {'2y', '3y'} and set(vega['CAP']) == {'3m', '6m', '1y', '2y'}, vega
+    total = sum(vega['SWPT'].values())
+    assert {label: amount / total for label, amount in vega['SWPT'].items()} == pytest.approx(
+        dict(utils.vertex_weights((EXPIRY - BASE).days / 365.0, calc.vertices)), rel=1e-6)
+
+    def worth(moved, size):
+        return solved(holding(VALUATION, [AMORTISING, CAP], extra=sliced(moved, size)))
+
+    base = worth((), 0.0)
+    for label in set(vega['SWPT']) | set(vega['CAP']):
+        up, down = worth((years[label],), shift), worth((years[label],), -shift)
+        for trade, found in vega.items():
+            largest = max(map(abs, found.values()))
+            if label in found:
+                across = (up[trade] - down[trade]) / (2 * shift)
+                assert abs(found[label] - (up[trade] - base[trade]) / shift) < 1e-12 * largest
+                assert abs(found[label] - across) < 1e-6 * largest, (trade, label, across)
+    up, down = worth(SLICES, shift), worth(SLICES, -shift)
+    for trade, found in vega.items():
+        assert sum(found.values()) == pytest.approx((up[trade] - down[trade]) / (2 * shift),
+                                                    rel=1e-6), trade
+
+
+def test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood(rate_vega, tmp_path):
+    """The space the set is compiled on, given a slice at each vertex expiry it lacks off its own
+    grid, linear in expiry and flat past either end, prices the swaption and the cap as the space
+    as authored does, to the bit; and their curve rows are to the bit what a run mapping the two
+    spaces null writes, the vega rows the only rows the spaces' coordinates add.
+
+    Killing mutation: an added slice read off the next slice, as `get_vols` fills an expiry a
+    tenor lacks - the swaption's value 0.054% up and the cap's 0.52%, the cap's 1y rate row 99.40
+    against 102.52.
+    """
+    _, output = rate_vega
+    with open(MAPPING, 'rt', encoding='utf-8') as f:
+        mapping = json.load(f)
+    for name in SWAPTION_VOLS:
+        mapping['Factors'][name]['SIMM'] = None
+    with open(tmp_path / 'mapping.json', 'wt', encoding='utf-8') as f:
+        json.dump(mapping, f)
+    unmapped = holding({'Vol_Shift': 1e-4, 'Mapping': str(tmp_path / 'mapping.json')},
+                       [AMORTISING, CAP], extra=SWAPTION_VOLS).run_job()[1]['Results']
+    plain = solved(holding(VALUATION, [AMORTISING, CAP], extra=SWAPTION_VOLS))
+    crif, trades = output['Results']['CRIF'], output['Results']['Trades'][['TradeID', 'Value']]
+    assert [value.hex() for value in trades['Value']] == [
+        plain[trade].hex() for trade in trades['TradeID']]
+    identical({'CRIF': crif[crif['RiskType'] != 'Risk_IRVol'].reset_index(drop=True),
+               'Trades': trades},
+              {'CRIF': unmapped['CRIF'], 'Trades': unmapped['Trades'][['TradeID', 'Value']]})
+
+
+def test_a_point_of_vega_on_what_is_no_vol_surface_is_refused_by_name(tmp_path):
+    """A point of vega moves a vol surface. A rate vol entering through a calibrated model's
+    parameters moves by its family's fit, which a move here re-solves for curves and credit alone,
+    and no trade a SIMM run values reads one - no deal declares `HullWhite2FactorModelParameters`
+    and a base valuation's walk takes no implied model's factor - so the refusal is held on a factor
+    of the rate class a trade does read: the spread the option discounts on, mapped Risk_IRVol,
+    refused by name.
+
+    Killing mutation: the refusal dropped - the run moves the spread as a surface and its compile
+    raises `AttributeError`, a curve having no `augmented`.
+    """
+    with open(MAPPING, 'rt', encoding='utf-8') as f:
+        mapping = json.load(f)
+    mapping['Factors']['InterestRate.ZAR-JIBAR.ZAR-JIBAR+50BP']['SIMM'] = {
+        'RiskType': 'Risk_IRVol', 'Qualifier': 'ZAR'}
+    with open(tmp_path / 'mapping.json', 'wt', encoding='utf-8') as f:
+        json.dump(mapping, f)
+    with pytest.raises(ValueError, match=r'SIMM: InterestRate\.ZAR-JIBAR\.ZAR-JIBAR\+50BP maps to '
+                                         r'Risk_IRVol, and a point of vega moves a vol surface'):
+        world({'Mapping': str(tmp_path / 'mapping.json')}).run_job()
 
 
 #: The credit module's USD curve quoted on its own knots, `(name, block)`.
@@ -1189,13 +1319,16 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     listed and left unstated, and the run refuses the pair by name and values the rest. The credit
     module's sold default swap on the overnight curve, its name's block quoted off it and its rows
     Risk_CreditQ on ISSUER in bucket 3, pins its survival curve to those coordinates, the module's,
-    and is valued writing its credit rows on them.
+    and is valued writing its credit rows on them. The amortising swaption's two rate vol spaces
+    take Risk_IRVol in the currency of the curve they are named for, USD with no bucket or Label2,
+    the module's, whatever its rows say, and it is valued writing its vega rows on them.
 
     Killing mutations: a pin taken from a trade reading two factors of the type - the pair is
     valued, both indices' deltas landing as one row of 120.68 under EQ and both vegas as one of
     76.43; the bucket read off a hand table of ISDA's groups - ZAR's five rate rows in bucket 3; the
     disagreement applied rather than listed - the option's vega row under ZARUSD; the credit rule
-    dropped - the survival curve listed unpinned and the swap refused by name.
+    dropped - the survival curve listed unpinned and the swap refused by name; the rate vol rule
+    dropped - both spaces listed unpinned and the swaption refused by name, writing no vega row.
     """
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                     'experiments'))
@@ -1230,6 +1363,11 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
                     credit.block('Par_Spread')['instrument'], Discount_Rate='USD-OIS')}}))
     with open(folder / 'CDS.json', 'wt') as f:
         json.dump(named, f)
+    swaption = job(book={'SET-SWPT': ()}, extra=SWAPTION_VOLS)
+    swaption['Calc']['Deals']['Deals']['Children'][0]['Children'] = [
+        json.loads(json.dumps(AMORTISING, cls=CustomJsonEncoder))]
+    with open(folder / 'SWPT.json', 'wt') as f:
+        json.dump(swaption, f)
     rows = pd.DataFrame([dict(crif.iloc[0], TradeID=trade, ProductClass=product, RiskType=risk,
                               Qualifier=qualifier, Bucket=bucket, Label1=label, Label2=sub,
                               Amount=amount, AmountUSD=amount)
@@ -1237,7 +1375,9 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
                              ('PAIR', 'Equity', 'Risk_Equity', 'EQ', '11', '', '', 4.2e3),
                              ('PAIR', 'Equity', 'Risk_EquityVol', 'EQ', '11', '1y', '', -1.3e3),
                              ('CDS', 'Credit', 'Risk_IRCurve', 'USD', '1', '5y', 'OIS', -17.5),
-                             ('CDS', 'Credit', 'Risk_CreditQ', 'ISSUER', '3', '5y', '', -1.6e3))])
+                             ('CDS', 'Credit', 'Risk_CreditQ', 'ISSUER', '3', '5y', '', -1.6e3),
+                             ('SWPT', 'RatesFX', 'Risk_IRCurve', 'USD', '1', '5y', 'OIS', 1.8e3),
+                             ('SWPT', 'RatesFX', 'Risk_IRVol', 'USD', '', '2y', '', 6.5e3))])
     source = pd.concat([crif.assign(Qualifier=crif['Qualifier'].where(
         crif['RiskType'] != 'Risk_FXVol', 'ZARUSD')), rows]).assign(
         IMModel='SIMM', AmountCurrency='USD', CSANumber='CSA', PortfolioID='BOOK',
@@ -1254,7 +1394,10 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     spread = ran[(ran['TradeID'] == 'CDS') & (ran['RiskType'] == 'Risk_CreditQ')]
     assert set(zip(spread['Qualifier'], spread['Bucket'], spread['Label2'])) == {
         ('ISSUER', '3', '')}
-    ran = ran[ran['TradeID'] != 'CDS'].reset_index(drop=True)
+    vega = ran[(ran['TradeID'] == 'SWPT') & (ran['RiskType'] == 'Risk_IRVol')]
+    assert set(zip(vega['Qualifier'], vega['Bucket'], vega['Label1'], vega['Label2'])) == {
+        ('USD', '', '2y', ''), ('USD', '', '3y', '')}
+    ran = ran[~ran['TradeID'].isin(('CDS', 'SWPT'))].reset_index(drop=True)
     zar = (crif['RiskType'] == 'Risk_IRCurve') & (crif['Qualifier'] == 'ZAR')
     identical({'CRIF': ran, 'Trades': serial[1]['Results']['Trades']},
               {'CRIF': crif.assign(Bucket=crif['Bucket'].where(~zar, '2')),
@@ -1263,7 +1406,7 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
         completed = json.load(f)
     unpinned = {'EquityPrice.EQ', 'EquityPrice.EQ2', 'EquityPriceVol.EQ', 'EquityPriceVol.EQ2'}
     # the read gates' and the credit gates' own factors, which no document here reads
-    unread = set(PAIR_CORRELATION) | set(SWAPTION_VOLS) | {'InterestRate.USD'}
+    unread = set(PAIR_CORRELATION) | {'InterestRate.USD'}
     expected = {name: entry['SIMM'] for name, entry in module['Factors'].items()
                 if name not in unpinned | unread}
     expected['InterestRate.ZAR-JIBAR'] = dict(expected['InterestRate.ZAR-JIBAR'], Bucket='2')
@@ -1271,7 +1414,7 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     assert completed['Product_Class'] == {
         'Instruments': {'SwapInterestDeal': 'RatesFX', 'FXOptionDeal': 'RatesFX',
                         'DealDefaultSwap': 'Credit'},
-        'Structures': {'PAIR': 'Equity'}}
+        'Structures': {'PAIR': 'Equity', 'SWPT': 'RatesFX'}}
     notes = pd.read_csv(output / 'MAPPING_{}.txt'.format(date), sep='\t', keep_default_na=False)
     outcomes = {outcome: set(found['Name']) for outcome, found in notes.groupby('Outcome')}
     assert outcomes['unpinned'] == unpinned and outcomes['disagrees'] == {'FXVol.USD.ZAR'}
