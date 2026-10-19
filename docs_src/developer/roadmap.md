@@ -57,11 +57,6 @@ features kept ahead of their build, not rows to close.
 
 **Speed and memory.**
 
-- **A SIMM move pays a whole compile** (2026-10-18, M). On the 35-trade extract 398 valuations take
-  853 seconds whether each prices the trades its move reaches (3,981 trade-pricings) or the whole
-  book (13,930), about 2.1 seconds a valuation in the dependency walk, the factor state and the
-  compile rather than in pricing. The fix builds the deal tree and the factor state once per run
-  and replaces the moved factor's leaves per move.
 - **The inner Monte Carlo's step fused** (2026-10-07, re-measured 2026-10-15, M). A one-step-survival
   step is about fifty elementwise kernels on `[batch, 2 x inner]`, and one batch of a 58-leg credit
   Monte Carlo keeps the device 38% busy at 1,024 paths and 63% at 4,096, with 343,000 kernel

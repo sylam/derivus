@@ -83,9 +83,11 @@ survives a JSON round trip, or a reloaded job would miss its slot forever. **Hel
 `test_the_artifact_survives_a_job_document_round_trip_by_key`.
 
 The `SIMM` calculation is the operator's second reader: its bootstrap publishes every coupled set's
-artifact whatever the blocks declare, and `SIMM.requoted` rides one to a basis point on one quote,
-writing each member curve through `InterestRate.solved_curve` as `solve_set` writes a solved one.
-**Held by** `test_simm.py::test_a_quote_move_rides_the_jacobian_and_is_the_re_solve_to_first_order`.
+artifact whatever the blocks declare and its one compile mints the curves it solved, riding none, and
+`SIMM.requoted` rides one to a basis point on one quote, writing each member curve through
+`InterestRate.solved_curve` as `solve_set` writes a solved one, into the compiled leaves. **Held by**
+`test_simm.py::test_a_quote_move_rides_the_jacobian_and_is_the_re_solve_to_first_order`,
+`::test_the_set_is_compiled_once_and_a_move_writes_the_leaves_it_moves`.
 
 !!! danger "A miss is a refusal, never a different number"
     With no artifact answering the plan the ride raises `CalibrationStale` rather than pricing the

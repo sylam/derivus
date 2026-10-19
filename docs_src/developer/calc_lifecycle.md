@@ -26,15 +26,37 @@ the dispatch to the inner fork and its recompute node: play it here or open it f
 `Context.Credit_Monte_Carlo`, which shards under `runparallel`), `run_baseval`,
 `run_hedgemontecarlo` or `run_simm`, each calling `construct_calculation`. The first three pick the
 device and inject only `Run_Date` (and `Time_grid` for the Monte Carlo modes); every other default
-comes from the class's `fields` through `declared_defaults`. `run_simm` injects nothing and picks no
-device: `SIMM` values the book through `run_baseval` once, and once per market input moved by
-ISDA's definition the trades that move reaches, each under its own netting set and read off its own
-structure. A base valuation draws a trade's Monte Carlo paths off `Quasi_Seed` alone, whatever is
-booked beside it, so a trade draws the same paths through every valuation and its difference is
-one of common random numbers. **Held by**
-`tests/test_simm.py::test_a_netting_set_s_crif_is_its_trades_own_to_the_bit`,
+comes from the class's `fields` through `declared_defaults`. `run_simm` injects nothing: `SIMM.base`
+compiles the book once as `BaseValuation.execute` does (`update_factors`, `set_deal_structures`; a
+worker of `run_simm` compiles its own once), each surface a vega move reaches given its vertex
+pillars so the base and every move share one grid, and prices it. A move (`SIMM.value`) writes the
+values of the factors it moves into their compiled leaves in place, clears `t_Buffer` and the
+trades' result blocks, prices the whole tree again and reads each trade off its own structure, a
+trade left unvalued refused by name, and writes the compiled leaves back. Every move prices the
+whole set, the trades it does not reach included; pricing only those it reaches is the in-graph
+form, [SIMM phase 2](roadmap.md#designed-not-built), one backward pass per set. A base valuation
+draws a trade's Monte Carlo paths off `Quasi_Seed` alone, whatever is booked beside it, and the
+inner block stays built through the run, so a trade draws the same paths through every pricing and
+its difference is one of common random numbers. **Held by**
+`tests/test_simm.py::test_the_set_is_compiled_once_and_a_move_writes_the_leaves_it_moves`,
+`::test_a_move_its_pricer_refuses_is_refused_by_name_never_read_off_the_last_pricing`,
+`::test_a_netting_set_s_crif_is_its_trades_own_to_the_bit`,
 `::test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit`,
 `::test_the_sharded_run_equals_the_serial_run_to_the_bit`.
+
+A price reads a factor's value off its leaf at pricing, where a move's write and the tape both see
+it, never off the factor at the compile: an equity swaplet's level fixing on the base date and
+stating no price is a sample the pricer reads off the spot (`utils.TensorCashFlows.equity_swaplet`),
+a compo leg's pair there likewise off the fx rates (`EquitySwapLeg.calc_dependencies`), and an
+amortising swaption's vol tenor and Lognormal level scale are `SwaptionDeal.duration_tenor`'s
+tensors off the curves its pricer reads, a leg that does not amortise reading its stated tenor and
+1.0. So the SIMM row of each is the central difference of two full compiles and `Greeks: First`
+the same derivative, to 1e-6. The compile's level for an unprinted inflation month is the diary's,
+the pricer projecting it off the index and curve leaves; a correlation is no leaf
+([decision 12](../limitations.md#decisions-waiting-on-the-desk)) and a basis decay a process's
+declared float. **Held by** `tests/test_simm.py::test_a_level_the_base_date_fixes_moves_with_the_spot`,
+`::test_a_compo_level_the_base_date_fixes_moves_with_the_pair`,
+`::test_an_amortising_swaptions_vol_moves_with_its_curves`.
 
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is

@@ -222,11 +222,11 @@ def run_baseval(context, prec=torch.float64, overrides=None):
 
 
 def run_simm(context, overrides=None):
-    """Runs a SIMM calculation - ISDA's CRIF by bump and revaluation, each market move one
-    valuation of the book - on the provided context: `(calculation, output)`, the CRIF under
-    `output['Results']['CRIF']`. `Workers` above one values the book here and deals the moves in
-    turn over that many processes, each on a context of its own; the CRIF is the same to the bit
-    either way."""
+    """Runs a SIMM calculation - ISDA's CRIF by bump and revaluation, the book compiled once and
+    each market move one pricing of it - on the provided context: `(calculation, output)`, the CRIF
+    under `output['Results']['CRIF']`. `Workers` above one values the book here and deals the moves
+    in turn over that many processes, each compiling it on a context of its own; the CRIF is the
+    same to the bit either way."""
     from .calculation import construct_calculation
 
     params = dict(context.deals['Calculation'])
@@ -249,13 +249,14 @@ def run_simm(context, overrides=None):
 
 def simm_shard(config, params, moves, job, queue):
     """A worker's share of a SIMM run's moves, each `(move, trades)`, valued on a context of its own
-    calibrated once, an artifact crossing no process: `{(trade, move): value}`."""
+    calibrated and compiled once, an artifact crossing no process: `{(trade, move): value}`."""
     from .calculation import construct_calculation
 
     calc = construct_calculation('SIMM', config)
     calc.setup(params)
-    calc.calibrate()
-    queue.put({'Job': job, 'Values': calc.values(moves)})
+    with calc.prepared():
+        calc.base()
+        queue.put({'Job': job, 'Values': calc.values(moves)})
 
 
 def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):

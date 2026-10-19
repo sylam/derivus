@@ -2233,8 +2233,9 @@ class TensorCashFlows(TensorSchedule):
         return cls(cash, np.zeros((len(cash), 3)))
 
     @classmethod
-    def equity_swaplet(cls, base_date, time_grid, position, cashflows, current_spot, busday):
-        """Equity cashflows from a data source."""
+    def equity_swaplet(cls, base_date, time_grid, position, cashflows, busday):
+        """Equity cashflows from a data source: a reset by the base date at the price and fx rate
+        it states, and one stating none from the base date on read off the spot by the pricer."""
 
         def row(cashflow):
             if cashflow['Payment_Date'] < base_date:
@@ -2257,18 +2258,7 @@ class TensorCashFlows(TensorSchedule):
                 # Need to use this reset to estimate future dividends
                 Time_Grid, Scenario = time_grid.get_scenario_offset(max(Reset_Day, 0))
 
-                # only add a reset if it's in the past - if its 0, then replace it with the current spot
-                if Start_Day <= 0:
-                    known_price = cashflow.get('Known_' + reset + '_Price', 0.0)
-                    if Start_Day == 0 and not known_price:
-                        logging.warning(
-                            'Known_{}_Price not set at base_date - setting to current spot'.format(reset))
-                        reset_price = current_spot
-                    else:
-                        reset_price = known_price
-                else:
-                    reset_price = 0.0
-
+                reset_price = cashflow.get('Known_' + reset + '_Price', 0.0) if Start_Day <= 0 else 0.0
                 r.append(([Time_Grid, Reset_Day, -1, Start_Day, Start_Day, Weight, reset_price,
                            (cashflow.get('Known_' + reset + '_FX_Rate') or 0.0) if Start_Day <= 0 else 0.0],
                           Scenario))

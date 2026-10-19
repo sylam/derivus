@@ -258,16 +258,6 @@ def calc_factor_code_chain(head, fieldname, static_offsets, stochastic_offsets, 
             for x in range(1, len(fieldname) + 1)]
 
 
-def calc_factor_value(field, static_offsets, stochastic_offsets, all_factors):
-    """Return a factor's current value, whether it is static or stochastic."""
-    if static_offsets.get(field) is not None:
-        return all_factors[field].current_value()
-    elif stochastic_offsets.get(field) is not None:
-        return all_factors[field].factor.current_value()
-    else:
-        raise Exception('Cannot find value for {}'.format(utils.check_tuple_name(field)))
-
-
 def get_interest_rate_currency(name, all_factors):
     """Read the Currency on an Interest Rate Price Factor"""
     ir_curve = all_factors.get(utils.Factor('InterestRate', name))
@@ -312,12 +302,6 @@ def get_equity_barrier_underlying(fieldname):
     per factor. None means the pricer observes endpoints, the conservative direction.
     """
     return None if len(fieldname) > 1 else utils.Factor('EquityPrice', fieldname)
-
-
-def get_fxrate_spot(fieldname, static_offsets, stochastic_offsets, all_factors):
-    """Read the spot of the FX rate price factor"""
-    return calc_factor_value(
-        utils.Factor('FxRate', fieldname), static_offsets, stochastic_offsets, all_factors)[0]
 
 
 def get_forwardprice_sampling(fieldname, all_factors):
@@ -455,12 +439,6 @@ def get_observed_basis_decay(commodity, all_factors):
 def get_equity_rate_factor(fieldname, static_offsets, stochastic_offsets):
     """Read the (basis-aware) code of the equity spot price factor"""
     return calc_factor_code_chain('EquityPrice', fieldname, static_offsets, stochastic_offsets)
-
-
-def get_equity_spot(fieldname, static_offsets, stochastic_offsets, all_factors):
-    """Read the spot of the equity price factor"""
-    return calc_factor_value(
-        utils.Factor('EquityPrice', fieldname), static_offsets, stochastic_offsets, all_factors)[0]
 
 
 def get_equity_currency_factor(fieldname, static_offsets, stochastic_offsets, all_factors):
@@ -825,7 +803,6 @@ class Deal(object):
             'Expiry': max((x['Payment_Date'] - base_date).days for x in items)}
         field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
             base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1, {'Items': items},
-            get_equity_spot(field['Equity'], static_offsets, stochastic_offsets, all_factors),
             settlement_days * bus_day)
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
                                equity_fx_correlation, vol_field='Equity_Volatility')
@@ -3370,8 +3347,8 @@ class SwaptionDeal(Deal):
         'durations of the bullets the leg holds at constant principal to each $t_i$, linear between them. A',
         '`Lognormal` vol read there is the bullets\', so it is scaled by their par rate, interpolated as the',
         'tenor is, over the leg\'s, each plus the **Shift** and both of the base date; a `Normal` one, a vol',
-        'in basis points, carries over unscaled. The tenor and the scale are numbers of the compile, so no',
-        'curve sensitivity runs through them.',
+        'in basis points, carries over unscaled. The tenor and the scale are read off the curves where the',
+        'pricer reads them, so a curve\'s sensitivity runs through them as through the legs.',
         '',
         'A swap starting after the expiry, $T_1>t_0$, reads a mid-curve vol. Its rate is',
         '$s=\\omega s_2-(\\omega-1)s_1$, $s_1$ that of the gap swap from $t_0$ to $T_1$ on the frequencies, day',
@@ -3507,11 +3484,6 @@ class SwaptionDeal(Deal):
         def tenor(start, end):
             return utils.DayCount.accrual(base_date, (end - start).days, index.day_count)
 
-        def growth(rate, days):
-            curve = get_factor_component(utils.Factor('InterestRate', field[rate][:1]), all_factors)
-            years = curve.get_day_count_accrual(base_date, days)
-            return curve.current_value(years) * years
-
         expiry, effective, maturity = (self.field[key] for key in (
             'Option_Expiry_Date', 'Swap_Effective_Date', 'Swap_Maturity_Date'))
         swap, gap = fixed_leg(self.legs), fixed_leg(self.gap) if self.gap else None
@@ -3521,11 +3493,9 @@ class SwaptionDeal(Deal):
         dist, shift = field_index['VolSurface'][0][utils.FACTOR_INDEX_SubType]
         # a Lognormal vol there is the bullet's, relative to its rate, and a Normal one carries over;
         # the floating periods without their resets, which a swaption on its legs never fixes
-        level = (np.vstack([fixed_leg(legs, floating).schedule for legs in (self.gap, self.legs) if legs]),
-                 partial(growth, 'Forecast_Rate'), shift.amount) if dist == 'Lognormal' else ()
-        field_index['Underlying_Swap_maturity'], field_index['Level_Scale'] = self.duration_tenor(
-            tenor(start, maturity), (start - base_date).days, schedule,
-            lambda days: np.exp(-growth('Discount_Rate', days)), *level)
+        field_index['Duration'] = (tenor(start, maturity), (start - base_date).days, schedule) + ((
+            np.vstack([fixed_leg(legs, floating).schedule for legs in (self.gap, self.legs) if legs]),
+            shift.amount) if dist == 'Lognormal' else ())
 
         # on its legs it prices them (`post_process`), reading off its terms only the vol's geometry:
         # the gap's legs, which no leaf carries
@@ -3605,13 +3575,23 @@ class SwaptionDeal(Deal):
         tenor_in_days = factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM]
         tenor = daycount_fn(tenor_in_days)
 
+        def base_date_curve(code):
+            """The zero rate times years to a day on `code`'s primary, of the grid's first row."""
+            block = utils.calc_time_grid_curve_rate(code[:1], time_grid.time_grid[:1], shared)
+            return lambda days: block.gather_weighted_curve(shared, days.reshape(1, -1))[0, :, 0]
+
+        discount_growth = base_date_curve(factor_dep['Discount'])
+        duration, scale = self.duration_tenor(
+            *factor_dep['Duration'], discount=lambda days: torch.exp(-discount_growth(days)),
+            growth=base_date_curve(factor_dep['Forward']))
+
         def vol(moneyness, years):
             """The vol of the deal's first rows, at `moneyness` and `years` before the expiry: the
             surface at the swap's tenor or, the swap starting after the expiry, the mid-curve vol of
             its rate s = omega s_2 - (omega - 1) s_1 (`documentation`). A row with no time left
             reads s_2's, its option being its intrinsic."""
             read = partial(utils.VolSurface.tenor_rate, factor_dep['VolSurface'], moneyness, years)
-            long_vol = read(factor_dep['Underlying_Swap_maturity'], shared) * factor_dep['Level_Scale']
+            long_vol = read(duration, shared) * scale
             live = np.count_nonzero(years > 0.0)
             if 'Gap' not in factor_dep or not live:
                 return long_vol
@@ -3701,36 +3681,49 @@ class SwaptionDeal(Deal):
         return pricing.interpolate(mtm, shared, time_grid, deal_data)
 
     @staticmethod
-    def duration_tenor(stated, start, schedule, discount, floating=None, growth=None, shift=0.0):
+    def duration_tenor(stated, start, schedule, floating=None, shift=0.0, discount=None, growth=None):
         """`(tenor, scale)` of a fixed leg's vol read. The tenor is on the axis `stated` at the leg's
         last accrual end and proportional before it to the days from `start`: where its Macaulay
         duration on that axis falls among those of the bullets it holds at constant principal to
         each accrual end, each cashflow weighted by `discount`, the base date's discount factor to a
         day, at its accrual end. Given the leg's `floating` schedule and `growth`, the base date's
         forecast zero rate times its years to a day, the scale is the bullets' par rate there,
-        interpolated as the tenor is, over the leg's, each plus `shift`; without, it is 1.0. A leg
-        that does not amortise reads `stated` and 1.0 to the bit."""
+        interpolated as the tenor is, over the leg's, each plus `shift`; without, it is 1.0. Both
+        are tensors carrying the curves `discount` and `growth` read, but for legs that do not
+        amortise, which read `stated` and 1.0 whatever the curves."""
+        def level(rows):
+            return rows[:, utils.CASHFLOW_INDEX_Nominal] / rows[0, utils.CASHFLOW_INDEX_Nominal]
+
+        if (level(schedule) == 1.0).all() and (floating is None or (level(floating) == 1.0).all()):
+            return stated, 1.0
         ends = schedule[:, utils.CASHFLOW_INDEX_End_Day]
-        axis = stated * ((ends - start) / (ends[-1] - start))
         accrual = schedule[:, utils.CASHFLOW_INDEX_Year_Frac]
         coupon = schedule[:, utils.CASHFLOW_INDEX_FixedRate] * accrual
-        # the bullets to each end, then the leg: at constant principal its steps are exact zeros but
-        # the last, so its row and its last bullet's are one number
-        held = np.vstack([np.tri(ends.size, ends.size + 1), np.append(
-            schedule[:, utils.CASHFLOW_INDEX_Nominal] / schedule[0, utils.CASHFLOW_INDEX_Nominal], 0.0)])
-        weight = (held[:, :-1] * coupon + (held[:, :-1] - held[:, 1:])) * discount(ends)
-        duration = (weight * axis).sum(axis=1) / weight.sum(axis=1)
-        at_duration = partial(np.interp, duration[-1], duration[:-1])
+        # the bullets to each end, then the leg
+        held = np.vstack([np.tri(ends.size, ends.size + 1), np.append(level(schedule), 0.0)])
+        weight = discount(ends) * discount(ends).new_tensor(
+            held[:, :-1] * coupon + (held[:, :-1] - held[:, 1:]))
+        axis = weight.new_tensor(stated * ((ends - start) / (ends[-1] - start)))
+        duration = (weight * axis).sum(dim=1) / weight.sum(dim=1)
+        bullets = duration[:-1]
+        upper = torch.searchsorted(bullets.detach(), duration[-1:].detach()).clamp(1, bullets.numel() - 1)
+        # np.interp at the leg's duration among the bullets', its weight on the graph
+        alpha = ((duration[-1:] - bullets[upper - 1]) / (bullets[upper] - bullets[upper - 1])).clamp(0.0, 1.0)
+
+        def at_duration(values):
+            return torch.lerp(values[upper - 1], values[upper], alpha)[0]
+
         if floating is None:
             return at_duration(axis), 1.0
         # a floating row is held by the bullets ending after its middle, which neither leg's
         # calendar moves across an accrual end
         start_day, end_day = floating[:, utils.CASHFLOW_INDEX_Start_Day], floating[:, utils.CASHFLOW_INDEX_End_Day]
-        nominal = floating[:, utils.CASHFLOW_INDEX_Nominal]
-        float_held = np.vstack([0.5 * (start_day + end_day) <= ends[:, np.newaxis], nominal / nominal[0]])
-        annuity = (held[:, :-1] * accrual * discount(schedule[:, utils.CASHFLOW_INDEX_Pay_Day])).sum(axis=1)
-        value = (float_held * np.expm1(growth(end_day) - growth(start_day)) * discount(
-            floating[:, utils.CASHFLOW_INDEX_Pay_Day])).sum(axis=1)
+        float_held = weight.new_tensor(np.vstack([0.5 * (start_day + end_day) <= ends[:, np.newaxis],
+                                                  level(floating)]))
+        annuity = (weight.new_tensor(held[:, :-1] * accrual) * discount(
+            schedule[:, utils.CASHFLOW_INDEX_Pay_Day])).sum(dim=1)
+        value = (float_held * torch.expm1(growth(end_day) - growth(start_day)) * discount(
+            floating[:, utils.CASHFLOW_INDEX_Pay_Day])).sum(dim=1)
         rate = value / annuity + shift
         return at_duration(axis), at_duration(rate[:-1]) / rate[-1]
 
@@ -5820,17 +5813,13 @@ class EquitySwapLeg(Deal):
                  'Payoff_Currency': utils.check_rate_name(self.payoff_ccy)}
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
         known = self.field['Equity_Known_Prices'].data if self.field['Equity_Known_Prices'] else {}
-        spot = get_equity_spot(utils.check_rate_name(self.field['Equity']), static_offsets, stochastic_offsets,
-                               all_factors)
-        cross = 1.0 if field['Currency'] == field['Payoff_Currency'] else get_fxrate_spot(
-            field['Currency'], static_offsets, stochastic_offsets, all_factors) / get_fxrate_spot(
-            field['Payoff_Currency'], static_offsets, stochastic_offsets, all_factors)
 
         def fixed(day):
             """The price and fx rate a fixing reads: the row stated on its day, else, before the base
-            date, the latest stated before it, and from the base date on the spot and the fx cross."""
+            date, the latest stated before it, and from the base date on none, the pricer reading the
+            spot and the pair."""
             if day >= base_date and day not in known:
-                return spot, cross
+                return 0.0, 0.0
             stated = [date for date in known if date <= day]
             return known[max(stated)] if stated else (None, None)
 

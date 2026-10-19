@@ -3,9 +3,13 @@
 		"Instruments": {
 			"SwapInterestDeal": "RatesFX",
 			"FXOptionDeal": "RatesFX",
-			"QEDI_CustomAutoCallSwap": "Equity"
+			"FXExtendableForwardDeal": "RatesFX",
+			"QEDI_CustomAutoCallSwap": "Equity",
+			"EquitySwapLeg": "Equity"
 		},
-		"Structures": {}
+		"Structures": {
+			"SWPT": "RatesFX"
+		}
 	},
 	"Factors": {
 		"InterestRate.USD-OIS": {
@@ -89,6 +93,18 @@
 				"Qualifier": "EQ",
 				"Bucket": "11"
 			},
+			"FRTB_SA": null
+		},
+		"Correlation.EquityPrice.EQ/FxRate.USD.ZAR": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"InterestYieldVol.USD-OIS": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"InterestRateVol.USD-OIS": {
+			"SIMM": null,
 			"FRTB_SA": null
 		}
 	}

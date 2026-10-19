@@ -148,10 +148,34 @@ def world(*args, **kwargs):
     return context
 
 
+def holding(calculation, nodes, **kwargs):
+    """A context loaded with the `job` of `calculation` and `kwargs` holding the trade `nodes`, each
+    `{'Instrument': ..., 'Children': ...}`, under one netting set."""
+    document = job(calculation, book={'NS': ()}, **kwargs)
+    document['Calc']['Deals']['Deals']['Children'][0]['Children'] = json.loads(
+        json.dumps(nodes, cls=CustomJsonEncoder))
+    context = derivus.Context()
+    context.load_json((json.dumps(document), 'simm'), compress=False)
+    return context
+
+
 def valued(context):
     """`{reference: value}` off one base valuation of the loaded job."""
     frame = context.run_job()[1]['Results']['mtm']
     return {reference: value for reference, value in zip(frame['Reference'], frame['Value'])}
+
+
+def solved(context):
+    """`valued` once the loaded job's curves are bootstrapped from its quotes."""
+    context.bootstrap()
+    return valued(context)
+
+
+def gradient(context):
+    """The book's `Greeks_First` off one base valuation of the loaded job, `{(rate, tenor): dV}`."""
+    frame = context.run_job()[1]['Results']['Greeks_First']
+    book = frame.drop(columns='Value').sum(axis=1)
+    return {(rate, tenor): value for (rate, tenor, _, _), value in book.items()}
 
 
 VALUATION = {'Object': 'BaseValuation'}
@@ -273,29 +297,249 @@ def test_the_crif_is_isdas_format(serial, tmp_path):
 
 def test_the_sharded_run_equals_the_serial_run_to_the_bit(serial):
     """Two workers spawned on contexts of their own, the book valued here and its moves dealt
-    between them, against the serial run in-process: the same CRIF to the bit, row for row, and the
-    same trades report.
+    between them, each compiling the set once, against the serial run in-process: the same CRIF to
+    the bit, row for row, and the same trades report.
 
-    Killing mutation: a worker valuing its moves on its context uncalibrated - the first quote
-    move finds no calibration to ride and refuses `CalibrationStale` naming the USD curve.
+    Killing mutation: a worker compiling on its context uncalibrated - the first quote move finds
+    no calibration to ride and refuses `CalibrationStale` naming the USD curve.
     """
     identical(world({'Workers': 2}).run_job()[1]['Results'], serial[1]['Results'])
 
 
+def test_the_set_is_compiled_once_and_a_move_writes_the_leaves_it_moves(serial):
+    """ONE COMPILE A RUN. The swap and the option are compiled once - the run's `Deals loaded` is
+    2 - on the curves the bootstrap solved, riding none, through the 10 and 30 moves they take, 30
+    between them, each the moved factors' values written into the compiled leaves and the set
+    priced again: the option's FX row is a base valuation of the option with ZAR's price a percent
+    up less its standing value, and its 1y vega row one with the surface's 1y pillar a point up,
+    each to 1e-12 of itself.
+
+    Killing mutations: the set compiled again for every move - `Deals loaded` 62; the run's
+    declaration of no ride dropped - the compile rides each curve to the quotes standing, a
+    mispricing per set, and `Calibrations` names both; the memo left standing between pricings -
+    every move reads the base's prices and the run writes no row; a leaf written on a copy - every
+    move prices the base, no row; the set compiled on the surface's own pillars and the vega moves
+    on it given its vertex pillars - the first vega move's write refused, a surface of 9 vols
+    against 36.
+    """
+    output = serial[1]
+    assert output['Stats']['Deals loaded'] == 2 and 'Calibrations' not in output['Stats']
+    assert list(output['Results']['Trades']['Moves']) == [10, 30]
+    stated = factors()
+    vols = stated['FXVol.USD.ZAR']['Surface'].array.copy()
+    vols[vols[:, 1] == 1.0, 2] += 0.01
+    worth = [valued(world(VALUATION, configuration={}, extra=moved))['FXO'] for moved in (
+        {}, {'FxRate.ZAR': dict(stated['FxRate.ZAR'], Spot=stated['FxRate.ZAR']['Spot'] * 1.01)},
+        {'FXVol.USD.ZAR': dict(stated['FXVol.USD.ZAR'], Surface=utils.Curve([], vols))})]
+    assert rows(output, 'FXO', 'Risk_FX')[''] == pytest.approx(worth[1] - worth[0], rel=1e-12)
+    assert rows(output, 'FXO', 'Risk_FXVol') == {
+        '1y': pytest.approx(worth[2] - worth[0], rel=1e-12)}
+
+
+def test_a_move_its_pricer_refuses_is_refused_by_name_never_read_off_the_last_pricing():
+    """A MOVE IS PRICED OR REFUSED. An extendable forward on the pair fixing quarterly over a year,
+    its vega moved ten points down: the 6m vertex's tent takes the surface's total variance below
+    what the 3m fixing reached, the pricer refuses a variance that decreases across its fixings,
+    and the run refuses by name the move that left the trade unvalued.
+
+    Killing mutation: the trades' result blocks left standing between pricings - the 6m and 1y
+    moves read the 3m move's value and the run writes three vega rows of 25.75 each.
+    """
+    fixings = [[BASE + pd.DateOffset(days=days), BASE + pd.DateOffset(days=days + 2), None, None]
+               for days in (91, 182, 273, 364)]
+    extendable = {'Object': 'FXExtendableForwardDeal', 'Reference': 'EXT', 'Currency': 'ZAR',
+                  'Underlying_Currency': 'USD', 'Discount_Rate': OPTION['Discount_Rate'],
+                  'FX_Volatility': 'USD.ZAR', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+                  'Strike_Price': 18.3, 'Extension_Strike': 18.9, 'Extension_Date': fixings[1][0],
+                  'Extension_Style': 'Strip', 'Underlying_Amount': NOTIONAL,
+                  'Extendable_ExpiryDates': fixings}
+    with pytest.raises(ValueError, match='EXT: moving vega/FXVol.USD.ZAR/6m values the trade to '
+                                         'None'):
+        world({'Vol_Shift': -10.0}, deals=[extendable], book={'NS': ('EXT',)}).run_job()
+
+
+#: An equity leg on the index from the base date, quarterly for a year on 10,000 shares: its first
+#: period starts at the level the base date fixes.
+RESETTING = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
+             'Equity_Currency': 'USD', 'Discount_Rate': 'USD-OIS', 'Equity': 'EQ',
+             'Buy_Sell': 'Buy', 'Effective_Date': BASE, 'Maturity_Date': BASE + pd.DateOffset(years=1),
+             'Payment_Frequency': pd.DateOffset(months=3), 'Principal_Fixed_Variable': 'Variable',
+             'Units': 1e4}
+#: The leg paid in ZAR as a compo, seasoned a quarter at 97 and 18 rand a dollar: its first period
+#: ends and its second starts on the base date, each at the level and the pair fixed there.
+COMPO = dict(RESETTING, Reference='CMP', Payoff_Currency='ZAR', Payoff_Type='Compo',
+             Discount_Rate='ZAR-JIBAR', Equity_Volatility='EQ', Include_Dividends='No',
+             Effective_Date=BASE - pd.DateOffset(months=3), Equity_Known_Prices=utils.DateEqualList(
+                 [[BASE - pd.DateOffset(months=3), 97.0, 18.0]]))
+PAIR_CORRELATION = {'Correlation.EquityPrice.EQ/FxRate.USD.ZAR': {'Value': 0.3}}
+
+
+def spot_read(deal, extra, factor, risk_type):
+    """`(row, its central difference, delta, its central difference)` of `deal` reading `factor`'s
+    spot: its SIMM row of `risk_type` at a thousandth of a percent against the central difference of
+    two full compiles on the spot so moved, and `Greeks: First`'s delta to the spot against the
+    central difference of two full compiles a millionth of it either side."""
+    node, shift, reference = [{'Instrument': {'.Deal': deal}}], 1e-3, deal['Reference']
+    stated = dict(factors(), **extra)[factor]
+
+    def at(scale, calculation=VALUATION, **kwargs):
+        return holding(calculation, node, extra=dict(
+            extra, **{factor: dict(stated, Spot=stated['Spot'] * scale)}), **kwargs)
+
+    row = rows(at(1.0, {'Spot_Shift': shift}).run_job()[1], reference, risk_type)['']
+    across = (solved(at(1 + shift / 100))[reference] - solved(at(1 - shift / 100))[reference]) / (
+        2 * shift)
+    delta = gradient(at(1.0, dict(VALUATION, Greeks='First'), configuration={}))[factor, 0.0]
+    exact = (valued(at(1 + 1e-6, configuration={}))[reference] -
+             valued(at(1 - 1e-6, configuration={}))[reference]) / (2e-6 * stated['Spot'])
+    return row, across, delta, exact
+
+
+def test_a_level_the_base_date_fixes_moves_with_the_spot():
+    """A LEVEL THE BASE DATE FIXES IS THE SPOT. The leg starting on the base date fixes its first
+    period's start there at the spot, so its value moves with the spot through that fixing as
+    through every forward: its SIMM equity row at a thousandth of a percent is the central
+    difference of two full compiles of the leg on the spot so moved, 426.13 a percent, and
+    `Greeks: First`'s delta the central difference of two full compiles a millionth either side,
+    426.13 a unit, each to 1e-6 of itself.
+
+    Killing mutation: the fixing written at the compile off the spot's value, `utils.TensorCashFlows.
+    equity_swaplet` handed it for a reset on the base date stating no price, a constant to the move
+    and to the tape - the row and the delta 10,314.59, the start fixing's own share missing from
+    both.
+    """
+    row, across, delta, exact = spot_read(RESETTING, INDICES, 'EquityPrice.EQ', 'Risk_Equity')
+    assert row == pytest.approx(across, rel=1e-6) and delta == pytest.approx(exact, rel=1e-6), (
+        row, across, delta, exact)
+
+
+def test_a_compo_level_the_base_date_fixes_moves_with_the_pair():
+    """A COMPO FIXING ON THE BASE DATE IS THE SPOT AND THE PAIR. The compo leg seasoned a quarter
+    fixes on the base date its first period's end and its second's start at the level and the pair
+    there, so its dollar value moves with the pair through those fixings as through its stated
+    one: its SIMM FX row at a thousandth of a percent is the central difference of two full
+    compiles on the rand so moved, -9,567.12 a percent, and `Greeks: First`'s delta to the rand the
+    central difference of two full compiles a millionth either side, -17,460,000 a unit, each to
+    1e-6 of itself.
+
+    Killing mutation: the fixings on the base date written at the compile off the spot's and the
+    pair's values (`EquitySwapLeg.calc_dependencies`' `fixed` answering them), constants to the move
+    and to the tape - the row -9,392.23 and the delta -17,140,824.
+    """
+    row, across, delta, exact = spot_read(COMPO, dict(INDICES, **PAIR_CORRELATION), 'FxRate.ZAR',
+                                          'Risk_FX')
+    assert row == pytest.approx(across, rel=1e-6) and delta == pytest.approx(exact, rel=1e-6), (
+        row, across, delta, exact)
+
+
+#: A payer two years into five on its legs, struck at 4% on ten million stepping down 1.5 million a
+#: year from its second coupon, on a Lognormal surface sloped in expiry and tenor.
+EXPIRY, MATURITY = BASE + pd.DateOffset(years=2), BASE + pd.DateOffset(years=7)
+COUPONS = [EXPIRY + pd.DateOffset(years=year) for year in range(6)]
+STEPS = utils.DateList({day: 1.5e6 for day in COUPONS[1:-1]})
+YIELD_VOLS = [(m, e, t, 0.2 + 0.02 * e - 0.01 * t) for m in (-0.02, 0.0, 0.02)
+              for e in (0.25, 1.0, 2.0, 5.0) for t in (1.0, 3.0, 5.0, 10.0)]
+SWAPTION_VOLS = {
+    'InterestYieldVol.USD-OIS': {'Property_Aliases': None, 'Distribution_Type': 'Lognormal',
+                                 'Shift': utils.Percent(0.0), 'Surface': utils.Curve([], YIELD_VOLS)},
+    'InterestRateVol.USD-OIS': {'Property_Aliases': None, 'Surface': utils.Curve([], YIELD_VOLS)}}
+
+
+def amortising_leg(kind, reference, own, **terms):
+    """The payer's annual leg of `kind` on its stepping principal, `own` each period's own columns."""
+    rows = [dict({'Payment_Date': end, 'Notional': 1e7 - 1.5e6 * sum(day <= start for day in COUPONS[1:-1]),
+                  'Accrual_Start_Date': start, 'Accrual_End_Date': end, 'Accrual_Day_Count': 'ACT_365',
+                  'Accrual_Year_Fraction': (end - start).days / 365.0, 'Fixed_Amount': 0.0,
+                  'FX_Reset_Date': None, 'Known_FX_Rate': 0.0}, **own(start, end))
+            for start, end in zip(COUPONS[:-1], COUPONS[1:])]
+    return {'Instrument': {'.Deal': dict({
+        'Object': kind, 'Reference': reference, 'Currency': 'USD', 'Discount_Rate': 'USD-OIS',
+        'Buy_Sell': 'Buy', 'Settlement_Style': 'Physical', 'Cashflows': dict(terms, Items=rows)})}}
+
+
+AMORTISING = {'Instrument': {'.Deal': {
+    'Object': 'SwaptionDeal', 'Reference': 'SWPT', 'Currency': 'USD', 'Discount_Rate': 'USD-OIS',
+    'Forecast_Rate': 'USD-OIS', 'Forecast_Rate_Volatility': 'USD-OIS', 'Buy_Sell': 'Buy',
+    'Payer_Receiver': 'Payer', 'Settlement_Style': 'Physical', 'Option_Expiry_Date': EXPIRY,
+    'Swap_Effective_Date': EXPIRY, 'Swap_Maturity_Date': MATURITY, 'Settlement_Date': EXPIRY,
+    'Principal': 1e7, 'Swap_Rate': 4.0, 'Floating_Margin': 0.0,
+    'Index_Tenor': pd.DateOffset(months=12), 'Index_Day_Count': 'ACT_365',
+    'Pay_Frequency': pd.DateOffset(months=12), 'Pay_Day_Count': 'ACT_365',
+    'Receive_Frequency': pd.DateOffset(months=12), 'Receive_Day_Count': 'ACT_365',
+    'Pay_Amortisation': STEPS, 'Receive_Amortisation': STEPS}},
+    'Children': [
+        amortising_leg('CFFixedInterestListDeal', 'SWPT_FIX', lambda start, end: {
+            'Rate': utils.Percent(4.0), 'Discounted': 'No'}, Compounding='No'),
+        amortising_leg('CFFloatingInterestListDeal', 'SWPT_FLT', lambda start, end: {
+            'Resets': [[start, start, end, (end - start).days / 365.0, pd.DateOffset(days=1),
+                        'ACT_365', '0D', 0.0, 'No', utils.Percent(0.0)]],
+            'Margin': utils.Basis(0.0)},
+            Compounding_Method='None', Averaging_Method='Average_Rate', Properties=[])]}
+AMORTISING['Children'][1]['Instrument']['.Deal']['Forecast_Rate'] = 'USD-OIS'
+
+
+def test_an_amortising_swaptions_vol_moves_with_its_curves():
+    """AN AMORTISING SWAPTION'S VOL READS ITS CURVES. The payer stepping down reads its vol at the
+    tenor where its fixed leg's duration on the discount curve falls among its bullets', at the
+    level its bullets' par rates off the forecast curve scale a Lognormal vol by, so its value moves
+    with the curves through its vol as through its legs: its SIMM rate rows at a ten-thousandth of a
+    basis point are the central differences of two full compiles on each quote so moved and
+    re-solved, split as the run splits them, 275.00, 1,775.77 and 529.91 at 3y, 5y and 10y; and
+    `Greeks: First`'s delta to each node of the curve the central difference of two full compiles
+    a millionth either side, 2,196,078 at 3y and 8,987,539 at 5y; each to 1e-6 of the largest.
+
+    Killing mutation: the duration and the par rates read at the compile off the curves' values
+    (`SwaptionDeal.duration_tenor` handed numpy reads of the factors), constants to the moves and
+    to the tape - the rows 354.51, 1,610.38 and 607.91, the deltas 2,656,483 and 6,055,819.
+    """
+    shift = 1e-4
+    calc, output = holding({'Rate_Shift': shift}, [AMORTISING], extra=SWAPTION_VOLS).run_job()
+    across = {}
+    for position, date in enumerate(USD_DATES):
+        worth = []
+        for sign in (1, -1):
+            prices = blocks()
+            prices['InterestRatePrices.USD-OIS']['instrument']['Points'][position][
+                'Quoted_Market_Value'] += sign * shift * 0.01
+            worth.append(solved(holding(VALUATION, [AMORTISING], extra=SWAPTION_VOLS,
+                                        prices=prices))['SWPT'])
+        for label, weight in utils.vertex_weights((date - BASE).days / 365.0, calc.vertices):
+            across[label] = across.get(label, 0.0) + weight * (worth[0] - worth[1]) / (2 * shift)
+    ridden = rows(output, 'SWPT', 'Risk_IRCurve')
+    largest = max(map(abs, across.values()))
+    assert set(ridden) <= set(across) and all(
+        abs(ridden.get(label, 0.0) - amount) < 1e-6 * largest for label, amount in across.items()), (
+        ridden, across)
+
+    stated = factors()['InterestRate.USD-OIS']
+    tape = gradient(holding(dict(VALUATION, Greeks='First'), [AMORTISING], configuration={},
+                            extra=SWAPTION_VOLS))
+    exact = {}
+    for node, (tenor, _) in enumerate(stated['Curve'].array):
+        worth = []
+        for sign in (1, -1):
+            curve = stated['Curve'].array.copy()
+            curve[node, 1] += sign * 1e-6
+            worth.append(valued(holding(VALUATION, [AMORTISING], configuration={}, extra=dict(
+                SWAPTION_VOLS, **{'InterestRate.USD-OIS': dict(stated, Curve=utils.Curve(
+                    [], curve.tolist()))})))['SWPT'])
+        exact[tenor] = (worth[0] - worth[1]) / 2e-6
+    largest = max(map(abs, exact.values()))
+    assert all(abs(tape.get(('InterestRate.USD-OIS', tenor), 0.0) - delta) < 1e-6 * largest
+               for tenor, delta in exact.items()), (tape, exact)
+
+
 @pytest.mark.parametrize('book', [{'NS': ('SWAP', 'FXO')}, {'NS': ('SWAP',), 'NT': ('FXO',)}])
 def test_a_netting_set_s_crif_is_its_trades_own_to_the_bit(book):
-    """A BOOK IS VALUED PER MOVE. The swap and the option, under one netting set or each under its
-    own, are valued as one book at the base and once per move as the trades the move reaches, 32
-    valuations pricing 43 trades where valuing the book per move priced 64, and write the CRIF rows
-    and the trades report the two write each alone in a one-trade document, to the bit. Both price
-    in closed form; the Monte Carlo gate below holds the same of two trades a Monte Carlo pricer
-    values.
+    """A SET IS PRICED WHOLE. The swap and the option, under one netting set or each under its own,
+    are compiled once and priced together at the base and at each of the 30 moves, and write the
+    CRIF rows and the trades report the two write each alone in a one-trade document, to the bit.
+    Both price in closed form; the Monte Carlo gate below holds the same of two trades a Monte
+    Carlo pricer values.
 
-    Killing mutations: a trade read off the structure of the next trade the valuation holds - the
-    swap read at the option's value at the base and at its own where a move reaches it alone,
-    writing 17 rows against 15, a swap row of 66,264.23; a book's trades booked under its first set
-    - on the two-set book the option, found under no set of its own, values to nothing and writes
-    none of the 10 rows it writes alone.
+    Killing mutation: a trade read off the structure of the next trade the set holds - the swap
+    read at the option's value and the option at the swap's, at the base and every move, writing
+    8 rows against 15, a swap row of -52.81 at 1y.
     """
     output = world(book=book).run_job()[1]['Results']
     alone = [world(book={reference: (trade,)}).run_job()[1]['Results']
@@ -362,9 +606,10 @@ def test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit():
     its moves dealt over two workers writes the serial run's to the bit. The two autocalls' terms
     and indices agree, so each values at 0.245048 and writes the other's rows.
 
-    Killing mutation: the pseudo-random draw restored below 16 outer paths - the second autocall's
-    base 5.5e-3 off its own document's, drawing after the first at the base and first at its own
-    index's moves, and its rows up to 0.18 of its largest.
+    Killing mutation: the pseudo-random draw restored below 16 outer paths, off the generator
+    seeded at the compile - the sharded run's CRIF off the serial run's, the second autocall's base
+    6.2e-3 off its own document's, drawing after the first, and the stream running on through the
+    moves, each autocall's rows up to 0.32 and 0.45 of its largest off its own document's.
     """
     calculation = dict(MCMC_Simulations=256)
     serial, sharded = (world(dict(calculation, **workers), extra=INDICES, deals=AUTOCALLS,
@@ -379,9 +624,8 @@ def test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit():
 
 def test_an_autocall_a_past_print_called_writes_no_rows():
     """An autocall whose coupon a month behind the base date printed over its trigger was called
-    then, and every valuation of it is skipped as expired - so it writes no CRIF row: the trade is
-    reported unvalued in the engine's own sentence, and the swap and the option beside it write
-    theirs.
+    then, and the compile skips it as expired - so it writes no CRIF row: the trade is reported
+    unvalued in the engine's own sentence, and the swap and the option beside it write theirs.
 
     Killing mutation: the compile-time call test removed - the note is valued live and writes its
     equity, vega and rate rows.
@@ -440,8 +684,7 @@ def test_a_quote_move_rides_the_jacobian_and_is_the_re_solve_to_first_order(seri
     Killing mutations: the Jacobian's sign flipped - every row the negative of the re-solve's, the
     swap's 5y -443.64 against 443.48; the quote moved one place along - the rows land on the next
     quote's vertices, the swap's PV01 halved onto 3y; the move added in basis points to a quote in
-    percent - the swap's 5y row 43,203 against 443.48; the run's declaration of no ride not held
-    through its valuations - every valuation rides the quotes standing and no rate row is written.
+    percent - the swap's 5y row 43,203 against 443.48.
     """
     calc, output = serial
     trades = ('SWAP', 'FXO')
@@ -798,8 +1041,10 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     with open(output / 'SIMM_MAPPING_{}.json'.format(date), 'rt', encoding='utf-8') as f:
         completed = json.load(f)
     unpinned = {'EquityPrice.EQ', 'EquityPrice.EQ2', 'EquityPriceVol.EQ', 'EquityPriceVol.EQ2'}
+    # the read gates' own factors, which no document here reads
+    unread = set(PAIR_CORRELATION) | set(SWAPTION_VOLS)
     expected = {name: entry['SIMM'] for name, entry in module['Factors'].items()
-                if name not in unpinned}
+                if name not in unpinned | unread}
     expected['InterestRate.ZAR-JIBAR'] = dict(expected['InterestRate.ZAR-JIBAR'], Bucket='2')
     assert {name: entry['SIMM'] for name, entry in completed['Factors'].items()} == expected
     assert completed['Product_Class'] == {

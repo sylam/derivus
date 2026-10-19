@@ -65,7 +65,8 @@ verdict and the benchmark comparison (see the [Hedging](hedging/overview.md) sec
 - `Trades` — one row per trade: its netting set, product class, value, moves, rows written and any
   leg the engine skipped, in its own sentence
 
-`Stats['Parameters']` records the `version` the SIMM parameters file states.
+`Stats['Parameters']` records the `version` the SIMM parameters file states, and `Stats` carries the
+one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`).
 
 ## Over HTTP
 

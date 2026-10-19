@@ -200,7 +200,7 @@ Inner paths per row, $N=$ `MCMC_Simulations`:
 |---|---|---|---|
 | `BaseValuation` | 16,384 | $2N$ = 32,768 ($u$ and $1-u$) | $N$ = 16,384 |
 | `CreditMonteCarlo`, `HedgeMonteCarlo` | 2,048 | $2N$ = 4,096 per outer path | $N$ = 2,048 |
-| `SIMM` (each valuation) | 16,384 | as `BaseValuation` | as `BaseValuation` |
+| `SIMM` (each pricing) | 16,384 | as `BaseValuation` | as `BaseValuation` |
 
 The mirrored half reuses the drawn uniforms; the variance reduction it gives is not measured.
 
