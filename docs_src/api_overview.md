@@ -31,7 +31,9 @@ README says `dv`; both are `import derivus as`.)
 
 A context can hold *multiple* loaded configurations — `cx.parsed` holds one `Config` per content
 of a `MergeMarketData.MarketDataFile` a job referenced, keyed by the sha256 of the file's bytes and
-parsed only on a miss for those bytes, and `cx.digests` the digest each named file last read.
+parsed only on a miss for those bytes, and `cx.digests` the digest each named file last read;
+`cx.held` maps a name to the bytes it is read as in place of its path's, which a replay fills
+with the content the record holds for a run.
 `cx.load_json(job, parses=store)` takes each parse from a `utils.LRUCache` outliving the context,
 pickled there under its digest and unpickled into the context's own copy, which is how the
 service's live book parses a file once for every request over it. A job
@@ -433,6 +435,15 @@ where the row's key is due under more than one netting set. The web client's Bac
 workspace works `/book/worklist`, `/book/close/check` and `/book/close` under the acting seat, and
 its Paper workspace `/book/entities` and `/book/agreements`, an agreement's terms rendered off the
 `NettingCollateralSet` declaration `/schema` publishes.
+
+**The files a job names.** A job names its market data file and its calendar by path
+(`MergeMarketData.MarketDataFile`, `CalendDataFile`), and a job document standing alone runs off
+what they hold; the record declares their content. `POST /book/files` `{name, kind, path, actor}`
+files the bytes at `path` on the service's box under `name`, `kind` `market` or `calendar`, the
+act `mark`, the latest declaration under a name standing; `GET /book/files` lists what stands,
+each row's `matches` naming the file the live book names - `MarketDataFile` or `CalendDataFile` -
+that holds its content now. A standing run's attestation carries the sha256 of each file it read
+beside its replay tuple, and a replay of it reads a declared file's bytes off the record.
 
 **The envelope, from the service.** `/schema` describes what goes *in* a `Calculation` block, a
 `Price Factors` block and a deal; it cannot describe where those blocks go, and that is not

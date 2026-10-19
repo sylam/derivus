@@ -157,6 +157,8 @@ def attempts(log):
         ('official_close_declared', {'market': 'official', 'values_hash': values}, None),
         ('fixing_observed', {'index': 'EURUSD-ECB', 'date': '2026-08-26', 'source': 'ECB',
                              'value': 1.0851}, None),
+        ('file_declared', {'name': 'risk-neutral', 'kind': 'market', 'blob': values,
+                           'supersedes': None}, None),
         ('policy_declared', {'policy': 'firmness', 'pillar_age_seconds': 30}, None),
         ('retention_declared', {'blob_class': 'tape', 'policy_blob': retention}, None),
         ('rehash_declared', {'algorithm': 'sha256'}, None),

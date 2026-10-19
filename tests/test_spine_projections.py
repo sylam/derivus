@@ -43,7 +43,7 @@ from derivus_spine.genesis import VERIFYING_KEY_POLICY
 from derivus_spine.policy import FIXINGS_POLICY, TOLERANCE_POLICY, declare
 from derivus_spine.projections import (
     PROJECTORS, SEEDS, SUMMARIES, fixings_at, fold, knocked, read_seed, seed_at)
-from derivus_spine.verbs import STANDING, apply_lifecycle, complete_run, file_quote
+from derivus_spine.verbs import STANDING, apply_lifecycle, complete_run, declare_file, file_quote
 from derivus_spine.vocabulary import ADMIN, EVENT_TYPES
 
 from test_spine import (
@@ -51,7 +51,7 @@ from test_spine import (
 
 #: Where the synthetic book stands, and the two positions its restatement turns on: the first
 #: official close, and the head. The republished print sits at 16, between them.
-HEAD = 22
+HEAD = 23
 CLOSE = 15
 #: The key the book's observations are filed under, and the administrators that print it.
 INDEX = 'EURUSD-ECB'
@@ -156,7 +156,7 @@ def test_every_projector_replays_to_its_committed_golden(tmp_path):
     """
     home, log, marks = synthetic_book(tmp_path)
     assert set(PROJECTORS) == {'activity', 'agreements', 'attestations', 'blotter', 'cash',
-                               'costs', 'decisions', 'denials', 'entities', 'lifecycle',
+                               'costs', 'decisions', 'denials', 'entities', 'files', 'lifecycle',
                                'markets', 'portfolios', 'positions', 'quotes'}
 
     for name in sorted(PROJECTORS):
@@ -379,6 +379,43 @@ def test_a_fold_never_claims_the_home_and_sees_the_next_append(tmp_path):
     assert rows[0]['plan_hash'] == marks['plan'] and rows[0]['lane'] == STANDING
     with pytest.raises(WriterBusy):
         SpineLog(home).append('rehash_declared', {'algorithm': 'sha256'}, actor=ACTOR)
+    log.close()
+
+
+def test_the_file_standing_under_a_name_is_its_latest_declaration_by_lsn(tmp_path):
+    """The `files` fold: under each name the declaration standing at the position read, the latest
+    by LSN with the one whose content it replaced, so a read at a past position answers the file
+    that stood there, a rollback to an older blob stands over the content it replaced, and a second
+    name stands beside the first. An attestation saying which files its job read carries them on
+    its row.
+
+    Killing mutation: the first declaration under a name kept, which reads the synthetic book's
+    market file at the position the second content stood.
+    """
+    home, log, marks = synthetic_book(tmp_path)
+    files, attestations = PROJECTORS['files'], PROJECTORS['attestations']
+    rolled, calendar = b'{"MarketData":{"Price Factors":{"FxRate.USD":{"Spot":1.0}}}}', b'<C/>'
+    second = declare_file(log, ACTOR, 'risk-neutral', 'market', rolled)
+    back = declare_file(log, ACTOR, 'risk-neutral', 'market', log.store.get(marks['file']))
+    dated = declare_file(log, ACTOR, 'calendars', 'calendar', calendar)
+
+    def standing(lsn):
+        return {row['name']: (row['blob'], row['supersedes'], row['lsn'], row['kind'])
+                for row in files.rows(fold(log, files, lsn=lsn))}
+
+    assert standing(HEAD) == {'risk-neutral': (marks['file'], None, HEAD, 'market')}
+    assert standing(second['lsn']) == {'risk-neutral': (
+        hashlib.sha256(rolled).hexdigest(), HEAD, second['lsn'], 'market')}
+    assert standing(back['lsn']) == {'risk-neutral': (
+        marks['file'], second['lsn'], back['lsn'], 'market')}
+    assert standing(None) == dict(standing(back['lsn']), calendars=(
+        hashlib.sha256(calendar).hexdigest(), None, dated['lsn'], 'calendar'))
+
+    read = {'MarketDataFile': marks['file'], 'CalendDataFile': None}
+    complete_run(log, STANDING, {'plan_hash': marks['plan'], 'values_hash': marks['values'],
+                                 'engine_version': 'derivus-1.0', 'seed': None, 'quasi_seed': 1},
+                 b'{"Calc": {}}', b'{"EURUSD":1.0851}', b'{"mtm": 1.0}', book=BOOK, files=read)
+    assert attestations.rows(fold(log, attestations))[-1]['files'] == read
     log.close()
 
 

@@ -88,6 +88,14 @@ def is_path(value):
     return is_text(value) and '' not in value.split('/')
 
 
+def is_digests(value):
+    """Whether `value` is an object of name -> content hash or null - the files a run read, each
+    by what it held, null where the job names none."""
+    return (isinstance(value, dict)
+            and all(is_text(name) and (digest is None or is_hash(digest))
+                    for name, digest in value.items()))
+
+
 #: `(description, predicate)` per field kind, spelled once so every refusal words it the same way.
 #: Appended to, never reordered - the constants below are indexes into this tuple.
 KINDS = (
@@ -98,8 +106,9 @@ KINDS = (
     ('a whole number or null', is_maybe_integer),
     ('an object of name -> finite number', is_coordinates),
     ('a path of named segments', is_path),
+    ('an object of name -> content hash or null', is_digests),
 )
-HASH, TEXT, NUMBER, INTEGER, MAYBE_INTEGER, COORDINATES, PATH = range(7)
+HASH, TEXT, NUMBER, INTEGER, MAYBE_INTEGER, COORDINATES, PATH, DIGESTS = range(8)
 
 
 def _validator(event_type, fields, open_body=False, optional=()):
@@ -189,6 +198,11 @@ FACT_TYPES = {
         ('name', TEXT), ('values_hash', HASH))),
     'official_close_declared': _validator('official_close_declared', (
         ('market', TEXT), ('values_hash', HASH)), optional=(('date', TEXT),)),
+    # A file a job names, declared by its content under a name the desk gives it. `supersedes` is
+    # the declaration whose content this one replaced, so a rollback to an older blob is a new
+    # fact while a repeat of the standing one restates its body and coalesces.
+    'file_declared': _validator('file_declared', (
+        ('name', TEXT), ('kind', TEXT), ('blob', HASH), ('supersedes', MAYBE_INTEGER))),
     # A decision over a plan HASH, so an amended plan is a new hash needing new approval, judged
     # at the portfolio the ticket books into where one is named.
     'approval': _validator('approval', (('plan_hash', HASH),), optional=(('portfolio', PATH),)),
@@ -216,17 +230,18 @@ PROVENANCE_TYPES = {
     # The standing lane's attestation at birth: the replay tuple plus the three objects that make
     # it checkable - the job the plan recompiles from, the values vector, and the result. `lane` is
     # on the row so the record is self-describing, and the verb refuses any lane but standing.
+    # `files` is the sha256 of each file the job named as the run read it, beside the tuple.
     'run_completed': _validator('run_completed', (
         ('plan_hash', HASH), ('values_hash', HASH), ('engine_version', TEXT),
         ('seed', MAYBE_INTEGER), ('quasi_seed', INTEGER), ('lane', TEXT), ('job', HASH),
-        ('result', HASH))),
+        ('result', HASH)), optional=(('files', DIGESTS),)),
     # Promotion across lanes after the fact: a tuple the hub did not witness, attested only once it
     # re-executed and the bytes reproduced within `tolerance_policy`, which names the hashed policy
     # the comparison was held to. Whether the pin was a cache hit is a fold, not a body field.
     'result_pinned': _validator('result_pinned', (
         ('plan_hash', HASH), ('values_hash', HASH), ('engine_version', TEXT),
         ('seed', MAYBE_INTEGER), ('quasi_seed', INTEGER), ('job', HASH), ('result', HASH),
-        ('tolerance_policy', HASH))),
+        ('tolerance_policy', HASH)), optional=(('files', DIGESTS),)),
     # The quoting act, filed when the client ACCEPTS the price. It pins two hashes: the values
     # vector it was struck on, which the booking reports, and the book plan its marginal charge was
     # solved against, which refuses where the book moved. `request` is the relayed client utterance,
@@ -320,6 +335,7 @@ EVENT_VERB = {
     'official_close_declared': MARK,
     'fixing_observed': MARK,
     'determination': MARK,              # a ruling where the contract vests the call in an agent
+    'file_declared': MARK,              # a market data file or a calendar, by its content
     # document: the paper the book trades under - its counterparties and their agreements.
     'entity_declared': DOCUMENT,
     'agreement_declared': DOCUMENT,
@@ -370,6 +386,8 @@ BLOB_FIELDS = {
     'snapshot_registered': ('blob',),
     'market_declared': ('values_hash',),
     'official_close_declared': ('values_hash',),
+    # A file's bytes, so a replay of a run that read them reads them off the store.
+    'file_declared': ('blob',),
     'retention_declared': ('policy_blob',),
     'policy_declared': ('blob',),
     # Durability ordering binds these like any other citation: no enrollment appends before the key

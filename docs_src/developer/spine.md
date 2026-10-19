@@ -26,8 +26,8 @@ them or a composition of them, so state a need in these four before adding a fif
 - **Facts.** An event a seat files through a verb and the hub, the single writer, appends: a
   booking, a print, a declaration, an approval, a close. Each names who filed it, is chained to the
   one before and is never edited; a correction is another fact.
-- **Blobs.** Whatever has content - terms, a market's values, a job, a result - is stored once under
-  its hash and cited by it.
+- **Blobs.** Whatever has content - terms, a market's values, a file a job names, a job, a result -
+  is stored once under its hash and cited by it.
 - **Folds.** Every view is a fold of the facts up to a point in the record: a position, a P&L, what
   stands - the latest declaration of a name there. Nothing derived is stored as truth, and the point
   is the citation, so nothing is priced against an older declaration by choice.
@@ -73,10 +73,11 @@ A `SpineRefusal` leaves as `SpineRefused`, a `ValueError`, so a 422 carries the 
 | `verify [--chain-only]` | `verify_home`, entitled or keyless |
 | `checkpoint`, `status` | sign the head; print it, and whether bodies open |
 | `follow <url> [--once] [--verify] [--interval] [--blobs] [--actor]` | pull a hub's frames into a replica |
-| `oracle [--script] [--against] [--diary] [--pnl]` | the fourteen invariants; exit 1 where one failed |
+| `oracle [--script] [--against] [--diary] [--pnl]` | the fifteen invariants; exit 1 where one failed |
 | `seed [--at] [--out]` | mint the folds' seeds at an official close |
 | `enroll`, `grant`, `rewrap`, `name`, `whoami` | seats, capabilities, key wraps, display names, token check |
 | `declare`, `policy`, `portfolio` | declare a policy, report those in force, declare a node |
+| `file --name --kind --path` | declare a market data file or a calendar a job names, by its bytes |
 
 ## The truth layer is files {#the-truth-layer}
 
@@ -123,7 +124,8 @@ reproduce. SHA-256 is FIPS 180-4 [@fips180-4]; digests are lowercase hex.
 | an instrument's address (`fill.instrument`, `amendment`), an agreement's `terms`, `plan_hash`, `values_hash`, a run's job, values and result blobs | engine form | SHA-256 |
 
 The forms compose because a blob is named by the SHA-256 of the bytes it is handed: `values_hash`
-and the stored values vector's address are one number.
+and the stored values vector's address are one number, and so are a declared file's blob and the
+digest a run reads it under in `Stats['Files']`.
 
 The vendored canonicaliser is held to the RFC's vectors; the trap is ECMAScript number spelling
 (`repr` writes `1e+16` where ES writes `10000000000000000`). Keys sort by UTF-16 code unit. An
@@ -210,8 +212,9 @@ assessed`, never a zero read as a count. Both refuse a thirteenth frame field, w
 
 `(plan_hash, values_hash, engine_version, seed, quasi_seed)`. The two hashes cover the files a job
 names by what they hold - a market data file's sections and its calendar in the plan, the file's
-values in `values_hash` - so the tuple pins their content, never their path; the record keeps no
-file, so a replay needs the files that still hold it ([before 0.5.0](roadmap.md#before-0-5-0)).
+values in `values_hash` - so the tuple pins their content, never their path, and the digests of
+the files a run read ride beside it rather than in it ([below](#lanes)); a replay reads a declared
+file's bytes off the store ([Markets](#markets)).
 `seed` is the `Random_Seed` a job states, null where it states none, a base valuation and a SIMM
 declaring none; `quasi_seed` is the `Quasi_Seed` every calculation declares, its default where the
 job states none (`spine.replay_seeds`). Neither is in `plan_hash`. **Held by**
@@ -246,7 +249,7 @@ verb, book}], "read": [{subject, class}]}`. Nine verbs, none implying another:
 | `validate` | nothing: work the queue admits |
 | `book` | `fill`, `amendment`, `election`, `quote_filed` |
 | `approve` | `approval`, `rejection`, `result_pinned` |
-| `mark` | `market_declared`, `official_close_declared`, `fixing_observed`, `determination` |
+| `mark` | `market_declared`, `official_close_declared`, `fixing_observed`, `determination`, `file_declared` |
 | `document` | `entity_declared`, `agreement_declared` |
 | `settle` | `status_transition` paying: `settled` moving no money, a `payment` or a `fee` |
 | `confirm` | `status_transition` matching a trade: `confirmed` |
@@ -297,13 +300,17 @@ private key off the hub. **Held by** `test_spine_custody.py`.
 
 A run is recorded if and only if a fact will cite it. `telemetry` (a tick) and `curiosity` (a
 what-if, `/execute`'s default) mint nothing; `standing` mints `run_completed` in the writer's voice
-with the replay tuple and the job, values and result. Content addressing dedupes numbers, not
-standing: a standing run whose numbers exist still attests, one coalescing onto a run in flight is
-promoted in `ComputeExecutor.submit`, and one whose attestation is refused fails rather than serve
-an unbacked citation. It posts its document, a `plan_id` naming only a parse. **Held by**
+with the replay tuple and the job, values and result, and `files`, the sha256 of each file its job
+named as the load read it - the run's `Stats['Files']`, null where it named none - beside the tuple
+and not in it, the two hashes already covering what the files hold; a pin files its claim's the
+same way. Content addressing dedupes numbers, not standing: a standing run whose numbers exist
+still attests, one coalescing onto a run in flight is promoted in `ComputeExecutor.submit`, and one
+whose attestation is refused fails rather than serve an unbacked citation. It posts its document,
+a `plan_id` naming only a parse. **Held by**
 `test_spine_engine.py::test_a_synthetic_tick_sequence_mints_nothing_and_the_absence_is_asserted`,
 `::test_a_standing_run_that_coalesces_onto_one_in_flight_is_attested_when_it_lands`,
-`::test_an_attestation_the_record_refuses_fails_the_run_it_was_for`.
+`::test_an_attestation_the_record_refuses_fails_the_run_it_was_for`,
+`::test_a_run_says_the_files_it_read_and_a_replay_reads_the_bytes_that_stood`.
 
 `pin_result` promotes a tuple this hub did not witness through an injected `executor`, the record
 being unable to import the engine: a cache hit on a matching `run_completed`, bit-equality, or
@@ -315,11 +322,11 @@ next, and the spine admits no tolerance of its own: a home declaring none pins n
 ## Folds, seeds and fixings {#folds}
 
 A projector is `initial`, `apply`, `rows` and the types it `reads`; `fold` opens only those bodies,
-and rows are sorted canonical JSON, so a golden replay is a byte comparison. The fourteen:
+and rows are sorted canonical JSON, so a golden replay is a byte comparison. The fifteen:
 `positions` (net per instrument × agreement × portfolio, clips under each ticket), `costs`, `cash`,
-`lifecycle` (prints under `(index, date, source)`, elections, statuses), `markets`, `attestations`,
-`decisions`, `quotes`, `denials`, `blotter`, `entities`, `agreements`, `portfolios`, and `activity`,
-the strip, which opens no body so a keyless replica shows every LSN.
+`lifecycle` (prints under `(index, date, source)`, elections, statuses), `markets`, `files`,
+`attestations`, `decisions`, `quotes`, `denials`, `blotter`, `entities`, `agreements`,
+`portfolios`, and `activity`, the strip, which opens no body so a keyless replica shows every LSN.
 
 A keyed row stands by the as-of key `(effective_time, lsn)`, so a backdated restatement does not win
 by arriving last, and what it beat stays readable; a second administrator's print is a second row. A
@@ -525,6 +532,31 @@ on the close standing under the market designated for `pnl`, as a standing run n
 moves - and the marks close the day where they read the book, so a ticket booked while the run waits
 is the next day's. **Held by** `test_pnl.py::test_a_ticket_booked_while_the_marks_wait_is_the_next_day_s_and_marks_run_forward`.
 
+**The files a job names.** A job names its market data file and its calendar by path and a job
+standing alone runs off what they hold; the record declares their content. `file_declared`
+(`mark`, judged at the firm) files a file's bytes under a name the desk gives it, its `kind`
+`market` or `calendar`, its `blob` their sha256 - the digest `Context.digest` takes and a run
+reports under `Stats['Files']`, one number. One name stands at a time, the latest by LSN, the body
+naming the declaration whose content it replaced (`supersedes`), so a rollback to an older blob is
+a new fact while the standing content declared again coalesces (the `files` fold).
+`POST /book/files` declares the bytes at a path on the service's box and `GET /book/files` lists
+what stands, each beside the file the live book names that holds its content now (`DV_Spine file`;
+the MCP's `declare_file` and `book_files`). A replay hands its context the digests the attestation
+carries (`spine.reading`, a maker of contexts holding those bytes, which `executor` builds on):
+the context reads a declared file off the store and any other off its path, the replay's own
+`Stats['Files']` saying whether it read the same. Every reader of a past marks job reads the same
+way, `PnL.marked` carrying each marks run's `files`: the diary of that job
+(`service.diary_rows`), the base currency a window crosses its cash at, the explain's valuations
+of the start's job and the end's (`sensed`, `carried`, the maker threaded through
+`quote_context` and `date_edit`), and the call's `Exclude_Paid_Today`
+(`Collateral.paid_today`), so a file rewritten since moves no struck day. **Held by**
+`test_spine_verbs.py::test_a_file_is_declared_by_its_bytes_and_the_latest_under_a_name_stands`,
+`test_spine_projections.py::test_the_file_standing_under_a_name_is_its_latest_declaration_by_lsn`,
+`test_spine_engine.py::test_a_run_says_the_files_it_read_and_a_replay_reads_the_bytes_that_stood`,
+`test_mcp.py::test_the_file_the_book_names_is_declared_and_listed_through_the_binding`,
+`test_pnl.py::test_a_window_reads_the_files_its_marks_read_as_they_stood`,
+`::test_the_explain_and_the_call_of_a_past_close_read_the_files_its_marks_read`.
+
 ## Queue admission {#admission}
 
 `ComputeExecutor.submit` asks before anything runs: `mark` over its book for a standing run,
@@ -655,6 +687,7 @@ question could not be put.
 | 12 cash reconciles | payments match the diary, a row is paid once under each agreement |
 | 13 every close marked | each `pnl` close has marks while the book held anything |
 | 14 the call is the formula | each call read is `CSA.call` over the record |
+| 15 files declared | each file an attested run read is a blob a `file_declared` at or before it cites; not asked where runs read files and none is declared |
 
 A keyless copy answers 1, 8, 9 and half of 2 and names the rest not assessed. **Held by**
 `test_spine_oracle.py`. `gates/spine_game/` plays a bank through the MCP binding over three closes
@@ -683,10 +716,9 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 
 ## Open {#open}
 
-Unbuilt parts of the design: a job's files are named by path, not declared in the record
-([before 0.5.0](roadmap.md#before-0-5-0)); the deal tree is the book file with nets written on,
-not composed from the fold; and a print is not yet one fact feeding both a calibration's archive and
-a deal's fixings ([designed, not built](roadmap.md#designed-not-built)). The record's other open
+Unbuilt parts of the design: the deal tree is the book file with nets written on, not composed
+from the fold; and a print is not yet one fact feeding both a calibration's archive and a deal's
+fixings ([designed, not built](roadmap.md#designed-not-built)). The record's other open
 rows - the log open's full scan, the oracle's blind spots, legacy trades - are
 [before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
 the rotation and replay limits are [trust limits](#trust-limits) and the replay tuple's reach is on

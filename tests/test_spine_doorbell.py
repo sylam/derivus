@@ -82,7 +82,7 @@ from test_spine_custody import ANY, document
 
 STRANGER = 'subject-nobody'
 #: Where the design's synthetic book ends - every later head in this file counts from there.
-BOOK_HEAD = 22
+BOOK_HEAD = 23
 #: How long a gate waits on a socket or a beat before it says so instead of hanging the suite.
 WIRE_SECONDS = 20.0
 #: Open streams the load gate holds, and what a read behind them may cost. The failure this bounds

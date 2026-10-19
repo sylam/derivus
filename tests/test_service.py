@@ -6123,19 +6123,20 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
     """A set's result id is its document, the sha256 of the market data file and of the calendar
     it names, the engine version and the seed. An unmoved book over unmoved files is one run; the
     file edited on disk, then the calendar, each gives every set a new id and the number a fresh
-    context reads off the edited files. A file edited while the set waits in the queue - the job
-    that builds the context, its stamp naming bytes the context never parsed - fails it rather than
-    pricing the new file under the old id, and its parse never prices the restored bytes: with the
-    file put back and the book moved, every set reads the fresh context's number. The request
-    parses neither: a market data file that is not JSON still queues every set, and each row lands
-    failed in the parser's words. A deal on an equity nothing carries is skipped by the engine, and
-    its set lands failed naming it, never done at a smaller CVA.
+    context reads off the edited files. A file edited while the set waits in the queue moves
+    nothing its id names: the set lands done at the number a fresh context reads off the file as
+    its stamp hashed it, EQ_3 at 130 where the file says 140.25 by the time the worker runs, and
+    with the file put back and the book moved every set reads the fresh context's number. The
+    request parses neither: a market data file that is not JSON still queues every set, and each
+    row lands failed in the parser's words. A deal on an equity nothing carries is skipped by the
+    engine, and its set lands failed naming it, never done at a smaller CVA.
 
     KILLING MUTATIONS: either digest dropped from the stamp, which serves the first run's numbers
-    under the first id; the worker's check of the stamped digests removed; the context's parse kept
-    by the file's path, which the session kept across the refusal then prices the restored file
-    with; a load on the request thread, which raises on the broken file; the `Stats` check removed,
-    which lands the set done without its deal.
+    under the first id; the worker reading the files off their paths rather than the bytes its
+    stamp hashed (`session.held` unset), which prices EQ_3 at 140.25 under the id stamped at 130,
+    a CVA of 2,251.12 where the stamped file's is 1,956.78; a load on the request thread, which
+    raises on the broken file; the `Stats` check removed, which lands the set done without its
+    deal.
     """
     def ids(queued):
         return {entry['result_id'] for entry in queued}
@@ -6173,14 +6174,16 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
         market.write_text(json.dumps(data))
         hold.set()
         service.EXECUTOR.queue.join()
-        assert 'changed after its recalc was asked' in xva_rows()['NS_3']['error']
+        priced = xva_rows()['NS_3']
         market.write_bytes(stamped)
+        assert priced['status'] == 'done', priced['error']
+        assert {'cva': priced['cva'], 'fva': priced['fva']} == fresh_xva(book, ['NS_3'])['NS_3']
         document = json.loads(book.read_text())
         document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
             'SurvivalProb.CPTY_9'] = wire(hazard(0.08))
         book.write_text(json.dumps(document, indent=2), newline='\n')
         recalc()
-        assert adjustments() == fresh_xva(book), 'a refused parse was kept'
+        assert adjustments() == fresh_xva(book), 'a kept parse priced other bytes than a fresh one'
 
         node = deal_at(document, service.netting_sets(document)[9][0])
         node['Children'].append({'Instrument': {'.Deal': wire(dict(

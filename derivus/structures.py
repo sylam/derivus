@@ -769,16 +769,18 @@ def pin_models(document, deal, pinned):
         valuation_entry(document, market, deal_type).update(entry)
 
 
-def market_of(document, parses=None):
+def market_of(document, parses=None, context=None):
     """The market `document` prices on, in the wire form an explicit block holds: the sections of
     the file it names with its explicit block merged over them, as the loaded config carries them,
     its deals not loaded and `Correlations` left out. `parses` is a store of the files' parses that
-    outlives the call (`Context.cached`)."""
+    outlives the call (`Context.cached`), and `context` a new one to load on - one reading what a
+    recorded run read (`spine.reading`) - where it is not a context of its own."""
     from . import Context
     from .config import CustomJsonEncoder, as_json
     calc = {key: value for key, value in document['Calc'].items() if key != 'Deals'}
-    params = Context().load_json((json.dumps({'Calc': calc}, cls=CustomJsonEncoder), 'market'),
-                                 parses=parses).current_cfg.params
+    params = (context or Context()).load_json(
+        (json.dumps({'Calc': calc}, cls=CustomJsonEncoder), 'market'),
+        parses=parses).current_cfg.params
     # no reader asks the simulation's correlations, a file's largest section by far
     return as_json({name: section for name, section in params.items() if name != 'Correlations'})
 

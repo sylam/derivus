@@ -80,6 +80,7 @@ tools and the writers to exactly those without the hint.
 | `book_diary` | `GET /book/diary`: every payment, fixing and expiry |
 | `close_check`, `declare_close` | `GET /book/close/check`, `POST /book/close`: whether a close is legal; the close |
 | `book_markets`, `declare_market` | `GET`/`POST /book/markets`: the closes, names and snapshots; a name declared |
+| `book_files`, `declare_file` | `GET`/`POST /book/files`: the files the record declares by content, beside the ones the book names by path; a file declared |
 | `book_reconcile`, `book_activity` | `GET /book/reconcile`, `/book/activity`: file against record; the record's strip |
 | `export_settlements` | `POST /book/settlements`: the settlement file for a day |
 | `file_status`, `file_lifecycle` | `POST /book/transition`, `/book/lifecycle`: a payment or a fee under the agreement it names, a confirmation, collateral moved - `settle`, `confirm`, `collateral`; a fixing, election or ruling |

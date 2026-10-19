@@ -196,5 +196,14 @@
     "lsn": 22,
     "record_time": "the writer stamped this",
     "summary": "a portfolio was declared"
+  },
+  {
+    "actor": "subject-desk-one",
+    "book": null,
+    "effective_time": null,
+    "event_type": "file_declared",
+    "lsn": 23,
+    "record_time": "the writer stamped this",
+    "summary": "a file a job names was declared by its content"
   }
 ]

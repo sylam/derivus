@@ -11,8 +11,9 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The acts a desk performs on the record - booking, amending, lifecycle, decisions, marks, quotes
-and runs - and the paper it trades under: its counterparties and their agreements.
+"""The acts a desk performs on the record - booking, amending, lifecycle, decisions, marks, the
+files a job names, quotes and runs - and the paper it trades under: its counterparties and their
+agreements.
 
 The logic lives here and the engine holds thin delegators, so no module under `derivus/` learns
 about users, workflow or storage: everything below takes plain data and injected callables.
@@ -51,8 +52,12 @@ MINTING = (STANDING,)
 LIFECYCLE_TYPES = ('election', 'fixing_observed', 'determination')
 
 #: The five coordinates a reported number replays from, named here so the claim a verb is handed
-#: and the body it writes cannot part company.
+#: and the body it writes cannot part company. The files a run read ride beside them, never in
+#: them: `plan_hash` already covers a file's sections and `values_hash` its values.
 REPLAY_FIELDS = ('plan_hash', 'values_hash', 'engine_version', 'seed', 'quasi_seed')
+
+#: What a declared file is to a job naming it: its market data file, or its calendar.
+FILE_KINDS = ('market', 'calendar')
 
 #: What a settlement may move, and the one status money moves under. A `payment` settles the diary
 #: row its subject keys, as a bare `settled` does, under the agreement it names where it names one;
@@ -336,6 +341,32 @@ def declare_close(log, actor, market, values, effective_time=None, date=None):
     return dict(envelope, market=market, values_hash=address)
 
 
+def declare_file(log, actor, name, kind, data):
+    """Declare `data`, the bytes of a file a job names, under `name` as its `kind`, returning the
+    envelope plus their address - the sha256 of the bytes, the digest a run of the job reports
+    reading and a replay of that run reads them by.
+
+    One name stands at a time, the latest. The body names the declaration whose content this one
+    replaced (`supersedes`), so a rollback to an older blob is a new fact, and a repeat of the
+    standing blob restates the standing body, which the writer coalesces. Firm-level, so it carries
+    no book.
+    """
+    from .projections import PROJECTORS, fold
+
+    if kind not in FILE_KINDS:
+        raise MalformedEvent(
+            'declare_file: kind is {!r}, not one of {} - a job names a market data file and a '
+            'calendar'.format(kind, ', '.join(FILE_KINDS)))
+    name = _name(name, 'name', 'declare_file')
+    address = _blob(log, data, 'the file')
+    standing = fold(log, PROJECTORS['files']).get(name)
+    body = {'name': name, 'kind': kind, 'blob': address, 'supersedes': standing and (
+        standing['supersedes'] if (standing['kind'], standing['blob']) == (kind, address)
+        else standing['lsn'])}
+    envelope = log.append('file_declared', body, actor=actor, blob_refs=(address,))
+    return dict(envelope, name=name, blob=address)
+
+
 def declare_entity(log, actor, entity, name, parent=None, effective_time=None):
     """Declare a legal entity the book may trade with, and return the envelope.
 
@@ -399,15 +430,17 @@ def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
     return dict(envelope, quote_id=quote_id, plan_hash=body['plan_hash'], values_hash=address)
 
 
-def complete_run(log, lane, claim, job, values, result, book=None, effective_time=None):
+def complete_run(log, lane, claim, job, values, result, book=None, effective_time=None,
+                 files=None):
     """The standing lane's attestation at birth, in the writer's own voice: the hub that executed
     the run is what says it ran. Returns the envelope plus the three addresses.
 
     `claim` is the replay tuple as the engine reports it; `job`, `values` and `result` are the three
     objects that make it checkable, as bytes. The values address is checked against the claimed
     `values_hash` rather than believed. `plan_hash` is not checked here, since checking it means
-    compiling; an auditor recompiles it from the `job` blob at this LSN. A lane that mints nothing
-    raises `MalformedEvent` rather than being dropped silently.
+    compiling; an auditor recompiles it from the `job` blob at this LSN. `files` is the sha256 of
+    each file the job names as the run read it, filed beside the tuple where stated. A lane that
+    mints nothing raises `MalformedEvent` rather than being dropped silently.
     """
     if not mints(lane):
         raise MalformedEvent(
@@ -419,14 +452,18 @@ def complete_run(log, lane, claim, job, values, result, book=None, effective_tim
     body['job'] = _blob(log, job, 'the job document')
     body['result'] = _blob(log, result, 'the result')
     body['values_hash'] = _values(log, values, body['values_hash'])
+    if files is not None:
+        body['files'] = files
     envelope = log.own('run_completed', body, book=book, effective_time=effective_time,
                        blob_refs=(body['job'], body['result'], body['values_hash']))
     return dict(envelope, **body)
 
 
-def pin_result(log, actor, claim, job, values, result, executor, book=None, effective_time=None):
+def pin_result(log, actor, claim, job, values, result, executor, book=None, effective_time=None,
+               files=None):
     """Promote a tuple this hub did not witness, returning the envelope, the addresses, and the
-    `resolution` that reached it.
+    `resolution` that reached it. `files` is the sha256 of each file the claim's job read, filed
+    beside the tuple where stated, as `complete_run` files it.
 
     A cache hit is a `run_completed` at or before this head carrying the same five coordinates; if
     that attestation names a different result the claim is refused, since one replay tuple cannot
@@ -444,6 +481,8 @@ def pin_result(log, actor, claim, job, values, result, executor, book=None, effe
     body['result'] = _blob(log, result, 'the claimed result')
     body['values_hash'] = _values(log, values, body['values_hash'])
     body['tolerance_policy'] = tolerance_blob
+    if files is not None:
+        body['files'] = files
 
     attested = attestation(log, claim)
     if attested is not None:

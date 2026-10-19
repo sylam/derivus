@@ -63,6 +63,7 @@ SUMMARIES = {
     'status_transition': 'a state was moved',
     'market_declared': 'a market name was pointed at a values vector',
     'official_close_declared': 'the official close was declared',
+    'file_declared': 'a file a job names was declared by its content',
     'approval': 'a plan was approved',
     'rejection': 'a plan was rejected',
     'snapshot_registered': 'a snapshot was registered',
@@ -365,8 +366,33 @@ class Markets(Projector):
                 'snapshots': list(state['snapshots'])}
 
 
+class Files(Projector):
+    """The file standing under each name the desk declared: its kind, the address of its bytes,
+    the declaration whose content it replaced, and who declared it where.
+
+    One name stands at a time, the latest by LSN, so a rollback is a new declaration citing an
+    older blob.
+    """
+
+    name = 'files'
+    reads = ('file_declared',)
+
+    def initial(self):
+        return {}
+
+    def apply(self, state, frame, log):
+        body = log.open_body(frame)
+        state[body['name']] = {'kind': body['kind'], 'blob': body['blob'],
+                               'supersedes': body['supersedes'], 'lsn': frame['lsn'],
+                               'actor': frame['actor']}
+
+    def rows(self, state):
+        return [_shown(row, name=name) for name, row in sorted(state.items())]
+
+
 class Attestations(Projector):
-    """Every standing attestation, under the five coordinates a reported number replays from.
+    """Every standing attestation, under the five coordinates a reported number replays from, with
+    the digests of the files its job read beside them where it states them.
 
     The FIRST row under a tuple stands, which is what `verbs.attestation` answers, so this reading
     and that one cannot disagree about which attestation a number replays from. `result_pinned` is
@@ -375,7 +401,7 @@ class Attestations(Projector):
     """
 
     name = 'attestations'
-    version = 2
+    version = 3
     reads = ('run_completed',)
 
     def initial(self):
@@ -719,8 +745,8 @@ class CSA:
 
 #: The projectors this module ships, by name. A reader picks one; nothing here is a default.
 PROJECTORS = dict((projector.name, projector) for projector in (
-    Positions(), Costs(), Lifecycle(), Blotter(), Markets(), Attestations(), Decisions(), Quotes(),
-    Denials(), Entities(), Agreements(), Portfolios(), Cash(), Activity()))
+    Positions(), Costs(), Lifecycle(), Blotter(), Markets(), Files(), Attestations(), Decisions(),
+    Quotes(), Denials(), Entities(), Agreements(), Portfolios(), Cash(), Activity()))
 
 
 def fold(log, projector, lsn=None, seed=None):

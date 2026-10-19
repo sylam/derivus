@@ -908,9 +908,30 @@ def read_values(values):
     return Config().read_json((bytes(values).decode('utf-8'), 'values'))
 
 
-def executor(kind=None):
+def reading(document, files, kind=None):
+    """A maker of new `kind` contexts (a `Context` by default), each reading every file `document`
+    names as the bytes the record's store holds for the content `files` - a run's `Stats['Files']`
+    - says the run read, so a reader at a point in the record reads what stood. A file whose
+    content the store does not hold is read off its path as ever, the reader's own `Stats['Files']`
+    saying whether that is what was read. The bytes are read once, for every context it makes."""
+    named = Context.named(document)
+    held = folded(lambda log: {named[key]: log.store.get(digest) for key, digest in files.items()
+                               if digest and log.store.has(digest)}) \
+        if configured() and files else {}
+
+    def make():
+        context = (kind or Context)()
+        context.held = held
+        return context
+
+    return make
+
+
+def executor(kind=None, files=None):
     """The callable `pin_result` re-executes a claim through: `(job, values, version)` in,
-    `(version, result bytes)` out. `kind` overrides the `Context` class it runs on.
+    `(version, result bytes)` out. `kind` overrides the `Context` class it runs on, and `files`,
+    the claim's `Stats['Files']`, is the content each file its job names is read as where the
+    record holds it (`reading`).
 
     The injection seam: the spine cannot import a pricer, so re-execution arrives as a function over
     real documents. The version is checked here before anything runs, so a claim at another build
@@ -923,7 +944,8 @@ def executor(kind=None):
                 'recorded version, so nothing is re-executed here - pin it on a build of {}, or '
                 'file the run this build produces as its own attestation'.format(
                     __version__, engine_version, engine_version))
-        context = (kind or Context)().load_json((bytes(job).decode('utf-8'), 'pinned'))
+        text = bytes(job).decode('utf-8')
+        context = reading(json.loads(text), files, kind)().load_json((text, 'pinned'))
         context.patch_market(read_values(values))
         _, out = context.run_job()
         return __version__, result_of(out)
@@ -1343,23 +1365,39 @@ def file_quote(quote_id, structure, plan_hash, values, solved, edge, request=Non
                                 book=book_name, effective_time=effective_time)
 
 
-def complete_run(claim, lane, job, values, result, book_name=None):
-    """Attest a standing run at birth, in the writer's own voice: the hub that ran it says so. A
-    telemetry or curiosity lane mints nothing and should not reach here; the verb refuses one that
-    does rather than dropping it quietly."""
+def complete_run(claim, lane, job, values, result, book_name=None, files=None):
+    """Attest a standing run at birth, in the writer's own voice: the hub that ran it says so,
+    `files` its `Stats['Files']` beside the tuple. A telemetry or curiosity lane mints nothing and
+    should not reach here; the verb refuses one that does rather than dropping it quietly."""
     verbs = package().verbs
     with writing() as log:
-        return verbs.complete_run(log, lane, claim, job, values, result, book=book_name)
+        return verbs.complete_run(log, lane, claim, job, values, result, book=book_name,
+                                  files=files)
 
 
 def pin_result(claim, job, values, result, actor_name=None, book_name=None, effective_time=None,
-               execute=None):
-    """Promote a replay claim this hub did not witness, through re-execution or a cache hit."""
+               execute=None, files=None):
+    """Promote a replay claim this hub did not witness, through re-execution or a cache hit,
+    `files` the claim's `Stats['Files']`."""
     verbs = package().verbs
     with writing() as log:
         return verbs.pin_result(log, actor(actor_name, log), claim, job, values, result,
-                                execute or executor(), book=book_name,
-                                effective_time=effective_time)
+                                execute or executor(files=files), book=book_name,
+                                effective_time=effective_time, files=files)
+
+
+def declare_file(name, kind, data, actor_name=None):
+    """Declare the bytes `data` of a file a job names under `name` as its `kind`, `market` or
+    `calendar`: `mark` over the firm, which the writer enforces."""
+    verbs = package().verbs
+    with writing() as log:
+        return verbs.declare_file(log, actor(actor_name, log), name, kind, data)
+
+
+def files():
+    """The file standing under each name the record declares - its kind, the address of its
+    bytes, the declaration it replaced, who declared it and where."""
+    return _rows('files')
 
 
 def tiers_policy():
@@ -1859,8 +1897,9 @@ class PnL:
     def marked(cls, book, closes, attestations, stored):
         """`{day: marks}` - the LATEST standing marks run of `book` on each of `closes`, keyed by
         the day it valued the book as of: the position of the record it read the book at, which
-        closes that business day, the values it stood on, and the addresses of the job it attested
-        and the result. `loaded` reads a marks' numbers."""
+        closes that business day, the values it stood on, the addresses of the job it attested
+        and the result, and the `files` that job read, null where its attestation says none.
+        `loaded` reads a marks' numbers."""
         values, found = {row['values_hash'] for row in closes}, {}
         for row in attestations:
             if row['values_hash'] not in values:
@@ -1878,7 +1917,8 @@ class PnL:
                 # a marks job naming no cut read the book where it was attested
                 found[day] = {'day': day, 'lsn': row['lsn'] if cut is None else cut,
                               'attested': row['lsn'], 'values_hash': row['values_hash'],
-                              'job': row['job'], 'result': row['result']}
+                              'job': row['job'], 'result': row['result'],
+                              'files': row.get('files')}
         return found
 
     @classmethod
@@ -2493,11 +2533,13 @@ class Collateral:
     """
 
     @staticmethod
-    def paid_today(document):
+    def paid_today(document, files=None):
         """Whether the netting sets of `document` hold the day's payments in the exposure their
         recursion reads: `Exclude_Paid_Today` off - the engine's default - as a set reads it off the
-        job's `Valuation Configuration`."""
-        options = market_of(document)['Valuation Configuration']
+        job's `Valuation Configuration`, each file the job names read as its marks run read it
+        (`files`, `reading`)."""
+        options = market_of(document, context=reading(document, files)())[
+            'Valuation Configuration']
         return not options.get('NettingCollateralSet', {}).get('Exclude_Paid_Today', False)
 
     @staticmethod
@@ -2533,7 +2575,8 @@ class Collateral:
     def calls(cls, close, valued, agreements, movements, until):
         """`[{agreement, entity, currency, exposure, fx, held, margin, required, balance, call,
         direction, minimum_transfer, unknown}]` - the call of each of the `collateralised`
-        agreements on the marks `close` (`{day, rates, document}`), in the agreement's currency:
+        agreements on the marks `close` (`{day, rates, document, files}`), in the agreement's
+        currency:
         `valued` is the P&L over that close alone, `movements` the `cash` rows and `until` the value
         date a balance is held as of - every movement filed, whatever its value date, where None.
 
@@ -2543,7 +2586,8 @@ class Collateral:
         dial the terms state none of - is named under `unknown`, and the call is null over it.
         """
         record, rates, answer = package().projections.CSA, close['rates'], []
-        balances, today = record.held(movements, until), cls.paid_today(close['document'])
+        balances, today = record.held(movements, until), cls.paid_today(close['document'],
+                                                                          close['files'])
         for declared in agreements:
             dials = record.of(declared['terms'])
             agreement, currency = declared['agreement'], dials['Agreement_Currency']

@@ -11,14 +11,15 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""What a copy of the record proves about a day on the desk - fourteen invariants and their
+"""What a copy of the record proves about a day on the desk - fifteen invariants and their
 evidence.
 
 Pure over a HOME and, where one is given, the SCRIPT of what was asked. The oracle folds the record
 the way every other reader does and re-runs the writer's own decisions through the writer's own
 functions, so an answer here is a property of the bytes rather than of the process that made them.
 It is read as a REPLICA, which is the honest posture - verification is always local - and a
-chain-only home still answers the four questions that cost no key while naming the ten it cannot.
+chain-only home still answers the four questions that cost no key while naming the eleven it
+cannot.
 
 What the record cannot hold is taken as DATA. The SCRIPT says what was ASKED: which attempts the
 writer refused, which were turned away short of it, the lane each run was submitted in, the rows a
@@ -52,12 +53,13 @@ from .verbs import (
     FEE, HELD, PAYMENT, REPLAY_FIELDS, SETTLED, STANDING, fill_key, marks_of)
 from .verify import NOT_ASSESSED, verify_home
 
-#: The fourteen questions, in the order a report answers them. The names are the report's keys.
+#: The fifteen questions, in the order a report answers them. The names are the report's keys.
 INVARIANTS = ('copies_agree', 'nothing_outside_its_seat', 'every_refusal_is_a_denial',
               'an_amended_plan_is_a_new_approval', 'closes_superseded_never_edited',
               'every_numbers_replay_tuple', 'the_diary_equals_the_filings', 'no_delete',
               'duplicates_coalesce', 'nothing_outside_its_scope', 'the_pnl_is_additive',
-              'cash_reconciles', 'every_close_marked', 'the_call_is_the_formula')
+              'cash_reconciles', 'every_close_marked', 'the_call_is_the_formula',
+              'files_declared')
 
 #: The one projector that opens no body, which is the whole of what a keyless copy can compare.
 KEYLESS_PROJECTORS = ('activity',)
@@ -917,8 +919,34 @@ def the_call_is_the_formula(log, script):
         '{}: every call unknown, {}'.format(day, NOT_ASSESSED) for day in unknown])
 
 
+def files_declared(log):
+    """Every file an attested run read was declared by its content at or before the run: each
+    digest a `run_completed` carries is the blob a `file_declared` filed at or before it cites,
+    which `no_delete` holds the store to.
+
+    Reported, never refused at the writer: a run on an undeclared file is a fact, and this reads
+    it. A run filed before runs said what they read carries nothing to hold, and a home whose runs
+    read files and which declares none is not asked, declaring them being the deployment's act.
+    """
+    declared, read = {}, []
+    for frame in log.frames():
+        if frame['event_type'] == 'file_declared':
+            declared.setdefault(log.open_body(frame)['blob'], frame['lsn'])
+        elif frame['event_type'] == 'run_completed':
+            read.extend((frame['lsn'], key, digest) for key, digest in sorted(
+                (log.open_body(frame).get('files') or {}).items()) if digest)
+    if read and not declared:
+        return unasked('no file is declared here, so the {} file(s) its runs read are held to '
+                       'none'.format(len(read)))
+    return answer(['LSN {}: the run read {} as its {}, and no file declared at or before it holds '
+                   'that content'.format(lsn, digest, key)
+                   for lsn, key, digest in read if declared.get(digest, lsn + 1) > lsn],
+                  ['{} file(s) read by attested runs, {} content(s) declared'.format(
+                      len(read), len(declared))])
+
+
 def report(home, script=None, against=None, diary_keys=None, pnl=None):
-    """`{invariant: {held, evidence}}` for all fourteen, over `home` and what it was given.
+    """`{invariant: {held, evidence}}` for all fifteen, over `home` and what it was given.
 
     A home whose class key is gone answers the three that cost no key and the envelope half of
     `nothing_outside_its_seat`, and says by name which it could not assess - the replica posture,
@@ -945,7 +973,8 @@ def report(home, script=None, against=None, diary_keys=None, pnl=None):
             the_pnl_is_additive(log, pnl) if entitled else sealed,
             cash_reconciles(log, script, diary_keys) if entitled else sealed,
             every_close_marked(log) if entitled else sealed,
-            the_call_is_the_formula(log, script) if entitled else sealed)))
+            the_call_is_the_formula(log, script) if entitled else sealed,
+            files_declared(log) if entitled else sealed)))
     finally:
         log.close()
 

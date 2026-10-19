@@ -9,6 +9,7 @@ round trip that keeps the book diffable, and the notifications a waiting tool ke
 """
 import ast
 import asyncio
+import hashlib
 import inspect
 import json
 import os
@@ -92,6 +93,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'calibrate_spot_model',
                 'book_risk_summary', 'xva_view', 'recalc_xva', 'book_reconcile', 'book_diary',
                 'close_check', 'book_activity', 'book_markets', 'declare_market', 'declare_close',
+                'book_files', 'declare_file',
                 'export_settlements', 'file_status', 'file_lifecycle', 'describe_calculations',
                 'configure_calculation', 'run_calculation', 'describe_agreements',
                 'declare_legal_entity', 'declare_agreement', 'book_positions', 'book_cash',
@@ -105,7 +107,7 @@ def test_every_tool_is_registered_and_carries_its_contract():
                        'execute_book', 'update_market_quotes', 'patch_market_values',
                        'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
                        'approve_quote', 'reject_quote', 'approve_ticket', 'reject_ticket',
-                       'declare_portfolio', 'declare_market', 'declare_close',
+                       'declare_portfolio', 'declare_market', 'declare_close', 'declare_file',
                        'export_settlements', 'file_status', 'file_lifecycle',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
                        'set_base_date', 'configure_securities', 'verify_securities',
@@ -268,7 +270,8 @@ def test_the_record_reads_are_read_only_and_say_what_they_read(book):
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
     for name, said in (('book_diary', 'determined'), ('close_check', 'legal'),
                        ('book_reconcile', 'record'), ('book_activity', 'strip'),
-                       ('book_markets', 'close'), ('book_positions', 'portfolio')):
+                       ('book_markets', 'close'), ('book_positions', 'portfolio'),
+                       ('book_files', 'content')):
         assert tools[name].annotations.read_only_hint is True, name
         assert said in tools[name].description, name
         assert name in mcp_server.INSTRUCTIONS, name
@@ -619,6 +622,32 @@ def test_the_book_read_lists_the_factors_of_the_file_it_names(file_book):
     assert listed['file'] == str(market)
     assert listed['factors'] == sorted(json.loads(market.read_text())['MarketData'][
         'Price Factors']) and listed['factor_count'] == 6
+
+
+def test_the_file_the_book_names_is_declared_and_listed_through_the_binding(file_book, tmp_path,
+                                                                            monkeypatch):
+    """`declare_file` and `book_files` are each one `service().call`: the book's market data file,
+    named by its path on the service's box, lands under the desk's name as the sha256 of its bytes,
+    and the listing is the route's own row beside the book's `MarketDataFile`; a kind that is
+    neither a market data file nor a calendar comes back as the record's own refusal.
+
+    Killing mutations: `declare_file` posting the path under another key, which the route reads as
+    none and fails; `book_files` composing an answer of its own rather than the route's rows.
+    """
+    from derivus_spine import init_home
+
+    actor, home = 'subject-desk-one', tmp_path / 'spine'
+    init_home(home, actor)
+    monkeypatch.setenv('DV_SPINE_HOME', str(home))
+    monkeypatch.setenv('DV_SPINE_ACTOR', actor)
+    _, market = file_book
+    declared = mcp_server.declare_file('risk-neutral', 'market', str(market))
+    assert declared['blob'] == hashlib.sha256(market.read_bytes()).hexdigest()
+    assert mcp_server.book_files() == {'files': [{
+        'name': 'risk-neutral', 'kind': 'market', 'blob': declared['blob'], 'supersedes': None,
+        'lsn': declared['recorded']['lsn'], 'actor': actor, 'matches': 'MarketDataFile'}]}
+    with pytest.raises(ToolError, match='market, calendar'):
+        mcp_server.declare_file('risk-neutral', 'curve', str(market))
 
 
 def test_booking_a_deal_prices_it(book):

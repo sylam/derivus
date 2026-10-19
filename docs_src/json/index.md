@@ -163,6 +163,11 @@ The usual split keeps models, correlations and configuration in the file and the
 loaded market data goes into `ExplicitMarketData`, `MarketDataFile` is left blank, and the calendar
 file is still named.
 
+A job names its market data file and its calendar by path, and runs off what they hold wherever it
+is run. Under a [book of record](../developer/spine.md#markets) the desk declares a file's content
+there by its sha256, the digest a run reports reading under `Stats['Files']`; nothing in the job
+changes, and a replay of a recorded run reads the bytes the record holds.
+
 ## CalendDataFile
 
 An XML file of business-day calendars, parsed once per `Context` and kept by the sha256 of its

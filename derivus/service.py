@@ -54,6 +54,8 @@ verb on `Context`, not an endpoint that reaches inside.
 | `GET /book/worklist` | what waits on somebody - tickets, payments, confirmations, marks, rejected trades |
 | `GET /book/portfolios` | the book's declared tree |
 | `POST /book/portfolios` | declare a node of it, judged at its parent |
+| `GET /book/files` | the files the record declares, each beside the file the book names that holds its content |
+| `POST /book/files` | declare a market data file or a calendar a job names, by the bytes it holds |
 | `GET /book/quote/{quote_id}` | the pending trade filed under a quote id - what was quoted, the deal that books it, and when |
 | `GET /book/quote/{quote_id}/sheet` | the quote sheet itself, streamed as the `.xlsx` a client is handed |
 | `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, in the quotes its factors are built from and in the factors themselves, cached on what it reads |
@@ -197,10 +199,10 @@ def load(job, context=None):
                                             parses=BOOK and BOOK.parses)
 
 
-def market_of(document):
+def market_of(document, context=None):
     """`structures.market_of` the document, each file it names taken from the live book's parses
-    where a book is served."""
-    return structures.market_of(document, BOOK and BOOK.parses)
+    where a book is served, loaded on `context` where one is handed (`spine.reading`)."""
+    return structures.market_of(document, BOOK and BOOK.parses, context)
 
 
 #: What `/execute` does with a lane it was never given. A run is recorded IFF its output will be
@@ -211,7 +213,8 @@ DEFAULT_LANE = spine.CURIOSITY
 
 def evidence_for(document, context):
     """The two objects a standing attestation is checkable from, as the bytes they are stored as:
-    the job document the plan recompiles from, and the values vector the run read.
+    the job document the plan recompiles from, and the values vector the run read - and beside
+    them the sha256 of each file the job names as the load read it, the run's `Stats['Files']`.
 
     Taken on the REQUEST thread, before anything runs, where the claim's `values_hash` was taken -
     the spine checks the vector against that claim rather than believing it.
@@ -220,7 +223,8 @@ def evidence_for(document, context):
     submission arrived, not the job, and the values vector carries the whole market as patched.
     """
     job = {'Calc': document['Calc']} if 'Calc' in document else document
-    return {'job': spine.canonical(job), 'values': spine.values_of(context)}
+    return {'job': spine.canonical(job), 'values': spine.values_of(context),
+            'files': context.current_cfg.files}
 
 
 def attests(submitted):
@@ -249,7 +253,8 @@ def attest(submitted, result):
     quote's numbers are cited by is the acceptance, and that is where they are recorded.
     """
     return spine.complete_run(submitted.replay, submitted.lane, submitted.evidence['job'],
-                              submitted.evidence['values'], result)
+                              submitted.evidence['values'], result,
+                              files=submitted.evidence['files'])
 
 
 def attested(envelope):
@@ -1560,18 +1565,19 @@ def quote_blocks(prices, universe):
         prices, bootstrappers.bootstrap_writers(prices, set(universe)))
 
 
-def quote_context(run):
+def quote_context(run, reading=Context):
     """`(context, note)`: the risk run with the book's own quotes CONNECTED - the blocks its
     factors are built from refitted with `Quote_Sensitivity` on wherever the family declares it,
     so one backward leaves `dV/dq` on every quote beside `dV/dtheta` on every factor - or the run
     as it stands and the sentence saying why not. The switch is worth zero forward, so the marks
     are the book's own; a refit that refuses leaves the risk in factor space rather than failing
-    the read."""
-    prices = market_of(run)['Market Prices']
-    universe = set(load(run).current_cfg.factor_universe()['resolved']) if prices else set()
+    the read. `reading` makes the contexts it loads on (`spine.reading`)."""
+    prices = market_of(run, reading())['Market Prices']
+    universe = set(load(run, reading()).current_cfg.factor_universe()['resolved']) \
+        if prices else set()
     blocks = quote_blocks(prices, universe)
     if not blocks:
-        return load(run), None
+        return load(run, reading()), None
     quoted = deepcopy(run)
     declared = mapping['MarketPrices']['types']
     quoted['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'] = {
@@ -1579,12 +1585,12 @@ def quote_context(run):
             prices[name]['instrument'], Quote_Sensitivity='Yes'))
         if 'Quote_Sensitivity' in declared.get(utils.check_rate_name(name)[0], {})
         else prices[name] for name in sorted(blocks)}
-    context = load(quoted)
+    context = load(quoted, reading())
     try:
         context.current_cfg.bootstrap(wanted=universe)
     except Exception as refusal:
-        return load(run), ('the quotes this book is built from did not refit, so its risk is read '
-                           'on the factors alone: {}'.format(refusal))
+        return load(run, reading()), ('the quotes this book is built from did not refit, so its '
+                                      'risk is read on the factors alone: {}'.format(refusal))
     # a family nobody configured fits nothing and says so only in a log, so the answer says it
     silent = sorted(name for name, block in quoted['Calc']['MergeMarketData'][
         'ExplicitMarketData']['Market Prices'].items()
@@ -2297,6 +2303,36 @@ def book_market_declared(request: dict):
             'values_hash': declared['values_hash']}
 
 
+@app.get('/book/files', summary='The files the record declares, beside the two the book names')
+def book_files():
+    """`{files}` - the file standing under each name the record declares: its `kind`, the `blob`
+    its bytes are stored under, the declaration it replaced (`supersedes`), who declared it where,
+    and `matches`, which of the files the live book names - `MarketDataFile` or `CalendDataFile` -
+    holds that content now, by digest (`Context.files`), null where neither does. 404 where no
+    home is configured."""
+    document, _ = recording().read()
+    named = {digest: key for key, digest in Context().files(document).items() if digest}
+    return {'files': [dict(row, matches=named.get(row['blob'])) for row in spine.files()]}
+
+
+@app.post('/book/files', summary='Declare a file a job names, by its content')
+def book_file_declared(request: dict):
+    """`{name, kind, path, actor}` - declare the bytes the file at `path` holds on this box under
+    `name`, its `kind` `market` or `calendar`: the record keeps them under their sha256, the digest
+    a run of a job naming the file reports reading, which a replay of that run reads them by. A job
+    still names its files by path, and runs as it always did whatever is declared. The act is
+    `mark` over the firm, enforced by the record in its own words. 404 where no home is
+    configured."""
+    recorded()
+    try:
+        data, _ = Context().digest(request['path'])
+    except OSError as unread:
+        raise HTTPException(422, 'the file to declare is not readable here: {}'.format(unread))
+    filed = spine.declare_file(request.get('name'), request.get('kind'), data,
+                               actor_name=request.get('actor'))
+    return {'recorded': {'lsn': filed['lsn']}, 'name': filed['name'], 'blob': filed['blob']}
+
+
 @app.post('/book/transition', summary='Move the state a party put a subject in')
 def book_transition(request: dict):
     """`{subject, status, actor, amount?, asset?, kind?, reference?, value_date?, agreement?}` -
@@ -2547,11 +2583,13 @@ def valued_between(first, last, document, marks, market, scope, through=False):
     days its marks cut, what the record held and moved at each end, and every payment the window's
     positions meet (`window_payments`), with the last day of each instrument that has one. `through`
     holds a position whose last day is `last`'s through it rather than closing it there, as a
-    netting set holds a deal until its cash moves."""
+    netting set holds a deal until its cash moves. The base currency is the start's job's, off the
+    files it read as they stood."""
     book = book_name(document)
     calculation = first['document']['Calc']['Calculation']
     reporting = calculation.get('Currency')
-    base = structures.base_currency(market_of(first['document']))
+    base = structures.base_currency(market_of(first['document'], spine.reading(
+        first['document'], first['files'])()))
     for marks_of in (first, last):
         marks_of['rates'] = PnL.rates(marks_of.pop('values', None) or json.loads(
             spine.stored(marks_of['values_hash']).decode('utf-8')), reporting, base)
@@ -2618,18 +2656,21 @@ def explaining(first, last, document):
     positions on the end's close for the levels their factors stand at there, and the start's
     close rolled onto the end's day at its own quotes - the day moved, every curve re-authored on it
     and, where the book declares a bootstrapper, the market re-bootstrapped, as `POST /book/date`
-    rolls a book."""
+    rolls a book. Each close's job reads the files its marks run read (`spine.reading`)."""
     def run(quantities):
         key = content_hash({'start': first['job'], 'end': last.get('job') or risk_etag(document),
                             'quantities': quantities})
         if key not in EXPLAIN_CACHE:
             terms = PnL.held_terms(document, set(quantities), spine.stored)
-            opening = held_job(first['document'], terms, quantities)
-            opened, note = sensed(opening)
-            closed, _ = sensed(held_job(last.get('document') or document, terms, quantities))
+            start, ending = first['document'], last.get('document') or document
+            reading = spine.reading(start, first['files'])
+            opening = held_job(start, terms, quantities)
+            opened, note = sensed(opening, reading)
+            closed, _ = sensed(held_job(ending, terms, quantities),
+                               spine.reading(ending, last.get('files')))
             if len(EXPLAIN_CACHE) >= EXPLAIN_LIMIT:
                 EXPLAIN_CACHE.popitem(last=False)
-            EXPLAIN_CACHE[key] = (opened, closed, carried(opening, last['day']), note)
+            EXPLAIN_CACHE[key] = (opened, closed, carried(opening, last['day'], reading), note)
         EXPLAIN_CACHE.move_to_end(key)
         return EXPLAIN_CACHE[key]
 
@@ -2646,13 +2687,14 @@ def held_job(market, terms, quantities):
     return job
 
 
-def sensed(job):
-    """`(reading, note)` - `job` valued with first-order sensitivities, in the quotes its factors
+def sensed(job, reading=Context):
+    """`(valued, note)` - `job` valued with first-order sensitivities, in the quotes its factors
     are built from where they refit (`quote_context`): its value, `{block, quote, value, level}`
-    per quote, the factors those stand for, and `{factor, tenor?, value, level}` per factor."""
+    per quote, the factors those stand for, and `{factor, tenor?, value, level}` per factor.
+    `reading` makes the contexts it loads on (`spine.reading`)."""
     run = spine.compiled_job(dict(job, Calc=dict(job['Calc'], Calculation=dict(
         job['Calc']['Calculation'], Greeks='First'))), strict=False, folds=folds())
-    context, note = quote_context(run)
+    context, note = quote_context(run, reading)
     _, out = context.run_job()
     quotes, quoted = quote_rows(context.current_cfg)
     gradient = out['Results'].get('Greeks_First')
@@ -2660,15 +2702,16 @@ def sensed(job):
             'quoted': quoted, 'greeks': [] if gradient is None else greek_rows(gradient)}, note
 
 
-def carried(job, day):
+def carried(job, day, reading=Context):
     """What `job` is worth rolled onto `day` at its own quotes, as `POST /book/date` rolls a book;
-    refused in the bootstrap's own words where that complains."""
+    refused in the bootstrap's own words where that complains. `reading` makes the contexts it
+    loads on (`spine.reading`)."""
     rolled = deepcopy(job)
-    write, outcome = date_edit(rolled, read_stamp(day))
+    write, outcome = date_edit(rolled, read_stamp(day), reading)
     if not write:
         raise ValueError('the start would not roll onto {}: {}'.format(
             day, '; '.join(outcome['refused'])))
-    _, out = load(spine.compiled_job(rolled, strict=False, folds=folds())).run_job()
+    _, out = load(spine.compiled_job(rolled, strict=False, folds=folds()), reading()).run_job()
     return sum(PnL.unit_marks(as_json(out['Results'])).values())
 
 
@@ -2726,12 +2769,13 @@ def window_payments(first, last, fills, amended, document, marks, movements):
         job = next((marks[day]['job'] for day in sorted(marks)
                     if marks[day]['lsn'] >= dealt[address]), last.get('job'))
         units.setdefault(job, []).append(PnL.unit_node(address, terms[address]))
+    read = {row['job']: row['files'] for row in marks.values()}
     rows = []
     for job, nodes in units.items():
         marked = (jobs.get(job) or json.loads(spine.stored(job).decode('utf-8')))['Calc']
         for group in PnL.apart(nodes):
             found, holders = diary_rows({'Calc': dict(marked, Deals=dict(marked['Deals'], Deals={
-                'Children': group}))}, last['lsn'])
+                'Children': group}))}, last['lsn'], read.get(job))
             rows.extend(dict(row, instrument=holders.get(row['instrument'], row['instrument']))
                         for row in found)
     keys, earlier = {row['key'] for row in rows}, {}
@@ -2742,7 +2786,7 @@ def window_payments(first, last, fills, amended, document, marks, movements):
                            and day <= movement['effective_time'][:10]), reverse=True)[:LOOK_BACK]:
             if day not in earlier:
                 earlier[day] = diary_rows(json.loads(spine.stored(marks[day]['job']).decode(
-                    'utf-8')), last['lsn'])
+                    'utf-8')), last['lsn'], marks[day]['files'])
             found, legs = earlier[day]
             hits = [dict(row, instrument=legs.get(row['instrument'], row['instrument']))
                     for row in found if row['key'] == movement['subject']]
@@ -2760,12 +2804,14 @@ def window_payments(first, last, fills, amended, document, marks, movements):
     return found, last_days
 
 
-def diary_rows(job, lsn):
+def diary_rows(job, lsn, files=None):
     """`(rows, legs)` - the diary of a marks job's units as the record stood at `lsn`, every row
     keyed as the book's own diary keys it, and `{leg address: unit}` for every leg of a structure
-    among them."""
+    among them. `files` is what the job's marks run read (`Stats['Files']`), which the diary reads
+    as it stood where the record holds it (`spine.reading`)."""
     units = [node['Instrument']['.Deal']['Reference'] for node in job_children(job)]
-    context = load(spine.compiled_job(job, lsn=lsn, strict=False, folds=folds()))
+    context = load(spine.compiled_job(job, lsn=lsn, strict=False, folds=folds()),
+                   spine.reading(job, files)())
     return (diary(context, dict(booked_instruments(job), **{
         str(position): address for position, address in enumerate(units)})),
         PnL.held_legs(job_children(job), set(units)))
@@ -3499,14 +3545,16 @@ class XvaJob:
     error still travels to the result store, so `/results/{result_id}` is never told otherwise. A
     run that skipped a deal is a failed run: a dropped deal must never read as a smaller CVA.
 
-    It holds the set's DOCUMENT, and the worker loads it onto the executor's long-lived context
-    (`ComputeExecutor.session_for`), so nothing parses on the request thread.
+    It holds the set's DOCUMENT and the bytes of each file it names as its stamp hashed them, and
+    the worker loads the one over the other onto the executor's long-lived context
+    (`ComputeExecutor.session_for`), so nothing parses on the request thread and the run prices the
+    content its id names, whatever the files say by then.
     """
 
-    def __init__(self, document, reference, terms, result_id, stamp):
+    def __init__(self, document, reference, terms, result_id, stamp, held):
         self.document, self.reference = document, reference
         self.counterparty, self.collateralized = terms
-        self.result_id, self.stamp = result_id, stamp
+        self.result_id, self.stamp, self.held = result_id, stamp, held
 
     def row(self, **fields):
         """The set's row: who it is against, what was run, and what came back - the replay tuple
@@ -3554,13 +3602,9 @@ class XvaJob:
         captured = CapturedErrors()
         logging.getLogger().addHandler(captured)
         try:
-            session = load(self.document,
-                           EXECUTOR.session_for(self.document, self.stamp['values_hash']))
-            # the digests the load parsed, so a parse of other bytes than the stamp's is refused
-            if content_hash(session.current_cfg.files) != self.stamp['values_hash']:
-                raise ValueError('a file this netting set names changed after its recalc was '
-                                 'asked for - ask again')
-            _, out = session.run_job()
+            session = EXECUTOR.session_for(self.document, self.stamp['values_hash'])
+            session.held = self.held
+            _, out = load(self.document, session).run_job()
             skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(
                 out['Stats'].items()) if name.endswith('Skipped'))
             if skipped:
@@ -3593,7 +3637,8 @@ def book_xva(request: dict):
 
     NOTHING IS PARSED HERE. A set's stamp is the content hash of its document, the sha256 of the
     market data and calendar files it names, the engine version and the two seeds; the worker loads
-    it.
+    it over the bytes those digests were taken of, so a file rewritten while the set waits moves
+    nothing its id names.
 
     Answers `{queued: [{reference, result_id}]}`. Content addressing applies: the same set over an
     unmoved book and unmoved files is one run, and asking twice hands back the id of the first.
@@ -3609,7 +3654,10 @@ def book_xva(request: dict):
                                  'are {}'.format(', '.join(map(repr, sorted(set(unknown)))),
                                                  ', '.join(sorted(found)) or 'none'))
 
-    queued, files = [], content_hash(Context().files(document))
+    reader = Context()
+    reader.held = {name: reader.digest(name)[0]
+                   for name in Context.named(document).values() if name}
+    queued, files = [], content_hash(reader.files(document))
     for reference in references:
         node = found[reference]
         terms = set_terms(node['Instrument']['.Deal'])
@@ -3617,7 +3665,7 @@ def book_xva(request: dict):
         stamp = dict(plan_hash=content_hash(job), values_hash=files, engine_version=__version__,
                      **spine.replay_seeds(job['Calc']['Calculation']))
         result_id = content_hash(stamp)
-        run = XvaJob(job, reference, terms, result_id, stamp)
+        run = XvaJob(job, reference, terms, result_id, stamp, reader.held)
         status = EXECUTOR.submit(
             Job(result_id, run, stamp, spine.CURIOSITY, actor=request.get('actor'),
                 book=book_name(document)), HEAVY)
@@ -3740,7 +3788,7 @@ def bootstrap_selection(market, outcome, patch):
                                               outcome['updated'])
 
 
-def market_edit(document, quotes, patch, bootstrap=None, authored=()):
+def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Context):
     """The market tick as ONE edit closure over a wire document, for `Book.mutate`: quote blocks
     installed or value-updated, a values patch applied, the bootstrap run, `(write, outcome)` back.
 
@@ -3761,10 +3809,10 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=()):
 
     THE BOOTSTRAP COVERS WHAT MOVED (`bootstrap_selection`) and names it under `bootstrapped`
     where it was narrowed, so a tick of one curve costs that curve and its dependents rather than
-    the whole market.
+    the whole market. `reading` makes the contexts it loads on (`spine.reading`).
     """
     outcome = {'installed': [], 'updated': []}
-    standing = market_of(document)['Market Prices'] if quotes else {}
+    standing = market_of(document, reading())['Market Prices'] if quotes else {}
     for name in sorted(quotes):
         if name in standing and name not in authored:
             # the market's own block is what a tick moves the values of, the tick replacing it
@@ -3773,7 +3821,7 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=()):
         outcome[update_market_quote(document, name, quotes[name])].append(name)
     wants_bootstrap = (bootstrap if bootstrap is not None else
                        ('Yes' if quotes else 'No')) == 'Yes'
-    context = load(document)
+    context = load(document, reading())
     params = context.current_cfg.params
     quoted = sorted(set(patch) & set(params['Market Prices']))
     if quoted:
@@ -4137,16 +4185,16 @@ def snap_date(rows, as_of):
                           if day is not None])
 
 
-def curve_holidays(document, calendar):
+def curve_holidays(document, calendar, reading=Context):
     """The dates a block's `Calendar` names, off the book's own calendar file, taken from the live
-    book's parses - the holiday set the emitter rolls against. No file, or a location it does not
-    carry, is the weekday rule."""
+    book's parses - the holiday set the emitter rolls against, read on a context `reading` makes
+    (`spine.reading`). No file, or a location it does not carry, is the weekday rule."""
     import datetime
 
     path = document['Calc'].get('CalendDataFile')
     if not (calendar and path and os.path.isfile(path)):
         return ()
-    holidays = Context().cached(path, Config().parse_calendar_file, BOOK and BOOK.parses)
+    holidays = reading().cached(path, Config().parse_calendar_file, BOOK and BOOK.parses)
     return {datetime.date.fromisoformat(day)
             for day in holidays.get(calendar, {}).get('holidays', ())}
 
@@ -4211,7 +4259,7 @@ def authored_curve(document, request):
         raise ValueError(str(error))
 
 
-def curve_edit(document, curves, base_date, quotes={}, patch={}):
+def curve_edit(document, curves, base_date, quotes={}, patch={}, reading=Context):
     """Curve blocks installed as ONE edit closure for `Book.mutate`, then the whole market
     bootstrapped through `market_edit` where the book declares a `Bootstrapper Configuration` - a
     book declaring none moves its dates and blocks and solves nothing.
@@ -4223,12 +4271,14 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}):
     bootstrap, and `patch` the values half riding it - the book's own spots, on a tick.
 
     `base_date` is the day the blocks handed in were authored on, stamped onto the book before they
-    land, so the curves and the calculation are dated together or not at all.
+    land, so the curves and the calculation are dated together or not at all. `reading` makes the
+    contexts it loads on (`spine.reading`).
     """
     from derivus_bloomberg.ir_curve import reauthor
 
     stamp_base_date(document, base_date)
-    market, loaded = document['Calc']['MergeMarketData']['ExplicitMarketData'], market_of(document)
+    market, loaded = document['Calc']['MergeMarketData']['ExplicitMarketData'], market_of(
+        document, reading())
     prices = market.setdefault('Market Prices', {})
     reauthored = [name for name in sorted(curves) if name in loaded['Market Prices']
                   and quote_plan(loaded['Market Prices'][name]) != quote_plan(curves[name])]
@@ -4236,14 +4286,15 @@ def curve_edit(document, curves, base_date, quotes={}, patch={}):
         reauthor(prices, name, curves[name])
     before = dict(market.get('Price Factors', {}))
     outcome = market_edit(document, dict(quotes, **curves), patch,
-                          'Yes' if loaded['Bootstrapper Configuration'] else 'No')[1]
+                          'Yes' if loaded['Bootstrapper Configuration'] else 'No',
+                          reading=reading)[1]
     write = outcome['written']
     return write, (dict(outcome, base_date=base_date.isoformat(), reauthored=reauthored,
                         rewrote=rewrote(before, market.get('Price Factors', {}))) if write
                    else outcome)
 
 
-def curve_quotes(source, document, base_date=None):
+def curve_quotes(source, document, base_date=None, reading=Context):
     """Every `InterestRatePrices` block the book carries, re-authored with its used rows re-priced
     off `source` - `(blocks, held out, date)`.
 
@@ -4257,13 +4308,13 @@ def curve_quotes(source, document, base_date=None):
     THE SNAP SETS THE DATE: the blocks are authored on the latest print the terminal answered with
     where that is later than the book's own day. `base_date` authors on a day a desk STATED
     instead, and no source is the same walk with no terminal at all - the rows exactly as they
-    stand, re-rolled onto that day.
+    stand, re-rolled onto that day. `reading` makes the contexts it loads on (`spine.reading`).
     """
     from derivus_bloomberg import ir_curve, security_map
     from derivus_bloomberg.errors import BloombergFXError
 
     as_of, read, quotes, held = base_date or book_base_date(document), {}, {}, []
-    prices = market_of(document)['Market Prices']
+    prices = market_of(document, reading())['Market Prices']
     for name in sorted(prices):
         if not name.startswith(CURVE_FAMILY + '.'):
             continue
@@ -4289,7 +4340,7 @@ def curve_quotes(source, document, base_date=None):
             quotes[name] = ir_curve.author_block(
                 {'curve': curve, 'currency': instrument['Currency'], 'conventions': conventions,
                  'rows': rows, 'discount_rate': instrument['Discount_Rate']},
-                as_of, curve_holidays(document, conventions.calendar))[1]
+                as_of, curve_holidays(document, conventions.calendar, reading))[1]
         except BloombergFXError as error:
             held.append('{} left as it stands - {}'.format(name, error))
     return quotes, held, as_of
@@ -4511,14 +4562,14 @@ def book_market_view():
     return {'etag': etag, 'market': market_of(document)}
 
 
-def date_edit(document, base_date):
+def date_edit(document, base_date, reading=Context):
     """The book's calculation date moved as ONE edit closure for `Book.mutate`: both stamps set,
     every curve block re-authored on the new date from its own rows and conventions with no
     terminal asked, and the market re-bootstrapped through `curve_edit` where the book declares a
     bootstrapper - so a bootstrap that complains writes NOTHING and the date does not move
-    either."""
-    curves, held, _ = curve_quotes(None, document, base_date)
-    write, outcome = curve_edit(document, curves, base_date)
+    either. `reading` makes the contexts it loads on (`spine.reading`)."""
+    curves, held, _ = curve_quotes(None, document, base_date, reading)
+    write, outcome = curve_edit(document, curves, base_date, reading=reading)
     return write, (dict(outcome, held_out=held) if write else outcome)
 
 

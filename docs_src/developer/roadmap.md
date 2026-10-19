@@ -21,12 +21,6 @@ not rows to close.
 
 **The record and the service.**
 
-- **The files a job names declared in the record** (2026-10-05, S). A job names its market data
-  and calendar files by path; the replay tuple covers what they hold, but the record keeps neither,
-  so a replay reproduces only while the files on disk still hold it. The fix uses what exists
-  ([the design](architecture.md#market-data-context-job)): the hub declares each file under a name
-  and a job names the standing blob. Meanwhile a set the XVA tab refused for a file that moved in
-  the queue keeps the refusal if the file is put back.
 - **The web client's market screens read the explicit block** (2026-10-18, S). The Market Data,
   Market Prices, Curves, Bootstrapper and Settings views and the blotter's base date read
   `ExplicitMarketData` off `GET /book`, so on a book naming a market data file they show only what

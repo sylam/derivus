@@ -11,7 +11,7 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The oracle's fourteen, each made to FAIL, and each named where it did.
+"""The oracle's fifteen, each made to FAIL, and each named where it did.
 
 A gate that only ever sees a green report is a gate that cannot tell an invariant from a constant,
 so every one of these doctors a home until the question it asks has the wrong answer and then reads
@@ -21,7 +21,8 @@ nobody signed, a close body no validating writer would have taken, a script aski
 record never attested, a settlement against a key the book has no row for, a line removed, one
 fact written twice under one tag, a verdict naming a node its ticket does not book at, a P&L that
 does not sum or that this record did not make, money moved under paper nobody declared or past what
-the diary determines, a close nobody marked, and a call the formula does not give.
+the diary determines, a close nobody marked, a call the formula does not give, and a run on a file
+nobody declared.
 
 The frames put on a platter by hand go through `SpineLog.accept`, which is what a replica writes
 with: it asks the chain and never the vocabulary, never scope and never the tag, so it is exactly
@@ -44,8 +45,8 @@ from derivus_spine.canon import canonical_bytes, content_hash
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 from derivus_spine.projections import CSA, PROJECTORS, fold
 from derivus_spine.verbs import (
-    STANDING, amendment, approve, book, declare_agreement, declare_close, declare_entity,
-    declare_portfolio, file_quote, transition)
+    STANDING, amendment, approve, book, complete_run, declare_agreement, declare_close,
+    declare_entity, declare_file, declare_portfolio, file_quote, transition)
 from derivus_spine.vocabulary import cited_blobs
 
 from gates.spine_game.red import forged
@@ -116,7 +117,7 @@ def script(*acts):
     return {'acts': list(acts)}
 
 
-def test_the_report_answers_fourteen_and_names_what_it_could_not_assess(tmp_path):
+def test_the_report_answers_fifteen_and_names_what_it_could_not_assess(tmp_path):
     """THE GREEN READING, so the reds below are differences rather than the only thing seen. The
     design's synthetic book holds every fact type this vocabulary has, including a close restated
     by a second close, and every invariant the record alone can answer holds over it.
@@ -137,7 +138,7 @@ def test_the_report_answers_fourteen_and_names_what_it_could_not_assess(tmp_path
         ('copies_agree', 'every_numbers_replay_tuple', 'every_refusal_is_a_denial',
          'the_pnl_is_additive', 'every_close_marked', 'the_call_is_the_formula'))
     assert '2 close(s) over 1 market(s)' in answers['closes_superseded_never_edited']['evidence'][0]
-    assert answers['duplicates_coalesce']['evidence'] == ['22 tag(s) over 22 frame(s)']
+    assert answers['duplicates_coalesce']['evidence'] == ['23 tag(s) over 23 frame(s)']
 
 
 def test_two_homes_that_are_not_copies_of_one_history_are_named(tmp_path):
@@ -1049,7 +1050,56 @@ def test_a_call_the_formula_does_not_give_is_named(tmp_path):
         'the_call_is_the_formula']['held'] is None
 
 
-def test_the_cli_answers_the_fourteen_and_exits_on_one_that_did_not_hold(tmp_path):
+def test_a_run_on_a_file_nobody_declared_is_named_and_passes_once_it_is_declared(tmp_path):
+    """FILES DECLARED. A run says the content of each file its job named, and each digest is to be
+    the blob of a `file_declared` filed at or before the run. A run whose market data file nobody
+    had declared is named by its LSN and the digest, the calendar beside it declared and passing,
+    and a declaration filed AFTER it covers nothing - the next run on the file passes, the first is
+    still named; on a home where the file was declared first the run holds. A home whose runs read
+    a file and which declares none is not asked, and one whose runs read no file holds with nothing
+    to hold. Reported, never refused: every run here landed.
+
+    Killing mutations: a declaration counted whatever its LSN, under which the market file declared
+    after the first run covers it; the run's own digests not read, which holds every run.
+    """
+    market, calendar = b'{"MarketData":{"Price Factors":{}}}', b'<Calendars/>'
+    read = {'MarketDataFile': hashlib.sha256(market).hexdigest(),
+            'CalendDataFile': hashlib.sha256(calendar).hexdigest()}
+    values = b'{"EURUSD":1.09}'
+
+    def declared(kind, data):
+        return lambda log: declare_file(log, ACTOR, kind, kind, data)
+
+    def ran(plan, files=read):
+        return lambda log: complete_run(log, STANDING, {
+            'plan_hash': plan, 'values_hash': hashlib.sha256(values).hexdigest(),
+            'engine_version': '2.0', 'seed': None, 'quasi_seed': 1}, b'{"Calc":{}}', values,
+            b'{"mtm":1.0}', files=files)
+
+    def answered(name, *acts):
+        home = seeded(tmp_path, name, clips=())
+        log = SpineLog(home)
+        try:
+            for act in acts:
+                act(log)
+        finally:
+            log.close()
+        return oracle.report(home)['files_declared']
+
+    late = answered('late', declared('calendar', calendar), ran(PLAN), declared('market', market),
+                    ran(TICKET))
+    assert late == {'held': False, 'evidence': [
+        'LSN 6: the run read {} as its MarketDataFile, and no file declared at or before it holds '
+        'that content'.format(read['MarketDataFile']),
+        '4 file(s) read by attested runs, 2 content(s) declared']}
+    assert answered('first', declared('calendar', calendar), declared('market', market),
+                    ran(PLAN)) == {'held': True, 'evidence': [
+        '2 file(s) read by attested runs, 2 content(s) declared']}
+    assert answered('none', ran(PLAN))['held'] is None
+    assert answered('nothing', ran(PLAN, dict.fromkeys(read)))['held'] is True
+
+
+def test_the_cli_answers_the_fifteen_and_exits_on_one_that_did_not_hold(tmp_path):
     """The mouth: `DV_Spine oracle` prints the report and exits 1 where an invariant did not hold,
     which is what makes it usable from a cron and from a gate that is not this suite; the diary's
     keys and the P&L are files it takes as data.

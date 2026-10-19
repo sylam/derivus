@@ -754,15 +754,17 @@ def synthetic_book(tmp_path, copied=True):
     recorded after Wednesday's), a backdated amendment behind it, an exercise election, an approval
     and a second seat's rejection, a determination and a status transition, an administrator's
     republished fixing under the same key, and a backdated observation after an official close -
-    answered by a NEW close, never an edit - and last a node of the book's tree. Every fact in the
-    closed vocabulary reaches the writer, the snapshot in the writer's own voice.
+    answered by a NEW close, never an edit - then a node of the book's tree, and last a market data
+    file declared by its content. Every fact in the closed vocabulary reaches the writer, the
+    snapshot in the writer's own voice.
 
     Answers `(home, log, marks)` with the writer open on a copy of the book this process wrote once,
     or with `copied` false on a book written there, a history of its own.
     """
     blobs = {'values': b'{"EURUSD":1.0851}', 'restated': b'{"EURUSD":1.0857}',
              'policy': b'{"tape":"90 days, then the logged reduction"}',
-             'snapshot': b'{"surface":"the vol cube of 2026-08-26"}'}
+             'snapshot': b'{"surface":"the vol cube of 2026-08-26"}',
+             'file': b'{"MarketData":{"Price Factors":{}}}'}
     marks = dict(((name, hashlib.sha256(data).hexdigest()) for name, data in blobs.items()),
                  plan=hashlib.sha256(b'the compiled job this desk approved').hexdigest())
 
@@ -810,6 +812,8 @@ def synthetic_book(tmp_path, copied=True):
         log.append('break_glass_used', {'reason': 'the grant declaration stranded the last admin'},
                    actor=ACTOR)
         log.append('portfolio_declared', {'path': BOOK + '/Options'}, actor=ACTOR, book=BOOK)
+        log.append('file_declared', {'name': 'risk-neutral', 'kind': 'market',
+                                     'blob': marks['file'], 'supersedes': None}, actor=ACTOR)
         log.close()
 
     home = copy_of(tmp_path, 'book', ('synthetic',), build, copied)
@@ -829,15 +833,15 @@ def test_the_synthetic_book_reads_as_of_and_as_at_across_a_restatement(tmp_path)
     Killing mutation: the as-of key read off the record time alone.
     """
     home, log, marks = synthetic_book(tmp_path)
-    assert verify_home(home) == {'mode': 'entitled', 'events': 22, 'checkpoints_verified': 1,
-                                 'head_lsn': 22, 'head_hash': log.head()[1]}
+    assert verify_home(home) == {'mode': 'entitled', 'events': 23, 'checkpoints_verified': 1,
+                                 'head_lsn': 23, 'head_hash': log.head()[1]}
     assert set(frame['event_type'] for frame in log.frames()) == set(FACT_TYPES), \
         'every fact in the closed vocabulary reaches the writer in this fixture'
 
     pairs = [(frame, log.open_body(frame)) for frame in log.frames(start_lsn=5)]
     as_at = [frame['lsn'] for frame, _ in pairs]
     as_of = [frame['lsn'] for frame, _ in sorted(pairs, key=lambda pair: as_of_key(pair[0]))]
-    assert as_at == list(range(5, 23)), 'as-at is LSN order and needs no key'
+    assert as_at == list(range(5, 24)), 'as-at is LSN order and needs no key'
     assert as_of != as_at, 'a book holding a late booking must read differently as of'
     assert as_of.index(6) < as_of.index(5), 'the Monday fill is true before the Wednesday one'
     assert as_of.index(7) < as_of.index(5), 'and so is the amendment backdated behind it'

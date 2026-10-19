@@ -487,6 +487,8 @@ class Context:
         self.file_map = file_transform
         # a named file's parse by the sha256 of its bytes, and the digest each name last read
         self.parsed, self.digests = {}, {}
+        # the bytes a named file is read as in place of its path's: what a run read, where held
+        self.held = {}
         self.current_cfg = Config()
         # there may be a stressed config file attached to the context
         self.stressed_config_file = None
@@ -512,8 +514,10 @@ class Context:
         return os.path.join(self.path_map.get(path, path), self.file_map.get(filename, filename))
 
     def digest(self, name):
-        """The bytes of the file `name` names and their sha256, which is the file's identity."""
-        data = pathlib.Path(self.parse_path(name)).read_bytes()
+        """The bytes of the file `name` names - the ones `held` holds for it, else its path's - and
+        their sha256, which is the file's identity."""
+        data = self.held[name] if name in self.held else pathlib.Path(
+            self.parse_path(name)).read_bytes()
         return data, hashlib.sha256(data).hexdigest()
 
     def cached(self, name, parse, parses=None):
@@ -873,18 +877,22 @@ class Context:
         return record(plan_hash, reason, actor_name=actor, book_name=book,
                       effective_time=effective_time)
 
-    def pin_result(self, job, values, result, claim, actor=None, book=None, effective_time=None):
+    def pin_result(self, job, values, result, claim, actor=None, book=None, effective_time=None,
+                   files=None):
         """Promote a replay claim this box did not witness: re-execute it, or find it already
         attested, and only then record it.
 
         The executor is built from THIS context's own class, so a subclass that prices differently
         pins through the pricing it actually does. A version mismatch refuses by name, and bytes
         that will not reproduce within the declared tolerance policy are refused, not attested.
+        `files` is the claim's `Stats['Files']`, whose content the re-execution reads where the
+        record holds it.
         """
         from .spine import executor, pin_result as record
 
         return record(claim, job, values, result, actor_name=actor, book_name=book,
-                      effective_time=effective_time, execute=executor(type(self)))
+                      effective_time=effective_time, execute=executor(type(self), files),
+                      files=files)
 
     def run_job(self, overrides=None, runparallel=False):
         # check what calc we should run

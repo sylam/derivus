@@ -1537,6 +1537,147 @@ def test_a_seat_marking_one_book_marks_it_and_the_hub_attests_the_marks(recorded
     assert [row['day'] for row in CLIENT.get('/book/marks').json()['days']] == ['2024-06-28']
 
 
+@pytest.fixture
+def filed(tmp_path):
+    """`(book, market)`: `desk`'s book with its market in a FILE the book names, the explicit block
+    stating over it only the day and the rand, which a desk's morning roll and tick move."""
+    body = document()
+    body['Calc']['Deals']['Deals']['Children'] = [netting_set(CLIENT_SET, 'CPTY_A')]
+    stated = body['Calc']['MergeMarketData']['ExplicitMarketData']
+    block = {'System Parameters': {'Base_Date': stated['System Parameters'].pop('Base_Date')},
+             'Price Factors': {'FxRate.ZAR': stated['Price Factors'].pop('FxRate.ZAR')}}
+    market = tmp_path / 'market.json'
+    market.write_text(json.dumps({'MarketData': stated}), newline='\n')
+    body['Calc']['MergeMarketData'] = {'MarketDataFile': str(market), 'ExplicitMarketData': block}
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(body, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    yield path, market
+    service.BOOK = None
+    service.BOOK_DIARY_CACHE.clear()
+
+
+#: A cashflow paying inside the window, so the window's P&L reads the start's diary and its base.
+PAYS_END = cashflow('CF-W', 100_000.0, END)
+
+
+def test_a_window_reads_the_files_its_marks_read_as_they_stood(recorded, filed):
+    """A WINDOW IS READ ON WHAT ITS MARKS READ. The book names its market data file - the curves,
+    the equity and the base currency, the day and the rand stated over it - and the desk declares
+    it; a cashflow of 100,000 rand paying on the second day is held through two marked closes, and
+    the window between them reads the payment off the diary of the start's own marks job and
+    crosses it on that job's base currency: 1,860,000.00 paid, a P&L of 10,304.08. The file is then
+    re-authored on disk - the rand curve renamed and the base currency moved to the rand - and the
+    window read again is the same answer to the bit, the start's diary and base read off the bytes
+    its marks run read, which the record holds by the digest the marks attested. A rewrite that
+    moved only the curve's day count, which would move a mark, reaches neither: no schedule, amount
+    or base reads a day count, and the window it leaves is the same read either way.
+
+    Killing mutations: the past diary read off the path, which finds no curve for the cashflow and
+    no payment nor last day with it, holding the position at its end mark - payments 0.00 where
+    1,860,000.00 and realised 0.00 where 60,000.00; the window's base read off the path, which
+    crosses the rand at one - payments 100,000.00 and a P&L of -1,749,695.92; the marks carrying no
+    files, which reads the diary off the path as the first does.
+    """
+    book, market = filed
+    designated(recorded, fixings=False)
+    declared = CLIENT.post('/book/files', content=dump({
+        'name': 'desk-market', 'kind': 'market', 'path': str(market), 'actor': ACTOR}),
+        headers=JSON)
+    assert declared.status_code == 200, declared.text
+    booked(PAYS_END, 1.0, 'EXEC-W', BOOK + '/Rates', 1_800_000.0)
+    closed_and_marked()
+    rolled(book, END, 18.6)
+    settle({'subject': due('CF-W', '2024-07-01')['key']})
+    closed_and_marked()
+    stood = between('2024-06-28', '2024-07-01')
+    assert stood['complete'] is True and stood['unknown'] == [], stood['unknown']
+    assert (stood['total']['payments'], stood['total']['pnl']) == (
+        pytest.approx(100_000.0 * 18.6), pytest.approx(10_304.084595102118))
+
+    data = json.loads(market.read_text())
+    factors = data['MarketData']['Price Factors']
+    factors['InterestRate.ZAR-OIS'] = factors.pop('InterestRate.ZAR')
+    data['MarketData']['System Parameters']['Base_Currency'] = 'ZAR'
+    market.write_text(json.dumps(data), newline='\n')
+    assert CLIENT.get('/book/files').json()['files'][0]['matches'] is None, 'the file did not move'
+    assert between('2024-06-28', '2024-07-01') == stood
+
+
+def test_the_explain_and_the_call_of_a_past_close_read_the_files_its_marks_read(recorded, filed):
+    """THE EXPLAIN AND THE CALL OF A PAST CLOSE ARE READ ON WHAT ITS MARKS READ. The book names its
+    market data file, which holds the rand curve solved from its quotes and states
+    `Exclude_Paid_Today` for the netting sets, and the desk declares it as it stands on each day;
+    a two-year rand cashflow and one paying on the second day sit under a collateralised agreement
+    through two marked closes, the book rolled between them. The explain between them - the
+    start's job valued with its sensitivities in the quotes, the end's job for the levels there,
+    and the start rolled onto the end's day, its curve re-authored and re-solved - reads a carry of
+    -1,838,031.40, a market move of 85,422.41 and a residual of 58.66, and the second close's call
+    an exposure of 15,899,479.92, the day's 1,860,000.00 left out as the file says. The file is
+    then rewritten on disk - the two-year quote moved 25 basis points, the curve interpolated
+    another way and the setting turned off - and both read again are the same answers to the bit,
+    every job loaded on the bytes its marks run read, which the record holds.
+
+    Killing mutations, each moving the explain off the path: the start's job, to a carry of
+    -1,839,392.60, a market move of 165,485.17 and a residual of -78,642.90; its sensitivities
+    alone, to -1,758,671.63, 84,993.44 and -78,872.14; the end's job, to a market move of 4,304.73
+    and a residual of 81,176.34; the roll's own loads, to a carry of -1,918,459.05; the rolled
+    job's valuation, to a carry of -1,838,098.94. The call's setting read off the path adds the
+    day's payment back, an exposure of 17,759,479.92.
+    """
+    book, market = filed
+
+    def into_file(*sections, **stated):
+        """What the verbs wrote into the book's block moved into its file - the rand curve, its
+        quotes and how they solve into it - and the file declared as it now stands."""
+        body, data = json.loads(book.read_text()), json.loads(market.read_text())
+        block = body['Calc']['MergeMarketData']['ExplicitMarketData']
+        data['MarketData']['Price Factors']['InterestRate.ZAR'] = block['Price Factors'].pop(
+            'InterestRate.ZAR')
+        data['MarketData'].update({section: block.pop(section) for section in sections}, **stated)
+        market.write_text(json.dumps(data), newline='\n')
+        book.write_text(json.dumps(body, indent=2), newline='\n')
+        assert CLIENT.post('/book/files', content=dump({
+            'name': 'desk-market', 'kind': 'market', 'path': str(market), 'actor': ACTOR}),
+            headers=JSON).status_code == 200
+
+    designated(recorded, fixings=False)
+    assert CLIENT.post('/book/curve', content=dump({'curve': 'ZAR', 'currency': 'ZAR',
+                                                    'rows': STRIP}), headers=JSON).json()['written']
+    into_file('Market Prices', 'Bootstrapper Configuration', **{'Valuation Configuration': {
+        'NettingCollateralSet': {'Exclude_Paid_Today': True}}})
+    agreed_csa('CSA-A', 'CPTY_A', 'USD', 1_000_000.0, -500_000.0, 100_000.0)
+    for deal, reference, price in ((LONG, 'EXEC-A', 15_600_000.0),
+                                   (PAYS_END, 'EXEC-W', 1_800_000.0)):
+        booked(deal, 1.0, reference, BOOK + '/Rates', price, parent=None, agreement='CSA-A')
+    closed_and_marked()
+    assert CLIENT.post('/book/date', content=dump({'base_date': '2024-07-01'}),
+                       headers=JSON).status_code == 200
+    into_file('Market Prices')
+    rolled(book, END, 18.6)
+    settle({'subject': due('CF-W', '2024-07-01')['key']})
+    closed_and_marked()
+    window = between('2024-06-28', '2024-07-01', explain=True)
+    told, call = window['explain'], called('2024-07-01')['CSA-A']
+    assert told['unknown'] == [] and call['exposure'] == pytest.approx(sum(
+        row['unit_end'] * row['quantity_end'] for row in window['rows']) - 100_000.0 * 18.6,
+        rel=1e-12)
+
+    data = json.loads(market.read_text())
+    data['MarketData']['Market Prices']['InterestRatePrices.ZAR']['instrument']['Points'][2][
+        'Quoted_Market_Value'] += 0.25
+    data['MarketData']['Price Factor Interpolation'] = {'.ModelParams': {
+        'modeldefaults': {}, 'modelfilters': {'InterestRate': [[['ID', 'ZAR'], 'Hermite']]}}}
+    data['MarketData']['Valuation Configuration'] = {
+        'NettingCollateralSet': {'Exclude_Paid_Today': False}}
+    market.write_text(json.dumps(data), newline='\n')
+    assert CLIENT.get('/book/files').json()['files'][0]['matches'] is None, 'the file did not move'
+    # the explain is kept by the two marks it reads, so the read after the rewrite is run again
+    service.EXPLAIN_CACHE.clear()
+    assert between('2024-06-28', '2024-07-01', explain=True)['explain'] == told
+    assert called('2024-07-01')['CSA-A'] == call
+
+
 #: The second pair of eyes, a seat reading the FX node of the book alone, and the seats that act on
 #: what waits: one approving at the Rates node, and the back office's three across the firm.
 SECOND, FX_READER = 'subject-desk-two', 'subject-desk-fx'

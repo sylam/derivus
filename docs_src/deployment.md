@@ -160,7 +160,7 @@ DV_HOME/                      ~/.derivus unless DV_HOME names another
 | file | what it holds | if it is lost |
 | --- | --- | --- |
 | `book.json` | the book: deals, market, calculation. Without a spine home it is the book of record; with one, the record is the spine and this file is reconciled against it (`GET /book/reconcile`) | restore it: the deal tree lives here in either case |
-| files the book names | a market-data file or calendar the book names by path | restore them with the book |
+| files the book names | a market-data file or calendar the book names by path | restore them with the book; one the record declares is also among its blobs, at the address `GET /book/files` names |
 | `calculations.json`, `seed.json` | desk configuration | restore them; without `seed.json` the packaged seed is read |
 | `security_map.json` | terminal evidence for each security | rebuilt by `DV_Bloomberg discover` on a terminal |
 | `xva.json` | the last XVA run of each netting set | recomputed by `POST /book/xva`, at the cost of the runs |

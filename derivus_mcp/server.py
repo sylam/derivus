@@ -120,7 +120,10 @@ THE RECORD, where this desk keeps one: book_diary is everything the book owes or
 the fact each row waits on, close_check says whether a close on a day is legal and names what
 is outstanding, book_reconcile says where the book file and the record disagree, book_activity
 is one line per event with the head to page from, and book_markets the official close standing
-per market - its latest by day - with the close of its day each superseded. DECLARING IS THE OTHER
+per market - its latest by day - with the close of its day each superseded; book_files lists the
+market data files and calendars the record declares by their content, each beside the file the
+book names that holds it now, and declare_file declares one by its bytes, the job still naming it
+by path. DECLARING IS THE OTHER
 HALF: declare_close puts the day's close on the record over the values the book is carrying, once
 close_check says the day is legal - declare_market is that same act under any other name -
 export_settlements strikes the settlement file for a day, on the market the desk designated for it
@@ -1568,6 +1571,30 @@ def declare_market(name: str, actor: str | None = None) -> dict:
     """
     return service().call('POST', '/book/markets',
                           json=dict({'name': name}, **_stated(actor=actor)))
+
+
+@MCP.tool(annotations=READ_ONLY)
+def book_files() -> dict:
+    """The market data files and calendars the record declares by their content: under each name
+    the declaration standing - its `kind`, the `blob` its bytes are stored under, the declaration
+    it replaced (`supersedes`) - and `matches`, which file the book names (`MarketDataFile` or
+    `CalendDataFile`) holds that content now, null where neither does. A job names its files by
+    path and a run says the content it read. 404 on a box that records nothing.
+    """
+    return service().call('GET', '/book/files')
+
+
+@MCP.tool()
+def declare_file(name: str, kind: str, path: str, actor: str | None = None) -> dict:
+    """Declare a market data file or a calendar a job names, by the bytes it holds now: `name` the
+    desk's name for it, `kind` `market` or `calendar`, and `path` where it sits on the service's
+    own box. The record keeps the bytes under their sha256, the digest a run of a job naming the
+    file reports reading, and the latest declaration under a name stands; declaring the standing
+    content again is one fact. The job still names the file by path. A seat the desk has not scoped
+    to mark is refused in the record's own words. Answers `{recorded: {lsn}, name, blob}`.
+    """
+    return service().call('POST', '/book/files', json=dict(
+        {'name': name, 'kind': kind, 'path': path}, **_stated(actor=actor)))
 
 
 @MCP.tool()

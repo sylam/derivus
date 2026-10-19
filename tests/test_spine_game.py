@@ -11,7 +11,7 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
-"""The acceptance test: a mock bank's days, played twice, and held to the oracle's fourteen.
+"""The acceptance test: a mock bank's days, played twice, and held to the oracle's fifteen.
 
 TWO PLAYS AND NO MORE. The BLUE play is the demo - a bank founded through the CLI, three desks and
 the back office working through the binding against a real hub on an ephemeral port across three
@@ -81,7 +81,7 @@ BACK_OFFICE = {roles.SETTLEMENTS, roles.CONFIRMATIONS, roles.COLLATERAL}
 
 @pytest.fixture(scope='module')
 def blue(tmp_path_factory):
-    """The bank's days with red off - the demo, and the shape the oracle's fourteen are asked of."""
+    """The bank's days with red off - the demo, and the shape the oracle's fifteen are asked of."""
     return play.play(tmp_path_factory.mktemp('blue'), replicas=2)
 
 
@@ -112,7 +112,7 @@ def test_the_blue_days_hold_every_invariant_on_three_replicas(blue):
     their worklists, rejecting one trade that stands, confirmations confirm every clip, settlements
     strike and pay the day's file and a fee, product control prints the fixing, closes and marks
     each day and reads the P&L and its explain, collateral calls and posts; two followers pull
-    every frame; and all fourteen invariants hold on the hub and on the copy that materialized a
+    every frame; and all fifteen invariants hold on the hub and on the copy that materialized a
     key, the one holding no key naming what it cannot assess.
 
     Killing mutations: an approver acting on nothing its worklist lists as pending, which leaves
@@ -266,7 +266,7 @@ def test_every_scripted_fault_converges(adversary):
 
 
 def test_the_oracle_names_what_a_copy_cannot_assess(blue, tmp_path):
-    """A COPY HOLDING NO KEY still answers four of the fourteen, and says by name which ten it
+    """A COPY HOLDING NO KEY still answers four of the fifteen, and says by name which eleven it
     cannot.
 
     The chain, the positions, the tags and the types are the envelope's, so a crypto-shredded copy
@@ -279,8 +279,8 @@ def test_the_oracle_names_what_a_copy_cannot_assess(blue, tmp_path):
     attested, so the invariants reading them ask for the blobs first and tell that copy to follow
     again - and the ONE it does fail is the true one: it cannot resolve a citation it holds.
 
-    Killing mutations: the unassessable ten answering `held: true`, which is a green report about a
-    record nobody read; and the blob check dropped from the judging walk, which accuses the
+    Killing mutations: the unassessable eleven answering `held: true`, which is a green report about
+    a record nobody read; and the blob check dropped from the judging walk, which accuses the
     deployment's own seats of forging the documents they declared.
     """
     keyless = blue[1]['replica-2']
@@ -301,7 +301,7 @@ def test_the_oracle_names_what_a_copy_cannot_assess(blue, tmp_path):
         'an_amended_plan_is_a_new_approval', 'closes_superseded_never_edited',
         'every_numbers_replay_tuple', 'every_refusal_is_a_denial', 'the_diary_equals_the_filings',
         'nothing_outside_its_scope', 'the_pnl_is_additive', 'cash_reconciles',
-        'every_close_marked', 'the_call_is_the_formula'))
+        'every_close_marked', 'the_call_is_the_formula', 'files_declared'))
     for name, found in keyless.items():
         if found['held'] is None:
             assert found['evidence'][0].startswith('not assessed:'), name

@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from derivus_spine import (
     CapabilityDenied, MalformedEvent, MissingBlobRefusal, QuoteNotFirm, ReplayRefused, SpineLog,
     UnknownEventType, init_home, verify_home)
-from derivus_spine import firmness, policy, projections, verbs
+from derivus_spine import cli, firmness, policy, projections, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 from test_spine import copy_of
@@ -655,6 +655,62 @@ def test_a_private_market_is_declared_by_the_seat_its_name_names(tmp_path):
     assert verbs.declare_market(log, DESK, 'dealer', VALUES)['lsn'] == closed['lsn'] + 1
     log.close()
     assert verify_home(home)['events'] == log.head()[0]
+
+
+def test_a_file_is_declared_by_its_bytes_and_the_latest_under_a_name_stands(tmp_path, capsys):
+    """A file a job names is declared by its BYTES: its blob is their sha256, the digest the
+    engine's `Context.digest` takes of the same bytes and a run reports reading, so the two are one
+    number. A second declaration under the name stands over the first and names it; the standing
+    content declared again restates the standing body, which the writer coalesces onto its LSN;
+    going back to the first content is a new fact citing the older blob. A kind that is neither a
+    market data file nor a calendar is refused by name, and a seat without `mark` over the firm
+    is refused with the denial landed - a desk's `mark` over its own book does not reach it. The
+    CLI's `file` verb files the bytes at the path it names the same way.
+
+    Killing mutations: the blob addressed by something other than the bytes' content - the bytes
+    filed with their name - which no run's digest ever names; a repeat naming the standing
+    declaration as the one it replaced, which files a retry as a second fact; a declaration naming
+    nothing it replaced, under which going back to the first content coalesces onto the first
+    declaration and leaves the second standing.
+    """
+    home, log = minted(tmp_path)
+    declare(log, MINT, document(grants=((DESK, 'mark', BOOK), (MINT, 'mark', '*'),
+                                        (MINT, 'admin', '*'))))
+    market, rolled = b'{"MarketData":{"Price Factors":{}}}', b'{"MarketData":{"Correlations":{}}}'
+    head = log.head()[0]
+
+    with pytest.raises(CapabilityDenied) as refusal:
+        verbs.declare_file(log, DESK, 'risk-neutral', 'market', market)
+    assert DESK in str(refusal.value) and 'file_declared' in str(refusal.value)
+    assert denials(log)[-1] == (head + 1, {'subject': DESK, 'verb': 'mark', 'book': '*',
+                                           'attempted_type': 'file_declared'})
+    with pytest.raises(MalformedEvent) as refusal:
+        verbs.declare_file(log, MINT, 'risk-neutral', 'curve', market)
+    assert 'market, calendar' in str(refusal.value)
+    assert log.head()[0] == head + 1, 'a refused kind wrote something'
+
+    first = verbs.declare_file(log, MINT, 'risk-neutral', 'market', market)
+    assert first['blob'] == address(market) and log.store.get(first['blob']) == market
+    again = verbs.declare_file(log, MINT, 'risk-neutral', 'market', market)
+    assert (again['lsn'], again['coalesced']) == (first['lsn'], True)
+    second = verbs.declare_file(log, MINT, 'risk-neutral', 'market', rolled)
+    back = verbs.declare_file(log, MINT, 'risk-neutral', 'market', market)
+    assert (second['lsn'], back['lsn'], back['coalesced']) == (first['lsn'] + 1, first['lsn'] + 2,
+                                                               False)
+    assert [log.open_body(log.frame_at(at['lsn'])) for at in (first, second, back)] == [
+        {'name': 'risk-neutral', 'kind': 'market', 'blob': blob, 'supersedes': replaced}
+        for blob, replaced in ((address(market), None), (address(rolled), first['lsn']),
+                               (address(market), second['lsn']))]
+    log.close()
+
+    # the CLI's `file` verb reads the bytes at the path it is given and files the same fact
+    calendar = tmp_path / 'calendars.cal'
+    calendar.write_bytes(b'<Calendars/>')
+    assert cli.main(['file', '--home', str(home), '--name', 'calendars', '--kind', 'calendar',
+                     '--path', str(calendar), '--actor', MINT]) == 0
+    filed = json.loads(capsys.readouterr().out)
+    assert (filed['lsn'], filed['blob']) == (back['lsn'] + 1, address(b'<Calendars/>'))
+    assert verify_home(home)['events'] == filed['lsn']
 
 
 # --------------------------------------------------------------------------------------------

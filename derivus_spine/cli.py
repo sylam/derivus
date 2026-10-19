@@ -16,7 +16,7 @@
 A home is a directory, never a service: `log/` segments, `blobs/`, `keys/`. The home verbs are
 `init` (mint one), `verify` (re-derive every hash from the bytes on disk), `checkpoint` (sign the
 head), `status` (read it), `follow` (pull a hub's frames into this home, the one verb that
-speaks to a network and the one that only ever reads at the far end), `oracle` (answer the fourteen
+speaks to a network and the one that only ever reads at the far end), `oracle` (answer the fifteen
 invariants over what this home holds, against what a day's script says was asked) and `seed`
 (mint the folds at an official close into a folder a reader starts from).
 
@@ -24,8 +24,9 @@ The identity verbs are `enroll` (mint a seat keypair), `grant` (declare a capabi
 `rewrap` (wrap the class key to whoever the document now admits), `name` (the mutable display-name
 side table) and `whoami` (verify an OIDC token against a JWKS the deployment hands in as a file).
 The policy verbs are `declare` (put any reserved policy document on the record from a JSON file),
-`policy` (report what is in force) and `portfolio` (declare a node of the desk's tree, at its
-parent). Nothing here listens or stores a secret.
+`policy` (report what is in force), `portfolio` (declare a node of the desk's tree, at its
+parent) and `file` (declare a market data file or a calendar a job names, by its bytes). Nothing
+here listens or stores a secret.
 
 Which home a verb works on: `--home`, else `DV_SPINE_HOME`, else `~/.derivus_spine`, resolved at
 the call rather than captured at import. The home verbs are spelled out individually since each
@@ -139,7 +140,7 @@ def do_follow(args):
 
 
 def do_oracle(args):
-    """Answer the fourteen invariants over this home and print the report; exit 1 where one did
+    """Answer the fifteen invariants over this home and print the report; exit 1 where one did
     not hold.
 
     `--script` is what was ASKED - the acts a day put to the record; `--against` is a second copy
@@ -352,6 +353,19 @@ def do_portfolio(args):
         log.close()
 
 
+def do_file(args):
+    """Declare the bytes the file at `--path` holds under `--name` as its `--kind`, and report the
+    declaration - `mark` over `*`, a file a job names being what its market is said to be."""
+    from derivus_spine import verbs
+    with open(args.path, 'rb') as handle:
+        data = handle.read()
+    log = SpineLog(spine_home(args.home))
+    try:
+        return report(verbs.declare_file(log, args.actor, args.name, args.kind, data))
+    finally:
+        log.close()
+
+
 def do_whoami(args):
     """Verify an OIDC id token against a JWKS file and report the pseudonymous subject reference.
 
@@ -385,6 +399,10 @@ ARGUMENTS = {
     'name': {'nargs': '?', 'default': None,
              'help': 'the reserved policy to report; every one of them where no name is given'},
     'path': {'help': 'the node to declare: the book, then named segments under it'},
+    '--name': {'required': True,
+               'help': 'the name the desk gives the file; the latest declaration under it stands'},
+    '--kind': {'required': True, 'help': 'what the file is to a job naming it: market or calendar'},
+    '--path': {'required': True, 'help': 'the file whose bytes are declared, as they stand'},
     '--display': {'default': None, 'help': 'the display name to write into the side table'},
     '--erase': {'action': 'store_true',
                 'help': 'erase this subject\'s display name; the log is not touched'},
@@ -411,8 +429,8 @@ IDENTITY_VERBS = (
 )
 
 #: The same four-tuple for the policy verbs - the policy-file editor this deployment has, in its
-#: CLI form: one verb that declares a document, one that reports what is standing, and one that
-#: declares a node of the tree the grants and tiers name.
+#: CLI form: one verb that declares a document, one that reports what is standing, one that
+#: declares a node of the tree the grants and tiers name, and one that declares a file a job names.
 POLICY_VERBS = (
     ('declare', 'declare a reserved policy document from a JSON file',
      ('policy', 'file', '--actor'), do_declare),
@@ -420,6 +438,8 @@ POLICY_VERBS = (
      ('name',), do_policy),
     ('portfolio', 'declare a node of the desk\'s tree, judged at its parent',
      ('path', '--actor'), do_portfolio),
+    ('file', 'declare a market data file or a calendar a job names, by its bytes',
+     ('--name', '--kind', '--path', '--actor'), do_file),
 )
 
 
@@ -484,7 +504,7 @@ def build_parser():
     pulled.set_defaults(run=do_follow)
 
     asked = verbs.add_parser('oracle', parents=[common],
-                             help='answer the fourteen invariants over this home and say which of '
+                             help='answer the fifteen invariants over this home and say which of '
                                   'them a copy standing here could not assess')
     asked.add_argument('--script', type=str, default=None,
                        help='the JSON record of what a day ASKED - the refusals, the attestation '

@@ -63,8 +63,9 @@ VERB_TYPES = ('status_transition',)
 #: The firm's own facts - said of every book at once, so judged at the firm whatever book an
 #: envelope names.
 FIRM_TYPES = ('policy_declared', 'market_declared', 'official_close_declared', 'fixing_observed',
-              'snapshot_registered', 'run_completed', 'entity_declared', 'agreement_declared',
-              'checkpoint', 'retention_declared', 'rehash_declared', 'seat_enrolled', 'key_wrapped')
+              'file_declared', 'snapshot_registered', 'run_completed', 'entity_declared',
+              'agreement_declared', 'checkpoint', 'retention_declared', 'rehash_declared',
+              'seat_enrolled', 'key_wrapped')
 
 #: The document's two sections and the fields of each row, closed exactly as an event body is.
 GRANT_FIELDS = ('book', 'subject', 'verb')

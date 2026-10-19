@@ -250,7 +250,7 @@ def test_a_mark_nobody_has_is_named_and_calls_nothing():
     null and raises; a missing mark read as zero, which calls on the half of the exposure known; a
     currency the terms leave out sought as a spot, which raises.
     """
-    close = {'day': BASE, 'rates': dict(FX), 'document': engine_job(TERMS)}
+    close = {'day': BASE, 'rates': dict(FX), 'document': engine_job(TERMS), 'files': None}
     valued = {'rows': [
         {'instrument': 'I1', 'agreement': 'CSA-1', 'value_end': 300_000.0, 'quantity_end': 1.0,
          'paid_end': 0.0},

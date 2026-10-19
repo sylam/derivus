@@ -61,10 +61,11 @@ from derivus import service, spine, structures, utils
 from derivus.config import CustomJsonEncoder
 from derivus.schema import deal_at, splice_deal, walk_job_deals
 from derivus_spine import SpineLog, canonical_bytes, init_home, verify_home
-from derivus_spine import policy, projections
+from derivus_spine import oracle, policy, projections
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 import test_spine_identity
+from test_service import file_world
 
 ACTOR = 'subject-desk-one'
 BASE = pd.Timestamp('2024-06-28')
@@ -734,6 +735,59 @@ def test_a_result_pinned_that_will_not_reproduce_is_refused_by_name(recorded, de
         spine.replay(context))
     assert pinned['resolution'] == 'reproduced' and head(recorded) == standing + 1
     assert verify_home(recorded)['events'] == head(recorded)
+
+
+def test_a_run_says_the_files_it_read_and_a_replay_reads_the_bytes_that_stood(recorded,
+                                                                             tmp_path):
+    """THE FILES A JOB NAMES, DECLARED BY THEIR CONTENT, on the book naming its market data file
+    by path. Declared under a name through `POST /book/files`, the file's blob is the sha256
+    `Context.files` takes of the book's file, one number, and `GET /book/files` lists it beside
+    `MarketDataFile`. A standing run of the book attests the digests its job read beside the
+    replay tuple - the declared blob and a null calendar, the run's own `Stats['Files']` - and the
+    oracle finds the file declared. The file is then rewritten on disk, the ZAR curve's day count
+    moved to ACT_360, a plan field the stored values vector patched over it cannot hide: the claim
+    replayed reads the bytes that stood and marks the cashflow at the run's own 15,803,002.92, the
+    result to the byte, where re-executing off the rewritten path marks it at 15,766,149.02; the
+    listing no longer matches the book's file. The job never changed.
+
+    Killing mutations: the replay reading the path (`reading` handing the context nothing), which
+    marks the rewritten file; the attestation without its digests (the evidence's `files` not
+    filed), which leaves the replay nothing to read the bytes by.
+    """
+    def mark(result):
+        table = json.loads(result.decode('utf-8'))['mtm']['.DataFrame']
+        return {row[0]: row[table['columns'].index('Value')] for row in table['data']}
+
+    book, market = file_world(tmp_path)
+    try:
+        declared = CLIENT.post('/book/files', content=dump({
+            'name': 'risk-neutral', 'kind': 'market', 'path': str(market)}), headers=JSON).json()
+        document = json.loads(book.read_text())
+        assert declared['blob'] == derivus.Context().files(document)['MarketDataFile'] == \
+            hashlib.sha256(market.read_bytes()).hexdigest()
+        assert [(row['name'], row['kind'], row['blob'], row['matches'])
+                for row in CLIENT.get('/book/files').json()['files']] == [
+            ('risk-neutral', 'market', declared['blob'], 'MarketDataFile')]
+
+        ran = drained(submit(document, lane=spine.STANDING))
+        assert ran['status'] == 'done', ran.get('error')
+        _, _, body = facts(recorded, 'run_completed')[0]
+        assert body['files'] == ran['stats']['Files'] == {
+            'MarketDataFile': declared['blob'], 'CalendDataFile': None}
+        assert oracle.report(recorded)['files_declared']['held'] is True
+
+        data = json.loads(market.read_text())
+        data['MarketData']['Price Factors']['InterestRate.ZAR']['Day_Count'] = 'ACT_360'
+        market.write_text(json.dumps(data))
+        job, values = blob(recorded, body['job']), blob(recorded, body['values_hash'])
+        _, stood = spine.executor(files=body['files'])(job, values, body['engine_version'])
+        _, moved = spine.executor()(job, values, body['engine_version'])
+        assert stood == blob(recorded, body['result'])
+        assert mark(stood)['CF1'] != mark(moved)['CF1']
+        assert CLIENT.get('/book/files').json()['files'][0]['matches'] is None
+        assert json.loads(book.read_text()) == document, 'the job moved'
+    finally:
+        service.BOOK = None
 
 
 # --------------------------------------------------------------------------------------------
