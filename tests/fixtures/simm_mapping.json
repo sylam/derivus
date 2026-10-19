@@ -7,7 +7,12 @@
 			"FXExtendableForwardDeal": "RatesFX",
 			"QEDI_CustomAutoCallSwap": "Equity",
 			"EquitySwapLeg": "Equity",
-			"DealDefaultSwap": "Credit"
+			"DealDefaultSwap": "Credit",
+			"CommodityForwardDeal": "Commodity",
+			"CommodityFutureDeal": "Commodity",
+			"FloatingEnergyDeal": "Commodity",
+			"EnergySingleOption": "Commodity",
+			"YieldInflationCashflowListDeal": "RatesFX"
 		},
 		"Structures": {
 			"SWPT": "RatesFX"
@@ -130,6 +135,89 @@
 				"Qualifier": "ISSUER",
 				"Bucket": "3"
 			},
+			"FRTB_SA": null
+		},
+		"CommodityPrice.METAL": {
+			"SIMM": {
+				"RiskType": "Risk_Commodity",
+				"Qualifier": "METAL",
+				"Bucket": "11"
+			},
+			"FRTB_SA": null
+		},
+		"ForwardPrice.METAL": {
+			"SIMM": {
+				"RiskType": "Risk_Commodity",
+				"Qualifier": "METAL",
+				"Bucket": "11"
+			},
+			"FRTB_SA": null
+		},
+		"ForwardRate.METAL_CARRY": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"ReferencePrice.METAL": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"ForwardPrice.FUEL": {
+			"SIMM": {
+				"RiskType": "Risk_Commodity",
+				"Qualifier": "FUEL",
+				"Bucket": "2"
+			},
+			"FRTB_SA": null
+		},
+		"ReferencePrice.FUEL": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"ForwardPriceSample.FUEL": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"CommodityPriceVol.FUEL": {
+			"SIMM": {
+				"RiskType": "Risk_CommodityVol",
+				"Qualifier": "FUEL",
+				"Bucket": "2"
+			},
+			"FRTB_SA": null
+		},
+		"CommodityPrice.LBMA_AM": {
+			"SIMM": {
+				"RiskType": "Risk_Commodity",
+				"Qualifier": "PLATINUM",
+				"Bucket": "12"
+			},
+			"FRTB_SA": null
+		},
+		"ObservedBasis.LBMA_AM.CME": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"ObservedBasis.LBMA_AM.PM": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"ObservedBasis.LBMA_AM.PM.CME": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"ForwardRate.PLATINUM_CARRY": {
+			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"InflationRate.INFL": {
+			"SIMM": {
+				"RiskType": "Risk_Inflation",
+				"Qualifier": "USD"
+			},
+			"FRTB_SA": null
+		},
+		"PriceIndex.INFL": {
+			"SIMM": null,
 			"FRTB_SA": null
 		}
 	}

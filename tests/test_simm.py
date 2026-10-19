@@ -11,7 +11,9 @@ on the spread. The vertices are read off a synthetic parameters file carrying no
 The credit rows are gated on the credit module's world, its sold default swap on a name whose
 survival curve its CDS quotes solve on a USD curve quoted on its own knots. The rate vega rows are
 gated on an amortising swaption and a cap reading a swaption and a caplet space on the overnight
-curve, sloped in expiry and tenor.
+curve, sloped in expiry and tenor; the commodity rows on the commodity trial's metal and fuel and
+the platinum chain carried on the overnight curve, and the inflation row on the rate trial's linker
+on an inflation curve sloped in tenor.
 """
 import copy
 import functools
@@ -32,6 +34,8 @@ from derivus import bootstrappers, calculation, utils
 from derivus.config import CustomJsonEncoder, ModelParams
 
 import test_credit_prices as credit
+import trial_commodity
+import trial_rates
 from rates_world import BASE
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
@@ -662,6 +666,207 @@ def test_a_point_of_vega_on_what_is_no_vol_surface_is_refused_by_name(tmp_path):
     with pytest.raises(ValueError, match=r'SIMM: InterestRate\.ZAR-JIBAR\.ZAR-JIBAR\+50BP maps to '
                                          r'Risk_IRVol, and a point of vega moves a vol surface'):
         world({'Mapping': str(tmp_path / 'mapping.json')}).run_job()
+
+
+#: The base date as the Excel serial a forward curve's deliveries are dated in.
+DAY0 = float((BASE - utils.excel_offset).days)
+
+
+def fuel_vols(expiries=(0.25, 1.0, 2.0), moved=(), size=0.0):
+    """The fuel's smile on pillars at `expiries`, linear in expiry, each pillar at an expiry of
+    `moved` `size` points up."""
+    return {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+            'Surface': utils.Curve([], [
+                [m, t, 0.30 + 0.02 * t + 0.1 * (m - 1.0) ** 2 + 0.01 * size * (t in moved)]
+                for m in (0.8, 1.0, 1.2) for t in expiries])}
+
+
+#: The commodity trial's metal, funded on the overnight curve, and its fuel on a smile sloped in
+#: expiry, beside the platinum chain: the LME spot, funded so, its CME basis chained to the PM one,
+#: and its carry.
+COMMODITIES = dict(trial_commodity.FACTORS, **{
+    'CommodityPrice.METAL': dict(trial_commodity.FACTORS['CommodityPrice.METAL'],
+                                 Interest_Rate='USD-OIS'),
+    'CommodityPriceVol.FUEL': fuel_vols(),
+    'CommodityPrice.LBMA_AM': {'Spot': 1638.9, 'Currency': 'USD', 'Interest_Rate': 'USD-OIS',
+                               'Forward_Rate': 'PLATINUM_CARRY'},
+    'ObservedBasis.LBMA_AM.CME': {'Spot': -7.35, 'Chained_Basis': 'LBMA_AM.PM.CME',
+                                  'Chained_Lag': 1},
+    'ObservedBasis.LBMA_AM.PM': {'Spot': -12.4},
+    'ObservedBasis.LBMA_AM.PM.CME': {'Spot': -10.65, 'Chained_Basis': 'LBMA_AM.CME'},
+    'ForwardRate.PLATINUM_CARRY': {'Currency': 'USD', 'Curve': utils.Curve(
+        [], [[DAY0 + 182.0, 0.031], [DAY0 + 365.0, 0.033]])}})
+#: Each commodity's price factors, by the qualifier the mapping states them under.
+PRICES = {'METAL': ('CommodityPrice.METAL', 'ForwardPrice.METAL'), 'FUEL': ('ForwardPrice.FUEL',),
+          'PLATINUM': ('CommodityPrice.LBMA_AM',)}
+
+
+def overnight(reference, **terms):
+    """The commodity trial's deal `reference`, discounted and funded on the overnight curve, with
+    `terms` over it, as a trade's node."""
+    deal = next(deal for deal in trial_commodity.DEALS if deal['Reference'] == reference)
+    return {'Instrument': {'.Deal': dict(deal, Discount_Rate='USD-OIS', **dict(
+        {'Repo_Rate': 'USD-OIS'} if 'Repo_Rate' in deal else {}, **terms))}}
+
+
+#: A sold metal forward, a metal future, a fuel leg and a fuel option, and a future on the platinum
+#: chain's CME level.
+COMMODITY_BOOK = [overnight('METAL_FWD', Buy_Sell='Sell'), overnight('METAL_FUT'),
+                  overnight('FUEL_FLOAT'), overnight('FUEL_OPT'),
+                  overnight('METAL_FUT', Reference='PLAT', Commodity='LBMA_AM.CME',
+                            Carry='PLATINUM_CARRY', Maturity_Date=BASE + pd.DateOffset(months=9),
+                            Units=10.0)]
+
+
+def priced(names, scale):
+    """The price factors `names` `scale` times as they stand, a spot and every node of a forward
+    curve."""
+    return {name: dict(block, Spot=block['Spot'] * scale) if 'Spot' in block else dict(
+        block, Curve=utils.Curve([], block['Curve'].array * [1.0, scale]))
+        for name, block in ((name, COMMODITIES[name]) for name in names)}
+
+
+def test_a_commodity_row_is_every_price_of_the_commodity_a_percent_up():
+    """RISK_COMMODITY IS A PERCENT OF THE COMMODITY. Five trades under one set on the overnight
+    curve each write one Risk_Commodity row, no label, on the qualifier and bucket the mapping
+    states the commodity's price factors under: the sold metal forward, whose walk names the
+    metal's spot and its forward curve and whose value reads the curve, and the metal future on
+    the spot and its carry, both METAL; the fuel leg and the fuel option on the fuel's forward
+    curve, FUEL; the future on the platinum chain's CME level, the LME spot under its basis,
+    PLATINUM. At a hundred-thousandth of a percent each row is the central difference of two full
+    compiles with every price factor of its commodity that far either side, -500.00, 205.78,
+    19,977.08, 414.94 and 173.41 a percent, measured within 7.3e-10 of itself on the four linear
+    trades and 2.5e-7 on the option, the one-sided difference's second order, held to 1e-6. The
+    carry curves, the reference prices, the sampling rule and the chain's three bases the walks
+    name are mapped null and take no move: each trade takes its curve's 10 quotes and its
+    commodity, the option its 12 vega vertices too. At ISDA's percent the rows read -500.00,
+    205.78, 19,977.08, 425.99 and 173.41; the platinum row is a percent of the LME spot, 1.0045%
+    of the future's level, the basis held.
+
+    Killing mutations: the forward curves' nodes moved without the spot - the metal and platinum
+    futures write no commodity row; the carry curve moved as a price with the spot naming it - the
+    two futures' rows 207.08 and 177.54.
+    """
+    shift = 1e-5
+    output = holding({'Spot_Shift': shift}, COMMODITY_BOOK, extra=COMMODITIES).run_job()[1]
+    crif, trades = output['Results']['CRIF'], output['Results']['Trades']
+    assert dict(zip(trades['TradeID'], trades['Moves'])) == {
+        'METAL_FWD': 11, 'METAL_FUT': 11, 'FUEL_FLOAT': 11, 'FUEL_OPT': 23, 'PLAT': 11}
+    assert set(crif['RiskType']) == {'Risk_IRCurve', 'Risk_Commodity', 'Risk_CommodityVol'}
+    found = crif[crif['RiskType'] == 'Risk_Commodity']
+    assert list(zip(found['TradeID'], found['Qualifier'], found['Bucket'], found['Label1'])) == [
+        ('METAL_FWD', 'METAL', '11', ''), ('METAL_FUT', 'METAL', '11', ''),
+        ('FUEL_FLOAT', 'FUEL', '2', ''), ('FUEL_OPT', 'FUEL', '2', ''),
+        ('PLAT', 'PLATINUM', '12', '')]
+    for qualifier, names in PRICES.items():
+        up, down = (solved(holding(VALUATION, COMMODITY_BOOK, extra=dict(
+            COMMODITIES, **priced(names, 1.0 + sign * shift / 100.0)))) for sign in (1, -1))
+        for trade, amount in zip(*(found[found['Qualifier'] == qualifier][column]
+                                   for column in ('TradeID', 'Amount'))):
+            across = (up[trade] - down[trade]) / (2 * shift)
+            assert abs(amount - across) < 1e-6 * abs(across), (trade, amount, across)
+
+
+#: The fuel smile's pillars once given one at each vertex expiry inside them.
+FUEL_SLICES = (0.25, 0.5, 1.0, 2.0)
+
+
+def test_a_commodity_vega_row_is_a_point_on_its_vertex_pillar():
+    """RISK_COMMODITYVOL IS THE OPTION'S EXPIRY. The fuel option averages the fuel's forward daily
+    over its fourth month, reading the smile at each sample's tenor, 0.33 to 0.42 years, between
+    the 3m and 6m vertices; the smile pillared at 3m, 1y and 2y gains one at 6m off its own line,
+    so its vega lands on 3m and 6m, 105.16 and 86.31 at a ten-thousandth of a point. Each row is
+    equal to the bit to the difference of two full compiles of the option on the smile stating the
+    6m pillar, the vertex's pillar so moved and not, and within 1.9e-8 and 2.1e-8 of the largest of
+    the central difference of two, the pillar moved either side, the forward difference's second
+    order; the two sum to the parallel point's within 2.2e-8, held to 1e-6; and the option the set
+    is compiled on values as the smile stood, to the bit.
+
+    Killing mutation: the smile compiled on its own pillars - the 3m vertex moves its own pillar
+    alone and the vega lands on 3m and 1y, 162.70 and 28.77.
+    """
+    shift = 1e-4
+    calc, output = holding({'Vol_Shift': shift}, [COMMODITY_BOOK[3]], extra=COMMODITIES).run_job()
+    years = dict(calc.vertices)
+    vega = rows(output, 'FUEL_OPT', 'Risk_CommodityVol')
+    assert set(vega) == {'3m', '6m'}, vega
+
+    def worth(surface):
+        return solved(holding(VALUATION, [COMMODITY_BOOK[3]], extra=dict(
+            COMMODITIES, **{'CommodityPriceVol.FUEL': surface})))['FUEL_OPT']
+
+    base, largest = worth(fuel_vols(FUEL_SLICES)), max(map(abs, vega.values()))
+    assert output['Results']['Trades']['Value'].item().hex() == worth(fuel_vols()).hex()
+    for label, amount in vega.items():
+        up, down = (worth(fuel_vols(FUEL_SLICES, (years[label],), size))
+                    for size in (shift, -shift))
+        assert abs(amount - (up - base) / shift) < 1e-12 * largest, label
+        assert abs(amount - (up - down) / (2 * shift)) < 1e-6 * largest, label
+    up, down = (worth(fuel_vols(FUEL_SLICES, FUEL_SLICES, size)) for size in (shift, -shift))
+    assert sum(vega.values()) == pytest.approx((up - down) / (2 * shift), rel=1e-6)
+
+
+#: The rate trial's linker on the overnight curve, its index forecast off a curve sloped in tenor.
+LINKER = {'Instrument': {'.Deal': dict(next(
+    deal for deal in trial_rates.DEALS if deal['Reference'] == 'LINKER'), Discount_Rate='USD-OIS')}}
+INFLATION = dict(trial_rates.FACTORS, **{'InflationRate.INFL': dict(
+    trial_rates.FACTORS['InflationRate.INFL'], Curve=utils.Curve(
+        [], [[0.0, 0.022], [1.0, 0.024], [2.0, 0.025], [5.0, 0.027]]))})
+
+
+def breakeven(shift):
+    """The linker's world with every node of its inflation curve `shift` over on its breakeven,
+    `exp(r) - 1`, spelt apart from the engine's move."""
+    block = INFLATION['InflationRate.INFL']
+    tenors, rates = block['Curve'].array.T
+    return dict(INFLATION, **{'InflationRate.INFL': dict(block, Curve=utils.Curve(
+        [], np.column_stack((tenors, np.log(np.exp(rates) + shift))).tolist()))})
+
+
+def test_an_inflation_row_is_a_basis_point_on_every_breakeven_of_its_curve():
+    """RISK_INFLATION IS A BASIS POINT OF BREAKEVEN. The rate trial's linker on the overnight curve,
+    its final references forecast off an inflation curve sloped from 2.2% to 2.7%, each node a
+    continuously compounded growth rate r whose breakeven is exp(r) - 1: at a ten-thousandth of a
+    basis point its one Risk_Inflation row, USD and no label, is the central difference of two full
+    compiles with every node at log(exp(r) + s) a basis point either side, 4.5391 a basis point,
+    measured within 2.4e-8 of itself and held to 1e-6, exact on the breakeven with no re-solve. The
+    index's prints are no risk factor: the walk names them, mapped null, and they take no move, the
+    linker's 11 its curve's 10 quotes and the breakeven.
+
+    Killing mutation: the node written r + s, a basis point on the growth rate - the row 4.6511,
+    2.47% over, the breakeven's first order in r.
+    """
+    shift = 1e-4
+    output = holding({'Rate_Shift': shift}, [LINKER], extra=INFLATION).run_job()[1]
+    crif = output['Results']['CRIF']
+    assert output['Results']['Trades']['Moves'].item() == 11
+    assert set(crif['RiskType']) == {'Risk_IRCurve', 'Risk_Inflation'}
+    found = crif[crif['RiskType'] == 'Risk_Inflation']
+    assert list(zip(found['Qualifier'], found['Bucket'], found['Label1'], found['Label2'])) == [
+        ('USD', '', '', '')]
+    up, down = (solved(holding(VALUATION, [LINKER], extra=breakeven(sign * shift * 1e-4)))[
+        'LINKER'] for sign in (1, -1))
+    assert found['Amount'].item() == pytest.approx((up - down) / (2 * shift), rel=1e-6)
+
+
+@pytest.mark.parametrize('risk_type', ['Risk_InflationVol', 'Risk_CreditVol'])
+def test_a_risk_type_no_factor_of_the_engine_carries_is_refused_by_name(risk_type, tmp_path):
+    """ISDA's Risk_InflationVol and Risk_CreditVol are sensitivities to an inflation vol and a
+    credit vol, which the engine has no factor type for, so no row of either can be moved: a
+    mapping stating the linker's inflation curve as either is refused by name, the factor and the
+    risk type, before a trade is valued.
+
+    Killing mutation: the refusal dropped - the run reads the class of a risk type it does not
+    move off nothing, a `TypeError`.
+    """
+    with open(MAPPING, 'rt', encoding='utf-8') as f:
+        mapping = json.load(f)
+    mapping['Factors']['InflationRate.INFL']['SIMM'] = {'RiskType': risk_type, 'Qualifier': 'USD'}
+    with open(tmp_path / 'mapping.json', 'wt', encoding='utf-8') as f:
+        json.dump(mapping, f)
+    with pytest.raises(ValueError, match=r'SIMM: InflationRate\.INFL maps to {}, and the risk '
+                                         r'types moved here are'.format(risk_type)):
+        holding({'Mapping': str(tmp_path / 'mapping.json')}, [LINKER], extra=INFLATION).run_job()
 
 
 #: The credit module's USD curve quoted on its own knots, `(name, block)`.
@@ -1321,14 +1526,22 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     Risk_CreditQ on ISSUER in bucket 3, pins its survival curve to those coordinates, the module's,
     and is valued writing its credit rows on them. The amortising swaption's two rate vol spaces
     take Risk_IRVol in the currency of the curve they are named for, USD with no bucket or Label2,
-    the module's, whatever its rows say, and it is valued writing its vega rows on them.
+    the module's, whatever its rows say, and it is valued writing its vega rows on them. The fuel
+    option, its rows Risk_Commodity and Risk_CommodityVol on FUEL in bucket 2, pins its forward
+    curve and its smile to those coordinates, its reference price and sampling rule mapping null;
+    the linker's inflation curve takes Risk_Inflation in its currency, USD, its index's prints
+    null; each is the module's, and each trade is valued writing its rows on them.
 
     Killing mutations: a pin taken from a trade reading two factors of the type - the pair is
     valued, both indices' deltas landing as one row of 120.68 under EQ and both vegas as one of
     76.43; the bucket read off a hand table of ISDA's groups - ZAR's five rate rows in bucket 3; the
     disagreement applied rather than listed - the option's vega row under ZARUSD; the credit rule
     dropped - the survival curve listed unpinned and the swap refused by name; the rate vol rule
-    dropped - both spaces listed unpinned and the swaption refused by name, writing no vega row.
+    dropped - both spaces listed unpinned and the swaption refused by name, writing no vega row;
+    the commodity price pin dropped - the fuel's forward curve listed unpinned and the option
+    refused by name; the commodity vol pin dropped - the smile so; the inflation rule dropped -
+    the curve listed unpinned and the linker refused by name; the null types dropped - the
+    reference price, the sampling rule and the prints listed unpinned and both refused.
     """
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                     'experiments'))
@@ -1368,6 +1581,13 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
         json.loads(json.dumps(AMORTISING, cls=CustomJsonEncoder))]
     with open(folder / 'SWPT.json', 'wt') as f:
         json.dump(swaption, f)
+    for trade, node, extra in (('FUEL_OPT', COMMODITY_BOOK[3], COMMODITIES),
+                               ('LINKER', LINKER, INFLATION)):
+        document = job(book={'SET-' + trade: ()}, extra=extra)
+        document['Calc']['Deals']['Deals']['Children'][0]['Children'] = [
+            json.loads(json.dumps(node, cls=CustomJsonEncoder))]
+        with open(folder / '{}.json'.format(trade), 'wt') as f:
+            json.dump(document, f)
     rows = pd.DataFrame([dict(crif.iloc[0], TradeID=trade, ProductClass=product, RiskType=risk,
                               Qualifier=qualifier, Bucket=bucket, Label1=label, Label2=sub,
                               Amount=amount, AmountUSD=amount)
@@ -1377,7 +1597,12 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
                              ('CDS', 'Credit', 'Risk_IRCurve', 'USD', '1', '5y', 'OIS', -17.5),
                              ('CDS', 'Credit', 'Risk_CreditQ', 'ISSUER', '3', '5y', '', -1.6e3),
                              ('SWPT', 'RatesFX', 'Risk_IRCurve', 'USD', '1', '5y', 'OIS', 1.8e3),
-                             ('SWPT', 'RatesFX', 'Risk_IRVol', 'USD', '', '2y', '', 6.5e3))])
+                             ('SWPT', 'RatesFX', 'Risk_IRVol', 'USD', '', '2y', '', 6.5e3),
+                             ('FUEL_OPT', 'Commodity', 'Risk_Commodity', 'FUEL', '2', '', '',
+                              4.1e2),
+                             ('FUEL_OPT', 'Commodity', 'Risk_CommodityVol', 'FUEL', '2', '3m', '',
+                              1.1e2),
+                             ('LINKER', 'RatesFX', 'Risk_Inflation', 'USD', '', '', '', 4.5))])
     source = pd.concat([crif.assign(Qualifier=crif['Qualifier'].where(
         crif['RiskType'] != 'Risk_FXVol', 'ZARUSD')), rows]).assign(
         IMModel='SIMM', AmountCurrency='USD', CSANumber='CSA', PortfolioID='BOOK',
@@ -1397,7 +1622,14 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     vega = ran[(ran['TradeID'] == 'SWPT') & (ran['RiskType'] == 'Risk_IRVol')]
     assert set(zip(vega['Qualifier'], vega['Bucket'], vega['Label1'], vega['Label2'])) == {
         ('USD', '', '2y', ''), ('USD', '', '3y', '')}
-    ran = ran[~ran['TradeID'].isin(('CDS', 'SWPT'))].reset_index(drop=True)
+    added = ran[ran['TradeID'].isin(('FUEL_OPT', 'LINKER')) & (ran['RiskType'] != 'Risk_IRCurve')]
+    assert set(zip(*(added[column] for column in (
+            'TradeID', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2')))) == {
+        ('FUEL_OPT', 'Risk_Commodity', 'FUEL', '2', '', ''),
+        ('FUEL_OPT', 'Risk_CommodityVol', 'FUEL', '2', '3m', ''),
+        ('FUEL_OPT', 'Risk_CommodityVol', 'FUEL', '2', '6m', ''),
+        ('LINKER', 'Risk_Inflation', 'USD', '', '', '')}
+    ran = ran[~ran['TradeID'].isin(('CDS', 'SWPT', 'FUEL_OPT', 'LINKER'))].reset_index(drop=True)
     zar = (crif['RiskType'] == 'Risk_IRCurve') & (crif['Qualifier'] == 'ZAR')
     identical({'CRIF': ran, 'Trades': serial[1]['Results']['Trades']},
               {'CRIF': crif.assign(Bucket=crif['Bucket'].where(~zar, '2')),
@@ -1405,15 +1637,18 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     with open(output / 'SIMM_MAPPING_{}.json'.format(date), 'rt', encoding='utf-8') as f:
         completed = json.load(f)
     unpinned = {'EquityPrice.EQ', 'EquityPrice.EQ2', 'EquityPriceVol.EQ', 'EquityPriceVol.EQ2'}
-    # the read gates' and the credit gates' own factors, which no document here reads
-    unread = set(PAIR_CORRELATION) | {'InterestRate.USD'}
+    # the read gates', the credit gates' and the metal and platinum's own factors, which no
+    # document here reads
+    unread = set(PAIR_CORRELATION) | {'InterestRate.USD'} | {
+        name for name in COMMODITIES if not name.endswith('.FUEL')}
     expected = {name: entry['SIMM'] for name, entry in module['Factors'].items()
                 if name not in unpinned | unread}
     expected['InterestRate.ZAR-JIBAR'] = dict(expected['InterestRate.ZAR-JIBAR'], Bucket='2')
     assert {name: entry['SIMM'] for name, entry in completed['Factors'].items()} == expected
     assert completed['Product_Class'] == {
         'Instruments': {'SwapInterestDeal': 'RatesFX', 'FXOptionDeal': 'RatesFX',
-                        'DealDefaultSwap': 'Credit'},
+                        'DealDefaultSwap': 'Credit', 'EnergySingleOption': 'Commodity',
+                        'YieldInflationCashflowListDeal': 'RatesFX'},
         'Structures': {'PAIR': 'Equity', 'SWPT': 'RatesFX'}}
     notes = pd.read_csv(output / 'MAPPING_{}.txt'.format(date), sep='\t', keep_default_na=False)
     outcomes = {outcome: set(found['Name']) for outcome, found in notes.groupby('Outcome')}

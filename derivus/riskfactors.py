@@ -634,16 +634,19 @@ class Factor3D(object):
 
     @classmethod
     def augmented(cls, block, years):
-        """`block`, a vol space, written as the grid the engine reads - every moneyness, expiry and
-        tenor its nodes name - with a slice at each expiry of `years` it lacks, read off that grid
-        node by node linearly in expiry and flat past either end, so it prices as it stood."""
+        """`block`, a vol space, written as the grid the engine reads - every node of each of its
+        three columns, the expiry the second - with a slice at each expiry of `years` it lacks,
+        read off that grid node by node linearly in expiry and flat past either end, so it prices
+        as it stood."""
         space = cls(block)
+        # `get_vols` lays a space out by its columns last to first, whatever each column names
+        last, first = (np.unique(block['Surface'].array[:, column]) for column in (2, 0))
         expiry = np.union1d(space.expiry, years)
         vols = np.apply_along_axis(lambda node: np.interp(expiry, space.expiry, node), 1,
-                                   space.vols.reshape(space.tenor.size, space.expiry.size, -1))
+                                   space.vols.reshape(last.size, space.expiry.size, -1))
         return dict(block, Surface=utils.Curve(block['Surface'].meta, [
-            [x, t, tenor, vol] for (tenor, t, x), vol in zip(
-                itertools.product(space.tenor, expiry, space.moneyness), vols.ravel())]))
+            [x, t, y, vol] for (y, t, x), vol in zip(
+                itertools.product(last, expiry, first), vols.ravel())]))
 
     def get_vols(self):
         """Uses flat extrapolation along moneyness and then linear interpolation along expiry"""

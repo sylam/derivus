@@ -82,17 +82,39 @@ reads that no configured family solves is refused by name, as an unquoted curve 
 
 A point of vega is a vertex's tent over a vol surface's expiry pillars, the surface given a pillar
 at each vertex expiry it lacks off its own interpolation, a Skew or an SVI one only past its ends
-(`Factor2D.augmented`). A rate vol space, `InterestYieldVol` or `InterestRateVol`, is written as
-the grid the engine reads, every moneyness, expiry and underlying tenor, with a slice at each vertex
-expiry it lacks read off that grid linearly in expiry and flat past either end
-(`Factor3D.augmented`), so it prices as it stood; a vertex moves every node of its slice, and a
-swaption's or a caplet's Risk_IRVol rows land on its expiry, the underlying tenor summed over, each
-row the difference of two full compiles on the space stating those slices. A factor mapped to a
-vega risk type that is no vol surface is refused by name: a model's parameters move by their
-family's fit, which a move re-solves for curves and credit alone.
+(`Factor2D.augmented`); a commodity option's Risk_CommodityVol rows land so on the expiries its
+samples read its `CommodityPriceVol` at. A vol space is written as the grid the engine reads, every
+node of each of its three columns, with a slice at each vertex expiry it lacks read off that grid
+linearly in expiry and flat past either end (`Factor3D.augmented`), so it prices as it stood; a
+vertex moves every node of its slice, and a swaption's or a caplet's Risk_IRVol rows land on its
+expiry, the underlying tenor summed over, each row the difference of two full compiles on the space
+stating those slices. The grid is read by its columns, a `ForwardPriceVol`'s running delivery,
+expiry, moneyness where a rate space's run moneyness, expiry, tenor; no trade reads a
+`ForwardPriceVol`, the `CSForwardPriceModelParameters` family's fit alone does, so no walk names
+one and no row of it is written. A factor mapped to a vega risk type that is no vol surface is
+refused by name: a model's parameters move by their family's fit, which a move re-solves for
+curves and credit alone.
 **Held by** `tests/test_simm.py::test_a_rate_vega_row_is_a_point_on_its_vertex_slice_of_the_space`,
 `::test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood`,
-`::test_a_point_of_vega_on_what_is_no_vol_surface_is_refused_by_name`.
+`::test_a_commodity_vega_row_is_a_point_on_its_vertex_pillar`,
+`::test_a_point_of_vega_on_what_is_no_vol_surface_is_refused_by_name`. **Not gated:** a
+`ForwardPriceVol`'s grid, which no trade reads.
+
+A percent of a commodity is a percent of every value each price factor the mapping states under
+its qualifier holds (`schema.partition_factor`), its spot (`CommodityPrice`) and every delivery of
+its forward curve (`ForwardPrice`) at once, one Risk_Commodity row a trade and no vertex. A carry
+curve (`ForwardRate`) is a rate, a basis (`ObservedBasis`) cross-class, and a reference price, the
+delivery a fixing reads, and a sampling rule carry no price, so each is mapped null: a future on
+the platinum chain's CME level moves by its LME spot alone, a percent of the spot 1.0045% of the
+level, the basis held. A basis point of inflation is one on the breakeven of every node of the
+trade's `InflationRate` curve, each node a continuously compounded growth rate r whose breakeven is
+exp(r) - 1, so the node is written r + log1p(s exp(-r)), exact on the quote with nothing
+re-solved, the engine having no inflation family; an index's prints (`PriceIndex`) are mapped
+null. ISDA's Risk_InflationVol and Risk_CreditVol name vols the engine has no factor type for, and
+a mapping naming either is refused as one naming any risk type no move writes. **Held by**
+`tests/test_simm.py::test_a_commodity_row_is_every_price_of_the_commodity_a_percent_up`,
+`::test_an_inflation_row_is_a_basis_point_on_every_breakeven_of_its_curve`,
+`::test_a_risk_type_no_factor_of_the_engine_carries_is_refused_by_name`.
 
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is

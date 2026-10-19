@@ -3742,20 +3742,22 @@ class SIMM(Calculation):
     a curve, split linearly between the vertices either side of its maturity, the survival curves
     solved on the curve re-solved on it; a basis point of spread on each quote of a survival curve,
     its block re-solved, split between the credit vertices either side of its tenor; a basis point
-    on every node of a cross-currency basis; a percent of a spot or of a currency's price in the
-    calculation currency; and a point of vol in a TENT on each vertex - the surface given a pillar
-    at every vertex expiry it lacks, read off its own interpolation, the set compiled on it so the
-    base and every move share one grid, then each vertex alone moved, so an option's vega lands on
-    its own expiry and the rows sum to the parallel move. A Skew or an SVI surface gains a pillar
-    only past its ends (`Factor2D.augmented`), so a vertex moves the pillars its tent reaches and an
-    option expiring between two pillars has its vega land on the vertices whose tents reach them.
-    A rate vol space gains a slice at each vertex expiry it lacks, every moneyness and underlying
-    tenor of its grid (`Factor3D.augmented`), so a swaption's or a caplet's vega lands on its own
-    expiry, the underlying tenor summed over. Where the rows land - risk type, qualifier, bucket,
-    labels - and a trade's product class are the bank's `Mapping`, held to `utils.FactorRiskClass`;
-    the rate and vol vertices are the regime's `Parameters`, the credit vertices the methodology's;
-    the regimes margin is posted and collected under are the agreement's own terms, declared on the
-    netting set. A shift other than ISDA's is scaled to it.
+    on every node of a cross-currency basis and on every node's breakeven of an inflation curve; a
+    percent of a spot, of a currency's price in the calculation currency, or of every price factor
+    of a commodity at once, its spot and each delivery of its forward curve, the factors a mapping
+    states under one qualifier being one commodity; and a point of vol in a TENT on each vertex -
+    the surface given a pillar at every vertex expiry it lacks, read off its own interpolation, the
+    set compiled on it so the base and every move share one grid, then each vertex alone moved, so
+    an option's vega lands on its own expiry and the rows sum to the parallel move. A Skew or an
+    SVI surface gains a pillar only past its ends (`Factor2D.augmented`), so a vertex moves the
+    pillars its tent reaches and an option expiring between two pillars has its vega land on the
+    vertices whose tents reach them. A vol space gains a slice at each vertex expiry it lacks, every
+    node of its other two columns (`Factor3D.augmented`), so a swaption's or a caplet's vega lands
+    on its own expiry, the underlying tenor summed over. Where the rows land - risk type,
+    qualifier, bucket, labels - and a trade's product class are the bank's `Mapping`, held to
+    `utils.FactorRiskClass`; the rate and vol vertices are the regime's `Parameters`, the credit
+    vertices the methodology's; the regimes margin is posted and collected under are the
+    agreement's own terms, declared on the netting set. A shift other than ISDA's is scaled to it.
 
     MARKET PRICES ARE A CONDITION: an interest rate or a survival curve a trade reads that no
     configured family bootstraps, and that is no child of a curve one does, refuses by name. A leg
@@ -3763,19 +3765,24 @@ class SIMM(Calculation):
     regardless.
     """
     #: The CRIF risk types the run moves: the risk class each belongs to and how its factor moves -
-    #: a basis point on each benchmark quote of the curve's block or on every node of a basis, a
-    #: basis point of spread on each quote of a survival curve's block, a percent of a currency's
-    #: price in the calculation currency or of a spot, a point of vol per vertex; the curve
+    #: a basis point on each benchmark quote of the curve's block, on every node of a basis or on
+    #: every node's breakeven of an inflation curve, a basis point of spread on each quote of a
+    #: survival curve's block, a percent of a currency's price in the calculation currency, of a
+    #: spot or of a commodity's price factors together, a point of vol per vertex; the curve
     #: benchmarks quoted as a price, which no basis point moves; and per `Surface_Type` the block a
-    #: point of vega moves and the column its expiry is in, the level being the last, a rate vol
-    #: space stating none and read as Explicit, its expiry the second of its four columns - a Skew
+    #: point of vega moves and the column its expiry is in, the level being the last, a vol space
+    #: stating none and read as Explicit, its expiry the second of its four columns - a Skew
     #: smile is added to its ATM level, so moving the level holds its skew, and the factor owns what
-    #: a point adds to a level (`Factor2D.vol_point`, `Factor3D.vol_point`).
+    #: a point adds to a level (`Factor2D.vol_point`, `Factor3D.vol_point`). ISDA's
+    #: Risk_InflationVol and Risk_CreditVol are not here, the engine having no inflation or credit
+    #: vol factor type, so a mapping naming either is refused as one naming any type not here is.
     MOVES = {'Risk_IRCurve': ('InterestRate', 'quote'),
              'Risk_XCcyBasis': ('InterestRate', 'parallel'),
+             'Risk_Inflation': ('InterestRate', 'inflation'),
              'Risk_FX': ('FX', 'fx'), 'Risk_Equity': ('Equity', 'spot'),
+             'Risk_Commodity': ('Commodity', 'commodity'),
              'Risk_IRVol': ('InterestRate', 'vega'), 'Risk_FXVol': ('FX', 'vega'),
-             'Risk_EquityVol': ('Equity', 'vega'),
+             'Risk_EquityVol': ('Equity', 'vega'), 'Risk_CommodityVol': ('Commodity', 'vega'),
              'Risk_CreditQ': ('Credit', 'cds'), 'Risk_CreditNonQ': ('Credit', 'cds')}
     #: The vertices a credit spread's rows land on, the methodology's: the parameters file weighs
     #: credit by bucket and names none.
@@ -3806,11 +3813,11 @@ class SIMM(Calculation):
           description='Processes the moves are dealt over, each on a context of its own; 1 values '
                       'them in this one'),
         F('Rate_Shift', 'Float', default=1.0,
-          description='Basis points a benchmark quote, a curve node, a basis or a credit spread '
-                      'moves by, ISDA\'s one; another is scaled to it'),
+          description='Basis points a benchmark quote, a curve node, a basis, a credit spread or a '
+                      'breakeven moves by, ISDA\'s one; another is scaled to it'),
         F('Spot_Shift', 'Float', default=1.0,
-          description='Percent a spot or a currency\'s price moves by, relative, ISDA\'s one; '
-                      'another is scaled to it'),
+          description='Percent a spot, a currency\'s price or a commodity\'s prices move by, '
+                      'relative, ISDA\'s one; another is scaled to it'),
         F('Vol_Shift', 'Float', default=1.0,
           description='Points of implied vol a vertex moves by, ISDA\'s one; another is scaled to it'),
         F('MCMC_Simulations', 'Integer', default=1 << 14,
@@ -3846,8 +3853,9 @@ class SIMM(Calculation):
         self.calc_stats['Parameters'] = parameters.get('version', '')
         self.calc_stats['Quasi_Seed'] = params['Quasi_Seed']
         self.shifts = {'quote': params['Rate_Shift'], 'parallel': params['Rate_Shift'],
-                       'cds': params['Rate_Shift'], 'spot': params['Spot_Shift'],
-                       'fx': params['Spot_Shift'], 'vega': params['Vol_Shift']}
+                       'inflation': params['Rate_Shift'], 'cds': params['Rate_Shift'],
+                       'spot': params['Spot_Shift'], 'fx': params['Spot_Shift'],
+                       'commodity': params['Spot_Shift'], 'vega': params['Vol_Shift']}
         self.valuation = {
             'Object': 'BaseValuation', 'Base_Date': params['Base_Date'],
             'Currency': params['Currency'], 'MCMC_Simulations': params['MCMC_Simulations'],
@@ -4031,7 +4039,7 @@ class SIMM(Calculation):
     def bumps(self, index):
         """Every move ISDA defines a sensitivity of trade `index` by, in a fixed order: each
         benchmark quote of every curve and survival block the walk stands on, then each other
-        mapped factor."""
+        mapped factor, the price factors of a commodity in one."""
         from . import bootstrappers
         from .bootstrappers import bootstrap_precedents, bootstrap_writers, quote_nodes
 
@@ -4093,8 +4101,13 @@ class SIMM(Calculation):
                 raise ValueError('SIMM: {} maps to Risk_IRCurve, which moves a curve by its '
                                  'quotes, and no InterestRatePrices block quotes it - map it null '
                                  'where it rides on its parent'.format(factor))
-            elif kind in ('parallel', 'spot') or (kind == 'fx' and rate[1] != currency):
+            elif kind in ('parallel', 'inflation', 'spot') or (
+                    kind == 'fx' and rate[1] != currency):
                 moves.append(self.Bump(factor, stated, [('', 1.0)], (kind, factor)))
+            elif kind == 'commodity' and not any(move.coordinates == stated for move in moves):
+                # the price factors a mapping states under one qualifier are one commodity
+                moves.append(self.Bump(factor, stated, [('', 1.0)], (kind,) + tuple(sorted(
+                    name for name in walk if self.coordinates(name, reference) == stated))))
             elif kind == 'vega':
                 surface = factors[factor].get('Surface_Type', 'Explicit')
                 if surface not in self.VOL_PILLARS:
@@ -4119,6 +4132,21 @@ class SIMM(Calculation):
             curve = factors[name]['Curve']
             return {name: dict(factors[name], Curve=utils.Curve(
                 curve.meta, curve.array + np.array([0.0, self.params['Rate_Shift'] * 1e-4])))}
+        if kind == 'inflation':
+            # each node is a growth rate r whose breakeven, exp(r) - 1, the basis point moves
+            curve = factors[name]['Curve']
+            tenors, rates = curve.array.T
+            return {name: dict(factors[name], Curve=utils.Curve(curve.meta, np.column_stack((
+                tenors, rates + np.log1p(self.params['Rate_Shift'] * 1e-4 * np.exp(-rates))))))}
+        if kind == 'commodity':
+            moved = {}
+            for other in move[1:]:
+                type_name = utils.check_rate_name(other)[0]
+                structural, values = schema.partition_factor(type_name, factors[other])
+                # a commodity's price is every value its factors hold, a spot's and each delivery's
+                moved[other] = schema.apply_values(type_name, structural, {
+                    key: np.multiply(value, spot) for key, value in values.items()})
+            return moved
         if kind == 'fx' and utils.check_rate_name(name)[1] == base:
             # a currency's price in the calculation currency is its spot over that currency's,
             # so the base currency's - whose own spot is one - rises by every other falling

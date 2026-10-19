@@ -42,11 +42,16 @@ from derivus.config import decode_wire
 #: What a row of a CRIF is keyed by, its vertex read whatever its case.
 KEY = ['TradeID', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2']
 #: The factor types whose coordinates a trade's own rows pin, each the risk type it is reported as.
-PINNED = {'EquityPrice': 'Risk_Equity', 'EquityPriceVol': 'Risk_EquityVol', 'FXVol': 'Risk_FXVol'}
+PINNED = {'EquityPrice': 'Risk_Equity', 'EquityPriceVol': 'Risk_EquityVol', 'FXVol': 'Risk_FXVol',
+          'CommodityPrice': 'Risk_Commodity', 'ForwardPrice': 'Risk_Commodity',
+          'FuturesPrice': 'Risk_Commodity', 'CommodityPriceVol': 'Risk_CommodityVol'}
 #: The risk types a survival curve is reported as, which of the two the source's own rows say.
 CREDIT = ('Risk_CreditQ', 'Risk_CreditNonQ')
-#: The factor types ISDA names no risk factor for, mapped null: a dividend curve, a correlation.
-UNNAMED = ('DividendRate', 'Correlation')
+#: The factor types ISDA names no risk factor for, mapped null: a dividend curve, a correlation, a
+#: commodity's carry curve, a basis, a sampling rule, the delivery a fixing reads and an index's
+#: prints.
+UNNAMED = ('DividendRate', 'Correlation', 'ForwardRate', 'ObservedBasis', 'ForwardPriceSample',
+           'ReferencePrice', 'PriceIndex')
 #: The columns of MAPPING_<date>.txt.
 NOTE = ['Outcome', 'Kind', 'Name', 'Stated', 'Derived', 'Detail']
 #: What a mapping states or a derivation finds for nothing, where None is the null.
@@ -197,17 +202,19 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
     the ISDA parameters file; `notes` the `NOTE` lines of each derivation, pin not made and
     disagreement with `mapping`, whose own statements are kept.
 
-    A spot, an equity vol or an FX vol takes the qualifier and bucket the rows of its risk type
-    carry for a trade reading it alone of its type (`pins`), or a basket's spot its vol's
-    (`baskets`); one pinned two ways or by no trade is left unstated, and a survival curve so takes
-    the risk type, qualifier, bucket and Label2 of its credit rows. A curve is Risk_IRCurve in its
-    currency, in the bucket of the volatility group the parameters file puts the currency in, Label2
-    as the rows of a trade reading it alone of its currency pin it, and left unstated where none
-    does, a rate row carrying no sub-curve being no row; a child
-    of a curve that is a basis spread is Risk_XCcyBasis in its currency and any other rides its
-    parent, null; a rate vol surface is Risk_IRVol in the currency of the curve it is named for; an
-    FX rate is Risk_FX. A structure's product class is its trade's rows', by reference, and another
-    trade's by instrument type where every trade of the type carries one."""
+    A spot, a commodity's price factor, or an equity, FX or commodity vol takes the qualifier and
+    bucket the rows of its risk type carry for a trade reading no other factor reported as that
+    risk type (`pins`), or a basket's spot its vol's (`baskets`); one pinned two ways or by no
+    trade is left unstated, and a survival curve so takes the risk type, qualifier, bucket and
+    Label2 of its credit rows. An inflation curve is Risk_Inflation in its currency, and a
+    commodity's carry curve, a basis, a sampling rule, a fixing's delivery and an index's prints
+    map null (`UNNAMED`). A curve is Risk_IRCurve in its currency, in the bucket of the volatility
+    group the parameters file puts the currency in, Label2 as the rows of a trade reading it alone
+    of its currency pin it, and left unstated where none does, a rate row carrying no sub-curve
+    being no row; a child of a curve that is a basis spread is Risk_XCcyBasis in its currency and
+    any other rides its parent, null; a rate vol surface is Risk_IRVol in the currency of the curve
+    it is named for; an FX rate is Risk_FX. A structure's product class is its trade's rows', by
+    reference, and another trade's by instrument type where every trade of the type carries one."""
     ir = next(iter(parameters['horizons'].values()))['ir']
     groups, buckets = ir['ccy']['Weights'], {group: bucket for bucket, group in ir[
         'bucket_vol_map'].items()}
@@ -267,6 +274,9 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
             curve = utils.check_tuple_name(utils.Factor('InterestRate', kind[1:]))
             return 'vol', {'RiskType': 'Risk_IRVol', 'Qualifier': factors[curve]['Currency']}, \
                 'the currency of ' + curve
+        if kind[0] == 'InflationRate':
+            return 'inflation', {'RiskType': 'Risk_Inflation',
+                                 'Qualifier': factors[factor]['Currency']}, 'its currency'
         if kind[0] == 'FxRate':
             return 'fx', {'RiskType': 'Risk_FX', 'Qualifier': kind[1]}, ''
         if kind[0] in UNNAMED:
