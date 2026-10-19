@@ -428,7 +428,7 @@ Each corner independent of the machinery it checks:
 | credit | `dV/dq` against the chain rule and a refitted deal, 1e-8 | `test_credit_prices.py::test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_greek` |
 | credit | a swap quote's `dV/dq` against both curves refitted, 1e-6 | `test_credit_prices.py::test_a_default_swaps_delta_to_a_swap_quote_carries_the_survival_curves_re_solve` |
 | inflation | round trip, 1e-10; the closed form where it is the root | `test_inflation_prices.py::test_the_bootstrap_recovers_the_inflation_curve_its_breakevens_came_from` |
-| inflation | $d	heta/dq$ against re-bootstraps, 1e-8 | `test_inflation_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference` |
+| inflation | $d\theta/dq$ against re-bootstraps, 1e-8 | `test_inflation_prices.py::test_the_quote_derivative_is_the_re_bootstrapped_difference` |
 | inflation | `dV/dq` against the chain rule and a refitted linker, 1e-8 | `test_inflation_prices.py::test_a_linker_reports_its_quote_delta_beside_its_factor_greek` |
 | inflation | a swap quote's `dV/dq` against both curves refitted, 1e-6 | `test_inflation_prices.py::test_a_linkers_delta_to_a_swap_quote_is_both_curves_refitted` |
 | HW2F | θ\* and deltas pinned, 1e-6 | `test_hw2f_analytic.py::test_the_four_quote_job_document_pins_theta_and_its_quote_deltas` |
