@@ -8,9 +8,13 @@ in deposits and annual swaps, a ZAR term curve in a deposit, FRAs and quarterly 
 spread riding on the ZAR curve, and a USDZAR surface on three expiry pillars. The swap IS the USD
 five-year benchmark, struck at its own quote, so its PV01 has a hand figure; the option discounts
 on the spread. The vertices are read off a synthetic parameters file carrying no licensed number.
+The credit rows are gated on the credit module's world, its sold default swap on a name whose
+survival curve its CDS quotes solve on a USD curve quoted on its own knots.
 """
 import copy
+import functools
 import json
+import logging
 import os
 import sys
 import threading
@@ -25,6 +29,7 @@ import derivus
 from derivus import bootstrappers, calculation, utils
 from derivus.config import CustomJsonEncoder, ModelParams
 
+import test_credit_prices as credit
 from rates_world import BASE
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
@@ -529,6 +534,204 @@ def test_an_amortising_swaptions_vol_moves_with_its_curves():
                for tenor, delta in exact.items()), (tape, exact)
 
 
+#: The credit module's USD curve quoted on its own knots, `(name, block)`.
+CREDIT_CURVE = bootstrappers.knot_prices('USD', credit.FACTORS, ModelParams(), credit.B, {})
+#: The methodology's credit vertices, spelt apart from the engine's.
+CREDIT_VERTICES = [('1y', 1.0), ('2y', 2.0), ('3y', 3.0), ('5y', 5.0), ('10y', 10.0)]
+
+
+def default_swap(survival, deals=(), factors=None, prices=None, **calculation):
+    """`(calculation, output)` of the SIMM of the credit module's sold default swap and `deals`
+    under a netting set of their own, on its world with the `survival` block - none where None -
+    beside the curve's, `factors` and `prices` beside its own, both families configured."""
+    prices = dict([CREDIT_CURVE], **(prices or {}), **(
+        {} if survival is None else {credit.BLOCK: survival}))
+    document = credit.document([], dict({credit.CURVE: credit.survival()}, **(factors or {})),
+                               prices, credit.FAMILIES, dict(SIMM, **calculation))
+    document['Calc']['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+        'Collateralized': 'False', 'Post_Regulations': 'SEC', 'Collect_Regulations': 'SEC'}},
+        'Children': [{'Instrument': {'.Deal': deal}} for deal in (credit.SOLD,) + tuple(deals)]}]
+    return credit.loaded(document).run_job()
+
+
+def re_solved(survival, curve=CREDIT_CURVE[1]):
+    """The sold default swap's mark on the curves the `survival` and `curve` blocks bootstrap to."""
+    solved = credit.bootstrapped({credit.BLOCK: survival, CREDIT_CURVE[0]: curve},
+                                 entries=credit.FAMILIES).current_cfg.params['Price Factors']
+    return credit.marks([credit.SOLD], {name: solved[name] for name in (
+        credit.CURVE, 'InterestRate.USD')})[0]['SOLD']
+
+
+@functools.lru_cache(maxsize=None)
+def front(kind):
+    """The 6M contract's `kind` quote off the credit module's curve, as `credit.quotes` reads the
+    others."""
+    upfront = kind == 'Upfront'
+    valued, _ = credit.marks([credit.contract('6M', 100.0 if upfront else unit,
+                                              unit if upfront else 0.0, reference=str(unit))
+                              for unit in (0, 1)], {credit.CURVE: credit.survival()})
+    return valued['0'] / (valued['0'] - valued['1'])
+
+
+def fronted(kind):
+    """The credit module's block quoting its curve in `kind`, a 6M contract in front."""
+    block = credit.block(kind)
+    points = block['instrument']['Points']
+    points.insert(0, dict(points[0], Descriptor='ISSUER 6M', Tenor='6M',
+                          Quoted_Market_Value=front(kind)))
+    return block
+
+
+def test_a_default_swaps_credit_rows_are_its_survival_curve_re_solved_a_spread_point_apart():
+    """CREDITQ BY ITS SPREADS. The credit module's sold default swap, its name's curve quoted in
+    par spreads at 6M, 1Y, 3Y, 5Y and 7Y beside the USD curve's block, both families configured:
+    each spread moved by a ten-thousandth of a basis point and the block re-solved writes the
+    swap's Risk_CreditQ rows on the credit vertices by the quote's tenor - the 6M and 1Y quotes on
+    1y, the 7Y split 3:2 between 5y and 10y - the central differences of two full re-solves either
+    side, -17.06, -494.39 and -1,606.76 at 1y, 3y and 5y, measured within 2.2e-9 of the largest and
+    held to 1e-6, the 7Y quote moving nothing the swap reads; the rows sum to the parallel spread
+    move's to 2.1e-9. The curve quoted in upfronts at the 100bp coupon writes the same rows within
+    2.6e-3 of the largest, measured 5.4%, 0.84% and 0.25% of each and 0.43% of their sum: an
+    upfront moves to what its contract quotes on the solved curve a basis point of spread over,
+    and the others hold their upfronts where the spreads hold spreads, two differences first order
+    in a spread's distance from the coupon.
+
+    Killing mutations: the split read off the rate vertices - the 6M quote's -3.08 lands on 6m;
+    an upfront moved by the basis point as a point of upfront - the upfronts' rows -1,847, -17,120
+    and -35,710, 22 to 108 times the spreads'.
+    """
+    shift = 1e-4
+    spreads, upfronts = (rows(default_swap(fronted(kind), Rate_Shift=shift)[1], 'SOLD',
+                              'Risk_CreditQ') for kind in ('Par_Spread', 'Upfront'))
+    across, parallel = {}, []
+    for position, months in enumerate((6, 12, 36, 60, 84)):
+        worth = []
+        for sign in (1, -1):
+            block = fronted('Par_Spread')
+            block['instrument']['Points'][position]['Quoted_Market_Value'] += sign * shift
+            worth.append(re_solved(block))
+        for label, weight in utils.vertex_weights(months / 12.0, CREDIT_VERTICES):
+            across[label] = across.get(label, 0.0) + weight * (worth[0] - worth[1]) / (2 * shift)
+    for sign in (1, -1):
+        block = fronted('Par_Spread')
+        for point in block['instrument']['Points']:
+            point['Quoted_Market_Value'] += sign * shift
+        parallel.append(re_solved(block))
+    largest = max(map(abs, across.values()))
+    assert set(spreads) <= set(across) and all(
+        abs(spreads.get(label, 0.0) - amount) < 1e-6 * largest
+        for label, amount in across.items()), (spreads, across)
+    assert sum(spreads.values()) == pytest.approx((parallel[0] - parallel[1]) / (2 * shift),
+                                                  rel=1e-6)
+    assert set(upfronts) == set(spreads) and all(
+        abs(upfronts[label] - amount) < 3e-3 * largest for label, amount in spreads.items()), (
+        upfronts, spreads)
+
+
+def test_a_curve_quote_re_solves_the_survival_curve_a_default_swap_reads():
+    """A CURVE QUOTE MOVES THE SURVIVAL CURVE SOLVED ON IT. The credit module's chain-rule world,
+    its sold default swap on a curve of par spreads at 1Y, 3Y, 5Y and 7Y solved on the USD curve
+    quoted on its own knots: a curve quote's ride re-solves the survival curve on the ridden curve,
+    so the swap's Risk_IRCurve rows at a ten-thousandth of a basis point are the central
+    differences of two full re-bootstraps of both curves either side, -6.93, -12.06, -27.38,
+    -17.47 and 0.04 at 1y to 10y, measured within 7.4e-8 of the largest and held to 1e-6: the
+    chain-rule gate's quote deltas, -692.83 to 4.14 a percent, per basis point. At ISDA's basis
+    point they read -6.9280, -12.0576, -27.3722, -17.4720 and 0.0414, within 1.2e-4 of
+    themselves.
+
+    Killing mutation: the survival curve not re-solved on a curve move - the rows with the curve
+    held, -8.18, -12.40, -24.39 and -13.96 and none at 10y, the chain-rule gate's held readings.
+    """
+    shift = 1e-4
+    ridden = rows(default_swap(credit.block('Par_Spread'), Rate_Shift=shift)[1], 'SOLD',
+                  'Risk_IRCurve')
+    across = {}
+    for position, years in enumerate((1, 2, 3, 5, 10)):
+        worth = []
+        for sign in (1, -1):
+            curve = copy.deepcopy(CREDIT_CURVE[1])
+            curve['instrument']['Points'][position]['Quoted_Market_Value'] += sign * shift * 0.01
+            worth.append(re_solved(credit.block('Par_Spread'), curve))
+        across['{}y'.format(years)] = (worth[0] - worth[1]) / (2 * shift)
+    largest = max(map(abs, across.values()))
+    assert set(ridden) == set(across) and all(
+        abs(ridden[label] - amount) < 1e-6 * largest for label, amount in across.items()), (
+        ridden, across)
+
+
+def test_a_default_swap_on_a_survival_curve_no_quotes_solve_is_refused_by_name(tmp_path):
+    """MARKET PRICES ARE A CONDITION FOR CREDIT TOO. The sold default swap with its name's block
+    withdrawn and its curve still pasted in is refused before a trade is valued, naming the trade
+    and the curve; and with the block standing and a mapping stating nothing for the curve,
+    refused as every factor the mapping omits is.
+
+    Killing mutations: the condition reading every survival curve as quoted - the run writes the
+    swap's four rate rows off the pasted curve and no credit row; the mapping's silence read as a
+    null - no refusal either.
+    """
+    with pytest.raises(ValueError, match='a configured family claims bootstraps') as refusal:
+        default_swap(None)
+    assert 'trade SOLD reads {},'.format(credit.CURVE) in str(refusal.value), str(refusal.value)
+    with open(MAPPING, 'rt', encoding='utf-8') as f:
+        mapping = json.load(f)
+    del mapping['Factors'][credit.CURVE]
+    with open(tmp_path / 'mapping.json', 'wt', encoding='utf-8') as f:
+        json.dump(mapping, f)
+    with pytest.raises(ValueError, match='trade SOLD reads {}, and the mapping states '
+                                         'nothing for it'.format(credit.CURVE)):
+        default_swap(credit.block('Par_Spread'), Mapping=str(tmp_path / 'mapping.json'))
+
+
+#: A second currency beside the credit module's: a EUR curve, its rate, the curve quoted on its own
+#: knots and a cashflow discounting on it.
+EURO = {'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                             'Curve': utils.Curve([], [[1.0, 0.025], [2.0, 0.026], [3.0, 0.0265],
+                                                       [5.0, 0.027], [10.0, 0.029]])},
+        'FxRate.EUR': {'Domestic_Currency': 'USD', 'Interest_Rate': 'EUR', 'Spot': 1.1}}
+EURO_CURVE = bootstrappers.knot_prices('EUR', dict(credit.FACTORS, **EURO), ModelParams(), credit.B,
+                                       {})
+CASHFLOW = {'Object': 'FixedCashflowDeal', 'Reference': 'EURCF', 'Currency': 'EUR',
+            'Discount_Rate': 'EUR', 'Amount': 1e6,
+            'Payment_Date': credit.B + pd.DateOffset(years=3)}
+
+
+def test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_other(tmp_path,
+                                                                                     caplog):
+    """A SURVIVAL BLOCK READS ITS DISCOUNT CURVE ALONE. The credit module's world beside a EUR curve
+    quoted on its own knots and a EUR cashflow on it, the name's block discounting on USD: the sold
+    default swap takes the USD curve's 5 quotes and its own 4 spreads, 9 moves, the cashflow the 10
+    quotes of the two curves its walk reads and its rate; off the family's own line per solve, the
+    run solves the survival curve 10 times - at its bootstrap, per spread and per USD quote - the
+    EUR quotes re-solving none. With the cashflow gone and the mapping stating nothing for the EUR
+    curve, a block the run refuses any trade it reaches for, the swap writes its rows as it writes
+    them in the credit module's world alone, to the bit.
+
+    Killing mutation: the family-level `reads` restored, every curve block read by every survival
+    block - the swap takes 14 moves, the run solves the survival curve 15 times, and without the
+    cashflow the run refuses the swap for a curve it never reads, "trade SOLD reads
+    InterestRate.EUR, and the mapping states nothing for it".
+    """
+    with open(MAPPING, 'rt', encoding='utf-8') as f:
+        mapping = json.load(f)
+    mapping['Product_Class']['Instruments']['FixedCashflowDeal'] = 'RatesFX'
+    mapping['Factors'].update({
+        'InterestRate.EUR': {'SIMM': {'RiskType': 'Risk_IRCurve', 'Qualifier': 'EUR',
+                                      'Bucket': '1', 'Label2': 'OIS'}},
+        'FxRate.EUR': {'SIMM': {'RiskType': 'Risk_FX', 'Qualifier': 'EUR'}}})
+    with open(tmp_path / 'mapping.json', 'wt', encoding='utf-8') as f:
+        json.dump(mapping, f)
+    euro = {'factors': EURO, 'prices': dict([EURO_CURVE])}
+    with caplog.at_level(logging.INFO):
+        trades = default_swap(credit.block('Par_Spread'), [CASHFLOW], Mapping=str(
+            tmp_path / 'mapping.json'), **euro)[1]['Results']['Trades']
+    assert dict(zip(trades['TradeID'], trades['Moves'])) == {'SOLD': 9, 'EURCF': 11}
+    assert sum(record.getMessage().startswith(credit.CURVE + ' bootstrapped from')
+               for record in caplog.records) == 10
+    identical(default_swap(credit.block('Par_Spread'), **euro)[1]['Results'],
+              default_swap(credit.block('Par_Spread'))[1]['Results'])
+
+
 @pytest.mark.parametrize('book', [{'NS': ('SWAP', 'FXO')}, {'NS': ('SWAP',), 'NT': ('FXO',)}])
 def test_a_netting_set_s_crif_is_its_trades_own_to_the_bit(book):
     """A SET IS PRICED WHOLE. The swap and the option, under one netting set or each under its own,
@@ -983,12 +1186,16 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     disagreement; the swap and the option pin each curve's Label2; the spread rides its parent and
     the dividends map null; the classes are the source's, the pair's by its reference. The pair
     reads two spots and two vols and its rows carry one of each, so nothing pins them: they are
-    listed and left unstated, and the run refuses the pair by name and values the rest.
+    listed and left unstated, and the run refuses the pair by name and values the rest. The credit
+    module's sold default swap on the overnight curve, its name's block quoted off it and its rows
+    Risk_CreditQ on ISSUER in bucket 3, pins its survival curve to those coordinates, the module's,
+    and is valued writing its credit rows on them.
 
     Killing mutations: a pin taken from a trade reading two factors of the type - the pair is
     valued, both indices' deltas landing as one row of 120.68 under EQ and both vegas as one of
     76.43; the bucket read off a hand table of ISDA's groups - ZAR's five rate rows in bucket 3; the
-    disagreement applied rather than listed - the option's vega row under ZARUSD.
+    disagreement applied rather than listed - the option's vega row under ZARUSD; the credit rule
+    dropped - the survival curve listed unpinned and the swap refused by name.
     """
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                     'experiments'))
@@ -1016,11 +1223,21 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
         json.loads(json.dumps(PAIR, cls=CustomJsonEncoder))]
     with open(folder / 'PAIR.json', 'wt') as f:
         json.dump(pair, f)
-    rows = pd.DataFrame([dict(crif.iloc[0], TradeID='PAIR', ProductClass='Equity', RiskType=risk,
-                              Qualifier='EQ', Bucket='11', Label1=label, Label2='', Amount=amount,
-                              AmountUSD=amount)
-                         for risk, label, amount in (('Risk_Equity', '', 4.2e3),
-                                                     ('Risk_EquityVol', '1y', -1.3e3))])
+    named = job(book={'SET-CDS': ('CDS',)}, deals=[dict(credit.SOLD, Reference='CDS',
+                                                        Discount_Rate='USD-OIS')],
+                extra={credit.CURVE: credit.survival()}, configuration=credit.FAMILIES,
+                prices=dict(blocks(), **{credit.BLOCK: {'instrument': dict(
+                    credit.block('Par_Spread')['instrument'], Discount_Rate='USD-OIS')}}))
+    with open(folder / 'CDS.json', 'wt') as f:
+        json.dump(named, f)
+    rows = pd.DataFrame([dict(crif.iloc[0], TradeID=trade, ProductClass=product, RiskType=risk,
+                              Qualifier=qualifier, Bucket=bucket, Label1=label, Label2=sub,
+                              Amount=amount, AmountUSD=amount)
+                         for trade, product, risk, qualifier, bucket, label, sub, amount in (
+                             ('PAIR', 'Equity', 'Risk_Equity', 'EQ', '11', '', '', 4.2e3),
+                             ('PAIR', 'Equity', 'Risk_EquityVol', 'EQ', '11', '1y', '', -1.3e3),
+                             ('CDS', 'Credit', 'Risk_IRCurve', 'USD', '1', '5y', 'OIS', -17.5),
+                             ('CDS', 'Credit', 'Risk_CreditQ', 'ISSUER', '3', '5y', '', -1.6e3))])
     source = pd.concat([crif.assign(Qualifier=crif['Qualifier'].where(
         crif['RiskType'] != 'Risk_FXVol', 'ZARUSD')), rows]).assign(
         IMModel='SIMM', AmountCurrency='USD', CSANumber='CSA', PortfolioID='BOOK',
@@ -1034,6 +1251,10 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     date = '{:%Y-%m-%d}'.format(BASE)
     ran = pd.read_csv(output / 'CRIF_{}.tsv'.format(date), sep='\t', dtype={'Bucket': str},
                       keep_default_na=False, float_precision='round_trip')
+    spread = ran[(ran['TradeID'] == 'CDS') & (ran['RiskType'] == 'Risk_CreditQ')]
+    assert set(zip(spread['Qualifier'], spread['Bucket'], spread['Label2'])) == {
+        ('ISSUER', '3', '')}
+    ran = ran[ran['TradeID'] != 'CDS'].reset_index(drop=True)
     zar = (crif['RiskType'] == 'Risk_IRCurve') & (crif['Qualifier'] == 'ZAR')
     identical({'CRIF': ran, 'Trades': serial[1]['Results']['Trades']},
               {'CRIF': crif.assign(Bucket=crif['Bucket'].where(~zar, '2')),
@@ -1041,14 +1262,15 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     with open(output / 'SIMM_MAPPING_{}.json'.format(date), 'rt', encoding='utf-8') as f:
         completed = json.load(f)
     unpinned = {'EquityPrice.EQ', 'EquityPrice.EQ2', 'EquityPriceVol.EQ', 'EquityPriceVol.EQ2'}
-    # the read gates' own factors, which no document here reads
-    unread = set(PAIR_CORRELATION) | set(SWAPTION_VOLS)
+    # the read gates' and the credit gates' own factors, which no document here reads
+    unread = set(PAIR_CORRELATION) | set(SWAPTION_VOLS) | {'InterestRate.USD'}
     expected = {name: entry['SIMM'] for name, entry in module['Factors'].items()
                 if name not in unpinned | unread}
     expected['InterestRate.ZAR-JIBAR'] = dict(expected['InterestRate.ZAR-JIBAR'], Bucket='2')
     assert {name: entry['SIMM'] for name, entry in completed['Factors'].items()} == expected
     assert completed['Product_Class'] == {
-        'Instruments': {'SwapInterestDeal': 'RatesFX', 'FXOptionDeal': 'RatesFX'},
+        'Instruments': {'SwapInterestDeal': 'RatesFX', 'FXOptionDeal': 'RatesFX',
+                        'DealDefaultSwap': 'Credit'},
         'Structures': {'PAIR': 'Equity'}}
     notes = pd.read_csv(output / 'MAPPING_{}.txt'.format(date), sep='\t', keep_default_na=False)
     outcomes = {outcome: set(found['Name']) for outcome, found in notes.groupby('Outcome')}

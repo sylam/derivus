@@ -43,6 +43,8 @@ from derivus.config import decode_wire
 KEY = ['TradeID', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2']
 #: The factor types whose coordinates a trade's own rows pin, each the risk type it is reported as.
 PINNED = {'EquityPrice': 'Risk_Equity', 'EquityPriceVol': 'Risk_EquityVol', 'FXVol': 'Risk_FXVol'}
+#: The risk types a survival curve is reported as, which of the two the source's own rows say.
+CREDIT = ('Risk_CreditQ', 'Risk_CreditNonQ')
 #: The factor types ISDA names no risk factor for, mapped null: a dividend curve, a correlation.
 UNNAMED = ('DividendRate', 'Correlation')
 #: The columns of MAPPING_<date>.txt.
@@ -138,25 +140,25 @@ def pins(source, reads, selected):
     """`(found, failed)` over the trades' `reads`: per factor `selected` names, the coordinates each
     reader's own rows of `source` pin it to, `{factor: {trade: coordinates}}`, and the sentences of
     the readers whose rows pin it to nothing. `selected` maps a factor to the rows it is reported
-    in, `(RiskType, Qualifier or None, columns)`: a trade pins the one factor of those rows it reads
-    where they carry one value of `columns`."""
+    in, `(risk types, Qualifier or None, columns)`: a trade pins the one factor of those rows it
+    reads where they carry one value of `columns`."""
     found, failed = {}, {}
     for trade, factors in reads.items():
         rows, groups = source[source['TradeID'] == trade], {}
         for factor in factors:
             if factor in selected:
                 groups.setdefault(selected[factor], []).append(factor)
-        for (risk_type, qualifier, columns), names in groups.items():
-            carried = sorted(set(rows[(rows['RiskType'] == risk_type) & (
+        for (risk_types, qualifier, columns), names in groups.items():
+            carried = sorted(set(rows[rows['RiskType'].isin(risk_types) & (
                 (rows['Qualifier'] == qualifier) | (qualifier is None))][list(columns)].itertuples(
                 index=False, name=None)))
             if len(names) == 1 and len(carried) == 1:
                 found.setdefault(names[0], {})[trade] = dict(zip(columns, carried[0]))
                 continue
+            said = ' '.join(filter(None, ('/'.join(risk_types), qualifier)))
             for name in names:
                 failed.setdefault(name, []).append('{} reads {} and its {} rows carry {}'.format(
-                    trade, ', '.join(names), ' '.join(filter(None, (risk_type, qualifier))),
-                    ', '.join(map('/'.join, carried)) or 'none'))
+                    trade, ', '.join(names), said, ', '.join(map('/'.join, carried)) or 'none'))
     return found, failed
 
 
@@ -197,7 +199,8 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
 
     A spot, an equity vol or an FX vol takes the qualifier and bucket the rows of its risk type
     carry for a trade reading it alone of its type (`pins`), or a basket's spot its vol's
-    (`baskets`); one pinned two ways or by no trade is left unstated. A curve is Risk_IRCurve in its
+    (`baskets`); one pinned two ways or by no trade is left unstated, and a survival curve so takes
+    the risk type, qualifier, bucket and Label2 of its credit rows. A curve is Risk_IRCurve in its
     currency, in the bucket of the volatility group the parameters file puts the currency in, Label2
     as the rows of a trade reading it alone of its currency pin it, and left unstated where none
     does, a rate row carrying no sub-curve being no row; a child
@@ -210,9 +213,11 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
     kinds = {factor: utils.check_rate_name(factor)
              for factor in sorted({factor for names in reads.values() for factor in names})}
     found, failed = pins(source, reads, dict(
-        {factor: (PINNED[kind[0]], None, ('Qualifier', 'Bucket')) for factor, kind in kinds.items()
-         if kind[0] in PINNED},
-        **{factor: ('Risk_IRCurve', factors[factor]['Currency'], ('Label2',))
+        {factor: ((PINNED[kind[0]],), None, ('Qualifier', 'Bucket'))
+         for factor, kind in kinds.items() if kind[0] in PINNED},
+        **{factor: (CREDIT, None, ('RiskType', 'Qualifier', 'Bucket', 'Label2'))
+           for factor, kind in kinds.items() if kind[0] == 'SurvivalProb'},
+        **{factor: (('Risk_IRCurve',), factors[factor]['Currency'], ('Label2',))
            for factor, kind in kinds.items() if kind[0] == 'InterestRate' and len(kind) == 2}))
     basket = baskets(source, reads, found)
     completed, notes = copy.deepcopy(mapping), []
@@ -238,6 +243,9 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
             return 'basket' if factor in basket else 'pin', NOTHING if value is None else dict(
                 RiskType=PINNED[kind[0]], **value), '; '.join(filter(None, (
                     why, basket.get(factor))))
+        if kind[0] == 'SurvivalProb':
+            value, why = agreement(factor)
+            return 'credit', NOTHING if value is None else value, why
         if kind[0] == 'InterestRate' and len(kind) == 2:
             currency = factors[factor]['Currency']
             group = groups['Currency'].get(currency, groups['default'])

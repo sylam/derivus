@@ -58,6 +58,28 @@ declared float. **Held by** `tests/test_simm.py::test_a_level_the_base_date_fixe
 `::test_a_compo_level_the_base_date_fixes_moves_with_the_pair`,
 `::test_an_amortising_swaptions_vol_moves_with_its_curves`.
 
+A move writes what two full compiles would solve. A curve quote rides its coupled set off the
+calibration the run's bootstrap published (`SIMM.requoted`), and every survival curve the book
+reads that its family solves on a curve the ride moved is re-solved on the ridden curves
+(`SIMM.resolved`), so a default swap's Risk_IRCurve rows carry its survival curve's re-solve as
+the AAD's quote deltas do. A survival block reads the curve its default swaps discount on and no
+other (`bootstrappers.block_readers`), so a default swap takes that curve's quotes and its own and
+a curve move re-solves only the survival curves solved on it. A credit quote - Risk_CreditQ or
+Risk_CreditNonQ, as the mapping states the survival curve - is one row of its `SurvivalProbPrices`
+block a basis point of spread over and the block re-solved by its family, no ride published: a
+`Par_Spread` row by the point, an `Upfront` row to what its contract quotes on the solved curve at
+a coupon the point under its own.
+The rows land on the methodology's credit vertices (`SIMM.CREDIT_VERTICES`) by the quote's `Tenor`,
+the parameters file weighing credit by bucket alone, and the knots are the quotes' maturities,
+which no spread moves. An upfront-quoted curve writes its par-spread twin's rows to 2.6e-3 of the
+largest: the others hold their upfronts where spreads hold spreads, and the conversion is on the
+standing curve, both first order in a spread's distance from the coupon. A survival curve a trade
+reads that no configured family solves is refused by name, as an unquoted curve is. **Held by**
+`tests/test_simm.py::test_a_default_swaps_credit_rows_are_its_survival_curve_re_solved_a_spread_point_apart`,
+`::test_a_curve_quote_re_solves_the_survival_curve_a_default_swap_reads`,
+`::test_a_default_swap_on_a_survival_curve_no_quotes_solve_is_refused_by_name`,
+`::test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_other`.
+
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
 judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a

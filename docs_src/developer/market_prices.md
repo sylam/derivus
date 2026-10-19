@@ -140,9 +140,12 @@ refuses the write ([below](#verbs)).
 
 **A run narrows to what moved.** `Config.bootstrap(only=…)` covers the blocks whose numbers moved
 plus every block reading one of them (`bootstrap_dependents`): a family's `reads`, and for curves the
-very curve a block names, so a curve re-solves the curves discounting on it and no others. `wanted=`
-narrows to what named factors stand on, so a calculation bootstraps only what its book reads.
-**Held by** `test_service.py::test_a_moved_curve_re_solves_what_reads_it_and_nothing_else`.
+very curve a block names, so a curve re-solves the curves discounting on it and no others; a
+survival block reads the curve its default swaps discount on, `Discount_Rate` else the currency's
+own, and no other. `wanted=` narrows to what named factors stand on, so a calculation bootstraps
+only what its book reads. **Held by**
+`test_service.py::test_a_moved_curve_re_solves_what_reads_it_and_nothing_else`,
+`test_simm.py::test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_other`.
 
 **Outside `bootstrap`**, the swaption residual (`calc_loss`) and the curve ride (`propagate`,
 `plan_key`) complete their block from the declarations, so the declared default is the fallback

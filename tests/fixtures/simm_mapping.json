@@ -5,7 +5,8 @@
 			"FXOptionDeal": "RatesFX",
 			"FXExtendableForwardDeal": "RatesFX",
 			"QEDI_CustomAutoCallSwap": "Equity",
-			"EquitySwapLeg": "Equity"
+			"EquitySwapLeg": "Equity",
+			"DealDefaultSwap": "Credit"
 		},
 		"Structures": {
 			"SWPT": "RatesFX"
@@ -105,6 +106,23 @@
 		},
 		"InterestRateVol.USD-OIS": {
 			"SIMM": null,
+			"FRTB_SA": null
+		},
+		"InterestRate.USD": {
+			"SIMM": {
+				"RiskType": "Risk_IRCurve",
+				"Qualifier": "USD",
+				"Bucket": "1",
+				"Label2": "OIS"
+			},
+			"FRTB_SA": null
+		},
+		"SurvivalProb.ISSUER": {
+			"SIMM": {
+				"RiskType": "Risk_CreditQ",
+				"Qualifier": "ISSUER",
+				"Bucket": "3"
+			},
 			"FRTB_SA": null
 		}
 	}

@@ -6390,21 +6390,24 @@ def block_readers(market_prices):
     A block is read two ways and both are the families' own declarations. `reads` names the price
     factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
     curve family names the very curve, in `Discount_Rate` and inside its benchmark deals
-    (`benchmark_curves`), so a curve is read by the curves discounting on it and no others. A block
-    of a type no family reads is nobody's dependency.
+    (`benchmark_curves`), and the credit family the curve its default swaps discount on,
+    `Discount_Rate` else the currency's own, so a curve is read by the curves discounting on it and
+    the survival curves solved on it and no others. A block of a type no family reads is nobody's
+    dependency.
     """
     writer = {cls.market_factor_type: cls for cls in FAMILIES}
     blocks = {name: writer[utils.check_rate_name(name)[0]] for name in market_prices
               if utils.check_rate_name(name)[0] in writer}
     curves = InterestRate
     named = {name: {block.get('Discount_Rate')} | curves.benchmark_curves(block, name)
-             for name, cls in blocks.items() if cls is curves
+             if cls is curves else {block.get('Discount_Rate') or block.get('Currency')}
+             for name, cls in blocks.items() if cls in (curves, SurvivalProb)
              for block in [market_prices[name].get('instrument', {})]}
     readers = {}
     for reader, cls in blocks.items():
         for written, wrote in blocks.items():
             if written != reader and wrote.__name__ in cls.reads and (
-                    cls is not curves or wrote is not curves
+                    reader not in named or wrote is not curves
                     or '.'.join(utils.check_rate_name(written)[1:]) in named[reader]):
                 readers.setdefault(written, []).append(reader)
     return readers
