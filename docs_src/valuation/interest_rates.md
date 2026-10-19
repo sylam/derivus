@@ -96,18 +96,27 @@ generated from their terms. The accrual dates run back from the maturity by the 
 short first period where they do not land on the effective date; a **First_Coupon_Date** runs them
 forward from that date instead, a short last period where they do not land on the maturity, and a
 **Penultimate_Coupon_Date** runs them back from that date. Every date rolls Modified Following on the
-accrual calendar. A period pays at its end, or at its start under **Payment_Timing** `Begin`,
-**Payment_Offset** business days of the payment calendar later; a blank calendar reads the other
-one, and an offset on neither counts weekdays. `Discounted` values as `End`. A swap's and a
-swaption's legs prefix each field `Pay_` or `Receive_`, the timing being `Pay_Timing` and a
-swaption's accrual calendar `Pay_Calendars`.
+accrual calendar. A period pays at its end, or at its start under **Payment_Timing** `Begin` or
+`Discounted`, **Payment_Offset** business days of the payment calendar later; a blank calendar
+reads the other one, and an offset on neither counts weekdays. `Discounted` pays the interest
+divided by $1+r\alpha$, $r$ the period's own rate - its fixing on a floating leg or an FRA, its
+fixed rate on a fixed leg - and $\alpha$ its accrual, ISDA's FRA discounting, which on one curve is
+the amount paid at the end discounted to the start; a period with a reset fixing after its start
+is refused by name, nothing being known to pay there. A deposit's principal is repaid as its
+periods end whatever the timing, and a leg that has paid every period, as one paying at its
+periods' starts has in its last, is worth nothing. A swap's and a swaption's legs prefix each field `Pay_` or
+`Receive_`, the timing being `Pay_Timing` and a swaption's accrual calendar `Pay_Calendars`.
 
 A floating period resets at its start over the index tenor from there, or over the period itself
 where the tenor is zero; **Reset_Type** `Arrears` takes each reset one reset period later, the
-period's end where it holds one reset, and `Advance` reads as `Standard`. A reset fixes
+period's end where it holds one reset, and `Advance` one earlier, the previous period's start where
+it holds one reset and the first period's a leg period before its own. A reset fixes
 **Index_Offset** business days of **Index_Calendars** before its window (weekdays where blank), a
 known rate being the row stated for that day, and its rate accrues on **Index_Day_Count** ($\alpha_2$
-above), the leg's own day count where blank.
+above), the leg's own day count where blank. Under **Index_Publication_Calendars** a reset reads the
+rate published on or before its day, so the days of a daily index reading one rate are one reset
+over their joined windows, weighted by their count: a weekend reads Friday's rate over Friday to
+Monday, and a compounded leg is the same leg whatever the calendar.
 
 ### Cashflow Lists
 

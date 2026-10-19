@@ -146,10 +146,13 @@ DealDataType = namedtuple('DealDataType', 'Instrument Factor_dep Time_dep Calc_r
 Partition = namedtuple('Partition', 'DealMTMs Collateral_Cash Funding_Cost Cashflows')
 Collateral = namedtuple('Collateral', 'Haircut_Posted Haircut_Received Amount Currency Funding_Rate '
                                       'Collateral_Rate Collateral')
-#: How a floating index fixes: the day-count code its rate accrues on, whether each reset fixes a
-#: reset period late (in arrears), and how many business days of `business_day` (weekdays where
-#: None) before its window it fixes.
-FloatIndex = namedtuple('FloatIndex', 'day_count arrears offset business_day')
+#: How a floating index fixes: the day-count code its rate accrues on, its `Reset_Type`, how many
+#: business days of `business_day` (weekdays where None) before its window it fixes, the calendar its
+#: rate is published on (every day where None) and the leg's frequency, by which an `Advance` reset
+#: reaches back before the first period.
+FloatIndex = namedtuple('FloatIndex', 'day_count reset_type offset business_day publication frequency')
+#: The reset periods each `Reset_Type` moves a reset by.
+RESET_SHIFTS = {'Advance': -1, 'Standard': 0, 'Arrears': 1}
 
 # define 1, 2 and 3d risk factors - add more as development proceeds
 DimensionLessFactors = ['Correlation']
@@ -1907,6 +1910,9 @@ def unstated_reset(reference, day):
 
 class TensorResets(TensorSchedule):
     def __init__(self, schedule, offsets):
+        # no reset left is every column of one and no row
+        if not len(schedule):
+            schedule, offsets = np.zeros((0, RESET_INDEX_Accrual + 1)), np.zeros(0)
         super(TensorResets, self).__init__(schedule, offsets)
 
         # Assign the offsets directly to the resets
@@ -1991,6 +1997,9 @@ class TensorResets(TensorSchedule):
 
 class TensorCashFlows(TensorSchedule):
     def __init__(self, schedule, offsets):
+        # a leg with nothing left to pay is every column of a cashflow and no row
+        if not len(schedule):
+            schedule, offsets = np.zeros((0, CASHFLOW_INDEX_FXResetValue + 1)), np.zeros((0, 3))
         # check which cashflows are settlements (as opposed to accumulations)
         for cashflow, next_cashflow, cash_ofs in zip(schedule[:-1], schedule[1:], offsets[:-1]):
             if (next_cashflow[CASHFLOW_INDEX_Pay_Day] != cashflow[CASHFLOW_INDEX_Pay_Day]) or (
@@ -1998,8 +2007,9 @@ class TensorCashFlows(TensorSchedule):
                 cash_ofs[CASHFLOW_OFFSET_Settle] = 1
 
         # last cashflow always settles (if it's not marked as such) otherwise, it's a forward
-        if offsets[-1][CASHFLOW_OFFSET_Settle] == 0:
-            offsets[-1][CASHFLOW_OFFSET_Settle] = 1
+        for last in offsets[-1:]:
+            if last[CASHFLOW_OFFSET_Settle] == 0:
+                last[CASHFLOW_OFFSET_Settle] = 1
 
         # Add Resets field
         self.Resets = None
@@ -2022,8 +2032,8 @@ class TensorCashFlows(TensorSchedule):
         """Start_day, End_day, Pay_day, Year_Frac, Nominal, FixedAmount (=0) and rate/spread, as
         days and nominals relative to the reference date, for every period still to pay. The nominal
         array must be one shorter than `reset_dates` (there is no nominal on the effective date), or
-        a single number for a constant profile; `pay_dates`, one per period, are the days each pays,
-        its end where None.
+        a single number for a constant profile; `spread_or_rate` is one number for every period or
+        one per period, and `pay_dates`, one per period, are the days each pays, its end where None.
         """
 
         amort_offsets = np.array([((k - reference_date).days, v) for k, v in amort.data.items()] if amort else [])
@@ -2043,9 +2053,9 @@ class TensorCashFlows(TensorSchedule):
 
         # the earliest period still to pay
         owed = np.where(pay_offsets >= 0)[0]
-        previous_index = owed[0] if owed.size else day_offsets.size
+        previous_index = owed[0] if owed.size else pay_offsets.size
         cashflows_left = day_offsets[previous_index:]
-        rates = spread_or_rate if isinstance(nominal, np.ndarray) else [spread_or_rate] * (reset_dates.size - 1)
+        rates = spread_or_rate if np.ndim(spread_or_rate) else [spread_or_rate] * (reset_dates.size - 1)
         ref_date = (reference_date + pd.offsets.Day(cashflows_left[0])) \
             if cashflows_left.any() else reference_date
 
@@ -2099,8 +2109,15 @@ class TensorCashFlows(TensorSchedule):
         a reset behind the base date with no known rate is fixed at 0% for, with a warning. `index`,
         a `FloatIndex`, says how each reset fixes: in the leg's own day count, on its window's
         start, where None; a known rate is the row stated for the day it fixes.
+
+        A reset moves by its `Reset_Type`'s `RESET_SHIFTS` reset periods, a period holding one reset
+        fixing on the accrual date that many periods from its start. Under a publication calendar a
+        reset reads the rate published on or before its day, the days reading one rate being one
+        reset over their joined windows, weighted by their count.
         """
-        index = index or FloatIndex(daycount_code, False, 0, None)
+        index = index or FloatIndex(daycount_code, 'Standard', 0, None, None, None)
+        shift = RESET_SHIFTS[index.reset_type]
+        accruals = ([reset_dates[0] - index.frequency] if shift < 0 else []) + list(reset_dates)
         # prepare to consume reset dates
         known_rates = known_rate_list if known_rate_list is not None else DateList({})
         known_rates.prepare_dates()
@@ -2112,22 +2129,25 @@ class TensorCashFlows(TensorSchedule):
             start = reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_Start_Day]))
             end = reference_date + pd.DateOffset(days=int(cashflow[CASHFLOW_INDEX_End_Day]))
             if next(iter(reset_frequency.kwds.values())) == 0.0:
-                reset_days = np.array([end if index.arrears else start])
+                reset_days = [accruals[accruals.index(start) + shift]]
                 reset_tenor = pd.offsets.Day(cashflow[CASHFLOW_INDEX_End_Day] - cashflow[CASHFLOW_INDEX_Start_Day])
             else:
                 reset_days = pd.date_range(start, end, freq=reset_frequency, inclusive='left')
-                if index.arrears:
-                    reset_days = pd.DatetimeIndex([day + reset_frequency for day in reset_days])
+                if shift:
+                    reset_days = pd.DatetimeIndex([day + shift * reset_frequency for day in reset_days])
                 reset_tenor = reset_frequency if next(iter(reset_tenor.kwds.values())) == 0.0 else reset_tenor
 
-            for reset_day in reset_days:
+            published = {}
+            for day in reset_days:
+                published.setdefault(index.publication.rollback(day) if index.publication else day, []).append(day)
+            for reset_day, days in published.items():
                 fixing = reset_day - index.offset * (index.business_day or pd.offsets.BDay()) \
                     if index.offset else reset_day
                 Reset_Day = (fixing - reference_date).days
-                Start_Day = (reset_day - reference_date).days
-                End_Day = (reset_day + reset_tenor - reference_date).days
+                Start_Day = (days[0] - reference_date).days
+                End_Day = (days[-1] + reset_tenor - reference_date).days
                 Accrual = DayCount.accrual(reference_date, End_Day - Start_Day, index.day_count)
-                Weight = 1.0 / reset_days.size
+                Weight = len(days) / len(reset_days)
                 Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
 
                 # match the closest reset
@@ -2153,14 +2173,19 @@ class TensorCashFlows(TensorSchedule):
 
     @classmethod
     def generate_fixed(cls, reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate,
-                       pay_dates=None):
+                       pay_dates=None, discounted=False):
         """`periods`' schedule with null resets. The nominal array must be one shorter than
-        `reset_dates`, or a single number for a constant profile.
+        `reset_dates`, or a single number for a constant profile. A `discounted` coupon is discounted
+        over its period at its own rate, its accrual `a` written as `a / (1 + r a)`.
         """
         cashflow_schedule = list(
             cls.periods(reference_date, reset_dates, nominal, amort, daycount_code, fixed_rate, pay_dates))
         # Add the null resets to the end
-        return cls(cashflow_schedule, np.zeros((len(cashflow_schedule), 3)))
+        cashflows = cls(cashflow_schedule, np.zeros((len(cashflow_schedule), 3)))
+        if discounted:
+            accrual = cashflows.schedule[:, CASHFLOW_INDEX_Year_Frac]
+            accrual /= 1.0 + cashflows.schedule[:, CASHFLOW_INDEX_FixedRate] * accrual
+        return cashflows
 
     @classmethod
     def fixed(cls, reference_date, position, cashflows, settlement_date):
@@ -2496,8 +2521,8 @@ class TensorCashFlows(TensorSchedule):
         return float(np.abs(self.schedule[:, CASHFLOW_INDEX_Nominal]).sum())
 
     def last_pay_day(self):
-        """Latest payment day (offset in days from base_date)."""
-        return float(self.schedule[:, CASHFLOW_INDEX_Pay_Day].max())
+        """Latest payment day (offset in days from base_date), None where nothing is left to pay."""
+        return float(self.schedule[:, CASHFLOW_INDEX_Pay_Day].max()) if len(self.schedule) else None
 
     def get_par_swap_rate(self, base_date, ir_curve):
         """Used to calculate the par swap rate for these cashflows given an interest rate curve"""
@@ -2513,11 +2538,23 @@ class TensorCashFlows(TensorSchedule):
             return D.sum()
 
     def insert_cashflow(self, cashflow):
-        """Inserts a cashflow at the beginning of the cashflow schedule - useful to model a fixed payment at the
-        beginning of a schedule of cashflows"""
+        """Insert `cashflow`, holding no resets, before the first cashflow paying on or after its day."""
         self._compiling()
-        self.schedule = np.vstack((cashflow, self.schedule))
-        self.offsets = np.vstack(([0, 0, 1], self.offsets))
+        at = np.searchsorted(self.schedule[:, CASHFLOW_INDEX_Pay_Day], cashflow[CASHFLOW_INDEX_Pay_Day])
+        resets = self.offsets[at, 1] if at < len(self.offsets) else self.offsets[:, 0].sum()
+        self.schedule = np.insert(self.schedule, at, cashflow, axis=0)
+        self.offsets = np.insert(self.offsets, at, [0, resets, 1], axis=0)
+
+    def pay(self, reference_date, flows, daycount_code):
+        """Each `(day, amount)` of `flows` paid as a fixed amount: by the cashflow paying on its day,
+        the first where several do, or by one of its own."""
+        for day, amount in flows:
+            paying = np.flatnonzero(self.schedule[:, CASHFLOW_INDEX_Pay_Day] == (day - reference_date).days)
+            if paying.size:
+                self._compiling()
+                self.schedule[paying[0], CASHFLOW_INDEX_FixedAmt] += amount
+            else:
+                self.insert_cashflow(self.make_cashflow(reference_date, day, day, day, 0.0, daycount_code, amount, 0.0))
 
     def set_fixed_amount(self, rate):
         """sets the fixed amount to the rate provided"""

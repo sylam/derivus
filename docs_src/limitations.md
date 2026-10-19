@@ -90,14 +90,6 @@ Grouped by where a validator meets them.
 
 ### The engine {#the-engine}
 
-- **A rate leg reads `Advance` as `Standard` and `Discounted` as `End`** (2026-09-30). Measured on
-  a two-year quarterly swap of a million on a curve rising from 2% to 6%: `Reset_Type: Advance`
-  fixes at the period start, so if it means a reset one period earlier the swap is 77.3 bp of
-  notional high; `Payment_Timing: Discounted` values from the period end, as the FRA's does, but
-  books its cash there rather than discounted at the start, and against $L\alpha/(1+L\alpha)$ paid
-  at the start the floating leg is 0.50 bp high under a 25 bp basis, exact on one curve.
-  `Index_Publication_Calendars` is unread, so a leg resetting daily fixes on every calendar day:
-  0.03 bp low on a one-year averaged leg, exact compounded.
 - **A fitted structure leg's two-way charge uses its lognormal vega** (2026-09-21). A leg under a
   fitted spot model publishes no FX vol quote sensitivity, so the charge reads the same leg as a
   lognormal (`spread_source` says so): a vega a desk could hedge, but not the quoted price's.

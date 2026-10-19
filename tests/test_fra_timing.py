@@ -6,14 +6,15 @@ CASH settles on the other, and the three declared timings are the three combinat
 | `Payment_Timing` | PV from | reval ends | cash books | amount booked |
 | --- | --- | --- | --- | --- |
 | `End` (the default) | Maturity | Maturity | Maturity | the full realized amount |
-| `Discounted` | Maturity | Effective | Effective | that amount discounted over the period |
+| `Discounted` | Effective | Effective | Effective | that amount over `1 + L tau`, ISDA's FRA discounting |
 | `Begin` | Effective | Effective | Effective | the full amount, undiscounted |
 
-`End` and `Discounted` carry the SAME PV - both discount the full amount from maturity - and differ
-only in where the deal dies and what the ledger receives. So a base valuation cannot separate them
-at all, and only the CREDIT MONTE CARLO gates below can: `cash_settle` is a no-op under base
+On ONE curve `End` and `Discounted` carry the same PV, `1 / (1 + F tau)` being that curve's own
+discount over the period, and differ only in where the deal dies and what the ledger receives,
+which only the CREDIT MONTE CARLO gates below can see: `cash_settle` is a no-op under base
 valuation (`shared.t_Cashflows is None`), so the ledger does not exist there, and the reval end is
-only visible as the rows a profile occupies.
+only visible as the rows a profile occupies. Under this module's basis the period's own rate
+discounts more than the discount curve does, and `Discounted` marks 0.1676% under `End`.
 
 THE CURVE SUITE IS BLIND TO ALL OF THIS, which is what makes these fixtures their shape:
 `test_interest_rate_prices.py` prices its FRAs at PAR, and a zero flow is zero whatever date it is
@@ -26,7 +27,8 @@ THE REFERENCE IS HAND-DERIVED, not the engine asked twice:
     D(T)   = exp(-r(T) * T)
     F      = (D_proj(T_s) / D_proj(T_e) - 1) / tau       tau = ACT/360 over the FRA period
     payoff = position * N * (F - K) * tau                position = +1 Borrower, -1 Lender
-    PV     = payoff * D_disc(T_pay)                      T_pay = T_e, except Begin's T_s
+    PV     = payoff * D_disc(T_pay)                      T_pay = T_e under End, T_s otherwise,
+                                                         Discounted's payoff over 1 + F tau
 
 The zero curves are LINEAR IN TENOR on purpose, and it buys the Monte Carlo gates their oracle: a
 Hull-White curve at time t is `[r(t+s)(t+s) - r(t)t] / s`, which for a linear `r` is `a + b(2t+s)`,
@@ -46,6 +48,7 @@ KILL READINGS against the pre-fix build, which handed `End` the effective date:
     SKIPPED, the profile comes back a scalar zero, and the run reports success with the trade
     missing - which a price gate cannot see, and why the exposure and ledger gates are owed.
 """
+import json
 import os
 import sys
 
@@ -58,11 +61,12 @@ import pytest
 import torch
 
 import derivus
-from derivus import run_baseval, utils
-from derivus.config import Config
+from derivus import run_baseval, spine, utils
+from derivus.config import Config, CustomJsonEncoder
 from derivus.instruments import construct_instrument
 
 import rates_world as rw
+import test_declared_defaults as book
 
 DTYPE = torch.float64
 BASE = rw.BASE
@@ -123,9 +127,9 @@ def discount_factor(curve, tenor):
 
 #: The projected simple forward over [Effective, Maturity], off the projection curve.
 FORWARD = (discount_factor(PROJECTION, T_S) / discount_factor(PROJECTION, T_E) - 1.0) / TAU
-#: What discounting the realized amount over the FRA period costs - the `Discounted` timing's whole
-#: difference from `Begin`, and (inverted) `Begin`'s from `End`.
-PERIOD_DISCOUNT = discount_factor(DISCOUNT, T_E) / discount_factor(DISCOUNT, T_S)
+#: What `Discounted` divides the realized amount it pays at the effective date by: the period's own
+#: rate over the period, its whole difference from `Begin`.
+PERIOD_DISCOUNT = 1.0 / (1.0 + FORWARD * TAU)
 
 
 def hand_derived_payoff(side, strike):
@@ -136,8 +140,9 @@ def hand_derived_payoff(side, strike):
 
 def hand_derived_pv(timing, side, strike):
     """The PV at the base date, derived here rather than read back off the engine."""
-    return hand_derived_payoff(side, strike) * discount_factor(
-        DISCOUNT, T_S if timing == 'Begin' else T_E)
+    if timing == 'End':
+        return hand_derived_payoff(side, strike) * discount_factor(DISCOUNT, T_E)
+    return hand_derived_settlement(timing, side, strike)[1] * discount_factor(DISCOUNT, T_S)
 
 
 def hand_derived_settlement(timing, side, strike):
@@ -235,13 +240,12 @@ def test_the_pv_discounts_from_the_date_the_timing_names(timing):
     Borrower and Lender, in and out of the money - so a sign convention cannot pass by cancelling
     and a discounting error cannot pass by being small on one side.
 
-    `End` and `Discounted` COINCIDE here by ruling rather than accident: both book at maturity and
-    discount from there, so what separates them is where the cash settles and how long the deal
-    stays alive, neither of which a base valuation sees. `Begin` moves by `D(T_e)/D(T_s)` - a
-    real number, not a rounding one, or three timings agreeing with a reference that never looked
-    at the timing would prove nothing.
+    `Begin` moves by `D(T_e)/D(T_s)` and `Discounted` by `D(T_e)(1 + F tau)/D(T_s)` - real numbers,
+    not rounding ones, or three timings agreeing with a reference that never looked at the timing
+    would prove nothing.
 
-    Killing mutation: `End` discounted from the effective date, 1.2889% high on all four.
+    Killing mutations: `End` discounted from the effective date, 1.2889% high on all four;
+    `Discounted` paying the amount the discount curve discounts over the period, 0.1679% high.
     """
     assert abs(PERIOD_DISCOUNT - 1.0) > 1e-2, (
         'the period discount is {:.6f} - too close to one for this fixture to separate '
@@ -258,6 +262,25 @@ def test_the_pv_discounts_from_the_date_the_timing_names(timing):
     assert values['BORROW_LOW'] > 0.0 > values['BORROW_HIGH'], (
         'the two strikes must straddle the forward, or the gate reads one sign twice')
     assert values['LEND_LOW'] == -values['BORROW_LOW'], 'a Lender is the mirror of a Borrower'
+
+
+def test_on_one_curve_discounted_is_the_end_amount_paid_early():
+    """An FRA discounted on its own projection curve marks the same under `Discounted` as under
+    `End` to 1e-12: `1 / (1 + F tau)` is that curve's discount over the period, so paying the
+    amount it discounts at the effective date is worth what paying the whole at maturity is. On
+    this module's two curves the same trade marks 0.1676% under `End`, the basis the reading
+    sees.
+
+    Killing mutation: `Discounted` read as `Begin`, the amount paid undiscounted, 1.4794% high on
+    one curve.
+    """
+    one = [rw.fra('ONE_' + timing, CURRENCY, PROJECTION_CURVE, PROJECTION_CURVE, START_MONTHS,
+                  END_MONTHS, LOW_STRIKE, timing=timing, principal=PRINCIPAL, fixing_lag=FIXING_LAG)
+           for timing in ('End', 'Discounted')]
+    values = priced(one + [fra('TWO_End', 'End', 'Borrower', LOW_STRIKE),
+                           fra('TWO_Discounted', 'Discounted', 'Borrower', LOW_STRIKE)])
+    assert abs(values['ONE_Discounted'] / values['ONE_End'] - 1.0) < 1e-12, values
+    assert round(100.0 * (values['TWO_Discounted'] / values['TWO_End'] - 1.0), 4) == -0.1676, values
 
 
 def test_the_reset_reads_the_fra_period_and_not_its_own_fixing_window():
@@ -297,14 +320,16 @@ def test_the_reset_reads_the_fra_period_and_not_its_own_fixing_window():
 def test_the_exposure_ends_and_the_cash_books_where_the_timing_says(timing):
     """One credit Monte Carlo per timing: the REVAL END and the LEDGER together, neither half
     enough alone. The profile says where the deal stops being a position, the ledger what was paid
-    and when - and `End` and `Discounted` agree at every row they share and at the base date, so
-    nothing but these two readings separates them. Both against the hand derivation to 1e-12, which
-    the zero-vol Hull-White world is what buys. Across the three, `End` and `Discounted` agree on
-    the PV and disagree on the ledger, `Begin` and `Discounted` agree on the date and disagree on
-    the amount, `End` and `Begin` the reverse - three branches, not two spellings of one.
+    and when - and on one curve `End` and `Discounted` agree at every row they share and at the
+    base date, so nothing but these two readings separates them. Both against the hand derivation
+    to 1e-12, which the zero-vol Hull-White world is what buys. Across the three, `End` and
+    `Discounted` disagree on the date and the amount, `Begin` and `Discounted` agree on the date and
+    disagree on the amount, `End` and `Begin` agree on the amount - three branches, not two
+    spellings of one.
 
     Killing mutations: `End` handed the effective date as its pay date (the deal is skipped); the
-    ledger booking the deal's first row rather than its settlement row.
+    ledger booking the deal's first row rather than its settlement row; `Discounted` paid at
+    maturity, its ledger on the wrong day.
     """
     side, strike = CMC_CASES[timing]
     calc, out = cmc([fra('FRA1', timing, side, strike)])
@@ -334,8 +359,25 @@ def test_the_exposure_ends_and_the_cash_books_where_the_timing_says(timing):
         '{}: the ledger booked {:.6f} where the hand derivation says {:.6f}'.format(
             timing, float(booked.mean()), expected_amount))
     assert np.array_equal(booked, own[-1]), (
-        '{}: the ledger is not the deal\'s own last row - `pv_fra_leg` books `local_pv[-1]`, so '
-        'these are the same number by construction'.format(timing))
+        '{}: the ledger is not the deal\'s own last row - the leg books its payment on its own '
+        'day, the deal\'s last, so these are the same number by construction'.format(timing))
+
+
+def test_the_diary_announces_the_payment_on_the_day_the_ledger_books_it():
+    """The diary announces each timing's one payment, its amount undetermined, on the day the
+    ledger books it: `End`'s at maturity, `Begin`'s and `Discounted`'s at the effective date.
+
+    Killing mutation: `Discounted`'s cashflow dated at maturity, its row due three months after
+    the ledger books it.
+    """
+    job = book.book([rw.fra('FRA_' + timing, 'USD', 'USD-PROJ', 'USD', START_MONTHS, END_MONTHS,
+                            LOW_STRIKE, timing=timing) for timing in CMC_CASES])
+    context = derivus.Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'fra-diary'))
+    due = {row['reference']: (row['due_date'], row['amount']) for row in spine.diary(context)
+           if row['kind'] == 'payment'}
+    assert due == {'FRA_' + timing: ('{:%Y-%m-%d}'.format(last_live_date(timing)), None)
+                   for timing in CMC_CASES}, due
 
 
 def test_the_deal_contributes_nothing_after_its_own_date_on_a_grid_that_outlives_it():

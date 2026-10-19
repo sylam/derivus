@@ -5514,6 +5514,25 @@ def pricer_floor(all_resets, t_cash, factor_dep, expiries, tenor, shared, vol_ex
     return _pricer_cap_floor(all_resets, t_cash, factor_dep, expiries, tenor, -1.0, shared, vol_expiries)
 
 
+def owing(schedule, time_grid, deal_data):
+    """The deal's time rows on which `schedule` still owes a payment, and each one's first payment
+    still to make: past its last payment a leg holds nothing (`paid_up`)."""
+    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+    start = schedule.get_cashflow_start_index(deal_time)
+    owed = start < len(schedule)
+    return deal_time[owed], start[owed]
+
+
+def paid_up(mtm_list, deal_time, deal_data, shared):
+    """A leg's values on the rows `owing` kept, zero on the deal's rows after them, every row of a
+    leg with nothing left to pay."""
+    rows = deal_data.Time_dep.deal_time_grid.size
+    if not mtm_list:
+        return shared.one.new_zeros((rows, shared.simulation_batch))
+    mtm, paid = torch.cat(mtm_list, dim=0), rows - len(deal_time)
+    return F.pad(mtm, [0, 0, 0, paid]) if paid else mtm
+
+
 def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.TimeGrid, deal_data: utils.DealDataType,
                            cashflow_pricer, mtm_currency=None, settle_cash=cash_settle):
     """The floating leg. Its one invariant is CANONICAL FORM: by the time the fold below runs,
@@ -5552,9 +5571,19 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
-    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+    deal_time, cash_start_idx = owing(factor_dep['Cashflows'], time_grid, deal_data)
+    if not len(deal_time):
+        return paid_up([], deal_time, deal_data, shared)
 
     resets = factor_dep['Cashflows'].Resets
+    # a period paid at its start must have fixed by its pay day each reset it holds
+    if factor_dep.get('Discounted') and (resets.schedule[:, utils.RESET_INDEX_Reset_Day] > np.repeat(
+            factor_dep['Cashflows'].schedule[:, utils.CASHFLOW_INDEX_Pay_Day],
+            factor_dep['Cashflows'].offsets[:, 0].astype(np.int64))).any():
+        raise utils.UnpriceableSchedule(
+            '{}: Payment_Timing Discounted pays a period at its start, and a reset fixing after that - in '
+            'arrears, or a daily index or caplet fixing through the period - leaves nothing known to pay '
+            'there'.format(deal_data.Instrument.field.get('Reference')))
 
     if mtm_currency:
         sim_fx_forward = utils.calc_fx_forward(
@@ -5578,7 +5607,6 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     old_resets = resets.get_simulated_resets(
         deal_time[:, utils.TIME_GRID_MTM].max(), factor_dep['Forward'], shared)
 
-    cash_start_idx = factor_dep['Cashflows'].get_cashflow_start_index(deal_time)
     start_index, start_counts = np.unique(cash_start_idx, return_counts=True)
 
     for index, (forward_block, discount_block) in enumerate(utils.split_counts(
@@ -5591,7 +5619,17 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day], return_index=True, return_counts=True)
 
         reset_offset = factor_dep['Cashflows'].offsets[start_index[index]][1]
-        pmts_offset = cash_index + (cash_counts - 1)
+        # a day pays every row's fixed amount and the interest of the rows holding resets: a bullet,
+        # holding none, is held out of the fold
+        fixed = torch.segment_reduce(cashflows.tn[:, utils.CASHFLOW_INDEX_FixedAmt], 'sum',
+                                     lengths=shared.upload(cash_counts, torch.int64))
+        resetting = (cashflows.np[:, utils.CASHFLOW_INDEX_NumResets] >= 1).astype(np.int64)
+        if resetting.all():
+            reset_cashflows = cashflows
+        else:
+            reset_cashflows = cashflows[np.flatnonzero(resetting)]
+            cash_index, cash_counts = (np.flatnonzero(resetting).searchsorted(cash_index),
+                                       np.add.reduceat(resetting, cash_index))
 
         time_ofs = 0
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
@@ -5619,15 +5657,6 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
             all_resets = utils.concat_resets(
                 [old_resets[reset_offset:reset_offset + offset].expand(size, -1, -1), future_resets], dim=1)
-
-            # cashflows that pay no interest (bullets) own no resets and are held out of the fold
-            if cashflows.np[:, utils.CASHFLOW_INDEX_NumResets].all():
-                reset_cashflows = cashflows
-            else:
-                reset_cash_index = np.where(cashflows.np[:, utils.CASHFLOW_INDEX_NumResets])[0]
-                reset_cashflows = cashflows[reset_cash_index]
-                cash_counts *= (cashflows.np[:, utils.CASHFLOW_INDEX_NumResets] >= 1).astype(np.int32)
-                cash_index = reset_cash_index.searchsorted(cash_index)
 
             if mtm_currency:
                 fx_past_index = start_index[index]
@@ -5744,6 +5773,11 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             else:
                 all_int, all_margin = cashflow_pricer(all_resets, reset_cashflows.tn, shared)
 
+            if factor_dep.get('Discounted'):
+                # paid at the period's start, the interest is discounted over it at the rate it fixes
+                all_int = all_int / (1.0 + all_resets * reset_cashflows.tn[
+                    :, utils.CASHFLOW_INDEX_Year_Frac].reshape(1, -1, 1))
+
             # the common case: no method compounding, so rows sharing a payment date simply sum
             if mtm_currency is None and factor_dep['CompoundingMethod'] in ['None', 'OIS']:
                 interest = all_int * reset_cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
@@ -5798,8 +5832,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
                 total = total + simple_margin
 
-            payments.append(total + cashflows.tn[shared.upload(pmts_offset, torch.int64),
-                                                 utils.CASHFLOW_INDEX_FixedAmt].reshape(1, -1, 1))
+            payments.append(total + fixed.reshape(1, -1, 1))
 
         all_payments = torch.cat(payments, dim=0) if len(payments) > 1 else payments[0]
 
@@ -5808,7 +5841,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                         np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]), all_payments[-1][0])
         mtm_list.append(torch.sum(all_payments * discount_rates, dim=1))
 
-    return torch.cat(mtm_list, dim=0)
+    return paid_up(mtm_list, deal_time, deal_data, shared)
 
 
 def fixed_payments(interest, nominal, fixed_amt, cash_index, cash_counts, compounding=False,
@@ -5821,12 +5854,12 @@ def fixed_payments(interest, nominal, fixed_amt, cash_index, cash_counts, compou
     cannot be two numbers. `cash_index` and `cash_counts` are `np.unique`'s on the pay-day column,
     and `pad` appends the zero row a group shorter than the longest one reads in its place.
     """
-    if cash_counts.min() != cash_counts.max():
+    if cash_counts.size and cash_counts.min() != cash_counts.max():
         interest, nominal, fixed_amt = pad(interest), pad(nominal), pad(fixed_amt)
 
     default_offst = np.ones(cash_index.size, dtype=np.int32) * (len(interest) - 1)
     payments = 0.0
-    for i in range(cash_counts.max()):
+    for i in range(cash_counts.max(initial=0)):
         offst = default_offst.copy()
         offst[cash_counts > i] = i + cash_index[cash_counts > i]
         int_i = interest[offst]
@@ -5845,10 +5878,10 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
     discounted back on the settlement curve."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
-    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
-
     schedule = factor_dep['Cashflows']
-    cash_start_idx = schedule.get_cashflow_start_index(deal_time)
+    deal_time, cash_start_idx = owing(schedule, time_grid, deal_data)
+    if not len(deal_time):
+        return paid_up([], deal_time, deal_data, shared)
     settlement_amt = factor_dep.get('Settlement_Amount', 0.0)
     discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
     # a forward-settled deal carries its own repo curve
@@ -5917,7 +5950,7 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
                             np.searchsorted(time_grid.mtm_time_grid, cash_pmts[0]),
                             schedule.derived[payment_key][0])
 
-    return torch.cat(mtm_list, dim=0)
+    return paid_up(mtm_list, deal_time, deal_data, shared)
 
 
 def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=cash_settle):
@@ -6773,38 +6806,6 @@ def pv_float_leg(shared, time_grid, deal_data):
     mtm = pv_float_cashflow_list(shared, time_grid, deal_data, model) * FX_rep
 
     return mtm
-
-
-@utils.log_exception
-def pv_fra_leg(shared, time_grid, deal_data):
-    """The FRA leg, whose settlement DATE and PV date are two different dates.
-
-    `pv_float_cashflow_list` books at the cashflow's own payment date, which is the date the PV runs
-    from, so an FRA settling early on a discounted amount cannot use it - hence `settle_cash=False`
-    and the settle below.
-
-    The deal's LAST row is its settlement row (`FRADeal.reset` puts `pay_date` there) and
-    `local_pv[-1]` the value on it. That is the whole timing map:
-
-    | Payment_Timing | PV from | last row | booked |
-    | --- | --- | --- | --- |
-    | `End` | Maturity | Maturity | the full realized amount, nothing left to discount |
-    | `Discounted` | Maturity | Effective | the amount discounted back to effective |
-    | `Begin` | Effective | Effective | the full amount, undiscounted, at the start |
-    """
-    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
-
-    FX_rep = utils.calc_fx_cross(
-        deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
-
-    local_pv = pv_float_cashflow_list(
-        shared, time_grid, deal_data, pricer_float_cashflows, settle_cash=False)
-
-    cash_settle(
-        shared, deal_data.Factor_dep['SettleCurrency'],
-        deal_data.Time_dep.deal_time_grid[-1], local_pv[-1])
-
-    return local_pv * FX_rep
 
 
 @utils.log_exception

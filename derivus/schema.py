@@ -1140,10 +1140,22 @@ FLOATING_INDEX = Group('FloatingIndex', 'Floating index', [
     F('Index_Tenor', 'Period', default='3M', convention=True),
     F('Index_Day_Count', 'Text', default='', convention=True, values=('',) + DAY_COUNTS),
     F('Index_Calendars', 'Text', default='', convention=True),
-    F('Index_Publication_Calendars', 'Text', default='', convention=True),
+    F('Index_Publication_Calendars', 'Text', default='', convention=True,
+      description='The calendar the index is published on, a reset reading the rate published on or '
+                  'before its day so that the days of a daily index reading one rate are one reset, '
+                  'and blank publishing every day'),
     F('Index_Offset', 'Integer', default=0, convention=True),
-    F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears'])
+    F('Reset_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Advance', 'Arrears'],
+      description="Standard fixes each reset on its day, Arrears one reset period later (a period's end "
+                  "where it holds one reset) and Advance one reset period earlier (the previous "
+                  "period's start, the first period's a leg period before its own)")
 ])
+
+#: When a coupon pays, the one statement of a leg's `Payment_Timing` and a swap's `Pay_Timing` and
+#: `Receive_Timing`.
+TIMING = ("End pays a period's amount at its end, Begin at its start, and Discounted at its start "
+          'discounted over the period at its own rate, the fixing on a floating leg and the fixed '
+          'rate on a fixed one')
 
 #: How a coupon schedule is built: the accrual basis and calendars, when and how a coupon pays, the
 #: stub dates and the amortisation.
@@ -1151,7 +1163,8 @@ COUPON_SCHEDULE = Group('CouponSchedule', 'Coupon schedule', [
     F('Accrual_Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
     F('Accrual_Calendars', 'Text', default='', convention=True),
     F('Payment_Calendars', 'Text', default='', convention=True),
-    F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
+    F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted'],
+      description=TIMING),
     F('Payment_Offset', 'Integer', default=0, convention=True),
     F('First_Coupon_Date', 'Date', default='', convention=True),
     F('Penultimate_Coupon_Date', 'Date', default='', convention=True),

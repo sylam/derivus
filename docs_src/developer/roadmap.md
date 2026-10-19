@@ -14,10 +14,8 @@ lands deletes its row there and here.
 The close-out list. Each row names its fix and sizes it (S, M, L); a landing deletes it, and a row
 found later is added here or, where it moves a validator's number, on Model Limitations.
 
-**The model rows**, on [Model Limitations](../limitations.md): the rate leg's residual
-conventions - `Advance`, `Discounted` and the index publication calendar, each measured there -
-close as each is built. The declared fields not yet read are features kept ahead of their build,
-not rows to close.
+**The model rows**, on [Model Limitations](../limitations.md): the declared fields not yet read are
+features kept ahead of their build, not rows to close.
 
 **The record and the service.**
 

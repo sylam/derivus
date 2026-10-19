@@ -21,7 +21,7 @@ from .schema import (
     engine_default, settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
     FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, OPTION_STYLE, TOUCH,
-    QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP)
+    QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
 
 import numpy as np
 import pandas as pd
@@ -773,7 +773,8 @@ class Deal(object):
         its fields (each prefixed `leg`) state: the dates `utils.coupon_dates` spells from its coupon
         dates where `stubs` reads them, `method` and `forward` on the accrual calendar, and a period
         paying `Payment_Offset` business days of the payment calendar after its end, or its start
-        under `Begin`. A blank calendar reads the other one, and an offset on neither counts weekdays."""
+        under `Begin` or `Discounted` in the field `timing` names, its end where that is None. A blank
+        calendar reads the other one, and an offset on neither counts weekdays."""
         def read(key):
             return self.field.read(leg + key)
 
@@ -786,15 +787,19 @@ class Deal(object):
         return dates, pd.DatetimeIndex([
             day + offset * (pays or pd.offsets.BDay()) if offset else
             utils.adjust_date(pays, 'Modified_Following', day)
-            for day in (dates[:-1] if read(timing) == 'Begin' else dates[1:])])
+            for day in (dates[:-1] if timing and read(timing) in ('Begin', 'Discounted') else dates[1:])])
 
-    def float_index(self, calendars, day_count):
+    def float_index(self, calendars, day_count, frequency):
         """How the deal's floating index fixes (`utils.FloatIndex`), off its `Index_Day_Count`, the
-        floating leg's `day_count` where blank, `Reset_Type`, `Index_Offset` and `Index_Calendars`."""
+        floating leg's `day_count` where blank, `Reset_Type`, `Index_Offset`, `Index_Calendars`,
+        `Index_Publication_Calendars` and the floating leg's `frequency`."""
+        def calendar(key):
+            return calendars.get(self.field.read(key), {}).get('businessday')
+
         return utils.FloatIndex(
-            utils.DayCount.code(self.field.read('Index_Day_Count', day_count)),
-            self.field.read('Reset_Type') == 'Arrears', int(self.field.read('Index_Offset', 0)),
-            calendars.get(self.field.read('Index_Calendars'), {}).get('businessday'))
+            utils.DayCount.code(self.field.read('Index_Day_Count', day_count)), self.field.read('Reset_Type'),
+            int(self.field.read('Index_Offset', 0)), calendar('Index_Calendars'),
+            calendar('Index_Publication_Calendars'), frequency)
 
     def equity_swaplets(self, field, paid, items, principal, settlement_days, base_date, static_offsets,
                         stochastic_offsets, all_factors, all_tenors, time_grid, calendars):
@@ -2516,13 +2521,14 @@ class DepositDeal(Deal):
         'A deposit pays interest on its balance, repays each **Amortisation** step at the end of',
         'the period it falls in and the balance left at maturity:',
         '',
-        '$$V(t)=\\sum_i \\delta_i N_i r_i D(t,T_i) + \\sum_i (N_i - N_{i+1}) D(t,T_i)$$',
+        '$$V(t)=\\sum_i \\delta_i N_i r_i D(t,P_i) + \\sum_i (N_i - N_{i+1}) D(t,T_i)$$',
         '',
         'where $N_i$ is the balance accruing over period $i$, $N_{n+1}=0$, $r_i$ is the accrual',
         'rate for period $i$ - read from **Interest_Rate_Schedule** when that pins every period, a row',
         'dated on the unadjusted start of the period it pins, otherwise forecast from **Interest_Rate**',
         '- and $D(t,T)$ is the discount factor from **Discount_Rate**. The periods are the deposit\'s',
-        '[coupon schedule](#coupon-schedules).',
+        '[coupon schedule](#coupon-schedules): period $i$ ends on $T_i$ and its interest is paid on',
+        '$P_i$ as its **Payment_Timing** says, its principal at its end whatever the timing.',
     ])
 
     @classmethod
@@ -2539,6 +2545,8 @@ class DepositDeal(Deal):
         super(DepositDeal, self).reset()
         terms = self.field['Effective_Date'], self.field['Maturity_Date'], self.field['Payment_Frequency']
         self.paydates, self.pays = self.coupon_schedule(calendars, *terms)
+        # the principal is repaid as a period ends, whenever its interest is paid
+        self.ends = self.coupon_schedule(calendars, *terms, timing=None)[1]
         self.add_reval_dates(self.paydates.union(self.pays), self.field['Currency'])
         # a pinned rate is stated on its period's unadjusted start, the day `quote` can name
         self.starts = self.coupon_schedule({}, *terms)[0][:-1]
@@ -2565,13 +2573,12 @@ class DepositDeal(Deal):
 
         daycount = utils.DayCount.code(self.field['Accrual_Day_Count'])
         schedule = self.field['Interest_Rate_Schedule']
+        field_index['Discounted'] = self.field['Payment_Timing'] == 'Discounted'
 
         if self.is_fixed:
             cashflows = utils.TensorCashFlows.generate_fixed(
-                base_date, self.paydates, self.field['Amount'], self.field['Amortisation'], daycount, 0.0,
-                self.pays)
-            for row, start in zip(cashflows.schedule, self.starts):
-                row[utils.CASHFLOW_INDEX_FixedRate] = schedule.data[start] / 100.0
+                base_date, self.paydates, self.field['Amount'], self.field['Amortisation'], daycount,
+                [schedule.data[start] / 100.0 for start in self.starts], self.pays, field_index['Discounted'])
         else:
             field['Interest_Rate'] = self.check_factor_name('Interest_Rate', field['Discount_Rate'])
             field_index['Forward'] = get_interest_factor(
@@ -2582,13 +2589,14 @@ class DepositDeal(Deal):
                 self.field.get('Reference'), self.pays)
             field_index['Model'] = pricing.pricer_float_cashflows
 
-        # each period repays the step its successor's balance is smaller by, the last period the
-        # balance then outstanding; `add_fixed_payments` places the amount lent
-        nominal = cashflows.schedule[:, utils.CASHFLOW_INDEX_Nominal]
-        cashflows.schedule[:, utils.CASHFLOW_INDEX_FixedAmt] = nominal - np.append(nominal[1:], 0.0)
-        cashflows.add_fixed_payments(
-            base_date, 'Start', self.field['Effective_Date'],
-            self.field['Accrual_Day_Count'], self.field['Amount'])
+        # the amount lent on the effective date, and each period's end repaying the step its
+        # successor's balance is smaller by, the last period's the balance then outstanding
+        nominal = np.array([period[utils.CASHFLOW_INDEX_Nominal] for period in utils.TensorCashFlows.periods(
+            min(base_date, self.field['Effective_Date']), self.paydates, self.field['Amount'],
+            self.field['Amortisation'], daycount, 0.0, self.ends)])
+        flows = zip([self.field['Effective_Date']] + list(self.ends),
+                    np.append(-self.field['Amount'], nominal - np.append(nominal[1:], 0.0)))
+        cashflows.pay(base_date, [(day, amount) for day, amount in flows if day >= base_date], daycount)
 
         field_index['Cashflows'] = cashflows
         field_index['Compounding'] = self.field['Compounding'] == 'Yes'
@@ -2630,7 +2638,8 @@ class SwapInterestDeal(Deal):
     ]), own('SwapInterestDeal', [
         F('Pay_Rate_Type', 'Text', default='Fixed', values=['Fixed', 'Floating']),
         F('Pay_First_Coupon_Date', 'Date', default='', convention=True),
-        F('Pay_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
+        F('Pay_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted'],
+          description=TIMING),
         F('Pay_Payment_Offset', 'Integer', default=0, convention=True),
         F('Pay_Interest_Frequency', 'Period', default='3M', convention=True),
         F('Pay_Penultimate_Coupon_Date', 'Date', default='', convention=True),
@@ -2645,7 +2654,8 @@ class SwapInterestDeal(Deal):
         F('Receive_First_Coupon_Date', 'Date', default='', convention=True),
         F('Receive_Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Receive_Interest_Frequency', 'Period', default='3M', convention=True),
-        F('Receive_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
+        F('Receive_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted'],
+          description=TIMING),
         F('Receive_Frequency', 'Period', default='3M', convention=True),
         F('Receive_Payment_Offset', 'Integer', default=0, convention=True)
     ], 'Receive', 'Receive leg')]
@@ -2704,14 +2714,17 @@ class SwapInterestDeal(Deal):
         dates, pays = self.legs[fixed]
         field_index['FixedCashflows'] = utils.TensorCashFlows.generate_fixed(
             base_date, dates, sign * self.field['Principal'], self.field['Amortisation'],
-            utils.DayCount.code(self.field[fixed + 'Day_Count']), self.field['Swap_Rate'] / 100.0, pays)
+            utils.DayCount.code(self.field[fixed + 'Day_Count']), self.field['Swap_Rate'] / 100.0, pays,
+            self.field[fixed + 'Timing'] == 'Discounted')
         dates, pays = self.legs[floating]
         field_index['FloatCashflows'] = utils.TensorCashFlows.generate_float(
             base_date, time_grid, dates, -sign * self.field['Principal'], self.field['Amortisation'],
             self.field['Known_Rates'], self.field[floating + 'Interest_Frequency'], self.field['Index_Tenor'],
             utils.DayCount.code(self.field[floating + 'Day_Count']), self.field['Floating_Margin'] / 10000.0,
-            self.field.get('Reference'), pays, self.float_index(calendars, self.field[floating + 'Day_Count']))
+            self.field.get('Reference'), pays, self.float_index(
+                calendars, self.field[floating + 'Day_Count'], self.field[floating + 'Frequency']))
 
+        field_index['Discounted'] = self.field[floating + 'Timing'] == 'Discounted'
         field_index['Compounding'] = self.field['Fixed_Compounding'] == 'Yes'
         field_index['CompoundingMethod'] = self.field['Compounding_Method']
         # read where a coupon owns several resets, which its Compounding_Method folds: None
@@ -3240,10 +3253,12 @@ class CapDeal(Deal):
                     (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
                     Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
                     utils.DayCount.code(self.field['Accrual_Day_Count']), self.field[strike] / 100.0,
-                    self.field.get('Reference'), self.pays, self.float_index(calendars, self.field['Accrual_Day_Count']))
+                    self.field.get('Reference'), self.pays, self.float_index(
+                        calendars, self.field['Accrual_Day_Count'], self.field['Payment_Interval']))
             field_index.update(
                 SettleCurrency=self.field['Currency'], CompoundingMethod='None',
-                AveragingMethod=self.field['Averaging_Method'], Model=pricer)
+                AveragingMethod=self.field['Averaging_Method'], Model=pricer,
+                Discounted=self.field['Payment_Timing'] == 'Discounted')
 
         return field_index
 
@@ -3297,7 +3312,8 @@ class SwaptionDeal(Deal):
         F('Pay_Amortisation', 'DateList', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')])),
         F('Pay_First_Coupon_Date', 'Date', default='', convention=True),
-        F('Pay_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
+        F('Pay_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted'],
+          description=TIMING),
         F('Pay_Payment_Offset', 'Integer', default=0, convention=True),
         F('Pay_Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Pay_Payment_Calendars', 'Text', default='', convention=True),
@@ -3311,7 +3327,8 @@ class SwaptionDeal(Deal):
         F('Receive_Amortisation', 'DateList', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')])),
         F('Receive_Payment_Calendars', 'Text', default='', convention=True),
-        F('Receive_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
+        F('Receive_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted'],
+          description=TIMING),
         F('Receive_Frequency', 'Period', default='3M', convention=True),
         F('Receive_Calendars', 'Text', default='', convention=True),
         F('Receive_Payment_Offset', 'Integer', default=0, convention=True)
@@ -3470,13 +3487,14 @@ class SwaptionDeal(Deal):
         field_index['Cash_Settled'] = self.field['Settlement_Style'] != 'Physical'
         fixed, floating, sign = ('Pay_', 'Receive_', -1) if self.field['Payer_Receiver'] == 'Payer' else (
             'Receive_', 'Pay_', 1)
-        index = self.float_index(calendars, self.field[floating + 'Day_Count'])
+        index = self.float_index(calendars, self.field[floating + 'Day_Count'], self.field[floating + 'Frequency'])
 
         def fixed_leg(legs, leg=fixed):
             dates, pays = legs[leg]
             return utils.TensorCashFlows.generate_fixed(
                 base_date, dates, sign * self.field['Principal'], self.field[leg + 'Amortisation'],
-                utils.DayCount.code(self.field[leg + 'Day_Count']), self.field['Swap_Rate'] / 100.0, pays)
+                utils.DayCount.code(self.field[leg + 'Day_Count']), self.field['Swap_Rate'] / 100.0, pays,
+                self.field[leg + 'Timing'] == 'Discounted')
 
         def floating_leg(legs):
             dates, pays = legs[floating]
@@ -3518,7 +3536,8 @@ class SwaptionDeal(Deal):
                 field_index.update(
                     Gap=({'Cashflows': gap, 'Discount': field_index['Discount']},
                          {'Cashflows': floating_leg(self.gap), 'Forward': field_index['Forward'],
-                          'Discount': field_index['Discount'], 'CompoundingMethod': 'None'}),
+                          'Discount': field_index['Discount'], 'CompoundingMethod': 'None',
+                          'Discounted': self.field[floating + 'Timing'] == 'Discounted'}),
                     Gap_Tenor=tenor(expiry, effective),
                     Mid_Curve_Correlation=get_implied_correlation(surface, surface, all_factors))
             return field_index
@@ -7071,7 +7090,8 @@ class FRADeal(Deal):
         F('Use_Known_Rate', 'Text', default='No', convention=True, values=['Yes', 'No'],
           description='Yes where the reset has fixed at Known_Rate, which a reset behind the base date must'),
         F('Known_Rate', 'Percent', default=0.0, convention=True),
-        F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted']),
+        F('Payment_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted'],
+          description=TIMING),
         F('Principal', 'Float', default=0.0, sized=True),
         F('Interest_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
         F('Day_Count', 'Text', default='ACT_365', convention=True, values=DAY_COUNTS),
@@ -7088,15 +7108,14 @@ class FRADeal(Deal):
                       'rate over **Effective_Date** to **Maturity_Date**. It is one',
                       '[floating interest cashflow](#floating-interest-cashflows) with margin $-K$:',
                       '',
-                      '$$V(t)=\\pm P\\,\\big(L(t)-K\\big)\\,\\alpha\\,D(t,T_{PV})$$',
+                      '$$V(t)=\\pm P\\,\\big(L(t)-K\\big)\\,\\alpha\\,D(t,T)$$',
                       '',
                       'with $\\pm$ $+$ for a **Borrower** and $-$ for a **Lender**, $P$ **Principal**, $K$ **FRA_Rate**,',
                       '$\\alpha$ the accrual fraction in **Day_Count**, $L$ the forward on **Interest_Rate** (or',
                       '**Known_Rate** where **Use_Known_Rate** is `Yes`) reset on **Reset_Date** (the effective date',
-                      'where blank). **Payment_Timing** `Begin` values and pays the amount at the effective date',
-                      'with no $1/(1+L\\alpha)$ discount; `End` and `Discounted` both value from maturity',
-                      '($T_{PV}$ = maturity), `End` paying there and `Discounted` paying the amount discounted back',
-                      'to the effective date.'
+                      'where blank), paid on $T$ as **Payment_Timing** pays a [coupon schedule](#coupon-schedules)\'s',
+                      'period: $T$ the maturity, or the effective date under `Begin` and `Discounted`, which divides',
+                      'the amount by $1+L\\alpha$.'
                       ])
 
     def reset(self, calendars):
@@ -7130,15 +7149,9 @@ class FRADeal(Deal):
         Accrual_fraction = utils.DayCount.accrual(
             base_date, (self.field['Maturity_Date'] - self.field['Effective_Date']).days, field_index['Daycount'])
 
-        # the PV date, NOT the settlement date: only Begin values from the start of the rate
-        # period. End and Discounted both PV from maturity and differ only in where the cash
-        # lands, which `reset`'s pay_date states.
-        timing = self.field.get('Payment_Timing', 'End')
-        discount_date = self.field['Effective_Date'] if timing == 'Begin' else self.field['Maturity_Date']
-
         cashflows = {'Items':
             [{
-                'Payment_Date': discount_date,
+                'Payment_Date': self.pay_date,
                 'Accrual_Start_Date': self.field['Effective_Date'],
                 'Accrual_End_Date': self.field['Maturity_Date'],
                 'Accrual_Year_Fraction': Accrual_fraction,
@@ -7154,6 +7167,7 @@ class FRADeal(Deal):
         }
 
         field_index['VolSurface'] = np.zeros(1, dtype=np.int32)
+        field_index['Discounted'] = self.field['Payment_Timing'] == 'Discounted'
         field_index['Cashflows'] = utils.TensorCashFlows.float(
             base_date, time_grid, 1 if self.field['Borrower_Lender'] == 'Borrower' else -1,
             cashflows, self.field.get('Reference'))
@@ -7161,7 +7175,7 @@ class FRADeal(Deal):
         return field_index
 
     def generate(self, shared, time_grid, deal_data):
-        return pricing.pv_fra_leg(shared, time_grid, deal_data)
+        return pricing.pv_float_leg(shared, time_grid, deal_data)
 
 
 class FloatingEnergyDeal(Deal):
