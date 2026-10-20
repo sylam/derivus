@@ -71,8 +71,7 @@ FACTORS = {
         'Last_Period_Start': PRINTS[-1], 'Next_Publication_Date': B + pd.DateOffset(days=12),
         'Publication_Period': 'Monthly', 'Currency': 'USD'},
     'InflationRate.INFL': {
-        'Price_Index': 'INFL', 'Reference_Name': 'IndexReferenceInterpolated3M',
-        'Day_Count': 'ACT_365', 'Accrual_Calendar': '', 'Currency': 'USD',
+        'Price_Index': 'INFL', 'Day_Count': 'ACT_365', 'Accrual_Calendar': '', 'Currency': 'USD',
         'Curve': utils.Curve([], [[0.0, 0.025], [10.0, 0.025]])}}
 CONFIGURATION = {}
 

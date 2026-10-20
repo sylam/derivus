@@ -35,8 +35,7 @@ A reference date at or before the last published period reads the published prin
 and on or before the base date reads the base-date forward $I(\tau_0)F(\cdot)$ above; a later one
 reads the simulated index (or, with no index model, the inflation curve's forward under
 `NoModel: RiskNeutral`; see [Definitions](definitions.md)). **Quarters_Lag**,
-**Quarter_Reference_Month**, **Reference_Day** and **Days_In_Period** are accepted and not read, and
-neither is the InflationRate factor's **Reference_Name**.
+**Quarter_Reference_Month**, **Reference_Day** and **Days_In_Period** are accepted and not read.
 
 ## Inflation Rates
 

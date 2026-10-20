@@ -1053,10 +1053,6 @@ class InflationRate(Factor1D):
     fields = [
         F('Price_Index', 'Text', default='',
           description='Name of the associated PriceIndex factor'),
-        F('Reference_Name', 'Text', default='IndexReferenceInterpolated3M',
-          description='Price index reference rule',
-          values=['IndexReferenceInterpolated1M', 'IndexReferenceInterpolated2M',
-                  'IndexReferenceInterpolated3M', 'IndexReferenceInterpolated4M']),
         F('Day_Count', 'Text', default='ACT_365', description='Daycount convention for this curve',
           values=['ACT_365', 'ACT_360', 'ACT_365_ISDA', '_30_360', '_30E_360', 'ACT_ACT_ICMA']),
         F('Accrual_Calendar', 'Text', default=''),
@@ -1066,9 +1062,6 @@ class InflationRate(Factor1D):
 
     def __init__(self, param):
         super(InflationRate, self).__init__(param)
-
-    def get_reference_name(self):
-        return self.param['Reference_Name']
 
     def get_day_count(self):
         return utils.DayCount.code(self.param['Day_Count'])
