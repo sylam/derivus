@@ -7,8 +7,8 @@ page follows that walk in code order; entry points and output are on
 
 | where | what |
 | --- | --- |
-| `__init__.py` | `Context.run_job` and the `run_*` dispatch functions |
-| `calculation.py` | the five calculations, their states, `batch_seed`, `DealStructure` |
+| `__init__.py` | `Context.run_job` and the `run_*` functions, each one line onto a calculation's `run` |
+| `calculation.py` | the five calculations and how each runs, their states, `batch_seed`, `DealStructure` |
 | `utils.py` | `Calculation_State`, `TimeGrid`, `TensorSchedule`, the curve reads, the `BoundarySet` family |
 | `pricing.py` | `interpolate`, `oss_stream`, `InnerMCRecompute`, `LogVar2FJKit`, the boundary and kink terms |
 
@@ -22,15 +22,20 @@ the dispatch to the inner fork and its recompute node: play it here or open it f
 
 ## Dispatch
 
-`Context.run_job` branches on `Calculation['Object']` to `run_cmc` (through
-`Context.Credit_Monte_Carlo`, which shards under `runparallel`), `run_baseval`,
-`run_hedgemontecarlo`, `run_simm` or `run_saccr`, each calling `construct_calculation`. The first
-three pick the device and inject only `Run_Date` (and `Time_grid` for the Monte Carlo modes); every
-other default comes from the class's `fields` through `declared_defaults`. `run_simm` and
-`run_saccr` inject nothing, their calculations sharing `NettingSetCalculation`'s setup and its
-`base`, which compiles the book once as `BaseValuation.execute` does (`update_factors`, `set_deal_structures`; a
-worker of `run_simm` compiles its own once), each surface a vega move reaches given its vertex
-pillars so the base and every move share one grid, and prices it. A move (`SIMM.value`) writes the
+`Context.run_job` is `calculation_class(Calculation['Object']).run`: each calculation class owns
+how it runs, and `cx.Base_Valuation`, `cx.Credit_Monte_Carlo`, `cx.Hedge_Monte_Carlo` and the
+`run_*` functions are one line onto the same `run`. **Held by**
+`tests/test_schema_emission.py::test_the_calculation_types_are_what_run_job_dispatches`. A run
+reads the block `Calculation.parameters` completes: the keys its class's `runner_keys` derive
+(`Run_Date`, and `Time_grid` for the Monte Carlo modes), the document's block over them and the
+overrides merged deeply; every other default comes from the class's `fields` through
+`declared_defaults`. `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` pick the device and
+take a precision, `CreditMonteCarlo.run` sharding under `runparallel`. `SIMM` and `SACCR` inject
+nothing, `SACCR` running through the base `Calculation.run`, their calculations sharing
+`NettingSetCalculation`'s setup and its `base`, which compiles the book once as
+`BaseValuation.execute` does (`update_factors`, `set_deal_structures`; a worker of `SIMM.run`
+compiles its own once, `SIMM.shard`), each surface a vega move reaches given its vertex pillars so
+the base and every move share one grid, and prices it. A move (`SIMM.value`) writes the
 values of the factors it moves into their compiled leaves in place, clears `t_Buffer` and the
 trades' result blocks, prices the whole tree again and reads each trade off its own structure, a
 trade left unvalued refused by name, and writes the compiled leaves back. Every move prices the
@@ -164,8 +169,8 @@ of a set of more than 5,000 trades.
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
 judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a
-`ValueError` names every field it refuses at once: `run_baseval` and `run_cmc` judge the merged
-block, `HedgeMonteCarlo`, `SIMM`, `SACCR` and the diary where they complete it. `Config.validate` reports the
+`ValueError` names every field it refuses at once: `BaseValuation.run` and `CreditMonteCarlo.run`
+judge the merged block, `HedgeMonteCarlo`, `SIMM`, `SACCR` and the diary where they complete it. `Config.validate` reports the
 same messages under `calculation`, and a refused block is not walked for factors. A service override
 is judged on what it states before it queues (`schema.stated_messages`), an undeclared key refused
 ([Conventions](conventions.md#declared-defaults)).

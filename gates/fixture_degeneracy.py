@@ -9,11 +9,12 @@ of the three is a wrong assertion. Each is a fixture that zeroed the quantity it
 supposed to be sensitive to, and prose alone has now failed to catch this twice.
 
 WHAT THIS IS. A pytest plugin that OBSERVES a real run rather than parsing test source: it rebinds
-``run_baseval`` / ``run_cmc`` / ``run_hedgemontecarlo`` (which is every entry point - ``Context``'s
-methods reach them as module globals) and for every call records what the ENGINE actually saw -
-the market data, the deal fields, the resulting time grid - as a vector of degeneracy axes. Rows
-are attributed to the DEAL TYPES priced in that run, so there is no hand-maintained module->family
-map and a new deal type appears in the table the day its first test runs.
+the ``run`` of ``BaseValuation`` / ``CreditMonteCarlo`` / ``HedgeMonteCarlo`` (which is every entry
+point - ``Context``'s methods and the ``run_*`` delegations reach them) and for every call records
+what the ENGINE actually saw - the market data, the deal fields, the resulting time grid - as a
+vector of degeneracy axes. Rows are attributed to the DEAL TYPES priced in that run, so there is no
+hand-maintained module->family map and a new deal type appears in the table the day its first test
+runs.
 
 THREE KINDS OF AXIS.
   MARKET axes ask "was this quantity zeroed?" of the run (rates, carry, smile, correlation, the
@@ -332,22 +333,23 @@ def pytest_addoption(parser):
 def pytest_configure(config):
     if not config.getoption('degeneracy_census'):
         return
-    import derivus
+    from derivus import calculation
 
     def wrap(fn):
-        def inner(context, *a, **kw):
-            out = fn(context, *a, **kw)
+        def inner(cls, context, *a, **kw):
+            out = fn(cls, context, *a, **kw)
             try:
                 observe(context, out[0] if isinstance(out, tuple) else None)
             except Exception as e:                      # a census must never fail a real gate
                 _ROWS.append({'test': _NODE[0], 'zero': {}, 'vary': {}, 'error': repr(e)})
             return out
-        return inner
+        return classmethod(inner)
 
-    # Context.run_job / Base_Valuation / Credit_Monte_Carlo reach these as module globals, so
-    # rebinding them here covers the Context entry points too.
-    for name in ('run_baseval', 'run_cmc', 'run_hedgemontecarlo'):
-        setattr(derivus, name, wrap(getattr(derivus, name)))
+    # every entry point - Context.run_job, its methods and the run_* delegations - reaches a run
+    # through its class's `run`, so rebinding these covers them all
+    for cls in (calculation.BaseValuation, calculation.CreditMonteCarlo,
+                calculation.HedgeMonteCarlo):
+        cls.run = wrap(cls.__dict__['run'].__func__)
 
 
 def pytest_runtest_setup(item):

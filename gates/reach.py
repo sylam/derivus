@@ -347,7 +347,7 @@ class Graph:
     def _registries(self):
         """`globals()` dispatch: each `construct_*` edges to WHAT its store selects, whole."""
         for fn, targets in (
-                ('calculation.construct_calculation', self.calculations()),
+                ('calculation.calculation_class', self.calculations()),
                 ('bootstrappers.construct_bootstrapper',
                  self.classes('bootstrappers', 'market_factor_type')),
                 ('instruments.construct_instrument', self.classes('instruments', base='Deal')),

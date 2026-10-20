@@ -14,10 +14,10 @@
 __author__ = "Shuaib Osman"
 __license__ = "Free for non-commercial use"
 __all__ = ['version_info', '__version__', '__author__', '__license__', 'Context', 'getpath',
-           'set_collateral', 'load_market_data', 'run_baseval', 'run_cmc', 'update_dict']
+           'set_collateral', 'load_market_data', 'run_baseval', 'run_cmc', 'summarize_data',
+           'update_dict']
 
 import os
-import copy
 import json
 import torch
 import pickle
@@ -25,13 +25,7 @@ import hashlib
 import numbers
 import pathlib
 import logging
-import traceback
-import numpy as np
 import pandas as pd
-import collections.abc
-import torch.multiprocessing as mp
-from queue import Empty
-from functools import partial
 
 from ._version import version_info, __version__
 # schema FIRST: it assembles `mapping` from the declaring modules, and importing one of those
@@ -42,12 +36,9 @@ from .instruments import construct_instrument
 from .schema import deal_at
 from .config import (CustomJsonEncoder, Config, compress_deal_data, correlation_names,
                      wire_sections)
-
-
-def update_dict(d, u):
-    for k, v in u.items():
-        d[k] = update_dict(d.get(k, {}), v) if isinstance(v, collections.abc.Mapping) else v
-    return d
+from .calculation import (BaseValuation, CreditMonteCarlo, HedgeMonteCarlo, SACCR, SIMM,
+                          calculation_class, summarize_data)
+from .utils import update_dict
 
 
 def getpath(pathlist):
@@ -65,20 +56,6 @@ def content_hash(obj):
     return hashlib.sha256(json.dumps(
         obj, sort_keys=True, separators=(',', ':'), cls=CustomJsonEncoder).encode()).hexdigest()
 
-
-def summarize_data(data, percentiles):
-    pos_exposure = data.clip(0.0, np.inf)
-    neg_exposure = data.clip(-np.inf, 0.0)
-
-    exposure = {
-        'EE': np.mean(pos_exposure, axis=1),
-        'ENE': np.mean(neg_exposure, axis=1)}
-
-    if percentiles:
-        extra = {'PFE_{}'.format(x): np.percentile(data, float(x), axis=1) for x in percentiles.split(',')}
-        exposure.update(extra)
-
-    return pd.DataFrame(exposure)
 
 def set_collateral(cfg, Agreement_Currency, Balance_Currency, Opening_Balance, Received_Threshold=0.0,
                    Posted_Threshold=0.0, Minimum_Received=100000.0, Minimum_Posted=100000.0, Liquidation_Period=10.0):
@@ -193,261 +170,24 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
 
 
 def run_baseval(context, prec=torch.float64, overrides=None):
-    """
-    Runs a base valuation calculation on the provided context
-    :param context: a Context object
-    :param prec: the numerical precision to use (default float64)
-    :param overrides: a dictionary of overrides merged over the context's calculation parameters
-    :return: a tuple containing the calculation object and the output dictionary
-    """
-    from .calculation import construct_calculation
-    calc_params = context.deals.get(
-        'Calculation',
-        {'Base_Date': context.params['System Parameters']['Base_Date'],
-         'Currency': context.params['System Parameters']['Base_Currency']})
-
-    device = utils.calculation_device()
-
-    rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
-    # only the runtime-derived key is injected; every declared default comes from the schema
-    params_bv = {'Run_Date': rundate}
-    params_bv.update(calc_params)
-
-    if overrides is not None:
-        update_dict(params_bv, overrides)
-
-    calc = construct_calculation('BaseValuation', context, device=device, prec=prec)
-    out = calc.execute(calc.judged(params_bv))
-    return calc, out
-
-
-def run_simm(context, overrides=None):
-    """Runs a SIMM calculation - ISDA's CRIF by bump and revaluation, the book compiled once and
-    each market move one pricing of it - on the provided context: `(calculation, output)`, the CRIF
-    under `output['Results']['CRIF']`. `Workers` above one values the book here and deals the moves
-    in turn over that many processes, each compiling it on a context of its own; the CRIF is the
-    same to the bit either way."""
-    from .calculation import construct_calculation
-
-    params = dict(context.deals['Calculation'])
-    if overrides is not None:
-        update_dict(params, overrides)
-    calc = construct_calculation('SIMM', context)
-    calc.setup(params)
-    count = worker_count(calc.params['Workers'])
-    if count == 1:
-        return calc, calc.execute(params)
-    with calc.prepared():
-        base = calc.base()
-        moves, queue = list(calc.reach(base).items()), mp.Queue()
-        values = dict(pair for answer in gathered([mp.Process(
-            target=partial(shielded, simm_shard, job, queue), args=(
-                context, calc.params, moves[job::count], job, queue))
-            for job in range(min(count, len(moves)))], queue) for pair in answer['Values'].items())
-        return calc, calc.report(base, values)
-
-
-def run_saccr(context, overrides=None):
-    """Runs an SA-CCR calculation - CRE52's exposure at default of each netting set off one base
-    valuation of the book and each trade's declared terms - on the provided context:
-    `(calculation, output)`, the two frames under `output['Results']['SACCR']`."""
-    from .calculation import construct_calculation
-
-    params = dict(context.deals['Calculation'])
-    if overrides is not None:
-        update_dict(params, overrides)
-    calc = construct_calculation('SACCR', context)
-    return calc, calc.execute(params)
-
-
-def simm_shard(config, params, moves, job, queue):
-    """A worker's share of a SIMM run's moves, each `(move, trades)`, valued on a context of its own
-    calibrated and compiled once, an artifact crossing no process: `{(trade, move): value}`."""
-    from .calculation import construct_calculation
-
-    calc = construct_calculation('SIMM', config)
-    calc.setup(params)
-    with calc.prepared():
-        calc.base()
-        queue.put({'Job': job, 'Values': calc.values(moves)})
+    """`BaseValuation.run` with its precision second."""
+    return BaseValuation.run(context, overrides, prec=prec)
 
 
 def run_hedgemontecarlo(context, prec=torch.float32, overrides=None):
-    from .calculation import construct_calculation, HedgeMonteCarlo
-    from .schema import declared_defaults
-
-    calc_params = context.deals.get(
-        'Calculation',
-        {'Base_Date': context.params['System Parameters']['Base_Date'],
-         'Currency': context.params['System Parameters']['Base_Currency']})
-
-    device = utils.calculation_device()
-
-    rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
-    time_grid = str(declared_defaults(HedgeMonteCarlo, calc_params)['Time_Grid'])
-
-    # only the runtime-derived keys are injected; every declared default comes from the schema
-    params_mc = {'Time_grid': time_grid, 'Run_Date': rundate}
-
-    params_mc.update(calc_params)
-
-    if overrides is not None:
-        update_dict(params_mc, overrides)
-
-    calc = construct_calculation('HedgeMonteCarlo', context, device=device, prec=prec)
-    out = calc.execute(params_mc)
-
-    return calc, out
+    """`HedgeMonteCarlo.run` with its precision second."""
+    return HedgeMonteCarlo.run(context, overrides, prec=prec)
 
 
 def run_cmc(context, prec=torch.float32, overrides=None, job_id=0, num_jobs=1, res_queue=None,
             deterministic_batches=False, device=None):
-    """
-    Runs a credit monte carlo calculation on the provided context
-    :param res_queue: If not None, returns the results in this queue
-    :param num_jobs: number of jobs spawned - usually just 1 (i.e. the parent)
-    :param job_id: used if multiprocessing is set (index of this process in a group of workers)
-    :param context: a Context object
-    :param overrides: a dictionary of overrides merged over the context's calculation parameters
-    :param prec: the numerical precision to use (default float32)
-    :param deterministic_batches: seed every batch from its GLOBAL index rather than seeding the
-        worker once, so the job is deterministic in the number of workers - the same document
-        sharded n ways and run on one device produce bit-identical batches. Set by the
-        `runparallel` dispatch and by nothing else: off is the historical stream, bit for bit.
-        See `CreditMonteCarlo.execute` for the semantics and the one boundary it refuses at.
-    :param device: the device to run on, overriding the choice below. Lives here rather than in the
-        job document for the same reason `prec` does: which silicon runs a calculation is a
-        property of the box, not of the trade. `None` keeps the historical choice - `cuda` when it
-        is there, `cpu` when it is not - and passing `'cpu'` shards across processes on a CUDA box,
-        which is what makes the deterministic sharding testable without one.
-    :return: a tuple containing the calculation object, output dictionary and exposure profile
-    """
-    from .calculation import construct_calculation, CreditMonteCarlo
-    from .riskfactors import SurvivalProb
-    from .schema import declared_defaults
-    calc_params = context.deals.get(
-        'Calculation',
-        {'Base_Date': context.params['System Parameters']['Base_Date'],
-         'Currency': context.params['System Parameters']['Base_Currency']})
-
-    device = utils.calculation_device(device, job_id)
-
-    rundate = calc_params['Base_Date'].strftime('%Y-%m-%d')
-    time_grid = str(declared_defaults(CreditMonteCarlo, calc_params)['Time_Grid'])
-
-    # only the runtime-derived keys are injected; every declared default comes from the schema
-    params_mc = {'Time_grid': time_grid, 'Run_Date': rundate}
-
-    params_mc.update(calc_params)
-
-    if overrides is not None:
-        update_dict(params_mc, overrides)
-
-    CreditMonteCarlo.judged(params_mc)
-    if params_mc.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
-        cva_sect = params_mc['Credit_Valuation_Adjustment']
-        if cva_sect.get('CDS_Tenors'):
-            # the CDS dates join the survival curve's knots, its last hazard carried on past them, so
-            # the CDS rates read a curve that runs to their dates - on the run's own copy of the
-            # factor, the context it runs on being written to by nothing
-            name = 'SurvivalProb.{}'.format(cva_sect['Counterparty'])
-            survivalprob = context.params['Price Factors'][name]
-            daycount = lambda time_in_days: utils.DayCount.accrual(
-                params_mc['Base_Date'], time_in_days, utils.DayCount.ACT365)
-            to_add = [daycount((x - params_mc['Base_Date']).days) for x in
-                      utils.cds_dates(params_mc['Base_Date'], max(cva_sect.get('CDS_Tenors')) * 12)]
-            new_terms = np.union1d(to_add, survivalprob['Curve'].array[:, 0])
-            curve = utils.Curve(survivalprob['Curve'].meta, np.array(
-                list(zip(new_terms, SurvivalProb(survivalprob).current_value(new_terms)))))
-            context = copy.copy(context)
-            context.params = dict(context.params, **{'Price Factors': dict(
-                context.params['Price Factors'], **{name: dict(survivalprob, Curve=curve)})})
-
-    calc = construct_calculation('CreditMonteCarlo', context, device=device, prec=prec)
-    out = calc.execute(params_mc, job_id, num_jobs, deterministic_batches)
-    calc.report_device_memory(out['Stats'])
-    out['Results']['exposure_profile'] = summarize_data(
-        out['Results']['mtm'], params_mc.get('Percentile', '95').replace(' ', ''))
-
-    # what this worker RAN, not what the document asked for: execute() rebinds params through
-    # declared_defaults before applying `//= num_jobs`, so the division never reached this dict and
-    # a consumer sizing paths off Params on a sharded run over-counted them by num_jobs. Identity
-    # when num_jobs is 1, which is every unsharded caller.
-    params_mc['Simulation_Batches'] = out['Stats']['Simulation_Batches']
-
-    if res_queue is not None:
-        # 'Job' is what lets the parent merge in a FIXED order: the queue hands payloads back in
-        # completion order, and a pooled reduction whose operand order is a race is not
-        # deterministic in n however carefully the batches were seeded.
-        res_queue.put({'Results': out['Results'], 'Stats': out['Stats'], 'Params':params_mc, 'Reference':context.deals['Attributes']['Reference'], 'Job': job_id})
-
-    return calc, out
+    """`CreditMonteCarlo.run` as one shard, its precision second."""
+    return CreditMonteCarlo.run(
+        context, overrides, prec=prec, device=device, job_id=job_id, num_jobs=num_jobs,
+        res_queue=res_queue, deterministic_batches=deterministic_batches)
 
 
-def worker_count(runparallel):
-    """How many workers `runparallel` asks for - the knob is that argument, and there is no second.
-
-    `True` keeps the historical meaning, one worker per visible CUDA device, but falls back to a
-    SINGLE worker where there is no CUDA rather than to zero: `torch.cuda.device_count()` returns 0
-    on a CPU box, and zero workers would leave the parent waiting on a queue nothing ever writes to.
-    An int asks for exactly that many and is deliberately NOT capped by the device count - workers
-    share devices through `job_id % device_count`, so a four-way shard runs on a two-device box and
-    an n-way shard runs on a box with no device at all.
-
-    `isinstance(True, int)` is True in Python, so the bool is matched by identity first.
-    """
-    if runparallel is True:
-        return torch.cuda.device_count() or 1
-    count = int(runparallel)
-    if count < 1:
-        raise ValueError(
-            'runparallel is a worker count: True for one per device, or an int >= 1, got '
-            '{!r}'.format(runparallel))
-    return count
-
-
-def shielded(target, job, queue, *args, **kwargs):
-    """A worker's body: `target`, which answers on `queue` itself, and on a raise the error put
-    there as worker `job`'s answer instead - so the parent re-raises it rather than waiting."""
-    try:
-        target(*args, **kwargs)
-    except Exception as error:
-        try:
-            pickle.loads(pickle.dumps(error))
-        except Exception:
-            # an error that cannot cross the process boundary crosses as its own traceback
-            error = RuntimeError(traceback.format_exc())
-        queue.put({'Job': job, 'Error': error})
-
-
-def gathered(workers, queue):
-    """Start `workers` and take one answer each off `queue`, returned in worker order though the
-    queue hands them back in completion order: a worker's error is raised here with the others
-    stopped, and a worker dead without answering is named rather than waited on."""
-    answers = {}
-    for worker in workers:
-        worker.start()
-    try:
-        while len(answers) < len(workers):
-            try:
-                answer = queue.get(timeout=1.0)
-            except Empty:
-                silent = ['{} (exit {})'.format(job, worker.exitcode)
-                          for job, worker in enumerate(workers)
-                          if worker.exitcode not in (None, 0) and job not in answers]
-                if silent:
-                    raise RuntimeError('worker {} died without answering'.format(
-                        ', '.join(silent)))
-                continue
-            if 'Error' in answer:
-                raise answer['Error']
-            answers[answer['Job']] = answer
-    finally:
-        for worker in workers:
-            if len(answers) < len(workers) and worker.is_alive():
-                worker.terminate()
-            worker.join()
-    return [answers[job] for job in range(len(workers))]
+run_simm, run_saccr = SIMM.run, SACCR.run
 
 
 def quote_delta(name, container, points, values):
@@ -908,65 +648,21 @@ class Context:
                       effective_time=effective_time, execute=executor(type(self), files),
                       files=files)
 
-    def run_job(self, overrides=None, runparallel=False):
-        # check what calc we should run
-        if self.current_cfg.deals['Calculation']['Object'] == 'CreditMonteCarlo':
-            return self.Credit_Monte_Carlo(overrides, runparallel)
-        elif self.current_cfg.deals['Calculation']['Object'] == 'BaseValuation':
-            return self.Base_Valuation(overrides)
-        elif self.current_cfg.deals['Calculation']['Object'] == 'HedgeMonteCarlo':
-            return self.Hedge_Monte_Carlo(overrides)
-        elif self.current_cfg.deals['Calculation']['Object'] == 'SIMM':
-            return run_simm(self.current_cfg, overrides)
-        elif self.current_cfg.deals['Calculation']['Object'] == 'SACCR':
-            return run_saccr(self.current_cfg, overrides)
-        else:
-            raise Exception('Unknown Calculation {}'.format(self.current_cfg.deals['Calculation']['Object']))
+    def run_job(self, overrides=None, **options):
+        """Runs the calculation the job's `Calculation.Object` names through its class's `run`,
+        `options` that run's own (`runparallel` a credit Monte Carlo's)."""
+        return calculation_class(self.current_cfg.deals['Calculation']['Object']).run(
+            self.current_cfg, overrides, **options)
 
     def Credit_Monte_Carlo(self, overrides=None, runparallel=False, device=None):
-        """Shard one calculation across worker processes, deterministically in their number.
-
-        `runparallel` is the worker-count knob (see `worker_count`): `True` for one per visible
-        CUDA device, an int for exactly that many. Workers take CONTIGUOUS batch ranges and every
-        batch seeds from its global index, so the same document sharded n ways and run unsharded
-        cover the same batches in the same order - the shard count changes the wall clock and not
-        the answer. `device` overrides where they run and is what lets the whole thing shard across
-        processes on a box with no CUDA at all.
-
-        Returns a dict of LISTS rather than the `(calc, out)` tuple - one entry per worker under
-        each of `Results`, `Stats`, `Params`, `Reference` and `Job`, ordered BY WORKER rather than
-        by which finished first - and the caller pools them. Pool the `mtm` and re-summarize:
-        `EE`/`ENE` are means over paths and pool by averaging equal shards, `PFE_<p>` is a
-        percentile and does not.
-        """
-        if runparallel:
-            num_workers = worker_count(runparallel)
-            results = mp.Queue()
-            workers = [mp.Process(target=partial(shielded, run_cmc, i, results),
-                                  args=(self.current_cfg, torch.float32, overrides, i,
-                                        num_workers, results),
-                                  kwargs={'deterministic_batches': True, 'device': device})
-                       for i in range(num_workers)]
-
-            # the queue hands them back in completion order, which is a race; the merge is keyed
-            # by worker so a pooled reduction reads its operands in the same order every run
-            post_processing = gathered(workers, results)
-            results.close()
-
-            post_results = {}
-            for output in post_processing:
-                data = dict(output)
-                for k, v in data.items():
-                    post_results.setdefault(k, []).append(v)
-            return post_results
-        else:
-            return run_cmc(self.current_cfg, overrides=overrides, device=device)
+        """`CreditMonteCarlo.run` on the loaded job, sharded under `runparallel`."""
+        return CreditMonteCarlo.run(self.current_cfg, overrides, runparallel, device=device)
 
     def Base_Valuation(self, overrides=None):
-        return run_baseval(self.current_cfg, overrides=overrides)
+        return BaseValuation.run(self.current_cfg, overrides)
 
     def Hedge_Monte_Carlo(self, overrides=None):
-        return run_hedgemontecarlo(self.current_cfg, overrides=overrides)
+        return HedgeMonteCarlo.run(self.current_cfg, overrides)
 
 
 class StressedContext(Context):

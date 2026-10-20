@@ -551,34 +551,27 @@ def calculation_classes():
 
 
 def dispatched_calculations():
-    """The `Object` strings `Context.run_job` actually branches on, read off the source.
-
-    Parsed rather than listed, for the reason `bootstrapped_market_factor_types` is: a hand-kept
-    list here would be a fourth store of the same knowledge and would drift the same way."""
-    found = set()
-    src = inspect.getsource(derivus.Context.run_job)
-    for node in ast.walk(ast.parse(textwrap.dedent(src))):
-        # `if self.current_cfg.deals['Calculation']['Object'] == 'X':`
-        if isinstance(node, ast.Compare) and isinstance(node.left, ast.Subscript) \
-                and isinstance(node.left.slice, ast.Constant) and node.left.slice.value == 'Object':
-            found.update(c.value for c in node.comparators
-                         if isinstance(c, ast.Constant) and isinstance(c.value, str))
-    return found
+    """`{Object: the class whose run runs it}` for every type the Calculation store publishes:
+    `Context.run_job` dispatches a document through `calculation_class(Object).run`, the nearest
+    class of its MRO defining `run`."""
+    return {name: next(c for c in calculation.calculation_class(name).__mro__ if 'run' in vars(c))
+            for name in CALCULATION['types']}
 
 
 def test_the_calculation_types_are_what_run_job_dispatches():
-    """Both directions. `run_job` branches on the `Object` string and RAISES on a miss, so a declared
-    type naming no branch is a calculation the create menu offers and the engine refuses to run;
-    and the converse was where the drift was - `HedgeMonteCarlo` had a `run_job` branch, a
-    documented contract and two shipped fixtures, and no schema row, so opening a job that used it
-    raised KeyError in `CalculationPage.load_items`. The type is the class name, the `Object`
-    string a job writes.
+    """`run_job` runs a document through `calculation_class`, which admits exactly the types the
+    store declares, so the type is the class name and the `Object` string a job writes; what can
+    drift is the run a type resolves, a declared calculation inheriting another declared one's
+    `run` running as that one (`HedgeMonteCarlo` is a `CreditMonteCarlo`).
 
-    Killing mutation: `run_job`'s HedgeMonteCarlo branch keyed on another string."""
-    undispatchable = sorted(set(CALCULATION['types']) - dispatched_calculations())
-    assert not undispatchable, f'schema offers calculations run_job cannot dispatch: {undispatchable}'
-    undeclared = sorted(dispatched_calculations() - set(CALCULATION['types']))
-    assert not undeclared, f'calculations run_job dispatches that no schema declares: {undeclared}'
+    Killing mutations: `run_job` dispatching on anything but `calculation_class`;
+    `HedgeMonteCarlo.run` deleted, so a hedge job runs as a credit Monte Carlo."""
+    source = ast.parse(textwrap.dedent(inspect.getsource(derivus.Context.run_job)))
+    assert any(isinstance(node, ast.Call) and getattr(node.func, 'id', None) == 'calculation_class'
+               for node in ast.walk(source)), 'run_job does not dispatch through calculation_class'
+    borrowed = {name: owner.__name__ for name, owner in dispatched_calculations().items()
+                if owner.__name__ != name and owner.__name__ in CALCULATION['types']}
+    assert not borrowed, f'declared calculations running through another one\'s run: {borrowed}'
 
 
 def calculation_fallback_reads(cls_name, module_ast):
@@ -975,8 +968,8 @@ def interpolated_factor_types():
     """The factor types `construct_factor` routes through the `Price Factor Interpolation` section,
     read off the source.
 
-    Parsed rather than listed, for the reason `dispatched_calculations` is: a hand-kept list here
-    would be a second store of the same knowledge and would drift the same way."""
+    Parsed rather than listed: a hand-kept list here would be a second store of the same knowledge
+    and would drift."""
     src = ast.parse(inspect.getsource(riskfactors))
     fn = next(n for n in src.body
               if isinstance(n, ast.FunctionDef) and n.name == 'construct_factor')

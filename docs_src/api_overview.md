@@ -66,7 +66,7 @@ reference:
 | `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolver) |
 | `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, the book compiled once and priced again per market move |
 | `derivus.run_saccr(cx.current_cfg, overrides)` | `SACCR` | The SA-CCR exposure at default of each netting set, off one base valuation of the book and each trade's declared terms |
-| `cx.run_job(overrides)` | (any of the above) | Dispatches based on the loaded JSON's `Calculation.Object` |
+| `cx.run_job(overrides)` | (any of the above) | Runs the class the loaded JSON's `Calculation.Object` names through its `run`, which each method above is one line onto |
 | `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |
 | `cx.describe()` | (any of the above) | Reports what the engine made of the loaded job, without running it |
 
@@ -146,9 +146,10 @@ comma-separated for several — so there is no column called plain `PFE`. The re
 DataFrame and so can be plotted via `.plot()`.
 
 !!! note "Sharding with `runparallel`"
-    `Credit_Monte_Carlo(runparallel=True)` runs one worker process per visible CUDA device (one on a
-    box without CUDA); an integer asks for exactly that many workers, sharing devices. Workers take
-    contiguous ranges of the batches and every batch is seeded from its global index, so the result
+    `Credit_Monte_Carlo(runparallel=True)`, or `run_job(runparallel=True)` on a `CreditMonteCarlo`
+    job, runs one worker process per visible CUDA device (one on a box without CUDA); an integer
+    asks for exactly that many workers, sharing devices. Workers take contiguous ranges of the
+    batches and every batch is seeded from its global index, so the result
     does not depend on the worker count; a remainder of `Simulation_Batches` that does not divide
     by the worker count is not run. It returns a dict of LISTS, one entry per worker under each of
     `Results`, `Stats`, `Params`, `Reference` and `Job`, rather than `(calc, out)`: pool the `mtm`

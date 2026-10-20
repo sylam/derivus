@@ -16,6 +16,7 @@ import os
 from functools import lru_cache, partial, reduce, wraps
 import threading
 from collections import namedtuple, OrderedDict
+from collections.abc import Mapping
 from typing import Tuple, List
 from dataclasses import dataclass
 
@@ -1587,6 +1588,12 @@ def calculation_device(requested=None, job_id=0):
         os.environ['CUBLAS_WORKSPACE_CONFIG'] = ':4096:8'
         torch.cuda.empty_cache()
     return device
+
+
+def update_dict(d, u):
+    for k, v in u.items():
+        d[k] = update_dict(d.get(k, {}), v) if isinstance(v, Mapping) else v
+    return d
 
 
 # often we need a numpy array and its tensor equivalent at the same time

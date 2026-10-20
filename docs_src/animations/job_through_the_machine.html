@@ -478,7 +478,7 @@
     { title: 'Dispatch: the job is judged',
       text: 'The document names a calculation by its class, and nothing else is injected but the run date and the time grid. Before anything runs, the block is completed from its declarations and judged by them, every refusal named at once. The device is the box’s choice, never the trade’s.',
       run: function () {
-        state.dispatched = true; state.status.job = 'run_cmc → CreditMonteCarlo'; render();
+        state.dispatched = true; state.status.job = 'CreditMonteCarlo.run'; render();
         return wait(600).then(function () {
           ['Run_Date', 'Time_grid'].forEach(function (c, i) {
             var x = JOB.x + 12 + i * 84, y = JOB.y + 136;

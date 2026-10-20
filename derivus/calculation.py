@@ -13,16 +13,21 @@
 
 
 import contextlib
+import copy
 import math
 import time
 import json
+import pickle
 import logging
 import itertools
+import traceback
 import pandas as pd
 import numpy as np
 import scipy.stats
 import torch
-from functools import reduce
+import torch.multiprocessing as mp
+from queue import Empty
+from functools import partial, reduce
 
 from collections import namedtuple, defaultdict
 from .riskfactors import construct_factor
@@ -379,6 +384,31 @@ class Calculation(object):
 
     def execute(self, params):
         pass
+
+    @classmethod
+    def runner_keys(cls, block):
+        """The keys a run derives off its job's `block` and sets beneath it: none."""
+        return {}
+
+    @classmethod
+    def parameters(cls, context, overrides=None):
+        """The block a run of `context` reads, each step over the last: its `runner_keys`, the
+        job's `Calculation` block (the system parameters' date and currency where it has none) and
+        `overrides` merged deeply."""
+        system = context.params['System Parameters']
+        block = context.deals.get('Calculation', {
+            'Base_Date': system['Base_Date'], 'Currency': system['Base_Currency']})
+        params = dict(cls.runner_keys(block), **block)
+        if overrides is not None:
+            utils.update_dict(params, overrides)
+        return params
+
+    @classmethod
+    def run(cls, context, overrides=None):
+        """Runs this calculation on `context`, its block completed by `parameters`:
+        `(calculation, output)`."""
+        calc = cls(context)
+        return calc, calc.execute(cls.parameters(context, overrides))
 
     @classmethod
     def refusals(cls, params):
@@ -1041,6 +1071,82 @@ class CreditMonteCarlo(Calculation):
         self.implied_var = {}
 
         self.all_var = None
+
+    @classmethod
+    def runner_keys(cls, block):
+        """`Time_grid`, the block's `Time_Grid` or its declared default as text, and `Run_Date`,
+        its `Base_Date` as `YYYY-MM-DD`."""
+        return {'Time_grid': str(declared_defaults(cls, block)['Time_Grid']),
+                'Run_Date': block['Base_Date'].strftime('%Y-%m-%d')}
+
+    @classmethod
+    def run(cls, context, overrides=None, runparallel=False, prec=torch.float32, device=None,
+            job_id=0, num_jobs=1, res_queue=None, deterministic_batches=False):
+        """Runs a credit Monte Carlo on `context`: `(calculation, output)`, the exposure profile
+        under `output['Results']['exposure_profile']`, or shard `job_id` of `num_jobs`, its answer
+        put on `res_queue`.
+
+        `runparallel` runs `worker_count(runparallel)` such shards in processes of their own, each
+        a contiguous range of the batches seeding every batch from its global index
+        (`deterministic_batches`), so the answer does not depend on the worker count, and returns
+        a dict of lists, one entry per worker in worker order under each of `Results`, `Stats`,
+        `Params`, `Reference` and `Job`: pool the `mtm` and re-summarize, a `PFE_<p>` percentile
+        not pooling by averaging. `device` overrides `utils.calculation_device`'s choice, a
+        property of the box and not of the trade, as `prec` is.
+        """
+        if runparallel:
+            count, queue = worker_count(runparallel), mp.Queue()
+            # the queue hands them back in completion order, which is a race; the merge is keyed
+            # by worker so a pooled reduction reads its operands in the same order every run
+            answers = gathered([mp.Process(
+                target=partial(shielded, cls.run, job, queue), args=(context, overrides), kwargs={
+                    'prec': prec, 'device': device, 'job_id': job, 'num_jobs': count,
+                    'res_queue': queue, 'deterministic_batches': True})
+                for job in range(count)], queue)
+            queue.close()
+            merged = {}
+            for answer in answers:
+                for key, value in answer.items():
+                    merged.setdefault(key, []).append(value)
+            return merged
+
+        device = utils.calculation_device(device, job_id)
+        params = cls.judged(cls.parameters(context, overrides))
+        if params.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
+            cva_sect = params['Credit_Valuation_Adjustment']
+            if cva_sect.get('CDS_Tenors'):
+                # the CDS dates join the survival curve's knots, its last hazard carried on past
+                # them, so the CDS rates read a curve that runs to their dates - on the run's own
+                # copy of the factor, the context it runs on being written to by nothing
+                name = 'SurvivalProb.{}'.format(cva_sect['Counterparty'])
+                survivalprob = context.params['Price Factors'][name]
+                daycount = lambda time_in_days: utils.DayCount.accrual(
+                    params['Base_Date'], time_in_days, utils.DayCount.ACT365)
+                to_add = [daycount((x - params['Base_Date']).days) for x in utils.cds_dates(
+                    params['Base_Date'], max(cva_sect.get('CDS_Tenors')) * 12)]
+                new_terms = np.union1d(to_add, survivalprob['Curve'].array[:, 0])
+                curve = utils.Curve(survivalprob['Curve'].meta, np.array(list(zip(
+                    new_terms, riskfactors.SurvivalProb(survivalprob).current_value(new_terms)))))
+                context = copy.copy(context)
+                context.params = dict(context.params, **{'Price Factors': dict(
+                    context.params['Price Factors'], **{name: dict(survivalprob, Curve=curve)})})
+
+        calc = cls(context, device=device, prec=prec)
+        out = calc.execute(params, job_id, num_jobs, deterministic_batches)
+        calc.report_device_memory(out['Stats'])
+        out['Results']['exposure_profile'] = summarize_data(
+            out['Results']['mtm'], params.get('Percentile', '95').replace(' ', ''))
+
+        # what this worker RAN, not what the document asked for: execute() rebinds params through
+        # declared_defaults before `//= num_jobs`, so the division never reached this dict; the
+        # identity where num_jobs is 1, which is every unsharded run
+        params['Simulation_Batches'] = out['Stats']['Simulation_Batches']
+
+        if res_queue is not None:
+            res_queue.put({'Results': out['Results'], 'Stats': out['Stats'], 'Params': params,
+                           'Reference': context.deals['Attributes']['Reference'], 'Job': job_id})
+
+        return calc, out
 
     def update_factors(self, params, base_date, job_id, num_jobs):
         dependent_factors, stochastic_factors, implied_factors, reset_dates, settlement_currencies = \
@@ -2028,6 +2134,18 @@ class BaseValuation(Calculation):
 
         self.static_var = {}
 
+    @classmethod
+    def runner_keys(cls, block):
+        """`Run_Date`, the block's `Base_Date` as `YYYY-MM-DD`."""
+        return {'Run_Date': block['Base_Date'].strftime('%Y-%m-%d')}
+
+    @classmethod
+    def run(cls, context, overrides=None, prec=torch.float64):
+        """Values `context`'s book on the device `utils.calculation_device` picks, at `prec`, its
+        block completed by `parameters` and judged: `(calculation, output)`."""
+        calc = cls(context, device=utils.calculation_device(), prec=prec)
+        return calc, calc.execute(calc.judged(cls.parameters(context, overrides)))
+
     def update_factors(self, params, base_date):
         dependent_factors, stochastic_factors, implied_factors, reset_dates, settlement_currencies = \
             self.config.calculate_dependencies(params, base_date, '0d', False)
@@ -2967,6 +3085,13 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Run_Textbook_Benchmark', 'Text', default='No', values=['Yes', 'No'],
                       description='Assemble the averaging-hedge lower-bound benchmark track')])])
     ]
+
+    @classmethod
+    def run(cls, context, overrides=None, prec=torch.float32):
+        """Runs the hedge on `context` on the device `utils.calculation_device` picks, at `prec`,
+        its block completed by `parameters`: `(calculation, HedgeRuntimeExecutionResult)`."""
+        calc = cls(context, device=utils.calculation_device(), prec=prec)
+        return calc, calc.execute(cls.parameters(context, overrides))
 
     @staticmethod
     def _factor_bundle_key(factor_key):
@@ -3982,8 +4107,40 @@ class SIMM(NettingSetCalculation):
         365/12 of them, as the methodology counts."""
         return int(label[:-1]) * {'w': 7.0, 'm': 365 / 12.0, 'y': 365.0}[label[-1].lower()] / 365.0
 
+    @classmethod
+    def run(cls, context, overrides=None):
+        """Runs SIMM on `context`, the book compiled once and each market move one pricing of it:
+        `(calculation, output)`, the CRIF under `output['Results']['CRIF']`. `Workers` above one
+        values the book here and deals the moves in turn over that many processes, each compiling
+        it on a context of its own (`shard`); the CRIF is the same to the bit either way."""
+        params = cls.parameters(context, overrides)
+        calc = cls(context)
+        calc.setup(params)
+        count = worker_count(calc.params['Workers'])
+        if count == 1:
+            return calc, calc.execute(params)
+        with calc.prepared():
+            base = calc.base()
+            moves, queue = list(calc.reach(base).items()), mp.Queue()
+            values = dict(pair for answer in gathered([mp.Process(
+                target=partial(shielded, cls.shard, job, queue), args=(
+                    context, calc.params, moves[job::count], job, queue))
+                for job in range(min(count, len(moves)))], queue)
+                for pair in answer['Values'].items())
+            return calc, calc.report(base, values)
+
+    @classmethod
+    def shard(cls, context, params, moves, job, queue):
+        """A worker's share of a run's moves, each `(move, trades)`, valued on a context of its own
+        calibrated and compiled once, an artifact crossing no process: `{(trade, move): value}`."""
+        calc = cls(context)
+        calc.setup(params)
+        with calc.prepared():
+            calc.base()
+            queue.put({'Job': job, 'Values': calc.values(moves)})
+
     def execute(self, params):
-        """The run in this process alone; `run_simm` deals the moves over workers."""
+        """The run in this process alone; `run` deals the moves over workers."""
         self.setup(params)
         with self.prepared():
             base = self.base()
@@ -4826,8 +4983,85 @@ class SACCR(NettingSetCalculation):
         return {'Stats': self.calc_stats, 'Results': self.output}
 
 
-def construct_calculation(name, config, **kwargs):
-    return calculation_class(name)(config, **kwargs)
+def summarize_data(data, percentiles):
+    pos_exposure = data.clip(0.0, np.inf)
+    neg_exposure = data.clip(-np.inf, 0.0)
+
+    exposure = {
+        'EE': np.mean(pos_exposure, axis=1),
+        'ENE': np.mean(neg_exposure, axis=1)}
+
+    if percentiles:
+        extra = {'PFE_{}'.format(x): np.percentile(data, float(x), axis=1) for x in percentiles.split(',')}
+        exposure.update(extra)
+
+    return pd.DataFrame(exposure)
+
+
+def worker_count(runparallel):
+    """How many workers `runparallel` asks for - the knob is that argument, and there is no second.
+
+    `True` keeps the historical meaning, one worker per visible CUDA device, but falls back to a
+    SINGLE worker where there is no CUDA rather than to zero: `torch.cuda.device_count()` returns 0
+    on a CPU box, and zero workers would leave the parent waiting on a queue nothing ever writes to.
+    An int asks for exactly that many and is deliberately NOT capped by the device count - workers
+    share devices through `job_id % device_count`, so a four-way shard runs on a two-device box and
+    an n-way shard runs on a box with no device at all.
+
+    `isinstance(True, int)` is True in Python, so the bool is matched by identity first.
+    """
+    if runparallel is True:
+        return torch.cuda.device_count() or 1
+    count = int(runparallel)
+    if count < 1:
+        raise ValueError(
+            'runparallel is a worker count: True for one per device, or an int >= 1, got '
+            '{!r}'.format(runparallel))
+    return count
+
+
+def shielded(target, job, queue, *args, **kwargs):
+    """A worker's body: `target`, which answers on `queue` itself, and on a raise the error put
+    there as worker `job`'s answer instead - so the parent re-raises it rather than waiting."""
+    try:
+        target(*args, **kwargs)
+    except Exception as error:
+        try:
+            pickle.loads(pickle.dumps(error))
+        except Exception:
+            # an error that cannot cross the process boundary crosses as its own traceback
+            error = RuntimeError(traceback.format_exc())
+        queue.put({'Job': job, 'Error': error})
+
+
+def gathered(workers, queue):
+    """Start `workers` and take one answer each off `queue`, returned in worker order though the
+    queue hands them back in completion order: a worker's error is raised here with the others
+    stopped, and a worker dead without answering is named rather than waited on."""
+    answers = {}
+    for worker in workers:
+        worker.start()
+    try:
+        while len(answers) < len(workers):
+            try:
+                answer = queue.get(timeout=1.0)
+            except Empty:
+                silent = ['{} (exit {})'.format(job, worker.exitcode)
+                          for job, worker in enumerate(workers)
+                          if worker.exitcode not in (None, 0) and job not in answers]
+                if silent:
+                    raise RuntimeError('worker {} died without answering'.format(
+                        ', '.join(silent)))
+                continue
+            if 'Error' in answer:
+                raise answer['Error']
+            answers[answer['Job']] = answer
+    finally:
+        for worker in workers:
+            if len(answers) < len(workers) and worker.is_alive():
+                worker.terminate()
+            worker.join()
+    return [answers[job] for job in range(len(workers))]
 
 
 def calculation_class(name):
