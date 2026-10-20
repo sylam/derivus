@@ -448,6 +448,28 @@ def test_the_day_s_payment_is_read_as_the_set_s_own_recursion_reads_it():
             "the day's payment moves no call here"
 
 
+def test_a_base_valuation_values_a_set_whatever_it_calls_at():
+    """A BASE VALUATION IS ONE DATE, and a collateralised set revalues on it as every deal does,
+    whatever its `Collateral_Call_Frequency`: called weekly, the set marks bit for bit as called
+    daily, at its forward's own value of 3,553.80, the uncollateralised net a single scenario
+    reports.
+
+    Killing mutation: the set's call days run to the last of its revaluation dates, which a one-date
+    grid finalises none of - the weekly set skipped on `max() iterable argument is empty`, the book
+    valuing nothing.
+    """
+    marks = []
+    for frequency in ('1D', '1W'):
+        job = engine_job(dict(TERMS, Collateral_Call_Frequency={'.DateOffset': frequency}))
+        job['Calc']['Calculation'] = {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': BASE},
+                                      'Currency': 'USD'}
+        context = derivus.Context()
+        context.load_json((json.dumps(job), 'called ' + frequency))
+        frame = context.run_job()[1]['Results']['mtm']
+        marks.append(dict(zip(frame['Reference'], frame['Value'])))
+    assert marks[1] == marks[0] and marks[1]['CSA-1'] == marks[1]['FWD'] != 0.0, marks
+
+
 def test_an_independent_amount_stated_as_an_empty_list_is_one_of_zero():
     """A blank table reads as the key left out: an `Independent_Amount` written as an empty
     `CreditSupportList` is an independent amount of zero, as the spine's CSA reads it, and the

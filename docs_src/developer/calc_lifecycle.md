@@ -349,7 +349,11 @@ dates are on the grid ([xVA](../theory/valuation_adjustments.md#notation-and-the
 **`BaseValuation`** is one date, every factor static, no Cholesky or generate loop:
 `resolve_structure` runs once, `pricing.greeks` reports `Greeks_First`, and `Greeks: 'All'` adds the
 full Hessian `Greeks_Second`, reported nowhere else. A Monte Carlo pricer still simulates inside
-(`MCMC_Simulations` 16,384; 2,048 on the credit Monte Carlo).
+(`MCMC_Simulations` 16,384; 2,048 on the credit Monte Carlo). Every deal revalues on the base date
+alone, a collateralised set whatever its `Collateral_Call_Frequency`, so a set reports its trades'
+net uncollateralised and `SIMM` and `SACCR`, pricing by one, value every trade it holds. **Held by**
+`tests/test_collateral.py::test_a_base_valuation_values_a_set_whatever_it_calls_at`,
+`tests/test_saccr.py::test_the_margined_example_is_cre99s_to_its_printed_figures`.
 
 **`HedgeMonteCarlo`** runs the credit Monte Carlo engine and harvests its marks. `update_factors`
 adds `Scenario_Factors` (factors no deal reaches) and caps the grid at the liability terminal; a leg

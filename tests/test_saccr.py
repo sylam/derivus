@@ -212,9 +212,11 @@ def margined(threshold, minimum, independent, held, mpor):
                 'Independent_Amount': utils.CreditSupportList([[1, independent]])}}
 
 
-#: Example 5's agreement (CRE99.80): no threshold, a minimum transfer of five, an independent amount
-#: of 150 received, 200 of collateral held, and the MPOR of CRE99.83 its weekly margin floors.
-EXAMPLE_5 = margined(0.0, 5e3, 150e3, 200e3, 14)
+#: Example 5's agreement (CRE99.80): margined weekly, no threshold, a minimum transfer of five, an
+#: independent amount of 150 received, 200 of collateral held, and the MPOR of CRE99.83 its weekly
+#: margin floors.
+EXAMPLE_5 = dict(
+    margined(0.0, 5e3, 150e3, 200e3, 14), Collateral_Call_Frequency=pd.DateOffset(weeks=1))
 #: A threshold of a million and a minimum transfer of fifty thousand over an independent amount of
 #: 200 thousand held, at an MPOR of five, under the bilateral floor; a set holding four million
 #: euros of cash cut 8% at a closeout; and one that posted a million dollars cut 10% on delivery.
@@ -504,8 +506,8 @@ def test_the_rates_and_credit_example_is_cre99s_to_its_printed_figures(world):
 
 
 def test_the_margined_example_is_cre99s_to_its_printed_figures(world):
-    """EXAMPLE 5 (CRE99.80-99.97), examples 1 and 3 under a margined set: no threshold, a minimum
-    transfer of 5, an independent amount of 150 received and 200 of collateral held, the RC
+    """EXAMPLE 5 (CRE99.80-99.97), examples 1 and 3 under a set margined weekly: no threshold, a
+    minimum transfer of 5, an independent amount of 150 received and 200 of collateral held, the RC
     max(80 - 200, 0 + 5 - 150, 0) nothing; the MPOR 14, nine business days and the five of its
     weekly margin, the maturity factor 1.5 (14/250)^0.5 for every trade; the rate trades'
     effective notionals 27,934, -12,869 and -3,579 and their add-on 123; the forwards' 3,550,
@@ -513,8 +515,9 @@ def test_the_margined_example_is_cre99s_to_its_printed_figures(world):
     -3,550 and silver's 3,550, their add-ons -639 and 639 and the commodity add-on 1,278; the
     aggregate 1,401, V - C -120, the multiplier 0.958 and the EAD 1,879.
 
-    Killing mutation: the margined maturity factor without its 1.5 of CRE52.52 - the aggregate
-    934.0, the EAD 1,226.3.
+    Killing mutations: the margined maturity factor without its 1.5 of CRE52.52 - the aggregate
+    934.0, the EAD 1,226.3; the set's call days run to the last of its revaluation dates, which a
+    base valuation finalises none of - the set skipped, no trade of it valued and the EAD nothing.
     """
     _, output = world
     found, rows = netting_sets(output).loc['EX5'], trades(output, 'EX5')

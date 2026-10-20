@@ -1568,8 +1568,9 @@ class NettingCollateralSet(Deal):
             call_mask = np.ones(time_grid.mtm_time_grid.size, dtype=np.int32)
 
             if call_freq.kwds != {'days': 1}:
+                # a one-date grid finalises no dates: there the set revalues on the base date alone
                 all_call_days = utils.generate_dates_forward(
-                    max(self.get_reval_dates()), base_call_date, call_freq,
+                    max(self.get_reval_dates() | {base_date}), base_call_date, call_freq,
                     bus_day=self.calendar, method='Modified_Following')
                 approx_calls = pd.DatetimeIndex(sorted(time_grid.mtm_dates)).intersection(all_call_days)
                 mod_call_dates = np.array([(x - base_date).days for x in approx_calls])
