@@ -62,7 +62,7 @@ Extension points are **data**, not control flow. Adding a factor type, a process
 
 ## Where valuation modes diverge
 
-`Context.run_job` is a 4-way branch on `Calculation['Object']`: `BaseValuation` (single-date static reval), `CreditMonteCarlo` (the full scenario engine — exposure and the [xVA](../theory/valuation_adjustments.md)), `HedgeMonteCarlo` (the CMC engine, harvesting raw marks for the diff-ML hedge solver and forking an inner Monte-Carlo) and `SIMM` (a CRIF by bump and revaluation, the book compiled once and priced again per market input moved with that input written into its leaves, a quote riding its curve's calibration Jacobian). All four share the compile phases; they differ only in what execute does with the priced tensors. See [Calc Lifecycle](calc_lifecycle.md#valuation-modes).
+`Context.run_job` is a 5-way branch on `Calculation['Object']`: `BaseValuation` (single-date static reval), `CreditMonteCarlo` (the full scenario engine — exposure and the [xVA](../theory/valuation_adjustments.md)), `HedgeMonteCarlo` (the CMC engine, harvesting raw marks for the diff-ML hedge solver and forking an inner Monte-Carlo), `SIMM` (a CRIF by bump and revaluation, the book compiled once and priced again per market input moved with that input written into its leaves, a quote riding its curve's calibration Jacobian) and `SACCR` (the SA-CCR exposure at default per netting set, off the same one compile's values and each trade's declared terms). All five share the compile phases; they differ only in what execute does with the priced tensors. See [Calc Lifecycle](calc_lifecycle.md#valuation-modes).
 
 ## Design direction
 

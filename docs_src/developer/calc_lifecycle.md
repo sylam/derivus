@@ -8,7 +8,7 @@ page follows that walk in code order; entry points and output are on
 | where | what |
 | --- | --- |
 | `__init__.py` | `Context.run_job` and the `run_*` dispatch functions |
-| `calculation.py` | the four calculations, their states, `batch_seed`, `DealStructure` |
+| `calculation.py` | the five calculations, their states, `batch_seed`, `DealStructure` |
 | `utils.py` | `Calculation_State`, `TimeGrid`, `TensorSchedule`, the curve reads, the `BoundarySet` family |
 | `pricing.py` | `interpolate`, `oss_stream`, `InnerMCRecompute`, `LogVar2FJKit`, the boundary and kink terms |
 
@@ -24,10 +24,11 @@ the dispatch to the inner fork and its recompute node: play it here or open it f
 
 `Context.run_job` branches on `Calculation['Object']` to `run_cmc` (through
 `Context.Credit_Monte_Carlo`, which shards under `runparallel`), `run_baseval`,
-`run_hedgemontecarlo` or `run_simm`, each calling `construct_calculation`. The first three pick the
-device and inject only `Run_Date` (and `Time_grid` for the Monte Carlo modes); every other default
-comes from the class's `fields` through `declared_defaults`. `run_simm` injects nothing: `SIMM.base`
-compiles the book once as `BaseValuation.execute` does (`update_factors`, `set_deal_structures`; a
+`run_hedgemontecarlo`, `run_simm` or `run_saccr`, each calling `construct_calculation`. The first
+three pick the device and inject only `Run_Date` (and `Time_grid` for the Monte Carlo modes); every
+other default comes from the class's `fields` through `declared_defaults`. `run_simm` and
+`run_saccr` inject nothing, their calculations sharing `NettingSetCalculation`'s setup and its
+`base`, which compiles the book once as `BaseValuation.execute` does (`update_factors`, `set_deal_structures`; a
 worker of `run_simm` compiles its own once), each surface a vega move reaches given its vertex
 pillars so the base and every move share one grid, and prices it. A move (`SIMM.value`) writes the
 values of the factors it moves into their compiled leaves in place, clears `t_Buffer` and the
@@ -129,11 +130,42 @@ as one naming any risk type no move writes. **Held by**
 `::test_an_inflation_curve_that_is_its_own_strip_moves_alike_quoted_or_pasted`,
 `::test_a_risk_type_no_factor_of_the_engine_carries_is_refused_by_name`.
 
+`SACCR` reads the one compile and moves nothing: each netting set's exposure at default under
+CRE52, `1.4 (RC + PFE)`, off its trades' values and their terms as each type declares them
+(`schema.Exposure`, `exposure` on the class, `schema.EXPOSURES` holding each type's own as
+`schema.OBSERVES` does `observes`): the fields its notional and its currency, or its units and the
+factor pricing a unit, its start and its long side are read off, and an option's strike, expiry and
+call; its end and maturity are the last day `schema.tenor_fields` names. A trade's asset class is
+the `Asset_Class` the `Mapping`'s `SACCR` section states for its type, a credit entity's rating
+the `Rating` under its survival curve's `SACCR` entry, an
+equity an index where its SIMM bucket is 11 or 12, a commodity's type its SIMM bucket, whose row in
+the `Parameters`' `commodity_sets` is its hedging set and subclass; a type declaring no exposure, one
+the mapping classes in none and an unrated entity each refuse by name, and the parameters file is
+held to CRE52's shape at setup. An option's P is read off the compiled factors - a swaption's par
+rate off the legs it is written on (`TensorCashFlows.get_par_swap_rate`), an FX option's outright
+(`utils.calc_fx_forward`) - and a date in years of 30/360 from the base date. A set is margined
+where it is `Collateralized`, its MPOR its `Liquidation_Period` in business days floored at ten,
+its C its `Opening_Balance` as the engine's balance counts it (`instruments.collateral_credit`), its
+TH, MTA and NICA its credit support amounts at their first values, and its EAD is capped at the
+set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_is_cre99s_to_its_printed_figures`,
+`::test_the_credit_example_is_cre99s_to_its_printed_figures`,
+`::test_the_commodity_example_is_cre99s_to_its_printed_figures`,
+`::test_the_rates_and_credit_example_is_cre99s_to_its_printed_figures`,
+`::test_the_margined_example_is_cre99s_to_its_printed_figures`,
+`::test_a_trade_inside_ten_business_days_is_floored_there_twice`,
+`::test_a_margined_set_past_its_threshold_is_capped_at_its_unmargined_exposure`,
+`::test_a_margined_sets_collateral_is_its_balance_as_the_engine_counts_it`,
+`::test_an_over_collateralised_set_keeps_its_add_on_at_the_five_percent_floor`,
+`::test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_hand`,
+`::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
+`::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
+of a set of more than 5,000 trades.
+
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
 judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a
 `ValueError` names every field it refuses at once: `run_baseval` and `run_cmc` judge the merged
-block, `HedgeMonteCarlo`, `SIMM` and the diary where they complete it. `Config.validate` reports the
+block, `HedgeMonteCarlo`, `SIMM`, `SACCR` and the diary where they complete it. `Config.validate` reports the
 same messages under `calculation`, and a refused block is not walked for factors. A service override
 is judged on what it states before it queues (`schema.stated_messages`), an undeclared key refused
 ([Conventions](conventions.md#declared-defaults)).

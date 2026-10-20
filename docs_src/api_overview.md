@@ -55,7 +55,7 @@ The active configuration exposes:
 
 ## Running a calculation
 
-Four calculation types are supported. Three have an explicit method, and all four run from the
+Five calculation types are supported. Three have an explicit method, and all five run from the
 JSON-driven dispatcher; every field each reads is in the [Calculations](json/calculations.md)
 reference:
 
@@ -65,6 +65,7 @@ reference:
 | `cx.Credit_Monte_Carlo(overrides)` | `CreditMonteCarlo` | Path-dependent simulation (CVA / FVA / PFE) |
 | `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolver) |
 | `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, the book compiled once and priced again per market move |
+| `derivus.run_saccr(cx.current_cfg, overrides)` | `SACCR` | The SA-CCR exposure at default of each netting set, off one base valuation of the book and each trade's declared terms |
 | `cx.run_job(overrides)` | (any of the above) | Dispatches based on the loaded JSON's `Calculation.Object` |
 | `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |
 | `cx.describe()` | (any of the above) | Reports what the engine made of the loaded job, without running it |
@@ -271,7 +272,7 @@ A reported number is replayable from five coordinates:
 
 `rf.__version__` is the engine version, and the two seeds are coordinates of their own because
 they belong to neither hash: `Random_Seed` seeds a credit or hedging Monte Carlo's scenarios, null
-for a base valuation and a SIMM, which declare none, and `Quasi_Seed`, which every calculation
+for a base valuation, a SIMM and an SA-CCR, which declare none, and `Quasi_Seed`, which every calculation
 declares, its quasi-random draws, a pricer's inner paths among them. Two runs agreeing on all five
 report the same numbers, so one plan can be compiled once and re-run against many value sets — and
 a run whose engine version differs is not a replay, because a code change may legitimately
@@ -284,7 +285,7 @@ just before execution. Common overrides:
 
 - `Run_Date` — switch the valuation date without editing the JSON. The runner sets it from the
   document's `Base_Date` before overrides apply, so overriding `Base_Date` alone does not move the
-  date (a `SIMM` run is the exception: it reads `Base_Date`)
+  date (a `SIMM` or an `SACCR` run is the exception: each reads `Base_Date`)
 - `Currency` — change the reporting currency
 - `Quasi_Seed`, `Random_Seed`, `Batch_Size`, `Simulation_Batches` — control Monte Carlo
   reproducibility and size, `Quasi_Seed` a pricer's inner paths under every calculation and
@@ -320,7 +321,8 @@ there's no implicit cache that needs to be invalidated.
 ## Output structure
 
 A base valuation returns `(calc, out)` where `out` is a dict with three top-level keys; a credit
-Monte Carlo returns the same three plus a fourth; a `SIMM` run returns `Stats` and `Results` only.
+Monte Carlo returns the same three plus a fourth; a `SIMM` or an `SACCR` run returns `Stats` and
+`Results` only.
 (A hedge run returns a
 `HedgeRuntimeExecutionResult` instead of a dict — see [Hedge Monte Carlo](#hedge-monte-carlo).)
 

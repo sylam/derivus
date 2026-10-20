@@ -27,6 +27,11 @@
   Mathematical Statistics*, 41(1), 164-171.
   [doi:10.1214/aoms/1177697196](https://doi.org/10.1214/aoms/1177697196)
 
+[@bcbscre52]: Basel Committee on Banking Supervision. *The Basel Framework*, CRE52: Standardised
+  approach to counterparty credit risk, and CRE99.20-99.97, its five worked examples. A published
+  standard with no DOI; an `SACCR` run records the `version` its `Parameters` file states as
+  `Stats['Parameters']`.
+
 [@beaglehole1997]: Beaglehole, D. R., Dybvig, P. H. and Zhou, G. (1997). Going to extremes:
   correcting simulation bias in exotic option valuation. *Financial Analysts Journal*, 53(1), 62-68
   (January 1997; the online record is dated 2019).

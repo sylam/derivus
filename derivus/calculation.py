@@ -20,6 +20,7 @@ import logging
 import itertools
 import pandas as pd
 import numpy as np
+import scipy.stats
 import torch
 from functools import reduce
 
@@ -29,7 +30,7 @@ from .stochasticprocess import REVEAL_CONTINUOUS, construct_process
 from .instruments import (Deal, barrier_monitoring_rows, get_fxrate_factor, get_survival_component,
                           get_interest_factor, get_survival_factor)
 from .pricing import SensitivitiesEstimator, fixed_payments
-from . import utils, pricing, riskfactors
+from . import utils, instruments, pricing, riskfactors
 from . import schema
 from .schema import (F, REQUIRED, Row, declared_defaults, declared_settlements, index_named,
                      settlement_days)
@@ -3724,7 +3725,117 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         return result
 
 
-class SIMM(Calculation):
+class NettingSetCalculation(Calculation):
+    """A calculation over the trades a book holds under its netting sets: the block judged, its
+    `Mapping` read and the trades listed under their sets, and each trade valued off its own
+    structure by one base valuation of the book compiled once (`base`), which `value` prices again
+    with moved price factors written into its leaves. `SIMM` and `SACCR` are its two."""
+
+    #: `MCMC_Simulations` and `Quasi_Seed`, declared once for the calculations over netting sets.
+    MCMC_SIMULATIONS = F('MCMC_Simulations', 'Integer', default=1 << 14,
+                         description='Inner Monte Carlo paths of each pricing, as a BaseValuation '
+                                     'reads them')
+    QUASI_SEED = F('Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,
+                   description="The scramble seed every pricing's quasi-random draws run on, each "
+                               "trade's inner paths its own whatever is booked beside it")
+
+    def setup(self, params):
+        """The block judged and completed, its `Mapping` read, the base valuation it prices by
+        stated and the book listed - what the run and each of its workers share - and the
+        `Parameters` file as it reads, returned."""
+        params = self.params = declared_defaults(type(self), self.judged(params))
+        with open(params['Mapping'], 'rt', encoding='utf-8') as f:
+            self.mapping = json.load(f)
+        with open(params['Parameters'], 'rt', encoding='utf-8') as f:
+            parameters = json.load(f)
+        self.calc_stats['Parameters'] = parameters.get('version', '')
+        self.calc_stats['Quasi_Seed'] = params['Quasi_Seed']
+        self.valuation = {
+            'Object': 'BaseValuation', 'Base_Date': params['Base_Date'],
+            'Currency': params['Currency'], 'MCMC_Simulations': params['MCMC_Simulations'],
+            'Quasi_Seed': params['Quasi_Seed'], 'Greeks': 'No', 'Deterministic_Kernels': 'Yes'}
+        book = self.config.deals['Deals']['Children']
+        loose = [node['Instrument'].field.get('Reference') for node in book
+                 if node['Instrument'].field['Object'] != 'NettingCollateralSet']
+        if loose:
+            raise ValueError('{}: {} sit under no netting set, and the calculation is a netting '
+                             'set\'s'.format(type(self).__name__, ', '.join(map(str, loose))))
+        self.trades = [(agreement, node) for agreement in book
+                       for node in agreement.get('Children', [])]
+        return parameters
+
+    @contextlib.contextmanager
+    def prepared(self):
+        """The config as the run's compile reads it - the valuation calculation and its date - put
+        back as it stood on the way out."""
+        config = self.config
+        calculation = config.deals['Calculation']
+        try:
+            config.deals['Calculation'] = self.valuation
+            config.params['System Parameters']['Base_Date'] = self.valuation['Base_Date']
+            yield
+        finally:
+            config.deals['Calculation'] = calculation
+
+    def base(self, over=None):
+        """`[(value, skipped)]` per trade: the book compiled once as a base valuation compiles it,
+        on the price factors `over` states in place of the standing ones, and priced as it stands,
+        with the engine's sentences for what it skipped inside each trade, the distinct ones
+        spoken at its deals."""
+        factors = self.config.params['Price Factors']
+        calc = self.compiled = BaseValuation(self.config, prec=torch.float64,
+                                             device=utils.calculation_device())
+        calc.calc_stats = self.calc_stats
+        calc.params = declared_defaults(BaseValuation, self.valuation)
+        heard = utils.CapturedErrors()
+        logging.getLogger().addHandler(heard)
+        try:
+            self.config.params['Price Factors'] = dict(factors, **(over or {}))
+            self.shared = calc.update_factors(calc.params, self.valuation['Base_Date'])
+            calc.netting_sets = DealStructure(Aggregation('root'), store_results=True)
+            calc.set_deal_structures(self.config.deals['Deals']['Children'], calc.netting_sets,
+                                     self.shared.one, deal_level_mtm=True)
+            held = {deal.Instrument.resolved_from or deal.Instrument: deal.Calc_res for deal in [
+                structure.obj for structure in calc.netting_sets.structures()] + list(
+                calc.netting_sets.deals())}
+            self.results = [held.get(node['Instrument'], {}) for _, node in self.trades]
+            values = self.value({})
+        finally:
+            logging.getLogger().removeHandler(heard)
+            self.config.params['Price Factors'] = factors
+        # the engine says so in so many words, wherever it skips a deal or a structure
+        skipped = [(deal, said) for deal, said in heard.said if 'skipp' in said.lower()]
+        found = []
+        for (_, node), value in zip(self.trades, values):
+            references = {deal['Instrument'].field.get('Reference') for _, deal in schema.walk([node])}
+            mine = list(dict.fromkeys(said for deal, said in skipped if deal in references))
+            found.append((value, mine if value is not None else
+                          mine + ['the trade itself was not valued']))
+        return found
+
+    def value(self, moved):
+        """Each trade's value in the calculation currency off its own structure, None where it was
+        not valued: the compiled set priced with the price factors `moved` written into their
+        leaves in place, the compiled leaves put back after."""
+        calc, written = self.compiled, {}
+        for factor in [f for f in calc.static_factors if utils.check_tuple_name(f) in moved]:
+            value = construct_factor(factor, moved, self.config.params['Price Factor Interpolation'],
+                                     base_date=calc.base_date).current_value()
+            for key, part in ((utils.Factor(factor.type, factor.name + (k,)), v) for k, v in
+                              value.items()) if isinstance(value, dict) else [(factor, value)]:
+                written[key] = calc.static_var[key].clone()
+                calc.static_var[key].copy_(written[key].new_tensor(part))
+        # the memo and the result blocks hold the last pricing's, stale once a leaf is written
+        self.shared.t_Buffer.clear()
+        for result in self.results:
+            result.clear()
+        calc.netting_sets.resolve_structure(self.shared, calc.time_grid)
+        for key, leaf in written.items():
+            calc.static_var[key].copy_(leaf)
+        return [result['Value'].item() if 'Value' in result else None for result in self.results]
+
+
+class SIMM(NettingSetCalculation):
     """ISDA SIMM sensitivities by bump and revaluation: the CRIF of a book of netting sets, one
     compile and a pricing per market move.
 
@@ -3823,27 +3934,20 @@ class SIMM(Calculation):
         F('Vol_Shift', 'Float', default=1.0,
           description='Points of implied vol a vertex moves by, a point on a Normal rate space a '
                       'basis point, ISDA\'s one; another is scaled to it'),
-        F('MCMC_Simulations', 'Integer', default=1 << 14,
-          description='Inner Monte Carlo paths of each pricing, as a BaseValuation reads them'),
-        F('Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,
-          description="The scramble seed every pricing's quasi-random draws run on, so each move "
-                      'is a common-random-numbers difference')
+        NettingSetCalculation.MCMC_SIMULATIONS,
+        NettingSetCalculation.QUASI_SEED
     ]
 
     def setup(self, params):
         """The run's inputs read and its book listed - what the run and each of its workers share."""
         from .bootstrappers import SurvivalProb, bootstrap_writers, market_prices_for
 
-        params = declared_defaults(type(self), self.judged(params))
+        parameters = super(SIMM, self).setup(params)
+        params = self.params
         missing = ['a non-zero ' + name for name in ('Rate_Shift', 'Spot_Shift', 'Vol_Shift')
                    if not params[name]]
         if missing:
             raise ValueError('SIMM: the calculation states no {}'.format(', '.join(missing)))
-        self.params = params
-        with open(params['Mapping'], 'rt', encoding='utf-8') as f:
-            self.mapping = json.load(f)
-        with open(params['Parameters'], 'rt', encoding='utf-8') as f:
-            parameters = json.load(f)
         try:
             weights = next(iter(next(iter(parameters['horizons'].values()))['ir']['rw']['Delta'][
                 'Volatility'].values()))['Weight']
@@ -3853,24 +3957,10 @@ class SIMM(Calculation):
         self.vertices = sorted(((label, self.years(label)) for label in weights),
                                key=lambda vertex: vertex[1])
         self.credit_vertices = [(label, self.years(label)) for label in self.CREDIT_VERTICES]
-        self.calc_stats['Parameters'] = parameters.get('version', '')
-        self.calc_stats['Quasi_Seed'] = params['Quasi_Seed']
         self.shifts = {'quote': params['Rate_Shift'], 'parallel': params['Rate_Shift'],
                        'inflation': params['Rate_Shift'], 'cds': params['Rate_Shift'],
                        'spot': params['Spot_Shift'], 'fx': params['Spot_Shift'],
                        'commodity': params['Spot_Shift'], 'vega': params['Vol_Shift']}
-        self.valuation = {
-            'Object': 'BaseValuation', 'Base_Date': params['Base_Date'],
-            'Currency': params['Currency'], 'MCMC_Simulations': params['MCMC_Simulations'],
-            'Quasi_Seed': params['Quasi_Seed'], 'Greeks': 'No', 'Deterministic_Kernels': 'Yes'}
-        book = self.config.deals['Deals']['Children']
-        loose = [node['Instrument'].field.get('Reference') for node in book
-                 if node['Instrument'].field['Object'] != 'NettingCollateralSet']
-        if loose:
-            raise ValueError('SIMM: {} sit under no netting set, and a sensitivity is a netting '
-                             'set\'s'.format(', '.join(map(str, loose))))
-        self.trades = [(agreement, node) for agreement in book
-                       for node in agreement.get('Children', [])]
         self.universe = set(self.config.factor_universe()['resolved'])
         prices = self.config.params['Market Prices']
         # what a configured family solves, and nothing a family the configuration omits carries
@@ -3899,22 +3989,18 @@ class SIMM(Calculation):
         """The config as the run's compile reads it - the valuation calculation, its date, the
         curves its market prices solve (`calibrate`), each trade's moves, classes and agreements -
         put back as it stood on the way out."""
-        config = self.config
-        calculation = config.deals['Calculation']
-        authored = dict(config.params['Market Prices'])
-        try:
-            config.deals['Calculation'] = self.valuation
-            config.params['System Parameters']['Base_Date'] = self.valuation['Base_Date']
-            self.calibrate()
-            self.bumped = []
-            for index, (agreement, node) in enumerate(self.trades):
-                self.bumped.append(self.bumps(index))
-                self.product_class(node)
-                self.agreement(agreement['Instrument'].field.get('Reference'))
-            yield
-        finally:
-            config.params['Market Prices'].update(authored)
-            config.deals['Calculation'] = calculation
+        authored = dict(self.config.params['Market Prices'])
+        with super(SIMM, self).prepared():
+            try:
+                self.calibrate()
+                self.bumped = []
+                for index, (agreement, node) in enumerate(self.trades):
+                    self.bumped.append(self.bumps(index))
+                    self.product_class(node)
+                    self.agreement(agreement['Instrument'].field.get('Reference'))
+                yield
+            finally:
+                self.config.params['Market Prices'].update(authored)
 
     def calibrate(self):
         """The curves the book reads solved from their quotes, each coupled set publishing its
@@ -4256,64 +4342,13 @@ class SIMM(Calculation):
         return {name: found[name]}
 
     def base(self):
-        """`[(value, skipped)]` per trade: the book compiled once as a base valuation compiles it,
-        each surface a vega move reaches given its vertex pillars (`surfaces`), and priced as it
-        stands, with the engine's sentences for what it skipped inside each trade, the distinct ones
-        spoken at its deals."""
+        """`[(value, skipped)]` per trade off the book compiled with each surface a vega move
+        reaches given its vertex pillars (`surfaces`)."""
         factors = self.config.params['Price Factors']
         self.surfaces = {name: getattr(riskfactors, utils.check_rate_name(name)[0]).augmented(
             factors[name], [t for _, t in self.vertices]) for name in {
             bump.move[1] for bumps in self.bumped for bump in bumps if bump.move[0] == 'vega'}}
-        calc = self.compiled = BaseValuation(self.config, prec=torch.float64,
-                                             device=utils.calculation_device())
-        calc.calc_stats = self.calc_stats
-        calc.params = declared_defaults(BaseValuation, self.valuation)
-        heard = utils.CapturedErrors()
-        logging.getLogger().addHandler(heard)
-        try:
-            self.config.params['Price Factors'] = dict(factors, **self.surfaces)
-            self.shared = calc.update_factors(calc.params, self.valuation['Base_Date'])
-            calc.netting_sets = DealStructure(Aggregation('root'), store_results=True)
-            calc.set_deal_structures(self.config.deals['Deals']['Children'], calc.netting_sets,
-                                     self.shared.one, deal_level_mtm=True)
-            held = {deal.Instrument.resolved_from or deal.Instrument: deal.Calc_res for deal in [
-                structure.obj for structure in calc.netting_sets.structures()] + list(
-                calc.netting_sets.deals())}
-            self.results = [held.get(node['Instrument'], {}) for _, node in self.trades]
-            values = self.value({})
-        finally:
-            logging.getLogger().removeHandler(heard)
-            self.config.params['Price Factors'] = factors
-        # the engine says so in so many words, wherever it skips a deal or a structure
-        skipped = [(deal, said) for deal, said in heard.said if 'skipp' in said.lower()]
-        found = []
-        for (_, node), value in zip(self.trades, values):
-            references = {deal['Instrument'].field.get('Reference') for _, deal in schema.walk([node])}
-            mine = list(dict.fromkeys(said for deal, said in skipped if deal in references))
-            found.append((value, mine if value is not None else
-                          mine + ['the trade itself was not valued']))
-        return found
-
-    def value(self, moved):
-        """Each trade's value in the calculation currency off its own structure, None where it was
-        not valued: the compiled set priced with the price factors `moved` written into their
-        leaves in place, the compiled leaves put back after."""
-        calc, written = self.compiled, {}
-        for factor in [f for f in calc.static_factors if utils.check_tuple_name(f) in moved]:
-            value = construct_factor(factor, moved, self.config.params['Price Factor Interpolation'],
-                                     base_date=calc.base_date).current_value()
-            for key, part in ((utils.Factor(factor.type, factor.name + (k,)), v) for k, v in
-                              value.items()) if isinstance(value, dict) else [(factor, value)]:
-                written[key] = calc.static_var[key].clone()
-                calc.static_var[key].copy_(written[key].new_tensor(part))
-        # the memo and the result blocks hold the last pricing's, stale once a leaf is written
-        self.shared.t_Buffer.clear()
-        for result in self.results:
-            result.clear()
-        calc.netting_sets.resolve_structure(self.shared, calc.time_grid)
-        for key, leaf in written.items():
-            calc.static_var[key].copy_(leaf)
-        return [result['Value'].item() if 'Value' in result else None for result in self.results]
+        return super(SIMM, self).base(self.surfaces)
 
     def reach(self, base):
         """`{move: [index]}` - every move the trades valued in `base` take, in a fixed order, and
@@ -4384,6 +4419,406 @@ class SIMM(Calculation):
         """A CRIF as the interchange carries it and the margin calculation reads it, tab
         separated."""
         frame.to_csv(path, sep='\t', index=False, columns=list(cls.CRIF_COLUMNS))
+
+
+class SACCR(NettingSetCalculation):
+    """The standardised approach to counterparty credit risk (CRE52): each netting set's exposure
+    at default, `alpha (RC + PFE)` (52.1), off one base valuation of the book and each trade's
+    declared terms.
+
+    A TRADE IS READ THROUGH ITS TYPE'S DECLARATION. Its asset class is the `Mapping`'s
+    `SACCR.Asset_Class` for its type, one class a trade (52.26-52.27; 52.28's allocation to several
+    is not built), and what its exposure is read off is its type's own `schema.Exposure`; a type
+    the mapping classes in none, or declaring none, refuses by name. A credit entity's rating is the
+    mapping's `SACCR.Rating` under its survival curve, AAA to CCC a single name and IG or SG an
+    index; an equity is an index where its price's SIMM bucket is 11 or 12, Risk_Equity's index
+    buckets; a commodity's type is its price's SIMM bucket, whose `commodity_sets` row in the
+    `Parameters` names its hedging set and subclass.
+
+    The netting set's terms, symbol by symbol:
+
+    - margined (52.2): `Collateralized` True.
+    - V (52.10): its trades' values in the calculation currency, each off its own structure.
+    - C (52.11, 52.18): a margined set's `Opening_Balance` as the engine's balance counts it.
+    - MPOR (52.50-52.51): `Liquidation_Period` in business days, floored as the file floors it.
+    - TH (52.18): `Received_Threshold` at its first value, crossed from `Agreement_Currency`.
+    - MTA (52.18): `Minimum_Received` at its first value, crossed from `Agreement_Currency`.
+    - NICA (52.17): `Independent_Amount` at its first value, received positive, crossed likewise.
+
+    A trade's dates count in years of 30/360 from the base date, a whole number of months exact as
+    the methodology's examples count a tenor: S its declared start, zero once started, E and M the
+    last day its type's tenor fields name (`schema.tenor_fields`), T its declared expiry (52.31).
+    Its d is an IR or credit notional crossed times SD, averaged over its life where it amortises,
+    an FX trade's foreign leg, the larger where both are, or an equity or commodity trade's units at
+    a unit's price (52.34-52.37); its delta plus or minus one by its long side and the amount's
+    sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
+    compiled factors, a rate option's P and K shifted by its currency's `option_shift`
+    (52.38-52.40); its MF sqrt(min(M, 1)), M floored at ten business days, or under a margined set
+    1.5 sqrt(MPOR / 250) (52.48, 52.52).
+
+    Not built: CDO tranches (52.41); basis and volatility hedging sets (52.46-52.47), every trade
+    sitting in its ordinary set; the non-daily, cleared, illiquid and disputed MPOR floors
+    (52.50(2)-(3), 52.51(2)-(3)), which a netting set declares nothing to read off; several margin
+    agreements to a set or sets to an agreement (52.74-52.76).
+    """
+    documentation = ('Calculations', [
+        'The exposure at default of each netting set under the standardised approach to counterparty',
+        'credit risk [@bcbscre52], $\\mathrm{EAD}=\\alpha(\\mathrm{RC}+\\mathrm{PFE})$ (CRE52.1), off one base',
+        'valuation of the book and each trade\'s terms as its type declares them. The inputs are:',
+        '',
+        '- **Currency** the exposures are in, and **Base Date** they are read at.',
+        '- **Mapping**: per instrument type its asset class (`SACCR.Asset_Class`), per credit factor its',
+        '  rating (`Factors.<name>.SACCR.Rating`, AAA to CCC a single name, IG or SG an index), and the',
+        '  SIMM bucket of an equity, which is an index in buckets 11 and 12, and of a commodity, which is',
+        '  its type.',
+        '- **Parameters**: Table 2 of CRE52.72, alpha, the multiplier\'s floor, the maturity buckets and',
+        '  correlations of CRE52.57, the maturity and MPOR floors of CRE52.48-52.52, each commodity',
+        '  bucket\'s hedging set and subclass and a currency\'s option shift, each beside its paragraph.',
+        '- **MCMC Simulations** and **Quasi Seed**, as a base valuation reads them.',
+        '',
+        'Per trade, its dates in years of 30/360 from the base date: the adjusted notional $d$',
+        '(CRE52.34-52.37), an IR or credit trade\'s notional, averaged over time where it amortises,',
+        'times $SD=(e^{-0.05S}-e^{-0.05E})/0.05$ floored at ten business days, an FX trade\'s foreign leg,',
+        'and an equity or commodity trade\'s units at a unit\'s price; the supervisory delta $\\delta$',
+        '(CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black delta on Table 2\'s vol at its',
+        'underlying\'s forward $P$; the maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$',
+        'floored at ten business days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a margined set; and',
+        '$D=d\\,\\delta\\,\\mathrm{MF}$. The add-ons (CRE52.55-52.70): IR by currency over three maturity',
+        'buckets, $\\mathrm{EN}=(D_1^2+D_2^2+D_3^2+1.4D_1D_2+1.4D_2D_3+0.6D_1D_3)^{1/2}$; FX by pair,',
+        '$|\\sum D|$; credit and equity by entity and commodity by type within its hedging set, each',
+        '$A_k$ its supervisory factor times $\\sum D$, as $\\big((\\sum\\rho_kA_k)^2+\\sum(1-\\rho_k^2)',
+        'A_k^2\\big)^{1/2}$; summed over the classes (CRE52.25). Then',
+        '',
+        '$$\\mathrm{multiplier}=\\min\\Big(1,\\,F+(1-F)\\exp\\frac{V-C}{2(1-F)\\,\\mathrm{AddOn}}\\Big),',
+        '\\qquad\\mathrm{PFE}=\\mathrm{multiplier}\\cdot\\mathrm{AddOn}$$',
+        '',
+        'with $F$ 5% (CRE52.23); RC is $\\max(V-C,0)$ unmargined and $\\max(V-C,\\,TH+MTA-NICA,\\,0)$',
+        'margined (CRE52.10, CRE52.18), a margined set\'s EAD capped at its unmargined one (CRE52.2).',
+        '',
+        'Not built: CDO tranches (CRE52.41); basis and volatility hedging sets (CRE52.46-52.47); a trade\'s',
+        'allocation to several classes (CRE52.28); the non-daily, cleared, illiquid and disputed MPOR',
+        'floors (CRE52.50-52.51); several margin agreements to a set, or sets to one (CRE52.74-52.76). A',
+        'type declaring no exposure refuses the run by name.'])
+    #: Table 2's rows (52.72) by asset class, each subclass a factor, correlation and option vol:
+    #: a credit index rated IG or SG, a single name AAA to CCC.
+    SUBCLASSES = {'IR': ('',), 'FX': ('',),
+                  'Credit': ('AAA', 'AA', 'A', 'BBB', 'BB', 'B', 'CCC', 'IG', 'SG'),
+                  'Equity': ('Single', 'Index'),
+                  'Commodity': ('Electricity', 'Oil/Gas', 'Metals', 'Agricultural', 'Other')}
+    #: Risk_Equity's index buckets, which make an equity an index.
+    EQUITY_INDICES = ('11', '12')
+    #: The columns of the netting sets frame and of the trades frame.
+    SETS = ('Counterparty', 'Margined', 'MPOR', 'V', 'C', 'RC') + tuple(
+        'AddOn_' + asset for asset in SUBCLASSES) + (
+        'AddOn_Aggregate', 'Multiplier', 'PFE', 'EAD', 'Skipped')
+    TRADES = ('TradeID', 'NettingSet', 'AssetClass', 'HedgingSet', 'Subclass', 'Bucket',
+              'SupervisoryFactor', 'AdjustedNotional', 'Delta', 'MaturityFactor',
+              'EffectiveNotional', 'Value')
+    fields = [
+        F('Base_Date', 'Date', default=''),
+        F('Currency', 'Text', default=REQUIRED,
+          description='The calculation currency the exposures are in'),
+        F('Mapping', 'Text', default=REQUIRED,
+          description='Path to the regime mapping: per instrument type its SA-CCR asset class, per '
+                      'credit factor its rating and per price factor its SIMM bucket'),
+        F('Parameters', 'Text', default=REQUIRED,
+          description='Path to the SA-CCR parameters file, the supervisory numbers of CRE52 each '
+                      'beside the paragraph it is read from'),
+        NettingSetCalculation.MCMC_SIMULATIONS,
+        NettingSetCalculation.QUASI_SEED
+    ]
+
+    def setup(self, params):
+        """The block and the book read as every calculation over netting sets reads them, and the
+        `Parameters` file's numbers, refused by name where one CRE52 reads is missing or
+        malformed."""
+        parameters = super(SACCR, self).setup(params)
+        try:
+            self.alpha, self.floor = float(parameters['alpha']), float(parameters['multiplier_floor'])
+            self.supervisory = {(asset, subclass): {key: float(row[key] or 0.0) for key in (
+                'factor', 'correlation', 'option_volatility')}
+                for asset, subclasses in self.SUBCLASSES.items() for subclass, row in (
+                    (subclass, parameters['supervisory'][asset][subclass]) for subclass in subclasses)}
+            rates, maturity = parameters['interest_rate'], parameters['maturity']
+            self.duration_rate = float(rates['supervisory_duration'])
+            self.buckets = tuple(float(edge) for edge in rates['buckets'])
+            self.correlation = np.array(rates['correlations'], dtype=np.float64).reshape(3, 3)
+            self.year, self.margined_scale = float(maturity['business_days']), float(
+                maturity['margined'])
+            self.horizon = float(maturity['floor']) / self.year
+            floors = maturity['mpor']
+            self.floors = (float(floors['bilateral']), float(floors['large_set']),
+                           int(floors['large_set_trades']))
+            self.sets = {str(bucket): (hedging, subclass)
+                         for bucket, (hedging, subclass) in parameters['commodity_sets'].items()}
+            unknown = {subclass for _, subclass in self.sets.values()}.difference(
+                self.SUBCLASSES['Commodity'])
+            if unknown:
+                raise KeyError('a commodity_sets subclass of Table 2: {}'.format(
+                    ', '.join(sorted(unknown))))
+            self.shifts = {currency: float(shift)
+                           for currency, shift in parameters['option_shift'].items()}
+        except (KeyError, TypeError, ValueError) as error:
+            raise ValueError('SACCR: {} does not state {} as CRE52 reads it'.format(
+                self.params['Parameters'], error))
+
+    def execute(self, params):
+        """The run: the book valued once and each netting set's exposure read off it."""
+        self.setup(params)
+        with self.prepared():
+            return self.report(self.base())
+
+    def years(self, day):
+        """`day` in years of 30/360 from the base date, nothing once it has passed."""
+        base = self.valuation['Base_Date']
+        return max(utils.DayCount.accrual(base, (day - base).days, utils.DayCount.ACT30_360), 0.0)
+
+    def fx(self, currency):
+        """What one unit of `currency` is worth in the calculation currency at the base date, off
+        the compiled spots."""
+        spots = self.compiled.all_factors
+        return spots[utils.Factor('FxRate', utils.check_rate_name(currency))].current_value()[
+            0] / spots[utils.Factor('FxRate', utils.check_rate_name(self.params['Currency']))
+                       ].current_value()[0]
+
+    def stated(self, reference, name, regime, key):
+        """What the mapping states under `regime`'s `key` for the price factor `name` trade
+        `reference` reads, refused by name where it states nothing."""
+        found = ((self.mapping['Factors'].get(name) or {}).get(regime) or {}).get(key)
+        if not found:
+            raise ValueError('SACCR: trade {} reads {}, and the mapping states no {}.{} for '
+                             'it'.format(reference, name, regime, key))
+        return str(found)
+
+    def price(self, deal, field):
+        """`(price, currency)` of one unit of what `field` names at the base date (52.36): a spot
+        as compiled, or a reference price's forward curve at the base date's delivery, its first
+        where the curve starts later."""
+        found = self.compiled.all_factors[utils.Factor(
+            type(deal).factor_fields[field][0], utils.check_rate_name(deal.field[field]))]
+        if isinstance(found, riskfactors.ReferencePrice):
+            found = self.compiled.all_factors[utils.Factor('ForwardPrice', found.get_forwardprice())]
+            return found.current_value(
+                [(self.valuation['Base_Date'] - utils.excel_offset).days])[0], found.get_currency()
+        return found.current_value()[0], found.get_currency()
+
+    def averaged(self, principal, steps, end):
+        """52.37(2): `principal` less the amortisation `steps` it has reached, averaged over time
+        from the base date to `end`."""
+        held, area, last = principal, 0.0, 0.0
+        for day, step in sorted(steps.data.items()):
+            reached = min(self.years(day), end)
+            area, held, last = area + held * (reached - last), held - step, reached
+        return (area + held * (end - last)) / end
+
+    def duration(self, start, end):
+        """SD (52.34), `(exp(-r S) - exp(-r E)) / r` at the supervisory rate, floored at ten
+        business days."""
+        rate = self.duration_rate
+        return max(math.exp(-rate * start) * -math.expm1(-rate * (end - start)) / rate,
+                   self.horizon)
+
+    def swap_rate(self, deal, terms):
+        """A swaption's forward swap rate in percent, its strike's unit: the par rate of the legs it
+        is written on, on the curve it forecasts on, as the compiled legs read it."""
+        structure = next(structure for structure in self.compiled.netting_sets.structures() if (
+            structure.obj.Instrument.resolved_from or structure.obj.Instrument) is deal)
+        curve = self.compiled.all_factors[structure.obj.Factor_dep['Forward'][0][
+            utils.FACTOR_INDEX_Offset]]
+        legs = [leg.Factor_dep['Cashflows'] for leg in structure.dependencies]
+        floating = next(leg for leg in legs if leg.Resets is not None)
+        fixed = next(leg for leg in legs if leg.Resets is None)
+        rate, annuity = floating.get_par_swap_rate(self.valuation['Base_Date'], curve)
+        return 100.0 * rate * annuity / fixed.get_par_swap_rate(self.valuation['Base_Date'], curve)
+
+    def fx_forward(self, deal, terms):
+        """An FX option's outright to its expiry, a unit of its amount's currency in the other one,
+        as the engine carries a pair (`utils.calc_fx_forward`)."""
+        calc = self.compiled
+        codes = [instruments.get_fx_and_zero_rate_factor(
+            utils.check_rate_name(deal.field[key]), calc.static_factors, calc.stoch_factors,
+            calc.all_tenors, calc.all_factors) for key in (terms.currency, terms.underlying)]
+        return utils.calc_fx_forward(
+            *codes, (deal.field[terms.expiry] - self.valuation['Base_Date']).days,
+            calc.time_grid.time_grid[:1], self.shared).item()
+
+    #: How an option's P is read off the compiled factors, by its asset class.
+    FORWARDS = {'IR': swap_rate, 'FX': fx_forward}
+
+    def exposure(self, index, mpor):
+        """Trade `index`'s row of the trades frame, its maturity factor its set's (`mpor` None
+        where unmargined), and its effective notional were the set unmargined, `Unmargined`."""
+        agreement, node = self.trades[index]
+        deal = node['Instrument']
+        fields, kind, reference = deal.field, deal.field['Object'], deal.field.get('Reference')
+        terms, asset = schema.EXPOSURES.get(kind), self.mapping['SACCR']['Asset_Class'].get(kind)
+        if terms is None or asset is None:
+            raise ValueError('SACCR: trade {} is a {}, {}'.format(
+                reference, kind, 'which declares no exposure CRE52 reads' if terms is None else
+                'and the mapping classes it under no SACCR.Asset_Class'))
+        end = self.years(max(day for *_, day in schema.settlement_days(
+            fields, schema.tenor_fields(type(deal))) if day is not None))
+        start = self.years(fields[terms.start]) if terms.start else 0.0
+        amount = fields[terms.amount]
+        side = math.copysign(1.0, amount) * (
+            1.0 if terms.long is None or fields[terms.long[0]] == terms.long[1] else -1.0)
+        name = terms.underlying and utils.check_tuple_name(utils.Factor(
+            type(deal).factor_fields[terms.underlying][0],
+            utils.check_rate_name(fields[terms.underlying])))
+        bucket = ''
+        if asset == 'IR':
+            hedging, subclass = utils.check_rate_name(fields[terms.currency])[0], ''
+            bucket = str(1 + (end >= self.buckets[0]) + (end > self.buckets[1]))
+        elif asset == 'FX':
+            own = utils.check_rate_name(fields[terms.currency])[0]
+            pair = sorted((own, utils.check_rate_name(fields[terms.underlying])[0]))
+            # long the pair as it is ordered, the other way up short
+            hedging, subclass, side = '/'.join(pair), '', side * (1.0 if own == pair[0] else -1.0)
+        elif asset == 'Credit':
+            hedging, subclass = name, self.stated(reference, name, 'SACCR', 'Rating')
+        elif asset == 'Equity':
+            hedging, subclass = name, 'Index' if self.stated(
+                reference, name, 'SIMM', 'Bucket') in self.EQUITY_INDICES else 'Single'
+        else:
+            bucket = self.stated(reference, name, 'SIMM', 'Bucket')
+            hedging, subclass = self.sets[bucket]
+        supervisory = self.supervisory[asset, subclass]
+
+        size = abs(amount)
+        if asset in ('IR', 'Credit'):
+            steps = terms.amortisation and fields[terms.amortisation]
+            notional = (self.averaged(size, steps, end) if steps else size) * self.fx(
+                fields[terms.currency]) * self.duration(start, end)
+        elif asset == 'FX':
+            legs = [(size, fields[terms.currency])] + (
+                [(size * fields[terms.strike], fields[terms.underlying])] if terms.strike else [])
+            notional = max(leg * self.fx(currency) for leg, currency in legs
+                           if utils.check_rate_name(currency) != utils.check_rate_name(
+                               self.params['Currency']))
+        else:
+            price, currency = self.price(deal, terms.price or terms.underlying)
+            notional = size * price * self.fx(currency)
+
+        delta = side
+        if terms.strike:
+            expiry, vol = self.years(fields[terms.expiry]), supervisory['option_volatility']
+            shift = self.shifts.get(hedging, 0.0) if asset == 'IR' else 0.0
+            d1 = (math.log((self.FORWARDS[asset](self, deal, terms) + shift) / (
+                fields[terms.strike] + shift)) + 0.5 * vol * vol * expiry) / (vol * math.sqrt(expiry))
+            delta = side * (scipy.stats.norm.cdf(d1) if fields[terms.call[0]] == terms.call[1]
+                            else -scipy.stats.norm.cdf(-d1))
+        unmargined = math.sqrt(min(max(end, self.horizon), 1.0))
+        factor = unmargined if mpor is None else self.margined_scale * math.sqrt(mpor / self.year)
+        return {'TradeID': reference, 'NettingSet': agreement['Instrument'].field.get('Reference'),
+                'AssetClass': asset, 'HedgingSet': hedging, 'Subclass': subclass, 'Bucket': bucket,
+                'SupervisoryFactor': supervisory['factor'], 'Correlation': supervisory['correlation'],
+                'AdjustedNotional': notional, 'Delta': delta, 'MaturityFactor': factor,
+                'EffectiveNotional': notional * delta * factor,
+                'Unmargined': notional * delta * unmargined}
+
+    def add_ons(self, rows, column):
+        """`[add-on]` per asset class over a set's trade `rows`, each effective notional its
+        `column`: IR by currency over its three maturity buckets (52.57), FX by pair (52.59),
+        credit and equity by entity (52.61, 52.66), commodity by type within its hedging set
+        (52.70)."""
+        found = []
+        for asset in self.SUBCLASSES:
+            summed = defaultdict(float)
+            for row in rows:
+                if row['AssetClass'] == asset:
+                    summed[row['HedgingSet'], row['Bucket'], row['SupervisoryFactor'],
+                           row['Correlation']] += row[column]
+            if asset == 'IR':
+                buckets = defaultdict(lambda: np.zeros(3))
+                for (currency, bucket, factor, _), notional in summed.items():
+                    buckets[currency, factor][int(bucket) - 1] += notional
+                found.append(sum(factor * math.sqrt(notional @ self.correlation @ notional)
+                                 for (_, factor), notional in buckets.items()))
+            elif asset == 'FX':
+                found.append(sum(factor * abs(notional) for (_, _, factor, _), notional in
+                                 summed.items()))
+            else:
+                # one single-factor sum per set: credit's and equity's one, commodity's four
+                sets = defaultdict(list)
+                for (hedging, _, factor, rho), notional in summed.items():
+                    sets[hedging if asset == 'Commodity' else ''].append((factor * notional, rho))
+                found.append(sum(math.sqrt(sum(rho * add_on for add_on, rho in entities) ** 2 + sum(
+                    (1.0 - rho * rho) * add_on * add_on for add_on, rho in entities))
+                    for entities in sets.values()))
+        return found
+
+    def potential(self, v, c, add_on):
+        """`(multiplier, PFE)` (52.20-52.23) of a set at `v` less `c` over its aggregate `add_on`:
+        the multiplier one where `v - c` is not negative, falling to its floor as it falls."""
+        excess = min(v - c, 0.0)
+        decay = math.exp(excess / (2.0 * (1.0 - self.floor) * add_on)) if add_on else float(
+            excess == 0.0)
+        multiplier = self.floor + (1.0 - self.floor) * decay
+        return multiplier, multiplier * add_on
+
+    def netting_set(self, agreement, indices, base):
+        """The set's row of the netting sets frame and its valued trades' rows: RC (52.10, 52.18),
+        PFE (52.20) and EAD (52.1), a margined set's capped at its unmargined one (52.2)."""
+        terms = agreement['Instrument'].field
+        margined = terms['Collateralized'] == 'True'
+        mpor = max(terms['Liquidation_Period'], self.floors[1] if len(indices) > self.floors[2]
+                   else self.floors[0]) if margined else None
+        rows = [dict(self.exposure(index, mpor), Value=base[index][0]) for index in indices
+                if base[index][0] is not None]
+        v = sum(row['Value'] for row in rows)
+        c, margin = self.collateral(terms) if margined else (0.0, 0.0)
+        add_ons = self.add_ons(rows, 'EffectiveNotional')
+        multiplier, pfe = self.potential(v, c, sum(add_ons))
+        unmargined = max(v - c, 0.0)
+        rc = max(unmargined, margin) if margined else unmargined
+        ead = self.alpha * (rc + pfe)
+        if margined:
+            ead = min(ead, self.alpha * (unmargined + self.potential(v, c, sum(self.add_ons(
+                rows, 'Unmargined')))[1]))
+        skipped = ['{}: {}'.format(self.trades[index][1]['Instrument'].field.get('Reference'), said)
+                   for index in indices for said in base[index][1]]
+        return dict(zip(self.SETS, (
+            terms.get('Reference'), margined, mpor, v, c, rc, *add_ons, sum(add_ons), multiplier,
+            pfe, ead, '; '.join(skipped)))), rows
+
+    def collateral(self, terms):
+        """`(C, TH + MTA - NICA)` of a margined set at the base date in the calculation currency:
+        its opening balance as the engine's balance counts it, held at one less its received
+        haircut and posted at face over one less its posted one (`instruments.collateral_credit`),
+        and its credit support amounts at their first values, crossed from its agreement's
+        currency."""
+        support, agreement = terms['Credit_Support_Amounts'], self.fx(terms['Agreement_Currency'])
+        margin = agreement * (support['Received_Threshold'].value() + support[
+            'Minimum_Received'].value() - support['Independent_Amount'].value())
+        assets = terms['Collateral_Assets']
+        if assets.get('Bond_Collateral') or assets.get('Equity_Collateral'):
+            raise ValueError('SACCR: netting set {} holds bond or equity collateral, whose value at '
+                             'the base date the calculation does not price'.format(
+                                 terms.get('Reference')))
+        balance_currency = terms.read('Balance_Currency', terms['Agreement_Currency'])
+        rows = assets.get('Cash_Collateral') or [{'Currency': balance_currency}]
+        worth = [(1.0 if row.get('Amount') is None else row['Amount']) * self.fx(row['Currency'])
+                 for row in rows]
+        cuts = [instruments.NettingCollateralSet.haircuts(row) for row in rows]
+        face = sum(worth)
+        posted, held = (sum(unit * cut[key] for unit, cut in zip(worth, cuts))
+                        for key in ('Haircut_Posted', 'Haircut_Received'))
+        opening = terms['Opening_Balance'] * self.fx(balance_currency)
+        balance = opening / (face - posted * (opening < 0))
+        return instruments.collateral_credit(balance, face, held), margin
+
+    def report(self, base):
+        """The run's results off the book's `base`: a row per netting set and per trade it
+        values, in book order."""
+        sets, trades = [], []
+        for agreement in self.config.deals['Deals']['Children']:
+            row, rows = self.netting_set(agreement, [
+                index for index, (held, _) in enumerate(self.trades) if held is agreement], base)
+            sets.append(row)
+            trades.extend(rows)
+        self.output = {'SACCR': {'netting_sets': pd.DataFrame(sets, columns=list(self.SETS)),
+                                 'trades': pd.DataFrame(trades, columns=list(self.TRADES))}}
+        return {'Stats': self.calc_stats, 'Results': self.output}
 
 
 def construct_calculation(name, config, **kwargs):

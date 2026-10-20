@@ -10,6 +10,7 @@ every type, with its type, default and menu, is on the type's own page under thi
 | `CreditMonteCarlo` | `run_cmc` | `cx.Credit_Monte_Carlo` | the simulated portfolio mark, exposure profile, CVA and FVA (CollVA and an initial margin experimental) |
 | `HedgeMonteCarlo` | `run_hedgemontecarlo` | `cx.Hedge_Monte_Carlo` | the dynamic-hedging solve or simulation of [Hedging](../hedging/overview.md) |
 | `SIMM` | `run_simm` | none: `cx.run_job` or `derivus.run_simm(cx.current_cfg)` | an ISDA SIMM sensitivity file (CRIF) [@isdasimm] by bump and revaluation, the book compiled once and priced again per market move |
+| `SACCR` | `run_saccr` | none: `cx.run_job` or `derivus.run_saccr(cx.current_cfg)` | the SA-CCR exposure at default of each netting set [@bcbscre52], off one base valuation of the book and each trade's declared terms |
 
 ## How a block is completed {#defaults}
 
@@ -17,7 +18,7 @@ Before a run, the block is assembled in this order, each step overwriting the la
 
 1. **Runner keys.** `run_baseval`, `run_cmc` and `run_hedgemontecarlo` add `Run_Date`, the
    document's `Base_Date` as `YYYY-MM-DD`. `run_cmc` and `run_hedgemontecarlo` also add `Time_grid`,
-   the document's `Time_Grid` (or its default) as text. `run_simm` adds nothing.
+   the document's `Time_Grid` (or its default) as text. `run_simm` and `run_saccr` add nothing.
 2. **The document's own keys.**
 3. **`overrides`**, merged deeply: a nested mapping is merged key by key, anything else replaces.
 4. **Declared defaults.** The calculation fills every top-level key still missing from its
@@ -33,9 +34,10 @@ What follows from that order:
 |---|---|
 | `Base_Date` must be stated, as a date | the runners read it before any default applies; its declared default is blank, which `cx.validate()` names as not stated |
 | `Currency` must be stated | it is the currency the run reports in, and no default names one: a block stating none is refused at step 5 |
-| The valuation date of `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` is `Run_Date` | step 1 copies it from the document's `Base_Date`, so an override must name `Run_Date`: overriding `Base_Date` alone does not move the date. `SIMM` reads `Base_Date` itself |
+| The valuation date of `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` is `Run_Date` | step 1 copies it from the document's `Base_Date`, so an override must name `Run_Date`: overriding `Base_Date` alone does not move the date. `SIMM` and `SACCR` read `Base_Date` themselves |
 | `CreditMonteCarlo` reads its grid from `Time_grid`, `HedgeMonteCarlo` from `Time_Grid` | so an override of the grid names `Time_grid` for the first and `Time_Grid` for the second |
 | `SIMM` refuses a blank `Base_Date`, `Mapping` or `Parameters` and a zero shift, naming each | checked before anything is valued |
+| `SACCR` refuses a blank `Base_Date`, `Mapping` or `Parameters` and a parameters file missing or malforming an entry CRE52 reads, naming each | checked before anything is valued |
 
 ## Containers {#containers}
 
@@ -64,8 +66,8 @@ For `CreditMonteCarlo` and `HedgeMonteCarlo`:
 | Outer paths | `Batch_Size × Simulation_Batches`. Sharded over `n` workers, each runs `Simulation_Batches // n` batches, so a remainder is not run |
 | Outer normals | `torch.randn`, correlated through the Cholesky factor of the matrix [Correlations](correlations.md) assembles. The generator is seeded once per worker with `Random_Seed + worker index`; a sharded run (`runparallel`) reseeds every batch from a SplitMix64 mix of `Random_Seed` and the batch's global index (`calculation.batch_seed`), so its batches do not depend on the worker count |
 | `Antithetic: Yes` | draws `Batch_Size // 2` correlated normals and appends their negatives. The path count is unchanged: the pairs are the two halves of the batch axis [@glasserman2003] |
-| Quasi-random stream | a scrambled Sobol sequence [@sobol1967; @owen1998; @joe2008] (`torch.quasirandom.SobolEngine`, its scramble seed `Quasi_Seed`, read from point 1024). Its consumers are the regime and mixer uniforms of `MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel` and `LogVar2FJImpliedSpotModel`, the inner normals of `HedgeMonteCarlo` under `Inner_Draws: sobol`, and the inner-path block of the simulated pricers at every outer batch size, which with a LogVar2FJ pricer's walk, keyed by `Quasi_Seed` and its segment, is all a `BaseValuation` or a `SIMM` draws. It is not derived from `Random_Seed` |
-| Inner paths | `MCMC_Simulations` per simulated pricing: 2,048 by default here, 16,384 under `BaseValuation` and `SIMM` |
+| Quasi-random stream | a scrambled Sobol sequence [@sobol1967; @owen1998; @joe2008] (`torch.quasirandom.SobolEngine`, its scramble seed `Quasi_Seed`, read from point 1024). Its consumers are the regime and mixer uniforms of `MarkovHMMSpotModel`, `GARCHSpotModel`, `BasisLinkedSpotModel` and `LogVar2FJImpliedSpotModel`, the inner normals of `HedgeMonteCarlo` under `Inner_Draws: sobol`, and the inner-path block of the simulated pricers at every outer batch size, which with a LogVar2FJ pricer's walk, keyed by `Quasi_Seed` and its segment, is all a `BaseValuation`, a `SIMM` or an `SACCR` draws. It is not derived from `Random_Seed` |
+| Inner paths | `MCMC_Simulations` per simulated pricing: 2,048 by default here, 16,384 under `BaseValuation`, `SIMM` and `SACCR` |
 | Precision | float32 by default (`run_cmc`, `run_hedgemontecarlo`); `run_baseval` defaults to float64 |
 | Model time | a scenario date's year fraction is its calendar days from `Base_Date` / 365.25 |
 

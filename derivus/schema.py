@@ -120,6 +120,14 @@ Cash = namedtuple('Cash', 'currency amount sign otherwise', defaults=(None, 1.0,
 Observes = namedtuple('Observes', 'index family table column elects expires monitors unless',
                       defaults=(None,) * 6)
 
+#: What a deal type's SA-CCR exposure is read off: `amount` its size, a notional in the currency
+#: `currency` names or units priced at the factor `price` names (`underlying`'s where None),
+#: `underlying` its primary risk factor (an FX trade's other currency), `start` its start, `long`
+#: the (field, value) long that factor or, an option, bought, else by the amount's sign; `strike`,
+#: `expiry` and `call` the (field, value) of a call where an option; `amortisation` its steps.
+Exposure = namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
+                                  'amortisation', defaults=(None,) * 9)
+
 
 class Row(object):
     """The ordered fields of one table row - each column a full `F`."""
@@ -578,10 +586,10 @@ def emit_instrument(module):
     return types, sections, sorted(containers), vernacular, titles
 
 
-def observes(module):
-    """`{deal type: Observes}`, off each type's OWN `observes` - never a parent's."""
-    return {deal_type: cls.__dict__['observes'] for deal_type, cls in vars(module).items()
-            if isinstance(cls, type) and cls.__dict__.get('observes') is not None}
+def declarations(module, attribute):
+    """`{deal type: declaration}`, off each type's OWN `attribute` - never a parent's."""
+    return {deal_type: cls.__dict__[attribute] for deal_type, cls in vars(module).items()
+            if isinstance(cls, type) and cls.__dict__.get(attribute) is not None}
 
 
 def factor_fields(module):
@@ -1431,7 +1439,8 @@ MARKET_QUOTE_CLOCKS = quote_clocks(bootstrappers)
 
 #: The registries the store and the partition read, each off its declarations - read at call time
 #: through this module, never bound by name at import, as the families import from here.
-OBSERVES = observes(instruments)
+OBSERVES = declarations(instruments, 'observes')
+EXPOSURES = declarations(instruments, 'exposure')
 FACTOR_FIELDS = factor_fields(riskfactors)
 _types, _sections, _containers, _vernacular, _titles = emit_instrument(instruments)
 _factor_types = emit_factor(riskfactors)

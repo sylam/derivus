@@ -1,6 +1,6 @@
 # Calculations
 
-A job's `Calculation` block names one of four calculation types in `Object`, and
+A job's `Calculation` block names one of five calculation types in `Object`, and
 `Context.run_job` runs it on the book and the market data the job loads. How each is called and
 what it returns is on [API Overview](../api_overview.md), every field each reads and its default on
 [Calculations](../json/calculations.md) in the JSON reference, and how a job reaches each and where
@@ -32,3 +32,8 @@ they part on [Calc Lifecycle](../developer/calc_lifecycle.md#valuation-modes).
   with the moved factors written into it, each trade read off its own structure, reading the
   regime `Mapping` and the ISDA `Parameters` file the block names. Its tables are on
   [Understanding Output](../output.md#simm).
+- **`SACCR`** ([`SACCR`](#saccr)) answers the exposure at default of each netting set under the
+  standardised approach to counterparty credit risk [@bcbscre52], off one base valuation of the
+  book and each trade's terms as its type declares them, reading the `Mapping` for each type's
+  asset class and each credit entity's rating and the `Parameters` file for the supervisory
+  numbers. Its tables are on [Understanding Output](../output.md#saccr).

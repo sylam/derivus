@@ -215,8 +215,8 @@ names by what they hold - a market data file's sections and its calendar in the 
 values in `values_hash` - so the tuple pins their content, never their path, and the digests of
 the files a run read ride beside it rather than in it ([below](#lanes)); a replay reads a declared
 file's bytes off the store ([Markets](#markets)).
-`seed` is the `Random_Seed` a job states, null where it states none, a base valuation and a SIMM
-declaring none; `quasi_seed` is the `Quasi_Seed` every calculation declares, its default where the
+`seed` is the `Random_Seed` a job states, null where it states none, a base valuation, a SIMM and
+an SA-CCR declaring none; `quasi_seed` is the `Quasi_Seed` every calculation declares, its default where the
 job states none (`spine.replay_seeds`). Neither is in `plan_hash`. **Held by**
 `test_spine_engine.py::test_a_standing_run_attests_at_birth_and_the_other_lanes_mint_nothing`.
 `engine_version` is the hand-set `derivus/_version.py`; no commit, torch or CUDA version or device

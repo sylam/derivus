@@ -65,7 +65,7 @@ features kept ahead of their build, not rows to close.
 
 **The code.**
 
-- `Context.run_job`'s four-way branch and the `run_*` functions fold into the calculation classes
+- `Context.run_job`'s five-way branch and the `run_*` functions fold into the calculation classes
   they dispatch to, one entry per class.
 - The retired family keys (`config.RETIRED_FAMILY_KEYS`: `InterestRateCurveParameters` and
   `FXVolSurfaceParameters` read as `InterestRate` and `FXVol`) are carried through this release and

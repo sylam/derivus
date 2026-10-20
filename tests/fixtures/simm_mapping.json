@@ -18,6 +18,24 @@
 			"SWPT": "RatesFX"
 		}
 	},
+	"SACCR": {
+		"Asset_Class": {
+			"SwapInterestDeal": "IR",
+			"SwaptionDeal": "IR",
+			"CapDeal": "IR",
+			"YieldInflationCashflowListDeal": "IR",
+			"FXOptionDeal": "FX",
+			"FXExtendableForwardDeal": "FX",
+			"DealDefaultSwap": "Credit",
+			"QEDI_CustomAutoCallSwap": "Equity",
+			"EquitySwapLeg": "Equity",
+			"EquityForwardDeal": "Equity",
+			"CommodityForwardDeal": "Commodity",
+			"CommodityFutureDeal": "Commodity",
+			"FloatingEnergyDeal": "Commodity",
+			"EnergySingleOption": "Commodity"
+		}
+	},
 	"Factors": {
 		"InterestRate.USD-OIS": {
 			"SIMM": {
@@ -135,7 +153,10 @@
 				"Qualifier": "ISSUER",
 				"Bucket": "3"
 			},
-			"FRTB_SA": null
+			"FRTB_SA": null,
+			"SACCR": {
+				"Rating": "BBB"
+			}
 		},
 		"CommodityPrice.METAL": {
 			"SIMM": {

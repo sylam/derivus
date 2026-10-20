@@ -1,0 +1,84 @@
+{
+	"version": "Basel Framework CRE52, the standardised approach for counterparty credit risk: its supervisory numbers, each beside the paragraph it is read from",
+	"alpha": 1.4,
+	"multiplier_floor": 0.05,
+	"supervisory": {
+		"IR": {
+			"": {"factor": 0.005, "correlation": null, "option_volatility": 0.5}
+		},
+		"FX": {
+			"": {"factor": 0.04, "correlation": null, "option_volatility": 0.15}
+		},
+		"Credit": {
+			"AAA": {"factor": 0.0038, "correlation": 0.5, "option_volatility": 1.0},
+			"AA": {"factor": 0.0038, "correlation": 0.5, "option_volatility": 1.0},
+			"A": {"factor": 0.0042, "correlation": 0.5, "option_volatility": 1.0},
+			"BBB": {"factor": 0.0054, "correlation": 0.5, "option_volatility": 1.0},
+			"BB": {"factor": 0.0106, "correlation": 0.5, "option_volatility": 1.0},
+			"B": {"factor": 0.016, "correlation": 0.5, "option_volatility": 1.0},
+			"CCC": {"factor": 0.06, "correlation": 0.5, "option_volatility": 1.0},
+			"IG": {"factor": 0.0038, "correlation": 0.8, "option_volatility": 0.8},
+			"SG": {"factor": 0.0106, "correlation": 0.8, "option_volatility": 0.8}
+		},
+		"Equity": {
+			"Single": {"factor": 0.32, "correlation": 0.5, "option_volatility": 1.2},
+			"Index": {"factor": 0.2, "correlation": 0.8, "option_volatility": 0.75}
+		},
+		"Commodity": {
+			"Electricity": {"factor": 0.4, "correlation": 0.4, "option_volatility": 1.5},
+			"Oil/Gas": {"factor": 0.18, "correlation": 0.4, "option_volatility": 0.7},
+			"Metals": {"factor": 0.18, "correlation": 0.4, "option_volatility": 0.7},
+			"Agricultural": {"factor": 0.18, "correlation": 0.4, "option_volatility": 0.7},
+			"Other": {"factor": 0.18, "correlation": 0.4, "option_volatility": 0.7}
+		}
+	},
+	"interest_rate": {
+		"supervisory_duration": 0.05,
+		"buckets": [1.0, 5.0],
+		"correlations": [[1.0, 0.7, 0.3], [0.7, 1.0, 0.7], [0.3, 0.7, 1.0]]
+	},
+	"maturity": {
+		"business_days": 250,
+		"floor": 10,
+		"margined": 1.5,
+		"mpor": {"bilateral": 10, "cleared": 5, "large_set": 20, "large_set_trades": 5000, "disputed": 2}
+	},
+	"commodity_sets": {
+		"1": ["Energy", "Oil/Gas"],
+		"2": ["Energy", "Oil/Gas"],
+		"3": ["Energy", "Oil/Gas"],
+		"4": ["Energy", "Oil/Gas"],
+		"5": ["Energy", "Oil/Gas"],
+		"6": ["Energy", "Oil/Gas"],
+		"7": ["Energy", "Oil/Gas"],
+		"8": ["Energy", "Electricity"],
+		"9": ["Energy", "Electricity"],
+		"10": ["Other", "Other"],
+		"11": ["Metals", "Metals"],
+		"12": ["Metals", "Metals"],
+		"13": ["Agricultural", "Agricultural"],
+		"14": ["Agricultural", "Agricultural"],
+		"15": ["Agricultural", "Agricultural"],
+		"16": ["Other", "Other"],
+		"17": ["Other", "Other"]
+	},
+	"option_shift": {},
+	"cites": {
+		"alpha": "CRE52.1: alpha = 1.4",
+		"multiplier_floor": "CRE52.23: Floor is 5%; CRE52.22: the multiplier is floored at 5% of the PFE add-on",
+		"supervisory": "CRE52.72, Table 2: the supervisory factor, correlation and supervisory option volatility of each asset class and subclass, N/A a null; the vol is the delta's of CRE52.40(2), the correlation the single-factor weight of CRE52.61(4), CRE52.66(4) and CRE52.70(5)",
+		"interest_rate.supervisory_duration": "CRE52.34: SD = (exp(-0.05 S) - exp(-0.05 E)) / 0.05",
+		"interest_rate.buckets": "CRE52.57(3): less than one year, between one and five years, more than five years, by the end date E of CRE52.31(3)",
+		"interest_rate.correlations": "CRE52.57(5): EN = (D1^2 + D2^2 + D3^2 + 1.4 D1 D2 + 1.4 D2 D3 + 0.6 D1 D3)^(1/2), each cross term twice the correlation of its two buckets",
+		"maturity.business_days": "CRE52.49 and CRE52.53: 250 business days in a year",
+		"maturity.floor": "CRE52.48 and CRE52.49: M floored at ten business days, 10/250 years; CRE52.34: SD floored at ten business days",
+		"maturity.margined": "CRE52.52: MF = 3/2 (MPOR / 1 year)^(1/2)",
+		"maturity.mpor.bilateral": "CRE52.50(1): ten business days for non-centrally-cleared transactions under daily margin",
+		"maturity.mpor.cleared": "CRE52.50(3): the floors CRE54 prescribes for centrally cleared transactions, five business days as the FAQ to CRE52.32 counts the shortest; not read, a netting set stating no clearing",
+		"maturity.mpor.large_set": "CRE52.51(1): 20 business days for a netting set of more than 5,000 transactions not with a central counterparty",
+		"maturity.mpor.large_set_trades": "CRE52.51(1): more than 5,000 transactions",
+		"maturity.mpor.disputed": "CRE52.51(3): the floor doubled after more than two margin call disputes over two quarters; not read, a netting set stating no dispute history",
+		"commodity_sets": "CRE52.45(5) and CRE52.70 step 2, the four hedging sets, and Table 2's subclasses: a SIMM commodity bucket to the hedging set and subclass it is held in, our declaration - coal, crude, the distillates and gas to energy at Oil/Gas, Table 2's energy row beside electricity; power to energy at Electricity; the metals to metals; grains, softs and livestock to agricultural; freight, other and indexes to other",
+		"option_shift": "CRE52.40, FAQ2: per currency the shift lambda added to P and K of every interest rate option in it, in percent as a rate option's strike is stated, none where a currency states none"
+	}
+}

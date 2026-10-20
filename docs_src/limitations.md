@@ -128,6 +128,15 @@ Grouped by where a validator meets them.
   seeds and path counts, a tenth of a point cutting it tenfold. It is the regulation's definition,
   so stated, not fixed. ISDA's inflation and credit vol sensitivities refuse by name, the engine
   carrying no factor type for either.
+- **SA-CCR holds a basis or a volatility trade in its ordinary hedging set** (2026-10-20).
+  CRE52.46-52.47 hold a trade on the basis between two risk factors of one currency, or on a risk
+  factor's volatility, in a hedging set of its own at half, or five times, its class's supervisory
+  factor (CRE52.73). `SACCR` holds every trade in its class's ordinary set at the ordinary factor,
+  so a basis swap offsets the outright rate trades of its currency where its own set would offset
+  none at half the factor, and a volatility trade is charged a fifth of its own set's factor.
+  UNMEASURED: a basis swap and a variance swap booked beside outright trades of their classes, and
+  the add-ons read with each in its own set at its own factor against the ordinary one, would
+  measure it; no type declaring an exposure is a basis swap, and the engine has no variance swap.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
   `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only

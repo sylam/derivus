@@ -18,7 +18,7 @@ from functools import partial, reduce
 from . import utils, pricing
 from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
-    engine_default, settlement_days,
+    engine_default, Exposure, settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
     FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, OPTION_STYLE, TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
@@ -638,6 +638,11 @@ class Deal(object):
     #: fills, the choice its expiry vests. Read through `schema.OBSERVES`, which holds each type's
     #: own declaration and never a parent's, as `vernacular` is read.
     observes = None
+
+    #: What the type's SA-CCR exposure is read off (`schema.Exposure`), read through
+    #: `schema.EXPOSURES` as `observes` is: a type declaring none has no exposure the calculation
+    #: can read, and refuses there by name.
+    exposure = None
 
     #: The `SpotModel` values this deal type HONOURS, declared the way a process declares
     #: `factor_types`. The base declares GBM only, so a type that never wrote a non-GBM pricer
@@ -2590,6 +2595,9 @@ class SwapInterestDeal(Deal):
     accepts_children = True
     vernacular = 'interest rate swap, IRS, vanilla swap, basis swap, payer swap, receiver swap'
     observes = Observes('Interest_Rate', 'InterestRate')
+    # a payer receives the floating rate, long it
+    exposure = Exposure('Principal', 'Currency', start='Effective_Date', long=('Pay_Rate_Type', 'Fixed'),
+                        amortisation='Amortisation')
     quoted = 'Swap_Rate'
     fields = [ADMIN, PRICING, FLOATING_INDEX, own('SwapInterestDeal', [
         F('Index_Frequency', 'Period', default='0M', convention=True),
@@ -3266,6 +3274,9 @@ class SwaptionDeal(Deal):
     # its legs are the underlying the option is written on: a position sizes them, flips the option
     option_on_children = True
     vernacular = 'swaption, payer swaption, receiver swaption'
+    # a payer is a call on the swap rate, its strike in percent, the unit its forward is read in
+    exposure = Exposure('Principal', 'Currency', start='Swap_Effective_Date', long=('Buy_Sell', 'Buy'),
+                        strike='Swap_Rate', expiry='Option_Expiry_Date', call=('Payer_Receiver', 'Payer'))
     fields = [ADMIN, PRICING, FLOATING_INDEX, own('SwaptionDeal', [
         F('Floating_Margin', 'Float', default=0.0, convention=True),
         F('Rate_Schedule', 'DateList', default='null', convention=True,
@@ -5256,6 +5267,8 @@ class CommodityNoTouchOption(CommodityOneTouchOption):
 
 class CommodityForwardDeal(Deal):
     vernacular = 'commodity forward, metal forward'
+    # a unit priced where the forward reads it, its reference's curve
+    exposure = Exposure('Units', underlying='Commodity', price='Reference_Type', long=('Buy_Sell', 'Buy'))
     fields = [ADMIN, PRICING, own('CommodityForwardDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Forward_Date', 'Date', default='', convention=True),
@@ -5337,6 +5350,7 @@ class CommodityForwardDeal(Deal):
 
 class CommodityFutureDeal(Deal):
     vernacular = 'commodity future, futures contract'
+    exposure = Exposure('Units', underlying='Commodity')
     fields = [ADMIN, own('CommodityFutureDeal', [
         F('Commodity', 'Text', default='', factors=['CommodityPrice']),
         F('Maturity_Date', 'Date', default=''),
@@ -5525,6 +5539,7 @@ class CommodityAveragePriceSwapDeal(Deal):
 
 class EquityForwardDeal(Deal):
     vernacular = 'equity forward, stock forward'
+    exposure = Exposure('Units', underlying='Equity', long=('Buy_Sell', 'Buy'))
     fields = [ADMIN, PRICING, own('EquityForwardDeal', [
         F('Forward_Price', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
@@ -6702,6 +6717,8 @@ class FXOptionDeal(Deal):
     vernacular = 'FX option, currency option, vanilla call or put'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
                         elects='Settlement_Style', expires='Expiry_Date')
+    exposure = Exposure('Underlying_Amount', 'Underlying_Currency', 'Currency', long=('Buy_Sell', 'Buy'),
+                        strike='Strike_Price', expiry='Expiry_Date', call=('Option_Type', 'Call'))
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, FX_OPTION_STYLE, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Expiry_Date', 'Date', default=''),
@@ -6955,6 +6972,9 @@ class CreditNthToDefault(Deal):
 
 class DealDefaultSwap(Deal):
     vernacular = 'credit default swap, CDS, single-name CDS'
+    # the protection buyer gains as the spread widens, long it
+    exposure = Exposure('Principal', 'Currency', 'Name', start='Effective_Date', long=('Buy_Sell', 'Buy'),
+                        amortisation='Amortisation')
     #: by quote type, the field and its unit: a running spread is the coupon, a standard
     #: contract's points are the upfront the buyer pays at the coupon the contract states
     quoted = {'Par_Spread': ('Pay_Rate', utils.Basis), 'Upfront': ('Upfront', utils.Percent)}

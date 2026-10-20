@@ -1,8 +1,8 @@
 ## The output dictionary
 
 Every calculation method returns `(calc, out)`. For a base valuation `out` is a dict with three
-top-level keys; a credit Monte Carlo adds a fourth, `Jacobians`; a `SIMM` run carries `Stats` and
-`Results` only; and a hedge run returns an attribute object instead (see
+top-level keys; a credit Monte Carlo adds a fourth, `Jacobians`; a `SIMM` or an `SACCR` run
+carries `Stats` and `Results` only; and a hedge run returns an attribute object instead (see
 [API Overview](api_overview.md#hedge-monte-carlo)):
 
 - **Netting** — the internal `DealStructure` tree, intended for developers walking the hierarchy.
@@ -67,6 +67,24 @@ verdict and the benchmark comparison (see the [Hedging](hedging/overview.md) sec
 
 `Stats['Parameters']` records the `version` the SIMM parameters file states, and `Stats` carries the
 one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`).
+
+## SACCR
+
+`Results['SACCR']` contains, every amount in the calculation `Currency` [@bcbscre52]:
+
+- `netting_sets` — one row per netting set: `Counterparty` (its reference), `Margined`, `MPOR` (in
+  business days, blank where unmargined), `V`, `C`, `RC`, the add-on of each asset class
+  (`AddOn_IR`, `AddOn_FX`, `AddOn_Credit`, `AddOn_Equity`, `AddOn_Commodity`), `AddOn_Aggregate`,
+  `Multiplier`, `PFE`, `EAD` and `Skipped`, every trade the engine skipped inside the set named
+  with its own sentence, its EAD written regardless
+- `trades` — one row per trade the run valued: `TradeID`, `NettingSet`, `AssetClass`, `HedgingSet`
+  (an IR trade's currency, an FX trade's pair, a credit or equity trade's entity, a commodity
+  trade's set), `Subclass` (Table 2's row), `Bucket` (an IR trade's maturity bucket, a commodity
+  trade's type), `SupervisoryFactor`, `AdjustedNotional`, `Delta`, `MaturityFactor`,
+  `EffectiveNotional` and `Value`
+
+`Stats['Parameters']` records the `version` the SA-CCR parameters file states, beside the one
+compile's counts.
 
 ## Over HTTP
 

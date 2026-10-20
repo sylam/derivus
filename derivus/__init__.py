@@ -247,6 +247,19 @@ def run_simm(context, overrides=None):
         return calc, calc.report(base, values)
 
 
+def run_saccr(context, overrides=None):
+    """Runs an SA-CCR calculation - CRE52's exposure at default of each netting set off one base
+    valuation of the book and each trade's declared terms - on the provided context:
+    `(calculation, output)`, the two frames under `output['Results']['SACCR']`."""
+    from .calculation import construct_calculation
+
+    params = dict(context.deals['Calculation'])
+    if overrides is not None:
+        update_dict(params, overrides)
+    calc = construct_calculation('SACCR', context)
+    return calc, calc.execute(params)
+
+
 def simm_shard(config, params, moves, job, queue):
     """A worker's share of a SIMM run's moves, each `(move, trades)`, valued on a context of its own
     calibrated and compiled once, an artifact crossing no process: `{(trade, move): value}`."""
@@ -905,6 +918,8 @@ class Context:
             return self.Hedge_Monte_Carlo(overrides)
         elif self.current_cfg.deals['Calculation']['Object'] == 'SIMM':
             return run_simm(self.current_cfg, overrides)
+        elif self.current_cfg.deals['Calculation']['Object'] == 'SACCR':
+            return run_saccr(self.current_cfg, overrides)
         else:
             raise Exception('Unknown Calculation {}'.format(self.current_cfg.deals['Calculation']['Object']))
 
