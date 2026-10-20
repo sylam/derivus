@@ -77,17 +77,20 @@ def rolled(items, at, drift=0.025, zero=None, lag=3, interpolated=True):
                for item in items if item['Payment_Date'] >= at)
 
 
-def linker(items):
-    """`trial_rates`' LINKER paying `items`, its one-deal wire document and its value by hand."""
-    deal = dict(LINKER, Cashflows={'Items': items})
+def linker(items, **terms):
+    """`trial_rates`' LINKER paying `items` under `terms`, its one-deal wire document and its
+    value by hand."""
+    deal = dict(LINKER, Cashflows={'Items': items}, **terms)
     return document(SimpleNamespace(DEALS=[deal], FACTORS=trial_rates.FACTORS, CONFIGURATION={})), \
         rolled(items, B)
 
 
-def still(job, drift, grid='0d 1m(1m)', vol=0.0, paths=16, nomodel='Constant', curves=('USD',)):
+def still(job, drift, grid='0d 1m(1m)', vol=0.0, paths=16, nomodel='Constant', curves=('USD',),
+          scenarios='No'):
     """`job`'s answer on `grid` under a credit Monte Carlo in float64 reading `nomodel`, its
     `curves` Hull-Whites at zero vol, its index static where `drift` is None, else a GBM at `vol`
-    drifting at `drift` on its own 365.25-day clock."""
+    drifting at `drift` on its own 365.25-day clock, the simulated factors reported under
+    `scenarios`."""
     deals = job['Calc']['Deals']['Deals']
     deals['Children'] = [{'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
@@ -95,7 +98,7 @@ def still(job, drift, grid='0d 1m(1m)', vol=0.0, paths=16, nomodel='Constant', c
     job['Calc']['Calculation'] = {
         'Object': 'CreditMonteCarlo', 'Base_Date': B, 'Currency': 'USD', 'Time_Grid': grid,
         'Batch_Size': paths, 'Simulation_Batches': 1, 'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD',
-        'NoModel': nomodel}
+        'NoModel': nomodel, 'Calc_Scenarios': scenarios}
     defaults = {kind: 'HullWhite1FactorInterestRateModel' for kind, curve in (
         ('InterestRate', 'USD'), ('InflationRate', 'INFL')) if curve in curves}
     models = {'HullWhite1FactorInterestRateModel.' + curve: {
@@ -326,3 +329,34 @@ def test_two_lists_on_one_simulated_index_read_a_shared_month_alike():
             if (at - B).days % 7 == 0:
                 hand = sum(rolled(items, at, 0.03, lag=1, interpolated=False) for items in (first, later))
                 assert row.mean() == pytest.approx(hand, rel=1e-12, abs=1e-9), (deals[0]['Reference'], at)
+
+
+def test_a_forward_on_a_linker_prices_on_an_index_simulated_to_its_settlement():
+    """The trialled linker as a forward settling 2026-11-03, its first coupon's final reference
+    reading September's and October's prints, under a credit Monte Carlo simulating the index at
+    10% on a monthly grid: the index's buffer ends at the settlement, a factor's horizon being the
+    last day a deal reading it values on, every row to the settlement is finite, the first is the
+    base valuation's mark and the rows after are zero. September's print is in force on the last
+    row and read off the path there; October's comes into force on 2026-11-15, after the deal's
+    last row, so every row projects it off the curve and the path is never read for it.
+
+    Killing mutations: the reset filter taking every reset whose reference day the deal's last
+    row has passed, October's included, whose row lies past the buffer (`index 4 is out of bounds
+    for dimension 0 with size 4`, the deal skipped by name and the run refusing with nothing
+    valued); a reset placed on the last row of its print's reign, September's running to
+    2026-11-04, the settlement currency's day past the deal's rows and the buffer (the same
+    refusal).
+    """
+    items = copy.deepcopy(LINKER['Cashflows']['Items'])
+    items[0]['Final_Reference_Date'] = pd.Timestamp('2026-12-03')
+    job, _ = linker(items, Is_Forward_Deal='Yes', Settlement_Date=pd.Timestamp('2026-11-03'))
+    base = float.fromhex(marks(job)['LINKER'])
+    out = still(job, 0.025, vol=0.10, paths=256, nomodel='RiskNeutral', scenarios='All')
+    index = out['Results']['scenarios']['PriceIndex.INFL']
+    assert [str(at.date()) for at in index.columns] == ['2026-08-03', '2026-09-03', '2026-10-03', '2026-11-03']
+    profile = out['Results']['mtm']
+    assert np.isfinite(profile.values).all()
+    assert profile.iloc[0].mean() == pytest.approx(base, rel=1e-6), (profile.iloc[0].mean(), base)
+    settled = profile.index > pd.Timestamp('2026-11-03')
+    assert settled.any() and (profile.loc[settled].values == 0).all()
+    assert (profile.loc[~settled].std(axis=1).iloc[1:] > 0).all()

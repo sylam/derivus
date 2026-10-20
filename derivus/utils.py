@@ -2314,8 +2314,13 @@ class TensorCashFlows(TensorSchedule):
                     Value = index_rate.current_value()[0] * np.exp(price_index.current_value([tau])[0] * tau)
                 else:
                     Value = index_rate.get_reference_value(Day)
-                Scenario, _, Time_Grid = TimeGrid._index_alpha(clock, (Day - last_print).days) \
-                    if Day > last_print else (-1, None, 0)
+                Scenario, Time_Grid = -1, 0
+                if Day > last_print:
+                    Scenario, _, Time_Grid = TimeGrid._index_alpha(clock, (Day - last_print).days)
+                    # a print holds from the row it lands on, so a month is read on the first row
+                    # of its reign, which a deal whose rows end inside the reign still reaches
+                    if Time_Grid == 0:
+                        Scenario = clock.searchsorted(clock[Scenario])
                 resets.append([Time_Grid, Rel_Day, -1, Rel_Day, Rel_Day, Weight, Value, 0.0])
                 offsets.append(Scenario)
 

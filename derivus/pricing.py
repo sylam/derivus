@@ -6001,11 +6001,13 @@ def pv_index_cashflows(shared, time_grid, deal_data, settle_cash=cash_settle):
         return torch.where(stated.tn.reshape(1, -1, 1) > 0, levels, projected)
 
     def filter_resets(resets, index):
-        """Every reset the outer grid has reached, in schedule order: a printed month its print, any
-        other the index's path - a static index answering one row and one column however many ask."""
+        """Every reset whose print is in force by the deal's last row, in schedule order: a printed
+        month its print, any other the index's path - a static index answering one row and one
+        column however many ask. A later reset is projected on every row, and its own row may lie
+        past the index's buffer, which ends with the deal's rows."""
         known_resets = resets.known_resets(shared.simulation_batch, filter_index=utils.RESET_INDEX_Scenario)
         reached = resets.schedule[resets.schedule[:, utils.RESET_INDEX_Reset_Day] <=
-                                  deal_time[:, utils.TIME_GRID_MTM].max()]
+                                  last_published[-1, utils.RESET_INDEX_Reset_Day]]
         simulated = reached[:, utils.RESET_INDEX_Scenario] > -1
         sim_resets = reached[simulated]
         old_resets = utils.calc_time_grid_spot_rate(
