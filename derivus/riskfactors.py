@@ -629,8 +629,10 @@ class Factor3D(object):
 
     @classmethod
     def vol_point(cls, block, point):
-        """What a point of vol adds to the vol column a vol space `block` holds: the point."""
-        return point
+        """What a point of vol adds to the vol column a vol space `block` holds, in the convention
+        it declares: the point on a Lognormal space, a basis point, a hundredth of it, on a Normal
+        one, whose vols are absolute."""
+        return point * 0.01 if cls(block).get_subtype()[0] == 'Normal' else point
 
     @classmethod
     def augmented(cls, block, years):

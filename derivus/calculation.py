@@ -3774,9 +3774,10 @@ class SIMM(Calculation):
     #: point of vega moves and the column its expiry is in, the level being the last, a vol space
     #: stating none and read as Explicit, its expiry the second of its four columns - a Skew
     #: smile is added to its ATM level, so moving the level holds its skew, and the factor owns what
-    #: a point adds to a level (`Factor2D.vol_point`, `Factor3D.vol_point`). ISDA's
-    #: Risk_InflationVol and Risk_CreditVol are not here, the engine having no inflation or credit
-    #: vol factor type, so a mapping naming either is refused as one naming any type not here is.
+    #: a point adds to a level (`Factor2D.vol_point`, `Factor3D.vol_point`), a basis point on a
+    #: Normal rate space. ISDA's Risk_InflationVol and Risk_CreditVol are not here, the engine
+    #: having no inflation or credit vol factor type, so a mapping naming either is refused as one
+    #: naming any type not here is.
     MOVES = {'Risk_IRCurve': ('InterestRate', 'quote'),
              'Risk_XCcyBasis': ('InterestRate', 'parallel'),
              'Risk_Inflation': ('InterestRate', 'inflation'),
@@ -3820,7 +3821,8 @@ class SIMM(Calculation):
           description='Percent a spot, a currency\'s price or a commodity\'s prices move by, '
                       'relative, ISDA\'s one; another is scaled to it'),
         F('Vol_Shift', 'Float', default=1.0,
-          description='Points of implied vol a vertex moves by, ISDA\'s one; another is scaled to it'),
+          description='Points of implied vol a vertex moves by, a point on a Normal rate space a '
+                      'basis point, ISDA\'s one; another is scaled to it'),
         F('MCMC_Simulations', 'Integer', default=1 << 14,
           description='Inner Monte Carlo paths of each pricing, as a BaseValuation reads them'),
         F('Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,

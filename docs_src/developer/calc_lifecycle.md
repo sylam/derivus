@@ -93,8 +93,11 @@ expiry, moneyness where a rate space's run moneyness, expiry, tenor; no trade re
 `ForwardPriceVol`, the `CSForwardPriceModelParameters` family's fit alone does, so no walk names
 one and no row of it is written. A factor mapped to a vega risk type that is no vol surface is
 refused by name: a model's parameters move by their family's fit, which a move re-solves for
-curves and credit alone.
+curves and credit alone. A point is what a vol space's declared convention calls one
+(`Factor3D.vol_point`, off the `Distribution_Type` `get_subtype` reads): a hundredth on a
+Lognormal space and a basis point on a Normal one, whose vols are absolute.
 **Held by** `tests/test_simm.py::test_a_rate_vega_row_is_a_point_on_its_vertex_slice_of_the_space`,
+`::test_a_point_of_vega_on_a_normal_space_is_a_basis_point`,
 `::test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood`,
 `::test_a_commodity_vega_row_is_a_point_on_its_vertex_pillar`,
 `::test_a_point_of_vega_on_what_is_no_vol_surface_is_refused_by_name`. **Not gated:** a

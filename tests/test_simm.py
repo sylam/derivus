@@ -451,10 +451,11 @@ COUPONS = [EXPIRY + pd.DateOffset(years=year) for year in range(6)]
 STEPS = utils.DateList({day: 1.5e6 for day in COUPONS[1:-1]})
 
 
-def yield_vols(expiries=(0.25, 1.0, 2.0, 5.0), moved=(), size=0.0):
-    """A rate vol space's quads on slices at `expiries`, sloped in expiry and tenor, each slice at an
-    expiry of `moved` `size` points up on every node."""
-    return [(m, e, t, 0.2 + 0.02 * e - 0.01 * t + 0.01 * size * (e in moved))
+def yield_vols(expiries=(0.25, 1.0, 2.0, 5.0), moved=(), size=0.0, level=1.0, point=0.01):
+    """A rate vol space's quads on slices at `expiries`, sloped in expiry and tenor, `level` times
+    a Lognormal space's, each slice at an expiry of `moved` `size` points of `point` up on every
+    node."""
+    return [(m, e, t, level * (0.2 + 0.02 * e - 0.01 * t) + point * size * (e in moved))
             for m in (-0.02, 0.0, 0.02) for e in expiries for t in (1.0, 3.0, 5.0, 10.0)]
 
 
@@ -463,6 +464,12 @@ SWAPTION_VOLS = {
     'InterestYieldVol.USD-OIS': {'Property_Aliases': None, 'Distribution_Type': 'Lognormal',
                                  'Shift': utils.Percent(0.0), 'Surface': utils.Curve([], YIELD_VOLS)},
     'InterestRateVol.USD-OIS': {'Property_Aliases': None, 'Surface': utils.Curve([], YIELD_VOLS)}}
+#: The two spaces in normal units, each vol the Lognormal one times 4%, about the overnight curve's
+#: rates, the swaption space declaring Normal, an absolute normal vol whose point is a basis point.
+NORMAL = {'level': 0.04, 'point': 1e-4}
+NORMAL_VOLS = {name: dict(block, Surface=utils.Curve([], yield_vols(**NORMAL)))
+               for name, block in SWAPTION_VOLS.items()}
+NORMAL_VOLS['InterestYieldVol.USD-OIS']['Distribution_Type'] = 'Normal'
 
 
 def amortising_leg(kind, reference, own, **terms):
@@ -559,11 +566,11 @@ CAP = {'Instrument': {'.Deal': {
 SLICES = (0.25, 0.5, 1.0, 2.0, 3.0, 5.0)
 
 
-def sliced(moved=(), size=0.0):
-    """The two spaces stating a slice at each of `SLICES` off their own line in expiry, as the run
-    compiles them, each slice at an expiry of `moved` `size` points up."""
-    return {name: dict(block, Surface=utils.Curve([], yield_vols(SLICES, moved, size)))
-            for name, block in SWAPTION_VOLS.items()}
+def sliced(moved=(), size=0.0, spaces=SWAPTION_VOLS, **units):
+    """The `spaces` stating a slice at each of `SLICES` off their own line in expiry, as the run
+    compiles them, each slice at an expiry of `moved` `size` points up, in `yield_vols`' `units`."""
+    return {name: dict(block, Surface=utils.Curve([], yield_vols(SLICES, moved, size, **units)))
+            for name, block in spaces.items()}
 
 
 @pytest.fixture(scope='module')
@@ -617,6 +624,39 @@ def test_a_rate_vega_row_is_a_point_on_its_vertex_slice_of_the_space(rate_vega):
     for trade, found in vega.items():
         assert sum(found.values()) == pytest.approx((up[trade] - down[trade]) / (2 * shift),
                                                     rel=1e-6), trade
+
+
+def test_a_point_of_vega_on_a_normal_space_is_a_basis_point(rate_vega):
+    """A NORMAL SPACE'S POINT IS A BASIS POINT. The swaption space declared Normal, each vol the
+    Lognormal one times 4%, an absolute normal vol the payer is priced on by Bachelier: a point of
+    vol is what the space's convention calls one, so each vertex moves its slice a basis point. The
+    payer's vega lands on 2y and 3y as on the Lognormal space, 1,643.73 and 4.5157 a basis point at
+    a ten-thousandth of one, each the difference of two full compiles on the space stating those
+    slices off its own line, that slice so moved over the shift and not, equal to the bit as
+    measured and held to 1e-12 of the largest, and the central difference within 2.7e-10, held to
+    1e-6; 0.2546 of the Lognormal twin's rows, 6,455.49 and 17.73, a basis point of normal vol
+    being 1.25% of the level where a point of lognormal vol is 5%.
+
+    Killing mutation: `Factor3D.vol_point` returning the point whatever the space declares - a
+    hundred basis points, the rows 164,372.53 and 451.57, 25.46 times the Lognormal twin's.
+    """
+    shift = 1e-4
+    calc, output = holding({'Vol_Shift': shift}, [AMORTISING], extra=NORMAL_VOLS).run_job()
+    years, vega = dict(calc.vertices), rows(output, 'SWPT', 'Risk_IRVol')
+    assert set(vega) == {'2y', '3y'}, vega
+
+    def worth(moved, size):
+        return solved(holding(VALUATION, [AMORTISING], extra=sliced(
+            moved, size, NORMAL_VOLS, **NORMAL)))['SWPT']
+
+    base, largest = worth((), 0.0), max(map(abs, vega.values()))
+    lognormal = rows(rate_vega[1], 'SWPT', 'Risk_IRVol')
+    for label, amount in vega.items():
+        up, down = (worth((years[label],), size) for size in (shift, -shift))
+        assert abs(amount - (up - base) / shift) < 1e-12 * largest, label
+        assert abs(amount - (up - down) / (2 * shift)) < 1e-6 * largest, label
+    assert all(0.1 < amount / lognormal[label] < 1.0 for label, amount in vega.items()), (
+        vega, lognormal)
 
 
 def test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood(rate_vega, tmp_path):
