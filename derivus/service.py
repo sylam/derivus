@@ -3803,7 +3803,8 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     A RETIRED ENTRY IS THE FILE'S AGAIN: each path of `retire` names an entry the explicit block
     states, its section first and every key below it, and the entry is deleted, a section left
     stating nothing with it, so the market reads the file's entry where the file carries one and
-    the bootstrap covers the whole market.
+    the bootstrap covers the whole market. The block's system date retired is `date_edit` back to
+    the file's day first, the calculation's date with it and every curve block re-authored there.
 
     `patch` is the `Price Factors` half of `patch_market` here and nothing else: a quote IS a
     patchable value to the engine, but on the live book it moves through `quotes`, which
@@ -3819,11 +3820,17 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     the whole market. `reading` makes the contexts it loads on (`spine.reading`).
     """
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    dated = 'Base_Date' in market.get('System Parameters', {})
     for path in retire:
         del reduce(getitem, path[:-1], market)[path[-1]]
         if market.get(path[0]) == {}:
             del market[path[0]]
     outcome = {'installed': [], 'updated': []}
+    if dated and 'Base_Date' not in market.get('System Parameters', {}):
+        # the book carries its date twice and the date verb moves both: here to the file's day
+        write, outcome = date_edit(document, book_base_date(document), reading)
+        if not write:
+            return write, outcome
     standing = market_of(document, reading())['Market Prices'] if quotes else {}
     for name in sorted(quotes):
         if name in standing and name not in authored:
@@ -3881,7 +3888,8 @@ def book_market(request: dict):
 
     `retire` deletes entries the book's explicit block states, each named by its path from the
     section down, so the file's entry stands again, and re-bootstraps the whole market where it
-    declares a bootstrapper; a path the block does not state refuses by name.
+    declares a bootstrapper; a path the block does not state refuses by name. The system date
+    retired moves both the book's dates to the file's, as `POST /book/date` moves them.
 
     A `patch` naming a `Market Prices` block is refused with the remedy, the one place the book is
     stricter than the engine: see `QUOTE_NOT_A_PATCH`.

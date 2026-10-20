@@ -6737,6 +6737,40 @@ def test_a_retire_reaches_into_a_section_and_re_solves_the_whole_market(file_boo
         True, ['FXVolPrices.USD.ZAR'], False)
 
 
+@pytest.mark.parametrize('date', [['System Parameters', 'Base_Date'], ['System Parameters']])
+def test_a_retired_system_date_is_the_date_verb_back_to_the_files_day(file_book, date):
+    """THE BOOK'S TWO DATES ARE ONE. The ZAR spot patched to 19.25 and bootstrapped, its ZAR-FX
+    curve re-solved to a 3M rate of 22.70%, then the book rolled from the file's 2024-06-28 to
+    2024-07-01 through `POST /book/date`: the block states the day, the calculation runs on it and
+    the ZAR block is re-authored there. The system date retired beside the spot, by its own path
+    or with its section, is the date verb back to the file's day, then the retire's whole-market
+    solve: both dates read 2024-06-28, the ZAR block re-authored on it is the file's own and so is
+    its curve, the ZAR-FX block stands as the roll left it and its curve is re-solved off the
+    file's spot to the file's 6.93%, the market answers as first served and the file on disk is
+    byte-identical.
+
+    KILLING MUTATIONS: the retire deleting the key alone - the calculation left on 2024-07-01
+    under the file's system date, the ZAR block and curve the rolled day's; the date verb
+    answering for the whole edit - the ZAR-FX curve left at 22.70% under the file's spot; the date
+    known by its own path alone - the section's retire leaving the calculation on 2024-07-01.
+    """
+    book, market = file_book
+    filed, first = market.read_bytes(), CLIENT.get('/book/market').json()['market']
+    assert CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 19.25}},
+                                             'bootstrap': 'Yes'}).json()['written'] is True
+    assert CLIENT.post('/book/date', json={'base_date': '2024-07-01'}).json()['written'] is True
+    retired = CLIENT.post('/book/market', json={'retire': [
+        date, ['Price Factors', 'FxRate.ZAR']]}).json()
+    calc, now = CLIENT.get('/book').json()['document']['Calc'], CLIENT.get('/book/market').json()
+    assert [calc['Calculation']['Base_Date'], now['market']['System Parameters']['Base_Date']] == [
+        first['System Parameters']['Base_Date']] * 2
+    assert round(zar_fx_front(now['market']), 4) == 0.0693
+    assert now['market'] == first
+    assert (retired['written'], retired['reauthored'], retired['held_out']) == (True, [
+        'InterestRatePrices.ZAR'], ["InterestRatePrices.ZAR-FX left as it stands - 'Spot_Days'"])
+    assert market.read_bytes() == filed
+
+
 def test_a_retire_the_market_cannot_stand_on_writes_nothing(file_book):
     """A retire is judged as every market write is and refused whole, the book's bytes standing.
     On the book's explicit twin, which names no file, the ZAR spot retired leaves the outrights

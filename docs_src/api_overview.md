@@ -461,7 +461,8 @@ what it moved, the factors a patch states and the ones its bootstrap changed, an
 the file's that stood still. `GET /book/market` answers that market itself, which the web client's
 market screens show, an entry the document's own block states marked as the block's.
 `POST /book/market` with `retire: [[section, key, ...]]` deletes such an entry by its path, so the
-file's stands again, and re-bootstraps the market.
+file's stands again, and re-bootstraps the market; the system date retired moves the calculation's
+date back with it, as `POST /book/date` does.
 
 **Plan then patch.** `POST /prepare` parses a job, names it by its `plan_hash` and keeps the parse
 under that name, so `/execute` takes either the whole document or the plan:

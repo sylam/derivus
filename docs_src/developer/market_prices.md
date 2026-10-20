@@ -189,10 +189,14 @@ and the web's type check; the rendering is **Not gated**. A writing verb holds f
   `::test_an_entry_configured_on_a_book_naming_a_file_is_merged_over_the_files`. A retire takes an
   entry back off the block: it deletes each path it names from the section down, the section with
   its last entry, so the file's stands again, and re-solves the whole market where the market
-  declares a bootstrapper, a retire the bootstrap cannot stand on writing nothing. **Held by**
+  declares a bootstrapper, a retire the bootstrap cannot stand on writing nothing. The block's
+  system date retired, by its path or with its section, is the date verb back to the file's day
+  before the rest of the edit, so `Calculation.Base_Date` moves with it and every curve block is
+  re-authored there: the book's two dates are never apart. **Held by**
   `::test_a_retired_override_restores_the_files_entry_and_the_market_re_bootstraps`,
   `::test_a_retire_reaches_into_a_section_and_re_solves_the_whole_market`,
-  `::test_a_retire_the_market_cannot_stand_on_writes_nothing`.
+  `::test_a_retire_the_market_cannot_stand_on_writes_nothing`,
+  `::test_a_retired_system_date_is_the_date_verb_back_to_the_files_day`.
 
 | verb | what it does | its own rule |
 | --- | --- | --- |
