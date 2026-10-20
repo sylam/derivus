@@ -3,9 +3,10 @@ import { configureBook } from '../api';
 import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Navigator, type Page } from '../components/Navigator';
-import { useApp, written } from '../state';
+import { Whose } from '../components/Whose';
+import { blockHint, marketOf, useApp, written } from '../state';
 import { isObject, token } from '../tokens';
-import type { ConfigSection, Schema } from '../types';
+import type { ConfigSection, JobDoc, Schema } from '../types';
 
 type Configure = (entry: string, fields: Record<string, unknown>) => Promise<string[] | null>;
 
@@ -78,7 +79,8 @@ function AddRule({ menu, attribute, configure }: {
  * of it is built with and the two columns blank, then one row per rule, the attribute a single
  * factor is named by and the name it must equal. A per-curve rule set from a Curves card and one
  * set here are THE SAME ROW. Every method edits in place; a rule is cleared by the ✕ that posts a
- * blank method, which is what the verb reads as a removal. */
+ * blank method, which is what the verb reads as a removal. Each row is marked whose it is, a type's
+ * rules being one list that a rule row marks and retires whole. */
 function RuleTable({ schema, name, declared, value, configure }: {
   schema: Schema; name: string; declared: ConfigSection; value: unknown; configure?: Configure;
 }) {
@@ -93,22 +95,27 @@ function RuleTable({ schema, name, declared, value, configure }: {
   const attribute = declared.key ?? '';
   const save = configure && (async (factor: string, fields: Record<string, unknown>) =>
     setRefused(await configure(factor, fields)));
+  const at = (key: string | undefined, factor: string) => [name, '.ModelParams', key ?? '', factor];
   const rows = [
     ...Object.keys(menu).map((factor) => ({
-      factor, method: String(defaults[factor] ?? declared.value ?? ''), where: '', equals: '' })),
+      factor, method: String(defaults[factor] ?? declared.value ?? ''), where: '', equals: '',
+      path: at(declared.entry, factor) })),
     ...Object.entries(half(declared.rules)).flatMap(([factor, filed]) =>
       (Array.isArray(filed) ? filed as [[string, string], string][] : [])
-        .map(([[where, equals], method]) => ({ factor, method, where, equals }))),
+        .map(([[where, equals], method]) => ({
+          factor, method, where, equals, path: at(declared.rules, factor) }))),
   ];
 
   return (
     <section className="card">
       <h3>{name}</h3>
       <DataTable
-        columns={['Risk_Factor.Interpolation', 'Where', 'Equals', '']} index={[]}
-        data={rows.map((rule) => [`${rule.factor}.${rule.method}`, rule.where, rule.equals, null])}
+        columns={['Risk_Factor.Interpolation', 'Where', 'Equals', '', '']} index={[]}
+        data={rows.map((rule) => [
+          `${rule.factor}.${rule.method}`, rule.where, rule.equals, null, null])}
         cell={(r, c) => {
           const rule = rows[r];
+          if (c === 3) return <Whose path={rule.path} />;
           if (c === 0) {
             return save && (
               <span className="editcell">
@@ -122,7 +129,7 @@ function RuleTable({ schema, name, declared, value, configure }: {
               </span>
             );
           }
-          return c === 3 && rule.equals && save ? (
+          return c === 4 && rule.equals && save ? (
             <button className="ghost"
                     onClick={() => void save(rule.factor, { [attribute]: rule.equals })}>✕</button>
           ) : undefined;
@@ -133,13 +140,14 @@ function RuleTable({ schema, name, declared, value, configure }: {
   );
 }
 
-/** One configuration section against its declaration, as PAGES and by shape. A declaration
- * carrying `types` is an entry per key the book states - the entry's own values where it has them
- * and the declared default otherwise, so an empty `{}` shows every dial at its default - filed under
- * the section, plus a page adding a family it does not state yet. One carrying `menu` is the rule
- * table above, one page. Editable where the document is the live book. */
-function sectionPages(schema: Schema, name: string, declared: ConfigSection, value: unknown,
-                      configure?: Configure): Page[] {
+/** One configuration section of the market the book prices on against its declaration, as PAGES
+ * and by shape. A declaration carrying `types` is an entry per key the market states, marked whose
+ * it is - the entry's own values where it has them and the declared default otherwise, so an empty
+ * `{}` shows every dial at its default - filed under the section, plus a page adding a family it
+ * does not state yet. One carrying `menu` is the rule table above, one page. Editable where the
+ * document is the live book, an edit to a file's entry landing on the block. */
+function sectionPages(schema: Schema, doc: JobDoc, name: string, declared: ConfigSection,
+                      value: unknown, configure?: Configure): Page[] {
   if (!declared.types) {
     return [{ id: name, label: name, content: (
       <RuleTable schema={schema} name={name} declared={declared} value={value}
@@ -150,11 +158,15 @@ function sectionPages(schema: Schema, name: string, declared: ConfigSection, val
   const stated = Object.keys(isObject(value) ? value : {});
   const missing = Object.keys(types).filter((family) => !stated.includes(family));
   return [
-    ...stated.map((key) => ({ id: `${name}/${key}`, folder: name, label: key, content: (
-      <DescriptorPanel
-        title={`${name} — ${key}`} fields={types[key]?.fields}
-        values={isObject(value) && isObject(value[key]) ? value[key] : {}}
-        onAmend={configure && ((field, wire) => configure(key, { [field]: wire }))} />
+    ...stated.map((key) => ({ id: `${name}/${key}`, folder: name, label: key,
+                              hint: blockHint(doc, [name, key]), content: (
+      <>
+        <div className="pager"><Whose path={[name, key]} /></div>
+        <DescriptorPanel
+          title={`${name} — ${key}`} fields={types[key]?.fields}
+          values={isObject(value) && isObject(value[key]) ? value[key] : {}}
+          onAmend={configure && ((field, wire) => configure(key, { [field]: wire }))} />
+      </>
     ) })),
     ...(configure && missing.length ? [{
       id: `${name}/`, folder: name, label: 'another family', accent: true,
@@ -163,16 +175,17 @@ function sectionPages(schema: Schema, name: string, declared: ConfigSection, val
   ];
 }
 
-/** The bootstrap's own dials: one entry per price family under the factor it writes, the
- * interpolation the routed curve types are built with as the rule table it is edited in, and the
- * one addition a book can make - a family it does not configure yet. Every save re-bootstraps the
- * market it configures, so a bootstrap that complains writes nothing and hands its messages back. */
+/** The bootstrap's own dials, as the market the book prices on states them: one entry per price
+ * family under the factor it writes, the interpolation the routed curve types are built with as the
+ * rule table it is edited in, and the one addition a book can make - a family it does not configure
+ * yet. Every save re-bootstraps the market it configures, so a bootstrap that complains writes
+ * nothing and hands its messages back. */
 export function BootstrapperView() {
   const { state, dispatch } = useApp();
   const { doc, schema } = state;
-  if (!doc || !schema) return null;
+  const market = marketOf(state);
+  if (!doc || !schema || !market) return null;
 
-  const explicit = doc.Calc.MergeMarketData?.ExplicitMarketData ?? {};
   const configure = (section: string): Configure | undefined =>
     state.source?.kind === 'book'
       ? async (entry, fields) => written(dispatch, await configureBook(section, entry, fields))
@@ -180,7 +193,7 @@ export function BootstrapperView() {
 
   return (
     <Navigator screen="bootstrap" keep pages={Object.entries(schema.Configuration).flatMap(
-      ([section, declared]) => sectionPages(schema, section, declared, explicit[section],
+      ([section, declared]) => sectionPages(schema, doc, section, declared, market[section],
                                             configure(section)))} />
   );
 }

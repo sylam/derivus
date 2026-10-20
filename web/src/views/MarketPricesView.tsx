@@ -3,7 +3,8 @@ import { failure, getResult, tickBloomberg, tickMarket } from '../api';
 import { DataTable } from '../components/DataTable';
 import { DescriptorPanel, EditableScalar } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
-import { useApp, written } from '../state';
+import { Whose } from '../components/Whose';
+import { blockHint, marketOf, useApp, written } from '../state';
 import { isObject } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
 
@@ -152,15 +153,16 @@ function BloombergTick() {
   );
 }
 
-/** The quotes half of the market data: every `Market Prices` block filed under its family, its
- * values editable over the live book, and one button that goes and gets the desk's own. */
+/** The quotes half of the market data: every `Market Prices` block of the market the book prices
+ * on, filed under its family and marked whose it is, its values editable over the live book - an
+ * edit to a file's block landing on the block - and one button that fetches the desk's own. */
 export function MarketPricesView() {
   const { state } = useApp();
   const { doc, schema } = state;
-  if (!doc || !schema) return null;
+  const market = marketOf(state);
+  if (!doc || !schema || !market) return null;
 
-  const prices = doc.Calc.MergeMarketData?.ExplicitMarketData?.['Market Prices'];
-  const blocks = isObject(prices) ? prices : {};
+  const blocks = market['Market Prices'] ?? {};
   const live = state.source?.kind === 'book';
 
   return (
@@ -170,7 +172,11 @@ export function MarketPricesView() {
         const [family, ...rest] = name.split('.');
         return {
           id: name, folder: family, label: rest.join('.') || family,
-          content: <MarketPriceBlock schema={schema} name={name} block={blocks[name]} live={live} />,
+          hint: blockHint(doc, ['Market Prices', name]),
+          content: <>
+            <div className="pager"><Whose path={['Market Prices', name]} /></div>
+            <MarketPriceBlock schema={schema} name={name} block={blocks[name]} live={live} />
+          </>,
         };
       })} />
   );

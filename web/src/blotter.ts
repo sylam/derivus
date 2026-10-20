@@ -11,7 +11,7 @@
 import type { Position } from './positions';
 import { formatNumber, isObject, token } from './tokens';
 import type { TreeNode } from './tree';
-import type { DealNode, JobDoc, Schema } from './types';
+import type { DealNode, JobDoc, Market, Schema } from './types';
 
 // ---- the candidate lists: one per column, most specific first ----------------------------------
 // Read against the deal's own keys. Every name below is declared by at least one instrument in
@@ -69,13 +69,14 @@ export function daysBetween(from: string, to: string): number | undefined {
   return Math.round(ms / 86400000);
 }
 
-/** The book's as-of date: the calculation's own, else System Parameters' - `quote_sheet`'s
- * resolution order, because a book stamped in either place is a book stamped. */
-export function baseDateOf(doc: JobDoc): string | undefined {
+/** The book's as-of date: the calculation's own, else the System Parameters of the market it
+ * prices on - `quote_sheet`'s resolution order, because a book stamped in either place is a book
+ * stamped. */
+export function baseDateOf(doc: JobDoc, market: Market | null): string | undefined {
   const calc = doc.Calc ?? ({} as JobDoc['Calc']);
   const own = dateOf((calc.Calculation ?? {})['Base_Date']);
   if (own) return own;
-  const system = (calc.MergeMarketData?.ExplicitMarketData ?? {})['System Parameters'];
+  const system = market?.['System Parameters'];
   return isObject(system) ? dateOf(system['Base_Date']) : undefined;
 }
 

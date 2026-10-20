@@ -1,6 +1,6 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import {
-  DOORBELL, failure, getBook, getBookActivity, getBookAgreements, getBookEntities,
+  DOORBELL, failure, getBook, getBookActivity, getBookAgreements, getBookEntities, getBookMarket,
   getBookPortfolios, getBookPositions, getBookRisk, getBookStatus, getBookXva, getSchema,
   postDescribe,
 } from './api';
@@ -128,6 +128,17 @@ export function App() {
     return () => { live = false; };
   }, [state.source, onXva]);
 
+  // The market the book prices on, read on the same etag: the market screens show it and mark what
+  // the document's own block states, so a write anywhere repaints both.
+  useEffect(() => {
+    if (state.source?.kind !== 'book') return;
+    let live = true;
+    getBookMarket()
+      .then((market) => { if (live) dispatch({ type: 'MARKET_LOADED', market }); })
+      .catch((error) => { if (live) dispatch({ type: 'MARKET_FAILED', ...failure(error) }); });
+    return () => { live = false; };
+  }, [state.source]);
+
   // The positions and the paper they sit under, for the two screens that group the book by them:
   // read while one of them is looked at on a desk that records, and again whenever the file or the
   // record moves under it - a booking moves both, a declaration the record alone.
@@ -202,6 +213,7 @@ export function App() {
           <div className="error-box">The service is not answering: {state.schemaError}</div>
         )}
         {state.docError && <div className="error-box">{state.docError}</div>}
+        {state.market.error && <div className="error-box">{state.market.error}</div>}
         {!state.doc ? (
           <div className="placeholder" style={{ flex: 1 }}>
             <div>No document loaded.</div>

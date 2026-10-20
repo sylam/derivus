@@ -24,6 +24,12 @@ of more than twelve carries a filter, and what a desk opened is remembered on th
 grouping, the filter and which folders stand open are `src/tree.ts`, checked by
 `scripts/tree_check.mjs`; `src/components/Navigator.tsx` is the one screen shape.
 
+**The market shown is the one the book prices on.** Every market screen, Settings and the blotter's
+base date read `GET /book/market` — the file the book names with its explicit block merged over it
+— and `src/components/Whose.tsx` marks each entry `block` where the document's own block states it
+and `file` where the file does; an edit lands on the block, and a `block` entry over a file
+retires, deleted there so the file's stands again and the market re-bootstrapped.
+
 A `Surface`-shaped price factor renders as four views over one pure module (`src/vols.ts`): the
 **smiles**, one line per expiry over the x coordinate; the **term structure** at one x; the
 **surface**, a rotatable 3-D mesh whose `echarts-gl` code is a lazy chunk the base bundle does not

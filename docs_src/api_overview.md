@@ -456,7 +456,10 @@ a minimal job with exactly that shape, and it is a job rather than a description
 the base currency and date, the factors, the quotes, the configuration - off the file's sections
 with the explicit block merged over them, and a verb that writes the market writes into the block
 what it moved, the factors a patch states and the ones its bootstrap changed, and never a factor of
-the file's that stood still. `GET /book/market` answers that market itself.
+the file's that stood still. `GET /book/market` answers that market itself, which the web client's
+market screens show, an entry the document's own block states marked as the block's.
+`POST /book/market` with `retire: [[section, key, ...]]` deletes such an entry by its path, so the
+file's stands again, and re-bootstraps the market.
 
 **Plan then patch.** `POST /prepare` parses a job, names it by its `plan_hash` and keeps the parse
 under that name, so `/execute` takes either the whole document or the plan:

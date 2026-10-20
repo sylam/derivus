@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { failure } from '../api';
 import {
   curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, label, offsetText,
@@ -113,13 +113,15 @@ export type AmendField = (key: string, wireValue: unknown) => Promise<string[] |
  * container's own scalars edit THROUGH the container: the amendment names the container and
  * carries it whole, its other keys standing, because an amendment merges top-level keys and a
  * container is one of them. `editable` narrows WHICH declared fields may edit - the market view
- * passes the bind='value' test, so structure stays read-only where the engine says it must. */
-export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
+ * passes the bind='value' test, so structure stays read-only where the engine says it must.
+ * `aside` is what a top-level field's label carries beside it - whose the entry is. */
+export function DescriptorPanel({ title, fields, values, onAmend, editable, aside }: {
   title: string;
   fields?: Record<string, Descriptor>;
   values: Record<string, unknown>;
   onAmend?: AmendField;
   editable?: (key: string, descriptor: Descriptor) => boolean;
+  aside?: (key: string) => ReactNode;
 }) {
   const declared = Object.entries(fields ?? {});
   const undeclared = Object.keys(values).filter((key) => !(fields ?? {})[key]);
@@ -152,7 +154,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
                       stated={values[key] !== undefined && values[key] !== null && values[key] !== ''}
                       declared={!!descriptor || !undeclared.includes(key)}
                       onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
-                        ? onAmend : undefined} />
+                        ? onAmend : undefined} aside={aside?.(key)} />
           );
         })}
       </div>
@@ -166,9 +168,9 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable }: {
  * what a form round-trips for nothing, so it is not a statement here either - which is what the
  * engine's own booking verdict says. `required` is the Instrument store's reading, MUST BE
  * STATED; on every other store it is still `default=REQUIRED`, and this panel renders both. */
-function FieldRow({ name, descriptor, value, stated, declared, onAmend }: {
+function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside }: {
   name: string; descriptor?: Descriptor; value: unknown; stated?: boolean; declared: boolean;
-  onAmend?: AmendField;
+  onAmend?: AmendField; aside?: ReactNode;
 }) {
   const editable = onAmend !== undefined && descriptor !== undefined &&
     isEditableScalar(descriptor, value);
@@ -179,6 +181,7 @@ function FieldRow({ name, descriptor, value, stated, declared, onAmend }: {
         {text}
         {descriptor?.required && !stated && <span className="required"> *</span>}
         {!declared && <span className="hint">(not declared)</span>}
+        {aside}
       </div>
       <div className="v">
         {editable

@@ -8,7 +8,7 @@ import {
   GROUPINGS, NO_PAPER, byId, byPath, clientName, clientTree, portfolioTree, type Paper,
   type Position,
 } from '../positions';
-import { useApp } from '../state';
+import { marketOf, useApp } from '../state';
 import { formatNumber } from '../tokens';
 import type { Schema } from '../types';
 
@@ -30,7 +30,8 @@ export function BlotterView() {
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set());
   const [opened, setOpened] = useState<string | null>(null);
 
-  const base = useMemo(() => (doc ? baseDateOf(doc) : undefined), [doc]);
+  const market = marketOf(state);
+  const base = useMemo(() => (doc ? baseDateOf(doc, market) : undefined), [doc, market]);
   // an empty book is a book: a document carrying no Deals block still renders the empty blotter
   const book = useMemo(() => (doc
     ? toRows(doc.Calc.Deals?.Deals?.Children ?? [], schema?.Instrument.containers ?? [], base)

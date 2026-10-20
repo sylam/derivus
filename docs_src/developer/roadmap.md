@@ -19,11 +19,6 @@ features kept ahead of their build, not rows to close.
 
 **The record and the service.**
 
-- **The web client's market screens read the explicit block** (2026-10-18, S). The Market Data,
-  Market Prices, Curves, Bootstrapper and Settings views and the blotter's base date read
-  `ExplicitMarketData` off `GET /book`, so on a book naming a market data file they show only what
-  the block states over it. The screens edit the block, so the fix is to show the market
-  `GET /book/market` answers with the block's own entries marked, an edit landing on the block.
 - **The tier recorded on an approval** (2026-09-29, M). Under a policy with both an automatic and a
   four-eyes tier, a copy forging an approval of a ticket only the four-eyes tier would admit is
   caught only by copies agreeing with the hub. Signed history ends at the last checkpoint either

@@ -6,9 +6,10 @@ import { createContext, useContext, type Dispatch } from 'react';
 import { getBook, type BookDealOutcome } from './api';
 import type { Grouping, Paper } from './positions';
 import { readRecord, reconciledRecord, type RecordHeld } from './spine';
+import { isObject } from './tokens';
 import type {
-  ActivityPage, BookRisk, BookXva, DescribeResult, JobDoc, Reconcile, ResultSummary, Schema,
-  SpineBlock, TablePage, ValidateResult,
+  ActivityPage, BookMarket, BookRisk, BookXva, DescribeResult, JobDoc, Market, Reconcile,
+  ResultSummary, Schema, SpineBlock, TablePage, ValidateResult,
 } from './types';
 
 export type Source =
@@ -63,6 +64,8 @@ export type AppState = {
   run: RunState;
   risk: RiskState;
   xva: Fetched<BookXva>;
+  /** The market the live book prices on, read again whenever the book moves. */
+  market: Fetched<BookMarket>;
   record: RecordState;
   /** The positions standing and the paper they sit under, for the screens that group by them. */
   paper: Fetched<Paper>;
@@ -79,6 +82,7 @@ const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false 
 
 export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, bookEtag: null };
 export const IDLE_XVA: Fetched<BookXva> = NOTHING_FETCHED;
+export const IDLE_MARKET: Fetched<BookMarket> = NOTHING_FETCHED;
 export const IDLE_PAPER: Fetched<Paper> = NOTHING_FETCHED;
 export const NO_RECORD: RecordState = {
   spine: null, rows: [], reconcile: null, reconciledAt: null,
@@ -88,7 +92,7 @@ export const INITIAL: AppState = {
   schema: null, schemaError: null, doc: null, source: null, docError: null,
   tab: 'portfolio', selection: { deal: null, picks: {} },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
-  record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
+  market: IDLE_MARKET, record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
 };
 
 export type Action =
@@ -115,6 +119,8 @@ export type Action =
   | { type: 'XVA_FETCHING' }
   | { type: 'XVA_LOADED'; xva: BookXva }
   | { type: 'XVA_FAILED'; error: string; status: number | null }
+  | { type: 'MARKET_LOADED'; market: BookMarket }
+  | { type: 'MARKET_FAILED'; error: string; status: number | null }
   | { type: 'PAPER_FETCHING' }
   | { type: 'PAPER_LOADED'; paper: Paper }
   | { type: 'PAPER_FAILED'; error: string; status: number | null }
@@ -139,7 +145,7 @@ export function reducer(state: AppState, action: Action): AppState {
         : {
             ...state, doc: action.doc, source: action.source, docError: null,
             selection: { deal: null, picks: {} }, describe: null, validate: null, run: IDLE_RUN,
-            risk: IDLE_RISK, xva: IDLE_XVA, paper: IDLE_PAPER,
+            risk: IDLE_RISK, xva: IDLE_XVA, market: IDLE_MARKET, paper: IDLE_PAPER,
           };
     case 'DOC_FAILED':
       return { ...state, docError: action.error };
@@ -202,6 +208,15 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         xva: { data: null, error: action.error, status: action.status, loading: false },
       };
+    case 'MARKET_LOADED':
+      return {
+        ...state, market: { data: action.market, error: null, status: null, loading: false },
+      };
+    case 'MARKET_FAILED':
+      return {
+        ...state,
+        market: { data: null, error: action.error, status: action.status, loading: false },
+      };
     case 'PAPER_FETCHING':
       return { ...state, paper: { ...state.paper, loading: true } };
     case 'PAPER_LOADED':
@@ -237,6 +252,32 @@ export async function written(dispatch: Dispatch<Action>, outcome: BookDealOutco
     source: { kind: 'book', etag: live.etag, path: live.path },
   });
   return null;
+}
+
+/** The market a screen shows: for the live book what `GET /book/market` answered, the file it
+ * names with its block merged over it, and null until that lands; for a document opened from a
+ * file its own block, which is all a browser holds of it. */
+export function marketOf(state: AppState): Market | null {
+  if (state.source?.kind === 'book') return state.market.data?.market ?? null;
+  return state.doc?.Calc.MergeMarketData?.ExplicitMarketData ?? {};
+}
+
+/** Whether `record` holds a key at every step of `path` - a section, an entry and any key below
+ * it. Asked of the document's explicit block, it is what makes an entry the block's. */
+export function holds(record: unknown, path: string[]): boolean {
+  let held = record;
+  for (const key of path) {
+    if (!isObject(held) || !(key in held)) return false;
+    held = held[key];
+  }
+  return true;
+}
+
+/** A tree item's word for an entry the block states over the file the book names; nothing on a
+ * book naming none, every entry of which is the block's. */
+export function blockHint(doc: JobDoc, path: string[]): string | undefined {
+  const merge = doc.Calc.MergeMarketData;
+  return merge?.MarketDataFile && holds(merge.ExplicitMarketData, path) ? 'block' : undefined;
 }
 
 export const AppContext = createContext<{ state: AppState; dispatch: Dispatch<Action> } | null>(null);

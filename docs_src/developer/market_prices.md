@@ -164,8 +164,13 @@ tick judges a quote block against the market's. **Held by**
 `::test_a_tick_of_the_files_own_quotes_is_an_update_as_on_its_explicit_twin`,
 `::test_a_quote_on_a_book_naming_a_file_is_the_quote_on_its_explicit_twin`,
 `::test_a_spot_model_fitted_on_a_book_naming_a_file_is_the_fit_on_its_explicit_twin`,
-`test_mcp.py::test_the_book_read_lists_the_factors_of_the_file_it_names`. A writing verb
-holds four invariants:
+`test_mcp.py::test_the_book_read_lists_the_factors_of_the_file_it_names`. The web's Market Data,
+Market Prices, Curves, Bootstrapper and Settings screens and the blotter's base date show that
+market as `GET /book/market` answers it, and mark an entry as the block's where the document's
+explicit block states it, a key test on the document `GET /book` serves; each screen writes
+through the verbs below, so an edit to a file's entry lands on the block. **Held by**
+`test_service.py::test_the_market_a_book_naming_a_file_answers_is_the_files_with_its_blocks_entries_over_it`
+and the web's type check; the rendering is **Not gated**. A writing verb holds four invariants:
 
 - **One atomic write.** Blocks, entries, spots, dates and the bootstrap land in one `Book.mutate`
   edit, so the file never holds quotes and factors from two states.
@@ -181,11 +186,17 @@ holds four invariants:
   stood still, and a configuration entry is merged over the market's and written where that moves
   it, a type's rules emptied over a file's stated as an empty list. **Held by**
   `test_service.py::test_a_spot_patched_on_a_book_naming_a_file_writes_back_what_moved`,
-  `::test_an_entry_configured_on_a_book_naming_a_file_is_merged_over_the_files`.
+  `::test_an_entry_configured_on_a_book_naming_a_file_is_merged_over_the_files`. A retire takes an
+  entry back off the block: it deletes each path it names from the section down, the section with
+  its last entry, so the file's stands again, and re-solves the whole market where the market
+  declares a bootstrapper, a retire the bootstrap cannot stand on writing nothing. **Held by**
+  `::test_a_retired_override_restores_the_files_entry_and_the_market_re_bootstraps`,
+  `::test_a_retire_reaches_into_a_section_and_re_solves_the_whole_market`,
+  `::test_a_retire_the_market_cannot_stand_on_writes_nothing`.
 
 | verb | what it does | its own rule |
 | --- | --- | --- |
-| `POST /book/market` | installs or value-updates quote blocks, bootstraps what moved | a quote moves under `quotes`, never as a values patch, which nothing would re-solve |
+| `POST /book/market` | installs or value-updates quote blocks, bootstraps what moved, retires the block's own entries | a quote moves under `quotes`, never as a values patch, which nothing would re-solve |
 | `POST /book/configure` | merges `fields` into one entry of either configuration section | validated by constructing the family; the market re-bootstraps |
 | `POST /book/curve` | authors an `InterestRatePrices` block from benchmark rows | the tenor says what a row is |
 | `POST /book/date` | moves both base dates, re-authoring every curve block | goes back as well as forward |

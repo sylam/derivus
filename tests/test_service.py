@@ -6612,6 +6612,155 @@ def test_the_book_parses_the_file_it_names_once_per_content(file_book):
     assert len(service.BOOK.parses.entries) == 2
 
 
+def zar_fx_front(market):
+    """The 3M rate of the ZAR curve the outrights imply, in a market's `Price Factors`."""
+    return market['Price Factors']['InterestRate.ZAR-FX']['Curve']['.Curve']['data'][0][1]
+
+
+def test_the_market_a_book_naming_a_file_answers_is_the_files_with_its_blocks_entries_over_it(
+        file_book):
+    """`GET /book/market` on a book naming a market data file is the file's market with the book's
+    explicit block over it, and the block's own entries are the keys the document states, which a
+    client reads off `GET /book` at the same etag. After the four writes the market screens make
+    over the file's entries - the ZAR spot patched to 19.0, the file's USDZAR smile ticked as the
+    market answers it with its 3M ATM quote moved from 14% to 14.5%, the surface family's
+    `Delta_Type` configured, the ZAR curve set up again with its 5Y quote moved from 8.55% to
+    8.60% - the block states the spot, the smile, the surface it re-solves, the ZAR-FX curve the
+    configure's whole-market bootstrap re-solves off the new spot, the family's entry, the ZAR
+    curve's block and the curve solved from it, and the base date the curve verb stamps; every
+    section the market answers holds the file's keys and the block's, each entry the block's where
+    the block states it and the file's as first served everywhere else; and the file on disk is
+    byte-identical.
+
+    KILLING MUTATIONS: the market answered off the explicit block, which first answers the bare
+    block's nothing and no smile to tick, `KeyError: 'Market Prices'`; the market answered off the
+    file alone, the spot 18.5 under the block's 19.0; the write-back of every factor the bootstrap
+    holds, the block stating all six factors.
+    """
+    book, market = file_book
+    filed, first = market.read_bytes(), CLIENT.get('/book/market').json()['market']
+    smile = json.loads(json.dumps(first['Market Prices']['FXVolPrices.USD.ZAR']))
+    smile['instrument']['Points'][0]['Quoted_Market_Value'] = 0.145
+    assert CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 19.0}}}).json()[
+        'written'] is True
+    assert CLIENT.post('/book/market', json={'quotes': {'FXVolPrices.USD.ZAR': smile}}).json()[
+        'updated'] == ['FXVolPrices.USD.ZAR']
+    assert configure('Bootstrapper Configuration', 'FXVol', Delta_Type='Forward')['written'] is True
+    assert set_up_curve([dict(row, quote=8.6) if row['tenor'] == '5Y' else row
+                         for row in CURVE_ROWS]).status_code == 200
+
+    answer, live = CLIENT.get('/book/market').json(), CLIENT.get('/book').json()
+    assert answer['etag'] == live['etag']
+    block = live['document']['Calc']['MergeMarketData']['ExplicitMarketData']
+    assert {section: sorted(stated) for section, stated in block.items()} == {
+        'Price Factors': ['FXVol.USD.ZAR', 'FxRate.ZAR', 'InterestRate.ZAR', 'InterestRate.ZAR-FX'],
+        'Market Prices': ['FXVolPrices.USD.ZAR', 'InterestRatePrices.ZAR'],
+        'Bootstrapper Configuration': ['FXVol'], 'System Parameters': ['Base_Date']}
+    for section, entries in answer['market'].items():
+        stated = block.get(section, {})
+        assert set(entries) == set(first[section]) | set(stated), section
+        for key, entry in entries.items():
+            assert entry == (stated if key in stated else first[section])[key], (section, key)
+    assert answer['market']['Price Factors']['FxRate.ZAR']['Spot'] == 19.0
+    assert market.read_bytes() == filed
+
+
+def test_a_retired_override_restores_the_files_entry_and_the_market_re_bootstraps(file_book):
+    """An entry of the book's own block retired through `POST /book/market` restores the file's in
+    what `GET /book/market` answers, and the market re-bootstraps over it. The ZAR spot patched to
+    19.25 and bootstrapped puts the spot and the ZAR-FX curve re-solved off it in the block, its 3M
+    rate 22.70%; the spot retired, the market reads the file's spot and the curve re-solved off
+    it, the file's own to the bit at 6.93%, which stands in the block as what the bootstrap moved;
+    that curve retired too, the block states nothing, the section going with its last entry, the
+    market is the file's as first served and the file on disk is byte-identical.
+
+    KILLING MUTATIONS: the retire's bootstrap left off, which leaves the curve at 22.70% under the
+    file's spot; the section its last entry left kept, the block `{'Price Factors': {}}`.
+    """
+    book, market = file_book
+    filed, first = market.read_bytes(), CLIENT.get('/book/market').json()['market']
+    assert CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 19.25}},
+                                             'bootstrap': 'Yes'}).json()['written'] is True
+    assert sorted(block_of(book)['Price Factors']) == ['FxRate.ZAR', 'InterestRate.ZAR-FX']
+    assert round(zar_fx_front(CLIENT.get('/book/market').json()['market']), 4) == 0.2270
+
+    retired = CLIENT.post('/book/market', json={'retire': [['Price Factors', 'FxRate.ZAR']]})
+    assert retired.json()['written'] is True
+    now = CLIENT.get('/book/market').json()['market']
+    assert now['Price Factors']['FxRate.ZAR'] == first['Price Factors']['FxRate.ZAR']
+    assert round(zar_fx_front(now), 4) == 0.0693
+    assert now['Price Factors'] == first['Price Factors']
+    assert block_of(book) == {'Price Factors': {
+        'InterestRate.ZAR-FX': first['Price Factors']['InterestRate.ZAR-FX']}}
+
+    assert CLIENT.post('/book/market', json={'retire': [[
+        'Price Factors', 'InterestRate.ZAR-FX']]}).json()['written'] is True
+    assert block_of(book) == {}
+    assert CLIENT.get('/book/market').json()['market'] == first
+    assert market.read_bytes() == filed
+
+
+def test_a_retire_reaches_into_a_section_and_re_solves_the_whole_market(file_book):
+    """A retire's path runs through a section to the entry it names, and a retire re-solves the
+    whole market whatever rides it. The curve type's default and its rules configured over the
+    file's - Linear for every curve, and a Linear ZAR-FX rule beside the file's HermiteRT ZAR - and
+    the rules retired by their path through the section's `.ModelParams`, the market reads the
+    block's default and the file's one rule. The ZAR spot patched to 19.25 and bootstrapped, then
+    retired riding a tick of the file's own smile as it stands, the ZAR-FX curve is re-solved off
+    the file's spot to the file's own `Price Factors`, though the tick moved the smile alone.
+
+    KILLING MUTATIONS: a retire reaching one key into its section, which deletes the whole
+    `.ModelParams` and the block's default with it; the bootstrap narrowed to what the tick moved,
+    which leaves the curve at 22.70%.
+    """
+    book, _ = file_book
+    first = CLIENT.get('/book/market').json()['market']
+    assert configure('Price Factor Interpolation', 'InterestRate', method='Linear')['written']
+    assert configure('Price Factor Interpolation', 'InterestRate', id='ZAR-FX',
+                     method='Linear')['written']
+    rules = ['Price Factor Interpolation', '.ModelParams', 'modelfilters', 'InterestRate']
+    assert CLIENT.post('/book/market', json={'retire': [rules]}).json()['written'] is True
+    filters = first['Price Factor Interpolation']['.ModelParams']['modelfilters']
+    assert filters == {'InterestRate': [[['id', 'ZAR'], 'HermiteRT']]}
+    assert CLIENT.get('/book/market').json()['market']['Price Factor Interpolation'] == {
+        '.ModelParams': {'modeldefaults': {'InterestRate': 'Linear'}, 'modelfilters': filters}}
+
+    assert CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 19.25}},
+                                             'bootstrap': 'Yes'}).json()['written'] is True
+    ridden = CLIENT.post('/book/market', json={
+        'retire': [['Price Factors', 'FxRate.ZAR']],
+        'quotes': {'FXVolPrices.USD.ZAR': first['Market Prices']['FXVolPrices.USD.ZAR']}}).json()
+    now = CLIENT.get('/book/market').json()['market']
+    assert round(zar_fx_front(now), 4) == 0.0693
+    assert now['Price Factors'] == first['Price Factors']
+    assert (ridden['written'], ridden['updated'], 'bootstrapped' in ridden) == (
+        True, ['FXVolPrices.USD.ZAR'], False)
+
+
+def test_a_retire_the_market_cannot_stand_on_writes_nothing(file_book):
+    """A retire is judged as every market write is and refused whole, the book's bytes standing.
+    On the book's explicit twin, which names no file, the ZAR spot retired leaves the outrights
+    the ZAR-FX curve is solved from no spot to read, and the bootstrap refuses naming
+    `FxRate.ZAR`; on the book naming the file, a path its block does not state refuses naming the
+    section it lacks.
+
+    KILLING MUTATION: the retire's bootstrap left off, which writes the twin a market with no ZAR
+    spot.
+    """
+    book, market = file_book
+    before = book.read_bytes()
+    refused = CLIENT.post('/book/market', json={'retire': [['Price Factors', 'FxRate.ZAR']]})
+    assert refused.status_code == 422 and refused.json()['detail'] == "'Price Factors'"
+    assert book.read_bytes() == before
+
+    path = twin(book, market)
+    service.BOOK = service.Book(str(path))
+    before = path.read_bytes()
+    refused = CLIENT.post('/book/market', json={'retire': [['Price Factors', 'FxRate.ZAR']]})
+    assert refused.status_code == 422 and refused.json()['detail'] == "'FxRate.ZAR'"
+    assert path.read_bytes() == before
+
+
 # --------------------------------------------------------------------------------------------
 # a quote is FOR someone, and it is firm for a WINDOW
 # --------------------------------------------------------------------------------------------

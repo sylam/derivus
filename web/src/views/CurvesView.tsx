@@ -4,11 +4,12 @@ import { DataTable } from '../components/DataTable';
 import { EmptyState } from '../components/EmptyState';
 import { DescriptorPanel, EditableScalar, type AmendField } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
+import { Whose } from '../components/Whose';
 import {
   QUIET_MS, commit, curveFields, curveRequest, due, nearPair, panelValues, prefill, solvedFactor,
   type CurveEdit, type CurveForm, type Editing,
 } from '../curves';
-import { useApp, written } from '../state';
+import { blockHint, marketOf, useApp, written } from '../state';
 import { curveOf, isObject, token } from '../tokens';
 import type {
   ConfigSection, CurveBlock, CurveOutcome, CurveRow, CurvesAnswer, Descriptor, Schema,
@@ -122,6 +123,7 @@ function CurveCard({ schema, title, block, seeded, fields, panel, declared, fact
       {seeded && seeded[form.curve]?.refused && (
         <div className="error-box">{seeded[form.curve].refused}</div>
       )}
+      {block && <div className="pager"><Whose path={['Market Prices', title]} /></div>}
       <DescriptorPanel
         title={title} fields={panel} values={panelValues(fields, form, typeScheme)}
         editable={(key) => key !== 'Near_Interpolation' || near.stated}
@@ -164,16 +166,19 @@ function CurveCard({ schema, title, block, seeded, fields, panel, declared, fact
       </section>
       {refused && <div className="error-box">{refused}</div>}
       {solved && (
-        <DescriptorPanel title={`${solved[0]} — ${knots} knots`} values={solved[1]}
-                         fields={schema.Factor.types[solved[0].split('.')[0]]} />
+        <>
+          <div className="pager"><Whose path={['Price Factors', solved[0]]} /></div>
+          <DescriptorPanel title={`${solved[0]} — ${knots} knots`} values={solved[1]}
+                           fields={schema.Factor.types[solved[0].split('.')[0]]} />
+        </>
       )}
     </>
   );
 }
 
-/** The curves half of the market: every curve block the book carries as the definition it is AND
- * the editor of it, with one card at the bottom that sets another up. THE ROWS ARE THE BENCHMARKS:
- * a tenor says what each instrument is, and the service is what reads it. */
+/** The curves half of the market: every curve block the book prices on as the definition it is,
+ * marked whose it is, AND the editor of it, with one card at the bottom that sets another up.
+ * THE ROWS ARE THE BENCHMARKS: a tenor says what each instrument is, and the service reads it. */
 export function CurvesView() {
   const { state } = useApp();
   const [answer, setAnswer] = useState<CurvesAnswer | null>(null);
@@ -199,7 +204,9 @@ export function CurvesView() {
       />
     );
   }
-  if (!state.schema || !state.doc) return null;
+  const { doc } = state;
+  const market = marketOf(state);
+  if (!state.schema || !doc || !market) return null;
   if (error) {
     return <div className="main"><div className="panel"><div className="error-box">{error}</div></div></div>;
   }
@@ -210,7 +217,6 @@ export function CurvesView() {
   const declared = state.schema.MarketPrices.types[FAMILY] ?? {};
   const fields = curveFields(declared, answer);
   const panel = panelFields(declared, fields, state.schema.Interpolation_factor_map[FACTOR] ?? []);
-  const market = state.doc.Calc.MergeMarketData?.ExplicitMarketData ?? {};
   // the scheme every curve of the type is built under where no rule names one - what a card posts
   // BLANK for, so wanting what every curve has writes no rule at all
   const section: ConfigSection = state.schema.Configuration['Price Factor Interpolation'] ?? {};
@@ -226,6 +232,7 @@ export function CurvesView() {
     <Navigator screen="curves" keep pages={[
       ...Object.entries(answer.curves).map(([name, block]) => ({
         id: name, folder: block.currency, label: block.curve,
+        hint: blockHint(doc, ['Market Prices', name]),
         content: <CurveCard {...card} title={name} block={block} />,
       })),
       { id: 'a new curve', label: 'a new curve', accent: true,

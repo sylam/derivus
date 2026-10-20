@@ -2,9 +2,10 @@ import { useEffect, useState } from 'react';
 import { getBookMarkets, patchMarket } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
+import { Whose } from '../components/Whose';
 import { stampText } from '../desk';
 import { marketsView } from '../spine';
-import { useApp, written } from '../state';
+import { blockHint, marketOf, useApp, written } from '../state';
 import { isObject } from '../tokens';
 import type { BookMarkets, Schema } from '../types';
 
@@ -39,9 +40,10 @@ function resolveProcess(
   return { title: 'static - no process' };
 }
 
-/** One price factor: its declared fields, VALUES editable over the live book - the bind='value'
- * declaration is the whole predicate, so structure stays read-only exactly where the engine refuses
- * it anyway - and the process that simulates it. */
+/** One price factor of the market the book prices on, marked whose it is: its declared fields,
+ * VALUES editable over the live book - the bind='value' declaration is the whole predicate, so
+ * structure stays read-only exactly where the engine refuses it anyway, and an edit to a file's
+ * factor lands on the block - and the process that simulates it. */
 function FactorBlock({ schema, name, block, priceModels, modelConfig, live }: {
   schema: Schema; name: string; block: Record<string, unknown>;
   priceModels: Record<string, unknown>; modelConfig: unknown; live: boolean;
@@ -53,6 +55,7 @@ function FactorBlock({ schema, name, block, priceModels, modelConfig, live }: {
     : undefined;
   return (
     <>
+      <div className="pager"><Whose path={['Price Factors', name]} /></div>
       <DescriptorPanel
         title={name} fields={schema.Factor.types[type]} values={block} onAmend={onPatch}
         editable={(_, descriptor) => descriptor.bind === 'value'} />
@@ -70,13 +73,12 @@ function FactorBlock({ schema, name, block, priceModels, modelConfig, live }: {
 export function MarketDataView() {
   const { state } = useApp();
   const { doc, schema, describe } = state;
-  if (!doc || !schema) return null;
+  const market = marketOf(state);
+  if (!doc || !schema || !market) return null;
 
-  const merge = doc.Calc.MergeMarketData ?? {};
-  const marketFile = merge.MarketDataFile ?? '';
-  const explicit = merge.ExplicitMarketData ?? {};
-  const factors = (explicit['Price Factors'] ?? {}) as Record<string, unknown>;
-  const priceModels = (explicit['Price Models'] ?? {}) as Record<string, unknown>;
+  const marketFile = doc.Calc.MergeMarketData?.MarketDataFile ?? '';
+  const factors = market['Price Factors'] ?? {};
+  const priceModels = market['Price Models'] ?? {};
   const live = state.source?.kind === 'book';
 
   return (
@@ -86,8 +88,11 @@ export function MarketDataView() {
         <RecordMarkets />
         {marketFile ? (
           <div className="banner">
-            This document overlays a server-side market data file (<b>{String(marketFile)}</b>) —
-            only the overlay is shown here.
+            {live
+              ? <>This book prices on the market data file <b>{marketFile}</b> with its own block
+                merged over it: an entry the block states is marked <b>block</b>.</>
+              : <>This document overlays a server-side market data file (<b>{marketFile}</b>) —
+                only the overlay is shown here.</>}
             {describe && ` The engine resolves ${describe.factors.resolved.length} factors from it` +
               (describe.factors.missing.length
                 ? ` and is missing ${describe.factors.missing.join(', ')}.` : '.')}
@@ -99,9 +104,10 @@ export function MarketDataView() {
         const block = factors[name];
         return {
           id: name, folder: type, label: rest.join('.') || type,
+          hint: blockHint(doc, ['Price Factors', name]),
           content: isObject(block) ? (
             <FactorBlock schema={schema} name={name} block={block} priceModels={priceModels}
-                         modelConfig={explicit['Model Configuration']} live={live} />
+                         modelConfig={market['Model Configuration']} live={live} />
           ) : <DescriptorPanel title={name} values={{ value: block }} />,
         };
       })} />

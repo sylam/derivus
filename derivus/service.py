@@ -37,7 +37,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/deals` | book or delete one deal - validated BEFORE an atomic write, refusal writes nothing |
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, validated before it queues, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
-| `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the bootstrap run - one atomic write |
+| `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the block's own entries retired, the bootstrap run - one atomic write |
 | `POST /book/configure` | set one bootstrapping dial - validated by building what reads it, then the whole market re-bootstrapped |
 | `POST /book/bloomberg` | provision the security map, fetch the desk's FX vol surfaces off the terminal, re-cross its spots and tick the book |
 | `GET /book/dependencies` | what the book - or the deals under one node of it - needs from the market, and which seed entry would supply what is missing |
@@ -103,7 +103,9 @@ import time
 
 from collections import Counter, namedtuple, OrderedDict
 from copy import deepcopy
+from functools import reduce
 from itertools import count, islice
+from operator import getitem
 
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
@@ -3788,7 +3790,7 @@ def bootstrap_selection(market, outcome, patch):
                                               outcome['updated'])
 
 
-def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Context):
+def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Context, retire=()):
     """The market tick as ONE edit closure over a wire document, for `Book.mutate`: quote blocks
     installed or value-updated, a values patch applied, the bootstrap run, `(write, outcome)` back.
 
@@ -3796,7 +3798,12 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     install-and-refuse semantic lives here once rather than twice: a bootstrap that reports an
     ERROR writes NOTHING and hands its messages back, because a book must never carry a market its
     own bootstrap complained about. `bootstrap` is `'Yes'`/`'No'`, or None for the default - run it
-    iff quotes arrived.
+    iff quotes arrived, or an entry was retired from a market that declares a bootstrapper.
+
+    A RETIRED ENTRY IS THE FILE'S AGAIN: each path of `retire` names an entry the explicit block
+    states, its section first and every key below it, and the entry is deleted, a section left
+    stating nothing with it, so the market reads the file's entry where the file carries one and
+    the bootstrap covers the whole market.
 
     `patch` is the `Price Factors` half of `patch_market` here and nothing else: a quote IS a
     patchable value to the engine, but on the live book it moves through `quotes`, which
@@ -3811,29 +3818,34 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     where it was narrowed, so a tick of one curve costs that curve and its dependents rather than
     the whole market. `reading` makes the contexts it loads on (`spine.reading`).
     """
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    for path in retire:
+        del reduce(getitem, path[:-1], market)[path[-1]]
+        if market.get(path[0]) == {}:
+            del market[path[0]]
     outcome = {'installed': [], 'updated': []}
     standing = market_of(document, reading())['Market Prices'] if quotes else {}
     for name in sorted(quotes):
         if name in standing and name not in authored:
             # the market's own block is what a tick moves the values of, the tick replacing it
-            document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
-                'Market Prices', {}).setdefault(name, standing[name])
+            market.setdefault('Market Prices', {}).setdefault(name, standing[name])
         outcome[update_market_quote(document, name, quotes[name])].append(name)
-    wants_bootstrap = (bootstrap if bootstrap is not None else
-                       ('Yes' if quotes else 'No')) == 'Yes'
     context = load(document, reading())
     params = context.current_cfg.params
+    wants_bootstrap = (bootstrap if bootstrap is not None else (
+        'Yes' if quotes or retire and params['Bootstrapper Configuration'] else 'No')) == 'Yes'
     quoted = sorted(set(patch) & set(params['Market Prices']))
     if quoted:
         raise ValueError(QUOTE_NOT_A_PATCH.format(', '.join(quoted)))
     if wants_bootstrap and not params['Bootstrapper Configuration']:
         raise ValueError(NO_BOOTSTRAPPER)
     if not (wants_bootstrap or patch):
-        return bool(outcome['installed'] or outcome['updated']), dict(outcome, written=True)
+        return (bool(outcome['installed'] or outcome['updated'] or retire),
+                dict(outcome, written=True))
 
     standing = as_json(params['Price Factors'])
     context.patch_market(patch)
-    only = bootstrap_selection(params, outcome, patch) if wants_bootstrap else None
+    only = bootstrap_selection(params, outcome, patch) if wants_bootstrap and not retire else None
     if wants_bootstrap:
         captured = CapturedErrors()
         logging.getLogger().addHandler(captured)
@@ -3846,9 +3858,8 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
     written = as_json(params['Price Factors'])
     moved = set(patch).union(rewrote(standing, written))
     if moved:
-        document['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault(
-            'Price Factors', {}).update((name, block) for name, block in written.items()
-                                        if name in moved)
+        market.setdefault('Price Factors', {}).update(
+            (name, block) for name, block in written.items() if name in moved)
     return True, dict(outcome, written=True, patched=sorted(patch),
                       new_factors=sorted(set(written) - set(standing)),
                       **({} if only is None else {'bootstrapped': sorted(only)}))
@@ -3856,7 +3867,8 @@ def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Co
 
 @app.post('/book/market', summary="Tick the book's market - quotes in, values patched, bootstrapped")
 def book_market(request: dict):
-    """`{quotes?: {name: block}, patch?: {factor: {field: value}}, bootstrap?: 'Yes'|'No'}`.
+    """`{quotes?: {name: block}, patch?: {factor: {field: value}}, retire?: [[section, key, ...]],
+    bootstrap?: 'Yes'|'No'}`.
 
     The practical tick path: a quote source posts `Market Prices` blocks, and an update may move
     only each point's `Quoted_Market_Value`, its two-way sides and its `Timestamp` - structure is a
@@ -3867,6 +3879,10 @@ def book_market(request: dict):
     that READS one of them, answered under `bootstrapped`; a block arriving authored, a patch
     naming a factor a family reads, or nothing moved at all re-solves the whole market.
 
+    `retire` deletes entries the book's explicit block states, each named by its path from the
+    section down, so the file's entry stands again, and re-bootstraps the whole market where it
+    declares a bootstrapper; a path the block does not state refuses by name.
+
     A `patch` naming a `Market Prices` block is refused with the remedy, the one place the book is
     stricter than the engine: see `QUOTE_NOT_A_PATCH`.
     """
@@ -3874,7 +3890,7 @@ def book_market(request: dict):
 
     def edit(document, etag):
         return market_edit(document, request.get('quotes', {}), request.get('patch', {}),
-                           request.get('bootstrap'))
+                           request.get('bootstrap'), retire=request.get('retire', ()))
 
     try:
         return live.mutate(edit)

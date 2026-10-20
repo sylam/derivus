@@ -61,17 +61,24 @@ export type DealNode = {
   Ignore?: string;
 };
 
+/** Market data by section, in the wire form a market data file and an explicit block both hold. */
+export type Market = Record<string, Record<string, unknown>>;
+
 export type JobDoc = {
   Calc: {
     Calculation: Record<string, unknown>;
     Deals: { Reference?: string; Deals: { Children: DealNode[] } };
     MergeMarketData?: {
       MarketDataFile?: string;
-      ExplicitMarketData?: Record<string, Record<string, unknown>>;
+      ExplicitMarketData?: Market;
     };
     [key: string]: unknown;
   };
 };
+
+/** `GET /book/market`: the market the book prices on - the file it names with its explicit block
+ * merged over it - and the etag of the document it was read off. */
+export type BookMarket = { etag: string; market: Market };
 
 export type TableShape = { rows: number; columns: unknown[] };
 

@@ -4,7 +4,8 @@
 import type { MarkedDays, Pnl } from './pnl';
 import type { Agreement, Entity, Position } from './positions';
 import type {
-  ActivityPage, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva, CalculationOutcome,
+  ActivityPage, BookMarket, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva,
+  CalculationOutcome,
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc,
   Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage,
   ValidateResult, Worklist,
@@ -82,13 +83,17 @@ export const getBook = () => call<BookResponse>('GET', '/book');
 export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/deals',
     signed({ action: 'amend', deal_path: dealPath, fields }));
-// the market tick, one endpoint and two vocabularies: a price factor's values, or whole quote
-// blocks - which the verb value-updates and bootstraps in the same atomic write
+// the market the book prices on: the file it names with its explicit block merged over it
+export const getBookMarket = () => call<BookMarket>('GET', '/book/market');
+// the market tick, one endpoint and three vocabularies: a price factor's values, whole quote
+// blocks - which the verb value-updates and bootstraps in the same atomic write - or the block's
+// own entries retired, each by its path from the section down, so the file's stands again
 const postMarket = (body: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/market', body);
 export const patchMarket = (factor: string, fields: Record<string, unknown>) =>
   postMarket({ patch: { [factor]: fields } });
 export const tickMarket = (quotes: Record<string, unknown>) => postMarket({ quotes });
+export const retireMarket = (paths: string[][]) => postMarket({ retire: paths });
 // the desk's own scope, fetched and installed as a queued job - polled like an execute
 export const tickBloomberg = () =>
   call<{ result_id: string; status: string }>('POST', '/book/bloomberg', signed({}));
