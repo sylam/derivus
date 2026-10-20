@@ -144,5 +144,25 @@
              "tenors": ["3Y", "5Y", "10Y"],
              "conventions": {"currency": "USD", "coupon": 100.0, "recovery_rate": 0.4,
                              "pay_frequency": "3M", "accrual_day_count": "ACT_360"}}
+ },
+ "inflation": {
+  "USCPI": {"index": {"security": "CPURNSA Index", "expect": "CPI"},
+            "swaps": {"security": "USSWIT{tenor} Curncy", "expect": "INFL",
+                      "tenors": ["1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "15Y", "20Y", "30Y"]},
+            "conventions": {"currency": "USD", "discount_rate": "", "months_lag": 3,
+                            "reference_type": "Interpolated", "day_count": "ACT_365",
+                            "publication": "Monthly"}},
+  "UKRPI": {"index": {"security": "UKRPI Index", "expect": "RPI"},
+            "swaps": {"security": "BPSWIT{tenor} Curncy", "expect": "INFL",
+                      "tenors": ["1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "15Y", "20Y", "30Y"]},
+            "conventions": {"currency": "GBP", "discount_rate": "", "months_lag": 2,
+                            "reference_type": "Single", "day_count": "ACT_365",
+                            "publication": "Monthly"}},
+  "EUHICPX": {"index": {"security": "CPTFEMU Index", "expect": "HICP"},
+              "swaps": {"security": "EUSWI{tenor} Curncy", "expect": "INFL",
+                        "tenors": ["1Y", "2Y", "3Y", "5Y", "7Y", "10Y", "15Y", "20Y", "30Y"]},
+              "conventions": {"currency": "EUR", "discount_rate": "", "months_lag": 3,
+                              "reference_type": "Single", "day_count": "ACT_365",
+                              "publication": "Monthly"}}
  }
 }

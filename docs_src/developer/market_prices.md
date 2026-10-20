@@ -13,7 +13,7 @@ the web screens and order the run, so the three cannot drift. Each family's meth
 | `config.py` | `Config.bootstrap(only, wanted)` |
 | `schema.py` | `emit_market_prices`, `emit_configuration`, `MARKET_QUOTE_VALUES`, `update_market_quote` |
 | `service.py` | the verbs that author market data ([below](#verbs)) |
-| `derivus_bloomberg/` | the seed, the security map, the curve strip, the CDS quotes, the surface and chain fetch |
+| `derivus_bloomberg/` | the seed, the security map, the curve strip, the CDS and inflation swap quotes, the surface and chain fetch |
 | `derivus_bootstrap.py` | the multiprocessing launcher |
 
 A rule marked **Held by** goes red under that test if it is broken.
@@ -390,11 +390,19 @@ its term in the chain rule is the residual itself, zero at the root: a swap quot
 linker is the linker's own discounting. **Held by**
 `test_inflation_prices.py::test_a_linker_reports_its_quote_delta_beside_its_factor_greek`,
 `::test_a_linkers_delta_to_a_swap_quote_is_both_curves_refitted`. There is no
-`Quote_Propagation`, as the credit family declares none, and no emitter: a block is authored by
-hand. Under `SIMM` a basis point of inflation is one on the breakevens the curve is defined by,
-which here are the block's quotes: every one a basis point up and the block re-solved, one row
-([Calc Lifecycle](calc_lifecycle.md)). **Held by**
+`Quote_Propagation`, as the credit family declares none. Under `SIMM` a basis point of inflation
+is one on the breakevens the curve is defined by, which here are the block's quotes: every one a
+basis point up and the block re-solved, one row ([Calc Lifecycle](calc_lifecycle.md)). **Held by**
 `test_simm.py::test_a_quoted_inflation_curve_moves_on_its_blocks_breakevens_re_solved`.
+
+**The emitter** (`derivus_bloomberg.inflation`) authors a block and the `PriceIndex` it reads off
+the verified map in one trip: a `Breakeven` row per believed swap in percent as the terminal prints
+it, a swap answering nothing held out with `Use` No, the seed's conventions beside the rows, and
+the index's prints from the first month the base date's reference reads to the last, the
+terminal's next release its `Next_Publication_Date`. A late swap print or an index whose next
+release is due refuses the trip by name. **Held by**
+`test_inflation_prices.py::test_the_terminal_authors_the_block_and_the_index_the_family_solves`,
+`::test_a_re_tick_is_a_values_patch_and_a_moved_tenor_a_new_plan`.
 
 ## `LogVar2FJModelPrices` — a smile fit with a forward-skew term {#logvar2fj}
 

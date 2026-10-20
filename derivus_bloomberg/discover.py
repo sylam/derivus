@@ -52,7 +52,12 @@ MONTH_SUFFIX = {'{}M'.format(month + 1): code for month, code in enumerate('ABCD
 LONG_MONTH_SUFFIX = {'{}M'.format(12 * year + month): '{}{}'.format(year, code or '')
                      for year in (1, 2) for month, code in enumerate('ABCDEFGHIJK', 1)}
 
-Candidate = namedtuple('Candidate', 'security path expect')
+#: The days between two prints of a series published on a calendar, the allowance its update date
+#: is given beyond `STALE_DAYS`: a monthly index released three weeks ago is its latest print.
+PUBLICATION_DAYS = {'Monthly': 31, 'Quarterly': 92}
+
+#: `period` is the publication allowance, zero for a quote that prints every business day.
+Candidate = namedtuple('Candidate', 'security path expect period', defaults=(0,))
 Verdict = namedtuple('Verdict', 'candidate verdict name last_update error')
 
 
@@ -149,6 +154,18 @@ def credit_candidates(name, spec):
                         (spec['expect'],))
 
 
+def inflation_candidates(name, spec):
+    """One seeded index's print and its zero-coupon swaps, a swap per whole-year tenor off the
+    entry's `security` pattern, its token the number of years: `USSWIT5 Curncy` is the 5Y. The
+    print's update date is allowed its `publication` period."""
+    index, swaps = spec['index'], spec['swaps']
+    yield Candidate(index['security'], ('inflation', name, 'index'), (index['expect'],),
+                    PUBLICATION_DAYS[spec['conventions']['publication']])
+    for tenor in swaps['tenors']:
+        yield Candidate(swaps['security'].format(tenor=tenor[:-1]),
+                        ('inflation', name, 'swaps', tenor), (swaps['expect'],))
+
+
 def candidates_from_seed(seed):
     fx_vol = seed.get('fx_vol', {})
     for pair in fx_vol.get('pairs', []):
@@ -160,6 +177,8 @@ def candidates_from_seed(seed):
         yield from swaption_candidates(currency, spec)
     for name, spec in seed.get('credit', {}).items():
         yield from credit_candidates(name, spec)
+    for name, spec in seed.get('inflation', {}).items():
+        yield from inflation_candidates(name, spec)
 
 
 def _squash(text):
@@ -193,7 +212,7 @@ def verify(candidates, report, as_of, stale_days=STALE_DAYS):
             verdict = 'mismatch'
         elif fields.get('PX_LAST') in (None, ''):
             verdict = 'unpriced'
-        elif _is_stale(fields.get('LAST_UPDATE_DT'), as_of, stale_days):
+        elif _is_stale(fields.get('LAST_UPDATE_DT'), as_of, stale_days + candidate.period):
             verdict = 'dead'
         else:
             verdict = 'live'
@@ -219,8 +238,11 @@ def build_map(seed, verdicts, generated):
         node = blocks
         for part in item.candidate.path[:-1]:
             node = node.setdefault(part, {})
-        node[item.candidate.path[-1]] = {'security': item.candidate.security, 'name': item.name,
-                                         'last_update': item.last_update, 'verified': generated}
+        entry = {'security': item.candidate.security, 'name': item.name,
+                 'last_update': item.last_update, 'verified': generated}
+        if item.candidate.period:
+            entry['period'] = item.candidate.period
+        node[item.candidate.path[-1]] = entry
     for pair, block in blocks.get('fx_vol', {}).items():
         quoted = set(block.get('quotes', {}))
         block['expiries'] = {label: fraction for label, fraction
@@ -365,7 +387,7 @@ def recheck(document, session, as_of, stale_days=STALE_DAYS, on_batch=None):
             drift = 'renamed: {!r} was verified as {!r}'.format(fields.get('NAME'), entry['name'])
         elif fields.get('PX_LAST') in (None, ''):
             drift = 'unpriced'
-        elif _is_stale(fields.get('LAST_UPDATE_DT'), as_of, stale_days):
+        elif _is_stale(fields.get('LAST_UPDATE_DT'), as_of, stale_days + entry.get('period', 0)):
             drift = 'stale since {}'.format(fields.get('LAST_UPDATE_DT'))
         else:
             continue

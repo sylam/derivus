@@ -43,17 +43,22 @@ _LAZY = {
     'screen_ladder': '.swaption_vol', 'swaption_conventions': '.swaption_vol',
     'CreditConventions': '.cds', 'cds_block': '.cds', 'credit_conventions': '.cds',
     'fetch_cds_strip': '.cds',
+    'IndexPrints': '.inflation', 'InflationConventions': '.inflation',
+    'fetch_inflation_strip': '.inflation', 'inflation_block': '.inflation',
+    'inflation_conventions': '.inflation',
 }
 
 __all__ = [
     'ChainContract', 'CreditConventions', 'CurveConventions', 'CurveScreen', 'CurveStrip',
     'EquityChain', 'EquityForward', 'EquityLadder', 'FXQuoteSecurity', 'FXVolDefinition',
-    'FXVolPoint', 'FXVolSnapshot', 'LeveragePrior', 'RatePrint', 'RawBloombergObservation',
+    'FXVolPoint', 'FXVolSnapshot', 'IndexPrints', 'InflationConventions', 'LeveragePrior',
+    'RatePrint', 'RawBloombergObservation',
     'SwaptionConventions', 'SwaptionLadder', 'SwaptionQuote', 'SwaptionScreen',
     'cds_block', 'credit_conventions', 'curve_conventions', 'equity_option_block',
     'fetch_cds_strip', 'fetch_curve_strip', 'fetch_equity_chain', 'fetch_fx_vol',
-    'fetch_swaption_ladder',
-    'hw2f_block', 'install_fx_vol_snapshot', 'ir_curve_block', 'normalize_fx_vol', 'reauthor',
+    'fetch_inflation_strip', 'fetch_swaption_ladder',
+    'hw2f_block', 'inflation_block', 'inflation_conventions', 'install_fx_vol_snapshot',
+    'ir_curve_block', 'normalize_fx_vol', 'reauthor',
     'screen_chain', 'screen_ladder', 'screen_strip', 'select_rungs', 'swaption_conventions',
     'to_market_prices_block', 'update_fx_vol_snapshot',
 ]

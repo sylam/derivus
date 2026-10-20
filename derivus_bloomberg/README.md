@@ -331,5 +331,30 @@ and a `Par_Spread` row where the spread alone does; one quoted against another c
 `off-coupon`. A row names its tenor and no date, so a re-tick on any day is a values patch. No
 `/book` verb and no tick carry it yet.
 
+## The inflation emitter — an index's zero-coupon swaps and its prints
+
+`inflation` turns one seeded index's verified zero-coupon swaps into one `InflationRatePrices`
+block, and the index's prints into the `PriceIndex` factor the block reads, off one trip. A seed
+`inflation` entry names the index's print (`security`, `expect`), the swaps' `security` pattern
+with `{tenor}` in it, the token the whole number of years (`USSWIT5 Curncy` is the 5Y), their
+`expect` and `tenors`, and its `conventions` - currency, the discount curve (blank for the
+currency's own), `months_lag`, `reference_type`, the curve's `day_count` and the index's
+`publication` - and an entry without them refuses by name. The shipped USCPI, UKRPI and EUHICPX
+entries (`CPURNSA Index` and `USSWIT`, `UKRPI Index` and `BPSWIT`, `CPTFEMU Index` and `EUSWI`)
+are candidate vocabulary no terminal has verified: discovery checks each `NAME` fragment at a
+pull, a monthly print's update date allowed its publication period.
+
+Each swap is asked `PX_LAST`/`PX_BID`/`PX_ASK`/`LAST_UPDATE_DT`, the breakeven in percent as the
+terminal prints it; the index `ECO_RELEASE_DT`, its next release; and then, through
+`BloombergSession.historical_data` (a `HistoricalDataRequest`, on a terminal only), its `PX_LAST`
+from the first month the base date's reference reads, `months_lag` back, to the as-of - the
+months the family reads, a later reference projecting off the last print. A print is filed at the
+start of the month the terminal dates it in, in excel days, the last one `Last_Period_Start` and
+the next release `Next_Publication_Date`. A swap printed longer ago than the stale days, or an
+index whose next release is not after the as-of, refuses the trip by name before the history is
+asked; a history missing a month refuses by name; a swap the screen does not believe, or one
+answering nothing, is a `Use` No row carrying no number. A row names its tenor and no date, so a
+re-tick on any day is a values patch. No `/book` verb and no tick carry it yet.
+
 Never commit Bloomberg values, credentials, or workstation-specific security maps - the map
 `DV_Bloomberg discover` writes belongs outside any repo.

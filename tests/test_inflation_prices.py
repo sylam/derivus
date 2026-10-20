@@ -20,8 +20,11 @@ WHAT IS HELD:
                     factor greek, the two one chain rule, and its swap quote deltas against both
                     curves refitted
   the refusals      a quote referencing only printed months; an index the market does not carry
+  the emitter       a scripted terminal authors the block and the index the family solves, and a
+                    re-tick is a values patch
 
-NO MONKEYPATCHING: every block is a JSON document bootstrapped and priced through `Context`.
+NO MONKEYPATCHING: every block is a JSON document bootstrapped and priced through `Context`, and
+the terminal is a `BloombergSession` subclass whose event walks yield canned rows.
 """
 import copy
 import functools
@@ -39,8 +42,14 @@ import torch
 import derivus
 import rates_world
 import trial_rates
-from derivus import bootstrappers, utils
+from derivus import bootstrappers, schema, utils
 from derivus.config import CustomJsonEncoder, ModelParams
+from derivus_bloomberg import discover
+from derivus_bloomberg.errors import BloombergConfigurationError, IncompleteStrip, InvalidQuote
+from derivus_bloomberg.inflation import fetch_inflation_strip, inflation_block
+from derivus_bloomberg.session import BloombergSession
+
+ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 B = rates_world.BASE                      # 2026-08-03
 NAME = 'INFL'
@@ -422,3 +431,208 @@ def test_a_price_index_the_market_does_not_carry_is_refused_by_name():
     with pytest.raises(ValueError, match='{}: Price_Index CPI names no PriceIndex the market '
                                          'carries'.format(BLOCK)):
         bootstrapped({BLOCK: block(Price_Index='CPI')})
+
+
+# =============================================================================================
+# the emitter, off a scripted terminal
+# =============================================================================================
+
+AS_OF = B.date()
+FRIDAY = (B - pd.Timedelta(days=3)).date().isoformat()   # the Friday before
+
+#: When the terminal says June's print came out, and when July's comes out: the world's own next
+#: publication, twelve days after the base date.
+RELEASED, NEXT_RELEASE = '2026-07-15', '2026-08-15'
+
+
+def packaged_inflation():
+    """The shipped seed's inflation section: three indices, each with its swaps and conventions."""
+    with open(os.path.join(ROOT, 'derivus_bloomberg', 'seed.json'), encoding='utf-8') as handle:
+        return {'inflation': json.load(handle)['inflation']}
+
+
+def printed():
+    """What the swaps print, in percent: the world's breakevens to 10Y, invented beyond it, and
+    nothing at 20Y."""
+    return dict(zip(['{}Y'.format(years) for years in TENORS], quotes()),
+                **{'15Y': 2.75, '30Y': 2.8})
+
+
+class Walked(BloombergSession):
+    """A session whose two event walks are canned rows, so the emitter is driven through the
+    package's real readers with no socket and no patching."""
+
+    def __init__(self, rows, history):
+        super().__init__()
+        self._api = self._session = self._service = object()
+        self.rows, self.history = rows, history
+
+    def _walk(self, securities, fields):
+        for security in securities:
+            if security in self.rows:
+                yield security, None, {key: value for key, value in self.rows[security].items()
+                                       if key in fields}
+
+    def _walk_history(self, security, fields, start, end):
+        for day, level in self.history[security]:
+            if start.isoformat() <= day <= end.isoformat():
+                yield day, None, {'PX_LAST': level}
+
+
+def terminal(seed, breakevens=None, stamps={}, next_release=NEXT_RELEASE, unprinted=()):
+    """`(verified map, session)`: the map discovery builds off canned NAME answers carrying each
+    entry's `expect`, each index last updated on June's release; the terminal answering each swap
+    in `breakevens` its print, a two-way and the Friday's date or the one `stamps` gives it, and
+    each index its next release and the world's monthly prints but those dated `unprinted`, each
+    at its month's end as the terminal dates an economic series."""
+    candidates = list(discover.candidates_from_seed(seed))
+    report = {candidate.security: {'ok': True, 'error': None, 'fields': {
+        'NAME': '{} {}'.format(candidate.expect[0], candidate.path[-1]), 'PX_LAST': 1.0,
+        'LAST_UPDATE_DT': RELEASED if candidate.path[2] == 'index' else FRIDAY}}
+        for candidate in candidates}
+    mapped = discover.build_map(seed, discover.verify(candidates, report, AS_OF),
+                                AS_OF.isoformat())
+    prints = trial_rates.FACTORS['PriceIndex.INFL']['Index'].array
+    month_ends = [(utils.excel_offset + pd.Timedelta(days=day) + pd.offsets.MonthEnd(0)).date(
+        ).isoformat() for day in prints[:, 0]]
+    history = [(day, level) for day, level in zip(month_ends, prints[:, 1]) if day not in unprinted]
+    rows, histories = {}, {}
+    for candidate in candidates:
+        quote = (printed() if breakevens is None else breakevens).get(candidate.path[-1])
+        if candidate.path[2] == 'index':
+            rows[candidate.security], histories[candidate.security] = {
+                'ECO_RELEASE_DT': next_release}, history
+        elif quote is not None:
+            rows[candidate.security] = {
+                'PX_LAST': quote, 'PX_BID': quote - 0.02, 'PX_ASK': quote + 0.02,
+                'LAST_UPDATE_DT': stamps.get(candidate.security, FRIDAY)}
+    return mapped, Walked(rows, histories)
+
+
+def emitted(seed, name, as_of=AS_OF, **answers):
+    """`(block name, block, factor name, factor, strip)` the emitter authors off the scripted
+    terminal on `as_of`, the block and the factor in the wire form a job carries."""
+    mapped, session = terminal(seed, **answers)
+    strip, index = fetch_inflation_strip(session, mapped, seed, name, as_of)
+    (block_name, authored), (factor_name, factor) = inflation_block(strip, index)
+    return (block_name, json.loads(json.dumps(authored)), factor_name,
+            json.loads(json.dumps(factor)), strip)
+
+
+def test_the_terminal_authors_the_block_and_the_index_the_family_solves():
+    """Three indices off one scripted terminal. USCPI's swaps print the world's breakevens to 10Y,
+    two invented beyond it and nothing at 20Y, which is held out with `Use` No by name and carries
+    no number, its verdict on the ledger; the seed's conventions ride beside the rows. The index
+    is its prints from the first month the base date's reference reads to the last: the world's
+    own May and June rows, in excel days from the month's start, under three months back
+    interpolated, June alone under UKRPI's two months back single, June the last period and the
+    terminal's next release the next publication. A 30Y printing 280, a decimal-shifted 2.8, is
+    held out `off-market`. A swap printed eleven days before the base date, an index whose next
+    release is the base date and a history missing May each refuse the trip by name, as does a
+    seed entry declaring no `months_lag`.
+
+    The family solves the block on the module's world reading the emitted index alone: the
+    world's curve back at its six knots within 7.8e-15, held to 1e-10, the 15Y and 30Y knots
+    beyond them, every used row's swap at par within 1.3e-9 on its million, held to 1e-6, and the
+    list module's linker on the solved curve marking as on the world's, 39,829.27201866585 against
+    ...855, one ulp, held to 1e-15.
+
+    KILLING MUTATIONS: the breakeven read in decimal, every row a hundredth of its print and the
+    solved 1Y rate -1.8e-3 against 2.1e-2, the curve 109% off and the linker 2.7% under; the
+    prints authored newest first, which the factor's reading alone sees, the engine's curve sorting
+    them; the excel day counted from the ordinal origin, the curve 9.7e-2 off and the linker 3.0e-4
+    under; the conventions dropped from the block, the family refusing `KeyError: 'Price_Index'`;
+    the index's publication allowance dropped at discovery, the index ledgered dead nineteen days
+    after June's release and the trip refused for want of it; the freshness rule dropped, the late
+    swap held out by the screen and the trip standing; the next-release rule dropped, the due
+    print unnoticed; the month check dropped, June authored alone, the curve 9.7e-2 off and the
+    linker 0.17% over; the band in basis points, the credit screen's, the shifted 30Y believed; a
+    missing lag defaulted rather than refused.
+    """
+    seed = packaged_inflation()
+    name, authored, index_name, index, strip = emitted(seed, 'USCPI')
+    rows = authored['instrument']['Points']
+    tenors = seed['inflation']['USCPI']['swaps']['tenors']
+    assert (name, index_name) == ('InflationRatePrices.USCPI', 'PriceIndex.USCPI')
+    assert [(row['Tenor'], row['Use'], row.get('Quoted_Market_Value')) for row in rows] == [
+        (tenor, 'No' if tenor == '20Y' else 'Yes', printed().get(tenor)) for tenor in tenors]
+    assert strip.rejected == {'USSWIT20 Curncy': 'invalid'}
+    assert all(row['Deal'] == {} and row['DealType'] == 'StructuredDeal' for row in rows)
+    assert all(row.get('Timestamp') == ({'.Timestamp': FRIDAY} if row['Use'] == 'Yes' else None)
+               for row in rows)
+    assert {key: value for key, value in authored['instrument'].items() if key != 'Points'} == {
+        'Currency': 'USD', 'Discount_Rate': '', 'Day_Count': 'ACT_365', 'Price_Index': 'USCPI',
+        'Months_Lag': 3, 'Reference_Type': 'Interpolated'}
+    assert index == {
+        'Index': {'.Curve': {'meta': [], 'data': trial_rates.FACTORS['PriceIndex.INFL'][
+            'Index'].array[-2:].tolist()}},
+        'Last_Period_Start': {'.Timestamp': '2026-06-01'},
+        'Next_Publication_Date': {'.Timestamp': NEXT_RELEASE}, 'Publication_Period': 'Monthly',
+        'Currency': 'USD'}
+    for other, currency, lag, kind, months in (('UKRPI', 'GBP', 2, 'Single', 1),
+                                               ('EUHICPX', 'EUR', 3, 'Single', 2)):
+        _, block_of, _, index_of, _ = emitted(seed, other)
+        assert [block_of['instrument'][key] for key in (
+            'Currency', 'Months_Lag', 'Reference_Type', 'Price_Index')] == [
+            currency, lag, kind, other]
+        assert len(index_of['Index']['.Curve']['data']) == months, (other, index_of)
+    shifted = emitted(seed, 'USCPI', breakevens=dict(printed(), **{'30Y': 280.0}))
+    assert shifted[1]['instrument']['Points'][-1]['Use'] == 'No'
+    assert shifted[4].rejected == {'USSWIT20 Curncy': 'invalid', 'USSWIT30 Curncy': 'off-market'}
+    with pytest.raises(InvalidQuote, match='USSWIT5 Curncy last printed 2026-07-23'):
+        emitted(seed, 'USCPI', stamps={'USSWIT5 Curncy': '2026-07-23'})
+    with pytest.raises(InvalidQuote, match='CPURNSA Index next releases on 2026-08-03'):
+        emitted(seed, 'USCPI', next_release=AS_OF.isoformat())
+    with pytest.raises(IncompleteStrip, match='CPURNSA Index answered 2026-06 105.965'):
+        emitted(seed, 'USCPI', unprinted=('2026-05-31',))
+    unstated = packaged_inflation()
+    del unstated['inflation']['UKRPI']['conventions']['months_lag']
+    with pytest.raises(BloombergConfigurationError, match='UKRPI declares no months_lag'):
+        emitted(unstated, 'UKRPI')
+
+    solved_name, emitted_index = 'InflationRate.USCPI', {index_name: index}
+    solved = bootstrapped({name: authored}, factors=emitted_index).current_cfg.params[
+        'Price Factors'][solved_name]
+    assert np.array_equal(solved['Curve'].array[:len(TENORS), 0], KNOTS)
+    error = np.abs(solved['Curve'].array[:len(TENORS), 1] / TRUE - 1.0).max()
+    assert error < 1e-10, 'recovered to {:.3g}, not 1e-10'.format(error)
+
+    factors = dict(emitted_index, **{solved_name: solved})
+    used = [(row['Tenor'], row['Quoted_Market_Value']) for row in rows if row['Use'] == 'Yes']
+    valued, _ = marks([dict(leg, Index='USCPI') if 'Index' in leg else leg for tenor, _ in used
+                       for leg in legs(B + utils.parse_period(tenor), INTERPOLATED, tenor)],
+                      factors)
+    par = [valued[tenor + ' index'] - valued[tenor + ' fixed'] * (1.0 + quote / 100.0) ** int(
+        tenor[:-1]) for tenor, quote in used]
+    assert max(abs(value) for value in par) < 1e-6, par
+
+    linker = dict(LINKER, Index='USCPI')
+    on_world, _ = marks([LINKER], {CURVE: inflation()})
+    on_emitted, _ = marks([linker], factors)
+    assert abs(on_emitted['LINKER'] / on_world['LINKER'] - 1.0) < 1e-15, (on_emitted, on_world)
+
+
+def test_a_re_tick_is_a_values_patch_and_a_moved_tenor_a_new_plan():
+    """The rows name no date and their `Deal` no number, so the same swaps printing other
+    breakevens on a later day are a VALUES change: `schema.update_market_quote` updates the
+    installed block in place, the held-out 20Y standing as it stood. A swap that stops answering
+    is a knot fewer, `Use` being structure, which the guard refuses as a moved plan by name.
+
+    Killing mutation: the breakeven authored into the row's `Deal` - every re-tick a new plan.
+    """
+    seed = packaged_inflation()
+    name, first = emitted(seed, 'USCPI')[:2]
+    job = {'Calc': {'MergeMarketData': {'ExplicitMarketData': {'Market Prices': {}}}}}
+    assert schema.update_market_quote(job, name, first) == 'installed'
+
+    tuesday = AS_OF + pd.Timedelta(days=1)
+    _, ticked = emitted(seed, 'USCPI', tuesday, breakevens={
+        tenor: quote + 0.05 for tenor, quote in printed().items()}, stamps={
+        security: AS_OF.isoformat() for security in ('USSWIT1 Curncy', 'USSWIT10 Curncy')})[:2]
+    assert ticked != first
+    assert schema.update_market_quote(job, name, ticked) == 'updated'
+
+    dark = {tenor: quote for tenor, quote in printed().items() if tenor != '7Y'}
+    _, moved = emitted(seed, 'USCPI', breakevens=dark)[:2]
+    with pytest.raises(ValueError, match='structure differs'):
+        schema.update_market_quote(job, name, moved)

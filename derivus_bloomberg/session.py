@@ -260,6 +260,18 @@ class BloombergSession:
         """
         return self._reported(securities, self._walked_bulk(securities, fields, overrides))
 
+    def historical_data(self, security: str, fields: Sequence[str], start: datetime.date,
+                        end: datetime.date) -> list[tuple[datetime.date, dict[str, object]]]:
+        """`[(date, {field: value})]` - one security's history from `start` to `end` as the
+        terminal dates it, refusing on its error for the security as `reference_data` does."""
+        rows = []
+        for day, error, values in self._drained(
+                lambda: self._walk_history(security, fields, start, end)):
+            if error is not None:
+                raise_response_error('{}: {}'.format(security, error))
+            rows.append((day, values))
+        return rows
+
     @staticmethod
     def _reported(securities, walked):
         report = {}
@@ -411,6 +423,51 @@ class BloombergSession:
                 row = override_element.appendElement()
                 row.setElement('fieldId', str(field))
                 row.setElement('value', str(value))
+        for security_data in self._answered(request):
+            for index in range(security_data.numValues()):
+                item = security_data.getValueAsElement(index)
+                security = item.getElementAsString('security')
+                error = None
+                if item.hasElement('securityError'):
+                    error = _error_text(item.getElement('securityError'))
+                elif item.hasElement('fieldExceptions'):
+                    exceptions = item.getElement('fieldExceptions')
+                    if exceptions.numValues():
+                        error = _error_text(exceptions)
+                values = {}
+                if item.hasElement('fieldData'):
+                    data = item.getElement('fieldData')
+                    values = {field: value_of(data.getElement(field))
+                              for field in fields if data.hasElement(field)}
+                yield security, error, values
+
+    def _walk_history(self, security, fields, start, end):
+        """`(date, error, values)` per row of one security's `HistoricalDataRequest` from `start` to
+        `end`, `error` Bloomberg's own text where it refused the security."""
+        if self._identity is not None:
+            raise BloombergRequestError(
+                'B-PIPE is a price feed: the history of {} needs a Desktop API terminal'.format(
+                    security))
+        request = self._service.createRequest('HistoricalDataRequest')
+        request.getElement('securities').appendValue(security)
+        for field in fields:
+            request.getElement('fields').appendValue(field)
+        request.set('startDate', start.strftime('%Y%m%d'))
+        request.set('endDate', end.strftime('%Y%m%d'))
+        for security_data in self._answered(request):
+            if security_data.hasElement('securityError'):
+                yield None, _error_text(security_data.getElement('securityError')), {}
+                continue
+            rows = security_data.getElement('fieldData')
+            for index in range(rows.numValues()):
+                row = rows.getValueAsElement(index)
+                yield row.getElement('date').getValue(), None, {
+                    field: row.getElement(field).getValue() for field in fields
+                    if row.hasElement(field)}
+
+    def _answered(self, request):
+        """Send `request` and yield each `securityData` element of its response, raising on a
+        request-level error or a timeout."""
         # `identity` rides ONLY under B-PIPE auth, so every canned two-argument `sendRequest` this
         # package's own gates are built on - never authenticated - keeps working unchanged.
         if self._identity is not None:
@@ -425,24 +482,7 @@ class BloombergSession:
             for message in event:
                 if message.hasElement('responseError'):
                     raise_response_error(_error_text(message.getElement('responseError')))
-                if not message.hasElement('securityData'):
-                    continue
-                security_data = message.getElement('securityData')
-                for index in range(security_data.numValues()):
-                    item = security_data.getValueAsElement(index)
-                    security = item.getElementAsString('security')
-                    error = None
-                    if item.hasElement('securityError'):
-                        error = _error_text(item.getElement('securityError'))
-                    elif item.hasElement('fieldExceptions'):
-                        exceptions = item.getElement('fieldExceptions')
-                        if exceptions.numValues():
-                            error = _error_text(exceptions)
-                    values = {}
-                    if item.hasElement('fieldData'):
-                        data = item.getElement('fieldData')
-                        values = {field: value_of(data.getElement(field))
-                                  for field in fields if data.hasElement(field)}
-                    yield security, error, values
+                if message.hasElement('securityData'):
+                    yield message.getElement('securityData')
             if event.eventType() == self._api.Event.RESPONSE:
                 return

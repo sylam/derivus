@@ -93,11 +93,16 @@ OPTIONAL_CONVENTIONS = {'notional': 1000000.0, 'quote_scale': 1.0, 'calendar': '
 
 
 class ReferenceDataSource(Protocol):
-    """The tolerant reader alone - one request carries the value, both sides of the two-way and the
-    print's own date, and the strict policy is applied HERE, per print, by the screen."""
+    """The tolerant reader - one request carries the value, both sides of the two-way and the
+    print's own date, and the strict policy is applied HERE, per print, by the screen - and the
+    history an inflation index's monthly prints are read off."""
 
     def reference_data_report(self, securities: Sequence[str],
                               fields: Sequence[str]) -> Mapping[str, Mapping[str, object]]:
+        ...
+
+    def historical_data(self, security: str, fields: Sequence[str], start: datetime.date,
+                        end: datetime.date) -> Sequence[tuple]:
         ...
 
 
@@ -581,7 +586,7 @@ def read_tenor(label, what='tenor'):
     return int(text[:-1]), text[-1]
 
 
-def _add_months(date, months):
+def add_months(date, months):
     """A date moved whole months, CLAMPED to the end of the shorter month - `pd.DateOffset`'s own
     rule, re-spelled here because this package constructs no pandas offset. 31 January plus a month
     is 28 February, and 29 February plus a year is 28 February."""
@@ -605,7 +610,7 @@ def _add_tenor(date, label):
         return date + datetime.timedelta(days=count)
     if unit == 'W':
         return date + datetime.timedelta(weeks=count)
-    return _add_months(date, count * (12 if unit == 'Y' else 1))
+    return add_months(date, count * (12 if unit == 'Y' else 1))
 
 
 def split_tenors(label, what='tenor pair'):
