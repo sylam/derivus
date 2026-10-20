@@ -48,8 +48,8 @@ PINNED = {'EquityPrice': 'Risk_Equity', 'EquityPriceVol': 'Risk_EquityVol', 'FXV
 #: The risk types a survival curve is reported as, which of the two the source's own rows say.
 CREDIT = ('Risk_CreditQ', 'Risk_CreditNonQ')
 #: The factor types ISDA names no risk factor for, mapped null: a dividend curve, a correlation, a
-#: commodity's carry curve, a basis, a sampling rule, the delivery a fixing reads and an index's
-#: prints.
+#: commodity's carry curve, a basis on no mapped commodity spot, a sampling rule, the delivery a
+#: fixing reads and an index's prints.
 UNNAMED = ('DividendRate', 'Correlation', 'ForwardRate', 'ObservedBasis', 'ForwardPriceSample',
            'ReferencePrice', 'PriceIndex')
 #: The columns of MAPPING_<date>.txt.
@@ -206,8 +206,12 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
     bucket the rows of its risk type carry for a trade reading no other factor reported as that
     risk type (`pins`), or a basket's spot its vol's (`baskets`); one pinned two ways or by no
     trade is left unstated, and a survival curve so takes the risk type, qualifier, bucket and
-    Label2 of its credit rows. An inflation curve is Risk_Inflation in its currency, and a
-    commodity's carry curve, a basis, a sampling rule, a fixing's delivery and an index's prints
+    Label2 of its credit rows. An inflation curve is Risk_Inflation in its currency. A
+    basis whose primary, its name's first part, is a mapped commodity spot takes the
+    spot's coordinates, Risk_Commodity under its qualifier and bucket, being part of the
+    commodity's price; one on any other primary maps null, a spot's or a currency's move
+    scaling the one factor it names so that an entry there would be read by nothing, as a
+    commodity's carry curve, a sampling rule, a fixing's delivery and an index's prints
     map null (`UNNAMED`). A curve is Risk_IRCurve in its currency, in the bucket of the volatility
     group the parameters file puts the currency in, Label2 as the rows of a trade reading it alone
     of its currency pin it, and left unstated where none does, a rate row carrying no sub-curve
@@ -279,6 +283,12 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
                                  'Qualifier': factors[factor]['Currency']}, 'its currency'
         if kind[0] == 'FxRate':
             return 'fx', {'RiskType': 'Risk_FX', 'Qualifier': kind[1]}, ''
+        if kind[0] == 'ObservedBasis':
+            # part of its commodity's price, whose spot `kinds`, being sorted, settles first
+            spot = utils.check_tuple_name(utils.Factor('CommodityPrice', kind[1:2]))
+            held = completed['Factors'][spot]['SIMM'] if spot in completed['Factors'] else None
+            if held is not None:
+                return 'commodity', held, 'the price of ' + spot
         if kind[0] in UNNAMED:
             return 'unnamed', None, 'ISDA names no risk factor for a ' + kind[0]
         return '', NOTHING, 'nothing derives a {} factor'.format(kind[0])

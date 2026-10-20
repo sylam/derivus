@@ -102,11 +102,13 @@ curves and credit alone.
 
 A percent of a commodity is a percent of every value each price factor the mapping states under
 its qualifier holds (`schema.partition_factor`), its spot (`CommodityPrice`) and every delivery of
-its forward curve (`ForwardPrice`) at once, one Risk_Commodity row a trade and no vertex. A carry
-curve (`ForwardRate`) is a rate, a basis (`ObservedBasis`) cross-class, and a reference price, the
-delivery a fixing reads, and a sampling rule carry no price, so each is mapped null: a future on
-the platinum chain's CME level moves by its LME spot alone, a percent of the spot 1.0045% of the
-level, the basis held. A basis point of inflation is one on the breakevens the trade's
+its forward curve (`ForwardPrice`) at once, one Risk_Commodity row a trade and no vertex. A basis
+(`ObservedBasis`) is part of its metal's price and is mapped under the metal's qualifier and
+bucket, a cross-class type taking the class it is mapped to (`SIMM.coordinates`), so a future on
+the platinum chain's CME level moves by a percent of that level, its LME spot and the chain's
+bases together. A carry curve (`ForwardRate`) is a rate, and a reference price, the delivery a
+fixing reads, and a sampling rule carry no price, so each is mapped null. A basis point of
+inflation is one on the breakevens the trade's
 `InflationRate` curve is defined by, one row: where an `InflationRatePrices` block solves the
 curve, its quotes, every one a basis point up and the block re-solved by its family (`reinflated`,
 nothing on the config written), the block a writer `bumps` admits and lists no quote of; where none

@@ -697,9 +697,11 @@ COMMODITIES = dict(trial_commodity.FACTORS, **{
     'ObservedBasis.LBMA_AM.PM.CME': {'Spot': -10.65, 'Chained_Basis': 'LBMA_AM.CME'},
     'ForwardRate.PLATINUM_CARRY': {'Currency': 'USD', 'Curve': utils.Curve(
         [], [[DAY0 + 182.0, 0.031], [DAY0 + 365.0, 0.033]])}})
-#: Each commodity's price factors, by the qualifier the mapping states them under.
+#: Each commodity's price factors, by the qualifier the mapping states them under, the platinum
+#: chain's bases with its spot.
 PRICES = {'METAL': ('CommodityPrice.METAL', 'ForwardPrice.METAL'), 'FUEL': ('ForwardPrice.FUEL',),
-          'PLATINUM': ('CommodityPrice.LBMA_AM',)}
+          'PLATINUM': ('CommodityPrice.LBMA_AM', 'ObservedBasis.LBMA_AM.CME',
+                       'ObservedBasis.LBMA_AM.PM', 'ObservedBasis.LBMA_AM.PM.CME')}
 
 
 def overnight(reference, **terms):
@@ -733,20 +735,23 @@ def test_a_commodity_row_is_every_price_of_the_commodity_a_percent_up():
     states the commodity's price factors under: the sold metal forward, whose walk names the
     metal's spot and its forward curve and whose value reads the curve, and the metal future on
     the spot and its carry, both METAL; the fuel leg and the fuel option on the fuel's forward
-    curve, FUEL; the future on the platinum chain's CME level, the LME spot under its basis,
-    PLATINUM. At a hundred-thousandth of a percent each row is the central difference of two full
-    compiles with every price factor of its commodity that far either side, -500.00, 205.78,
-    19,977.08, 414.94 and 173.41 a percent, measured within 7.3e-10 of itself on the four linear
-    trades and 2.5e-7 on the option, the one-sided difference's second order, held to 1e-6. The
-    carry curves, the reference prices, the sampling rule and the chain's three bases the walks
-    name are mapped null and take no move: each trade takes its curve's 10 quotes and its
-    commodity, the option its 12 vega vertices too. At ISDA's percent the rows read -500.00,
-    205.78, 19,977.08, 425.99 and 173.41; the platinum row is a percent of the LME spot, 1.0045%
-    of the future's level, the basis held.
+    curve, FUEL; the future on the platinum chain's CME level, the LME spot under its basis, and
+    the chain's three bases its walk names, PLATINUM. At a hundred-thousandth of a percent each row
+    is the central difference of two full compiles with every price factor of its commodity that
+    far either side, -500.00, 205.78, 19,977.08, 414.94 and 172.63 a percent, measured within
+    7.3e-10 of itself on the four linear trades and 2.5e-7 on the option, the one-sided
+    difference's second order, held to 1e-6. The carry curves, the reference prices and the
+    sampling rule the walks name are mapped null and take no move: each trade takes its curve's 10
+    quotes and its commodity, the option its 12 vega vertices too. At ISDA's percent the rows read
+    -500.00, 205.78, 19,977.08, 425.99 and 172.63; the platinum row is a percent of the future's
+    level, its spot and bases moving together, where a percent of the spot alone, the bases held,
+    reads 173.41, 1.0045% of the level.
 
     Killing mutations: the forward curves' nodes moved without the spot - the metal and platinum
     futures write no commodity row; the carry curve moved as a price with the spot naming it - the
-    two futures' rows 207.08 and 177.54.
+    two futures' rows 207.08 and 176.76; the chain's bases mapped null - the platinum row 173.41;
+    a cross-class factor held to its own class - the run refused, `ObservedBasis.LBMA_AM.CME is a
+    factor of the CrossClass class and maps to Risk_Commodity`.
     """
     shift = 1e-5
     output = holding({'Spot_Shift': shift}, COMMODITY_BOOK, extra=COMMODITIES).run_job()[1]
@@ -1622,8 +1627,11 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     the module's, whatever its rows say, and it is valued writing its vega rows on them. The fuel
     option, its rows Risk_Commodity and Risk_CommodityVol on FUEL in bucket 2, pins its forward
     curve and its smile to those coordinates, its reference price and sampling rule mapping null;
-    the linker's inflation curve takes Risk_Inflation in its currency, USD, its index's prints
-    null; each is the module's, and each trade is valued writing its rows on them.
+    the platinum future, its row Risk_Commodity on PLATINUM in bucket 12, pins the LME spot so,
+    and the chain's three bases its walk names take the spot's coordinates, being part of the
+    metal's price, its carry curve mapping null; the linker's inflation curve takes Risk_Inflation
+    in its currency, USD, its index's prints null; each is the module's, and each trade is valued
+    writing its rows on them.
 
     Killing mutations: a pin taken from a trade reading two factors of the type - the pair is
     valued, both indices' deltas landing as one row of 120.68 under EQ and both vegas as one of
@@ -1631,10 +1639,12 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     disagreement applied rather than listed - the option's vega row under ZARUSD; the credit rule
     dropped - the survival curve listed unpinned and the swap refused by name; the rate vol rule
     dropped - both spaces listed unpinned and the swaption refused by name, writing no vega row;
-    the commodity price pin dropped - the fuel's forward curve listed unpinned and the option
-    refused by name; the commodity vol pin dropped - the smile so; the inflation rule dropped -
-    the curve listed unpinned and the linker refused by name; the null types dropped - the
-    reference price, the sampling rule and the prints listed unpinned and both refused.
+    the commodity price pin dropped - the fuel's forward curve and the LME spot listed unpinned and
+    the option and the future refused by name; the commodity vol pin dropped - the smile so; the
+    basis rule dropped - the three bases derived null, the future's row 173.41, a percent of its
+    spot alone, against 172.63; the inflation rule dropped - the curve listed unpinned and the
+    linker refused by name; the null types dropped - the reference price, the sampling rule, the
+    carry curve and the prints listed unpinned and the three trades reading them refused.
     """
     sys.path.insert(0, os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))),
                                     'experiments'))
@@ -1675,6 +1685,7 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     with open(folder / 'SWPT.json', 'wt') as f:
         json.dump(swaption, f)
     for trade, node, extra in (('FUEL_OPT', COMMODITY_BOOK[3], COMMODITIES),
+                               ('PLAT', COMMODITY_BOOK[4], COMMODITIES),
                                ('LINKER', LINKER, INFLATION)):
         document = job(book={'SET-' + trade: ()}, extra=extra)
         document['Calc']['Deals']['Deals']['Children'][0]['Children'] = [
@@ -1695,6 +1706,8 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
                               4.1e2),
                              ('FUEL_OPT', 'Commodity', 'Risk_CommodityVol', 'FUEL', '2', '3m', '',
                               1.1e2),
+                             ('PLAT', 'Commodity', 'Risk_Commodity', 'PLATINUM', '12', '', '',
+                              1.7e2),
                              ('LINKER', 'RatesFX', 'Risk_Inflation', 'USD', '', '', '', 4.5))])
     source = pd.concat([crif.assign(Qualifier=crif['Qualifier'].where(
         crif['RiskType'] != 'Risk_FXVol', 'ZARUSD')), rows]).assign(
@@ -1715,14 +1728,17 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     vega = ran[(ran['TradeID'] == 'SWPT') & (ran['RiskType'] == 'Risk_IRVol')]
     assert set(zip(vega['Qualifier'], vega['Bucket'], vega['Label1'], vega['Label2'])) == {
         ('USD', '', '2y', ''), ('USD', '', '3y', '')}
-    added = ran[ran['TradeID'].isin(('FUEL_OPT', 'LINKER')) & (ran['RiskType'] != 'Risk_IRCurve')]
+    added = ran[ran['TradeID'].isin(('FUEL_OPT', 'PLAT', 'LINKER')) & (
+        ran['RiskType'] != 'Risk_IRCurve')]
     assert set(zip(*(added[column] for column in (
             'TradeID', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2')))) == {
         ('FUEL_OPT', 'Risk_Commodity', 'FUEL', '2', '', ''),
         ('FUEL_OPT', 'Risk_CommodityVol', 'FUEL', '2', '3m', ''),
         ('FUEL_OPT', 'Risk_CommodityVol', 'FUEL', '2', '6m', ''),
+        ('PLAT', 'Risk_Commodity', 'PLATINUM', '12', '', ''),
         ('LINKER', 'Risk_Inflation', 'USD', '', '', '')}
-    ran = ran[~ran['TradeID'].isin(('CDS', 'SWPT', 'FUEL_OPT', 'LINKER'))].reset_index(drop=True)
+    ran = ran[~ran['TradeID'].isin(('CDS', 'SWPT', 'FUEL_OPT', 'PLAT', 'LINKER'))].reset_index(
+        drop=True)
     zar = (crif['RiskType'] == 'Risk_IRCurve') & (crif['Qualifier'] == 'ZAR')
     identical({'CRIF': ran, 'Trades': serial[1]['Results']['Trades']},
               {'CRIF': crif.assign(Bucket=crif['Bucket'].where(~zar, '2')),
@@ -1730,10 +1746,9 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     with open(output / 'SIMM_MAPPING_{}.json'.format(date), 'rt', encoding='utf-8') as f:
         completed = json.load(f)
     unpinned = {'EquityPrice.EQ', 'EquityPrice.EQ2', 'EquityPriceVol.EQ', 'EquityPriceVol.EQ2'}
-    # the read gates', the credit gates' and the metal and platinum's own factors, which no
-    # document here reads
+    # the read gates', the credit gates' and the metal's own factors, which no document here reads
     unread = set(PAIR_CORRELATION) | {'InterestRate.USD'} | {
-        name for name in COMMODITIES if not name.endswith('.FUEL')}
+        name for name in COMMODITIES if 'METAL' in name}
     expected = {name: entry['SIMM'] for name, entry in module['Factors'].items()
                 if name not in unpinned | unread}
     expected['InterestRate.ZAR-JIBAR'] = dict(expected['InterestRate.ZAR-JIBAR'], Bucket='2')
@@ -1741,6 +1756,7 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     assert completed['Product_Class'] == {
         'Instruments': {'SwapInterestDeal': 'RatesFX', 'FXOptionDeal': 'RatesFX',
                         'DealDefaultSwap': 'Credit', 'EnergySingleOption': 'Commodity',
+                        'CommodityFutureDeal': 'Commodity',
                         'YieldInflationCashflowListDeal': 'RatesFX'},
         'Structures': {'PAIR': 'Equity', 'SWPT': 'RatesFX'}}
     notes = pd.read_csv(output / 'MAPPING_{}.txt'.format(date), sep='\t', keep_default_na=False)

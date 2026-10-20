@@ -3950,7 +3950,8 @@ class SIMM(Calculation):
 
     def coordinates(self, factor, trade):
         """`factor`'s SIMM coordinates off the mapping, None where it carries no risk factor, held
-        to the engine's risk class of its type and a vega risk type to a vol surface."""
+        to the engine's risk class of its type, a cross-class type taking its risk type's, and a
+        vega risk type to a vol surface."""
         if factor not in self.mapping['Factors']:
             raise ValueError('SIMM: trade {} reads {}, and the mapping states nothing for it - '
                              'state its SIMM coordinates, or null where ISDA names no risk factor '
@@ -3964,7 +3965,8 @@ class SIMM(Calculation):
                 factor, stated.get('RiskType'), ', '.join(sorted(self.MOVES))))
         factor_type = utils.check_rate_name(factor)[0]
         risk_class = utils.FactorRiskClass[factor_type]
-        if risk_class != kind[0]:
+        # a cross-class factor's class is inherited: a basis's is the commodity's it rides
+        if risk_class not in (kind[0], 'CrossClass'):
             raise ValueError('SIMM: {} is a factor of the {} class and maps to {}, a risk type of '
                              'the {} class'.format(factor, risk_class, stated['RiskType'], kind[0]))
         if kind[1] == 'vega' and factor_type not in (

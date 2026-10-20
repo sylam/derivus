@@ -194,15 +194,27 @@
 			"FRTB_SA": null
 		},
 		"ObservedBasis.LBMA_AM.CME": {
-			"SIMM": null,
+			"SIMM": {
+				"RiskType": "Risk_Commodity",
+				"Qualifier": "PLATINUM",
+				"Bucket": "12"
+			},
 			"FRTB_SA": null
 		},
 		"ObservedBasis.LBMA_AM.PM": {
-			"SIMM": null,
+			"SIMM": {
+				"RiskType": "Risk_Commodity",
+				"Qualifier": "PLATINUM",
+				"Bucket": "12"
+			},
 			"FRTB_SA": null
 		},
 		"ObservedBasis.LBMA_AM.PM.CME": {
-			"SIMM": null,
+			"SIMM": {
+				"RiskType": "Risk_Commodity",
+				"Qualifier": "PLATINUM",
+				"Bucket": "12"
+			},
 			"FRTB_SA": null
 		},
 		"ForwardRate.PLATINUM_CARRY": {
