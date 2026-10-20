@@ -2356,9 +2356,10 @@ class Diary(BaseValuation):
         `BaseValuation.execute`'s compile half, READ rather than priced.
 
         The loaded tree is walked once and each leaf read off what the compile made of it, the
-        compiled deal being the leaf itself or the deal its history resolved it to: a deal the
-        compile LEFT OUT is expired, and announces what a live one of its type announces, or
-        unreadable, and announces why.
+        compiled deal being the leaf itself or the deal its history resolved it to. A deal the
+        compile LEFT OUT is judged as the compile judged it, as what its history made it, and is
+        expired, announcing what a live one of that type announces - a knocked-out barrier its
+        rebate - or unreadable, and announces why.
         """
         params = declared_defaults(type(self), self.judged(params))
         base_date = pd.Timestamp(params['Run_Date'])
@@ -2369,11 +2370,15 @@ class Diary(BaseValuation):
                                  shared.one, deal_level_mtm=True)
         rows, compiled = [], {held.Instrument.resolved_from or held.Instrument: held
                               for held in self.netting_sets.deals()}
+        options = self.config.params.get('Valuation Configuration', {})
         for path, netting_set, deal in self._leaves(self.config.deals['Deals']['Children']):
             held = compiled.get(deal)
+            # a deal carrying the compile's verdict is read by it, which resolving again could raise
+            became = deal if held is not None or hasattr(deal, 'unpriced_because') else (
+                deal.resolve_history(base_date, self.config.holidays, options))
             rows.extend(dict(row, deal_path=path, netting_set=netting_set) for row in (
                 self._deal_rows(held.Instrument, held.Factor_dep, base_date) if held is not None
-                else self._dropped_rows(deal) if self._expired(base_date, deal)
+                else self._dropped_rows(became) if self._expired(base_date, became)
                 else [self._unreadable_row(base_date, deal)]))
         return rows
 

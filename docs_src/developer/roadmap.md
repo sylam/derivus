@@ -27,9 +27,6 @@ features kept ahead of their build, not rows to close.
   verb map, so a frame filed under a verb its act no longer demands - a confirmation or a
   collateral movement under a `settle` grant - reads as outside its seat, while the desk runs
   unchanged. The map read like a policy, one read in `verb_for`.
-- **A knocked-out barrier past its rebate date blocks the close** (2026-10-18, S). The compile
-  leaves it out and the diary reads it `unreadable` rather than expired, so the close check waits
-  on it for good. Seen on one synthetic book; UNMEASURED elsewhere.
 - **A late settlement is matched within a business week** (2026-09-28). A settlement filed
   against a payment the window's own diary no longer announces is looked for `LOOK_BACK` marks
   back from its value date, a business week; past that, its day and a window reaching back over

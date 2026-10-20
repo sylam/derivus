@@ -410,11 +410,14 @@ terms - a reading, never a refusal. **Held by**
 `::test_a_fill_the_file_never_took_is_what_reconcile_is_for`.
 
 A close is legal when nothing due by its day waits: a fixing nobody printed, a payment nobody
-settled, an expiry nobody elected, or any `unreadable` row. `GET /book/close/check?date=` answers
-that, and `POST /book/close` refuses an illegal day with nothing appended; a second close for a day
-supersedes the first. `POST /book/settlements` takes only `due_before`, a file being struck for a
-day, on the market the `tiers` policy designates, so pointing it elsewhere is unrepresentable.
+settled, an expiry nobody elected, or any `unreadable` row. A deal the compile left out is judged
+as what its history made it, so a barrier its prints knocked out waits on its rebate and on nothing
+after. `GET /book/close/check?date=` answers that, and `POST /book/close` refuses an illegal day
+with nothing appended; a second close for a day supersedes the first. `POST /book/settlements`
+takes only `due_before`, a file being struck for a day, on the market the `tiers` policy
+designates, so pointing it elsewhere is unrepresentable.
 **Held by** `test_diary.py::test_the_close_check_is_the_catch_up_rule`,
+`::test_a_barrier_its_prints_knocked_out_owes_its_rebate_and_nothing_after`,
 `::test_a_close_is_declared_only_on_a_day_the_check_calls_legal`,
 `::test_the_settlement_file_is_struck_on_the_market_the_record_designates`.
 

@@ -1227,10 +1227,13 @@ def test_a_deal_the_compile_could_not_read_is_named_and_blocks_the_close(recorde
     answered `legal` would be a verdict on a book the engine could not read.
 
     One `unreadable` row per such deal, carrying where it sits and the engine's own sentence, and
-    outstanding on EVERY day - it has no date of its own.
+    outstanding on EVERY day - it has no date of its own. A barrier stating no `Barrier_Price`
+    beside a monitoring row behind the base date is one too: the compile could not resolve its
+    history, and its verdict stands.
 
-    Killing mutation: the unreadable rows left out of the outstanding count, which is the clean
-    bill again with the row rendered beside it.
+    Killing mutations: the unreadable rows left out of the outstanding count, which is the clean
+    bill again with the row rendered beside it; the diary resolving again the history of a deal
+    the compile stamped a verdict on, which refuses the whole diary, 422 naming `'Barrier_Price'`.
     """
     serving(tmp_path, [node(dict(FX_OPTION, Reference='NOVOL'))], factors=FACTORS)
     rows = [row for row in diary_rows()['rows'] if row['kind'] == Diary.UNREADABLE]
@@ -1243,6 +1246,11 @@ def test_a_deal_the_compile_could_not_read_is_named_and_blocks_the_close(recorde
     verdict = CLIENT.get('/book/close/check', params={'date': '2020-01-01'}).json()
     assert verdict['legal'] is False, 'a day with nothing due was still not legal'
     assert [row['kind'] for row in verdict['outstanding']] == [Diary.UNREADABLE]
+
+    unpriced = {key: value for key, value in BARRIER_WATCHED.items() if key != 'Barrier_Price'}
+    serving(tmp_path, [node(dict(unpriced, Reference='NOPRICE'))], factors=dict(FACTORS, **EQUITY))
+    assert [(row['kind'], row['reference']) for row in diary_rows()['rows']] == [
+        (Diary.UNREADABLE, 'NOPRICE')]
 
 
 def test_a_barrier_its_history_knocked_in_is_read_as_the_vanilla_it_became(unrecorded, tmp_path):
@@ -1260,6 +1268,54 @@ def test_a_barrier_its_history_knocked_in_is_read_as_the_vanilla_it_became(unrec
     rows = diary_rows()['rows']
     assert sorted(row['kind'] for row in rows) == [Diary.EXPIRY, Diary.FIXING, Diary.PAYMENT], rows
     assert all(row['deal_path'] == '0' and row['key'] for row in rows), rows
+
+
+def test_a_barrier_its_prints_knocked_out_owes_its_rebate_and_nothing_after(recorded, tmp_path):
+    """A DEAL THAT KNOCKED OUT HAS SETTLED WHAT IT OWES BUT ITS REBATE. A sold up-and-out call,
+    booked under a client's set with its one monitoring row a month behind the book's date left
+    blank, knocks out on the record's print of 120 against its 115 barrier, and compiles as the
+    rebate it became: 2,500 rand the desk pays on the crossing day, behind the base date. The diary
+    reads it as any deal past its last payment: the rebate due on that day at -2,500, the deal's
+    expiry there, and nothing after - no `unreadable` row, and no fixing or payoff on the option's
+    expiry a year out. A close the day after the crossing waits on the rebate alone; once `settle`
+    files it the close is legal on that day and on the option's expiry.
+
+    Killing mutation: the diary judging a deal the compile left out by its booked terms rather than
+    by what its history made it - the barrier is one `unreadable` row ('reading it again raised
+    nothing'), outstanding on every day, and the close is never legal.
+    """
+    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')], factors=dict(FACTORS, **EQUITY))
+    crossed = str(WATCHED.date())
+    log = SpineLog(recorded)
+    try:
+        policy.declare(log, ACTOR, policy.FIXINGS_POLICY, {'sources': {'EquityPrice.EQ': [
+            'EXCHANGE']}})
+        log.append('fixing_observed', {'index': 'EquityPrice.EQ', 'date': crossed,
+                                       'source': 'EXCHANGE', 'value': 120.0}, actor=ACTOR)
+    finally:
+        log.close()
+    knocked = dict(BARRIER, Reference='OUT', Buy_Sell='Sell', Cash_Rebate=2_500.0,
+                   Barrier_Dates=[[WATCHED]])
+    booked = CLIENT.post('/book/deals', content=dump(
+        {'action': 'add', 'deal': knocked, 'parent_reference': CLIENT_SET, 'quantity': 1.0,
+         'execution_reference': 'EXEC-OUT'}), headers=JSON).json()
+    assert booked['written'] is True, booked
+
+    rows = diary_rows()['rows']
+    assert [(row['kind'], row['due_date'], row['state'], row['amount']) for row in rows] == [
+        (Diary.EXPIRY, crossed, Diary.EXPIRED, None), (Diary.PAYMENT, crossed, Diary.DUE, -2_500.0)]
+    rebate = rows[1]
+    assert (rebate['currency'], rebate['deal_path'], rebate['netting_set']) == ('ZAR', '0/0',
+                                                                                 CLIENT_SET)
+    after, expiry = str((WATCHED + pd.DateOffset(days=1)).date()), str(BARRIER['Expiry_Date'].date())
+    verdict = CLIENT.get('/book/close/check', params={'date': after}).json()
+    assert verdict['legal'] is False and [row['key'] for row in verdict['outstanding']] == [
+        rebate['key']]
+
+    settle(recorded, rebate['key'])
+    for day in (after, expiry):
+        cleared = CLIENT.get('/book/close/check', params={'date': day}).json()
+        assert cleared['legal'] is True and cleared['outstanding'] == [], (day, cleared)
 
 
 def test_a_book_saying_no_reads_as_one_saying_yes_and_its_valuation_keeps_the_deal(recorded, tmp_path):
