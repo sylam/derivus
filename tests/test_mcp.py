@@ -28,8 +28,8 @@ from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 import derivus
 from derivus_mcp import server as mcp_server
 from derivus import service
-from test_service import (AMOUNT, BINARY, BOOKED, EQUITY, FACTORS, RATE, SPOT, VANILLA, Held, dump,
-                          file_world, job)
+from test_service import (AMOUNT, BINARY, BOOKED, CLIENT, EQUITY, FACTORS, RATE, SPOT, VANILLA,
+                          Held, block_of, dump, file_world, job)
 
 SERVER_FILE = mcp_server.__file__
 
@@ -85,7 +85,8 @@ def test_every_tool_is_registered_and_carries_its_contract():
                 'price_candidate', 'solve_deal', 'execute_book', 'validate_book', 'describe_book',
                 'poll_result', 'fetch_table', 'deal_values', 'configure_book',
                 'describe_curve', 'configure_curve', 'set_base_date', 'update_market_quotes',
-                'patch_market_values', 'describe_securities', 'configure_securities',
+                'patch_market_values', 'retire_market_overrides', 'describe_securities',
+                'configure_securities',
                 'verify_securities', 'book_dependencies', 'setup_market',
                 'tick_market_from_bloomberg', 'describe_structure', 'solve_structure',
                 'book_quote', 'approve_quote', 'reject_quote', 'approve_ticket',
@@ -105,8 +106,9 @@ def test_every_tool_is_registered_and_carries_its_contract():
                if not (tool.annotations and tool.annotations.read_only_hint)}
     assert writers == {'book_deal', 'amend_deal', 'delete_deal', 'price_candidate', 'solve_deal',
                        'execute_book', 'update_market_quotes', 'patch_market_values',
-                       'tick_market_from_bloomberg', 'solve_structure', 'book_quote',
-                       'approve_quote', 'reject_quote', 'approve_ticket', 'reject_ticket',
+                       'retire_market_overrides', 'tick_market_from_bloomberg', 'solve_structure',
+                       'book_quote', 'approve_quote', 'reject_quote', 'approve_ticket',
+                       'reject_ticket',
                        'declare_portfolio', 'declare_market', 'declare_close', 'declare_file',
                        'export_settlements', 'file_status', 'file_lifecycle',
                        'recalc_xva', 'calibrate_spot_model', 'configure_book', 'configure_curve',
@@ -622,6 +624,38 @@ def test_the_book_read_lists_the_factors_of_the_file_it_names(file_book):
     assert listed['file'] == str(market)
     assert listed['factors'] == sorted(json.loads(market.read_text())['MarketData'][
         'Price Factors']) and listed['factor_count'] == 6
+
+
+def test_a_model_retires_an_override_and_the_files_entry_stands_again(file_book):
+    """`retire_market_overrides` is one `service().call`: on a book naming a market data file, the
+    ZAR spot patched from the file's 18.5 to 19.25 through `patch_market_values` stands in the
+    book's block; retired through the tool, the block states nothing, the market the book prices
+    on - the one `read_book` lists the factors of - carries the file's 18.5 among the file's six
+    factors, and the file is byte-identical. Retired again, the path the block no longer states
+    comes back as the service's 422 naming `'Price Factors'`, the book's bytes standing.
+
+    Killing mutation: the tool posting the paths under `patch` for `retire`, which the service
+    reads as a values patch and fails on (`TypeError: unhashable type: 'list'`), the spot standing
+    at 19.25.
+    """
+    book, market = file_book
+    filed = market.read_bytes()
+    factors = json.loads(filed)['MarketData']['Price Factors']
+    assert mcp_server.patch_market_values({'FxRate.ZAR': {'Spot': 19.25}})['written'] is True
+    assert block_of(book) == {'Price Factors': {'FxRate.ZAR': dict(factors['FxRate.ZAR'],
+                                                                   Spot=19.25)}}
+
+    assert mcp_server.retire_market_overrides([['Price Factors', 'FxRate.ZAR']])['written'] is True
+    assert block_of(book) == {}
+    assert CLIENT.get('/book/market').json()['market']['Price Factors'] == factors
+    assert factors['FxRate.ZAR']['Spot'] == SPOT
+    assert mcp_server.read_book()['market_data']['factors'] == sorted(factors)
+    assert market.read_bytes() == filed
+
+    before = book.read_bytes()
+    with pytest.raises(ToolError, match="answered 422 .*'Price Factors'"):
+        mcp_server.retire_market_overrides([['Price Factors', 'FxRate.ZAR']])
+    assert book.read_bytes() == before
 
 
 def test_the_file_the_book_names_is_declared_and_listed_through_the_binding(file_book, tmp_path,

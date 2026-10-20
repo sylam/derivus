@@ -854,6 +854,21 @@ def patch_market_values(patch: dict) -> dict:
 
 
 @MCP.tool()
+def retire_market_overrides(paths: list[list[str]]) -> dict:
+    """Put the market data FILE's entry back where the live book's own block states one over it -
+    "take the spot back to the file's". Each path runs from the section down to the entry,
+    `[["Price Factors", "FxRate.ZAR"]]`, or `["Price Factor Interpolation", ".ModelParams",
+    "modelfilters", "InterestRate"]` for one type's curve rules; the entry leaves the block, a
+    section with its last entry, so the market reads the file's again. Where the book declares a
+    bootstrapper the WHOLE market is re-bootstrapped in the same atomic write, and a bootstrap that
+    complains writes nothing and hands its messages back as `refused`. A path the block does not
+    state refuses by name, the service's 422 naming the key it lacks. Retiring the block's system
+    date, `["System Parameters", "Base_Date"]` or its section whole, is `set_base_date` back to the
+    file's day first: both the book's dates move and every curve block is re-authored there."""
+    return service().call('POST', '/book/market', json={'retire': paths})
+
+
+@MCP.tool()
 async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
                                      pillars: list = None, wait_seconds: float = 360.0,
                                      ctx: Context = None) -> dict:

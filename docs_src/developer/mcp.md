@@ -66,7 +66,7 @@ tools and the writers to exactly those without the hint.
 | `approve_ticket`, `reject_ticket`, `approve_quote`, `reject_quote` | `POST /book/approve`, `/book/reject`: a second seat's verdict |
 | `worklist` | `GET /book/worklist`: what waits on the seat asking |
 | `poll_result`, `fetch_table`, `deal_values` | `GET /results/{id}[/{table}]`: status and shapes; one capped page; `{reference: value}` |
-| `update_market_quotes`, `patch_market_values` | `POST /book/market`: quote blocks ticked and bootstrapped; values patched |
+| `update_market_quotes`, `patch_market_values`, `retire_market_overrides` | `POST /book/market`: quote blocks ticked and bootstrapped; values patched; the block's own entries retired, the file's standing again |
 | `configure_book` | `POST /book/configure`: one bootstrap dial, the market re-bootstrapped |
 | `describe_curve`, `configure_curve` | `GET`/`POST /book/curve`: curves as definitions; a curve authored from its rows |
 | `set_base_date` | `POST /book/date`: both dates moved, every curve re-rolled |
@@ -269,7 +269,10 @@ never carries a market its bootstrap complained about. `patch_market_values` rid
 `Market Prices` block naming `update_market_quotes`, because a patched quote would leave the written
 factors stale against it. **Held by** `test_service.py::test_a_quote_update_may_move_only_the_numbers`,
 `::test_a_market_values_patch_reaches_the_file_and_a_structural_one_is_refused`,
-`::test_a_bootstrap_that_complains_writes_nothing`.
+`::test_a_bootstrap_that_complains_writes_nothing`. `retire_market_overrides` posts the retire the
+web's market screens post, each path from the section down, so the file's entry stands again under
+the service's rule ([Market Prices](market_prices.md)), and a path the block does not state is the
+service's 422. **Held by** `test_a_model_retires_an_override_and_the_files_entry_stands_again`.
 
 ## Open and non-goals
 
