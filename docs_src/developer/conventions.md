@@ -17,7 +17,7 @@ The job JSON is the whole program: a script does `import derivus as rf`, `cx.loa
 
 ## `globals()` dispatch {#globals-dispatch}
 
-Constructors dispatch on class name through the module `globals()` — `construct_calculation`, `construct_instrument`, `construct_factor`, `process_class`, `construct_calibration_config`, `family_class` — so the class name is the dispatch key: **one class per concept in a file**, and a new type is a new class, never an edit to a dispatcher. An unknown deal `Object` loads as `{'Object': name}`, which `Config.validate` reports and the compile refuses.
+Constructors dispatch on class name through the module `globals()` — `calculation_class`, `construct_instrument`, `construct_factor`, `process_class`, `construct_calibration_config`, `family_class` — so the class name is the dispatch key: **one class per concept in a file**, and a new type is a new class, never an edit to a dispatcher. An unknown deal `Object` loads as `{'Object': name}`, which `Config.validate` reports and the compile refuses.
 
 ## Registries, not functions {#registries-not-functions}
 
@@ -76,8 +76,8 @@ In the OSS pricers every sibling `InnerMCRecompute.run` left outside it kept its
 
 ### What is gated, and what is not {#what-holds-today-and-what-the-purge-left-open}
 
-- **Held:** the already-hit barrier leg's value, invisible to an AAD-against-CRN gate since a bump ladder differentiates the same wrong value (`tests/test_barrier_fold_json.py::test_a_row_every_scenario_has_crossed_is_what_the_barrier_became`); pricer branches no test executes (`gates/pricer_branch_census.py`), though a branch executed is not a branch checked.
-- **Not gated:** the vol term structure reaching the monitoring (two surfaces agreeing at expiry and differing before it); the payoff's forward against the vol surface's; rate units, an annualised carry reaching `exp` without a year fraction (an AST pass is the cheap check, blind to a units-correct, value-wrong sloped carry).
+- **Held:** the already-hit barrier leg's value, invisible to an AAD-against-CRN gate since a bump ladder differentiates the same wrong value (`tests/test_barrier_fold_json.py::test_a_row_every_scenario_has_crossed_is_what_the_barrier_became`); pricer branches no test executes (`gates/pricer_branch_census.py`), though a branch executed is not a branch checked; for each `MUST` triple, a document reaching its reader that states its value, every other admitted value no reaching document states listed as a hole (`gates/declared_values.py`); a function reading a vol surface's coordinate, a carry or a strip beside the seam that spells it, unless `KNOWN` names it with its reason (`gates/seam_readers.py`).
+- **Not gated:** the vol term structure reaching the monitoring (two surfaces agreeing at expiry and differing before it); the payoff's forward against the vol surface's; rate units, an annualised carry reaching `exp` without a year fraction (an AST pass is the cheap check, blind to a units-correct, value-wrong sloped carry); a hole no `MUST` names; a raw read beside a call of its seam, and a coordinate a caller computes and hands in.
 
 ## A fixture must not zero the quantity its gate is sensitive to {#fixture-degeneracy}
 
@@ -115,6 +115,10 @@ Before calling a gate done, say for each "varied" or "degenerate **because** …
 **A landing runs the tests its diff reaches.** `python gates/impacted.py --dirty --time` names them, `--run` runs them (`--since BASE`, `--commit SHA`), and `--files` rounds up to whole files for a test reading another's cached value. Selection is line-granular off an execution map — a changed statement selects the tests that executed it, a comment nothing — and fails open to the whole suite, each file under its own home, saying why, on `tests/conftest.py`, `derivus/__init__.py`, an unmapped path or no map. Beside it run the standing readings.
 
 **A campaign boundary runs the full suite** with the tree held still, since a selection cannot see an order-sensitive statistical gate or a dependency gained since the map; then `python gates/impacted.py --measure DIR` rebuilds the local map, and `CUDA_VISIBLE_DEVICES=0 python gates/pricer_branch_census.py` traces the tests it says enter a census pricer (`--anchors`: the AST half alone).
+
+**The selected modules ride `python gates/declared_values.py tests/<modules>`**, which tables per reader and field the values a menu or a class-level admission admits that no document reaching the reader states, and fails on an unmet `MUST` as the degeneracy plugin fails on an unmet `JOINT`.
+
+**A change to a seam or to a function reading a vol surface, a carry or a forward runs `python gates/seam_readers.py`**, which lists every function under `derivus/` reading a seam's primitive and not the seam, and fails on one its `KNOWN` list does not explain by name.
 
 **A test** drives a JSON contract, has a defined outcome, covers a named area, runs or fails quickly, and names its killing mutation; it goes only where every mutation it names is shown red under the tests that remain, never on coverage alone.
 

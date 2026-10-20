@@ -42,6 +42,9 @@ tests/_stepper_out*/
 !/gates/reach.py
 # the developer pages name it as what a renaming change runs, so it has to be in the tree
 !/gates/doc_symbols.py
+# and these two as what a landing runs
+!/gates/declared_values.py
+!/gates/seam_readers.py
 # the acceptance game is tracked for the same reason: tests/test_spine_game.py plays the day it
 # describes, so the roles, the objectives and the faults have to be in the tree. What a RUN of it
 # writes still is not - that lands under artifacts/.

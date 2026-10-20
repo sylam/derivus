@@ -62,8 +62,12 @@ features kept ahead of their build, not rows to close.
 
 **The code.**
 
-- `Context.run_job`'s five-way branch and the `run_*` functions fold into the calculation classes
-  they dispatch to, one entry per class.
+- **The extendable forward spells its forward, vol and carry inline** (2026-10-21, S).
+  `pv_MC_ExtendableForward.market_inputs` keeps its own spelling of the log forward off
+  `curve_spread`, the per-fixing vol and the interval carry and variance beside `total_log_forward`,
+  `forward_vol_strip` and `forward_carry_rate`, the shape a unification's siblings take on
+  [Conventions](conventions.md#unification-siblings); `gates/seam_readers.py` lists it under `KNOWN`
+  until it is folded, proven by bit identity or a gate for the difference.
 - The retired family keys (`config.RETIRED_FAMILY_KEYS`: `InterestRateCurveParameters` and
   `FXVolSurfaceParameters` read as `InterestRate` and `FXVol`) are carried through this release and
   go the release after. A book keyed by them hashes to a new plan once its keys move, so a quote
@@ -215,6 +219,16 @@ features kept ahead of their build, not rows to close.
 - **A fixture must not zero the quantity its gate tests** (the checklist and plugin are on
   [Conventions](conventions.md#fixture-degeneracy)): a surviving mutant means the fixture is wrong,
   not that the code is right.
+- **Which admitted values no document states**: `python gates/declared_values.py tests/<modules>`
+  rides a suite invocation and tables, per reader and field, the values a declared menu or a
+  class-level admission admits that no document reaching the reader states. A document is placed by
+  the readers that ran in its test, a reader running where no document was seen is blind, and an
+  unmet `MUST` fails the run (`--values-strict`: any hole). It reads what a document states, not
+  what the reader reads off it, and credits every document of a test with what any of them states.
+- **Which functions read beside a seam**: `python gates/seam_readers.py` lists, off the reach
+  graph, every function referencing a seam's primitive (a vol surface's coordinate, a carry, a
+  strip) and not the seam, and fails on one `KNOWN` does not explain by name. It is blind to a
+  coordinate a caller computes and hands in, and to a raw read beside a call of the seam.
 
 ## What this list is for
 
