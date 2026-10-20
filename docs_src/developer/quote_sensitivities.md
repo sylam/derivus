@@ -308,7 +308,11 @@ rises reprices, and a falling one repairs to zero. No test holds the map's quote
 The leaves are the ATM column either way; `atm_column` picks the source by provenance. Where an
 `FXVolPrices` block wrote the surface, its ATM rows are the surface's ATM vols by construction —
 `malz_skew` puts them at the delta-neutral straddle — so they are taken as quoted rather than read back
-off the grid. Otherwise the column is the surface at moneyness 1.
+off the grid. Otherwise the column is the surface read at the ATM coordinate of its type, where a
+strike at the forward sits on the axis the pricer reads it on (`OptionQuoteFamily.moneyness`): 1 on
+a ratio surface, 0 on a `Malz` or `Relative_Forward` one, and $\log(K/F)=0$ on a `Sticky_Moneyness`
+`Skew` or `SVI` one through `Factor2D.current_value`, on its own expiries. **Held by**
+`tests/test_gbm_term_structure.py::test_a_surface_is_read_at_the_atm_coordinate_of_its_type`.
 
 !!! warning "Provenance is evidence, not a name"
     A hand-authored surface can share a quote block's name. The check is the fingerprint
@@ -446,9 +450,6 @@ pseudo-inverse it is the projector onto the kept directions. No test holds it.
 
 ## Open {#open}
 
-- The GBM family reads a wing as a hand-authored `Malz` surface's ATM column: moneyness 1 is a ratio
-  surface's ATM, a `Malz` axis is $\log(F/K)$. A surface the FX family wrote takes the [quote
-  path](#the-atm-column).
 - `Tenor_Offset` declines an FX surface's attachment though `Factor2D.current_value()` ignores the
   offset, dropping a delta for a surface that did not move.
 - A model-priced leg's charge reads a lognormal vega; a consolidated risk read refits its blocks

@@ -625,7 +625,9 @@ default — `Yes` on `FXVol`, the plain forward delta `No` on `EquityPriceVol` a
 **The ATM row is the surface's ATM vol.** `Factor2D.malz_skew` places it at the delta-neutral
 straddle strike, so the written ATM vol is the quoted number, and `GBMAssetPriceTSModelPrices` takes
 those rows as its ATM column wherever this family wrote the surface, evidenced by the fingerprint
-`pinned_grid` reads, never by the name ([the two sources](quote_sensitivities.md#the-atm-column)).
+`pinned_grid` reads, never by the name, and reads any other surface at the ATM coordinate of its
+type ([the two sources](quote_sensitivities.md#the-atm-column)). **Held by**
+`tests/test_gbm_term_structure.py::test_a_surface_is_read_at_the_atm_coordinate_of_its_type`.
 `Quote_Sensitivity` leaves the surface connected to its quotes, bit-identical either way
 ([the delta solve](quote_sensitivities.md#the-delta-solve)).
 

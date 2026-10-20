@@ -15,18 +15,36 @@ from derivus import utils
 from derivus.config import CustomJsonEncoder
 
 
-def built(expiries, atm):
-    """The `Vol` knots a bootstrap writes off an equity surface whose ATM column is `atm`."""
-    surface = [[m, t, v * (1.0 + abs(m - 1.0))] for t, v in zip(expiries, atm) for m in (0.8, 1.0, 1.2)]
+#: A Skew surface's smile off its ATM vol, and the level it is referenced to.
+SKEW = {'ATM_Ref': 100.0, 's': -0.15, 'L': 0.30, 'R': 0.20, 'C': -0.35, 'D': 0.35, 'lam': 0.5,
+        'rho': 0.5}
+
+
+def surface(expiries, atm, surface_type='Explicit', axis=lambda m: m):
+    """A `surface_type` surface whose ATM column is `atm` beneath a smile 20% up at moneyness 0.8
+    and 1.2, each node placed on the type's own axis by `axis`."""
+    return {'Surface_Type': surface_type, 'Moneyness_Rule': 'Sticky_Moneyness',
+            'Surface': utils.Curve([], [[axis(m), t, v * (1.0 + abs(m - 1.0))]
+                                        for t, v in zip(expiries, atm) for m in (0.8, 1.0, 1.2)])}
+
+
+def skew(expiries, atm):
+    """A Skew surface whose ATM vol is `atm`, sloping and curving off it as `SKEW` says."""
+    curve = lambda values: utils.Curve([], [list(row) for row in zip(expiries, values)])
+    return dict({name: curve([x] * len(atm)) for name, x in SKEW.items()}, Surface_Type='Skew',
+                Moneyness_Rule='Sticky_Moneyness', ATM_Vol=curve(atm))
+
+
+def built(expiries, atm, vol=surface):
+    """The `Vol` knots a bootstrap writes off the equity surface `vol` makes of the ATM column
+    `atm`."""
     base = {'.Timestamp': '2026-01-15'}
     document = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD'},
         'Deals': {'Reference': 'gbm', 'Deals': {'Children': []}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
-            'Price Factors': {'EquityPriceVol.EQ': {
-                'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
-                'Surface': utils.Curve([], surface)}},
+            'Price Factors': {'EquityPriceVol.EQ': vol(expiries, atm)},
             'Market Prices': {'GBMAssetPriceTSModelPrices.EQ': {
                 'instrument': {'Asset_Price_Volatility': 'EQ', 'Quote_Sensitivity': 'Yes'}}},
             'Bootstrapper Configuration': {
@@ -67,3 +85,21 @@ def test_a_falling_total_variance_is_repaired_to_a_zero_vol():
     knots = built([0.5, 1.0, 2.0], [0.30, 0.20, 0.10])
     assert knots[1:, 1].tolist() == [0.0] * 4
     assert implied(knots, 2.0) == pytest.approx(0.30 * np.sqrt((0.5 + 1.0 / 365.0 / 3.0) / 2.0), rel=1e-12)
+
+
+@pytest.mark.parametrize('vol', [
+    lambda e, a: surface(e, a, 'Malz', np.log),
+    lambda e, a: surface(e, a, 'Relative_Forward', lambda m: 1.0 / m - 1.0),
+    skew], ids=['Malz', 'Relative_Forward', 'Skew'])
+def test_a_surface_is_read_at_the_atm_coordinate_of_its_type(vol):
+    """A hand-authored surface and its Explicit twin, one ATM column under a smile, integrate one
+    vol curve, each read where a strike at the forward sits on its own axis: a Malz and a
+    Relative_Forward surface node for node at log(F/K) 0 and (K - F)/F 0, a Skew one at its
+    log-moneyness 0, its ATM vol, on its own expiries.
+
+    Killing mutations: the column read at moneyness 1 whatever the type, a wing of each smile, the
+    Malz and Relative_Forward curves 20% high (6.6 vol points) and the Skew one 29% (3.0 points);
+    the Skew surface read off the placeholder grid its factor carries, one knot at 1%."""
+    expiries, atm = [0.25, 1.0, 2.0, 5.0], [0.10, 0.20, 0.25, 0.30]
+    np.testing.assert_allclose(built(expiries, atm, vol), built(expiries, atm), rtol=0.0,
+                               atol=1e-12)

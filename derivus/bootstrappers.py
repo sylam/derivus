@@ -3572,10 +3572,9 @@ class GBMAssetPriceTSModelParameters(Construction):
          '',
          '- WHICH ATM. Where the market data carries an `FXVolPrices` block for the surface and that family',
          '  wrote it (the `Malz` surface type beside its `Grid_Tolerance`), the column is that block\'s ATM',
-         '  quotes. Otherwise it is the surface read at moneyness 1 (`np.interp`).',
-         '- A hand-authored `Malz` surface reads a WING there, because its axis is $\\log(F/K)$, whose ATM is',
-         '  at 0: 0.194 against a quoted 0.200 on one test surface, about a vol point at three months on a',
-         '  USDZAR-shaped smile. Measured during development, not re-checked by a test.',
+         '  quotes. Otherwise it is the surface read where a strike at the forward sits on the axis of its',
+         '  type, as the pricer reads it: 1 on a ratio surface, 0 on a `Malz` or `Relative_Forward` one, and',
+         '  $\\log(K/F)=0$ on a `Sticky_Moneyness` `Skew` or `SVI` one, on its own expiries.',
          '- For an FX rate the ATM read off an `FXVolPrices` block is the premium-adjusted delta-neutral',
          '  straddle vol, not the ATM-forward vol. The model is flat in strike, so the difference passes',
          '  straight into the GBM vol; its size is unmeasured.',
@@ -3615,7 +3614,7 @@ class GBMAssetPriceTSModelParameters(Construction):
 
     @staticmethod
     def atm_column(vol_factor, vol_surface, market_prices, price_factors):
-        """The ATM vol per surface expiry, and where each number came from.
+        """The surface's expiries, its ATM vol at each, and where the numbers came from.
 
         Two sources, chosen by the surface's PROVENANCE. Where this market data carries an
         `FXVolPrices` block for the surface being integrated and that surface is the one the block
@@ -3626,11 +3625,12 @@ class GBMAssetPriceTSModelParameters(Construction):
         block also uses. What is checked is the fingerprint `FXVol` leaves and
         `pinned_grid` reads back - the `Malz` subtype beside its `Grid_Tolerance`.
 
-        Anything else is authored data, and the ATM column is `np.interp` at moneyness 1. Where the
-        surface carries a node there, that read is the node itself.
-
-        KNOWN LIMITATION: moneyness 1 is the ATM coordinate of a RATIO surface, while a `Malz`
-        axis is log(F/K), whose ATM is at 0 - so a hand-authored Malz surface reads a wing.
+        Anything else is authored data, and the ATM column is the surface read at the coordinate a
+        strike at the forward takes through the pricer's own dispatch (`OptionQuoteFamily.moneyness`):
+        `np.interp` along each expiry of a grid, 1 on a ratio surface and 0 on a `Malz` or
+        `Relative_Forward` one, and `Factor2D.current_value` at that coordinate on the expiries of
+        a `Skew` or `SVI` one, log(K/F) 0 under `Sticky_Moneyness`. Where a grid carries a node
+        there, that read is the node itself.
         """
         family = FXVol
         quoted_name = utils.check_tuple_name(utils.Factor(
@@ -3647,11 +3647,16 @@ class GBMAssetPriceTSModelParameters(Construction):
                         utils.check_tuple_name(vol_factor),
                         ', '.join('{:g}'.format(T) for T in sorted(atm)),
                         ', '.join('{:g}'.format(T) for T in sorted(vol_surface.expiry))))
-            return [atm[expiry] for expiry in vol_surface.expiry], 'its own ATM quotes'
+            return vol_surface.expiry, [atm[expiry] for expiry in vol_surface.expiry], \
+                'its own ATM quotes'
 
-        mn_ix = np.searchsorted(vol_surface.moneyness, 1.0)
-        return [np.interp(1, vol_surface.moneyness[mn_ix - 1:mn_ix + 1], y) for y in
-                vol_surface.get_vols()[:, mn_ix - 1:mn_ix + 1]], 'the surface at moneyness 1'
+        x = OptionQuoteFamily.moneyness(1.0, 1.0, 1.0, vol_surface, True, False)
+        source = 'the surface at its ATM coordinate {:g}'.format(x)
+        if vol_surface.get_subtype()[0] in OptionQuoteFamily.tabular_surfaces:
+            return vol_surface.expiry, [np.interp(x, vol_surface.moneyness, vols)
+                                        for vols in vol_surface.get_vols()], source
+        column = vol_surface.current_value(np.array([x])).array
+        return column[:, 1], column[:, 2], source
 
     @classmethod
     def integrated_vol(cls, atm_vol, expiry):
@@ -3724,10 +3729,10 @@ class GBMAssetPriceTSModelParameters(Construction):
                     continue
 
                 connect = implied_params['instrument']['Quote_Sensitivity'] == 'Yes'
-                atm_vol, source = self.atm_column(
+                expiry, atm_vol, source = self.atm_column(
                     vol_factor, vol_surface, market_prices, price_factors)
                 quotes = torch.tensor(atm_vol, dtype=self.dtype, requires_grad=connect)
-                tenors, curve, floored = self.integrated_vol(quotes, vol_surface.expiry)
+                tenors, curve, floored = self.integrated_vol(quotes, expiry)
 
                 # store the output
                 price_param = utils.Factor(self.__class__.__name__, market_factor.name)
@@ -3752,7 +3757,7 @@ class GBMAssetPriceTSModelParameters(Construction):
                 if connect:
                     self.calibrated[utils.Factor(price_param.type, price_param.name + ('Vol',))] = curve
                     self.quote_leaves[market_price] = (
-                        ['ATM {:g}'.format(expiry) for expiry in vol_surface.expiry], quotes)
+                        ['ATM {:g}'.format(T) for T in expiry], quotes)
 
                 logging.info('{} built from {} ATM vols off {}'.format(
                     utils.check_tuple_name(price_param), len(atm_vol), source))
