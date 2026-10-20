@@ -881,3 +881,40 @@ def test_book_model_calibrates_a_cross_and_the_quote_pins_it(tmp_path, monkeypat
             'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
     finally:
         service.BOOK = None
+
+
+def test_the_emitter_reads_a_surface_on_its_own_axis():
+    """GATE 2c - THE VOL IS READ WHERE THE PRICER READS THAT SURFACE TYPE.
+
+    The emitter places its strikes in log-moneyness, the Malz axis, and reads the surface through
+    the family's `moneyness`, the pricer's own dispatch off the subtype: a Malz surface at that
+    log-moneyness, an Explicit one at the ratio of forward to strike, a Relative_Forward one at the
+    strike's distance from the forward over it. So the built Malz surface and the same smile
+    rewritten node for node as an Explicit ratio surface (F/K = exp(x)) and as a Relative_Forward
+    one ((K - F)/F = exp(x) - 1 on the fitted axis, which the storage order inverts here) emit the
+    same ladder, the strikes and the vols apart only by the two axes' linear interpolation between
+    nodes. MEASURED 3.6e-7 in vol and 1.2e-7 in strike on the Explicit twin.
+
+    KILLING MUTATION - the surface read at the log-moneyness itself whatever its type: every read
+    on the ratio twin lands below its lowest node and extrapolates flat to the deep put wing, 1.4e-2
+    in vol and 6.6e-3 in strike, a smile one vol point too high with no skew in it and no refusal.
+    """
+    document = surfaced('USD')
+    factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    nodes = np.array(factors['FXVol.EUR.ZAR']['Surface']['.Curve']['data'])
+    _, malz = author(document)
+    sign = 1.0 if malz['instrument']['Invert_Moneyness'] == 'Yes' else -1.0
+    for kind, coordinate in (('Explicit', np.exp), ('Relative_Forward', lambda x: np.exp(sign * x) - 1.0)):
+        twin = copy.deepcopy(document)
+        twin['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FXVol.EUR.ZAR'] = {
+            'Surface_Type': kind, 'Moneyness_Rule': 'Sticky_Moneyness',
+            'Surface': {'.Curve': {'meta': [], 'data': [
+                [float(coordinate(x)), float(t), float(vol)] for x, t, vol in nodes]}}}
+        _, block = author(twin)
+        quotes = zip(malz['instrument']['European_Options'], block['instrument']['European_Options'])
+        for reference, quote in quotes:
+            assert quote['Expiry_Date'] == reference['Expiry_Date'], kind
+            assert abs(quote['Strike'] / reference['Strike'] - 1.0) < 1e-5, (
+                kind, quote['Strike'], reference['Strike'])
+            assert abs(quote['Quoted_Market_Value'] - reference['Quoted_Market_Value']) < 1e-5, (
+                kind, quote['Quoted_Market_Value'], reference['Quoted_Market_Value'])

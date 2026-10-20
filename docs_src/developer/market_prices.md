@@ -408,6 +408,11 @@ the FX one off a built surface: two delta pillars at four wing expiries, because
 bucket frees one parameter per wing quote, and at least eight distinct contracts after snapping,
 because a repeated contract is a weight, not an observation. **Held by**
 `test_market_prices_partition.py::test_the_ladder_is_the_entrys_and_the_contract_floor_is_a_declared_lever`.
+Its strikes are placed in log-moneyness and each vol is read where the pricer reads the surface's
+type, through the family's `moneyness`: a Malz surface at that log-moneyness, an Explicit one at
+the ratio of forward to strike, a Relative_Forward one at the strike's distance from the forward,
+so a ratio surface is read on its own nodes. **Held by**
+`test_cross_spot_model.py::test_the_emitter_reads_a_surface_on_its_own_axis`.
 
 **ξ is stored and the level derived.** The factor stores `ξ(t) = E₀[h_t]` and derives
 `L*(t) = log ξ(t) − ½Var(ℓ_t + s_t)`, so `E₀[h_t] = ξ(t)` whatever the vol-of-vol; a stored level

@@ -762,9 +762,13 @@ class OptionQuoteFamily(ImpliedCalibration):
         count and is what the FORWARD hangs off. They agree only under ACT_365 - reading the surface
         at `t` under ACT_360 puts the 1Y rung past the last expiry the surface carries.
 
-        The strikes are the surface's own coordinates: the ATM one is the delta-neutral straddle
+        The strikes are placed in log-moneyness: the ATM one is the delta-neutral straddle
         `K = F exp(-sigma^2 T/2)`, each wing the strike whose premium-adjusted forward delta is one
         of `Wing_Pillars`, found by inverting the delta the Malz solve inverted off the same vols.
+        The vol at each is read where the pricer reads the surface's type (`moneyness`): a Malz
+        surface at that log-moneyness, an Explicit one at the ratio of forward to strike, a
+        Relative_Forward one at the strike's distance from the forward over it, so a ratio surface
+        is read on its own nodes rather than on the Malz axis.
 
         No `Funding_Rate` is declared, and an FX pair needs none: `Discount_Rate` and `Yield` are
         exactly the pair `utils.calc_fx_forward` builds the priced forward from, so the calibrated
@@ -878,6 +882,11 @@ class OptionQuoteFamily(ImpliedCalibration):
             price_factors, factor_interp)
         cap = max(ladder.atm)
 
+        def strike_of(forward, x):
+            """The strike log-moneyness `x` names in the underlying's own units, inverting
+            `calc_moneyness` as `Invert_Moneyness` declares."""
+            return forward * np.exp(x if invert else -x)
+
         def pillar(expiry):
             """One admissible expiry's `(T, moved, days, t, F, r, vol_at)`, or `None` where the
             surface carries no pillar the ladder may snap to. `T` is the surface's coordinate and
@@ -889,17 +898,18 @@ class OptionQuoteFamily(ImpliedCalibration):
             t = discount.get_day_count_accrual(base_date, days)
             rate = float(discount.current_value(t))
             forward = spot * np.exp((rate - float(carry.current_value(t))) * t)
-            # the surface unshifted - the fit applies `Volatility_Delta` to every vol it reads
+            # the surface unshifted - the fit applies `Volatility_Delta` to every vol it reads -
+            # at the coordinate the pricer reads its type at, off the strike `x` names
             return T, moved, days, t, forward, rate, (
-                lambda x: float(surface.current_value([[x, T]])[0]))
+                lambda x: float(surface.current_value([[cls.moneyness(
+                    strike_of(forward, x), spot, forward, surface, True, invert), T]])[0]))
 
         quotes, substituted = [], []
 
         def quote(days, forward, rate, t, x, vol):
             """One `OPTION_QUOTE` row: the strike this coordinate names in the underlying's own
-            units (inverting `calc_moneyness`, as `Invert_Moneyness` declares), the surface's vol
-            there, and the Black vega that becomes its weight."""
-            strike = forward * np.exp(x if invert else -x)
+            units, the surface's vol there, and the Black vega that becomes its weight."""
+            strike = strike_of(forward, x)
             quotes.append({
                 'Expiry_Date': base_date + pd.DateOffset(days=days), 'Strike': strike,
                 # the OTM leg, which is the one a desk deals; the fit is blind to the choice, puts
