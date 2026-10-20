@@ -149,6 +149,17 @@ LogVar2FJ knock-in, whose vanilla is the walk's). Closes
 observed before the base date are folded at compile: a crossed knock-in compiles as its vanilla,
 a crossed knock-out as its rebate cash flow.
 
+Under the `Relative_Digital_Spread` valuation option $\varepsilon$, the GBM digital is the
+strike spread the European digital takes,
+$\phi\big(C(K(1-\varepsilon))-C(K(1+\varepsilon))\big)/(2\varepsilon K)$, each leg $C(K')$ the
+barrier call struck at $K'$: the two walk the fixings side by side on the same uniforms, each on
+the strip read at its own strike, and each integrates its terminal step, $L_{N-1}$ times the
+expectation of $(\phi(S_N-K'))^+$ on the survival region of the last interval's law. The strip
+telescopes to $\sigma(K',T-t)$, so the spread is the European's where no path reaches the
+barrier. $V_{\text{van}}$ and the already-hit leg are the European spread, each leg the Black at
+$\sigma(K',T-t)$; on the expiry row each leg is its intrinsic. Under LogVar2FJ the option is not
+read.
+
 ### Accumulator, TARF, autocall, extendable forward
 
 - **Accumulator.** Fixing $j$ pays $N_1(\phi(S_j-K))^+-N_2(\phi(K-S_j))^+$ at its settlement date

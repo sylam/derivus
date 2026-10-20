@@ -742,6 +742,32 @@ def lognormal_fired_gain(spot, drift, vol, z_bound, strike, fired_above, power=1
                 spot, drift, vol, z_bound, fired_above, 0.0))
 
 
+def lognormal_band_gain(spot, drift, vol, lo, hi, strike, phi):
+    """``E[(phi (S_k - strike))^+ * 1{lo < Z < hi}]`` under ONE fixing interval's lognormal law,
+    ``S_k = spot * exp(drift + vol * Z)``: Black's expectation truncated to a band of the
+    standardised step, a bound of None the line's end.
+
+    The band lies on the paying side of the strike, its near edge at or beyond the strike's own
+    standard score, as `sim_spot_oss` builds it; each tail is read as itself, the call's upper and
+    the put's lower (`lognormal_fired_gain`). With no far edge it is Black over the interval.
+    """
+    call = phi == OPTION_CALL
+    near, far = (lo, hi) if call else (hi, lo)
+    gain = lognormal_fired_gain(spot, drift, vol, near, strike, call)
+    if far is not None:
+        # a barrier short of the strike's edge leaves the band empty
+        far = (torch.maximum if call else torch.minimum)(far, near)
+        gain = gain - lognormal_fired_gain(spot, drift, vol, far, strike, call)
+    return phi * gain
+
+
+def strike_spread(low, high, eps, phi):
+    """``phi (V(K(1 - eps)) - V(K(1 + eps))) / (2 eps)``, K times the cash digital a strike spread
+    of half-width ``eps K`` replicates, from its two vanillas: the digital `Relative_Digital_Spread`
+    prices, each leg at its own strike's vol so the smile's ``-vega dVol/dK`` is in it."""
+    return phi * (low - high) / (2.0 * eps)
+
+
 #: What an autocall's put barrier is observed on - the deal's `Barrier_Observation`. Each caller
 #: hands the two readings of its own quantity; a coupon window of one makes them the same bits.
 BARRIER_OBSERVATION = {'Spot': lambda spot, average: spot,
@@ -1804,7 +1830,8 @@ def smooth_relu(x, eps=0.005):
 
 
 def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_rep,
-                               invert_moneyness=False, use_forwards=False, isdigital=False):
+                               invert_moneyness=False, use_forwards=False, isdigital=False,
+                               digital_spread=0.0):
     """One-step-survival (OSS) Monte Carlo for a discretely monitored barrier option.
 
     At each observation date the analytic survival probability contributes the knock-out term
@@ -1820,6 +1847,13 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     spot model neither vol quantity is built, so a leg reaching for an implied surface fails on the
     shape rather than quietly pricing a second model. Quanto bends the per-fixing carry; compo
     prices S*X.
+
+    ``digital_spread`` is a digital's relative half-width ``eps``: under GBM the digital is the
+    `strike_spread` of the barrier calls at ``K(1 -+ eps)``, each read at its own strike - both
+    walk the fixings side by side off the same uniforms on their own strips, each integrating its
+    terminal step to its strike (`lognormal_band_gain`), and the in-out-parity vanilla and the
+    already-hit leg are the European spread at the legs' ``sd_to_expiry``. A kit's law carries the
+    smile and does not read it.
 
     Conventions this loop owns:
 
@@ -1866,7 +1900,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         PURE bound/theta split: leading arguments are the block's shape, trailing ones every
         graph-carrying tensor. It takes BOTH vol quantities - ``vols`` the per-interval strip
         ``[N_block, N_fix, batch]`` the simulation steps on, ``sd_to_expiry`` the European standard
-        deviation ``[N_block, batch]`` the parity vanilla is valued at.
+        deviation ``[N_block, batch]`` the parity vanilla is valued at. Under a digital spread each
+        carries a leg axis after the block's, the two legs' reads at their own strikes, and the
+        legs walk side by side.
 
         A digital's TERMINAL step is INTEGRATED, not sampled: an indicator on a drawn spot has zero
         derivative almost everywhere, so sampling it loses most of a digital's delta and vega.
@@ -1889,6 +1925,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # mask is what makes it the identity. Read on the HOST - the day-count strip is constant
         zero_step = (times <= 0).detach().cpu().numpy()     # [N_block, N_fix]
         if kit is None:
+            if spread:
+                # the legs' strips sit on an axis of their own, after the block's
+                dt, carry_int = dt.unsqueeze(1), carry_int.unsqueeze(1)
             live = (dt > 0).to(carry_int.dtype)             # [N_block, N_fix, 1]
             # `vols` is the INTERVAL vol strip (forward_vol_rate), so this is interval variance.
             # The floor stays under `sqrt`, whose gradient at an exact zero is not finite
@@ -1905,7 +1944,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             N_fix = D.shape[0]
             r = sigma = law = None
             if kit is None:
-                r, sigma = drift[blk], vol[blk]  # [N_fix, batch] each
+                r, sigma = drift[blk], vol[blk]  # [N_fix, batch] each, legs first under a spread
 
             # antithetic variates: [N_fix, batch, 2*num_sims] (shared OSS spelling, bit-identical)
             n_mix = 0 if kit is None else kit.mixers(row_times[blk], times[blk])
@@ -1922,10 +1961,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 if kit is None:
                     # the parity vanilla: KI = Vanilla - KO_pure + rebate * E[L_T]. ONE vol prices
                     # every European leg - the `sd_to_expiry` the already-hit leg marks with, not
-                    # the strip's own total
+                    # the strip's own total - and a spread's legs each their own
                     fwd_to_T = s * torch.exp(total_log_forward(carry[blk], times[blk]))
                     vol_to_T = sd_to_expiry[blk]
-                    if isdigital:
+                    if spread:
+                        vanilla_pv = strike_spread(*utils.black_european_option(
+                            fwd_to_T, struck[..., 0], vol_to_T, 1.0, 1.0, phi, shared),
+                            spread, phi) / strike * D[-1]
+                    elif isdigital:
                         vanilla_pv = utils.black_european_option(
                             fwd_to_T, strike, vol_to_T, 1.0, 1.0, phi, shared, cash_payoff=1.0) * D[-1]
                     else:
@@ -1938,8 +1981,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     parity.append(vanilla_pv)
                 vanilla_pv = vanilla_pv.reshape(-1, 1)  # [batch, 1]
 
-            P = shared.one.new_zeros(shared.simulation_batch, 2 * num_sims)
-            L = shared.one.new_ones(shared.simulation_batch, 2 * num_sims)
+            P = shared.one.new_zeros(*legs, shared.simulation_batch, 2 * num_sims)
+            L = shared.one.new_ones(*legs, shared.simulation_batch, 2 * num_sims)
             surv_payoff = None
             # initialise Sj by broadcasting spot into [batch, 2*num_sims]
             Sj = s.reshape(-1, 1) + P
@@ -1948,7 +1991,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                        N_fix=N_fix):
                 """One observation: the state it leaves (see `oss_stream`)."""
                 if kit is None:
-                    r_j, sig_j = r[j].reshape(-1, 1), sigma[j].reshape(-1, 1)  # [batch, 1] each
+                    # [batch, 1] each, legs first under a spread
+                    r_j, sig_j = r[..., j, :].unsqueeze(-1), sigma[..., j, :].unsqueeze(-1)
                 else:
                     r_j, sig_j = law[0][..., j], law[1][..., j]   # the interval's own block law
 
@@ -1957,12 +2001,14 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                     # tape, and that term is most of a digital's delta and vega. A ZERO-LENGTH one
                     # has nothing to integrate - its spot is the row's own, so `joint` is exact
                     if zero_step[blk][j]:
-                        joint = (phi * (Sj - strike) > 0.0).to(Sj.dtype)
+                        # a spread's legs pay their intrinsics, which the parity vanilla reads there
+                        joint = (torch.relu(phi * (Sj - struck)) if spread else
+                                 (phi * (Sj - strike) > 0.0).to(Sj.dtype))
                         if isBarrierDate_block[j] > 0:
                             p = survives(Sj)
                             joint = joint * p
                     else:
-                        z_pay = (torch.log(strike / Sj) - r_j) / sig_j
+                        z_pay = (torch.log(struck / Sj) - r_j) / sig_j
                         lo, hi = (z_pay, None) if phi == OPTION_CALL else (None, z_pay)
                         if isBarrierDate_block[j] > 0:
                             z_max = (torch.log(barrier / Sj) - r_j) / sig_j
@@ -1972,9 +2018,13 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                             else:
                                 p = 1.0 - utils.norm_cdf(z_max)
                                 lo = z_max if lo is None else torch.maximum(lo, z_max)
-                        # joint P(pays AND survives this fixing)
-                        joint = ((utils.norm_cdf(hi) if hi is not None else 1.0) -
-                                 (utils.norm_cdf(lo) if lo is not None else 0.0)).clamp(min=0.0)
+                        # joint P(pays AND survives this fixing), a spread's legs their calls over
+                        # the band each one's own law leaves
+                        if spread:
+                            joint = lognormal_band_gain(Sj, r_j, sig_j, lo, hi, struck, phi)
+                        else:
+                            joint = ((utils.norm_cdf(hi) if hi is not None else 1.0) -
+                                     (utils.norm_cdf(lo) if lo is not None else 0.0)).clamp(min=0.0)
                     if isBarrierDate_block[j] > 0 and direction == BARRIER_OUT:
                         P = P + (1.0 - p) * L * rebate_per_unit * D[j].reshape(-1, 1)
                     # survival is inside `joint`, so it weights the L carried IN, while L itself
@@ -2017,6 +2067,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 return (Sj * torch.exp(r_j + sig_j * Z), P, L, surv_payoff), None
 
             (Sj, P, L, surv_payoff), _ = oss_stream(fixing, (Sj, P, L, surv_payoff), N_fix, shared)
+            if spread:
+                # the legs' barrier calls make the digital; a rebate, which the binary declares
+                # none of, rides on the legs' mean
+                surv_payoff = strike_spread(*surv_payoff, spread, phi) / strike
+                P, L = P.mean(0), L.mean(0)
 
             # terminal payoff on paths that survived all barrier dates; surv_payoff is already
             # L-weighted when the last step was integrated rather than sampled (GBM digitals)
@@ -2074,6 +2129,12 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     # quantity instead
     scalars = oss_model_scalars(factor_dep, shared)
     kit = oss_model_kit(factor_dep, scalars)
+    # a digital's spread legs, read under GBM alone: a kit's law carries the smile itself
+    spread = digital_spread if kit is None else 0.0
+    levels = (strike * (1.0 - spread), strike * (1.0 + spread)) if spread else ()
+    # the strike a walk integrates its terminal step to, and the legs' axis its state carries
+    struck = spot.new_tensor(levels).reshape(-1, 1, 1) if spread else strike
+    legs = (len(levels),) if spread else ()
 
     expiry = daycount_fn(tau)
     expiry_years_key = ('Expiry_Years', tuple(expiry))
@@ -2082,8 +2143,10 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
 
     expiry_years = factor_dep[expiry_years_key]
     forward = spot * torch.exp(b * expiry_years)
-    moneyness = calc_moneyness(compo_strike(factor_dep, deal_time, shared, shared.one * strike),
-                               spot, forward, deal_data, use_forwards, invert_moneyness)
+    moneyness, *leg_moneyness = [
+        calc_moneyness(compo_strike(factor_dep, deal_time, shared, shared.one * level), spot,
+                       forward, deal_data, use_forwards, invert_moneyness)
+        for level in (strike,) + levels]
 
     # per-scenario: crossed at a past discrete observation date? Once set, KO scenarios are worth 0
     # and KI scenarios the vanilla European
@@ -2096,8 +2159,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     boundary_aad = getattr(shared, 'boundary_aad', False) and not smooth
     b_gaps, b_crossed, b_obs_before, b_alive, b_dead, b_cash = [], [], [], [], [], []
 
-    for index, (discount_block, spot_block, moneyness_block, rem_exp) in enumerate(
-            utils.split_counts([discount, spot, moneyness, expiry_years], counts, shared)):
+    for index, (discount_block, spot_block, moneyness_block, rem_exp,
+                *leg_moneyness_block) in enumerate(utils.split_counts(
+                    [discount, spot, moneyness, expiry_years] + leg_moneyness, counts, shared)):
 
         t_block = discount_block.time_grid
         sample_index_t = start_index[index]
@@ -2161,7 +2225,6 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             adj = calc_vol_adjustment(factor_dep, t_block, expiry, expiry_vols, shared, fixings)
             if adj['fx_vol'] is not None:
                 local = (spot_block, drifts, fixing_fx_forwards(adj, fixing_block))
-            expiry_vols = adj['vol']
             drifts = drifts + adj['carry_adj']
             spot_block = spot_block * adj['spot_scale']
 
@@ -2171,22 +2234,35 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # the carry over each INTERVAL, which is not the zero carry to each fixing
         # (forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
         fwd_drifts = forward_carry_rate(drifts, cum_t, sample_ts)
-        # the SIMULATION read: the surface at every fixing's own tenor and the deal's declared
-        # moneyness, differenced into forward variance (forward_vol_rate)
         smile_spot, smile_carry, fx_forward = local or (spot_block, drifts, 1.0)
-        interval_vols = forward_vol_rate(forward_vol_strip(
-            deal_data, shared.one * strike / fx_forward, smile_spot, smile_carry, fixing_block,
-            shared, invert_moneyness, use_forwards), cum_t, sample_ts
-        ) if kit is None else spot_block.new_empty(0)
-        if adj is not None and adj['fx_vol'] is not None:
-            # compo: the simulation steps S*X, so each interval's vol is the PRODUCT's - the
-            # asset's own interval strip composed with the fx expiry read
-            interval_vols = compo_vol(interval_vols, adj['fx_vol'].unsqueeze(1), adj['rho'])
-        # sigma(K, tau) * sqrt(tau): the ONE European standard deviation, marked by the already-hit
-        # leg below and by the in-out-parity vanilla inside sim_spot_oss; zero on the expiry row,
-        # where Black reads the intrinsic, the root kept off zero so its gradient stays finite
-        sd_to_expiry = (expiry_vols * torch.sqrt(rem_exp.clamp(min=1e-4)) * (rem_exp > 0.0)
-                        if kit is None else expiry_vols)
+
+        def reads(level, vols):
+            """Both vol quantities at the strike `level`: the SIMULATION read, the surface at every
+            fixing's own tenor and the deal's declared moneyness differenced into forward variance
+            (forward_vol_rate), and the European standard deviation off `vols`, the surface at the
+            strike's moneyness and the remaining expiry."""
+            strip = forward_vol_rate(forward_vol_strip(
+                deal_data, shared.one * level / fx_forward, smile_spot, smile_carry, fixing_block,
+                shared, invert_moneyness, use_forwards), cum_t, sample_ts)
+            if adj is not None and adj['fx_vol'] is not None:
+                # compo: the simulation steps S*X, so each vol is the PRODUCT's - the asset's own
+                # composed with the fx expiry read
+                strip = compo_vol(strip, adj['fx_vol'].unsqueeze(1), adj['rho'])
+                vols = compo_vol(vols, adj['fx_vol'], adj['rho'])
+            # sigma(K, tau) * sqrt(tau), zero on the expiry row, where Black reads the intrinsic,
+            # the root kept off zero so its gradient stays finite
+            return strip, vols * torch.sqrt(rem_exp.clamp(min=1e-4)) * (rem_exp > 0.0)
+
+        # the ONE European standard deviation is marked by the already-hit leg below and by the
+        # in-out-parity vanilla inside sim_spot_oss; a spread's legs read both quantities at their
+        # own strikes, on an axis after the block's
+        interval_vols = sd_to_expiry = expiry_vols
+        if kit is None and spread:
+            interval_vols, sd_to_expiry = (torch.stack(x, dim=1) for x in zip(*(
+                reads(level, utils.VolSurface.rate(factor_dep['Volatility'], money, expiry, shared))
+                for level, money in zip(levels, leg_moneyness_block))))
+        elif kit is None:
+            interval_vols, sd_to_expiry = reads(strike, expiry_vols)
 
         # discount rates per fixing: [N_block, N_fix, batch]
         discount_rates = utils.calc_discount_rate(discount_block, fixings, shared)
@@ -2221,7 +2297,11 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                 log_fwd = total_log_forward(fwd_drifts, sample_ts)              # [N_block, batch]
                 fwd_to_expiry = spot_block * torch.exp(log_fwd)                 # [N_block, batch]
                 vol_to_T = sd_to_expiry                                         # [N_block, batch]
-                if isdigital:
+                if spread:
+                    vanilla = strike_spread(*utils.black_european_option(
+                        fwd_to_expiry.unsqueeze(1), struck[..., 0], vol_to_T, 1.0, 1.0, phi,
+                        shared).unbind(1), spread, phi) / strike
+                elif isdigital:
                     vanilla = utils.black_european_option(
                         fwd_to_expiry, strike, vol_to_T, 1.0, 1.0, phi, shared, cash_payoff=1.0)
                 else:
@@ -2833,8 +2913,7 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
                     forward, strike * (1.0 + shift * eps), leg_vols, expiry, 1.0, w, shared)
                     )
 
-            # w * (V(K-epsK) - V(K+epsK)) / 2eps = K * cash digital
-            digital_component = w * (legs[0] - legs[1]) / (2.0 * eps)
+            digital_component = strike_spread(legs[0], legs[1], eps, w)
             if is_asset:
                 vanilla = utils.black_european_option(
                     forward, strike, vols, expiry, 1.0, w, shared)

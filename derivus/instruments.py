@@ -3995,8 +3995,21 @@ class EquityBarrierBinaryOption(Deal):
         'column and its compile-time fold, and the **SpotModel** valuation option shared by both',
         'deals - `LogVar2FJ`, which walks its own internal step and is exact where the',
         'observation dates lie on that grid. A knocked-in binary compiles as the plain',
-        '`EquityBinaryOption` it now is.'
+        '`EquityBinaryOption` it now is.',
+        '',
+        'If the **Relative_Digital_Spread** Valuation Configuration option is set (> 0), the',
+        'digital is the call/put spread of half-width `Strike * Relative_Digital_Spread` the plain',
+        'binary takes, a barrier call at each of the two strikes, so the smile is picked up here',
+        'too: the two calls walk the observation dates side by side off the same draws, each on',
+        'the vol strip its own strike reads, and each integrates its terminal step, truncated at',
+        'the barrier under its own law where the expiry is a barrier date. The in-out-parity',
+        'vanilla and the already-hit leg are the European spread, each leg at its own strike\'s',
+        'vol to expiry; on the expiry row each leg is its intrinsic. The option is this type\'s',
+        'own, a knocked-in binary reading the plain binary\'s. Under `LogVar2FJ` it is not read:',
+        'the walk\'s law carries the smile and its digital is the model\'s own.'
     ])
+
+    option_defaults = {'Relative_Digital_Spread': 0.0}
 
     def resolve_history(self, base_date, calendars, valuation_options):
         # the plain binary pays its cash as `Payoff`, the style it defaults to
@@ -4074,7 +4087,8 @@ class EquityBarrierBinaryOption(Deal):
         spot = utils.spot_on_deal_grid(spot, deal_time, shared)
 
         pv = pricing.pv_discrete_barrier_option(
-            shared, time_grid, deal_data, spot, b, tau, fx_rep, isdigital=True)
+            shared, time_grid, deal_data, spot, b, tau, fx_rep, isdigital=True,
+            digital_spread=self.options['Relative_Digital_Spread'])
 
         mtm = pv * fx_rep
 
