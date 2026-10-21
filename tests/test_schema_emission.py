@@ -48,6 +48,12 @@ UNDECLARED_FACTORS = {
     'InterestRateJacobian': 'its block is keyed by BENCHMARK name, so it has no fixed field set',
 }
 
+# process classes no `Price Models` block authors: each is constructed by its calculation alone.
+UNDECLARED_PROCESSES = {
+    'SuppliedValuesModel': 'publishes the values ScenarioValuation supplies, never a model a '
+                           'Model Configuration names',
+}
+
 # How many columns each table tag's deserializer consumes, read off `set_repr` in derivus_jupyter:
 # `DateList`/`CreditSupportList` unpack a PAIR per row, `DateEqualList` keys on [0] and keeps [1:],
 # `DateValueList` only re-types [0], and `ResetArray` zips against ten hardcoded field types.
@@ -254,6 +260,7 @@ SHAPELESS = {
     ('HedgeMonteCarlo', 'Hedging_Problem.Liabilities'),
     ('HedgeMonteCarlo', 'Hedging_Problem.Portfolio_State'),
     ('HedgeMonteCarlo', 'Scenario_Factors'),
+    ('ScenarioValuation', 'Scenarios'),
     ('InterestRatePrices', 'Points.Deal'),
     ('InflationRatePrices', 'Points.Deal'),
     ('SurvivalProbPrices', 'Points.Deal'),
@@ -521,7 +528,7 @@ def test_the_process_types_are_the_process_classes():
     Killing mutation: `LogOUSpotModel`'s declaration withdrawn."""
     undispatchable = sorted(set(PROCESS['types']) - set(concrete_processes()))
     assert not undispatchable, f'schema offers process types with no class: {undispatchable}'
-    missing = sorted(set(concrete_processes()) - set(PROCESS['types']))
+    missing = sorted(set(concrete_processes()) - set(PROCESS['types']) - set(UNDECLARED_PROCESSES))
     assert not missing, f'process classes no schema can author: {missing}'
 
 

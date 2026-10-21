@@ -55,16 +55,17 @@ The active configuration exposes:
 
 ## Running a calculation
 
-Five calculation types are supported. Three have an explicit method, and all five run from the
+Six calculation types are supported. Three have an explicit method, and all six run from the
 JSON-driven dispatcher; every field each reads is in the [Calculations](json/calculations.md)
 reference:
 
 | Method | JSON `Calculation.Object` | Purpose |
 |---|---|---|
 | `cx.Base_Valuation(overrides)` | `BaseValuation` | Single-point MTM revaluation |
+| `cx.run_job(overrides)` | `ScenarioValuation` | One date against each of a batch of given markets, the scenarios priced together in passes |
 | `cx.Credit_Monte_Carlo(overrides)` | `CreditMonteCarlo` | Path-dependent simulation (CVA / FVA / PFE) |
 | `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolver) |
-| `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, the book compiled once and priced again per market move, or under `Method: Graph` each row the move's derivative off one backward pass per trade, and each netting set's margin off it |
+| `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, the book compiled once and its market moves the scenarios of one scenario valuation, or under `Method: Graph` each row the move's derivative off one backward pass per trade, and each netting set's margin off it |
 | `derivus.run_saccr(cx.current_cfg, overrides)` | `SACCR` | The SA-CCR exposure at default of each netting set, off one base valuation of the book and each trade's declared terms |
 | `cx.run_job(overrides)` | (any of the above) | Runs the class the loaded JSON's `Calculation.Object` names through its `run`, which each method above is one line onto |
 | `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |
@@ -273,7 +274,7 @@ A reported number is replayable from five coordinates:
 
 `rf.__version__` is the engine version, and the two seeds are coordinates of their own because
 they belong to neither hash: `Random_Seed` seeds a credit or hedging Monte Carlo's scenarios, null
-for a base valuation, a SIMM and an SA-CCR, which declare none, and `Quasi_Seed`, which every calculation
+for a base or a scenario valuation, a SIMM and an SA-CCR, which declare none, and `Quasi_Seed`, which every calculation
 declares, its quasi-random draws, a pricer's inner paths among them. Two runs agreeing on all five
 report the same numbers, so one plan can be compiled once and re-run against many value sets — and
 a run whose engine version differs is not a replay, because a code change may legitimately
@@ -321,7 +322,7 @@ there's no implicit cache that needs to be invalidated.
 
 ## Output structure
 
-A base valuation returns `(calc, out)` where `out` is a dict with three top-level keys; a credit
+A base or a scenario valuation returns `(calc, out)` where `out` is a dict with three top-level keys; a credit
 Monte Carlo returns the same three plus a fourth; a `SIMM` or an `SACCR` run returns `Stats` and
 `Results` only.
 (A hedge run returns a

@@ -29,25 +29,39 @@ how it runs, and `cx.Base_Valuation`, `cx.Credit_Monte_Carlo`, `cx.Hedge_Monte_C
 reads the block `Calculation.parameters` completes: the keys its class's `runner_keys` derive
 (`Run_Date`, and `Time_grid` for the Monte Carlo modes), the document's block over them and the
 overrides merged deeply; every other default comes from the class's `fields` through
-`declared_defaults`. `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` pick the device and
-take a precision, `CreditMonteCarlo.run` sharding under `runparallel`. `SIMM` and `SACCR` inject
-nothing, `SACCR` running through the base `Calculation.run`, their calculations sharing
-`NettingSetCalculation`'s setup and its `base`, which compiles the book once as
-`BaseValuation.execute` does (`update_factors`, `set_deal_structures`; a worker of `SIMM.run`
-compiles its own once, `SIMM.shard`), each surface a vega move reaches given its vertex pillars so
-the base and every move share one grid, and prices it. A move (`SIMM.value`) writes the
-values of the factors it moves into their compiled leaves in place, clears `t_Buffer` and the
-trades' result blocks, prices the whole tree again and reads each trade off its own structure, a
-trade left unvalued refused by name, and writes the compiled leaves back. Every move prices the
-whole set, the trades it does not reach included. A base valuation
-draws a trade's Monte Carlo paths off `Quasi_Seed` alone, whatever is booked beside it, and the
-inner block stays built through the run, so a trade draws the same paths through every pricing and
-its difference is one of common random numbers. **Held by**
-`tests/test_simm.py::test_the_set_is_compiled_once_and_a_move_writes_the_leaves_it_moves`,
+`declared_defaults`. `BaseValuation`, `ScenarioValuation`, `CreditMonteCarlo` and
+`HedgeMonteCarlo` pick the device and take a precision, `CreditMonteCarlo.run` sharding under
+`runparallel`. `SIMM` and `SACCR` inject nothing, `SACCR` running through the base
+`Calculation.run`, their calculations sharing `NettingSetCalculation`'s setup and its `base`, which
+compiles the book once as a `ScenarioValuation` whose scenarios its valuation states
+(`update_factors`, `set_deal_structures`; a worker of `SIMM.run` compiles its own once, over its
+own moves, `SIMM.shard`), each surface a vega move reaches given its vertex pillars so the base and
+every move share one grid, and prices it on the standing market alone. Under `Method: Bump` the
+moves are that valuation's scenarios (`SIMM.values`): those whose market a scenario axis carries
+priced `Batch_Size` at a time, or as many as half the device's free memory holds at what a scenario
+took in the standing market's pass, each pass beside the standing market, so a trade's change is
+the difference of two columns of one pass; a vega move, its surface or space read static, priced
+alone, its change off the base (`ScenarioValuation.passes`). A trade a pass leaves unvalued is priced again a
+move a pass, so the refusal names its own move. Every pass prices the whole set, the trades it does
+not reach included. A base valuation draws a trade's Monte Carlo paths off `Quasi_Seed` alone,
+whatever is booked or priced beside it, and the inner block stays built through the run, so a trade
+draws the same paths through every pricing and its difference is one of common random numbers.
+**Held by** `tests/test_simm.py::test_the_set_is_compiled_once_and_a_move_writes_the_leaves_it_moves`,
 `::test_a_move_its_pricer_refuses_is_refused_by_name_never_read_off_the_last_pricing`,
 `::test_a_netting_set_s_crif_is_its_trades_own_to_the_bit`,
 `::test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit`,
-`::test_the_sharded_run_equals_the_serial_run_to_the_bit`.
+`::test_the_sharded_run_equals_the_serial_run_to_the_bit`,
+`::test_the_batched_run_sharded_equals_the_serial_run_to_the_bit`.
+
+A pass's arithmetic is its own: a column is the same to the bit whatever stands beside it, so the
+CRIF is the same whatever the chunk and the worker count. A pass of one is the exception: it sums a
+deal's terms with the scenario axis contiguous where a pass of several strides it, so a bump
+pricing each move in a pass of its own reassociates against the batch, a row departing by at most
+3.0e-12 of its trade's largest (a linker's rate rows, two ulps of its value). A mean over 16,384
+inner paths the device splits across blocks by the pass's width, so on the Monte Carlo set a pass
+of five departs from a pass of two by 3.7e-15 of a trade's largest row. **Held by**
+`tests/test_simm.py::test_the_scenario_batch_writes_the_crif_the_row_at_a_time_bump_wrote`,
+`::test_the_chunked_batch_writes_the_same_crif`.
 
 Under `Method: Graph` nothing moves: the set is priced once on the tape, every curve, survival and
 inflation solve kept there (`Quote_Sensitivity`), and a trade's rows are one backward pass of its
@@ -401,6 +415,27 @@ alone, a collateralised set whatever its `Collateral_Call_Frequency`, so a set r
 net uncollateralised and `SIMM` and `SACCR`, pricing by one, value every trade it holds. **Held by**
 `tests/test_collateral.py::test_a_base_valuation_values_a_set_whatever_it_calls_at`,
 `tests/test_saccr.py::test_the_margined_example_is_cre99s_to_its_printed_figures`.
+
+**`ScenarioValuation`** is one date against B given markets: a base valuation whose `Scenarios`
+are data, each the price factors it states over the job's own, which `SIMM` fills from its moves
+and a historical or stressed market would fill from an archive or a file. Where it has scenarios,
+every factor of a type that carries a scenario axis (`SuppliedValuesModel.factor_types`: spots,
+bases, price indices and every curve) but the base currency's price is a `SuppliedValuesModel`,
+which draws nothing and publishes its value on each scenario of a pass as one path on the one row;
+a vol surface or space, a model's parameters and a correlation stay static, so a scenario stating
+one is priced in a pass of its own, the factor written into its leaf and put back. A pass is
+`Scenario_State.reset`, each process's `generate` and `resolve_structure`, its state the base
+valuation's with a scenario axis, so a deal prices on each scenario as a base valuation of that
+market does: the smooth estimator, a collateralised set's net, a Monte Carlo deal's inner paths
+the canonical block broadcast over the scenarios, and an amortising swaption's vol tenor read off
+each scenario's own curves. `Valuation_Date` ages the deals to a later date as a credit Monte Carlo
+prices a later grid point, the scenarios the markets there. **Held by**
+`tests/test_simm.py::test_a_scenario_is_the_move_it_was_filled_with`,
+`::test_a_later_valuation_date_values_each_market_as_a_base_valuation_on_that_date`,
+`tests/test_collateral.py::test_a_scenario_valuation_values_a_collateralised_set_as_a_base_valuation_does`.
+A vol surface carries no scenario axis: a surface per scenario needs every read `VolSurface`
+spells - the flat grid's gather and its moneyness read per column, the Skew and SVI parameters, the
+vol space's tenor blend - to take a trailing scenario axis, more than one seam.
 
 **`HedgeMonteCarlo`** runs the credit Monte Carlo engine and harvests its marks. `update_factors`
 adds `Scenario_Factors` (factors no deal reaches) and caps the grid at the liability terminal; a leg

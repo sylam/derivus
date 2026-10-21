@@ -1,7 +1,7 @@
 ## The output dictionary
 
 Every calculation method returns `(calc, out)`. For a base valuation `out` is a dict with three
-top-level keys; a credit Monte Carlo adds a fourth, `Jacobians`; a `SIMM` or an `SACCR` run
+top-level keys, as does a scenario valuation; a credit Monte Carlo adds a fourth, `Jacobians`; a `SIMM` or an `SACCR` run
 carries `Stats` and `Results` only; and a hedge run returns an attribute object instead (see
 [API Overview](api_overview.md#hedge-monte-carlo)):
 
@@ -55,6 +55,14 @@ calc, out = cx.Credit_Monte_Carlo(overrides={})
 `Results` carries the solver's outputs: the fitted value-function artifact, the greedy-policy
 verdict and the benchmark comparison (see the [Hedging](hedging/overview.md) section).
 
+## ScenarioValuation
+
+`Results['mtm']` holds one row per deal and structure, the root first, each structure before what it
+holds: `Parent`, `Reference`, `Object`, `Value` (its value on the job's own market) and one column
+per scenario, numbered as `Scenarios` lists them, each in the calculation `Currency`. A deal its
+pricer could not value on a scenario reads NaN there. `Stats['Batch_Size']` is the most scenarios
+a pass priced.
+
 ## SIMM
 
 `Results` contains:
@@ -77,7 +85,8 @@ verdict and the benchmark comparison (see the [Hedging](hedging/overview.md) sec
   is its rows', and the shares sum to the set's margin where no concentration threshold binds
 
 `Stats['Parameters']` records the `version` the SIMM parameters file states, and `Stats` carries the
-one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`).
+one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`) and, under
+`Method: Bump`, the most moves a pass priced (`Batch_Size`).
 
 ## SACCR
 

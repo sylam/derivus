@@ -470,6 +470,39 @@ def test_a_base_valuation_values_a_set_whatever_it_calls_at():
     assert marks[1] == marks[0] and marks[1]['CSA-1'] == marks[1]['FWD'] != 0.0, marks
 
 
+def test_a_scenario_valuation_values_a_collateralised_set_as_a_base_valuation_does():
+    """GIVEN MARKETS BOOK NO CASH. A `ScenarioValuation` of the collateralised set on its index a
+    percent up and on the rand and the euro a percent up, priced in one pass of three scenarios,
+    values the set and its forward on each market to the bit as a base valuation of that market
+    does, the set at its forward's own value, the uncollateralised net: a balance reads the cash
+    ledger a simulation keeps over its paths, and given markets on one date keep none.
+
+    Killing mutation: the set collateralised wherever a pass holds more than one scenario - its
+    balance read off a ledger the pass never kept, the set unvalued on every scenario.
+    """
+    job = engine_job(TERMS)
+    stated = job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    markets = [{name: dict(stated[name], Spot=stated[name]['Spot'] * 1.01)}
+               for name in ('EquityPrice.EQ', 'FxRate.ZAR', 'FxRate.EUR')]
+
+    def valued(calculation, market=None):
+        document = json.loads(json.dumps(job))
+        document['Calc']['Calculation'] = dict(
+            calculation, Base_Date={'.Timestamp': BASE}, Currency='USD')
+        document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(
+            market or {})
+        context = derivus.Context()
+        context.load_json((json.dumps(document), 'given'))
+        return context.run_job()[1]['Results']['mtm'].set_index('Reference')
+
+    frame = valued({'Object': 'ScenarioValuation', 'Scenarios': markets})
+    for column, market in [('Value', {})] + list(enumerate(markets)):
+        alone = valued({'Object': 'BaseValuation'}, market)
+        for reference in ('CSA-1', 'FWD'):
+            assert frame.loc[reference, column].hex() == alone.loc[reference, 'Value'].hex(), (
+                column, reference)
+
+
 def test_an_independent_amount_stated_as_an_empty_list_is_one_of_zero():
     """A blank table reads as the key left out: an `Independent_Amount` written as an empty
     `CreditSupportList` is an independent amount of zero, as the spine's CSA reads it, and the

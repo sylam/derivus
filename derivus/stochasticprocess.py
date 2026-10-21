@@ -6377,6 +6377,33 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         """`sqrt(exp(log h))` at `log_h = ell + s`: `h` is the ANNUALISED variance already."""
         return torch.sqrt(torch.exp(log_h))
 
+
+class SuppliedValuesModel(StochasticProcess):
+    """The values its calculation supplies (`calculation.ScenarioValuation`): one row, the date
+    the calculation values on, and one path a scenario, the factor as that scenario's market
+    states it. It draws nothing, has no dynamics and is no simulation's, so it is constructed by
+    its calculation alone, never named in `Model Configuration`, and `generate` is all it does."""
+
+    #: The factor types a scenario axis is carried for, each read off `t_Scenario_Buffer` where a
+    #: process publishes it; a vol surface or space, a model's parameters and a correlation are
+    #: read off their static leaf alone.
+    factor_types = ('CommodityPrice', 'DividendRate', 'EquityPrice', 'ForwardPrice', 'ForwardRate',
+                    'FxRate', 'InflationRate', 'InterestRate', 'ObservedBasis', 'PriceIndex',
+                    'SurvivalProb')
+
+    def basis_decay(self):
+        """A supplied basis has no dynamics, so it is held where it stands, as a static one is."""
+        return 1.0, 0.0
+
+    def generate(self, shared_mem):
+        """The pass's values of this factor as its calculation supplied them, scenarios last
+        (`calculation.Scenario_State.reset`), on the one row: `[1, tenors, scenarios]` a curve's,
+        `[1, scenarios]` a spot's."""
+        values = shared_mem.t_Supplied[self.factor_key]
+        return values.unsqueeze(0) if self.factor_key.type in utils.OneDimensionalFactors else (
+            values.reshape(1, -1))
+
+
 def process_class(sp_type):
     """The process `Model Configuration` names; an unknown name refuses by name."""
     cls = globals().get(sp_type)

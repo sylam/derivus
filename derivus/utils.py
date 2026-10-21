@@ -1527,8 +1527,7 @@ class Calculation_State(object):
         self.t_Static_Buffer = static_buffer
         # storing a unit tensor allows the dtype and device to be encoded in the calculation state
         self.one = unit
-        self.fillvalue = unit.new_zeros((0, 1, simulation_batch))
-        self.simulation_batch = simulation_batch
+        self.resize(simulation_batch)
         # How many batches the RUN takes, so its sample is this times `simulation_batch`. Declared
         # here, at 1, so a calculation that does not batch is read without a fallback.
         self.simulation_batches = 1
@@ -1556,6 +1555,12 @@ class Calculation_State(object):
             self.quasi_seed = quasi_seed
         # the canonical inner block per inner path count - see `inner_block`
         self.t_inner_block = {}
+
+    def resize(self, simulation_batch):
+        """The paths a pricing runs on, `simulation_batch`, and the empty batch-sized block a
+        pricer joins its resets onto (`fillvalue`), which follows it."""
+        self.simulation_batch = simulation_batch
+        self.fillvalue = self.one.new_zeros((0, 1, simulation_batch))
 
     def upload(self, array, dtype=None):
         """Numpy `array` on this state's device in `dtype`, the job's by default: copied once a

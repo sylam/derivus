@@ -351,18 +351,18 @@ def test_the_sharded_run_equals_the_serial_run_to_the_bit(serial):
 def test_the_set_is_compiled_once_and_a_move_writes_the_leaves_it_moves(serial):
     """ONE COMPILE A RUN. The swap and the option are compiled once - the run's `Deals loaded` is
     2 - on the curves the bootstrap solved, riding none, through the 10 and 30 moves they take, 30
-    between them, each the moved factors' values written into the compiled leaves and the set
-    priced again: the option's FX row is a base valuation of the option with ZAR's price a percent
-    up less its standing value, and its 1y vega row one with the surface's 1y pillar a point up,
-    each to 1e-12 of itself.
+    between them, each a scenario of the one valuation, a vega move's surface written into its
+    compiled leaf for its pass: the option's FX row is a base valuation of the option with ZAR's
+    price a percent up less its standing value, and its 1y vega row one with the surface's 1y
+    pillar a point up, each to 1e-12 of itself.
 
-    Killing mutations: the set compiled again for every move - `Deals loaded` 62; the run's
+    Killing mutations: the set compiled again for every pass - `Deals loaded` 28; the run's
     declaration of no ride dropped - the compile rides each curve to the quotes standing, a
-    mispricing per set, and `Calibrations` names both; the memo left standing between pricings -
-    every move reads the base's prices and the run writes no row; a leaf written on a copy - every
-    move prices the base, no row; the set compiled on the surface's own pillars and the vega moves
-    on it given its vertex pillars - the first vega move's write refused, a surface of 9 vols
-    against 36.
+    mispricing per set, and `Calibrations` names both; the memo left standing between passes - the
+    pass of 18 moves reads the standing pass's prices, one scenario wide, and the run fails on the
+    shape; a leaf written on a copy - every vega move prices the standing surface, no vega row; the
+    set compiled on the surface's own pillars and the vega moves on it given its vertex pillars -
+    the first vega move's write refused, a surface of 9 vols against 36.
     """
     output = serial[1]
     assert output['Stats']['Deals loaded'] == 2 and 'Calibrations' not in output['Stats']
@@ -384,7 +384,7 @@ def test_a_move_its_pricer_refuses_is_refused_by_name_never_read_off_the_last_pr
     what the 3m fixing reached, the pricer refuses a variance that decreases across its fixings,
     and the run refuses by name the move that left the trade unvalued.
 
-    Killing mutation: the trades' result blocks left standing between pricings - the 6m and 1y
+    Killing mutation: the trades' result blocks left standing between passes - the 6m and 1y
     moves read the 3m move's value and the run writes three vega rows of 25.75 each.
     """
     fixings = [[BASE + pd.DateOffset(days=days), BASE + pd.DateOffset(days=days + 2), None, None]
@@ -1290,6 +1290,155 @@ def test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit():
         1]['Results'] for trade in ('AC1', 'AC2')]
     identical(serial, {table: pd.concat([run[table] for run in alone], ignore_index=True)
                        for table in ('CRIF', 'Trades')})
+
+
+#: The module's world's CRIF as the row-at-a-time bump wrote it at ee4492f, each move priced alone
+#: and differenced against the base priced alone, `{coordinates: Amount}` in hex.
+ROW_AT_A_TIME = {
+    ('SWAP', 'Risk_IRCurve', 'USD', '1', '1y', 'OIS'): '-0x1.8629280000000p-13',
+    ('SWAP', 'Risk_IRCurve', 'USD', '1', '2y', 'OIS'): '-0x1.887356a6ed101p-11',
+    ('SWAP', 'Risk_IRCurve', 'USD', '1', '3y', 'OIS'): '-0x1.a12e854dda204p-9',
+    ('SWAP', 'Risk_IRCurve', 'USD', '1', '5y', 'OIS'): '0x1.bb68826f11006p+8',
+    ('SWAP', 'Risk_IRCurve', 'USD', '1', '10y', 'OIS'): '0x1.f1dd1352dba3cp-3',
+    ('FXO', 'Risk_FX', 'ZAR', '', '', ''): '-0x1.27d503b1792a0p+12',
+    ('FXO', 'Risk_FXVol', 'USDZAR', '', '1y', ''): '0x1.d3f9c982815c0p+11',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '1y', 'OIS'): '-0x1.a682e80970800p+5',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '2y', 'OIS'): '-0x1.2eea74415f62ep-2',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '3y', 'OIS'): '-0x1.aa1454c13a47cp-11',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3m', 'Libor3m'): '0x1.7d557a4f2867cp+3',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '6m', 'Libor3m'): '0x1.1df838c409462p+4',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '1y', 'Libor3m'): '0x1.1de168262f860p+4',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '2y', 'Libor3m'): '0x1.3d9acf0146231p-2',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3y', 'Libor3m'): '0x1.bebd9ef3b9eedp-11'}
+
+
+def test_the_scenario_batch_writes_the_crif_the_row_at_a_time_bump_wrote(serial):
+    """THE BATCH IS THE BUMP. The module's world, its 18 delta moves priced as scenarios beside the
+    standing market in one pass and its 12 vega moves each alone, writes the CRIF the row-at-a-time
+    bump wrote, banked here in hex: the same fifteen coordinates, the option's ten rows to the bit
+    and the swap's five within 1e-12 of its largest row. Three of the swap's depart, its 1y, 3y and
+    5y rows by at most 6.6e-14 of its 443.41: a pass of several scenarios sums a leg's cashflows
+    with the scenario axis strided, where a pass of one sums them contiguously, so each of the
+    swap's legs, each near a million, is reassociated by an ulp.
+
+    Killing mutations: a pass's columns read in reverse - rows written on coordinates the bump
+    never wrote, each read off another move; the scenarios' values never supplied, every column of
+    a pass the standing market - no delta row written, the CRIF the option's one vega row.
+    """
+    crif = serial[1]['Results']['CRIF']
+    found = {tuple(row[:6]): row[6] for row in zip(
+        crif['TradeID'], crif['RiskType'], crif['Qualifier'], crif['Bucket'], crif['Label1'],
+        crif['Label2'], crif['Amount'])}
+    assert set(found) == set(ROW_AT_A_TIME)
+    assert {key: amount.hex() for key, amount in found.items() if key[0] == 'FXO'} == {
+        key: amount for key, amount in ROW_AT_A_TIME.items() if key[0] == 'FXO'}
+    largest = max(abs(float.fromhex(amount)) for key, amount in ROW_AT_A_TIME.items()
+                  if key[0] == 'SWAP')
+    gaps = {key: abs(amount - float.fromhex(ROW_AT_A_TIME[key])) / largest
+            for key, amount in found.items() if key[0] == 'SWAP'}
+    assert max(gaps.values()) <= 1e-12, gaps
+
+
+def test_a_scenario_is_the_move_it_was_filled_with():
+    """A SCENARIO IS ITS MARKET. A `ScenarioValuation` of the swap, the option and the two
+    autocalls under one set, on 256 inner paths, against nine markets of the kinds a SIMM move
+    states - the rand a percent up, each curve a basis point, two curves at once, each index's
+    spot, a dividend curve, the FX surface's 1y pillar and the second index's surface a point up -
+    values each trade on each market to the bit as a base valuation of that market written alone:
+    the seven a scenario axis carries priced together in one pass, the two vol surfaces, read
+    static, each alone.
+
+    Killing mutations: the scenarios' order permuted in a pass - the option on the rand's market
+    valued at 66,209.81 where it marks 61,476.49; a static factor's market read off the standing
+    one, its surface never written - the option 3,743.81 off on the FX surface's market and the
+    second autocall 1.34e-3 on its own.
+    """
+    stated = dict(factors(), **INDICES)
+
+    def shifted(name, shift):
+        block = stated[name]
+        return {name: dict(block, Curve=utils.Curve(
+            block['Curve'].meta, block['Curve'].array + np.array([0.0, shift])))}
+
+    vols = stated['FXVol.USD.ZAR']['Surface'].array.copy()
+    vols[vols[:, 1] == 1.0, 2] += 0.01
+    smile = stated['EquityPriceVol.EQ2']['Surface'].array + np.array([0.0, 0.0, 0.01])
+    markets = [
+        {'FxRate.ZAR': dict(stated['FxRate.ZAR'], Spot=stated['FxRate.ZAR']['Spot'] * 1.01)},
+        shifted('InterestRate.USD-OIS', 1e-4), shifted('InterestRate.ZAR-JIBAR', -1e-4),
+        dict(shifted('InterestRate.USD-OIS', -1e-4),
+             **shifted('InterestRate.ZAR-JIBAR.ZAR-JIBAR+50BP', 2e-4)),
+        {'EquityPrice.EQ': dict(stated['EquityPrice.EQ'], Spot=101.0)},
+        {'EquityPrice.EQ2': dict(stated['EquityPrice.EQ2'], Spot=99.0)},
+        shifted('DividendRate.EQ', 5e-4),
+        {'FXVol.USD.ZAR': dict(stated['FXVol.USD.ZAR'], Surface=utils.Curve([], vols))},
+        {'EquityPriceVol.EQ2': dict(stated['EquityPriceVol.EQ2'], Surface=utils.Curve([], smile))}]
+    book, calculation = dict(configuration={}, extra=INDICES, deals=AUTOCALLS), {
+        'MCMC_Simulations': 256}
+    frame = world(dict(calculation, Object='ScenarioValuation', Scenarios=markets),
+                  **book).run_job()[1]['Results']['mtm'].set_index('Reference')
+    for column, market in [('Value', {})] + list(enumerate(markets)):
+        alone = valued(world(dict(calculation, **VALUATION), **dict(
+            book, extra=dict(INDICES, **market))))
+        for trade in ('SWAP', 'FXO', 'AC1', 'AC2'):
+            assert frame.loc[trade, column].hex() == alone[trade].hex(), (column, trade)
+
+
+def test_a_later_valuation_date_values_each_market_as_a_base_valuation_on_that_date():
+    """A VALUATION DATE IS ONE VALUE AWAY. A `ScenarioValuation` of the swap and the option ten days
+    after the base date, on the market as it stands and with the rand a percent up, values each
+    trade on each as a base valuation on that date does, to the bit: the deals aged to the one
+    grid point, the curves read from it.
+
+    Killing mutation: the valuation date read as the base date - the swap 42,074.79 and the option
+    1,217.51 off on the standing market.
+    """
+    later = BASE + pd.DateOffset(days=10)
+    stated = factors()['FxRate.ZAR']
+    market = {'FxRate.ZAR': dict(stated, Spot=stated['Spot'] * 1.01)}
+    frame = world({'Object': 'ScenarioValuation', 'Valuation_Date': later, 'Scenarios': [market]},
+                  configuration={}).run_job()[1]['Results']['mtm'].set_index('Reference')
+    for column, extra in (('Value', {}), (0, market)):
+        on = valued(world({'Object': 'BaseValuation', 'Base_Date': later}, configuration={},
+                          system={'Base_Date': later}, extra=extra))
+        for trade in ('SWAP', 'FXO'):
+            assert frame.loc[trade, column].hex() == on[trade].hex(), (column, trade)
+
+
+def test_the_chunked_batch_writes_the_same_crif():
+    """A CHUNK MOVES NOTHING. The Monte Carlo set's seven delta moves priced a scenario a pass, four
+    a pass and all in one - passes of two, five and eight columns beside the standing market -
+    write the same CRIF and trades report to the bit: each trade's inner paths are the canonical
+    block broadcast over a pass's scenarios, and a column's arithmetic is its own whatever stands
+    beside it. On 16,384 inner paths a pass of five departs on 4 of the 14 rows by 3.7e-15 of a
+    trade's largest row, the device splitting a mean of that many paths across blocks by the
+    pass's width.
+
+    Killing mutation: the inner block drawn per pass, its points read from where a draw of the
+    pass's width stands - 8 of the 14 rows apart between the chunkings, up to 1.75e-3 of a trade's
+    largest.
+    """
+    runs = [world({'MCMC_Simulations': 256, 'Batch_Size': size}, extra=INDICES, deals=AUTOCALLS,
+                  book={'NS': ('AC1', 'AC2')}).run_job()[1] for size in (1, 4, 0)]
+    assert [run['Stats']['Batch_Size'] for run in runs[:2]] == [1, 4]
+    assert runs[2]['Stats']['Batch_Size'] >= 7
+    for run in runs[1:]:
+        identical(run['Results'], runs[0]['Results'])
+
+
+def test_the_batched_run_sharded_equals_the_serial_run_to_the_bit():
+    """The commodity book's moves dealt over two workers, each compiling the set once over its own
+    moves and pricing them three a pass, against the serial run pricing every delta move in one
+    pass: the same CRIF and trades report to the bit, each change priced beside the standing market
+    in its own pass whatever the pass holds.
+
+    Killing mutation: each change read against the base priced alone, so a pass of one move sums
+    as the base does and a pass of several does not - the two fuel trades' commodity rows apart by
+    1.2e-14 and 4.1e-13 of their largest.
+    """
+    serial, sharded = (holding(calculation, COMMODITY_BOOK, extra=COMMODITIES).run_job()[1][
+        'Results'] for calculation in ({}, {'Workers': 2, 'Batch_Size': 3}))
+    identical(sharded, serial)
 
 
 def test_an_autocall_a_past_print_called_writes_no_rows():

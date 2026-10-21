@@ -1,6 +1,6 @@
 # Calculations
 
-A job's `Calculation` block names one of five calculation types in `Object`, and
+A job's `Calculation` block names one of six calculation types in `Object`, and
 `Context.run_job` runs it on the book and the market data the job loads. How each is called and
 what it returns is on [API Overview](../api_overview.md), every field each reads and its default on
 [Calculations](../json/calculations.md) in the JSON reference, and how a job reaches each and where
@@ -9,6 +9,9 @@ they part on [Calc Lifecycle](../developer/calc_lifecycle.md#valuation-modes).
 - **`BaseValuation`** ([`BaseValuation`](#basevaluation)) answers what each deal is worth at
   the valuation date: the book at one date on the `Price Factors` it reaches as they stand, none
   simulated, with AAD sensitivities to them under `Greeks`.
+- **`ScenarioValuation`** ([`ScenarioValuation`](#scenariovaluation)) answers what the book is
+  worth on one date against each of a batch of given markets, each scenario the price factors it
+  states over the job's own; its table is on [Understanding Output](../output.md#scenariovaluation).
 - **`CreditMonteCarlo`** ([`CreditMonteCarlo`](#creditmontecarlo)) answers what the book may
   be worth at each future date: it simulates every factor `Price Models` gives a model, correlated
   as `Correlations` declares and the rest held constant, values the book on every path and reduces
@@ -28,8 +31,8 @@ they part on [Calc Lifecycle](../developer/calc_lifecycle.md#valuation-modes).
   inflation curve a basis point on the breakevens it is defined by - its block's quotes, re-solved,
   where one solves it, its nodes' own where none does - its Risk_Inflation row. The engine has
   no factor type for ISDA's Risk_InflationVol or Risk_CreditVol, and a mapping naming either is
-  refused. The book is compiled once as a `BaseValuation` compiles it and priced again per move
-  with the moved factors written into it, each trade read off its own structure, reading the
+  refused. The book is compiled once as a `ScenarioValuation` whose scenarios are the moves,
+  priced in passes beside the standing market, each trade read off its own structure, reading the
   regime `Mapping` and the ISDA `Parameters` file the block names, and each netting set's margin
   is aggregated off the CRIF, posted and collected. Its tables are on
   [Understanding Output](../output.md#simm).

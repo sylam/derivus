@@ -31,7 +31,7 @@ from functools import partial, reduce
 
 from collections import namedtuple, defaultdict
 from .riskfactors import construct_factor
-from .stochasticprocess import REVEAL_CONTINUOUS, construct_process
+from .stochasticprocess import REVEAL_CONTINUOUS, SuppliedValuesModel, construct_process
 from .instruments import (Deal, barrier_monitoring_rows, get_fxrate_factor, get_survival_component,
                           get_interest_factor, get_survival_factor)
 from .pricing import SensitivitiesEstimator, fixed_payments
@@ -462,6 +462,17 @@ class Calculation(object):
         connected = leaf + (theta - theta.detach())
         connected.retain_grad()
         return connected
+
+    def leaves(self, moved, factors=None):
+        """`[(key, value)]` - each leaf of `factors`, the compiled price factors where None, that
+        the price factors `moved` write, keyed as the compile keys it, and the value written."""
+        found, interp = [], self.config.params['Price Factor Interpolation']
+        for factor in [f for f in (self.all_factors if factors is None else factors)
+                       if utils.check_tuple_name(f) in moved]:
+            value = construct_factor(factor, moved, interp, base_date=self.base_date).current_value()
+            found.extend(((utils.Factor(factor.type, factor.name + (k,)), v) for k, v in
+                          value.items()) if isinstance(value, dict) else [(factor, value)])
+        return found
 
     def make_factor_index(self, tensors):
         tenors = utils.get_tenors(self.all_factors)
@@ -2064,9 +2075,9 @@ class BaseValuation(Calculation):
 
     Two things refuse rather than report a plausible wrong number: a deal that registered a
     `BoundarySet` (`execute` below) and `Recompute_Inner_MC` (`pricing.InnerMCRecompute.backward`).
-    `Branch_And_Weight` answers the first and is declared here and nowhere else - the smooth
-    estimator removes the decision instead of correcting it, so a deal priced under the switch
-    registers nothing and the full Hessian flows.
+    `Branch_And_Weight` answers the first, declared here and on `ScenarioValuation`, which values
+    as this does - the smooth estimator removes the decision instead of correcting it, so a deal
+    priced under the switch registers nothing and the full Hessian flows.
     """
     documentation = ('Calculations', [
         'This applies the valuation models mentioned earlier to the portfolio per deal, at one date and on',
@@ -2098,6 +2109,15 @@ class BaseValuation(Calculation):
         'The output is a dictionary containing the DealStructure and the calculation computation statistics.'
     ])
 
+    #: The smooth estimator's switch, on the calculations that value as this one does.
+    BRANCH_AND_WEIGHT = F(
+        'Branch_And_Weight', 'Text', default='Yes', values=['Yes', 'No'],
+        description='Price fixing-observed knockouts (TARF, accumulator, discrete barrier, '
+                    'autocall) with the SMOOTH estimator, each fixing\'s fired branch integrated '
+                    'analytically; `No` is the crisp estimator')
+    #: The state a pricing runs on.
+    state = Base_Reval_State
+
     fields = [
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default=REQUIRED),
@@ -2114,10 +2134,7 @@ class BaseValuation(Calculation):
         F('Recompute_Inner_MC', 'Text', default='No', values=['Yes', 'No'],
           description='Re-simulate a Monte Carlo pricer\'s inner paths in backward() rather than '
                       'taping them; trades a second forward pass for the graph of every pricing'),
-        F('Branch_And_Weight', 'Text', default='Yes', values=['Yes', 'No'],
-          description='Price fixing-observed knockouts (TARF, accumulator, discrete barrier, '
-                      'autocall) with the SMOOTH estimator, each fixing\'s fired branch integrated '
-                      'analytically; `No` is the crisp estimator'),
+        BRANCH_AND_WEIGHT,
         F('Correlation_Bump', 'Float', default=0.025,
           description='Half-width of the CRN bump reporting a quanto, compo or mid-curve correlation '
                       'delta; 0 turns it off')
@@ -2230,13 +2247,15 @@ class BaseValuation(Calculation):
             self.update_factors(params, self.base_date)
         return rows
 
-    def update_time_grid(self, base_date):
-        self.time_grid = utils.TimeGrid({base_date}, {base_date}, {base_date})
+    def update_time_grid(self, base_date, day=None):
+        """The grid of the one date valued, `day`, the base date where None."""
+        day = base_date if day is None else day
+        self.time_grid = utils.TimeGrid({day}, {day}, {day})
         self.base_date = base_date
         self.time_grid.set_base_date(base_date)
         # the one date IS the reporting date - a boundary registration reads report_index to
         # know the grid its counterfactual lands on, and reads its absence as "not reportable"
-        self.time_grid.set_report_dates(base_date, {base_date})
+        self.time_grid.set_report_dates(base_date, {day})
 
     def __init_shared_mem(self, reporting_currency, mcmc_sim, calc_greeks, quasi_seed):
         # set BOTH ways every run - the switch is process-global
@@ -2251,13 +2270,13 @@ class BaseValuation(Calculation):
             all_vars_concat = [x for x in self.static_var.items() if x[0] != base_currency]
             self.make_factor_index(list(self.static_var.items()))
 
-        shared_mem = Base_Reval_State(
+        shared_mem = self.state(
             self.static_var, torch.ones([1, 1], dtype=self.dtype, device=self.device),
             mcmc_sim, get_fxrate_factor(utils.check_rate_name(reporting_currency), self.static_factors, {}),
             all_vars_concat, self.params['Greeks'] == 'All', quasi_seed)
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
-        # the SMOOTH estimator, declared on this calculation alone; `execute` has completed the
-        # block, so the key is present and the read direct
+        # the SMOOTH estimator, declared on the calculations valuing as this one does; `execute`
+        # has completed the block, so the key is present and the read direct
         shared_mem.branch_and_weight = self.params['Branch_And_Weight'] == 'Yes'
         # the reserve line a calibration WROTE on its factor, which nothing on the tensor side
         # carries: `pricing.skew_reserve` composes it with the portfolio's own two derivatives
@@ -2748,6 +2767,218 @@ class Diary(BaseValuation):
         if isinstance(currency, str) and currency:
             return currency
         return next(iter(settlement)) if len(settlement) == 1 else None
+
+
+class Scenario_State(Base_Reval_State):
+    """A base valuation's state over a batch of given markets: each pass the values its
+    calculation supplies per simulated factor (`t_Supplied`), which the factors' processes
+    publish (`t_Scenario_Buffer`), one path a scenario."""
+
+    def __init__(self, *args, **kwargs):
+        super(Scenario_State, self).__init__(*args, **kwargs)
+        self.t_Supplied = {}
+        self.t_Scenario_Buffer = {}
+
+    def reset(self, supplied, scenarios):
+        """A pass of `scenarios` markets, `supplied` the value of each simulated factor on each,
+        the last pass's memo, published paths and decisions cleared."""
+        self.resize(scenarios)
+        self.t_Supplied = supplied
+        self.t_Scenario_Buffer.clear()
+        self.t_Buffer.clear()
+        self.boundary_sets.clear()
+
+
+class ScenarioValuation(BaseValuation):
+    """The book valued on one date against each of a batch of given markets: a base valuation
+    whose scenarios are data, which `SIMM` fills from its moves.
+
+    A scenario is the price factors it states over the job's own, `{name: block}`. Where there are
+    scenarios, every factor whose type carries a scenario axis (`SuppliedValuesModel.factor_types`)
+    but the base currency's price is simulated, a process publishing its value on each scenario of
+    a pass, one path a scenario; the rest are static, and a scenario stating one of those - a vol
+    surface - is priced in a pass of its own, the factor written into its leaf and put back. With
+    none it compiles and prices as a base valuation does. One pass of reset, generate and
+    `resolve_structure` values every deal on every scenario of the pass as a base valuation of that
+    market does, a Monte Carlo deal's inner paths the canonical block broadcast over them; the
+    deals are aged to `Valuation_Date` as a credit Monte Carlo ages them to a later grid point.
+    """
+    documentation = ('Calculations', [
+        'This values the portfolio on one date against each of a batch of given markets, every',
+        'scenario a market as a base valuation reads one, priced together in one pass of the engine.',
+        '',
+        'The inputs are:',
+        '',
+        '- **Currency** of the output.',
+        '- **Base Date** of the market data, and **Valuation Date** the date the deals are valued on:',
+        '  the base date where blank, a later one aging every deal to it',
+        '- **Scenarios** the markets, each the price factors it states over the job\'s own, by name; a',
+        '  curve, a spot, a survival, inflation or forward curve and a basis carry one value a',
+        '  scenario, and a scenario stating a vol surface is priced alone',
+        '- **Batch Size** the scenarios priced in one pass, as many as half the device\'s free memory',
+        '  holds where 0',
+        '- **MCMC Simulations**, **Quasi Seed**, **Deterministic Kernels** and **Branch And Weight**',
+        '  as a base valuation reads them, every scenario drawing the same inner paths',
+        '',
+        'The output `mtm` holds each deal\'s and each structure\'s value on the job\'s own market and',
+        'on each scenario, one column a scenario.'
+    ])
+
+    #: `MCMC_Simulations`, declared once for the calculations valuing on given markets.
+    MCMC_SIMULATIONS = F('MCMC_Simulations', 'Integer', default=1 << 14,
+                         description='Inner Monte Carlo paths of each pricing, as a BaseValuation '
+                                     'reads them')
+    #: `Batch_Size`, declared once for the calculations valuing on given markets.
+    BATCH_SIZE = F('Batch_Size', 'Integer', default=0,
+                   description='Scenarios priced in one pass, as many as half the device\'s free '
+                               'memory holds where 0')
+    state = Scenario_State
+
+    fields = [
+        F('Base_Date', 'Date', default=''),
+        F('Currency', 'Text', default=REQUIRED),
+        F('Valuation_Date', 'Date', default='', convention=True,
+          description='The date the deals are valued on, each scenario a market there; the base '
+                      'date where blank'),
+        F('Scenarios', 'Container', default=[],
+          description='The markets valued, each the price factors it states over the job\'s own, '
+                      'by name'),
+        BATCH_SIZE,
+        MCMC_SIMULATIONS,
+        Calculation.QUASI_SEED,
+        Calculation.DETERMINISTIC_KERNELS,
+        F('Greeks', 'Text', default='No', values=['All', 'First', 'No'],
+          description='First values on the tape, each deal\'s result block keeping its value on '
+                      'every scenario as the tensor a reader differentiates, All to second order'),
+        BaseValuation.BRANCH_AND_WEIGHT
+    ]
+
+    def __init__(self, config, **kwargs):
+        super(ScenarioValuation, self).__init__(config, **kwargs)
+        #: the device memory a scenario took in the first pass priced, in bytes
+        self.scenario_bytes = None
+
+    @classmethod
+    def run(cls, context, overrides=None, prec=torch.float64):
+        """Values `context`'s book on its market and on each scenario on the device
+        `utils.calculation_device` picks, at `prec`, its block completed by `parameters` and
+        judged: `(calculation, output)`."""
+        calc = cls(context, device=utils.calculation_device(), prec=prec)
+        return calc, calc.execute(calc.judged(cls.parameters(context, overrides)))
+
+    def update_time_grid(self, base_date, day=None):
+        """The grid of `Valuation_Date`, the base date where blank."""
+        super(ScenarioValuation, self).update_time_grid(
+            base_date, self.params['Valuation_Date'] or None)
+
+    def update_factors(self, params, base_date):
+        """The book's price factors compiled as a base valuation compiles them, then, where there
+        are scenarios, each whose type carries a scenario axis handed to a process publishing them,
+        its compiled leaf the value it stands at, and the report currency read as the factors then
+        stand. Where the leaves are differentiated each result block keeps its taped value
+        (`tensor`)."""
+        shared = super(ScenarioValuation, self).update_factors(params, base_date)
+        # the base currency's price is identically one, as no model simulates it either
+        one = utils.Factor('FxRate', (self.config.params['System Parameters']['Base_Currency'],))
+        for key in [key for key in self.static_factors if key.type in
+                    SuppliedValuesModel.factor_types and key != one] if params['Scenarios'] else []:
+            process = self.stoch_factors[key] = SuppliedValuesModel(self.static_factors.pop(key), None)
+            process.factor_key = key
+            self.stoch_var[key] = self.static_var.pop(key)
+        self.all_factors = {**self.stoch_factors, **self.static_factors}
+        shared.Report_Currency = get_fxrate_factor(
+            utils.check_rate_name(params['Currency']), self.static_factors, self.stoch_factors)
+        shared.keep_tensor = shared.calc_greeks is not None
+        return shared
+
+    def nodes(self, structure=None):
+        """`(parent reference, node)` for the root and every structure and deal beneath it,
+        depth first, a structure before what it holds."""
+        if structure is None:
+            yield None, self.netting_sets.obj
+            structure = self.netting_sets
+        reference = structure.obj.Instrument.field.get('Reference')
+        for sub in structure.sub_structures:
+            yield reference, sub.obj
+            yield from self.nodes(sub)
+        for deal in structure.dependencies:
+            yield reference, deal
+
+    def passes(self, shared, scenarios):
+        """`([[position]], [position])` - the passes `scenarios` are priced in: those stating no
+        static factor `Batch_Size` at a time, or as many as half the device's free memory holds at
+        what a scenario took in the first pass, and those stating one, each alone, a static factor
+        taking one value a pass."""
+        static = {utils.check_tuple_name(key) for key in self.static_factors}
+        alone = [at for at, scenario in enumerate(scenarios) if static.intersection(scenario)]
+        batched = sorted(set(range(len(scenarios))).difference(alone))
+        budget = pricing.device_budget(shared) if shared.one.is_cuda else None
+        size = max(1, self.params['Batch_Size'] or (
+            int(budget // max(self.scenario_bytes or 0.0, 1.0)) if budget else len(batched)))
+        self.calc_stats['Batch_Size'] = max(self.calc_stats.get('Batch_Size', 0), size)
+        logging.debug('SCENARIO_BATCH %d scenarios %d a pass, %s bytes a scenario, budget %s',
+                      len(batched), size, self.scenario_bytes, budget)
+        return [batched[at:at + size] for at in range(0, len(batched), size)], alone
+
+    def priced(self, shared, scenarios):
+        """Every deal and structure valued on each of `scenarios` in one pass, its result block's
+        `Value` one column a scenario: each simulated factor's process publishes its value on each,
+        as the scenario states it or where it does not as its leaf stands, and a static factor the
+        pass states is written into its leaf and put back after."""
+        columns = [dict(self.leaves(scenario)) for scenario in scenarios]
+        static = {key: value for column in columns for key, value in column.items()
+                  if key in self.static_var}
+        written = {key: self.static_var[key].detach().clone() for key in static}
+        with torch.no_grad():
+            for key, value in static.items():
+                self.static_var[key].copy_(written[key].new_tensor(value))
+        shared.reset({key: torch.stack([leaf.new_tensor(column[key]) if key in column else leaf
+                                        for column in columns], dim=-1)
+                      for key, leaf in self.stoch_var.items()}, len(scenarios))
+        for _, node in self.nodes():
+            node.Calc_res.clear()
+        for key, process in self.stoch_factors.items():
+            shared.t_Scenario_Buffer[key] = process.generate(shared)
+        # the first pass measures what a scenario takes, the peak from it on the run's own
+        probe = shared.one.is_cuda and self.scenario_bytes is None
+        if probe:
+            held = torch.cuda.memory_allocated(shared.one.device)
+            torch.cuda.reset_peak_memory_stats(shared.one.device)
+        self.netting_sets.resolve_structure(shared, self.time_grid)
+        if probe:
+            self.scenario_bytes = (torch.cuda.max_memory_allocated(shared.one.device) - held) / len(
+                scenarios)
+        with torch.no_grad():
+            for key, leaf in written.items():
+                self.static_var[key].copy_(leaf)
+
+    def execute(self, params):
+        """Every deal's and structure's value on the job's market and on each of its `Scenarios`,
+        the first priced alone to measure what a scenario takes."""
+        params = self.params = declared_defaults(type(self), params)
+        shared = self.update_factors(params, pd.Timestamp(params['Run_Date']))
+        self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
+        self.set_deal_structures(self.config.deals['Deals']['Children'], self.netting_sets,
+                                 shared.one, deal_level_mtm=True)
+        nodes, scenarios = list(self.nodes()), params['Scenarios']
+        table = np.full((len(nodes), len(scenarios) + 1), np.nan)
+
+        def recorded(columns, markets):
+            self.priced(shared, markets)
+            for row, (_, node) in enumerate(nodes):
+                if 'Value' in node.Calc_res:
+                    table[row, columns] = node.Calc_res['Value'].reshape(-1)
+
+        recorded([0], [{}])
+        batched, alone = self.passes(shared, scenarios)
+        for chunk in batched + [[at] for at in alone]:
+            recorded([at + 1 for at in chunk], [scenarios[at] for at in chunk])
+        frame = pd.DataFrame([{'Parent': parent, 'Reference': node.Instrument.field.get('Reference'),
+                               'Object': node.Instrument.field.get('Object', 'Root')}
+                              for parent, node in nodes])
+        frame = pd.concat([frame, pd.DataFrame(table, columns=['Value'] + list(range(len(scenarios))))],
+                          axis=1)
+        return {'Netting': self.netting_sets, 'Stats': self.calc_stats, 'Results': {'mtm': frame}}
 
 
 class HedgeMonteCarlo(CreditMonteCarlo):
@@ -3756,10 +3987,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                             first_row=cutoff_idx))
 
                 shared_mem.t_Buffer.clear()
-                shared_mem.simulation_batch = B_flat
-                # `fillvalue` is a batch-sized empty tensor frozen at State construction; it
-                # must track the current simulation_batch or cash_settle mismatches on size
-                shared_mem.fillvalue = shared_mem.one.new_zeros((0, 1, B_flat))
+                shared_mem.resize(B_flat)
                 # restricted DealStructures: same instruments and Factor_dep, fresh Time_dep
                 # windowed to [t, t+1], fresh Calc_res
                 inner_netting_sets = self._restricted_struct(self.netting_sets, cutoff_idx, window_end_idx)
@@ -3858,13 +4086,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 class NettingSetCalculation(Calculation):
     """A calculation over the trades a book holds under its netting sets: the block judged, its
     `Mapping` read and the trades listed under their sets, and each trade valued off its own
-    structure by one base valuation of the book compiled once (`base`), which `value` prices again
-    with moved price factors written into its leaves. `SIMM` and `SACCR` are its two."""
+    structure by one scenario valuation of the book compiled once (`base`), which `value` prices
+    over given markets. `SIMM` and `SACCR` are its two."""
 
-    #: `MCMC_Simulations` and `Quasi_Seed`, declared once for the calculations over netting sets.
-    MCMC_SIMULATIONS = F('MCMC_Simulations', 'Integer', default=1 << 14,
-                         description='Inner Monte Carlo paths of each pricing, as a BaseValuation '
-                                     'reads them')
+    #: `Quasi_Seed`, declared once for the calculations over netting sets.
     QUASI_SEED = F('Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,
                    description="The scramble seed every pricing's quasi-random draws run on, each "
                                "trade's inner paths its own whatever is booked beside it")
@@ -3881,9 +4106,10 @@ class NettingSetCalculation(Calculation):
         self.calc_stats['Parameters'] = parameters.get('version', '')
         self.calc_stats['Quasi_Seed'] = params['Quasi_Seed']
         self.valuation = {
-            'Object': 'BaseValuation', 'Base_Date': params['Base_Date'],
+            'Object': 'ScenarioValuation', 'Base_Date': params['Base_Date'],
             'Currency': params['Currency'], 'MCMC_Simulations': params['MCMC_Simulations'],
-            'Quasi_Seed': params['Quasi_Seed'], 'Greeks': 'No', 'Deterministic_Kernels': 'Yes'}
+            'Quasi_Seed': params['Quasi_Seed'], 'Greeks': 'No', 'Deterministic_Kernels': 'Yes',
+            'Scenarios': []}
         book = self.config.deals['Deals']['Children']
         loose = [node['Instrument'].field.get('Reference') for node in book
                  if node['Instrument'].field['Object'] != 'NettingCollateralSet']
@@ -3908,22 +4134,20 @@ class NettingSetCalculation(Calculation):
             config.deals['Calculation'] = calculation
 
     def base(self, over=None):
-        """`[(value, skipped)]` per trade: the book compiled once as a base valuation compiles it,
-        on the price factors `over` states in place of the standing ones, and priced as it stands,
-        with the engine's sentences for what it skipped inside each trade, the distinct ones
-        spoken at its deals."""
+        """`[(value, skipped)]` per trade: the book compiled once as a scenario valuation compiles
+        it over the valuation's `Scenarios`, on the price factors `over` states in place of the
+        standing ones, and priced as it stands, with the engine's sentences for what it skipped
+        inside each trade, the distinct ones spoken at its deals."""
         factors = self.config.params['Price Factors']
-        calc = self.compiled = BaseValuation(self.config, prec=torch.float64,
-                                             device=utils.calculation_device())
+        calc = self.compiled = ScenarioValuation(self.config, prec=torch.float64,
+                                                 device=utils.calculation_device())
         calc.calc_stats = self.calc_stats
-        calc.params = declared_defaults(BaseValuation, self.valuation)
+        calc.params = declared_defaults(ScenarioValuation, self.valuation)
         heard = utils.CapturedErrors()
         logging.getLogger().addHandler(heard)
         try:
             self.config.params['Price Factors'] = dict(factors, **(over or {}))
             self.shared = calc.update_factors(calc.params, self.valuation['Base_Date'])
-            # a valuation asking for its gradient keeps each trade's taped value to differentiate
-            self.shared.keep_tensor = self.shared.calc_greeks is not None
             calc.netting_sets = DealStructure(Aggregation('root'), store_results=True)
             calc.set_deal_structures(self.config.deals['Deals']['Children'], calc.netting_sets,
                                      self.shared.one, deal_level_mtm=True)
@@ -3931,7 +4155,7 @@ class NettingSetCalculation(Calculation):
                 structure.obj for structure in calc.netting_sets.structures()] + list(
                 calc.netting_sets.deals())}
             self.results = [held.get(node['Instrument'], {}) for _, node in self.trades]
-            values = self.value({})
+            values = self.value([{}])[0]
         finally:
             logging.getLogger().removeHandler(heard)
             self.config.params['Price Factors'] = factors
@@ -3945,49 +4169,28 @@ class NettingSetCalculation(Calculation):
                           mine + ['the trade itself was not valued']))
         return found
 
-    def leaves(self, moved, factors=None):
-        """`[(key, value)]` - each leaf of `factors`, the compiled price factors where None, that
-        the price factors `moved` write, keyed as the compile keys it, and the value written."""
-        found, interp = [], self.config.params['Price Factor Interpolation']
-        for factor in [f for f in (self.compiled.static_factors if factors is None else factors)
-                       if utils.check_tuple_name(f) in moved]:
-            value = construct_factor(factor, moved, interp,
-                                     base_date=self.compiled.base_date).current_value()
-            found.extend(((utils.Factor(factor.type, factor.name + (k,)), v) for k, v in
-                          value.items()) if isinstance(value, dict) else [(factor, value)])
-        return found
-
-    def value(self, moved):
-        """Each trade's value in the calculation currency off its own structure, None where it was
-        not valued: the compiled set priced with the price factors `moved` written into their
-        leaves in place, the compiled leaves put back after."""
-        calc, written = self.compiled, {}
-        for key, part in self.leaves(moved):
-            written[key] = calc.static_var[key].clone()
-            calc.static_var[key].copy_(written[key].new_tensor(part))
-        # the memo and the result blocks hold the last pricing's, stale once a leaf is written
-        self.shared.t_Buffer.clear()
-        for result in self.results:
-            result.clear()
-        calc.netting_sets.resolve_structure(self.shared, calc.time_grid)
-        for key, leaf in written.items():
-            calc.static_var[key].copy_(leaf)
-        return [result['Value'].item() if 'Value' in result else None for result in self.results]
+    def value(self, scenarios):
+        """Per scenario of `scenarios`, the markets of one pass (`ScenarioValuation.priced`), each
+        trade's value in the calculation currency off its own structure, None where it was not
+        valued."""
+        self.compiled.priced(self.shared, scenarios)
+        return [[result['Value'][..., column].item() if 'Value' in result else None
+                 for result in self.results] for column in range(len(scenarios))]
 
 
 class SIMM(NettingSetCalculation):
     """ISDA SIMM sensitivities by bump and revaluation: the CRIF of a book of netting sets, one
-    compile and a pricing per market move.
+    compile and its market moves the scenarios of one valuation (`ScenarioValuation`).
 
     MARKET PRICES -> PRICE FACTORS -> MTM. A trade is a booked structure under a netting set, never
-    its legs. The set is compiled once, and one market input a trade's own dependency walk names is
-    moved by ISDA's definition of the sensitivity to it, written into its leaves and the set priced
-    again, each trade read off its own structure: a trade's difference over the shift is a CRIF
-    row. A Monte Carlo pricer draws a trade's inner paths off `Quasi_Seed` alone, whatever is
-    booked beside it, so each trade draws the same paths through the base and every move and each
-    difference is one of common random numbers. A moved benchmark quote rides its curve family's
-    calibration Jacobian, `theta* + J (q - q0)`, off one solve per coupled set at the run's
-    bootstrap, exact to first order in the move.
+    its legs. The set is compiled once, each market input a trade's own dependency walk names moved
+    by ISDA's definition of the sensitivity to it, and the moves are scenarios priced in passes,
+    each beside the standing market, each trade read off its own structure: a trade's change over
+    the shift is a CRIF row. A Monte Carlo pricer draws a trade's inner paths off `Quasi_Seed`
+    alone, whatever is booked or priced beside it, so each trade draws the same paths on the
+    standing market and on every move and each change is one of common random numbers. A moved
+    benchmark quote rides its curve family's calibration Jacobian, `theta* + J (q - q0)`, off one
+    solve per coupled set at the run's bootstrap, exact to first order in the move.
 
     How a factor moves is the methodology and lives here: a basis point on each benchmark quote of
     a curve, split linearly between the vertices either side of its maturity, the survival curves
@@ -4116,7 +4319,8 @@ class SIMM(NettingSetCalculation):
         F('Vol_Shift', 'Float', default=1.0,
           description='Points of implied vol a vertex moves by, or on a rate space percent of each '
                       'vol, ISDA\'s one; another is scaled to it'),
-        NettingSetCalculation.MCMC_SIMULATIONS,
+        ScenarioValuation.BATCH_SIZE,
+        ScenarioValuation.MCMC_SIMULATIONS,
         NettingSetCalculation.QUASI_SEED
     ]
 
@@ -4127,6 +4331,7 @@ class SIMM(NettingSetCalculation):
         parameters = super(SIMM, self).setup(params)
         params = self.params
         self.graph = params['Method'] == 'Graph'
+        self.valuation['Batch_Size'] = params['Batch_Size']
         if self.graph:
             # the compile's leaves on the tape, each trade's taped value kept (`base`)
             self.valuation['Greeks'] = 'First'
@@ -4173,11 +4378,11 @@ class SIMM(NettingSetCalculation):
 
     @classmethod
     def run(cls, context, overrides=None):
-        """Runs SIMM on `context`, the book compiled once and each market move one pricing of it:
-        `(calculation, output)`, the CRIF under `output['Results']['CRIF']`. `Workers` above one
-        values the book here and deals what it reaches in turn over that many processes, each
-        compiling it on a context of its own (`shard`); the CRIF is the same to the bit either
-        way."""
+        """Runs SIMM on `context`, the book compiled once and its market moves the scenarios of one
+        valuation of it: `(calculation, output)`, the CRIF under `output['Results']['CRIF']`.
+        `Workers` above one values the book here and deals what it reaches in turn over that many
+        processes, each compiling it on a context of its own (`shard`); the CRIF is the same to
+        the bit either way."""
         params = cls.parameters(context, overrides)
         calc = cls(context)
         calc.setup(params)
@@ -4199,19 +4404,20 @@ class SIMM(NettingSetCalculation):
     @classmethod
     def shard(cls, context, params, work, job, queue):
         """A worker's share of what a run reaches, valued on a context of its own calibrated and
-        compiled once, an artifact crossing no process: `{(trade, move): value}` (`values`), or
-        under Graph `{(trade, move): derivative}` (`derivatives`)."""
+        compiled once over its moves, an artifact crossing no process: `{(trade, move): change}`
+        (`values`), or under Graph `{(trade, move): derivative}` (`derivatives`)."""
         calc = cls(context)
         calc.setup(params)
         with calc.prepared():
-            calc.base()
+            calc.base(() if calc.graph else [move for move, _ in work])
             queue.put({'Job': job, 'Values': calc.values(work)})
 
     def execute(self, params):
         """The run in this process alone; `run` deals what it reaches over workers."""
         self.setup(params)
         with self.prepared():
-            base = self.base()
+            base = self.base(() if self.graph else dict.fromkeys(
+                bump.move for bumps in self.bumped for bump in bumps))
             return self.report(base, self.values(self.reach(base)))
 
     @contextlib.contextmanager
@@ -4265,8 +4471,9 @@ class SIMM(NettingSetCalculation):
         declaring('No')
 
     def report(self, base, values):
-        """The run's results off the book's `base` and the `values` its moves wrote, or under Graph
-        their derivatives: the CRIF, a row per trade and the margin off the CRIF (`margins`)."""
+        """The run's results off the book's `base` and the changes its moves made (`values`), or
+        under Graph their derivatives: the CRIF, a row per trade and the margin off the CRIF
+        (`margins`)."""
         trades = [self.trade(index, base, values) for index in range(len(self.trades))]
         crif = self.frame(trades)
         self.output = dict({'CRIF': crif, 'Trades': pd.DataFrame(
@@ -4602,14 +4809,19 @@ class SIMM(NettingSetCalculation):
                      config.params['System Parameters']['Base_Date'], config.holidays)
         return {name: found[name]}
 
-    def base(self):
+    def base(self, moves=()):
         """`[(value, skipped)]` per trade off the book compiled with each surface a vega move
-        reaches given its vertex pillars (`surfaces`)."""
+        reaches given its vertex pillars (`surfaces`), over the markets `moves` write as its
+        scenarios (`scenarios`)."""
         factors = self.config.params['Price Factors']
         self.surfaces = {name: getattr(riskfactors, utils.check_rate_name(name)[0]).augmented(
             factors[name], [t for _, t in self.vertices]) for name in {
             bump.move[1] for bumps in self.bumped for bump in bumps if bump.move[0] in self.VEGAS}}
-        return super(SIMM, self).base(self.surfaces)
+        self.scenarios = {move: self.move(move) for move in moves}
+        self.valuation['Scenarios'] = list(self.scenarios.values())
+        found = super(SIMM, self).base(self.surfaces)
+        self.standing = [value for value, _ in found]
+        return found
 
     def reach(self, base):
         """`[(move, [index])]` - every move the trades valued in `base` take, in a fixed order,
@@ -4623,22 +4835,42 @@ class SIMM(NettingSetCalculation):
         return list(reach.items())
 
     def values(self, work):
-        """`{(index, move): value}` - each `(move, indices)` of `work` one pricing of the set,
-        the trades `indices` read off it, each refused by name where it values to nothing finite;
-        under Graph `{(index, move): derivative}` off each trade of `work` (`derivatives`)."""
+        """`{(index, move): change}` - each `(move, indices)` of `work` a scenario, its market the
+        move's, priced in passes (`ScenarioValuation.passes`), and each trade of `indices` read off
+        its value there less on the standing market: priced in the same pass, so the two share
+        its arithmetic, or for a market stating a static factor, priced alone, off the base. A
+        trade valued to nothing finite is refused by name; under Graph `{(index, move):
+        derivative}` off each trade of `work` (`derivatives`)."""
         if self.graph:
             return self.derivatives(work)
-        found = {}
-        for move, indices in work:
-            valued = self.value(self.move(move))
-            for index in indices:
-                value = valued[index]
-                if value is None or not math.isfinite(value):
-                    raise ValueError(
-                        '{}: moving {} values the trade to {}, off which no sensitivity can be '
-                        'read'.format(self.trades[index][1]['Instrument'].field.get('Reference'),
-                                      '/'.join(map(str, move)), value))
-                found[index, move] = value
+        scenarios, found = [self.scenarios[move] for move, _ in work], {}
+        batched, alone = self.compiled.passes(self.shared, scenarios)
+
+        def priced(chunk, standing):
+            """Per position of `chunk`, each trade's value on its market and on the standing one."""
+            valued = self.value(([{}] if standing else []) + [scenarios[at] for at in chunk])
+            return [(column, valued[0] if standing else self.standing)
+                    for column in (valued[1:] if standing else valued)]
+
+        def finite(value):
+            return value is not None and math.isfinite(value)
+
+        for chunk, standing in [(chunk, True) for chunk in batched] + [([at], False) for at in alone]:
+            columns = priced(chunk, standing)
+            if len(chunk) > 1 and not all(finite(column[index]) and finite(base[index]) for (
+                    column, base), at in zip(columns, chunk) for index in work[at][1]):
+                # a pricer refusing one market leaves its trade unvalued on all, so each is priced
+                # alone and the refusal names its own move
+                columns = [priced([at], standing)[0] for at in chunk]
+            for (column, base), at in zip(columns, chunk):
+                move, indices = work[at]
+                for index in indices:
+                    if not finite(column[index]):
+                        raise ValueError(
+                            '{}: moving {} values the trade to {}, off which no sensitivity can be '
+                            'read'.format(self.trades[index][1]['Instrument'].field.get('Reference'),
+                                          '/'.join(map(str, move)), column[index]))
+                    found[index, move] = column[index] - base[index]
         return found
 
     def derivatives(self, indices):
@@ -4692,22 +4924,22 @@ class SIMM(NettingSetCalculation):
         moved = self.move(move, tangent=True)
         if kind == 'quote':
             curves = [utils.Factor(rate[0], rate[1:]) for rate in map(utils.check_rate_name, moved)]
-            standing = dict(self.leaves(self.config.params['Price Factors'], curves))
+            standing = dict(self.compiled.leaves(self.config.params['Price Factors'], curves))
             return {('Calibrated', key): (value - standing[key]) / shift
-                    for key, value in self.leaves(moved, curves)}
+                    for key, value in self.compiled.leaves(moved, curves)}
         return {key: (value - self.compiled.static_var[key].detach().cpu().numpy()) / shift
-                for key, value in self.leaves(moved)}
+                for key, value in self.compiled.leaves(moved)}
 
     def trade(self, index, base, values):
-        """Trade `index`'s CRIF rows off the book's `base` and the `values` its moves wrote, or
-        under Graph their derivatives, its base value, the moves it took and what the engine
-        skipped inside it - its rows written regardless."""
+        """Trade `index`'s CRIF rows off the book's `base` and the changes its moves made
+        (`values`), or under Graph their derivatives, its base value, the moves it took and what the
+        engine skipped inside it - its rows written regardless."""
         agreement, node = self.trades[index]
         value, skipped = base[index]
         rows = {}
         for bump in self.bumped[index] if value is not None else []:
             delta = values[index, bump.move] if self.graph else (
-                values[index, bump.move] - value) / self.shifts[bump.move[0]]
+                values[index, bump.move] / self.shifts[bump.move[0]])
             stated = bump.coordinates
             for label, weight in bump.split:
                 key = (stated['RiskType'], stated['Qualifier'], stated['Bucket'],
@@ -5083,7 +5315,7 @@ class SACCR(NettingSetCalculation):
         F('Parameters', 'Text', default=REQUIRED,
           description='Path to the SA-CCR parameters file, the supervisory numbers of CRE52 each '
                       'beside the paragraph it is read from'),
-        NettingSetCalculation.MCMC_SIMULATIONS,
+        ScenarioValuation.MCMC_SIMULATIONS,
         NettingSetCalculation.QUASI_SEED
     ]
 

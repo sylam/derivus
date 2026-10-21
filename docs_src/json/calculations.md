@@ -7,6 +7,7 @@ every type, with its type, default and menu, is on the type's own page under thi
 | `Object` | Runner | In-process method | What it reports |
 |---|---|---|---|
 | `BaseValuation` | `run_baseval` | `cx.Base_Valuation` | each deal's mark at the valuation date, and AAD factor sensitivities (`Greeks`) |
+| `ScenarioValuation` | none | `cx.run_job` | each deal's mark at the valuation date on the job's market and on each of its `Scenarios`, given markets priced together in passes |
 | `CreditMonteCarlo` | `run_cmc` | `cx.Credit_Monte_Carlo` | the simulated portfolio mark, exposure profile, CVA and FVA (CollVA and an initial margin experimental) |
 | `HedgeMonteCarlo` | `run_hedgemontecarlo` | `cx.Hedge_Monte_Carlo` | the dynamic-hedging solve or simulation of [Hedging](../hedging/overview.md) |
 | `SIMM` | `run_simm` | none: `cx.run_job` or `derivus.run_simm(cx.current_cfg)` | an ISDA SIMM sensitivity file (CRIF) [@isdasimm] by bump and revaluation, the book compiled once and priced again per market move, or under `Method: Graph` each row the move's derivative off one backward pass per trade, and each netting set's margin off it |
@@ -18,8 +19,8 @@ A runner and a method are each one line onto the type's `run`.
 
 Before a run, the block is assembled in this order, each step overwriting the last:
 
-1. **Runner keys.** `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` add `Run_Date`, the
-   document's `Base_Date` as `YYYY-MM-DD`. `CreditMonteCarlo` and `HedgeMonteCarlo` also add
+1. **Runner keys.** `BaseValuation`, `ScenarioValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo`
+   add `Run_Date`, the document's `Base_Date` as `YYYY-MM-DD`. `CreditMonteCarlo` and `HedgeMonteCarlo` also add
    `Time_grid`, the document's `Time_Grid` (or its default) as text. `SIMM` and `SACCR` add nothing.
 2. **The document's own keys.**
 3. **`overrides`**, merged deeply: a nested mapping is merged key by key, anything else replaces.
@@ -36,7 +37,7 @@ What follows from that order:
 |---|---|
 | `Base_Date` must be stated, as a date | the runners read it before any default applies; its declared default is blank, which `cx.validate()` names as not stated |
 | `Currency` must be stated | it is the currency the run reports in, and no default names one: a block stating none is refused at step 5 |
-| The valuation date of `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` is `Run_Date` | step 1 copies it from the document's `Base_Date`, so an override must name `Run_Date`: overriding `Base_Date` alone does not move the date. `SIMM` and `SACCR` read `Base_Date` themselves |
+| The valuation date of `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` is `Run_Date` | step 1 copies it from the document's `Base_Date`, so an override must name `Run_Date`: overriding `Base_Date` alone does not move the date. `SIMM` and `SACCR` read `Base_Date` themselves, and `ScenarioValuation` reads its market's date off `Run_Date` and values on `Valuation_Date`, that date where blank |
 | `CreditMonteCarlo` reads its grid from `Time_grid`, `HedgeMonteCarlo` from `Time_Grid` | so an override of the grid names `Time_grid` for the first and `Time_Grid` for the second |
 | `SIMM` refuses a blank `Base_Date`, `Mapping` or `Parameters`, a zero shift and a key the margin reads that the `Parameters` file lacks under the `Horizon`, naming each | checked before anything is valued |
 | `SACCR` refuses a blank `Base_Date`, `Mapping` or `Parameters` and a parameters file missing or malforming an entry CRE52 reads, naming each | checked before anything is valued |

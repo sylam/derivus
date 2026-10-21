@@ -1631,7 +1631,10 @@ class NettingCollateralSet(Deal):
                 logging.warning('Survival Probability for Netting set {} not found - Setting to 1.0'.format(
                     self.field.get('Reference')))
 
-        if self.field.get('Collateralized', 'False') == 'True' and shared.simulation_batch > 1:
+        # a balance reads the cash ledger a simulation keeps over its paths; given markets on one
+        # date, a scenario valuation's, keep none and report the net as a base valuation does
+        if self.field.get('Collateralized', 'False') == 'True' and shared.simulation_batch > 1 and \
+                hasattr(shared, 'reset_cashflows'):
             C_base = 0.0
 
             for curr, fx_factor in factor_dep['Settlement_Currencies'].items():
@@ -3591,9 +3594,10 @@ class SwaptionDeal(Deal):
         tenor = daycount_fn(tenor_in_days)
 
         def base_date_curve(code):
-            """The zero rate times years to a day on `code`'s primary, of the grid's first row."""
+            """The zero rate times years to a day on `code`'s primary, of the grid's first row,
+            `[scenario, day]`."""
             block = utils.calc_time_grid_curve_rate(code[:1], time_grid.time_grid[:1], shared)
-            return lambda days: block.gather_weighted_curve(shared, days.reshape(1, -1))[0, :, 0]
+            return lambda days: block.gather_weighted_curve(shared, days.reshape(1, -1))[0].T
 
         discount_growth = base_date_curve(factor_dep['Discount'])
         duration, scale = self.duration_tenor(
@@ -3606,7 +3610,18 @@ class SwaptionDeal(Deal):
             its rate s = omega s_2 - (omega - 1) s_1 (`documentation`). A row with no time left
             reads s_2's, its option being its intrinsic."""
             read = partial(utils.VolSurface.tenor_rate, factor_dep['VolSurface'], moneyness, years)
-            long_vol = read(duration, shared) * scale
+            if torch.is_tensor(duration):
+                # each scenario reads at its own duration, the scenarios sharing one sharing a read
+                tenors = duration.detach().cpu().numpy()
+                long_vol = None
+                for tenor in np.unique(tenors):
+                    at = tenors == tenor
+                    vol_at = read(duration[at.argmax()], shared)
+                    long_vol = vol_at if long_vol is None else torch.where(
+                        shared.one.new_tensor(at, dtype=torch.bool), vol_at, long_vol)
+                long_vol = long_vol * scale
+            else:
+                long_vol = read(duration, shared) * scale
             live = np.count_nonzero(years > 0.0)
             if 'Gap' not in factor_dep or not live:
                 return long_vol
@@ -3704,8 +3719,9 @@ class SwaptionDeal(Deal):
         day, at its accrual end. Given the leg's `floating` schedule and `growth`, the base date's
         forecast zero rate times its years to a day, the scale is the bullets' par rate there,
         interpolated as the tenor is, over the leg's, each plus `shift`; without, it is 1.0. Both
-        are tensors carrying the curves `discount` and `growth` read, but for legs that do not
-        amortise, which read `stated` and 1.0 whatever the curves."""
+        are tensors carrying the curves `discount` and `growth` read, one entry a scenario as each
+        reads `[scenario, day]`, but for legs that do not amortise, which read `stated` and 1.0
+        whatever the curves."""
         def level(rows):
             return rows[:, utils.CASHFLOW_INDEX_Nominal] / rows[0, utils.CASHFLOW_INDEX_Nominal]
 
@@ -3716,17 +3732,20 @@ class SwaptionDeal(Deal):
         coupon = schedule[:, utils.CASHFLOW_INDEX_FixedRate] * accrual
         # the bullets to each end, then the leg
         held = np.vstack([np.tri(ends.size, ends.size + 1), np.append(level(schedule), 0.0)])
-        weight = discount(ends) * discount(ends).new_tensor(
+        weight = discount(ends).unsqueeze(-2) * discount(ends).new_tensor(
             held[:, :-1] * coupon + (held[:, :-1] - held[:, 1:]))
         axis = weight.new_tensor(stated * ((ends - start) / (ends[-1] - start)))
-        duration = (weight * axis).sum(dim=1) / weight.sum(dim=1)
-        bullets = duration[:-1]
-        upper = torch.searchsorted(bullets.detach(), duration[-1:].detach()).clamp(1, bullets.numel() - 1)
+        duration = (weight * axis).sum(dim=-1) / weight.sum(dim=-1)
+        bullets = duration[:, :-1]
+        upper = torch.searchsorted(bullets.detach().contiguous(), duration[:, -1:].detach().contiguous(
+            )).clamp(1, bullets.shape[1] - 1)
         # np.interp at the leg's duration among the bullets', its weight on the graph
-        alpha = ((duration[-1:] - bullets[upper - 1]) / (bullets[upper] - bullets[upper - 1])).clamp(0.0, 1.0)
+        alpha = ((duration[:, -1:] - bullets.gather(1, upper - 1)) / (
+            bullets.gather(1, upper) - bullets.gather(1, upper - 1))).clamp(0.0, 1.0)
 
         def at_duration(values):
-            return torch.lerp(values[upper - 1], values[upper], alpha)[0]
+            values = values.expand_as(bullets)
+            return torch.lerp(values.gather(1, upper - 1), values.gather(1, upper), alpha)[:, 0]
 
         if floating is None:
             return at_duration(axis), 1.0
@@ -3736,11 +3755,11 @@ class SwaptionDeal(Deal):
         float_held = weight.new_tensor(np.vstack([0.5 * (start_day + end_day) <= ends[:, np.newaxis],
                                                   level(floating)]))
         annuity = (weight.new_tensor(held[:, :-1] * accrual) * discount(
-            schedule[:, utils.CASHFLOW_INDEX_Pay_Day])).sum(dim=1)
-        value = (float_held * torch.expm1(growth(end_day) - growth(start_day)) * discount(
-            floating[:, utils.CASHFLOW_INDEX_Pay_Day])).sum(dim=1)
+            schedule[:, utils.CASHFLOW_INDEX_Pay_Day]).unsqueeze(-2)).sum(dim=-1)
+        value = (float_held * torch.expm1(growth(end_day) - growth(start_day)).unsqueeze(-2) * discount(
+            floating[:, utils.CASHFLOW_INDEX_Pay_Day]).unsqueeze(-2)).sum(dim=-1)
         rate = value / annuity + shift
-        return at_duration(axis), at_duration(rate[:-1]) / rate[-1]
+        return at_duration(axis), at_duration(rate[:, :-1]) / rate[:, -1]
 
     @staticmethod
     def register_exercise_boundary(shared, time_grid, deal_data, fx_rep, option, swap, gap, exercised, swap_cash):

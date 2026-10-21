@@ -45,7 +45,7 @@ calc, out = cx.run_job(overrides={})
 ```
 
 `run_job` dispatches on the document's `Calculation.Object` (`BaseValuation`, `CreditMonteCarlo`,
-`HedgeMonteCarlo`, `SIMM` or `SACCR`) and returns the calculation object and its output, whose tables are
+`HedgeMonteCarlo`, `ScenarioValuation`, `SIMM` or `SACCR`) and returns the calculation object and its output, whose tables are
 described in [Understanding Output](output.md). [JSON Configuration](json/index.md) describes every
 block of the document, and the service's `GET /schema/job` (below) serves a minimal one that loads
 and prices unchanged.
