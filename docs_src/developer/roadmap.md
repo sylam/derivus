@@ -88,9 +88,10 @@ features kept ahead of their build, not rows to close.
   patch `session.BloombergSession` or the `blpapi` module where a declared canned-terminal entry
   would do (S); `test_bloomberg_session.py` already drives a scripted fake of the SDK as data.
   `test_notebooks` needs a world file that is not in the repository.
-- **The pricer branch census names 38 arcs no test executes** (2026-10-11). The LogVar2FJ
-  discrete-barrier arcs are worth a fixture; the rest are diagnostics, completeness elses and new
-  code. `gates/pricer_branch_census.py` lists them.
+- **The pricer branch census names 29 arcs no test executes** (2026-10-21). The LogVar2FJ
+  discrete-barrier and TARF arcs are worth a fixture; the rest are completeness elses, a quanto
+  discrete barrier, an inverted TARF and the barrier digital's spread-off legs.
+  `gates/pricer_branch_census.py` lists them.
 - **Three checks are ungated** (2026-08-21): the vol term structure reaching the monitoring, the
   payoff's forward against the vol surface's, and rate units
   ([Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open)).

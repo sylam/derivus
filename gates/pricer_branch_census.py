@@ -86,8 +86,8 @@ FAMILY = (
 #: work-list item, not an excuse.
 #:
 #: The shape of what is left: no document under SpotModel LogVar2FJ on the discrete barrier or
-#: the TARF; no inverted TARF; no quanto discrete barrier; no already-hit
-#: barrier digital; and the DEBUG reconstructions nothing runs.
+#: the TARF; no inverted TARF; no quanto discrete barrier; and no barrier digital with the
+#: spread off on its already-hit or knock-in legs.
 UNREACHED = {
     # ---- getbarrierpayoff ---------------------------------------------------------------------------
     ('getbarrierpayoff.barrier_option', 'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike <= H) or', 'else#1'):
@@ -101,35 +101,16 @@ UNREACHED = {
         "produces it (the selector sets eta from Down or Up and nothing else), so no fixture can "
         "reach this arm.",
     # ---- pv_MC_AutoCallSwap -------------------------------------------------------------------------
-    ('pv_MC_AutoCallSwap', 'for flag in latch.fired:', 'body'):
-        "the DEBUG reconstruction of a registered autocall latch: nothing runs the autocall at "
-        "DEBUG under boundary_aad. A diagnostic, not a payoff.",
-    ('pv_MC_AutoCallSwap', 'for flag in latch.fired:', 'exit'):
-        "the same reconstruction's loop completing.",
     ('pv_MC_AutoCallSwap', 'if b_latch:', 'else'):
         "a boundary-AAD autocall registering an observed put alone, no coupon decision on any "
         "row of its grid.",
     ('pv_MC_AutoCallSwap', 'if boundary_aad:', 'body#3'):
         "the all-resolved block's counterfactual: boundary_aad on, and a block reached after "
         "EVERY scenario has autocalled, so the rows carry a zero counterfactual.",
-    ('pv_MC_AutoCallSwap', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body'):
-        "the line that reconstruction logs - a diagnostic, not a payoff.",
-    ('pv_MC_AutoCallSwap.sim_spot.fixing', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body'):
-        "the AUTOCALL_SETTLE debug line. Nothing runs the suite at DEBUG; a diagnostic rather "
-        "than a payoff, and the one entry here no fixture should be written for.",
     # ---- pv_MC_Tarf ---------------------------------------------------------------------------------
-    ('pv_MC_Tarf', 'for flag in latch.fired:', 'body'):
-        "the DEBUG reconstruction of a registered TARF latch - a diagnostic, not a payoff.",
-    ('pv_MC_Tarf', 'for flag in latch.fired:', 'exit'):
-        "the same reconstruction's loop completing.",
     ('pv_MC_Tarf', 'if b_gaps:', 'else'):
         "a TARF priced with boundary_aad on that records no gap at all - a grid whose rows all "
         "sit past the last fixing.",
-    ('pv_MC_Tarf', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body#1'):
-        "the line that reconstruction logs.",
-    ('pv_MC_Tarf', 'if logging.getLogger().isEnabledFor(logging.DEBUG):', 'body#2'):
-        "the TARF's boundary-set DEBUG line, which the TARF pin reads outside the suite; no test "
-        "runs the TARF at DEBUG.",
     ('pv_MC_Tarf.accrued', 'if inverted:', 'body'):
         "a TARF with Invert_Target set - the reciprocal accrual. Every TARF fixture is "
         "non-inverted.",
@@ -161,15 +142,16 @@ UNREACHED = {
     ('pv_discrete_barrier_option', "if adj['fx_vol'] is not None:", 'else'):
         "a QUANTO discrete barrier - a payoff type with no fx vol to compose; every payoff-type "
         "fixture of the family is a compo.",
-    ('pv_discrete_barrier_option', 'if isdigital:', 'body'):
-        "an already-knocked-in GBM digital barrier. This is the cash-payoff twin of the leg that "
-        "carried the +1432% forward defect, and it is still not executed by anything.",
-    ('pv_discrete_barrier_option.sim_spot_oss.fixing', 'if eta == BARRIER_UP:', 'else#1'):
-        "a GBM barrier DIGITAL on a DOWN barrier whose integrated terminal step is a barrier "
-        "date.",
-    ('pv_discrete_barrier_option.sim_spot_oss.fixing', 'if isBarrierDate_block[j] > 0:', 'body#1'):
-        "a GBM barrier digital whose LAST fixing is a zero-length step on a monitored date - a "
-        "row ON the expiry that is also a barrier date.",
+    ('pv_discrete_barrier_option', 'elif kit is None:', 'else'):
+        "a document declaring SpotModel LogVar2FJ on the discrete barrier, whose legs' vols the "
+        "walk's law carries and the strips are not read; no fixture does.",
+    ('pv_discrete_barrier_option', 'elif isdigital:', 'body'):
+        "an already-knocked-in GBM digital barrier with the spread OFF, the cash-or-nothing at one "
+        "vol; the knock-in digital gates run with the spread on, so the spread's arm beside it is "
+        "reached and this one is not.",
+    ('pv_discrete_barrier_option.sim_spot_oss', 'elif isdigital:', 'body'):
+        "a GBM knock-IN barrier digital with the spread OFF, whose in-out-parity vanilla is "
+        "cash-or-nothing at one vol; the knock-in digital gates run with the spread on.",
     ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#1'):
         "a document declaring SpotModel LogVar2FJ on the discrete barrier - the kit's interval "
         "law; no fixture does.",
@@ -180,9 +162,6 @@ UNREACHED = {
         "the same document, where each monitored interval reads its law off that block.",
     ('pv_discrete_barrier_option.sim_spot_oss.fixing', 'if kit is None:', 'else'):
         "the same document, on the interval the walk reads its law off.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if isdigital:', 'body'):
-        "a GBM knock-IN barrier DIGITAL, whose in-out-parity vanilla is cash-or-nothing; no "
-        "fixture books a knock-in digital.",
     ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is not None:', 'body'):
         "a document declaring SpotModel LogVar2FJ - the walking kit's block law; no fixture does.",
     # ---- pv_european_option -------------------------------------------------------------------------
