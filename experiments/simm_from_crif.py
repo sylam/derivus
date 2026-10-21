@@ -134,11 +134,9 @@ def book(source, documents, calculation, calendar):
                      'CalendDataFile': calendar}}
 
 
-def loaded(job):
-    """A context holding `job`."""
-    context = derivus.Context()
-    context.load_json((json.dumps(job), 'simm_from_crif'), compress=False)
-    return context
+def loaded(context, job):
+    """`context` holding `job`, the files it names parsed once per content."""
+    return context.load_json((json.dumps(job), 'simm_from_crif'), compress=False)
 
 
 def pins(source, reads, selected):
@@ -326,14 +324,13 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
     return completed, notes
 
 
-def run(job, output):
-    """`(calculation, results, refused)` - `job` run as SIMM, its curves quoted as the batch runner
-    quotes them, each trade whose document the run refuses by name set aside and the job run again,
-    `refused` the engine's sentence per trade set aside."""
+def run(context, job, output):
+    """`(calculation, results, refused)` - `job` run as SIMM on `context`, its curves quoted as the
+    batch runner quotes them, each trade whose document the run refuses by name set aside and the
+    job run again, `refused` the engine's sentence per trade set aside."""
     refused = {}
     while True:
-        context = loaded(job)
-        config = context.current_cfg
+        config = loaded(context, job).current_cfg
         date = config.deals['Calculation']['Base_Date']
         derivus_batch.quote_curves(config, date)
         context.save_json(os.path.join(output, 'SIMM_JOB_{:%Y-%m-%d}.json'.format(date)))
@@ -420,8 +417,9 @@ def main(argv=None):
         'Object': 'SIMM', 'Currency': currency, 'Parameters': args.parameters,
         'Mapping': os.path.join(args.output, 'SIMM_MAPPING_{}.json'.format(date)),
         'Workers': args.workers, 'Base_Date': base_date}
-    reads = {trade: loaded(book(source, {trade: document}, calculation, args.calendar)).current_cfg
-             .factor_universe()['resolved'] for trade, document in documents.items()}
+    context = derivus.Context()
+    reads = {trade: loaded(context, book(source, {trade: document}, calculation, args.calendar))
+             .current_cfg.factor_universe()['resolved'] for trade, document in documents.items()}
     job = book(source, documents, calculation, args.calendar)
     mapping, notes = derived_mapping(
         source, documents, reads, job['Calc']['MergeMarketData']['ExplicitMarketData'][
@@ -431,7 +429,7 @@ def main(argv=None):
         json.dump(mapping, f, indent=1)
     notes = pd.DataFrame(notes, columns=NOTE)
     notes.to_csv(os.path.join(args.output, 'MAPPING_{}.txt'.format(date)), sep='\t', index=False)
-    calc, results, refused = run(job, args.output)
+    calc, results, refused = run(context, job, args.output)
 
     crif, report = results['CRIF'], results['Trades']
     calc.write(crif, os.path.join(args.output, 'CRIF_{}.tsv'.format(date)))
