@@ -21,16 +21,17 @@ they part on [Calc Lifecycle](../developer/calc_lifecycle.md#valuation-modes).
   moves one market input at a time by ISDA's definition, a benchmark quote's curve ridden on the
   calibration Jacobian its bootstrap from `Market Prices` published and the survival curves solved
   on it re-solved, a CDS quote of a survival curve's block a basis point of spread over and the
-  block re-solved, its Risk_CreditQ or Risk_CreditNonQ rows on the credit vertices, a rate vol
-  space a point of vol on one vertex's expiry slice, its Risk_IRVol rows on the option's expiry,
-  the underlying tenor summed over, a commodity's spot and forward curve a percent together, its
+  block re-solved, its Risk_CreditQ or Risk_CreditNonQ rows on the credit vertices, each vol of a
+  rate vol space's slice on one vertex's expiry a percent of itself, its Risk_IRVol rows the
+  vol-weighted vega on the option's expiry, the underlying tenor summed over, a commodity's spot and forward curve a percent together, its
   Risk_Commodity row, and its smile a point per vertex, its Risk_CommodityVol rows, and an
   inflation curve a basis point on the breakevens it is defined by - its block's quotes, re-solved,
   where one solves it, its nodes' own where none does - its Risk_Inflation row. The engine has
   no factor type for ISDA's Risk_InflationVol or Risk_CreditVol, and a mapping naming either is
   refused. The book is compiled once as a `BaseValuation` compiles it and priced again per move
   with the moved factors written into it, each trade read off its own structure, reading the
-  regime `Mapping` and the ISDA `Parameters` file the block names. Its tables are on
+  regime `Mapping` and the ISDA `Parameters` file the block names, and each netting set's margin
+  is aggregated off the CRIF, posted and collected. Its tables are on
   [Understanding Output](../output.md#simm).
 - **`SACCR`** ([`SACCR`](#saccr)) answers the exposure at default of each netting set under the
   standardised approach to counterparty credit risk [@bcbscre52], off one base valuation of the

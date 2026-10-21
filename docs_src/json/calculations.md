@@ -9,7 +9,7 @@ every type, with its type, default and menu, is on the type's own page under thi
 | `BaseValuation` | `run_baseval` | `cx.Base_Valuation` | each deal's mark at the valuation date, and AAD factor sensitivities (`Greeks`) |
 | `CreditMonteCarlo` | `run_cmc` | `cx.Credit_Monte_Carlo` | the simulated portfolio mark, exposure profile, CVA and FVA (CollVA and an initial margin experimental) |
 | `HedgeMonteCarlo` | `run_hedgemontecarlo` | `cx.Hedge_Monte_Carlo` | the dynamic-hedging solve or simulation of [Hedging](../hedging/overview.md) |
-| `SIMM` | `run_simm` | none: `cx.run_job` or `derivus.run_simm(cx.current_cfg)` | an ISDA SIMM sensitivity file (CRIF) [@isdasimm] by bump and revaluation, the book compiled once and priced again per market move, or under `Method: Graph` each row the move's derivative off one backward pass per trade |
+| `SIMM` | `run_simm` | none: `cx.run_job` or `derivus.run_simm(cx.current_cfg)` | an ISDA SIMM sensitivity file (CRIF) [@isdasimm] by bump and revaluation, the book compiled once and priced again per market move, or under `Method: Graph` each row the move's derivative off one backward pass per trade, and each netting set's margin off it |
 | `SACCR` | `run_saccr` | none: `cx.run_job` or `derivus.run_saccr(cx.current_cfg)` | the SA-CCR exposure at default of each netting set [@bcbscre52], off one base valuation of the book and each trade's declared terms |
 
 A runner and a method are each one line onto the type's `run`.
@@ -38,7 +38,7 @@ What follows from that order:
 | `Currency` must be stated | it is the currency the run reports in, and no default names one: a block stating none is refused at step 5 |
 | The valuation date of `BaseValuation`, `CreditMonteCarlo` and `HedgeMonteCarlo` is `Run_Date` | step 1 copies it from the document's `Base_Date`, so an override must name `Run_Date`: overriding `Base_Date` alone does not move the date. `SIMM` and `SACCR` read `Base_Date` themselves |
 | `CreditMonteCarlo` reads its grid from `Time_grid`, `HedgeMonteCarlo` from `Time_Grid` | so an override of the grid names `Time_grid` for the first and `Time_Grid` for the second |
-| `SIMM` refuses a blank `Base_Date`, `Mapping` or `Parameters` and a zero shift, naming each | checked before anything is valued |
+| `SIMM` refuses a blank `Base_Date`, `Mapping` or `Parameters`, a zero shift and a key the margin reads that the `Parameters` file lacks under the `Horizon`, naming each | checked before anything is valued |
 | `SACCR` refuses a blank `Base_Date`, `Mapping` or `Parameters` and a parameters file missing or malforming an entry CRE52 reads, naming each | checked before anything is valued |
 
 ## Containers {#containers}

@@ -104,18 +104,19 @@ at each vertex expiry it lacks off its own interpolation, a Skew or an SVI one o
 samples read its `CommodityPriceVol` at. A vol space is written as the grid the engine reads, every
 node of each of its three columns, with a slice at each vertex expiry it lacks read off that grid
 linearly in expiry and flat past either end (`Factor3D.augmented`), so it prices as it stood; a
-vertex moves every node of its slice, and a swaption's or a caplet's Risk_IRVol rows land on its
-expiry, the underlying tenor summed over, each row the difference of two full compiles on the space
-stating those slices. The grid is read by its columns, a `ForwardPriceVol`'s running delivery,
+vertex moves every node of its slice a percent of itself, and a swaption's or a caplet's
+Risk_IRVol rows land on its expiry, the underlying tenor summed over, each row the sum over the
+slice of each vol times the vega to it - ISDA's vol-weighted vega, the amount its rate vega risk
+reads as it stands (the methodology's paragraph 10(c)) - by one rule whichever convention the space
+declares, the methodology admitting a normal vol for rates (paragraphs 10(a) and 30). An FX, equity
+or commodity vertex moves its vols a point, the methodology weighing those rows by a vol it derives
+from the delta weight. The grid is read by its columns, a `ForwardPriceVol`'s running delivery,
 expiry, moneyness where a rate space's run moneyness, expiry, tenor; no trade reads a
 `ForwardPriceVol`, the `CSForwardPriceModelParameters` family's fit alone does, so no walk names
 one and no row of it is written. A factor mapped to a vega risk type that is no vol surface is
 refused by name: a model's parameters move by their family's fit, which a move re-solves for
-curves and credit alone. A point is what a vol space's declared convention calls one
-(`Factor3D.vol_point`, off the `Distribution_Type` `get_subtype` reads): a hundredth on a
-Lognormal space and a basis point on a Normal one, whose vols are absolute.
-**Held by** `tests/test_simm.py::test_a_rate_vega_row_is_a_point_on_its_vertex_slice_of_the_space`,
-`::test_a_point_of_vega_on_a_normal_space_is_a_basis_point`,
+curves and credit alone.
+**Held by** `tests/test_simm.py::test_a_rate_vega_row_is_the_vol_weighted_vega`,
 `::test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood`,
 `::test_a_commodity_vega_row_is_a_point_on_its_vertex_pillar`,
 `::test_a_point_of_vega_on_what_is_no_vol_surface_is_refused_by_name`. **Not gated:** a
@@ -146,6 +147,35 @@ as one naming any risk type no move writes. **Held by**
 `::test_a_quoted_inflation_curve_moves_on_its_blocks_breakevens_re_solved`,
 `::test_an_inflation_curve_that_is_its_own_strip_moves_alike_quoted_or_pasted`,
 `::test_a_risk_type_no_factor_of_the_engine_carries_is_refused_by_name`.
+
+The margin is the methodology's aggregation of each netting set's CRIF as one torch function of its
+rows' USD amounts (`SIMM.margin`), the thresholds being in USD and the amounts crossed off the
+`FxRate` factors as the CRIF's `AmountUSD` is, read off the `Parameters` file under the block's
+`Horizon`, every key it reads refused by name where the file lacks it. Per product class and risk
+class (`SIMM.RISK_CLASSES`, paragraphs 5 and 6) a delta, a vega and a curvature margin
+(`SIMM.aggregated`, off `SIMM.exposures`): a factor's weighted exposure is concentrated over its
+group, a rate currency's curves and inflation and never its basis, a credit issuer's vertices,
+which are weighed apart under its same-name correlation (paragraphs 8(b) and 42), any other factor
+alone; a rate vega is its row, the vol-weighted vega, and an FX, equity or commodity vega its row
+times the vol its delta weight implies and the class's HVR, a pair's off the groups of its two
+currencies in order (paragraph 10); a curvature scales a vega by its expiry, correlated squared,
+equity's bucket 12 taking none and a rate's over HVR² (paragraph 11); the risk classes of a product
+class are correlated by the class correlations and the product classes summed. A set's margin is
+read in two directions, collected on its rows as written and posted on their negation, which moves
+the curvature alone, each under the regime the agreement declares for it. A norm at zero is zero
+(`utils.sqrt_or_zero`) and a tie takes the branch a strict comparison selects, a concentration of
+one, a curvature's theta of zero and its floor, a bucket's own sum, so nothing is smoothed;
+`Margin_Rows` is each row's derivative of its set's margin, by autograd, and its share. The
+methodology's add-ons and multipliers (its section L) are not applied. **Held by**
+`tests/test_simm.py::test_a_one_row_book_margins_by_hand`,
+`::test_the_margin_is_the_notebooks_on_the_synthetic_parameters`,
+`::test_the_margin_rows_gradient_is_the_margins_own_derivative`,
+`::test_a_parameters_file_lacking_what_the_margin_reads_is_refused_by_name`. **Not gated:** the
+residual buckets, the Credit Non-Qualifying class, a cross-currency basis row and an equity
+volatility index, which no gated document writes; a vega concentration that binds, within a bucket
+or across rate currencies; the shares summing to the margin below every threshold; a one-day
+section of a file, read under the ten-day constants
+([limitations](../limitations.md#the-engine)).
 
 `SACCR` reads the one compile and moves nothing: each netting set's exposure at default under
 CRE52, `1.4 (RC + PFE)`, off its trades' values and their terms as each type declares them

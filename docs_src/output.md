@@ -64,6 +64,17 @@ verdict and the benchmark comparison (see the [Hedging](hedging/overview.md) sec
   `Bucket`, `Label1`, `Label2`, `Amount` (in the calculation `Currency`) and `AmountUSD`
 - `Trades` — one row per trade: its netting set, product class, value, moves, rows written and any
   leg the engine skipped, in its own sentence
+- `Margin` — each netting set's initial margin off its CRIF, as the methodology aggregates it under
+  the `Parameters` file's `Horizon`, in each `Direction`: `Posted` on the rows' negation and
+  `Collected` on them as written, under the `Regime` its agreement declares for that direction. One
+  row per `ProductClass`, `RiskClass` (`InterestRate`, `CreditQ`, `CreditNonQ`, `Equity`,
+  `Commodity`, `FX`) and `MarginType` (`Delta`, `Vega`, `Curvature`), each risk class's three
+  summed as its `Total`, a product class's risk classes as its `RiskClass` `Total` and the product
+  classes as the set's `ProductClass` `Total`; `Amount` in the calculation `Currency` and
+  `AmountUSD`. The methodology's add-ons and multipliers are not applied
+- `Margin_Rows` — per CRIF row and direction, the `Derivative` of its set's margin in the row's
+  amount and the row's `Share`, the derivative times the amount (`ShareUSD` in USD); a trade's share
+  is its rows', and the shares sum to the set's margin where no concentration threshold binds
 
 `Stats['Parameters']` records the `version` the SIMM parameters file states, and `Stats` carries the
 one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`).

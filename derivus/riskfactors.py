@@ -628,13 +628,6 @@ class Factor3D(object):
         return np.unique(self.param['Surface'].array[:, self.TENOR_INDEX])
 
     @classmethod
-    def vol_point(cls, block, point, tangent=False):
-        """What a point of vol adds to the vol column a vol space `block` holds, in the convention
-        it declares: the point on a Lognormal space, a basis point, a hundredth of it, on a Normal
-        one, whose vols are absolute - linear in the point, so its own first order (`tangent`)."""
-        return point * 0.01 if cls(block).get_subtype()[0] == 'Normal' else point
-
-    @classmethod
     def augmented(cls, block, years):
         """`block`, a vol space, written as the grid the engine reads - every node of each of its
         three columns, the expiry the second - with a slice at each expiry of `years` it lacks,

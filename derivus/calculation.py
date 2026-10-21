@@ -4005,7 +4005,8 @@ class SIMM(NettingSetCalculation):
     pillars its tent reaches and an option expiring between two pillars has its vega land on the
     vertices whose tents reach them. A vol space gains a slice at each vertex expiry it lacks, every
     node of its other two columns (`Factor3D.augmented`), so a swaption's or a caplet's vega lands
-    on its own expiry, the underlying tenor summed over. Where the rows land - risk type,
+    on its own expiry, the underlying tenor summed over, and a rate vertex moves each vol of its
+    slice a percent of itself, its row ISDA's vol-weighted vega. Where the rows land - risk type,
     qualifier, bucket, labels - and a trade's product class are the bank's `Mapping`, held to
     `utils.FactorRiskClass`; the rate and vol vertices are the regime's `Parameters`, the credit
     vertices the methodology's; the regimes margin is posted and collected under are the
@@ -4024,13 +4025,14 @@ class SIMM(NettingSetCalculation):
     #: a basis point on each benchmark quote of the curve's block, on every node of a basis or on
     #: the breakevens an inflation curve is defined by, a basis point of spread on each quote of a
     #: survival curve's block, a percent of a currency's price in the calculation currency, of a
-    #: spot or of a commodity's price factors together, a point of vol per vertex; the curve
-    #: benchmarks quoted as a price, which no basis point moves; and per `Surface_Type` the block a
-    #: point of vega moves and the column its expiry is in, the level being the last, a vol space
-    #: stating none and read as Explicit, its expiry the second of its four columns - a Skew
-    #: smile is added to its ATM level, so moving the level holds its skew, and the factor owns what
-    #: a point adds to a level (`Factor2D.vol_point`, `Factor3D.vol_point`), a basis point on a
-    #: Normal rate space. ISDA's Risk_InflationVol and Risk_CreditVol are not here, the engine
+    #: spot or of a commodity's price factors together, a point of vol per vertex, or on a rate
+    #: space each vol of the vertex's slice a percent of itself, in whichever convention the space
+    #: declares (ISDA's vol-weighted vega, `weighted`); the curve benchmarks quoted as a price,
+    #: which no basis point moves; and per `Surface_Type` the block a point of vega moves and the
+    #: column its expiry is in, the level being the last, a vol space stating none and read as
+    #: Explicit, its expiry the second of its four columns - a Skew smile is added to its ATM level,
+    #: so moving the level holds its skew, and the surface owns what a point adds to a level
+    #: (`Factor2D.vol_point`). ISDA's Risk_InflationVol and Risk_CreditVol are not here, the engine
     #: having no inflation or credit vol factor type, so a mapping naming either is refused as one
     #: naming any type not here is.
     MOVES = {'Risk_IRCurve': ('InterestRate', 'quote'),
@@ -4038,7 +4040,7 @@ class SIMM(NettingSetCalculation):
              'Risk_Inflation': ('InterestRate', 'inflation'),
              'Risk_FX': ('FX', 'fx'), 'Risk_Equity': ('Equity', 'spot'),
              'Risk_Commodity': ('Commodity', 'commodity'),
-             'Risk_IRVol': ('InterestRate', 'vega'), 'Risk_FXVol': ('FX', 'vega'),
+             'Risk_IRVol': ('InterestRate', 'weighted'), 'Risk_FXVol': ('FX', 'vega'),
              'Risk_EquityVol': ('Equity', 'vega'), 'Risk_CommodityVol': ('Commodity', 'vega'),
              'Risk_CreditQ': ('Credit', 'cds'), 'Risk_CreditNonQ': ('Credit', 'cds')}
     #: The vertices a credit spread's rows land on, the methodology's: the parameters file weighs
@@ -4047,6 +4049,8 @@ class SIMM(NettingSetCalculation):
     OUTRIGHTS = ('FXForwardDeal',)
     VOL_PILLARS = {'Skew': ('ATM_Vol', 0), 'Malz': ('Surface', 1), 'Explicit': ('Surface', 1),
                    'SVI': ('a', 0)}
+    #: The moves of a vol surface: a point of vol on a vertex, or a percent of each vol there.
+    VEGAS = ('vega', 'weighted')
     #: What the margin calculation reads off a CRIF, in the order it is written, `Amount` in the
     #: calculation currency.
     CRIF_COLUMNS = ('TradeID', 'Counterparty', 'PostRegulations', 'CollectRegulations',
@@ -4056,6 +4060,34 @@ class SIMM(NettingSetCalculation):
     #: coordinates, `[(Label1, weight)]` its amount is split by and the move itself - a key `move`
     #: turns into price factors.
     Bump = namedtuple('Bump', 'factor coordinates split move')
+    #: The methodology's risk classes the margin aggregates: per class its section of the
+    #: parameters file and the keys read there, the name the class correlations know it by, and the
+    #: risk types of its delta and of its vega, whose rows margin its curvature too.
+    RiskClass = namedtuple('RiskClass', 'section keys name deltas vega')
+    RISK_CLASSES = {
+        'InterestRate': RiskClass(
+            'ir', ('rw', 'ccy', 'con', 'rho', 'rho_inter', 'hvr', 'bucket_vol_map'), 'IR',
+            ('Risk_IRCurve', 'Risk_Inflation', 'Risk_XCcyBasis'), 'Risk_IRVol'),
+        'CreditQ': RiskClass('crq', ('rw', 'con', 'rho_intra', 'rho_inter'), 'CSR (Q)',
+                             ('Risk_CreditQ',), None),
+        'CreditNonQ': RiskClass('crnq', ('rw', 'con', 'rho_intra', 'rho_inter'), 'CSR (NQ)',
+                                ('Risk_CreditNonQ',), None),
+        'Equity': RiskClass('eq', ('rw', 'con', 'rho_intra', 'rho_inter', 'hvr'), 'Equity',
+                            ('Risk_Equity',), 'Risk_EquityVol'),
+        'Commodity': RiskClass('cm', ('rw', 'con', 'rho_intra', 'rho_inter', 'hvr'), 'Commodity',
+                               ('Risk_Commodity',), 'Risk_CommodityVol'),
+        'FX': RiskClass('fx', ('rw', 'ccy', 'con', 'rho', 'hvr', 'high'), 'FX', ('Risk_FX',),
+                        'Risk_FXVol')}
+    #: The margins of a risk class, and the directions a set's margin is read in, each under the
+    #: regime its agreement declares: posted on the rows' negation, collected on them as written.
+    MARGINS = ('Delta', 'Vega', 'Curvature')
+    DIRECTIONS = (('Posted', 'PostRegulations', -1.0), ('Collected', 'CollectRegulations', 1.0))
+    #: The methodology's constants: a vega's vol is its delta weight over a fortnight at the 99th
+    #: percentile, a curvature scales an expiry by half a fortnight's share of it and its lambda
+    #: reads the 99.5th, a residual bucket aggregates apart, and an equity volatility index takes
+    #: no curvature.
+    FORTNIGHT, RESIDUAL, VOLATILITY_INDICES = 14.0, 'Residual', '12'
+    Q99, Q995 = scipy.stats.norm.ppf([0.99, 0.995])
     fields = [
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default=REQUIRED,
@@ -4066,6 +4098,9 @@ class SIMM(NettingSetCalculation):
         F('Parameters', 'Text', default=REQUIRED,
           description='Path to the ISDA SIMM parameters file, whose interest-rate weights name the '
                       'vertices the rate and vol rows land on'),
+        F('Horizon', 'Text', default='Horizon_10d',
+          description='The horizon of the parameters file the vertices and the margin are read '
+                      'under'),
         F('Method', 'Text', default='Bump', values=['Bump', 'Graph'],
           description='Bump reads each row off the set revalued once per move, Graph as the '
                       'move\'s derivative off one backward pass per trade'),
@@ -4079,8 +4114,8 @@ class SIMM(NettingSetCalculation):
           description='Percent a spot, a currency\'s price or a commodity\'s prices move by, '
                       'relative, ISDA\'s one; another is scaled to it'),
         F('Vol_Shift', 'Float', default=1.0,
-          description='Points of implied vol a vertex moves by, a point on a Normal rate space a '
-                      'basis point, ISDA\'s one; another is scaled to it'),
+          description='Points of implied vol a vertex moves by, or on a rate space percent of each '
+                      'vol, ISDA\'s one; another is scaled to it'),
         NettingSetCalculation.MCMC_SIMULATIONS,
         NettingSetCalculation.QUASI_SEED
     ]
@@ -4100,18 +4135,26 @@ class SIMM(NettingSetCalculation):
         if missing:
             raise ValueError('SIMM: the calculation states no {}'.format(', '.join(missing)))
         try:
-            weights = next(iter(next(iter(parameters['horizons'].values()))['ir']['rw']['Delta'][
-                'Volatility'].values()))['Weight']
+            horizon = self.parameters = parameters['horizons'][params['Horizon']]
+            weights = next(iter(horizon['ir']['rw']['Delta']['Volatility'].values()))['Weight']
         except (AttributeError, KeyError, StopIteration, TypeError):
-            raise ValueError('SIMM: {} carries no interest-rate delta weights by tenor, which name '
-                             'the vertices'.format(params['Parameters']))
+            raise ValueError('SIMM: {} carries no interest-rate delta weights by tenor under {}, '
+                             'which name the vertices'.format(params['Parameters'],
+                                                              params['Horizon']))
+        missing = [] if 'class_rho' in horizon else ['class_rho']
+        missing += ['{}.{}'.format(stated.section, key) for stated in self.RISK_CLASSES.values()
+                    for key in stated.keys if key not in horizon.get(stated.section, {})]
+        if missing:
+            raise ValueError('SIMM: {} carries no {} under {}, which the margin reads'.format(
+                params['Parameters'], ', '.join(missing), params['Horizon']))
         self.vertices = sorted(((label, self.years(label)) for label in weights),
                                key=lambda vertex: vertex[1])
         self.credit_vertices = [(label, self.years(label)) for label in self.CREDIT_VERTICES]
         self.shifts = {'quote': params['Rate_Shift'], 'parallel': params['Rate_Shift'],
                        'inflation': params['Rate_Shift'], 'cds': params['Rate_Shift'],
                        'spot': params['Spot_Shift'], 'fx': params['Spot_Shift'],
-                       'commodity': params['Spot_Shift'], 'vega': params['Vol_Shift']}
+                       'commodity': params['Spot_Shift'], 'vega': params['Vol_Shift'],
+                       'weighted': params['Vol_Shift'] * 0.01}
         self.universe = set(self.config.factor_universe()['resolved'])
         prices = self.config.params['Market Prices']
         # what a configured family solves, and nothing a family the configuration omits carries
@@ -4223,14 +4266,15 @@ class SIMM(NettingSetCalculation):
 
     def report(self, base, values):
         """The run's results off the book's `base` and the `values` its moves wrote, or under Graph
-        their derivatives: the CRIF and a row per trade."""
+        their derivatives: the CRIF, a row per trade and the margin off the CRIF (`margins`)."""
         trades = [self.trade(index, base, values) for index in range(len(self.trades))]
-        self.output = {'CRIF': self.frame(trades), 'Trades': pd.DataFrame(
+        crif = self.frame(trades)
+        self.output = dict({'CRIF': crif, 'Trades': pd.DataFrame(
             [dict({key: value for key, value in trade.items() if key != 'Rows'},
                   Skipped='; '.join(trade['Skipped']), Written=len(trade['Rows']))
              for trade in trades],
             columns=['TradeID', 'NettingSet', 'ProductClass', 'Value', 'Moves', 'Written',
-                     'Skipped'])}
+                     'Skipped'])}, **self.margins(crif))
         return {'Stats': self.calc_stats, 'Results': self.output}
 
     def coordinates(self, factor, trade):
@@ -4254,7 +4298,7 @@ class SIMM(NettingSetCalculation):
         if risk_class not in (kind[0], 'CrossClass'):
             raise ValueError('SIMM: {} is a factor of the {} class and maps to {}, a risk type of '
                              'the {} class'.format(factor, risk_class, stated['RiskType'], kind[0]))
-        if kind[1] == 'vega' and factor_type not in (
+        if kind[1] in self.VEGAS and factor_type not in (
                 utils.TwoDimensionalFactors + utils.ThreeDimensionalFactors):
             raise ValueError('SIMM: {} maps to {}, and a point of vega moves a vol surface - a '
                              'model\'s parameters move by their family\'s fit, which a move here '
@@ -4402,13 +4446,13 @@ class SIMM(NettingSetCalculation):
                 # the price factors a mapping states under one qualifier are one commodity
                 moves.append(self.Bump(factor, stated, [('', 1.0)], (kind,) + tuple(sorted(
                     name for name in walk if self.coordinates(name, reference) == stated))))
-            elif kind == 'vega':
+            elif kind in self.VEGAS:
                 surface = factors[factor].get('Surface_Type', 'Explicit')
                 if surface not in self.VOL_PILLARS:
                     raise ValueError('SIMM: {} is a {} surface, and a point of vega moves the vols '
                                      'of a {} one'.format(factor, surface,
                                                           ', '.join(self.VOL_PILLARS)))
-                moves.extend(self.Bump(factor, stated, [(label, 1.0)], ('vega', factor, label))
+                moves.extend(self.Bump(factor, stated, [(label, 1.0)], (kind, factor, label))
                              for label, _ in self.vertices)
         return moves
 
@@ -4461,7 +4505,8 @@ class SIMM(NettingSetCalculation):
         rows = block[held].array.copy()
         point = self.params['Vol_Shift'] * 0.01 * np.array([dict(
             utils.vertex_weights(t, self.vertices)).get(move[2], 0.0) for t in rows[:, column]])
-        rows[:, -1] += getattr(riskfactors, utils.check_rate_name(name)[0]).vol_point(
+        # a rate vertex moves each vol a percent of itself, the one rule in either convention
+        rows[:, -1] += rows[:, -1] * point if kind == 'weighted' else riskfactors.Factor2D.vol_point(
             block, point, tangent)
         return {name: dict(block, **{held: utils.Curve(block[held].meta, rows)})}
 
@@ -4563,7 +4608,7 @@ class SIMM(NettingSetCalculation):
         factors = self.config.params['Price Factors']
         self.surfaces = {name: getattr(riskfactors, utils.check_rate_name(name)[0]).augmented(
             factors[name], [t for _, t in self.vertices]) for name in {
-            bump.move[1] for bumps in self.bumped for bump in bumps if bump.move[0] == 'vega'}}
+            bump.move[1] for bumps in self.bumped for bump in bumps if bump.move[0] in self.VEGAS}}
         return super(SIMM, self).base(self.surfaces)
 
     def reach(self, base):
@@ -4677,10 +4722,7 @@ class SIMM(NettingSetCalculation):
     def frame(self, trades):
         """The CRIF of `trades`, in trade order and then by coordinates, a vertex by its place on
         the grid; a move that left a trade's value exactly where it stood writes no row."""
-        factors = self.config.params['Price Factors']
-        currency = self.valuation['Currency']
-        usd = 1.0 if currency == 'USD' else factors['FxRate.' + currency]['Spot'] / factors[
-            'FxRate.USD']['Spot']
+        usd = self.usd()
         order = {label: position for position, (label, _) in enumerate(self.vertices)}
         rows = []
         for trade in trades:
@@ -4692,6 +4734,244 @@ class SIMM(NettingSetCalculation):
                                  Qualifier=qualifier, Bucket=bucket, Label1=label1, Label2=label2,
                                  Amount=amount, AmountUSD=amount * usd))
         return pd.DataFrame(rows, columns=list(self.CRIF_COLUMNS))
+
+    def usd(self):
+        """A unit of the calculation currency in USD, off the `FxRate` factors."""
+        factors, currency = self.config.params['Price Factors'], self.valuation['Currency']
+        return 1.0 if currency == 'USD' else factors['FxRate.' + currency]['Spot'] / factors[
+            'FxRate.USD']['Spot']
+
+    def margins(self, crif):
+        """`{'Margin': ..., 'Margin_Rows': ...}` off the CRIF `crif`: each netting set's margin in
+        each direction under the regime its agreement declares, by product class, risk class and
+        margin type with each level's `Total`, in the calculation currency and USD (`margin`); and
+        per row and direction the derivative of its set's margin in the row's amount and its share,
+        the derivative times the amount."""
+        usd, margins, shares = self.usd(), [], []
+        for counterparty in dict.fromkeys(
+                agreement['Instrument'].field.get('Reference') for agreement, _ in self.trades):
+            rows = crif[crif['Counterparty'] == counterparty]
+            agreement = self.agreement(counterparty)
+            for direction, regime, sign in self.DIRECTIONS:
+                amounts = torch.tensor(rows['AmountUSD'].to_numpy(np.float64), requires_grad=True)
+                found = self.margin(rows, sign * amounts)
+                total = found['Total', 'Total', 'Total']
+                derivative = torch.autograd.grad(total, amounts)[0].numpy() if (
+                    total.requires_grad) else np.zeros(len(rows))
+                margins.extend(dict(
+                    Counterparty=counterparty, Direction=direction, Regime=agreement[regime],
+                    ProductClass=product, RiskClass=risk_class, MarginType=margin,
+                    Amount=value.item() / usd, AmountUSD=value.item())
+                    for (product, risk_class, margin), value in found.items())
+                shares.extend(dict(
+                    row, Direction=direction, Regime=agreement[regime], Derivative=slope,
+                    Share=slope * row['Amount'], ShareUSD=slope * row['AmountUSD'])
+                    for row, slope in zip(rows.to_dict('records'), derivative))
+        return {'Margin': pd.DataFrame(margins, columns=[
+                    'Counterparty', 'Direction', 'Regime', 'ProductClass', 'RiskClass',
+                    'MarginType', 'Amount', 'AmountUSD']),
+                'Margin_Rows': pd.DataFrame(shares, columns=[
+                    'TradeID', 'Counterparty', 'Direction', 'Regime', 'ProductClass', 'RiskType',
+                    'Qualifier', 'Bucket', 'Label1', 'Label2', 'Derivative', 'Share', 'ShareUSD'])}
+
+    def margin(self, rows, amounts):
+        """The methodology's margin of one netting set's CRIF `rows` as one torch function of
+        `amounts`, their USD amounts as one direction reads them: `{(product class, risk class,
+        margin type): margin}` in USD, each risk class's three margins summed as its `Total`, a
+        product class's risk classes correlated by the class correlations as its `Total` and the
+        product classes summed as the set's."""
+        correlations, found = self.parameters['class_rho']['Correlation'], {}
+        for product in rows['ProductClass'].unique():
+            within, classes = (rows['ProductClass'] == product).to_numpy(), {}
+            for risk_class, stated in self.RISK_CLASSES.items():
+                held = {margin: within & rows['RiskType'].isin(
+                    stated.deltas if margin == 'Delta' else (stated.vega,)).to_numpy()
+                    for margin in self.MARGINS}
+                if not any(mask.any() for mask in held.values()):
+                    continue
+                for margin, mask in held.items():
+                    found[product, risk_class, margin] = amounts.new_zeros(()) if not mask.any() \
+                        else self.aggregated(risk_class, margin, rows[mask],
+                                             amounts[torch.as_tensor(mask)])
+                classes[risk_class] = found[product, risk_class, 'Total'] = sum(
+                    found[product, risk_class, margin] for margin in self.MARGINS)
+            names = [self.RISK_CLASSES[risk_class].name for risk_class in classes]
+            psi = amounts.new_tensor([[self.correlation(correlations, a, b) for b in names]
+                                      for a in names])
+            margin = torch.stack(list(classes.values()))
+            found[product, 'Total', 'Total'] = utils.sqrt_or_zero(margin @ psi @ margin)
+        found['Total', 'Total', 'Total'] = sum(
+            (value for (_, risk_class, _), value in found.items() if risk_class == 'Total'),
+            amounts.new_zeros(()))
+        return found
+
+    def aggregated(self, risk_class, margin, rows, amounts):
+        """`risk_class`'s `margin` - Delta, Vega or Curvature - of the CRIF `rows`, `amounts` their
+        USD amounts as one direction reads them: each factor's exposure `x` its rows' amounts
+        scaled, weighted and concentrated, `CR = sqrt(max(|sum| / T, 1))` over its group; a
+        bucket's `K = sqrt(sum_kl rho_kl f_kl x_k x_l)` and `S` its exposures' sum within `[-K,
+        K]`; the margin `sqrt(sum K^2 + sum_{b != c} gamma_bc g_bc S_b S_c)` over the non-residual
+        buckets, plus the residual's `K` - or for curvature, on `rho^2` and `gamma^2`, each part's
+        `max(sum x + lambda K, 0)`, `lambda` off `theta = min(sum x / sum |x|, 0)`, a rate's over
+        its `HVR^2`. A norm at zero is zero, and a tie takes the branch a strict comparison
+        selects."""
+        found, correlation, across, inner, outer = self.exposures(risk_class, margin, rows)
+        curvature = margin == 'Curvature'
+        power, tensor = 2 if curvature else 1, partial(torch.as_tensor, dtype=amounts.dtype)
+        described = {factor: rest for factor, *rest in found}
+        factors = list(described)
+        buckets = list(dict.fromkeys(described[factor][0] for factor in factors))
+        groups = list(dict.fromkeys(described[factor][1] for factor in factors
+                                    if described[factor][1] is not None))
+        thresholds = tensor([next(described[factor][2] for factor in factors
+                                  if described[factor][1] == group) for group in groups])
+        residual = np.array([bucket == self.RESIDUAL for bucket in buckets])
+        rho = tensor([[1.0 if k == l else correlation(k, l, described[k][0]) ** power
+                       if described[k][0] == described[l][0] else 0.0 for l in factors]
+                      for k in factors])
+        gamma = tensor([[0.0 if b == c or residual[i] or residual[j] else across(b, c) ** power
+                         for j, c in enumerate(buckets)] for i, b in enumerate(buckets)])
+        member = tensor(np.eye(len(buckets))[[buckets.index(described[k][0]) for k in factors]])
+        grouped = tensor([[float(described[k][1] == group) for group in groups] for k in factors])
+        own = tensor([[float(bucket == group) for group in groups] for bucket in buckets])
+
+        exposure = amounts.new_zeros(len(factors)).index_add(
+            0, torch.as_tensor([factors.index(row[0]) for row in found]),
+            amounts * tensor([row[5] for row in found]))
+        level = (exposure @ grouped).abs() / thresholds
+        group = torch.sqrt(torch.where(level > 1.0, level, torch.ones_like(level)))
+        # a factor or a bucket in no group, a basis or a curvature, is unconcentrated
+        concentration = grouped @ group + 1.0 - grouped.sum(1)
+        x = tensor([described[k][3] for k in factors]) * exposure * concentration
+        if inner:
+            rho = rho * self.ratios(concentration)
+        if outer:
+            gamma = gamma * self.ratios(own @ group + 1.0 - own.sum(1))
+        square = member.T @ (x * (rho @ x))
+        K, summed = utils.sqrt_or_zero(square), member.T @ x
+        S = torch.where(summed > K, K, torch.where(summed < -K, -K, summed))
+        apart, inside = tensor(residual.astype(float)), tensor((~residual).astype(float))
+        aggregate = utils.sqrt_or_zero((square * inside).sum() + S @ gamma @ S)
+        if not curvature:
+            return aggregate + (K * apart).sum()
+
+        def floored(part, root):
+            total, absolute = (summed * part).sum(), (x.abs() * (member @ part)).sum()
+            theta = torch.where(total < 0.0, total / torch.where(
+                absolute > 0.0, absolute, torch.ones_like(absolute)), torch.zeros_like(total))
+            value = total + ((self.Q995 ** 2 - 1.0) * (1.0 + theta) - theta) * root
+            return torch.where(value > 0.0, value, torch.zeros_like(value))
+
+        floor = floored(inside, aggregate) + floored(apart, (K * apart).sum())
+        return floor / self.parameters['ir']['hvr'] ** 2 if risk_class == 'InterestRate' else floor
+
+    def exposures(self, risk_class, margin, rows):
+        """`(found, correlation, across, inner, outer)` of the CRIF `rows` of `risk_class` to its
+        `margin`, as the methodology and the parameters file state them: per row `(factor, bucket,
+        group, threshold, weight, scale)` - the factor it nets into, the factor's bucket, its
+        concentration group, None where nothing concentrates it, the group's threshold, the
+        factor's weight and what the row's amount is scaled by there; the correlation of two
+        factors of a bucket and of two buckets; and whether the concentration ratio scales each."""
+        stated = self.parameters[self.RISK_CLASSES[risk_class].section]
+        rw, delta, curvature = stated['rw'], margin == 'Delta', margin == 'Curvature'
+        con = None if curvature else stated['con'][margin]['Threshold']
+        rows = list(zip(*(rows[column] for column in (
+            'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2'))))
+
+        def scale(expiry):
+            # an expiry in days of the methodology's year, its scale half a fortnight's share of it
+            return 0.5 * min(1.0, self.FORTNIGHT / (365.0 * self.years(expiry)))
+
+        def vol(weight):
+            # the vol a vega is weighed by, its delta weight over a fortnight at the 99th percentile
+            return weight * np.sqrt(365.0 / self.FORTNIGHT) / self.Q99
+
+        if risk_class == 'InterestRate':
+            rho, groups = stated['rho'], stated['ccy']
+
+            def group(currency, kind):
+                return groups[kind]['Currency'].get(currency, groups[kind]['default'])
+
+            def weight(risk_type, currency, bucket, tenor):
+                weights = rw['Delta']['Volatility']
+                return weights[stated['bucket_vol_map'][bucket]]['Weight'][tenor] if (
+                    risk_type == 'Risk_IRCurve') else weights[group(currency, 'Weights')][{
+                        'Risk_Inflation': 'InflationWeight',
+                        'Risk_XCcyBasis': 'CrossCurrencyBasisWeight'}[risk_type]]
+
+            def correlation(k, l, bucket):
+                kinds = {k[1], l[1]}
+                return rho['CrossCurrencyBasisCorrelation'] if 'Risk_XCcyBasis' in kinds else \
+                    rho['InflationCorrelation'] if 'Risk_Inflation' in kinds else self.correlation(
+                        rho['Correlation'], k[2], l[2]) * (
+                        rho['BasisRiskCorrelation'] if k[3] != l[3] else 1.0)
+
+            # a currency concentrates its rates and inflation alone, never its basis
+            found = [((currency, risk_type, tenor, curve), currency,
+                      None if curvature or risk_type == 'Risk_XCcyBasis' else currency,
+                      None if curvature else con[group(currency, 'ConcentrationThresholds')],
+                      weight(risk_type, currency, bucket, tenor) if delta else 1.0 if curvature
+                      else rw['Vega'], scale(tenor) if curvature else 1.0)
+                     for risk_type, currency, bucket, tenor, curve in rows]
+            return found, correlation, lambda b, c: stated['rho_inter'], False, not curvature
+        if risk_class == 'FX':
+            calculation = self.params['Currency']
+
+            def volatility(*currencies):
+                return ''.join('High' if currency in stated['high'] else 'Regular'
+                               for currency in currencies)
+
+            def category(currency):
+                return stated['ccy']['Currency'].get(currency, stated['ccy']['default'])
+
+            # a pair's vol is the delta weight its two currencies' groups state, in order
+            vols = {pair: vol(rw['Delta'][volatility(pair[:3], pair[3:])])
+                    for _, pair, _, _, _ in rows if not delta}
+            found = [(qualifier, '', qualifier, con[category(qualifier)],
+                      rw['Delta'][volatility(qualifier, calculation)], 1.0) if delta else
+                     (qualifier, '', None if curvature else qualifier,
+                      None if curvature else con[category(qualifier[:3])][category(qualifier[3:])],
+                      1.0 if curvature else rw['Vega'],
+                      vols[qualifier] * (scale(expiry) if curvature else stated['hvr']))
+                     for _, qualifier, _, expiry, _ in rows]
+            correlations = stated['rho']['Correlation'][
+                'CalculationCurrency{}Volatility'.format(volatility(calculation))]
+            return found, (lambda k, l, bucket: correlations[volatility(k, l)]) if delta else (
+                lambda k, l, bucket: stated['rho']['CorrelationVol']), None, not curvature, False
+        if risk_class in ('CreditQ', 'CreditNonQ'):
+            # an issuer's vertices are its factors, concentrated together, alike or not by name
+            found = [((issuer, tenor, label), bucket, issuer, con[bucket],
+                      rw['Delta']['Weight'][bucket], 1.0)
+                     for _, issuer, bucket, tenor, label in rows]
+            return found, lambda k, l, bucket: stated['rho_intra'][
+                'Residual' if bucket == self.RESIDUAL else 'NonResidual'][
+                'SameName' if k[0] == l[0] else 'DiffName'], lambda b, c: self.correlation(
+                stated['rho_inter']['Correlation'], b, c), True, False
+        vegas = rw['Vega'].get('Weight', {})
+        found = [(qualifier, bucket, None if curvature else qualifier,
+                  None if curvature else con[bucket],
+                  rw['Delta']['Weight'][bucket] if delta else 1.0 if curvature else vegas.get(
+                      bucket, rw['Vega']['default']),
+                  1.0 if delta else vol(rw['Delta']['Weight'][bucket]) * (
+                      scale(expiry) * (risk_class != 'Equity' or bucket != self.VOLATILITY_INDICES)
+                      if curvature else stated['hvr']))
+                 for _, qualifier, bucket, expiry, _ in rows]
+        return found, lambda k, l, bucket: stated['rho_intra']['Correlation'][bucket], \
+            lambda b, c: self.correlation(stated['rho_inter']['Correlation'], b, c), \
+            not curvature, False
+
+    @staticmethod
+    def ratios(concentrations):
+        """`min / max` of each pair of `concentrations`, the methodology's ratios f and g."""
+        return torch.minimum(concentrations[:, None], concentrations) / torch.maximum(
+            concentrations[:, None], concentrations)
+
+    @staticmethod
+    def correlation(table, a, b):
+        """The correlation between `a` and `b` the upper triangle `table` of the parameters file
+        states, either way round, one where they are one."""
+        return 1.0 if a == b else table[a]['Correlation'][b] if b in table.get(a, {}).get(
+            'Correlation', {}) else table[b]['Correlation'][a]
 
     @classmethod
     def write(cls, frame, path):

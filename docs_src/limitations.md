@@ -129,6 +129,12 @@ Grouped by where a validator meets them.
   so stated, not fixed; under `Method: Graph` the rows are the shock's limit, the derivative, and
   sum to the parallel point's. ISDA's inflation and credit vol sensitivities refuse by name, the
   engine carrying no factor type for either.
+- **The SIMM margin reads a one-day horizon under the ten-day constants** (2026-10-21). The vol a
+  vega is weighted by, its delta weight times sqrt(365/14) over the 99th percentile, and the
+  curvature's scale, half of 14 days' share of an expiry, are the ten-day methodology's (its
+  paragraphs 10(b) and 11(a)), so a `Horizon` naming a file's one-day section weighs that section's
+  parameters under them. Unmeasured: the one-day methodology is not in the repository, and
+  measuring it takes its constants and one book's margin stated under each horizon.
 - **SA-CCR holds a basis or a volatility trade in its ordinary hedging set** (2026-10-20).
   CRE52.46-52.47 hold a trade on the basis between two risk factors of one currency, or on a risk
   factor's volatility, in a hedging set of its own at half, or five times, its class's supervisory

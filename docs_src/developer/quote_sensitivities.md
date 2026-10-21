@@ -462,7 +462,8 @@ Listed on the [roadmap](roadmap.md#designed-not-built).
 - **No margin off these deltas**: the `SIMM` calculation writes a CRIF, by bump and revaluation, a
   moved quote riding its curve's [calibration](quote_propagation.md#stateless), or under
   `Method: Graph` off the backward pass that carries them, a credit quote's or a quoted breakeven's
-  row its `dV/dq`, and aggregates no margin. No wrong-way risk.
+  row its `dV/dq`, and aggregates its margin off the CRIF, not off these deltas; the margin's own
+  derivative in the quotes waits on the calibration's second derivative. No wrong-way risk.
 - **No recalibration inside the simulation**; quote sensitivities are t0 risk.
 - **No new pricers**, and no pricer changes for the t0 closure — so far none.
 - **No SABR or SSVI**; a Malz smile is the one delta parameterisation, and a swaption quote is its

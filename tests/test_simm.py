@@ -13,21 +13,26 @@ survival curve its CDS quotes solve on a USD curve quoted on its own knots. The 
 gated on an amortising swaption and a cap reading a swaption and a caplet space on the overnight
 curve, sloped in expiry and tenor; the commodity rows on the commodity trial's metal and fuel and
 the platinum chain carried on the overnight curve, and the inflation row on the rate trial's linker
-on an inflation curve sloped in tenor.
+on an inflation curve sloped in tenor. The margin is gated by hand on a book of one row per risk
+class, against the SIMM notebook's aggregation ported into the module, and by its rows'
+derivatives, on that file's invented weights, correlations and thresholds.
 """
 import copy
 import functools
+import itertools
 import json
 import logging
 import os
 import sys
 import threading
+from collections import defaultdict
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
 import pytest
+import scipy.stats
 
 import derivus
 from derivus import bootstrappers, calculation, utils
@@ -162,10 +167,14 @@ def world(*args, **kwargs):
 
 def holding(calculation, nodes, **kwargs):
     """A context loaded with the `job` of `calculation` and `kwargs` holding the trade `nodes`, each
-    `{'Instrument': ..., 'Children': ...}`, under one netting set."""
-    document = job(calculation, book={'NS': ()}, **kwargs)
-    document['Calc']['Deals']['Deals']['Children'][0]['Children'] = json.loads(
-        json.dumps(nodes, cls=CustomJsonEncoder))
+    `{'Instrument': ..., 'Children': ...}`, under one netting set, or under `nodes` a dict
+    `{reference: (posted under, collected under, nodes)}` under a set each, its regimes so."""
+    sets = nodes if isinstance(nodes, dict) else {'NS': ('SEC', 'SEC', nodes)}
+    document = job(calculation, book=dict.fromkeys(sets, ()), **kwargs)
+    for agreement, (post, collect, held) in zip(document['Calc']['Deals']['Deals']['Children'],
+                                                sets.values()):
+        agreement['Instrument']['.Deal'].update(Post_Regulations=post, Collect_Regulations=collect)
+        agreement['Children'] = json.loads(json.dumps(held, cls=CustomJsonEncoder))
     context = derivus.Context()
     context.load_json((json.dumps(document), 'simm'), compress=False)
     return context
@@ -472,11 +481,10 @@ COUPONS = [EXPIRY + pd.DateOffset(years=year) for year in range(6)]
 STEPS = utils.DateList({day: 1.5e6 for day in COUPONS[1:-1]})
 
 
-def yield_vols(expiries=(0.25, 1.0, 2.0, 5.0), moved=(), size=0.0, level=1.0, point=0.01):
+def yield_vols(expiries=(0.25, 1.0, 2.0, 5.0), level=1.0):
     """A rate vol space's quads on slices at `expiries`, sloped in expiry and tenor, `level` times
-    a Lognormal space's, each slice at an expiry of `moved` `size` points of `point` up on every
-    node."""
-    return [(m, e, t, level * (0.2 + 0.02 * e - 0.01 * t) + point * size * (e in moved))
+    a Lognormal space's."""
+    return [(m, e, t, level * (0.2 + 0.02 * e - 0.01 * t))
             for m in (-0.02, 0.0, 0.02) for e in expiries for t in (1.0, 3.0, 5.0, 10.0)]
 
 
@@ -486,9 +494,9 @@ SWAPTION_VOLS = {
                                  'Shift': utils.Percent(0.0), 'Surface': utils.Curve([], YIELD_VOLS)},
     'InterestRateVol.USD-OIS': {'Property_Aliases': None, 'Surface': utils.Curve([], YIELD_VOLS)}}
 #: The two spaces in normal units, each vol the Lognormal one times 4%, about the overnight curve's
-#: rates, the swaption space declaring Normal, an absolute normal vol whose point is a basis point.
-NORMAL = {'level': 0.04, 'point': 1e-4}
-NORMAL_VOLS = {name: dict(block, Surface=utils.Curve([], yield_vols(**NORMAL)))
+#: rates, the swaption space declaring Normal, an absolute normal vol.
+NORMAL = 0.04
+NORMAL_VOLS = {name: dict(block, Surface=utils.Curve([], yield_vols(level=NORMAL)))
                for name, block in SWAPTION_VOLS.items()}
 NORMAL_VOLS['InterestYieldVol.USD-OIS']['Distribution_Type'] = 'Normal'
 
@@ -587,100 +595,63 @@ CAP = {'Instrument': {'.Deal': {
 SLICES = (0.25, 0.5, 1.0, 2.0, 3.0, 5.0)
 
 
-def sliced(moved=(), size=0.0, spaces=SWAPTION_VOLS, **units):
+def sliced(spaces=SWAPTION_VOLS, level=1.0):
     """The `spaces` stating a slice at each of `SLICES` off their own line in expiry, as the run
-    compiles them, each slice at an expiry of `moved` `size` points up, in `yield_vols`' `units`."""
-    return {name: dict(block, Surface=utils.Curve([], yield_vols(SLICES, moved, size, **units)))
+    compiles them, `level` times a Lognormal space's."""
+    return {name: dict(block, Surface=utils.Curve([], yield_vols(SLICES, level)))
             for name, block in spaces.items()}
 
 
-@pytest.fixture(scope='module')
-def rate_vega():
-    """The swaption and the cap under one set, their vega taken at a ten-thousandth of a point."""
-    return holding({'Vol_Shift': 1e-4}, [AMORTISING, CAP], extra=SWAPTION_VOLS).run_job()
+#: Per convention the rate vol spaces and the trades reading them: the swaption and the cap on the
+#: Lognormal spaces, the swaption on the Normal swaption space.
+RATE_VEGA = {'Lognormal': ([AMORTISING, CAP], SWAPTION_VOLS, 1.0),
+             'Normal': ([AMORTISING], NORMAL_VOLS, NORMAL)}
 
 
-def test_a_rate_vega_row_is_a_point_on_its_vertex_slice_of_the_space(rate_vega):
-    """ISDA'S RATE VEGA IS THE OPTION'S EXPIRY. A rate vol space slices at 3m, 1y, 2y and 5y; given
-    a slice at each vertex expiry it lacks, every moneyness and underlying tenor read off its grid,
-    each vertex alone moves its own slice, a tent over the slices about it. The payer expiring two
-    years and a day out reads the swaption space between its 2y and 3y slices, so its vega lands on
-    2y and 3y in the split `vertex_weights` gives, 364/365 and 1/365; the cap reads the caplet space
-    at each caplet's expiry, its rows on 3m, 6m, 1y and 2y. At a ten-thousandth of a point each row
-    is the difference of two full compiles of the book on the space stating those slices off its
-    own line, that slice so moved and not, equal to the bit as measured; and the central difference
-    of two such compiles, the slice moved either side, within 5.0e-8 of the swaption's largest row
-    and 2.4e-7 of the cap's, the forward difference's second order, which falls with the shift.
-    Each trade's rows sum to the central difference of a parallel move of every slice, within
-    5.0e-8 and 1.7e-7.
+@pytest.mark.parametrize('convention', sorted(RATE_VEGA))
+def test_a_rate_vega_row_is_the_vol_weighted_vega(convention):
+    """ISDA'S RATE VEGA IS VOL-WEIGHTED, ON THE OPTION'S EXPIRY. A rate vol space slices at 3m, 1y,
+    2y and 5y; given a slice at each vertex expiry it lacks, every moneyness and underlying tenor
+    read off its grid, each vertex alone moves every vol of its own slice a percent of itself, a
+    tent over the slices about it, so its row is the sum over those nodes of the tent, the vol and
+    the vega to it, ISDA's vol-weighted vega, by one rule whichever convention the space declares.
+    The payer expiring two years and a day out reads the swaption space between its 2y and 3y
+    slices, so its vega lands on 2y and 3y; the cap reads the caplet space at each caplet's expiry,
+    its rows on 3m, 6m, 1y and 2y. Under `Method: Graph` each row is that sum off `Greeks: First`
+    of a base valuation of the trade alone on the space stating those slices, on the curves its
+    quotes solve, to 1e-10 of the trade's largest row, measured within 5.8e-15. The payer's 2y row
+    is 132,589.40 on the Lognormal space and 135,041.88 on the Normal one, whose vols are 4% of the
+    Lognormal's, 1.8% apart where a point of each convention's vega reads 6,455.50 and 1,643.73.
 
-    Killing mutations: the slice moved at the space's first tenor alone - the swaption, reading
-    between its 3y and 5y tenors, writes no vega row; the expiry read off the space's tenor column -
-    the swaption's rows land on 3y and 5y, 4,981.14 and 1,492.09, and the cap's on 1y alone; the
-    split off the credit vertices - the cap's 3m and 6m rows fold into its 1y row, 1,748.33; the
-    space compiled on its own slices - the swaption's vega lands on 2y and 5y, 6,467.32 and 5.91,
-    and the cap's 6m row on its 3m and 1y.
+    Killing mutations: the move absolute, a point on every node of the slice as on an FX surface -
+    the payer's 2y row 645,549.53 on the Lognormal space and 16,437,252.85 on the Normal one; the
+    split off the credit vertices - the cap's 3m and 6m rows fold into its 1y row, 36,099.65
+    against 25,209.16; the space compiled on its own slices - the payer's vega lands on 2y and 5y,
+    132,832.24 and 156.89; the expiry read off the space's tenor column - the payer's lands on 3y
+    and 5y, 104,631.29 and 28,357.84.
     """
-    calc, output = rate_vega
-    shift, years = 1e-4, dict(calc.vertices)
-    vega = {trade: rows(output, trade, 'Risk_IRVol') for trade in ('SWPT', 'CAP')}
-    assert set(vega['SWPT']) == {'2y', '3y'} and set(vega['CAP']) == {'3m', '6m', '1y', '2y'}, vega
-    total = sum(vega['SWPT'].values())
-    assert {label: amount / total for label, amount in vega['SWPT'].items()} == pytest.approx(
-        dict(utils.vertex_weights((EXPIRY - BASE).days / 365.0, calc.vertices)), rel=1e-6)
-
-    def worth(moved, size):
-        return solved(holding(VALUATION, [AMORTISING, CAP], extra=sliced(moved, size)))
-
-    base = worth((), 0.0)
-    for label in set(vega['SWPT']) | set(vega['CAP']):
-        up, down = worth((years[label],), shift), worth((years[label],), -shift)
-        for trade, found in vega.items():
-            largest = max(map(abs, found.values()))
-            if label in found:
-                across = (up[trade] - down[trade]) / (2 * shift)
-                assert abs(found[label] - (up[trade] - base[trade]) / shift) < 1e-12 * largest
-                assert abs(found[label] - across) < 1e-6 * largest, (trade, label, across)
-    up, down = worth(SLICES, shift), worth(SLICES, -shift)
-    for trade, found in vega.items():
-        assert sum(found.values()) == pytest.approx((up[trade] - down[trade]) / (2 * shift),
-                                                    rel=1e-6), trade
+    nodes, spaces, level = RATE_VEGA[convention]
+    calc, output = holding({'Method': 'Graph'}, nodes, extra=spaces).run_job()
+    for node in nodes:
+        trade = node['Instrument']['.Deal']['Reference']
+        context = holding(dict(VALUATION, Greeks='First'), [node], extra=sliced(spaces, level))
+        context.bootstrap()
+        frame = context.run_job()[1]['Results']['Greeks_First']
+        weighted = {}
+        for (rate, tenor, expiry, _), vega in frame.drop(columns='Value').sum(axis=1).items():
+            # the node's vol off the space's own line, Greeks_First's `Value` reading a space amiss
+            vol = level * (0.2 + 0.02 * expiry - 0.01 * tenor)
+            for label, weight in utils.vertex_weights(expiry, calc.vertices) if (
+                    rate in spaces) else ():
+                weighted[label] = weighted.get(label, 0.0) + weight * vol * vega
+        found, largest = rows(output, trade, 'Risk_IRVol'), max(map(abs, weighted.values()))
+        assert set(found) == set(weighted) == {'SWPT': {'2y', '3y'}, 'CAP': {
+            '3m', '6m', '1y', '2y'}}[trade], (found, weighted)
+        assert all(abs(found[label] - amount) < 1e-10 * largest
+                   for label, amount in weighted.items()), (trade, found, weighted)
 
 
-def test_a_point_of_vega_on_a_normal_space_is_a_basis_point(rate_vega):
-    """A NORMAL SPACE'S POINT IS A BASIS POINT. The swaption space declared Normal, each vol the
-    Lognormal one times 4%, an absolute normal vol the payer is priced on by Bachelier: a point of
-    vol is what the space's convention calls one, so each vertex moves its slice a basis point. The
-    payer's vega lands on 2y and 3y as on the Lognormal space, 1,643.73 and 4.5157 a basis point at
-    a ten-thousandth of one, each the difference of two full compiles on the space stating those
-    slices off its own line, that slice so moved over the shift and not, equal to the bit as
-    measured and held to 1e-12 of the largest, and the central difference within 2.7e-10, held to
-    1e-6; 0.2546 of the Lognormal twin's rows, 6,455.49 and 17.73, a basis point of normal vol
-    being 1.25% of the level where a point of lognormal vol is 5%.
-
-    Killing mutation: `Factor3D.vol_point` returning the point whatever the space declares - a
-    hundred basis points, the rows 164,372.53 and 451.57, 25.46 times the Lognormal twin's.
-    """
-    shift = 1e-4
-    calc, output = holding({'Vol_Shift': shift}, [AMORTISING], extra=NORMAL_VOLS).run_job()
-    years, vega = dict(calc.vertices), rows(output, 'SWPT', 'Risk_IRVol')
-    assert set(vega) == {'2y', '3y'}, vega
-
-    def worth(moved, size):
-        return solved(holding(VALUATION, [AMORTISING], extra=sliced(
-            moved, size, NORMAL_VOLS, **NORMAL)))['SWPT']
-
-    base, largest = worth((), 0.0), max(map(abs, vega.values()))
-    lognormal = rows(rate_vega[1], 'SWPT', 'Risk_IRVol')
-    for label, amount in vega.items():
-        up, down = (worth((years[label],), size) for size in (shift, -shift))
-        assert abs(amount - (up - base) / shift) < 1e-12 * largest, label
-        assert abs(amount - (up - down) / (2 * shift)) < 1e-6 * largest, label
-    assert all(0.1 < amount / lognormal[label] < 1.0 for label, amount in vega.items()), (
-        vega, lognormal)
-
-
-def test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood(rate_vega, tmp_path):
+def test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood(tmp_path):
     """The space the set is compiled on, given a slice at each vertex expiry it lacks off its own
     grid, linear in expiry and flat past either end, prices the swaption and the cap as the space
     as authored does, to the bit; and their curve rows are to the bit what a run mapping the two
@@ -690,7 +661,7 @@ def test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood(rate_vega, 
     tenor lacks - the swaption's value 0.054% up and the cap's 0.52%, the cap's 1y rate row 99.40
     against 102.52.
     """
-    _, output = rate_vega
+    output = holding({'Vol_Shift': 1e-4}, [AMORTISING, CAP], extra=SWAPTION_VOLS).run_job()[1]
     with open(MAPPING, 'rt', encoding='utf-8') as f:
         mapping = json.load(f)
     for name in SWAPTION_VOLS:
@@ -1999,3 +1970,604 @@ def test_the_graph_run_sharded_equals_the_serial_run_to_the_bit():
                        for workers in ({}, {'Workers': 2}))
     assert len(serial['CRIF']) == 14
     identical(sharded, serial)
+
+
+def nodes(*deals):
+    return [{'Instrument': {'.Deal': deal}} for deal in deals]
+
+
+def remapped(tmp_path, factors):
+    """The path of the module's mapping with each price factor of `factors` stated as its SIMM
+    coordinates there."""
+    with open(MAPPING, 'rt', encoding='utf-8') as f:
+        mapping = json.load(f)
+    for name, stated in factors.items():
+        mapping['Factors'][name]['SIMM'] = stated
+    with open(tmp_path / 'mapping.json', 'wt', encoding='utf-8') as f:
+        json.dump(mapping, f)
+    return str(tmp_path / 'mapping.json')
+
+
+def credit_world(survival, **extra):
+    """`job`'s market of the credit module's USD curve, quoted on its knots, and its name's
+    `survival` block beside the module's own, `extra` among its price factors, both families
+    configured."""
+    return {'extra': dict(extra, **{'InterestRate.USD': credit.FACTORS['InterestRate.USD'],
+                                    credit.CURVE: credit.survival()}),
+            'prices': dict(blocks(), **dict([CREDIT_CURVE]), **{credit.BLOCK: survival}),
+            'configuration': credit.FAMILIES}
+
+
+#: The credit module's five-year swap on its USD curve, quarterly, booked 25bp over its quote.
+FIVE = CREDIT_CURVE[1]['instrument']['Points'][3]
+QUARTERLY = dict(FIVE['Deal'], Object='SwapInterestDeal', Reference='SWAP3M', Discount_Rate='USD',
+                 Swap_Rate=FIVE['Quoted_Market_Value'] + 0.25)
+#: The margin's two documents, each run in a test's folder: the module's book in rand under two
+#: sets posting and collecting under regimes of their own, the platinum chain mapped into the
+#: metal's bucket, and in dollars the swap, the option and the quarterly swap, its curve mapped a
+#: second USD sub-curve, under one set and the credit module's sold default swap under another.
+MARGINED = {
+    'rand': lambda tmp_path: holding({
+        'Currency': 'ZAR', 'MCMC_Simulations': 256, 'Mapping': remapped(tmp_path, dict.fromkeys(
+            PRICES['PLATINUM'], {'RiskType': 'Risk_Commodity', 'Qualifier': 'PLATINUM',
+                                 'Bucket': '11'}))}, {
+        'RATES': ('SEC', 'CFTC', nodes(benchmark(blocks())[1], OPTION) + [AMORTISING, CAP, LINKER]),
+        'BOOK': ('CFTC', 'SEC', nodes(*AUTOCALLS) + COMMODITY_BOOK)},
+        extra=dict(SWAPTION_VOLS, **COMMODITIES, **INFLATION, **INDICES)).run_job(),
+    'dollar': lambda tmp_path: holding({'Mapping': remapped(tmp_path, {'InterestRate.USD': {
+        'RiskType': 'Risk_IRCurve', 'Qualifier': 'USD', 'Bucket': '1', 'Label2': 'Libor3m'}})}, {
+        'RATES': ('SEC', 'SEC', nodes(benchmark(blocks())[1], OPTION, QUARTERLY)),
+        'CREDIT': ('SEC', 'SEC', nodes(credit.SOLD))},
+        **credit_world(credit.block('Par_Spread'))).run_job()}
+
+
+def margins(results):
+    """`{(direction, counterparty, regime, product class, risk class, margin type): USD}` off a
+    run's `Margin`."""
+    return {(row.Direction, row.Counterparty, row.Regime, row.ProductClass, row.RiskClass,
+             row.MarginType): row.AmountUSD for row in results['Margin'].itertuples()}
+
+
+def notebook(crif, currency, parameters=PARAMETERS):
+    """`{(direction, counterparty, regime, product class, risk class, margin type): margin}` the
+    SIMM notebook's aggregation (`notebooks/SIMM 2.4.ipynb`, cells 3 to 14) reads off `crif`, in
+    USD, its totals under `Total` - ported as it stands on the parameters file at `parameters` but
+    for three departures: the calculation currency is the CRIF's where `calc_simm` defaults the
+    notebook's dollar; an issuer's credit vertices are weighed apart and concentrated together, as
+    the methodology does, where the notebook nets them first; and a vega weight the file's section
+    states no `Weight` for is its `default`, where the notebook raises on a commodity's."""
+    with open(parameters, 'rt', encoding='utf-8') as f:
+        sd = json.load(f)['horizons']['Horizon_10d']
+    alpha = scipy.stats.norm.ppf(0.99)
+    keys = ['PostRegulations', 'CollectRegulations', 'Counterparty']
+    classes = {'rho_inter': sd['class_rho'], 'risk_names': {
+        'Risk_IRCurve': 'IR', 'Risk_FX': 'FX', 'Risk_Equity': 'Equity', 'Risk_CreditQ': 'CSR (Q)',
+        'Risk_Commodity': 'Commodity'}}
+    ir = dict(sd['ir'], other_map={'Risk_Inflation': 'InflationWeight',
+                                   'Risk_XCcyBasis': 'CrossCurrencyBasisWeight'})
+
+    def reset_index(df, groups):
+        return df.reset_index(level=list(range(len(groups)))).groupby(groups)
+
+    def apply_correlation(var, sd, transform=lambda x: x):
+        cross = 0.0
+        for i, j in itertools.combinations(var.keys(), 2):
+            table = sd['rho_inter']['Correlation']
+            y_bc = table[i]['Correlation'][j] if i in table and j in table[i]['Correlation'] else \
+                table[j]['Correlation'][i]
+            cross += 2.0 * transform(y_bc) * var[i] * var[j]
+        return cross
+
+    def calc_margin(K, sd, bucket='WS_k', replace_vol_with=''):
+        w = {}
+        for group, full_df in reset_index(K, keys + ['ProductClass', 'RiskType']):
+            if 'Residual' in full_df.index:
+                df, residual = full_df.loc[full_df.index.difference(['Residual'])], \
+                    full_df.loc['Residual']['K']
+            else:
+                df, residual = full_df, 0.0
+            S_b = ((-df['K']).clip(lower=df[['K', bucket]].min(axis=1))).to_dict()
+            w[group[:-1] + (group[-1].replace('Vol', replace_vol_with),
+                            'Delta' if bucket == 'WS_k' else 'Vega')] = np.sqrt(
+                (df['K'] * df['K']).sum() + apply_correlation(S_b, sd)) + residual
+        return w
+
+    def calc_curve_margin(C, sd, lamb, replace_vol_with=''):
+        w = {}
+        for group, full_df in reset_index(C, keys + ['ProductClass', 'RiskType']):
+            margin = 0.0
+            if 'Residual' in full_df.index:
+                df, residual = full_df.loc[full_df.index.difference(['Residual'])], \
+                    full_df.loc['Residual'][['K', 'CVR_k']]
+            else:
+                df, residual = full_df, 0.0
+            if group + ('NonResidual',) in lamb:
+                l = lamb.loc[group + ('NonResidual',)]
+                S_b = ((-df['K']).clip(lower=df[['K', 'CVR_k']].min(axis=1))).to_dict()
+                cm = (df['K'] * df['K']).sum() + apply_correlation(S_b, sd, lambda x: x * x)
+                margin += max(df['CVR_k'].sum() + l * np.sqrt(cm), 0.0)
+            if group + ('Residual',) in lamb:
+                l = lamb.loc[group + ('Residual',)]
+                margin += max(residual['CVR_k'] + l * residual['K'], 0.0)
+            w[group[:-1] + (group[-1].replace('Vol', replace_vol_with), 'Curvature')] = margin
+        return w
+
+    def delta_K(filtered, RiskType, sd):
+        if RiskType == 'Risk_FX':
+            s_k_i = filtered.groupby(keys + ['ProductClass', 'RiskType', 'Qualifier']).agg(
+                {'Amount': 'sum', 'AmountUSD': 'sum'})
+            threshold = s_k_i.index.get_level_values('Qualifier').map(
+                lambda ccy: sd['con']['Delta']['Threshold'][sd['ccy']['Currency'].get(
+                    ccy, sd['ccy']['default'])])
+            s_k_i['CR_b'] = np.sqrt(s_k_i['AmountUSD'].abs() / threshold).clip(lower=1.0)
+            report_vol = 'High' if currency in sd['high'] else 'Regular'
+            rho = sd['rho']['Correlation']['CalculationCurrency{}Volatility'.format(report_vol)]
+            s_k_i['RW_k'] = s_k_i.index.get_level_values('Qualifier').map(
+                lambda ccy: sd['rw']['Delta']['{}{}'.format(
+                    'High' if ccy in sd['high'] else 'Regular', report_vol)]
+                if ccy != currency else 0.0)
+            s_k_i['WS_k_i'] = s_k_i['RW_k'] * s_k_i['AmountUSD'] * s_k_i['CR_b']
+            w = {}
+            for group, df in reset_index(s_k_i, keys + ['ProductClass', 'RiskType']):
+                ws_ki, CR_k = df['WS_k_i'].to_dict(), df['CR_b'].to_dict()
+                K_b = sum([x * x for x in ws_ki.values()])
+                for i, j in itertools.combinations(ws_ki.keys(), 2):
+                    rho_ij = rho['{}{}'.format('High' if i in sd['high'] else 'Regular',
+                                               'High' if j in sd['high'] else 'Regular')]
+                    f_kl = min(CR_k[i], CR_k[j]) / max(CR_k[i], CR_k[j])
+                    K_b += 2.0 * f_kl * rho_ij * ws_ki[i] * ws_ki[j]
+                w[group] = [np.sqrt(K_b), sum(ws_ki.values())]
+            K = pd.DataFrame(w, index=['K', 'WS_k']).T
+            K.index.set_names(keys + ['ProductClass', 'RiskType'], inplace=True)
+            return calc_margin(K, sd)
+        if RiskType == 'Risk_IRCurve':
+            groups = keys + ['ProductClass', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2']
+            other_groups = groups[:-3]
+            other = filtered[filtered['RiskType'].isin(['Risk_XCcyBasis', 'Risk_Inflation'])]
+            filtered = filtered[filtered['RiskType'] == 'Risk_IRCurve']
+            s_k_i = filtered.groupby(groups).agg({'Amount': 'sum', 'AmountUSD': 'sum'})
+            o_k_i = other.groupby(other_groups).agg({'Amount': 'sum', 'AmountUSD': 'sum'})
+            inf = o_k_i.loc[o_k_i.index.get_level_values('RiskType') == 'Risk_Inflation']
+            sum_ski = s_k_i.groupby(other_groups).agg({'Amount': 'sum', 'AmountUSD': 'sum'})
+            abs_s_k_i = sum_ski.set_index(sum_ski.index.droplevel('RiskType')).add(
+                inf.set_index(inf.index.droplevel('RiskType')), fill_value=0.0).abs()
+            threshold = abs_s_k_i.index.get_level_values('Qualifier').map(
+                lambda ccy: sd['con']['Delta']['Threshold'][sd['ccy']['ConcentrationThresholds'][
+                    'Currency'].get(ccy, sd['ccy']['ConcentrationThresholds']['default'])])
+            concen = np.sqrt(abs_s_k_i['AmountUSD'] / threshold).clip(lower=1.0).to_dict()
+            s_k_i['CR_b'] = s_k_i.index.droplevel('RiskType').map(lambda x: concen[x[:-3]])
+            s_k_i['RW_k'] = [sd['rw']['Delta']['Volatility'][sd['bucket_vol_map'][bucket]][
+                'Weight'][tenor.lower()] for bucket, tenor in zip(
+                s_k_i.index.get_level_values('Bucket'), s_k_i.index.get_level_values('Label1'))]
+            s_k_i['WS_k_i'] = s_k_i['RW_k'] * s_k_i['AmountUSD'] * s_k_i['CR_b']
+            o_k_i['CR_b'] = np.where(o_k_i.index.get_level_values('RiskType') == 'Risk_XCcyBasis',
+                                     1.0, o_k_i.index.droplevel('RiskType').map(lambda x: concen[x]))
+            o_k_i['RW_k'] = o_k_i.index.map(lambda x: sd['rw']['Delta']['Volatility'][
+                sd['ccy']['Weights']['Currency'].get(x[-1], sd['ccy']['Weights']['default'])][
+                sd['other_map'][x[-2]]])
+            o_k_i['WS_k_i'] = o_k_i['RW_k'] * o_k_i['AmountUSD'] * o_k_i['CR_b']
+            other_basis = o_k_i.reset_index(level=[x for x in o_k_i.index.names if x != 'RiskType']
+                                            ).groupby(keys + ['ProductClass', 'Qualifier'])
+            w = {}
+            for group, df in reset_index(s_k_i, keys + ['ProductClass', 'RiskType', 'Qualifier',
+                                                        'CR_b']):
+                ws_ki = df['WS_k_i'].to_dict()
+                basis_key = group[:-3] + group[-2:-1]
+                if basis_key in other_basis.groups:
+                    ws_ki.update(other_basis.get_group(basis_key)['WS_k_i'].to_dict())
+                K_b = sum([x * x for x in ws_ki.values()])
+                for i, j in itertools.combinations(ws_ki.keys(), 2):
+                    rho_ij, phi_ij = 1.0, 1.0
+                    if i == 'Risk_XCcyBasis' or j == 'Risk_XCcyBasis':
+                        rho_ij = sd['rho']['CrossCurrencyBasisCorrelation']
+                    elif i == 'Risk_Inflation' or j == 'Risk_Inflation':
+                        rho_ij = sd['rho']['InflationCorrelation']
+                    else:
+                        phi_ij = sd['rho']['BasisRiskCorrelation'] if i[1] != j[1] else 1.0
+                        if i[0] != j[0]:
+                            table = sd['rho']['Correlation']
+                            rho_ij = table[j[0].lower()]['Correlation'][i[0].lower()] if (
+                                j[0].lower() in table and i[0].lower() in table[j[0].lower()][
+                                    'Correlation']) else table[i[0].lower()]['Correlation'][
+                                j[0].lower()]
+                    K_b += 2.0 * phi_ij * rho_ij * ws_ki[i] * ws_ki[j]
+                w[group] = [np.sqrt(K_b), sum(ws_ki.values())]
+            K = pd.DataFrame(w, index=['K', 'WS_ki']).T
+            K.index.set_names(keys + ['ProductClass', 'RiskType', 'Qualifier', 'CR_b'], inplace=True)
+            dm = {}
+            for group, df in reset_index(K, keys + ['ProductClass', 'RiskType']):
+                S_b = ((-df['K']).clip(lower=df[['K', 'WS_ki']].min(axis=1))).to_dict()
+                margin = (df['K'] * df['K']).sum()
+                for i, j in itertools.combinations(S_b.keys(), 2):
+                    margin += sd['rho_inter'] * min(i[1], j[1]) / max(i[1], j[1]) * 2.0 * S_b[i] * \
+                        S_b[j]
+                dm[group[:-1] + (group[-1].replace('Vol', ''), 'Delta')] = np.sqrt(margin)
+            return dm
+        groups = keys + ['ProductClass', 'RiskType', 'Bucket']
+        credit = RiskType in ['Risk_CreditNQ', 'Risk_CreditQ']
+        # the departure: a vertex is a factor of its own, its issuer's net concentrating it
+        s_k_i = filtered.groupby(groups + (['Qualifier', 'Label1', 'Label2'] if credit else [
+            'Qualifier'])).agg({'Amount': 'sum', 'AmountUSD': 'sum'})
+        net = s_k_i.groupby(groups + ['Qualifier'])['AmountUSD'].transform('sum') if credit else \
+            s_k_i['AmountUSD']
+        threshold = s_k_i.index.get_level_values('Bucket').map(
+            lambda bucket: sd['con']['Delta']['Threshold'][bucket])
+        s_k_i['CR_b'] = np.sqrt(net.abs() / threshold).clip(lower=1.0)
+        s_k_i['RW_k'] = s_k_i.index.get_level_values('Bucket').map(
+            lambda bucket: sd['rw']['Delta']['Weight'][bucket])
+        s_k_i['WS_k_i'] = s_k_i['RW_k'] * s_k_i['AmountUSD'] * s_k_i['CR_b']
+        w = {}
+        for group, df in s_k_i.reset_index().groupby(groups):
+            ws_ki, CR_k = df['WS_k_i'].to_dict(), df['CR_b'].to_dict()
+            q_k = df['Qualifier'].to_dict()
+            K_b = sum([x * x for x in ws_ki.values()])
+            for i, j in itertools.combinations(ws_ki.keys(), 2):
+                if credit:
+                    rho_ij = sd['rho_intra'][
+                        'Residual' if group[-1] == 'Residual' else 'NonResidual'][
+                        'SameName' if q_k[i][:16] == q_k[j][:16] else 'DiffName']
+                else:
+                    rho_ij = sd['rho_intra']['Correlation'][group[-1]]
+                f_kl = min(CR_k[i], CR_k[j]) / max(CR_k[i], CR_k[j])
+                K_b += 2.0 * f_kl * rho_ij * ws_ki[i] * ws_ki[j]
+            w[group] = [np.sqrt(K_b), sum(ws_ki.values())]
+        K = pd.DataFrame(w, index=['K', 'WS_k']).T
+        K.index.set_names(groups, inplace=True)
+        return calc_margin(K, sd)
+
+    def vega_K(filtered, RiskType, sd, pledgor):
+        filtered = filtered.copy()
+        filtered['t_kj'] = filtered['Label1'].apply(lambda x: int(x[:-1]) * (
+            {'d': 1.0, 'w': 7.0, 'm': 365 / 12.0, 'y': 365.0}).get(x.lower()[-1]))
+        filtered['SF_t'] = 0.5 * (14 / filtered['t_kj']).clip(upper=1.0)
+        irvol, fxvol = RiskType == 'Risk_IRVol', RiskType == 'Risk_FXVol'
+        if fxvol:
+            groups = keys + ['ProductClass', 'RiskType', 'Qualifier', 'Label1']
+            filtered['Sigma_kj'] = filtered['Qualifier'].apply(lambda ccy: sd['rw']['Delta'][
+                '{}{}'.format('High' if ccy[:3] in sd['high'] else 'Regular',
+                              'High' if ccy[3:] in sd['high'] else 'Regular')] * np.sqrt(
+                365.0 / 14) / alpha)
+        elif irvol:
+            groups = keys + ['ProductClass', 'RiskType', 'Bucket', 'Label1']
+            filtered['Sigma_kj'] = 1.0
+            filtered['Bucket'] = filtered['Qualifier'].map(
+                lambda ccy: sd['ccy']['ConcentrationThresholds']['Currency'].get(
+                    ccy, sd['ccy']['ConcentrationThresholds']['default']))
+        else:
+            groups = keys + ['ProductClass', 'RiskType', 'Qualifier', 'Bucket', 'Label1']
+            filtered['Sigma_kj'] = filtered['Bucket'].apply(
+                lambda x: sd['rw']['Delta']['Weight'].get(x) * np.sqrt(365.0 / 14) / alpha)
+        filtered['Vega_Amount'] = filtered['Sigma_kj'] * filtered['Amount']
+        filtered['Vega_AmountUSD'] = filtered['Sigma_kj'] * filtered['AmountUSD']
+        filtered['Curve_Amount'] = filtered['SF_t'] * filtered['Vega_Amount']
+        filtered['Curve_AmountUSD'] = filtered['SF_t'] * filtered['Vega_AmountUSD']
+        hvr, curve_adj = (sd['hvr'], 1.0) if not irvol else (1.0, 1.0 / (sd['hvr'] * sd['hvr']))
+        VR_ik = hvr * filtered.groupby(groups).agg({'Vega_Amount': 'sum', 'Vega_AmountUSD': 'sum'})
+        CVR_ik = filtered.groupby(groups).agg({'Curve_Amount': 'sum', 'Curve_AmountUSD': 'sum'}) * (
+            -1.0 if pledgor else 1.0)
+        if not irvol:
+            groups.remove('Label1')
+        CVR_k = CVR_ik.groupby(groups).agg({'Curve_Amount': 'sum', 'Curve_AmountUSD': 'sum'})
+        VR_k = VR_ik.groupby(groups).agg({'Vega_Amount': 'sum', 'Vega_AmountUSD': 'sum'})
+        if fxvol:
+            bucket = VR_k.index.get_level_values('Qualifier').map(
+                lambda ccy: (sd['ccy']['Currency'].get(ccy[:3], sd['ccy']['default']),
+                             sd['ccy']['Currency'].get(ccy[3:], sd['ccy']['default']))).to_numpy()
+            threshold = [sd['con']['Vega']['Threshold'][b[0]][b[1]] for b in bucket]
+        else:
+            threshold = VR_k.index.get_level_values('Bucket').map(
+                lambda bucket: sd['con']['Vega']['Threshold'][bucket]).to_numpy()
+        VR_k['VCR_k'] = np.sqrt(VR_k['Vega_AmountUSD'].abs() / threshold).clip(lower=1.0)
+        if fxvol or irvol:
+            VR_k['VRW'] = sd['rw']['Vega']
+            group_K = keys + ['ProductClass', 'RiskType'] + ([] if fxvol else ['Bucket'])
+            CVR_k['Is_Residual'] = 'NonResidual'
+        else:
+            # the departure: a section stating no `Weight` weighs every bucket at its default
+            VR_k['VRW'] = VR_k.index.get_level_values('Bucket').map(lambda b: sd['rw']['Vega'].get(
+                'Weight', {}).get(b, sd['rw']['Vega']['default']))
+            group_K = keys + ['ProductClass', 'RiskType', 'Bucket']
+            if RiskType == 'Risk_EquityVol':
+                CVR_k = CVR_k.index.get_level_values('Bucket').map(
+                    lambda x: 1.0 if x != '12' else 0).values.reshape(-1, 1) * CVR_k
+            CVR_k['Is_Residual'] = CVR_k.index.get_level_values('Bucket').map(
+                lambda x: 'Residual' if x == 'Residual' else 'NonResidual')
+        VR_k['VR_k'] = VR_k['VRW'] * VR_k['Vega_AmountUSD'] * VR_k['VCR_k']
+        CVR_k['CVR_k'] = CVR_k['Curve_AmountUSD']
+        CVR_k['abs_CVR_k'] = CVR_k['CVR_k'].abs()
+        levels = CVR_k.groupby(group_K[:len(keys) + 2] + ['Is_Residual']).agg(
+            {'CVR_k': 'sum', 'abs_CVR_k': 'sum'})
+        theta = (levels['CVR_k'] / levels['abs_CVR_k']).clip(upper=0.0)
+        lamb = (scipy.stats.norm.ppf(0.995) ** 2 - 1.0) * (1 + theta) - theta
+        w, c = {}, {}
+        for group, df in VR_k.reset_index().groupby(group_K):
+            if not irvol:
+                rho_ij = sd['rho']['CorrelationVol'] if fxvol else sd['rho_intra']['Correlation'][
+                    group[-1]]
+                vr_k, VCR_k = df['VR_k'].to_dict(), df['VCR_k'].to_dict()
+            else:
+                vr_k = df[['Label1', 'VR_k']].set_index('Label1').to_dict()['VR_k']
+            K_b = sum([x * x for x in vr_k.values()])
+            for i, j in itertools.combinations(vr_k.keys(), 2):
+                if irvol:
+                    table = sd['rho']['Correlation']
+                    rho_ij = table[i.lower()]['Correlation'][j.lower()] if i.lower() in table and \
+                        j.lower() in table[i.lower()]['Correlation'] else table[j.lower()][
+                        'Correlation'][i.lower()]
+                f_kl = 1.0 if irvol else min(VCR_k[i], VCR_k[j]) / max(VCR_k[i], VCR_k[j])
+                K_b += 2.0 * f_kl * rho_ij * vr_k[i] * vr_k[j]
+            w[group] = [np.sqrt(K_b), sum(vr_k.values())]
+        for group, df in CVR_k.reset_index().groupby(group_K):
+            cvr_k = df['CVR_k'].to_dict() if not irvol else df[['Label1', 'CVR_k']].set_index(
+                'Label1').to_dict()['CVR_k']
+            K_b = sum([x * x for x in cvr_k.values()])
+            if not irvol:
+                rho2_ij = (sd['rho']['CorrelationVol'] if fxvol else sd['rho_intra']['Correlation'][
+                    group[-1]]) ** 2
+            for i, j in itertools.combinations(cvr_k.keys(), 2):
+                if irvol:
+                    table = sd['rho']['Correlation']
+                    rho2_ij = (table[i.lower()]['Correlation'][j.lower()] if i.lower() in table and
+                               j.lower() in table[i.lower()]['Correlation'] else table[j.lower()][
+                        'Correlation'][i.lower()]) ** 2
+                K_b += 2.0 * rho2_ij * cvr_k[i] * cvr_k[j]
+            c[group] = [np.sqrt(K_b), sum(cvr_k.values())]
+        K = pd.DataFrame(w, index=['K', 'VR_k']).T
+        K.index.set_names(group_K, inplace=True)
+        C = pd.DataFrame(c, index=['K', 'CVR_k']).T
+        C.index.set_names(group_K, inplace=True)
+        vega = calc_margin(K, sd, bucket='VR_k', replace_vol_with='Curve' if irvol else '')
+        curvature = calc_curve_margin(C, sd, lamb, replace_vol_with='Curve' if irvol else '')
+        return vega, {key: curve_adj * value for key, value in curvature.items()}
+
+    riskgroups = {'Risk_Equity': (delta_K, sd['eq']), 'Risk_Commodity': (delta_K, sd['cm']),
+                  'Risk_FX': (delta_K, sd['fx']), 'Risk_CreditQ': (delta_K, sd['crq']),
+                  'Risk_IRCurve': (delta_K, ir), 'Risk_IRVol': (vega_K, ir),
+                  'Risk_EquityVol': (vega_K, sd['eq']), 'Risk_FXVol': (vega_K, sd['fx']),
+                  'Risk_CommodityVol': (vega_K, sd['cm'])}
+    crif = crif.assign(RiskGroup=crif['RiskType'].map(
+        lambda x: 'Risk_IRCurve' if x in ['Risk_XCcyBasis', 'Risk_Inflation'] else x))
+    totals = {'Posted': defaultdict(float), 'Collected': defaultdict(float)}
+    for group, df in crif.groupby(['PostRegulations', 'CollectRegulations', 'ProductClass',
+                                   'RiskGroup']):
+        margin_calc, params = riskgroups[group[-1]]
+        if margin_calc is delta_K:
+            found = dict.fromkeys(totals, margin_calc(df.copy(), group[-1], params))
+        else:
+            (vega, collected), (_, posted) = (margin_calc(df, group[-1], params, pledgor)
+                                              for pledgor in (False, True))
+            found = {'Collected': {**vega, **collected}, 'Posted': {**vega, **posted}}
+        for direction, margins in found.items():
+            for key, value in margins.items():
+                totals[direction][key] += value
+    names = {'Risk_IRCurve': 'InterestRate', 'Risk_FX': 'FX', 'Risk_Equity': 'Equity',
+             'Risk_CreditQ': 'CreditQ', 'Risk_Commodity': 'Commodity'}
+    found = defaultdict(float)
+    for direction, margins in totals.items():
+        exposures = defaultdict(dict)
+        for (post, collect, counterparty, product, risk_type, margin), value in margins.items():
+            key = (direction, counterparty, post if direction == 'Posted' else collect, product,
+                   names[risk_type])
+            found[key + (margin,)] += value
+            found[key + ('Total',)] += value
+            exposures[key[1:4]][classes['risk_names'][risk_type]] = found[key + ('Total',)]
+        for (counterparty, regime, product), margin in exposures.items():
+            simm = np.sqrt(sum(v * v for v in margin.values()) + apply_correlation(margin, classes))
+            found[direction, counterparty, regime, product, 'Total', 'Total'] = simm
+            found[direction, counterparty, regime, 'Total', 'Total', 'Total'] += simm
+    return dict(found)
+
+
+#: Each document's margin, `{(direction, counterparty): SIMM}` in USD, banked in hex.
+BANKED = {
+    'rand': {('Posted', 'RATES'): '0x1.ded012f46008cp+18',
+             ('Posted', 'BOOK'): '0x1.d3996b29a27aep+19',
+             ('Collected', 'RATES'): '0x1.03a6ccca9523fp+19',
+             ('Collected', 'BOOK'): '0x1.d4cb158bcb06ep+19'},
+    'dollar': {('Posted', 'RATES'): '0x1.879ac31ba8ad4p+17',
+               ('Posted', 'CREDIT'): '0x1.d96813ab4151dp+17',
+               ('Collected', 'RATES'): '0x1.b70be15d2653ap+17',
+               ('Collected', 'CREDIT'): '0x1.d96813ab4151dp+17'}}
+
+
+@pytest.mark.parametrize('document', sorted(MARGINED))
+def test_the_margin_is_the_notebooks_on_the_synthetic_parameters(document, tmp_path):
+    """THE MARGIN IS THE NOTEBOOK'S. The SIMM notebook's aggregation, ported into this module as
+    `notebook` with the three departures it names, read off each document's CRIF on the synthetic
+    parameters, writes every margin the engine writes - per set, direction, regime, product class,
+    risk class and margin type, with the totals - to 1e-12, measured within 2.9e-16, and each set's
+    margin is its banked figure to 1e-12: in rand 490,304.30 posted and 531,766.40 collected on the
+    rates, 957,643.35 and 960,088.67 on the rest; in dollars 200,501.52 and 224,791.76 on the rates
+    and 242,384.15 either way on the default swap. The rand book crosses to USD off the `FxRate`
+    factors, its calculation currency in the high FX group; its dollar and rand rates both pass
+    their thresholds (CR 1.79 and 2.19), the metal and the platinum chain share a bucket past its
+    threshold (CR 1.72 and 1.31), the fuel passes its own (2.02), the rate vega rows are
+    vol-weighted, and its second set holds the autocalls' short and the fuel option's long vega
+    under its own regimes. The dollar book carries USD on two sub-curves, the rand's FX vega off its
+    pair's groups and the default swap's three vertices of one name, weighed apart and concentrated
+    together past their threshold (CR 1.46); the notebook netting them first reads that credit
+    margin 1.9% over, 246,623.70 against 242,017.24.
+
+    Killing mutations: the sub-curve correlation read as one - the dollar rates delta 55,039.88
+    against 54,397.65; the rate g_bc dropped - 55,775.30 there and 330,964.92 against 330,483.02 in
+    rand; the FX vol group read off the row's currency, a pair's weight its qualifier's against the
+    calculation currency's - the dollar FX vega 11,832.69 against 54,608.67; the class correlations
+    halved - the rand rates set's posted margin 470,812.89 against 490,304.30; the concentration
+    ratio f read as one - the rand commodity delta 699,961.58 against 699,973.48.
+    """
+    calc, output = MARGINED[document](tmp_path)
+    found, reference = margins(output['Results']), notebook(output['Results']['CRIF'],
+                                                            calc.params['Currency'])
+    assert set(reference) <= set(found), set(reference) - set(found)
+    for key, value in found.items():
+        assert abs(value - reference.get(key, 0.0)) <= 1e-12 * abs(reference.get(key, 0.0)), (
+            key, value, reference.get(key))
+    banked = {key[:2]: value for key, value in found.items() if key[3] == 'Total'}
+    assert set(banked) == set(BANKED[document]) and all(
+        abs(banked[key] / float.fromhex(value) - 1.0) <= 1e-12
+        for key, value in BANKED[document].items()), banked
+
+
+#: The one-row book: the option on the 1y vertex, the equity leg, the sold default swap on its
+#: name's five-year spread alone, the sold metal forward, the linker and a caplet resetting on the
+#: 1y vertex, each writing one row, every curve mapped null.
+CAPLET = {'Instrument': {'.Deal': dict(
+    CAP['Instrument']['.Deal'], Reference='CAPLET', Effective_Date=BASE + pd.DateOffset(years=1),
+    Maturity_Date=BASE + pd.DateOffset(years=1, months=3))}}
+
+
+def one_row(tmp_path, scale=None):
+    """The results of the one-row book under one set, each trade of `scale` with its fields
+    `{trade: {field: factor}}` scaled so."""
+    survival = credit.block('Par_Spread')
+    survival['instrument']['Points'] = [point for point in survival['instrument']['Points']
+                                        if point['Tenor'] == '5Y']
+    book = [dict(node, Instrument={'.Deal': dict(deal, **{
+        field: deal[field] * factor for field, factor in (scale or {}).get(
+            deal['Reference'], {}).items()})})
+        for node, deal in ((node, node['Instrument']['.Deal']) for node in nodes(
+            OPTION, RESETTING, credit.SOLD) + [overnight('METAL_FWD', Buy_Sell='Sell'), LINKER,
+                                              CAPLET])]
+    return holding({'Mapping': remapped(tmp_path, dict.fromkeys(
+        ('InterestRate.USD-OIS', 'InterestRate.ZAR-JIBAR', 'InterestRate.USD')))}, book,
+        **credit_world(survival, **SWAPTION_VOLS, **COMMODITIES, **INFLATION, **INDICES)
+    ).run_job()[1]['Results']
+
+
+def test_a_one_row_book_margins_by_hand(tmp_path):
+    """THE MARGIN BY HAND. A book under one set in dollars writing one row per risk class and
+    margin, every curve mapped null: the option's rand delta and its 1y vega, the equity leg's
+    delta, the sold default swap's 5y row off its name's five-year quote alone, the sold metal
+    forward's delta, the linker's breakeven and the caplet's 1y rate vega. Each margin is its hand
+    formula off the synthetic parameters to 1e-12, measured within 2.2e-16: a delta `RW |s| CR`,
+    `CR = sqrt(max(|s| / T, 1))`, the equity leg's 2.06, the metal's 2.24 and the default swap's
+    1.46; the FX vega `VRW |VR| VCR`, `VR = HVR sigma v` and `sigma` the delta weight of the dollar's
+    regular and the rand's high group times `sqrt(365/14)` over the 99th percentile, its VCR 1.54;
+    the rate vega `VRW |v|`, the row being the vol-weighted vega and taking no HVR; a curvature
+    `max(Phi^-1(0.995)^2 SF sigma v, 0)` at `SF(1y) = 7/365`, a rate's `sigma` one and the margin
+    over `HVR^2`; the product classes' risk classes correlated by the class correlations and summed,
+    507,843.42 collected. The posted margin reads the rows' negation, so a long vega row's curvature
+    is exactly zero there, its theta -1 and lambda one, and the set posts 482,304.50.
+
+    Killing mutations: CR's square root dropped - the equity delta 56,290.97 against 27,269.02, the
+    metal's 65,000 against 29,068.88; the posted margin read on the rows as written - the posted
+    rate and FX curvatures 2,076.79 and 25,094.10 against zero; HVR on the rate vega - 1,399.55
+    against 1,999.35.
+    """
+    results = one_row(tmp_path)
+    crif, found = results['CRIF'], margins(results)
+    s = dict(zip(crif['RiskType'], crif['AmountUSD']))
+    assert len(s) == len(crif) == 7, crif
+    with open(PARAMETERS, 'rt', encoding='utf-8') as f:
+        horizon = json.load(f)['horizons']['Horizon_10d']
+    ir, fx, eq, cm, crq = (horizon[section] for section in ('ir', 'fx', 'eq', 'cm', 'crq'))
+    q99, q995, scaled = scipy.stats.norm.ppf(0.99), scipy.stats.norm.ppf(0.995), 0.5 * 14 / 365
+
+    def concentrated(amount, threshold):
+        return np.sqrt(max(abs(amount) / threshold, 1.0))
+
+    # the dollar is a regular currency, the rand a high one, of the first and second categories
+    sigma = fx['rw']['Delta']['RegularHigh'] * np.sqrt(365 / 14) / q99
+    vr = fx['hvr'] * sigma * s['Risk_FXVol']
+    assert min(concentrated(s['Risk_Equity'], eq['con']['Delta']['Threshold']['11']),
+               concentrated(s['Risk_Commodity'], cm['con']['Delta']['Threshold']['11']),
+               concentrated(s['Risk_CreditQ'], crq['con']['Delta']['Threshold']['3']),
+               concentrated(vr, fx['con']['Vega']['Threshold']['1']['2'])) > 1.4
+    for direction, sign in (('Posted', -1.0), ('Collected', 1.0)):
+        hand = {
+            ('RatesFX', 'InterestRate', 'Delta'): ir['rw']['Delta']['Volatility']['Regular'][
+                'InflationWeight'] * abs(s['Risk_Inflation']) * concentrated(
+                s['Risk_Inflation'], ir['con']['Delta']['Threshold']['Regular Well-Traded']),
+            ('RatesFX', 'InterestRate', 'Vega'): ir['rw']['Vega'] * abs(s['Risk_IRVol']) *
+            concentrated(s['Risk_IRVol'], ir['con']['Vega']['Threshold']['Regular Well-Traded']),
+            ('RatesFX', 'InterestRate', 'Curvature'): max(
+                sign * q995 ** 2 * scaled * s['Risk_IRVol'], 0.0) / ir['hvr'] ** 2,
+            ('RatesFX', 'FX', 'Delta'): fx['rw']['Delta']['HighRegular'] * abs(s['Risk_FX']) *
+            concentrated(s['Risk_FX'], fx['con']['Delta']['Threshold']['2']),
+            ('RatesFX', 'FX', 'Vega'): fx['rw']['Vega'] * abs(vr) * concentrated(
+                vr, fx['con']['Vega']['Threshold']['1']['2']),
+            ('RatesFX', 'FX', 'Curvature'): max(sign * q995 ** 2 * scaled * sigma *
+                                                s['Risk_FXVol'], 0.0),
+            ('Equity', 'Equity', 'Delta'): eq['rw']['Delta']['Weight']['11'] * abs(
+                s['Risk_Equity']) * concentrated(s['Risk_Equity'],
+                                                 eq['con']['Delta']['Threshold']['11']),
+            ('Commodity', 'Commodity', 'Delta'): cm['rw']['Delta']['Weight']['11'] * abs(
+                s['Risk_Commodity']) * concentrated(s['Risk_Commodity'],
+                                                    cm['con']['Delta']['Threshold']['11']),
+            ('Credit', 'CreditQ', 'Delta'): crq['rw']['Delta']['Weight']['3'] * abs(
+                s['Risk_CreditQ']) * concentrated(s['Risk_CreditQ'],
+                                                  crq['con']['Delta']['Threshold']['3'])}
+        for product, risk_class in {key[:2] for key in list(hand)}:
+            hand[product, risk_class, 'Total'] = sum(hand.get((product, risk_class, margin), 0.0)
+                                                     for margin in ('Delta', 'Vega', 'Curvature'))
+        rates, currencies = (hand['RatesFX', name, 'Total'] for name in ('InterestRate', 'FX'))
+        hand['RatesFX', 'Total', 'Total'] = np.sqrt(rates ** 2 + currencies ** 2 + 2 * horizon[
+            'class_rho']['Correlation']['IR']['Correlation']['FX'] * rates * currencies)
+        for product, risk_class in (('Equity', 'Equity'), ('Commodity', 'Commodity'),
+                                    ('Credit', 'CreditQ')):
+            hand[product, 'Total', 'Total'] = hand[product, risk_class, 'Total']
+        hand['Total', 'Total', 'Total'] = sum(value for key, value in hand.items()
+                                              if key[1:] == ('Total', 'Total'))
+        mine = {key[3:]: value for key, value in found.items() if key[0] == direction}
+        assert set(hand) <= set(mine), set(hand) - set(mine)
+        for key, value in mine.items():
+            assert abs(value - hand.get(key, 0.0)) <= 1e-12 * abs(hand.get(key, 0.0)), (
+                direction, key, value, hand.get(key))
+    assert found['Posted', 'NS', 'SEC', 'RatesFX', 'FX', 'Curvature'] == 0.0
+    assert found['Posted', 'NS', 'SEC', 'RatesFX', 'InterestRate', 'Curvature'] == 0.0
+
+
+def test_a_parameters_file_lacking_what_the_margin_reads_is_refused_by_name(tmp_path):
+    """The margin reads the class correlations and each risk class's section of the parameters file
+    under the block's `Horizon`, so a file lacking one of them, or a horizon it does not carry, is
+    refused by name before a trade is valued: the synthetic file without its class correlations
+    and its FX historical vol ratio, and the one-day horizon it does not state.
+
+    Killing mutation: the check dropped - the run values the book and raises `KeyError:
+    'class_rho'` aggregating its margin.
+    """
+    with open(PARAMETERS, 'rt', encoding='utf-8') as f:
+        parameters = json.load(f)
+    horizon = parameters['horizons']['Horizon_10d']
+    del horizon['class_rho'], horizon['fx']['hvr']
+    with open(tmp_path / 'parameters.json', 'wt', encoding='utf-8') as f:
+        json.dump(parameters, f)
+    stated = {'Parameters': str(tmp_path / 'parameters.json')}
+    with pytest.raises(ValueError, match=r'parameters\.json carries no class_rho, fx\.hvr under '
+                                         r'Horizon_10d, which the margin reads'):
+        world(stated).run_job()
+    with pytest.raises(ValueError, match='carries no interest-rate delta weights by tenor under '
+                                         'Horizon_1d'):
+        world({'Horizon': 'Horizon_1d'}).run_job()
+
+
+@pytest.mark.parametrize('trade, field', [('LEG', 'Units'), ('CAPLET', 'Principal')])
+def test_the_margin_rows_gradient_is_the_margins_own_derivative(trade, field, tmp_path):
+    """THE ROW'S SHARE IS THE MARGIN'S DERIVATIVE. `Margin_Rows` writes each row's derivative of
+    its set's margin, autograd of the one torch function, and its share, the derivative times the
+    amount. On the one-row book a trade writing one row scaled by `1 +- h` moves that row alone,
+    linearly, so the central difference of the set's margin over `2h` is the row's share to second
+    order in `h`, in each direction: the equity leg's, its delta concentrated past its threshold so
+    its margin goes as `|s|^1.5`, within 4.2e-6 of itself at `h = 1e-2` and 1.7e-5 at 2e-2; the
+    caplet's, posted with no curvature and collected with it, within 5.7e-9 and 1.8e-8; the error
+    falling fourfold as `h` halves. The leg's share is 40,903.53 where its margin is 27,269.02, the
+    shares summing to the margin only below every threshold.
+
+    Killing mutations: the concentration detached, a constant to the tape - the leg's share
+    27,269.02 against a difference of 40,903.36; the derivative taken in the rows as the direction
+    reads them - the posted shares negated, the leg's -40,903.53.
+    """
+    shares = one_row(tmp_path)['Margin_Rows']
+    shares = {direction: shares[(shares['TradeID'] == trade) & (
+        shares['Direction'] == direction)]['ShareUSD'].item() for direction in ('Posted',
+                                                                                 'Collected')}
+    errors = {}
+    for h in (2e-2, 1e-2):
+        up, down = (margins(one_row(tmp_path, {trade: {field: 1.0 + sign * h}}))
+                    for sign in (1, -1))
+        for direction, share in shares.items():
+            key = (direction, 'NS', 'SEC', 'Total', 'Total', 'Total')
+            errors[direction, h] = abs((up[key] - down[key]) / (2 * h) - share) / abs(share)
+    for direction in shares:
+        assert errors[direction, 1e-2] < 1e-5 and 3.5 < errors[direction, 2e-2] / errors[
+            direction, 1e-2] < 4.5, errors
