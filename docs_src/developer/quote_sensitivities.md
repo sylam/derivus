@@ -459,8 +459,10 @@ pseudo-inverse it is the projector onto the kept directions. No test holds it.
 
 Listed on the [roadmap](roadmap.md#designed-not-built).
 
-- **No aggregation off these deltas**; the `SIMM` calculation bumps and revalues on its own, a
-  moved quote riding its curve's [calibration](quote_propagation.md#stateless). No wrong-way risk.
+- **No margin off these deltas**: the `SIMM` calculation writes a CRIF, by bump and revaluation, a
+  moved quote riding its curve's [calibration](quote_propagation.md#stateless), or under
+  `Method: Graph` off the backward pass that carries them, a credit quote's or a quoted breakeven's
+  row its `dV/dq`, and aggregates no margin. No wrong-way risk.
 - **No recalibration inside the simulation**; quote sensitivities are t0 risk.
 - **No new pricers**, and no pricer changes for the t0 closure — so far none.
 - **No SABR or SSVI**; a Malz smile is the one delta parameterisation, and a swaption quote is its

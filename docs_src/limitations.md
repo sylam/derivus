@@ -126,8 +126,9 @@ Grouped by where a validator meets them.
 - **A one-point vol move carries cross-vertex convexity** (2026-10-07). On the autocalls the twelve
   vertex rows differ from one parallel point by -0.8% to +13% (0.1% to 1.2% on FX), stable across
   seeds and path counts, a tenth of a point cutting it tenfold. It is the regulation's definition,
-  so stated, not fixed. ISDA's inflation and credit vol sensitivities refuse by name, the engine
-  carrying no factor type for either.
+  so stated, not fixed; under `Method: Graph` the rows are the shock's limit, the derivative, and
+  sum to the parallel point's. ISDA's inflation and credit vol sensitivities refuse by name, the
+  engine carrying no factor type for either.
 - **SA-CCR holds a basis or a volatility trade in its ordinary hedging set** (2026-10-20).
   CRE52.46-52.47 hold a trade on the basis between two risk factors of one currency, or on a risk
   factor's volatility, in a hedging set of its own at half, or five times, its class's supervisory

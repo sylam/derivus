@@ -3922,6 +3922,8 @@ class NettingSetCalculation(Calculation):
         try:
             self.config.params['Price Factors'] = dict(factors, **(over or {}))
             self.shared = calc.update_factors(calc.params, self.valuation['Base_Date'])
+            # a valuation asking for its gradient keeps each trade's taped value to differentiate
+            self.shared.keep_tensor = self.shared.calc_greeks is not None
             calc.netting_sets = DealStructure(Aggregation('root'), store_results=True)
             calc.set_deal_structures(self.config.deals['Deals']['Children'], calc.netting_sets,
                                      self.shared.one, deal_level_mtm=True)
@@ -3943,18 +3945,26 @@ class NettingSetCalculation(Calculation):
                           mine + ['the trade itself was not valued']))
         return found
 
+    def leaves(self, moved, factors=None):
+        """`[(key, value)]` - each leaf of `factors`, the compiled price factors where None, that
+        the price factors `moved` write, keyed as the compile keys it, and the value written."""
+        found, interp = [], self.config.params['Price Factor Interpolation']
+        for factor in [f for f in (self.compiled.static_factors if factors is None else factors)
+                       if utils.check_tuple_name(f) in moved]:
+            value = construct_factor(factor, moved, interp,
+                                     base_date=self.compiled.base_date).current_value()
+            found.extend(((utils.Factor(factor.type, factor.name + (k,)), v) for k, v in
+                          value.items()) if isinstance(value, dict) else [(factor, value)])
+        return found
+
     def value(self, moved):
         """Each trade's value in the calculation currency off its own structure, None where it was
         not valued: the compiled set priced with the price factors `moved` written into their
         leaves in place, the compiled leaves put back after."""
         calc, written = self.compiled, {}
-        for factor in [f for f in calc.static_factors if utils.check_tuple_name(f) in moved]:
-            value = construct_factor(factor, moved, self.config.params['Price Factor Interpolation'],
-                                     base_date=calc.base_date).current_value()
-            for key, part in ((utils.Factor(factor.type, factor.name + (k,)), v) for k, v in
-                              value.items()) if isinstance(value, dict) else [(factor, value)]:
-                written[key] = calc.static_var[key].clone()
-                calc.static_var[key].copy_(written[key].new_tensor(part))
+        for key, part in self.leaves(moved):
+            written[key] = calc.static_var[key].clone()
+            calc.static_var[key].copy_(written[key].new_tensor(part))
         # the memo and the result blocks hold the last pricing's, stale once a leaf is written
         self.shared.t_Buffer.clear()
         for result in self.results:
@@ -4000,6 +4010,10 @@ class SIMM(NettingSetCalculation):
     `utils.FactorRiskClass`; the rate and vol vertices are the regime's `Parameters`, the credit
     vertices the methodology's; the regimes margin is posted and collected under are the
     agreement's own terms, declared on the netting set. A shift other than ISDA's is scaled to it.
+
+    `Method: Graph` moves nothing: the set is priced once on a tape and each trade differentiated
+    by one backward pass, each of its moves a row as the derivative of the move at a zero shift
+    (`tangent`), the limit of the difference `Bump` reads.
 
     MARKET PRICES ARE A CONDITION: an interest rate or a survival curve a trade reads that no
     configured family bootstraps, and that is no child of a curve one does, refuses by name. A leg
@@ -4052,9 +4066,12 @@ class SIMM(NettingSetCalculation):
         F('Parameters', 'Text', default=REQUIRED,
           description='Path to the ISDA SIMM parameters file, whose interest-rate weights name the '
                       'vertices the rate and vol rows land on'),
+        F('Method', 'Text', default='Bump', values=['Bump', 'Graph'],
+          description='Bump reads each row off the set revalued once per move, Graph as the '
+                      'move\'s derivative off one backward pass per trade'),
         F('Workers', 'Integer', default=1,
-          description='Processes the moves are dealt over, each on a context of its own; 1 values '
-                      'them in this one'),
+          description='Processes the moves, or under Graph the trades, are dealt over, each on a '
+                      'context of its own; 1 values them in this one'),
         F('Rate_Shift', 'Float', default=1.0,
           description='Basis points a benchmark quote, a curve node, a basis, a credit spread or a '
                       'breakeven moves by, ISDA\'s one; another is scaled to it'),
@@ -4074,6 +4091,10 @@ class SIMM(NettingSetCalculation):
 
         parameters = super(SIMM, self).setup(params)
         params = self.params
+        self.graph = params['Method'] == 'Graph'
+        if self.graph:
+            # the compile's leaves on the tape, each trade's taped value kept (`base`)
+            self.valuation['Greeks'] = 'First'
         missing = ['a non-zero ' + name for name in ('Rate_Shift', 'Spot_Shift', 'Vol_Shift')
                    if not params[name]]
         if missing:
@@ -4111,40 +4132,44 @@ class SIMM(NettingSetCalculation):
     def run(cls, context, overrides=None):
         """Runs SIMM on `context`, the book compiled once and each market move one pricing of it:
         `(calculation, output)`, the CRIF under `output['Results']['CRIF']`. `Workers` above one
-        values the book here and deals the moves in turn over that many processes, each compiling
-        it on a context of its own (`shard`); the CRIF is the same to the bit either way."""
+        values the book here and deals what it reaches in turn over that many processes, each
+        compiling it on a context of its own (`shard`); the CRIF is the same to the bit either
+        way."""
         params = cls.parameters(context, overrides)
         calc = cls(context)
         calc.setup(params)
         count = worker_count(calc.params['Workers'])
         if count == 1:
             return calc, calc.execute(params)
+        # the base alone is valued here, and a calibration's tape crosses no process
+        calc.valuation['Greeks'] = 'No'
         with calc.prepared():
             base = calc.base()
-            moves, queue = list(calc.reach(base).items()), mp.Queue()
+            work, queue = calc.reach(base), mp.Queue()
             values = dict(pair for answer in gathered([mp.Process(
                 target=partial(shielded, cls.shard, job, queue), args=(
-                    context, calc.params, moves[job::count], job, queue))
-                for job in range(min(count, len(moves)))], queue)
+                    context, calc.params, work[job::count], job, queue))
+                for job in range(min(count, len(work)))], queue)
                 for pair in answer['Values'].items())
             return calc, calc.report(base, values)
 
     @classmethod
-    def shard(cls, context, params, moves, job, queue):
-        """A worker's share of a run's moves, each `(move, trades)`, valued on a context of its own
-        calibrated and compiled once, an artifact crossing no process: `{(trade, move): value}`."""
+    def shard(cls, context, params, work, job, queue):
+        """A worker's share of what a run reaches, valued on a context of its own calibrated and
+        compiled once, an artifact crossing no process: `{(trade, move): value}` (`values`), or
+        under Graph `{(trade, move): derivative}` (`derivatives`)."""
         calc = cls(context)
         calc.setup(params)
         with calc.prepared():
             calc.base()
-            queue.put({'Job': job, 'Values': calc.values(moves)})
+            queue.put({'Job': job, 'Values': calc.values(work)})
 
     def execute(self, params):
-        """The run in this process alone; `run` deals the moves over workers."""
+        """The run in this process alone; `run` deals what it reaches over workers."""
         self.setup(params)
         with self.prepared():
             base = self.base()
-            return self.report(base, self.values(self.reach(base).items()))
+            return self.report(base, self.values(self.reach(base)))
 
     @contextlib.contextmanager
     def prepared(self):
@@ -4167,10 +4192,20 @@ class SIMM(NettingSetCalculation):
     def calibrate(self):
         """The curves the book reads solved from their quotes, each coupled set publishing its
         calibration for a quote move to ride (`requoted`) whatever its blocks declare, which then
-        declare no ride, so the compile mints the curves the bootstrap solved."""
+        declare no ride, so the compile mints the curves the bootstrap solved. Where the valuation
+        is differentiated (Graph) every curve, survival and inflation block keeps its solve on the
+        tape (`Quote_Sensitivity`), the re-solve a move differences being its family's Jacobian
+        there."""
         from . import bootstrappers
 
         prices = self.config.params['Market Prices']
+        if self.valuation['Greeks'] != 'No':
+            taped = {family.market_factor_type for family in (
+                bootstrappers.InterestRate, bootstrappers.SurvivalProb,
+                bootstrappers.InflationRate)}
+            prices.update({name: dict(block, instrument=dict(
+                block['instrument'], Quote_Sensitivity='Yes')) for name, block in prices.items()
+                if utils.check_rate_name(name)[0] in taped})
         curves = {name: block for name, block in prices.items()
                   if utils.check_rate_name(name)[0] == bootstrappers.InterestRate.market_factor_type}
 
@@ -4187,8 +4222,8 @@ class SIMM(NettingSetCalculation):
         declaring('No')
 
     def report(self, base, values):
-        """The run's results off the book's `base` and the `values` its moves wrote: the CRIF and a
-        row per trade."""
+        """The run's results off the book's `base` and the `values` its moves wrote, or under Graph
+        their derivatives: the CRIF and a row per trade."""
         trades = [self.trade(index, base, values) for index in range(len(self.trades))]
         self.output = {'CRIF': self.frame(trades), 'Trades': pd.DataFrame(
             [dict({key: value for key, value in trade.items() if key != 'Rows'},
@@ -4377,14 +4412,16 @@ class SIMM(NettingSetCalculation):
                              for label, _ in self.vertices)
         return moves
 
-    def move(self, move):
+    def move(self, move, tangent=False):
         """The price factors `move` writes over the standing ones, a vol surface's over the one the
-        set is compiled on (`surfaces`)."""
+        set is compiled on (`surfaces`); with `tangent`, what it writes to first order in its
+        shift, a curve quote's ride alone, the survival curves solved on it chained on their tape
+        (`calibrate`)."""
         factors, kind, name = self.config.params['Price Factors'], move[0], move[1]
         base = self.config.params['System Parameters']['Base_Currency']
         spot = 1.0 + self.params['Spot_Shift'] / 100.0
         if kind == 'quote':
-            return self.requoted(name, move[2])
+            return self.requoted(name, move[2], tangent)
         if kind == 'cds':
             return self.resolved({name}, {}, move[2])
         if kind == 'parallel':
@@ -4397,8 +4434,9 @@ class SIMM(NettingSetCalculation):
             # each node is a growth rate r whose breakeven, exp(r) - 1, the basis point moves
             curve = factors[name]['Curve']
             tenors, rates = curve.array.T
+            step = self.params['Rate_Shift'] * 1e-4 * np.exp(-rates)
             return {name: dict(factors[name], Curve=utils.Curve(curve.meta, np.column_stack((
-                tenors, rates + np.log1p(self.params['Rate_Shift'] * 1e-4 * np.exp(-rates))))))}
+                tenors, rates + (step if tangent else np.log1p(step))))))}
         if kind == 'commodity':
             moved = {}
             for other in move[1:]:
@@ -4411,7 +4449,8 @@ class SIMM(NettingSetCalculation):
         if kind == 'fx' and utils.check_rate_name(name)[1] == base:
             # a currency's price in the calculation currency is its spot over that currency's,
             # so the base currency's - whose own spot is one - rises by every other falling
-            return {other: dict(block, Spot=block['Spot'] / spot)
+            return {other: dict(block, Spot=block['Spot'] * (2.0 - spot) if tangent else
+                                block['Spot'] / spot)
                     for other, block in factors.items()
                     if utils.check_rate_name(other)[0] == 'FxRate'
                     and utils.check_rate_name(other)[1] != base}
@@ -4422,14 +4461,15 @@ class SIMM(NettingSetCalculation):
         rows = block[held].array.copy()
         point = self.params['Vol_Shift'] * 0.01 * np.array([dict(
             utils.vertex_weights(t, self.vertices)).get(move[2], 0.0) for t in rows[:, column]])
-        rows[:, -1] += getattr(riskfactors, utils.check_rate_name(name)[0]).vol_point(block, point)
+        rows[:, -1] += getattr(riskfactors, utils.check_rate_name(name)[0]).vol_point(
+            block, point, tangent)
         return {name: dict(block, **{held: utils.Curve(block[held].meta, rows)})}
 
-    def requoted(self, block, position):
+    def requoted(self, block, position, tangent=False):
         """Every curve of `block`'s coupled set with a basis point on its quote `position`, ridden
         off the calibration `calibrate` published, `theta* + J (q - q0)`, and written as the
         family writes a solved curve, with the survival curves solved on one re-solved on them
-        (`resolved`) - nothing on the config written."""
+        (`resolved`), or with `tangent` the ride alone - nothing on the config written."""
         from . import bootstrappers
 
         config, family = self.config, bootstrappers.InterestRate
@@ -4447,40 +4487,54 @@ class SIMM(NettingSetCalculation):
         ridden = {(name := utils.check_tuple_name(curve)): dict(
             factors[name], Curve=family.solved_curve(artifact.benchmarks, theta, curve))
             for curve in artifact.factors}
-        return dict(ridden, **self.resolved(
+        return ridden if tangent else dict(ridden, **self.resolved(
             bootstrappers.bootstrap_dependents(prices, artifact.members), ridden))
+
+    def survival(self, block):
+        """`(solver, instrument)` - the survival family as configured, and the survival block
+        `block`'s instrument as that family completes it."""
+        from . import bootstrappers
+
+        name, config = bootstrappers.SurvivalProb.__name__, self.config.params
+        solver = bootstrappers.construct_bootstrapper(
+            name, config['Bootstrapper Configuration'][name])
+        return solver, dict(solver.param, **config['Market Prices'][block]['instrument'])
+
+    def spread(self, block, instrument, position, found, shift):
+        """Quote `position` of the survival block `block`, its `instrument` completed, a basis point
+        of spread `shift` over on the price factors `found`: a `Par_Spread` by the point, an
+        `Upfront` to what its contract quotes at a coupon the point under its own, the value being
+        affine in the coupon."""
+        from . import bootstrappers
+
+        config, point = self.config, instrument['Points'][position]
+        if point['Quote_Type'] == 'Par_Spread':
+            return point['Quoted_Market_Value'] + shift
+        base_date = config.params['System Parameters']['Base_Date']
+        contract = bootstrappers.SurvivalProb.contracts(dict(instrument, Points=[point]), block,
+                                                        base_date)[0]
+        return float(bootstrappers.par_quotes([dict(contract, Deal=dict(
+            contract['Deal'], Pay_Rate=utils.Basis(
+                1e4 * float(contract['Deal']['Pay_Rate']) - shift)))],
+            instrument['Discount_Rate'], instrument['Currency'], found,
+            config.params['Price Factor Interpolation'], base_date, config.holidays)[0])
 
     def resolved(self, blocks, curves, position=None):
         """The survival curves the book reads that `blocks` write, solved by their family on the
         standing curves with `curves` over them and with each block's quote `position` moved by a
-        basis point of spread - a `Par_Spread` by the point, an `Upfront` to what its contract
-        quotes on the solved curve at a coupon the point under its own, the value being affine in
-        the coupon - nothing on the config written."""
+        basis point of spread (`spread`) on the solved curve - nothing on the config written."""
         from . import bootstrappers
 
         config, family = self.config, bootstrappers.SurvivalProb
-        prices, interp = config.params['Market Prices'], config.params['Price Factor Interpolation']
+        interp = config.params['Price Factor Interpolation']
         base_date = config.params['System Parameters']['Base_Date']
-        shift = self.params['Rate_Shift']
         found, solved = dict(config.params['Price Factors'], **curves), []
         for block in sorted(self.credit.intersection(blocks)):
-            solver = bootstrappers.construct_bootstrapper(
-                family.__name__, config.params['Bootstrapper Configuration'][family.__name__])
-            instrument = dict(solver.param, **prices[block]['instrument'])
+            solver, instrument = self.survival(block)
             if position is not None:
                 points = instrument['Points'] = list(instrument['Points'])
-                point = points[position]
-                if point['Quote_Type'] == 'Par_Spread':
-                    quote = point['Quoted_Market_Value'] + shift
-                else:
-                    contract = family.contracts(dict(instrument, Points=[point]), block,
-                                                base_date)[0]
-                    quote = float(bootstrappers.par_quotes([dict(contract, Deal=dict(
-                        contract['Deal'], Pay_Rate=utils.Basis(
-                            1e4 * float(contract['Deal']['Pay_Rate']) - shift)))],
-                        instrument['Discount_Rate'], instrument['Currency'], found, interp,
-                        base_date, config.holidays)[0])
-                points[position] = dict(point, Quoted_Market_Value=quote)
+                points[position] = dict(points[position], Quoted_Market_Value=self.spread(
+                    block, instrument, position, found, self.params['Rate_Shift']))
             solver.solve(block, instrument, found, interp, base_date, config.holidays)
             solved.append(utils.check_tuple_name(utils.Factor(
                 family.__name__, utils.check_rate_name(block)[1:])))
@@ -4513,19 +4567,24 @@ class SIMM(NettingSetCalculation):
         return super(SIMM, self).base(self.surfaces)
 
     def reach(self, base):
-        """`{move: [index]}` - every move the trades valued in `base` take, in a fixed order, and
-        the trades whose rows it writes."""
+        """`[(move, [index])]` - every move the trades valued in `base` take, in a fixed order,
+        and the trades whose rows it writes; under Graph `[index]`, each trade valued."""
+        if self.graph:
+            return [index for index, (value, _) in enumerate(base) if value is not None]
         reach = {}
         for index, bumps in enumerate(self.bumped):
             for bump in bumps if base[index][0] is not None else []:
                 reach.setdefault(bump.move, []).append(index)
-        return reach
+        return list(reach.items())
 
-    def values(self, moves):
-        """`{(index, move): value}` - each `(move, indices)` of `moves` one pricing of the set,
-        the trades `indices` read off it, each refused by name where it values to nothing finite."""
+    def values(self, work):
+        """`{(index, move): value}` - each `(move, indices)` of `work` one pricing of the set,
+        the trades `indices` read off it, each refused by name where it values to nothing finite;
+        under Graph `{(index, move): derivative}` off each trade of `work` (`derivatives`)."""
+        if self.graph:
+            return self.derivatives(work)
         found = {}
-        for move, indices in moves:
+        for move, indices in work:
             valued = self.value(self.move(move))
             for index in indices:
                 value = valued[index]
@@ -4537,15 +4596,73 @@ class SIMM(NettingSetCalculation):
                 found[index, move] = value
         return found
 
+    def derivatives(self, indices):
+        """`{(index, move): derivative}` - each trade of `indices` differentiated by one backward
+        pass of its taped value, each move it takes read off that gradient along the move's
+        `tangent`. A boundary correction is worth nothing here: a base valuation's one scenario
+        gives a latched decision no kernel width, and the smooth estimator it declares registers
+        no inner path's."""
+        config = self.config
+        tape = {**self.compiled.static_var, **{
+            ('Calibrated', factor): theta for factor, theta in config.calibrated_factors.items()},
+            **{name: quotes for name, (_, quotes) in config.quote_leaves.items()}}
+        tangents, found = {}, {}
+        for index in indices:
+            moves = [bump.move for bump in self.bumped[index]]
+            for move in moves:
+                if move not in tangents:
+                    tangents[move] = self.tangent(move)
+            keys = list(dict.fromkeys(key for move in moves for key in tangents[move]))
+            value = self.results[index]['tensor'].sum()
+            gradient = dict(zip(keys, torch.autograd.grad(
+                [value], [tape[key] for key in keys], allow_unused=True,
+                retain_graph=True) if value.requires_grad and keys else ()))
+            for move in moves:
+                found[index, move] = sum(
+                    float(np.dot(direction, gradient[key].detach().cpu().numpy().ravel()))
+                    for key, direction in tangents[move].items() if gradient.get(key) is not None)
+        return found
+
+    def tangent(self, move):
+        """`move`'s derivative at a zero shift, per unit of ISDA's shift: `{key: direction}` along
+        the tensors `derivatives` differentiates against - the compiled leaves the move writes, to
+        first order in it (`move`); the calibrated curves a quote rides, whose tape carries the
+        survival curves solved on them; and the quotes of a block the move re-solves, the
+        re-solve's derivative being its family's Jacobian on the tape (`calibrate`)."""
+        from .bootstrappers import SurvivalProb
+
+        kind, name, shift = move[0], move[1], self.shifts[move[0]]
+        if kind == 'cds':
+            _, instrument = self.survival(name)
+            used = SurvivalProb.used_quotes(instrument, name)
+            standing, direction = self.config.params['Price Factors'], np.zeros(len(used))
+            # a par spread moves by the point, an upfront by what a point of coupon is worth
+            direction[[quote is instrument['Points'][move[2]] for quote in used].index(True)] = (
+                self.spread(name, instrument, move[2], standing, shift) -
+                self.spread(name, instrument, move[2], standing, 0.0)) / shift
+            return {name: direction}
+        if kind == 'inflation' and move[2:]:
+            # every breakeven a basis point up, a hundredth of the percent it is quoted in
+            return {move[2]: np.full(self.config.quote_leaves[move[2]][1].numel(), 0.01)}
+        moved = self.move(move, tangent=True)
+        if kind == 'quote':
+            curves = [utils.Factor(rate[0], rate[1:]) for rate in map(utils.check_rate_name, moved)]
+            standing = dict(self.leaves(self.config.params['Price Factors'], curves))
+            return {('Calibrated', key): (value - standing[key]) / shift
+                    for key, value in self.leaves(moved, curves)}
+        return {key: (value - self.compiled.static_var[key].detach().cpu().numpy()) / shift
+                for key, value in self.leaves(moved)}
+
     def trade(self, index, base, values):
-        """Trade `index`'s CRIF rows off the book's `base` and the `values` its moves wrote, its
-        base value, the moves it took and what the engine skipped inside it - its rows written
-        regardless."""
+        """Trade `index`'s CRIF rows off the book's `base` and the `values` its moves wrote, or
+        under Graph their derivatives, its base value, the moves it took and what the engine
+        skipped inside it - its rows written regardless."""
         agreement, node = self.trades[index]
         value, skipped = base[index]
         rows = {}
         for bump in self.bumped[index] if value is not None else []:
-            delta = (values[index, bump.move] - value) / self.shifts[bump.move[0]]
+            delta = values[index, bump.move] if self.graph else (
+                values[index, bump.move] - value) / self.shifts[bump.move[0]]
             stated = bump.coordinates
             for label, weight in bump.split:
                 key = (stated['RiskType'], stated['Qualifier'], stated['Bucket'],

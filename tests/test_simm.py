@@ -265,6 +265,27 @@ def test_a_swaps_pv01_is_its_annuity_times_a_basis_point(serial):
         NOTIONAL * annuity * 1e-4, rel=2e-4)
 
 
+def test_a_par_swaps_graph_pv01_is_its_annuity():
+    """A PAR SWAP'S GRAPH PV01 IS ITS ANNUITY ON THE BASE CURVE. The swap is the five-year benchmark
+    struck at its quote, at par for every quote the curve is solved from, so its value is
+    `N A (q - K)` and its derivative in the quote at `q = K` is `N A`: under `Method: Graph` its
+    rate rows, the quote's ride differentiated, sum to `N A 1bp`, `A` its fixed leg's annuity on the
+    curve the run solved, read off its knots, every coupon on one - 443.77, to 1e-12, measured
+    within 2.9e-14 - where the Bump twin above reads `A'` on the curve re-solved a basis point up.
+
+    Killing mutation: the basis point taken in decimal on a quote in percent (`requoted` adding
+    1e-4 of the shift to a quote in percent) - the rows sum to 4.44, a hundredth of the hand figure.
+    """
+    calc, output = world({'Method': 'Graph'}).run_job()
+    knots = calc.config.params['Price Factors']['InterestRate.USD-OIS']['Curve'].array
+    coupons = [BASE + pd.DateOffset(years=y) for y in range(6)]
+    annuity = sum((end - start).days / 365.0 * np.exp(-knots[knots[:, 0] == (
+        end - BASE).days / 365.0, 1][0] * (end - BASE).days / 365.0)
+                  for start, end in zip(coupons[:-1], coupons[1:]))
+    assert sum(rows(output, 'SWAP', 'Risk_IRCurve').values()) == pytest.approx(
+        NOTIONAL * annuity * 1e-4, rel=1e-12)
+
+
 def test_the_crif_is_isdas_format(serial, tmp_path):
     """THE FILE THE MARGIN CALCULATION READS. Its columns are the ones the margin calculation's
     reader consumes, one row per trade and coordinates, the trade id the booked trade's reference;
@@ -900,10 +921,12 @@ INFLATION_CURVE = bootstrappers.knot_prices('USD', inflation.FACTORS, ModelParam
                                             {})
 
 
-def linker(prices, factors=None, entries=inflation.FAMILIES):
+def linker(prices, factors=None, entries=inflation.FAMILIES, **calculation):
     """The SIMM results of the inflation module's linker under a netting set of its own, on its
-    world with `prices` beside the USD curve's block, `factors` over it and `entries` configured."""
-    document = inflation.document([], factors, dict([INFLATION_CURVE], **prices), entries, SIMM)
+    world with `prices` beside the USD curve's block, `factors` over it, `entries` configured and
+    `calculation` over the SIMM block."""
+    document = inflation.document([], factors, dict([INFLATION_CURVE], **prices), entries,
+                                  dict(SIMM, **calculation))
     document['Calc']['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
         'Collateralized': 'False', 'Post_Regulations': 'SEC', 'Collect_Regulations': 'SEC'}},
@@ -1472,6 +1495,15 @@ def parametric(kind, tenors, **pillars):
         for name, values in pillars.items()})
 
 
+#: A USDZAR smile sliced at 0.04, 0.4, 0.8 and 1.5 years, and a 0.6-year call struck over the
+#: forward on it.
+SVI_TENORS = (0.04, 0.4, 0.8, 1.5)
+SVI_SMILE = parametric('SVI', SVI_TENORS, a=[0.020, 0.018, 0.017, 0.016],
+                       b=[0.08, 0.06, 0.05, 0.04], rho=[-0.5, -0.4, -0.35, -0.3],
+                       m=[0.02, 0.03, 0.04, 0.05], sigma=[0.10, 0.15, 0.20, 0.25])
+SVI_OPTION = {'Expiry_Date': BASE + pd.DateOffset(days=219), 'Strike_Price': 21.0}
+
+
 @pytest.mark.parametrize('days, label', [(14, '2w'), (365, '1y'), (1095, '3y')])
 def test_a_flat_svi_surface_moves_as_the_explicit_surface_stating_its_vol(days, label):
     """An SVI surface with no smile, `b` 0, at one vol on slices at 6m, 1y and 2y is the Explicit
@@ -1508,11 +1540,7 @@ def test_an_svi_vertex_moves_the_slices_its_tent_reaches_off_the_standing_surfac
     as a Skew surface gains one - the call's base moves by 0.24% and its vega lands on 6m and 1y
     alone, the 6m row 1,656 against 1,023.
     """
-    tenors = (0.04, 0.4, 0.8, 1.5)
-    smile = parametric('SVI', tenors, a=[0.020, 0.018, 0.017, 0.016],
-                       b=[0.08, 0.06, 0.05, 0.04], rho=[-0.5, -0.4, -0.35, -0.3],
-                       m=[0.02, 0.03, 0.04, 0.05], sigma=[0.10, 0.15, 0.20, 0.25])
-    option = {'Expiry_Date': BASE + pd.DateOffset(days=219), 'Strike_Price': 21.0}
+    tenors, smile, option = SVI_TENORS, SVI_SMILE, SVI_OPTION
     vega = rows(world(option=option, extra={'FXVol.USD.ZAR': smile}).run_job()[1], 'FXO',
                 'Risk_FXVol')
 
@@ -1807,3 +1835,167 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     compare = pd.read_csv(output / 'COMPARE_{}.csv'.format(date), keep_default_na=False)
     refused = compare[compare['TradeID'] == 'PAIR']
     assert not refused['Valued'].item() and 'PAIR reads EquityPrice' in refused['Engine'].item()
+
+
+def amounts(results):
+    """A run's CRIF, `{(TradeID, RiskType, Qualifier, Bucket, Label1, Label2): Amount}`."""
+    crif = results['CRIF']
+    return dict(zip(zip(*(crif[column] for column in (
+        'TradeID', 'RiskType', 'Qualifier', 'Bucket', 'Label1', 'Label2'))), crif['Amount']))
+
+
+def module_book(calculation):
+    """The results of the module's book under one set reported in rand, `calculation` over its
+    block: the swap and the option, the amortising swaption and the cap, the commodity book, the
+    linker on its unquoted curve and the two autocalls on 256 inner paths, so every dollar trade's
+    FX row is the base currency's."""
+    nodes = [{'Instrument': {'.Deal': deal}}
+             for deal in [benchmark(blocks())[1], OPTION] + AUTOCALLS]
+    return holding(dict({'Currency': 'ZAR', 'MCMC_Simulations': 256}, **calculation),
+                   nodes + [AMORTISING, CAP, LINKER] + COMMODITY_BOOK,
+                   extra=dict(SWAPTION_VOLS, **COMMODITIES, **INFLATION, **INDICES)).run_job()[1][
+        'Results']
+
+
+#: The documents of the module's book, each `(results of a calculation over its block, the risk
+#: types it writes)`: the book above, the option on the SVI smile, the credit module's sold default
+#: swap on its par spreads and on a strip of upfronts fronted at 6M, and the inflation module's
+#: linker on its quoted curve.
+GRAPH_DOCUMENTS = {
+    'book': (module_book, {'Risk_IRCurve', 'Risk_FX', 'Risk_FXVol', 'Risk_IRVol', 'Risk_Commodity',
+                           'Risk_CommodityVol', 'Risk_Inflation', 'Risk_Equity', 'Risk_EquityVol'}),
+    'svi': (lambda calculation: world(calculation, option=SVI_OPTION, extra={
+        'FXVol.USD.ZAR': SVI_SMILE}).run_job()[1]['Results'],
+            {'Risk_IRCurve', 'Risk_FX', 'Risk_FXVol'}),
+    'spreads': (lambda calculation: default_swap(credit.block('Par_Spread'), **calculation)[1][
+        'Results'], {'Risk_IRCurve', 'Risk_CreditQ'}),
+    'upfronts': (lambda calculation: default_swap(fronted('Upfront'), **calculation)[1][
+        'Results'], {'Risk_IRCurve', 'Risk_CreditQ'}),
+    'linker': (lambda calculation: linker({inflation.BLOCK: inflation.block(
+        inflation.INTERPOLATED)}, **calculation), {'Risk_IRCurve', 'Risk_Inflation'})}
+#: The fraction of ISDA's unit the two Bump runs a Graph run is held against move either side.
+LIMIT = 1e-3
+
+
+@pytest.mark.parametrize('document', sorted(GRAPH_DOCUMENTS))
+def test_the_graph_crif_is_the_limit_of_the_bump_crif(document):
+    """THE DERIVATIVE IS THE LIMIT OF THE DIFFERENCE. Every row of the module's book under
+    `Method: Graph` - one backward pass of its trade's value along each move's derivative at a zero
+    shift - is the mean of the two Bump runs a thousandth of ISDA's unit up and down, every shift so
+    scaled, within a tenth of that thousandth's square of its trade's largest row: measured within
+    2.4e-9, the closed-form rows at the central difference's own error and the two autocalls' at
+    the common random numbers' 1.1e-9. The book, reported in rand, moves every dollar trade's FX row
+    as the base currency's, every other price falling, and the linker's breakeven on its unquoted
+    curve; the SVI smile's point moves each slice's `a` by `2 vol point`; a curve quote rides its
+    set and chains the survival curve solved on it through the tape; a credit quote and a quoted
+    breakeven re-solve on their family's Jacobian, an upfront by what a basis point of coupon is
+    worth on the standing curve.
+
+    Killing mutations: the SVI tangent taken as the point, `2 vol` dropped - the option's 6m vega
+    row off by 0.67 of its largest; the base currency's tangent's sign flipped, every other spot
+    rising - the book's dollar FX rows off by twice themselves; a curve quote's tangent ridden off
+    its neighbour's quote - the swap's rows off by its PV01, the default swap's by 1.1e-2 of its
+    largest; the upfront's coefficient dropped, a basis point of spread read as a point of upfront
+    - the 5y credit row off by 0.96 of the largest; the survival chain dropped, a curve quote
+    differentiated along the curve's leaves alone - the default swap's 5y rate row off by 2.2e-3
+    and 3.7e-3 of its largest; an unquoted breakeven moved by its `log1p` - the linker's inflation
+    row off by 5.6e-7 of its largest.
+    """
+    run, types = GRAPH_DOCUMENTS[document]
+    graph = amounts(run({'Method': 'Graph'}))
+    up, down = (amounts(run({name: sign * LIMIT for name in ('Rate_Shift', 'Spot_Shift',
+                                                             'Vol_Shift')}))
+                for sign in (1, -1))
+    assert {key[1] for key in graph} == types and set(graph) <= set(up) | set(down)
+    for trade in {key[0] for key in up}:
+        keys = {key for key in set(graph) | set(up) | set(down) if key[0] == trade}
+        largest = max(abs(graph.get(key, 0.0)) for key in keys)
+        for key in keys:
+            central = 0.5 * (up.get(key, 0.0) + down.get(key, 0.0))
+            assert abs(graph.get(key, 0.0) - central) < 0.1 * LIMIT ** 2 * largest, (
+                key, graph.get(key), central)
+
+
+def test_method_omitted_is_bump_and_graph_is_one_value_away():
+    """BUMP IS THE DEFAULT, GRAPH ONE VALUE AWAY. The commodity book with `Method` omitted writes
+    to the bit the CRIF and trades report it writes stating `Bump`, the path every gate above holds.
+    Under `Graph` its trades report is the bump's, each trade valued to the bit on the tape, and its
+    rows the bump's coordinates but for a rounding remnant the bump leaves, the metal forward's 1y
+    rate row at -7.3e-12: the four trades linear in their commodity write its row to 1e-12 under
+    either method, measured within 1.6e-14, and every other row departs from the bump by its move's
+    convexity, more than 1e-6 of itself - the fuel option's commodity row 2.7% and its vega rows
+    1.3e-4 and 2.1e-4, the rate rows 6.1e-6 to 2.5e-5. A Graph row is the derivative per ISDA unit,
+    so the run at twice ISDA's shifts writes it to 1e-12, measured within 6.9e-15.
+
+    Killing mutations: `Method` declared `Graph` by default - the omitted run writes the
+    derivative, 17 rows against the bump's 18, the fuel option's commodity row 414.94 against
+    425.99; a tangent left undivided by its shift - the doubled run's rows twice the derivative,
+    the metal forward's -1,000 against -500; a derivative read as a moved value - a row on every
+    move a trade takes, each its derivative less the trade's value, the metal forward's -500 read
+    49,500.
+    """
+    def run(calculation):
+        return holding(calculation, COMMODITY_BOOK, extra=COMMODITIES).run_job()[1]['Results']
+
+    omitted, bump, graph, doubled = (run(calculation) for calculation in (
+        {}, {'Method': 'Bump'}, {'Method': 'Graph'},
+        {'Method': 'Graph', 'Rate_Shift': 2.0, 'Spot_Shift': 2.0, 'Vol_Shift': 2.0}))
+    identical(omitted, bump)
+    report = ['TradeID', 'NettingSet', 'ProductClass', 'Moves', 'Skipped']
+    assert graph['Trades'][report].equals(bump['Trades'][report])
+    assert [value.hex() for value in graph['Trades']['Value']] == [
+        value.hex() for value in bump['Trades']['Value']]
+    bump, graph, doubled = (amounts(results) for results in (bump, graph, doubled))
+    assert set(graph) == set(doubled) <= set(bump)
+    for key in set(bump) - set(graph):
+        assert abs(bump[key]) < 1e-12 * max(abs(amount) for other, amount in bump.items()
+                                            if other[0] == key[0]), (key, bump[key])
+    for key, amount in graph.items():
+        linear = key[1] == 'Risk_Commodity' and key[0] != 'FUEL_OPT'
+        assert (abs(bump[key] - amount) < 1e-12 * abs(amount)) == linear, (key, bump[key], amount)
+        assert linear or abs(bump[key] - amount) > 1e-6 * abs(amount), key
+        assert abs(doubled[key] - amount) < 1e-12 * abs(amount), (key, doubled[key], amount)
+
+
+def test_graph_vertex_rows_sum_to_the_parallel_derivative():
+    """A VERTEX IS A FIXED COMBINATION OF THE NODES. Under `Method: Graph` a vertex's tangent is
+    its tent over the augmented surface's slices, the tents a partition of one, so the 0.6-year
+    call on the SVI smile writes vega rows on 3m, 6m and 1y, 403.28, 1,008.19 and 604.91, that sum
+    to its derivative along a point on every slice - each slice's `a` moving by `2 vol` a point,
+    off `Greeks: First` of a base valuation on the curves its quotes solve - to 1e-12, measured
+    within 3.3e-16; the Bump rows sum to it but for the convexity, 1.5% over.
+
+    Killing mutations: the SVI tangent the move's own difference, the point's square kept - the
+    rows sum 1.6% over; the SVI tangent taken as the point, `2 vol` dropped - three times over.
+    """
+    extra = {'FXVol.USD.ZAR': SVI_SMILE}
+    vega = rows(world({'Method': 'Graph'}, option=SVI_OPTION, extra=extra).run_job()[1], 'FXO',
+                'Risk_FXVol')
+    assert set(vega) == {'3m', '6m', '1y'}, vega
+    context = world(dict(VALUATION, Greeks='First'), option=SVI_OPTION, extra=extra)
+    context.bootstrap()
+    found = context.run_job()[1]['Results']['Greeks_First'].drop(columns='Value').sum(axis=1)
+    a, b, rho, m, sigma = (SVI_SMILE[name].array[:, 1] for name in ('a', 'b', 'rho', 'm', 'sigma'))
+    vols = dict(zip(SVI_TENORS, np.sqrt(a + b * (rho * -m + np.sqrt(m ** 2 + sigma ** 2)))))
+    parallel = sum(0.02 * vols[tenor] * value for (rate, tenor, _, _), value in found.items()
+                   if rate == 'FXVol.USD.ZAR.a')
+    assert sum(vega.values()) == pytest.approx(parallel, rel=1e-12), (vega, parallel)
+
+
+def test_the_graph_run_sharded_equals_the_serial_run_to_the_bit():
+    """Under Graph a run deals whole trades: two workers on contexts of their own, each calibrating
+    and compiling the set once and pricing it on the tape, each differentiating the trade dealt to
+    it, write the two autocalls' CRIF and trades report as the serial run does, to the bit, each
+    autocall drawing its inner paths off `Quasi_Seed` alone in whichever process prices it; the
+    parent values the base alone, off no tape.
+
+    Killing mutation: the parent's valuation left asking for its gradient - the calibration tape it
+    keeps crosses no process and the spawn refuses, `Cowardly refusing to serialize non-leaf tensor
+    which requires_grad`.
+    """
+    calculation = {'Method': 'Graph', 'MCMC_Simulations': 256}
+    serial, sharded = (world(dict(calculation, **workers), extra=INDICES, deals=AUTOCALLS,
+                             book={'NS': ('AC1', 'AC2')}).run_job()[1]['Results']
+                       for workers in ({}, {'Workers': 2}))
+    assert len(serial['CRIF']) == 14
+    identical(sharded, serial)

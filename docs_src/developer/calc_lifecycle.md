@@ -39,8 +39,7 @@ the base and every move share one grid, and prices it. A move (`SIMM.value`) wri
 values of the factors it moves into their compiled leaves in place, clears `t_Buffer` and the
 trades' result blocks, prices the whole tree again and reads each trade off its own structure, a
 trade left unvalued refused by name, and writes the compiled leaves back. Every move prices the
-whole set, the trades it does not reach included; pricing only those it reaches is the in-graph
-form, [SIMM phase 2](roadmap.md#designed-not-built), one backward pass per set. A base valuation
+whole set, the trades it does not reach included. A base valuation
 draws a trade's Monte Carlo paths off `Quasi_Seed` alone, whatever is booked beside it, and the
 inner block stays built through the run, so a trade draws the same paths through every pricing and
 its difference is one of common random numbers. **Held by**
@@ -49,6 +48,19 @@ its difference is one of common random numbers. **Held by**
 `::test_a_netting_set_s_crif_is_its_trades_own_to_the_bit`,
 `::test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit`,
 `::test_the_sharded_run_equals_the_serial_run_to_the_bit`.
+
+Under `Method: Graph` nothing moves: the set is priced once on the tape, every curve, survival and
+inflation solve kept there (`Quote_Sensitivity`), and a trade's rows are one backward pass of its
+value along each move's derivative at a zero shift (`SIMM.tangent`), split as the bump splits it -
+along the leaves the move writes, to first order where it is not linear; along the calibrated
+curves a quote rides, whose tape chains the survival curves solved on them; and along the quotes of
+a block the move re-solves, its family's [Jacobian](quote_sensitivities.md#the-ift-contract). A
+sharded run deals whole trades, its parent valuing the base off no tape, which crosses no process.
+**Held by** `tests/test_simm.py::test_the_graph_crif_is_the_limit_of_the_bump_crif`,
+`::test_a_par_swaps_graph_pv01_is_its_annuity`,
+`::test_method_omitted_is_bump_and_graph_is_one_value_away`,
+`::test_graph_vertex_rows_sum_to_the_parallel_derivative`,
+`::test_the_graph_run_sharded_equals_the_serial_run_to_the_bit`.
 
 A price reads a factor's value off its leaf at pricing, where a move's write and the tape both see
 it, never off the factor at the compile: an equity swaplet's level fixing on the base date and

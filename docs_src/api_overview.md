@@ -64,7 +64,7 @@ reference:
 | `cx.Base_Valuation(overrides)` | `BaseValuation` | Single-point MTM revaluation |
 | `cx.Credit_Monte_Carlo(overrides)` | `CreditMonteCarlo` | Path-dependent simulation (CVA / FVA / PFE) |
 | `cx.Hedge_Monte_Carlo(overrides)` | `HedgeMonteCarlo` | Same simulation engine, used to solve a dynamic hedging problem (DiffSolver) |
-| `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, the book compiled once and priced again per market move |
+| `derivus.run_simm(cx.current_cfg, overrides)` | `SIMM` | ISDA SIMM sensitivities (a CRIF) by bump and revaluation, the book compiled once and priced again per market move, or under `Method: Graph` each row the move's derivative off one backward pass per trade |
 | `derivus.run_saccr(cx.current_cfg, overrides)` | `SACCR` | The SA-CCR exposure at default of each netting set, off one base valuation of the book and each trade's declared terms |
 | `cx.run_job(overrides)` | (any of the above) | Runs the class the loaded JSON's `Calculation.Object` names through its `run`, which each method above is one line onto |
 | `cx.validate()` | (any of the above) | Reports what would stop the loaded job running, without running it |

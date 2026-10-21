@@ -156,12 +156,12 @@ features kept ahead of their build, not rows to close.
   declares. The residual is reported as a share of P&L, with no declared threshold watching it.
 - **Sensitivity estimators as first-class objects**: a `SensitivityProfile` per pricer, telling a
   pathwise derivative from one carrying a boundary term.
-- **SIMM in-graph, phase 2.** Phase 1, the `SIMM` calculation, writes a CRIF by bump and
-  revaluation. Phase 2 replaces its execute with one backward pass per netting set, the CRIF
-  projection and aggregation in-graph so the margin's gradient survives, `dSIMM/dtheta` as one
-  Hessian-vector product, and the margin in quote space through the calibration. It waits on the row
-  below and on second derivatives in quote space, which the calibration refuses backwards; the SIMM
-  notebook aggregating the phase 1 CRIF is its oracle meanwhile.
+- **SIMM in-graph, phase 2.** The `SIMM` calculation writes its CRIF by bump and revaluation or,
+  under `Method: Graph`, off one backward pass per trade. What remains: the aggregation in-graph so
+  the margin's gradient survives, `dSIMM/dtheta` as one Hessian-vector product, and the margin in
+  quote space through the calibration. It waits on the row below and on second derivatives in quote
+  space, which the calibration refuses backwards; the SIMM notebook aggregating the CRIF is its
+  oracle meanwhile.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,
   forward-over-reverse, first for `dSIMM/dtheta` and FVA's splits.
 - **Incremental XVA as risk-impact v2**: `CVA(book + mirror) − CVA(book)` through

@@ -435,14 +435,14 @@ class Factor2D(object):
         return a + b * (rho * (x - m) + np.sqrt((x - m) ** 2 + sigma ** 2))
 
     @classmethod
-    def vol_point(cls, block, point):
+    def vol_point(cls, block, point, tangent=False):
         """What a point of vol adds to the level column a vol surface `block` holds: the point on a
         vol column, `(vol + point)^2 - vol^2` on an SVI slice's variance `a`, `vol` the slice's
-        at-the-money vol."""
+        at-the-money vol, or with `tangent` its first order in the point, `2 vol point`."""
         if block.get('Surface_Type', 'Explicit') != 'SVI':
             return point
         vol = np.sqrt(cls.svi_variance(0.0, *(block[x].array[:, 1] for x in cls.svi_params[1:])))
-        return point * (2.0 * vol + point)
+        return point * (2.0 * vol + (0.0 if tangent else point))
 
     @classmethod
     def augmented(cls, block, years):
@@ -628,10 +628,10 @@ class Factor3D(object):
         return np.unique(self.param['Surface'].array[:, self.TENOR_INDEX])
 
     @classmethod
-    def vol_point(cls, block, point):
+    def vol_point(cls, block, point, tangent=False):
         """What a point of vol adds to the vol column a vol space `block` holds, in the convention
         it declares: the point on a Lognormal space, a basis point, a hundredth of it, on a Normal
-        one, whose vols are absolute."""
+        one, whose vols are absolute - linear in the point, so its own first order (`tangent`)."""
         return point * 0.01 if cls(block).get_subtype()[0] == 'Normal' else point
 
     @classmethod
