@@ -3,11 +3,12 @@ one book of a netting set per counterparty by the framework's SIMM calculation a
 the source CRIF.
 
     python experiments/simm_from_crif.py CRIF FOLDER --parameters PARAMETERS [--mapping MAPPING]
-        [--calendar CALENDAR] [--currency CCY] [--workers N] [--output DIR]
+        [--calendar CALENDAR] [--market MARKET] [--currency CCY] [--workers N] [--output DIR]
 
 Run from the repo root. FOLDER holds `<TradeID>.json` for every trade the CRIF names, a job document
 whose one netting set holds the trade. The book is one job document: the SIMM block, the union of
-the documents' market data, the calendar, and per counterparty a NettingCollateralSet holding its
+the documents' market data over MARKET, the market data file named in place of the documents' own
+where one is stated, the calendar, and per counterparty a NettingCollateralSet holding its
 trades and posting and collecting margin under the regimes the CRIF's rows state - the job a desk
 hands the engine, written as it runs to `SIMM_JOB_<date>.json`. A trade whose document the run
 refuses by name is set aside and the book run again without it.
@@ -95,10 +96,11 @@ def references(node):
         *map(references, node.get('Children', [])))
 
 
-def book(source, documents, calculation, calendar):
+def book(source, documents, calculation, calendar, market_file):
     """The job document of `documents`, `{trade: document}`: `calculation` its block, the union of
-    their market data, a factor stated two ways refused by name, and per counterparty of the
-    `source` CRIF a netting set of its trades on the terms their own sets state."""
+    their market data over `market_file`, the market data file it names in place of the documents'
+    own, a factor stated two ways refused by name, and per counterparty of the `source` CRIF a
+    netting set of its trades on the terms their own sets state."""
     stated_terms = terms(source)
     markets = {trade: document['Calc']['MergeMarketData']['ExplicitMarketData']
                for trade, document in documents.items()}
@@ -130,7 +132,8 @@ def book(source, documents, calculation, calendar):
             'Children': [translated(child) for node in held.values() for child in node['Children']]})
     return {'Calc': {'Calculation': calculation,
                      'Deals': {'Reference': 'simm_from_crif', 'Deals': {'Children': children}},
-                     'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': explicit},
+                     'MergeMarketData': {'MarketDataFile': market_file,
+                                         'ExplicitMarketData': explicit},
                      'CalendDataFile': calendar}}
 
 
@@ -383,6 +386,9 @@ def main(argv=None):
     parser.add_argument('--mapping', help='the regime mapping the bank states, completed off the '
                                           'CRIF; none unless stated')
     parser.add_argument('--calendar', default='', help='the calendar file, none unless stated')
+    parser.add_argument('--market', default='', help='the market data file the book names in '
+                                                     "place of the documents' own, none unless "
+                                                     'stated: their explicit blocks alone')
     parser.add_argument('--currency', help="the calculation currency, the CRIF's AmountCurrency "
                                            'unless stated')
     parser.add_argument('--workers', type=int, default=1, help='processes the moves are dealt over')
@@ -418,9 +424,10 @@ def main(argv=None):
         'Mapping': os.path.join(args.output, 'SIMM_MAPPING_{}.json'.format(date)),
         'Workers': args.workers, 'Base_Date': base_date}
     context = derivus.Context()
-    reads = {trade: loaded(context, book(source, {trade: document}, calculation, args.calendar))
+    reads = {trade: loaded(context, book(source, {trade: document}, calculation, args.calendar,
+                                         args.market))
              .current_cfg.factor_universe()['resolved'] for trade, document in documents.items()}
-    job = book(source, documents, calculation, args.calendar)
+    job = book(source, documents, calculation, args.calendar, args.market)
     mapping, notes = derived_mapping(
         source, documents, reads, job['Calc']['MergeMarketData']['ExplicitMarketData'][
             'Price Factors'], stated, parameters)
