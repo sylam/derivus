@@ -3,7 +3,8 @@ one book of a netting set per counterparty by the framework's SIMM calculation a
 the source CRIF.
 
     python experiments/simm_from_crif.py CRIF FOLDER --parameters PARAMETERS [--mapping MAPPING]
-        [--calendar CALENDAR] [--market MARKET] [--currency CCY] [--workers N] [--output DIR]
+        [--calendar CALENDAR] [--market MARKET] [--currency CCY] [--workers N] [--method M]
+        [--output DIR]
 
 Run from the repo root. FOLDER holds `<TradeID>.json` for every trade the CRIF names, a job document
 whose one netting set holds the trade. The book is one job document: the SIMM block, the union of
@@ -392,6 +393,9 @@ def main(argv=None):
     parser.add_argument('--currency', help="the calculation currency, the CRIF's AmountCurrency "
                                            'unless stated')
     parser.add_argument('--workers', type=int, default=1, help='processes the moves are dealt over')
+    parser.add_argument('--method', default='Bump', choices=('Bump', 'Graph'),
+                        help='how a row is read: Bump revalues the set per move, Graph differentiates '
+                             'each trade once')
     parser.add_argument('--output', default=os.path.join('artifacts', 'simm_from_crif'),
                         help='the folder the outputs are written to')
     args = parser.parse_args(argv)
@@ -422,7 +426,7 @@ def main(argv=None):
     calculation = {
         'Object': 'SIMM', 'Currency': currency, 'Parameters': args.parameters,
         'Mapping': os.path.join(args.output, 'SIMM_MAPPING_{}.json'.format(date)),
-        'Workers': args.workers, 'Base_Date': base_date}
+        'Workers': args.workers, 'Method': args.method, 'Base_Date': base_date}
     context = derivus.Context()
     reads = {trade: loaded(context, book(source, {trade: document}, calculation, args.calendar,
                                          args.market))
