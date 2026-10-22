@@ -156,14 +156,39 @@ features kept ahead of their build, not rows to close.
   declares. The residual is reported as a share of P&L, with no declared threshold watching it.
 - **Sensitivity estimators as first-class objects**: a `SensitivityProfile` per pricer, telling a
   pathwise derivative from one carrying a boundary term.
-- **SIMM in-graph, phase 2.** The `SIMM` calculation writes its CRIF by bump and revaluation or,
-  under `Method: Graph`, off one backward pass per trade, and aggregates its margin in torch, each
-  row's derivative of it reported. What remains: the margin's gradient in the market,
-  `dSIMM/dtheta` as one Hessian-vector product, and the margin in quote space through the
-  calibration. It waits on the row below and on second derivatives in quote space, which the
-  calibration refuses backwards.
+- **SIMM phase 2, the margin's gradient off the scenario batch.** The `SIMM` calculation writes
+  its CRIF by bump and revaluation, every move of a set a scenario of one `ScenarioValuation`
+  pass, or under `Method: Graph` off one backward pass per trade, and aggregates its margin in
+  torch, each row's derivative of it reported. What remains is the gradient of the posted margin in
+  the market and in quote space, and it is first order throughout: a scenario's values on the tape
+  as the leaf plus a constant, so a column carries a graph to the leaves it moves (a supplied
+  column carries none today), each bump row then a difference of two taped values, the margin a
+  function of those rows and `dIM/dtheta` one backward pass of it; a quote scenario as the
+  calibration re-solved at the shifted quote on the tape, so a row's derivative in the quote is
+  the difference of two first-order implicit-function backwards over the shift, retiring the
+  second-order theorem; the gradient the derivative of the number posted, gated against central
+  differences of the reported margin on a ladder. Memory is B scenarios times the taped base,
+  which the recompute node and the streamed strip bound. M.
+- **Vega through a fitted model, by the ride.** A trade priced under `LogVar2FJ` reads the
+  model's parameters, not the surface, so a vega move never reaches it: the parameter factor maps
+  null and the trade writes no vega row, and a mapping that tries refuses by name. A vega scenario
+  should move the block's pillar quotes under the vertex's tent and the parameters ride the fit's
+  Jacobian, `theta* + J dq`, the `Quote_Sensitivity` contraction at the stationary point under
+  `Fit_Mode: Global`, first order in the move as the curve ride is and the one well-posed answer
+  for a least-squares fit, whose refit wanders along its flat directions; the parameter factor
+  takes the scenario axis and the walking kit its scalars per path. The same shape serves the
+  Hull-White two-factor and GBM term-structure families under a scenario run through the credit
+  Monte Carlo, where a scenario surface wants their parameters moved. M to L.
+- **Historical VaR and stress as readers of the scenario batch.** `ScenarioValuation` prices B
+  given markets on one date; a reader fills the batch and reports. Historical VaR fills it from
+  the archive the historical calibrations read, each day's shock applied to today's market,
+  absolute on rates and relative on spots and vols, `Valuation_Date` at T+10 for a ten-day
+  horizon, and reports the P&L vector per trade and per set with its quantile and expected
+  shortfall; a stress test fills it from a file and reports its named columns. A reader prices the
+  standing market inside its pass, as SIMM does, so a column's difference carries no pass-of-one
+  rounding. S each once the batch stands.
 - **Hessian-vector products** instead of materialised Hessians: a `jvp` rule on the recompute node,
-  forward-over-reverse, first for `dSIMM/dtheta` and FVA's splits.
+  forward-over-reverse, for FVA's splits.
 - **Incremental XVA as risk-impact v2**: `CVA(book + mirror) − CVA(book)` through
   `CreditMonteCarlo` on the same two-run seam, with a ratio-solve primitive for participating
   forwards.
