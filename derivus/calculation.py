@@ -99,8 +99,8 @@ class DealStructure(object):
         """Compile `deal` into this structure, the history fold first. A deal the compile cannot
         read is skipped and counted, or kept and marked at zero on every date where `exclude` is
         False, the exception stamped on it either way (`unpriced_because`, which the diary reads);
-        a framework fault or a schedule refused by name (`utils.is_fatal_pricing_error`) is never
-        swallowed."""
+        a framework fault or a schedule refused by name (`utils.is_fatal_pricing_error`) is counted
+        and stamped too, and raised, never swallowed."""
         try:
             deal = deal.resolve_history(base_date, calendars, valuation_options or {})
             deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
@@ -111,13 +111,14 @@ class DealStructure(object):
                 calendars), unit)
             stats['Deals loaded'] = stats.setdefault('Deals loaded', 0) + 1
         except Exception as e:
+            fatal = utils.is_fatal_pricing_error(e)
             logging.error('{0} {1} {2} - {3}'.format(
                 deal.field['Object'], deal.field.get('Reference'), e.args,
-                'Skipped' if exclude else 'kept at zero'))
-            if utils.is_fatal_pricing_error(e):
-                raise
+                'Skipped' if exclude or fatal else 'kept at zero'))
             stats['Deals Skipped'] = stats.setdefault('Deals Skipped', 0) + 1
             deal.unpriced_because = e
+            if fatal:
+                raise
             if exclude:
                 return
             deal_time_dep, factor_dep = utils.DealTimeDependencies(
@@ -4083,8 +4084,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 class NettingSetCalculation(Calculation):
     """A calculation over the trades a book holds under its netting sets: the block judged, its
     `Mapping` read and the trades listed under their sets, and each trade valued off its own
-    structure by one scenario valuation of the book compiled once (`base`), which `value` prices
-    over given markets. `SIMM` and `SACCR` are its two."""
+    structure by one scenario valuation of the book compiled once, a trade its compile refuses set
+    aside (`base`), which `value` prices over given markets. `SIMM` and `SACCR` are its two."""
 
     #: `Quasi_Seed`, declared once for the calculations over netting sets.
     QUASI_SEED = F('Quasi_Seed', 'Integer', default=schema.QUASI_SEED, convention=True,
@@ -4132,9 +4133,11 @@ class NettingSetCalculation(Calculation):
 
     def base(self, over=None):
         """`[(value, skipped)]` per trade: the book compiled once as a scenario valuation compiles
-        it over the valuation's `Scenarios`, on the price factors `over` states in place of the
-        standing ones, and priced as it stands, with the engine's sentences for what it skipped
-        inside each trade, the distinct ones spoken at its deals."""
+        it over the valuation's `Scenarios`, each trade alone under its set, on the price factors
+        `over` states in place of the standing ones, and priced as it stands, with the engine's
+        sentences for what it skipped inside each trade, the distinct ones spoken at its deals. A
+        trade whose own compile refuses its document by name (`utils.UnpriceableSchedule`) is set
+        aside unvalued, its sentence among them."""
         factors = self.config.params['Price Factors']
         calc = self.compiled = ScenarioValuation(self.config, prec=torch.float64,
                                                  device=utils.calculation_device())
@@ -4146,8 +4149,14 @@ class NettingSetCalculation(Calculation):
             self.config.params['Price Factors'] = dict(factors, **(over or {}))
             self.shared = calc.update_factors(calc.params, self.valuation['Base_Date'])
             calc.netting_sets = DealStructure(Aggregation('root'), store_results=True)
-            calc.set_deal_structures(self.config.deals['Deals']['Children'], calc.netting_sets,
-                                     self.shared.one, deal_level_mtm=True)
+            for agreement, node in self.trades:
+                try:
+                    calc.set_deal_structures([dict(agreement, Children=[node])], calc.netting_sets,
+                                             self.shared.one, deal_level_mtm=True)
+                except utils.UnpriceableSchedule:
+                    # a census names the trade and values the rest: its compile attached nothing
+                    # and stamped and counted the deal it refused
+                    continue
             held = {deal.Instrument.resolved_from or deal.Instrument: deal.Calc_res for deal in [
                 structure.obj for structure in calc.netting_sets.structures()] + list(
                 calc.netting_sets.deals())}
@@ -4219,7 +4228,8 @@ class SIMM(NettingSetCalculation):
     MARKET PRICES ARE A CONDITION: an interest rate or a survival curve a trade reads that no
     configured family bootstraps, and that is no child of a curve one does, refuses by name. A leg
     the engine skips is reported per trade in its own sentence and the trade's rows written
-    regardless.
+    regardless; a trade whose own compile refuses its document by name is set aside, reported
+    unvalued in that sentence and writing no row (`base`).
     """
     #: The CRIF risk types the run moves: the risk class each belongs to and how its factor moves -
     #: a basis point on each benchmark quote of the curve's block, on every node of a basis or on

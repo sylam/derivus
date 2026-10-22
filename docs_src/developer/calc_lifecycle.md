@@ -53,6 +53,16 @@ draws the same paths through every pricing and its difference is one of common r
 `::test_the_sharded_run_equals_the_serial_run_to_the_bit`,
 `::test_the_batched_run_sharded_equals_the_serial_run_to_the_bit`.
 
+`base` compiles each trade alone under its set, so a trade whose own compile refuses its document
+by name (`utils.UnpriceableSchedule`, which `DealStructure.add_deal_to_structure` counts under
+`Deals Skipped` and stamps on the deal before it raises) is set aside: reported unvalued in that
+sentence whatever `Exclude_Deals_With_Missing_Market_Data` says, writing no row, the book compiled
+once without it and every other trade's rows what a book without it writes, to the bit. Nothing
+marks it zero, and every other refusal stops the run - a pricing's, a move's, the mapping's, a
+quote set's, a family's - as a compile's refusal by name stops every other calculation. **Held by**
+`tests/test_simm.py::test_a_trade_the_compile_refuses_is_set_aside_by_name_and_the_run_goes_on`.
+**Not gated:** `SACCR`'s set-aside, the same `base`'s.
+
 A pass's arithmetic is its own: a column is the same to the bit whatever stands beside it, so the
 CRIF is the same whatever the chunk and the worker count. A pass of one is the exception: it sums a
 deal's terms with the scenario axis contiguous where a pass of several strides it, so a bump

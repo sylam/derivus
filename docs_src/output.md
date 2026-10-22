@@ -71,7 +71,8 @@ a pass priced.
   `Counterparty`, `PostRegulations`, `CollectRegulations`, `ProductClass`, `RiskType`, `Qualifier`,
   `Bucket`, `Label1`, `Label2`, `Amount` (in the calculation `Currency`) and `AmountUSD`
 - `Trades` — one row per trade: its netting set, product class, value, moves, rows written and any
-  leg the engine skipped, in its own sentence
+  leg the engine skipped, in its own sentence; a trade whose own compile the engine refuses by name
+  is set aside, unvalued in that sentence and writing no row
 - `Margin` — each netting set's initial margin off its CRIF, as the methodology aggregates it under
   the `Parameters` file's `Horizon`, in each `Direction`: `Posted` on the rows' negation and
   `Collected` on them as written, under the `Regime` its agreement declares for that direction. One

@@ -11,8 +11,10 @@ whose one netting set holds the trade. The book is one job document: the SIMM bl
 the documents' market data over MARKET, the market data file named in place of the documents' own
 where one is stated, the calendar, and per counterparty a NettingCollateralSet holding its
 trades and posting and collecting margin under the regimes the CRIF's rows state - the job a desk
-hands the engine, written as it runs to `SIMM_JOB_<date>.json`. A trade whose document the run
-refuses by name is set aside and the book run again without it.
+hands the engine, written as it runs to `SIMM_JOB_<date>.json`. A trade whose own compile refuses
+its document the run sets aside itself, reporting it unvalued; a trade the run refuses by name for
+anything else, a factor the mapping leaves unstated among them, is set aside here and the book run
+again without it.
 
 The run reads the mapping a bank states in MAPPING, none unless named, completed off the CRIF's own
 rows (`derived_mapping`) for every factor a trade reads that it states nothing for and every
@@ -330,8 +332,9 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
 
 def run(context, job, output):
     """`(calculation, results, refused)` - `job` run as SIMM on `context`, its curves quoted as the
-    batch runner quotes them, each trade whose document the run refuses by name set aside and the
-    job run again, `refused` the engine's sentence per trade set aside."""
+    batch runner quotes them, each trade the run refuses by name set aside and the job run again,
+    `refused` the engine's sentence per trade set aside; a trade its compile refuses the run sets
+    aside itself, unvalued in its `Trades`."""
     refused = {}
     while True:
         config = loaded(context, job).current_cfg

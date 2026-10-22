@@ -1571,6 +1571,53 @@ def test_an_autocall_a_past_print_called_writes_no_rows():
         BASE - pd.DateOffset(days=30)) in called['Skipped'].item()
 
 
+#: A note booked as two legs: an index autocall fixing three times for its two coupons, its last
+#: fixing a week past its last coupon so that no window is the last coupon's own, and a year's call
+#: on the index.
+NOTE_FIXINGS = [BASE + pd.DateOffset(days=days) for days in (179, 362, 370)]
+NOTE_COUPONS = [BASE + pd.DateOffset(days=days) for days in (182, 365)]
+NOTE = {'Instrument': {'.Deal': {'Object': 'StructuredDeal', 'Reference': 'NOTE',
+                                 'Currency': 'USD'}},
+        'Children': [{'Instrument': {'.Deal': dict(
+            CALLED, Reference='NOTE-AC', Price_Fixing=[[day, 0.0] for day in NOTE_FIXINGS],
+            Autocall_Coupons=[[day, 0.04] for day in NOTE_COUPONS],
+            Autocall_Thresholds=[[day, 1.0] for day in NOTE_COUPONS])}},
+            {'Instrument': {'.Deal': {
+                'Object': 'EquityOptionDeal', 'Reference': 'NOTE-EQ', 'Currency': 'USD',
+                'Discount_Rate': 'USD-OIS', 'Equity': 'EQ', 'Equity_Volatility': 'EQ',
+                'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': 100.0, 'Units': 100.0,
+                'Expiry_Date': BASE + pd.DateOffset(years=1)}}}]}
+
+
+@pytest.mark.parametrize('exclude', ['Yes', 'No'])
+def test_a_trade_the_compile_refuses_is_set_aside_by_name_and_the_run_goes_on(exclude, serial):
+    """A CENSUS SETS A REFUSED TRADE ASIDE. The module's swap and option and the note under one
+    set, one run, whatever `Exclude_Deals_With_Missing_Market_Data` says: the note's autocall leg
+    is refused by name at its compile, so the note is set aside, its deal counted under `Deals
+    Skipped` and the note reported unvalued in the engine's `UnpriceableSchedule` sentence, writing
+    no row; the book is compiled once without it, `Deals loaded` the run without it's 2, and the
+    swap and the option write that run's CRIF and trades report to the bit.
+
+    Killing mutations: the verdict swallowed as a skipped leg - the note valued at its call leg,
+    1,138.99, writing 5 rows; the whole book compiled again after the set-aside - `Deals loaded` 4;
+    the verdict raised before it is counted - no `Deals Skipped`; the verdict logged as a deal kept
+    at zero under `No` - the note's sentence lost; the census reading no verdict - the run refuses
+    `UnpriceableSchedule` naming NOTE-AC.
+    """
+    output = holding({}, nodes(benchmark(blocks())[1], OPTION) + [NOTE], extra=INDEX, system={
+        'Exclude_Deals_With_Missing_Market_Data': exclude}).run_job()[1]
+    crif, trades = output['Results']['CRIF'], output['Results']['Trades']
+    note = trades[trades['TradeID'] == 'NOTE']
+    assert np.isnan(note['Value'].item()) and note['Written'].item() == 0
+    assert 'NOTE-AC: the price fixings {} do not give each coupon {} a window of its own'.format(
+        *([day.strftime('%Y-%m-%d') for day in days] for days in (NOTE_FIXINGS, NOTE_COUPONS))
+    ) in note['Skipped'].item()
+    assert (output['Stats']['Deals loaded'], output['Stats']['Deals Skipped']) == (
+        serial[1]['Stats']['Deals loaded'], 1)
+    identical({'CRIF': crif, 'Trades': trades[trades['TradeID'] != 'NOTE']},
+              serial[1]['Results'])
+
+
 def test_a_curve_no_quote_set_stands_behind_is_refused_by_name():
     """MARKET PRICES ARE A CONDITION. The ZAR curve's quote set withdrawn, its nodes still pasted
     in, the run refuses before a trade is valued and names the curve: no margin off a curve no

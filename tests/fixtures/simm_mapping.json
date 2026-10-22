@@ -15,7 +15,8 @@
 			"YieldInflationCashflowListDeal": "RatesFX"
 		},
 		"Structures": {
-			"SWPT": "RatesFX"
+			"SWPT": "RatesFX",
+			"NOTE": "Equity"
 		}
 	},
 	"SACCR": {
