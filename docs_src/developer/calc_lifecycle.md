@@ -43,7 +43,13 @@ free memory holds at what a scenario took in the standing market's pass, each pa
 standing market, so a trade's change is the difference of two columns of one pass
 (`ScenarioValuation.passes`). A trade a pass leaves unvalued is priced again a
 move a pass, so the refusal names its own move. Every pass prices the whole set, the trades it does
-not reach included. A base valuation draws a trade's Monte Carlo paths off `Quasi_Seed` alone,
+not reach included. A trade's product class is read off its walk: the one class among Credit,
+Equity and Commodity its factors are of, RatesFX where they are of none, every trade reading its
+curves and currencies, and its own `Product_Class`, a field of the admin group, where they are of
+more than one, refused by name where it states none (`SIMM.product_class`); the mapping states
+the factors' coordinates alone. **Held by**
+`tests/test_simm.py::test_a_trades_product_class_is_its_walks_or_its_own_statement`. A base
+valuation draws a trade's Monte Carlo paths off `Quasi_Seed` alone,
 whatever is booked or priced beside it, and the inner block stays built through the run, so a trade
 draws the same paths through every pricing and its difference is one of common random numbers.
 **Held by** `tests/test_simm.py::test_the_set_is_compiled_once_and_a_move_writes_the_leaves_it_moves`,

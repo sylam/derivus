@@ -1,258 +1,238 @@
 {
-	"Product_Class": {
-		"Instruments": {
-			"SwapInterestDeal": "RatesFX",
-			"CapDeal": "RatesFX",
-			"FXOptionDeal": "RatesFX",
-			"FXExtendableForwardDeal": "RatesFX",
-			"QEDI_CustomAutoCallSwap": "Equity",
-			"EquitySwapLeg": "Equity",
-			"DealDefaultSwap": "Credit",
-			"CommodityForwardDeal": "Commodity",
-			"CommodityFutureDeal": "Commodity",
-			"FloatingEnergyDeal": "Commodity",
-			"EnergySingleOption": "Commodity",
-			"YieldInflationCashflowListDeal": "RatesFX"
-		},
-		"Structures": {
-			"SWPT": "RatesFX",
-			"NOTE": "Equity"
-		}
-	},
-	"SACCR": {
-		"Asset_Class": {
-			"SwapInterestDeal": "IR",
-			"SwaptionDeal": "IR",
-			"CapDeal": "IR",
-			"YieldInflationCashflowListDeal": "IR",
-			"FXOptionDeal": "FX",
-			"FXExtendableForwardDeal": "FX",
-			"DealDefaultSwap": "Credit",
-			"QEDI_CustomAutoCallSwap": "Equity",
-			"EquitySwapLeg": "Equity",
-			"EquityForwardDeal": "Equity",
-			"CommodityForwardDeal": "Commodity",
-			"CommodityFutureDeal": "Commodity",
-			"FloatingEnergyDeal": "Commodity",
-			"EnergySingleOption": "Commodity"
-		}
-	},
-	"Factors": {
-		"InterestRate.USD-OIS": {
-			"SIMM": {
-				"RiskType": "Risk_IRCurve",
-				"Qualifier": "USD",
-				"Bucket": "1",
-				"Label2": "OIS"
-			},
-			"FRTB_SA": null
-		},
-		"InterestRate.ZAR-JIBAR": {
-			"SIMM": {
-				"RiskType": "Risk_IRCurve",
-				"Qualifier": "ZAR",
-				"Bucket": "3",
-				"Label2": "Libor3m"
-			},
-			"FRTB_SA": null
-		},
-		"InterestRate.ZAR-JIBAR.ZAR-JIBAR+50BP": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"FxRate.USD": {
-			"SIMM": {
-				"RiskType": "Risk_FX",
-				"Qualifier": "USD"
-			},
-			"FRTB_SA": null
-		},
-		"FxRate.ZAR": {
-			"SIMM": {
-				"RiskType": "Risk_FX",
-				"Qualifier": "ZAR"
-			},
-			"FRTB_SA": null
-		},
-		"FXVol.USD.ZAR": {
-			"SIMM": {
-				"RiskType": "Risk_FXVol",
-				"Qualifier": "USDZAR"
-			},
-			"FRTB_SA": null
-		},
-		"EquityPrice.EQ": {
-			"SIMM": {
-				"RiskType": "Risk_Equity",
-				"Qualifier": "EQ",
-				"Bucket": "11"
-			},
-			"FRTB_SA": null
-		},
-		"DividendRate.EQ": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"EquityPrice.EQ2": {
-			"SIMM": {
-				"RiskType": "Risk_Equity",
-				"Qualifier": "EQ2",
-				"Bucket": "11"
-			},
-			"FRTB_SA": null
-		},
-		"DividendRate.EQ2": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"EquityPriceVol.EQ2": {
-			"SIMM": {
-				"RiskType": "Risk_EquityVol",
-				"Qualifier": "EQ2",
-				"Bucket": "11"
-			},
-			"FRTB_SA": null
-		},
-		"EquityPriceVol.EQ": {
-			"SIMM": {
-				"RiskType": "Risk_EquityVol",
-				"Qualifier": "EQ",
-				"Bucket": "11"
-			},
-			"FRTB_SA": null
-		},
-		"Correlation.EquityPrice.EQ/FxRate.USD.ZAR": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"InterestYieldVol.USD-OIS": {
-			"SIMM": {
-				"RiskType": "Risk_IRVol",
-				"Qualifier": "USD"
-			},
-			"FRTB_SA": null
-		},
-		"InterestRateVol.USD-OIS": {
-			"SIMM": {
-				"RiskType": "Risk_IRVol",
-				"Qualifier": "USD"
-			},
-			"FRTB_SA": null
-		},
-		"InterestRate.USD": {
-			"SIMM": {
-				"RiskType": "Risk_IRCurve",
-				"Qualifier": "USD",
-				"Bucket": "1",
-				"Label2": "OIS"
-			},
-			"FRTB_SA": null
-		},
-		"SurvivalProb.ISSUER": {
-			"SIMM": {
-				"RiskType": "Risk_CreditQ",
-				"Qualifier": "ISSUER",
-				"Bucket": "3"
-			},
-			"FRTB_SA": null,
-			"SACCR": {
-				"Rating": "BBB"
-			}
-		},
-		"CommodityPrice.METAL": {
-			"SIMM": {
-				"RiskType": "Risk_Commodity",
-				"Qualifier": "METAL",
-				"Bucket": "11"
-			},
-			"FRTB_SA": null
-		},
-		"ForwardPrice.METAL": {
-			"SIMM": {
-				"RiskType": "Risk_Commodity",
-				"Qualifier": "METAL",
-				"Bucket": "11"
-			},
-			"FRTB_SA": null
-		},
-		"ForwardRate.METAL_CARRY": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"ReferencePrice.METAL": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"ForwardPrice.FUEL": {
-			"SIMM": {
-				"RiskType": "Risk_Commodity",
-				"Qualifier": "FUEL",
-				"Bucket": "2"
-			},
-			"FRTB_SA": null
-		},
-		"ReferencePrice.FUEL": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"ForwardPriceSample.FUEL": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"CommodityPriceVol.FUEL": {
-			"SIMM": {
-				"RiskType": "Risk_CommodityVol",
-				"Qualifier": "FUEL",
-				"Bucket": "2"
-			},
-			"FRTB_SA": null
-		},
-		"CommodityPrice.LBMA_AM": {
-			"SIMM": {
-				"RiskType": "Risk_Commodity",
-				"Qualifier": "PLATINUM",
-				"Bucket": "12"
-			},
-			"FRTB_SA": null
-		},
-		"ObservedBasis.LBMA_AM.CME": {
-			"SIMM": {
-				"RiskType": "Risk_Commodity",
-				"Qualifier": "PLATINUM",
-				"Bucket": "12"
-			},
-			"FRTB_SA": null
-		},
-		"ObservedBasis.LBMA_AM.PM": {
-			"SIMM": {
-				"RiskType": "Risk_Commodity",
-				"Qualifier": "PLATINUM",
-				"Bucket": "12"
-			},
-			"FRTB_SA": null
-		},
-		"ObservedBasis.LBMA_AM.PM.CME": {
-			"SIMM": {
-				"RiskType": "Risk_Commodity",
-				"Qualifier": "PLATINUM",
-				"Bucket": "12"
-			},
-			"FRTB_SA": null
-		},
-		"ForwardRate.PLATINUM_CARRY": {
-			"SIMM": null,
-			"FRTB_SA": null
-		},
-		"InflationRate.INFL": {
-			"SIMM": {
-				"RiskType": "Risk_Inflation",
-				"Qualifier": "USD"
-			},
-			"FRTB_SA": null
-		},
-		"PriceIndex.INFL": {
-			"SIMM": null,
-			"FRTB_SA": null
-		}
-	}
+ "SACCR": {
+  "Asset_Class": {
+   "SwapInterestDeal": "IR",
+   "SwaptionDeal": "IR",
+   "CapDeal": "IR",
+   "YieldInflationCashflowListDeal": "IR",
+   "FXOptionDeal": "FX",
+   "FXExtendableForwardDeal": "FX",
+   "DealDefaultSwap": "Credit",
+   "QEDI_CustomAutoCallSwap": "Equity",
+   "EquitySwapLeg": "Equity",
+   "EquityForwardDeal": "Equity",
+   "CommodityForwardDeal": "Commodity",
+   "CommodityFutureDeal": "Commodity",
+   "FloatingEnergyDeal": "Commodity",
+   "EnergySingleOption": "Commodity"
+  }
+ },
+ "Factors": {
+  "InterestRate.USD-OIS": {
+   "SIMM": {
+    "RiskType": "Risk_IRCurve",
+    "Qualifier": "USD",
+    "Bucket": "1",
+    "Label2": "OIS"
+   },
+   "FRTB_SA": null
+  },
+  "InterestRate.ZAR-JIBAR": {
+   "SIMM": {
+    "RiskType": "Risk_IRCurve",
+    "Qualifier": "ZAR",
+    "Bucket": "3",
+    "Label2": "Libor3m"
+   },
+   "FRTB_SA": null
+  },
+  "InterestRate.ZAR-JIBAR.ZAR-JIBAR+50BP": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "FxRate.USD": {
+   "SIMM": {
+    "RiskType": "Risk_FX",
+    "Qualifier": "USD"
+   },
+   "FRTB_SA": null
+  },
+  "FxRate.ZAR": {
+   "SIMM": {
+    "RiskType": "Risk_FX",
+    "Qualifier": "ZAR"
+   },
+   "FRTB_SA": null
+  },
+  "FXVol.USD.ZAR": {
+   "SIMM": {
+    "RiskType": "Risk_FXVol",
+    "Qualifier": "USDZAR"
+   },
+   "FRTB_SA": null
+  },
+  "EquityPrice.EQ": {
+   "SIMM": {
+    "RiskType": "Risk_Equity",
+    "Qualifier": "EQ",
+    "Bucket": "11"
+   },
+   "FRTB_SA": null
+  },
+  "DividendRate.EQ": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "EquityPrice.EQ2": {
+   "SIMM": {
+    "RiskType": "Risk_Equity",
+    "Qualifier": "EQ2",
+    "Bucket": "11"
+   },
+   "FRTB_SA": null
+  },
+  "DividendRate.EQ2": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "EquityPriceVol.EQ2": {
+   "SIMM": {
+    "RiskType": "Risk_EquityVol",
+    "Qualifier": "EQ2",
+    "Bucket": "11"
+   },
+   "FRTB_SA": null
+  },
+  "EquityPriceVol.EQ": {
+   "SIMM": {
+    "RiskType": "Risk_EquityVol",
+    "Qualifier": "EQ",
+    "Bucket": "11"
+   },
+   "FRTB_SA": null
+  },
+  "Correlation.EquityPrice.EQ/FxRate.USD.ZAR": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "InterestYieldVol.USD-OIS": {
+   "SIMM": {
+    "RiskType": "Risk_IRVol",
+    "Qualifier": "USD"
+   },
+   "FRTB_SA": null
+  },
+  "InterestRateVol.USD-OIS": {
+   "SIMM": {
+    "RiskType": "Risk_IRVol",
+    "Qualifier": "USD"
+   },
+   "FRTB_SA": null
+  },
+  "InterestRate.USD": {
+   "SIMM": {
+    "RiskType": "Risk_IRCurve",
+    "Qualifier": "USD",
+    "Bucket": "1",
+    "Label2": "OIS"
+   },
+   "FRTB_SA": null
+  },
+  "SurvivalProb.ISSUER": {
+   "SIMM": {
+    "RiskType": "Risk_CreditQ",
+    "Qualifier": "ISSUER",
+    "Bucket": "3"
+   },
+   "FRTB_SA": null,
+   "SACCR": {
+    "Rating": "BBB"
+   }
+  },
+  "CommodityPrice.METAL": {
+   "SIMM": {
+    "RiskType": "Risk_Commodity",
+    "Qualifier": "METAL",
+    "Bucket": "11"
+   },
+   "FRTB_SA": null
+  },
+  "ForwardPrice.METAL": {
+   "SIMM": {
+    "RiskType": "Risk_Commodity",
+    "Qualifier": "METAL",
+    "Bucket": "11"
+   },
+   "FRTB_SA": null
+  },
+  "ForwardRate.METAL_CARRY": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "ReferencePrice.METAL": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "ForwardPrice.FUEL": {
+   "SIMM": {
+    "RiskType": "Risk_Commodity",
+    "Qualifier": "FUEL",
+    "Bucket": "2"
+   },
+   "FRTB_SA": null
+  },
+  "ReferencePrice.FUEL": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "ForwardPriceSample.FUEL": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "CommodityPriceVol.FUEL": {
+   "SIMM": {
+    "RiskType": "Risk_CommodityVol",
+    "Qualifier": "FUEL",
+    "Bucket": "2"
+   },
+   "FRTB_SA": null
+  },
+  "CommodityPrice.LBMA_AM": {
+   "SIMM": {
+    "RiskType": "Risk_Commodity",
+    "Qualifier": "PLATINUM",
+    "Bucket": "12"
+   },
+   "FRTB_SA": null
+  },
+  "ObservedBasis.LBMA_AM.CME": {
+   "SIMM": {
+    "RiskType": "Risk_Commodity",
+    "Qualifier": "PLATINUM",
+    "Bucket": "12"
+   },
+   "FRTB_SA": null
+  },
+  "ObservedBasis.LBMA_AM.PM": {
+   "SIMM": {
+    "RiskType": "Risk_Commodity",
+    "Qualifier": "PLATINUM",
+    "Bucket": "12"
+   },
+   "FRTB_SA": null
+  },
+  "ObservedBasis.LBMA_AM.PM.CME": {
+   "SIMM": {
+    "RiskType": "Risk_Commodity",
+    "Qualifier": "PLATINUM",
+    "Bucket": "12"
+   },
+   "FRTB_SA": null
+  },
+  "ForwardRate.PLATINUM_CARRY": {
+   "SIMM": null,
+   "FRTB_SA": null
+  },
+  "InflationRate.INFL": {
+   "SIMM": {
+    "RiskType": "Risk_Inflation",
+    "Qualifier": "USD"
+   },
+   "FRTB_SA": null
+  },
+  "PriceIndex.INFL": {
+   "SIMM": null,
+   "FRTB_SA": null
+  }
+ }
 }

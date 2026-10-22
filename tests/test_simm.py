@@ -1180,7 +1180,6 @@ def test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_o
     """
     with open(MAPPING, 'rt', encoding='utf-8') as f:
         mapping = json.load(f)
-    mapping['Product_Class']['Instruments']['FixedCashflowDeal'] = 'RatesFX'
     mapping['Factors'].update({
         'InterestRate.EUR': {'SIMM': {'RiskType': 'Risk_IRCurve', 'Qualifier': 'EUR',
                                       'Bucket': '1', 'Label2': 'OIS'}},
@@ -1565,6 +1564,50 @@ def test_the_batched_run_sharded_equals_the_serial_run_to_the_bit():
     serial, sharded = (holding(calculation, COMMODITY_BOOK, extra=COMMODITIES).run_job()[1][
         'Results'] for calculation in ({}, {'Workers': 2, 'Batch_Size': 1}))
     identical(sharded, serial)
+
+
+def test_a_trades_product_class_is_its_walks_or_its_own_statement(serial):
+    """A TRADE'S PRODUCT CLASS IS READ OFF ITS WALK. The one class among Credit, Equity and
+    Commodity a trade's factors are of is its product class, RatesFX where they are of none, every
+    trade reading its curves and currencies: the swap and the FX option RatesFX, the default swap
+    Credit beside the curve it discounts on, the commodity book Commodity, the basis future on the
+    platinum chain's CME level among it, the two autocalls Equity. A structure holding an equity
+    call and a metal forward reads two classes and is refused by name until it states its
+    `Product_Class`, which then classes its rows; a class the methodology does not name is refused
+    naming the four.
+
+    Killing mutations: RatesFX counted among a trade's classes - the default swap refused as a
+    hybrid of Credit and RatesFX; the statement read whatever the walk - the hybrid classed Equity
+    with none stated, 'Bonds' accepted; the walk's first class taken for a hybrid - the structure
+    classed Commodity with no statement, no refusal.
+    """
+    classes = dict(zip(*(serial[1]['Results']['Trades'][column] for column in ('TradeID', 'ProductClass'))))
+    assert classes == {'SWAP': 'RatesFX', 'FXO': 'RatesFX'}
+    sold = default_swap(credit.block('Par_Spread'))[1]['Results']['Trades']
+    assert set(sold['ProductClass']) == {'Credit'}
+    metals = holding({}, COMMODITY_BOOK, extra=COMMODITIES).run_job()[1]['Results']['Trades']
+    assert set(metals['ProductClass']) == {'Commodity'} and 'PLAT' in set(metals['TradeID'])
+    autocalls = world({'MCMC_Simulations': 256}, extra=INDICES, deals=AUTOCALLS,
+                      book={'NS': ('AC1', 'AC2')}).run_job()[1]['Results']['Trades']
+    assert set(autocalls['ProductClass']) == {'Equity'}
+    # a structure holding the note's equity call and a sold metal forward, factors of two classes
+    HYBRID = {'Instrument': {'.Deal': {'Object': 'StructuredDeal', 'Reference': 'HYB',
+                                       'Currency': 'USD'}},
+              'Children': [NOTE['Children'][1], overnight('METAL_FWD', Buy_Sell='Sell')]}
+    market = dict(INDEX, **COMMODITIES)
+    with pytest.raises(ValueError, match='HYB reads factors of the Commodity and Equity classes') \
+            as refusal:
+        holding({}, [HYBRID], extra=market).run_job()
+    assert 'state its Product_Class, one of Commodity, Credit, Equity, RatesFX' in str(refusal.value)
+    stated = {'Instrument': {'.Deal': dict(HYBRID['Instrument']['.Deal'], Product_Class='Equity')},
+              'Children': HYBRID['Children']}
+    output = holding({}, [stated], extra=market).run_job()[1]['Results']
+    assert set(output['Trades']['ProductClass']) == {'Equity'}
+    assert set(output['CRIF']['ProductClass']) == {'Equity'} and len(output['CRIF']) > 1
+    bonds = {'Instrument': {'.Deal': dict(HYBRID['Instrument']['.Deal'], Product_Class='Bonds')},
+             'Children': HYBRID['Children']}
+    with pytest.raises(ValueError, match='and states Bonds - state its Product_Class'):
+        holding({}, [bonds], extra=market).run_job()
 
 
 def test_an_autocall_a_past_print_called_writes_no_rows():
@@ -2016,8 +2059,7 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     with open(PARAMETERS, 'rt', encoding='utf-8') as f:
         parameters = json.load(f)
     parameters['horizons']['Horizon_10d']['ir']['ccy']['Weights']['default'] = 'Low'
-    stated = {'Product_Class': {'Instruments': {}, 'Structures': {}},
-              'Factors': {'FXVol.USD.ZAR': module['Factors']['FXVol.USD.ZAR']}}
+    stated = {'Factors': {'FXVol.USD.ZAR': module['Factors']['FXVol.USD.ZAR']}}
     for name, content in (('mapping.json', stated), ('parameters.json', parameters)):
         with open(tmp_path / name, 'wt', encoding='utf-8') as f:
             json.dump(content, f)
@@ -2114,12 +2156,7 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
                 if name not in unpinned | unread}
     expected['InterestRate.ZAR-JIBAR'] = dict(expected['InterestRate.ZAR-JIBAR'], Bucket='2')
     assert {name: entry['SIMM'] for name, entry in completed['Factors'].items()} == expected
-    assert completed['Product_Class'] == {
-        'Instruments': {'SwapInterestDeal': 'RatesFX', 'FXOptionDeal': 'RatesFX',
-                        'DealDefaultSwap': 'Credit', 'EnergySingleOption': 'Commodity',
-                        'CommodityFutureDeal': 'Commodity',
-                        'YieldInflationCashflowListDeal': 'RatesFX'},
-        'Structures': {'PAIR': 'Equity', 'SWPT': 'RatesFX'}}
+    assert set(completed) == {'Factors'}
     notes = pd.read_csv(output / 'MAPPING_{}.txt'.format(date), sep='\t', keep_default_na=False)
     outcomes = {outcome: set(found['Name']) for outcome, found in notes.groupby('Outcome')}
     assert outcomes['unpinned'] == unpinned and outcomes['disagrees'] == {'FXVol.USD.ZAR'}

@@ -1133,7 +1133,11 @@ ADMIN = Group('Admin', 'Admin', [
                   'and positive when the desk earns it, a RECORD nothing is priced off'),
     F('Sales_Margin_Currency', 'Text', default='', convention=True,
       description='The currency Sales_Margin is stated in, which need not be one this deal '
-                  'settles or discounts in')
+                  'settles or discounts in'),
+    F('Product_Class', 'Text', default='', convention=True,
+      description='The ISDA SIMM product class, RatesFX, Credit, Equity or Commodity, of a trade '
+                  'whose factors are of more than one of Credit, Equity and Commodity, blank where '
+                  'they are of one or none, which the SIMM calculation reads off its walk')
 ])
 
 #: What a deal is priced in: the currency it settles and the curve it discounts on.

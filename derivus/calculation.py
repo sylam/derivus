@@ -4216,8 +4216,10 @@ class SIMM(NettingSetCalculation):
     node of its other two columns (`Factor3D.augmented`), so a swaption's or a caplet's vega lands
     on its own expiry, the underlying tenor summed over, and a rate vertex moves each vol of its
     slice a percent of itself, its row ISDA's vol-weighted vega. Where the rows land - risk type,
-    qualifier, bucket, labels - and a trade's product class are the bank's `Mapping`, held to
-    `utils.FactorRiskClass`; the rate and vol vertices are the regime's `Parameters`, the credit
+    qualifier, bucket, labels - is the bank's `Mapping`, held to `utils.FactorRiskClass`; a trade's
+    product class is read off its walk, the one class among Credit, Equity and Commodity its
+    factors are of, RatesFX where they are of none, and its own `Product_Class` where they are of
+    more than one (`product_class`); the rate and vol vertices are the regime's `Parameters`, the credit
     vertices the methodology's; the regimes margin is posted and collected under are the
     agreement's own terms, declared on the netting set. A shift other than ISDA's is scaled to it.
 
@@ -4256,6 +4258,10 @@ class SIMM(NettingSetCalculation):
     #: The vertices a credit spread's rows land on, the methodology's: the parameters file weighs
     #: credit by bucket and names none.
     CREDIT_VERTICES = ('1y', '2y', '3y', '5y', '10y')
+    #: ISDA's product class of each risk class of the engine's; a cross-class factor rides the
+    #: factor it is read beside and names none.
+    PRODUCT_CLASSES = {'InterestRate': 'RatesFX', 'FX': 'RatesFX', 'Credit': 'Credit',
+                       'Equity': 'Equity', 'Commodity': 'Commodity'}
     OUTRIGHTS = ('FXForwardDeal',)
     VOL_PILLARS = {'Skew': ('ATM_Vol', 0), 'Malz': ('Surface', 1), 'Explicit': ('Surface', 1),
                    'SVI': ('a', 0)}
@@ -4303,8 +4309,8 @@ class SIMM(NettingSetCalculation):
         F('Currency', 'Text', default=REQUIRED,
           description='The calculation currency the CRIF amounts are in'),
         F('Mapping', 'Text', default=REQUIRED,
-          description='Path to the regime mapping: per price factor its SIMM coordinates or null, '
-                      'per instrument type and per structure a product class'),
+          description='Path to the regime mapping: per price factor its SIMM coordinates, or null '
+                      'where ISDA names no risk factor for it'),
         F('Parameters', 'Text', default=REQUIRED,
           description='Path to the ISDA SIMM parameters file, whose interest-rate weights name the '
                       'vertices the rate and vol rows land on'),
@@ -4436,10 +4442,11 @@ class SIMM(NettingSetCalculation):
         with super(SIMM, self).prepared():
             try:
                 self.calibrate()
-                self.bumped = []
+                self.bumped, self.classes = [], []
                 for index, (agreement, node) in enumerate(self.trades):
-                    self.bumped.append(self.bumps(index))
-                    self.product_class(node)
+                    walk = self.walk(index)
+                    self.bumped.append(self.bumps(index, walk))
+                    self.classes.append(self.product_class(walk, node))
                     self.agreement(agreement['Instrument'].field.get('Reference'))
                 yield
             finally:
@@ -4520,18 +4527,26 @@ class SIMM(NettingSetCalculation):
                                  factor, stated['RiskType']))
         return dict({'Qualifier': '', 'Bucket': '', 'Label1': '', 'Label2': ''}, **stated)
 
-    def product_class(self, node):
-        """A booked trade's product class: a structure's - a trade booked with legs beneath it -
-        is declared on it, by its reference, and any other trade's by its instrument type."""
-        stated, field = self.mapping['Product_Class'], node['Instrument'].field
-        reference, kind = field.get('Reference'), field['Object']
-        found = stated['Structures'].get(reference) if node.get('Children') \
-            else stated['Instruments'].get(kind)
-        if found is None:
-            raise ValueError('SIMM: the mapping states no product class for {} {} - a structure '
-                             'declares its own under Structures, by reference, and any other trade '
-                             'its instrument type\'s under Instruments'.format(kind, reference))
-        return found
+    def product_class(self, walk, node):
+        """A trade's product class off the factors its `walk` reads (`PRODUCT_CLASSES`): the one
+        class among Credit, Equity and Commodity they are of, RatesFX where they are of none, its
+        curves and currencies being every trade's, or where they are of more than one the
+        `Product_Class` the trade states, refused by name where it states none or one the
+        methodology does not name."""
+        field = node['Instrument'].field
+        classes = sorted({self.PRODUCT_CLASSES[utils.FactorRiskClass[kind]] for kind in {
+            utils.check_rate_name(factor)[0] for factor in walk}
+            if utils.FactorRiskClass[kind] in self.PRODUCT_CLASSES} - {'RatesFX'})
+        if len(classes) < 2:
+            return classes[0] if classes else 'RatesFX'
+        stated = field['Product_Class']
+        if stated not in set(self.PRODUCT_CLASSES.values()):
+            raise ValueError('SIMM: trade {} reads factors of the {} classes{} - state its '
+                             'Product_Class, one of {}'.format(
+                                 field.get('Reference'), ' and '.join(classes),
+                                 ' and states {}'.format(stated) if stated else '',
+                                 ', '.join(sorted(set(self.PRODUCT_CLASSES.values())))))
+        return stated
 
     def agreement(self, reference):
         """What the CRIF carries of the agreement a trade sits under: the netting set's reference
@@ -4582,14 +4597,13 @@ class SIMM(NettingSetCalculation):
                 'configure its family'.format(reference, ', '.join(unquoted)))
         return universe['resolved']
 
-    def bumps(self, index):
+    def bumps(self, index, walk):
         """Every move ISDA defines a sensitivity of trade `index` by, in a fixed order: each
-        benchmark quote of every curve and survival block the walk stands on, then each other
+        benchmark quote of every curve and survival block its `walk` stands on, then each other
         mapped factor, the price factors of a commodity in one."""
         from . import bootstrappers
         from .bootstrappers import bootstrap_precedents, bootstrap_writers, quote_nodes
 
-        walk = self.walk(index)
         reference = self.trades[index][1]['Instrument'].field.get('Reference')
         prices, factors = self.config.params['Market Prices'], self.config.params['Price Factors']
         curves = bootstrappers.InterestRate
@@ -4951,7 +4965,7 @@ class SIMM(NettingSetCalculation):
                 rows[key] = rows.get(key, 0.0) + float(weight) * delta
         return {'TradeID': node['Instrument'].field.get('Reference'),
                 'NettingSet': agreement['Instrument'].field.get('Reference'),
-                'ProductClass': self.product_class(node),
+                'ProductClass': self.classes[index],
                 'Value': value, 'Moves': len(self.bumped[index]), 'Skipped': skipped,
                 'Rows': [key + (amount,) for key, amount in rows.items() if amount != 0.0]}
 

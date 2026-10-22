@@ -17,9 +17,10 @@ anything else, a factor the mapping leaves unstated among them, is set aside her
 again without it.
 
 The run reads the mapping a bank states in MAPPING, none unless named, completed off the CRIF's own
-rows (`derived_mapping`) for every factor a trade reads that it states nothing for and every
-product class it lacks: what it states is kept, a derivation that disagrees is listed, and a factor
-nothing pins is left unstated, so the run refuses its trades by name.
+rows (`derived_mapping`) for every factor a trade reads that it states nothing for: what it states
+is kept, a derivation that disagrees is listed, and a factor nothing pins is left unstated, so the
+run refuses its trades by name. The source's product class is written on each trade as its
+`Product_Class`, which the run reads where a trade's factors span more than one class.
 
 Written under the output folder (artifacts/simm_from_crif unless stated): SIMM_MAPPING_<date>.json,
 the completed mapping; MAPPING_<date>.txt, tab separated, every derivation, pin not made and
@@ -82,13 +83,16 @@ def agreed(stated, what):
     return value
 
 
-def translated(node):
+def translated(node, product_class=None):
     """`node` and what is under it as the engine reads them: the extract's one translation, an
-    EquityBinaryOption stating its cash amount as `Cash_Payoff`, which states it as `Payoff`."""
+    EquityBinaryOption stating its cash amount as `Cash_Payoff`, which states it as `Payoff`, and
+    the source's `product_class` written on `node` where one is given, a trade's own."""
     deal = node['Instrument']['.Deal']
     if deal['Object'] == 'EquityBinaryOption' and 'Cash_Payoff' in deal and 'Payoff' not in deal:
         deal = dict({key: value for key, value in deal.items() if key != 'Cash_Payoff'},
                     Payoff=deal['Cash_Payoff'])
+    if product_class is not None:
+        deal = dict(deal, Product_Class=product_class)
     return dict(node, Instrument=dict(node['Instrument'], **{'.Deal': deal}), **(
         {'Children': [translated(child) for child in node['Children']]} if 'Children' in node else {}))
 
@@ -130,9 +134,11 @@ def book(source, documents, calculation, calendar, market_file):
         post, collect = agreed({trade: tuple(stated_terms.loc[trade, ['PostRegulations',
                                                                        'CollectRegulations']])
                                 for trade in held}, 'the regulations of ' + counterparty)
+        # the source's product class on each trade, read where the engine's walk spans classes
         children.append({'Instrument': {'.Deal': dict(
             agreement, Reference=counterparty, Post_Regulations=post, Collect_Regulations=collect)},
-            'Children': [translated(child) for node in held.values() for child in node['Children']]})
+            'Children': [translated(child, stated_terms.loc[trade, 'ProductClass'])
+                         for trade, node in held.items() for child in node['Children']]})
     return {'Calc': {'Calculation': calculation,
                      'Deals': {'Reference': 'simm_from_crif', 'Deals': {'Children': children}},
                      'MergeMarketData': {'MarketDataFile': market_file,
@@ -201,8 +207,7 @@ def disagrees(stated, derived):
 
 def derived_mapping(source, documents, reads, factors, mapping, parameters):
     """`(completed, notes)`: `mapping` completed off the `source` CRIF's own rows for every factor
-    the trades' `reads`, `{trade: [factor]}`, name that it states nothing for and every product
-    class of the trades of `documents` it lacks, `factors` their `Price Factors` and `parameters`
+    the trades' `reads`, `{trade: [factor]}`, name that it states nothing for, `factors` their `Price Factors` and `parameters`
     the ISDA parameters file; `notes` the `NOTE` lines of each derivation, pin not made and
     disagreement with `mapping`, whose own statements are kept.
 
@@ -221,8 +226,7 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
     of its currency pin it, and left unstated where none does, a rate row carrying no sub-curve
     being no row; a child of a curve that is a basis spread is Risk_XCcyBasis in its currency and
     any other rides its parent, null; a rate vol surface is Risk_IRVol in the currency of the curve
-    it is named for; an FX rate is Risk_FX. A structure's product class is its trade's rows', by
-    reference, and another trade's by instrument type where every trade of the type carries one."""
+    it is named for; an FX rate is Risk_FX."""
     ir = next(iter(parameters['horizons'].values()))['ir']
     groups, buckets = ir['ccy']['Weights'], {group: bucket for bucket, group in ir[
         'bucket_vol_map'].items()}
@@ -314,19 +318,6 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
         kind, derived, why = derivation(factor)
         if settled(factor, stated, kind, derived, why):
             completed['Factors'][factor] = {'SIMM': derived}
-    stated_terms, classes = terms(source), {}
-    for trade, document in documents.items():
-        for node in document['Calc']['Deals']['Deals']['Children'][0]['Children']:
-            deal = node['Instrument']['.Deal']
-            classes.setdefault(('Structures', deal['Reference'], 'structure') if node.get(
-                'Children') else ('Instruments', deal['Object'], 'instrument'), {}).setdefault(
-                stated_terms.loc[trade, 'ProductClass'], []).append(trade)
-    for (section, key, kind), held in classes.items():
-        product = next(iter(held)) if len(held) == 1 else NOTHING
-        if settled('{}.{}'.format(section, key), mapping['Product_Class'][section].get(
-                key, NOTHING), kind, product, '; '.join('{} carried by {}'.format(
-                    carried, ', '.join(carriers)) for carried, carriers in held.items())):
-            completed['Product_Class'][section][key] = product
     return completed, notes
 
 
@@ -415,7 +406,7 @@ def main(argv=None):
     for trade, path in paths.items():
         with open(path, 'rt', encoding='utf-8') as f:
             documents[trade] = json.load(f)
-    stated = {'Product_Class': {'Instruments': {}, 'Structures': {}}, 'Factors': {}}
+    stated = {'Factors': {}}
     if args.mapping:
         with open(args.mapping, 'rt', encoding='utf-8') as f:
             stated = json.load(f)
