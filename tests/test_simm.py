@@ -1567,19 +1567,20 @@ def test_the_batched_run_sharded_equals_the_serial_run_to_the_bit():
 
 
 def test_a_trades_product_class_is_its_walks_or_its_own_statement(serial):
-    """A TRADE'S PRODUCT CLASS IS READ OFF ITS WALK. The one class among Credit, Equity and
-    Commodity a trade's factors are of is its product class, RatesFX where they are of none, every
-    trade reading its curves and currencies: the swap and the FX option RatesFX, the default swap
-    Credit beside the curve it discounts on, the commodity book Commodity, the basis future on the
-    platinum chain's CME level among it, the two autocalls Equity. A structure holding an equity
-    call and a metal forward reads two classes and is refused by name until it states its
-    `Product_Class`, which then classes its rows; a class the methodology does not name is refused
-    naming the four.
+    """A TRADE'S PRODUCT CLASS IS WHAT IT STATES, ELSE ITS WALK'S. The one class among Credit,
+    Equity and Commodity a trade's factors are of is its product class, RatesFX where they are of
+    none, every trade reading its curves and currencies: the swap and the FX option RatesFX, the
+    default swap Credit beside the curve it discounts on, the commodity book Commodity, the basis
+    future on the platinum chain's CME level among it, the two autocalls Equity. A structure
+    holding an equity call and a metal forward reads two classes and is refused by name until it
+    states its `Product_Class`, which then classes its rows; a metal forward stating Equity, the
+    premium leg of an equity structure booked beside it, is Equity; a class the methodology does
+    not name is refused naming the four.
 
     Killing mutations: RatesFX counted among a trade's classes - the default swap refused as a
-    hybrid of Credit and RatesFX; the statement read whatever the walk - the hybrid classed Equity
-    with none stated, 'Bonds' accepted; the walk's first class taken for a hybrid - the structure
-    classed Commodity with no statement, no refusal.
+    hybrid of Credit and RatesFX; the statement read only where the walk spans classes - the
+    stated metal forward Commodity; the statement unchecked - 'Bonds' accepted; the walk's first
+    class taken for a hybrid - the structure classed Commodity with no statement, no refusal.
     """
     classes = dict(zip(*(serial[1]['Results']['Trades'][column] for column in ('TradeID', 'ProductClass'))))
     assert classes == {'SWAP': 'RatesFX', 'FXO': 'RatesFX'}
@@ -1604,9 +1605,13 @@ def test_a_trades_product_class_is_its_walks_or_its_own_statement(serial):
     output = holding({}, [stated], extra=market).run_job()[1]['Results']
     assert set(output['Trades']['ProductClass']) == {'Equity'}
     assert set(output['CRIF']['ProductClass']) == {'Equity'} and len(output['CRIF']) > 1
+    leg = overnight('METAL_FWD', Buy_Sell='Sell', Product_Class='Equity')
+    assert set(holding({}, [leg], extra=COMMODITIES).run_job()[1]['Results']['Trades'][
+        'ProductClass']) == {'Equity'}
     bonds = {'Instrument': {'.Deal': dict(HYBRID['Instrument']['.Deal'], Product_Class='Bonds')},
              'Children': HYBRID['Children']}
-    with pytest.raises(ValueError, match='and states Bonds - state its Product_Class'):
+    with pytest.raises(ValueError, match='HYB states the product class Bonds, and the methodology '
+                                         'names Commodity, Credit, Equity, RatesFX'):
         holding({}, [bonds], extra=market).run_job()
 
 

@@ -1135,9 +1135,9 @@ ADMIN = Group('Admin', 'Admin', [
       description='The currency Sales_Margin is stated in, which need not be one this deal '
                   'settles or discounts in'),
     F('Product_Class', 'Text', default='', convention=True,
-      description='The ISDA SIMM product class, RatesFX, Credit, Equity or Commodity, of a trade '
-                  'whose factors are of more than one of Credit, Equity and Commodity, blank where '
-                  'they are of one or none, which the SIMM calculation reads off its walk')
+      description='The ISDA SIMM product class this trade is margined under, RatesFX, Credit, '
+                  'Equity or Commodity; blank is the one class its factors are of, which the SIMM '
+                  'calculation reads off its walk, and a trade whose factors span two states one')
 ])
 
 #: What a deal is priced in: the currency it settles and the curve it discounts on.

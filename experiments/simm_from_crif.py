@@ -240,7 +240,7 @@ def derived_mapping(source, documents, reads, factors, mapping, parameters):
         **{factor: (('Risk_IRCurve',), factors[factor]['Currency'], ('Label2',))
            for factor, kind in kinds.items() if kind[0] == 'InterestRate' and len(kind) == 2}))
     basket = baskets(source, reads, found)
-    completed, notes = copy.deepcopy(mapping), []
+    completed, notes = {'Factors': copy.deepcopy(mapping['Factors'])}, []
 
     def agreement(factor):
         """The coordinates `factor`'s readers pin it to and who pins it, or None and why not."""

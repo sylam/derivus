@@ -4217,9 +4217,9 @@ class SIMM(NettingSetCalculation):
     on its own expiry, the underlying tenor summed over, and a rate vertex moves each vol of its
     slice a percent of itself, its row ISDA's vol-weighted vega. Where the rows land - risk type,
     qualifier, bucket, labels - is the bank's `Mapping`, held to `utils.FactorRiskClass`; a trade's
-    product class is read off its walk, the one class among Credit, Equity and Commodity its
-    factors are of, RatesFX where they are of none, and its own `Product_Class` where they are of
-    more than one (`product_class`); the rate and vol vertices are the regime's `Parameters`, the credit
+    product class is the `Product_Class` it states, else read off its walk, the one class among
+    Credit, Equity and Commodity its factors are of, RatesFX where they are of none, a walk of
+    more than one refused by name (`product_class`); the rate and vol vertices are the regime's `Parameters`, the credit
     vertices the methodology's; the regimes margin is posted and collected under are the
     agreement's own terms, declared on the netting set. A shift other than ISDA's is scaled to it.
 
@@ -4528,25 +4528,26 @@ class SIMM(NettingSetCalculation):
         return dict({'Qualifier': '', 'Bucket': '', 'Label1': '', 'Label2': ''}, **stated)
 
     def product_class(self, walk, node):
-        """A trade's product class off the factors its `walk` reads (`PRODUCT_CLASSES`): the one
+        """A trade's product class: the `Product_Class` it states, one of the methodology's four
+        or refused by name, else off the factors its `walk` reads (`PRODUCT_CLASSES`), the one
         class among Credit, Equity and Commodity they are of, RatesFX where they are of none, its
-        curves and currencies being every trade's, or where they are of more than one the
-        `Product_Class` the trade states, refused by name where it states none or one the
-        methodology does not name."""
-        field = node['Instrument'].field
+        curves and currencies being every trade's, and refused by name where they are of more than
+        one."""
+        field, named = node['Instrument'].field, sorted(set(self.PRODUCT_CLASSES.values()))
+        stated = field['Product_Class']
+        if stated:
+            if stated not in named:
+                raise ValueError('SIMM: trade {} states the product class {}, and the methodology '
+                                 'names {}'.format(field.get('Reference'), stated, ', '.join(named)))
+            return stated
         classes = sorted({self.PRODUCT_CLASSES[utils.FactorRiskClass[kind]] for kind in {
             utils.check_rate_name(factor)[0] for factor in walk}
             if utils.FactorRiskClass[kind] in self.PRODUCT_CLASSES} - {'RatesFX'})
-        if len(classes) < 2:
-            return classes[0] if classes else 'RatesFX'
-        stated = field['Product_Class']
-        if stated not in set(self.PRODUCT_CLASSES.values()):
-            raise ValueError('SIMM: trade {} reads factors of the {} classes{} - state its '
+        if len(classes) > 1:
+            raise ValueError('SIMM: trade {} reads factors of the {} classes - state its '
                              'Product_Class, one of {}'.format(
-                                 field.get('Reference'), ' and '.join(classes),
-                                 ' and states {}'.format(stated) if stated else '',
-                                 ', '.join(sorted(set(self.PRODUCT_CLASSES.values())))))
-        return stated
+                                 field.get('Reference'), ' and '.join(classes), ', '.join(named)))
+        return classes[0] if classes else 'RatesFX'
 
     def agreement(self, reference):
         """What the CRIF carries of the agreement a trade sits under: the netting set's reference
