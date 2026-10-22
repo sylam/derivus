@@ -5662,7 +5662,7 @@ def active_bounds(labels, x, lower, upper, g):
         lower[i] if g[i] > 0.0 else upper[i], g[i]) for i in np.flatnonzero(held)]
 
 
-def damped_newton(residual, theta, n_iter, tol, halvings):
+def damped_newton(residual, theta, n_iter, tol, halvings, standing=None):
     """Solve `residual(theta) = 0` for a `{Factor: tensor}` of curve nodes, in float64.
 
     The curves are flattened into ONE system, so a projection curve solved against a discount curve
@@ -5673,6 +5673,11 @@ def damped_newton(residual, theta, n_iter, tol, halvings):
     Damping is a backtracking line search on the residual's max-norm: full step first, halved until
     it decreases. Near the root Newton takes the full step.
 
+    Returns the nodes and the Newton steps taken. `standing`, the curve standing on the solve's
+    knots flat in `theta`'s order (`bootstrappers.InterestRate.seed_factor`), is returned as it
+    stands in no step where the convergence test passes at it; otherwise the solve runs from
+    `theta` as it does with none.
+
     `n_iter`, `tol` and `halvings` are declared fields of the block being solved.
     """
     keys = list(theta)
@@ -5681,18 +5686,28 @@ def damped_newton(residual, theta, n_iter, tol, halvings):
     def unflatten(flat):
         return dict(zip(keys, flat.split(sizes)))
 
-    x = torch.cat([theta[key].detach() for key in keys])
-    for iteration in range(n_iter):
+    def newton(x):
+        """`(x, residual, step)` at `x`, the Newton step off a Jacobian of a backward per row."""
         x = x.detach().requires_grad_(True)
         f = residual(unflatten(x))
         jacobian = torch.stack([torch.autograd.grad(f[i], x, retain_graph=True)[0]
                                 for i in range(f.numel())])
-        step = torch.linalg.solve(jacobian, f.detach())
+        return x, f, torch.linalg.solve(jacobian, f.detach())
+
+    x = torch.cat([theta[key].detach() for key in keys])
+    if standing is not None:
+        written, _, step = newton(torch.tensor(standing, dtype=x.dtype, device=x.device))
+        # taken only where it is already the root, never as a start: a solve that iterates is
+        # the cold one, so it is a function of its quotes whatever stood before it
+        if step.abs().max() <= tol:
+            return unflatten(written.detach()), 0
+    for iteration in range(n_iter):
+        x, f, step = newton(x)
 
         # convergence is tested on the step BEFORE the line search: a step this small is inside the
         # linear solve's own rounding, and a residual at noise level cannot decrease again
         if step.abs().max() <= tol:
-            return unflatten((x - step).detach())
+            return unflatten((x - step).detach()), iteration + 1
 
         norm = f.detach().abs().max()
         damping = 1.0
@@ -5784,12 +5799,15 @@ class CalibrationSolve(torch.autograd.Function):
     further input `c`, its cotangent `-(dF/dc)^T w`, so autograd carries
     `dtheta/dq_c = -(dF/dtheta)^-1 (dF/dc)(dc/dq_c)` on through the solve that wrote `c`: the two
     solves in turn, not one system.
+
+    The iterations the solve took are left on `benchmarks.iterations` for the family's report.
     """
 
     @staticmethod
-    def forward(ctx, benchmarks, seed, n_iter, tol, halvings, quotes, *connected):
+    def forward(ctx, benchmarks, seed, standing, n_iter, tol, halvings, quotes, *connected):
         with torch.enable_grad():
-            theta = damped_newton(benchmarks, seed, n_iter, tol, halvings)
+            theta, benchmarks.iterations = damped_newton(
+                benchmarks, seed, n_iter, tol, halvings, standing)
         ctx.benchmarks, ctx.theta = benchmarks, theta
         return torch.cat([theta[factor] for factor in benchmarks.solve_for])
 
@@ -5798,7 +5816,7 @@ class CalibrationSolve(torch.autograd.Function):
         with torch.enable_grad():
             _, d_theta, *d_inputs = residual_jacobians(ctx.benchmarks, ctx.theta)
             w = torch.linalg.solve(d_theta.t(), cotangent)
-        return (None,) * 5 + tuple(-(d_input.t() @ w) for d_input in d_inputs)
+        return (None,) * 6 + tuple(-(d_input.t() @ w) for d_input in d_inputs)
 
 
 class CalibrationArtifact(object):

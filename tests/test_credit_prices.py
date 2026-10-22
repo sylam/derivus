@@ -203,6 +203,22 @@ def test_the_bootstrap_recovers_the_survival_curve_its_quotes_came_from(quote_ty
         assert np.abs(solved[1:, 1] / spreads[1:, 1] - 1.0).max() < 1e-13
 
 
+def test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration(caplog):
+    """A CURVE QUOTED OFF ITSELF IS ITS OWN ROOT. The world's survival curve standing in `Price
+    Factors` beside its par spreads bootstraps back to itself to the bit in no Newton iteration,
+    the curve written on the solve's knots tested before any step as the curve family tests its
+    own; from the flat hazards the same quotes solve to within 1.1e-14 of it in four.
+
+    Killing mutations: the standing curve never tested - the curve 1.1e-14 off in four
+    iterations; a standing curve passing the test given its step - 1.1e-14 off in one.
+    """
+    with caplog.at_level(logging.INFO):
+        solved = curve(bootstrapped({BLOCK: block('Par_Spread')}, factors={CURVE: survival()}))
+    assert [value.hex() for value in solved.ravel()] == [
+        value.hex() for value in survival()['Curve'].array.ravel()]
+    assert rates_world.newton_steps(caplog.text) == [0], caplog.text
+
+
 def standard_model(factor):
     """`{tenor in years: par spread}` the ISDA standard model reads off `factor` - the credit Monte
     Carlo's `CDS_Tenors`, its counterparty the name, a CVA gradient asked for beside a cashflow."""

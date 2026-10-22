@@ -4931,6 +4931,18 @@ class BenchmarkInstruments(object):
             sum(leg.Instrument.generate(shared, self.time_grid, leg).reshape(()) for leg in legs)
             for legs in self.benchmarks])
 
+    def report(self, name, points, theta, began):
+        """Log the solve of `name` from the quotes `points` at the solved `theta`: the seconds since
+        `began`, the `iterations` `utils.CalibrationSolve` left and the largest residual, then each
+        quote's residual."""
+        residuals = self(utils.split_theta(self, theta.detach())).detach()
+        logging.info('{} bootstrapped from {} quotes in {:.2f} seconds and {} iterations, residual '
+                     '{:.3g}'.format(name, len(points), time.monotonic() - began, self.iterations,
+                                     float(residuals.abs().max())))
+        for point, residual in zip(points, residuals):
+            logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
+                point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
+
 
 def as_period(value):
     """A period stated as the wire string a declared default carries, or already decoded."""
@@ -5115,8 +5127,11 @@ class InterestRate(Construction):
          '| Stop | $\\lVert\\Delta\\rVert_\\infty\\le$ `Tol` (1e-13, in zero rate), tested BEFORE the line search |',
          '| Refusals | no decreasing step within `Damping_Halvings` (6) halvings, or `N_Iter` (50) iterations: both raise, and the bootstrap fails |',
          '',
-         'The log reports the largest absolute benchmark PV at the solution and each quote\'s repriced',
-         'PV.',
+         'A curve written in `Price Factors` on the knots is tested before any step and, where',
+         'it passes, returned as written in no iteration, so a curve quoted off itself is its own',
+         'root; where it does not, the solve runs from the par rates and never from it, so what',
+         'iterates is a function of the quotes alone. The log reports the Newton iterations, the',
+         'largest absolute benchmark PV at the solution and each quote\'s repriced PV.',
          '',
          '**Several curves.** Blocks are solved in dependency order: after every block building a',
          'curve their `Discount_Rate` names or their benchmark deals name (multi-curve construction,',
@@ -5275,6 +5290,18 @@ class InterestRate(Construction):
         return knots
 
     @staticmethod
+    def seed_factor(price_factors, factor, cold, held=0):
+        """Write `cold`, a curve family's factor on its cold seed, under `factor`, and give back
+        the values after the `held` knots of the factor it replaces where that one stood on the
+        seed's knots - the root the solve tests before it iterates (`utils.damped_newton`) - else
+        None."""
+        name = utils.check_tuple_name(factor)
+        standing = price_factors.get(name, {}).get('Curve')
+        price_factors[name] = cold
+        return standing.array[held:, 1] if standing is not None and np.array_equal(
+            standing.array[:, 0], cold['Curve'].array[:, 0]) else None
+
+    @staticmethod
     def benchmark_curves(block, market_price=None):
         """Every `InterestRate` curve this block's used benchmark deals NAME, read off each deal
         type's own `factor_fields` and recursing into `Children`.
@@ -5350,6 +5377,8 @@ class InterestRate(Construction):
         it always was - where a ride across one refuses (`solve_set`).
         """
         base_date = sys_params['Base_Date']
+        #: what stood on each curve's knots when this run first seeded it, the root its solve tests
+        self.standing = {}
         blocks = self.in_dependency_order(market_prices)
         ride = any(entry['instrument']['Quote_Propagation'] == 'Linear' for _, entry in blocks)
         groups = self.coupled_sets(blocks, price_factors, factor_interp, base_date, calendars) \
@@ -5364,8 +5393,9 @@ class InterestRate(Construction):
             self.solve_set(group, price_factors, factor_interp, base_date, calendars)
 
     def seed(self, market_price, block, price_factors, base_date, calendars):
-        """Write this block's par-rate seed curve into `Price Factors`, and give back what the solve
-        reads off it: `(curve factor, used quotes, deal nodes, discount rate)`.
+        """Write this block's par-rate seed curve into `Price Factors` (`seed_factor`), keeping
+        what stood there for the solve to test, and give back what the solve reads off it:
+        `(curve factor, used quotes, deal nodes, discount rate)`.
 
         Seeding comes first because the benchmark closure constructs the curve factor OUT of
         `Price Factors`; a par rate is within a few basis points of the zero rate at the same
@@ -5394,7 +5424,8 @@ class InterestRate(Construction):
             # factor stacks the two on the knot the tenor lands in and the solve reads both
             written.update({'Near_Interpolation': block['Near_Interpolation'],
                             'Near_Date': base_date + block['Near_Tenor']})
-        price_factors[utils.check_tuple_name(curve)] = written
+        # a coupled set is seeded twice in a run, and the second seeding sees the first's
+        self.standing.setdefault(curve, self.seed_factor(price_factors, curve, written))
         return curve, points, nodes, discount_rate
 
     def coupled_sets(self, blocks, price_factors, factor_interp, base_date, calendars):
@@ -5449,7 +5480,8 @@ class InterestRate(Construction):
         Jacobian that falls out is what `utils.calibration_jacobian` inverts in one go.
 
         The seed theta is read off the CONSTRUCTED factor, so it is aligned with the tenor grid the
-        pricers gather against whatever `get_tenor` made of the block. The solve goes through the
+        pricers gather against whatever `get_tenor` made of the block; the curves that stood on
+        every member's knots are tested as the root first. The solve goes through the
         implicit-function wrapper either way; with no quotes on the tape no edge is recorded.
 
         Solver knobs are declared per block and a set takes the STRICTEST of them.
@@ -5492,8 +5524,10 @@ class InterestRate(Construction):
                           for node in quote_nodes(block_points, discount_rate, 1.0)]
             if carry else None)
         # seed theta off the constructed factor - see the docstring on grid alignment
+        standing = [self.standing[curve] for curve in curves]
         theta = utils.CalibrationSolve.apply(
             benchmarks, benchmarks.written(),
+            None if any(nodes is None for nodes in standing) else np.concatenate(standing),
             max(int(block['N_Iter']) for _, block in members),
             min(float(block['Tol']) for _, block in members),
             max(int(block['Damping_Halvings']) for _, block in members),
@@ -5515,14 +5549,8 @@ class InterestRate(Construction):
         if all(propagate):
             self.published.append(
                 self.publish(members, factor_interp, base_date, benchmarks, theta.detach()))
-
-        residuals = benchmarks(utils.split_theta(benchmarks, theta.detach())).detach()
-        logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
-            ' + '.join(utils.check_tuple_name(curve) for curve in curves), len(points),
-            time.monotonic() - time_now, float(residuals.abs().max())))
-        for point, residual in zip(points, residuals):
-            logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
-                point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
+        benchmarks.report(' + '.join(utils.check_tuple_name(curve) for curve in curves), points,
+                          theta, time_now)
 
     @staticmethod
     def solved_curve(benchmarks, theta, factor):
@@ -5740,7 +5768,8 @@ class SurvivalProb(Construction):
          '**Solver.** The curve family\'s damped Newton in float64 on the host [@dennis1996], with',
          'its `N_Iter`, `Tol` and `Damping_Halvings` ([Interest Rates](interest_rates.md#interestrate)),',
          'seeded at each row\'s running spread $s_i$ as a flat hazard, $H_i=s_iT_i/(1-R)$, an upfront',
-         'adding its percent over the years it buys to the coupon. `Recovery_Rate` is the $R$ the',
+         'adding its percent over the years it buys to the coupon, a survival curve written on the',
+         'knots tested first as the curve family tests its own. `Recovery_Rate` is the $R$ the',
          'contracts are priced at, written onto the solved curve.',
          '',
          '**Quote derivatives.** At the root the implicit function theorem is exact',
@@ -5877,10 +5906,11 @@ class SurvivalProb(Construction):
                            price_factors, factor_interp, sys_params['Base_Date'], calendars)
 
     def solve(self, market_price, block, price_factors, factor_interp, base_date, calendars):
-        """Seed the curve as flat hazards at the knots, solve the knots after the anchor through
-        `utils.CalibrationSolve`, and write the curve with the block's recovery. Under
-        `Quote_Sensitivity` the solve reads a connected discount curve through its graph, so a curve
-        quote's derivative carries this curve's re-solve."""
+        """Seed the curve as flat hazards at the knots (`InterestRate.seed_factor`), solve the knots
+        after the anchor through `utils.CalibrationSolve`, the curve that stood there tested first,
+        and write the curve with the block's recovery. Under `Quote_Sensitivity` the solve reads a
+        connected discount curve through its graph, so a curve quote's derivative carries this
+        curve's re-solve."""
         factor = utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:])
         points = self.contracts(block, market_price, base_date)
         nodes = quote_nodes(points, block['Discount_Rate'])
@@ -5888,9 +5918,10 @@ class SurvivalProb(Construction):
                                         calendars)
         recovery = float(block['Recovery_Rate'])
         name = utils.check_tuple_name(factor)
-        price_factors[name] = {'Recovery_Rate': recovery, 'Curve': utils.Curve([], [(0.0, 0.0)] + [
-            (knot, self.running_spread(point, block, knot) * knot / (1.0 - recovery))
-            for point, knot in zip(points, knots)])}
+        standing = InterestRate.seed_factor(price_factors, factor, {
+            'Recovery_Rate': recovery, 'Curve': utils.Curve([], [(0.0, 0.0)] + [
+                (knot, self.running_spread(point, block, knot) * knot / (1.0 - recovery))
+                for point, knot in zip(points, knots)])}, held=1)
 
         carry = block['Quote_Sensitivity'] == 'Yes'
         time_now = time.monotonic()
@@ -5900,7 +5931,7 @@ class SurvivalProb(Construction):
             bumped_nodes=quote_nodes(points, block['Discount_Rate'], 1.0) if carry else None, held=1,
             connected=self.connected if carry else {})
         theta = utils.CalibrationSolve.apply(
-            benchmarks, benchmarks.written(), int(block['N_Iter']), float(block['Tol']),
+            benchmarks, benchmarks.written(), standing, int(block['N_Iter']), float(block['Tol']),
             int(block['Damping_Halvings']), benchmarks.quotes, *benchmarks.connected.values())
         solved = benchmarks.nodes(utils.split_theta(benchmarks, theta))[factor]
         price_factors[name]['Curve'] = utils.Curve([], list(zip(
@@ -5909,13 +5940,7 @@ class SurvivalProb(Construction):
             self.calibrated[factor] = solved
             self.quote_leaves[market_price] = ([point['Descriptor'] for point in points],
                                                benchmarks.quotes)
-
-        residuals = benchmarks(utils.split_theta(benchmarks, theta.detach())).detach()
-        logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
-            name, len(points), time.monotonic() - time_now, float(residuals.abs().max())))
-        for point, residual in zip(points, residuals):
-            logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
-                point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
+        benchmarks.report(name, points, theta, time_now)
 
 
 class InflationRate(Construction):
@@ -5963,11 +5988,12 @@ class InflationRate(Construction):
          '',
          '**Solver.** The curve family\'s damped Newton in float64 on the host [@dennis1996], with its',
          '`N_Iter`, `Tol` and `Damping_Halvings` ([Interest Rates](interest_rates.md#interestrate)),',
-         'seeded at each breakeven as a continuous rate, $\\log(1+b_i)$. Where the base reference is the',
-         'last print and the final reference reads one month at $\\tau$ from it, the root is the closed',
-         'form $r_I(\\tau)=T\\log(1+b)/\\tau$; an interpolated reference mixes two months and a base',
-         'reference off the last print scales the ratio, so the closed form is then a reading, not the',
-         'curve.',
+         'seeded at each breakeven as a continuous rate, $\\log(1+b_i)$, an inflation curve',
+         'written on the knots tested first as the curve family tests its own. Where the base',
+         'reference is the last print and the final reference reads one month at $\\tau$ from it,',
+         'the root is the closed form $r_I(\\tau)=T\\log(1+b)/\\tau$; an interpolated reference',
+         'mixes two months and a base reference off the last print scales the ratio, so the closed',
+         'form is then a reading, not the curve.',
          '',
          '**Quote derivatives.** At the root the implicit function theorem is exact',
          '[@christianson1998; @henrard2014], so `Quote_Sensitivity` reports `dV/dq` beside `dV/dθ` on',
@@ -6114,8 +6140,9 @@ class InflationRate(Construction):
                            price_factors, factor_interp, sys_params['Base_Date'], calendars)
 
     def solve(self, market_price, block, price_factors, factor_interp, base_date, calendars):
-        """Seed the curve at the breakevens as continuous rates on the knots, solve them through
-        `utils.CalibrationSolve`, and write the curve on the block's index and day count. Under
+        """Seed the curve at the breakevens as continuous rates on the knots
+        (`InterestRate.seed_factor`), solve them through `utils.CalibrationSolve`, the curve that
+        stood there tested first, and write the curve on the block's index and day count. Under
         `Quote_Sensitivity` the solve reads a connected discount curve through its graph."""
         factor = utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:])
         prints = price_factors.get(utils.check_tuple_name(utils.Factor(
@@ -6128,10 +6155,10 @@ class InflationRate(Construction):
         knots = self.live_knots(market_price, points, nodes, prints['Last_Period_Start'],
                                 block['Day_Count'])
         name = utils.check_tuple_name(factor)
-        price_factors[name] = {
+        standing = InterestRate.seed_factor(price_factors, factor, {
             'Price_Index': block['Price_Index'], 'Currency': block['Currency'],
             'Day_Count': block['Day_Count'], 'Curve': utils.Curve([], list(zip(knots, np.log1p(
-                [point['Quoted_Market_Value'] / 100.0 for point in points]))))}
+                [point['Quoted_Market_Value'] / 100.0 for point in points]))))})
 
         carry = block['Quote_Sensitivity'] == 'Yes'
         time_now = time.monotonic()
@@ -6141,20 +6168,14 @@ class InflationRate(Construction):
             bumped_nodes=quote_nodes(points, block['Discount_Rate'], 1.0) if carry else None,
             connected=self.connected if carry else {})
         theta = utils.CalibrationSolve.apply(
-            benchmarks, benchmarks.written(), int(block['N_Iter']), float(block['Tol']),
+            benchmarks, benchmarks.written(), standing, int(block['N_Iter']), float(block['Tol']),
             int(block['Damping_Halvings']), benchmarks.quotes, *benchmarks.connected.values())
         price_factors[name]['Curve'] = InterestRate.solved_curve(benchmarks, theta, factor)
         if carry:
             self.calibrated[factor] = theta
             self.quote_leaves[market_price] = ([point['Descriptor'] for point in points],
                                                benchmarks.quotes)
-
-        residuals = benchmarks(utils.split_theta(benchmarks, theta.detach())).detach()
-        logging.info('{} bootstrapped from {} quotes in {:.2f} seconds, residual {:.3g}'.format(
-            name, len(points), time.monotonic() - time_now, float(residuals.abs().max())))
-        for point, residual in zip(points, residuals):
-            logging.info('  {} at {:.4f} reprices to {:.3g}'.format(
-                point['Descriptor'], point['Quoted_Market_Value'], float(residual)))
+        benchmarks.report(name, points, theta, time_now)
 
 
 class FXVol(Construction):

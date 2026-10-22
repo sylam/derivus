@@ -96,12 +96,31 @@ evidence that a basin was found, so an implied calibration skips the search and 
 | Clewlow-Strickland | L-BFGS-B from `Seed` | from the factor, clipped into the boxes |
 | LogVar2FJ | the staged search | the joint polish alone ([below](#logvar2fj)) |
 | `FXVolPrices` | a refined grid | the [pinned grid](#fxvolprices) |
-| `InterestRatePrices` | the par rates | none: the par rates move with the tick, a previous θ\* does not |
-| `SurvivalProbPrices` | the quotes as flat hazards | none, for the curve family's reason |
-| `InflationRatePrices` | the breakevens as continuous rates | none, for the curve family's reason |
+| `InterestRatePrices` | the par rates | none; the written curve is returned where it is the root |
+| `SurvivalProbPrices` | the quotes as flat hazards | none, as the curve family |
+| `InflationRatePrices` | the breakevens as continuous rates | none, as the curve family |
 
 **Held by** `test_warm_starts.py::test_the_written_hull_white_factor_skips_the_search`,
 `test_warm_starts.py::test_the_written_energy_factor_seeds_the_minimisation`.
+
+**A curve family takes its written curve only where it is the root.** A reported number replays
+from the plan and values hashes, the engine version and the two seeds, so a solve must not depend
+on which curve stood on the context when it ran, and the written curve is no warm start.
+`InterestRate.seed_factor` is the one spelling the three families seed through: it writes the
+cold seed and gives back the curve standing in `Price Factors` where its knots are the solve's,
+the held knots aside, which `damped_newton` tests before any step. Where the test passes, the
+curve is returned as written in no iteration, so a curve quoted off itself (`knot_prices`)
+returns itself to the bit where from the cold seed it lands within the solve's rounding of it,
+about 2e-14 relative, in three or four; that factor is part of the market the job states. Where
+it fails, the solve runs from the cold seed and never from it, bit-identical to a solve with
+nothing standing: a tick costs the one Jacobian spent on the test, a held-out quote or a moved
+knot is not tested, and neither moves a number. The test enters neither `plan_hash` nor the
+artifact's slot.
+**Held by** `test_interest_rate_prices.py::test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration`,
+`::test_a_curve_whose_knots_moved_seeds_cold`,
+`test_credit_prices.py::test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration`,
+`test_inflation_prices.py::test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration`,
+`test_quote_propagation.py::test_a_ticked_curve_solves_cold_and_lands_on_the_cold_solve_to_the_bit`.
 
 ## `Bootstrapper Configuration` {#bootstrapper-configuration}
 
@@ -287,7 +306,8 @@ instrument; the solve reads both segments. **Held by**
 `test_interest_rate_prices.py::test_the_near_split_is_written_through_and_every_quote_still_reprices`,
 `test_interest_rate_prices.py::test_a_curves_own_rule_builds_it_and_leaves_its_neighbour_on_the_default`.
 
-**The solve** is a damped Newton in float64 on the host, from the par rates [@dennis1996], its
+**The solve** is a damped Newton in float64 on the host [@dennis1996], from the par rates, the
+curve written on its knots returned where it is the root ([warm starts](#warm-starts)), its
 Jacobian AAD through the engine's own pricers: the derivative
 [Quote Sensitivities](quote_sensitivities.md#the-ift-contract) carries the other way into `dV/dq`,
 so the residual is written once and differentiated twice. A discount curve is solved before the
@@ -325,7 +345,8 @@ curve. **Held by** `test_credit_prices.py::test_a_quote_maturing_at_the_base_dat
 
 **The solve is the curve family's**: `utils.CalibrationSolve` over `damped_newton` in float64 on the
 host under the same `N_Iter`, `Tol` and `Damping_Halvings` declarations, seeded at each row's
-running spread as a flat hazard. The family `reads` `InterestRate`, so `bootstrap_order` solves the
+running spread as a flat hazard, the written curve tested first as the curve family tests its own
+([warm starts](#warm-starts)). The family `reads` `InterestRate`, so `bootstrap_order` solves the
 curves it discounts on first. **Held by**
 `test_credit_prices.py::test_the_solver_knobs_are_read_off_the_block_and_its_entry`,
 `test_credit_prices.py::test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it`.
@@ -389,7 +410,8 @@ by name, as does a `Price_Index` the market carries no `PriceIndex` for. **Held 
 `test_inflation_prices.py::test_a_quote_referencing_only_printed_months_is_refused_by_name`,
 `::test_a_price_index_the_market_does_not_carry_is_refused_by_name`.
 
-**The solve is the curve family's**, seeded at each breakeven as a continuous rate, $\log(1+b)$.
+**The solve is the curve family's**, seeded at each breakeven as a continuous rate, $\log(1+b)$,
+the written curve tested first as the curve family tests its own ([warm starts](#warm-starts)).
 The family `reads` `InterestRate` and `PriceIndex`, so `bootstrap_order` solves the curves it
 discounts on first and a patched print re-solves it. Where the base reference is the last print
 and the final one reads one month, the root is the closed form $r(\tau)=T\log(1+b)/\tau$; under

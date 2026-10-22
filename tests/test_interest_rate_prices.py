@@ -42,7 +42,7 @@ from derivus.instruments import deal_node
 from derivus.schema import completed
 from derivus.config import Config, CustomJsonEncoder, ModelParams
 
-from rates_world import BASE, deposit, fra, par_swap, ois_swap
+from rates_world import BASE, deposit, fra, newton_steps, par_swap, ois_swap
 
 DEVICE = torch.device('cpu')
 INTERP = ModelParams()
@@ -236,13 +236,14 @@ def authored_world(world, interp=None):
     return market_prices, price_factors, true_curves
 
 
-def bootstrapped(market_prices, currency, spot_curve, interp=None, config=None):
+def bootstrapped(market_prices, currency, spot_curve, interp=None, config=None, standing=None):
     """`Price Factors` after `Config.bootstrap` over `market_prices`, from one holding the base
-    currency's spot alone - the way a job reaches the family."""
+    currency's spot and the curves `standing` alone - the way a job reaches the family."""
     config = config or Config(base_currency=currency)
     config.params['System Parameters']['Base_Date'] = BASE
-    config.params['Price Factors'] = {'FxRate.{}'.format(currency): {
-        'Domestic_Currency': None, 'Interest_Rate': spot_curve, 'Priority': 1, 'Spot': 1.0}}
+    config.params['Price Factors'] = dict({'FxRate.{}'.format(currency): {
+        'Domestic_Currency': None, 'Interest_Rate': spot_curve, 'Priority': 1, 'Spot': 1.0}},
+        **copy.deepcopy(standing or {}))
     config.params['Price Factor Interpolation'] = interp or INTERP
     config.params['Market Prices'] = market_prices
     config.params['Bootstrapper Configuration'] = {'InterestRate': {}}
@@ -572,6 +573,49 @@ def test_a_tighter_tolerance_still_converges_to_the_same_curve():
                   loose[curve_name]['Curve'].array[:, 1]).max() < 1e-14
     assert np.abs(tight[curve_name]['Curve'].array[:, 1] -
                   true_factors[curve_name]['Curve'].array[:, 1]).max() < 1e-10
+
+
+def test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration(caplog):
+    """A CURVE QUOTED OFF ITSELF IS ITS OWN ROOT. The ZAR world's curve standing in `Price
+    Factors`, quoted on its own knots by `knot_prices`, bootstraps back to itself to the bit in no
+    Newton iteration: the curve written on the solve's knots is tested before any step and passes.
+    From the par rates the same quotes solve to within 2.1e-14 of it in four.
+
+    Killing mutations: the standing curve never tested - the curve 2.1e-14 off in four iterations;
+    a standing curve passing the test given the step it was tested on - the curve 2.3e-14 off in
+    one, a Newton step at the root being the residual's rounding.
+    """
+    _, factors, _ = authored_world('zar')
+    written = factors['InterestRate.ZAR-JIBAR-3M']['Curve'].array
+    with caplog.at_level(logging.INFO):
+        solved = bootstrapped(dict([bootstrappers.knot_prices(
+            'ZAR-JIBAR-3M', factors, INTERP, BASE, {})]), 'ZAR', 'ZAR-JIBAR-3M', standing=factors)
+    assert [value.hex() for value in solved['InterestRate.ZAR-JIBAR-3M']['Curve'].array.ravel()
+            ] == [value.hex() for value in written.ravel()]
+    assert newton_steps(caplog.text) == [0], caplog.text
+
+
+def test_a_curve_whose_knots_moved_seeds_cold(caplog):
+    """A MOVED KNOT IS A COLD SOLVE. The ZAR world's curve stands in `Price Factors` and its 10Y
+    quote is held out, so the solve's knots are no longer the curve's: nothing is tested, and the
+    bootstrap is the one with no curve standing, to the bit and in four Newton iterations each.
+
+    Killing mutation: the standing curve read at the solve's knots whatever they are - the curve
+    standing passes and is returned, 2.1e-14 off the cold solve, in no iteration.
+    """
+    market_prices, factors, _ = authored_world('zar')
+    market_prices['InterestRatePrices.ZAR-JIBAR-3M']['instrument']['Points'][-1]['Use'] = 'No'
+    solved, steps = [], []
+    for standing in (factors, None):
+        caplog.clear()
+        with caplog.at_level(logging.INFO):
+            solved.append(bootstrapped(market_prices, 'ZAR', 'ZAR-JIBAR-3M', standing=standing)[
+                'InterestRate.ZAR-JIBAR-3M']['Curve'].array)
+        steps.append(newton_steps(caplog.text))
+    assert len(solved[0]) == len(factors['InterestRate.ZAR-JIBAR-3M']['Curve'].array) - 1
+    assert [value.hex() for value in solved[0].ravel()] == [
+        value.hex() for value in solved[1].ravel()]
+    assert steps[0] == steps[1] == [4], steps
 
 
 # ---------------------------------------------------------------------------------------------

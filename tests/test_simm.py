@@ -1291,33 +1291,37 @@ def test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit():
 
 
 #: The module's world's CRIF as the row-at-a-time bump wrote it at ee4492f, each move priced alone
-#: and differenced against the base priced alone, `{coordinates: Amount}` in hex.
+#: and differenced against the base priced alone, `{coordinates: Amount}` in hex - the option's
+#: rows re-banked as the batch writes them on the curves the bootstrap returns as written.
 ROW_AT_A_TIME = {
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '1y', 'OIS'): '-0x1.8629280000000p-13',
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '2y', 'OIS'): '-0x1.887356a6ed101p-11',
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '3y', 'OIS'): '-0x1.a12e854dda204p-9',
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '5y', 'OIS'): '0x1.bb68826f11006p+8',
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '10y', 'OIS'): '0x1.f1dd1352dba3cp-3',
-    ('FXO', 'Risk_FX', 'ZAR', '', '', ''): '-0x1.27d503b1792a0p+12',
-    ('FXO', 'Risk_FXVol', 'USDZAR', '', '1y', ''): '0x1.d3f9c982815c0p+11',
-    ('FXO', 'Risk_IRCurve', 'USD', '1', '1y', 'OIS'): '-0x1.a682e80970800p+5',
-    ('FXO', 'Risk_IRCurve', 'USD', '1', '2y', 'OIS'): '-0x1.2eea74415f62ep-2',
-    ('FXO', 'Risk_IRCurve', 'USD', '1', '3y', 'OIS'): '-0x1.aa1454c13a47cp-11',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3m', 'Libor3m'): '0x1.7d557a4f2867cp+3',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '6m', 'Libor3m'): '0x1.1df838c409462p+4',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '1y', 'Libor3m'): '0x1.1de168262f860p+4',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '2y', 'Libor3m'): '0x1.3d9acf0146231p-2',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3y', 'Libor3m'): '0x1.bebd9ef3b9eedp-11'}
+    ('FXO', 'Risk_FX', 'ZAR', '', '', ''): '-0x1.27d503b179308p+12',
+    ('FXO', 'Risk_FXVol', 'USDZAR', '', '1y', ''): '0x1.d3f9c98281760p+11',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '1y', 'OIS'): '-0x1.a682e8096a800p+5',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '2y', 'OIS'): '-0x1.2eea743fe0703p-2',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '3y', 'OIS'): '-0x1.aa1454bf1fa0dp-11',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3m', 'Libor3m'): '0x1.7d557a4f1c810p+3',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '6m', 'Libor3m'): '0x1.1df838c3f43fdp+4',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '1y', 'Libor3m'): '0x1.1de168260d7fbp+4',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '2y', 'Libor3m'): '0x1.3d9acf0444086p-2',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3y', 'Libor3m'): '0x1.bebd9ef7ef3cbp-11'}
 
 
 def test_the_scenario_batch_writes_the_crif_the_row_at_a_time_bump_wrote(serial):
     """THE BATCH IS THE BUMP. The module's world, its 18 delta and 12 vega moves priced as
     scenarios beside the standing market in one pass, writes the CRIF the row-at-a-time bump
     wrote, banked here in hex: the same fifteen coordinates, the option's ten rows to the bit, its
-    vega row among them, and the swap's five within 1e-12 of its largest row. Three of the swap's
-    depart, its 1y, 3y and 5y rows by at most 6.6e-14 of its 443.41: a pass of several scenarios
-    sums a leg's cashflows with the scenario axis strided, where a pass of one sums them
-    contiguously, so each of the swap's legs, each near a million, is reassociated by an ulp.
+    vega row among them, and the swap's five within 1e-12 of its largest row, its 1y, 2y and 3y
+    departing by at most 6.6e-14 of its 443.41: a pass of several scenarios sums a leg's cashflows
+    with the scenario axis strided, where a pass of one sums them contiguously, so each of the
+    swap's legs, each near a million, is reassociated by an ulp, and the world's curves are quoted
+    off themselves, so its bootstrap returns them as written where a solve from the par rates
+    landed within 2.0e-14 of them. The option's rows are re-banked on those curves, each within
+    1.05e-13 of its 4,733.31 of the row-at-a-time bump's.
 
     Killing mutations: a pass's columns read in reverse - rows written on coordinates the bump
     never wrote, each read off another move; the scenarios' values never supplied, every column of
@@ -1521,11 +1525,14 @@ def test_a_later_valuation_date_values_each_market_as_a_base_valuation_on_that_d
 def test_the_chunked_batch_writes_the_same_crif():
     """A CHUNK MOVES NOTHING. The Monte Carlo set's 36 moves, 12 delta and 24 vega, priced a
     scenario a pass, four a pass and all in one - passes of two, five and 37 columns beside the
-    standing market - write the same CRIF and trades report to the bit: each trade's inner paths are
-    the canonical block broadcast over a pass's scenarios, and a column's arithmetic is its own
-    whatever stands beside it. On 16,384 inner paths a pass of five or of 37 departs from a pass of
-    two on 4 of the 14 rows by 3.7e-15 of a trade's largest row, the device splitting a mean of that
-    many paths across blocks by the pass's width.
+    standing market - write the same CRIF and trades report, to the bit at passes of two and five
+    and the pass of 37 within 1e-14 of a trade's largest row: each trade's inner paths are the
+    canonical block broadcast over a pass's scenarios, and a column's arithmetic is its own
+    whatever stands beside it. The pass of 37 departs on 4 of the 14 rows by 3.7e-15 of a trade's
+    largest, as a pass of five or of 37 does on 16,384 inner paths, the device splitting a mean of
+    that many paths across blocks by the pass's width; on the curves solved from the par rates,
+    2.0e-14 off the ones the world's quotes are read off and its bootstrap now returns, it departed
+    on none.
 
     Killing mutation: the inner block drawn per pass, its points read from where a draw of the
     pass's width stands - all 14 rows apart between the chunkings, up to 1.75e-3 of a trade's
@@ -1535,8 +1542,14 @@ def test_the_chunked_batch_writes_the_same_crif():
                   book={'NS': ('AC1', 'AC2')}).run_job()[1] for size in (1, 4, 0)]
     assert [run['Stats']['Batch_Size'] for run in runs[:2]] == [1, 4]
     assert runs[2]['Stats']['Batch_Size'] >= 36
-    for run in runs[1:]:
-        identical(run['Results'], runs[0]['Results'])
+    identical(runs[1]['Results'], runs[0]['Results'])
+    (crif, trades), (chunked, alone) = ((run['Results'][table] for table in ('CRIF', 'Trades'))
+                                        for run in (runs[2], runs[0]))
+    assert crif.drop(columns=['Amount', 'AmountUSD']).equals(
+        chunked.drop(columns=['Amount', 'AmountUSD'])) and trades.equals(alone)
+    for column in ('Amount', 'AmountUSD'):
+        largest = chunked[column].abs().groupby(chunked['TradeID']).transform('max')
+        assert ((crif[column] - chunked[column]).abs() <= 1e-14 * largest).all(), column
 
 
 def test_the_batched_run_sharded_equals_the_serial_run_to_the_bit():
@@ -2164,12 +2177,16 @@ def test_the_graph_crif_is_the_limit_of_the_bump_crif(document):
     shift - is the mean of the two Bump runs a thousandth of ISDA's unit up and down, every shift so
     scaled, within a tenth of that thousandth's square of its trade's largest row: measured within
     2.4e-9, the closed-form rows at the central difference's own error and the two autocalls' at
-    the common random numbers' 1.1e-9. The book, reported in rand, moves every dollar trade's FX row
-    as the base currency's, every other price falling, and the linker's breakeven on its unquoted
-    curve; the SVI smile's point moves each slice's `a` by `2 vol point`; a curve quote rides its
-    set and chains the survival curve solved on it through the tape; a credit quote and a quoted
-    breakeven re-solve on their family's Jacobian, an upfront by what a basis point of coupon is
-    worth on the standing curve.
+    the common random numbers' 1.1e-9. A coordinate one method reads as zero the other may write
+    at its rounding, so a row is held on the coordinates either writes: on the curves the
+    bootstrap returns as written the metal forward's 1y rate row is -2.2e-14 under Graph beside
+    its 9,125 commodity row, where both Bump runs write none, and on the curves solved from the
+    par rates it was -1.2e-7 under either Bump run, where Graph wrote none. The book, reported in
+    rand, moves every dollar trade's FX row as the base currency's, every other price falling, and
+    the linker's breakeven on its unquoted curve; the SVI smile's point moves each slice's `a` by
+    `2 vol point`; a curve quote rides its set and chains the survival curve solved on it through
+    the tape; a credit quote and a quoted breakeven re-solve on their family's Jacobian, an upfront
+    by what a basis point of coupon is worth on the standing curve.
 
     Killing mutations: the SVI tangent taken as the point, `2 vol` dropped - the option's 6m vega
     row off by 0.67 of its largest; the base currency's tangent's sign flipped, every other spot
@@ -2186,7 +2203,7 @@ def test_the_graph_crif_is_the_limit_of_the_bump_crif(document):
     up, down = (amounts(run({name: sign * LIMIT for name in ('Rate_Shift', 'Spot_Shift',
                                                              'Vol_Shift')}))
                 for sign in (1, -1))
-    assert {key[1] for key in graph} == types and set(graph) <= set(up) | set(down)
+    assert {key[1] for key in graph} == types
     for trade in {key[0] for key in up}:
         keys = {key for key in set(graph) | set(up) | set(down) if key[0] == trade}
         largest = max(abs(graph.get(key, 0.0)) for key in keys)
@@ -2674,9 +2691,9 @@ BANKED = {
              ('Collected', 'RATES'): '0x1.03a6ccca9523fp+19',
              ('Collected', 'BOOK'): '0x1.d4cb158bcb06ep+19'},
     'dollar': {('Posted', 'RATES'): '0x1.879ac31ba8ad4p+17',
-               ('Posted', 'CREDIT'): '0x1.d96813ab4151dp+17',
+               ('Posted', 'CREDIT'): '0x1.d96813ab3bc3dp+17',
                ('Collected', 'RATES'): '0x1.b70be15d2653ap+17',
-               ('Collected', 'CREDIT'): '0x1.d96813ab4151dp+17'}}
+               ('Collected', 'CREDIT'): '0x1.d96813ab3bc3dp+17'}}
 
 
 @pytest.mark.parametrize('document', sorted(MARGINED))
@@ -2687,10 +2704,13 @@ def test_the_margin_is_the_notebooks_on_the_synthetic_parameters(document, tmp_p
     risk class and margin type, with the totals - to 1e-12, measured within 2.9e-16, and each set's
     margin is its banked figure to 1e-12: in rand 490,304.30 posted and 531,766.40 collected on the
     rates, 957,643.35 and 960,088.67 on the rest; in dollars 200,501.52 and 224,791.76 on the rates
-    and 242,384.15 either way on the default swap. The rand book crosses to USD off the `FxRate`
-    factors, its calculation currency in the high FX group; its dollar and rand rates both pass
-    their thresholds (CR 1.79 and 2.19), the metal and the platinum chain share a bucket past its
-    threshold (CR 1.72 and 1.31), the fuel passes its own (2.02), the rate vega rows are
+    and 242,384.15 either way on the default swap, re-banked 2.7e-12 under its figure on curves
+    solved from the par rates: its survival curve, quoted off itself, now stands as written while
+    each spread move still re-solves cold, so its rows carry the cold solve's rounding against the
+    written curve, every other bank within 3.1e-13 of its own. The rand book crosses to USD off the
+    `FxRate` factors, its calculation currency in the high FX group; its dollar and rand rates both
+    pass their thresholds (CR 1.79 and 2.19), the metal and the platinum chain share a bucket past
+    its threshold (CR 1.72 and 1.31), the fuel passes its own (2.02), the rate vega rows are
     vol-weighted, and its second set holds the autocalls' short and the fuel option's long vega
     under its own regimes. The dollar book carries USD on two sub-curves, the rand's FX vega off its
     pair's groups and the default swap's three vertices of one name, weighed apart and concentrated

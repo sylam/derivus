@@ -36,7 +36,7 @@ from derivus import bootstrappers, utils
 from derivus.config import Config, CustomJsonEncoder, ModelParams
 from derivus.instruments import construct_instrument
 
-from rates_world import BASE, deposit, par_swap
+from rates_world import BASE, deposit, newton_steps, par_swap
 from test_interest_rate_prices import (authored_world, block_nodes, curve_of, discount_of,
                                        par_quotes, quote_point)
 
@@ -203,6 +203,33 @@ def test_the_artifact_holds_the_calibration_jacobian_the_solve_would_have_differ
     error = np.abs(artifact.jacobian.cpu().numpy() - reference).max()
     assert error / np.abs(reference).max() < 1e-8, (
         'the published J is not the calibration Jacobian: {:.3g}'.format(error))
+
+
+def test_a_ticked_curve_solves_cold_and_lands_on_the_cold_solve_to_the_bit(caplog):
+    """A SOLVE IS A FUNCTION OF ITS QUOTES. The ZAR world bootstrapped riding, its 1Y quote ticked
+    5bp and the same config bootstrapped again: the curve the first solve wrote stands on the
+    solve's knots, fails the convergence test at once and is never a start, so the refit is the
+    cold solve of the ticked quotes in a fresh config to the bit, curve and published calibration
+    Jacobian, in four Newton iterations each. A curve standing is taken only where it is already
+    the root, as a curve quoted off itself is, so a long-lived context and a fresh one price one
+    market alike.
+
+    Killing mutations: the standing curve the start of a solve it fails - the curve 4.4e-16 off
+    in three iterations; the standing curve returned untested - the curve the tick moved, 5.7e-3
+    off.
+    """
+    market_prices = market(True)
+    warm = bootstrapped(market_prices)
+    market_prices[BLOCK]['instrument']['Points'][1]['Quoted_Market_Value'] += 0.05
+    caplog.clear()
+    with caplog.at_level(logging.INFO):
+        warm.bootstrap()
+        cold = bootstrapped(market_prices)
+    assert [value.hex() for value in curve_values(warm)] == [
+        value.hex() for value in curve_values(cold)]
+    assert [value.hex() for value in artifact_of(warm).jacobian.numpy().ravel()] == [
+        value.hex() for value in artifact_of(cold).jacobian.numpy().ravel()]
+    assert newton_steps(caplog.text) == [4, 4], caplog.text
 
 
 def test_the_artifact_key_is_plan_side_and_its_id_is_not():

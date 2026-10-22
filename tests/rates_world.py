@@ -14,6 +14,7 @@ Quotes are in PERCENT throughout, because that is what the engine reads: `Deposi
 instead, which is the one place the type says so.
 """
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -23,6 +24,12 @@ import pandas as pd
 from derivus import utils
 
 BASE = pd.Timestamp('2026-08-03')
+
+
+def newton_steps(log):
+    """The Newton iterations each curve solve reported in `log`, in the order the solves ran."""
+    return [int(steps) for steps in re.findall(
+        r' bootstrapped from \d+ quotes in [\d.]+ seconds and (\d+) iterations', log)]
 
 
 def market(currency, curves, discount_curve, day_count='ACT_365'):

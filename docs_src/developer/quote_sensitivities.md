@@ -90,8 +90,11 @@ measured rather than branched on type so it lapses when such a type grows a sche
 row per benchmark, is the one the backward needs too: the residual is written once and differentiated
 twice [@dennis1996]. The seed is each par quote as a zero rate. Damping halves the step until the
 max-norm residual decreases; convergence is tested on the step before the line search, as a step
-inside the linear solve's rounding cannot reduce a residual at noise level. A coupled set takes its
-members' strictest knobs.
+inside the linear solve's rounding cannot reduce a residual at noise level. A curve written on the
+solve's knots is tested so before any step and returned as written where it passes, never taken
+as a start ([warm starts](market_prices.md#warm-starts)): a curve quoted off itself is its own
+root in no iteration, where one Newton step there moves it 2.3e-14 on the ZAR world. A coupled set
+takes its members' strictest knobs.
 
 | field | default | why |
 | --- | --- | --- |
@@ -100,7 +103,8 @@ members' strictest knobs.
 | `Damping_Halvings` | 6 | past that the step's length is not what is wrong |
 
 **Held by** `tests/test_interest_rate_prices.py::test_the_bootstrap_recovers_the_curve_its_quotes_came_from`,
-`::test_the_solver_knobs_are_read_off_the_block`, `::test_a_tighter_tolerance_still_converges_to_the_same_curve`.
+`::test_the_solver_knobs_are_read_off_the_block`, `::test_a_tighter_tolerance_still_converges_to_the_same_curve`,
+`::test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration`.
 No test world takes a halved step.
 
 ### The knot rule {#the-knot-rule}

@@ -29,6 +29,7 @@ the terminal is a `BloombergSession` subclass whose event walks yield canned row
 import copy
 import functools
 import json
+import logging
 import os
 import sys
 
@@ -204,6 +205,23 @@ def test_the_bootstrap_recovers_the_inflation_curve_its_breakevens_came_from(rul
     closed = years * np.log1p(np.array(quotes(rule)) / 100.0) / KNOTS
     gap = np.abs(closed - solved[:, 1]).max()
     assert gap < (1e-15 if kind == 'Single' else 2.5e-4), gap
+
+
+def test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration(caplog):
+    """A CURVE QUOTED OFF ITSELF IS ITS OWN ROOT. The world's inflation curve standing in `Price
+    Factors` beside its breakevens bootstraps back to itself to the bit in no Newton iteration,
+    the curve written on the solve's knots tested before any step as the curve family tests its
+    own; from the breakevens as continuous rates the same quotes solve to within 7.8e-15 of it in
+    three.
+
+    Killing mutations: the standing curve never tested - the curve 7.8e-15 off in three
+    iterations; a standing curve passing the test given its step - 4.9e-15 off in one.
+    """
+    with caplog.at_level(logging.INFO):
+        solved = curve(bootstrapped({BLOCK: block()}, factors={CURVE: inflation()}))
+    assert [value.hex() for value in solved.ravel()] == [
+        value.hex() for value in inflation()['Curve'].array.ravel()]
+    assert rates_world.newton_steps(caplog.text) == [0], caplog.text
 
 
 def test_the_linker_on_the_solved_curve_marks_as_on_the_curve_it_came_from():
