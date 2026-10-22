@@ -37,11 +37,11 @@ compiles the book once as a `ScenarioValuation` whose scenarios its valuation st
 (`update_factors`, `set_deal_structures`; a worker of `SIMM.run` compiles its own once, over its
 own moves, `SIMM.shard`), each surface a vega move reaches given its vertex pillars so the base and
 every move share one grid, and prices it on the standing market alone. Under `Method: Bump` the
-moves are that valuation's scenarios (`SIMM.values`): those whose market a scenario axis carries
-priced `Batch_Size` at a time, or as many as half the device's free memory holds at what a scenario
-took in the standing market's pass, each pass beside the standing market, so a trade's change is
-the difference of two columns of one pass; a vega move, its surface or space read static, priced
-alone, its change off the base (`ScenarioValuation.passes`). A trade a pass leaves unvalued is priced again a
+moves are that valuation's scenarios (`SIMM.values`), a vega move's surface or space carried on
+the scenario axis as a curve's is, priced `Batch_Size` at a time, or as many as half the device's
+free memory holds at what a scenario took in the standing market's pass, each pass beside the
+standing market, so a trade's change is the difference of two columns of one pass
+(`ScenarioValuation.passes`). A trade a pass leaves unvalued is priced again a
 move a pass, so the refusal names its own move. Every pass prices the whole set, the trades it does
 not reach included. A base valuation draws a trade's Monte Carlo paths off `Quasi_Seed` alone,
 whatever is booked or priced beside it, and the inner block stays built through the run, so a trade
@@ -57,9 +57,12 @@ A pass's arithmetic is its own: a column is the same to the bit whatever stands 
 CRIF is the same whatever the chunk and the worker count. A pass of one is the exception: it sums a
 deal's terms with the scenario axis contiguous where a pass of several strides it, so a bump
 pricing each move in a pass of its own reassociates against the batch, a row departing by at most
-3.0e-12 of its trade's largest (a linker's rate rows, two ulps of its value). A mean over 16,384
-inner paths the device splits across blocks by the pass's width, so on the Monte Carlo set a pass
-of five departs from a pass of two by 3.7e-15 of a trade's largest row. **Held by**
+3.0e-12 of its trade's largest (a linker's rate rows, two ulps of its value), a rate vega row by
+1.5e-13 (the amortising swaption's, fourteen ulps of its value over its hundredth of each vol); a
+row being a change over its shift, a shift a ten-thousandth of ISDA's reads the same ulps ten
+thousand times larger. A mean over 16,384 inner paths the device splits across blocks by the
+pass's width, so on the Monte Carlo set a pass of five departs from a pass of two by 3.7e-15 of a
+trade's largest row. **Held by**
 `tests/test_simm.py::test_the_scenario_batch_writes_the_crif_the_row_at_a_time_bump_wrote`,
 `::test_the_chunked_batch_writes_the_same_crif`.
 
@@ -420,10 +423,11 @@ net uncollateralised and `SIMM` and `SACCR`, pricing by one, value every trade i
 are data, each the price factors it states over the job's own, which `SIMM` fills from its moves
 and a historical or stressed market would fill from an archive or a file. Where it has scenarios,
 every factor of a type that carries a scenario axis (`SuppliedValuesModel.factor_types`: spots,
-bases, price indices and every curve) but the base currency's price is a `SuppliedValuesModel`,
-which draws nothing and publishes its value on each scenario of a pass as one path on the one row;
-a vol surface or space, a model's parameters and a correlation stay static, so a scenario stating
-one is priced in a pass of its own, the factor written into its leaf and put back. A pass is
+bases, price indices, every curve and every vol surface and space) but the base currency's price is
+a `SuppliedValuesModel`, which draws nothing and publishes its value on each scenario of a pass as
+one path on the one row, a Skew or SVI surface a leaf a parameter (`Calculation.split`); a model's
+parameters and a correlation stay static, so a scenario stating one is priced in a pass of its own,
+the factor written into its leaf and put back. A pass is
 `Scenario_State.reset`, each process's `generate` and `resolve_structure`, its state the base
 valuation's with a scenario axis, so a deal prices on each scenario as a base valuation of that
 market does: the smooth estimator, a collateralised set's net, a Monte Carlo deal's inner paths
@@ -431,11 +435,22 @@ the canonical block broadcast over the scenarios, and an amortising swaption's v
 each scenario's own curves. `Valuation_Date` ages the deals to a later date as a credit Monte Carlo
 prices a later grid point, the scenarios the markets there. **Held by**
 `tests/test_simm.py::test_a_scenario_is_the_move_it_was_filled_with`,
+`::test_a_scenario_stating_a_models_parameters_is_priced_alone_on_them`,
 `::test_a_later_valuation_date_values_each_market_as_a_base_valuation_on_that_date`,
 `tests/test_collateral.py::test_a_scenario_valuation_values_a_collateralised_set_as_a_base_valuation_does`.
-A vol surface carries no scenario axis: a surface per scenario needs every read `VolSurface`
-spells - the flat grid's gather and its moneyness read per column, the Skew and SVI parameters, the
-vol space's tenor blend - to take a trailing scenario axis, more than one seam.
+**Not gated:** the leaf a pass of its own writes put back before the next pass.
+
+`utils.VolSurface` reads a surface as `[nodes, paths]`, a static one on one path and a supplied
+one on each scenario, and every gather keeps the trailing path axis: the flat grid's node gather and
+its Malz variance blend, a vol space's row gather in expiry and its blend in vol tenor, the Skew and
+SVI parameters at each expiry, and the moneyness read, each path its own node off its own surface; a
+Skew wing whose `lam` or `rho` is zero on a pillar the read blends is held flat on each path whose
+own pillar holds it. So a scenario stating a surface or a space rides the pass with the others, and
+a static one reads as it did, to the bit. A surface published on more than one row, a simulated
+one, is refused by name, no vol read taking the time grid a curve's row gather reads. **Held by**
+`tests/test_simm.py::test_every_kind_of_surface_reads_its_own_market_in_a_pass_of_several`,
+`::test_a_scenario_is_the_move_it_was_filled_with`. **Not gated:** the refusal, no process
+publishing a surface on more than one row.
 
 **`HedgeMonteCarlo`** runs the credit Monte Carlo engine and harvests its marks. `update_factors`
 adds `Scenario_Factors` (factors no deal reaches) and caps the grid at the liability terminal; a leg

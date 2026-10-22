@@ -5158,25 +5158,34 @@ class VolSurface:
     """The volatility a pricer reads off a moneyness/expiry surface.
 
     `rate` reads a 2-D surface, `tenor_rate` and `cap_rate` a 3-D one at a vol tenor - a swaption's
-    or a cap's. The private three are the gathers they share: the flat-surface build, the expiry
-    blend, the vol-tenor blend and the moneyness read every one of them ends in.
+    or a cap's. The private ones are what they share: the surface's values, the flat-surface build,
+    the expiry blend, the vol-tenor blend and the moneyness read every one of them ends in.
+
+    A surface is `[nodes, paths]`: a static one on one path, one a scenario valuation supplies on
+    each of its scenarios. Every gather keeps the trailing path axis, so each path reads its own
+    surface, and a read's result carries the path axis its moneyness or its surface does.
     """
 
     @staticmethod
+    def _values(rate, key, shared):
+        """`[nodes, paths]` - `key`, the surface the code `rate` names or one of its parameters: a
+        static one's leaf on one path, a simulated one's values on the one row its process
+        publishes, a surface on more rows refused by name, no read here taking a time grid."""
+        if not rate[FACTOR_INDEX_Stoch]:
+            return shared.t_Static_Buffer[key].reshape(-1, 1)
+        published = shared.t_Scenario_Buffer[key]
+        if published.shape[0] > 1:
+            raise ValueError('{} is published on {} rows, and a vol surface is read on one'.format(
+                check_tuple_name(key), published.shape[0]))
+        return published[0]
+
+    @staticmethod
     def _tenor_blend(code, tenor, shared):
-        """The static vol stack blended along its vol-tenor axis at `tenor`."""
-        vol_spread = None
-
-        for rate in code:
-            # Only static moneyness/expiry vol surfaces are supported for now
-            if rate[FACTOR_INDEX_Stoch]:
-                raise Exception("Stochastic vol surfaces not yet implemented")
-            else:
-                vol_spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
-                break
-
+        """The vol space blended along its vol-tenor axis at `tenor`, `[expiry x moneyness,
+        paths]`."""
+        vol_spread = VolSurface._values(code[0], code[0][FACTOR_INDEX_Offset], shared)
         tenor_index = code[0][FACTOR_INDEX_VolTenor_Index]
-        space = vol_spread.reshape(tenor_index.tenor.size, -1)
+        space = vol_spread.reshape(tenor_index.tenor.size, -1, vol_spread.shape[-1])
         index, index_next, alpha = tenor_index.get_index(tenor)
 
         return torch.lerp(space[index], space[index_next], alpha)
@@ -5187,7 +5196,7 @@ class VolSurface:
         time_code = ('surface_flat', code[:2], tuple(expiry), calc_std)
 
         if time_code not in shared.t_Buffer:
-            time_modifier = np.sqrt(expiry).reshape(-1, 1) if calc_std else 1.0
+            time_modifier = np.sqrt(expiry).reshape(-1, 1, 1) if calc_std else 1.0
 
             if time_code not in shared.t_PreCalc:
                 # the read's weights, gathers and moneyness axis are the surface's grid and the
@@ -5213,25 +5222,26 @@ class VolSurface:
                 money_indices, money_alpha = np.array(block_indices), np.array(block_alphas)
                 subset_index = subset.searchsorted(index)
                 subset_index_next = subset.searchsorted(index_next)
+                # each weight on a trailing axis of one, which the surface's paths broadcast over
                 shared.t_PreCalc[time_code] = (
-                    flat_surface.new(alpha.reshape(-1, 1, 1)),
+                    flat_surface.new(alpha.reshape(-1, 1, 1, 1)),
                     flat_surface.new_tensor(money_indices[subset_index], dtype=torch.int64),
-                    flat_surface.new(money_alpha[subset_index]),
-                    flat_surface.new(money_alpha[subset_index_next]),
+                    flat_surface.new(money_alpha[subset_index, ..., np.newaxis]),
+                    flat_surface.new(money_alpha[subset_index_next, ..., np.newaxis]),
                     flat_surface.new_tensor(money_indices[subset_index_next], dtype=torch.int64),
                     CurveTenor(new_moneyness_tenor), [flat_surface.new(x) for x in (
-                        expiry_tenor.tenor[index].reshape(-1, 1, 1),
-                        expiry_tenor.tenor[index_next].reshape(-1, 1, 1),
-                        expiry.clip(min=expiry_tenor.min).reshape(-1, 1))]
+                        expiry_tenor.tenor[index].reshape(-1, 1, 1, 1),
+                        expiry_tenor.tenor[index_next].reshape(-1, 1, 1, 1),
+                        expiry.clip(min=expiry_tenor.min).reshape(-1, 1, 1))]
                     if code[FACTOR_INDEX_SubType][0] == 'Malz' else None)
 
             (alpha, tenor_money_indices, tenor_money_alpha, tenor_money_alpha_next,
              tenor_money_indices_next, new_moneyness_tenor, terms) = shared.t_PreCalc[time_code]
 
-            # index_select over take: the same elements off the 1-D surface, and a backward
-            # (index_add_) that Deterministic_Kernels pins where take's put_ has no kernel
+            # index_select over take: the same nodes off the surface, and a backward (index_add_)
+            # that Deterministic_Kernels pins where take's put_ has no kernel
             def read(idx):
-                return flat_surface.index_select(0, idx.reshape(-1)).reshape(idx.shape)
+                return flat_surface.index_select(0, idx.reshape(-1)).reshape(*idx.shape, -1)
 
             if terms is not None:
                 # interpolate along variance for term
@@ -5247,7 +5257,8 @@ class VolSurface:
                     read(tenor_money_indices) * tenor_money_alpha,
                     read(tenor_money_indices_next) * tenor_money_alpha_next, alpha), dim=1)
 
-            shared.t_Buffer[time_code] = (surface.reshape(-1), code, new_moneyness_tenor)
+            shared.t_Buffer[time_code] = (surface.reshape(-1, surface.shape[-1]), code,
+                                          new_moneyness_tenor)
 
         return shared.t_Buffer[time_code]
 
@@ -5256,7 +5267,7 @@ class VolSurface:
         # uncached: `surface` is one vol tenor's blend, and the callers cache by that tenor
         index, index_next, alpha = code[FACTOR_INDEX_Expiry_Index].device_index(expiry, surface)
         time_modifier = np.sqrt(expiry) if calc_std else 1.0
-        return torch.lerp(surface[index], surface[index_next], alpha) * time_modifier
+        return torch.lerp(surface[index], surface[index_next], alpha.unsqueeze(-1)) * time_modifier
 
     @staticmethod
     def _moneyness(moneyness, expiry, key_code, shared):
@@ -5264,37 +5275,50 @@ class VolSurface:
             skew_key = ('skew_params', t) + key_code[FACTOR_INDEX_Offset][0]
 
             if skew_key not in shared.t_Buffer:
+                # a held wing's quadratic is read off a lam or rho of one, never divided by zero
+                lam_w, rho_w = lam.where(lam != 0, 1.0), rho.where(rho != 0, 1.0)
                 s2LC = s + 2.0 * L * C
-                gamma = s2LC / (-2.0 * C * lam)
-                beta = s2LC * (1.0 + 1.0 / lam)
+                gamma = s2LC / (-2.0 * C * lam_w)
+                beta = s2LC * (1.0 + 1.0 / lam_w)
                 alpha = atm_vol + C * ((s - beta) + C * (L - gamma))
 
                 # Right wing
                 s2RD = s + 2.0 * R * D
-                gamma_r = s2RD / (-2.0 * D * rho)
-                beta_r = s2RD * (1.0 + 1.0 / rho)
+                gamma_r = s2RD / (-2.0 * D * rho_w)
+                beta_r = s2RD * (1.0 + 1.0 / rho_w)
                 alpha_r = atm_vol + D * ((s - beta_r) + D * (R - gamma_r))
 
                 shared.t_Buffer[skew_key] = (gamma, beta, alpha, gamma_r, beta_r, alpha_r)
 
             gamma, beta, alpha, gamma_r, beta_r, alpha_r = shared.t_Buffer[skew_key]
-            # a static surface's wings are the run's, so whether either is zero is read once
-            wings = skew_key + ('wings',)
-            if wings not in shared.t_PreCalc:
-                shared.t_PreCalc[wings] = (bool(lam.all()), bool(rho.all()))
-            lam_ok, rho_ok = shared.t_PreCalc[wings]
+            # a wing is held flat where its lam or rho is zero on a pillar the read blends: a static
+            # surface's wings are the run's, read once, a simulated one's each path's own
+            if rate_code[FACTOR_INDEX_Stoch]:
+                lam_ok, rho_ok = (lam != 0).all(dim=0), (rho != 0).all(dim=0)
+            else:
+                wings = skew_key + ('wings',)
+                if wings not in shared.t_PreCalc:
+                    shared.t_PreCalc[wings] = (bool(lam.all()), bool(rho.all()))
+                lam_ok, rho_ok = shared.t_PreCalc[wings]
 
-            # the 6 regions of the skew - check for 0 lam and rho - hold flat
-            r1 = torch.ones_like(x) * (
-                (alpha + C * (beta * (1.0 + lam) + gamma * (1.0 + lam) ** 2 * C)) if lam_ok else (
-                            atm_vol + C * (s + L * C)))
-            r2 = alpha + x * (beta + gamma * x) if lam_ok else atm_vol + C * (s + L * C)
+            def held(ok, wing, flat):
+                return torch.where(ok, wing(), flat()) if torch.is_tensor(ok) else (
+                    wing() if ok else flat())
+
+            # the 6 regions of the skew
+            r1 = torch.ones_like(x) * held(
+                lam_ok, lambda: alpha + C * (beta * (1.0 + lam) + gamma * (1.0 + lam) ** 2 * C),
+                lambda: atm_vol + C * (s + L * C))
+            r2 = held(lam_ok, lambda: alpha + x * (beta + gamma * x),
+                      lambda: atm_vol + C * (s + L * C))
             r3 = atm_vol + x * (s + L * x)
             r4 = atm_vol + x * (s + R * x)
-            r5 = alpha_r + x * (beta_r + gamma_r * x) if rho_ok else atm_vol + D * (s + R * D)
-            r6 = torch.ones_like(x) * (
-                (alpha_r + D * (beta_r * (1.0 + rho) + gamma_r * (1.0 + rho) ** 2 * D)) if rho_ok else (
-                            atm_vol + D * (s + R * D)))
+            r5 = held(rho_ok, lambda: alpha_r + x * (beta_r + gamma_r * x),
+                      lambda: atm_vol + D * (s + R * D))
+            r6 = torch.ones_like(x) * held(
+                rho_ok,
+                lambda: alpha_r + D * (beta_r * (1.0 + rho) + gamma_r * (1.0 + rho) ** 2 * D),
+                lambda: atm_vol + D * (s + R * D))
 
             return torch.where(
                 x <= (1 + lam) * C, r1,
@@ -5340,7 +5364,6 @@ class VolSurface:
                 return torch.sqrt(torch.lerp(var_prior, var_post, alpha)) * time_modifier
         else:
             surface, rate_code, moneyness_tenor = shared.t_Buffer[key_code]
-            max_index = np.prod(surface.shape) - 1
             if moneyness is None:
                 # the at-the-money coordinate: zero on a log or relative axis, one on a ratio
                 ratio = rate_code[FACTOR_INDEX_SubType][0] not in ('Malz', 'Relative_Forward')
@@ -5351,8 +5374,10 @@ class VolSurface:
             vol_index = index + torch.arange(0, expiry.size * size, size, dtype=torch.int32,
                                              device=shared.one.device).reshape(-1, 1)
 
-            vol_index_next = torch.clamp(vol_index + 1, 0, max_index)
-            return torch.lerp(surface[vol_index], surface[vol_index_next], alpha)
+            vol_index_next = torch.clamp(vol_index + 1, 0, surface.shape[0] - 1)
+            # each path's node off its own surface
+            path = torch.arange(surface.shape[-1], device=shared.one.device)
+            return torch.lerp(surface[vol_index, path], surface[vol_index_next, path], alpha)
 
     @staticmethod
     def rate(code, moneyness, expiry, shared, calc_std=False):
@@ -5366,26 +5391,14 @@ class VolSurface:
         key_code = ('vol_time_grid', tuple(keys), tuple(expiry), calc_std)
 
         if key_code not in shared.t_Buffer:
-            spread = None
-            # We only support one vol stack at the moment - but can extend this to 2 or more
-            for rate in code:
-                # Only static moneyness/expiry vol surfaces are supported for now
-                if rate[FACTOR_INDEX_Stoch]:
-                    raise Exception("Stochastic vol surfaces not yet implemented")
-                else:
-                    if rate[FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
-                        spread = {x.name[-1]: shared.t_Static_Buffer[x].reshape(-1, 1) for x in
-                                  rate[FACTOR_INDEX_Offset]}
-                    else:
-                        spread = shared.t_Static_Buffer[rate[FACTOR_INDEX_Offset]]
-                    break
-
-            # either interpolate a flat vol surface or a svi/skew vol param
-            if code[0][FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
-                shared.t_Buffer[key_code] = (spread, code[0], calc_std)
+            # one vol stack, the code's first: either a svi/skew surface's params or a flat surface
+            rate = code[0]
+            if rate[FACTOR_INDEX_SubType][0] in ['SVI', 'Skew']:
+                shared.t_Buffer[key_code] = ({x.name[-1]: VolSurface._values(rate, x, shared)
+                                              for x in rate[FACTOR_INDEX_Offset]}, rate, calc_std)
             else:
-                shared.t_Buffer[key_code] = VolSurface._flat(
-                    spread, code[0], expiry, shared, calc_std)
+                shared.t_Buffer[key_code] = VolSurface._flat(VolSurface._values(
+                    rate, rate[FACTOR_INDEX_Offset], shared), rate, expiry, shared, calc_std)
 
         return VolSurface._moneyness(moneyness, expiry, key_code, shared)
 
@@ -5397,8 +5410,10 @@ class VolSurface:
         if key_code not in shared.t_Buffer:
             spread = VolSurface._tenor_blend(code, tenor, shared)
 
-            surface = spread.reshape(-1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size)
-            flat_vol_time = VolSurface._interp(surface, code[0], expiry, calc_std).reshape(-1, )
+            surface = spread.reshape(-1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size,
+                                     spread.shape[-1])
+            flat_vol_time = VolSurface._interp(surface, code[0], expiry, calc_std).reshape(
+                -1, spread.shape[-1])
 
             shared.t_Buffer[key_code] = (flat_vol_time, code[0], code[0][FACTOR_INDEX_Moneyness_Index])
 
@@ -5409,8 +5424,9 @@ class VolSurface:
         key_code = ('vol3d_cap', tuple([x[:2] for x in code]), tenor, calc_std, tuple(expiry.flatten()))
 
         if key_code not in shared.t_Buffer:
-            shared.t_Buffer[key_code] = VolSurface._tenor_blend(code, tenor, shared).reshape(
-                -1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size)
+            spread = VolSurface._tenor_blend(code, tenor, shared)
+            shared.t_Buffer[key_code] = spread.reshape(
+                -1, code[0][FACTOR_INDEX_Moneyness_Index].tenor.size, spread.shape[-1])
 
         surface = shared.t_Buffer[key_code]
         result = []
@@ -5418,7 +5434,7 @@ class VolSurface:
             time_exp = key_code[:-1] + tuple(exp)
             if time_exp not in shared.t_Buffer:
                 flat_vol_time = VolSurface._interp(
-                    surface, code[0], exp, calc_std).reshape(-1)
+                    surface, code[0], exp, calc_std).reshape(-1, surface.shape[-1])
                 shared.t_Buffer[time_exp] = (flat_vol_time, code[0], code[0][FACTOR_INDEX_Moneyness_Index])
             result.append(VolSurface._moneyness(mon, exp, time_exp, shared))
 

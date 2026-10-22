@@ -469,10 +469,16 @@ class Calculation(object):
         found, interp = [], self.config.params['Price Factor Interpolation']
         for factor in [f for f in (self.all_factors if factors is None else factors)
                        if utils.check_tuple_name(f) in moved]:
-            value = construct_factor(factor, moved, interp, base_date=self.base_date).current_value()
-            found.extend(((utils.Factor(factor.type, factor.name + (k,)), v) for k, v in
-                          value.items()) if isinstance(value, dict) else [(factor, value)])
+            found.extend(self.split(factor, construct_factor(
+                factor, moved, interp, base_date=self.base_date).current_value()))
         return found
+
+    @staticmethod
+    def split(factor, value):
+        """`[(key, value)]` - the leaves price factor `factor` standing at `value` compiles to: a
+        surface stating parameters a leaf a parameter, any other factor its own."""
+        return [(utils.Factor(factor.type, factor.name + (k,)), v) for k, v in value.items()] if (
+            isinstance(value, dict)) else [(factor, value)]
 
     def make_factor_index(self, tensors):
         tenors = utils.get_tenors(self.all_factors)
@@ -1293,15 +1299,10 @@ class CreditMonteCarlo(Calculation):
                             value, 'get_day_count') else utils.DayCount.ACT365)
                 else:
                     factor_tenor_offset = 0.0
-                current_val = value.current_value(offset=factor_tenor_offset)
-                if isinstance(current_val, dict):
-                    for k, v in current_val.items():
-                        fkey = utils.Factor(key.type, key.name + (k,))
-                        self.static_var[fkey] = implied_leaves[fkey] if fkey in implied_leaves else \
-                            self.factor_leaf(fkey, v, calc_grad, factor_tenor_offset)
-                else:
-                    self.static_var[key] = implied_leaves[key] if key in implied_leaves else \
-                        self.factor_leaf(key, current_val, calc_grad, factor_tenor_offset)
+                for leaf, current_val in self.split(
+                        key, value.current_value(offset=factor_tenor_offset)):
+                    self.static_var[leaf] = implied_leaves[leaf] if leaf in implied_leaves else \
+                        self.factor_leaf(leaf, current_val, calc_grad, factor_tenor_offset)
 
         # beside the seed, and set BOTH ways every run: the switch is process-global, so a job
         # that declared Yes must not leave the next job in the process pinned
@@ -2185,13 +2186,8 @@ class BaseValuation(Calculation):
         calc_grad = params.get('Greeks', 'No') != 'No'
         for key, value in self.static_factors.items():
             if key.type not in utils.DimensionLessFactors:
-                current_val = value.current_value()
-                if isinstance(current_val, dict):
-                    for k, v in current_val.items():
-                        fkey = utils.Factor(key.type, key.name + (k,))
-                        self.static_var[fkey] = self.factor_leaf(fkey, v, calc_grad)
-                else:
-                    self.static_var[key] = self.factor_leaf(key, current_val, calc_grad)
+                for leaf, current_val in self.split(key, value.current_value()):
+                    self.static_var[leaf] = self.factor_leaf(leaf, current_val, calc_grad)
 
         quasi_seed = self.calc_stats['Quasi_Seed'] = int(params['Quasi_Seed'])
         shared_mem = self.__init_shared_mem(
@@ -2771,8 +2767,8 @@ class Diary(BaseValuation):
 
 class Scenario_State(Base_Reval_State):
     """A base valuation's state over a batch of given markets: each pass the values its
-    calculation supplies per simulated factor (`t_Supplied`), which the factors' processes
-    publish (`t_Scenario_Buffer`), one path a scenario."""
+    calculation supplies per leaf of a simulated factor (`t_Supplied`), which the factors'
+    processes publish (`t_Scenario_Buffer`), one path a scenario."""
 
     def __init__(self, *args, **kwargs):
         super(Scenario_State, self).__init__(*args, **kwargs)
@@ -2780,7 +2776,7 @@ class Scenario_State(Base_Reval_State):
         self.t_Scenario_Buffer = {}
 
     def reset(self, supplied, scenarios):
-        """A pass of `scenarios` markets, `supplied` the value of each simulated factor on each,
+        """A pass of `scenarios` markets, `supplied` the value of each simulated leaf on each,
         the last pass's memo, published paths and decisions cleared."""
         self.resize(scenarios)
         self.t_Supplied = supplied
@@ -2796,9 +2792,9 @@ class ScenarioValuation(BaseValuation):
     A scenario is the price factors it states over the job's own, `{name: block}`. Where there are
     scenarios, every factor whose type carries a scenario axis (`SuppliedValuesModel.factor_types`)
     but the base currency's price is simulated, a process publishing its value on each scenario of
-    a pass, one path a scenario; the rest are static, and a scenario stating one of those - a vol
-    surface - is priced in a pass of its own, the factor written into its leaf and put back. With
-    none it compiles and prices as a base valuation does. One pass of reset, generate and
+    a pass, one path a scenario; the rest are static, and a scenario stating one of those - a
+    model's parameters - is priced in a pass of its own, the factor written into its leaf and put
+    back. With none it compiles and prices as a base valuation does. One pass of reset, generate and
     `resolve_structure` values every deal on every scenario of the pass as a base valuation of that
     market does, a Monte Carlo deal's inner paths the canonical block broadcast over them; the
     deals are aged to `Valuation_Date` as a credit Monte Carlo ages them to a later grid point.
@@ -2812,9 +2808,10 @@ class ScenarioValuation(BaseValuation):
         '- **Currency** of the output.',
         '- **Base Date** of the market data, and **Valuation Date** the date the deals are valued on:',
         '  the base date where blank, a later one aging every deal to it',
-        '- **Scenarios** the markets, each the price factors it states over the job\'s own, by name; a',
-        '  curve, a spot, a survival, inflation or forward curve and a basis carry one value a',
-        '  scenario, and a scenario stating a vol surface is priced alone',
+        '- **Scenarios** the markets, each the price factors it states over the job\'s own, by name;',
+        '  a curve, a spot, a survival, inflation or forward curve, a basis and a vol surface or',
+        '  space carry one value a scenario, and a scenario stating a model\'s parameters is priced',
+        '  alone',
         '- **Batch Size** the scenarios priced in one pass, as many as half the device\'s free memory',
         '  holds where 0',
         '- **MCMC Simulations**, **Quasi Seed**, **Deterministic Kernels** and **Branch And Weight**',
@@ -2874,8 +2871,8 @@ class ScenarioValuation(BaseValuation):
     def update_factors(self, params, base_date):
         """The book's price factors compiled as a base valuation compiles them, then, where there
         are scenarios, each whose type carries a scenario axis handed to a process publishing them,
-        its compiled leaf the value it stands at, and the report currency read as the factors then
-        stand. Where the leaves are differentiated each result block keeps its taped value
+        its compiled leaves the values it stands at, and the report currency read as the factors
+        then stand. Where the leaves are differentiated each result block keeps its taped value
         (`tensor`)."""
         shared = super(ScenarioValuation, self).update_factors(params, base_date)
         # the base currency's price is identically one, as no model simulates it either
@@ -2883,8 +2880,8 @@ class ScenarioValuation(BaseValuation):
         for key in [key for key in self.static_factors if key.type in
                     SuppliedValuesModel.factor_types and key != one] if params['Scenarios'] else []:
             process = self.stoch_factors[key] = SuppliedValuesModel(self.static_factors.pop(key), None)
-            process.factor_key = key
-            self.stoch_var[key] = self.static_var.pop(key)
+            process.leaves = [leaf for leaf, _ in self.split(key, process.factor.current_value())]
+            self.stoch_var.update((leaf, self.static_var.pop(leaf)) for leaf in process.leaves)
         self.all_factors = {**self.stoch_factors, **self.static_factors}
         shared.Report_Currency = get_fxrate_factor(
             utils.check_rate_name(params['Currency']), self.static_factors, self.stoch_factors)
@@ -2937,8 +2934,8 @@ class ScenarioValuation(BaseValuation):
                       for key, leaf in self.stoch_var.items()}, len(scenarios))
         for _, node in self.nodes():
             node.Calc_res.clear()
-        for key, process in self.stoch_factors.items():
-            shared.t_Scenario_Buffer[key] = process.generate(shared)
+        for process in self.stoch_factors.values():
+            shared.t_Scenario_Buffer.update(process.generate(shared))
         # the first pass measures what a scenario takes, the peak from it on the run's own
         probe = shared.one.is_cuda and self.scenario_bytes is None
         if probe:
@@ -4819,9 +4816,7 @@ class SIMM(NettingSetCalculation):
             bump.move[1] for bumps in self.bumped for bump in bumps if bump.move[0] in self.VEGAS}}
         self.scenarios = {move: self.move(move) for move in moves}
         self.valuation['Scenarios'] = list(self.scenarios.values())
-        found = super(SIMM, self).base(self.surfaces)
-        self.standing = [value for value, _ in found]
-        return found
+        return super(SIMM, self).base(self.surfaces)
 
     def reach(self, base):
         """`[(move, [index])]` - every move the trades valued in `base` take, in a fixed order,
@@ -4836,32 +4831,31 @@ class SIMM(NettingSetCalculation):
 
     def values(self, work):
         """`{(index, move): change}` - each `(move, indices)` of `work` a scenario, its market the
-        move's, priced in passes (`ScenarioValuation.passes`), and each trade of `indices` read off
-        its value there less on the standing market: priced in the same pass, so the two share
-        its arithmetic, or for a market stating a static factor, priced alone, off the base. A
+        move's, priced in passes (`ScenarioValuation.passes`) beside the standing market, and each
+        trade of `indices` read off its value there less on the standing market in the same pass,
+        so the two share its arithmetic; a move states no factor a scenario axis does not carry. A
         trade valued to nothing finite is refused by name; under Graph `{(index, move):
         derivative}` off each trade of `work` (`derivatives`)."""
         if self.graph:
             return self.derivatives(work)
         scenarios, found = [self.scenarios[move] for move, _ in work], {}
-        batched, alone = self.compiled.passes(self.shared, scenarios)
+        batched, _ = self.compiled.passes(self.shared, scenarios)
 
-        def priced(chunk, standing):
+        def priced(chunk):
             """Per position of `chunk`, each trade's value on its market and on the standing one."""
-            valued = self.value(([{}] if standing else []) + [scenarios[at] for at in chunk])
-            return [(column, valued[0] if standing else self.standing)
-                    for column in (valued[1:] if standing else valued)]
+            valued = self.value([{}] + [scenarios[at] for at in chunk])
+            return [(column, valued[0]) for column in valued[1:]]
 
         def finite(value):
             return value is not None and math.isfinite(value)
 
-        for chunk, standing in [(chunk, True) for chunk in batched] + [([at], False) for at in alone]:
-            columns = priced(chunk, standing)
+        for chunk in batched:
+            columns = priced(chunk)
             if len(chunk) > 1 and not all(finite(column[index]) and finite(base[index]) for (
                     column, base), at in zip(columns, chunk) for index in work[at][1]):
                 # a pricer refusing one market leaves its trade unvalued on all, so each is priced
                 # alone and the refusal names its own move
-                columns = [priced([at], standing)[0] for at in chunk]
+                columns = [priced([at])[0] for at in chunk]
             for (column, base), at in zip(columns, chunk):
                 move, indices = work[at]
                 for index in indices:

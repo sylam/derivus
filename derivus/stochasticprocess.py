@@ -6382,26 +6382,27 @@ class SuppliedValuesModel(StochasticProcess):
     """The values its calculation supplies (`calculation.ScenarioValuation`): one row, the date
     the calculation values on, and one path a scenario, the factor as that scenario's market
     states it. It draws nothing, has no dynamics and is no simulation's, so it is constructed by
-    its calculation alone, never named in `Model Configuration`, and `generate` is all it does."""
+    its calculation alone, never named in `Model Configuration`, and `generate` is all it does. Its
+    `leaves` are the factor's compiled leaves, a surface stating parameters one a parameter."""
 
+    #: The spots, each published on one value a scenario.
+    SPOTS = ('CommodityPrice', 'EquityPrice', 'FxRate', 'ObservedBasis', 'PriceIndex')
     #: The factor types a scenario axis is carried for, each read off `t_Scenario_Buffer` where a
-    #: process publishes it; a vol surface or space, a model's parameters and a correlation are
-    #: read off their static leaf alone.
-    factor_types = ('CommodityPrice', 'DividendRate', 'EquityPrice', 'ForwardPrice', 'ForwardRate',
-                    'FxRate', 'InflationRate', 'InterestRate', 'ObservedBasis', 'PriceIndex',
-                    'SurvivalProb')
+    #: process publishes it: the spots and every curve, vol surface and vol space; a model's
+    #: parameters and a correlation are read off their static leaf alone.
+    factor_types = SPOTS + tuple(
+        utils.OneDimensionalFactors + utils.TwoDimensionalFactors + utils.ThreeDimensionalFactors)
 
     def basis_decay(self):
         """A supplied basis has no dynamics, so it is held where it stands, as a static one is."""
         return 1.0, 0.0
 
     def generate(self, shared_mem):
-        """The pass's values of this factor as its calculation supplied them, scenarios last
-        (`calculation.Scenario_State.reset`), on the one row: `[1, tenors, scenarios]` a curve's,
-        `[1, scenarios]` a spot's."""
-        values = shared_mem.t_Supplied[self.factor_key]
-        return values.unsqueeze(0) if self.factor_key.type in utils.OneDimensionalFactors else (
-            values.reshape(1, -1))
+        """`{leaf: values}` - the pass's values of each of `leaves` as its calculation supplied
+        them, scenarios last (`calculation.Scenario_State.reset`), on the one row: `[1, scenarios]`
+        a spot's, `[1, nodes, scenarios]` a curve's, a surface's or a surface parameter's."""
+        return {leaf: shared_mem.t_Supplied[leaf].reshape(1, -1) if leaf.type in self.SPOTS else
+                shared_mem.t_Supplied[leaf].unsqueeze(0) for leaf in self.leaves}
 
 
 def process_class(sp_type):
