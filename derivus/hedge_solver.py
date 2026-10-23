@@ -26,9 +26,8 @@ import torch
 from . import utils
 from .hedge_bundle import (
     _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed,
-    wealth_step,
+    initial_q_from_runtime, per_contract_kappa, turnover_charge, wealth_step,
 )
-from .hedge_runtime import per_contract_kappa, initial_q_from_runtime, turnover_charge
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
 # into every artifact so a loader can tell which solver produced a checkpoint.
@@ -40,6 +39,15 @@ def _packed(values):
     spread over columns because a `Total_Position_Schedule` narrows the ladder per step, and a
     per-rung column layout would ragged the header the dump writes exactly once."""
     return " ".join("%.6g" % float(v) for v in values)
+
+
+def _tail_stats(u_fn, wT, u_sum=None):
+    """Terminal-P&L stats shared by the verdict and the stepper rollout: the objective mean —
+    `u_fn(wT)`, or the accumulated step-sum when the caller carries one — and the dollar tail."""
+    p5 = torch.quantile(wT, 0.05)
+    cvar5 = wT[wT <= p5].mean() if (wT <= p5).any() else p5
+    return {"u_mean": float((u_fn(wT) if u_sum is None else u_sum).mean()),
+            "wT_mean": float(wT.mean()), "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
 
 
 @dataclass
@@ -80,7 +88,7 @@ class HedgeActionSpace:
         the signed NET cover, each rung split across the legs by the schedule. `grid_at` dispatches
         on which universe is configured; downstream consumes the rows either way.
       * `kappa(tradables_sim, t)` — the per-hedge turnover kappa at sim-grid `t`, off the single
-        `hedge_runtime.per_contract_kappa` rule.
+        `hedge_bundle.per_contract_kappa` rule.
       * `initial_q(batch, device)` — the opening book `q0`.
       * `turnover_cost(dq, kappa)` / `schedule_key(schedule)` — the friction charge on a reposition
         and the comparison-stable corridor stamp."""
@@ -370,7 +378,7 @@ class HedgeActionSpace:
 
     def kappa(self, tradables_sim, t_index, calendar=False):
         """Per-hedge kappa `(n_hedge,)` at sim-grid `t_index` — each instrument's mean mark
-        through `hedge_runtime.per_contract_kappa` (the single turnover-cost rule). The step's
+        through `hedge_bundle.per_contract_kappa` (the single turnover-cost rule). The step's
         scalar vol (when a Vol_Scale spread is configured) drives per_contract_kappa's Vol_Scale.
         `calendar=True` prices the MATCHED leg at `Calendar_Spread_Bps` instead of the outright
         half-spread — the rate `turnover_cost` charges matched volume at."""
@@ -417,7 +425,7 @@ class HedgeActionSpace:
         return initial_q_from_runtime(self.runtime, batch, device)
 
     def turnover_cost(self, delta_contracts, kappa, kappa_cal=None):
-        """The solver-side name for `hedge_runtime.turnover_charge`, the single reposition-cost
+        """The solver-side name for `hedge_bundle.turnover_charge`, the single reposition-cost
         rule the realized accounting reads too: the L1 sum `Σ_i |Δ_i|·κ_i`, or — with the matched
         -leg `kappa_cal` from `calendar_kappa` — a greedy sweep over consecutive maturities that
         charges matched volume one calendar crossing and every unmatched lot its own leg's kappa.
@@ -1115,6 +1123,24 @@ class DiffSolver:
         `(..., n_hedge)`, `dL` is `(...)`. Expiry is composed by callers through `live` on dF."""
         return wealth_step(W, q, self.contract_size, dF, dL)
 
+    def _outer_dF(self, t, rows=slice(None)):
+        """The OUTER-realized one-step hedge move `F_{t+1} − F_t`, stacked `(..., n_hedge)` in
+        hedge order — the one spelling behind the bank roll, the verdict, the stepper rollout's
+        drift monitor and the constructed policy."""
+        return torch.stack(
+            [self.tradables_sim[r][t + 1][rows] - self.tradables_sim[r][t][rows]
+             for r in self.hedges], dim=-1)
+
+    def _risk_adjusted(self, C1f):
+        """`E_inner[C]`, downside-adjusted when `DiffV2_Risk_Kappa` is armed: the mean less kappa
+        times the downside semideviation over the inner draws. The one scoring rule of `_decide`'s
+        chunk loop, its incumbent, and `_score_actions`."""
+        C1 = C1f.mean(-1)
+        if self.risk_kappa > 0.0:
+            dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)
+            C1 = C1 - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
+        return C1
+
     # ---- inner-MC one-step quantities at outer t -----------------------------
     def _inner_step(self, t):
         """Fork inner MC at t (resolve_structure / resolve_hedge_structure under the hood)
@@ -1220,10 +1246,7 @@ class DiffSolver:
                     # the DAY's reward, read off the CHARGED W1 so a move pays its toll inside the
                     # step that made it rather than at a terminal the reward no longer reaches
                     C1f = C1f + self._u_step(W1, W[:, None, None], t + 1)
-                C1 = C1f.mean(-1)                                                         # E_inner[C] (B,c)
-                if self.risk_kappa > 0.0:        # downside-aware: penalise per-action downside dispersion
-                    dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)                         # negatives only
-                    C1 = C1 - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
+                C1 = self._risk_adjusted(C1f)                                             # E_inner[C] (B,c)
                 if limit:
                     dq_c = a_live[None, :, :] - q_live[:, None, :]                        # (B,c,n_h)
                     # under a weight schedule the control is the NET cover, so the band measures
@@ -1270,10 +1293,7 @@ class DiffSolver:
                 if self.running_wealth:
                     # the incumbent earns its own day's increment, priced as every rival's
                     C1f_inc = C1f_inc + self._u_step(W1, W[:, None, None], t + 1).reshape(B, Bi)
-                inc = C1f_inc.mean(-1)
-                if self.risk_kappa > 0.0:
-                    dev = (C1f_inc - inc.unsqueeze(-1)).clamp(max=0.0)
-                    inc = inc - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
+                inc = self._risk_adjusted(C1f_inc)
                 diff = best_f - C1f_inc                                                   # (B,Bi) paired
                 se = diff.std(-1) / math.sqrt(Bi)
                 move = diff.mean(-1) > self.aspace.deadband_sigma * se
@@ -1350,10 +1370,7 @@ class DiffSolver:
                 oob.append((t, lo, hi, float((tot < lo - tol).float().mean()
                                              + (tot > hi + tol).float().mean()),
                             float(tot.min()), float(tot.max())))
-            dF = torch.stack(
-                [self.tradables_sim[ref][t + 1] - self.tradables_sim[ref][t] for ref in self.hedges],
-                dim=-1)                                                                  # (B_outer, n_hedge)
-            W = self._wealth_step(W, q, dF, L[t + 1] - L[t])
+            W = self._wealth_step(W, q, self._outer_dF(t), L[t + 1] - L[t])
             q_prev = q
         if oob:
             worst = max(oob, key=lambda r: r[3])
@@ -1673,9 +1690,7 @@ class DiffSolver:
         last_W_pre = {}            # ...and the wealth it launched from (the ratio needs the base)
         with torch.no_grad():
             for t in sweep_ts:
-                dF_o = torch.stack(
-                    [self.tradables_sim[r][t + 1][rows] - self.tradables_sim[r][t][rows]
-                     for r in self.hedges], dim=-1)                                       # (n, n_hedge)
+                dF_o = self._outer_dF(t, rows)                                     # (n, n_hedge)
                 dL_o = (L[t + 1] - L[t])[rows]
                 dF, dL, m1, _, live = inner_cache[t]
                 # in-sim validation CUSUM: the fork's expectation minus the outer realized move,
@@ -1738,13 +1753,7 @@ class DiffSolver:
                                     + self._u_step(last_W_pre[p] + last_net_inc[p] - unwind,
                                                    last_W_pre[p], self.T_dec))
 
-        def stats(wT, u_sum=None):
-            p5 = torch.quantile(wT, 0.05)
-            cvar5 = wT[wT <= p5].mean() if (wT <= p5).any() else p5
-            return {"u_mean": float((self._u(wT) if u_sum is None else u_sum).mean()),
-                    "wT_mean": float(wT.mean()),
-                    "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
-        out = {p: stats(W[p], None if u_run is None else u_run[p]) for p in W}
+        out = {p: _tail_stats(self._u, W[p], None if u_run is None else u_run[p]) for p in W}
         out["validation_drift_z"] = round(vdrift_z / max(1, vdrift_n) * (vdrift_n ** 0.5), 4)
         # THE NULL: the per-step std of the within-model standardized residual, so the tripwire
         # boundary at inference is k * null_sigma * sqrt(t). Stamped with the frame.
@@ -1759,7 +1768,7 @@ class DiffSolver:
         out["argmax_charged"] = bool(self.cost_aware or self.position_state)
         out["u_mean_is_step_sum"] = bool(self.running_wealth)
         for p in ("greedy", "textbook"):
-            net_stats = stats(W[p] - cost[p], None if u_net is None else u_net[p])
+            net_stats = _tail_stats(self._u, W[p] - cost[p], None if u_net is None else u_net[p])
             out[p]["turnover_cost_mean"] = float(cost[p].mean())
             out[p].update({f"{k}_net": v for k, v in net_stats.items()})
         # greedy position summary: mean over the rollout of |q| per instrument (is it hedging?)
@@ -1805,11 +1814,7 @@ class DiffSolver:
                 C1f = self._continuation(nets, market, Wx.reshape(-1), t + 1, p1).reshape(B, K, Bi)
                 if self.running_wealth:
                     C1f = C1f + self._u_step(Wx, W[:, None, None], t + 1)   # the day's own reward
-                C1 = C1f.mean(-1)
-                if self.risk_kappa > 0.0:
-                    dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)
-                    C1 = C1 - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
-                return C1[0]
+                return self._risk_adjusted(C1f)[0]
 
             charged = rank(W1c)
             return (charged if W1c is W1 else rank(W1)), charged, W1c[0]
@@ -2020,9 +2025,7 @@ class DiffSolver:
                         # MODEL-DRIFT CUSUM: the model's one-day forecast minus what the market
                         # then did, summed. Mean-zero under correct assumptions, and standardized
                         # by the fork's own dispersion so the threshold is scale-free.
-                        obs_dF = torch.stack(
-                            [self.tradables_sim[r][t + 1] - self.tradables_sim[r][t]
-                             for r in self.hedges], dim=-1)                       # (B, n_h)
+                        obs_dF = self._outer_dF(t)                                # (B, n_h)
                         obs_dL = self.liability_sim[t + 1] - self.liability_sim[t]
                         rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
                         rL = dL.mean(1) - obs_dL                                  # (B,)
@@ -2084,14 +2087,9 @@ class DiffSolver:
                 u_sum = u_sum + self._u_step(wT.to(torch.float32), w_prev, self.T_dec)  # tail
             return wT, u_sum, drift
 
-        def stats(wT, u_sum=None):
-            p5 = torch.quantile(wT, 0.05)
-            cvar5 = wT[wT <= p5].mean() if (wT <= p5).any() else p5
-            return {"u_mean": float((self._u(wT.to(torch.float32)) if u_sum is None
-                                     else u_sum).mean()),
-                    "wT_mean": float(wT.mean()), "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
         rolled = {p: roll(p) for p in ("greedy", "textbook", "nohedge")}
-        out = {p: stats(wT, u_sum) for p, (wT, u_sum, _) in rolled.items()}
+        out = {p: _tail_stats(lambda w: self._u(w.to(torch.float32)), wT, u_sum)
+               for p, (wT, u_sum, _) in rolled.items()}
         # one drift monitor per rollout policy; the greedy one is THE inference guard
         out["drift_monitor"] = rolled["greedy"][2]
         out["u_mean_is_step_sum"] = bool(self.running_wealth)
@@ -2879,7 +2877,6 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
                  {k: round(v["v0_mean"], 4) for k, v in comparison.items()},
                  ladder["holds"])
     return {
-        "policy": None,
         "evaluation_output": {
             "solver_name": primary.solver_name,
             "solver_result": primary,
@@ -2989,8 +2986,7 @@ class DiffSolverV2(DiffSolver):
         book)`."""
         L, T = self.liability_sim, self.T_dec
         rep = [self._replication_hedge(t) for t in range(T)]
-        dF = [torch.stack([self.tradables_sim[r][t + 1] - self.tradables_sim[r][t]
-                           for r in self.hedges], dim=-1) for t in range(T)]
+        dF = [self._outer_dF(t) for t in range(T)]
         LT = L[T]
         # THE CLAIRVOYANT RESERVE, backward per path: req_t is the minimum book at t from which the
         # known remaining path can be played without dipping under the floor. Days a futures hedge
@@ -3202,10 +3198,7 @@ class DiffSolverV2(DiffSolver):
             q = torch.minimum(torch.maximum(q_star[t] + noise * mask, self.q_lo), self.q_hi)
             if self.aspace.schedule is not None:
                 q = self.aspace.project_to_corridor(q, t)
-            dF = torch.stack(
-                [self.tradables_sim[ref][t + 1] - self.tradables_sim[ref][t] for ref in self.hedges],
-                dim=-1)
-            W = self._wealth_step(W, q, dF, L[t + 1] - L[t])
+            W = self._wealth_step(W, q, self._outer_dF(t), L[t + 1] - L[t])
             q_prev = q
         if self.log_ratio:
             bw = torch.stack(W_list)

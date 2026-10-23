@@ -9,7 +9,7 @@
 
 ## One boundary
 
-`construct_hedge_runtime` (`hedge_runtime.py`) is the only place the `Hedging_Problem` JSON block
+`construct_hedge_runtime` (`hedge_bundle.py`) is the only place the `Hedging_Problem` JSON block
 is read and validated. It returns the normalized **runtime** every consumer indexes by key:
 canonical lowercased modes, the instrument / cash-account / hedge name sets, per-instrument
 metadata, the accounting rules (position limits, turnover cost, spreads, margin funding, corridor),

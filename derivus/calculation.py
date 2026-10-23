@@ -42,8 +42,8 @@ from .schema import (F, REQUIRED, Row, declared_defaults, declared_settlements, 
 from .utils import (CASHFLOW_INDEX_FixedAmt, CASHFLOW_INDEX_FixedRate, CASHFLOW_INDEX_Nominal,
                     CASHFLOW_INDEX_Pay_Day, CASHFLOW_INDEX_Year_Frac, RESET_INDEX_Reset_Day,
                     RESET_INDEX_Value, TensorCashFlows, TensorResets, walk_schedules)
-from .hedge_runtime import construct_hedge_runtime
-from .hedge_bundle import Bundle, run_hedge_execution, HedgeRuntimeExecutionResult
+from .hedge_bundle import (Bundle, HedgeRuntimeExecutionResult, construct_hedge_runtime,
+                           run_hedge_execution)
 from .hedge_solver import StreamingSolve
 
 class Aggregation(object):

@@ -79,7 +79,7 @@ class ConstructMarkdown(object):
         'API_Usage': ('API & Usage', '.calculation', 'documentation'),
         # The hedging stack spans three modules — the JSON boundary, the bundle/environment and
         # the solver — so this section names a tuple and their class docs merge page by page.
-        'Hedging': ('Hedging', ('.hedge_runtime', '.hedge_bundle', '.hedge_solver'),
+        'Hedging': ('Hedging', ('.hedge_bundle', '.hedge_solver'),
                     'documentation'),
         # Developer is static-only: the attribute is one no class defines.
         'Developer': ('Developer', '.stochasticprocess', 'documentation_developer'),

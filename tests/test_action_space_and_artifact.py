@@ -24,7 +24,7 @@ import pytest
 import torch
 
 import derivus as rf
-from derivus.hedge_runtime import per_contract_kappa
+from derivus.hedge_bundle import per_contract_kappa
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        'fixtures', 'policy_test_simulate_only.json')

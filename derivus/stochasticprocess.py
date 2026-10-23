@@ -553,7 +553,7 @@ class StochasticProcess(object):
         """Map this process's revealed log-conditional-variance surface `log_h` (T, B) to
         annualized fractional vol (T, B), or None if the process exposes no log-variance
         sufficient statistic. Consumed by the state-dependent bid/offer half-spread
-        (`hedge_runtime.per_contract_kappa` Vol_Scale) — the per-step, per-path vol driver.
+        (`hedge_bundle.per_contract_kappa` Vol_Scale) — the per-step, per-path vol driver.
         Default None."""
         return None
 
