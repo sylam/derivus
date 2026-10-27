@@ -179,6 +179,30 @@ features kept ahead of their build, not rows to close.
   takes the scenario axis and the walking kit its scalars per path. The same shape serves the
   Hull-White two-factor and GBM term-structure families under a scenario run through the credit
   Monte Carlo, where a scenario surface wants their parameters moved. M to L.
+- **One vol-scenario language across time: the bump, the hedge world and judgement exposure.**
+  The engine stresses volatility for three reasons — SIMM's bump (built: one date, B supplied
+  markets, but its moves are the extract's own code rather than a declaration), a hedge world
+  whose skew moves, and an exposure run under judgement vol (a real-world PFE; a stressed CVA is
+  a desk ruling, never a default) — and all three are one statement: the factor's value over the
+  simulation is its base under a declared MOVE, in declared COORDINATES on a declared TERM AXIS.
+  Coordinates: `Nodes` (surface points), `Quotes` (pillar quotes riding the fit's
+  `Quote_Sensitivity` Jacobian at its stationary point — the row above's map, and the space
+  dynamics are calibrated in), or `Parameters` (the model's own, for judgement on the model).
+  Term axis: one date (the bump's degenerate case), dated rows interpolated over the grid (the
+  judgement path), or a named process (the hedge world: an OU on quote coordinates mapped
+  `theta* + J dq`, innovations in transformed coordinates — log for a vol-of-vol, atanh for a
+  leverage, the simulation cap's corner respected — correlated through the standard rows and
+  published so the checkpointed recompute re-reads them; the linearization measured by repricing
+  the pillars under theta_t against the intended quotes). Moves compose onto the base AT
+  PUBLICATION, never at read: `utils.VolSurface` gains the time-row gather curves already have
+  (its one-row refusal retires), `implied_tensor` reads the parameter factor's published row
+  where a process drives it, and no pricer changes. An undeclared factor stays constant (the
+  `NoModel` rule), so every existing document is bit-identical; SIMM's bump restates its moves
+  in the language, a fold. Under Q a moving theta is a declared modeling choice: a hedge world
+  and a PFE run carry it, a booked CVA does not without a ruling. Acceptance: an FX hedge world
+  with vanilla option tradables marked under the moving skew, and an exposure document whose
+  dated vol path moves the profile while the undeclared run stays bit-identical. M–L, riding the
+  vega row's machinery.
 - **Historical VaR and stress as readers of the scenario batch.** `ScenarioValuation` prices B
   given markets on one date; a reader fills the batch and reports. Historical VaR fills it from
   the archive the historical calibrations read, each day's shock applied to today's market,
