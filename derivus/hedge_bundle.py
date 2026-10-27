@@ -1135,7 +1135,8 @@ class Bundle:
         '- **Tradables** — `tradables` / `tradables_sim`: the per-instrument mark series, harvested',
         '  from the priced deal tree via `DealStructure.tensor_marks`. An instrument that fails to',
         '  price is ABSENT rather than zero, and a fork reads absence as an expired contract.',
-        '- **Liability** — `liability_mtm` / `liability_sim`, plus `realized_cashflows`.',
+        '- **Liability** — `liability_mtm` / `liability_sim`, plus `realized_cashflows`, and',
+        '  `unfixed_at`: the signed quantity its fixings still carry after a row.',
         '- **Factors** — the simulated factor paths, and `privileged_factors`: whatever each process',
         '  publishes as market state.',
         '- **Frame** — `utility_scale` (the objective scale `c`), its optional per-decision-step',
@@ -1183,6 +1184,7 @@ class Bundle:
         # per-step c_t under Utility_Scale_Mode='conditional_sim'
         self.utility_scale_schedule = None
         self.total_leg_volume = 0.0
+        self.fixings = ()                   # ((day offset, signed quantity), ...) of the liability
         self.last_settlement_index = None
         self.last_live_mtm_index = 0
         # inner-MC forks, attached by HedgeMonteCarlo.execute for Execution_Mode='solve_hedge'
@@ -1194,7 +1196,7 @@ class Bundle:
     def from_batch(cls, base_date, business_day, time_grid_days, tradable_blocks,
                    factor_tensor_blocks, hedge_profile_blocks, num_batches, stoch_factors,
                    runtime, privileged_factor_blocks=None, total_leg_volume=None,
-                   last_payment_day=None):
+                   last_payment_day=None, fixings=()):
         """Assemble the per-batch tensor blocks the HedgeMonteCarlo simulator produced into one
         bundle: join them along the batch axis, then run the four resolve stages.
 
@@ -1214,7 +1216,7 @@ class Bundle:
             + [int(t.shape[0]) for t in tradables.values()]
             + [int(t.shape[0]) for t in factors.values()])
         self._resolve_tradables(tradables, time_grid_days, steps, runtime)
-        self._resolve_liability(mtm, cashflows, steps, total_leg_volume, last_payment_day)
+        self._resolve_liability(mtm, cashflows, steps, total_leg_volume, last_payment_day, fixings)
         self._resolve_factors(factors, privileged_factor_blocks or {}, stoch_factors, steps)
         self._resolve_frame(runtime, stoch_factors)
         return self
@@ -1276,11 +1278,13 @@ class Bundle:
             return realized.to(dtype=tensor.dtype)
         return tensor[:1].expand((self.history_rows,) + tuple(tensor.shape[1:])).contiguous()
 
-    def _resolve_liability(self, mtm, cashflows, steps, total_leg_volume, last_payment_day):
-        """Stage 2 — the marked liability, the realized cashflow ledger, and the two schedule
-        scalars the utility scale needs. `last_live_mtm_index` is the structural pre-settlement
-        terminal: the grid appends one clean-exit row where the liability settles to zero, so the
-        last LIVE mtm row is `steps - 2` — the single source for the DP depth and the L_T read."""
+    def _resolve_liability(self, mtm, cashflows, steps, total_leg_volume, last_payment_day,
+                           fixings):
+        """Stage 2 — the marked liability, the realized cashflow ledger, the two schedule
+        scalars the utility scale needs and the liability's fixings `unfixed_at` reads.
+        `last_live_mtm_index` is the structural pre-settlement terminal: the grid appends one
+        clean-exit row where the liability settles to zero, so the last LIVE mtm row is
+        `steps - 2` — the single source for the DP depth and the L_T read."""
         prefixed = bool(self.spot_price_history)          # the stage-1 prefix gate
         if mtm is not None:
             mtm = _align_time_axis(mtm, steps)
@@ -1299,6 +1303,7 @@ class Bundle:
         self.last_live_mtm_index = int(steps - 2)
         if total_leg_volume:
             self.total_leg_volume = float(total_leg_volume)
+        self.fixings = tuple(fixings)
         if last_payment_day is not None:
             # Last (history-prefixed) grid step still strictly before the final payment.
             pending = [i for i, d in enumerate(self.time_grid_days_cpu) if d < last_payment_day]
@@ -1653,6 +1658,12 @@ class Bundle:
         for tensor in self.realized_cashflows.values():
             total = total + tensor[time_index].to(dtype=torch.float32, device=self.device)
         return total
+
+    def unfixed_at(self, time_index):
+        """Signed liability quantity still to fix after full-grid step `time_index`: the summed
+        quantity of every liability fixing dated after that row."""
+        day = self.time_grid_days_cpu[int(time_index)]
+        return sum(quantity for fixing_day, quantity in self.fixings if fixing_day > day)
 
     def vol_at(self, time_index):
         """Scalar annualized vol at full-grid step `time_index`, or None when no vol series was

@@ -288,15 +288,16 @@ class DealStructure(object):
 
     def aggregate_leg_descriptors(self):
         """Reduce the per-deal cashflow descriptors over this structure and its
-        sub-structures: summed |notional| across all legs, and the latest pay-day. A leg
-        with no schedule contributes (0.0, None)."""
-        total_volume, last_payment_day = 0.0, None
-        for vol, pay in ([dd.Instrument.leg_descriptors(dd) for dd in self.dependencies] +
-                         [sub.aggregate_leg_descriptors() for sub in self.sub_structures]):
+        sub-structures: summed |notional| across all legs, the latest pay-day, and every leg's
+        fixings. A leg with no schedule contributes (0.0, None, ())."""
+        total_volume, last_payment_day, fixings = 0.0, None, ()
+        for vol, pay, fix in ([dd.Instrument.leg_descriptors(dd) for dd in self.dependencies] +
+                              [sub.aggregate_leg_descriptors() for sub in self.sub_structures]):
             total_volume += vol
+            fixings += fix
             if pay is not None:
                 last_payment_day = pay if last_payment_day is None else max(last_payment_day, pay)
-        return total_volume, last_payment_day
+        return total_volume, last_payment_day, fixings
 
     def tensor_marks(self):
         """Stored per-deal price series keyed by deal Reference, recursing sub-structures.
@@ -3386,10 +3387,12 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         return shared_mem
 
     def _liability_schedule_scalars(self):
-        """`(total_leg_volume, last_payment_day)` off the cashflow schedules - the summed |notional|
-        across all liability legs and the latest payment day as a day offset from base_date, which
-        the symlog utility-scale needs. `Bundle.from_batch` maps that day onto the
-        (history-prefixed) bundle time grid to recover `last_settlement_index`."""
+        """`(total_leg_volume, last_payment_day, fixings)` off the cashflow schedules - the summed
+        |notional| across all liability legs and the latest payment day as a day offset from
+        base_date, which the symlog utility-scale needs, and every liability fixing as a signed
+        `(day offset, quantity)` row, the exposure the passive hedge offsets as it fixes.
+        `Bundle.from_batch` maps that day onto the (history-prefixed) bundle time grid to recover
+        `last_settlement_index`."""
         return self.liabilities.aggregate_leg_descriptors()
 
     def _reveal_transform(self, key, block, kind):
@@ -3521,7 +3524,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # exposes via `privileged_factors()`.
         (factor_tensor_blocks, tradable_blocks, hedge_profile_blocks,
          privileged_factor_blocks) = _new_blocks()
-        total_leg_volume, last_payment_day = self._liability_schedule_scalars()
+        total_leg_volume, last_payment_day, fixings = self._liability_schedule_scalars()
         bus_day = self.config.holidays.get(
             self.params['Calendar'], {'businessday': pd.offsets.BDay(1)})['businessday']
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
@@ -3676,7 +3679,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     tradable_blocks, factor_tensor_blocks, hedge_profile_blocks, 1,
                     self.stoch_factors, normalized_runtime,
                     privileged_factor_blocks=privileged_factor_blocks,
-                    total_leg_volume=total_leg_volume, last_payment_day=last_payment_day)
+                    total_leg_volume=total_leg_volume, last_payment_day=last_payment_day,
+                    fixings=fixings)
                 self._attach_inner_mc(bundle, batch_buffer, shared_mem, base_date, tradable_refs)
                 if run == 0:
                     streaming_solve.warmup(bundle)
@@ -3706,6 +3710,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             privileged_factor_blocks=privileged_factor_blocks,
             total_leg_volume=total_leg_volume,
             last_payment_day=last_payment_day,
+            fixings=fixings,
         )
 
         evaluation_summary = None

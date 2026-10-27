@@ -201,14 +201,14 @@ class HedgeActionSpace:
         `Step <= t` (piecewise-constant; clamps to the first knot for t before it) as an
         `(n_hedge,)` tensor, intersected with the legs that can actually carry a contract and
         renormalized over what is left: the INACTIVE legs (`Active_Hedge_Indices`) and, when the
-        caller passes one, the EXPIRED legs (`live`).
+        caller passes one, the EXPIRED legs (`live`). Absent a table every leg weighs one.
 
         The live intersection happens HERE, before the ladder is built, rather than as a filter
         afterwards: a knot's weight on a dead leg is cover the book cannot realize, so leaving it
         in makes every rung advertise a net it masks away from and makes a corridor the live legs
         can satisfy look infeasible."""
-        w = self.weights[0][1]
-        for step, knot in self.weights:
+        w = (1.0,) * self.n_hedge if self.weights is None else self.weights[0][1]
+        for step, knot in self.weights or ():
             if step > t:
                 break
             w = knot
@@ -1324,6 +1324,18 @@ class DiffSolver:
             q[i] = (-beta / (self.contract_size[i] * max(self.n_active, 1)))
         return torch.minimum(torch.maximum(q, self.q_lo), self.q_hi)
 
+    def _passive_hedge(self, t, live, batch):
+        """The passive book at decision step t `(batch, n_hedge)`: minus the liability quantity
+        still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`
+        and held in contracts, clamped to the position limits and projected into the corridor as
+        the textbook book is."""
+        unfixed = self.bundle.unfixed_at(self.bundle.initial_time_index + t)
+        # a fully fixed swap holds nothing, also where no live leg is left to split it onto
+        q = (-unfixed * self.aspace._weights_at(t, live) / self.contract_size if unfixed
+             else torch.zeros(self.n_hedge, device=self.device))
+        q = torch.minimum(torch.maximum(q, self.q_lo), self.q_hi)
+        return self.aspace.project_to_corridor(q[None].expand(batch, self.n_hedge), t)
+
     def _build_bank(self, gen):
         """Operating-region bank — roll the OUTER paths forward (cheap; outer-realised
         moves only, no inner MC): hold q = clamp(q_rep_t + noise) each step, accumulate
@@ -1646,8 +1658,9 @@ class DiffSolver:
     def _verdict(self, nets, inner_cache, sweep_ts, rows=slice(None)):
         """Roll the fitted argmax policy forward over [t_min, T_dec] on the OUTER paths in
         `rows` (wealth advanced by the outer-realised dF/dL), starting FLAT at t_min, and
-        compare terminal-wealth downside against a textbook diagonal-min-var delta hedge and
-        no hedge. The argmax uses the cached inner-MC E[C_{t+1}] estimate; the realised
+        compare terminal-wealth downside against a textbook diagonal-min-var delta hedge, no
+        hedge, and the passive hedge short the liability's unfixed quantity (`_passive_hedge`).
+        The argmax uses the cached inner-MC E[C_{t+1}] estimate; the realised
         outcome uses the outer path. Pass held-out `rows` for an honest OUT-OF-SAMPLE verdict.
 
         Returns per-policy `{u_mean, wT_mean, wT_p5, wT_cvar5}`. The greedy policy should DOMINATE
@@ -1662,7 +1675,7 @@ class DiffSolver:
 
         Turnover cost is accounted in PARALLEL — entry from the OPENING book `q0`, per-step
         repositioning, and the terminal unwind under `Force_Flat_At_End` — the same three-part rule
-        the two benchmark tracks price their execution with, so all three `*_net` columns compare.
+        the two benchmark tracks price their execution with, so every `*_net` column compares.
         The wealth recursion itself stays cost-free, so these are DIAGNOSTICS on that
         approximation.
 
@@ -1673,12 +1686,12 @@ class DiffSolver:
         L = self.liability_sim
         t0 = self.t_min
         n = L[t0][rows].shape[0]
-        W = {p: L[t0][rows].clone() for p in ("greedy", "textbook", "nohedge")}
-        q_traj = {"greedy": [], "textbook": []}                                          # mean |q| per step
+        W = {p: L[t0][rows].clone() for p in ("greedy", "textbook", "nohedge", "passive")}
         # parallel turnover-cost DIAGNOSTIC, entry measured from the opening book
-        cost = {p: torch.zeros(n, device=self.device) for p in ("greedy", "textbook")}
+        cost = {p: torch.zeros(n, device=self.device) for p in ("greedy", "textbook", "passive")}
+        q_traj = {p: [] for p in cost}                                                  # mean q per step
         q0 = self.aspace.initial_q(n, self.device)
-        q_prev = {p: q0.clone() for p in ("greedy", "textbook")}
+        q_prev = {p: q0.clone() for p in cost}
         # running-wealth: the rollout's value is the SUM of the per-step rewards, accumulated along
         # the roll, and the net sum charges each step's own turnover into that step's increment
         vdrift_z, vdrift_s2, vdrift_n = 0.0, 0.0, 0
@@ -1713,10 +1726,11 @@ class DiffSolver:
                 # the same mandate as greedy (no schedule = identity)
                 q_tb = self.aspace.project_to_corridor(
                     self._replication_hedge(t)[None].expand(n, self.n_hedge), t)
+                q_pa = self._passive_hedge(t, live, n)
                 z = torch.zeros(n, self.n_hedge, device=self.device)
                 kappa_cal_t = self.aspace.calendar_kappa(self.tradables_sim, t)
                 step_cost = {}
-                for p, q_now in (("greedy", q_g), ("textbook", q_tb)):
+                for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("passive", q_pa)):
                     step_cost[p] = self.aspace.turnover_cost(q_now - q_prev[p], kappa_t,
                                                              kappa_cal_t)
                     cost[p] = cost[p] + step_cost[p]
@@ -1725,6 +1739,7 @@ class DiffSolver:
                 W["greedy"] = self._wealth_step(W["greedy"], q_g, dF_o, dL_o)
                 W["textbook"] = self._wealth_step(W["textbook"], q_tb, dF_o, dL_o)
                 W["nohedge"] = self._wealth_step(W["nohedge"], z, dF_o, dL_o)
+                W["passive"] = self._wealth_step(W["passive"], q_pa, dF_o, dL_o)
                 if u_run is not None:
                     # indexed by the step the increment ARRIVES at, as every other seam does: the
                     # knee an increment is measured under belongs to the day it lands on
@@ -1737,6 +1752,7 @@ class DiffSolver:
                             W_pre[p] + last_net_inc[p], W_pre[p], t + 1)
                 q_traj["greedy"].append(q_g.mean(0).tolist())
                 q_traj["textbook"].append(q_tb.mean(0).tolist())
+                q_traj["passive"].append(q_pa.mean(0).tolist())
             if self.force_flat:
                 # the unwind both benchmark tracks charge, so all three price one execution
                 kappa_T = self.aspace.kappa(self.tradables_sim, self.T_dec)
@@ -1767,7 +1783,7 @@ class DiffSolver:
         # of per-step ones - neither is readable off the figures
         out["argmax_charged"] = bool(self.cost_aware or self.position_state)
         out["u_mean_is_step_sum"] = bool(self.running_wealth)
-        for p in ("greedy", "textbook"):
+        for p in cost:
             net_stats = _tail_stats(self._u, W[p] - cost[p], None if u_net is None else u_net[p])
             out[p]["turnover_cost_mean"] = float(cost[p].mean())
             out[p].update({f"{k}_net": v for k, v in net_stats.items()})
@@ -1776,6 +1792,7 @@ class DiffSolver:
         out["greedy_mean_abs_q"] = gq.abs().mean(0).tolist()
         out["greedy_q_traj"] = q_traj["greedy"]          # full per-t mean book (audit trail)
         out["textbook_q_traj"] = q_traj["textbook"]      # corridor-projected benchmark book (audit)
+        out["passive_q_traj"] = q_traj["passive"]
         out["greedy_q_first"] = q_traj["greedy"][0] if q_traj["greedy"] else None
         out["greedy_q_mid"] = (q_traj["greedy"][len(q_traj["greedy"]) // 2]
                                if q_traj["greedy"] else None)
@@ -1959,10 +1976,10 @@ class DiffSolver:
         and the STEPPER'S OWN net wealth, never a verdict wealth recursion, so the decision cannot
         be contaminated by mis-accrued P&L.
 
-        Returns `{greedy, textbook, nohedge}` terminal-P&L stats in the verdict shape, with
-        `u_mean_is_step_sum` stating whether `u_mean` is a terminal utility or the running-wealth
-        sum. `Solver.DiffV2_Decision_Curve_Dump` hangs a per-decision CSV off the greedy roll; no
-        branch below it depends on whether it is on."""
+        Returns `{greedy, textbook, nohedge, passive}` terminal-P&L stats in the verdict shape,
+        with `u_mean_is_step_sum` stating whether `u_mean` is a terminal utility or the
+        running-wealth sum. `Solver.DiffV2_Decision_Curve_Dump` hangs a per-decision CSV off the
+        greedy roll; no branch below it depends on whether it is on."""
         from .hedge_bundle import BundleStepper, _tracking_error_value
         hist = self.bundle.initial_time_index
         sweep_set = set(int(t) for t in sweep_ts)
@@ -2020,6 +2037,8 @@ class DiffSolver:
                         # obey the corridor mandate too, so this is the same in-corridor min-var
                         # benchmark the verdict rolls
                         q = self.aspace.project_to_corridor(qt[None].expand(B, self.n_hedge), t)
+                    elif policy == "passive":
+                        q = self._passive_hedge(t, inner_cache[t][4], B)
                     else:
                         dF, dL, m1, _, live = inner_cache[t]
                         # MODEL-DRIFT CUSUM: the model's one-day forecast minus what the market
@@ -2087,7 +2106,7 @@ class DiffSolver:
                 u_sum = u_sum + self._u_step(wT.to(torch.float32), w_prev, self.T_dec)  # tail
             return wT, u_sum, drift
 
-        rolled = {p: roll(p) for p in ("greedy", "textbook", "nohedge")}
+        rolled = {p: roll(p) for p in ("greedy", "textbook", "nohedge", "passive")}
         out = {p: _tail_stats(lambda w: self._u(w.to(torch.float32)), wT, u_sum)
                for p, (wT, u_sum, _) in rolled.items()}
         # one drift monitor per rollout policy; the greedy one is THE inference guard
@@ -2641,7 +2660,7 @@ class DiffSolver:
         nothing was fitted, and re-emitting the file's policy would claim this run as its
         provenance.
 
-        The downside verdict — greedy policy against textbook delta hedge and no hedge — is
+        The downside verdict — greedy policy against textbook delta hedge, no hedge and passive — is
         OUT-OF-SAMPLE by construction, since `finish` always runs on a world no fit step saw. With
         a checkpoint loaded and `DiffV2_Stepper_Rollout` set, `_rollout_on_stepper` adds the
         deployment-faithful backtest, which is the trustworthy P&L for a walk-forward because the
@@ -2683,17 +2702,20 @@ class DiffSolver:
         stepper_verdict = None
         if loaded is not None and bool(self.cfg.get("diffv2_stepper_rollout", False)):
             stepper_verdict = self._rollout_on_stepper(nets, inner_cache, sweep_ts)
-            sg, stb, snh = (stepper_verdict[k] for k in ("greedy", "textbook", "nohedge"))
+            sg, stb, snh, spa = (stepper_verdict[k]
+                                 for k in ("greedy", "textbook", "nohedge", "passive"))
             logging.info(
                 "DiffSolver STEPPER ROLLOUT (frozen policy, realized path, real accounting):\n"
                 "  greedy   wT=%+.4e p5=%+.4e cvar5=%+.4e\n"
                 "  textbook wT=%+.4e p5=%+.4e cvar5=%+.4e\n"
-                "  nohedge  wT=%+.4e p5=%+.4e cvar5=%+.4e",
+                "  nohedge  wT=%+.4e p5=%+.4e cvar5=%+.4e\n"
+                "  passive  wT=%+.4e p5=%+.4e cvar5=%+.4e",
                 sg["wT_mean"], sg["wT_p5"], sg["wT_cvar5"],
                 stb["wT_mean"], stb["wT_p5"], stb["wT_cvar5"],
-                snh["wT_mean"], snh["wT_p5"], snh["wT_cvar5"])
+                snh["wT_mean"], snh["wT_p5"], snh["wT_cvar5"],
+                spa["wT_mean"], spa["wT_p5"], spa["wT_cvar5"])
 
-        g, tb, nh = verdict["greedy"], verdict["textbook"], verdict["nohedge"]
+        g, tb, nh, pa = (verdict[k] for k in ("greedy", "textbook", "nohedge", "passive"))
         # PRIMARY metric = the optimization target E[u(W_T)], which already encodes downside
         # aversion through the concave utility; CVaR5 is a secondary tail diagnostic
         beats_nh = g["u_mean"] >= nh["u_mean"]
@@ -2705,12 +2727,14 @@ class DiffSolver:
             "  greedy    %+.5f    %+.4e   %+.4e   %+.4e\n"
             "  textbook  %+.5f    %+.4e   %+.4e   %+.4e\n"
             "  nohedge   %+.5f    %+.4e   %+.4e   %+.4e\n"
+            "  passive   %+.5f    %+.4e   %+.4e   %+.4e\n"
             "  → on the OBJECTIVE E[u(W_T)]: beats no-hedge=%s, beats textbook=%s | "
             "tail(CVaR5) competitive w/ textbook=%s",
             "OUT-OF-SAMPLE", self.t_min, self.B_outer,
             g["u_mean"], g["wT_mean"], g["wT_p5"], g["wT_cvar5"],
             tb["u_mean"], tb["wT_mean"], tb["wT_p5"], tb["wT_cvar5"],
             nh["u_mean"], nh["wT_mean"], nh["wT_p5"], nh["wT_cvar5"],
+            pa["u_mean"], pa["wT_mean"], pa["wT_p5"], pa["wT_cvar5"],
             beats_nh, beats_tb, tail_vs_tb)
         logging.info(
             "DiffSolver greedy positions: mean|q| per instrument=%s | q@t0=%s | q@mid=%s "

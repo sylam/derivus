@@ -12,6 +12,8 @@
   4. CORRIDOR — a policy trained inside a `Total_Position_Schedule` rolls inside its fence,
      carries the corridor it was trained in, and loads only into that one; a corridor-free
      policy loads into any.
+  5. PASSIVE — the verdict's and the stepper's `passive` book is minus the swap's unfixed
+     quantity, split by `Allocation_Weights`, at the costs every other policy pays.
 
 Configs are built in code from the canonical fixture TEMPLATE (never edited) — small batch /
 shallow sweep so the gates run fast. Every run, training and loaded evaluation alike, is a
@@ -20,6 +22,7 @@ document through `load_json` + `run_job`.
 import json as jsonlib
 import os
 
+import pandas as pd
 import pytest
 import torch
 
@@ -275,3 +278,116 @@ def test_a_corridor_free_policy_rolls_in_any_corridor(free):
     assert train.policy_artifact['total_position_schedule'] is None
     fence = [{'Step': 0, 'Min_Total': -50, 'Max_Total': -20}]
     assert _v0(_run(_cfg(seed=7, load=ckpt, schedule=fence))) == _v0(train)
+
+
+# --------------------------------------------------------------------------------------------
+# (v) passive — minus the swap's unfixed quantity, through the same wealth step and costs
+# --------------------------------------------------------------------------------------------
+#: Sixteen May fixings of a swap bought on 2,400 oz and sold on 800: a net 100 oz a print.
+FIXINGS = ('2026-05-01', '2026-05-04', '2026-05-05', '2026-05-06', '2026-05-07', '2026-05-08',
+           '2026-05-11', '2026-05-12', '2026-05-13', '2026-05-14', '2026-05-15', '2026-05-18',
+           '2026-05-19', '2026-05-20', '2026-05-21', '2026-05-22')
+SWAP_LEGS = (('Buy', 2400.0, 2040.0), ('Sell', 800.0, 2060.0))
+LEGS = ('PL_JUL_2026', 'PL_OCT_2026')
+#: Half and half, then from Step 25 a quarter and three quarters.
+KNOTS = ((0, (0.5, 0.5)), (25, (0.25, 0.75)))
+PASSIVE_T_MIN = 15
+
+
+def _passive_cfg(save=None, load=None):
+    """The swap hedged on the July and October legs in a flat corridor the passive book sits
+    inside; with `load`, the frozen eval of that checkpoint with the stepper rollout on."""
+    cfg = _cfg(batch=24, seed=5, save=save, load=load,
+               schedule=[{'Step': 0, 'Min_Total': -40, 'Max_Total': 5}])
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Liabilities'] = {'CommodityAveragePriceSwapDeal': {
+        f'PLAT_APS_{side.upper()}': {
+            'Currency': 'USD', 'Commodity': 'PLATINUM_LME.LME_CME', 'Carry': 'PLATINUM_CARRY',
+            'Discount_Rate': 'USD-SOFR', 'Buy_Sell': side, 'Units': units, 'Fixed_Price': strike,
+            'Settlement_Date': {'.Timestamp': '2026-05-27'},
+            'Sampling_Data': [[{'.Timestamp': d}, 0.0, 1.0] for d in FIXINGS]}
+        for side, units, strike in SWAP_LEGS}}
+    del hp['Tradable_Instruments']['CommodityFutureDeal']['PL_APR_2026']
+    hp['Tradable_Instruments']['CashAccountDeal']['USD_CASH']['Investment_Horizon'] = {
+        '.Timestamp': '2026-05-27'}
+    for key in ('Positions', 'Settlement_Prices', 'Initial_Margin'):
+        del hp['Portfolio_State'][key]['PL_APR_2026']
+    ev = hp['Evaluator']
+    ev['Position_Limits'] = {h: {'Min_Position': -20, 'Max_Position': 5} for h in LEGS}
+    ev['Total_Position_Abs_Limit'] = 40
+    ev['Allocation_Weights'] = [{'Step': s, 'Instrument': h, 'Weight': w}
+                                for s, ws in KNOTS for h, w in zip(LEGS, ws)]
+    hp['Solver'].update({'Training_Action_Grid_Levels_Per_Axis': 46, 'T_Min': PASSIVE_T_MIN})
+    if load is not None:
+        hp['Solver']['DiffV2_Stepper_Rollout'] = 'Yes'
+    return cfg
+
+
+def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp_path):
+    """The passive book is short the swap's net unfixed ounces, the bought leg less the sold,
+    sixteen contracts a leg before the first fixing and two fewer at each print, split by the
+    knot in force and inside the corridor, so no projection moves it. The verdict's terminal
+    wealth is that book's P&L by the wealth law, the sum over steps of position times contract
+    size times futures move plus the liability's move, less the declared cost (half the 10 bp
+    spread on the path-mean mark per contract traded, entry from the opening book and the unwind
+    at the horizon), within 1e-10 relative; the frozen eval's stepper rollout is that book driven
+    through `create_stepper()`, to the bit.
+
+    Killing mutations, the verdict's net and the stepper's mean against the book's -34995.98 and
+    236429.42: the ramp read one fixing late (`fixing_day >= day` in `Bundle.unfixed_at`),
+    -36298.97 and 233941.29; the side dropped (`Buy_Sell` unread in `leg_descriptors`), the book
+    clamped at -20 a leg, -45476.94 and 228728.83; the passive's turnover not charged in
+    `_verdict`, -31108.75; the stepper roll's passive branch dropped, rolling the greedy argmax,
+    321804.17."""
+    ckpt = str(tmp_path / 'value_fn_passive.pt')
+    cfg = _passive_cfg(save=ckpt)
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    sizes = [float(hp['Tradable_Instruments']['CommodityFutureDeal'][h]['Contract_Size'])
+             for h in LEGS]
+    net_units = sum((1.0 if side == 'Buy' else -1.0) * units for side, units, _ in SWAP_LEGS)
+
+    def book(world, t):
+        date = world.scenario_dates[world.initial_time_index + t]
+        unfixed = net_units / len(FIXINGS) * sum(pd.Timestamp(d) > date for d in FIXINGS)
+        weights = [ws for step, ws in KNOTS if step <= t][-1]
+        return (-unfixed * torch.tensor(weights, device=world.device)
+                / torch.tensor(sizes, device=world.device))
+
+    train = _run(cfg)
+    v, world = train.evaluation_summary['diagnostics']['verdict'], train.bundle
+    F, L, horizon = world.tradables_sim, world.liability_sim, world.last_live_mtm_index
+
+    def kappa(t):
+        return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t].mean()
+                            * size for h, size in zip(LEGS, sizes)])
+
+    W, q_prev, books = L[PASSIVE_T_MIN].clone(), torch.zeros(len(LEGS), device=world.device), []
+    cost = torch.zeros_like(W)
+    for t in range(PASSIVE_T_MIN, horizon):
+        q = book(world, t)
+        books.append(q.tolist())
+        cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1)
+        dF = torch.stack([F[h][t + 1] - F[h][t] for h in LEGS], dim=-1)
+        W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t + 1] - L[t])
+        q_prev = q
+    cost = cost + (q_prev.abs() * kappa(horizon)).sum(-1)
+    assert books[0] == [-16.0, -16.0] and books[-1] == [0.0, 0.0]
+    assert v['passive_q_traj'] == books, 'the passive book is not the unfixed quantity'
+    net = float((W - cost).mean())
+    assert abs(v['passive']['wT_mean_net'] - net) <= 1e-10 * abs(net), \
+        (v['passive']['wT_mean_net'], net)
+    assert abs(v['passive']['turnover_cost_mean'] - float(cost.mean())) \
+        <= 1e-10 * float(cost.mean())
+
+    frozen = _run(_passive_cfg(load=ckpt))
+    stepper, hist = frozen.create_stepper(), frozen.bundle.initial_time_index
+    while not stepper.done:
+        t = stepper.time_index - hist
+        if stepper.is_decision_step and PASSIVE_T_MIN <= t < frozen.bundle.last_live_mtm_index:
+            q, held = book(frozen.bundle, t), stepper.observe()['positions']
+            last = stepper.step({h: q[i] - held[h] for i, h in enumerate(LEGS)})
+        else:
+            last = stepper.step(None)
+    wT = (last['transition_pnl_excess'] + last['transition_liability_value']).to(torch.float64)
+    assert frozen.evaluation_summary['diagnostics']['stepper_verdict']['passive']['wT_mean'] \
+        == float(wT.mean())

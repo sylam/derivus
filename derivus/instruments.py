@@ -865,10 +865,11 @@ class Deal(object):
 
     def leg_descriptors(self, deal_data):
         """Static (batch-independent) cashflow descriptors: (summed |notional|, latest pay day
-        offset). Reads this deal's own `Factor_dep['Cashflows']`, defaulting to (0.0, None) for
-        deals with no cashflow schedule."""
+        offset, fixings), the last the signed quantity each fixing carries as `(day offset,
+        quantity)` rows. Reads this deal's own `Factor_dep['Cashflows']`, which states no fixings,
+        defaulting to (0.0, None, ()) for deals with no cashflow schedule."""
         cf = deal_data.Factor_dep.get('Cashflows')
-        return (cf.total_abs_nominal(), cf.last_pay_day()) if cf is not None else (0.0, None)
+        return (cf.total_abs_nominal(), cf.last_pay_day(), ()) if cf is not None else (0.0, None, ())
 
     def calculate(self, shared, time_grid, deal_data):
         """Generate the theo price and interpolate it onto the report grid. A deal the compile
@@ -5546,12 +5547,18 @@ class CommodityAveragePriceSwapDeal(Deal):
         return field_index
 
     def leg_descriptors(self, deal_data):
-        """`(|Units|, settlement day offset)` - the pair `Bundle`'s utility scale reads, off THIS
+        """`(|Units|, settlement day offset, fixings)` - the descriptors `Bundle` reads, off THIS
         deal's own resolved dependencies rather than a `Cashflows` schedule it does not build.
 
-        The base implementation's `(0.0, None)` default is right for a deal with no schedule and
-        wrong for this one: it pays exactly one cashflow, of `Units` ounces, at `Settlement`."""
-        return abs(self.field['Units']), float(deal_data.Factor_dep['Settlement'])
+        The base implementation's `(0.0, None, ())` default is right for a deal with no schedule
+        and wrong for this one: it pays exactly one cashflow, of `Units` ounces, at `Settlement`,
+        and each fixing of `Samples` carries `Buy_Sell * Units` times its normalised weight."""
+        dep = deal_data.Factor_dep
+        units = dep['Buy_Sell'] * self.field['Units']
+        fixings = tuple(
+            (float(day), units * float(weight)) for day, weight in
+            dep['Samples'].schedule[:, [utils.RESET_INDEX_Reset_Day, utils.RESET_INDEX_Weight]])
+        return abs(self.field['Units']), float(dep['Settlement']), fixings
 
     def generate(self, shared, time_grid, deal_data):
         return pricing.pv_average_price_swap(shared, time_grid, deal_data)
