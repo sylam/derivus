@@ -20,8 +20,9 @@ goes red under that test if it is broken.
 ## A structure is a declaration
 
 A structure subclasses `Structure`. Its class name is the registry key (`Structure.__subclasses__()`,
-so declaring one registers it), and it declares these and nothing else — a subclass with no
-`vernacular` raises at import:
+so declaring one registers it), and it declares these — a subclass with no `vernacular` raises at
+import — plus, for one solving a [ticket parameter](#parameter-solve), the classmethods that answer
+it:
 
 | attribute | what |
 | --- | --- |
@@ -29,7 +30,7 @@ so declaring one registers it), and it declares these and nothing else — a sub
 | `fields` | the parameters, as `schema.F`. Shared ones come from the base: `Structure.QUOTED` (`pair`, `expiry`, `notional`, `notional_currency`), the two `SELECTORS`, and `Structure.strike(name, description)` for a level in market terms |
 | `legs` | named `Leg(role, deal_type, pinned, slots)`: a declared instrument type, the partial deal block the structure fixes, and `{deal field: parameter}` for the rest. A leg never restates an instrument's fields — the `Instrument` declarations are its schema, as with a [market-price quote](market_prices.md#a-quote), so the two cannot drift. `Leg.vanilla` is a European `FXOptionDeal` |
 | `variations` | in place of `legs`, for a structure dealt [more than one way](#variations) |
-| `recipe` | ordered steps: `Price(role)`, and `Solve(role, field, target)` where `target` is a number or a `Premium` combination of legs already priced (`-Premium('protection')`, `Premium('a') + Premium('b')`); targeting a leg not yet priced refuses as a mis-ordered recipe |
+| `recipe` | ordered steps: `Price(role)`, and `Solve(role, field, target)` where `target` is a number or a `Premium` combination of legs already priced (`-Premium('protection')`, `Premium('a') + Premium('b')`); targeting a leg not yet priced refuses as a mis-ordered recipe. `SolveUnknown(target)` instead solves the one ticket parameter the structure finds blank to the parameter `target` names |
 
 The roster:
 
@@ -41,13 +42,15 @@ The roster:
 | `ForwardExtra` | protection vanilla + sold knock-in (`FXBarrierOption`) at the same strike | the barrier, to `-Premium('protection')` | `test_a_forward_extra_costs_nothing_and_solves_its_barrier` |
 | `TargetRedemptionForward` | one `FXTARFOptionDeal` strip | the strike, to zero | `test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward` |
 | `Accumulator` | one `FXAccumulatorOptionDeal` strip | the strike, to zero | the same |
+| `RangeAccrual` | one `FXRangeAccrualDeal` per stated tier (one to four), each paying the increment over the tier outside it | the one blank tier cell, or the tiers' width, to `premium`; nothing, quoting the premium, where every cell is stated | `test_a_wedding_cake_is_its_nested_range_accruals_with_incremental_payoffs`, `test_the_one_blank_tier_parameter_solves_to_the_stated_premium` |
 
 `test_the_registry_publishes_exactly_the_declared_structures` holds the published store to the
 classes and every leg type to a declared instrument.
 
 **To add a structure:** subclass `Structure` with the attributes above, using only the leg types the
-runner furnishes (`FXOptionDeal`, `FXBarrierOption`, `FXTARFOptionDeal`, `FXAccumulatorOptionDeal` —
-`materialize` refuses any other, since it is what fills their shared fields), derive a mirror form
+runner furnishes (`FXOptionDeal`, `FXBarrierOption`, `FXTARFOptionDeal`, `FXAccumulatorOptionDeal`,
+`FXRangeAccrualDeal` — `materialize` refuses any other, since it is what fills their shared fields),
+derive a mirror form
 with `reflected` where the product is dealt both ways, and add the identity it must satisfy to
 `tests/test_structures.py` beside the ones in the table.
 
@@ -100,7 +103,8 @@ variation rather than the ticket, so the booking and the account of it agree.
 3. `run_recipe` runs the steps at mid. Each step prices one leg alone (`alone`: a deep copy of the
    book with its deal tree emptied and the calculation set by `priced_job`) — a leg's base-valuation
    row does not depend on its siblings, and a lone deal compiles fast enough to sit inside a solve.
-   `Solve` is `derivus.solve_deal_field`, [bracketed](#solves).
+   `Solve` is `derivus.solve_deal_field`, [bracketed](#solves); `SolveUnknown` is the
+   [parameter solve](#parameter-solve).
 4. Where the book quotes a [two-way](#two-sided), each leg's vega is read and the charge levied; the
    [risk-impact step](#risk-impact) may scale it; a second, seeded pass re-solves with the charge.
 5. `compose` builds the bookable `StructuredDeal`; the outcome carries the legs, `net`, `net_mid`,
@@ -116,20 +120,26 @@ the quote and the mark have to be one estimator. A book stating fewer gets a `no
 Parameters arrive in market terms (USDZAR 15.50 is ZAR per USD) and `materialize` converts once, so
 no structure declares an orientation and none can get it wrong. An `FXOptionDeal` is an option on
 `Underlying_Currency` settled in `Currency`, and the runner makes `notional_currency` the underlying —
-which is exactly the discriminator the conversion needs. When the notional is the pair's quote
-currency the deal's axis is the reciprocal of the market's:
+which is exactly the discriminator the conversion needs. A leg type declaring no `Underlying_Amount`
+(`FXRangeAccrualDeal`) is instead PAID in its notional, so `notional_currency` is its `Currency`
+and the pair's other side its underlying, the axis read off the declaration and never the type's
+name; the shared block carries only what the leg's type declares. When the leg's underlying is the
+pair's quote currency the deal's axis is the reciprocal of the market's:
 
 - `Strike_Price` and `Barrier_Price` become `1/K`;
 - the option sense flips (a market call is an engine put) and a barrier's direction flips with the
   level (`Up_And_In` becomes `Down_And_In`); In/Out never moves;
-- when the notional is the base currency nothing converts.
+- a range's bounds cross and SWAP — the reciprocal of a floor is a cap, so `Lower_Barrier` is
+  `1/cap` and `Upper_Barrier` `1/floor`;
+- when the underlying is the base currency nothing converts.
 
 `Materialized.to_market` reports solved levels back in market terms. The book's surface may be
 stored either way round (`FXVol.USD.ZAR` or `FXVol.ZAR.USD`); the legs name it as the book carries
 it. **Held by** `test_a_market_strike_reaches_the_engine_axis`,
 `test_the_same_trade_quotes_the_same_from_either_side_of_the_pair`,
 `test_a_forward_extra_quotes_the_same_from_either_side_of_the_pair`,
-`test_a_ticket_quotes_alike_whichever_way_round_the_book_carries_its_surface`.
+`test_a_ticket_quotes_alike_whichever_way_round_the_book_carries_its_surface`,
+`test_a_range_accrual_on_the_base_currency_crosses_its_levels_and_swaps_them`.
 
 ### Accrual legs {#accrual}
 
@@ -144,16 +154,24 @@ A leg whose type observes a fixing table (`accrues`, off `schema.OBSERVES`) is a
   frequency does not divide, which would end the strip short of the tenor the ticket says.
   **Held by** `test_a_strip_ends_on_its_own_expiry_or_refuses`.
 - **Expiry.** A TARF's `Expiry_Date` is its last settlement — a strip is not over until its last
-  cashflow lands; `FXAccumulatorOptionDeal` declares no such field, so it is removed.
-- **Notionals.** `Underlying_Amount` is the notional per fixing; `LeverageNotional` is
-  `leverage × notional`. Neither converts: the notional is in its own currency and gearing is a
-  ratio.
+  cashflow lands; `FXAccumulatorOptionDeal` declares no such field, so its block carries none. A
+  type declaring a `Settlement_Date` (`FXRangeAccrualDeal`) pays the whole strip once, on the last
+  settlement, its fixings written `[fixing, None]` since none has printed.
+- **Notionals.** `Underlying_Amount` is the notional per fixing; `LeverageNotional`, on a type
+  declaring it, is `leverage × notional`. Neither converts: the notional is in its own currency and
+  gearing is a ratio.
+- **Ranges.** A type declaring `Lower_Barrier` and `Upper_Barrier` takes its tier's bounds
+  (`RangeAccrual.tier`, innermost first, crossed as [above](#axes)) and a `Payoff` per fixing of
+  `notional × increment / 100 × T / N`: the tier's coupon less the next wider one's, a rate a year
+  earned in full where every fixing lands, `T` the ACT/365 years to the last fixing and `N` the
+  fixings. **Held by** `test_a_wedding_cake_is_its_nested_range_accruals_with_incremental_payoffs`.
 - **Axis.** An accumulator's knock-out is a level and crosses like a barrier. A TARF's target is a
   sum of differences, and `1/S − 1/K` is not the reciprocal of `S − K`, so no reciprocal number
   means the same cap: a TARF on the quote currency refuses by name and `InvertedTarget` is always
   `False` (that flag is a different product — the whole fixing on the reciprocal axis). **Held by**
   `test_an_accumulator_crosses_both_axes_and_a_tarf_refuses_the_second`.
-- **Model.** `spot_model` pins `Structure.spot_model` (`LogVar2FJ`) for the deal type in the copy's
+- **Model.** A type whose `spot_models` do not admit `Structure.spot_model` pins nothing and has
+  no note. Otherwise `spot_model` pins `Structure.spot_model` (`LogVar2FJ`) for the deal type in the copy's
   `Valuation Configuration` where the book carries that pair's calibration, and otherwise leaves the
   leg on GBM with a `note` naming the missing factor and `/book/model`. The check is made here
   because a switch whose factor is absent makes the engine skip the deal, and the quote would come
@@ -226,6 +244,37 @@ straddle, so the answer is the full bracket's either way. No root in the bracket
 economics stated ("cannot be financed at these parameters"). **Held by**
 `test_a_seeded_solve_costs_less_and_a_missed_seed_still_answers_the_full_bracket`.
 
+### The parameter solve {#parameter-solve}
+
+`SolveUnknown(target)` moves a TICKET parameter rather than a deal field: a cake's coupon enters
+two legs (its own increment and the one inside it) and its width enters no field at all. The
+structure answers `unknown(params, spot)` — `(path, bracket)`, or `(None, None)` — and
+`completed(params, path, value, forward)`, and the runner knows nothing of tiers: `brentq` over the
+bracket, every leg rebuilt from the completed ticket and priced together (`run_prices`, one base
+valuation, a leg's row not depending on its siblings), the residual the legs' sum less the stated
+`premium` (crossed from `notional_currency` as a margin is) less the charge. A charged pass seeds
+`±Solve.SEED_BRACKET` around the first root and falls back to the full bracket. The solved value
+comes back written into `params` in market terms, so the completed ticket is what the desk re-runs;
+`charged_on` and each leg's `solved` name the path (`'tiers[2].cap'`, `'width'`). `Structure.dealt`
+says which declared legs a ticket deals — every one, or for `RangeAccrual` one per stated tier — so
+the leg count follows the ticket.
+
+`RangeAccrual`'s rule: tiers sort by width where every bound is stated, else by coupon, and refuse
+by name where they are not a cake (more than four, a negative cell, a range admitting nothing, a
+band not strictly inside the next wider, a coupon not above the next wider's). Then
+
+| the ticket states | the unknown | bracket |
+| --- | --- | --- |
+| every cell, no `premium` | none: the legs are priced and `net_mid` is the premium, `charged_on` `'premium'` | — |
+| a `premium` and one blank cell | that cell | a coupon between its neighbours' coupons (else 0 and 100); a floor between the next wider floor (else `0.25 ×` spot) and the next narrower (else its own cap); a cap the mirror — each opened by `OPEN` (1e-9 of the span), an end being a tier the engine refuses |
+| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the expiry (`forward_rate`: one valuation of a unit of each currency received that day, priced only when asked for) | `(1e-4, log 4)` |
+
+Two blanks, a blank beside a blank premium, a tier stating no bound beside one that does, and a
+ticket stating every cell and a premium each refuse by name; no root refuses with the economics
+said, as `run_solve` does. The value is monotone in each parameter, so a root is unique where it
+exists. **Held by** `test_the_one_blank_tier_parameter_solves_to_the_stated_premium`,
+`test_coupons_alone_solve_the_widest_tiers_centred_on_the_forward`.
+
 ## The two-way charge {#two-sided}
 
 A desk quotes at a spread but its book marks at the mid, and both hold because the two numbers live
@@ -274,14 +323,16 @@ difference of that pillar's quote, re-bootstrapped), `test_a_strip_pays_the_spre
 `margin_value` crosses it to the calculation's currency (else the base) on the document's own
 `FxRate.<ccy>.Spot` ratio, so the margin and the legs see one market. It is charged on the same
 coordinate as the two-way — a financing leg's target becomes the premiums it finances plus the
-charge, a strip targets minus it, and a recipe solving nothing charges the premium — so one
-convention covers every structure. On the client's paper `net` reads the margin back negative; the
+charge, a strip targets minus it, a solved ticket parameter makes the legs worth the stated
+premium less it, and a ticket solving nothing charges the premium — so one convention covers every
+structure. On the client's paper `net` reads the margin back negative; the
 booked mirror marks the bank at plus the margin and the edge. `compose` records it as `Sales_Margin`
 and `Sales_Margin_Currency` (declared on the shared `Admin` group, a record nothing prices off).
 `edge` excludes it, so a policy tightening the market's spread never shaves an agreed margin.
 **Held by** `test_a_collar_at_a_margin_is_minus_it_on_paper_and_plus_it_on_the_book` (both ends,
 since one end alone cannot catch a sign), `test_a_margin_and_a_two_way_compose_on_one_coordinate`,
 `test_a_structure_that_solves_nothing_charges_its_premium`,
+`test_coupons_alone_solve_the_widest_tiers_centred_on_the_forward`,
 `test_a_margin_survives_a_policy_that_tightens_the_two_way`, `test_a_margin_refuses_where_it_cannot_be_valued`.
 
 ## Risk-impact pricing {#risk-impact}

@@ -20,7 +20,9 @@ by re-bootstrapping.
 """
 import copy
 import json
+import math
 import os
+import re
 import sys
 
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
@@ -40,7 +42,7 @@ NOTIONAL_CURRENCY = 'ZAR'
 
 #: The names the registry must carry, and nothing else.
 ROSTER = {'Straddle', 'Strangle', 'ZeroCostCollar', 'Seagull', 'ForwardExtra',
-          'TargetRedemptionForward', 'Accumulator'}
+          'TargetRedemptionForward', 'Accumulator', 'RangeAccrual'}
 
 #: Inner paths for an ACCRUAL structure. A TARF and an accumulator are Monte Carlo priced, so a
 #: zero-cost solve is a root find over an estimator, converging on the true root only as the paths
@@ -60,7 +62,7 @@ MODEL_AXIS_TOLERANCE = 5e-4
 #: Every parameter in the store that is NOT required, and the value it must publish. A market
 #: convention is the only reason a sales parameter carries a default, so this is the one place a new
 #: one has to be argued for.
-DECLARED_DEFAULTS = {'leverage': 2.0}
+DECLARED_DEFAULTS = {'leverage': 2.0, 'premium': 0.0}
 
 #: The only two fields that may be published as SELECTORS - they choose which variation is being
 #: dealt rather than filling a leg, which is why they carry no value and no client states one.
@@ -302,7 +304,7 @@ def test_an_unknown_structure_refuses_with_the_roster():
     choose from.
     """
     with pytest.raises(ValueError) as refusal:
-        structures.quote({}, 'RangeAccrual', params())
+        structures.quote({}, 'Butterfly', params())
     assert 'ZeroCostCollar' in str(refusal.value)
 
 
@@ -1679,6 +1681,209 @@ def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
         structures.quote(book, 'TargetRedemptionForward', dict(
             accrual_params(target=TARGET), fixing_frequency='5M', notional_currency='USD'))
     assert '5M' in str(quoted.value)
+
+
+# --------------------------------------------------------------------------------------------
+# the range accrual: one to four nested tiers, a FXRangeAccrualDeal per tier
+# --------------------------------------------------------------------------------------------
+#: A three-tier cake about the 18.50 spot, listed out of order: [floor, cap, coupon % a year].
+CAKE = [[17.0, 20.0, 5.0], [18.0, 19.0, 8.0], [16.0, 21.0, 2.0]]
+#: The same tiers innermost first, with the increment each books over the tier outside it.
+INCREMENTS = [(18.0, 19.0, 3.0), (17.0, 20.0, 3.0), (16.0, 21.0, 2.0)]
+#: Twelve monthly fixings to a one-year expiry, 2025-06-28: the ACT/365 years over the fixings.
+YEARS, FIXINGS = 365 / 365.0, 12
+
+
+def cake_params(tiers=CAKE, **extra):
+    return params(fixing_frequency=FIXING_FREQUENCY, tiers=copy.deepcopy(tiers), **extra)
+
+
+def tier_legs(outcome):
+    """The composed cake's legs, innermost first."""
+    return [child['Instrument']['.Deal'] for child in outcome['deal']['Children']]
+
+
+def unit_forward(document):
+    """The pair's forward to the cake's expiry the way any document prices one: a unit of each
+    currency received on 2025-06-28, the ratio of the two values."""
+    units = [{'Object': 'FXForwardDeal', 'Reference': bought, 'Buy_Currency': bought,
+              'Buy_Amount': 1.0, 'Buy_Discount_Rate': bought, 'Sell_Currency': sold,
+              'Sell_Amount': 0.0, 'Sell_Discount_Rate': sold,
+              'Settlement_Date': {'.Timestamp': '2025-06-28'}}
+             for bought, sold in (('USD', 'ZAR'), ('ZAR', 'USD'))]
+    priced = values(document, units)
+    return priced['USD'] / priced['ZAR']
+
+
+def test_a_wedding_cake_is_its_nested_range_accruals_with_incremental_payoffs(book):
+    """Three tiers on a rand notional with every cell stated and no premium: the quote IS the
+    premium, the sum of the composed legs priced alone through the book, to the bit. Each tier
+    books as one `FXRangeAccrualDeal` over its own range paying the increment over the tier
+    outside it, `notional * increment / 100 * T / N` per fixing - the coupon a rate a year earned
+    in full where every fixing lands - and a rand notional is the pair's quote currency, paid in
+    rand on the pair's own axis, so the bounds are the ticket's. One payment for the strip, two
+    days after the last fixing; no fixing has printed.
+
+    Killing mutations: the tier coupons used raw rather than as increments (the inner Payoff
+    8,000/12 rather than 3,000/12); `T / N` dropped (the Payoff 30,000).
+    """
+    outcome = structures.quote(book, 'RangeAccrual', cake_params())
+    legs = tier_legs(outcome)
+    priced = values(book, legs)
+
+    assert outcome['charged_on'] == 'premium' and outcome['net'] == outcome['net_mid'] > 0.0
+    assert outcome['net_mid'] == sum(priced[leg['Reference']] for leg in legs)
+    assert [row['role'] for row in outcome['legs']] == ['tier_1', 'tier_2', 'tier_3']
+    for leg, (floor, cap, increment) in zip(legs, INCREMENTS):
+        assert (leg['Object'], leg['Buy_Sell'], leg['Currency'], leg['Underlying_Currency']) == (
+            'FXRangeAccrualDeal', 'Buy', 'ZAR', 'USD')
+        assert (leg['Lower_Barrier'], leg['Upper_Barrier']) == (floor, cap)
+        assert leg['Payoff'] == NOTIONAL * increment / 100.0 * YEARS / FIXINGS, leg['Payoff']
+        assert leg['Settlement_Date'] == {'.Timestamp': '2025-06-30'}
+        assert len(leg['Observation_Dates']) == FIXINGS and all(
+            value is None for _, value in leg['Observation_Dates'])
+        assert not {'Underlying_Amount', 'Expiry_Date', 'Strike_Price', 'LeverageNotional'} & set(
+            leg), 'a key the range accrual does not declare reached its block'
+    assert all(row['note'] is None for row in outcome['legs']), 'a range accrual pins no model'
+
+
+def test_a_range_accrual_on_the_base_currency_crosses_its_levels_and_swaps_them(book):
+    """The same tiers on a dollar notional: the coupon accrues and is PAID in dollars, so each leg
+    settles in USD on rand - the engine level dollars per rand, the reciprocal of the market's -
+    and the reciprocal of a floor is a cap: `Lower_Barrier` is `1/cap` and `Upper_Barrier`
+    `1/floor`, to the bit. The quote prices, and its legs reprice through the book to it.
+
+    Killing mutations: the swap dropped (`Lower_Barrier` 1/floor, above `Upper_Barrier`); the
+    notional left on the underlying side (the legs settled in rand).
+    """
+    outcome = structures.quote(book, 'RangeAccrual', cake_params(
+        notional=NOTIONAL / SPOT, notional_currency='USD'))
+    legs = tier_legs(outcome)
+
+    for leg, (floor, cap, _) in zip(legs, INCREMENTS):
+        assert (leg['Currency'], leg['Underlying_Currency'], leg['Discount_Rate']) == (
+            'USD', 'ZAR', 'USD')
+        assert (leg['Lower_Barrier'], leg['Upper_Barrier']) == (1.0 / cap, 1.0 / floor)
+    priced = values(book, legs)
+    assert outcome['net_mid'] == sum(priced[leg['Reference']] for leg in legs) > 0.0
+    assert outcome['spot']['value_market'] == pytest.approx(SPOT, rel=1e-12)
+
+
+#: What the client pays for the cake, in rand - more than the stated cake's 39,686.68, so a solve
+#: has to move. Below the 41,568.87 the outer cap saturates at, the whole upper tail inside it.
+CAKE_PREMIUM = 42_000.0
+CAP_PREMIUM = 41_000.0
+
+
+def test_the_one_blank_tier_parameter_solves_to_the_stated_premium(book):
+    """One blank cell and a premium: the blank is solved, written back into the ticket, and the
+    legs come back at it. Tier 2's coupon enters two legs - its own increment and the one inside
+    it - so both move, and the returned ticket re-run with no premium quotes the premium back,
+    1e-6 relative, as do the composed legs repriced through the book. Tier 3's cap enters one,
+    solved the same way within brentq's own tolerance (2e-12 absolute plus 4 ulps of the root).
+    Two blanks, a blank beside a blank premium and a tier stating no bound beside tiers that do
+    each refuse by name.
+
+    Killing mutation: the solve moving one leg's Payoff only - the inner leg built at the stated
+    ticket's increment - which the re-run ticket misses by the other increment.
+    """
+    for blank, path, premium in (((0, 2), 'tiers[0].coupon', CAKE_PREMIUM),
+                                 ((2, 1), 'tiers[2].cap', CAP_PREMIUM)):
+        target, tiers = premium / SPOT, copy.deepcopy(CAKE)
+        tiers[blank[0]][blank[1]] = None
+        outcome = structures.quote(book, 'RangeAccrual', cake_params(tiers, premium=premium))
+        solved = outcome['params']['tiers'][blank[0]][blank[1]]
+        assert outcome['charged_on'] == path
+        assert [row['solved'] for row in outcome['legs']] == [{path: solved}] * 3
+        tiers[blank[0]][blank[1]] = solved
+        assert outcome['params']['tiers'] == tiers, 'a cell nobody left blank moved'
+        legs = tier_legs(outcome)
+        priced = values(book, legs)
+        assert sum(priced[leg['Reference']] for leg in legs) == pytest.approx(target, rel=1e-6)
+        again = structures.quote(book, 'RangeAccrual', dict(outcome['params'], premium=0.0))
+        assert again['net_mid'] == pytest.approx(target, rel=1e-6), 'the ticket is not the quote'
+        if blank == (0, 2):
+            assert 5.0 < solved < 8.0, solved
+            assert [leg['Payoff'] for leg in legs[:2]] == [
+                NOTIONAL * (8.0 - solved) / 100.0 * YEARS / FIXINGS,
+                NOTIONAL * (solved - 2.0) / 100.0 * YEARS / FIXINGS]
+        else:
+            assert 21.0 < solved < 4.0 * SPOT and legs[2]['Upper_Barrier'] == solved
+
+    for tiers, premium, said in (
+            ([[17.0, None, 5.0], [18.0, 19.0, None], [16.0, 21.0, 2.0]], CAKE_PREMIUM,
+             'tiers[0].cap and tiers[1].coupon are blank - a stated premium solves exactly one'),
+            ([[17.0, 20.0, None], [18.0, 19.0, 8.0], [16.0, 21.0, 2.0]], 0.0,
+             'tiers[0].coupon is blank and so is premium'),
+            ([[None, None, 5.0], [18.0, 19.0, 8.0], [16.0, 21.0, 2.0]], CAKE_PREMIUM,
+             'tiers[0] states no floor or cap while another tier does'),
+            (CAKE, CAKE_PREMIUM, 'every tier is stated and so is premium')):
+        with pytest.raises(ValueError, match=re.escape(said)):
+            structures.quote(book, 'RangeAccrual', cake_params(tiers, premium=premium))
+
+
+@pytest.fixture(scope='module')
+def carry_book(book):
+    """The book with the rand curve 4% above the dollar one, so the forward is not the spot."""
+    document = copy.deepcopy(book)
+    curve = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'InterestRate.ZAR']['Curve']['.Curve']
+    curve['data'] = [[tenor, rate + 0.04] for tenor, rate in curve['data']]
+    return document
+
+
+def test_coupons_alone_solve_the_widest_tiers_centred_on_the_forward(carry_book):
+    """Coupons and a premium, no bound: the one width `w` is solved, the k-th innermost tier at
+    `F e^-kw` to `F e^kw` about the engine's own forward to the expiry - priced here through a
+    document of its own - so `floor * cap = F^2` and `log(cap / F) = k w` within 1e-9, every bound
+    written back. The composed deal reprices to the premium. At a margin the client holds paper
+    worth the premium less it, and the bank's mirror marks at minus the premium plus it.
+
+    Killing mutation: the tiers centred on the SPOT (the forward 3.9% above it here).
+    """
+    forward = unit_forward(carry_book)
+    assert forward > SPOT * 1.03, 'this world has no carry to tell the forward from the spot'
+    coupons = [[None, None, 8.0], [None, None, 5.0], [None, None, 2.0]]
+    outcome = structures.quote(carry_book, 'RangeAccrual', cake_params(
+        coupons, premium=CAKE_PREMIUM))
+    width = outcome['legs'][0]['solved']['width']
+    assert outcome['charged_on'] == 'width' and 1e-4 < width < 0.5
+
+    for k, (floor, cap, coupon) in enumerate(outcome['params']['tiers'], 1):
+        assert coupon == coupons[k - 1][2]
+        assert floor * cap == pytest.approx(forward ** 2, rel=1e-9)
+        assert math.log(cap / forward) == pytest.approx(k * width, rel=1e-9)
+    legs = tier_legs(outcome)
+    priced = values(carry_book, legs)
+    assert sum(priced[leg['Reference']] for leg in legs) == pytest.approx(
+        CAKE_PREMIUM / SPOT, rel=1e-6)
+
+    charged = structures.quote(carry_book, 'RangeAccrual', cake_params(
+        coupons, premium=CAKE_PREMIUM), margin=SMALL_MARGIN)
+    margin = charged['margin']['value']
+    assert charged['charged_on'] == 'width'
+    assert charged['net'] - CAKE_PREMIUM / SPOT == pytest.approx(-margin, rel=1e-6)
+    assert charged['legs'][0]['solved']['width'] < width, 'a cake funding a margin is no narrower'
+    mirror = values(carry_book, [structures.mirror(charged['deal'])])[charged['deal']['Reference']]
+    assert mirror + CAKE_PREMIUM / SPOT == pytest.approx(margin, rel=1e-6)
+
+
+def test_a_cake_quote_writes_its_sheet(book, tmp_path):
+    """The `.xlsx` ticket for a cake: written whole, the tiers on the Quote sheet and each leg's
+    range on the Legs sheet. A range leg has no strike, so its row's strike cell is blank.
+
+    Killing mutation: the shared block's unsolved `Strike_Price` written on every leg whatever its
+    type declares, a strike the sheet then shows for a leg that has none.
+    """
+    quote_sheet = pytest.importorskip('derivus.quote_sheet', reason='the quote extra is absent')
+    import zipfile
+    outcome = structures.quote(book, 'RangeAccrual', cake_params())
+    path = tmp_path / 'cake.xlsx'
+    quote_sheet.write_sheet(path, outcome, book, structures.market_of(book))
+    with zipfile.ZipFile(path) as sheet:
+        strings = sheet.read('xl/sharedStrings.xml').decode()
+    assert all(word in strings for word in ('tiers', 'Lower_Barrier', 'Upper_Barrier', 'Payoff'))
+    assert [row['strike_market'] for row in outcome['legs']] == [None] * 3
 
 
 def calibrated(document):

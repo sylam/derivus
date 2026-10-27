@@ -21,7 +21,8 @@ and no logic at all:
   - `legs`, each naming a declared `Instrument` type plus the PARTIAL deal block the structure
     pins, and the parameter SLOTS mapped onto the rest. The Instrument store's declarations already
     ARE the leg's field schema, so a leg restates no deal fields
-  - `recipe`, an ordered list of `Price` and `Solve` steps
+  - `recipe`, an ordered list of `Price` and `Solve` steps, or a `SolveUnknown` moving the one
+    ticket parameter the structure finds blank
 
 A structure dealt MORE THAN ONE WAY declares `variations` in place of `legs` - an exporter flooring
 the pair and an importer capping it are one product and two bookings - each with the side of the
@@ -71,12 +72,14 @@ which it used under `spot`, read off the document it priced.
 """
 
 import copy
+import functools
 import json
+import math
 import time
 
 from . import utils
 from . import schema
-from .schema import F, REQUIRED
+from .schema import F, REQUIRED, Row
 
 
 class Leg(object):
@@ -210,6 +213,25 @@ class Solve(object):
             str(self.target) if isinstance(self.target, Premium) else '{:g}'.format(self.target))
 
 
+class SolveUnknown(object):
+    """Move the one TICKET parameter the structure finds blank until every leg together is worth
+    the parameter `target` names, less the desk's charge.
+
+    A `Solve` moves one field of one leg, while a ticket parameter may enter several legs - a
+    wedding cake's coupon is the increment of its own tier and of the one inside it - or none by
+    name, as a tier width does. So the structure says which parameter is blank and its bracket
+    (`unknown`) and writes a candidate into the ticket (`completed`), and the runner rebuilds and
+    prices every leg at each candidate. A ticket leaving nothing blank prices its legs as stated.
+    """
+    __slots__ = ('target',)
+
+    def __init__(self, target):
+        self.target = target
+
+    def describe(self):
+        return 'Solve the one blank parameter to {}'.format(self.target)
+
+
 def crossed(deal_type, block):
     """`block` read from the other side of the pair: its option sense and barrier direction flipped
     under `deal_type`'s own declarations, every other field as written. In/Out never moves."""
@@ -295,6 +317,11 @@ class Structure(object):
         """A strike-like parameter: a market-terms number the runner converts to the engine axis."""
         return F(name, 'Float', default=REQUIRED, description=description + (
             '. In MARKET terms, as the pair is quoted (USDZAR 15.50)'))
+
+    @classmethod
+    def dealt(cls, legs, params):
+        """The declared `legs` this ticket deals: every one."""
+        return legs
 
 
 class Straddle(Structure):
@@ -459,6 +486,176 @@ class Accumulator(Structure):
             {'Barrier_Price': 'knockout'})])}
     variations['sell'] = reflected(variations['buy'], {}, [])
     recipe = [Solve('accumulator', 'Strike_Price', 0.0)]
+
+
+class RangeAccrual(Structure):
+    """A coupon for every fixing inside a range: one to four nested tiers, the innermost paying the
+    most - a range accrual with one, a wedding cake with more.
+
+    Each tier is `[floor, cap]` in MARKET terms and a `coupon` in percent a year on the notional,
+    earned in full where every fixing lands inside it and apportioned equally over the fixings. It
+    books as one `FXRangeAccrualDeal` per tier paying the INCREMENT over the tier outside it, so a
+    fixing in the innermost range earns every increment, its own coupon. The notional is what the
+    coupon accrues on and is paid in, so `notional_currency` is the legs' settlement currency.
+
+    The desk states every cell but one and the `premium` the client pays, and the blank is solved
+    to it; with coupons alone the unknown is the one width `w` putting the k-th innermost tier at
+    `F e^-kw` to `F e^kw` about the forward `F` to the expiry; with every cell stated and no premium
+    the premium is quoted. `unknown` says which, `completed` writes a candidate into the ticket.
+    """
+    vernacular = 'range accrual, wedding cake, corridor, fairway, digital range'
+    TIERS = F('tiers', 'Table', default=REQUIRED, row=Row([
+        F('floor', 'Float', description='The tier\'s lower level in MARKET terms (USDZAR 17.50); '
+                                        'blank is the unknown'),
+        F('cap', 'Float', description='The tier\'s upper level in MARKET terms; blank is the '
+                                      'unknown'),
+        F('coupon', 'Float', description='Percent a year on the notional, earned in full where '
+                                         'every fixing lands inside the tier; blank is the '
+                                         'unknown')]),
+        description='One row per tier, nested; the innermost pays the most')
+    #: A tier's cells, in the order a row states them.
+    CELLS = tuple(f.key for f in TIERS.row.fields)
+    fields = [*Structure.QUOTED,
+              F('fixing_frequency', 'Text', default=REQUIRED,
+                description='How often the strip fixes - 1M, 3M - counted off the book\'s '
+                            'Base_Date to the tenor'),
+              F('premium', 'Float', default=0.0, convention=True,
+                description='What the client pays for the structure, in notional_currency; blank '
+                            'quotes it, stated it is the target the one blank tier parameter is '
+                            'solved to'),
+              TIERS]
+    legs = [Leg('tier_{}'.format(k), 'FXRangeAccrualDeal', {'Buy_Sell': 'Buy'})
+            for k in (1, 2, 3, 4)]
+    recipe = [SolveUnknown('premium')]
+    #: The width solve's ends: the log step from one tier's bounds to the next.
+    WIDTH_BRACKET = (1e-4, math.log(4.0))
+    #: A coupon's ends, in percent a year, where no neighbouring tier's coupon bounds it.
+    COUPON_BRACKET = (0.0, 100.0)
+    #: How far inside its ends a cell's solve stays, as a fraction of the span: each end is a tier
+    #: meeting its neighbour or admitting nothing, which the engine refuses.
+    OPEN = 1e-9
+
+    @classmethod
+    def dealt(cls, legs, params):
+        """One leg per tier the ticket states, innermost first."""
+        return legs[:len(params['tiers'])]
+
+    @classmethod
+    def ordered(cls, params):
+        """The ticket's tiers innermost first as `(row, [floor, cap, coupon])`, a blank cell None.
+
+        Refused by name where they are not a cake: more tiers than legs, a negative cell, a range
+        admitting nothing, and - sorted by width where every bound is stated, else by coupon where
+        every coupon is, else left as listed with nothing to compare - a band not strictly inside
+        the next wider, overlapping bands having no single payoff per fixing, or a coupon not above
+        the next wider one's, equal coupons being one tier.
+        """
+        rows = [(row, [cell or None for cell in cells])
+                for row, cells in enumerate(params['tiers'])]
+        if len(rows) > len(cls.legs):
+            raise ValueError('RangeAccrual: {} tiers - a cake is one to {}'.format(
+                len(rows), len(cls.legs)))
+        for row, (floor, cap, coupon) in rows:
+            for key, cell in zip(cls.CELLS, (floor, cap, coupon)):
+                if cell is not None and cell < 0.0:
+                    raise ValueError('RangeAccrual: tiers[{}].{} is {:g} - a level and a coupon '
+                                     'are positive'.format(row, key, cell))
+            if floor and cap and floor >= cap:
+                raise ValueError('RangeAccrual: tiers[{}] floor {:g} is not below its cap {:g} - '
+                                 'a range admitting nothing earns nothing'.format(row, floor, cap))
+        if all(floor and cap for _, (floor, cap, _) in rows):
+            rows.sort(key=lambda entry: entry[1][1] - entry[1][0])
+        elif all(coupon for _, (_, _, coupon) in rows):
+            rows.sort(key=lambda entry: -entry[1][2])
+        else:
+            return rows
+        for (inner, (floor, cap, coupon)), (outer, (wide_floor, wide_cap, wide_coupon)) in zip(
+                rows, rows[1:]):
+            if floor and wide_floor and floor <= wide_floor or cap and wide_cap and cap >= wide_cap:
+                raise ValueError('RangeAccrual: tiers[{}] is not strictly inside tiers[{}] - a '
+                                 "cake's tiers nest, and bands that overlap have no single payoff "
+                                 'per fixing'.format(inner, outer))
+            if coupon and wide_coupon and coupon <= wide_coupon:
+                raise ValueError('RangeAccrual: tiers[{}] pays {:g}%, no more than the {:g}% of '
+                                 'tiers[{}] outside it - the innermost tier pays the most, and '
+                                 'equal coupons are one tier: state them as one'.format(
+                                     inner, coupon, wide_coupon, outer))
+        return rows
+
+    @classmethod
+    def unknown(cls, params, spot):
+        """`(path, bracket)` for the one parameter this ticket leaves to its premium, or
+        `(None, None)` where every cell is stated and the premium is quoted. `spot` is the pair in
+        market terms, bracketing an outermost level as a strike solve is bracketed.
+
+        A cell's bracket is its neighbours' own: a coupon between the next wider tier's (else 0)
+        and the next narrower's (else 100), a floor between the next wider tier's floor (else
+        `Solve.STRIKE_BRACKET[0]` spot) and the next narrower's (else its own cap), a cap the
+        mirror. The value is monotone in each, so a root is unique where it exists. Two blanks, a
+        blank beside a blank premium, a tier stating no bound beside one that does and a ticket
+        stating everything and a premium refuse by name.
+        """
+        rows = cls.ordered(params)
+        blanks = ['tiers[{}].{}'.format(row, key) for row, cells in sorted(rows)
+                  for key, cell in zip(cls.CELLS, cells) if cell is None]
+        if not stated(params, 'premium'):
+            if blanks:
+                raise ValueError('RangeAccrual: {} {} blank and so is premium - a blank is solved '
+                                 'to the premium the client pays, so state it, or state every '
+                                 'tier and the quote is the premium'.format(
+                                     ' and '.join(blanks), 'is' if len(blanks) == 1 else 'are'))
+            return None, None
+        bare = [row for row, (floor, cap, _) in rows if not (floor or cap)]
+        if len(bare) == len(rows) and all(coupon for _, (_, _, coupon) in rows):
+            return 'width', cls.WIDTH_BRACKET
+        if bare and len(bare) < len(rows):
+            raise ValueError('RangeAccrual: tiers[{}] states no floor or cap while another tier '
+                             'does - the tiers are placed about the forward only where no tier '
+                             'states a bound'.format(bare[0]))
+        if len(blanks) != 1:
+            raise ValueError('RangeAccrual: {} - a stated premium solves exactly one blank among '
+                             'the tiers'.format(
+                                 '{} are blank'.format(' and '.join(blanks)) if blanks else
+                                 'every tier is stated and so is premium, leaving nothing to '
+                                 'solve'))
+        position = next(k for k, (_, cells) in enumerate(rows) if None in cells)
+        floor, cap, coupon = rows[position][1]
+        inner = rows[position - 1][1] if position else [None, None, None]
+        outer = rows[position + 1][1] if position + 1 < len(rows) else [None, None, None]
+        if coupon is None:
+            low, high = outer[2] or cls.COUPON_BRACKET[0], inner[2] or cls.COUPON_BRACKET[1]
+        elif floor is None:
+            low, high = outer[0] or Solve.STRIKE_BRACKET[0] * spot, inner[0] or cap
+        else:
+            low, high = inner[1] or floor, outer[1] or Solve.STRIKE_BRACKET[1] * spot
+        if low >= high:
+            raise ValueError('RangeAccrual: no {} lies between {:g} and {:g}, the tiers either '
+                             'side of it - a cake\'s tiers nest'.format(blanks[0], low, high))
+        hair = cls.OPEN * (high - low)
+        return blanks[0], (low + hair, high - hair)
+
+    @classmethod
+    def completed(cls, params, path, value, forward):
+        """The ticket with `value` written at `path` - one cell, or under `width` every tier's floor
+        and cap, the k-th innermost at `F e^-kw` and `F e^kw` about `forward()`. `None` writes
+        nothing."""
+        tiers = [list(cells) for cells in params['tiers']]
+        if path == 'width':
+            centre = forward()
+            for k, (row, _) in enumerate(cls.ordered(params), 1):
+                tiers[row][:2] = [centre * math.exp(-k * value), centre * math.exp(k * value)]
+        elif path is not None:
+            row, key = path[len('tiers['):].split('].')
+            tiers[int(row)][cls.CELLS.index(key)] = value
+        return dict(params, tiers=tiers)
+
+    @classmethod
+    def tier(cls, params, position):
+        """`(floor, cap, increment)` of the `position`-th innermost tier in market terms, the
+        increment its coupon less the next wider tier's; None where a cell is blank."""
+        rows = [cells for _, cells in cls.ordered(params)] + [[None, None, 0.0]]
+        (floor, cap, coupon), wider = rows[position], rows[position + 1][2]
+        return floor, cap, None if coupon is None or wider is None else coupon - wider
 
 
 def registry():
@@ -1018,8 +1215,11 @@ def materialize(structure, params, document):
 
     The shared block comes from the parameters - the two currencies off the pair, the surface named
     for it, the settlement currency doing the discounting, the notional as the underlying amount,
-    and the expiry as a date. Then the leg's pinned block, then its slots. Strike-like slots and
-    `Option_Type` cross to the engine axis together, exactly once, here.
+    and the expiry as a date - and carries what the leg's type declares of it. A type declaring no
+    `Underlying_Amount` is PAID in its notional, so `notional_currency` settles it and the other
+    side is its underlying. Then the leg's pinned block, then its slots. Strike-like slots and
+    `Option_Type` cross to the engine axis together, exactly once, here. The legs are the ones
+    `structure.dealt` says the ticket deals.
 
     An ACCRUAL leg is furnished the same way plus a schedule - see `furnish_accrual`. It may WRITE
     to `document` to pin the spot model on the deal type, so the caller owns the copy exactly as it
@@ -1030,12 +1230,13 @@ def materialize(structure, params, document):
     way; one the book quotes no surface for refuses here, naming the pairs it does. A notional is a
     positive amount - which side the desk is on is the structure's own statement, not the sign.
     """
+    from . import instruments
     params = declared(structure, params)
     base, quote_ccy = split_pair(params['pair'])
-    underlying = str(params['notional_currency']).upper()
-    if underlying not in (base, quote_ccy):
+    named = str(params['notional_currency']).upper()
+    if named not in (base, quote_ccy):
         raise ValueError('notional_currency {!r} is not a side of {}'.format(
-            underlying, params['pair']))
+            named, params['pair']))
     notional = float(params['notional'])
     if notional <= 0.0:
         raise ValueError('a notional is a positive amount, not {:g} - the side the desk takes is '
@@ -1050,24 +1251,34 @@ def materialize(structure, params, document):
             params['pair'], ', '.join(name.split('.', 1)[1].replace('.', '')
                                       for name in sorted(factors)
                                       if name.startswith(family)) or 'no FX surface'))
-    settlement = quote_ccy if underlying == base else base
-    # the quoted axis is the deal's own only when the notional is the pair's BASE currency
-    inverted = underlying == quote_ccy
     base_date = timestamp(document['Calc']['Calculation']['Base_Date'])
-    shared = {'Currency': settlement, 'Discount_Rate': settlement,
-              'Underlying_Currency': underlying, 'Underlying_Amount': notional,
-              'FX_Volatility': surface, 'Expiry_Date': expiry_date(base_date, params['expiry'])}
-    seed = engine_spot(market, underlying, settlement)
+    expires = expiry_date(base_date, params['expiry'])
 
     out = []
-    furnished = ('FXOptionDeal', 'FXBarrierOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal')
+    furnished = ('FXOptionDeal', 'FXBarrierOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
+                 'FXRangeAccrualDeal')
     variation = variation_for(structure, params)[1]
-    for leg in (variation.legs if variation else structure.legs):
+    for position, leg in enumerate(structure.dealt(
+            variation.legs if variation else structure.legs, params)):
         if leg.deal_type not in furnished:
             raise ValueError('{}: the runner furnishes {} and the accrual deals {}, not {}'.format(
                 leg.role, ', '.join(t for t in furnished if not accrues(t)),
                 ', '.join(t for t in furnished if accrues(t)), leg.deal_type))
-        deal = dict(shared, Object=leg.deal_type)
+        takes = schema.declared_fields(getattr(instruments, leg.deal_type))
+        # an option is ON its notional, which is its underlying; a type declaring no
+        # Underlying_Amount is PAID in its notional, which then settles it
+        underlying = named if 'Underlying_Amount' in takes else (
+            quote_ccy if named == base else base)
+        settlement = quote_ccy if underlying == base else base
+        # the quoted axis is the deal's own only when its underlying is the pair's BASE currency
+        inverted = underlying == quote_ccy
+        shared = {'Currency': settlement, 'Discount_Rate': settlement,
+                  'Underlying_Currency': underlying, 'Underlying_Amount': notional,
+                  'FX_Volatility': surface, 'Expiry_Date': expires}
+        seed = engine_spot(market, underlying, settlement)
+        # a deal block is the field dict the pricer reads, so it carries what its type declares
+        deal = dict({key: value for key, value in shared.items() if key in takes},
+                    Object=leg.deal_type)
         deal.update(leg.pinned)
         for field, slot in leg.slots.items():
             if slot not in params:
@@ -1097,7 +1308,8 @@ def materialize(structure, params, document):
                     1.0 / deal['Barrier_Price'] if inverted else deal['Barrier_Price'],
                     1.0 / seed if inverted else seed))
         # an unsolved strike still has to be a number the splice can price - the solve replaces it
-        deal.setdefault('Strike_Price', seed)
+        if 'Strike_Price' in takes:
+            deal.setdefault('Strike_Price', seed)
         if leg.deal_type == 'FXBarrierOption':
             # the direction is the structure's own statement: the Instrument declaration's default
             # would ride the axis unflipped, so a barrier leg that names none refuses
@@ -1109,7 +1321,7 @@ def materialize(structure, params, document):
             deal.setdefault('Barrier_Price',
                             seed * (0.75 if deal['Barrier_Type'].startswith('Down') else 1.25))
         note = furnish_accrual(structure, deal, params, document, base_date, underlying,
-                               inverted) if accrues(leg.deal_type) else None
+                               inverted, position) if accrues(leg.deal_type) else None
         out.append(Materialized(leg.role, deal, inverted, note))
     return out
 
@@ -1121,19 +1333,25 @@ def accrues(deal_type):
     return observes is not None and observes.table is not None and observes.expires is None
 
 
-def furnish_accrual(structure, deal, params, document, base_date, underlying, inverted):
-    """The rest of an accrual leg: its fixing strip, its geared notional, and the one axis question
-    a strip asks that a single expiry does not. Returns the leg's note.
+def furnish_accrual(structure, deal, params, document, base_date, underlying, inverted, position):
+    """The rest of an accrual leg - the `position`-th the ticket deals: its fixing strip, its
+    notionals or its range, and the one axis question a strip asks that a single expiry does not.
+    Returns the leg's note.
 
     THE SCHEDULE. `fixing_grid` grows it from the tenor and `fixing_frequency`, settling the
     structure's `fixing_lag` on, and it is filed under the table the deal declares it observes.
     `FXTARFOptionDeal` also declares an `Expiry_Date`, set to the LAST SETTLEMENT rather than to the
-    tenor; `FXAccumulatorOptionDeal` declares no such field, so the shared block's is REMOVED - a
-    deal block is the field dict the pricer reads.
+    tenor. A type declaring a `Settlement_Date` pays the whole strip once, on that last settlement,
+    and its table holds each fixing with no `Value`, none having printed.
 
     THE NOTIONALS. `Underlying_Amount` is the notional per fixing, already in `notional_currency`;
-    `LeverageNotional` is `leverage` times it. Neither has an axis: `notional_currency` IS the
-    underlying, and a gearing is a pure ratio.
+    `LeverageNotional`, on a type declaring it, is `leverage` times it. Neither has an axis:
+    `notional_currency` IS the underlying, and a gearing is a pure ratio.
+
+    THE RANGE. A type declaring `Lower_Barrier` and `Upper_Barrier` takes them from the structure's
+    tier at `position` (`tier`), crossed where the leg is inverted - the reciprocal of a floor is
+    a cap, so the two swap - and its `Payoff` per fixing is the notional times the tier's increment
+    in percent a year times the ACT/365 years to the last fixing, over the fixings.
 
     THE TARGET does not cross. It is a sum of DIFFERENCES, and `1/S - 1/K` is not the reciprocal of
     `S - K`, so no number in reciprocal units means the same accrual cap. `InvertedTarget` is not
@@ -1144,26 +1362,45 @@ def furnish_accrual(structure, deal, params, document, base_date, underlying, in
     accumulator has no target and crosses freely.
 
     THE MODEL. `spot_model` pins the structure's `spot_model` where the book carries a calibration
-    for this leg's PAIR, and hands back the note where it does not.
+    for this leg's PAIR, and hands back the note where it does not; a type whose `spot_models`
+    admit no such model has nothing to pin and no note.
     """
+    from . import instruments
     if inverted and deal['Object'] == 'FXTARFOptionDeal':
         raise ValueError(
             'a target redemption forward is quoted on the pair\'s BASE currency: the target is '
             'an accrual cap in the pair\'s own units, the deal accrues on the axis its notional '
             'puts it on, and a sum of differences has no reading on the reciprocal - '
             '{} would cap a move nobody quoted'.format(underlying))
+    cls = getattr(instruments, deal['Object'])
+    takes = schema.declared_fields(cls)
     schedule = fixing_grid(base_date, params['expiry'], params['fixing_frequency'],
                            structure.fixing_lag)
-    deal[schema.OBSERVES[deal['Object']].table] = schedule
-    deal['LeverageNotional'] = float(params['leverage']) * float(params['notional'])
+    table = schema.OBSERVES[deal['Object']].table
+    if 'Settlement_Date' in takes:
+        deal[table] = [[fixing, None] for fixing, _, _ in schedule]
+        deal['Settlement_Date'] = dict(schedule[-1][1])
+    else:
+        deal[table] = schedule
+    if 'LeverageNotional' in takes:
+        deal['LeverageNotional'] = float(params['leverage']) * float(params['notional'])
+    if 'Lower_Barrier' in takes and 'Upper_Barrier' in takes:
+        floor, cap, increment = structure.tier(params, position)
+        lower, upper = (cap, floor) if inverted else (floor, cap)
+        deal['Lower_Barrier'], deal['Upper_Barrier'] = [
+            None if level is None else 1.0 / level if inverted else level
+            for level in (lower, upper)]
+        years = (timestamp(schedule[-1][0]) - base_date.normalize()).days / 365.0
+        deal['Payoff'] = None if increment is None else \
+            float(params['notional']) * increment / 100.0 * years / len(schedule)
     if deal['Object'] == 'FXTARFOptionDeal':
         deal['Expiry_Date'] = dict(schedule[-1][1])
         # the deal accrues and pays on its OWN axis - see the docstring for what the flag would do
         deal['InvertedTarget'] = False
         # the OTM knock-in this desk does not sell; `> 0.0` is the pricer's own switch
         deal.setdefault('Barrier', 0.0)
-    else:
-        deal.pop('Expiry_Date', None)
+    if structure.spot_model not in cls.spot_models:
+        return None
     return spot_model(document, deal['Object'], underlying, deal['Currency'], structure.spot_model)
 
 
@@ -1219,9 +1456,36 @@ def own_value(out, reference):
 
 def run_price(document, deal):
     """One leg's value as an ordinary base valuation, which already reports the number."""
+    return run_prices(document, [deal])[0]
+
+
+def run_prices(document, deals):
+    """Each of `deals`' own values off ONE base valuation of them together against the book, as
+    `alone` prices one: a deal's row does not depend on its siblings."""
     from . import Context
-    _, out = Context().load_json((json.dumps(alone(document, deal)[0]), 'quote')).run_job()
-    return own_value(out, deal['Reference'])
+    iterate = alone(document, deals[0])[0]
+    for deal in deals[1:]:
+        schema.splice_deal(iterate, deal)
+    _, out = Context().load_json((json.dumps(iterate), 'quote')).run_job()
+    return [own_value(out, deal['Reference']) for deal in deals]
+
+
+def forward_rate(document, params):
+    """The pair's FX forward to the ticket's expiry in MARKET terms, as the engine prices it: one
+    base valuation of a unit of each currency received on that day, discounted on its own
+    `FxRate`'s curve, the ratio of the two values."""
+    base, quote_ccy = split_pair(params['pair'])
+    factors = market_data(market_of(document))
+    settles = expiry_date(timestamp(document['Calc']['Calculation']['Base_Date']), params['expiry'])
+    units = [{'Object': 'FXForwardDeal', 'Reference': 'forward-{}'.format(bought),
+              'Buy_Currency': bought, 'Buy_Amount': 1.0,
+              'Buy_Discount_Rate': factors['FxRate.{}'.format(bought)]['Interest_Rate'],
+              'Sell_Currency': sold, 'Sell_Amount': 0.0,
+              'Sell_Discount_Rate': factors['FxRate.{}'.format(sold)]['Interest_Rate'],
+              'Settlement_Date': settles}
+             for bought, sold in ((base, quote_ccy), (quote_ccy, base))]
+    in_base, in_quote = run_prices(document, units)
+    return in_base / in_quote
 
 
 def run_solve(document, leg, field, target, spot, seed=None):
@@ -1502,7 +1766,7 @@ def risk_scale(rows, cost, policy, charge_full, min_ticket):
     return scale, saving, scale * charge_full, note
 
 
-def run_recipe(document, structure, params, reference, spot, charge=0.0, seed=None):
+def run_recipe(document, structure, params, reference, spot, charge=0.0, seed=None, forward=None):
     """One whole pass of the recipe at MID, from fresh legs.
 
     Materializes the legs and runs the steps in order against the book as it stands. EVERY leg
@@ -1518,18 +1782,21 @@ def run_recipe(document, structure, params, reference, spot, charge=0.0, seed=No
     it; the charge moves a coordinate by a spread's width, so the second pass need not search the
     whole bracket again.
 
-    Returns `(legs, premiums, solved)`. Legs are FRESH because `run_solve` writes the solved value
-    back onto the leg it moved, so a second pass over the first pass's legs would seed itself from
-    the answer it is meant to find.
+    Returns `(legs, premiums, solved, params)`, `params` the ticket priced - a solved parameter
+    written in. Legs are FRESH because `run_solve` writes the solved value back onto the leg it
+    moved, so a second pass over the first pass's legs would seed itself from the answer it is
+    meant to find. `forward` answers the pair's forward to the expiry, for a parameter solve.
     """
-    legs = materialize(structure, params, document)
-    for leg in legs:
-        leg.deal['Reference'] = '{}_{}'.format(reference, leg.role)
-        leg.deal['Structure_Reference'] = reference
+    legs = named_legs(structure, params, document, reference)
     by_role = {leg.role: leg for leg in legs}
 
     premiums, solved = {}, {}
     for step in structure.recipe:
+        if isinstance(step, SolveUnknown):
+            legs, premiums, solved, params = run_unknown(
+                document, structure, params, reference, step, legs[0].to_market(spot), charge,
+                seed, forward)
+            continue
         if step.role not in by_role:
             raise ValueError('{}: the recipe names leg {!r}, which is not declared'.format(
                 structure.__name__, step.role))
@@ -1552,7 +1819,64 @@ def run_recipe(document, structure, params, reference, spot, charge=0.0, seed=No
     if unpriced:
         raise ValueError('{}: the recipe never prices {}'.format(
             structure.__name__, ', '.join(unpriced)))
-    return legs, premiums, solved
+    return legs, premiums, solved, params
+
+
+def named_legs(structure, params, document, reference):
+    """`materialize`'s legs, each named under the structure's `reference`."""
+    legs = materialize(structure, params, document)
+    for leg in legs:
+        leg.deal['Reference'] = '{}_{}'.format(reference, leg.role)
+        leg.deal['Structure_Reference'] = reference
+    return legs
+
+
+def run_unknown(document, structure, params, reference, step, spot, charge, seed, forward):
+    """`step` over the ticket, `(legs, premiums, solved, params)` as `run_recipe` returns them.
+
+    `structure.unknown` names the blank parameter and its bracket, `spot` being the pair in market
+    terms; `brentq` moves it, every leg rebuilt from the ticket with the candidate written in and
+    priced together, until the legs sum to the `step.target` parameter - crossed from
+    `notional_currency` as a margin is - less `charge`. `seed` is an earlier pass's `solved` and
+    narrows the bracket to `Solve.SEED_BRACKET` around its root, falling back to the full one. No
+    root refuses with the economics said; no blank prices the legs as stated.
+    """
+    from scipy import optimize
+    path, bracket = structure.unknown(params, spot)
+    tried = {}
+
+    def priced(value):
+        if value not in tried:
+            ticket = structure.completed(params, path, value, forward)
+            legs = named_legs(structure, ticket, document, reference)
+            tried[value] = legs, run_prices(document, [leg.deal for leg in legs]), ticket
+        return tried[value]
+
+    root = None
+    if path is not None:
+        target = margin_value(document, {'amount': params[step.target],
+                                         'currency': params['notional_currency']})['value']
+        before = next((solved[path] for solved in (seed or {}).values() if path in solved), None)
+        ends = [bracket] if before is None else [
+            (max(bracket[0], before * (1.0 - Solve.SEED_BRACKET)),
+             min(bracket[1], before * (1.0 + Solve.SEED_BRACKET))), bracket]
+        for attempt, span in enumerate(ends):
+            try:
+                root = float(optimize.brentq(
+                    lambda x: sum(priced(float(x))[1]) - (target - charge), *span))
+                break
+            except ValueError as error:
+                if 'different signs' not in str(error):
+                    raise
+                if attempt + 1 < len(ends):
+                    continue
+                raise ValueError(
+                    '{}: no {} in [{:.6g}, {:.6g}] lets the legs reach {:.6g} - the structure '
+                    'cannot be financed at these parameters'.format(
+                        reference, path, span[0], span[1], target - charge)) from None
+    legs, values, ticket = priced(root)
+    return (legs, {leg.role: value for leg, value in zip(legs, values)},
+            {leg.role: {path: root} for leg in legs} if path else {}, ticket)
 
 
 def risk_impact(document, params, reference, surface, legs, halves, charge_full, cache):
@@ -1617,8 +1941,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
 
     `document` is a wire-form job document - the book - and travels whole, never a patch. `params`
     are the client's numbers, in the market's own terms, and come back COMPLETED by the structure's
-    own declared defaults. The answer carries `quote_id`, `structure`, `params`, the `variation`
-    selected and the `client` cashflows read off it, `netting_set`, a row per leg (reference, role,
+    own declared defaults, a solved ticket parameter written in. The answer carries `quote_id`,
+    `structure`, `params`, the `variation` selected and the `client` cashflows read off it, `netting_set`, a row per leg (reference, role,
     deal type, side, market-terms strike and barrier, premium, whatever was solved, the two-way
     `spread_charge` levied on it with its `spread_source` and pillar rows, and any `note`), `net`,
     `net_mid`, `edge`, `charged_on`, `spot`, `risk`, `notes` - what the runner did that the book
@@ -1653,7 +1977,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     stated as money in whatever currency it was agreed in. It crosses to the pricing currency at
     this document's own spots (`margin_value`) and is charged the way the two-way is, on the ONE
     coordinate the quote has: the financing leg raises the premiums it finances plus the charge, a
-    single-solve strip targets minus the charge rather than zero, and a recipe that SOLVES NOTHING
+    single-solve strip targets minus the charge rather than zero, a solved ticket parameter makes
+    the legs worth the stated premium less it, and a ticket that SOLVES NOTHING
     charges the PREMIUM instead - the client simply pays more, the booked legs stay at mid, and
     `charged_on` names which it was. So on a solving structure `net` reads the margin back NEGATIVE
     - the client holds paper worth minus what they paid for it - and the booked `mirror` marks the
@@ -1695,7 +2020,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     # what the BOOK already pinned, so what is reported below is what THIS quote pinned
     already = market['Valuation Configuration']
     margin = margin_value(document, margin)
-    solves = [step for step in structure.recipe if isinstance(step, Solve)]
+    solves = [step for step in structure.recipe if isinstance(step, (Solve, SolveUnknown))]
     if margin is not None and len(solves) > 1:
         raise ValueError(
             'a margin is charged by moving the ONE coordinate a recipe solves, and {} solves {} of '
@@ -1715,12 +2040,17 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     spot = engine_spot(market, probe.deal['Underlying_Currency'], probe.deal['Currency'])
     surface = probe.deal['FX_Volatility']
     halves = quote_two_way(market, surface)
+    # the coordinate THIS ticket solves: a parameter solve has one only where the ticket leaves a
+    # blank, and the forward it may be placed about is priced once, only if it is asked for
+    moved = [field for field in (step.field if isinstance(step, Solve) else structure.unknown(
+        params, probe.to_market(spot))[0] for step in solves) if field]
+    forward = functools.lru_cache(maxsize=None)(lambda: forward_rate(document, params))
 
     # the desk's own charge rides the coordinate the recipe SOLVES, or the premium where it solves
     # nothing; either way the client pays the margin and the two-way on top of the mid
     charge = margin['value'] if margin else 0.0
-    legs, premiums, solved = run_recipe(document, structure, params, reference, spot,
-                                        charge if solves else 0.0)
+    legs, premiums, solved, priced_params = run_recipe(
+        document, structure, params, reference, spot, charge if moved else 0.0, forward=forward)
     # the MID solution's own vegas, one greeks run per leg, and never made at all on a book that
     # quotes no two-way: there is nothing to charge them at
     vegas = [leg_vega(document, leg, surface) for leg in legs] if halves \
@@ -1735,14 +2065,14 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     # policy's own scale, and the rows below are rebuilt at the money that was really charged
     charged = 1.0 if risk['scale'] is None else risk['scale']
     levied = charged * (full or 0.0)
-    if levied and solves:
-        legs, premiums, solved = run_recipe(
-            document, structure, params, reference, spot, charge + levied, solved)
+    if levied and moved:
+        legs, premiums, solved, priced_params = run_recipe(
+            document, structure, params, reference, spot, charge + levied, solved, forward)
     if charged != 1.0:
         blocks = [spread_block(vega, source, halves, charged) for vega, source, _ in vegas]
 
     outcome = {
-        'quote_id': quote_id, 'structure': structure_name, 'params': dict(params),
+        'quote_id': quote_id, 'structure': structure_name, 'params': dict(priced_params),
         # WHICH WAY it was dealt, and the client's own two cashflows read off the variation that
         # was priced rather than off the ticket, so the booking and the account of it agree. Both
         # null for a structure declaring one form
@@ -1765,11 +2095,11 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
                  for leg, (_, _, note), block in zip(legs, vegas, blocks)],
         # the finished legs are AT MID, so what they are worth is what the trade marks at, and what
         # the client is quoted is that plus everything the desk charged on the coordinate below
-        'net': sum(premiums.values()) + levied + (0.0 if solves else charge),
+        'net': sum(premiums.values()) + levied + (0.0 if moved else charge),
         'net_mid': sum(premiums.values()),
         # WHICH coordinate carried the desk's charge - the field the recipe solved, or the premium
         # where it solves nothing and the client simply pays more
-        'charged_on': solves[0].field if solves else 'premium',
+        'charged_on': moved[0] if moved else 'premium',
         # the spot the legs were ACTUALLY struck on, read back off the document rather than taken
         # from the caller; the caller owns only the account of where it came from
         'spot': dict({'source': 'book', 'note': None}, **(spot_source or {}),

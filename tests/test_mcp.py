@@ -577,9 +577,9 @@ def test_the_structure_store_is_the_quoting_menu():
     menu = {entry['name']: entry for entry in listed['structures']}
 
     assert [entry['name'] for entry in listed['structures']] == [
-        'Accumulator', 'ForwardExtra', 'Seagull', 'Straddle', 'Strangle',
+        'Accumulator', 'ForwardExtra', 'RangeAccrual', 'Seagull', 'Straddle', 'Strangle',
         'TargetRedemptionForward', 'ZeroCostCollar']
-    assert listed['count'] == 7 and all(vernaculars.values())
+    assert listed['count'] == 8 and all(vernaculars.values())
     assert 'collar' in vernaculars['ZeroCostCollar']
 
     assert menu['ForwardExtra']['variations'] == {'floor': ['floor'], 'cap': ['cap']}
@@ -601,6 +601,11 @@ def test_the_structure_store_is_the_quoting_menu():
 
     with pytest.raises(ToolError, match='ZeroCostCollar'):
         mcp_server.describe_structure('collar')
+    with pytest.raises(ToolError, match='Close matches: RangeAccrual$'):
+        mcp_server.describe_structure('wedding cake')
+    cake = mcp_server.describe_structure('RangeAccrual')
+    assert cake['fields']['tiers']['col_names'] == ['floor', 'cap', 'coupon']
+    assert cake['fields']['tiers']['required'] and 'premium' in cake['fields']
 
 
 @pytest.fixture
