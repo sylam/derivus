@@ -1,5 +1,6 @@
-"""FX - the Asians, the one-touch and the no-touch, the partial-time barrier and the extendable
-forward, beside a barrier paying its rebate, as `tests/test_position_scaling.py` trials them."""
+"""FX - the Asians, the one-touch and the no-touch, the partial-time barrier, the extendable
+forward and the range accrual, beside a barrier paying its rebate, as
+`tests/test_position_scaling.py` trials them."""
 
 import pandas as pd
 
@@ -43,6 +44,11 @@ DEALS = [
     # the declared-defaults book's barrier pays no rebate, so this one does
     book.fx_leg('FXBarrierOption', 'FXKOR', Expiry_Date=E, Barrier_Type='Down_And_Out',
                 Barrier_Price=1.15, Cash_Rebate=50.0),
+    # monthly to the expiry about the 1.25 spot, nothing fixed yet
+    {'Object': 'FXRangeAccrualDeal', 'Reference': 'FXRA', 'Currency': 'USD',
+     'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
+     'Buy_Sell': 'Buy', 'Lower_Barrier': 1.20, 'Upper_Barrier': 1.30, 'Payoff': 1000.0,
+     'Settlement_Date': E, 'Observation_Dates': [[date, None] for date in dates(*range(1, 13))]},
 ]
 FACTORS = {}
 CONFIGURATION = {}

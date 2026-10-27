@@ -1524,7 +1524,8 @@ mapping = {
                  'FXBarrierOption', 'FXSwapDeal',
                  'MtMCrossCurrencySwapDeal', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
                  'FXExtendableForwardDeal',
-                 'FXDiscreteExplicitDoubleAsianOption', 'FXPartialTimeBarrierOption'],
+                 'FXDiscreteExplicitDoubleAsianOption', 'FXPartialTimeBarrierOption',
+                 'FXRangeAccrualDeal'],
             'New Energy Derivative':
                 ['FloatingEnergyDeal', 'FixedEnergyDeal', 'EnergySingleOption',
                  'CommodityDigitalOption', 'CommodityOneTouchOption', 'CommodityNoTouchOption',

@@ -2943,6 +2943,84 @@ def pv_european_option(shared, time_grid, deal_data, nominal, moneyness, forward
     return value * discount_rates
 
 
+def pv_fx_range_accrual(shared, time_grid, deal_data, spot):
+    """An FX range accrual on the deal grid: per row, the observations already fixed counted by
+    their exact inclusive indicator - a known `Value` before the base date, the path's own spot
+    after it - and each later one the cash digital at the lower bound less the one at the upper,
+    Black on the forward to its own date at each strike's own vol, or under
+    `Relative_Digital_Spread` each digital the call spread at its strike. The count times `Payoff`
+    is discounted to the settlement.
+
+    Logs `RANGE_ACCRUAL` at DEBUG: the observations fixed before the base date, those the path
+    resolves on some row of the grid and those priced as digitals on its first row.
+    """
+    factor_dep = deal_data.Factor_dep
+    deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+    discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
+    daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
+    carry = (factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1])
+    lower, upper = factor_dep['Lower'], factor_dep['Upper']
+    eps = deal_data.Instrument.options['Relative_Digital_Spread']
+
+    observations = factor_dep['Observations']
+    known_resets = observations.known_resets(shared.simulation_batch)
+    start_idx = observations.get_start_index(deal_time)
+    sim_samples = observations.schedule[
+        (observations.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
+        (observations.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
+    next_samples = utils.fx_fixings(factor_dep, sim_samples, shared)
+    all_samples = torch.cat(
+        [torch.cat(known_resets, dim=0), next_samples], dim=0) if known_resets else next_samples
+    in_range = ((all_samples >= lower) & (all_samples <= upper)).to(shared.one.dtype)
+    dual_samples = observations.dual()
+
+    logging.debug('RANGE_ACCRUAL ref=%s rows=%d known=%d simulated=%d future=%d eps=%.6g',
+                  deal_data.Instrument.field.get('Reference'), deal_time.shape[0], len(known_resets),
+                  len(sim_samples), len(observations.schedule) - start_idx[0], eps)
+
+    def digital(forward, strike, spot_block, carry_block, sample_tau):
+        """The undiscounted cash digital call at `strike` on each observation's forward."""
+        def vols(k):
+            return forward_vol_strip(deal_data, k, spot_block, carry_block, sample_tau, shared,
+                                     factor_dep['Invert_Moneyness'], use_forwards=True)
+        if not eps:
+            return utils.black_european_option(
+                forward, strike, vols(strike), sample_tau, 1.0, 1.0, shared, cash_payoff=1.0)
+        low, high = (strike * (1.0 + shift * eps) for shift in (-1.0, 1.0))
+        return strike_spread(
+            utils.black_european_option(forward, low, vols(low), sample_tau, 1.0, 1.0, shared),
+            utils.black_european_option(forward, high, vols(high), sample_tau, 1.0, 1.0, shared),
+            eps, 1.0) / strike
+
+    mtm_list = []
+    start_index, counts = np.unique(start_idx, return_counts=True)
+    for index, (discount_block, spot_block) in enumerate(
+            utils.split_counts([discount, spot], counts, shared)):
+        t_block = discount_block.time_grid
+        sample_index_t = start_index[index]
+        accrued = in_range[:sample_index_t].sum(dim=0).expand(counts[index], -1)
+
+        sample_days = (dual_samples.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
+                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
+        if sample_days.shape[1]:
+            sample_tau = daycount_fn(sample_days)
+            sample_ts = spot_block.new(sample_tau)
+            carry_block = zero_carry_rate(carry, sample_days, sample_ts, t_block, shared)
+            forward = spot_block.unsqueeze(-2) * torch.exp(carry_block * sample_ts.unsqueeze(-1))
+            accrued = accrued + (
+                digital(forward, lower, spot_block, carry_block, sample_tau) -
+                digital(forward, upper, spot_block, carry_block, sample_tau)).sum(dim=1)
+
+        value = factor_dep['Buy_Sell'] * factor_dep['Payoff'] * accrued
+        settle_in_days = factor_dep['Settlement'] - t_block[:, utils.TIME_GRID_MTM]
+        mtm_list.append(value * torch.squeeze(
+            utils.calc_discount_rate(discount_block, settle_in_days.reshape(-1, 1), shared), dim=1))
+
+    cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], value[-1])
+
+    return torch.cat(mtm_list, dim=0)
+
+
 def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     """Fixing-observed FX accumulator with a knock-out barrier, by one-step-survival Monte Carlo.
 

@@ -6882,6 +6882,115 @@ class FXBinaryOption(FXOptionDeal):
         return mtm
 
 
+class FXRangeAccrualDeal(Deal):
+    vernacular = 'FX range accrual, corridor, fairway, digital strip'
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Observation_Dates', 1)
+    fields = [ADMIN, FX_ADMIN, own('FXRangeAccrualDeal', [
+        F('Currency', 'Text', default='', factors=['FxRate']),
+        F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
+        F('Discount_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
+        F('FX_Volatility', 'Text', default='', factors=['FXVol']),
+        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+        F('Lower_Barrier', 'Float', default=REQUIRED, description=FX_AXIS.format('Lower bound of the range')),
+        F('Upper_Barrier', 'Float', default=REQUIRED, description=FX_AXIS.format('Upper bound of the range')),
+        F('Payoff', 'Float', default=REQUIRED, sized=True,
+          description='Cash in Currency earned by each observation fixing inside the range'),
+        F('Settlement_Date', 'Date', default='', settles=Cash('Currency')),
+        F('Observation_Dates', 'Table', default='null',
+          row=Row([F('Date', 'Date'), F('Value', 'Float')]),
+          description='One row per observation: its date and, once known, the fixing')
+    ])]
+
+    documentation = ('Fx And Equity', [
+        'An FX range accrual: at each observation date $t_j$ the pair fixing inside',
+        '$[L, U]$ (**Lower_Barrier**, **Upper_Barrier**, both inclusive) earns **Payoff** in',
+        '**Currency**, and every amount earned is paid once, on **Settlement_Date**:',
+        '',
+        '$$\\mathrm{BS}\\cdot P\\,D(t, T_s)\\sum_j \\left(1_{\\{S_j \\ge L\\}} - 1_{\\{S_j > U\\}}\\right),$$',
+        '',
+        'BS being +1/-1 for Buy/Sell. It is a strip of cash-or-nothing digitals, a bought call at',
+        '$L$ and a sold call at $U$ per observation. A future observation is Black on the FX forward',
+        'to its own date, each digital at the vol read at its own strike and that tenor, the whole',
+        'discounted on **Discount_Rate** to **Settlement_Date**; under deterministic rates the',
+        'fixing\'s forward measure and the payment\'s agree, so no convexity enters. An observation',
+        'dated before the base date is read off the `Value` its row states, which it must; one dated',
+        'on the base date is the engine\'s spot.',
+        '',
+        'A wedding cake is a `StructuredDeal` of nested range accruals, each paying the increment over',
+        'the tier outside it: tiers earning $P_1$ inside $P_2$ inside $P_3$ book as three ranges',
+        'earning $P_3$, $P_2 - P_3$ and $P_1 - P_2$, whatever the tier count.',
+        '',
+        'If the **Relative_Digital_Spread** Valuation Configuration option is set (> 0), each digital',
+        'is priced as a call spread of width `Strike * Relative_Digital_Spread` either side of its',
+        'strike, rather than the single-vol closed form, so the vol surface smile is picked up',
+        'automatically.'])
+
+    option_defaults = {'Relative_Digital_Spread': 0.0}
+
+    def reset(self, calendars):
+        super(FXRangeAccrualDeal, self).reset()
+        self.add_settlement_dates()
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        """The pair, its curves and surface, the range and the observations, sorted by date: a row
+        dated before the base date reads its stated `Value` and one dated on it the simulated spot
+        (`TensorResets.from_observations`). A past row stating no `Value`, an empty range and a
+        non-positive bound refuse by name."""
+        reference = self.field.get('Reference', 'FXRangeAccrualDeal')
+        rows = sorted(self.field['Observation_Dates'], key=lambda x: x[0])
+        for date, value in rows:
+            if date < base_date and value in (None, ''):
+                raise utils.UnpriceableSchedule(
+                    '{}: the Observation_Dates row {:%Y-%m-%d} is behind the base date and states no '
+                    'Value, so whether it fixed inside the range is unknown. Add the fixing to the '
+                    'row'.format(reference, date))
+        lower, upper = float(self.field['Lower_Barrier']), float(self.field['Upper_Barrier'])
+        if lower <= 0.0 or upper <= 0.0:
+            raise ValueError('{}: Lower_Barrier and Upper_Barrier must be positive (got {} and {}); a '
+                             'range open below is authored with its lower bound far below the '
+                             'spot'.format(reference, lower, upper))
+        if lower >= upper:
+            raise ValueError('{}: Lower_Barrier {} is not below Upper_Barrier {}, and a range that '
+                             'admits nothing is not a deal - it prices to exactly zero on every '
+                             'path'.format(reference, lower, upper))
+
+        field = {'Currency': utils.check_rate_name(self.field['Currency']),
+                 'Underlying_Currency': utils.check_rate_name(self.field['Underlying_Currency']),
+                 'FX_Volatility': utils.check_rate_name(self.field['FX_Volatility'])}
+        field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
+
+        return {
+            'Currency': get_fx_and_zero_rate_factor(
+                field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'SettleCurrency': self.field['Currency'],
+            'Discount': get_interest_factor(
+                field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
+            'Underlying_Currency': get_fx_and_zero_rate_factor(
+                field['Underlying_Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+            'Volatility': get_vol_factor('FXVol',
+                                         field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
+            'Settlement': (self.field['Settlement_Date'] - base_date).days,
+            'Observations': utils.TensorResets.from_observations(
+                base_date, time_grid, [[date, value or 0.0] for date, value in rows]),
+            'Lower': lower,
+            'Upper': upper,
+            'Payoff': float(self.field['Payoff']),
+            'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
+            'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
+        }
+
+    def generate(self, shared, time_grid, deal_data):
+        deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
+        fx_rep = utils.calc_fx_cross(
+            deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
+        spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
+            deal_data.Factor_dep['Underlying_Currency'][0],
+            deal_data.Factor_dep['Currency'][0], deal_time, shared), deal_time, shared)
+        return pricing.pv_fx_range_accrual(shared, time_grid, deal_data, spot) * fx_rep
+
+
 class CreditNthToDefault(Deal):
     vernacular = 'nth-to-default, first-to-default, basket default swap'
     fields = [ADMIN, PRICING, own('CreditNthToDefault', [

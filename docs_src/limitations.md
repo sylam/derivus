@@ -87,6 +87,11 @@ Grouped by where a validator meets them.
 - **The closed-form barrier floors its vol at 5%** (2026-10-11). `pv_barrier_option` (the FX barrier,
   and an equity barrier without `Barrier_Dates`) lifts any lower vol to 5% before pricing and before
   the monitoring shift. UNMEASURED on low-vol pairs.
+- **The FX range accrual's simulated fixings carry no boundary correction.** A fixing after the
+  base date is the path's own inclusive indicator, a step on outer state that `pv_fx_range_accrual`
+  registers no `BoundarySet` for, so a credit Monte Carlo's sensitivities drop its flux on every row
+  after a fixing; a base valuation has no simulated fixing and its derivative is exact. UNMEASURED:
+  measuring it is a CRN ladder of a CMC delta on a row after a fixing (`tests/crn_ladder.py`).
 
 ### The engine {#the-engine}
 

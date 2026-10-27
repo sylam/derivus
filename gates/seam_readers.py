@@ -49,6 +49,8 @@ SEAMS = {
 
 _ATM = 'an ATM vol: a None coordinate, which `VolSurface.rate` places by the surface\'s subtype'
 _WALK = 'steps the interval strip along its path, and no forward is totalled'
+_DIGITALS = 'prices each observation as a European digital on its own forward and its own implied ' \
+            'vol: no interval is stepped'
 _AVERAGE = 'forwards each sample on its zero carry and moment-matches on its implied vol: an ' \
            'average of forwards steps no interval'
 
@@ -85,6 +87,8 @@ KNOWN = {
     ('pricing.forward_carry_rate', 'pricing.pv_discrete_double_asian_option'): _AVERAGE,
     ('pricing.forward_vol_rate', 'pricing.pv_discrete_asian_option'): _AVERAGE,
     ('pricing.forward_vol_rate', 'pricing.pv_discrete_double_asian_option'): _AVERAGE,
+    ('pricing.forward_carry_rate', 'pricing.pv_fx_range_accrual'): _DIGITALS,
+    ('pricing.forward_vol_rate', 'pricing.pv_fx_range_accrual'): _DIGITALS,
     ('pricing.total_log_forward', 'pricing.pv_MC_Accumulator'): _WALK,
     ('pricing.total_log_forward', 'pricing.pv_MC_AutoCallSwap'): _WALK,
     ('pricing.total_log_forward', 'pricing.pv_MC_Tarf'): _WALK,
