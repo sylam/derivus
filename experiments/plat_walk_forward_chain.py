@@ -386,8 +386,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
     knots = carry_knots(trade_date, max(max(info['fixings']), max(info['mats'])))
     horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
-    observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap,
-                          cols=SCALAR_COLS)
+    as_of = observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap,
+                                  cols=SCALAR_COLS, to_date=args.to_date)
 
     ckpts, train_us, v0s, market_dim = [], [], [], None
     u_step_sum = None                      # set by a TRAINED seed; a checkpoint-skip run has none
@@ -496,10 +496,29 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     greedy = (sv.get('greedy') or {}).get('wT_mean')
     nohedge = (sv.get('nohedge') or {}).get('wT_mean')
     q = np.array(sv.get('greedy_q_traj') or [[0.0]])
-    bound = pf_bound(arch, trade_date, info['mats'], info['pay'], spot_cols=HEDGE_COLS)
-    st_short = static_short_usd_oz(arch, trade_date, info['mats'], info['pay'], args.volume,
-                                   spot_cols=HEDGE_COLS)
+    if args.to_date:
+        # the live book: the last decision on or before the last archive day, beside the
+        # passive's book at that step and the drift monitor's reading there
+        dates = pd.to_datetime(sv.get('greedy_q_dates') or [])
+        i = int(np.searchsorted(dates, as_of, side='right')) - 1
+        dm = sv.get('drift_monitor') or {}
+        to_date = {'as_of': str(as_of.date()), 'decision_date': str(dates[i].date()),
+                   'book': [round(float(x), 2) for x in q[i]],
+                   'passive': [round(float(x), 2) for x in
+                               np.array((rdiag.get('verdict') or {}).get('passive_q_traj'))[sv['greedy_q_t'][i]]],
+                   'drift_z': (dm.get('z_path') or [None])[min(i, len(dm.get('z_path') or []) - 1)],
+                   'tripped': (dm.get('tripped') or [None])[min(i, len(dm.get('tripped') or []) - 1)]}
+        logging.info('TO-DATE %s as of %s (decision %s): book %s contracts, passive %s, drift z %s tripped %s',
+                     tag, to_date['as_of'], to_date['decision_date'], to_date['book'],
+                     to_date['passive'], to_date['drift_z'], to_date['tripped'])
+        bound = st_short = None
+    else:
+        to_date = None
+        bound = pf_bound(arch, trade_date, info['mats'], info['pay'], spot_cols=HEDGE_COLS)
+        st_short = static_short_usd_oz(arch, trade_date, info['mats'], info['pay'], args.volume,
+                                       spot_cols=HEDGE_COLS)
     return {
+        'to_date': to_date,
         'trade': tag, 'world': 'chain', 'margin': args.margin, 'corridor': args.delta_corridor,
         'fair': round(info['k_fair'], 2), 'strike': round(info['k_fair'] - args.margin, 2),
         'n_seeds': len(args.seeds), 'market_dim': market_dim,
@@ -507,10 +526,10 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         'train_u_is_step_sum': u_step_sum,
         'greedy_usd_oz': None if greedy is None else round(greedy / args.volume, 2),
         'nohedge_usd_oz': None if nohedge is None else round(nohedge / args.volume, 2),
-        'static_short_usd_oz': (None if nohedge is None
+        'static_short_usd_oz': (None if (nohedge is None or st_short is None)
                                 else round(nohedge / args.volume + st_short, 2)),
-        'pf_bound': round(bound, 2),
-        'bound_pass': (None if (greedy is None or nohedge is None)
+        'pf_bound': None if bound is None else round(bound, 2),
+        'bound_pass': (None if (greedy is None or nohedge is None or bound is None)
                        else bool(greedy / args.volume <= nohedge / args.volume + bound + 1e-6)),
         'churn': round(float(np.abs(np.diff(q, axis=0)).sum()), 1),
     }
@@ -567,6 +586,10 @@ def main():
                          'different decision horizon (steps clamp to the saved range).')
     ap.add_argument('--max-gap', type=int, default=5,
                     help='Largest hole (days) allowed in the realized window.')
+    ap.add_argument('--to-date', action='store_true',
+                    help='The live roll: a window past the archive end is padded flat and the '
+                         'book on the last archive day is printed beside the passive book (the '
+                         'row field to_date); the bound and the static short are not computed.')
     ap.add_argument('--fit-iters', type=int, default=None)
     ap.add_argument('--huber-aversion', type=float, default=None,
                     help='Override the template Objective\'s Huber_Aversion (trains a different '

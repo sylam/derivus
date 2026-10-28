@@ -374,7 +374,7 @@ def resolved_calibration_config(source, archive, out_path):
 
 
 def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5,
-                          cols=(CME_COL, BASIS_COL)):
+                          cols=(CME_COL, BASIS_COL), to_date=False):
     """Dense daily realized (CME primary, published basis, CARRY CURVE) from the base date,
     forward-filled. The framework composes the LBMA fixing S = P + b itself. The carry rides as
     the `(T, 2)` curve tensor the job's own two DATED knots imply: z at each knot's aged tenor,
@@ -391,10 +391,15 @@ def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5,
     refused it. The synchronized archive is built from intraday ticks that pass a quality filter,
     so it HAS holes - the largest 29 days covering the first half of April 2020, the averaging
     month of the 2020-01 trade. Measured there: the realized average comes out $26.02/oz below
-    the EOD archive's. `--max-gap 999` to run anyway and own the number."""
+    the EOD archive's. `--max-gap 999` to run anyway and own the number.
+
+    `to_date` is the live roll: a window past the archive end is padded flat from the last
+    archive day, the hole guard still holding on the observed part, and the last observed day
+    is returned - the decision on that day reads only the state on that day, so the padding
+    cannot touch the book it prints."""
     base = pd.Timestamp(base_date)
     dates = pd.DatetimeIndex([base + pd.Timedelta(days=i) for i in range(int(horizon_days))])
-    if dates.max() > arch.index[-1]:
+    if dates.max() > arch.index[-1] and not to_date:
         raise ValueError(
             f'Observed window {base.date()}+{horizon_days}d ends {dates.max().date()} past '
             f'archive end {arch.index[-1].date()}: the roll would run on fabricated flat prices')
@@ -413,6 +418,7 @@ def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5,
     # what the archive columns already are; the carry rides as its own (T, 2) curve tensor
     np.savez(path, **{c: rows[c].to_numpy() for c in cols},
              **{'ForwardRate.PLATINUM_CARRY': carry})
+    return min(dates.max(), arch.index[-1])
 
 
 def static_short_usd_oz(arch, trade_date, mats, pay, volume, spot_cols=(CME_COL,)):
