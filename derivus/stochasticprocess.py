@@ -4842,7 +4842,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         inner = Z.ndim == 3
         T, batch = Z.shape[0], Z.shape[1:]
         # floored, the same inf/NaN guard as the linked spot
-        W = torch.distributions.Chi2(shared_mem.one.new_tensor(nu)).sample(Z.shape).clamp_min(1.0e-6)
+        W = torch.distributions.Chi2(shared_mem.one.new_tensor(nu), validate_args=False).sample(Z.shape).clamp_min(1.0e-6)
         scale = torch.sqrt((nu - 2.0) / W)
         eta = None if self.garch or self.band else sigma_t * Z * scale
         out = torch.empty(Z.shape, device=device, dtype=dtype)

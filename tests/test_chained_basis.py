@@ -14,8 +14,10 @@ priced beside their primary.
 import json
 from types import SimpleNamespace
 
+import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 import derivus as rf
 import test_position_scaling as trials
@@ -286,3 +288,32 @@ def test_a_composed_name_beside_its_primary_marks_the_same_in_either_order(head,
     plain, composed = dict(deal, Reference='PLAIN'), dict(deal, Reference='COMPOSED', **{field: name})
     together = marks(plain, composed)
     assert together == marks(composed, plain) and together['PLAIN'] != together['COMPOSED'], together
+
+
+def test_the_band_basis_prices_under_torch_s_distribution_validation():
+    """A `Band_Mixture` basis carries `Nu` 0, the calibrator's own convention, the mixture being its
+    innovation law: the chi-squared the t-scale is drawn from is never read on the band branch, and
+    torch validates a chi-squared's degrees of freedom whenever `__debug__` is on, as it is here and
+    in every run not started with -O. The band document prices: every row of the credit Monte
+    Carlo's mtm is finite and the base-date row is one value across the paths.
+
+    Killing mutation: `validate_args=False` dropped from the basis draw - torch refuses the
+    degrees of freedom 0 before the first step.
+    """
+    world = _world('LBMA_AM.CME', chained=False)
+    market = world['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'CommodityPrice': 'GBMAssetPriceModel', 'ObservedBasis': 'BasisLinkedSpotModel'},
+        'modelfilters': {}}}
+    market['Price Models'] = {
+        'GBMAssetPriceModel.LBMA_AM': {'Vol': 0.3, 'Drift': 0.0},
+        'BasisLinkedSpotModel.LBMA_AM.CME': {
+            'A': 0.01, 'Phi': 0.9, 'Nu': 0.0, 'Sigma': 1.5, 'Reversion_Model': 'Band_Mixture',
+            'Band_Kappa': 2.0, 'Band_Beta': 0.2, 'Mix_Q_Stress': 0.1, 'Mix_Sigma_Quiet': 1.0,
+            'Mix_Sigma_Stress': 4.0, 'Mix_Stay_Stress': 0.8, 'Mix_P0_Stress': 0.1,
+            'Slow_Mean_Lambda': 0.95, 'Mu_0': -7.0, 'Calibration_DT_Years': 1.0 / 252.0}}
+    cx = rf.Context(path_transform={}, file_transform={})
+    cx.load_json((json.dumps(world), 'band_basis.json'))
+    mtm = rf.run_cmc(cx.current_cfg, prec=torch.float64)[1]['Results']['mtm']
+    assert mtm.shape == (11, 64) and np.isfinite(mtm.values).all(), mtm.shape
+    assert np.ptp(mtm.iloc[0].values) == 0.0, mtm.iloc[0].values[:4]
