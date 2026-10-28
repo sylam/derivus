@@ -68,10 +68,18 @@ import pandas as pd
 
 # Must precede the first torch/derivus import (pulled in via production_solver below):
 # PYTORCH_CUDA_ALLOC_CONF is parsed once at first allocator use. expandable_segments frees
-# ~20GB of reserved allocator slack, bit-identical results.
-os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+# ~20GB of reserved allocator slack, bit-identical results; Windows has no such mode.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'garbage_collection_threshold:0.6'
+                      if sys.platform == 'win32' else 'expandable_segments:True')
+
+import torch  # noqa: E402
 
 from production_solver import apply_config, run
+
+if sys.platform == 'win32' and torch.cuda.is_available():
+    # without a cap the caching allocator's reserve grows to the card and WDDM pages it out,
+    # ten times slower; the cap makes it free its cache instead (bit-identical)
+    torch.cuda.set_per_process_memory_fraction(0.92)
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
 

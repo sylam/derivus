@@ -416,6 +416,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
             tcalc['Hedging_Problem']['Solver']['DiffV2_Bank_Noise_Frac'] = args.bank_noise
         if args.fit_tol is not None:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Fit_Tol'] = args.fit_tol
+        if args.action_chunk is not None:
+            tcalc['Hedging_Problem']['Solver']['Training_Action_Chunk_Size'] = args.action_chunk
         if args.solver is not None:
             tcalc['Hedging_Problem']['Solver']['Object'] = args.solver
         if args.temporal_proximity is not None:
@@ -646,6 +648,9 @@ def main():
                          'is what makes the position-state slice identifiable.')
     ap.add_argument('--fit-tol', type=float, default=None,
                     help='Solver DiffV2_Fit_Tol override (0 pins the full fit budget).')
+    ap.add_argument('--action-chunk', type=int, default=None,
+                    help='Solver Training_Action_Chunk_Size: grid rows scored per pass of the argmax. '
+                         'Bit-identical at any value; bounds the peak memory of a decision.')
     ap.add_argument('--grid-levels', type=int, default=None,
                     help='Override Solver Training_Action_Grid_Levels_Per_Axis (train AND '
                          'roll argmax). Changes the action space: a retrain. WITH --allocation '
