@@ -237,11 +237,16 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     premium = float(json.load(open(calibrated_md))['MarketData']['Price Models'][
         f'FixingBridgeModel.{B_PM.split(".", 1)[1]}']['Bridge_Premium'])
 
-    # --- liability: the 3-month-out averaging month, both sessions, paid +5 days ---------------
-    avg_start = (pd.Timestamp(trade_date) + pd.offsets.MonthBegin(3)).normalize()
+    # --- liability: the averaging month `--avg-lead-months` out (3: the desk's product; 0: the
+    # trade month itself), both sessions, paid +5 days; `--avg-days` keeps only the month's last
+    # N fixings, the short product that gives one independent tape a month ----------------------
+    first = pd.Timestamp(trade_date).normalize().replace(day=1)
+    avg_start = first + pd.offsets.MonthBegin(args.avg_lead_months) if args.avg_lead_months else first
     avg_end = (avg_start + pd.offsets.MonthEnd(0)).normalize()
     pay = avg_end + pd.Timedelta(days=5)
     fixings = pd.bdate_range(avg_start, avg_end)
+    if args.avg_days:
+        fixings = fixings[-int(args.avg_days):]
     k_fair = fair_strike(row, trade_date, fixings, premium)
     legs = hp['Liabilities']['CommodityAveragePriceSwapDeal']
     for leg in legs.values():                      # the template owns each leg's Commodity/routing
@@ -648,6 +653,10 @@ def main():
                          'is what makes the position-state slice identifiable.')
     ap.add_argument('--fit-tol', type=float, default=None,
                     help='Solver DiffV2_Fit_Tol override (0 pins the full fit budget).')
+    ap.add_argument('--avg-lead-months', type=int, default=3,
+                    help='The averaging month, this many months after the trade month (0 = the trade month).')
+    ap.add_argument('--avg-days', type=int, default=0,
+                    help='Only the last N fixings of the averaging month (0 = the whole month).')
     ap.add_argument('--action-chunk', type=int, default=None,
                     help='Solver Training_Action_Chunk_Size: grid rows scored per pass of the argmax. '
                          'Bit-identical at any value; bounds the peak memory of a decision.')
