@@ -391,3 +391,23 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
     wT = (last['transition_pnl_excess'] + last['transition_liability_value']).to(torch.float64)
     assert frozen.evaluation_summary['diagnostics']['stepper_verdict']['passive']['wT_mean'] \
         == float(wT.mean())
+
+
+def test_the_returns_state_fits_the_wealth_column_it_reads():
+    """Under `DiffV2_Returns_State` the value state is dimensionless: price columns as log-returns
+    against the t0 spot, the basis as a fraction of it and wealth as a fraction of the t0 book
+    notional, in one spelling (`_w_norm`) on every path a net is fitted or read on. A training
+    document under the scale-free LogWealth objective with the returns state on then fits its
+    labels: the fitted residual tracks the bootstrap label from the first backward step and the
+    sweep's `V_0` is 0.16328038275241852, held within 1e-9 relative.
+
+    Killing mutation: the fit loop and the ensemble path feeding wealth in dollars to the
+    fraction frame (the three spellings this gate retired) - the net sees a column a million
+    standard deviations wide, fits a residual an order of magnitude too small at the first step,
+    and the sweep reads V_0 0.036762408912181854."""
+    cfg = _cfg(seed=7)
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Objective'] = {'Object': 'LogWealth'}
+    hp['Solver']['DiffV2_Returns_State'] = 'Yes'
+    v0 = _v0(_run(cfg))
+    assert abs(v0 - 0.16328038275241852) <= 1e-9 * 0.16328038275241852, v0

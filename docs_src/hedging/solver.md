@@ -23,6 +23,8 @@ minimum-variance hedge ratio, a simplification of the discrete-time quadratic he
 unconditional across the paths at each step rather than conditional on the state, and per
 instrument rather than joint.
 
+Under `DiffV2_Returns_State` the value state is dimensionless: price columns as log-returns against the t0 spot, basis columns as fractions of it, and wealth as a fraction of the t0 book notional. The wealth column has one spelling, `DiffSolver._w_norm`, on every path a net is fitted or read on, so the fit never feeds dollars to a fraction frame. Held by `tests/test_action_space_and_artifact.py::test_the_returns_state_fits_the_wealth_column_it_reads`.
+
 ## Benchmarks and the verdict
 
 | Track | Policy | Reported in |

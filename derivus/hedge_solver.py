@@ -958,9 +958,16 @@ class DiffSolver:
         under every combination."""
         cols = [(market - self.m_mean) / self.m_std]
         if not self.wealth_free:
-            sn = getattr(self, "state_notional", None)
-            cols.append((((W / sn if sn else W) - self.w_mean) / self.w_std).unsqueeze(-1))
+            cols.append(self._w_norm(W).unsqueeze(-1))
         return torch.cat(cols if p is None else cols + [p.unsqueeze(-1)], dim=-1)
+
+    def _w_norm(self, W, w_mean=None, w_std=None):
+        """The wealth column as every net reads it: W in fractions of the t0 book notional under
+        `DiffV2_Returns_State` (the frame `w_mean`/`w_std` was measured in), z-scored. One spelling
+        for the fit, the query and an ensemble member, so no path feeds dollars to a fraction frame."""
+        sn = getattr(self, "state_notional", None)
+        w = W / sn if sn else W
+        return (w - (self.w_mean if w_mean is None else w_mean)) / (self.w_std if w_std is None else w_std)
 
     def _continuation(self, nets, market, W, t, p, chunk=400_000):
         """`C_t = u(W) + A_t(market, W[, p])`; terminal `C_{T_dec} = u(W)`. Row-chunked net eval.
@@ -998,7 +1005,7 @@ class DiffSolver:
                     continue
                 cols = [(market - m_mean) / m_std]
                 if not self.wealth_free:
-                    cols.append(((W - w_mean) / w_std).unsqueeze(-1))
+                    cols.append(self._w_norm(W, w_mean, w_std).unsqueeze(-1))
                 x = torch.cat(cols + ([] if p is None else [p.unsqueeze(-1)]), dim=-1)
                 b = m_bounds[t] if m_bounds is not None else None
                 for i in range(0, x.shape[0], chunk):
@@ -1582,9 +1589,10 @@ class DiffSolver:
             net.load_state_dict(ref.state_dict())
         prox_ref = (torch.cat([p.detach().reshape(-1) for p in ref.parameters()])
                     if ref is not None and self.prox > 0.0 else None)
-        # twin loss in STANDARDIZED space: g_zn = std*g_raw
+        # twin loss in STANDARDIZED space: g_zn = std*g_raw, the wealth column's std carrying the
+        # t0 notional the column is divided by under the returns state (`_w_norm`)
         lam_g = float(self.cfg.get("diffv2_lambda_grad", 1.0))
-        g_zn_W = self.w_std * a_gW                                                       # (B,)
+        g_zn_W = self.w_std * (getattr(self, "state_notional", None) or 1.0) * a_gW          # (B,)
         g_zn_m = self.m_std * g_market                                                   # (B,md); u indep of market
         # per-term label-variance normalization
         nrm_v = a_val.var() + 1e-8
@@ -1604,7 +1612,7 @@ class DiffSolver:
         prev_loss, iters_run = None, self.fit_iters
         for it in range(self.fit_iters):
             mn = ((market0 - self.m_mean) / self.m_std).detach().requires_grad_(True)
-            wn = ((W0_bank - self.w_mean) / self.w_std).detach().requires_grad_(True)
+            wn = self._w_norm(W0_bank).detach().requires_grad_(True)
             cols = [mn] if self.wealth_free else [mn, wn.unsqueeze(-1)]
             a = net(torch.cat(cols
                               + ([] if p_bank is None else [p_bank.unsqueeze(-1)]), dim=-1))
