@@ -2182,8 +2182,9 @@ class DiffSolver:
 
         Warned: a stale `solver_version`, a missing corridor/universe/rate stamp under a live one,
         and a pre-stream frame. Corridor-FREE training spans the widest wealth support, so rolling
-        it inside any corridor only restricts to a learned subset; a policy trained INSIDE one is
-        off-support under a different or absent corridor."""
+        it inside any corridor only restricts to a learned subset, and so does a corridor INSIDE the
+        trained one; a policy trained inside a corridor is off-support under a wider, a different
+        or an absent one."""
         for key, want in (("t_min", self.t_min), ("T_dec", self.T_dec),
                           ("md", md), ("hedges", list(self.hedges))):
             if ck[key] != want:
@@ -2260,6 +2261,10 @@ class DiffSolver:
                     "DiffV2_Load_Value_Fn: %s trained corridor-free (widest wealth support); "
                     "rolling under a Total_Position_Schedule only restricts to a learned "
                     "subset — valid.", src)
+            elif self._corridor_inside(saved_sched):
+                logging.info(
+                    "DiffV2_Load_Value_Fn: %s rolls inside the corridor it trained in: every "
+                    "decision step's fence lies within the stamped one — valid.", src)
             else:
                 raise ValueError(
                     f"DiffV2_Load_Value_Fn corridor mismatch: {src} was trained under "
@@ -2363,6 +2368,23 @@ class DiffSolver:
                 "volume, or retrain")
         return float(c) * self.state_notional / float(trained_on)
 
+    def _corridor_inside(self, saved):
+        """True when this run's `Total_Position_Schedule` lies inside the stamped `saved` one on every
+        decision step, so the roll only ever queries the fitted value on learned support."""
+        mine = self.aspace.schedule
+        if not mine or not saved:
+            return False
+
+        def at(sched, t):
+            lo, hi = sched[0][1], sched[0][2]
+            for step, mn, mx in sched:
+                if step > t:
+                    break
+                lo, hi = mn, mx
+            return lo, hi
+        return all(at(saved, t)[0] - 1e-9 <= at(mine, t)[0] and at(mine, t)[1] <= at(saved, t)[1] + 1e-9
+                   for t in range(self.T_dec))
+
     def _restore_frame(self, members):
         """Adopt a loaded checkpoint's FRAME as this run's — the z-frame, the utility scale and
         its per-decision-step schedule — and mirror it onto the runtime, so every reward and every
@@ -2387,8 +2409,10 @@ class DiffSolver:
         self.loaded_displacement = loaded.get("displacement")
         if self.loaded_displacement is not None:
             self.displacement = self._capital_line(loaded)
-        if loaded.get("drift_null_sigma") is not None:
-            self.drift_null_sigma = float(loaded["drift_null_sigma"])
+        nulls = [float(ck["drift_null_sigma"]) for ck in members if ck.get("drift_null_sigma") is not None]
+        if nulls:
+            # one tripwire for the ensemble's forecast: the members' nulls averaged, whatever their order
+            self.drift_null_sigma = sum(nulls) / len(nulls)
         # the scalar IS the terminal read, so under a schedule it comes from the members' terminal
         # KNEES rather than a scalar that only happens to equal them
         scales = [float(ck["utility_scale_schedule"][-1] if ck.get("utility_scale_schedule")

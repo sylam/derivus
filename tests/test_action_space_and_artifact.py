@@ -280,6 +280,26 @@ def test_a_corridor_trained_policy_rolls_in_its_fence_and_loads_only_into_it(tmp
             _run(_cfg(seed=7, load=ckpt, schedule=other, symmetric=True))
 
 
+def test_a_corridor_trained_policy_rolls_inside_its_own_corridor(tmp_path):
+    """A fence inside the trained corridor on every decision step only restricts the roll to learned
+    support, so the frozen policy rolls in it and its greedy book sums inside the narrower fence;
+    a fence wider on either side is still refused by name.
+
+    Killing mutation: the containment branch removed from the corridor check (refused as a mismatch)."""
+    ckpt = str(tmp_path / 'value_fn_inside.pt')
+    _run(_passive_cfg(save=ckpt))                       # trained in the flat [-40, 5] corridor
+    inside = [{'Step': 0, 'Min_Total': -30, 'Max_Total': 0}]
+    cfg = _passive_cfg(load=ckpt)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']['Total_Position_Schedule'] = inside
+    sv = _run(cfg).evaluation_summary['diagnostics']['stepper_verdict']
+    assert all(-30 - 1e-3 <= sum(book) <= 0 + 1e-3 for book in sv['greedy_q_traj']), sv['greedy_q_traj'][:3]
+    wider = [{'Step': 0, 'Min_Total': -45, 'Max_Total': 5}]
+    cfg = _passive_cfg(load=ckpt)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']['Total_Position_Schedule'] = wider
+    with pytest.raises(ValueError, match='corridor mismatch'):
+        _run(cfg)
+
+
 def test_a_corridor_free_policy_rolls_in_any_corridor(free):
     """A policy trained corridor-FREE has the widest wealth support, so rolling it INSIDE a
     Total_Position_Schedule only restricts to a learned subset - allowed, and the eval reports
@@ -542,7 +562,8 @@ def test_an_ensemble_scores_each_member_in_its_own_frame(tmp_path):
     """Two LogWealth checkpoints of one document trained under different seeds carry different
     capital lines (each seed's displacement is measured off its own bank), and a two-member roll
     reads the day's reward as each member's log-growth at its own line, averaged: the frozen
-    ensemble rolls the same greedy book and the same V_0 whichever checkpoint is listed first.
+    ensemble rolls the same greedy book and the same V_0 whichever checkpoint is listed first, and
+    its drift tripwire's null is the members' average, the same in either order.
 
     Killing mutation: the reward read at the FIRST member's capital line for both members, so
     the roll depends on the order of `DiffV2_Load_Value_Fn`."""
@@ -558,6 +579,7 @@ def test_an_ensemble_scores_each_member_in_its_own_frame(tmp_path):
         cfg = _cfg(seed=7, load=order)
         cfg['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
         v = _run(cfg).evaluation_summary['diagnostics']['verdict']
-        reads.append((v['greedy_q_traj'], v['greedy']['wT_mean']))
+        reads.append((v['greedy_q_traj'], v['greedy']['wT_mean'], v['drift_null_sigma']))
     assert reads[0][0] == reads[1][0], [(a, b) for a, b in zip(reads[0][0], reads[1][0]) if a != b][:3]
     assert reads[0][1] == reads[1][1], (reads[0][1], reads[1][1])
+    assert reads[0][2] == reads[1][2] > 0.0, (reads[0][2], reads[1][2])     # the tripwire's null, averaged
