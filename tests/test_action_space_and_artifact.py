@@ -86,7 +86,7 @@ def _cfg(*, batch=48, inner=8, seed=7, positions=None, active=None,
     if save is not None:
         solver['DiffV2_Save_Value_Fn'] = save
     if load is not None:
-        solver['DiffV2_Load_Value_Fn'] = [load]
+        solver['DiffV2_Load_Value_Fn'] = list(load) if isinstance(load, (list, tuple)) else [load]
     hp['Solver'] = solver
     return cfg
 
@@ -411,3 +411,28 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     hp['Solver']['DiffV2_Returns_State'] = 'Yes'
     v0 = _v0(_run(cfg))
     assert abs(v0 - 0.16328038275241852) <= 1e-9 * 0.16328038275241852, v0
+
+
+def test_an_ensemble_scores_each_member_in_its_own_frame(tmp_path):
+    """Two LogWealth checkpoints of one document trained under different seeds carry different
+    capital lines (each seed's displacement is measured off its own bank), and a two-member roll
+    reads the day's reward as each member's log-growth at its own line, averaged: the frozen
+    ensemble rolls the same greedy book and the same V_0 whichever checkpoint is listed first.
+
+    Killing mutation: the reward read at the FIRST member's capital line for both members, so
+    the roll depends on the order of `DiffV2_Load_Value_Fn`."""
+    ckpts = []
+    for seed in (7, 11):
+        path = str(tmp_path / f'value_fn_s{seed}.pt')
+        cfg = _cfg(seed=seed, save=path)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
+        _run(cfg)
+        ckpts.append(path)
+    reads = []
+    for order in (ckpts, ckpts[::-1]):
+        cfg = _cfg(seed=7, load=order)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
+        v = _run(cfg).evaluation_summary['diagnostics']['verdict']
+        reads.append((v['greedy_q_traj'], v['greedy']['wT_mean']))
+    assert reads[0][0] == reads[1][0], [(a, b) for a, b in zip(reads[0][0], reads[1][0]) if a != b][:3]
+    assert reads[0][1] == reads[1][1], (reads[0][1], reads[1][1])

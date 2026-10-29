@@ -993,7 +993,7 @@ class DiffSolver:
             return base
         if ensemble:
             acc = torch.zeros_like(base)
-            for m_nets, m_mean, m_std, w_mean, w_std, m_bounds, m_sched in ensemble:
+            for m_nets, m_mean, m_std, w_mean, w_std, m_bounds, m_sched, _m_disp in ensemble:
                 if m_sched is not None:
                     # the member's own step KNEE, as much a part of its frame as its z-stats.
                     # Written as a correction to the shared anchor so a schedule-free ensemble
@@ -1065,19 +1065,20 @@ class DiffSolver:
         return charge
 
     # ---- one-step wealth move ------------------------------------------------
-    def _u_step(self, W1, W0, t):
+    def _u_step(self, W1, W0, t, displacement=None):
         """The per-step reward both step-sum objectives share. Running_Wealth: u((W1−W0)/c_t),
         the scaled increment. LogWealth: log(W1/W0) — the day's growth ratio, zero iff the step
         is perfectly hedged, scale-free (no c_t anywhere). Below `eps` the log continues
         linearly so a breached path keeps gradient while paying an unbounded-in-level penalty,
         and a step LAUNCHED at or under the floor can only score <= 0: ruin is absorbing, not a
-        rebirth against a clamped denominator."""
+        rebirth against a clamped denominator. `displacement` reads the ratio at another
+        member's capital line (the ensemble's `_reward`); None is this run's own."""
         if not self.log_ratio:
             return self._u(W1 - W0, t)
         # the CAPITAL line: wealth in the ratio is capital + MTM, so "wealth 1" is one unit of
         # backing capital and ruin is losing it. Both legs sit on the SAME step's c, so the inner
         # fork is measured against its own launch.
-        c = self.displacement / self.aversion
+        c = (self.displacement if displacement is None else displacement) / self.aversion
         eps = 1.0e-3
         base = (c + W0).clamp_min(self.w_floor)
         r = (c + W1) / base
@@ -1087,6 +1088,15 @@ class DiffSolver:
         # cliff stays a cliff and the labels stay a distribution.
         u = u.clamp_min(-20.0)
         return torch.where((c + W0) > self.w_floor, u, u.clamp_max(0.0))
+
+    def _reward(self, W1, W0, t):
+        """The day's reward in the frame the value it is added to was fitted in: `_u_step`, or over
+        an ensemble under LogWealth the mean of each member's growth at its OWN capital line, so a
+        two-member roll ranks the same book whichever checkpoint is listed first."""
+        ensemble = getattr(self, "_ensemble", None)
+        if not ensemble or not self.log_ratio:
+            return self._u_step(W1, W0, t)
+        return sum(self._u_step(W1, W0, t, m[7]) for m in ensemble) / len(ensemble)
 
 
     def _set_displacement(self, W_bank):
@@ -1252,7 +1262,7 @@ class DiffSolver:
                 if self.running_wealth:
                     # the DAY's reward, read off the CHARGED W1 so a move pays its toll inside the
                     # step that made it rather than at a terminal the reward no longer reaches
-                    C1f = C1f + self._u_step(W1, W[:, None, None], t + 1)
+                    C1f = C1f + self._reward(W1, W[:, None, None], t + 1)
                 C1 = self._risk_adjusted(C1f)                                             # E_inner[C] (B,c)
                 if limit:
                     dq_c = a_live[None, :, :] - q_live[:, None, :]                        # (B,c,n_h)
@@ -1299,7 +1309,7 @@ class DiffSolver:
                     p_inc).reshape(B, Bi)
                 if self.running_wealth:
                     # the incumbent earns its own day's increment, priced as every rival's
-                    C1f_inc = C1f_inc + self._u_step(W1, W[:, None, None], t + 1).reshape(B, Bi)
+                    C1f_inc = C1f_inc + self._reward(W1, W[:, None, None], t + 1).reshape(B, Bi)
                 inc = self._risk_adjusted(C1f_inc)
                 diff = best_f - C1f_inc                                                   # (B,Bi) paired
                 se = diff.std(-1) / math.sqrt(Bi)
@@ -1838,7 +1848,7 @@ class DiffSolver:
             def rank(Wx):
                 C1f = self._continuation(nets, market, Wx.reshape(-1), t + 1, p1).reshape(B, K, Bi)
                 if self.running_wealth:
-                    C1f = C1f + self._u_step(Wx, W[:, None, None], t + 1)   # the day's own reward
+                    C1f = C1f + self._reward(Wx, W[:, None, None], t + 1)   # the day's own reward
                 return self._risk_adjusted(C1f)[0]
 
             charged = rank(W1c)
@@ -2491,7 +2501,8 @@ class DiffSolver:
                          self._pad_steps(ck.get("a_bounds"), self.T_dec) if pad
                          else ck.get("a_bounds"),
                          self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 2)
-                         if pad else ck.get("utility_scale_schedule")))
+                         if pad else ck.get("utility_scale_schedule"),
+                         ck.get("displacement")))           # the member's own capital line
                 logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
             self.worst = float(loaded["max_abs_Y_boot"])
             self.root = {"t": self.t_min, "Y_mean": float(loaded["V_0"]),

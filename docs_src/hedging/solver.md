@@ -25,6 +25,8 @@ instrument rather than joint.
 
 Under `DiffV2_Returns_State` the value state is dimensionless: price columns as log-returns against the t0 spot, basis columns as fractions of it, and wealth as a fraction of the t0 book notional. The wealth column has one spelling, `DiffSolver._w_norm`, on every path a net is fitted or read on, so the fit never feeds dollars to a fraction frame. Held by `tests/test_action_space_and_artifact.py::test_the_returns_state_fits_the_wealth_column_it_reads`.
 
+An ensemble (`DiffV2_Load_Value_Fn` listing several checkpoints) scores every candidate book as the mean over members of each member's own value: its residual net in its own standardisation frame and, under `LogWealth`, the day's growth at its own capital line (`DiffSolver._reward`), so the greedy book does not depend on the order the checkpoints are listed in. Held by `tests/test_action_space_and_artifact.py::test_an_ensemble_scores_each_member_in_its_own_frame`.
+
 ## Benchmarks and the verdict
 
 | Track | Policy | Reported in |
