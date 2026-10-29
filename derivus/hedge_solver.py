@@ -824,6 +824,8 @@ class DiffSolver:
         # the stepper roll's handover to the passive book, a trip rule read outside the engine
         passive_from = str(self.cfg.get("diffv2_passive_from", "") or "")
         self.passive_from = pd.Timestamp(passive_from) if passive_from else None
+        self.first_from_passive = (str(self.cfg.get("diffv2_first_decision_from", "opening_book")).lower()
+                                   == "passive")
         if self.position_state and not self.total_abs_limit > 0.0:
             raise ValueError(
                 "Solver.DiffV2_Position_State='Yes' requires Evaluator.Total_Position_Abs_Limit > 0 "
@@ -1765,11 +1767,11 @@ class DiffSolver:
                     # indexed by the step the increment ARRIVES at, as every other seam does: the
                     # knee an increment is measured under belongs to the day it lands on
                     for p in W:
-                        u_run[p] = u_run[p] + self._u_step(W[p], W_pre[p], t + 1)
+                        u_run[p] = u_run[p] + self._reward(W[p], W_pre[p], t + 1)
                     for p in u_net:
                         last_net_inc[p] = W[p] - W_pre[p] - step_cost[p]
                         last_W_pre[p] = W_pre[p]
-                        u_net[p] = u_net[p] + self._u_step(
+                        u_net[p] = u_net[p] + self._reward(
                             W_pre[p] + last_net_inc[p], W_pre[p], t + 1)
                 q_traj["greedy"].append(q_g.mean(0).tolist())
                 q_traj["textbook"].append(q_tb.mean(0).tolist())
@@ -1785,9 +1787,9 @@ class DiffSolver:
                         # it; u is nonlinear, so appending u(-unwind) as its own term would report
                         # a different objective than the one optimised
                         u_net[p] = (u_net[p]
-                                    - self._u_step(last_W_pre[p] + last_net_inc[p],
+                                    - self._reward(last_W_pre[p] + last_net_inc[p],
                                                    last_W_pre[p], self.T_dec)
-                                    + self._u_step(last_W_pre[p] + last_net_inc[p] - unwind,
+                                    + self._reward(last_W_pre[p] + last_net_inc[p] - unwind,
                                                    last_W_pre[p], self.T_dec))
 
         out = {p: _tail_stats(self._u, W[p], None if u_run is None else u_run[p]) for p in W}
@@ -2045,7 +2047,7 @@ class DiffSolver:
                     B = W.shape[0]
                     if self.running_wealth:
                         u_sum = (torch.zeros_like(W) if w_prev is None
-                                 else u_sum + self._u_step(W, w_prev, t))
+                                 else u_sum + self._reward(W, w_prev, t))
                         w_prev = W
                     if policy == "nohedge":
                         q = torch.zeros(B, self.n_hedge, device=self.device)
@@ -2098,6 +2100,11 @@ class DiffSolver:
                                 device=self.device)
                             dF = dF + adj.view(1, 1, -1)
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
+                        if self.first_from_passive and not q_log["t"]:
+                            # the swap hedged at inception: the first decision's band and
+                            # position state ride the passive book, the stepper still enters from
+                            # its opening book at this day's price
+                            q_prev = self._passive_hedge(t, live, B)
                         day = self.bundle.scenario_dates[hist + int(t)]    # the full grid, past the history
                         handed = self.passive_from is not None and day >= self.passive_from
                         if handed:
@@ -2130,7 +2137,7 @@ class DiffSolver:
             wT = (last["transition_pnl_excess"]
                   + last["transition_liability_value"]).to(torch.float64)
             if u_sum is not None:
-                u_sum = u_sum + self._u_step(wT.to(torch.float32), w_prev, self.T_dec)  # tail
+                u_sum = u_sum + self._reward(wT.to(torch.float32), w_prev, self.T_dec)  # tail
             return wT, u_sum, drift
 
         rolled = {p: roll(p) for p in ("greedy", "textbook", "nohedge", "passive")}
@@ -2709,7 +2716,10 @@ class DiffSolver:
                 "DiffSolver sweep complete: t=%d→%d | max|Y_boot|=%.4g (%s) | "
                 "V_0=%+.6g | n_star@t=%d=%s", self.T_dec - 1, self.t_min, worst,
                 "BOUNDED" if bounded else "EXPLODED", V_0, root["t"], n_star_0)
-        # POLICY ARTIFACT, built ONCE here; a LOADED run produces none
+        # downside verdict, OUT-OF-SAMPLE by construction: all rows of the held-out world
+        verdict = self._verdict(nets, inner_cache, sweep_ts, rows=slice(None))
+        # POLICY ARTIFACT, built ONCE here and after the verdict, whose drift null it stamps;
+        # a LOADED run produces none
         artifact = None
         save_path = str(self.cfg.get("diffv2_save_value_fn", "") or "")
         if loaded is None:
@@ -2723,8 +2733,6 @@ class DiffSolver:
                 os.replace(tmp, save_path)                       # atomic on POSIX
                 logging.info("DiffSolver SAVED value fn to %s (V_0=%+.6g)", save_path, V_0)
 
-        # downside verdict, OUT-OF-SAMPLE by construction: all rows of the held-out world
-        verdict = self._verdict(nets, inner_cache, sweep_ts, rows=slice(None))
         # deployment-faithful backtest through BundleStepper: real futures accounting, decisions
         # off the stepper's own wealth
         stepper_verdict = None

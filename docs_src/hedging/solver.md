@@ -29,6 +29,10 @@ An ensemble (`DiffV2_Load_Value_Fn` listing several checkpoints) scores every ca
 
 The stepper roll's greedy policy holds the passive book from the first decision day on or after `DiffV2_Passive_From` and the fitted argmax before it, so a trip rule read outside the engine, such as a ledger's realised-vol switch, is read on the engine's own accounting rather than on a replay; the recorded book (`greedy_q_traj` on `greedy_q_dates`) shows the handover, and the drift monitor reads every decision day as before. Held by `tests/test_action_space_and_artifact.py::test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day`.
 
+A saved checkpoint carries the drift monitor's null sigma the training verdict measured, since the policy artifact is built after that verdict, and a frozen roll's tripwire (`DiffV2_Drift_Threshold_Sigmas` null sigmas times the square root of the day count) is scaled by it. An ensemble's reported objective is the mean over members of each member's growth at its own capital line (`DiffSolver._reward`), the same reading the decision uses. Held by `tests/test_action_space_and_artifact.py::test_the_saved_checkpoint_carries_the_drift_null_the_verdict_measured`.
+
+Under `DiffV2_First_Decision_From` 'Passive' the stepper roll's first greedy decision is measured from the passive book at that step, so the trade band and the position state ride the hedge a desk books at inception and the policy's deviation enters through the band; the accounting is untouched, every track entering from the declared opening book at that day's price. Held by `tests/test_action_space_and_artifact.py::test_the_first_decision_can_be_measured_from_the_passive_book`.
+
 ## Benchmarks and the verdict
 
 | Track | Policy | Reported in |

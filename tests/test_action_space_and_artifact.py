@@ -228,6 +228,18 @@ def test_the_returned_artifact_is_the_file_the_run_saved(free):
         assert same(file_dict[k], artifact[k]), f'file/artifact disagree on {k!r}'
 
 
+def test_the_saved_checkpoint_carries_the_drift_null_the_verdict_measured(free):
+    """The policy artifact is built after the training verdict, so the checkpoint carries the
+    drift monitor's null sigma that verdict measured, and a frozen roll's tripwire is scaled by it.
+
+    Killing mutation: the artifact built and saved before `_verdict`, so the stamp is None."""
+    ckpt, train = free
+    measured = train.evaluation_summary['diagnostics']['verdict']['drift_null_sigma']
+    assert measured > 0.0, measured
+    stamped = torch.load(ckpt, map_location='cpu', weights_only=False)['drift_null_sigma']
+    assert stamped is not None and round(stamped, 4) == measured, (stamped, measured)
+
+
 # --------------------------------------------------------------------------------------------
 # (iv) corridor — trained inside a fence, rolled inside it, loaded only into it
 # --------------------------------------------------------------------------------------------
@@ -432,6 +444,36 @@ def test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day(
     assert plain['greedy_q_traj'][k:] != passive[k:], 'the greedy roll already held the passive'
     assert first['greedy']['wT_mean'] == first['passive']['wT_mean'], \
         (first['greedy']['wT_mean'], first['passive']['wT_mean'])
+
+
+def test_the_first_decision_can_be_measured_from_the_passive_book(tmp_path):
+    """`DiffV2_First_Decision_From` 'Passive' seats the stepper roll's first greedy decision on the
+    passive book at that step, so the trade band holds the first book within a band of the passive
+    rather than of the empty opening book; the accounting is untouched, every track still entering
+    from the opening book at that day's price, so the passive track's wealth is the same either way.
+
+    Killing mutation: the first decision's `q_prev` left at the opening book under 'Passive'."""
+    ckpt = str(tmp_path / 'value_fn_first.pt')
+    _run(_passive_cfg(save=ckpt))
+
+    def roll(first_from):
+        cfg = _passive_cfg(load=ckpt)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        hp['Evaluator']['Max_Trade_Per_Step'] = 2.0
+        hp['Solver']['DiffV2_First_Decision_From'] = first_from
+        diag = _run(cfg).evaluation_summary['diagnostics']
+        sv = diag['stepper_verdict']
+        passive0 = diag['verdict']['passive_q_traj'][sv['greedy_q_t'][0] - diag['root_t']]
+        return sv, passive0
+
+    book, passive0 = roll('Opening_Book')
+    seated, passive0_seated = roll('Passive')
+    assert passive0 == passive0_seated and max(abs(q) for q in passive0) > 2.0, passive0
+    assert all(abs(q) <= 2.0 + 1e-6 for q in book['greedy_q_traj'][0]), book['greedy_q_traj'][0]
+    assert all(abs(q - p) <= 2.0 + 1e-6 for q, p in zip(seated['greedy_q_traj'][0], passive0)), \
+        (seated['greedy_q_traj'][0], passive0)
+    assert seated['greedy_q_dates'] == book['greedy_q_dates']
+    assert seated['passive']['wT_mean'] == book['passive']['wT_mean']
 
 
 def test_the_returns_state_fits_the_wealth_column_it_reads():
