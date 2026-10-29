@@ -301,7 +301,7 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
         for lim in limits.values():
             lim['Max_Position'] = int(args.long_cap)
         hp['Evaluator']['Total_Position_Abs_Limit'] = 60.0
-        if delta_corridor is None:
+        if delta_corridor is None and not args.no_schedule:
             hp['Evaluator']['Total_Position_Schedule'] = [
                 {'Step': 0, 'Min_Total': -60.0, 'Max_Total': float(args.long_cap)}]
 
@@ -602,6 +602,10 @@ def main():
                     help='Annualised log-drift stamped as GARCHSpotModel.Mu on top of the carry.')
     ap.add_argument('--drift-beta', type=float, default=None,
                     help='Roll-time Solver.DiffV2_Drift_Beta.')
+    ap.add_argument('--no-schedule', action='store_true',
+                    help='With --long-cap, leave the flat net schedule unwritten so the policy trains '
+                         'corridor-free (the per-leg boxes and the gross limit still bound it) and rolls '
+                         'in any corridor.')
     ap.add_argument('--open-at', choices=['passive', 'flat'], default='passive',
                     help="What the first decision is measured from: 'passive' (the swap hedged at "
                          "inception, the sleeve entering through the band) or 'flat' (the empty "
