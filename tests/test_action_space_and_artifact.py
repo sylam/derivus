@@ -496,6 +496,48 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     assert abs(v0 - 0.16328038275241852) <= 1e-9 * 0.16328038275241852, v0
 
 
+def _doubled(cfg):
+    """Every dollar of the document doubled, nothing else: the liability's volume, each future's
+    contract size, the margins and the cash; prices, paths and contract counts unchanged."""
+    cfg = jsonlib.loads(jsonlib.dumps(cfg))
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    for deal in hp['Liabilities']['FloatingEnergyDeal'].values():
+        for item in deal['Payments']['Items']:
+            item['Volume'] *= 2
+    for fut in hp['Tradable_Instruments']['CommodityFutureDeal'].values():
+        fut['Contract_Size'] *= 2
+    ps = hp['Portfolio_State']
+    for im in ps['Initial_Margin'].values():
+        im['Amount'] *= 2
+    for key in ('Cash_Balances', 'Margin_Balances'):
+        for k in ps.get(key, {}):
+            ps[key][k] *= 2
+    return cfg
+
+
+def test_the_capital_line_travels_with_the_returns_state_frame(tmp_path):
+    """Under the returns state the value state is in fractions of the t0 notional, and so is the
+    capital line the day's growth is read against: the checkpoint stamps its training notional and
+    a roll scales the line by its own notional over it, so the same document at twice every
+    dollar rolls the same book with exactly twice the wealth.
+
+    Killing mutation: the displacement restored in the training world's dollars."""
+    ckpt = str(tmp_path / 'value_fn_frame.pt')
+    cfg = _cfg(seed=7, save=ckpt)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Returns_State'] = 'Yes'
+    _run(cfg)
+    roll = _cfg(seed=7, load=ckpt)
+    roll['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
+    roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Returns_State'] = 'Yes'
+    base = _run(roll).evaluation_summary['diagnostics']['verdict']
+    twice = _run(_doubled(roll)).evaluation_summary['diagnostics']['verdict']
+    assert twice['greedy_q_traj'] == base['greedy_q_traj'], \
+        [(a, b) for a, b in zip(base['greedy_q_traj'], twice['greedy_q_traj']) if a != b][:3]
+    assert abs(twice['greedy']['wT_mean'] - 2.0 * base['greedy']['wT_mean']) <= 1e-6 * abs(base['greedy']['wT_mean']), \
+        (base['greedy']['wT_mean'], twice['greedy']['wT_mean'])
+
+
 def test_an_ensemble_scores_each_member_in_its_own_frame(tmp_path):
     """Two LogWealth checkpoints of one document trained under different seeds carry different
     capital lines (each seed's displacement is measured off its own bank), and a two-member roll

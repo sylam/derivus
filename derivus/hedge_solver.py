@@ -2349,6 +2349,20 @@ class DiffSolver:
             "execution re-roll — but the argmax is now ranking against a different friction "
             "than the one it was tuned on.", src, ck["calendar_spread_bps"], want)
 
+    def _capital_line(self, ck):
+        """A checkpoint's displacement in this run's dollars: under the returns state the frame is in
+        fractions of the t0 notional, so the line scales by this run's notional over the training one."""
+        c = ck.get("displacement")
+        if c is None or not self.state_notional:
+            return c
+        trained_on = ck.get("state_notional")
+        if not trained_on:
+            raise ValueError(
+                "a returns-state checkpoint carries no state_notional: its capital line cannot be read "
+                "in this run's frame; stamp it with its training world's t0 spot times the liability "
+                "volume, or retrain")
+        return float(c) * self.state_notional / float(trained_on)
+
     def _restore_frame(self, members):
         """Adopt a loaded checkpoint's FRAME as this run's — the z-frame, the utility scale and
         its per-decision-step schedule — and mirror it onto the runtime, so every reward and every
@@ -2372,7 +2386,7 @@ class DiffSolver:
                                                           self.T_dec + 2)
         self.loaded_displacement = loaded.get("displacement")
         if self.loaded_displacement is not None:
-            self.displacement = float(self.loaded_displacement)
+            self.displacement = self._capital_line(loaded)
         if loaded.get("drift_null_sigma") is not None:
             self.drift_null_sigma = float(loaded["drift_null_sigma"])
         # the scalar IS the terminal read, so under a schedule it comes from the members' terminal
@@ -2518,7 +2532,7 @@ class DiffSolver:
                          else ck.get("a_bounds"),
                          self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 2)
                          if pad else ck.get("utility_scale_schedule"),
-                         ck.get("displacement")))           # the member's own capital line
+                         self._capital_line(ck)))           # the member's own capital line
                 logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
             self.worst = float(loaded["max_abs_Y_boot"])
             self.root = {"t": self.t_min, "Y_mean": float(loaded["V_0"]),
@@ -2641,6 +2655,9 @@ class DiffSolver:
             # the growth reward's shift, measured off the training bank's worst book - part of the
             # FRAME, since a roll under a different shift is a different utility
             "displacement": getattr(self, "displacement", 0.0),
+            # the notional the returns-state frame divides wealth by; the roll scales the
+            # displacement by its own notional over this one, so the reward stays in the frame
+            "state_notional": getattr(self, "state_notional", None),
             "drift_null_sigma": getattr(self, "drift_null_sigma", None),
             "risk_aversion": getattr(self, "aversion", None),
             "phi_curves": getattr(self, "phi_curves", None),
