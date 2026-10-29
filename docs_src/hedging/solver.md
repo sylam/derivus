@@ -27,6 +27,8 @@ Under `DiffV2_Returns_State` the value state is dimensionless: price columns as 
 
 An ensemble (`DiffV2_Load_Value_Fn` listing several checkpoints) scores every candidate book as the mean over members of each member's own value: its residual net in its own standardisation frame and, under `LogWealth`, the day's growth at its own capital line (`DiffSolver._reward`), so the greedy book does not depend on the order the checkpoints are listed in. Held by `tests/test_action_space_and_artifact.py::test_an_ensemble_scores_each_member_in_its_own_frame`.
 
+The stepper roll's greedy policy holds the passive book from the first decision day on or after `DiffV2_Passive_From` and the fitted argmax before it, so a trip rule read outside the engine, such as a ledger's realised-vol switch, is read on the engine's own accounting rather than on a replay; the recorded book (`greedy_q_traj` on `greedy_q_dates`) shows the handover, and the drift monitor reads every decision day as before. Held by `tests/test_action_space_and_artifact.py::test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day`.
+
 ## Benchmarks and the verdict
 
 | Track | Policy | Reported in |

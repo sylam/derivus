@@ -337,6 +337,8 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_drift_threshold_sigmas":
             float(solver_config.get("DiffV2_Drift_Threshold_Sigmas", 3.0)),
         "diffv2_drift_beta": float(solver_config.get("DiffV2_Drift_Beta", 0.0)),
+        # the stepper roll's handover: the greedy policy holds the passive book from this date
+        "diffv2_passive_from": str(solver_config.get("DiffV2_Passive_From", "") or ""),
         # Residual-net regularization: the twin-loss pathwise-gradient match (diffv2_lambda_grad)
         # in STANDARDIZED space, plus optional weight decay for outer-path-starved problems.
         "diffv2_weight_decay": float(solver_config.get("DiffV2_Weight_Decay", 0.0)),

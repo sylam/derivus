@@ -3262,6 +3262,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='On-trip correction strength: the forecast used by the '
                                   'ranking is biased toward the REALIZED drift by beta times '
                                   'the observed average residual; 0 = report-only'),
+                    F('DiffV2_Passive_From', 'Text', default='',
+                      description='A date (YYYY-MM-DD) from whose first decision day on the '
+                                  'greedy policy of the stepper roll holds the passive book, the '
+                                  'trip of a rule read outside the engine; blank = never'),
                     F('DiffV2_Load_Horizon_Pad', 'Text', default='No', values=['Yes', 'No'],
                       description='Yes loads a value-function checkpoint fitted on another '
                                   'decision horizon, clamped to its saved range with the last '

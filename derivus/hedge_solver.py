@@ -821,6 +821,9 @@ class DiffSolver:
         self.force_flat = bool(runtime["accounting"]["force_flat_at_end"])
         # pure diagnostic: where `_rollout_on_stepper` writes its per-decision ranking-curve CSV
         self.curve_dump = str(self.cfg.get("diffv2_decision_curve_dump", "") or "")
+        # the stepper roll's handover to the passive book, a trip rule read outside the engine
+        passive_from = str(self.cfg.get("diffv2_passive_from", "") or "")
+        self.passive_from = pd.Timestamp(passive_from) if passive_from else None
         if self.position_state and not self.total_abs_limit > 0.0:
             raise ValueError(
                 "Solver.DiffV2_Position_State='Yes' requires Evaluator.Total_Position_Abs_Limit > 0 "
@@ -1997,7 +2000,8 @@ class DiffSolver:
         Returns `{greedy, textbook, nohedge, passive}` terminal-P&L stats in the verdict shape,
         with `u_mean_is_step_sum` stating whether `u_mean` is a terminal utility or the
         running-wealth sum. `Solver.DiffV2_Decision_Curve_Dump` hangs a per-decision CSV off the
-        greedy roll; no branch below it depends on whether it is on."""
+        greedy roll; no branch below it depends on whether it is on. From the first decision day
+        on or after `Solver.DiffV2_Passive_From` the greedy roll holds the passive book."""
         from .hedge_bundle import BundleStepper, _tracking_error_value
         hist = self.bundle.initial_time_index
         sweep_set = set(int(t) for t in sweep_ts)
@@ -2094,15 +2098,20 @@ class DiffSolver:
                                 device=self.device)
                             dF = dF + adj.view(1, 1, -1)
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
-                        q, _ = self._decide(
-                            nets, m1, dF, dL, W, t, q_prev=q_prev, live=live,
-                            kappa=kappa_t if self.cost_aware or self.position_state else None)
-                        q = q * live
+                        day = self.bundle.scenario_dates[hist + int(t)]    # the full grid, past the history
+                        handed = self.passive_from is not None and day >= self.passive_from
+                        if handed:
+                            q = self._passive_hedge(t, live, B)
+                        else:
+                            q, _ = self._decide(
+                                nets, m1, dF, dL, W, t, q_prev=q_prev, live=live,
+                                kappa=kappa_t if self.cost_aware or self.position_state else None)
+                            q = q * live
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
                         q_log["t"].append(int(t))
-                        q_log["date"].append(str(self.bundle.scenario_dates[int(t)].date()))
+                        q_log["date"].append(str(day.date()))
                         q_log["w"].append(float(W.mean()))
-                        if dump_rows is not None:
+                        if dump_rows is not None and not handed:
                             dump_rows.append(self._decision_curve_row(
                                 nets, t, m1, dF, dL, W, q_prev, q, live,
                                 kappa_t if self.cost_aware or self.position_state else None))

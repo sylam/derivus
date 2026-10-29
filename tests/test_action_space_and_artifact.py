@@ -393,6 +393,47 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
         == float(wT.mean())
 
 
+def test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day(tmp_path):
+    """`DiffV2_Passive_From` hands the stepper roll's greedy policy to the passive book from the
+    first decision day on or after the date: on the same decision days, the greedy book is the
+    plain roll's before that day and the passive book from it, and a handover from the first
+    decision day rolls the passive's terminal wealth to the bit. The swap world's passive book is
+    not flat, so the handover cannot read as a flat book; its scenario carries a price history, so
+    the recorded decision dates are on or after the base date only when they are read on the
+    full grid.
+
+    Killing mutations: the handover branch removed from `_rollout_on_stepper`, so the greedy roll
+    ignores the field; the decision date indexed by the sim step alone, so the dates are recorded
+    a history prefix early."""
+    ckpt = str(tmp_path / 'value_fn_handover.pt')
+    _run(_passive_cfg(save=ckpt))
+
+    def roll(passive_from=None):
+        cfg = _passive_cfg(load=ckpt)
+        if passive_from is not None:
+            cfg['Calc']['Calculation']['Hedging_Problem']['Solver'][
+                'DiffV2_Passive_From'] = passive_from
+        diag = _run(cfg).evaluation_summary['diagnostics']
+        sv = diag['stepper_verdict']
+        passive = [diag['verdict']['passive_q_traj'][t - diag['root_t']] for t in sv['greedy_q_t']]
+        return sv, passive
+
+    plain, passive = roll()
+    dates = plain['greedy_q_dates']
+    assert len(dates) >= 3, dates
+    base = _passive_cfg()['Calc']['Calculation']['Base_Date']['.Timestamp']
+    assert dates[0] >= base, (dates[0], base)
+    k = len(dates) // 2
+    mid, _ = roll(dates[k])
+    first, _ = roll(dates[0])
+    assert mid['greedy_q_dates'] == first['greedy_q_dates'] == dates
+    assert mid['greedy_q_traj'][:k] == plain['greedy_q_traj'][:k]
+    assert mid['greedy_q_traj'][k:] == passive[k:]
+    assert plain['greedy_q_traj'][k:] != passive[k:], 'the greedy roll already held the passive'
+    assert first['greedy']['wT_mean'] == first['passive']['wT_mean'], \
+        (first['greedy']['wT_mean'], first['passive']['wT_mean'])
+
+
 def test_the_returns_state_fits_the_wealth_column_it_reads():
     """Under `DiffV2_Returns_State` the value state is dimensionless: price columns as log-returns
     against the t0 spot, the basis as a fraction of it and wealth as a fraction of the t0 book

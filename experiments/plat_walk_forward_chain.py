@@ -369,6 +369,7 @@ def _apply_overrides(cfg, args):
 def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     """Train the day-1 policy per seed in the calibrated chain world, then roll the frozen
     ensemble along the REALIZED archive path. Returns the recorded row."""
+    chain_md = calibrated_md     # the month's calibration, before the trade world re-filters it
     calibrated_md = trade_world(arch, trade_date, calibrated_md,
                                 os.path.join(run_dir, f'md_{tag}_trade.json'), args.carry_drift)
     cfg, info = build_deal_config(template, arch, trade_date, calibrated_md, args,
@@ -388,6 +389,22 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
     as_of = observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap,
                                   cols=SCALAR_COLS, to_date=args.to_date)
+    passive_from = None
+    if args.vol_switch is not None:
+        # the live ledger's spelling: the fix's last ten log returns through the day against the
+        # month's calibrated GARCH vol, on every archive day the roll observes
+        am = arch[FIX_COL].astype(float)
+        h0 = json.load(open(chain_md))['MarketData']['Price Models']['GARCHSpotModel.LBMA_AM']['H0']
+        cal = float(np.sqrt(h0 * 252))
+        for d in arch.index[(arch.index >= pd.Timestamp(trade_date)) & (arch.index <= as_of)]:
+            rv10 = float(np.log(am.loc[:d]).diff().iloc[-10:].std() * np.sqrt(252))
+            if rv10 > args.vol_switch * cal:
+                passive_from = str(d.date())
+                logging.info('VOL-SWITCH %s: trips %s (rv10 %.4f vs %g x cal %.4f)',
+                             tag, passive_from, rv10, args.vol_switch, cal)
+                break
+        else:
+            logging.info('VOL-SWITCH %s: no trip', tag)
 
     ckpts, train_us, v0s, market_dim = [], [], [], None
     u_step_sum = None                      # set by a TRAINED seed; a checkpoint-skip run has none
@@ -454,6 +471,9 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     if args.drift_beta is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'DiffV2_Drift_Beta'] = args.drift_beta
+    if passive_from is not None:
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
+            'DiffV2_Passive_From'] = passive_from
     if args.grid_levels is not None:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
             'Training_Action_Grid_Levels_Per_Axis'] = args.grid_levels
@@ -518,7 +538,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         st_short = static_short_usd_oz(arch, trade_date, info['mats'], info['pay'], args.volume,
                                        spot_cols=HEDGE_COLS)
     return {
-        'to_date': to_date,
+        'to_date': to_date, 'passive_from': passive_from, 'vol_switch': args.vol_switch,
         'trade': tag, 'world': 'chain', 'margin': args.margin, 'corridor': args.delta_corridor,
         'fair': round(info['k_fair'], 2), 'strike': round(info['k_fair'] - args.margin, 2),
         'n_seeds': len(args.seeds), 'market_dim': market_dim,
@@ -579,6 +599,11 @@ def main():
                     help='Annualised log-drift stamped as GARCHSpotModel.Mu on top of the carry.')
     ap.add_argument('--drift-beta', type=float, default=None,
                     help='Roll-time Solver.DiffV2_Drift_Beta.')
+    ap.add_argument('--vol-switch', type=float, default=None, metavar='K',
+                    help='The greedy roll hands over to the passive from the first decision day '
+                         'whose trailing 10-day realised vol of the fix exceeds K times the '
+                         "month's calibrated vol; the trip date is stamped as "
+                         'DiffV2_Passive_From and written in the row.')
     ap.add_argument('--returns-state', action='store_true',
                     help='Solver.DiffV2_Returns_State=Yes on train and roll.')
     ap.add_argument('--load-horizon-pad', action='store_true',
