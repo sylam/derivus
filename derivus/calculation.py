@@ -3184,13 +3184,13 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Transaction_Cost_Per_Unit', 'Float', default=0.0,
                       description='Flat turnover cost per contract, before the spread charge'),
                     F('Bid_Offer_Spread_Bps', 'Float', default=0.0,
-                      description='Half-spread bps on notional; a spec dict may replace the '
+                      description='Full quoted spread in bps on notional, half of it charged on each trade; a spec dict may replace the '
                                   'scalar for maturity- and vol-dependent spreads'),
                     F('Roll_As_Calendar_Spread', 'Text', default='No', values=['Yes', 'No'],
                       description='Charge a matched roll one calendar half-cost instead of two '
                                   'outright half-spreads'),
                     F('Calendar_Spread_Bps', 'Float', default=None,
-                      description='Half-spread bps of the calendar roll leg; setting it arms the '
+                      description='Full spread bps of a calendar roll leg, half of it charged on a matched leg; setting it arms the '
                                   'matched-leg pricing everywhere'),
                     F('IM_Funding_Spread_Bps', 'Float', default=0.0,
                       description='Spread paid to fund initial margin; 0 switches the term off'),
