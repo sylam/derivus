@@ -516,6 +516,17 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     assert abs(v0 - 0.16328038275241852) <= 1e-9 * 0.16328038275241852, v0
 
 
+def _logwealth(cfg):
+    """`cfg` under the LogWealth objective. The fixture's twelve-path, five-iteration fit ruins its
+    held-out batch under the growth reward (V_0 0.07 to 0.17 nats against a held-out greedy utility
+    of -14 to -94), so the gates using it, which hold frames rather than convergence, declare the
+    optimism bound past that."""
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Objective'] = {'Object': 'LogWealth'}
+    hp['Solver']['DiffV2_Max_Value_Optimism'] = 1.0e3
+    return cfg
+
+
 def _doubled(cfg):
     """Every dollar of the document doubled, nothing else: the liability's volume, each future's
     contract size, the margins and the cash; prices, paths and contract counts unchanged."""
@@ -543,12 +554,10 @@ def test_the_capital_line_travels_with_the_returns_state_frame(tmp_path):
 
     Killing mutation: the displacement restored in the training world's dollars."""
     ckpt = str(tmp_path / 'value_fn_frame.pt')
-    cfg = _cfg(seed=7, save=ckpt)
-    cfg['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
+    cfg = _logwealth(_cfg(seed=7, save=ckpt))
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Returns_State'] = 'Yes'
     _run(cfg)
-    roll = _cfg(seed=7, load=ckpt)
-    roll['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
+    roll = _logwealth(_cfg(seed=7, load=ckpt))
     roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Returns_State'] = 'Yes'
     base = _run(roll).evaluation_summary['diagnostics']['verdict']
     twice = _run(_doubled(roll)).evaluation_summary['diagnostics']['verdict']
@@ -570,15 +579,11 @@ def test_an_ensemble_scores_each_member_in_its_own_frame(tmp_path):
     ckpts = []
     for seed in (7, 11):
         path = str(tmp_path / f'value_fn_s{seed}.pt')
-        cfg = _cfg(seed=seed, save=path)
-        cfg['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
-        _run(cfg)
+        _run(_logwealth(_cfg(seed=seed, save=path)))
         ckpts.append(path)
     reads = []
     for order in (ckpts, ckpts[::-1]):
-        cfg = _cfg(seed=7, load=order)
-        cfg['Calc']['Calculation']['Hedging_Problem']['Objective'] = {'Object': 'LogWealth'}
-        v = _run(cfg).evaluation_summary['diagnostics']['verdict']
+        v = _run(_logwealth(_cfg(seed=7, load=order))).evaluation_summary['diagnostics']['verdict']
         reads.append((v['greedy_q_traj'], v['greedy']['wT_mean'], v['drift_null_sigma']))
     assert reads[0][0] == reads[1][0], [(a, b) for a, b in zip(reads[0][0], reads[1][0]) if a != b][:3]
     assert reads[0][1] == reads[1][1], (reads[0][1], reads[1][1])
@@ -611,3 +616,69 @@ def test_the_drift_monitor_scores_a_decision_only_once_its_move_has_printed(tmp_
     assert all(plain_m['tripped'][1:]) and all(beta_m['tripped'][1:]), plain_m['tripped']
     assert beta_m['z_path'] == plain_m['z_path'], (beta_m['z_path'][:3], plain_m['z_path'][:3])
     assert beta_q[0] == plain_q[0], (beta_q[0], plain_q[0])
+
+
+# --------------------------------------------------------------------------------------------
+# (vi) convergence - what a fit saves and a roll loads
+# --------------------------------------------------------------------------------------------
+def _swap_growth(seed, save=None, load=None):
+    """The swap fixture under LogWealth with the position and returns states, trained on 512 paths a
+    batch, 16 inner draws and 60 fit iterations over the sweep to the first decision; with `load`, the
+    frozen roll of that checkpoint on the fixture's own batch."""
+    cfg = _passive_cfg(save=save, load=load)
+    calc = cfg['Calc']['Calculation']
+    hp = calc['Hedging_Problem']
+    hp['Objective'] = {'Object': 'LogWealth'}
+    hp['Solver'].update({'DiffV2_Position_State': 'Yes', 'DiffV2_Returns_State': 'Yes',
+                         'DiffV2_Fit_Iters': 60, 'T_Min': 0, 'DiffV2_Stepper_Rollout': 'No'})
+    if load is None:
+        calc['Random_Seed'], calc['Batch_Size'], calc['Inner_Sub_Batch'] = seed, 512, 16
+    return cfg
+
+
+def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(tmp_path):
+    """`DiffV2_Max_Value_Optimism` bounds V_0 less the held-out greedy utility: the value a fit
+    claims against what its own argmax earns on a world no fit step saw. On the swap fixture seed 5
+    claims V_0 +0.2779 while its held-out batch ruins below the capital line its bank measured
+    (greedy u -1.9119, 2.19 apart): the save is refused naming the field, V_0 and the held-out
+    utility, and no checkpoint is written. Seed 6 (+0.2322 against +0.2778) saves, stamped with its
+    optimism; a roll declaring a bound below the stamp refuses the member by name, and the same
+    checkpoint without the stamp, as every checkpoint saved before it, loads at that bound. 30 s.
+
+    Killing mutations: the save's check removed (seed 5 writes its checkpoint); the roll's check
+    removed (the stamped member loads below its stamp)."""
+    ruined = str(tmp_path / 'value_fn_s5.pt')
+    with pytest.raises(ValueError, match=r'DiffV2_Max_Value_Optimism.*V_0=\+0\.2779.*utility -1\.911'):
+        _run(_swap_growth(5, save=ruined))
+    assert not os.path.exists(ruined)
+
+    saved = str(tmp_path / 'value_fn_s6.pt')
+    diag = _run(_swap_growth(6, save=saved)).evaluation_summary['diagnostics']
+    stamp = torch.load(saved, map_location='cpu', weights_only=False)['value_optimism']
+    assert stamp == diag['V_0'] - diag['verdict']['greedy']['u_mean'] < 0.0, stamp
+    below = _swap_growth(6, load=saved)
+    below['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Max_Value_Optimism'] = -0.1
+    with pytest.raises(ValueError, match='DiffV2_Max_Value_Optimism: .*value_fn_s6.pt was saved'):
+        _run(below)
+    unstamped = torch.load(saved, map_location='cpu', weights_only=False)
+    del unstamped['value_optimism']
+    torch.save(unstamped, saved)
+    assert _run(below).evaluation_summary['diagnostics']['V_0'] == diag['V_0']
+
+
+def test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused(tmp_path):
+    """`DiffV2_Max_Member_Disagreement` bounds the mean absolute difference, in contracts, between
+    two ensemble members' swept net books. Two checkpoints of one document trained under seeds 7
+    and 11 sweep books 3.95 contracts apart on average over their 17 swept steps (8.85 at most): a
+    two-member roll loads at the default 8 and is refused at 0, naming the field and both members.
+
+    Killing mutation: the check removed (the roll at 0 loads)."""
+    ckpts = []
+    for seed in (7, 11):
+        ckpts.append(str(tmp_path / f'value_fn_s{seed}.pt'))
+        _run(_cfg(seed=seed, save=ckpts[-1]))
+    assert _run(_cfg(seed=7, load=ckpts)).evaluation_summary['diagnostics']['verdict']['greedy_q_traj']
+    strict = _cfg(seed=7, load=ckpts)
+    strict['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Max_Member_Disagreement'] = 0.0
+    with pytest.raises(ValueError, match=r'DiffV2_Max_Member_Disagreement: .*s7\.pt and .*s11\.pt .*3\.95'):
+        _run(strict)

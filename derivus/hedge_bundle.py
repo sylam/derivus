@@ -397,6 +397,11 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
             ([str(p) for p in solver_config["DiffV2_Load_Value_Fn"]]
              if isinstance(solver_config.get("DiffV2_Load_Value_Fn"), (list, tuple))
              else str(solver_config.get("DiffV2_Load_Value_Fn", "") or "")),
+        # Convergence declarations: the value's optimism over its held-out greedy utility a fit
+        # saves and a roll loads, and how far an ensemble's members' swept books may disagree.
+        "diffv2_max_value_optimism": float(solver_config.get("DiffV2_Max_Value_Optimism", 1.0)),
+        "diffv2_max_member_disagreement":
+            float(solver_config.get("DiffV2_Max_Member_Disagreement", 8.0)),
         "active_hedge_indices":
             (list(solver_config["Active_Hedge_Indices"])
              if solver_config.get("Active_Hedge_Indices") is not None else None),

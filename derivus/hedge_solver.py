@@ -901,10 +901,12 @@ class DiffSolver:
         """sha1 of the stable-JSON solver cfg — the stamp identifying this TRAINING RECIPE.
         The persistence paths are excluded so the same recipe hashes identically regardless of
         where its checkpoint lives — and the decision-curve dump path with them, because a
-        diagnostic that is switched on beside a run must not make it a different recipe."""
+        diagnostic that is switched on beside a run must not make it a different recipe, and the
+        two convergence bounds, which accept or refuse a fit without changing it."""
         stable = {k: v for k, v in self.cfg.items()
                   if k not in ("diffv2_save_value_fn", "diffv2_load_value_fn",
-                               "diffv2_decision_curve_dump")}
+                               "diffv2_decision_curve_dump", "diffv2_max_value_optimism",
+                               "diffv2_max_member_disagreement")}
         return hashlib.sha1(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()
 
     # ---- utility anchor ------------------------------------------------------
@@ -2180,8 +2182,10 @@ class DiffSolver:
         surface as a `load_state_dict` shape error naming a Linear weight; the two OBJECTIVE dials
         (`Reference_Mode`, and whether a `conditional_sim` schedule is in force), neither of which
         moves a tensor shape, so a mismatch has no symptom but a quietly wrong policy; a corridor
-        mismatch; and, in `_check_action_universe` / `_check_calendar_spread`, a narrowed
-        `Allocation_Weights` universe or a `Calendar_Spread_Bps` that moved under position state.
+        mismatch; a stamped `value_optimism` above `DiffV2_Max_Value_Optimism` (a checkpoint saved
+        before the stamp loads as before); and, in `_check_action_universe` /
+        `_check_calendar_spread`, a narrowed `Allocation_Weights` universe or a
+        `Calendar_Spread_Bps` that moved under position state.
 
         Warned: a stale `solver_version`, a missing corridor/universe/rate stamp under a live one,
         and a pre-stream frame. Corridor-FREE training spans the widest wealth support, so rolling
@@ -2283,6 +2287,12 @@ class DiffSolver:
                 "unverified.", src)
         self._check_action_universe(ck, src)
         self._check_calendar_spread(ck, src)
+        optimism, bound = ck.get("value_optimism"), self.cfg["diffv2_max_value_optimism"]
+        if optimism is not None and not optimism <= bound:
+            raise ValueError(
+                f"DiffV2_Max_Value_Optimism: {src} was saved with V_0={ck['V_0']:+.6g} outrunning its "
+                f"held-out greedy utility by {optimism:.6g}, above this run's {bound:g}. Its DP had "
+                f"not converged, so its argmax ranks on a value no roll earns - redraw the member.")
         if "streaming" in ck and not ck["streaming"]:
             logging.warning(
                 "DiffV2_Load_Value_Fn: %s carries a pre-stream frame, locked on a whole "
@@ -2498,12 +2508,13 @@ class DiffSolver:
         loaded = None
         if load_members:
             # frozen-policy eval: restore the fitted nets AND each member's own frame
-            members = []
+            members, srcs = [], []
             versions = set()
             for member in load_members:
                 # pre-contract checkpoints still load: only the frame and net keys below are read
                 ck = member if isinstance(member, dict) else torch.load(member, map_location=self.device)
                 src = "<in-memory artifact>" if isinstance(member, dict) else member
+                srcs.append(src)
                 versions.add(self._check_load_provenance(ck, src, md))
                 drift = ((M.mean(0) - ck["m_mean"]).abs() / ck["m_std"]).max()
                 logging.info(
@@ -2521,6 +2532,19 @@ class DiffSolver:
                 raise ValueError(
                     f"DiffV2_Load_Value_Fn: the ensemble mixes solver versions {sorted(versions)} "
                     "- members trained under different architectures cannot be averaged")
+            # members whose swept books disagree beyond the declaration are DPs that have not
+            # converged to one policy, and their mean ranks on the steepest member's slope
+            books = [(src, [sum(q) for q in ck["q_star_path"]])
+                     for src, ck in zip(srcs, members) if ck.get("q_star_path")]
+            limit = self.cfg["diffv2_max_member_disagreement"]
+            for i, (src_a, a) in enumerate(books):
+                for src_b, b in books[i + 1:]:
+                    apart = sum(abs(x - y) for x, y in zip(a, b)) / max(min(len(a), len(b)), 1)
+                    if apart > limit:
+                        raise ValueError(
+                            f"DiffV2_Max_Member_Disagreement: {src_a} and {src_b} sweep net books "
+                            f"{apart:.4g} contracts apart on average, above this run's {limit:g} "
+                            f"- the ensemble has not converged to one policy.")
             loaded = members[0]
             self._restore_frame(members)
             hidden = int(loaded["hidden"])
@@ -2636,7 +2660,7 @@ class DiffSolver:
             sum(r[1] for r in self._breaches) / len(self._breaches), worst[1], worst[0],
             worst[1], worst[2], worst[3], lo, hi)
 
-    def _policy_artifact(self, nets, md, hidden, V_0, n_star_0, worst):
+    def _policy_artifact(self, nets, md, hidden, V_0, n_star_0, worst, optimism):
         """The policy artifact: the fitted nets, the frame they read their inputs through, and the
         provenance every `DiffV2_Load_Value_Fn` guard compares against. Built ONCE per run (in
         `finish`) and returned AND `torch.save`d, so the file and the in-memory dict are the same
@@ -2695,6 +2719,10 @@ class DiffSolver:
             "frame_stamp": self._frame_stamp(),
             # Headline echoed so a loaded eval reads it back rather than recomputing.
             "V_0": V_0, "n_star_0": list(n_star_0), "max_abs_Y_boot": worst,
+            # convergence stamps a roll is held to: V_0 less the held-out greedy utility, and the
+            # swept mean book per decision step from t_min, which an ensemble's members must share
+            "value_optimism": optimism,
+            "q_star_path": [r["q_star_mean"] for r in reversed(self.rows)],
         }
 
     def _frame_stamp(self):
@@ -2766,11 +2794,22 @@ class DiffSolver:
         artifact = None
         save_path = str(self.cfg.get("diffv2_save_value_fn", "") or "")
         if loaded is None:
-            artifact = self._policy_artifact(nets, md, hidden, V_0, n_star_0, worst)
+            # the fitted value against what its own argmax earns held out: a bootstrap that
+            # outruns it has ratcheted an unfitted slope into V_0, or its policy ruins
+            u_held = float(verdict["greedy"]["u_mean"])
+            optimism = V_0 - u_held
+            artifact = self._policy_artifact(nets, md, hidden, V_0, n_star_0, worst, optimism)
             if save_path:
                 if not math.isfinite(V_0):
                     raise ValueError(
                         f"refusing to save non-finite value fn to {save_path}: V_0={V_0}")
+                bound = self.cfg["diffv2_max_value_optimism"]
+                if not optimism <= bound:
+                    raise ValueError(
+                        f"DiffV2_Max_Value_Optimism: refusing to save the value fn to {save_path}: "
+                        f"V_0={V_0:+.6g} outruns the held-out greedy utility {u_held:+.6g} by "
+                        f"{optimism:.6g}, above {bound:g}. The fit has not converged - redraw the "
+                        f"seed or lengthen the stream.")
                 tmp = save_path + ".tmp"
                 torch.save(artifact, tmp)
                 os.replace(tmp, save_path)                       # atomic on POSIX
