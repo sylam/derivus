@@ -7,21 +7,24 @@ primary** and the CME curve hangs off it, so every routing is the other way roun
 
   * `CommodityPrice.LBMA_AM` (GARCHSpotModel) is the fixing itself - the liability's own
     reference, and NOT tradable.
-  * `ObservedBasis.LBMA_AM.CME` (BasisLinkedSpotModel) is the CME session basis, and the futures
-    reference the COMPOSED name `LBMA_AM.CME` = fix + basis. The hedge carries a basis the deal
-    does not, which is the unhedgeable floor this world exists to measure.
-  * `ObservedBasis.LBMA_AM.PM` (FixingBridgeModel) is the PM fixing bridged off the AM path, and
-    `ObservedBasis.LBMA_AM.CME.PM` (ChainedBasisModel) closes the AM/PM session 2-cycle. Both are
-    BRIDGES off a finished path - they carry no state of their own to restamp.
-  * The liability is the AVG-fixing product: TWO `CommodityAveragePriceSwapDeal` legs, one on each
-    session's fixing, equal volume, one strike. Its PM leg is where the bridge premium lands.
+  * `ObservedBasis.LBMA_AM.CME` (BasisLinkedSpotModel) is the AM-session CME basis, and
+    `ObservedBasis.LBMA_AM.PM` (FixingBridgeModel) the PM fixing bridged off the AM path, with
+    `ObservedBasis.LBMA_AM.PM.CME` (ChainedBasisModel) closing the AM/PM session 2-cycle. The PM
+    two are BRIDGES off a finished path - they carry no state of their own to restamp - and enter
+    the world only where a deal reaches the PM session (`price_factors`).
+  * The futures reference a COMPOSED name, the fix plus its bases (`LBMA_AM.CME` at the AM print,
+    `LBMA_AM.PM.CME` at the PM), so the hedge carries a basis the deal does not, which is the
+    unhedgeable floor this world exists to measure.
+  * The liability is the template's `CommodityAveragePriceSwapDeal` legs at equal volume and one
+    strike: the AM fix alone, or the AVG product's two legs, one on each session's fixing, the PM
+    leg where the bridge premium lands. The trade date and the fixings are London fixing days.
   * `Carry_Drift` is stamped back onto the recalibrated spot block - see `trade_world`.
 
-WHAT IS DELIBERATELY THE SAME, so the decks read against each other: the trade calendar, the
-margin, the volume, the seeds, the corridor, the causal bound, the realized-path roll, and the
-solver - `production_solver`'s validated block, applied on top of whatever the template JSON
-carries (the authored chain job declares `DiffSolverV2` with no knobs, i.e. the framework
-defaults; the harness's own validated knobs win here, as they do in both sibling decks).
+WHAT IS DELIBERATELY THE SAME, so the decks read against each other: the margin, the volume,
+the seeds, the corridor, the causal bound, the realized-path roll, and the solver -
+`production_solver`'s validated block, applied on top of whatever the template JSON carries (the
+authored chain job declares `DiffSolverV2` with no knobs, i.e. the framework defaults; the
+harness's own validated knobs win here, as they do in both sibling decks).
 
 WHY A SIBLING RATHER THAN A `--world` MODE. The arithmetic is shared and IMPORTED, not copied -
 the carry curve and its knots, the causal bound, the static-short benchmark, the state restamp,
@@ -46,6 +49,7 @@ import json
 import logging
 import os
 import sys
+from xml.etree import ElementTree
 
 import numpy as np
 import pandas as pd
@@ -68,29 +72,75 @@ B_PM = 'ObservedBasis.LBMA_AM.PM'               # PM fix - AM fix (FixingBridgeM
 B_CME = 'ObservedBasis.LBMA_AM.CME'             # AM-session CME basis (BasisLinkedSpotModel)
 B_CME_PM = 'ObservedBasis.LBMA_AM.PM.CME'       # PM-session CME basis (ChainedBasisModel,
                                                 # PM-branch tail: composes the PM futures spot)
-SCALAR_COLS = (FIX_COL, B_PM, B_CME, B_CME_PM)  # the four scalar factors; the carry is the fifth
-HEDGE_COLS = (FIX_COL, B_PM, B_CME_PM)          # the futures' Commodity 'LBMA_AM.PM.CME'
-                                                # = PM fix + PM-session basis (execution at the
-                                                # day's LAST event - no intra-row lookahead)
 CARRY = 'PLATINUM_CARRY'
+FIXING_CALENDAR = 'London'                      # the LBMA fixes on London business days
+WEEK = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
 
 
-def price_factors(row, trade_date, last_query, sofr_cols):
+def composed_cols(name):
+    """The archive columns a composed commodity name sums, its positional chain: `LBMA_AM.PM.CME` is
+    the fix `CommodityPrice.LBMA_AM`, then `ObservedBasis.LBMA_AM.PM`, then
+    `ObservedBasis.LBMA_AM.PM.CME`."""
+    parts = name.split('.')
+    return (f'CommodityPrice.{parts[0]}',) + tuple(
+        f'ObservedBasis.{".".join(parts[:i + 1])}' for i in range(1, len(parts)))
+
+
+def hedge_cols(template):
+    """The columns the futures' one composed `Commodity` sums: the hedge's pricing spot, executed at
+    the print its last basis is observed at."""
+    (name,) = {f['Commodity'] for f in template['Calc']['Calculation']['Hedging_Problem'][
+        'Tradable_Instruments']['CommodityFutureDeal'].values()}
+    return composed_cols(name)
+
+
+def replayed_cols(cfg):
+    """The scalar columns the job simulates, so the roll replays each: the columns of every composed
+    name its deals reference, closed under the `Chained_Basis` its price factors declare (a chain
+    member entering the universe pulls every member, each with its own composed name)."""
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    factors = cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    todo = [d['Commodity'] for d in [*hp['Liabilities']['CommodityAveragePriceSwapDeal'].values(),
+                                     *hp['Tradable_Instruments']['CommodityFutureDeal'].values()]]
+    cols = []
+    while todo:
+        for c in composed_cols(todo.pop()):
+            if c not in cols:
+                cols.append(c)
+                if factors[c].get('Chained_Basis'):
+                    todo.append(factors[c]['Chained_Basis'])
+    return cols
+
+
+def fixing_day(template):
+    """The London business day of the calendar file the template names, read as
+    `Config.parse_calendar_file` reads it: `Holidays` a `date|name, ...` list, `Weekends` the days
+    it names."""
+    cal = next(e.attrib for e in ElementTree.parse(template['Calc']['CalendDataFile']).getroot().iter()
+               if e.attrib.get('Location') == FIXING_CALENDAR)
+    return pd.offsets.CustomBusinessDay(
+        holidays=[h.split('|')[0] for h in cal['Holidays'].split(', ')] if cal['Holidays'] else [],
+        weekmask=' '.join(d[:3] for d in WEEK if d not in cal['Weekends']))
+
+
+def price_factors(row, trade_date, last_query, sofr_cols, chained):
     """The complete `Price Factors` block off ONE archive row - the t0 restamp of every market
     LEVEL, so no trade sees a level it could not have observed.
 
-    The two CME bases declare each other as `Chained_Basis`: that 2-cycle IS the session chain,
-    and `ChainedBasisModel` reads the declaration and nothing else. The AM basis lags its link
-    (`Chained_Lag` 1 - it steps off YESTERDAY's PM basis, the chain's day boundary), so the
-    same-row link on the PM side is the one generation edge. The PM fixing basis declares
-    nothing - `FixingBridgeModel` is the open-link family and takes its parent from the name."""
+    Where the job reaches the PM-session basis (`chained`) the two CME bases declare each other
+    as `Chained_Basis`: that 2-cycle IS the session chain, and `ChainedBasisModel` reads the
+    declaration and nothing else. The AM basis lags its link (`Chained_Lag` 1 - it steps off
+    YESTERDAY's PM basis, the chain's day boundary), so the same-row link on the PM side is the
+    one generation edge. Otherwise the AM basis is the open link off the fix and nothing pulls
+    the PM pair, whose prints come after the AM minute. The PM fixing basis declares nothing -
+    `FixingBridgeModel` is the open-link family and takes its parent from the name."""
     p0, state = float(row[FIX_COL]), carry_state(row)
     return {
         'FxRate.USD': {'Domestic_Currency': '', 'Interest_Rate': 'USD-SOFR', 'Spot': 1.0},
         FIX_COL: {'Currency': 'USD', 'Interest_Rate': ZERO_CURVE, 'Forward_Rate': CARRY,
                   'Spot': p0, 'Property_Aliases': ''},
-        B_CME: {'Spot': float(row[B_CME]), 'Chained_Basis': B_CME_PM.split('.', 1)[1],
-                'Chained_Lag': 1},
+        B_CME: {'Spot': float(row[B_CME]), **({'Chained_Basis': B_CME_PM.split('.', 1)[1],
+                                              'Chained_Lag': 1} if chained else {})},
         B_CME_PM: {'Spot': float(row[B_CME_PM]), 'Chained_Basis': B_CME.split('.', 1)[1]},
         B_PM: {'Spot': float(row[B_PM])},
         f'ForwardRate.{CARRY}': {
@@ -108,19 +158,19 @@ def price_factors(row, trade_date, last_query, sofr_cols):
     }
 
 
-def fair_strike(row, trade_date, fixings, bridge_premium):
-    """The desk-fair AVG strike: the equal-weight mean over the fixing calendar of the AM index
-    forward S exp(z(tau) tau), and the SAME forward times exp(premium) for the PM leg.
+def fair_strike(row, trade_date, fixings, premia):
+    """The desk-fair strike of legs at equal volume: the mean of the legs' fairs, each the equal-weight
+    mean over the fixing calendar of the AM index forward S exp(z(tau) tau) times exp(premium), with
+    `premia` one bridge premium per leg (none on the AM fix itself).
 
-    The PM leg's law is `FixingBridgeModel`'s - log B = log P + W dlog P + premium - so its fixing
-    is the AM path scaled by the premium in expectation, and the premium is the only term that
-    survives averaging. The two legs carry equal volume, so the product's fair is their mean; no
-    basis term appears at all, because neither leg references a CME basis (that asymmetry against
-    the hedge is exactly what this world measures)."""
+    A PM leg's law is `FixingBridgeModel`'s - log B = log P + W dlog P + premium - so its fixing is
+    the AM path scaled by the premium in expectation, and the premium is the only term that survives
+    averaging. No basis term appears at all, because no leg references a CME basis (that asymmetry
+    against the hedge is exactly what this world measures)."""
     p0, state = float(row[FIX_COL]), carry_state(row)
     days = np.array([(pd.Timestamp(f) - pd.Timestamp(trade_date)).days for f in fixings], float)
     am = float(forward(p0, state, days / DAYS_IN_YEAR).mean())
-    return 0.5 * (am + am * float(np.exp(bridge_premium)))
+    return sum(am * float(np.exp(p)) for p in premia) / len(premia)
 
 
 def allocation_knots(trade_date, fixings, mats, names):
@@ -219,7 +269,7 @@ def apply_objective_flags(objective, args):
 
 
 def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_corridor=None):
-    """The trade-date job: the two-leg AVG liability struck at fair - margin, the listed CME strip
+    """The trade-date job: the template's liability legs struck at fair - margin, the listed CME strip
     as tradables, and every market level read off the archive row. Returns `(cfg, info)`.
 
     The row is FORWARD-FILLED: a session whose futures snapshot failed quality leaves that day's
@@ -233,22 +283,25 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     merge['MarketDataFile'] = calibrated_md
     apply_objective_flags(hp['Objective'], args)
 
-    p0, state = float(row[FIX_COL]), carry_state(row)
-    premium = float(json.load(open(calibrated_md))['MarketData']['Price Models'][
-        f'FixingBridgeModel.{B_PM.split(".", 1)[1]}']['Bridge_Premium'])
+    state = carry_state(row)
+    models = json.load(open(calibrated_md))['MarketData']['Price Models']
 
     # --- liability: the averaging month `--avg-lead-months` out (3: the desk's product; 0: the
-    # trade month itself), both sessions, paid +5 days; `--avg-days` keeps only the month's last
-    # N fixings, the short product that gives one independent tape a month ----------------------
+    # trade month itself), its London fixing days, paid +5 days; `--avg-days` keeps only the
+    # month's last N fixings, the short product that gives one independent tape a month ---------
     first = pd.Timestamp(trade_date).normalize().replace(day=1)
     avg_start = first + pd.offsets.MonthBegin(args.avg_lead_months) if args.avg_lead_months else first
     avg_end = (avg_start + pd.offsets.MonthEnd(0)).normalize()
     pay = avg_end + pd.Timedelta(days=5)
-    fixings = pd.bdate_range(avg_start, avg_end)
+    fixings = pd.date_range(avg_start, avg_end, freq=fixing_day(template))
     if args.avg_days:
         fixings = fixings[-int(args.avg_days):]
-    k_fair = fair_strike(row, trade_date, fixings, premium)
     legs = hp['Liabilities']['CommodityAveragePriceSwapDeal']
+    # a leg's fixing is the AM path through its bridges, each adding its premium (a KeyError names
+    # a basis no FixingBridgeModel carries: such a leg has no fair here)
+    premia = [sum(float(models[f'FixingBridgeModel.{c.split(".", 1)[1]}']['Bridge_Premium'])
+                  for c in composed_cols(leg['Commodity'])[1:]) for leg in legs.values()]
+    k_fair = fair_strike(row, trade_date, fixings, premia)
     for leg in legs.values():                      # the template owns each leg's Commodity/routing
         leg.update({'Units': args.volume / len(legs),
                     'Fixed_Price': round(k_fair - args.margin, 6), 'Settlement_Date': _ts(pay),
@@ -258,7 +311,7 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     futs = hp['Tradable_Instruments']['CommodityFutureDeal']
     mats = listed_expiries(args.expiries, trade_date, n=len(futs))
     positions, setts, margins, limits = {}, {}, {}, {}
-    spot_cme = p0 + float(row[B_PM]) + float(row[B_CME_PM])   # PM-session synthetic CME spot
+    spot_cme = sum(float(row[c]) for c in hedge_cols(template))   # the synthetic CME spot
     for name, mat in zip(sorted(futs), mats):
         futs[name]['Maturity_Date'] = _ts(mat)
         positions[name] = 0
@@ -311,11 +364,12 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     # timeline-shift trap the bundle now refuses (history at/after the base date).
     ps.pop('Spot_Price_History', None)
 
+    reached = {c for d in [*legs.values(), *futs.values()] for c in composed_cols(d['Commodity'])}
     merge['ExplicitMarketData']['Price Factors'] = price_factors(
-        row, trade_date, max(max(fixings), max(mats)), arch.columns)
+        row, trade_date, max(max(fixings), max(mats)), arch.columns, chained=B_CME_PM in reached)
     merge['ExplicitMarketData'].setdefault('Price Models', {})
     return cfg, {'k_fair': k_fair, 'mats': mats, 'pay': pay, 'fixings': fixings,
-                 'premium': premium}
+                 'premia': premia}
 
 
 def trade_world(arch, trade_date, calibrated_md, out_path, carry_drift):
@@ -388,7 +442,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     knots = carry_knots(trade_date, max(max(info['fixings']), max(info['mats'])))
     horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
     as_of = observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap,
-                                  cols=SCALAR_COLS, to_date=args.to_date)
+                                  cols=replayed_cols(cfg), to_date=args.to_date)
     passive_from = None
     if args.vol_switch is not None:
         # the live ledger's spelling: the fix's last ten log returns through the day against the
@@ -445,8 +499,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         if args.temporal_proximity is not None:
             tcalc['Hedging_Problem']['Solver']['DiffV2_Temporal_Proximity'] = \
                 args.temporal_proximity
-        logging.info('=== TRAIN %s seed=%d (fair=%.2f, strike=%.2f, bridge premium=%+.6f) ===',
-                     tag, seed, info['k_fair'], info['k_fair'] - args.margin, info['premium'])
+        logging.info('=== TRAIN %s seed=%d (fair=%.2f, strike=%.2f, leg bridge premia=%s) ===',
+                     tag, seed, info['k_fair'], info['k_fair'] - args.margin, info['premia'])
         tdiag = run(train, f'train_{tag}_s{seed}')
         vd = tdiag.get('verdict') or {}
         verdict = vd.get('greedy') or {}
@@ -537,9 +591,9 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         bound = st_short = None
     else:
         to_date = None
-        bound = pf_bound(arch, trade_date, info['mats'], info['pay'], spot_cols=HEDGE_COLS)
+        bound = pf_bound(arch, trade_date, info['mats'], info['pay'], spot_cols=hedge_cols(template))
         st_short = static_short_usd_oz(arch, trade_date, info['mats'], info['pay'], args.volume,
-                                       spot_cols=HEDGE_COLS)
+                                       spot_cols=hedge_cols(template))
     return {
         'to_date': to_date, 'passive_from': passive_from, 'vol_switch': args.vol_switch, 'open_at': args.open_at,
         'trade': tag, 'world': 'chain', 'margin': args.margin, 'corridor': args.delta_corridor,
@@ -779,10 +833,10 @@ def main():
     if done:
         logging.info('RESUME: %d completed trade(s) found in run dir; will skip them', len(done))
 
-    rows, calibrated_md = [], None
+    rows, calibrated_md, fixing = [], None, fixing_day(template)
     for m in range(args.months):
-        trade_date = (pd.Timestamp(args.start + '-01') + pd.offsets.MonthBegin(m)
-                      + pd.offsets.BDay(0)).normalize()
+        # the first London fixing day of the month: the strike's AM print is a day the hedge trades
+        trade_date = fixing.rollforward(pd.Timestamp(args.start + '-01') + pd.offsets.MonthBegin(m))
         tag = trade_date.strftime('%Y%m')
         try:
             if m % args.recal_months == 0:
@@ -808,7 +862,7 @@ def main():
                 mats_g = listed_expiries(args.expiries, trade_date)
                 taus = [(e - trade_date).days / DAYS_IN_YEAR for e in mats_g]
                 for leg, by_state in guard_e_df_state(
-                        arch, cal_end, taus, mats=mats_g, hedge_cols=HEDGE_COLS,
+                        arch, cal_end, taus, mats=mats_g, hedge_cols=hedge_cols(template),
                         state_cols={'b_cme': B_CME, 'b_pm': B_PM, 'b_cme_pm': B_CME_PM},
                         control_cols=(FIX_COL,), control='AM fix (control)').items():
                     logging.info('GUARD %s %-22s %s', cal_end, leg, '  '.join(
