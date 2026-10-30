@@ -583,3 +583,31 @@ def test_an_ensemble_scores_each_member_in_its_own_frame(tmp_path):
     assert reads[0][0] == reads[1][0], [(a, b) for a, b in zip(reads[0][0], reads[1][0]) if a != b][:3]
     assert reads[0][1] == reads[1][1], (reads[0][1], reads[1][1])
     assert reads[0][2] == reads[1][2] > 0.0, (reads[0][2], reads[1][2])     # the tripwire's null, averaged
+
+
+def test_the_drift_monitor_scores_a_decision_only_once_its_move_has_printed(tmp_path):
+    """The stepper roll's drift CUSUM enters each decision's one-day residual at the NEXT decision,
+    so a trip, the printed drift z and, under `DiffV2_Drift_Beta`, the fork's shift at a decision
+    read only prices printed before it: the first decision scores nothing (z 0.0, no trip), every
+    later decision trips under a hair trigger, the residual path is the fork's against the market
+    whatever beta does to the book, and the first book under beta is the beta-off book.
+
+    Killing mutation: today's order, the residual summed and the trip tested before the same
+    decision is made (the first decision reads its own next move: z_path[0] non-zero, tripped[0]
+    True, and the beta roll's first book shifted off the plain one)."""
+    ckpt = str(tmp_path / 'value_fn_drift.pt')
+    _run(_passive_cfg(save=ckpt))
+
+    def roll(beta):
+        cfg = _passive_cfg(load=ckpt)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update(
+            {'DiffV2_Drift_Threshold_Sigmas': 1e-6, 'DiffV2_Drift_Beta': beta})
+        sv = _run(cfg).evaluation_summary['diagnostics']['stepper_verdict']
+        return sv['drift_monitor'], sv['greedy_q_traj']
+    plain_m, plain_q = roll(0.0)
+    beta_m, beta_q = roll(5.0)
+    assert len(plain_m['z_path']) == len(plain_m['t']) >= 3
+    assert plain_m['z_path'][0] == 0.0 and plain_m['tripped'][0] is False, (plain_m['z_path'][:2], plain_m['tripped'][:2])
+    assert all(plain_m['tripped'][1:]) and all(beta_m['tripped'][1:]), plain_m['tripped']
+    assert beta_m['z_path'] == plain_m['z_path'], (beta_m['z_path'][:3], plain_m['z_path'][:3])
+    assert beta_q[0] == plain_q[0], (beta_q[0], plain_q[0])

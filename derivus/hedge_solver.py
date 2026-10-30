@@ -2039,6 +2039,7 @@ class DiffSolver:
             u_sum = w_prev = None
             drift = {"t": [], "cum_dF_usd": [0.0] * self.n_hedge, "cum_dL_usd": 0.0,
                      "cum_z": 0.0, "z_path": [], "tripped": []}
+            pending = None      # the last decision's residual, scored once its move has printed
             while not stepper.done:
                 t = stepper.time_index - hist
                 if stepper.is_decision_step and t in sweep_set:
@@ -2065,26 +2066,28 @@ class DiffSolver:
                         q = self._passive_hedge(t, inner_cache[t][4], B)
                     else:
                         dF, dL, m1, _, live = inner_cache[t]
-                        # MODEL-DRIFT CUSUM: the model's one-day forecast minus what the market
-                        # then did, summed. Mean-zero under correct assumptions, and standardized
-                        # by the fork's own dispersion so the threshold is scale-free.
+                        # MODEL-DRIFT CUSUM: each decision's one-day forecast minus what the market
+                        # then did, standardized by the fork's own dispersion, entering at the NEXT
+                        # decision so a trip reads only printed moves
+                        if pending is not None:
+                            drift["cum_dF_usd"] = [a + b for a, b in zip(drift["cum_dF_usd"], pending[0])]
+                            drift["cum_dL_usd"] += pending[1]
+                            drift["cum_z"] += pending[2]
                         obs_dF = self._outer_dF(t)                                # (B, n_h)
                         obs_dL = self.liability_sim[t + 1] - self.liability_sim[t]
                         rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
                         rL = dL.mean(1) - obs_dL                                  # (B,)
                         sF = dF.std(1).clamp_min(1e-9)
-                        drift["t"].append(int(t))
-                        drift["cum_dF_usd"] = [a + float(b) for a, b in
-                                               zip(drift["cum_dF_usd"], rF.mean(0))]
-                        drift["cum_dL_usd"] += float(rL.mean())
                         # informative legs only: live AND still dispersing. On a leg's final day
                         # the fork's dispersion collapses while the settling mark moves, and the
                         # frozen-mark dust over the std clamp fabricates huge sigma readings.
                         inf_m = live * (sF.mean(0) > 0.5)
                         n_inf = float(inf_m.sum()).__int__() or 1
-                        drift["cum_z"] += float(((rF / sF) * inf_m).sum() / (rF.shape[0] * n_inf))
+                        pending = ([float(b) for b in rF.mean(0)], float(rL.mean()),
+                                   float(((rF / sF) * inf_m).sum() / (rF.shape[0] * n_inf)))
+                        drift["t"].append(int(t))
                         drift["z_path"].append(round(drift["cum_z"], 4))
-                        n_so_far = len(drift["t"])
+                        n_so_far = max(1, len(drift["t"]) - 1)         # residuals scored so far
                         boundary = (float(self.cfg.get("diffv2_drift_threshold_sigmas", 3.0))
                                     * getattr(self, "drift_null_sigma", 1.0)
                                     * (n_so_far ** 0.5))
@@ -2129,7 +2132,7 @@ class DiffSolver:
                     last = stepper.step(delta)
                 else:
                     last = stepper.step(None)
-            n_dec = max(1, len(drift["t"]))
+            n_dec = max(1, len(drift["t"]) - 1)        # the last decision's residual is never scored
             drift["max_abs_z"] = max((abs(z) for z in drift["z_path"]), default=0.0)
             drift["n_tripped"] = int(sum(drift["tripped"]))
             drift["null_sigma"] = round(getattr(self, "drift_null_sigma", 1.0), 4)
@@ -2747,7 +2750,6 @@ class DiffSolver:
             self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         nets, sweep_ts, inner_cache = self.nets, self.sweep_ts, self.inner_cache
         loaded, rows, worst, root = self.loaded, self.rows, self.worst, self.root
-        train = self.train
         md, hidden = self.md, self.hidden
         V_0 = float(root["Y_mean"])
         n_star_0 = root["q_star_mean"]
