@@ -4428,9 +4428,7 @@ class FixingBridgeCalibration(object):
                              f'in the frame (have {list(data_frame.columns)})')
         panel = data_frame[[own_col, src_col]].astype(np.float64)
         idx = panel.index
-        days = np.asarray((idx - utils.excel_offset).days
-                          if isinstance(idx, pd.DatetimeIndex) else idx, dtype=np.int64)
-        dd = np.diff(days)
+        dd = np.diff(utils.excel_days(idx))
         b, P = panel[own_col].values, panel[src_col].values
         m = (dd == 1) & np.isfinite(b[:-1]) & np.isfinite(P[:-1]) & np.isfinite(P[1:]) \
             & (P[:-1] + b[:-1] > 0)
@@ -4515,9 +4513,7 @@ class ChainedBasisCalibration(object):
 
         panel = data_frame[[own_col, src_col]].astype(np.float64)
         idx = panel.index
-        days = np.asarray((idx - utils.excel_offset).days
-                          if isinstance(idx, pd.DatetimeIndex) else idx, dtype=np.int64)
-        dd = np.diff(days)
+        dd = np.diff(utils.excel_days(idx))
         max_gap = int(self.param.get('Max_Session_Gap_Days', 4))
         b, P = panel[own_col].values, panel[src_col].values
 
@@ -5103,6 +5099,10 @@ class BasisLinkedSpotCalibration(object):
         "forward-filtered stress probability at the sample's end. `Phi` is the no-intercept regression",
         'slope of $d_t$ on $d_{t-1}$, written for the basis-decay projection only.',
         '',
+        'A row more than 4 calendar days after its predecessor is one observation of a different law: a',
+        'move across a holiday enters neither the location fit nor the mixture. Held by',
+        '`tests/test_chained_basis.py::test_the_band_fit_leaves_a_jump_across_a_calendar_gap_out_of_the_innovation`.',
+        '',
         '**Writes.**',
         '',
         '| Fit | Fields |',
@@ -5289,8 +5289,7 @@ class BasisLinkedSpotCalibration(object):
         span = int(self.param.get('Slow_Mean_Span', 0))
         d = b[1:] - ewm[:-1]                                    # deviation from the LAGGED level
         dd, d0, ds = np.diff(d), d[:-1], dlme[1:]               # aligned to targets d[1:]
-        gaps = np.asarray((pd.DatetimeIndex(index[2:]) - pd.DatetimeIndex(index[1:-1])).days)
-        fit_m = gaps <= 4                                       # adjacent business days (weekends ok)
+        fit_m = np.diff(utils.excel_days(index))[1:] <= 4       # adjacent business days (weekends ok)
 
         a_hat, kappa, beta = 0.0, 5.0, 0.2
         x, y, s_ = d0[fit_m], dd[fit_m], ds[fit_m]

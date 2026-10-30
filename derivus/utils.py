@@ -2884,6 +2884,13 @@ class DerivedForwardCurve(object):
 
 # date generation utils
 
+def excel_days(index):
+    """An archive index as integer Excel day numbers: the framework's own index (`Config` numbers the
+    archive in Excel days) as it stands, a `DatetimeIndex` converted."""
+    return np.asarray((index - excel_offset).days if isinstance(index, pd.DatetimeIndex) else index,
+                      dtype=np.int64)
+
+
 def adjust_date(bus_day, method, date):
     """`date` rolled onto a business day of `bus_day` by `method`, a business-day convention by name:
     a `Modified_` one rolls the other way where its roll leaves the month, and `None` or no calendar

@@ -9,8 +9,10 @@ both read.
 Each chained-basis gate is a credit Monte Carlo document through `Context.load_json`, read at its
 own factor discovery - the walk `run_job` takes before any model is asked for; the registry's is a
 one-deal base valuation per head, described and priced, and a composed FX rate and equity are each
-priced beside their primary.
+priced beside their primary. The band basis's fit is a calibration document through
+`Config.calibrate_factors`.
 """
+import io
 import json
 from types import SimpleNamespace
 
@@ -23,6 +25,7 @@ import derivus as rf
 import test_position_scaling as trials
 import trial_rates
 from derivus import instruments, utils
+from derivus.config import Config, CustomJsonEncoder, ModelParams
 
 BASE = pd.Timestamp('2026-01-15')
 
@@ -317,3 +320,65 @@ def test_the_band_basis_prices_under_torch_s_distribution_validation():
     mtm = rf.run_cmc(cx.current_cfg, prec=torch.float64)[1]['Results']['mtm']
     assert mtm.shape == (11, 64) and np.isfinite(mtm.values).all(), mtm.shape
     assert np.ptp(mtm.iloc[0].values) == 0.0, mtm.iloc[0].values[:4]
+
+
+def test_the_band_fit_leaves_a_jump_across_a_calendar_gap_out_of_the_innovation(tmp_path):
+    """A calibration document on a synthetic `Band_Mixture` archive: three years of business days
+    drawn from the fit's own law (A 0.05, kappa 4, beta 0.3, the 63-day slow mean, a two-state
+    innovation 80% at sd 2 and 20% at sd 6, the law's sd 3.2249), one week missing three days so
+    a Wednesday is followed by the next Tuesday, and a 60 $/oz jump across that 6-day gap. The fit
+    reads only rows at most 4 calendar days apart, so the jump is not an innovation: the fitted
+    Sigma is the law's within 5% (measured 3.2303) and the stress sd is the law's 6 within 5%
+    (5.9152). 3 s.
+
+    Killing mutation: the gap read as `(DatetimeIndex(index[2:]) - DatetimeIndex(index[1:-1])).days`
+    on the archive's Excel-day index, every gap 0 days, so the jump enters the fit: Sigma 3.8839
+    (+20%) and the stress sd 10.2898, the stress weight halved (0.098 against 0.203).
+    """
+    n, span, a, kappa, beta = 756, 63, 0.05, 4.0, 0.3
+    p_quiet, s_quiet, s_stress = 0.8, 2.0, 6.0
+    rng = np.random.default_rng(1)
+    days = pd.bdate_range('2021-01-04', periods=n + 3)
+    dates = days[:n // 2].append(days[n // 2 + 3:])
+    spot = 1000.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 15.0, n - 1)]))
+    eta = np.where(rng.random(n) < p_quiet, s_quiet, s_stress) * rng.standard_normal(n)
+    eta[n // 2] = 60.0                                  # the row after the gap
+    lam = 1.0 - 2.0 / (span + 1.0)
+    basis, ewm = np.full(n, -5.0), np.full(n, -5.0)
+    for j in range(2, n):                               # d_t - d_{t-1} = A dS - pull(d_{t-1}) + eta
+        d = basis[j - 1] - ewm[j - 2]
+        basis[j] = (ewm[j - 1] + d + a * (spot[j] - spot[j - 1])
+                    - beta * np.sign(d) * max(abs(d) - kappa, 0.0) + eta[j])
+        ewm[j] = lam * ewm[j - 1] + (1.0 - lam) * basis[j]
+    archive = pd.DataFrame({'CommodityPrice.PLAT': spot, 'ObservedBasis.PLAT.CME': basis}, index=dates)
+    archive.index.name = 'Date'
+    archive.to_csv(tmp_path / 'archive.csv', sep='\t')
+    retrieval = {'ID': '', 'Use_Pre_Computed_Statistics': 'Yes', 'Data_Retrieval_Parameters': {
+        'Frequency': '1d', 'Calendar': '', 'Business_Days_In_Year': 252}}
+    document = {
+        'MarketData': {
+            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': dates[-1]},
+            'Model Configuration': ModelParams(({'CommodityPrice': 'GBMAssetPriceModel',
+                                                'ObservedBasis': 'BasisLinkedSpotModel'}, {})),
+            'Price Factors': {}, 'Price Models': {}, 'Correlations': {},
+            'Price Factor Interpolation': ModelParams(({}, {})),
+            'Bootstrapper Configuration': {}, 'Market Prices': {}},
+        'Version': ['JSONVersion', '22.05.30'],
+        'CalibrationConfig': {
+            'MarketDataArchiveFile': {'name': str(tmp_path / 'archive.csv'), 'skiprows': 0,
+                                      'index_column': 'Date'},
+            'Calibrations': {
+                'GBMAssetPriceModel': dict(retrieval, Method='GBMAssetPriceCalibration'),
+                'BasisLinkedSpotModel': dict(retrieval, Method='BasisLinkedSpotCalibration',
+                                             Slow_Mean_Span=span, Reversion_Model='Band_Mixture')}}}
+    with io.open(tmp_path / 'calibration.json', 'w', encoding='utf-8') as handle:
+        handle.write(json.dumps(document, indent=1, cls=CustomJsonEncoder))
+    config = Config()
+    config.parse_json(str(tmp_path / 'calibration.json'))
+    factors = config.fetch_all_calibration_factors()
+    config.calibrate_factors(dates[0], dates[-1], dict(factors['present'], **factors['absent']))
+
+    fitted = config.params['Price Models']['BasisLinkedSpotModel.PLAT.CME']
+    law = np.sqrt(p_quiet * s_quiet ** 2 + (1.0 - p_quiet) * s_stress ** 2)
+    assert abs(fitted['Sigma'] / law - 1.0) < 0.05, (fitted['Sigma'], law)
+    assert abs(fitted['Mix_Sigma_Stress'] / s_stress - 1.0) < 0.05, fitted['Mix_Sigma_Stress']
