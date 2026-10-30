@@ -3305,6 +3305,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Frictional Bellman: the signed net book fraction becomes a '
                                   'state coordinate of the fitted value and the repositioning '
                                   'charge enters the regressed target'),
+                    F('DiffV2_Book_Gradient_Label', 'Text', default='No', values=['Yes', 'No'],
+                      description='Yes fits the value\'s slope in the standing book to its '
+                                  'pathwise label, the repositioning charge\'s, under '
+                                  'DiffV2_Position_State; No leaves that column to the value '
+                                  'term alone'),
                     F('DiffV2_Wealth_Free_Value', 'Text', default='No', values=['Yes', 'No'],
                       description='Drop the wealth column from the value net\'s inputs, so the '
                                   'fitted residual reads market state (and the position, under '

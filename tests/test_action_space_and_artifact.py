@@ -619,7 +619,7 @@ def test_the_drift_monitor_scores_a_decision_only_once_its_move_has_printed(tmp_
 
 
 # --------------------------------------------------------------------------------------------
-# (vi) convergence - what a fit saves and a roll loads
+# (vi) convergence - what a fit saves, what a roll loads, and the book column's label
 # --------------------------------------------------------------------------------------------
 def _swap_growth(seed, save=None, load=None):
     """The swap fixture under LogWealth with the position and returns states, trained on 512 paths a
@@ -636,14 +636,21 @@ def _swap_growth(seed, save=None, load=None):
     return cfg
 
 
-def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(tmp_path):
+@pytest.fixture(scope='module')
+def growth(tmp_path_factory):
+    """The growth document trained under seed 6, saved: `(checkpoint path, diagnostics)`."""
+    ckpt = str(tmp_path_factory.mktemp('vf') / 'value_fn_s6.pt')
+    return ckpt, _run(_swap_growth(6, save=ckpt)).evaluation_summary['diagnostics']
+
+
+def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tmp_path):
     """`DiffV2_Max_Value_Optimism` bounds V_0 less the held-out greedy utility: the value a fit
     claims against what its own argmax earns on a world no fit step saw. On the swap fixture seed 5
     claims V_0 +0.2779 while its held-out batch ruins below the capital line its bank measured
     (greedy u -1.9119, 2.19 apart): the save is refused naming the field, V_0 and the held-out
     utility, and no checkpoint is written. Seed 6 (+0.2322 against +0.2778) saves, stamped with its
     optimism; a roll declaring a bound below the stamp refuses the member by name, and the same
-    checkpoint without the stamp, as every checkpoint saved before it, loads at that bound. 30 s.
+    checkpoint without the stamp, as every checkpoint saved before it, loads at that bound. 20 s.
 
     Killing mutations: the save's check removed (seed 5 writes its checkpoint); the roll's check
     removed (the stamped member loads below its stamp)."""
@@ -652,17 +659,18 @@ def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(tmp_path):
         _run(_swap_growth(5, save=ruined))
     assert not os.path.exists(ruined)
 
-    saved = str(tmp_path / 'value_fn_s6.pt')
-    diag = _run(_swap_growth(6, save=saved)).evaluation_summary['diagnostics']
-    stamp = torch.load(saved, map_location='cpu', weights_only=False)['value_optimism']
-    assert stamp == diag['V_0'] - diag['verdict']['greedy']['u_mean'] < 0.0, stamp
+    saved, diag = growth
+    stamped = torch.load(saved, map_location='cpu', weights_only=False)
+    assert stamped['value_optimism'] == diag['V_0'] - diag['verdict']['greedy']['u_mean'] < 0.0, \
+        stamped['value_optimism']
     below = _swap_growth(6, load=saved)
     below['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Max_Value_Optimism'] = -0.1
     with pytest.raises(ValueError, match='DiffV2_Max_Value_Optimism: .*value_fn_s6.pt was saved'):
         _run(below)
-    unstamped = torch.load(saved, map_location='cpu', weights_only=False)
-    del unstamped['value_optimism']
-    torch.save(unstamped, saved)
+    del stamped['value_optimism']
+    torch.save(stamped, str(tmp_path / 'value_fn_unstamped.pt'))
+    below['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Load_Value_Fn'] = [
+        str(tmp_path / 'value_fn_unstamped.pt')]
     assert _run(below).evaluation_summary['diagnostics']['V_0'] == diag['V_0']
 
 
@@ -682,3 +690,30 @@ def test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused(tm
     strict['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Max_Member_Disagreement'] = 0.0
     with pytest.raises(ValueError, match=r'DiffV2_Max_Member_Disagreement: .*s7\.pt and .*s11\.pt .*3\.95'):
         _run(strict)
+
+
+def test_the_book_column_is_fitted_to_the_repositioning_charge_s_slope(growth):
+    """Under the position state the value net reads the standing book p, a control the bank samples
+    whose slope no AAD label measures, so the value term alone leaves it free and the argmax
+    harvests whatever slope it lands at. `DiffV2_Book_Gradient_Label` 'Yes' makes the book a leaf
+    of the gradient fork, whose label is by the envelope theorem the repositioning charge's slope at
+    the chosen action, and fits the net's dA/dp to it. On the swap fixture under seed 6 the field
+    omitted and 'No' train the same V_0 and root book to the bit (0.23219308257102966, as before
+    the field existed); under 'Yes' the fitted slope's mean over the bank departs from the label's
+    by 11.5% of the label, summed over the 47 swept steps (bound 25%), and the root book moves to
+    [-8.55, -8.94] from [-9.63, -9.98]. 30 s.
+
+    Killing mutation: the slope term dropped from the fit's loss (the departure reads 170% and the
+    'Yes' fit is the 'No' fit to the bit, root book and all)."""
+    _, omitted = growth
+    reads = {}
+    for label in ('No', 'Yes'):
+        cfg = _swap_growth(6)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Book_Gradient_Label'] = label
+        reads[label] = _run(cfg).evaluation_summary['diagnostics']
+    assert (reads['No']['V_0'], reads['No']['n_star_0']) == (omitted['V_0'], omitted['n_star_0'])
+    rows = reads['Yes']['per_t']
+    departs = (sum(abs(r['book_slope'] - r['book_label']) for r in rows)
+               / sum(abs(r['book_label']) for r in rows))
+    assert len(rows) == 47 and departs < 0.25, (len(rows), departs)
+    assert reads['Yes']['n_star_0'] != reads['No']['n_star_0'], reads['Yes']['n_star_0']

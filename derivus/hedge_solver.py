@@ -686,6 +686,7 @@ class DiffSolver:
         '| `DiffV2_Cost_Aware_Argmax` | No | charge the L1 repositioning cost at the argmax |',
         '| `DiffV2_Position_State` | No | the frictional Bellman: `p` as state, the charge in the '
         'target |',
+        '| `DiffV2_Book_Gradient_Label` | No | fit the slope in `p` to the charge\'s pathwise slope |',
         '| `DiffV2_Wealth_Free_Value` | No | drop `W` from the residual: the ranking bends only as '
         '`u` does |',
         '| `DiffV2_Decision_Curve_Dump` | off | CSV of the stepper rollout\'s full per-rung ranking '
@@ -772,6 +773,8 @@ class DiffSolver:
         # the repositioning charge enters the regressed target. Q_max is the Evaluator's cap - the
         # only declared scale p can be measured in - so an absent cap fails loud.
         self.position_state = bool(self.cfg.get("diffv2_position_state", False))
+        # the book column's own pathwise label, the charge's slope in the standing book
+        self.book_label = self.position_state and self.cfg["diffv2_book_gradient_label"]
         # WEALTH-FREE residual: the value net's W input column is REMOVED, so C_t's whole
         # dependence on wealth is the utility anchor's. Composes with the position state.
         self.wealth_free = bool(self.cfg.get("diffv2_wealth_free_value", False))
@@ -1542,7 +1545,13 @@ class DiffSolver:
         W1 = self._wealth_step(W0[:, None], q, dF_g, dL_g)                                # (B,Bi)
         B, Bi_e, md = m1_g.shape
         p_bank = p1 = None
+        extra = []
         if self.position_state:
+            if self.book_label:
+                # the standing book a leaf of the fork: by the envelope theorem the label's slope
+                # in it is the charge's at the chosen action
+                q_prev = q_prev.detach().requires_grad_(True)
+                extra = [q_prev]
             # the charge the SELECTION above ranked with, now inside the regressed TARGET, and the
             # successor read at the book the chosen action leaves standing
             W1 = W1 - self._reposition_charge(
@@ -1557,15 +1566,18 @@ class DiffSolver:
             # g_market - the reward is part of what the twin loss differentiates.
             Y = Y + self._u_step(W1, W0[:, None], t + 1)
         Y = Y.mean(1)                                                                     # (B,)
-        grads = torch.autograd.grad(Y.sum(), [W0] + list(leaves.values()), allow_unused=True)
+        grads = torch.autograd.grad(Y.sum(), [W0] + list(leaves.values()) + extra, allow_unused=True)
         gW = grads[0].detach()
         leaf_grads = {k: (g.detach() if g is not None else None)
-                      for k, g in zip(leaves.keys(), grads[1:])}
+                      for k, g in zip(leaves.keys(), grads[1:1 + len(leaves)])}
         g_market = self._project_leaf_grads(leaf_grads, widths, rows, B, md)             # ∂Y/∂market_t (B,md)
+        # ∂Y/∂p: a move in p = Sum(q)/Q_max spread evenly over the live legs
+        g_p = (grads[-1].detach().sum(-1) * self.total_abs_limit / max(1.0, float(live.sum()))
+               if extra else None)
         Y = Y.detach()
-        return self._fit_from_labels(nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank)
+        return self._fit_from_labels(nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p)
 
-    def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank):
+    def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p=None):
         """Shared fit tail: advantage decomposition + standardized twin loss on the
         (value, wealth-grad, market-grad) labels. Called by both the single-fork and the
         sub-sliced large-B label paths of `_fit_step`.
@@ -1580,9 +1592,10 @@ class DiffSolver:
         drown both the value fit and the market gradient, and `lam_g` would not balance
         value against gradient as intended.
 
-        `p_bank` is an input column with NO gradient label: the twin loss carries only the channels
-        the AAD fork measures, and p is a control the bank samples rather than a simulated
-        coordinate. It is supervised by the value term alone.
+        `p_bank` is a control the bank samples rather than a simulated coordinate, so the AAD fork
+        measures no slope in it and it is supervised by the value term alone, unless
+        `DiffV2_Book_Gradient_Label` hands in `g_p`, the label's slope in the standing book (the
+        repositioning charge's), matched beside the others and normalized by its own variance.
 
         `DiffV2_Wealth_Free_Value` is the same discipline the other way: W is no longer an input,
         so it can no longer be a MEASURED COLUMN and its gradient term leaves the loss with it.
@@ -1627,21 +1640,25 @@ class DiffSolver:
                 net.parameters(), lr=self.lr,
                 weight_decay=float(self.cfg.get("diffv2_weight_decay", 0.0)))
         prev_loss, iters_run = None, self.fit_iters
+        nrm_p = None if g_p is None else g_p.var() + 1e-8
         for it in range(self.fit_iters):
             mn = ((market0 - self.m_mean) / self.m_std).detach().requires_grad_(True)
             wn = self._w_norm(W0_bank).detach().requires_grad_(True)
             cols = [mn] if self.wealth_free else [mn, wn.unsqueeze(-1)]
+            pn = p_bank if g_p is None else p_bank.detach().requires_grad_(True)
             a = net(torch.cat(cols
-                              + ([] if p_bank is None else [p_bank.unsqueeze(-1)]), dim=-1))
+                              + ([] if p_bank is None else [pn.unsqueeze(-1)]), dim=-1))
             # the MEASURED COLUMNS of the twin loss are exactly the input channels the net
             # consumes, so `DiffV2_Wealth_Free_Value` takes W out of both at once
-            das = torch.autograd.grad(a.sum(), [mn] if self.wealth_free else [mn, wn],
-                                      create_graph=True)
+            das = torch.autograd.grad(a.sum(), ([mn] if self.wealth_free else [mn, wn])
+                                      + ([] if g_p is None else [pn]), create_graph=True)
             da_m = das[0]
             w_term = 0.0 if self.wealth_free else lam_g * ((das[1] - g_zn_W) ** 2).mean() / nrm_w
             loss = (((a - a_val) ** 2).mean() / nrm_v
                     + w_term
                     + lam_g * (((da_m - g_zn_m) ** 2) / nrm_m).mean())
+            if g_p is not None:
+                loss = loss + lam_g * ((das[-1] - g_p) ** 2).mean() / nrm_p
             if prox_ref is not None:
                 flat = torch.cat([p.reshape(-1) for p in net.parameters()])
                 loss = loss + self.prox * (flat - prox_ref).pow(2).mean()
@@ -1671,13 +1688,19 @@ class DiffSolver:
             else:
                 pad = max(hi - lo, 1e-3)
                 self.a_bounds[t] = (lo - pad, hi + pad)
-        return {
+        row = {
             "t": t, "val_loss": val_loss, "iters": iters_run,
             "Y_absmean": float(Y.abs().mean()),
             "A_absmean": float(a_fit.abs().mean()),
             "q_star_mean": q_star.mean(0).detach().cpu().tolist(),
             "Y_mean": float(Y.mean()),
         }
+        if g_p is not None:
+            # the fitted slope in the standing book against its label, over the bank's states
+            pn = p_bank.detach().requires_grad_(True)
+            (da_p,) = torch.autograd.grad(net(self._standardize(market0, W0_bank, pn)).sum(), pn)
+            row.update(book_slope=float(da_p.mean()), book_label=float(g_p.mean()))
+        return row
 
     # ---- greedy-rollout downside verdict -------------------------------------
     def _verdict(self, nets, inner_cache, sweep_ts, rows=slice(None)):

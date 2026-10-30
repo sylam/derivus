@@ -365,6 +365,10 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # enters the fitted TARGET (see docstring). 'No' = the position-free value.
         "diffv2_position_state":
             solver_config.get("DiffV2_Position_State", "No") == "Yes",
+        # The book column's own pathwise label under the position state: the charge's slope in the
+        # standing book joins the twin loss. 'No' = the column fitted by the value term alone.
+        "diffv2_book_gradient_label":
+            solver_config.get("DiffV2_Book_Gradient_Label", "No") == "Yes",
         # Load a checkpoint fitted on a different decision horizon: per-step structures clamp
         # to the saved range (the tail repeats the last fitted step). 'No' = exact-shape loads.
         "diffv2_load_horizon_pad":
