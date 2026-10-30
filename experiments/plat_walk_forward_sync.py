@@ -404,7 +404,8 @@ def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5,
             f'Observed window {base.date()}+{horizon_days}d ends {dates.max().date()} past '
             f'archive end {arch.index[-1].date()}: the roll would run on fabricated flat prices')
     window = pd.Series(arch.index[(arch.index >= base) & (arch.index <= dates.max())])
-    gap = int(max(window.diff().dt.days.max(), (window.iloc[0] - base).days))
+    # a window of one row (the archive ending on the trade date, the live morning) has no gap in it
+    gap = int(max(window.diff().dt.days.fillna(0).max(), (window.iloc[0] - base).days))
     if gap > max_gap:
         raise ValueError(
             f'Observed window {base.date()}+{horizon_days}d has a {gap}-day hole in the archive '

@@ -599,7 +599,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         'trade': tag, 'world': 'chain', 'margin': args.margin, 'corridor': args.delta_corridor,
         'fair': round(info['k_fair'], 2), 'strike': round(info['k_fair'] - args.margin, 2),
         'n_seeds': len(args.seeds), 'market_dim': market_dim,
-        'train_u': train_us[0], 'train_u_seeds': train_us, 'V_0': v0s[0],
+        'train_u': train_us[0], 'train_u_seeds': train_us, 'V_0': v0s[0], 'V_0_seeds': v0s,
         'train_u_is_step_sum': u_step_sum,
         'greedy_usd_oz': None if greedy is None else round(greedy / args.volume, 2),
         'nohedge_usd_oz': None if nohedge is None else round(nohedge / args.volume, 2),
