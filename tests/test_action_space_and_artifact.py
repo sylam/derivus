@@ -739,13 +739,15 @@ def test_the_book_label_is_taken_along_the_ladder():
     legs, so a leg the ladder never moves carries no weight in the label whatever the bank books
     on it. The swap growth document under seed 6 with its first leg inactive and no bank noise
     trains to the bit as the same document with that leg removed: V_0 (0.16260874271392822 on
-    the CPU), the root book (-8.392578125) and every swept step's `book_label` and `book_slope`.
+    the CPU), the root book (-8.392578125) and every swept step's `book_label` and `book_slope`;
+    both documents declare `Deterministic_Kernels` so the identity holds to the bit on a card too.
     30 s.
 
     Killing mutation: the gradient summed over the live legs and divided by their count (the
     two-leg label reads 0.48 of the one-leg's, 52% apart summed over the 47 steps, and the fits
     part: V_0 0.1542 against 0.1626, the root book -8.41 against -8.39)."""
     cfg = _swap_growth(6)
+    cfg['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update({
         'DiffV2_Book_Gradient_Label': 'Yes', 'DiffV2_Bank_Noise_Frac': 0.0, 'Active_Hedge_Indices': [1]})
     two = _run(cfg).evaluation_summary['diagnostics']
