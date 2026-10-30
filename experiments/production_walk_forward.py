@@ -76,9 +76,11 @@ import torch  # noqa: E402
 
 from production_solver import apply_config, run
 
-if sys.platform == 'win32' and torch.cuda.is_available():
+if sys.platform == 'win32' and torch.cuda.device_count():
     # without a cap the caching allocator's reserve grows to the card and WDDM pages it out,
-    # ten times slower; the cap makes it free its cache instead (bit-identical)
+    # ten times slower; the cap makes it free its cache instead (bit-identical). The count, not
+    # is_available(): the latter answers True with the devices hidden and this call would then
+    # initialise CUDA and put every job of the process on the card (utils.calculation_device)
     torch.cuda.set_per_process_memory_fraction(0.92)
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')
