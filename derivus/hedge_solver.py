@@ -1571,8 +1571,9 @@ class DiffSolver:
         leaf_grads = {k: (g.detach() if g is not None else None)
                       for k, g in zip(leaves.keys(), grads[1:1 + len(leaves)])}
         g_market = self._project_leaf_grads(leaf_grads, widths, rows, B, md)             # ∂Y/∂market_t (B,md)
-        # ∂Y/∂p: a move in p = Sum(q)/Q_max spread evenly over the live legs
-        g_p = (grads[-1].detach().sum(-1) * self.total_abs_limit / max(1.0, float(live.sum()))
+        # ∂Y/∂p along the ladder: a move in p lands on the live legs as the step's Allocation_Weights
+        # split it (evenly where none is declared), so the bank's off-ladder exploration carries no weight
+        g_p = ((grads[-1].detach() * self.aspace._weights_at(t, live)).sum(-1) * self.total_abs_limit
                if extra else None)
         Y = Y.detach()
         return self._fit_from_labels(nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p)

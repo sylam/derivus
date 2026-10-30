@@ -717,3 +717,39 @@ def test_the_book_column_is_fitted_to_the_repositioning_charge_s_slope(growth):
                / sum(abs(r['book_label']) for r in rows))
     assert len(rows) == 47 and departs < 0.25, (len(rows), departs)
     assert reads['Yes']['n_star_0'] != reads['No']['n_star_0'], reads['Yes']['n_star_0']
+
+
+def _without_first_leg(cfg):
+    """`cfg` with its first hedge leg removed: the future, its position, settlement price and
+    margin, its position limits and its allocation rows, the whole net on the leg left."""
+    gone, kept = LEGS
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    del hp['Tradable_Instruments']['CommodityFutureDeal'][gone]
+    for key in ('Positions', 'Settlement_Prices', 'Initial_Margin'):
+        del hp['Portfolio_State'][key][gone]
+    del hp['Evaluator']['Position_Limits'][gone]
+    hp['Evaluator']['Allocation_Weights'] = [{'Step': 0, 'Instrument': kept, 'Weight': 1.0}]
+    hp['Solver']['Active_Hedge_Indices'] = [0]
+    return cfg
+
+
+def test_the_book_label_is_taken_along_the_ladder():
+    """The label's slope in the standing book is the charge's along the ladder: a move in p lands
+    on the live legs as the step's `Allocation_Weights` split them, intersected with the active
+    legs, so a leg the ladder never moves carries no weight in the label whatever the bank books
+    on it. The swap growth document under seed 6 with its first leg inactive and no bank noise
+    trains to the bit as the same document with that leg removed: V_0 (0.16260874271392822 on
+    the CPU), the root book (-8.392578125) and every swept step's `book_label` and `book_slope`.
+    30 s.
+
+    Killing mutation: the gradient summed over the live legs and divided by their count (the
+    two-leg label reads 0.48 of the one-leg's, 52% apart summed over the 47 steps, and the fits
+    part: V_0 0.1542 against 0.1626, the root book -8.41 against -8.39)."""
+    cfg = _swap_growth(6)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update({
+        'DiffV2_Book_Gradient_Label': 'Yes', 'DiffV2_Bank_Noise_Frac': 0.0, 'Active_Hedge_Indices': [1]})
+    two = _run(cfg).evaluation_summary['diagnostics']
+    one = _run(_without_first_leg(cfg)).evaluation_summary['diagnostics']
+    assert (two['V_0'], two['n_star_0']) == (one['V_0'], [0.0] + one['n_star_0']), (two['V_0'], one['V_0'])
+    labels = [[(r['book_label'], r['book_slope']) for r in d['per_t']] for d in (two, one)]
+    assert len(labels[0]) == 47 and labels[0] == labels[1]
