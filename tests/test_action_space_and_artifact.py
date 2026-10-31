@@ -770,6 +770,58 @@ def test_the_book_label_is_taken_along_the_ladder():
     assert len(labels[0]) == 47 and labels[0] == labels[1]
 
 
+def test_the_bank_is_composed_along_the_ladder():
+    """Under `DiffV2_Bank_Along_Ladder` 'Yes' every training-bank book is a rung of the ladder on
+    its live legs: the constructed net spans the ladder's band, its reserve is priced on the
+    ladder's weights, and the exploration is drawn on the net, clamped into the band and held as a
+    rung, so the bank explores only books the policy can hold. On the swap growth document (256
+    paths, 8 inner draws, 20 fit iterations, the book label, a [-12, 10] corridor) A has both legs
+    active, one knot weighting the July leg 0 and `Calendar_Spread_Bps` 3; B has only the October
+    leg active, no calendar and October's box floored at -12, so B's band stops at -12 on its box
+    where A's stops on the corridor, and both stop at 5 on October's box where A's `net_bounds`
+    reaches 10. Under 'Yes' A trains to the bit as B: V_0 (0.06843073666095734 on the CPU), the
+    root book ([0, -3.71875]) and every swept step's label, slope and value; under 'No' they part
+    (V_0 0.0844 against 0.0680), and A with the field omitted is A under 'No' to the bit. Under an
+    even (0.5, 0.5) knot a rung moves both legs the same way, so the calendar flag meets no matched
+    volume and the fits with and without it are one (V_0 0.08964155614376068).
+    `Deterministic_Kernels` holds the identities on a card too.
+
+    Killing mutations, A's V_0 against B's: the constructed policy's three water-fills left on the
+    replication shape (0.0694 against 0.0684); the exploration drawn per active leg and projected
+    into the corridor, as the default bank's is (0.0758 against 0.0680; the even knot's fits part,
+    0.0926 against 0.0757); the noisy net left unclamped (0.0805 against 0.0768); the constructed
+    net spanning `net_bounds` (0.0914 against 0.0684); the reserve priced on the replication split
+    (0.0769 against 0.0684)."""
+    def fit(ladder, weights=(0.0, 1.0), calendar=True, october_only=False):
+        cfg = _swap_growth(6)
+        calc = cfg['Calc']['Calculation']
+        calc['Deterministic_Kernels'], calc['Batch_Size'], calc['Inner_Sub_Batch'] = 'Yes', 256, 8
+        hp = calc['Hedging_Problem']
+        hp['Solver'].update({'DiffV2_Fit_Iters': 20, 'DiffV2_Book_Gradient_Label': 'Yes'})
+        hp['Evaluator'].update({
+            'Allocation_Weights': [{'Step': 0, 'Instrument': h, 'Weight': w}
+                                   for h, w in zip(LEGS, weights)],
+            'Total_Position_Schedule': [{'Step': 0, 'Min_Total': -12, 'Max_Total': 10}]})
+        if calendar:
+            hp['Evaluator']['Calendar_Spread_Bps'] = 3.0
+        if october_only:
+            hp['Solver']['Active_Hedge_Indices'] = [1]
+            hp['Evaluator']['Position_Limits'][LEGS[1]]['Min_Position'] = -12
+        if ladder is not None:
+            hp['Solver']['DiffV2_Bank_Along_Ladder'] = ladder
+        diag = _run(cfg).evaluation_summary['diagnostics']
+        return (diag['V_0'], diag['n_star_0'],
+                [(r['book_label'], r['book_slope'], r['Y_mean']) for r in diag['per_t']])
+
+    a = fit('Yes')
+    assert a == fit('Yes', calendar=False, october_only=True), a[:2]
+    a_no = fit('No')
+    assert a_no[0] != fit('No', calendar=False, october_only=True)[0], a_no[:2]
+    assert fit(None) == a_no, a_no[:2]
+    even = fit('Yes', weights=(0.5, 0.5))
+    assert even == fit('Yes', weights=(0.5, 0.5), calendar=False), even[:2]
+
+
 def test_a_no_table_document_whose_legs_all_die_still_labels():
     """Absent an `Allocation_Weights` table the label's ladder is even over the live active legs,
     and a swept step where none can carry a contract has no direction: the label is zero there,

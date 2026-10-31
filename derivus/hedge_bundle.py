@@ -369,6 +369,10 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # standing book joins the twin loss. 'No' = the column fitted by the value term alone.
         "diffv2_book_gradient_label":
             solver_config.get("DiffV2_Book_Gradient_Label", "No") == "Yes",
+        # The DiffSolverV2 bank's books as rungs of the ladder on its live legs, the noise on the
+        # net. 'No' = the net water-filled onto the replication hedge's shape over the active legs.
+        "diffv2_bank_along_ladder":
+            solver_config.get("DiffV2_Bank_Along_Ladder", "No") == "Yes",
         # Load a checkpoint fitted on a different decision horizon: per-step structures clamp
         # to the saved range (the tail repeats the last fitted step). 'No' = exact-shape loads.
         "diffv2_load_horizon_pad":

@@ -244,6 +244,29 @@ class HedgeActionSpace:
         rank.scatter_(-1, order, torch.arange(x.shape[-1], device=x.device).expand_as(order))
         return base + (rank < need).to(x.dtype)
 
+    def ladder(self, t, live=None):
+        """The ladder at decision step t, `(weights, legs, box_lo, box_hi, lo, hi)`: the
+        `_weights_at` split over `live`, the indices of the legs it weighs, their whole-contract
+        boxes (snapped inward, zero on every other leg), and the band of the signed net,
+        `net_bounds(t)` intersected with those boxes and snapped INWARD to whole contracts, since a
+        fractional band would emit rungs that round outside their own mandate."""
+        weights = self._weights_at(t, live)
+        usable = (weights > 0).to(self.q_lo.dtype)
+        box_lo, box_hi = torch.ceil(self.q_lo) * usable, torch.floor(self.q_hi) * usable
+        lo, hi = self.net_bounds(t)
+        lo = math.ceil(max(lo, float(box_lo.sum())) - 1e-9)
+        hi = math.floor(min(hi, float(box_hi.sum())) + 1e-9)
+        return weights, usable.nonzero().flatten().tolist(), box_lo, box_hi, lo, hi
+
+    def rung(self, t, net, live=None):
+        """The whole-contract book `(B, n_hedge)` carrying each signed net cover of `net` `(B, 1)`,
+        inside the `ladder` band, along the ladder at decision step t: `Q·w` clamped into the
+        weighted legs' boxes, water-filled back onto Q over those legs and rounded by
+        `_largest_remainder`."""
+        weights, legs, box_lo, box_hi, _, _ = self.ladder(t, live)
+        return self._largest_remainder(
+            self.waterfill((net * weights).clamp(box_lo, box_hi), net, net, legs), net)
+
     def allocation_grid(self, t, live=None):
         """The FACTORED action universe at decision step t: a Q-LADDER over the signed NET cover,
         each rung split across the legs by the `Allocation_Weights` knot in force. The solver then
@@ -256,28 +279,22 @@ class HedgeActionSpace:
 
         Construction runs on the legs that can carry a contract — `_weights_at(t, live)` drops the
         inactive and expired ones and renormalizes, and every bound is summed over what survives:
-          * the band is `net_bounds(t)` (cap ∩ corridor ∩ boxes) intersected with those legs' own
-            boxes, then snapped INWARD to whole contracts, since a fractional band would emit
-            rungs that round outside their own mandate;
-          * `Q·w` is clamped into the per-leg boxes and water-filled back onto Q over the SAME leg
-            set, so nothing puts cover on a leg the schedule zeroed;
-          * `_largest_remainder` rounds to whole contracts summing to Q, and duplicate rungs
+          * the band is the `ladder` band: `net_bounds(t)` (cap ∩ corridor ∩ boxes) intersected
+            with those legs' own boxes, snapped INWARD to whole contracts;
+          * each rung is `rung(t, Q, live)`: `Q·w` clamped into the per-leg boxes and water-filled
+            back onto Q over the SAME leg set, so nothing puts cover on a leg the schedule zeroed,
+            then rounded by `_largest_remainder` to whole contracts summing to Q; duplicate rungs
             collapse.
         Cached per `(t, live)`. The corridor filter downstream in `grid_at` is then a no-op: the
         rungs a caller is offered are rungs it can realize."""
         key = (t, None if live is None else tuple(live.tolist()))
         if key not in self._ladder_cache:
-            weights = self._weights_at(t, live)
-            usable = (weights > 0).to(self.q_lo.dtype)
-            box_lo, box_hi = torch.ceil(self.q_lo) * usable, torch.floor(self.q_hi) * usable
-            lo, hi = self.net_bounds(t)
-            lo = math.ceil(max(lo, float(box_lo.sum())) - 1e-9)
-            hi = math.floor(min(hi, float(box_hi.sum())) + 1e-9)
+            _, legs, _, _, lo, hi = self.ladder(t, live)
             if lo > hi:
                 raise ValueError(
                     f"action ladder empty at step {t} — no whole-contract net is reachable on the "
-                    f"weighted live legs {[self.hedges[i] for i in usable.nonzero().flatten().tolist()]} "
-                    f"inside net_bounds {self.net_bounds(t)}")
+                    f"weighted live legs {[self.hedges[i] for i in legs]} inside net_bounds "
+                    f"{self.net_bounds(t)}")
             if hi - lo > self.levels - 1:
                 raise ValueError(
                     f"Allocation_Weights ladder at step {t} spans {hi - lo} contracts over "
@@ -287,9 +304,7 @@ class HedgeActionSpace:
                     f"quantum above 1 rebuilds the coarse net grid the schedule exists to "
                     f"replace; raise it to at least {hi - lo + 1}.")
             net = torch.linspace(lo, hi, self.levels, device=self.device).unsqueeze(-1)  # (L,1)
-            raw = (net * weights).clamp(box_lo, box_hi)
-            rows = self._largest_remainder(
-                self.waterfill(raw, net, net, usable.nonzero().flatten().tolist()), net)
+            rows = self.rung(t, net, live)
             if self.total_abs_limit > 0.0:
                 rows = rows[rows.abs().sum(-1) <= self.total_abs_limit + 1e-9]
             self._ladder_cache[key] = rows.unique(dim=0)
@@ -684,13 +699,16 @@ class DiffSolver:
         '| `DiffV2_Per_Column_Grad_Norm` | Yes | normalize greeks per input column rather than '
         'pooled |',
         '| `DiffV2_Bank_Noise_Frac` | 0.15 | exploration around the per-t replication hedge, as a '
-        "fraction of each instrument's position range |",
+        "fraction of each instrument's position range; under the ladder bank, of the band's width "
+        'on the net |',
         '| `DiffV2_Risk_Kappa` | 0 | score actions by `mean(C) - kappa * downside-semidev(C)` |',
         '| `DiffV2_Risk_Aversion` | 1.0 | divides the `LogWealth` capital line; in [0.1, 10] |',
         '| `DiffV2_Cost_Aware_Argmax` | No | charge the L1 repositioning cost at the argmax |',
         '| `DiffV2_Position_State` | No | the frictional Bellman: `p` as state, the charge in the '
         'target |',
         '| `DiffV2_Book_Gradient_Label` | No | fit the slope in `p` to the charge\'s pathwise slope |',
+        '| `DiffV2_Bank_Along_Ladder` | No | `DiffSolverV2`\'s bank books as rungs of the ladder, on '
+        'its live legs |',
         '| `DiffV2_Wealth_Free_Value` | No | drop `W` from the residual: the ranking bends only as '
         '`u` does |',
         '| `DiffV2_Decision_Curve_Dump` | off | CSV of the stepper rollout\'s full per-rung ranking '
@@ -779,6 +797,8 @@ class DiffSolver:
         self.position_state = bool(self.cfg.get("diffv2_position_state", False))
         # the book column's own pathwise label, the charge's slope in the standing book
         self.book_label = self.position_state and self.cfg["diffv2_book_gradient_label"]
+        # DiffSolverV2's training bank composed along the ladder, as the policy's own books are
+        self.bank_ladder = self.cfg["diffv2_bank_along_ladder"]
         # WEALTH-FREE residual: the value net's W input column is REMOVED, so C_t's whole
         # dependence on wealth is the utility anchor's. Composes with the position state.
         self.wealth_free = bool(self.cfg.get("diffv2_wealth_free_value", False))
@@ -3096,7 +3116,8 @@ class DiffSolverV2(DiffSolver):
         '  paths: up to 64 buckets in $L_t$ of at least 32 paths, made non-increasing in $L$. The',
         '  net position is',
         '  $q_{net}=hi-d_t(W_t)\\,(hi-lo)$ inside the feasible band, rounded away from zero to whole',
-        '  contracts and split across the legs in the replication hedge\'s proportions.',
+        '  contracts and water-filled onto the replication hedge\'s shape over the active legs, or',
+        '  under `DiffV2_Bank_Along_Ladder` held as a rung of the ladder on its live legs.',
         '- **Clairvoyant reserve.** After the first step, each path moves its position by the',
         '  fewest whole contracts that keep the next day\'s book above the reserve its own remaining',
         '  path requires, a backward recursion on the realized moves. Half the bank paths roll this',
@@ -3145,17 +3166,30 @@ class DiffSolverV2(DiffSolver):
         # the curve is float32 by construction, read in the books' own precision
         return torch.lerp(bp[idx - 1].to(w.dtype), bp[idx].to(w.dtype), w)
 
-    def _constructed_policy(self, floored=True):
+    def _constructed_policy(self, floored=True, live=None):
         """ONE deterministic pass — measure, then construct. The moving-strike delta
         `d_t(book) = P(terminal book < book at t | book at t)` is measured on the FLAT liability,
         the only book that exists before a policy does, and the policy rolls once against those
         curves: the strike rides the book, so hedging does not change the measured object and no
-        fixed point is needed. Returns `(q per step (B, n_hedge), curves per step, terminal
-        book)`."""
+        fixed point is needed. Given the per-step mask `live` of the legs that still price, each
+        step's net spans the `HedgeActionSpace.ladder` band, is held as its `rung` and its reserve
+        is priced on the ladder's weights; absent `live`, the net spans `net_bounds` and is
+        water-filled onto the replication hedge's shape, its reserve priced in that shape. Returns
+        `(q per step (B, n_hedge), curves per step, terminal book)`."""
         L, T = self.liability_sim, self.T_dec
         rep = [self._replication_hedge(t) for t in range(T)]
         dF = [self._outer_dF(t) for t in range(T)]
         LT = L[T]
+
+        def band(t):
+            return self.aspace.net_bounds(t) if live is None else self.aspace.ladder(t, live[t])[4:]
+
+        def compose(t, net):
+            if live is not None:
+                return self.aspace.rung(t, net, live[t])
+            return self.aspace._largest_remainder(self.aspace.waterfill(
+                rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net), net)
+
         # THE CLAIRVOYANT RESERVE, backward per path: req_t is the minimum book at t from which the
         # known remaining path can be played without dipping under the floor. Days a futures hedge
         # cannot defend propagate their need BACKWARD, so the forward pass pre-positions.
@@ -3163,14 +3197,14 @@ class DiffSolverV2(DiffSolver):
         m_t, lo_is, hi_is = [], [], []
         for t in range(T):
             rs = float(rep[t].abs().sum())
-            lo_t, hi_t = self.aspace.net_bounds(t)
+            lo_t, hi_t = band(t)
             lo_is.append(math.ceil(lo_t - 1e-9))
             hi_is.append(math.floor(hi_t + 1e-9))
             if rs < 0.5:
                 m_t.append(torch.zeros(self.B_outer, device=self.device))
             else:
-                w_rep = rep[t] / rep[t].sum()
-                m_t.append(torch.einsum('i,ib->b', w_rep * self.contract_size,
+                w = rep[t] / rep[t].sum() if live is None else self.aspace._weights_at(t, live[t])
+                m_t.append(torch.einsum('i,ib->b', w * self.contract_size,
                                         torch.stack([self.tradables_sim[r][t + 1]
                                                      - self.tradables_sim[r][t]
                                                      for r in self.hedges])))
@@ -3196,7 +3230,7 @@ class DiffSolverV2(DiffSolver):
                 qt = torch.zeros(self.B_outer, self.n_hedge, device=self.device)
             else:
                 g = self._phi_apply(cv, W)
-                lo_t, hi_t = self.aspace.net_bounds(t)
+                lo_t, hi_t = band(t)
                 lo_i, hi_i = math.ceil(lo_t - 1e-9), math.floor(hi_t + 1e-9)
                 net = hi_t - g * (hi_t - lo_t)
                 # WHOLE contracts, rounded AWAY from zero (up, in cover terms); the box is snapped
@@ -3213,9 +3247,7 @@ class DiffSolverV2(DiffSolver):
                     # t0 is the ONE decision deployment shares with the seed - a single real state
                     # and a single position - so it takes the uniform honest delta with NO
                     # clairvoyance; paths needing more catch up at t1
-                    q.append(self.aspace._largest_remainder(self.aspace.waterfill(
-                        rep[t][None].expand(self.B_outer, self.n_hedge).clone(),
-                        net.unsqueeze(-1), net.unsqueeze(-1)), net.unsqueeze(-1)))
+                    q.append(compose(t, net.unsqueeze(-1)))
                     W = self._wealth_step(W, q[-1], dF[t], L[t + 1] - L[t])
                     continue
                 # the floor constraint q*m >= need is a HALF-LINE, and the repair is the delta base
@@ -3228,12 +3260,9 @@ class DiffSolverV2(DiffSolver):
                 net = torch.where(defensible & (m < 0),
                                   torch.minimum(net, bound.floor()), net)
                 net = net.clamp(lo_i, hi_i).unsqueeze(-1)
-                qt = self.aspace.waterfill(
-                    rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net)
-                qt = self.aspace._largest_remainder(qt, net)
-                qt = torch.minimum(torch.maximum(qt, self.q_lo), self.q_hi)
-                # EXECUTION-EXACT top-up: the bound above prices the hedge at the rep-weighted
-                # basket move while the executed split deviates, so re-price the EXECUTED book and
+                qt = torch.minimum(torch.maximum(compose(t, net), self.q_lo), self.q_hi)
+                # EXECUTION-EXACT top-up: the bound above prices the hedge at the weighted basket
+                # move while the executed split deviates, so re-price the EXECUTED book and
                 # top the net up by the least whole contracts that clear the shortfall
                 exec_pnl = (qt * self.contract_size * dF[t]).sum(-1)
                 short = target - (W + dL + exec_pnl)
@@ -3245,10 +3274,7 @@ class DiffSolverV2(DiffSolver):
                     extra = torch.where(fix, ((short / m.abs()).ceil() + 1.0) * torch.sign(m),
                                         torch.zeros_like(m))
                     net = (net.squeeze(-1) + extra).clamp(lo_i, hi_i).unsqueeze(-1)
-                    qt = self.aspace.waterfill(
-                        rep[t][None].expand(self.B_outer, self.n_hedge).clone(), net, net)
-                    qt = self.aspace._largest_remainder(qt, net)
-                    qt = torch.minimum(torch.maximum(qt, self.q_lo), self.q_hi)
+                    qt = torch.minimum(torch.maximum(compose(t, net), self.q_lo), self.q_hi)
             q.append(qt)
             W = self._wealth_step(W, qt, dF[t], L[t + 1] - L[t])
         return q, curves, W
@@ -3328,7 +3354,10 @@ class DiffSolverV2(DiffSolver):
         """The operating region IS the constructed policy: the bank rolls the forward pass's
         own positions with `DiffV2_Bank_Noise_Frac` exploration around them. The parent's
         uniform p-axis coverage is deliberately absent — concentrating the fit on the
-        constructed policy's neighbourhood is the point of the forward pass."""
+        constructed policy's neighbourhood is the point of the forward pass. Under
+        `DiffV2_Bank_Along_Ladder` the exploration is drawn on the net, as `DiffV2_Bank_Noise_Frac`
+        of the ladder band's width, clamped into the band, and every bank book is that net's
+        `rung`."""
         if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
                 and not (self.cfg.get("diffv2_load_value_fn") or "")):
             sched = self._carry_variance_weights()
@@ -3337,11 +3366,18 @@ class DiffSolverV2(DiffSolver):
                 "DiffSolverV2 Carry_Variance allocator: %d knot(s); w(t=0)=%s w(mid)=%s",
                 len(sched), sched[0][1] if sched else None,
                 sched[len(sched) // 2][1] if sched else None)
-        q_star, curves, WT = self._constructed_policy()
+        live = None
+        if self.bank_ladder:
+            # the inner guard's live legs, read off the outer marks: a mark freezes after its
+            # contract's last priced row, so a leg is live at t while its mark still moved into t
+            F = torch.stack([self.tradables_sim[r] for r in self.hedges], dim=-1)
+            moved = torch.diff(F, dim=0, prepend=torch.zeros_like(F[:1])).abs().amax(dim=1) > 0
+            live = [moved[t].to(self.q_lo.dtype) for t in range(self.T_dec)]
+        q_star, curves, WT = self._constructed_policy(live=live)
         # the floored seed keeps every training book above the floor, so a deep-under-water state
         # would never appear and the net would extrapolate there. Half the paths therefore roll the
         # clairvoyant seed and half the UNDEFENDED delta base.
-        q_base, _, _ = self._constructed_policy(floored=False)
+        q_base, _, _ = self._constructed_policy(floored=False, live=live)
         half = self.B_outer // 2
         for t in range(self.T_dec):
             q_star[t] = torch.cat([q_star[t][:half], q_base[t][half:]], dim=0)
@@ -3361,11 +3397,20 @@ class DiffSolverV2(DiffSolver):
         for t in range(self.T_dec):
             W_list.append(W.clone())
             q_list.append(q_prev.clone())
-            noise = self.noise_frac * rng * torch.randn(
-                self.B_outer, self.n_hedge, generator=gen, device=self.device)
-            q = torch.minimum(torch.maximum(q_star[t] + noise * mask, self.q_lo), self.q_hi)
-            if self.aspace.schedule is not None:
-                q = self.aspace.project_to_corridor(q, t)
+            if live is None:
+                noise = self.noise_frac * rng * torch.randn(
+                    self.B_outer, self.n_hedge, generator=gen, device=self.device)
+                q = torch.minimum(torch.maximum(q_star[t] + noise * mask, self.q_lo), self.q_hi)
+                if self.aspace.schedule is not None:
+                    q = self.aspace.project_to_corridor(q, t)
+            else:
+                # the exploration rides the net and the book stays a rung, inside the band and so
+                # inside the corridor
+                _, legs, _, _, lo, hi = self.aspace.ladder(t, live[t])
+                noise = self.noise_frac * (hi - lo) * torch.randn(
+                    self.B_outer, 1, generator=gen, device=self.device)
+                net = (q_star[t][:, legs].sum(-1, keepdim=True) + noise).clamp(lo, hi)
+                q = self.aspace.rung(t, net, live[t])
             W = self._wealth_step(W, q, self._outer_dF(t), L[t + 1] - L[t])
             q_prev = q
         if self.log_ratio:

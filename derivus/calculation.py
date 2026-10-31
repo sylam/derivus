@@ -3310,6 +3310,14 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'pathwise label, the repositioning charge\'s, under '
                                   'DiffV2_Position_State; No leaves that column to the value '
                                   'term alone'),
+                    F('DiffV2_Bank_Along_Ladder', 'Text', default='No', values=['Yes', 'No'],
+                      description='Yes holds every DiffSolverV2 training-bank book as a rung of '
+                                  'the ladder on its live legs, its exploration '
+                                  'DiffV2_Bank_Noise_Frac of the ladder band\'s width on the net, '
+                                  'the ladder being the Allocation_Weights split or, absent one, '
+                                  'the even split over the live active legs, which the Cartesian '
+                                  'policy need not hold; No water-fills the bank\'s net onto the '
+                                  'replication hedge\'s shape over the active legs'),
                     F('DiffV2_Wealth_Free_Value', 'Text', default='No', values=['Yes', 'No'],
                       description='Drop the wealth column from the value net\'s inputs, so the '
                                   'fitted residual reads market state (and the position, under '
