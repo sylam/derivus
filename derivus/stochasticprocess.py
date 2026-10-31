@@ -4607,7 +4607,14 @@ class BasisLinkedSpotModel(StochasticProcess):
         '',
         'with $\\eta_t$ normal of sd **Mix_Sigma_Quiet** or **Mix_Sigma_Stress** by state, the stress state',
         'persisting with probability **Mix_Stay_Stress**, entered with the probability that keeps',
-        '**Mix_Q_Stress** stationary, and started in stress with probability **Mix_P0_Stress**.',
+        '**Mix_Q_Stress** stationary, and started in stress with probability **Mix_P0_Stress**. Under',
+        '**G_Omega** $>0$ the two sds are relative scales $m_t$ on the GARCH(1,1) above,',
+        '$\\eta_t=\\sigma_t m_t Z_t$, of unit stationary variance, $q\\,s_{\\text{stress}}^2+(1-q)\\,s_{\\text{quiet}}^2=1$',
+        'with $q$ = **Mix_Q_Stress**, as the calibration writes them: the persistence is then',
+        "**G_Alpha** + **G_Beta**, where other sds make it **G_Alpha** times that variance plus **G_Beta**. Held by",
+        '`tests/test_chained_basis.py::test_a_band_basis_on_a_constant_garch_variance_is_the_band_with_its_sds_scaled`',
+        'and `::test_the_garch_seed_sets_the_band_basis_dispersion_over_its_first_month`. A replayed path',
+        'filters its stress state on $\\eta_t/\\sigma_t$. **Not gated**.',
         '',
         'Both recursions are deterministic functions of the realised path and draw no randomness. The AR',
         'is applied per simulation step whatever its length: **Calibration_DT_Years** is metadata.',
@@ -4644,8 +4651,9 @@ class BasisLinkedSpotModel(StochasticProcess):
           description='Mean the first simulated step reverts to - the slow-mean recursion\'s '
                       'seed, stamped from the end of the calibration sample'),
         F('G_Omega', 'Float', default=0.0,
-          description='Variance intercept of the innovation\'s own GARCH(1,1) - > 0 turns it on '
-                      'and it replaces the flat Sigma'),
+          description='Variance intercept of the innovation\'s own GARCH(1,1) - > 0 turns it on, '
+                      'replacing the flat Sigma or scaling the Band_Mixture sds, which are then '
+                      'relative scales of unit stationary variance'),
         F('G_Alpha', 'Float', default=0.0,
           description='Weight on the last squared innovation'),
         F('G_Beta', 'Float', default=0.0,
@@ -4668,9 +4676,11 @@ class BasisLinkedSpotModel(StochasticProcess):
         F('Mix_Q_Stress', 'Float', default=0.0,
           description='Stationary probability of the stress innovation state'),
         F('Mix_Sigma_Quiet', 'Float', default=0.0,
-          description='Innovation std in the quiet state'),
+          description='Innovation std in the quiet state - when G_Omega > 0 a scale on the GARCH '
+                      'sigma, the two sds of unit stationary variance'),
         F('Mix_Sigma_Stress', 'Float', default=0.0,
-          description='Innovation std in the stress state'),
+          description='Innovation std in the stress state - when G_Omega > 0 a scale on the GARCH '
+                      'sigma, the two sds of unit stationary variance'),
         F('Mix_Stay_Stress', 'Float', default=0.0,
           description='P(stress tomorrow | stress today) - quiet persistence follows from '
                       'stationarity'),
@@ -4745,7 +4755,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         self.sig20 = shared.one.new_tensor(float(self.param.get('Sig2_0', 0.0)))
         # band+mixture reversion: a dead zone of width Band_Kappa around the slow level with
         # pull Band_Beta outside it, and Gaussian innovations whose scale is a 2-state Markov
-        # mixture - the mixture supplies the tails, so no t-scale and no GARCH recursion
+        # mixture riding the GARCH variance when it is on - the mixture supplies the tails
         self.band = str(self.param.get('Reversion_Model', 'Linear')) == 'Band_Mixture'
         if self.band:
             assert self.slow_mean, 'Band_Mixture reversion needs Slow_Mean_Lambda > 0'
@@ -4754,7 +4764,6 @@ class BasisLinkedSpotModel(StochasticProcess):
             assert self.sigma_by_state is None, \
                 'Band_Mixture and Sigma_By_State are mutually exclusive (the mixture is the ' \
                 'innovation law); declare a flat Sigma on a band basis'
-            self.garch = False
             self.band_kappa = float(self.param['Band_Kappa'])
             self.band_beta = float(self.param['Band_Beta'])
             q, stay = float(self.param['Mix_Q_Stress']), float(self.param['Mix_Stay_Stress'])
@@ -4866,9 +4875,11 @@ class BasisLinkedSpotModel(StochasticProcess):
 
         def drawn(mean, s2):
             """Forward sim: eta is DRAWN - regime-scaled Gaussian under the band mixture,
-            rescaled by the live sigma^2 under GARCH, else already scaled."""
+            rescaled by the live sigma^2 under GARCH (the mixture's too), else already scaled."""
             if self.band:
                 eta_t = self.mix_sig2[s.long()].sqrt() * Z[t]
+                if self.garch:
+                    eta_t = s2.sqrt() * eta_t
             else:
                 eta_t = s2.sqrt() * Z[t] * scale[t] if self.garch else eta[t]
             return eta_t, mean + eta_t
@@ -5003,7 +5014,7 @@ class BasisLinkedSpotModel(StochasticProcess):
             """Replay: the level is DATA and eta is its deviation from the conditional mean."""
             eta_t = obs[t] - mean
             if self.band:
-                last_eta[0] = eta_t
+                last_eta[0] = eta_t / s2.sqrt() if self.garch else eta_t
             return eta_t, obs[t]
 
         for t in range(1, obs.shape[0]):
@@ -5030,7 +5041,6 @@ class BasisLinkedSpotCalibration(object):
     excess kurtosis; per-regime sigma from rolling-vol terciles of eta, indexed in
     sigma-ascending order to match the linked spot's HMM convention.
 
-    That default path is FROZEN - `tests/test_basis_slow_mean_garch.py` holds it byte-for-byte.
     Declaring either switch below moves the system onto ONE likelihood instead.
 
     `Slow_Mean_Span > 0` regresses the DEVIATION from the slow observable mean, mu_t being the
@@ -5039,7 +5049,8 @@ class BasisLinkedSpotCalibration(object):
 
     `GARCH_Innovation = 'Yes'` fits the innovation's own GARCH(1,1), stamping
     `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0` plus a flat `Sigma` (eta's unconditional std) INSTEAD
-    of `Sigma_By_State`, which the model's precedence would otherwise put first.
+    of `Sigma_By_State`, which the model's precedence would otherwise put first; under
+    `Band_Mixture` it standardises the innovation the mixture is fitted on.
 
     ONE LIKELIHOOD: either switch routes the fit to `arx1_t_mle` with the EWMA handed in as
     `mean` and `garch` on, so (a, phi, omega_b, alpha_b, beta_b, nu) are estimated together
@@ -5066,7 +5077,7 @@ class BasisLinkedSpotCalibration(object):
         '|---|---|',
         '| default | ordinary least squares, moment $\\nu$, regime volatilities by rolling-volatility terciles |',
         '| `Slow_Mean_Span` $>0$ or `GARCH_Innovation` Yes | one Student-t likelihood for the whole system |',
-        '| `Reversion_Model` `Band_Mixture` (needs `Slow_Mean_Span` $>0$, else refused) | band reversion by alternating least squares, a two-state mixture by EM [@dempster1977] |',
+        '| `Reversion_Model` `Band_Mixture` (needs `Slow_Mean_Span` $>0$, else refused) | band reversion by alternating least squares, a two-state mixture by EM [@dempster1977], under `GARCH_Innovation` Yes on the innovation its own GARCH(1,1) standardises |',
         '',
         '**Default fit.** $b_t=a\\Delta S_t+\\phi b_{t-1}+\\eta_t$ by least squares with no intercept. With',
         "$\\hat K$ the sample excess kurtosis of $\\eta$ (a t's is $6/(\\nu-4)$),",
@@ -5099,6 +5110,17 @@ class BasisLinkedSpotCalibration(object):
         "forward-filtered stress probability at the sample's end. `Phi` is the no-intercept regression",
         'slope of $d_t$ on $d_{t-1}$, written for the basis-decay projection only.',
         '',
+        'Under `GARCH_Innovation` Yes a zero-mean GARCH(1,1)-t is first fitted to $\\eta$ (its $\\nu$ unused,',
+        '`Max_Persistence` applied as in the joint fit), and the mixture, its persistence and the filter read',
+        '$z_t=\\eta_t/\\sqrt{h_t}$, a move across a gap divided by $\\mathrm{sd}(\\eta)$. With',
+        '$v=q\\,s_{\\text{stress}}^2+(1-q)\\,s_{\\text{quiet}}^2$ and $q$ = `Mix_Q_Stress`, the two sds are written',
+        "divided by $\\sqrt v$, so the mixture's stationary variance is one; $h$ and the mixture's variance of $z$",
+        "differ by $v$, a projection of the two-stage fit. The fit's own intercept is not written: `G_Omega` is",
+        "$(1-\\alpha_b-\\beta_b)\\,\\mathrm{sd}(\\eta)^2$, so the law's unconditional variance is the window's by",
+        'construction but for the covariance a persistent stress state builds between $m_t^2$ and $\\sigma_t^2$,',
+        'and `Sig2_0` is the variance of the last `Vol_Window` innovations. Held by',
+        '`tests/test_chained_basis.py::test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trailing_level`.',
+        '',
         'A row more than 4 calendar days after its predecessor is one observation of a different law: a',
         'move across a holiday enters neither the location fit nor the mixture. Held by',
         '`tests/test_chained_basis.py::test_the_band_fit_leaves_a_jump_across_a_calendar_gap_out_of_the_innovation`.',
@@ -5112,9 +5134,11 @@ class BasisLinkedSpotCalibration(object):
         '| joint with GARCH [@bollerslev1986] | `Sigma` $=\\mathrm{sd}(\\eta)$, `G_Omega`, `G_Alpha`, `G_Beta`, `Sig2_0` (the conditional variance of the last observation) |',
         "| with a span | `Slow_Mean_Lambda` $=\\lambda$, `Mu_0` the mean at the sample's end |",
         '| Band_Mixture | `Sigma` $=\\mathrm{sd}(\\eta)$, `Nu` 0, `Reversion_Model`, `Band_Kappa`, `Band_Beta`, `Mix_Q_Stress`, `Mix_Sigma_Quiet`, `Mix_Sigma_Stress`, `Mix_Stay_Stress`, `Mix_P0_Stress`, `Slow_Mean_Lambda`, `Mu_0` |',
+        '| Band_Mixture with GARCH | also `G_Alpha`, `G_Beta`, `G_Omega` $=(1-\\alpha_b-\\beta_b)\\,$`Sigma`$^2$, `Sig2_0` the variance of the last `Vol_Window` innovations, the two mixture sds of unit stationary variance |',
         '',
-        '`delta` is $\\eta_t$, standardised under GARCH and divided by the posterior-blended mixture sd under',
-        '`Band_Mixture` (by the unconditional one on rows outside the fit); `correlation` is `[[1.0]]`.',
+        '`delta` is $\\eta_t$, standardised under GARCH, and under `Band_Mixture` divided by the',
+        'posterior-blended mixture sd (by the unconditional one on rows outside the fit); `correlation` is',
+        '`[[1.0]]`.',
         '',
         '**Tuning.**',
         '',
@@ -5148,7 +5172,8 @@ class BasisLinkedSpotCalibration(object):
                       'the joint likelihood once either switch below is declared'),
         F('Nu_Max', 'Float', default=50.0, description='Ceiling on the same solve'),
         F('Vol_Window', 'Integer', default=21,
-          description='Rolling window, in business days, the regime terciles are cut on'),
+          description='Rolling window, in business days, the regime terciles are cut on, and the '
+                      'trailing one whose variance seeds a Band_Mixture GARCH'),
         F('Max_Persistence', 'Float', default=0.999,
           description='Cap on G_Alpha + G_Beta of the basis GARCH - an escalating-variance '
                       'window can drive the MLE past a unit root, and an explosive basis '
@@ -5158,12 +5183,13 @@ class BasisLinkedSpotCalibration(object):
           description='EWMA span, in business days, of the slow observable mean the AR reverts '
                       'to - 0 fits the shipped zero-mean AR and stamps neither new field'),
         F('GARCH_Innovation', 'Text', default='No', values=['Yes', 'No'],
-          description='Yes fits the innovation\'s own GARCH(1,1)-t and stamps a flat Sigma in '
-                      'place of Sigma_By_State, which would otherwise take precedence over it'),
+          description='Yes fits the innovation\'s own GARCH(1,1)-t, stamping a flat Sigma in '
+                      'place of Sigma_By_State or, under Band_Mixture, the variance the '
+                      'mixture\'s relative sds scale'),
         F('Reversion_Model', 'Text', default='Linear', values=['Linear', 'Band_Mixture'],
           description='Band_Mixture fits dead-band reversion around the slow level with 2-state '
                       'Markov mixture innovations (alternating least squares + EM) in place of '
-                      'the AR(1)/GARCH path - the Q-Q-ruled law for a physically arbitraged '
+                      'the AR(1) fits - the Q-Q-ruled law for a physically arbitraged '
                       'spread. Needs Slow_Mean_Span > 0')
     ]
 
@@ -5206,7 +5232,7 @@ class BasisLinkedSpotCalibration(object):
         if str(self.param.get('Reversion_Model', 'Linear')) == 'Band_Mixture':
             assert span, 'Band_Mixture calibration needs Slow_Mean_Span > 0 (the band is a ' \
                          'deviation from the slow level)'
-            return self._calibrate_band_mixture(basis_col, b, dlme, ewm, joint.index, dt_calib)
+            return self._calibrate_band_mixture(basis_col, b, dlme, ewm, joint.index, dt_calib, fit_garch)
 
         if span or fit_garch:
             # ONE likelihood for the whole system: (a, φ, ω_b, α_b, β_b, ν) fitted together, with
@@ -5230,14 +5256,7 @@ class BasisLinkedSpotCalibration(object):
 
         if fit_garch:
             g_omega, g_alpha, g_beta = fit.garch
-            max_persistence = float(self.param.get('Max_Persistence', 0.999))
-            if g_alpha + g_beta > max_persistence:
-                # an escalating-variance window drives the MLE past a unit root, and an
-                # explosive basis GARCH random-walks the simulated basis; same projection as
-                # GARCHSpotCalibration's
-                logging.warning('basis GARCH persistence %.5f > %.5f - scaling beta down.',
-                                g_alpha + g_beta, max_persistence)
-                g_beta = max_persistence - g_alpha
+            g_beta = self._capped_beta(g_alpha, g_beta)
             vol = {'Sigma': float(eta.std()), 'G_Omega': g_omega, 'G_Alpha': g_alpha,
                    'G_Beta': g_beta, 'Sig2_0': float(sigma_t[-1] ** 2)}
             eta = fit.resid                                               # standardised for `delta`
@@ -5278,13 +5297,28 @@ class BasisLinkedSpotCalibration(object):
                              index=start_of_return(joint.index[1:], joint.index))
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
-    def _calibrate_band_mixture(self, basis_col, b, dlme, ewm, index, dt_calib):
+    def _capped_beta(self, g_alpha, g_beta):
+        """`g_beta`, lowered where `g_alpha + g_beta` exceeds `Max_Persistence` to meet it."""
+        max_persistence = float(self.param.get('Max_Persistence', 0.999))
+        if g_alpha + g_beta > max_persistence:
+            # an escalating-variance window drives the MLE past a unit root, and an explosive
+            # basis GARCH random-walks the simulated basis; same projection as GARCHSpotCalibration's
+            logging.warning('basis GARCH persistence %.5f > %.5f - scaling beta down.',
+                            g_alpha + g_beta, max_persistence)
+            return max_persistence - g_alpha
+        return g_beta
+
+    def _calibrate_band_mixture(self, basis_col, b, dlme, ewm, index, dt_calib, fit_garch):
         """The Q-Q-ruled law: dead-band reversion around the lagged slow level plus a 2-state
         Gaussian scale mixture. Location (A, kappa, beta) by alternating least squares, the
         mixture by EM, stress persistence from the posterior state runs, and Mix_P0_Stress from
         the forward filter at the sample end. FIT on adjacent business days only (a hole spanning
         several days is one observation of a different law); the delta residuals cover every row
-        so the correlation consolidation stays date-aligned with the other factors."""
+        so the correlation consolidation stays date-aligned with the other factors.
+
+        `fit_garch` fits the innovation's own GARCH(1,1) first: the mixture, its runs and the
+        filter read the innovation it standardises, the two sds are written at unit stationary
+        variance, `G_Omega` targets the window's variance and `Sig2_0` is the last `Vol_Window`'s."""
         from scipy import optimize
         span = int(self.param.get('Slow_Mean_Span', 0))
         d = b[1:] - ewm[:-1]                                    # deviation from the LAGGED level
@@ -5304,6 +5338,22 @@ class BasisLinkedSpotCalibration(object):
         pull_all = -beta * np.sign(d0) * np.clip(np.abs(d0) - kappa, 0.0, None)
         eta_all = dd - a_hat * ds - pull_all
         eta = eta_all[fit_m]
+        sigma = float(eta.std())
+        if fit_garch:
+            # the t's nu is unused, the mixture carrying the tails; the intercept is targeted at the
+            # window's variance, where a capped near-integrated fit's own would misstate the level
+            _, g_alpha, g_beta, _, h, _ = garch11_t_mle(eta)
+            g_beta = self._capped_beta(g_alpha, g_beta)
+            window = int(self.param.get('Vol_Window', 21))
+            garch = {
+                'G_Omega': (1.0 - g_alpha - g_beta) * sigma ** 2, 'G_Alpha': g_alpha, 'G_Beta': g_beta,
+                'Sig2_0': float(eta[-window:].var())
+                }
+            # a move across a gap is not on the recursion's clock and is read at the flat sd
+            root_h = np.full_like(eta_all, sigma)
+            root_h[fit_m] = np.sqrt(h)
+            eta_all = eta_all / root_h
+            eta = eta_all[fit_m]
         p_q, s1, s2 = 0.7, eta.std() * 0.4, eta.std() * 1.8
         for _ in range(300):
             f1 = p_q * np.exp(-0.5 * (eta / s1) ** 2) / s1
@@ -5336,7 +5386,7 @@ class BasisLinkedSpotCalibration(object):
         z_all[~fit_m] = eta_all[~fit_m] / float(np.sqrt(p_q * s1 ** 2 + (1 - p_q) * s2 ** 2))
         param = {
             'A': a_hat, 'Phi': phi_eff, 'Nu': 0.0,
-            'Sigma': float(eta.std()),
+            'Sigma': sigma,
             'Reversion_Model': 'Band_Mixture',
             'Band_Kappa': kappa, 'Band_Beta': beta,
             'Mix_Q_Stress': q, 'Mix_Sigma_Quiet': s1, 'Mix_Sigma_Stress': s2,
@@ -5344,6 +5394,13 @@ class BasisLinkedSpotCalibration(object):
             'Slow_Mean_Lambda': 1.0 - 2.0 / (span + 1.0), 'Mu_0': float(ewm[-1]),
             'Calibration_DT_Years': dt_calib,
         }
+        if fit_garch:
+            v = q * s2 ** 2 + (1.0 - q) * s1 ** 2               # the mixture's variance of eta/sqrt(h)
+            param.update(garch, Mix_Sigma_Quiet=s1 / v ** 0.5, Mix_Sigma_Stress=s2 / v ** 0.5)
+            logging.info('basis band+mixture GARCH(1,1)-t: alpha=%.4f beta=%.4f persistence=%.4f | '
+                         'G_Omega=%.4f targets Sigma^2=%.4f, Sig2_0=%.4f | mixture variance of '
+                         'eta/sqrt(h) %.4f', g_alpha, g_beta, g_alpha + g_beta, garch['G_Omega'],
+                         sigma ** 2, garch['Sig2_0'], v)
         delta = pd.DataFrame({basis_col: z_all}, index=start_of_return(index[2:], index))
         return utils.CalibrationInfo(param, [[1.0]], delta)
 
