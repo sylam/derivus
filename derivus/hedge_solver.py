@@ -201,7 +201,8 @@ class HedgeActionSpace:
         `Step <= t` (piecewise-constant; clamps to the first knot for t before it) as an
         `(n_hedge,)` tensor, intersected with the legs that can actually carry a contract and
         renormalized over what is left: the INACTIVE legs (`Active_Hedge_Indices`) and, when the
-        caller passes one, the EXPIRED legs (`live`). Absent a table every leg weighs one.
+        caller passes one, the EXPIRED legs (`live`). Absent a table the live active legs weigh
+        evenly, and a step where none can carry a contract has no direction (every weight 0).
 
         The live intersection happens HERE, before the ladder is built, rather than as a filter
         afterwards: a knot's weight on a dead leg is cover the book cannot realize, so leaving it
@@ -215,6 +216,9 @@ class HedgeActionSpace:
         w = torch.tensor(w, device=self.device) * self.active_mask
         if live is not None:
             w = w * live
+        if self.weights is None:
+            # no table: even over the legs that can carry a contract, no direction where none can
+            return w / max(1.0, float(w.sum()))
         if not float(w.sum()) > 0.0:
             raise ValueError(
                 f"Allocation_Weights knot in force at step {t} puts no weight on a LIVE, ACTIVE "
@@ -1572,7 +1576,7 @@ class DiffSolver:
                       for k, g in zip(leaves.keys(), grads[1:1 + len(leaves)])}
         g_market = self._project_leaf_grads(leaf_grads, widths, rows, B, md)             # ∂Y/∂market_t (B,md)
         # ∂Y/∂p along the ladder: a move in p lands on the live legs as the step's Allocation_Weights
-        # split it (evenly where none is declared), so the bank's off-ladder exploration carries no weight
+        # split it (evenly where none is declared), so a leg the ladder never moves carries no weight
         g_p = ((grads[-1].detach() * self.aspace._weights_at(t, live)).sum(-1) * self.total_abs_limit
                if extra else None)
         Y = Y.detach()
@@ -1970,9 +1974,7 @@ class DiffSolver:
         span, width = float(cs[-1] - cs[0]), float(ns[-1] - ns[0])
         chord = (cs[0] + (cs[-1] - cs[0]) * (ns - ns[0]) / width) if width else cs
         # a unit of net cover under the composition the schedule mandates
-        w = (self.aspace._weights_at(t, live) if self.aspace.weights is not None
-             else self.aspace.active_mask * (1.0 if live is None else live))
-        w = w / w.sum()
+        w = self.aspace._weights_at(t, live)
         dfn = (dF * (w * self.contract_size)).reshape(-1, self.n_hedge).sum(-1)
         dl = dL.reshape(-1)
 
