@@ -21,6 +21,7 @@ document through `load_json` + `run_job`.
 """
 import json as jsonlib
 import os
+import re
 
 import pandas as pd
 import pytest
@@ -511,6 +512,7 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     standard deviations wide, fits a residual an order of magnitude too small at the first step,
     the sweep reads V_0 0.036762408912181854 and the doubled document no longer trains alike."""
     cfg = _cfg(seed=7)
+    cfg['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'     # the two fits repeat to the bit on a card
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Objective'] = {'Object': 'LogWealth'}
     hp['Solver']['DiffV2_Returns_State'] = 'Yes'
@@ -686,7 +688,7 @@ def test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused(tm
     two ensemble members' swept net books. Two checkpoints of one document trained under seeds 7
     and 11 sweep books 3.95 contracts apart on average over their 17 swept steps on the CPU (8.85
     at most): a two-member roll loads at the default 8 and is refused at 0, naming the field, both
-    members and the distance.
+    members and the distance the two checkpoints' swept books give.
 
     Killing mutation: the check removed (the roll at 0 loads)."""
     ckpts = []
@@ -696,7 +698,10 @@ def test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused(tm
     assert _run(_cfg(seed=7, load=ckpts)).evaluation_summary['diagnostics']['verdict']['greedy_q_traj']
     strict = _cfg(seed=7, load=ckpts)
     strict['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Max_Member_Disagreement'] = 0.0
-    with pytest.raises(ValueError, match=r'DiffV2_Max_Member_Disagreement: .*s7\.pt and .*s11\.pt .*\d\.\d\d'):
+    books = [[sum(q) for q in torch.load(c, map_location='cpu', weights_only=False)['q_star_path']] for c in ckpts]
+    apart = sum(abs(x - y) for x, y in zip(*books)) / min(map(len, books))
+    with pytest.raises(ValueError, match=r'DiffV2_Max_Member_Disagreement: .*s7\.pt and .*s11\.pt sweep net books '
+                       + re.escape(f'{apart:.4g}') + ' contracts apart on average'):
         _run(strict)
 
 
@@ -768,19 +773,23 @@ def test_the_book_label_is_taken_along_the_ladder():
 def test_a_no_table_document_whose_legs_all_die_still_labels():
     """Absent an `Allocation_Weights` table the label's ladder is even over the live active legs,
     and a swept step where none can carry a contract has no direction: the label is zero there,
-    as the passive holds nothing. The swap growth document on the Cartesian grid, only its July
-    leg active and that leg expiring between the last fixing and settlement, trains under the
-    label (V_0 0.14504718780517578 on the CPU over 47 steps, the dead step 46 labelled zero and
-    step 0 not) where the ladder-weighted label of 120225b refused it at step 46, naming a table
-    the document never declared. 15 s.
+    as the passive holds nothing. The swap growth document on the Cartesian grid, both legs
+    expiring between the last fixing and settlement, trains under the label over 47 steps (V_0
+    0.2657 on the CPU) with the dead step 46 labelled zero and step 0 not, and its passive splits
+    the 32 unfixed contracts evenly, 16 a leg. 20 s.
 
-    Killing mutation: the no-table branch of `_weights_at` removed (the refusal returns)."""
+    Killing mutations: the no-table branch of `_weights_at` removed (refused at step 46, naming a
+    table the document never declared); its normalisation dropped (the passive reads [-20, -20],
+    V_0 0.2692 against 0.2657 on the CPU)."""
     cfg = _swap_growth(6)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
-    hp['Solver'].update({'DiffV2_Book_Gradient_Label': 'Yes', 'Active_Hedge_Indices': [0],
+    hp['Solver'].update({'DiffV2_Book_Gradient_Label': 'Yes', 'Active_Hedge_Indices': [0, 1],
                          'Training_Action_Grid_Levels_Per_Axis': 6})
     del hp['Evaluator']['Allocation_Weights']
     del hp['Evaluator']['Total_Position_Schedule']
-    hp['Tradable_Instruments']['CommodityFutureDeal']['PL_JUL_2026']['Maturity_Date'] = {'.Timestamp': '2026-05-25'}
-    labels = {r['t']: r['book_label'] for r in _run(cfg).evaluation_summary['diagnostics']['per_t']}
+    for leg in LEGS:
+        hp['Tradable_Instruments']['CommodityFutureDeal'][leg]['Maturity_Date'] = {'.Timestamp': '2026-05-25'}
+    diag = _run(cfg).evaluation_summary['diagnostics']
+    labels = {r['t']: r['book_label'] for r in diag['per_t']}
     assert len(labels) == 47 and labels[46] == 0.0 and labels[0] != 0.0, (labels[46], labels[0])
+    assert diag['verdict']['passive_q_traj'][0] == [-16.0, -16.0], diag['verdict']['passive_q_traj'][0]
