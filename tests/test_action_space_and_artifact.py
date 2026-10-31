@@ -648,18 +648,20 @@ def growth(tmp_path_factory):
 
 
 def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tmp_path):
-    """`DiffV2_Max_Value_Optimism` bounds V_0 less the held-out greedy utility: the value a fit
-    claims against what its own argmax earns on a world no fit step saw. On the swap fixture seed 5
-    claims V_0 +0.2779 while its held-out batch ruins below the capital line its bank measured
-    (greedy u -1.9119, 2.19 apart): the save is refused naming the field, V_0 and the held-out
-    utility, and no checkpoint is written (those are the CPU's draws; a card's seed 5 does not
-    ruin, so the test declares the bound at -10, below any fit's gap, and the refusal fires on
-    either device). Seed 6 (+0.2322 against +0.2778 on the CPU) saves, stamped with its optimism;
-    a roll declaring a bound below the stamp refuses the member by name, and the same checkpoint
-    without the stamp, as every checkpoint saved before it, loads at that bound. 20 s.
+    """`DiffV2_Max_Value_Optimism` bounds V_0 less the held-out greedy utility, net of the
+    repositioning charge under the position state the swap fixture carries: the value a fit claims
+    against what its own argmax earns on a world no fit step saw. Seed 5 claims V_0 +0.2779 while
+    its held-out batch ruins below the capital line its bank measured (greedy u -1.9864 net,
+    2.26 apart): the save is refused naming the field, V_0 and the held-out utility, and no
+    checkpoint is written (those are the CPU's draws; a card's seed 5 does not ruin, so the test
+    declares the bound at -10, below any fit's gap, and the refusal fires on either device). Seed
+    6 (+0.2322 against +0.2447 net on the CPU) saves, stamped with its optimism; a roll declaring a
+    bound below the stamp refuses the member by name, and the same checkpoint without the stamp,
+    as every checkpoint saved before it, loads at that bound. 20 s.
 
     Killing mutations: the save's check removed (seed 5 writes its checkpoint); the roll's check
-    removed (the stamped member loads below its stamp)."""
+    removed (the stamped member loads below its stamp); the held-out utility read gross of the
+    charge (seed 6 stamps -0.0456 where V_0 less the net utility is -0.0125)."""
     ruined = str(tmp_path / 'value_fn_s5.pt')
     cfg = _swap_growth(5, save=ruined)
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Max_Value_Optimism'] = -10.0
@@ -669,7 +671,7 @@ def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tm
 
     saved, diag = growth
     stamped = torch.load(saved, map_location='cpu', weights_only=False)
-    assert stamped['value_optimism'] == diag['V_0'] - diag['verdict']['greedy']['u_mean'], \
+    assert stamped['value_optimism'] == diag['V_0'] - diag['verdict']['greedy']['u_mean_net'], \
         stamped['value_optimism']
     below = _swap_growth(6, load=saved)
     below['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Max_Value_Optimism'] = \
@@ -845,3 +847,63 @@ def test_a_no_table_document_whose_legs_all_die_still_labels():
     labels = {r['t']: r['book_label'] for r in diag['per_t']}
     assert len(labels) == 47 and labels[46] == 0.0 and labels[0] != 0.0, (labels[46], labels[0])
     assert diag['verdict']['passive_q_traj'][0] == [-16.0, -16.0], diag['verdict']['passive_q_traj'][0]
+
+
+def test_a_label_horizon_of_one_is_the_one_step_fit():
+    """`DiffV2_Label_Horizon` 1 is the one-step bootstrap: the label test's document trains with
+    the field omitted and stated 1 to the bit, V_0 (0.16260874271392822 on the CPU, as before the
+    field existed), the root book and every swept step's diagnostics. 30 s.
+
+    Killing mutation: the default the solver block is read with moved to 2 (the omitted document
+    trains V_0 0.1680 against 0.1626)."""
+    cfg = _swap_growth(6)
+    cfg['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update({
+        'DiffV2_Book_Gradient_Label': 'Yes', 'DiffV2_Bank_Noise_Frac': 0.0, 'Active_Hedge_Indices': [1]})
+    omitted = _run(cfg).evaluation_summary['diagnostics']
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Label_Horizon'] = 1
+    one = _run(cfg).evaluation_summary['diagnostics']
+    assert (one['V_0'], one['n_star_0'], one['per_t']) == (
+        omitted['V_0'], omitted['n_star_0'], omitted['per_t']), (one['V_0'], omitted['V_0'])
+
+
+def _horizon(objective, save=None, load=None):
+    """The swap growth document on 512 paths and 8 inner draws under `Deterministic_Kernels`, its
+    objective LogWealth or the fixture's terminal utility, trained with a label horizon of 100
+    steps; with `load`, the frozen roll of that checkpoint on a one-batch stream of the same seed
+    and shape, which is the training batch."""
+    cfg = _swap_growth(6, save=save, load=load)
+    calc = cfg['Calc']['Calculation']
+    calc.update({'Deterministic_Kernels': 'Yes', 'Random_Seed': 6, 'Batch_Size': 512, 'Inner_Sub_Batch': 8})
+    hp = calc['Hedging_Problem']
+    if objective == 'terminal':
+        hp['Objective'] = jsonlib.load(open(FIXTURE))['Calc']['Calculation']['Hedging_Problem']['Objective']
+    if load is None:
+        hp['Solver']['DiffV2_Label_Horizon'] = 100
+    return cfg
+
+
+@pytest.mark.parametrize('objective', ['growth', 'terminal'])
+def test_a_label_past_the_horizon_is_what_its_greedy_policy_realises(objective, tmp_path):
+    """Under `DiffV2_Label_Horizon` k the value label gains, on the outer path, the k-step bootstrap
+    along the fitted greedy policy less the one-step one, k clipped at the decision horizon. Past
+    the horizon the root label is then the utility the greedy policy realises on the training
+    paths, net of its repositioning charges, up to the root's one-step cross-fit: the swap growth
+    document under seed 6 at a horizon of 100 steps, 47 past it, trains a V_0 within 0.006 of
+    what its checkpoint's frozen roll on the training batch reports net of cost (`u_mean_net`,
+    the roll's first greedy book the training root's): on the CPU 0.2551 against 0.2524 under
+    LogWealth and 0.2058 against 0.2075 under the fixture's terminal utility, where the one-step
+    fit reads 0.2380 against 0.2506 and 0.2239 against 0.2023. 35 s each.
+
+    Killing mutations, V_0 against the roll's utility: the correction's sign flipped (the
+    recursion runs away, -3.7e9 and -3.0e10); the k-step end read at the bank's own wealth
+    (terminal 0.0530 against 0.1615; LogWealth's end at the horizon is zero at any wealth); the
+    rollout's charge dropped (0.2824 against 0.2517, 0.2235 against 0.2073); the rewards after
+    the first move dropped (growth 0.0031 against 0.1996); k not clipped at the horizon (refused
+    at the last step, which has no successor in the cache)."""
+    ckpt = str(tmp_path / 'value_fn.pt')
+    train = _run(_horizon(objective, save=ckpt)).evaluation_summary['diagnostics']
+    roll = _run(_horizon(objective, load=ckpt)).evaluation_summary['diagnostics']['verdict']
+    assert roll['greedy_q_traj'][0] == train['n_star_0'], (roll['greedy_q_traj'][0], train['n_star_0'])
+    realised = roll['greedy']['u_mean_net']
+    assert abs(train['V_0'] - realised) < 0.006, (train['V_0'], realised)

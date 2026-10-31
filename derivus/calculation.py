@@ -3318,6 +3318,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'the even split over the live active legs, which the Cartesian '
                                   'policy need not hold; No water-fills the bank\'s net onto the '
                                   'replication hedge\'s shape over the active legs'),
+                    F('DiffV2_Label_Horizon', 'Integer', default=1,
+                      description='Steps the value label realises along the fitted greedy '
+                                  'policy on the outer path before it bootstraps, clipped at the '
+                                  'decision horizon; 1 = the one-step bootstrap'),
                     F('DiffV2_Wealth_Free_Value', 'Text', default='No', values=['Yes', 'No'],
                       description='Drop the wealth column from the value net\'s inputs, so the '
                                   'fitted residual reads market state (and the position, under '
@@ -3334,7 +3338,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('DiffV2_Load_Value_Fn', 'Text', default='',
                       description='Checkpoint to evaluate frozen; a LIST loads an ensemble'),
                     F('DiffV2_Max_Value_Optimism', 'Float', default=1.0,
-                      description='The largest V_0 less the held-out greedy utility a fit saves '
+                      description='The largest V_0 less the held-out greedy utility, net of the '
+                                  'repositioning charge under DiffV2_Position_State, a fit saves '
                                   'and a roll loads'),
                     F('DiffV2_Max_Member_Disagreement', 'Float', default=8.0,
                       description='The largest mean absolute difference, in contracts, between '

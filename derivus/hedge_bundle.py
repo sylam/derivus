@@ -373,6 +373,9 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # net. 'No' = the net water-filled onto the replication hedge's shape over the active legs.
         "diffv2_bank_along_ladder":
             solver_config.get("DiffV2_Bank_Along_Ladder", "No") == "Yes",
+        # TD(k): the value label realises k steps along the greedy policy on the outer path before
+        # it bootstraps. 1 = the one-step bootstrap.
+        "diffv2_label_horizon": int(solver_config.get("DiffV2_Label_Horizon", 1)),
         # Load a checkpoint fitted on a different decision horizon: per-step structures clamp
         # to the saved range (the tail repeats the last fitted step). 'No' = exact-shape loads.
         "diffv2_load_horizon_pad":

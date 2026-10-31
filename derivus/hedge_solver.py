@@ -707,6 +707,8 @@ class DiffSolver:
         '| `DiffV2_Position_State` | No | the frictional Bellman: `p` as state, the charge in the '
         'target |',
         '| `DiffV2_Book_Gradient_Label` | No | fit the slope in `p` to the charge\'s pathwise slope |',
+        '| `DiffV2_Label_Horizon` | 1 | steps the value label realises along the greedy policy on '
+        'the outer path before it bootstraps |',
         '| `DiffV2_Bank_Along_Ladder` | No | `DiffSolverV2`\'s bank books as rungs of the ladder, on '
         'its live legs |',
         '| `DiffV2_Wealth_Free_Value` | No | drop `W` from the residual: the ranking bends only as '
@@ -797,6 +799,8 @@ class DiffSolver:
         self.position_state = bool(self.cfg.get("diffv2_position_state", False))
         # the book column's own pathwise label, the charge's slope in the standing book
         self.book_label = self.position_state and self.cfg["diffv2_book_gradient_label"]
+        # TD(k): the steps the value label realises along the greedy policy before it bootstraps
+        self.label_horizon = self.cfg["diffv2_label_horizon"]
         # DiffSolverV2's training bank composed along the ladder, as the policy's own books are
         self.bank_ladder = self.cfg["diffv2_bank_along_ladder"]
         # WEALTH-FREE residual: the value net's W input column is REMOVED, so C_t's whole
@@ -1509,7 +1513,10 @@ class DiffSolver:
         the fit has to meet it there; masking with this step's `live` would read `nets[t]` on one
         coordinate and write it on another, disagreeing by the full width of the axis on exactly
         the step where a leg rolls off. `live_prev` carries that mask in. The CHARGE keeps this
-        step's `live`: what you own and what you may trade are different questions."""
+        step's `live`: what you own and what you may trade are different questions.
+
+        Under `DiffV2_Label_Horizon` k > 1 the value label gains `_horizon_correction`, k clipped at
+        the decision horizon; the gradient labels stay the one-step cross-fitted ones."""
         dF_ng, dL_ng, m1_ng, market0, live = inner                                       # no-grad cache
         market0 = market0[rows]
         W0_bank = W_bank[t][rows]
@@ -1600,7 +1607,48 @@ class DiffSolver:
         g_p = ((grads[-1].detach() * self.aspace._weights_at(t, live)).sum(-1) * self.total_abs_limit
                if extra else None)
         Y = Y.detach()
+        k = min(self.label_horizon, self.T_dec - t)
+        if k > 1:
+            Y = Y + self._horizon_correction(nets, W0_bank, q_star, q_prev, kappa_t, t, k, rows)
         return self._fit_from_labels(nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p)
+
+    def _horizon_correction(self, nets, W0, q, q_prev, kappa, t, k, rows):
+        """The `DiffV2_Label_Horizon` correction to step t's value label `(rows,)`, no grad: from the
+        chosen book `q` on the outer paths in `rows`, the k-step bootstrap along the greedy policy
+        less the one-step bootstrap at t+1. Each step moves the wealth by the outer move, less the
+        repositioning charge under `DiffV2_Position_State`; the book at t+j is `_decide` on that
+        step's cached no-grad draws; under `Running_Wealth` the rewards of the moves after t join
+        the k-step side; both ends are `_continuation` at the outer market state, the policy's
+        wealth and the book it leaves standing."""
+        L = self.liability_sim
+
+        def move(s, W, q, q_prev, kappa):
+            W1 = self._wealth_step(W, q, self._outer_dF(s, rows), (L[s + 1] - L[s])[rows])
+            if not self.position_state:
+                return W1
+            return W1 - self._reposition_charge(
+                q, q_prev, kappa, self._unwind_kappa(s), self._calendar_kappa(s))
+
+        def bootstrap(s, W, q):
+            market = self.inner_cache[s][3][rows] if s < self.T_dec else None
+            p = q.sum(-1) / self.total_abs_limit if self.position_state else None
+            return self._continuation(nets, market, W, s, p)
+
+        with torch.no_grad():
+            W = move(t, W0, q, q_prev, kappa)
+            one = bootstrap(t + 1, W, q)
+            ret = torch.zeros_like(W)
+            for s in range(t + 1, t + k):
+                dF, dL, m1, _, live = self.inner_cache[s]
+                kappa = self.aspace.kappa(self.tradables_sim, s) if self.position_state else None
+                q_prev = q * live
+                q, _ = self._decide(nets, m1[rows], dF[rows], dL[rows], W, s, q_prev=q_prev,
+                                    kappa=kappa, live=live, rate_limit=False)
+                W1 = move(s, W, q, q_prev, kappa)
+                if self.running_wealth:
+                    ret = ret + self._u_step(W1, W, s + 1)
+                W = W1
+            return ret + bootstrap(t + k, W, q) - one
 
     def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p=None):
         """Shared fit tail: advantage decomposition + standardized twin loss on the
@@ -2841,8 +2889,9 @@ class DiffSolver:
         save_path = str(self.cfg.get("diffv2_save_value_fn", "") or "")
         if loaded is None:
             # the fitted value against what its own argmax earns held out: a bootstrap that
-            # outruns it has ratcheted an unfitted slope into V_0, or its policy ruins
-            u_held = float(verdict["greedy"]["u_mean"])
+            # outruns it has ratcheted an unfitted slope into V_0, or its policy ruins. Under the
+            # position state V_0 is fitted net of the repositioning charge, so it is read net too.
+            u_held = float(verdict["greedy"]["u_mean_net" if self.position_state else "u_mean"])
             optimism = V_0 - u_held
             artifact = self._policy_artifact(nets, md, hidden, V_0, n_star_0, worst, optimism)
             if save_path:
