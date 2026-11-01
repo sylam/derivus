@@ -1088,8 +1088,8 @@ class DiffSolver:
         ONE expression, called from every seam: the wealth that RANKS a candidate in `_decide`, the
         wealth the INCUMBENT holds against it, and the wealth that becomes the chosen action's
         regressed TARGET in `_fit_step` all price the same friction. That equality is the whole of
-        the frictional Bellman. Callers pass LIVE-MASKED positions on both sides, so a dead leg has
-        `dq = 0` and carries no phantom toll.
+        the frictional Bellman. Callers pass `acts` live-masked and `q_prev` as the step that set it
+        left it: a leg dying at the step pays its close, one dead before it no phantom toll.
 
         `kappa_cal` (from `_calendar_kappa`) makes the toll SPREAD-AWARE: the move's matched half
         pays the calendar rate rather than two outright crossings. The terminal unwind stays
@@ -1244,10 +1244,10 @@ class DiffSolver:
         cost-free; with it, the same charge plus the terminal unwind enters the label's target and
         the successor is queried at `p' = Sum(a·live)/Q_max`, the book each candidate leaves.
 
-        EXPIRY, one convention end to end: every position this method prices, states and RETURNS is
-        LIVE-MASKED — candidate, standing book, incumbent, band and answer alike. A dead leg cannot
-        be traded and earns nothing, so an unmasked `q_prev` would let the argmax park size on a
-        dead leg purely to dodge the phantom's unwind, spending the cap on nothing.
+        EXPIRY: every position this method holds, states and RETURNS is LIVE-MASKED — candidate,
+        incumbent, band and answer alike — since a dead leg cannot be traded and earns nothing. The
+        charge alone moves from `q_prev` as the step that set it left it, so a position on a leg
+        dying at t pays its close, as the roll's accounting charges it.
 
         `Decision_Deadband_Sigma` makes the standing book the INCUMBENT candidate: the winner only
         trades when it beats holding by that many standard errors of the difference PAIRED across
@@ -1269,7 +1269,7 @@ class DiffSolver:
             kappa_T = self._unwind_kappa(t)
             kappa_cal = self._calendar_kappa(t)
             rows = torch.arange(B, device=market_t1.device)
-            # one expiry convention: the standing book, like every candidate, is only what lives
+            # the standing book on the live legs, which the band and the incumbent hold
             q_live = q_prev if q_prev is None or live is None else q_prev * live
             best_val = None
             best_q = None
@@ -1285,9 +1285,9 @@ class DiffSolver:
                 W1 = self._wealth_step(W[:, None, None], q, dF[:, None], dL[:, None])     # (B,c,Bi)
                 # kappa_T rides OUTSIDE the q_prev gate: the terminal unwind is a property of the
                 # ACTION, so a step with no standing book must not liquidate for free.
-                if kappa_T is not None or (q_live is not None
+                if kappa_T is not None or (q_prev is not None
                                            and (kappa is not None or self.churn_lambda > 0.0)):
-                    prev = a_live[None] if q_live is None else q_live[:, None, :]
+                    prev = a_live[None] if q_prev is None else q_prev[:, None, :]
                     W1 = W1 - self._reposition_charge(                                    # (B,c) $
                         a_live[None, :, :], prev, kappa, kappa_T, kappa_cal)[:, :, None]
                 # the successor is queried at the book the CANDIDATE leaves standing
@@ -1333,13 +1333,13 @@ class DiffSolver:
                 best_val = torch.where(ok, band_val, best_val)
                 best_f = torch.where(ok.unsqueeze(-1), band_f, best_f)
             if dead:
-                # the incumbent is a CANDIDATE priced by the same rules: dq = 0 kills the L1 and
-                # churn terms, and only the terminal unwind - a charge on the LEVEL - survives
+                # the incumbent is a CANDIDATE priced by the same rules: dq = 0 on the live legs
+                # kills the L1 and churn terms there, leaving a dying leg's close and the unwind
                 W1 = self._wealth_step(W[:, None, None], q_live[:, None, None, :],
                                        dF[:, None], dL[:, None])                          # (B,1,Bi)
                 if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
                     W1 = W1 - self._reposition_charge(
-                        q_live, q_live, kappa, kappa_T, kappa_cal)[:, None, None]
+                        q_live, q_prev, kappa, kappa_T, kappa_cal)[:, None, None]
                 p_inc = ((q_live.sum(-1) / self.total_abs_limit)[:, None, None]
                          .expand(B, 1, Bi).reshape(-1) if self.position_state else None)
                 C1f_inc = self._continuation(
@@ -1512,19 +1512,17 @@ class DiffSolver:
         t−1 can only hold its own `live`, so it hands the successor `Sum(a·live_{t-1})/Q_max` and
         the fit has to meet it there; masking with this step's `live` would read `nets[t]` on one
         coordinate and write it on another, disagreeing by the full width of the axis on exactly
-        the step where a leg rolls off. `live_prev` carries that mask in. The CHARGE keeps this
-        step's `live`: what you own and what you may trade are different questions.
+        the step where a leg rolls off. `live_prev` carries that mask in. The charge moves from the
+        same book, so a leg dying at t pays its close.
 
         Under `DiffV2_Label_Horizon` k > 1 the value label gains `_horizon_correction`, k clipped at
         the decision horizon; the gradient labels stay the one-step cross-fitted ones."""
         dF_ng, dL_ng, m1_ng, market0, live = inner                                       # no-grad cache
         market0 = market0[rows]
         W0_bank = W_bank[t][rows]
-        # live-masked like every other caller: an expired leg's phantom book must not buy position
-        # budget. With churn_lambda 0 and no kappa the book is inert.
-        q_prev = q_bank[t][rows] * live
-        # ...but the position STATE is the book masked by the step that set it
-        q_state = q_bank[t][rows] * (live if live_prev is None else live_prev)
+        # the standing book masked by the step that set it: the position state and the book the
+        # charge moves from. With churn_lambda 0 and no kappa the book is inert.
+        q_prev = q_bank[t][rows] * (live if live_prev is None else live_prev)
         kappa_t = self.aspace.kappa(self.tradables_sim, t) if self.position_state else None
         # SELECT the action on the NO-GRAD inner draws; EVALUATE its value and pathwise gradients
         # on a fresh GRAD inner, so independent draws cross-fit away the winner's-curse max bias
@@ -1578,6 +1576,7 @@ class DiffSolver:
         p_bank = p1 = None
         extra = []
         if self.position_state:
+            p_bank = q_prev.sum(-1) / self.total_abs_limit                # state at t: live_{t-1}
             if self.book_label:
                 # the standing book a leaf of the fork: by the envelope theorem the label's slope
                 # in it is the charge's at the chosen action
@@ -1587,7 +1586,6 @@ class DiffSolver:
             # successor read at the book the chosen action leaves standing
             W1 = W1 - self._reposition_charge(
                 q_star, q_prev, kappa_t, self._unwind_kappa(t), self._calendar_kappa(t))[:, None]
-            p_bank = q_state.sum(-1) / self.total_abs_limit               # state at t: live_{t-1}
             p1 = (q_star.sum(-1) / self.total_abs_limit)[:, None].expand(B, Bi_e).reshape(-1)
         Y = self._continuation(
             nets, m1_g.reshape(-1, md), W1.reshape(-1), t + 1, p1).reshape(B, Bi_e)       # (B,Bi)
@@ -1616,10 +1614,10 @@ class DiffSolver:
         """The `DiffV2_Label_Horizon` correction to step t's value label `(rows,)`, no grad: from the
         chosen book `q` on the outer paths in `rows`, the k-step bootstrap along the greedy policy
         less the one-step bootstrap at t+1. Each step moves the wealth by the outer move, less the
-        repositioning charge under `DiffV2_Position_State`; the book at t+j is `_decide` on that
-        step's cached no-grad draws; under `Running_Wealth` the rewards of the moves after t join
-        the k-step side; both ends are `_continuation` at the outer market state, the policy's
-        wealth and the book it leaves standing."""
+        repositioning charge from the book the step before left under `DiffV2_Position_State`; the
+        book at t+j is `_decide` on that step's cached no-grad draws; under `Running_Wealth` the
+        rewards of the moves after t join the k-step side; both ends are `_continuation` at the
+        outer market state, the policy's wealth and the book it leaves standing."""
         L = self.liability_sim
 
         def move(s, W, q, q_prev, kappa):
@@ -1641,7 +1639,7 @@ class DiffSolver:
             for s in range(t + 1, t + k):
                 dF, dL, m1, _, live = self.inner_cache[s]
                 kappa = self.aspace.kappa(self.tradables_sim, s) if self.position_state else None
-                q_prev = q * live
+                q_prev = q
                 q, _ = self._decide(nets, m1[rows], dF[rows], dL[rows], W, s, q_prev=q_prev,
                                     kappa=kappa, live=live, rate_limit=False)
                 W1 = move(s, W, q, q_prev, kappa)
@@ -1920,7 +1918,7 @@ class DiffSolver:
         return out
 
     # ---- decision-curve diagnostic (Solver.DiffV2_Decision_Curve_Dump) --------
-    def _score_actions(self, nets, t, acts, market_t1, dF, dL, W, q_live, kappa, live):
+    def _score_actions(self, nets, t, acts, market_t1, dF, dL, W, q_prev, kappa, live):
         """Score `acts` `(K, n_hedge)` the way `_decide`'s chunk loop ranks its grid rows —
         `E_inner[C_{t+1}]` before and after the repositioning charge — and hand back the CHARGED
         per-draw `W1` the ranking's continuation was actually read at. Returns `(pre, charged,
@@ -1943,7 +1941,7 @@ class DiffSolver:
             W1c = W1
             if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
                 W1c = W1 - self._reposition_charge(
-                    a_live[None, :, :], q_live[:, None, :], kappa, kappa_T, kappa_cal)[:, :, None]
+                    a_live[None, :, :], q_prev[:, None, :], kappa, kappa_T, kappa_cal)[:, :, None]
             p1 = ((a_live.sum(-1) / self.total_abs_limit)[None, :, None]
                   .expand(B, K, Bi).reshape(-1) if self.position_state else None)
             market = market_t1[:, None].expand(B, K, Bi, md).reshape(-1, md)
@@ -2016,7 +2014,7 @@ class DiffSolver:
         a_live = grid if live is None else grid * live                              # (K,n_hedge)
         net = a_live.sum(-1)                                                        # (K,)
         pre, charged, _ = self._score_actions(
-            nets, t, grid, market_t1, dF, dL, W, q_live, kappa, live)
+            nets, t, grid, market_t1, dF, dL, W, q_prev, kappa, live)
         # the rate-limit band the executed argmax searched inside, measured exactly as `_decide`
         # measures it - net under a weight schedule, per-leg without one - with its fallback
         pick = charged
@@ -2031,7 +2029,7 @@ class DiffSolver:
         # P_band at the three reference books, off the SAME charged W1 the ranking is built on.
         probes = torch.stack([torch.zeros_like(q_live[0]), q_live[0], a_live[deep]])
         _, _, W1p = self._score_actions(
-            nets, t, probes, market_t1, dF, dL, W, q_live, kappa, live)
+            nets, t, probes, market_t1, dF, dL, W, q_prev, kappa, live)
         # ...on the same quantity `x0` is: the successor LEVEL, or the day's realized INCREMENT.
         x1 = (W1p - (w0 if self.running_wealth else 0.0) - R) / c
         p_band = ((x1 > -delta) & (x1 < 0.0)).to(torch.float32).mean(-1)

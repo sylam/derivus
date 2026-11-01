@@ -863,12 +863,12 @@ def test_a_no_table_document_whose_legs_all_die_still_labels():
     and a swept step where none can carry a contract has no direction: the label is zero there,
     as the passive holds nothing. The swap growth document on the Cartesian grid, both legs
     expiring between the last fixing and settlement, trains under the label over 47 steps (V_0
-    0.2657 on the CPU) with the dead step 46 labelled zero and step 0 not, and its passive splits
+    0.2654 on the CPU) with the dead step 46 labelled zero and step 0 not, and its passive splits
     the 32 unfixed contracts evenly, 16 a leg. 20 s.
 
     Killing mutations: the no-table branch of `_weights_at` removed (refused at step 46, naming a
     table the document never declared); its normalisation dropped (the passive reads [-20, -20],
-    V_0 0.2692 against 0.2657 on the CPU)."""
+    V_0 0.2751 against 0.2654 on the CPU)."""
     cfg = _swap_growth(6)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Solver'].update({'DiffV2_Book_Gradient_Label': 'Yes', 'Active_Hedge_Indices': [0, 1],
@@ -941,3 +941,45 @@ def test_a_label_past_the_horizon_is_what_its_greedy_policy_realises(objective, 
     assert roll['greedy_q_traj'][0] == train['n_star_0'], (roll['greedy_q_traj'][0], train['n_star_0'])
     realised = roll['greedy']['u_mean_net']
     assert abs(train['V_0'] - realised) < 0.006, (train['V_0'], realised)
+
+
+def _held_into_expiry(fee):
+    """The passive document on its October leg alone under a linear utility at a declared scale of
+    1e5, both legs expiring at the last decision step, the corridor pinning the book at -10
+    contracts before it, the sweep the last two steps under a label horizon of 2, and a flat
+    `Transaction_Cost_Per_Unit` of `fee` the only cost."""
+    cfg = _passive_cfg()
+    calc = cfg['Calc']['Calculation']
+    calc.update({'Deterministic_Kernels': 'Yes', 'Batch_Size': 64})
+    hp = calc['Hedging_Problem']
+    hp['Objective'] = {'Object': 'AsymmetricUtility_Huber', 'Huber_Aversion': 0.0,
+                       'Utility_Scale_Explicit': 1.0e5}
+    hp['Solver'].update({'DiffV2_Position_State': 'Yes', 'T_Min': 45, 'Active_Hedge_Indices': [1],
+                         'DiffV2_Bank_Noise_Frac': 0.0, 'Training_Action_Grid_Levels_Per_Axis': 26,
+                         'DiffV2_Label_Horizon': 2})
+    ev = hp['Evaluator']
+    del ev['Allocation_Weights']
+    ev.update({'Bid_Offer_Spread_Bps': 0.0, 'Transaction_Cost_Per_Unit': fee,
+               'Total_Position_Schedule': [{'Step': 0, 'Min_Total': -10, 'Max_Total': -10},
+                                           {'Step': 46, 'Min_Total': -20, 'Max_Total': 5}]})
+    for leg in LEGS:
+        hp['Tradable_Instruments']['CommodityFutureDeal'][leg]['Maturity_Date'] = {'.Timestamp': '2026-05-25'}
+    return cfg
+
+
+def test_the_label_charges_the_close_of_a_leg_that_dies_at_the_step():
+    """The repositioning charge is on the move from the standing book, as the step that set it left
+    it, to the new book on the live legs, so a book held into its leg's expiry pays the close at
+    that step, as the roll pays it. With 10 contracts held into the last decision step at a fee of
+    500 a contract, the last step's label sits below the fee-free document's by the close over the
+    utility scale, 500 x 10 / 1e5 = 0.05, to 1e-6, and the step before's, whose two-step label
+    realises that close on the outer path, by the same within 1e-3 (7e-5 on the CPU). 3 s.
+
+    Killing mutations: the standing book masked by the step's live legs before the charge (both
+    shifts 0); in the one-step label alone (the last step's 0); in the k-step correction alone (the
+    step before's -7e-5). Not seen: the argmax's own spelling, the corridor and the expiry leaving
+    each step one candidate."""
+    rows = [{r['t']: r['Y_mean'] for r in _run(_held_into_expiry(fee)).evaluation_summary['diagnostics']['per_t']}
+            for fee in (0.0, 500.0)]
+    shift = {t: rows[1][t] - rows[0][t] for t in (45, 46)}
+    assert abs(shift[46] + 0.05) < 1e-6 and abs(shift[45] + 0.05) < 1e-3, shift
