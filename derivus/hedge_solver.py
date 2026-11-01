@@ -2562,12 +2562,13 @@ class DiffSolver:
             self.B_outer, self.levels, self.fit_iters, self.lr, self.contract_size.tolist(),
             self.q_lo.tolist(), self.q_hi.tolist(), self.total_abs_limit)
 
+        # one inner-MC fork per swept t, reused for the argmax, the bootstrap, market_t and the
+        # bank's live legs
+        self.sweep_ts = sweep_ts = list(range(self.t_min, self.T_dec))
+        self.inner_cache = inner_cache = {t: self._inner_step(t) for t in sweep_ts}
         W_bank, q_bank = self._build_bank(self.gen)
         if self.log_ratio and self.loaded_displacement is None and not self.displacement:
             self._set_displacement(W_bank)
-        # one inner-MC fork per swept t, reused for the argmax, the bootstrap and market_t
-        self.sweep_ts = sweep_ts = list(range(self.t_min, self.T_dec))
-        self.inner_cache = inner_cache = {t: self._inner_step(t) for t in sweep_ts}
 
         # every path in this batch trains: the out-of-sample world is the HELD-OUT BATCH, an
         # independent draw rather than sibling rows of the same call
@@ -2728,10 +2729,10 @@ class DiffSolver:
                          "eval, so this batch trains nothing")
             return
         self._bind(bundle)
+        self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         W_bank, q_bank = self._build_bank(self.gen)
         if self.log_ratio and self.loaded_displacement is None and not self.displacement:
             self._set_displacement(W_bank)
-        self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         self._breaches = []
         self._sweep(W_bank, q_bank)
         self._log_breaches()
@@ -3406,7 +3407,7 @@ class DiffSolverV2(DiffSolver):
         constructed policy's neighbourhood is the point of the forward pass. Under
         `DiffV2_Bank_Along_Ladder` the exploration is drawn on the net, as `DiffV2_Bank_Noise_Frac`
         of the ladder band's width, clamped into the band, and every bank book is that net's
-        `rung`."""
+        `rung` on the legs the inner cache's expired-contract guard calls live at the step."""
         if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
                 and not (self.cfg.get("diffv2_load_value_fn") or "")):
             sched = self._carry_variance_weights()
@@ -3417,11 +3418,10 @@ class DiffSolverV2(DiffSolver):
                 sched[len(sched) // 2][1] if sched else None)
         live = None
         if self.bank_ladder:
-            # the inner guard's live legs, read off the outer marks: a mark freezes after its
-            # contract's last priced row, so a leg is live at t while its mark still moved into t
-            F = torch.stack([self.tradables_sim[r] for r in self.hedges], dim=-1)
-            moved = torch.diff(F, dim=0, prepend=torch.zeros_like(F[:1])).abs().amax(dim=1) > 0
-            live = [moved[t].to(self.q_lo.dtype) for t in range(self.T_dec)]
+            # the policy's live legs, the inner guard's mask of the sweep's own fork; a step before
+            # the sweep is forked for its mask alone
+            live = [(self.inner_cache[t] if t in self.inner_cache else self._inner_step(t))[4]
+                    for t in range(self.T_dec)]
         q_star, curves, WT = self._constructed_policy(live=live)
         # the floored seed keeps every training book above the floor, so a deep-under-water state
         # would never appear and the net would extrapolate there. Half the paths therefore roll the

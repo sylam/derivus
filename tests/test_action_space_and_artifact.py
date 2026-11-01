@@ -23,6 +23,7 @@ import json as jsonlib
 import os
 import re
 
+import numpy as np
 import pandas as pd
 import pytest
 import torch
@@ -822,6 +823,39 @@ def test_the_bank_is_composed_along_the_ladder():
     assert fit(None) == a_no, a_no[:2]
     even = fit('Yes', weights=(0.5, 0.5))
     assert even == fit('Yes', weights=(0.5, 0.5), calendar=False), even[:2]
+
+
+def test_the_ladder_bank_reads_the_policy_s_live_legs_on_a_replayed_path(growth, tmp_path):
+    """Under `DiffV2_Bank_Along_Ladder` 'Yes' the bank's live legs are the inner guard's, the mask
+    the policy's ladder reads, so a contract the inner fork still prices is live on a day its mark
+    did not move. The swap growth checkpoint rolls frozen on one replayed path, the carry and the
+    rate at zero and day 20 a copy of day 19 (a forward-filled holiday), so neither leg's mark
+    moves into step 20: the roll under 'Yes' reads the roll under 'No' to the bit over its 47 steps,
+    the bank being inert on a loaded checkpoint (greedy wT_mean -12345.93 on the CPU, the book at
+    step 20 [3, 2]). `Deterministic_Kernels` holds the identity on a card too. 5 s.
+
+    Killing mutation: the bank's live legs read off the outer marks, a leg live while its mark
+    moved into the step (refused at step 20: "Allocation_Weights knot in force at step 20 puts no
+    weight on a LIVE, ACTIVE hedge leg")."""
+    saved, _ = growth
+    spot = 2055.0 + 15.0 * np.sin(0.7 * np.arange(64))
+    spot[20] = spot[19]
+    path = str(tmp_path / 'replay.npz')
+    np.savez(path, **{'CommodityPrice.PLATINUM_LME': spot,
+                      'ObservedBasis.PLATINUM_LME.LME_CME': np.full(64, -32.5375),
+                      'ForwardRate.PLATINUM_CARRY': np.zeros((64, 2)),
+                      'InterestRate.USD-SOFR': np.zeros((64, 31))})
+
+    def roll(ladder):
+        cfg = _swap_growth(6, load=saved)
+        calc = cfg['Calc']['Calculation']
+        calc['Batch_Size'], calc['Observed_Scenario'], calc['Deterministic_Kernels'] = 1, path, 'Yes'
+        hp = calc['Hedging_Problem']
+        hp['Randomize_Initial_State'] = 'No'
+        hp['Solver']['DiffV2_Bank_Along_Ladder'] = ladder
+        return _run(cfg).evaluation_summary['diagnostics']['verdict']
+    yes = roll('Yes')
+    assert yes == roll('No'), yes['greedy']
 
 
 def test_a_no_table_document_whose_legs_all_die_still_labels():
