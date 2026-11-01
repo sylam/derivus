@@ -95,6 +95,15 @@ Grouped by where a validator meets them.
 
 ### The engine {#the-engine}
 
+- **The basis model draws a full business-day innovation on every grid row** (2026-11-01).
+  `BasisLinkedSpotModel` scales neither its innovation nor its band pull by the step's trading-time
+  fraction, where `GARCHSpotModel` scales its recursion by $f_t = dt_t / dt_c$, so on a calendar-daily
+  hedging grid a simulated week carries seven basis shocks and seven pulls where the data carry five;
+  and a replayed path's basis GARCH filter (`GARCH_Innovation` under `Band_Mixture`) reads a
+  forward-filled row as an innovation near zero, so its variance decays over a weekend (on the
+  platinum record's tape the standardised innovation's second moment reads 1.97 on business days
+  against 1.22 on a business-day grid). The per-step adequacy ratios cannot see either. The fix is the
+  spot model's fraction on the innovation, the pull and the replay: a world change and a full retrain.
 - **A fitted structure leg's two-way charge uses its lognormal vega** (2026-09-21). A leg under a
   fitted spot model publishes no FX vol quote sensitivity, so the charge reads the same leg as a
   lognormal (`spread_source` says so): a vega a desk could hedge, but not the quoted price's.
