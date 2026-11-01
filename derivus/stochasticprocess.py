@@ -5121,6 +5121,12 @@ class BasisLinkedSpotCalibration(object):
         'and `Sig2_0` is the variance of the last `Vol_Window` innovations. Held by',
         '`tests/test_chained_basis.py::test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trailing_level`.',
         '',
+        '`Basis_Scale_Window` $N>0$ multiplies `Sigma` and the two mixture sds by one factor, the realised sd',
+        '(ddof 1) of the last $N$ daily changes of $b$ before the calibration date, the frame\'s last, over the',
+        "fitted law's stationary one-step sd $\\sqrt v$; every other field is the fit's. It is refused under",
+        '`GARCH_Innovation` Yes, whose sds are relative and whose level is the recursion\'s. Held by',
+        '`tests/test_chained_basis.py::test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alone`.',
+        '',
         'A row more than 4 calendar days after its predecessor is one observation of a different law: a',
         'move across a holiday enters neither the location fit nor the mixture. Held by',
         '`tests/test_chained_basis.py::test_the_band_fit_leaves_a_jump_across_a_calendar_gap_out_of_the_innovation`.',
@@ -5150,6 +5156,7 @@ class BasisLinkedSpotCalibration(object):
         '| `Slow_Mean_Span` | 0 (off) |',
         '| `GARCH_Innovation` | No |',
         '| `Reversion_Model` | `Linear` |',
+        '| `Basis_Scale_Window` | 0 (off) |',
         '',
         '**Limitations.**',
         '',
@@ -5190,7 +5197,10 @@ class BasisLinkedSpotCalibration(object):
           description='Band_Mixture fits dead-band reversion around the slow level with 2-state '
                       'Markov mixture innovations (alternating least squares + EM) in place of '
                       'the AR(1) fits - the Q-Q-ruled law for a physically arbitraged '
-                      'spread. Needs Slow_Mean_Span > 0')
+                      'spread. Needs Slow_Mean_Span > 0'),
+        F('Basis_Scale_Window', 'Integer', default=0,
+          description='Under Band_Mixture, the number of daily basis changes before the calibration '
+                      'date whose realised sd the fitted sds are scaled to - 0 writes the fit\'s own')
     ]
 
     def __init__(self, model, param):
@@ -5232,7 +5242,8 @@ class BasisLinkedSpotCalibration(object):
         if str(self.param.get('Reversion_Model', 'Linear')) == 'Band_Mixture':
             assert span, 'Band_Mixture calibration needs Slow_Mean_Span > 0 (the band is a ' \
                          'deviation from the slow level)'
-            return self._calibrate_band_mixture(basis_col, b, dlme, ewm, joint.index, dt_calib, fit_garch)
+            return self._calibrate_band_mixture(basis_col, b, dlme, ewm, joint.index, dt_calib, fit_garch,
+                                                data_frame.index[-1])
 
         if span or fit_garch:
             # ONE likelihood for the whole system: (a, φ, ω_b, α_b, β_b, ν) fitted together, with
@@ -5308,7 +5319,7 @@ class BasisLinkedSpotCalibration(object):
             return max_persistence - g_alpha
         return g_beta
 
-    def _calibrate_band_mixture(self, basis_col, b, dlme, ewm, index, dt_calib, fit_garch):
+    def _calibrate_band_mixture(self, basis_col, b, dlme, ewm, index, dt_calib, fit_garch, end):
         """The Q-Q-ruled law: dead-band reversion around the lagged slow level plus a 2-state
         Gaussian scale mixture. Location (A, kappa, beta) by alternating least squares, the
         mixture by EM, stress persistence from the posterior state runs, and Mix_P0_Stress from
@@ -5318,9 +5329,17 @@ class BasisLinkedSpotCalibration(object):
 
         `fit_garch` fits the innovation's own GARCH(1,1) first: the mixture, its runs and the
         filter read the innovation it standardises, the two sds are written at unit stationary
-        variance, `G_Omega` targets the window's variance and `Sig2_0` is the last `Vol_Window`'s."""
+        variance, `G_Omega` targets the window's variance and `Sig2_0` is the last `Vol_Window`'s.
+
+        `Basis_Scale_Window` N > 0 multiplies Sigma and the two mixture sds by the realised sd of
+        the last N changes of `b` dated before `end`, the calibration date, over the fitted law's
+        stationary one-step sd; refused under `fit_garch`."""
         from scipy import optimize
         span = int(self.param.get('Slow_Mean_Span', 0))
+        scale_window = int(self.param.get('Basis_Scale_Window', 0))
+        if fit_garch and scale_window:
+            raise ValueError('Basis_Scale_Window scales absolute sds, and under GARCH_Innovation Yes the '
+                             "mixture's sds are relative, the level being the recursion's")
         d = b[1:] - ewm[:-1]                                    # deviation from the LAGGED level
         dd, d0, ds = np.diff(d), d[:-1], dlme[1:]               # aligned to targets d[1:]
         fit_m = np.diff(utils.excel_days(index))[1:] <= 4       # adjacent business days (weekends ok)
@@ -5394,13 +5413,19 @@ class BasisLinkedSpotCalibration(object):
             'Slow_Mean_Lambda': 1.0 - 2.0 / (span + 1.0), 'Mu_0': float(ewm[-1]),
             'Calibration_DT_Years': dt_calib,
         }
+        v = q * s2 ** 2 + (1.0 - q) * s1 ** 2                   # the mixture's stationary variance
         if fit_garch:
-            v = q * s2 ** 2 + (1.0 - q) * s1 ** 2               # the mixture's variance of eta/sqrt(h)
             param.update(garch, Mix_Sigma_Quiet=s1 / v ** 0.5, Mix_Sigma_Stress=s2 / v ** 0.5)
             logging.info('basis band+mixture GARCH(1,1)-t: alpha=%.4f beta=%.4f persistence=%.4f | '
                          'G_Omega=%.4f targets Sigma^2=%.4f, Sig2_0=%.4f | mixture variance of '
                          'eta/sqrt(h) %.4f', g_alpha, g_beta, g_alpha + g_beta, garch['G_Omega'],
                          sigma ** 2, garch['Sig2_0'], v)
+        if scale_window:
+            trailing = float(np.diff(b[index < end])[-scale_window:].std(ddof=1))
+            scale = trailing / v ** 0.5
+            param.update(Sigma=sigma * scale, Mix_Sigma_Quiet=s1 * scale, Mix_Sigma_Stress=s2 * scale)
+            logging.info('basis band+mixture scale: the last %d changes before the calibration date at '
+                         'sd %.4f over the law\'s %.4f, x%.4f', scale_window, trailing, v ** 0.5, scale)
         delta = pd.DataFrame({basis_col: z_all}, index=start_of_return(index[2:], index))
         return utils.CalibrationInfo(param, [[1.0]], delta)
 

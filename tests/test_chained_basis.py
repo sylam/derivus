@@ -15,6 +15,7 @@ Monte Carlo documents read side by side.
 """
 import io
 import json
+import logging
 from types import SimpleNamespace
 
 import numpy as np
@@ -527,3 +528,36 @@ def test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trail
     location = ('A', 'Phi', 'Sigma', 'Band_Kappa', 'Band_Beta', 'Mu_0')
     assert {k: fitted[k] for k in location} == {k: BAND_FIT_WITHOUT_GARCH[k] for k in location}
     assert _fit_band(tmp_path, dates, spot, basis, GARCH_Innovation='No') == BAND_FIT_WITHOUT_GARCH
+
+
+def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alone(tmp_path, caplog):
+    """A calibration document on a synthetic `Band_Mixture` archive of two years drawn from the
+    fit's own law (a two-state innovation 85% at sd 2 and 15% at sd 7), its last day, the
+    calibration date, a 40 $/oz move, fitted with and without `Basis_Scale_Window` 20: `Sigma`,
+    `Mix_Sigma_Quiet` and `Mix_Sigma_Stress` are the plain fit's times the realised sd (ddof 1)
+    of the last 20 basis changes before the calibration date over the fitted law's stationary sd
+    sqrt(q s_stress^2 + (1 - q) s_quiet^2), q = `Mix_Q_Stress`, to 1e-12 (the ratio 0.7992), and
+    every other key is the plain fit's to the bit; under `GARCH_Innovation` 'Yes', whose sds are
+    relative, the key is refused by name and no block is written. 0.1 s.
+
+    Killing mutations: the change into the calibration date counted - the ratio 2.7005; ddof 0 -
+    0.7790; the law's sd with q on the quiet sd - 0.2964; `Sigma` left unscaled - 3.4785 against
+    2.7801; the refusal dropped - the GARCH fit writes its block.
+    """
+    n, window = 504, 20
+    rng = np.random.default_rng(5)
+    dates = pd.bdate_range('2023-01-02', periods=n)
+    spot = 1000.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 15.0, n - 1)]))
+    eta = np.where(rng.random(n) < 0.85, 2.0, 7.0) * rng.standard_normal(n)
+    eta[-1] = 40.0
+    basis = _band_basis(spot, eta)
+    plain = _fit_band(tmp_path, dates, spot, basis)
+    scaled = _fit_band(tmp_path, dates, spot, basis, Basis_Scale_Window=window)
+    q, sds = plain['Mix_Q_Stress'], ('Sigma', 'Mix_Sigma_Quiet', 'Mix_Sigma_Stress')
+    ratio = np.diff(basis[:-1])[-window:].std(ddof=1) / np.sqrt(
+        q * plain['Mix_Sigma_Stress'] ** 2 + (1.0 - q) * plain['Mix_Sigma_Quiet'] ** 2)
+    assert all(abs(scaled[k] / (plain[k] * ratio) - 1.0) < 1e-12 for k in sds), (ratio, scaled, plain)
+    assert {k: v for k, v in scaled.items() if k not in sds} == {k: v for k, v in plain.items() if k not in sds}
+    with caplog.at_level(logging.ERROR), pytest.raises(KeyError, match='BasisLinkedSpotModel.PLAT.CME'):
+        _fit_band(tmp_path, dates, spot, basis, GARCH_Innovation='Yes', Basis_Scale_Window=window)
+    assert 'Basis_Scale_Window' in caplog.text, caplog.text
