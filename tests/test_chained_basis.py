@@ -12,7 +12,8 @@ one-deal base valuation per head, described and priced, and a composed FX rate a
 priced beside their primary. The band basis's fit is a calibration document through
 `Config.calibrate_factors`, and its draw on the innovation's own GARCH variance a pair of credit
 Monte Carlo documents read side by side; its replay is a simulate-only hedging document on an observed
-scenario, its recursions read off the replay's `BASIS_REPLAY` debug line.
+scenario, its recursions read off the replay's `BASIS_REPLAY` debug line, and a GARCH spot's off
+`GARCH_REPLAY`.
 """
 import ast
 import io
@@ -354,10 +355,13 @@ def _band_basis(spot, eta, span=63, a=0.05, kappa=4.0, beta=0.3):
     return basis
 
 
-def _fit_band(tmp_path, dates, spot, basis, **tuning):
+def _fit_band(tmp_path, dates, spot, basis, garch=None, **tuning):
     """The `BasisLinkedSpotModel` block a calibration document fits under `Band_Mixture` with the
     63-day slow mean and `tuning`, through `Config.calibrate_factors`, on the archive of `spot`
-    and `basis` dated `dates`."""
+    and `basis` dated `dates`; given `garch`, the `GARCHSpotModel` block the spot is fitted to in
+    place of a GBM under the calibration fields `garch`."""
+    spot_model, spot_fit = (('GBMAssetPriceModel', {'Method': 'GBMAssetPriceCalibration'}) if garch is None
+                            else ('GARCHSpotModel', dict(garch, Method='GARCHSpotCalibration')))
     archive = pd.DataFrame({'CommodityPrice.PLAT': spot, 'ObservedBasis.PLAT.CME': basis}, index=dates)
     archive.index.name = 'Date'
     archive.to_csv(tmp_path / 'archive.csv', sep='\t')
@@ -366,7 +370,7 @@ def _fit_band(tmp_path, dates, spot, basis, **tuning):
     document = {
         'MarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': dates[-1]},
-            'Model Configuration': ModelParams(({'CommodityPrice': 'GBMAssetPriceModel',
+            'Model Configuration': ModelParams(({'CommodityPrice': spot_model,
                                                 'ObservedBasis': 'BasisLinkedSpotModel'}, {})),
             'Price Factors': {}, 'Price Models': {}, 'Correlations': {},
             'Price Factor Interpolation': ModelParams(({}, {})),
@@ -376,7 +380,7 @@ def _fit_band(tmp_path, dates, spot, basis, **tuning):
             'MarketDataArchiveFile': {'name': str(tmp_path / 'archive.csv'), 'skiprows': 0,
                                       'index_column': 'Date'},
             'Calibrations': {
-                'GBMAssetPriceModel': dict(retrieval, Method='GBMAssetPriceCalibration'),
+                spot_model: dict(retrieval, **spot_fit),
                 'BasisLinkedSpotModel': dict(retrieval, Method='BasisLinkedSpotCalibration',
                                              Slow_Mean_Span=63, Reversion_Model='Band_Mixture',
                                              **tuning)}}}
@@ -386,7 +390,7 @@ def _fit_band(tmp_path, dates, spot, basis, **tuning):
     config.parse_json(str(tmp_path / 'calibration.json'))
     factors = config.fetch_all_calibration_factors()
     config.calibrate_factors(dates[0], dates[-1], dict(factors['present'], **factors['absent']))
-    return config.params['Price Models']['BasisLinkedSpotModel.PLAT.CME']
+    return config.params['Price Models']['BasisLinkedSpotModel.PLAT.CME' if garch is None else 'GARCHSpotModel.PLAT']
 
 
 def test_the_band_basis_prices_under_torch_s_distribution_validation():
@@ -576,20 +580,26 @@ HEDGE_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtur
                              'policy_test_simulate_only.json')
 
 
-def _replayed(tmp_path, caplog, basis_block, spot, basis):
+def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None):
     """The recursions `{'mu', 'sig2', 'regime'}` per row on the first path that the simulate-only
     hedging fixture, rolling daily from Friday 2026-04-10, publishes replaying the observed `spot`
-    and `basis`, its basis the `BasisLinkedSpotModel` block `basis_block`."""
+    and `basis`, its basis the `BasisLinkedSpotModel` block `basis_block`; given `spot_block`, the
+    spot is that `GARCHSpotModel` block and the recursion its `{'log_h', 'h'}`, the terminal h."""
     observed = str(tmp_path / 'observed.npz')
     np.savez(observed, **{'CommodityPrice.PLATINUM_LME': spot, 'ObservedBasis.PLATINUM_LME.LME_CME': basis})
     cfg = json.load(open(HEDGE_FIXTURE))
     cfg['Calc']['Calculation'].update({'Batch_Size': 2, 'Observed_Scenario': observed})
-    cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
-        'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis_block}
+    market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models'] = {'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis_block}
+    if spot_block is not None:
+        market['Price Models']['GARCHSpotModel.PLATINUM_LME'] = spot_block
+        market['Model Configuration'] = {'.ModelParams': {
+            'modeldefaults': {'CommodityPrice': 'GARCHSpotModel'}, 'modelfilters': {}}}
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
         rf.Context().load_json((json.dumps(cfg), 'replay.json')).run_job()
-    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith('BASIS_REPLAY'))
+    tag = 'BASIS_REPLAY' if spot_block is None else 'GARCH_REPLAY'
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith(tag))
     return ast.literal_eval(line.split(' ', 2)[2])
 
 
@@ -636,6 +646,67 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
     assert calendar == _replayed(tmp_path, caplog, dict(fitted, Trading_Clock='No'), spot[row], basis[row])
     assert business == _replayed(tmp_path, caplog, dict(fitted, Trading_Clock='No', Replay_Skips_Filled_Rows='No'),
                                  spot, basis)
+
+
+#: A flat-Sigma Linear basis, which a GARCH spot without regimes can carry.
+FLAT_BASIS = {'A': 0.0, 'Phi': 0.4, 'Nu': 5.0, 'Sigma': 8.0, 'Calibration_DT_Years': 1.0 / 252.0}
+
+
+def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_path, caplog):
+    """A calibration document stating `Replay_Skips_Filled_Rows` on `GARCHSpotModel`, on 504 days of
+    a GARCH(1,1) spot beside a band basis, writes the fit's own block plus the switch. The simulate-
+    only hedging fixture, its spot that block and its basis a flat Linear, replays it on 119
+    calendar rows, the weekends forward filled from Friday, with a flat fix on the fourth business
+    day (a Wednesday), and on the same business days with the filled rows removed: on all 85
+    business rows the published log h equals, to the bit, the compressed replay's at that row's
+    count of business days, and every filled row holds the row before it. A market row is one
+    calibration step and a filled row's drift is the next market row's: under a `Mu` of 0.5 the
+    calendar replay's log h is the business-day filter written here, h' = Omega + Alpha r^2 + Beta h
+    with r the log return less the drift over its calendar days plus h / 2, within 5e-5 on every
+    market row (9.7e-6 on the CPU, the job's float32) and its terminal h to 5e-5 (9e-7). 5 s.
+
+    Killing mutations: the filled rows replayed (84 of the 85 rows apart from the compressed
+    replay, log h 0.42 off the filter); the trading clock's per-row fraction kept on a market row
+    (0.47 off the filter, the compressed replay alike); a filled row read off the spot alone, so
+    the flat Wednesday holds (0.14); off the date alone, so the compressed replay's weekend-dated
+    rows hold (84 rows apart); a filled row's drift dropped (0.077); the switch not stamped (the
+    fitted blocks part)."""
+    n = 504
+    rng = np.random.default_rng(11)
+    returns, h = np.zeros(n), 2.0e-4
+    for j in range(1, n):
+        returns[j] = h ** 0.5 * rng.standard_normal()
+        h = 1.0e-5 + 0.1 * returns[j] ** 2 + 0.85 * h
+    dates = pd.bdate_range('2023-01-02', periods=n)
+    history = 1000.0 * np.exp(np.cumsum(returns))
+    archive = _band_basis(history, 2.0 * rng.standard_normal(n))
+    stated = {'Replay_Skips_Filled_Rows': 'Yes'}
+    fitted = _fit_band(tmp_path, dates, history, archive, garch=stated)
+    assert fitted == dict(_fit_band(tmp_path, dates, history, archive, garch={}), **stated)
+
+    days = pd.bdate_range('2026-04-10', periods=200)
+    spot = 2055.0 * np.exp(np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 0.02, 199)])))
+    basis = -30.0 + np.cumsum(rng.normal(0.0, 3.0, 200))
+    spot[3] = spot[2]
+    row = np.searchsorted(days, pd.date_range('2026-04-10', periods=200), side='right') - 1
+    calendar = _replayed(tmp_path, caplog, FLAT_BASIS, spot[row], basis[row], spot_block=fitted)
+    business = _replayed(tmp_path, caplog, FLAT_BASIS, spot, basis, spot_block=fitted)
+    log_h = calendar['log_h']
+    market = [t for t in range(len(log_h)) if t == 0 or row[t] != row[t - 1]]
+    apart = sum(log_h[t] != business['log_h'][row[t]] for t in market)
+    held = all(log_h[t] == log_h[t - 1] for t in range(1, len(log_h)) if t not in market)
+
+    mu = 0.5
+    drifted = _replayed(tmp_path, caplog, FLAT_BASIS, spot[row], basis[row], spot_block=dict(fitted, Mu=mu))
+    tape = np.log(spot.astype(np.float32).astype(np.float64))
+    years = np.diff(days.values).astype('timedelta64[D]').astype(float) / 365.25
+    filtered = [fitted['H0']]
+    for k in range(1, row[len(log_h) - 1] + 1):
+        r = tape[k] - tape[k - 1] - mu * years[k - 1] + 0.5 * filtered[-1]
+        filtered.append(fitted['Omega'] + fitted['Alpha'] * r * r + fitted['Beta'] * filtered[-1])
+    worst = max(abs(drifted['log_h'][t] - np.log(filtered[row[t]])) for t in market)
+    assert len(market) == 85 and apart == 0 and held, (len(market), apart, held)
+    assert worst < 5e-5 and abs(drifted['h'] / filtered[-1] - 1.0) < 5e-5, (worst, drifted['h'], filtered[-1])
 
 
 def test_a_calendar_week_on_the_trading_clock_carries_the_business_days_its_rows_span():

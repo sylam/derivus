@@ -19,7 +19,9 @@ Configs are built in code from the canonical fixture TEMPLATE (never edited) —
 shallow sweep so the gates run fast. Every run, training and loaded evaluation alike, is a
 document through `load_json` + `run_job`.
 """
+import ast
 import json as jsonlib
+import logging
 import os
 import re
 
@@ -983,3 +985,66 @@ def test_the_label_charges_the_close_of_a_leg_that_dies_at_the_step():
             for fee in (0.0, 500.0)]
     shift = {t: rows[1][t] - rows[0][t] for t in (45, 46)}
     assert abs(shift[46] + 0.05) < 1e-6 and abs(shift[45] + 0.05) < 1e-3, shift
+
+
+#: The fixture's basis reverting to a slow mean of lambda 0.95, and the GARCH(1,1) its innovation
+#: variance can run on.
+SLOW_BASIS = {'A': 0.05, 'Phi': 0.8, 'Nu': 5.0, 'Sigma': 4.0, 'Slow_Mean_Lambda': 0.95, 'Mu_0': -30.0,
+              'Calibration_DT_Years': 1.0 / 252.0}
+OWN_GARCH = {'G_Omega': 0.8, 'G_Alpha': 0.1, 'G_Beta': 0.85, 'Sig2_0': 25.0}
+LAST_STEP = 116
+
+
+def _band_state(path, reveal=None, garch=True, save=None, load=None):
+    """`_cfg` on two paths a batch replaying the observed scenario `path` from the calibrated t0,
+    swept at its last decision step alone, its basis `SLOW_BASIS`, off its own GARCH unless `garch`,
+    stating `Reveal_Band_State` `reveal` where given; with `load`, the frozen eval."""
+    cfg = _cfg(batch=4, save=save, load=load)
+    calc = cfg['Calc']['Calculation']
+    calc['Observed_Scenario'] = path
+    hp = calc['Hedging_Problem']
+    hp['Randomize_Initial_State'] = 'No'
+    hp['Solver']['T_Min'] = LAST_STEP
+    basis = dict(SLOW_BASIS, **(OWN_GARCH if garch else {}))
+    if reveal is not None:
+        basis['Reveal_Band_State'] = reveal
+    cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
+        'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis}
+    return cfg
+
+
+def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, caplog):
+    """Under `Reveal_Band_State` 'Yes' the value net reads, before the basis level, its deviation
+    from the slow level the next step reverts to and, under its own GARCH, its log variance. The
+    fixture trained on one replayed path and swept at its last decision step, so the saved frame's
+    market mean is that step's state to the bit: on a basis with a slow mean on its own GARCH the
+    market dimension is 9 where the same document without the field reads 7, the frame is the
+    field-free one with two columns inserted before the level (-30.722), the first b - mu at the
+    replay's published row of the step to the bit (-1.879) and the second log sigma^2 there within
+    1e-6 (2.0838, the frame's float32); and the field-free checkpoint loaded into the field's world
+    off the GARCH, one column wider, is refused by the shape check naming 'md' (7 against 8). 7 s.
+
+    Killing mutations: mu revealed in place of b - mu (-28.843); the published mean read a row
+    early (-1.978) or late (the fork's two-row grid out of bounds); log sigma^2 dropped (8 against
+    9); the level revealed first (-30.722 in the deviation's column)."""
+    rng = np.random.default_rng(3)
+    spot = 2055.0 + np.cumsum(rng.normal(0.0, 25.0, 160))
+    basis = -30.0 + 6.0 * np.sin(0.3 * np.arange(160)) + rng.normal(0.0, 1.0, 160)
+    path = str(tmp_path / 'replay.npz')
+    np.savez(path, **{'CommodityPrice.PLATINUM_LME': spot, 'ObservedBasis.PLATINUM_LME.LME_CME': basis})
+    hidden, shown = str(tmp_path / 'value_fn.pt'), str(tmp_path / 'value_fn_band.pt')
+    plain = _run(_band_state(path, save=hidden)).evaluation_summary['diagnostics']
+    with caplog.at_level(logging.DEBUG):
+        band = _run(_band_state(path, reveal='Yes', save=shown)).evaluation_summary['diagnostics']
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith('BASIS_REPLAY'))
+    replay = ast.literal_eval(line.split(' ', 2)[2])
+    before, after = (torch.load(c, map_location='cpu', weights_only=False)['m_mean'].tolist() for c in (hidden, shown))
+    level = np.float32(basis[LAST_STEP])
+    col = before.index(float(level))
+    deviation = float(level - np.float32(replay['mu'][LAST_STEP]))
+    assert band['market_dim'] == plain['market_dim'] + 2, (band['market_dim'], plain['market_dim'])
+    assert after[:col] + after[col + 2:] == before and after[col] == deviation, (after[col], deviation)
+    assert abs(after[col + 1] - np.log(replay['sig2'][LAST_STEP])) < 1e-6, after[col + 1]
+    with pytest.raises(ValueError, match=re.escape(
+            f"checkpoint mismatch on 'md': {hidden} saved {plain['market_dim']} vs this run {plain['market_dim'] + 1}")):
+        _run(_band_state(path, reveal='Yes', garch=False, load=hidden))

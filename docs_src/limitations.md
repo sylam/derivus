@@ -101,7 +101,11 @@ Grouped by where a validator meets them.
   data carry five, and on replay decays its GARCH filter over a forward-filled weekend (the
   standardised innovation's second moment 1.97 on business days against 1.22 on a business-day grid,
   on the platinum record's tape); the two declared switches address both, and stay off so the
-  standing record reproduces, moving it being a world change and a full retrain.
+  standing record reproduces, moving it being a world change and a full retrain. The spot's
+  `GARCHSpotModel` replay decays its variance over the weekend too (its log h at 0.79 of the
+  business-day filter on the same tape), which its own `Replay_Skips_Filled_Rows` addresses, off in
+  the standing worlds as well; under it a forward-filled weekday holiday is still a zero-return
+  market day, one step of decay about eight times a year.
 - **A fitted structure leg's two-way charge uses its lognormal vega** (2026-09-21). A leg under a
   fitted spot model publishes no FX vol quote sensitivity, so the charge reads the same leg as a
   lognormal (`spread_source` says so): a vega a desk could hedge, but not the quoted price's.

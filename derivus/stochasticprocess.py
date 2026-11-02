@@ -3169,6 +3169,17 @@ class GARCHSpotModel(StochasticProcess):
         'which is the recursion above at $f=1$ and keeps the long-run variance $\\omega/(1-\\alpha-\\beta)$ for',
         'any $f$; a step longer than one calibration step walks daily sub-steps.',
         '',
+        'A replay runs the recursion on the realised returns of an observed path, each row at its own $f$.',
+        '**Replay_Skips_Filled_Rows** Yes replays a Saturday or Sunday row on which the spot repeats the',
+        'previous row to the bit, as a forward fill writes a weekend, as one on which no market time passed:',
+        '$h$ and the published $\\log h$ hold and its drift joins the next market row, and every other row',
+        'is one calibration step whatever $f$ says, so a calendar tape replays on its market rows as the',
+        'same tape with the filled rows removed. A repeat alone is not a fill, since a weekday can print',
+        'the fix it printed the day before (about one business day in 34 on the LBMA platinum AM fix), and',
+        'a weekend never prints. A forward-filled weekday holiday is therefore a market day with a zero',
+        'return, one step of decay, about eight a year on the London calendar, **Not gated**. Held by',
+        '`tests/test_chained_basis.py::test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend`.',
+        '',
         'Parameters:',
         '',
         '- **Omega, H0**: per-step variance of fractional log returns ($H_0$ is $h$ at $t=0$)',
@@ -3180,6 +3191,7 @@ class GARCHSpotModel(StochasticProcess):
         '  subtracting $\\tfrac{1}{2}\\text{Var}(r_t)$ from the per-step log-drift; No leaves a',
         '  $+\\tfrac{1}{2}\\text{Var}$ Jensen drift.',
         '- **Carry_Drift**: Yes drifts the log-spot at the front of the declared carry curve.',
+        '- **Replay_Skips_Filled_Rows**: the replay rule above, default No',
         '- **Drift_States / Drift_Transition_Matrix / Drift_Initial_Probs**: optional latent Markov chain',
         '  over per-regime drifts replacing the scalar Mu (vol stays GARCH); the matrix is re-discretised to',
         '  the simulation grid via the CTMC generator, and inner forks always draw their regime from the',
@@ -3223,6 +3235,9 @@ class GARCHSpotModel(StochasticProcess):
                       'leaked from the outer path into a fork'),
         F('Drift_Calibration_DT_Years', 'Float', default=1.0 / 52.0,
           description='Step size (in years) of the drift-chain transition matrix'),
+        F('Replay_Skips_Filled_Rows', 'Text', default='No', values=['Yes', 'No'],
+          description='Yes replays a weekend row repeating the spot to the bit as one on which no '
+                      'market time passed and every other row as one calibration step'),
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -3300,6 +3315,12 @@ class GARCHSpotModel(StochasticProcess):
                          'the correlated draw rides the sqrt(E[h])-weighted combination.',
                          int(self.n_sub.max()))
         self._log_lr_var = float(np.log(self.param['Omega'] / (1.0 - self.param['Alpha'] - self.param['Beta'])))
+        self.skip_filled = self.param.get('Replay_Skips_Filled_Rows', 'No') == 'Yes'
+        if self.skip_filled:
+            # the rows on which no fix prints, the only ones a forward fill can be told from a
+            # flat print on
+            self.weekend = ((ref_date + pd.to_timedelta(time_grid.scen_time_grid, unit='D')).dayofweek
+                            >= 5).tolist()
 
         # AAD: spot0 stays on the graph, unreshaped so inner MC can pass (B,).
         self.spot0 = tensor
@@ -3424,13 +3445,14 @@ class GARCHSpotModel(StochasticProcess):
             log_h[t] = h.log()
         return ds, log_h
 
-    def _advance_variance(self, h, t, innovation):
+    def _advance_variance(self, h, t, innovation, f=None):
         """One fractional-clock GARCH variance step (n_sub <= 1; a coarse interval routes to
         `utils.garch_correlated_substeps` instead), shared by the forward sim and the replay so
         forward == replay is STRUCTURAL. `innovation(var_step)` is the only thing that differs -
         sqrt(Var)*eps forward, the realized convexity-undone log-return in replay - and the
-        return is (h_{t+1}, var_step, r) off h + f*(omega - (1-beta)*h) + alpha*r^2."""
-        ft = self.f[t]
+        return is (h_{t+1}, var_step, r) off h + f*(omega - (1-beta)*h) + alpha*r^2, f the row's
+        trading-time length unless stated."""
+        ft = self.f[t] if f is None else f
         var_step = h * ft                                                        # Var(r_t)
         r = innovation(var_step)
         return h + ft * (self.omega - (1.0 - self.beta) * h) + self.alpha * r * r, var_step, r
@@ -3519,7 +3541,13 @@ class GARCHSpotModel(StochasticProcess):
         returns the right log h along the replayed path) and `h0_outer` (the terminal h, for a
         continuing replay). The innovation is recovered as r = realized_logret - drift +
         1/2*Var(r) with the SAME convexity correction the forward sim applied, which keeps the
-        h recursion identical between forward sim and replay."""
+        h recursion identical between forward sim and replay.
+
+        Under `Replay_Skips_Filled_Rows` a Saturday or Sunday row repeating the spot to the bit, as
+        a forward fill writes a weekend, is one on which no market time passed: h and the
+        published log h hold and its drift joins the next market row's, and every other row is one
+        calibration step whatever the trading clock says, so a calendar tape replays on its market
+        rows as the same tape with the filled rows removed."""
         # Replay is defined only on the daily grid: the intra-interval returns the variance
         # recursion replays are unobservable at coarser nodes.
         if np.any(self.n_sub >= 2):
@@ -3534,16 +3562,33 @@ class GARCHSpotModel(StochasticProcess):
         h = torch.zeros_like(obs[0]) + self.h0_default                       # (…B) = H0
         log_h = torch.empty_like(obs)
         log_h[0] = h.log()
+        T = obs.shape[0]
+        filled = [False] * T
+        if self.skip_filled:
+            # a weekday can print yesterday's fix again, so a repeat is a fill only on a weekend
+            same = (obs[1:] == obs[:-1]).reshape(T - 1, -1).all(dim=1).tolist()
+            filled[1:] = [weekend and repeat for weekend, repeat in zip(self.weekend[1:T], same)]
 
-        def realized(var_step, t):                                           # realized innovation r_t
-            r = (logret[t] - logret[t - 1]) - drift[t]
+        def realized(var_step, t, due):                                      # realized innovation r_t
+            r = (logret[t] - logret[t - 1]) - due
             return r + 0.5 * var_step if self.convexity else r               # undo the −½Var(r) drift shift
 
-        for t in range(1, obs.shape[0]):
-            h, _, _ = self._advance_variance(h, t, lambda v: realized(v, t))
+        carried = None
+        for t in range(1, T):
+            due = drift[t] if carried is None else carried + drift[t]
+            if filled[t]:
+                log_h[t], carried = log_h[t - 1], due
+                continue
+            carried = None
+            h, _, _ = self._advance_variance(h, t, lambda v: realized(v, t, due),
+                                             1.0 if self.skip_filled else None)
             log_h[t] = h.log()
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'garch_log_h')] = log_h.unsqueeze(1)
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'h0_outer')] = h
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            # the replayed recursion on the first path, which the filled-row gate reads
+            logging.debug('GARCH_REPLAY %s %r', utils.check_tuple_name(self.factor_key), {
+                'log_h': log_h.reshape(T, -1)[:, 0].tolist(), 'h': float(h.reshape(-1)[0])})
 
     def calibrated_annual_vol(self):
         """Long-run annualised (fractional) vol √(ω/(1−α−β) / dt_c) — the stationary GARCH vol.
@@ -3600,6 +3645,7 @@ class GARCHSpotCalibration(object):
         '| `Mu` | 0 |',
         '| `Calibration_DT_Years` | 1/252 |',
         '| `Convexity_Correction`, `Carry_Drift` | the tuning values, stamped |',
+        '| `Replay_Skips_Filled_Rows` | as the configuration states it |',
         '| `Log_Price` | true (the process does not read it) |',
         '',
         '`delta` is $x_t/\\sqrt{h_t}$; `correlation` is `[[1.0]]`. The standard error of $\\omega$ and the',
@@ -3615,6 +3661,7 @@ class GARCHSpotCalibration(object):
         '| `Nu_Min` | 2.05 | Floor on $\\nu$ |',
         "| `Convexity_Correction` | Yes | Stamped; the process's own default is No |",
         '| `Carry_Drift` | No | Stamped |',
+        '| `Replay_Skips_Filled_Rows` | not written | Stamped when stated |',
         '',
         '**Limitations.**',
         '',
@@ -3645,7 +3692,9 @@ class GARCHSpotCalibration(object):
           description='Stamped straight onto the emitted param block, like '
                       'Convexity_Correction - without a passthrough a recalibration silently '
                       'DROPS the switch that keeps futures near-driftless in the simulated '
-                      'world, which is the exact phantom the switch exists to remove')
+                      'world, which is the exact phantom the switch exists to remove'),
+        F('Replay_Skips_Filled_Rows', 'Text', default='No', values=['Yes', 'No'],
+          description="Stamped onto the fitted block when stated, the process's switch of that name")
     ]
 
     def __init__(self, model, param):
@@ -3692,6 +3741,8 @@ class GARCHSpotCalibration(object):
             'Convexity_Correction': convexity,
             'Carry_Drift': carry_drift,
         }
+        if 'Replay_Skips_Filled_Rows' in self.param:
+            param['Replay_Skips_Filled_Rows'] = self.param['Replay_Skips_Filled_Rows']
 
         # delta = standardised residual ε_t = r_t/√h_t off the filtered variance path (both in
         # percent units, so the 100· scaling cancels) — approximately iid under the fit.
@@ -4657,6 +4708,12 @@ class BasisLinkedSpotModel(StochasticProcess):
         'has none to skip. Held by',
         '`tests/test_chained_basis.py::test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row`.',
         '',
+        '**Reveal_Band_State** Yes shows the hedging value net, before the level, the deviation',
+        "$b_t-\\mu_t$ from the slow level the next step reverts to, and under the innovation's own GARCH",
+        '$\\log\\sigma^2_t$, both read off the published recursions on a simulated and a replayed path alike;',
+        'without a slow mean $\\mu_t=0$ and the deviation is the level. Held by',
+        '`tests/test_action_space_and_artifact.py::test_the_value_net_reads_the_band_deviation_the_world_declares`.',
+        '',
         "- **A**: the loading $a$ on the parent's concurrent move",
         '- **Phi**: the AR(1) coefficient (under Band_Mixture, an effective one used only to project the',
         "  basis's decay)",
@@ -4666,6 +4723,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         '- **G_Omega, G_Alpha, G_Beta, Sig2_0**: the own-GARCH innovation variance and its seed',
         '- **Band_Kappa, Band_Beta** and the **Mix_** fields: the Band_Mixture law',
         '- **Trading_Clock, Replay_Skips_Filled_Rows**: the two switches above, default No',
+        '- **Reveal_Band_State**: the value net\'s band state above, default No',
         '',
         '[BasisLinkedSpotCalibration](../calibration/observed_basis.md#basislinkedspotcalibration) estimates',
         'the block.',
@@ -4733,6 +4791,9 @@ class BasisLinkedSpotModel(StochasticProcess):
         F('Replay_Skips_Filled_Rows', 'Text', default='No', values=['Yes', 'No'],
           description='Yes replays a row repeating both the basis and its parent to the bit as one '
                       'on which no market time passed and every other row as one calibration step'),
+        F('Reveal_Band_State', 'Text', default='No', values=['Yes', 'No'],
+          description='Yes reveals to the value net, before the level, the deviation from the slow '
+                      'level and, under the innovation\'s own GARCH, its log variance'),
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -5064,6 +5125,19 @@ class BasisLinkedSpotModel(StochasticProcess):
         seed = shared_mem.t_Scenario_Buffer.get(
             (self.factor_key, kind + ('_inner' if inner else '_outer')))
         return calibrated if seed is None else (seed.unsqueeze(-1) if inner else seed)
+
+    def reveal_state_at(self, t, buffer):
+        """The level as the one CONTINUOUS segment; under `Reveal_Band_State` led by SUFFICIENT
+        ones: b_t - mu_t, mu_t the published `basis_mu` row t, the level step t->t+1 reverts to
+        (0 without a slow mean, as the law reads it), and under the own GARCH log sigma^2_t."""
+        level = buffer[self.factor_key][t]
+        if self.param.get('Reveal_Band_State', 'No') != 'Yes':
+            return [(level, REVEAL_CONTINUOUS)]
+        state = [(level - buffer[(self.factor_key, 'basis_mu')][t] if self.slow_mean else level,
+                  REVEAL_SUFFICIENT)]
+        if self.garch:
+            state.append((buffer[(self.factor_key, 'basis_sig2')][t].log(), REVEAL_SUFFICIENT))
+        return state + [(level, REVEAL_CONTINUOUS)]
 
     def inner_fork_seed(self, factor_key, outer_buf, t):
         """Per-outer-path seeds for the two observable recursions, read at the fork row so the
