@@ -1582,9 +1582,14 @@ class DiffSolver:
             logging.info("DiffSolver differential-label projection check (privileged market_t "
                          "cols vs state_t leaves; ≈0 ⇒ ∂Y/∂market_col == ∂Y/∂leaf): %s",
                          " ".join(errs))
-        F_t = torch.stack([self.tradables_sim[r][t] for r in self.hedges], dim=-1)        # (B_outer,n_hedge)
         F_t1 = torch.stack([ig["F_t1"][r] for r in self.hedges], dim=-1) * live           # AAD-live
-        dF_g = (F_t1 - F_t.unsqueeze(1))[rows]
+        if self.state_label:
+            # the fork's own t mark moves with the leaves as F_{t+1} does: the outer one would
+            # label a column with the slope of F_{t+1} alone rather than of the move
+            F_t = torch.stack([ig["F_t"][r] for r in self.hedges], dim=-1) * live
+        else:
+            F_t = torch.stack([self.tradables_sim[r][t] for r in self.hedges], dim=-1).unsqueeze(1)
+        dF_g = (F_t1 - F_t)[rows]
         dL_g = (ig["L_t1"] - ig["L_t"])[rows]
         m1_g = ig["market_t1"][rows]
         W0 = W0_bank.clone().requires_grad_(True)

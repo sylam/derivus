@@ -1050,19 +1050,39 @@ def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, cap
         _run(_band_state(path, reveal='Yes', garch=False, load=hidden))
 
 
-def _state_labels(caplog, label=None, returns=False):
+#: A frictional LogWealth solve on the returns state, its basis a `Band_Mixture` revealing its band
+#: state: a 2 $/oz dead band with a 0.2 pull around the slow mean, 10% stress days at four times the
+#: quiet sd.
+FRICTIONAL = {'DiffV2_Returns_State': 'Yes', 'DiffV2_Position_State': 'Yes', 'DiffV2_Book_Gradient_Label': 'Yes',
+              'DiffV2_Bank_Along_Ladder': 'Yes', 'DiffV2_Risk_Kappa': 0.2}
+BAND_BASIS = {'A': 0.01, 'Phi': 0.9, 'Nu': 0.0, 'Sigma': 1.5, 'Reversion_Model': 'Band_Mixture', 'Band_Kappa': 2.0,
+              'Band_Beta': 0.2, 'Mix_Q_Stress': 0.1, 'Mix_Sigma_Quiet': 1.0, 'Mix_Sigma_Stress': 4.0,
+              'Mix_Stay_Stress': 0.8, 'Mix_P0_Stress': 0.1, 'Slow_Mean_Lambda': 0.95, 'Mu_0': -30.0,
+              'Calibration_DT_Years': 1.0 / 252.0, 'Reveal_Band_State': 'Yes'}
+
+
+def _state_labels(caplog, label=None, returns=False, save=None, band=False):
     """`_cfg` swept over its last five decision steps at 200 fit iterations, its basis `SLOW_BASIS`
     on `OWN_GARCH` revealing its band state, stating `DiffV2_State_Gradient_Label` `label` where
-    given: each fitted step's `(slope, label)` bank means per market column, from the debug line."""
-    cfg = _cfg(seed=7)
-    solver = cfg['Calc']['Calculation']['Hedging_Problem']['Solver']
+    given and saving its value fn to `save`; under `band` the `FRICTIONAL` solve on 96 paths of
+    seed 11 with `BAND_BASIS`: each fitted step's `(slope, label)` bank means per market column,
+    from the debug line."""
+    cfg = _cfg(seed=11, batch=96) if band else _cfg(seed=7, save=save)
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    solver = hp['Solver']
     solver['T_Min'], solver['DiffV2_Fit_Iters'] = LAST_STEP - 4, 200
     if label is not None:
         solver['DiffV2_State_Gradient_Label'] = label
     if returns:
         solver['DiffV2_Returns_State'] = 'Yes'
+    basis = dict(SLOW_BASIS, **OWN_GARCH, Reveal_Band_State='Yes')
+    if band:
+        solver.update(FRICTIONAL)
+        hp['Objective'] = {'Object': 'LogWealth', 'Utility_Scale_Mode': 'conditional_sim'}
+        hp['Evaluator'].update(Max_Trade_Per_Step=10.0, Calendar_Spread_Bps=3.0)
+        basis = BAND_BASIS
     cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
-        'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': dict(SLOW_BASIS, **OWN_GARCH, Reveal_Band_State='Yes')}
+        'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis}
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
         _run(cfg)
@@ -1071,23 +1091,29 @@ def _state_labels(caplog, label=None, returns=False):
             for t, v in ((t, ast.literal_eval(body)) for _, t, body in rows)}
 
 
-def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(caplog):
+def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(caplog, tmp_path):
     """Under `DiffV2_State_Gradient_Label` 'Yes' the gradient fork is seeded from leaves at the
     basis's revealed deviation D = b - mu and log sigma^2, mu the level leaf less D, so each column's
     label is its slope at the others fixed: D's -dY/dmu, the level's dY/db + dY/dmu. On the fixture
     under the band (D the 7th market column, log sigma^2 the 8th, the level the 9th), over the five
     swept steps: without the field D and log sigma^2 are labelled 0 on every step and the fitted
-    slope in D sums to 2.8e-6, 0.2% of the label's 1.34e-3 under it; under it the fitted slopes in
-    D and log sigma^2 sum within 4.3% and 6.2% of their labels (bound 15%: the twin loss meets a
-    label in the bank mean of 24 states beside the value term, not exactly). At the last step,
-    whose continuation is the closed-form utility in both runs, the level's label is the
-    field-free one (dY/db at fixed mu) less D's to 1e-5, and under `DiffV2_Returns_State`, whose
-    columns are fractions of the 2,055 t0 spot, all three are 2,055 times the plain ones. 14 s.
+    slope in D sums to 2.8e-6, 0.2% of the label's 1.25e-3 under it; under it the fitted slopes in
+    D and log sigma^2 sum within 1.0% and 3.5% of their labels, and in the net's standardised
+    coordinates every column's within 3.6% of the largest label (bound 15%: the twin loss meets a
+    label in the bank mean of 24 states beside the value term, not exactly). At the last step, whose
+    continuation is the closed-form utility, the level's label is 0.1% of D's (bound 1%): shifting
+    the level and its slow mean together leaves the move's law unchanged; and under
+    `DiffV2_Returns_State`, whose columns are fractions of the 2,055 t0 spot, all three are 2,055
+    times the plain ones. 11 s.
 
     Killing mutations: the leaves not made (D's label 0); mu seeded off the outer level rather than
-    the level leaf (the level's label the field-free one); the seeds detached from their leaves
-    (D's label 0); the returns state's map dropped (ratio 1)."""
-    off, on = _state_labels(caplog), _state_labels(caplog, 'Yes')
+    the level leaf (the level's label at the last step D's, 40% off in standardised slope); the
+    seeds detached from their leaves (D's label 0); the returns state's map dropped (ratio 1); the
+    wealth step differencing the fork's t+1 marks against the outer t marks, which carry no
+    gradient (the level's label at the last step 5.0 times D's, the price column's standardised
+    label -0.96 against a slope of 0.0014)."""
+    ckpt = str(tmp_path / 'value_fn.pt')
+    off, on = _state_labels(caplog), _state_labels(caplog, 'Yes', save=ckpt)
     rs = _state_labels(caplog, 'Yes', returns=True)
     (slope_off, _), (slope_on, label_on) = ((sum(run[t][0] for t in run), sum(run[t][1] for t in run))
                                             for run in (off, on))
@@ -1096,6 +1122,28 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     for col in (6, 7):
         assert label_on[col] > 0.0 and abs(slope_on[col] / label_on[col] - 1.0) < 0.15, \
             (col, slope_on[col], label_on[col])
+    m_std = np.asarray(torch.load(ckpt, map_location='cpu', weights_only=False)['m_std'])
+    z_err, z_label = np.abs(slope_on - label_on) * m_std, np.abs(label_on) * m_std
+    assert z_err.max() < 0.15 * z_label.max(), (z_err, z_label)
     last = on[LAST_STEP][1]
-    assert abs(last[8] - (off[LAST_STEP][1][8] - last[6])) < 1e-5 * abs(last[8]), (last, off[LAST_STEP][1])
+    assert abs(last[8]) < 0.01 * last[6], last
     assert np.allclose(rs[LAST_STEP][1][6:9], 2055.0 * last[6:9], rtol=1e-5, atol=0.0), (rs[LAST_STEP][1], last)
+
+
+def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
+    """Under `DiffV2_State_Gradient_Label` 'Yes' the gradient fork's futures move is its t+1 mark
+    less its own t mark, both moving with the leaves, so a column the marks read (the carry, the
+    price, the basis level) is labelled with the move's slope rather than the t+1 mark's. On the
+    `FRICTIONAL` solve with `BAND_BASIS` (D the 7th of 8 market columns, the level the 8th), at the
+    last step, whose continuation is the closed-form utility, the level's label is 0.15% of D's
+    (bound 1%), and over the five swept steps D's fitted slope sums within 6% of its label (bound
+    15%). 6 s.
+
+    Killing mutation: the wealth step differencing the fork's t+1 marks against the outer t marks,
+    which carry no gradient (the level's label at the last step 5.0 times D's, summed -1.10 against
+    D's 0.132)."""
+    run = _state_labels(caplog, 'Yes', band=True)
+    last = run[LAST_STEP][1]
+    assert abs(last[7]) < 0.01 * last[6], last
+    slope, label = (sum(run[t][i] for t in run) for i in (0, 1))
+    assert label[6] > 0.0 and abs(slope[6] / label[6] - 1.0) < 0.15, (slope[6], label[6])

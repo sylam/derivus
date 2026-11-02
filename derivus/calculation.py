@@ -3883,7 +3883,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         demand outside the outer loop, via `Bundle.inner_mc`.
 
         Returns the inner samples the solver bootstraps from:
-            F_t1          {ref: (B_outer, B_inner)}       futures price at outer t+1
+            F_t, F_t1     {ref: (B_outer, B_inner)}       futures price at outer t and t+1
             L_t, L_t1     (B_outer, B_inner)              liability MTM at outer t and t+1
             market_t1     (B_outer, B_inner, market_dim)  inner market state at outer t+1
             market_t      (B_outer, market_dim)           outer-realised market state at t
@@ -4075,18 +4075,19 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 # the window prices {t, t+1}, so no terminal row exists to read: `L_T` is None and
                 # the horizon stats are not produced
                 result = {}
-                F_t1 = {}
+                F_t, F_t1 = {}, {}
                 zero_bs = inner_mtm[-2].new_zeros(inner_mtm[-2].shape)   # (B_outer, B_inner)
                 for ref in tradable_refs:
                     td = inner_trade_tensors.get(ref)
                     if td is None:
                         # Tradable expired before this fork — zero moves, no position.
-                        F_t1[ref] = zero_bs
+                        F_t[ref] = F_t1[ref] = zero_bs
                         continue
                     td = td[cutoff_idx:]                                # (T_inner, B_outer, B_inner)
                     # td has < 2 time points when the tradable's last deal event is at t
                     # (it expires this step) — no t+1 slice; freeze it (dF == 0).
                     F_t1[ref] = (td[1] if td.shape[0] >= 2 else td[-1]).clone()
+                    F_t[ref] = td[0]
                 # market state - every simulated factor's informative state concatenated;
                 # factor order is the `stoch_factors_inner` order, identical for t and t+1
                 market_t1 = torch.cat(market_t1_parts, dim=0).permute(1, 2, 0).contiguous()
@@ -4121,7 +4122,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                               else mtm_fwd[-1]).clone()                     # outer-t+1 per inner draw
                 result.update(
                     t=t, cutoff_idx=cutoff_idx, L_T=None,
-                    L_t=L_t_inner, L_t1=L_t1_inner, F_t1=F_t1,
+                    L_t=L_t_inner, L_t1=L_t1_inner, F_t=F_t, F_t1=F_t1,
                     market_t=market_t, market_t1=market_t1)
                 if with_grad:
                     result['state_t_leaves'] = state_t_leaves
