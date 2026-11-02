@@ -2770,6 +2770,7 @@ class DiffSolver:
                          "eval, so this batch trains nothing")
             return
         self._bind(bundle)
+        self.inner_cache = None          # the last batch's forks are freed before the next are made
         self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         W_bank, q_bank = self._build_bank(self.gen)
         if self.log_ratio and self.loaded_displacement is None and not self.displacement:
@@ -2910,7 +2911,9 @@ class DiffSolver:
         simplified `_verdict` wealth recursion mis-accrues expiry."""
         if bundle is not self.bundle:
             self._bind(bundle)
-            # the held-out world needs its OWN forks
+            # the held-out world needs its OWN forks; the training batch's are freed first, or both
+            # sets are live at once
+            self.inner_cache = None
             self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
         nets, sweep_ts, inner_cache = self.nets, self.sweep_ts, self.inner_cache
         loaded, rows, worst, root = self.loaded, self.rows, self.worst, self.root
