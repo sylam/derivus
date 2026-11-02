@@ -4577,11 +4577,13 @@ class BasisLinkedSpotModel(StochasticProcess):
     `Sig2_0` the variance of the FIRST innovation - and both recursions are per-path state that
     forks with the path: `(key,'basis_mu')` and `(key,'basis_sig2')` publish what step t->t+1
     consumes, which is what `inner_fork_seed` hands an inner run as its t=0.
-    `Calibration_DT_Years` is declared metadata; nothing rescales the AR to the sim grid.
-    `reseed_from_path` runs both recursions along an observed path.
+    `Calibration_DT_Years` is metadata unless `Trading_Clock` scales every per-step rate by the
+    row's f = dt/dt_c. `reseed_from_path` runs both recursions along an observed path, holding
+    them across a forward-filled row under `Replay_Skips_Filled_Rows`.
 
     JSON config: `A` (concurrent dS loading), `Phi`, `Nu`, `Sigma_By_State` or flat `Sigma`,
-    `Slow_Mean_Lambda`/`Mu_0`, `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0`, `Calibration_DT_Years`."""
+    `Slow_Mean_Lambda`/`Mu_0`, `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0`, `Calibration_DT_Years`,
+    `Trading_Clock`, `Replay_Skips_Filled_Rows`."""
 
     documentation = ('Asset Pricing', [
         "A basis driven by its parent's path, under the historical measure. The parent (the name minus its",
@@ -4616,8 +4618,33 @@ class BasisLinkedSpotModel(StochasticProcess):
         'and `::test_the_garch_seed_sets_the_band_basis_dispersion_over_its_first_month`. A replayed path',
         'filters its stress state on $\\eta_t/\\sigma_t$. **Not gated**.',
         '',
-        'Both recursions are deterministic functions of the realised path and draw no randomness. The AR',
-        'is applied per simulation step whatever its length: **Calibration_DT_Years** is metadata.',
+        'Both recursions are deterministic functions of the realised path and draw no randomness. Without',
+        '**Trading_Clock** the law is applied once per simulation step whatever its length.',
+        '',
+        "**Trading_Clock** Yes runs it on `GARCHSpotModel`'s trading clock: a row of $\\delta$ years is",
+        '$f=\\delta/\\delta_c$ calibration steps ($\\delta_c$ = **Calibration_DT_Years**), the innovation\'s variance',
+        'is $f$ times its own, and the pull ($\\beta$, or $1-\\phi$ on the Linear AR), the slow mean\'s step',
+        "$1-\\lambda$, the stress chain's two switching probabilities and the GARCH decay are $f$ times theirs,",
+        '',
+        '$$ \\sigma^2_{t+1}=\\sigma^2_t+f\\big(\\omega_b-(1-\\beta_b)\\sigma^2_t\\big)+\\alpha_b\\eta_t^2 $$',
+        '',
+        "which is the law at $f=1$ and keeps **Mix_Q_Stress** and the GARCH's long-run variance for any $f$:",
+        'a calendar week on a daily grid is $7\\times252/365.25=4.83$ calibration steps rather than seven. Held',
+        'by `tests/test_chained_basis.py::test_a_calendar_week_on_the_trading_clock_carries_the_business_days_its_rows_span`.',
+        "Without **Replay_Skips_Filled_Rows** a replay updates each row at that row's own $f$, **Not gated**.",
+        'The projection a pricer reads (`basis_decay`) is the pair a row is simulated with,',
+        '$1-f(1-\\phi)$ and $1-f(1-\\lambda)$ at the $f$ of the grid\'s last row, every row\'s on a uniform grid.',
+        'Held by `tests/test_chained_basis.py::test_the_average_price_swap_projects_the_basis_at_the_rate_the_clock_simulates`.',
+        '',
+        '**Replay_Skips_Filled_Rows** Yes replays a row on which the basis and its parent both repeat the',
+        'previous row to the bit, as a forward fill writes a weekend or a holiday, as one on which no market',
+        'time passed: $\\mu$, $\\sigma^2$, the stress filter and the published regime hold, and the next market',
+        'row is updated as on the path without the filled rows, its regime drawn at its count of market',
+        'rows. A market row is one calibration step whatever **Trading_Clock** says: the clock spreads',
+        'five business days over seven calendar rows, which a replay that knows its market rows does not',
+        'need. A row repeating only one of the two is a market row, and a replay whose parent is simulated',
+        'has none to skip. Held by',
+        '`tests/test_chained_basis.py::test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row`.',
         '',
         "- **A**: the loading $a$ on the parent's concurrent move",
         '- **Phi**: the AR(1) coefficient (under Band_Mixture, an effective one used only to project the',
@@ -4627,6 +4654,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         '- **Slow_Mean_Lambda, Mu_0**: decay and seed of the slow mean',
         '- **G_Omega, G_Alpha, G_Beta, Sig2_0**: the own-GARCH innovation variance and its seed',
         '- **Band_Kappa, Band_Beta** and the **Mix_** fields: the Band_Mixture law',
+        '- **Trading_Clock, Replay_Skips_Filled_Rows**: the two switches above, default No',
         '',
         '[BasisLinkedSpotCalibration](../calibration/observed_basis.md#basislinkedspotcalibration) estimates',
         'the block.',
@@ -4687,6 +4715,12 @@ class BasisLinkedSpotModel(StochasticProcess):
         F('Mix_P0_Stress', 'Float', default=0.0,
           description='P(stress) at the first simulated step - the filtered posterior at the '
                       'end of the calibration sample'),
+        F('Trading_Clock', 'Text', default='No', values=['Yes', 'No'],
+          description='Yes runs every per-step rate of the law on the trading clock, a row of dt '
+                      'years being dt / Calibration_DT_Years calibration steps'),
+        F('Replay_Skips_Filled_Rows', 'Text', default='No', values=['Yes', 'No'],
+          description='Yes replays a row repeating both the basis and its parent to the bit as one '
+                      'on which no market time passed and every other row as one calibration step'),
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -4718,8 +4752,14 @@ class BasisLinkedSpotModel(StochasticProcess):
 
     def basis_decay(self):
         """AR(1) toward the (possibly slow-moving) mean: the declared Phi, and the slow mean's
-        own lambda when that extension is on — absent IS off, as precalculate reads it."""
-        return float(self.param['Phi']), float(self.param.get('Slow_Mean_Lambda', 0.0) or 0.0)
+        own lambda when that extension is on — absent IS off, as precalculate reads it. Under
+        `Trading_Clock` each is the simulated row's, 1 - f(1 - Phi) and 1 - f(1 - lambda) at the
+        f of the grid's last row, which is every row's on a uniform grid."""
+        phi, lam = float(self.param['Phi']), float(self.param.get('Slow_Mean_Lambda', 0.0) or 0.0)
+        if self.param.get('Trading_Clock', 'No') != 'Yes':
+            return phi, lam
+        f = self.clock[-1]
+        return 1.0 - f * (1.0 - phi), (1.0 - f * (1.0 - lam) if lam else 0.0)
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         """Precompute the OU basis parameters and the observed initial basis.
@@ -4772,6 +4812,14 @@ class BasisLinkedSpotModel(StochasticProcess):
             self.mix_stay_s = stay
             self.mix_enter = q * (1.0 - stay) / (1.0 - q)          # quiet->stress, stationarity
             self.mix_q, self.p0_stress = q, float(self.param.get('Mix_P0_Stress', q))
+        # per row the calibration steps it spans, f = dt/dt_c as GARCHSpotModel reads them; None
+        # is one step a row whatever its length, the law as calibrated
+        self.clock = [None] * self.scenario_horizon
+        if self.param.get('Trading_Clock', 'No') == 'Yes':
+            tg_years = time_grid.time_grid_years
+            dt = np.diff(np.hstack(([tg_years[0]], tg_years)))
+            self.clock = (dt / float(self.param.get('Calibration_DT_Years', 1.0 / 252.0))).tolist()
+        self.skip_filled = self.param.get('Replay_Skips_Filled_Rows', 'No') == 'Yes'
         # b0 stays on the graph, unreshaped so inner MC can pass (B,)
         self.b0 = tensor
 
@@ -4797,11 +4845,12 @@ class BasisLinkedSpotModel(StochasticProcess):
                 f'shift would mis-anchor row 1 by (1−Phi)·b(0)')
         self.chain_t0_shift = p.reshape(-1) - self.b0.reshape(-1)
 
-    def _ds_linked(self, linked_path, t):
-        """The concurrent-dS drive of step t with the row-1 seam conditioning folded in - shared
-        by the forward sim and the replay so the bias cannot drift between them."""
+    def _ds_linked(self, linked_path, t, k=None):
+        """The concurrent-dS drive of step t with the row-1 seam conditioning folded in on the
+        first market step, `k` counting them (t unless a replay skips filled rows) - shared by the
+        forward sim and the replay so the bias cannot drift between them."""
         ds = self.A * (linked_path[t] - linked_path[t - 1])
-        if t == 1 and self.chain_t0_shift is not None:
+        if (t if k is None else k) == 1 and self.chain_t0_shift is not None:
             s = self.chain_t0_shift
             ds = ds + (s.view(-1, 1) if ds.dim() == 2 and s.numel() > 1 else s)
         return ds
@@ -4882,15 +4931,17 @@ class BasisLinkedSpotModel(StochasticProcess):
                     eta_t = s2.sqrt() * eta_t
             else:
                 eta_t = s2.sqrt() * Z[t] * scale[t] if self.garch else eta[t]
+            if self.clock[t] is not None:
+                eta_t = eta_t * self.clock[t] ** 0.5
             return eta_t, mean + eta_t
 
         for t in range(1, T):
             if self.band:
-                s = torch.where(s > 0.5, (u_regime[t] < self.mix_stay_s).to(dtype),
-                                (u_regime[t] < self.mix_enter).to(dtype))
+                stay, enter = self._switching(self.clock[t])
+                s = torch.where(s > 0.5, (u_regime[t] < stay).to(dtype), (u_regime[t] < enter).to(dtype))
                 regime_path[t] = s
             out[t], mu, sig2 = self._advance(
-                mu, sig2, out[t - 1], self._ds_linked(linked_path, t), drawn)
+                mu, sig2, out[t - 1], self._ds_linked(linked_path, t), drawn, self.clock[t])
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
@@ -4898,7 +4949,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path)
         return out
 
-    def _advance(self, mu, sig2, prev, ds, innovation):
+    def _advance(self, mu, sig2, prev, ds, innovation, f=None):
         """One step of the coupled (b, mu, sigma^2) recursion, shared by the forward sim and the
         replay so forward == replay is STRUCTURAL. The only thing that differs is
         `innovation(mean, sig2) -> (eta_t, b_t)`: the forward sim draws eta and derives the
@@ -4906,17 +4957,37 @@ class BasisLinkedSpotModel(StochasticProcess):
         conditional mean. Returning both is what makes the replayed mu exact - rebuilding `b` as
         `mean + (b - mean)` would be one rounding off the observed level.
 
+        `f` is the step's length in calibration steps under `Trading_Clock`: the pull, the slow
+        mean's step and the GARCH decay are f times the calibrated one's, the variance of eta f
+        times its own (the innovation's to scale), `GARCHSpotModel`'s clock.
+
         Returns `(b_t, mu_{t+1}, sigma^2_{t+1})`, both states in the published fork-index
         convention. Each extension's off arm returns its state untouched."""
         if self.band:
             d = prev - mu
-            mean = prev + ds - self.band_beta * torch.sign(d) * (d.abs() - self.band_kappa).clamp_min(0.0)
-        else:
+            pull = self.band_beta * torch.sign(d) * (d.abs() - self.band_kappa).clamp_min(0.0)
+            mean = prev + ds - (pull if f is None else f * pull)
+        elif f is None:
             mean = mu + ds + self.Phi * (prev - mu) if self.slow_mean else ds + self.Phi * prev
+        else:
+            mean = prev + ds - f * (1.0 - self.Phi) * (prev - mu if self.slow_mean else prev)
         eta, b = innovation(mean, sig2)
+        if f is None:
+            return (b,
+                    self.lam * mu + (1.0 - self.lam) * b if self.slow_mean else mu,
+                    self.g_omega + self.g_alpha * eta * eta + self.g_beta * sig2 if self.garch else sig2)
         return (b,
-                self.lam * mu + (1.0 - self.lam) * b if self.slow_mean else mu,
-                self.g_omega + self.g_alpha * eta * eta + self.g_beta * sig2 if self.garch else sig2)
+                mu + f * (1.0 - self.lam) * (b - mu) if self.slow_mean else mu,
+                sig2 + f * (self.g_omega - (1.0 - self.g_beta) * sig2) + self.g_alpha * eta * eta
+                if self.garch else sig2)
+
+    def _switching(self, f):
+        """`(P(stress | stress), P(stress | quiet))` over a step of f calibration steps: the
+        calibrated pair at None, else the two switching rates times f, which keeps
+        `Mix_Q_Stress` stationary."""
+        if f is None:
+            return self.mix_stay_s, self.mix_enter
+        return 1.0 - f * (1.0 - self.mix_stay_s), f * self.mix_enter
 
     def _recursion_state(self, shared_mem, out, inner):
         """`(mu_0, sig2_0, mu path, sig2 path)` at t=0: the seeds (fork / burn-in / calibrated)
@@ -4981,7 +5052,14 @@ class BasisLinkedSpotModel(StochasticProcess):
         relative in float64 and 6e-7 in float32, because `fl(b_t - mean)` differs from the drawn
         eta by the rounding of the forward pass's final addition. No spelling recovers eta
         exactly from a rounded sum, which is why `_advance` takes the level from the innovation
-        supplier rather than re-deriving it."""
+        supplier rather than re-deriving it.
+
+        Under `Replay_Skips_Filled_Rows` a row repeating both the basis and its parent to the bit,
+        as a forward fill writes it, is one on which no market time passed: every recursion and
+        the published regime hold their state, and the next market row is updated as one
+        calibration step whatever `Trading_Clock` says, its regime drawn off the quasi stream at
+        its count of market rows, as on the path without the filled rows. Without the rule a
+        clocked replay reads each row at the forward's f."""
         self._chain_shift(shared_mem)
         if not (self.slow_mean or self.garch):
             return
@@ -4989,13 +5067,19 @@ class BasisLinkedSpotModel(StochasticProcess):
         linked_path = shared_mem.t_Scenario_Buffer[self.linked_key]
         inner = obs.ndim == 3
         mu, sig2, mu_path, sig2_path = self._recursion_state(shared_mem, obs, inner)
+        T, batch = obs.shape[0], obs.shape[1:]
+        filled = [False] * T
+        if self.skip_filled:
+            # a forward fill copies every column, so both series repeat to the bit; one repeating
+            # alone is a flat print on a market row
+            same = (obs[1:] == obs[:-1]) & (linked_path[1:T] == linked_path[:T - 1])
+            filled[1:] = same.reshape(T - 1, -1).all(dim=1).tolist()
 
         regime_path = None
         if self.band:
             # the regime is UNOBSERVED on a realised path: forward-filter P(stress | eta_1..t)
             # and draw the published state off the quasi stream generate uses, so the replayed
             # regime is reproducible under the seed
-            T, batch = obs.shape[0], obs.shape[1:]
             if inner:
                 u = shared_mem.quasi_rng(T + 1, batch[0] * batch[1])[1].transpose(
                     0, 1).contiguous().reshape(T + 1, *batch)
@@ -5017,21 +5101,38 @@ class BasisLinkedSpotModel(StochasticProcess):
                 last_eta[0] = eta_t / s2.sqrt() if self.garch else eta_t
             return eta_t, obs[t]
 
-        for t in range(1, obs.shape[0]):
+        k = 0
+        for t in range(1, T):
+            if filled[t]:
+                for path in (mu_path, sig2_path, regime_path):
+                    if path is not None:
+                        path[t] = path[t - 1]
+                continue
+            k += 1
+            # a market row the skip rule finds carries one business day: the clock's uniform f
+            # is the simulation's spreading of five business days over seven calendar rows
+            f = None if self.skip_filled else self.clock[t]
             _, mu, sig2 = self._advance(
-                mu, sig2, obs[t - 1], self._ds_linked(linked_path, t), realised)
+                mu, sig2, obs[t - 1], self._ds_linked(linked_path, t, k), realised, f)
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
                 sig2_path[t] = sig2
             if self.band:
-                eta2 = last_eta[0] * last_eta[0]
-                prior = p * self.mix_stay_s + (1.0 - p) * self.mix_enter
+                stay, enter = self._switching(f)
+                eta2 = last_eta[0] * last_eta[0] if f is None else last_eta[0] * last_eta[0] / f
+                prior = p * stay + (1.0 - p) * enter
                 lq = torch.exp(-0.5 * eta2 / sq2) / sq2.sqrt()
                 ls = torch.exp(-0.5 * eta2 / ss2) / ss2.sqrt()
                 p = prior * ls / (prior * ls + (1.0 - prior) * lq)
-                regime_path[t] = (u[t] < p).to(obs.dtype)
+                regime_path[t] = (u[k] < p).to(obs.dtype)
         self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path)
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            # the replayed recursions on the first path, which the filled-row gate reads
+            logging.debug('BASIS_REPLAY %s %r', utils.check_tuple_name(self.factor_key), {
+                kind: path.reshape(path.shape[0], -1)[:, 0].tolist()
+                for kind, path in (('mu', mu_path), ('sig2', sig2_path), ('regime', regime_path))
+                if path is not None})
 
 
 class BasisLinkedSpotCalibration(object):
@@ -5135,7 +5236,7 @@ class BasisLinkedSpotCalibration(object):
         '',
         '| Fit | Fields |',
         '|---|---|',
-        '| every fit | `A`, `Phi`, `Nu`, `Calibration_DT_Years` 1/252 |',
+        '| every fit | `A`, `Phi`, `Nu`, `Calibration_DT_Years` 1/252, and `Trading_Clock` and `Replay_Skips_Filled_Rows` as the configuration states them |',
         "| default, or joint without GARCH | `Sigma_By_State`, the terciles above applied to that fit's $\\eta$ |",
         '| joint with GARCH [@bollerslev1986] | `Sigma` $=\\mathrm{sd}(\\eta)$, `G_Omega`, `G_Alpha`, `G_Beta`, `Sig2_0` (the conditional variance of the last observation) |',
         "| with a span | `Slow_Mean_Lambda` $=\\lambda$, `Mu_0` the mean at the sample's end |",
@@ -5157,6 +5258,7 @@ class BasisLinkedSpotCalibration(object):
         '| `GARCH_Innovation` | No |',
         '| `Reversion_Model` | `Linear` |',
         '| `Basis_Scale_Window` | 0 (off) |',
+        '| `Trading_Clock`, `Replay_Skips_Filled_Rows` | not written |',
         '',
         '**Limitations.**',
         '',
@@ -5169,8 +5271,8 @@ class BasisLinkedSpotCalibration(object):
         "- The `Band_Mixture` fit's left side is the change of the deviation, the process's the change of",
         "  the level; they differ by the slow mean's own daily change. The mixture is fitted as independent",
         '  draws and its persistence read off afterwards.',
-        '- `Calibration_DT_Years` is metadata: the process applies the daily AR per simulation step,',
-        "  whatever the step's length.",
+        '- Without `Trading_Clock` the process applies the daily law once per simulation step, whatever',
+        "  the step's length.",
         ])
     model_type = 'BasisLinkedSpotModel'
     fields = [
@@ -5200,7 +5302,11 @@ class BasisLinkedSpotCalibration(object):
                       'spread. Needs Slow_Mean_Span > 0'),
         F('Basis_Scale_Window', 'Integer', default=0,
           description='Under Band_Mixture, the number of daily basis changes before the calibration '
-                      'date whose realised sd the fitted sds are scaled to - 0 writes the fit\'s own')
+                      'date whose realised sd the fitted sds are scaled to - 0 writes the fit\'s own'),
+        F('Trading_Clock', 'Text', default='No', values=['Yes', 'No'],
+          description='Stamped onto the fitted block when stated, the process\'s switch of that name'),
+        F('Replay_Skips_Filled_Rows', 'Text', default='No', values=['Yes', 'No'],
+          description='Stamped onto the fitted block when stated, the process\'s switch of that name')
     ]
 
     def __init__(self, model, param):
@@ -5209,6 +5315,14 @@ class BasisLinkedSpotCalibration(object):
         self.num_factors = 1
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
+        """The fit, with the process's two switches the calibration config states stamped onto
+        its block as stated; the fit itself is per calibration step either way."""
+        info = self._fit(data_frame, num_business_days)
+        info.param.update({key: self.param[key] for key in ('Trading_Clock', 'Replay_Skips_Filled_Rows')
+                           if key in self.param})
+        return info
+
+    def _fit(self, data_frame, num_business_days):
         from scipy import stats as scipy_stats
 
         nu_min = float(self.param.get('Nu_Min', 3.0))
