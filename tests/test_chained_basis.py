@@ -716,3 +716,83 @@ def test_the_average_price_swap_projects_the_basis_at_the_rate_the_clock_simulat
         projected, realised = share(mtm.iloc[0].values), share(mtm.loc['2026-01-20'].values)
         assert np.abs(projected - (pi + (1.0 - pi) * (lam * phi) ** 5)).max() < 1e-9, (clock, projected[0])
         assert abs(realised.mean() - projected[0]) < 0.005, (clock, realised.mean(), projected[0])
+
+
+def test_a_coarse_row_on_the_trading_clock_walks_sub_steps_of_at_most_one_calibration_step():
+    """`Trading_Clock` on a monthly grid, the first row's 31 calendar days f = 21.388 calibration
+    steps walked as 21 whole steps and 0.388 of one: the credit Monte Carlo of the one future on flat
+    curves, so the mtm's move over the month is the spot's plus the basis's.
+    (a) The band's pull off and the stress chain at its stationary 20% (the week test's), the spot at
+    no vol, 65,536 paths: the month's variance is f within 3%, the stress share held, on the monthly
+    grid (21.309) as on the daily one (21.242).
+    (b) The week test's pull, slow mean and GARCH: the walk's closed form within 3%, 15.937 (measured
+    15.785); the daily grid's 31 rows of 0.69 steps are another discretisation of the law, 14.781
+    (14.697).
+    (c) A Linear law without innovation, the spot at 30% vol, 4,096 paths: the basis's month move is
+    A w times the spot's, its twin at A = 0 the regressor, w = 0.33918 the closed form of the spot's
+    move shared among the sub-steps by length, each share then pulled toward the slow mean, to 1e-9.
+    (d) The average-price swap test's law on a weekly grid whose rows include the fixing and the
+    settlement, steps of 7, 7 and 5 days to the fixing, 16,384 paths: the base-date mark projects the
+    composition of the three steps' pairs over their sub-steps, 0.164246, to 1e-9, the paths'
+    realised share within 0.005 (0.166791, a standard error of 0.0014). 2 s.
+
+    Killing mutations: each row one step of f - (a) 53.02, the chain's probabilities outside [0, 1];
+    (b) NaN, the run refusing its value; (c) 1.0; (d) 0.022854; the sub-steps reusing the row's draw
+    - (a) 395.0; the spot's move on the first sub-step - (c) 0.1571, on the last 1.0; the projection
+    at the pair of the grid's last step - (d) 0.673525.
+    """
+    f, grid = 31 * 252.0 / 365.25, {'vol': 0.0, 'flat_curves': True, 'Deterministic_Kernels': 'Yes'}
+    walk = dict(BAND, **UNIT_MIX, Band_Beta=0.0, Mix_Stay_Stress=0.5, Mix_P0_Stress=0.2, Trading_Clock='Yes')
+    pull = dict(BAND, Band_Kappa=0.0, Band_Beta=0.3, Slow_Mean_Lambda=0.8, Mu_0=-7.35, Mix_Q_Stress=0.5,
+                Mix_Sigma_Quiet=1.0, Mix_Sigma_Stress=1.0, Mix_Stay_Stress=0.5, Mix_P0_Stress=0.5,
+                G_Omega=0.05, G_Alpha=0.1, G_Beta=0.85, Sig2_0=4.0, Trading_Clock='Yes')
+
+    def substeps(x):
+        return [1.0] * int(x) + [x - int(x)]
+
+    def month(law, time_grid, **calculation):
+        mtm = _band_mtm(law, maturity='2026-02-20', Time_Grid=time_grid, **dict(grid, **calculation))
+        return (mtm.loc['2026-02-15'] - mtm.loc['2026-01-15']).values
+
+    def location(steps, h=4.0):
+        cov = np.zeros((2, 2))
+        for r in steps:
+            m, step = 1.0 - 0.3 * r, 0.2 * r                  # the pull's and the slow mean's
+            weights = np.array([[m, 1.0 - m], [step * m, 1.0 - step * m]])
+            cov = weights @ cov @ weights.T + np.outer([1.0, step], [1.0, step]) * r * h
+            h += r * (0.05 - 0.05 * h)
+        return cov[0, 0]
+
+    def carried(steps, phi=0.817, lam=0.96875):
+        """The (b, mu) map the Linear law's sub-steps compose to, each the pull and then the slow
+        mean's step."""
+        total = np.eye(2)
+        for r in steps:
+            total = np.array([[1.0, 0.0], [r * (1.0 - lam), 1.0 - r * (1.0 - lam)]]) @ np.array(
+                [[1.0 - r * (1.0 - phi), r * (1.0 - phi)], [0.0, 1.0]]) @ total
+        return total
+
+    for time_grid in ('0d 1m(1m)', '0d 1d(1d)'):
+        assert abs(month(walk, time_grid, Batch_Size=65536).var() / f - 1.0) < 0.03, time_grid
+    assert abs(month(pull, '0d 1m(1m)', Batch_Size=65536).var() / location(substeps(f)) - 1.0) < 0.03
+
+    linear = {'Phi': 0.817, 'Nu': 5.0, 'Sigma': 0.0, 'Slow_Mean_Lambda': 0.96875, 'Mu_0': -2.35,
+              'Calibration_DT_Years': 1.0 / 252.0, 'Trading_Clock': 'Yes'}
+    still, moved = (month(dict(linear, A=a), '0d 1m(1m)', Batch_Size=4096, vol=0.3) for a in (0.0, 0.5))
+    spot, basis = still - still.mean(), moved - still - (moved - still).mean()
+    steps = substeps(f)
+    w = sum(r / f * (carried(steps[j + 1:]) @ [1.0, r * 0.03125])[0] for j, r in enumerate(steps))
+    assert abs((basis * spot).sum() / (spot * spot).sum() / (0.5 * w) - 1.0) < 1e-9, w
+
+    swap = {'Object': 'CommodityAveragePriceSwapDeal', 'Reference': 'APS', 'Currency': 'USD',
+            'Commodity': 'LBMA_AM.CME', 'Carry': 'PLATINUM_CARRY', 'Discount_Rate': 'USD-SOFR', 'Buy_Sell': 'Buy',
+            'Units': 1.0, 'Fixed_Price': 1630.0, 'Settlement_Date': {'.Timestamp': '2026-02-05'},
+            'Sampling_Data': [[{'.Timestamp': '2026-02-03'}, 0.0, 1.0]]}
+    mtm = _band_mtm(dict(linear, A=0.0, Sigma=0.5), deal=swap, Batch_Size=16384, Time_Grid='0d 1w(1w)',
+                    Dynamic_Scenario_Dates='Yes', **grid)
+    assert list(mtm.index.strftime('%m-%d')) == ['01-15', '01-22', '01-29', '02-03', '02-05', '02-06']
+    projected, realised = ((mtm.loc[day].values + 1630.0 - 1638.9 + 2.35) / -5.0
+                           for day in ('2026-01-15', '2026-02-03'))
+    kept = carried([r for days in (7, 7, 5) for r in substeps(days * 252.0 / 365.25)])[0, 0]
+    assert np.abs(projected - kept).max() < 1e-9, (projected[0], kept)
+    assert abs(realised.mean() - kept) < 0.005, (realised.mean(), kept)

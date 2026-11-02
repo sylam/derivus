@@ -4577,9 +4577,10 @@ class BasisLinkedSpotModel(StochasticProcess):
     `Sig2_0` the variance of the FIRST innovation - and both recursions are per-path state that
     forks with the path: `(key,'basis_mu')` and `(key,'basis_sig2')` publish what step t->t+1
     consumes, which is what `inner_fork_seed` hands an inner run as its t=0.
-    `Calibration_DT_Years` is metadata unless `Trading_Clock` scales every per-step rate by the
-    row's f = dt/dt_c. `reseed_from_path` runs both recursions along an observed path, holding
-    them across a forward-filled row under `Replay_Skips_Filled_Rows`.
+    `Calibration_DT_Years` is metadata unless `Trading_Clock` walks a row's f = dt/dt_c calibration
+    steps as sub-steps of at most one, each scaling every per-step rate by its length.
+    `reseed_from_path` runs both recursions along an observed path, holding them across a
+    forward-filled row under `Replay_Skips_Filled_Rows`.
 
     JSON config: `A` (concurrent dS loading), `Phi`, `Nu`, `Sigma_By_State` or flat `Sigma`,
     `Slow_Mean_Lambda`/`Mu_0`, `G_Omega`/`G_Alpha`/`G_Beta`/`Sig2_0`, `Calibration_DT_Years`,
@@ -4622,19 +4623,29 @@ class BasisLinkedSpotModel(StochasticProcess):
         '**Trading_Clock** the law is applied once per simulation step whatever its length.',
         '',
         "**Trading_Clock** Yes runs it on `GARCHSpotModel`'s trading clock: a row of $\\delta$ years is",
-        '$f=\\delta/\\delta_c$ calibration steps ($\\delta_c$ = **Calibration_DT_Years**), the innovation\'s variance',
-        'is $f$ times its own, and the pull ($\\beta$, or $1-\\phi$ on the Linear AR), the slow mean\'s step',
-        "$1-\\lambda$, the stress chain's two switching probabilities and the GARCH decay are $f$ times theirs,",
+        '$f=\\delta/\\delta_c$ calibration steps ($\\delta_c$ = **Calibration_DT_Years**), walked as sub-steps of at',
+        'most one, the whole steps and then the remainder (`utils.substep_schedule`). On a sub-step of $r\\le1$',
+        "steps the innovation's variance is $r$ times its own, and the pull ($\\beta$, or $1-\\phi$ on the Linear",
+        "AR), the slow mean's step $1-\\lambda$, the stress chain's two switching probabilities and the GARCH",
+        'decay are $r$ times theirs,',
         '',
-        '$$ \\sigma^2_{t+1}=\\sigma^2_t+f\\big(\\omega_b-(1-\\beta_b)\\sigma^2_t\\big)+\\alpha_b\\eta_t^2 $$',
+        '$$ \\sigma^2_{j+1}=\\sigma^2_j+r\\big(\\omega_b-(1-\\beta_b)\\sigma^2_j\\big)+\\alpha_b\\eta_j^2 $$',
         '',
-        "which is the law at $f=1$ and keeps **Mix_Q_Stress** and the GARCH's long-run variance for any $f$:",
-        'a calendar week on a daily grid is $7\\times252/365.25=4.83$ calibration steps rather than seven. Held',
-        'by `tests/test_chained_basis.py::test_a_calendar_week_on_the_trading_clock_carries_the_business_days_its_rows_span`.',
-        "Without **Replay_Skips_Filled_Rows** a replay updates each row at that row's own $f$, **Not gated**.",
-        'The projection a pricer reads (`basis_decay`) is the pair a row is simulated with,',
-        '$1-f(1-\\phi)$ and $1-f(1-\\lambda)$ at the $f$ of the grid\'s last row, every row\'s on a uniform grid.',
-        'Held by `tests/test_chained_basis.py::test_the_average_price_swap_projects_the_basis_at_the_rate_the_clock_simulates`.',
+        'which is the law at $r=1$ and keeps every probability in $[0,1]$, every pull at most its calibrated',
+        "one and the variance positive, so **Mix_Q_Stress** and the GARCH's long-run variance hold on any grid.",
+        "A row of more than one step draws fresh Gaussians whose length-weighted sum is the row's correlated",
+        "draw (`utils.substep_normals`), and shares the parent's move over the row among its sub-steps by",
+        'length, the seam conditioning on the first. A calendar week on a daily grid is',
+        '$7\\times252/365.25=4.83$ calibration steps rather than seven. Held by',
+        '`tests/test_chained_basis.py::test_a_calendar_week_on_the_trading_clock_carries_the_business_days_its_rows_span`',
+        'and `::test_a_coarse_row_on_the_trading_clock_walks_sub_steps_of_at_most_one_calibration_step`.',
+        "Without **Replay_Skips_Filled_Rows** a replay walks each row's sub-steps, the observed level landing",
+        "on the last and the earlier ones at their conditional means, the stress filter reading the row's",
+        "innovation once, **Not gated**. The projection a pricer reads (`basis_decay`) is each row's pair",
+        'composed over its sub-steps of $1-r(1-\\phi)$ and $1-r(1-\\lambda)$, and the average-price swap composes',
+        "the rows a fixing's projection spans. Held by",
+        '`tests/test_chained_basis.py::test_the_average_price_swap_projects_the_basis_at_the_rate_the_clock_simulates`',
+        'and `::test_a_coarse_row_on_the_trading_clock_walks_sub_steps_of_at_most_one_calibration_step`.',
         '',
         '**Replay_Skips_Filled_Rows** Yes replays a row on which the basis and its parent both repeat the',
         'previous row to the bit, as a forward fill writes a weekend or a holiday, as one on which no market',
@@ -4717,7 +4728,8 @@ class BasisLinkedSpotModel(StochasticProcess):
                       'end of the calibration sample'),
         F('Trading_Clock', 'Text', default='No', values=['Yes', 'No'],
           description='Yes runs every per-step rate of the law on the trading clock, a row of dt '
-                      'years being dt / Calibration_DT_Years calibration steps'),
+                      'years being dt / Calibration_DT_Years calibration steps walked in sub-steps of '
+                      'at most one'),
         F('Replay_Skips_Filled_Rows', 'Text', default='No', values=['Yes', 'No'],
           description='Yes replays a row repeating both the basis and its parent to the bit as one '
                       'on which no market time passed and every other row as one calibration step'),
@@ -4753,13 +4765,22 @@ class BasisLinkedSpotModel(StochasticProcess):
     def basis_decay(self):
         """AR(1) toward the (possibly slow-moving) mean: the declared Phi, and the slow mean's
         own lambda when that extension is on — absent IS off, as precalculate reads it. Under
-        `Trading_Clock` each is the simulated row's, 1 - f(1 - Phi) and 1 - f(1 - lambda) at the
-        f of the grid's last row, which is every row's on a uniform grid."""
+        `Trading_Clock` each is an array, entry k the pair of the step into row k + 1 composed
+        over its sub-steps, a sub-step of r calibration steps being 1 - r(1 - Phi) and
+        1 - r(1 - lambda)."""
         phi, lam = float(self.param['Phi']), float(self.param.get('Slow_Mean_Lambda', 0.0) or 0.0)
         if self.param.get('Trading_Clock', 'No') != 'Yes':
             return phi, lam
-        f = self.clock[-1]
-        return 1.0 - f * (1.0 - phi), (1.0 - f * (1.0 - lam) if lam else 0.0)
+        pairs = []
+        for steps in self.clock[1:]:
+            # the share of the deviation the level keeps, and the deviation's own decay
+            keep, decay = 1.0, 1.0
+            for r in steps:
+                p = 1.0 - r * (1.0 - phi)
+                keep, decay = keep - decay * (1.0 - p), decay * p * (1.0 - r * (1.0 - lam) if lam else 1.0)
+            pairs.append((keep, decay / keep))
+        phis, lams = np.array(pairs).T
+        return phis, (lams if lam else 0.0)
 
     def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
         """Precompute the OU basis parameters and the observed initial basis.
@@ -4812,13 +4833,13 @@ class BasisLinkedSpotModel(StochasticProcess):
             self.mix_stay_s = stay
             self.mix_enter = q * (1.0 - stay) / (1.0 - q)          # quiet->stress, stationarity
             self.mix_q, self.p0_stress = q, float(self.param.get('Mix_P0_Stress', q))
-        # per row the calibration steps it spans, f = dt/dt_c as GARCHSpotModel reads them; None
-        # is one step a row whatever its length, the law as calibrated
-        self.clock = [None] * self.scenario_horizon
+        # per row the sub-steps of at most one calibration step its f = dt/dt_c spans, as
+        # GARCHSpotModel walks them; (None,) is one step a row whatever its length, the law as calibrated
+        self.clock = [(None,)] * self.scenario_horizon
         if self.param.get('Trading_Clock', 'No') == 'Yes':
             tg_years = time_grid.time_grid_years
             dt = np.diff(np.hstack(([tg_years[0]], tg_years)))
-            self.clock = (dt / float(self.param.get('Calibration_DT_Years', 1.0 / 252.0))).tolist()
+            self.clock = utils.substep_schedule(dt / float(self.param.get('Calibration_DT_Years', 1.0 / 252.0)))
         self.skip_filled = self.param.get('Replay_Skips_Filled_Rows', 'No') == 'Yes'
         # b0 stays on the graph, unreshaped so inner MC can pass (B,)
         self.b0 = tensor
@@ -4845,11 +4866,12 @@ class BasisLinkedSpotModel(StochasticProcess):
                 f'shift would mis-anchor row 1 by (1−Phi)·b(0)')
         self.chain_t0_shift = p.reshape(-1) - self.b0.reshape(-1)
 
-    def _ds_linked(self, linked_path, t, k=None):
-        """The concurrent-dS drive of step t with the row-1 seam conditioning folded in on the
-        first market step, `k` counting them (t unless a replay skips filled rows) - shared by the
-        forward sim and the replay so the bias cannot drift between them."""
-        ds = self.A * (linked_path[t] - linked_path[t - 1])
+    def _ds_linked(self, linked_path, t, k=None, share=1.0):
+        """The concurrent-dS drive of step t, `share` of the parent's move over it on a sub-step,
+        with the row-1 seam conditioning folded in on the first market step, `k` counting them (t
+        unless a replay skips filled rows, 0 past a step's first sub-step) - shared by the forward
+        sim and the replay so the bias cannot drift between them."""
+        ds = share * self.A * (linked_path[t] - linked_path[t - 1])
         if (t if k is None else k) == 1 and self.chain_t0_shift is not None:
             s = self.chain_t0_shift
             ds = ds + (s.view(-1, 1) if ds.dim() == 2 and s.numel() > 1 else s)
@@ -4864,7 +4886,8 @@ class BasisLinkedSpotModel(StochasticProcess):
         One loop covers outer (T, B) and inner (T, B, B2) - every expression broadcasts, so only
         `b_init` needs the mode. The two extensions are the two `if`s inside it, and with both
         off the else arms are the shipped expression in the shipped order. Neither recursion
-        draws: `W` is sampled once and the GARCH arm reuses the same `Z`/`W` element.
+        draws: `W` is sampled once and the GARCH arm reuses the same `Z`/`W` element. A clocked
+        step of more than one calibration step draws its sub-steps' own (`_walk`).
         """
         self._chain_shift(shared_mem)
         # Z is (T, B) outer / (T, B, B2) inner, correlated.
@@ -4896,9 +4919,9 @@ class BasisLinkedSpotModel(StochasticProcess):
         inner = Z.ndim == 3
         T, batch = Z.shape[0], Z.shape[1:]
         # floored, the same inf/NaN guard as the linked spot
-        W = torch.distributions.Chi2(shared_mem.one.new_tensor(nu), validate_args=False).sample(Z.shape).clamp_min(1.0e-6)
-        scale = torch.sqrt((nu - 2.0) / W)
-        eta = None if self.garch or self.band else sigma_t * Z * scale
+        chi2 = torch.distributions.Chi2(shared_mem.one.new_tensor(nu), validate_args=False)
+        scale = torch.sqrt((nu - 2.0) / chi2.sample(Z.shape).clamp_min(1.0e-6))
+        sigma = None if self.garch or self.band else torch.broadcast_tensors(sigma_t, Z)[0]
         out = torch.empty(Z.shape, device=device, dtype=dtype)
         out[0] = self.b0.unsqueeze(-1).expand(batch) if inner else self.b0.expand(batch)
         # Per-path recursion state, seeded from the inner fork / burn-in when either published one.
@@ -4922,26 +4945,37 @@ class BasisLinkedSpotModel(StochasticProcess):
             regime_path = torch.empty(Z.shape, device=device, dtype=dtype)
             regime_path[0] = s
 
-        def drawn(mean, s2):
-            """Forward sim: eta is DRAWN - regime-scaled Gaussian under the band mixture,
-            rescaled by the live sigma^2 under GARCH (the mixture's too), else already scaled."""
+        def drawn(mean, s2, j):
+            """Forward sim: sub-step j's eta is DRAWN - regime-scaled Gaussian under the band
+            mixture, its state moved first, rescaled by the live sigma^2 under GARCH (the
+            mixture's too), else t-scaled."""
+            nonlocal s
             if self.band:
-                eta_t = self.mix_sig2[s.long()].sqrt() * Z[t]
+                stay, enter = self._switching(steps[j])
+                s = torch.where(s > 0.5, (u[j] < stay).to(dtype), (u[j] < enter).to(dtype))
+                eta_t = self.mix_sig2[s.long()].sqrt() * z[j]
                 if self.garch:
                     eta_t = s2.sqrt() * eta_t
             else:
-                eta_t = s2.sqrt() * Z[t] * scale[t] if self.garch else eta[t]
-            if self.clock[t] is not None:
-                eta_t = eta_t * self.clock[t] ** 0.5
+                eta_t = s2.sqrt() * z[j] * w[j] if self.garch else sigma[t] * z[j] * w[j]
+            if steps[j] is not None:
+                eta_t = eta_t * steps[j] ** 0.5
             return eta_t, mean + eta_t
 
         for t in range(1, T):
+            steps, z, w = self.clock[t], Z[t:t + 1], scale[t:t + 1]
+            u = None if u_regime is None else u_regime[t:t + 1]
+            if len(steps) > 1:
+                # fresh draws whose length-weighted sum is the step's framework draw, so the
+                # declared correlation holds over the step, as GARCHSpotModel's coarse step
+                z = utils.substep_normals(Z.new_tensor(steps).sqrt().view(-1, *(1,) * len(batch)).expand(
+                    len(steps), *batch), Z[t])
+                w = None if self.band else torch.sqrt((nu - 2.0) / chi2.sample(z.shape).clamp_min(1.0e-6))
+                u = None if u is None else torch.cat([u, torch.rand(
+                    (len(steps) - 1, *batch), dtype=u.dtype, device=u.device)])
+            out[t], mu, sig2 = self._walk(mu, sig2, out[t - 1], linked_path, t, None, steps, drawn)
             if self.band:
-                stay, enter = self._switching(self.clock[t])
-                s = torch.where(s > 0.5, (u_regime[t] < stay).to(dtype), (u_regime[t] < enter).to(dtype))
                 regime_path[t] = s
-            out[t], mu, sig2 = self._advance(
-                mu, sig2, out[t - 1], self._ds_linked(linked_path, t), drawn, self.clock[t])
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
@@ -4957,9 +4991,9 @@ class BasisLinkedSpotModel(StochasticProcess):
         conditional mean. Returning both is what makes the replayed mu exact - rebuilding `b` as
         `mean + (b - mean)` would be one rounding off the observed level.
 
-        `f` is the step's length in calibration steps under `Trading_Clock`: the pull, the slow
-        mean's step and the GARCH decay are f times the calibrated one's, the variance of eta f
-        times its own (the innovation's to scale), `GARCHSpotModel`'s clock.
+        `f` is the sub-step's length, at most one calibration step, under `Trading_Clock`: the
+        pull, the slow mean's step and the GARCH decay are f times the calibrated one's, the
+        variance of eta f times its own (the innovation's to scale), `GARCHSpotModel`'s clock.
 
         Returns `(b_t, mu_{t+1}, sigma^2_{t+1})`, both states in the published fork-index
         convention. Each extension's off arm returns its state untouched."""
@@ -4980,6 +5014,18 @@ class BasisLinkedSpotModel(StochasticProcess):
                 mu + f * (1.0 - self.lam) * (b - mu) if self.slow_mean else mu,
                 sig2 + f * (self.g_omega - (1.0 - self.g_beta) * sig2) + self.g_alpha * eta * eta
                 if self.garch else sig2)
+
+    def _walk(self, mu, sig2, prev, linked_path, t, k, steps, innovation):
+        """Step t as its sub-steps `steps` (`(None,)` the step as calibrated): `_advance` on
+        each in turn, the parent's move over the step shared among them by length and the seam
+        conditioning on the first, `innovation(mean, sig2, j)` sub-step j's supplier. Shared by
+        the forward sim and the replay; returns `(b_t, mu, sigma^2)` after the last."""
+        for j, f in enumerate(steps):
+            prev, mu, sig2 = self._advance(
+                mu, sig2, prev, self._ds_linked(linked_path, t, k if j == 0 else 0,
+                                                1.0 if f is None else f / sum(steps)),
+                lambda mean, s2: innovation(mean, s2, j), f)
+        return prev, mu, sig2
 
     def _switching(self, f):
         """`(P(stress | stress), P(stress | quiet))` over a step of f calibration steps: the
@@ -5059,7 +5105,8 @@ class BasisLinkedSpotModel(StochasticProcess):
         the published regime hold their state, and the next market row is updated as one
         calibration step whatever `Trading_Clock` says, its regime drawn off the quasi stream at
         its count of market rows, as on the path without the filled rows. Without the rule a
-        clocked replay reads each row at the forward's f."""
+        clocked replay walks each row's sub-steps as the forward does, the observed level landing
+        on the last."""
         self._chain_shift(shared_mem)
         if not (self.slow_mean or self.garch):
             return
@@ -5094,8 +5141,11 @@ class BasisLinkedSpotModel(StochasticProcess):
             sq2, ss2 = self.mix_sig2[0], self.mix_sig2[1]
             last_eta = [None]
 
-        def realised(mean, s2):
-            """Replay: the level is DATA and eta is its deviation from the conditional mean."""
+        def realised(mean, s2, j):
+            """Replay: the level is DATA and eta is its deviation from the conditional mean, on
+            the step's last sub-step - the earlier ones, unobserved, at their conditional means."""
+            if j < len(steps) - 1:
+                return torch.zeros_like(mean), mean
             eta_t = obs[t] - mean
             if self.band:
                 last_eta[0] = eta_t / s2.sqrt() if self.garch else eta_t
@@ -5111,17 +5161,19 @@ class BasisLinkedSpotModel(StochasticProcess):
             k += 1
             # a market row the skip rule finds carries one business day: the clock's uniform f
             # is the simulation's spreading of five business days over seven calendar rows
-            f = None if self.skip_filled else self.clock[t]
-            _, mu, sig2 = self._advance(
-                mu, sig2, obs[t - 1], self._ds_linked(linked_path, t, k), realised, f)
+            steps = (None,) if self.skip_filled else self.clock[t]
+            _, mu, sig2 = self._walk(mu, sig2, obs[t - 1], linked_path, t, k, steps, realised)
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
                 sig2_path[t] = sig2
             if self.band:
-                stay, enter = self._switching(f)
-                eta2 = last_eta[0] * last_eta[0] if f is None else last_eta[0] * last_eta[0] / f
-                prior = p * stay + (1.0 - p) * enter
+                # the chain moves through every sub-step, and the step's innovation is read once
+                prior = p
+                for f in steps:
+                    stay, enter = self._switching(f)
+                    prior = prior * stay + (1.0 - prior) * enter
+                eta2 = last_eta[0] * last_eta[0] if steps[0] is None else last_eta[0] * last_eta[0] / sum(steps)
                 lq = torch.exp(-0.5 * eta2 / sq2) / sq2.sqrt()
                 ls = torch.exp(-0.5 * eta2 / ss2) / ss2.sqrt()
                 p = prior * ls / (prior * ls + (1.0 - prior) * lq)

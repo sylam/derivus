@@ -424,8 +424,9 @@ def get_observed_basis_decay(commodity, all_factors):
     deviation decays at `lam*phi` toward the pair's conserved mixture rather than at `phi` toward
     the mean. `mu` is the spot-shaped code reading the `(key, 'basis_mu')` series the process
     publishes, `None` when the recursion is off. A tail nothing simulates has no dynamics, so
-    `phi = 1` leaves it where it is. The declared parameters ride `Factor_dep` as plain floats, not
-    AAD leaves. Valid inside an inner-MC fork, which republishes every path series.
+    `phi = 1` leaves it where it is. The declared parameters ride `Factor_dep` as plain floats, or
+    arrays of one per step where the law states one, not AAD leaves. Valid inside an inner-MC fork,
+    which republishes every path series.
     """
     if len(commodity) < 2 or not commodity[-1][utils.FACTOR_INDEX_Stoch]:
         return 1.0, 0.0, None
@@ -433,7 +434,7 @@ def get_observed_basis_decay(commodity, all_factors):
     # the PROCESS declares its own decay pair (`basis_decay`) - one model per payoff: a basis
     # law that cannot state the (phi, lam) projection raises there, never prices as another's
     phi, lam = all_factors[key].basis_decay()
-    return phi, lam, ([(True, (key, 'basis_mu'), None)] if lam else None)
+    return phi, lam, ([(True, (key, 'basis_mu'), None)] if np.any(lam) else None)
 
 
 def get_equity_rate_factor(fieldname, static_offsets, stochastic_offsets):

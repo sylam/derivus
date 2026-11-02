@@ -6415,7 +6415,8 @@ def pv_average_price_swap(shared, time_grid, deal_data):
 
     ``n_j`` counts SIMULATION STEPS between the two rows, fractionally, a simulation step being what
     the basis model applies ``Phi`` to; calendar days or calibration steps project a different model
-    from the one being simulated.
+    from the one being simulated. A law stating a pair per step (``Trading_Clock``) composes them
+    over the steps the projection spans.
 
     Both halves carry the same normalised weights, so ``K`` comes off the average once.
     """
@@ -6453,12 +6454,10 @@ def pv_average_price_swap(shared, time_grid, deal_data):
         repo.gather_weighted_curve(shared, tau))
 
     if factor_dep['Basis']:
-        # steps, not days: the fractional scenario position of the fixing less that of the row
-        steps = np.clip(
-            (dual.np[:, utils.RESET_INDEX_Scenario] +
-             dual.np[:, utils.RESET_INDEX_Time_Grid]).reshape(1, -1) -
-            (deal_time[:, utils.TIME_GRID_ScenarioPriorIndex] +
-             deal_time[:, utils.TIME_GRID_PriorScenarioDelta]).reshape(-1, 1), 0.0, None)
+        # steps, not days: the fractional scenario positions of the row and of the fixing
+        start = (deal_time[:, utils.TIME_GRID_ScenarioPriorIndex] +
+                 deal_time[:, utils.TIME_GRID_PriorScenarioDelta]).reshape(-1, 1)
+        end = (dual.np[:, utils.RESET_INDEX_Scenario] + dual.np[:, utils.RESET_INDEX_Time_Grid]).reshape(1, -1)
         basis = utils.calc_time_grid_spot_rate(factor_dep['Basis'], deal_time, shared).unsqueeze(1)
         phi = factor_dep['Basis_Phi']
         if factor_dep['Basis_Mu']:
@@ -6468,9 +6467,22 @@ def pv_average_price_swap(shared, time_grid, deal_data):
             # share pi_b of itself forever rather than dying
             lam = factor_dep['Basis_Lambda']
             pi_b = (1.0 - lam) * phi / ((1.0 - lam) * phi + 1.0 - phi)
-            decay = pi_b + (1.0 - pi_b) * (lam * phi) ** steps
+            fall = lam * phi
         else:
-            mean, decay = 0.0, phi ** steps
+            mean, pi_b, fall = 0.0, 0.0 * phi, phi
+        if np.ndim(fall):
+            # a pair per step: composed backward from each fixing, a fraction x of a step
+            # keeping pi_b + (1 - pi_b) fall^x of the deviation
+            n = fall.size
+            kept = np.ones((n + 1, end.size))
+            for k in range(n - 1, -1, -1):
+                piece = fall[k] ** np.clip(end[0] - k, 0.0, 1.0)
+                kept[k] = piece * kept[k + 1] + pi_b[k] * (1.0 - piece)
+            row = np.minimum(np.floor(start[:, 0]), n - 1).astype(int)
+            piece = fall[row, None] ** np.clip(end - start, 0.0, row[:, None] + 1.0 - start)
+            decay = piece * kept[row + 1] + pi_b[row, None] * (1.0 - piece)
+        else:
+            decay = pi_b + (1.0 - pi_b) * fall ** np.clip(end - start, 0.0, None)
         projected = projected + mean + spot.new_tensor(decay).unsqueeze(-1) * (basis - mean)
 
     n = realised.shape[0]
