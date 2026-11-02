@@ -3310,6 +3310,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'pathwise label, the repositioning charge\'s, under '
                                   'DiffV2_Position_State; No leaves that column to the value '
                                   'term alone'),
+                    F('DiffV2_State_Gradient_Label', 'Text', default='No', values=['Yes', 'No'],
+                      description='Yes labels every revealed market column with its pathwise '
+                                  'slope in the coordinates the value net reads it, leaving one no '
+                                  'leaf measures to the value term; No labels a column without a '
+                                  'leaf zero'),
                     F('DiffV2_Bank_Along_Ladder', 'Text', default='No', values=['Yes', 'No'],
                       description='Yes holds every DiffSolverV2 training-bank book as a rung of '
                                   'the ladder on its live legs, its exploration '
@@ -3567,6 +3572,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # per run, so outer rows and fork reveals share a coordinate system across epochs
         self._returns_state = (hedging_problem.get('Solver') or {}).get(
             'DiffV2_Returns_State', 'No') == 'Yes'
+        self._state_labels = (hedging_problem.get('Solver') or {}).get(
+            'DiffV2_State_Gradient_Label', 'No') == 'Yes'
         self._state_spot0 = None
         if self._returns_state:
             price_keys = [k for k in self.stoch_factors if k.type == 'CommodityPrice']
@@ -3991,7 +3998,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 # process may seed a factor that generates before it in topological order
                 for key, proc_inner in live_procs:
                     for seed_key, seed_val in proc_inner.inner_fork_seed(
-                            key, outer_scenario_buffer, t).items():
+                            key, outer_scenario_buffer, t,
+                            state_t_leaves if self._state_labels else None).items():
                         shared_mem.t_Scenario_Buffer[seed_key] = seed_val
                 self._publish_print_seeds(live_procs, fork_state, 0, shared_mem)
                 for key, proc_inner in live_procs:
@@ -4084,6 +4092,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 market_t1 = torch.cat(market_t1_parts, dim=0).permute(1, 2, 0).contiguous()
                 market_t_parts = []
                 market_t_widths = []
+                label_scale = []
                 for key in self.stoch_factors_inner:
                     if key.type in utils.DimensionLessFactors:
                         continue
@@ -4093,9 +4102,16 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                         b = self._reveal_transform(key, block, _kind).reshape(-1, B_outer)
                         market_t_parts.append(b)
                         width += b.shape[0]
+                        if with_grad and self._state_labels:
+                            # d(revealed)/d(column): a leaf's slope times it is the slope in the
+                            # column the net reads, under the returns state too
+                            x = block.detach().reshape(-1, B_outer).clone().requires_grad_(True)
+                            label_scale.append(1.0 / torch.autograd.grad(
+                                self._reveal_transform(key, x, _kind).sum(), x)[0])
                     # the process's differentiable-state-leaf suffixes, so the solver's label
                     # projection maps leaf grads to market columns with no model concept
-                    market_t_widths.append((key, width, tuple(proc_inner.diff_state_leaves())))
+                    market_t_widths.append(
+                        (key, width, tuple(proc_inner.diff_state_leaves(self._state_labels))))
                 market_t = torch.cat(market_t_parts, dim=0).permute(1, 0).contiguous()
                 # exact liability MTM at outer-t and outer-t+1 on the inner draws (same time
                 # indexing as F_t1) - not a Jacobian linearization
@@ -4110,6 +4126,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 if with_grad:
                     result['state_t_leaves'] = state_t_leaves
                     result['state_t_leaf_widths'] = market_t_widths
+                    if self._state_labels:
+                        result['market_t_label_scale'] = torch.cat(label_scale).permute(1, 0)
             finally:
                 # restore on ANY exit - a mid-fork raise must not leave the state flat-sized
                 shared_mem.simulation_batch = borrowed_batch

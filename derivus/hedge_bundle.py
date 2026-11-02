@@ -369,6 +369,10 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # standing book joins the twin loss. 'No' = the column fitted by the value term alone.
         "diffv2_book_gradient_label":
             solver_config.get("DiffV2_Book_Gradient_Label", "No") == "Yes",
+        # Every revealed market column labelled in the coordinates the net reads it, a column no
+        # leaf measures left to the value term. 'No' = such a column labelled zero.
+        "diffv2_state_gradient_label":
+            solver_config.get("DiffV2_State_Gradient_Label", "No") == "Yes",
         # The DiffSolverV2 bank's books as rungs of the ladder on its live legs, the noise on the
         # net. 'No' = the net water-filled onto the replication hedge's shape over the active legs.
         "diffv2_bank_along_ladder":

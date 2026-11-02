@@ -1048,3 +1048,54 @@ def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, cap
     with pytest.raises(ValueError, match=re.escape(
             f"checkpoint mismatch on 'md': {hidden} saved {plain['market_dim']} vs this run {plain['market_dim'] + 1}")):
         _run(_band_state(path, reveal='Yes', garch=False, load=hidden))
+
+
+def _state_labels(caplog, label=None, returns=False):
+    """`_cfg` swept over its last five decision steps at 200 fit iterations, its basis `SLOW_BASIS`
+    on `OWN_GARCH` revealing its band state, stating `DiffV2_State_Gradient_Label` `label` where
+    given: each fitted step's `(slope, label)` bank means per market column, from the debug line."""
+    cfg = _cfg(seed=7)
+    solver = cfg['Calc']['Calculation']['Hedging_Problem']['Solver']
+    solver['T_Min'], solver['DiffV2_Fit_Iters'] = LAST_STEP - 4, 200
+    if label is not None:
+        solver['DiffV2_State_Gradient_Label'] = label
+    if returns:
+        solver['DiffV2_Returns_State'] = 'Yes'
+    cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
+        'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': dict(SLOW_BASIS, **OWN_GARCH, Reveal_Band_State='Yes')}
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        _run(cfg)
+    rows = (r.getMessage().split(' ', 2) for r in caplog.records if r.getMessage().startswith('STATE_LABEL '))
+    return {int(t): (np.array(v['slope']), np.array(v['label']))
+            for t, v in ((t, ast.literal_eval(body)) for _, t, body in rows)}
+
+
+def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(caplog):
+    """Under `DiffV2_State_Gradient_Label` 'Yes' the gradient fork is seeded from leaves at the
+    basis's revealed deviation D = b - mu and log sigma^2, mu the level leaf less D, so each column's
+    label is its slope at the others fixed: D's -dY/dmu, the level's dY/db + dY/dmu. On the fixture
+    under the band (D the 7th market column, log sigma^2 the 8th, the level the 9th), over the five
+    swept steps: without the field D and log sigma^2 are labelled 0 on every step and the fitted
+    slope in D sums to 2.8e-6, 0.2% of the label's 1.34e-3 under it; under it the fitted slopes in
+    D and log sigma^2 sum within 4.3% and 6.2% of their labels (bound 15%: the twin loss meets a
+    label in the bank mean of 24 states beside the value term, not exactly). At the last step,
+    whose continuation is the closed-form utility in both runs, the level's label is the
+    field-free one (dY/db at fixed mu) less D's to 1e-5, and under `DiffV2_Returns_State`, whose
+    columns are fractions of the 2,055 t0 spot, all three are 2,055 times the plain ones. 14 s.
+
+    Killing mutations: the leaves not made (D's label 0); mu seeded off the outer level rather than
+    the level leaf (the level's label the field-free one); the seeds detached from their leaves
+    (D's label 0); the returns state's map dropped (ratio 1)."""
+    off, on = _state_labels(caplog), _state_labels(caplog, 'Yes')
+    rs = _state_labels(caplog, 'Yes', returns=True)
+    (slope_off, _), (slope_on, label_on) = ((sum(run[t][0] for t in run), sum(run[t][1] for t in run))
+                                            for run in (off, on))
+    assert all((off[t][1][6:8] == 0.0).all() for t in off)
+    assert abs(slope_off[6]) < 0.01 * label_on[6], (slope_off[6], label_on[6])
+    for col in (6, 7):
+        assert label_on[col] > 0.0 and abs(slope_on[col] / label_on[col] - 1.0) < 0.15, \
+            (col, slope_on[col], label_on[col])
+    last = on[LAST_STEP][1]
+    assert abs(last[8] - (off[LAST_STEP][1][8] - last[6])) < 1e-5 * abs(last[8]), (last, off[LAST_STEP][1])
+    assert np.allclose(rs[LAST_STEP][1][6:9], 2055.0 * last[6:9], rtol=1e-5, atol=0.0), (rs[LAST_STEP][1], last)

@@ -585,12 +585,17 @@ class StochasticProcess(object):
     # Model-agnostic seed/publish protocol - the only verbs the calc speaks. SEEDS run before
     # ANY generate (`inner_fork_seed`, `print_seed`, `outer_reseed`) and read only the handed
     # state; PUBLICATIONS run after a generate/replay and re-derive revealed state along a path.
-    def inner_fork_seed(self, factor_key, outer_buf, t):
+    def inner_fork_seed(self, factor_key, outer_buf, t, leaves=None):
         """Buffer entries seeding this process's inner-MC fork at outer time `t` from the
         outer path — the per-outer-path t=0 privileged sufficient statistic the fork reprices
         from (regime for the HMM, conditional variance for GARCH). Keyed by the buffer key the
         process's `generate` consumes, so the forker runs one uniform loop across process types
-        instead of type-branching. Default: nothing to seed."""
+        instead of type-branching. Default: nothing to seed.
+
+        `leaves`, the gradient fork's leaf dict holding the level at `factor_key`, asks for the
+        seeds built from leaves at the coordinates `reveal_state_at` shows before the level, added
+        to it under `diff_state_leaves(True)`, so each column's label is its slope at the others
+        fixed."""
         return {}
 
     def print_seed(self, factor_key, state, t):
@@ -630,11 +635,12 @@ class StochasticProcess(object):
         when `with_grad`. Default: nothing to publish, no leaves."""
         return {}
 
-    def diff_state_leaves(self):
+    def diff_state_leaves(self, revealed=False):
         """Ordered buffer-key suffixes of this process's DIFFERENTIABLE state coordinates — the
         market columns (before the trailing price) the twin loss supervises via a state leaf
-        rather than the raw factor leaf. The solver reads this to project leaf grads into market
-        columns without knowing any model concept. Default: none (price-only / masked state)."""
+        rather than the raw factor leaf, with `revealed` those `inner_fork_seed` makes leaves of.
+        The solver reads this to project leaf grads into market columns without knowing any model
+        concept. Default: none (price-only / masked state)."""
         return ()
 
     def forward_curve(self, tensor, time_grid_years, shared, mul_time=True, floor=0.0):
@@ -2778,7 +2784,7 @@ class MarkovHMMSpotModel(StochasticProcess):
                 .to(dtype=buffer[key].dtype).movedim(-1, 0)                   # (n_states, ...batch)
         return [(block, REVEAL_SUFFICIENT), (price, REVEAL_CONTINUOUS)]
 
-    def inner_fork_seed(self, factor_key, outer_buf, t):
+    def inner_fork_seed(self, factor_key, outer_buf, t, leaves=None):
         """Per-outer-path t=0 regime seed: the regime at the fork step, read by generate()'s
         `regime0_inner` hook so the inner fan-out continues the forked path's regime instead
         of redrawing from π_0."""
@@ -2822,7 +2828,7 @@ class MarkovHMMSpotModel(StochasticProcess):
                 bool(torch.allclose(sums, torch.ones_like(sums), atol=1.0e-4)))
         return leaves
 
-    def diff_state_leaves(self):
+    def diff_state_leaves(self, revealed=False):
         return ('regime_belief',)
 
     def calibrated_annual_vol(self):
@@ -3496,9 +3502,11 @@ class GARCHSpotModel(StochasticProcess):
         # underflow threshold, where exp() returns 0.0 and breaks the price invariant
         spot_path = log_path.clamp_min(-10.0).exp()
 
-        # revealed state, DETACHED (a state coordinate, not differentiated through) and B-last so
-        # the buffer's dim=-1 concat works; the (T, B) form is stashed for privileged_factors
-        shared_mem.t_Scenario_Buffer[(self.factor_key, 'garch_log_h')] = log_h.detach().unsqueeze(1)
+        # revealed state, DETACHED (a state coordinate, not differentiated through) unless its seed
+        # is a leaf of the gradient fork, and B-last so the buffer's dim=-1 concat works; the
+        # (T, B) form is stashed for privileged_factors
+        shared_mem.t_Scenario_Buffer[(self.factor_key, 'garch_log_h')] = (
+            log_h if h0 is not None and h0.requires_grad else log_h.detach()).unsqueeze(1)
         self.last_log_h = log_h.detach()
         return spot_path
 
@@ -3525,11 +3533,18 @@ class GARCHSpotModel(StochasticProcess):
             block = torch.full_like(price, self._log_lr_var)
         return [(block, REVEAL_SUFFICIENT), (price, REVEAL_CONTINUOUS)]
 
-    def inner_fork_seed(self, factor_key, outer_buf, t):
+    def inner_fork_seed(self, factor_key, outer_buf, t, leaves=None):
         """Per-outer-path t=0 conditional-variance seed: h0_inner = exp(outer log h_t), so the
         inner fan-out reprices from the forked path's vol state, not the calibrated H0. Without
-        it the one-step bootstrap labels are wrong (repriced from the base-date variance)."""
-        return {(factor_key, 'h0_inner'): outer_buf[(factor_key, 'garch_log_h')][t].reshape(-1).exp()}
+        it the one-step bootstrap labels are wrong (repriced from the base-date variance). With
+        `leaves`, log h_t is the leaf `garch_log_h`."""
+        log_h = outer_buf[(factor_key, 'garch_log_h')][t].reshape(-1)
+        if leaves is not None:
+            log_h = leaves[(factor_key, 'garch_log_h')] = log_h.detach().clone().requires_grad_(True)
+        return {(factor_key, 'h0_inner'): log_h.exp()}
+
+    def diff_state_leaves(self, revealed=False):
+        return ('garch_log_h',) if revealed else ()
 
     def outer_reseed(self):
         """t=0 conditional-variance seed for the next outer run's burn-in: terminal h of this run."""
@@ -5139,16 +5154,36 @@ class BasisLinkedSpotModel(StochasticProcess):
             state.append((buffer[(self.factor_key, 'basis_sig2')][t].log(), REVEAL_SUFFICIENT))
         return state + [(level, REVEAL_CONTINUOUS)]
 
-    def inner_fork_seed(self, factor_key, outer_buf, t):
+    def inner_fork_seed(self, factor_key, outer_buf, t, leaves=None):
         """Per-outer-path seeds for the two observable recursions, read at the fork row so the
         inner fan-out continues the forked path's state rather than restarting from `Mu_0`/
         `Sig2_0`. Both published arrays hold what step t->t+1 consumes, which IS the inner run's
         step 0->1, so the fork is an index read. Detached: the inner tape differentiates back to
-        its own `state_t` leaves, never through the outer path."""
-        return {(factor_key, seed): outer_buf[(factor_key, kind)][t].detach()
-                for kind, seed in (('basis_mu', 'mu0_inner'), ('basis_sig2', 'sig20_inner'),
-                                   ('basis_regime', 'regime0_inner'))
-                if (factor_key, kind) in outer_buf}
+        its own `state_t` leaves, never through the outer path.
+
+        With `leaves` under `Reveal_Band_State` the revealed b_t - mu_t and log sigma^2_t are the
+        leaves `basis_dev` and `basis_log_sig2`, mu_t the level leaf less the deviation. Without
+        a slow mean the deviation is the level, no coordinate of its own, and has no leaf."""
+        seeds = {(factor_key, seed): outer_buf[(factor_key, kind)][t].detach()
+                 for kind, seed in (('basis_mu', 'mu0_inner'), ('basis_sig2', 'sig20_inner'),
+                                    ('basis_regime', 'regime0_inner'))
+                 if (factor_key, kind) in outer_buf}
+        if leaves is None or not self.diff_state_leaves(True):
+            return seeds
+        if self.slow_mean:
+            dev = leaves[(factor_key, 'basis_dev')] = (
+                outer_buf[factor_key][t].detach() - seeds[(factor_key, 'mu0_inner')]).requires_grad_(True)
+            seeds[(factor_key, 'mu0_inner')] = leaves[factor_key] - dev
+        if self.garch:
+            log_sig2 = leaves[(factor_key, 'basis_log_sig2')] = \
+                seeds[(factor_key, 'sig20_inner')].log().requires_grad_(True)
+            seeds[(factor_key, 'sig20_inner')] = log_sig2.exp()
+        return seeds
+
+    def diff_state_leaves(self, revealed=False):
+        if not revealed or self.param.get('Reveal_Band_State', 'No') != 'Yes':
+            return ()
+        return ('basis_dev',) + (('basis_log_sig2',) if self.garch else ())
 
     def outer_reseed(self):
         """t=0 seeds for the next outer run's burn-in: this run's terminal mean / variance state,
@@ -6668,7 +6703,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
                                  torch.zeros_like(price)]))
         return [(block, REVEAL_SUFFICIENT), (price, REVEAL_CONTINUOUS)]
 
-    def inner_fork_seed(self, factor_key, outer_buf, t):
+    def inner_fork_seed(self, factor_key, outer_buf, t, leaves=None):
         """The outer path's `(ell_t, s_t)`, which the OSS kit's walk starts its row from instead of
         re-seeding it at `(L*(t_row), 0)` - the carried state phase 3 adds."""
         return {(factor_key, name): outer_buf[(factor_key, series)][t].reshape(-1)
