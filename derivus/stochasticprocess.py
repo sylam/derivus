@@ -5397,7 +5397,7 @@ class BasisLinkedSpotCalibration(object):
         '',
         '| Fit | Fields |',
         '|---|---|',
-        '| every fit | `A`, `Phi`, `Nu`, `Calibration_DT_Years` 1/252, and `Trading_Clock` and `Replay_Skips_Filled_Rows` as the configuration states them |',
+        '| every fit | `A`, `Phi`, `Nu`, `Calibration_DT_Years` 1/252, and `Trading_Clock`, `Replay_Skips_Filled_Rows` and `Reveal_Band_State` as the configuration states them |',
         "| default, or joint without GARCH | `Sigma_By_State`, the terciles above applied to that fit's $\\eta$ |",
         '| joint with GARCH [@bollerslev1986] | `Sigma` $=\\mathrm{sd}(\\eta)$, `G_Omega`, `G_Alpha`, `G_Beta`, `Sig2_0` (the conditional variance of the last observation) |',
         "| with a span | `Slow_Mean_Lambda` $=\\lambda$, `Mu_0` the mean at the sample's end |",
@@ -5419,7 +5419,7 @@ class BasisLinkedSpotCalibration(object):
         '| `GARCH_Innovation` | No |',
         '| `Reversion_Model` | `Linear` |',
         '| `Basis_Scale_Window` | 0 (off) |',
-        '| `Trading_Clock`, `Replay_Skips_Filled_Rows` | not written |',
+        '| `Trading_Clock`, `Replay_Skips_Filled_Rows`, `Reveal_Band_State` | not written |',
         '',
         '**Limitations.**',
         '',
@@ -5467,7 +5467,9 @@ class BasisLinkedSpotCalibration(object):
         F('Trading_Clock', 'Text', default='No', values=['Yes', 'No'],
           description='Stamped onto the fitted block when stated, the process\'s switch of that name'),
         F('Replay_Skips_Filled_Rows', 'Text', default='No', values=['Yes', 'No'],
-          description='Stamped onto the fitted block when stated, the process\'s switch of that name')
+          description='Stamped onto the fitted block when stated, the process\'s switch of that name'),
+        F('Reveal_Band_State', 'Text', default='No', values=['Yes', 'No'],
+          description="Stamped onto the fitted block when stated, the process's switch of that name")
     ]
 
     def __init__(self, model, param):
@@ -5476,10 +5478,11 @@ class BasisLinkedSpotCalibration(object):
         self.num_factors = 1
 
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
-        """The fit, with the process's two switches the calibration config states stamped onto
-        its block as stated; the fit itself is per calibration step either way."""
+        """The fit, with the process's switches the calibration config states stamped onto its
+        block as stated; the fit itself is per calibration step either way."""
         info = self._fit(data_frame, num_business_days)
-        info.param.update({key: self.param[key] for key in ('Trading_Clock', 'Replay_Skips_Filled_Rows')
+        info.param.update({key: self.param[key] for key in
+                           ('Trading_Clock', 'Replay_Skips_Filled_Rows', 'Reveal_Band_State')
                            if key in self.param})
         return info
 

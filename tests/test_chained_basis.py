@@ -573,8 +573,8 @@ def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alo
     assert 'Basis_Scale_Window' in caplog.text, caplog.text
 
 
-#: The process's two switches as a calibration document states them.
-SWITCHES = {'Trading_Clock': 'Yes', 'Replay_Skips_Filled_Rows': 'Yes'}
+#: The process's switches as a calibration document states them.
+SWITCHES = {'Trading_Clock': 'Yes', 'Replay_Skips_Filled_Rows': 'Yes', 'Reveal_Band_State': 'Yes'}
 
 HEDGE_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
                              'policy_test_simulate_only.json')
@@ -605,8 +605,8 @@ def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None):
 
 @pytest.mark.parametrize('garch', ['No', 'Yes'])
 def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_path, caplog, garch):
-    """A calibration document stating both switches, on an archive drawn as the scale-window test's
-    and under `GARCH_Innovation` 'No' and 'Yes', writes the fit's own block plus the two switches. The
+    """A calibration document stating the three switches, on an archive drawn as the scale-window
+    test's and under `GARCH_Innovation` 'No' and 'Yes', writes the fit's own block plus the three. The
     simulate-only hedging fixture replays that block on 119 calendar rows, the weekends forward
     filled from Friday, and on the same business days with the filled rows removed: on every
     business row the published mu, sig2 and regime equal, to the bit, the compressed replay's at
@@ -620,8 +620,8 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
     20 and 19 of the 85 rows); the regime drawn at the calendar row rather than the business count
     (20 and 19 rows); the clock's per-row f kept on a market row (mu 3.04 from the unclocked replay,
     sig2 0.72, the regime on 12 and 9 rows); a filled row read off the basis alone (mu 0.130 from the
-    twin under neither switch) or the spot alone (0.243); the switches not stamped on the block (the
-    fitted block parts).
+    twin under neither switch) or the spot alone (0.243); any of the three not stamped on the block
+    (the fitted block parts).
     """
     n = 504
     rng = np.random.default_rng(5)
