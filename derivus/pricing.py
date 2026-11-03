@@ -6415,8 +6415,8 @@ def pv_average_price_swap(shared, time_grid, deal_data):
 
     ``n_j`` counts SIMULATION STEPS between the two rows, fractionally, a simulation step being what
     the basis model applies ``Phi`` to; calendar days or calibration steps project a different model
-    from the one being simulated. A law stating a pair per step (``Trading_Clock``) composes them
-    over the steps the projection spans.
+    from the one being simulated. A law stating a pair per step (the basis on its trading clock)
+    composes them over the steps the projection spans.
 
     Both halves carry the same normalised weights, so ``K`` comes off the average once.
     """

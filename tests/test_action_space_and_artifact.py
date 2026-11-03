@@ -506,7 +506,7 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     notional, in one spelling (`_w_norm`) on every path a net is fitted or read on. A training
     document under the scale-free LogWealth objective with the returns state on then fits its
     labels: the fitted residual tracks the bootstrap label from the first backward step, the
-    sweep's `V_0` reads 0.16328038275241852 on the CPU (0.1301 on a card: the twelve-path,
+    sweep's `V_0` reads 0.13223984837532043 on the CPU (0.1301 on a card: the twelve-path,
     five-iteration fit is device-rounded) and the same document at twice every dollar trains
     to the same `V_0` within 1e-6, since the frame is dimensionless.
 
@@ -658,7 +658,7 @@ def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tm
     apart): the save is refused naming the field, V_0 and the held-out utility, and no
     checkpoint is written (those are the CPU's draws; a card's seed 5 does not ruin, so the test
     declares the bound at -10, below any fit's gap, and the refusal fires on either device). Seed
-    6 (+0.2322 against +0.2483 on the CPU) saves, stamped with V_0 less its held-out greedy
+    6 (V_0 +0.1538 on the CPU) saves, stamped with V_0 less its held-out greedy
     `u_mean`; a roll declaring a bound below the stamp refuses the member by name, and the same
     checkpoint without the stamp, as every checkpoint saved before it, loads at that bound. 20 s.
 
@@ -691,8 +691,8 @@ def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tm
 def test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused(tmp_path):
     """`DiffV2_Max_Member_Disagreement` bounds the mean absolute difference, in contracts, between
     two ensemble members' swept net books. Two checkpoints of one document trained under seeds 7
-    and 11 sweep books 3.95 contracts apart on average over their 17 swept steps on the CPU (8.85
-    at most): a two-member roll loads at the default 8 and is refused at 0, naming the field, both
+    and 11 sweep books 5.48 contracts apart on average over their 17 swept steps on the CPU: a
+    two-member roll loads at the default 8 and is refused at 0, naming the field, both
     members and the distance the two checkpoints' swept books give.
 
     Killing mutation: the check removed (the roll at 0 loads)."""
@@ -716,10 +716,9 @@ def test_the_book_column_is_fitted_to_the_repositioning_charge_s_slope(growth):
     harvests whatever slope it lands at. `DiffV2_Book_Gradient_Label` 'Yes' makes the book a leaf
     of the gradient fork, whose label is by the envelope theorem the repositioning charge's slope at
     the chosen action, and fits the net's dA/dp to it. On the swap fixture under seed 6 the field
-    omitted and 'No' train the same V_0 and root book to the bit (0.23219308257102966, as before
+    omitted and 'No' train the same V_0 and root book to the bit (0.153822660446167, as before
     the field existed); under 'Yes' the fitted slope's mean over the bank departs from the label's
-    by 11.5% of the label, summed over the 47 swept steps (bound 25%), and the root book moves to
-    [-8.55, -8.94] from [-9.63, -9.98]. 30 s.
+    by 9.1% of the label, summed over the 47 swept steps (bound 25%), and the root book moves. 30 s.
 
     Killing mutation: the slope term dropped from the fit's loss (the departure reads 170% and the
     'Yes' fit is the 'No' fit to the bit, root book and all)."""
@@ -756,8 +755,8 @@ def test_the_book_label_is_taken_along_the_ladder():
     on the live legs as the step's `Allocation_Weights` split them, intersected with the active
     legs, so a leg the ladder never moves carries no weight in the label whatever the bank books
     on it. The swap growth document under seed 6 with its first leg inactive and no bank noise
-    trains to the bit as the same document with that leg removed: V_0 (0.16260874271392822 on
-    the CPU), the root book (-8.392578125) and every swept step's `book_label` and `book_slope`;
+    trains to the bit as the same document with that leg removed: V_0 (0.09422151744365692 on
+    the CPU), the root book (-8.998046875) and every swept step's `book_label` and `book_slope`;
     both documents declare `Deterministic_Kernels` so the identity holds to the bit on a card too.
     30 s.
 
@@ -865,7 +864,7 @@ def test_a_no_table_document_whose_legs_all_die_still_labels():
     and a swept step where none can carry a contract has no direction: the label is zero there,
     as the passive holds nothing. The swap growth document on the Cartesian grid, both legs
     expiring between the last fixing and settlement, trains under the label over 47 steps (V_0
-    0.2654 on the CPU) with the dead step 46 labelled zero and step 0 not, and its passive splits
+    0.1737 on the CPU) with the dead step 46 labelled zero and step 0 not, and its passive splits
     the 32 unfixed contracts evenly, 16 a leg. 20 s.
 
     Killing mutations: the no-table branch of `_weights_at` removed (refused at step 46, naming a
@@ -887,7 +886,7 @@ def test_a_no_table_document_whose_legs_all_die_still_labels():
 
 def test_a_label_horizon_of_one_is_the_one_step_fit():
     """`DiffV2_Label_Horizon` 1 is the one-step bootstrap: the label test's document trains with
-    the field omitted and stated 1 to the bit, V_0 (0.16260874271392822 on the CPU, as before the
+    the field omitted and stated 1 to the bit, V_0 (0.09422151744365692 on the CPU, as before the
     field existed), the root book and every swept step's diagnostics. 30 s.
 
     Killing mutation: the default the solver block is read with moved to 2 (the omitted document
@@ -933,9 +932,8 @@ def test_a_label_past_the_horizon_is_what_its_greedy_policy_realises(objective, 
     was fitted on: the swap growth document under seed 6 at a horizon of 100 steps, 47 past it,
     trains a V_0 within 0.006 of the `u_mean` its checkpoint's frozen roll on the training batch
     realises (the roll's first greedy book the training root's). On
-    the CPU 0.1435 against 0.1450 under LogWealth and 0.2058 against 0.2072 under the fixture's
-    terminal utility, where the one-step fit reads 0.1352 against 0.1453 and 0.2239 against
-    0.2022; seeds 1 to 8 read LogWealth's V_0 within -0.0015 to +0.0025 of the roll. 35 s each.
+    the CPU 0.0889 against 0.0900 under LogWealth and 0.1478 against 0.1486 under the fixture's
+    terminal utility. 35 s each.
 
     Killing mutations, V_0 against the roll's utility: the roll's wealth recursion gross of the
     charge (its `u_mean` 0.1616 and 0.2252 against the net 0.1439 and 0.2075, on every seed 1 to 8);
@@ -1003,50 +1001,49 @@ OWN_GARCH = {'G_Omega': 0.8, 'G_Alpha': 0.1, 'G_Beta': 0.85, 'Sig2_0': 25.0}
 LAST_STEP = 116
 
 
-def _band_state(path, reveal=None, garch=True, save=None, load=None):
+def _band_state(path, slow=True, garch=True, save=None, load=None):
     """`_cfg` on two paths a batch replaying the observed scenario `path` from the calibrated t0,
-    swept at its last decision step alone, its basis `SLOW_BASIS`, off its own GARCH unless `garch`,
-    stating `Reveal_Band_State` `reveal` where given; with `load`, the frozen eval."""
+    swept at its last decision step alone, its basis `SLOW_BASIS`, off its slow mean unless `slow`
+    and its own GARCH unless `garch`; with `load`, the frozen eval."""
     cfg = _cfg(batch=4, save=save, load=load)
     calc = cfg['Calc']['Calculation']
     calc['Observed_Scenario'] = path
     hp = calc['Hedging_Problem']
     hp['Randomize_Initial_State'] = 'No'
     hp['Solver']['T_Min'] = LAST_STEP
-    basis = dict(SLOW_BASIS, **(OWN_GARCH if garch else {}))
-    if reveal is not None:
-        basis['Reveal_Band_State'] = reveal
+    basis = dict(SLOW_BASIS, **(OWN_GARCH if garch else {}), **({} if slow else {'Slow_Mean_Lambda': 0.0}))
     cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
         'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis}
     return cfg
 
 
 def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, caplog):
-    """Under `Reveal_Band_State` 'Yes' the value net reads, before the basis level, its deviation
-    from the slow level the next step reverts to and, under its own GARCH, its log variance. The
+    """The value net reads, before the basis level, its deviation from the slow level the next step
+    reverts to where the basis has a slow mean and, under its own GARCH, its log variance. The
     fixture trained on one replayed path and swept at its last decision step, so the saved frame's
     market mean is that step's state to the bit: on a basis with a slow mean on its own GARCH the
-    market dimension is 9 where the same document without the field reads 7, the frame is the
-    field-free one with two columns inserted before the level (-30.722), the first b - mu at the
+    market dimension is 9 where the same document on a basis with neither reads 7, the frame is the
+    plain one with two columns inserted before the level (-30.722), the first b - mu at the
     replay's published row of the step to the bit (-1.879) and the second log sigma^2 there within
     1e-6 (2.0838, the frame's float32); under `DiffV2_Returns_State` the deviation and the level
-    are one fraction of the t0 spot and log sigma^2 is itself; and the field-free checkpoint loaded
-    into the field's world off the GARCH, one column wider, is refused by the shape check naming
-    'md' (7 against 8). 10 s.
+    are one fraction of the t0 spot and log sigma^2 is itself; and the plain checkpoint loaded into
+    the slow mean's world off the GARCH, one column wider, is refused by the shape check naming 'md'
+    (7 against 8). 10 s.
 
     Killing mutations: mu revealed in place of b - mu (-28.843); the published mean read a row
     early (-1.978) or late (the fork's two-row grid out of bounds); log sigma^2 dropped (8 against
     9); the level revealed first (-30.722 in the deviation's column); log sigma^2 taken for a
-    fraction of the spot under the returns state (0.0010)."""
+    fraction of the spot under the returns state (0.0010); the deviation revealed without a slow
+    mean (the plain world 8)."""
     rng = np.random.default_rng(3)
     spot = 2055.0 + np.cumsum(rng.normal(0.0, 25.0, 160))
     basis = -30.0 + 6.0 * np.sin(0.3 * np.arange(160)) + rng.normal(0.0, 1.0, 160)
     path = str(tmp_path / 'replay.npz')
     np.savez(path, **{'CommodityPrice.PLATINUM_LME': spot, 'ObservedBasis.PLATINUM_LME.LME_CME': basis})
     hidden, shown = str(tmp_path / 'value_fn.pt'), str(tmp_path / 'value_fn_band.pt')
-    plain = _run(_band_state(path, save=hidden)).evaluation_summary['diagnostics']
+    plain = _run(_band_state(path, slow=False, garch=False, save=hidden)).evaluation_summary['diagnostics']
     with caplog.at_level(logging.DEBUG):
-        band = _run(_band_state(path, reveal='Yes', save=shown)).evaluation_summary['diagnostics']
+        band = _run(_band_state(path, save=shown)).evaluation_summary['diagnostics']
     line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith('BASIS_REPLAY'))
     replay = ast.literal_eval(line.split(' ', 2)[2])
     before, after = (torch.load(c, map_location='cpu', weights_only=False)['m_mean'].tolist() for c in (hidden, shown))
@@ -1056,7 +1053,7 @@ def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, cap
     assert band['market_dim'] == plain['market_dim'] + 2, (band['market_dim'], plain['market_dim'])
     assert after[:col] + after[col + 2:] == before and after[col] == deviation, (after[col], deviation)
     assert abs(after[col + 1] - np.log(replay['sig2'][LAST_STEP])) < 1e-6, after[col + 1]
-    returns = _band_state(path, reveal='Yes', save=str(tmp_path / 'value_fn_returns.pt'))
+    returns = _band_state(path, save=str(tmp_path / 'value_fn_returns.pt'))
     returns['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Returns_State'] = 'Yes'
     _run(returns)
     fraction = torch.load(str(tmp_path / 'value_fn_returns.pt'), map_location='cpu', weights_only=False)['m_mean']
@@ -1064,7 +1061,7 @@ def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, cap
     assert abs(fraction[col + 1] - after[col + 1]) < 1e-6, fraction
     with pytest.raises(ValueError, match=re.escape(
             f"checkpoint mismatch on 'md': {hidden} saved {plain['market_dim']} vs this run {plain['market_dim'] + 1}")):
-        _run(_band_state(path, reveal='Yes', garch=False, load=hidden))
+        _run(_band_state(path, garch=False, load=hidden))
 
 
 #: A frictional LogWealth solve on the returns state, its basis a `Band_Mixture` revealing its band
@@ -1075,13 +1072,12 @@ FRICTIONAL = {'DiffV2_Returns_State': 'Yes', 'DiffV2_Position_State': 'Yes', 'Di
 BAND_BASIS = {'A': 0.01, 'Phi': 0.9, 'Nu': 0.0, 'Sigma': 1.5, 'Reversion_Model': 'Band_Mixture', 'Band_Kappa': 2.0,
               'Band_Beta': 0.2, 'Mix_Q_Stress': 0.1, 'Mix_Sigma_Quiet': 1.0, 'Mix_Sigma_Stress': 4.0,
               'Mix_Stay_Stress': 0.8, 'Mix_P0_Stress': 0.1, 'Slow_Mean_Lambda': 0.95, 'Mu_0': -30.0,
-              'Calibration_DT_Years': 1.0 / 252.0, 'Reveal_Band_State': 'Yes'}
+              'Calibration_DT_Years': 1.0 / 252.0}
 
 
-def _state_labels(caplog, label=None, returns=False, save=None, band=False):
+def _state_labels(caplog, returns=False, save=None, band=False):
     """`_cfg` swept over its last five decision steps at 200 fit iterations, its basis `SLOW_BASIS`
-    on `OWN_GARCH` revealing its band state, stating `DiffV2_State_Gradient_Label` `label` where
-    given and saving its value fn to `save`; under `band` the `FRICTIONAL` solve on 96 paths of
+    on `OWN_GARCH`, saving its value fn to `save`; under `band` the `FRICTIONAL` solve on 96 paths of
     seed 11 with `BAND_BASIS`, the July average running to its payment date so the last decision
     step still hedges a fixing: each fitted step's `(slope, label)` bank means per market column,
     from the debug line."""
@@ -1089,11 +1085,9 @@ def _state_labels(caplog, label=None, returns=False, save=None, band=False):
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     solver = hp['Solver']
     solver['T_Min'], solver['DiffV2_Fit_Iters'] = LAST_STEP - 4, 200
-    if label is not None:
-        solver['DiffV2_State_Gradient_Label'] = label
     if returns:
         solver['DiffV2_Returns_State'] = 'Yes'
-    basis = dict(SLOW_BASIS, **OWN_GARCH, Reveal_Band_State='Yes')
+    basis = dict(SLOW_BASIS, **OWN_GARCH)
     if band:
         solver.update(FRICTIONAL)
         hp['Objective'] = {'Object': 'LogWealth', 'Utility_Scale_Mode': 'conditional_sim'}
@@ -1112,13 +1106,11 @@ def _state_labels(caplog, label=None, returns=False, save=None, band=False):
 
 
 def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(caplog, tmp_path):
-    """Under `DiffV2_State_Gradient_Label` 'Yes' the gradient fork is seeded from leaves at the
-    basis's revealed deviation D = b - mu and log sigma^2, mu the level leaf less D, so each column's
-    label is its slope at the others fixed: D's -dY/dmu, the level's dY/db + dY/dmu. On the fixture
-    under the band (D the 7th market column, log sigma^2 the 8th, the level the 9th), over the five
-    swept steps: without the field D and log sigma^2 are labelled 0 on every step and the fitted
-    slope in D sums to 2.8e-6, 0.2% of the label's 1.25e-3 under it; under it the fitted slopes in
-    D and log sigma^2 sum within 1.0% and 3.5% of their labels, and in the net's standardised
+    """The gradient fork is seeded from leaves at the basis's revealed deviation D = b - mu and log
+    sigma^2, mu the level leaf less D, so each column's label is its slope at the others fixed: D's
+    -dY/dmu, the level's dY/db + dY/dmu. On the fixture under the band (D the 7th market column, log
+    sigma^2 the 8th, the level the 9th), over the five swept steps: the fitted slopes in D and log
+    sigma^2 sum within 1.0% and 3.5% of their labels, and in the net's standardised
     coordinates every column's within 3.6% of the largest label (bound 15%: the twin loss meets a
     label in the bank mean of 24 states beside the value term, not exactly). At the last step, whose
     continuation is the closed-form utility, the level's label is 0.1% of D's (bound 1%): shifting
@@ -1134,12 +1126,8 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     gradient (the level's label at the last step 5.0 times D's, the price column's standardised
     label -0.96 against a slope of 0.0014)."""
     ckpt = str(tmp_path / 'value_fn.pt')
-    off, on = _state_labels(caplog), _state_labels(caplog, 'Yes', save=ckpt)
-    rs = _state_labels(caplog, 'Yes', returns=True)
-    (slope_off, _), (slope_on, label_on) = ((sum(run[t][0] for t in run), sum(run[t][1] for t in run))
-                                            for run in (off, on))
-    assert all((off[t][1][6:8] == 0.0).all() for t in off)
-    assert abs(slope_off[6]) < 0.01 * label_on[6], (slope_off[6], label_on[6])
+    on, rs = _state_labels(caplog, save=ckpt), _state_labels(caplog, returns=True)
+    slope_on, label_on = (sum(on[t][i] for t in on) for i in (0, 1))
     for col in (6, 7):
         assert label_on[col] > 0.0 and abs(slope_on[col] / label_on[col] - 1.0) < 0.15, \
             (col, slope_on[col], label_on[col])
@@ -1152,7 +1140,7 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
 
 
 def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
-    """Under `DiffV2_State_Gradient_Label` 'Yes' the gradient fork's futures move is its t+1 mark
+    """The gradient fork's futures move is its t+1 mark
     less its own t mark, both moving with the leaves, so a column the marks read (the carry, the
     price, the basis level) is labelled with the move's slope rather than the t+1 mark's. On the
     `FRICTIONAL` solve with `BAND_BASIS` (D the 7th of 8 market columns, the level the 8th), at the
@@ -1165,7 +1153,7 @@ def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
     Killing mutation: the wealth step differencing the fork's t+1 marks against the outer t marks,
     which carry no gradient (the level's label at the last step 86% of D's summed label, 59% and
     110% on the card's seeds 4 and 2)."""
-    run = _state_labels(caplog, 'Yes', band=True)
+    run = _state_labels(caplog, band=True)
     last = run[LAST_STEP][1]
     slope, label = (sum(run[t][i] for t in run) for i in (0, 1))
     assert label[6] > 0.0 and abs(last[7]) < 0.01 * label[6], (last[7], label[6])

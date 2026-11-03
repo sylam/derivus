@@ -436,10 +436,11 @@ def test_the_garch_seed_sets_the_band_basis_dispersion_over_its_first_month():
     0.05 c^2 so the stationary variance is c^2, one seeded at `Sig2_0` = c^2 and one at 4c^2, the
     spot at no vol and the band's pull off, so a month's basis move is the sum of its innovations;
     the stress state is drawn afresh each day (`Mix_Stay_Stress` = `Mix_P0_Stress` =
-    `Mix_Q_Stress`), so each innovation's expected variance is the recursion's,
-    E[sigma^2_k] = c^2 (1 + 3 p^k) after the seed, p = `G_Alpha` + `G_Beta`. Over the 31 daily
-    steps to the one-month row the seeded document's mtm dispersion is the other's times
-    sqrt(mean(1 + 3 p^k)) = 1.5940 within 2% on 4,096 paths (measured 1.5868, -0.45%).
+    `Mix_Q_Stress`), so each innovation's expected variance is f times the recursion's on the
+    trading clock, E[sigma^2_k] = c^2 (1 + 3 p^k) after the seed, p = 1 - f (1 - `G_Alpha` -
+    `G_Beta`) a calendar row of f = 252 / 365.25 calibration steps. Over the 31 daily steps to the
+    one-month row the seeded document's mtm dispersion is the other's times sqrt(mean(1 + 3 p^k)) =
+    1.6913 within 2% on 4,096 paths (measured 1.6863).
 
     Killing mutations: the band's draw left off the GARCH variance - both documents at the unit
     mixture, the ratio 1.0; the seed ignored under the band, both started at the stationary
@@ -452,7 +453,8 @@ def test_the_garch_seed_sets_the_band_basis_dispersion_over_its_first_month():
                G_Omega=(1.0 - alpha - beta) * c * c, G_Alpha=alpha, G_Beta=beta)
     calm, seeded = (_band_mtm(dict(law, Sig2_0=sig2_0), vol=0.0, Batch_Size=4096, **MONTH).loc['2026-02-15']
                     for sig2_0 in (c * c, 4.0 * c * c))
-    predicted = np.sqrt(np.mean(1.0 + 3.0 * (alpha + beta) ** np.arange(n)))
+    p = 1.0 - 252.0 / 365.25 * (1.0 - alpha - beta)
+    predicted = np.sqrt(np.mean(1.0 + 3.0 * p ** np.arange(n)))
     assert abs(seeded.std() / calm.std() / predicted - 1.0) < 0.02, (seeded.std() / calm.std(), predicted)
 
 
@@ -501,11 +503,11 @@ def test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trail
     `Max_Persistence` 0.9 below the law's; the mixture variance v of the standardised innovation
     is 1.0785. The stamp is simulated by a credit Monte Carlo document of 16,384 paths over a
     daily year on curves flat at zero, the spot at no vol and the band's pull off, so each day's
-    move is its innovation, and the stress chain started at its stationary probability:
-    (a) the first day's variance is the archive's last 21 innovations' within 8% (1.031, the
-    paths' standard error about 2.5%); (b) the daily variance past day 100 is the archive's
-    innovation variance within 4% (1.016, the stress state's own persistence, stay 0.074 over q
-    0.054, adding about 1.1%: 1.005 with the state drawn afresh each day); (c) `G_Alpha` +
+    move is its innovation, the block's `Calibration_DT_Years` a calendar day so a row is one
+    calibration step, and the stress chain started at its stationary probability: (a) the first
+    day's variance is the archive's last 21 innovations' within 8% (1.031, the paths' standard
+    error about 2.5%); (b) the daily variance past day 100 is the archive's innovation variance
+    within 4% (1.016, the stress state's own persistence adding about 1%); (c) `G_Alpha` +
     `G_Beta` is the cap 0.9 to 1e-12. The location fit is the one 'No' makes, and under 'No' the
     block is `BAND_FIT_WITHOUT_GARCH` to the bit. 2 s.
 
@@ -529,7 +531,7 @@ def test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trail
 
     fitted = _fit_band(tmp_path, dates, spot, basis, GARCH_Innovation='Yes', Max_Persistence=0.9)
     assert abs(fitted['G_Alpha'] + fitted['G_Beta'] - 0.9) < 1e-12, fitted
-    stationary = dict(fitted, Band_Beta=0.0, Mix_P0_Stress=fitted['Mix_Q_Stress'])
+    stationary = dict(fitted, Band_Beta=0.0, Mix_P0_Stress=fitted['Mix_Q_Stress'], Calibration_DT_Years=1.0 / 365.25)
     mtm = _band_mtm(
         stationary, vol=0.0, maturity='2027-01-29', flat_curves=True, Batch_Size=16384,
         Time_Grid='0d 1d(1d)', Deterministic_Kernels='Yes')
@@ -573,9 +575,6 @@ def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alo
         assert {k: v for k, v in scaled.items() if k not in sds} == {k: v for k, v in plain.items() if k not in sds}
 
 
-#: The process's switches as a calibration document states them.
-SWITCHES = {'Trading_Clock': 'Yes', 'Reveal_Band_State': 'Yes'}
-
 HEDGE_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
                              'policy_test_simulate_only.json')
 
@@ -617,33 +616,31 @@ def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None, fille
 
 @pytest.mark.parametrize('garch', ['No', 'Yes'])
 def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_path, caplog, garch):
-    """A calibration document stating the two switches, on an archive drawn as the scale-window
-    test's and under `GARCH_Innovation` 'No' and 'Yes', writes the fit's own block plus the two. The
-    simulate-only hedging fixture replays that block on 119 calendar rows, the weekends and London's
+    """A calibration document on an archive drawn as the scale-window test's, under
+    `GARCH_Innovation` 'No' and 'Yes'. The simulate-only hedging fixture replays its block on 119
+    calendar rows, the weekends and London's
     4 May bank holiday flagged forward-filled, the holiday printing a spot and a basis of its own (a
     CME print), and on the same business days with the filled rows removed: on every business row
     the published mu, sig2 and regime equal, to the bit, the compressed replay's at that row's count
     of business days (84 rows), and every filled row holds the row before it. A market row is one
-    calibration step whatever the clock the block also states: the calendar replay is to the bit the
-    same replay with `Trading_Clock` 'No'. On the compressed path, which flags nothing, the basis
-    and the spot both flat on its sixth business day and the spot flat on its ninth each move mu.
-    2 s.
+    calibration step whatever the clock says: the compressed replay's mu is the slow mean's own
+    recursion mu' = lambda mu + (1 - lambda) b on every row within 1e-4 (1.1e-8, the job's
+    float32). On the compressed path, which flags nothing, the basis and the spot both flat on its
+    sixth business day and the spot flat on its ninth each move mu. 2 s.
 
     Killing mutations: the flag unread (mu 2.13 apart on 78 of the 84 rows, sig2 1.10 under GARCH,
     the regime on 18 and 19); the regime drawn at the calendar row rather than the business count
-    (19 and 20 rows); the clock's per-row f kept on a market row (mu 0.124 from the unclocked replay
-    on the fifth row); the old rule, a row on which both prices repeat filled (mu held on the
-    sixth, 1.6523 twice); the parent's move and the basis read from the row before rather than the
-    last market row (sig2 0.040 under GARCH on 40 rows); either switch not stamped on the block (the
-    fitted block parts).
+    (19 and 20 rows); the clock's per-row f kept on a market row (mu 3.61 off the recursion);
+    the old rule, a row on which both prices repeat filled (mu held on the sixth, 1.6523 twice); the
+    parent's move and the basis read from the row before rather than the last market row (sig2
+    0.040 under GARCH on 40 rows).
     """
     n = 504
     rng = np.random.default_rng(5)
     dates = pd.bdate_range('2023-01-02', periods=n)
     history = 1000.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 15.0, n - 1)]))
     archive = _band_basis(history, np.where(rng.random(n) < 0.85, 2.0, 7.0) * rng.standard_normal(n))
-    fitted = _fit_band(tmp_path, dates, history, archive, GARCH_Innovation=garch, **SWITCHES)
-    assert fitted == dict(_fit_band(tmp_path, dates, history, archive, GARCH_Innovation=garch), **SWITCHES)
+    fitted = _fit_band(tmp_path, dates, history, archive, GARCH_Innovation=garch)
 
     row, filled, holiday = _holiday_tape()
     spot = 2055.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 30.0, 198)]))
@@ -658,7 +655,10 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
     assert {k: [v[t] for t in market] for k, v in calendar.items()} == \
         {k: [v[row[t]] for t in market] for k, v in business.items()}
     assert all(v[t] == v[t - 1] for v in calendar.values() for t in range(1, len(v)) if t not in market)
-    assert calendar == _replayed(tmp_path, caplog, dict(fitted, Trading_Clock='No'), spot_cal, basis_cal, filled=filled)
+    mu = [fitted['Mu_0']]
+    for b in basis[1:len(business['mu'])].astype(np.float32):
+        mu.append(fitted['Slow_Mean_Lambda'] * mu[-1] + (1.0 - fitted['Slow_Mean_Lambda']) * b)
+    assert np.abs(np.array(business['mu']) - mu).max() < 1e-4, np.abs(np.array(business['mu']) - mu).max()
     assert business['mu'][6] != business['mu'][5] and business['mu'][9] != business['mu'][8], business['mu'][4:10]
 
 
@@ -724,21 +724,19 @@ def test_a_spot_replay_holds_its_variance_across_a_forward_filled_holiday(tmp_pa
 
 
 def test_a_calendar_week_on_the_trading_clock_carries_the_business_days_its_rows_span():
-    """`Trading_Clock` on a calendar-daily grid, a row f = (1/365.25) / (1/252) = 0.6899 calibration
+    """The trading clock on a calendar-daily grid, a row f = (1/365.25) / (1/252) = 0.6899 calibration
     steps: the credit Monte Carlo of the one future on flat curves, the spot at no vol, so the mtm's
     move over the first calendar week (rows 0 to 7) is the basis's, on 65,536 paths.
     (a) The band's pull off and the stress chain at its stationary 20% (`UNIT_MIX`, `Mix_Stay_Stress`
     0.5): the week's variance is 7f = 4.8296 business days of the law's unit daily variance within
     3% (measured 4.8641), and its kurtosis 3 (1 + sum_ij rho^|i-j| / 49) within 4% with the chain's
-    eigenvalue rho = 1 - f (1 - stay + enter) = 0.5688 (4.1918, measured 4.1918); without the switch
-    7 (7.0364) and the same with rho = 0.375 (3.8254, measured 3.8613).
+    eigenvalue rho = 1 - f (1 - stay + enter) = 0.5688 (4.1918, measured 4.1918).
     (b) A dead band of width 0 with pull 0.3 around a slow mean of lambda 0.8 seeded at the basis,
     the innovation Gaussian on a GARCH(1,1) (alpha 0.1, beta 0.85, stationary variance 1) seeded at
     4: the week's variance is the closed form of the linear (b, mu) recursion and the GARCH mean
-    variance, each row f steps, within 3%: 8.4115 (measured 8.4535), without the switch 10.3036
-    (10.3510). 1 s.
+    variance, each row f steps, within 3%: 8.4115 (measured 8.4535). 1 s.
 
-    Killing mutations, each under the switch: the innovation left unscaled - (a) 7.05, (b) 13.83;
+    Killing mutations: the innovation left unscaled - (a) 7.05, (b) 13.83;
     scaled by f rather than its root - (a) 3.36; the pull left at a whole step - (b) 6.51; the slow
     mean's step left whole - (b) 9.42; the GARCH recursion in its calibrated spelling - (b) 7.18;
     the chain's switching left whole - (a) kurtosis 3.86.
@@ -748,8 +746,8 @@ def test_a_calendar_week_on_the_trading_clock_carries_the_business_days_its_rows
                 Mix_Sigma_Quiet=1.0, Mix_Sigma_Stress=1.0, Mix_Stay_Stress=0.5, Mix_P0_Stress=0.5,
                 G_Omega=0.05, G_Alpha=0.1, G_Beta=0.85, Sig2_0=4.0)
 
-    def week(law, clock):
-        mtm = _band_mtm(dict(law, Trading_Clock=clock), vol=0.0, maturity='2026-01-23', flat_curves=True,
+    def week(law):
+        mtm = _band_mtm(law, vol=0.0, maturity='2026-01-23', flat_curves=True,
                         Batch_Size=65536, Time_Grid='0d 1d(1d)', Deterministic_Kernels='Yes')
         move = (mtm.loc['2026-01-22'] - mtm.loc['2026-01-15']).values
         return move - move.mean()
@@ -763,12 +761,12 @@ def test_a_calendar_week_on_the_trading_clock_carries_the_business_days_its_rows
             h += f * (0.05 - 0.05 * h)
         return cov[0, 0]
 
-    for clock, f in (('Yes', 252.0 / 365.25), ('No', 1.0)):
-        move, rho = week(walk, clock), 1.0 - f * 0.625
-        kurtosis = 3.0 * (1.0 + sum(rho ** abs(i - j) for i in range(7) for j in range(7)) / 49.0)
-        assert abs(move.var() / (7.0 * f) - 1.0) < 0.03, (clock, move.var(), 7.0 * f)
-        assert abs((move ** 4).mean() / move.var() ** 2 / kurtosis - 1.0) < 0.04, (clock, kurtosis)
-        assert abs(week(pull, clock).var() / location(f) - 1.0) < 0.03, (clock, location(f))
+    f = 252.0 / 365.25
+    move, rho = week(walk), 1.0 - f * 0.625
+    kurtosis = 3.0 * (1.0 + sum(rho ** abs(i - j) for i in range(7) for j in range(7)) / 49.0)
+    assert abs(move.var() / (7.0 * f) - 1.0) < 0.03, (move.var(), 7.0 * f)
+    assert abs((move ** 4).mean() / move.var() ** 2 / kurtosis - 1.0) < 0.04, kurtosis
+    assert abs(week(pull).var() / location(f) - 1.0) < 0.03, location(f)
 
 
 def test_the_average_price_swap_projects_the_basis_at_the_rate_the_clock_simulates():
@@ -777,12 +775,11 @@ def test_the_average_price_swap_projects_the_basis_at_the_rate_the_clock_simulat
     the basis at -7.35, a flat Sigma of 0.5), on flat curves and a spot at no vol, over 16,384 paths:
     the base-date mark prices the deviation's share pi + (1 - pi)(lambda phi)^5 left at the fixing,
     pi = (1 - lambda) phi / ((1 - lambda) phi + 1 - phi), at the pair the law simulates a row with,
-    under `Trading_Clock` 1 - f(1 - Phi) and 1 - f(1 - lambda) at f = 0.6899 (0.527195), without it
-    the declared pair (0.394985), to 1e-9; each is the paths' mean realised share at the fixing within
-    0.005 (0.528442 and 0.396359, a standard error of 0.0012). 1 s.
+    1 - f(1 - Phi) and 1 - f(1 - lambda) at f = 0.6899 (0.527195), to 1e-9, the paths' mean realised
+    share at the fixing within 0.005 (0.528442, a standard error of 0.0012). 1 s.
 
-    Killing mutation: `basis_decay` reading the declared pair under the clock (0.394985 projected
-    against the paths' 0.528442)."""
+    Killing mutation: `basis_decay` reading the declared pair (0.394985 projected against the paths'
+    0.528442)."""
     law = {'A': 0.0, 'Phi': 0.817, 'Nu': 5.0, 'Sigma': 0.5, 'Slow_Mean_Lambda': 0.96875, 'Mu_0': -2.35,
            'Calibration_DT_Years': 1.0 / 252.0}
     swap = {'Object': 'CommodityAveragePriceSwapDeal', 'Reference': 'APS', 'Currency': 'USD',
@@ -793,18 +790,18 @@ def test_the_average_price_swap_projects_the_basis_at_the_rate_the_clock_simulat
     def share(mark):                                    # the spot 1638.9, the deviation -5 off -2.35
         return (mark + 1630.0 - 1638.9 + 2.35) / -5.0
 
-    for clock, f in (('Yes', 252.0 / 365.25), ('No', 1.0)):
-        phi, lam = 1.0 - f * (1.0 - 0.817), 1.0 - f * (1.0 - 0.96875)
-        pi = (1.0 - lam) * phi / ((1.0 - lam) * phi + 1.0 - phi)
-        mtm = _band_mtm(dict(law, Trading_Clock=clock), vol=0.0, flat_curves=True, deal=swap, Batch_Size=16384,
-                        Time_Grid='0d 1d(1d)', Deterministic_Kernels='Yes')
-        projected, realised = share(mtm.iloc[0].values), share(mtm.loc['2026-01-20'].values)
-        assert np.abs(projected - (pi + (1.0 - pi) * (lam * phi) ** 5)).max() < 1e-9, (clock, projected[0])
-        assert abs(realised.mean() - projected[0]) < 0.005, (clock, realised.mean(), projected[0])
+    f = 252.0 / 365.25
+    phi, lam = 1.0 - f * (1.0 - 0.817), 1.0 - f * (1.0 - 0.96875)
+    pi = (1.0 - lam) * phi / ((1.0 - lam) * phi + 1.0 - phi)
+    mtm = _band_mtm(law, vol=0.0, flat_curves=True, deal=swap, Batch_Size=16384, Time_Grid='0d 1d(1d)',
+                    Deterministic_Kernels='Yes')
+    projected, realised = share(mtm.iloc[0].values), share(mtm.loc['2026-01-20'].values)
+    assert np.abs(projected - (pi + (1.0 - pi) * (lam * phi) ** 5)).max() < 1e-9, projected[0]
+    assert abs(realised.mean() - projected[0]) < 0.005, (realised.mean(), projected[0])
 
 
 def test_a_coarse_row_on_the_trading_clock_walks_sub_steps_of_at_most_one_calibration_step():
-    """`Trading_Clock` on a monthly grid, the first row's 31 calendar days f = 21.388 calibration
+    """The trading clock on a monthly grid, the first row's 31 calendar days f = 21.388 calibration
     steps walked as 21 whole steps and 0.388 of one: the credit Monte Carlo of the one future on flat
     curves, so the mtm's move over the month is the spot's plus the basis's.
     (a) The band's pull off and the stress chain at its stationary 20% (the week test's), the spot at
@@ -827,10 +824,10 @@ def test_a_coarse_row_on_the_trading_clock_walks_sub_steps_of_at_most_one_calibr
     at the pair of the grid's last step - (d) 0.673525.
     """
     f, grid = 31 * 252.0 / 365.25, {'vol': 0.0, 'flat_curves': True, 'Deterministic_Kernels': 'Yes'}
-    walk = dict(BAND, **UNIT_MIX, Band_Beta=0.0, Mix_Stay_Stress=0.5, Mix_P0_Stress=0.2, Trading_Clock='Yes')
+    walk = dict(BAND, **UNIT_MIX, Band_Beta=0.0, Mix_Stay_Stress=0.5, Mix_P0_Stress=0.2)
     pull = dict(BAND, Band_Kappa=0.0, Band_Beta=0.3, Slow_Mean_Lambda=0.8, Mu_0=-7.35, Mix_Q_Stress=0.5,
                 Mix_Sigma_Quiet=1.0, Mix_Sigma_Stress=1.0, Mix_Stay_Stress=0.5, Mix_P0_Stress=0.5,
-                G_Omega=0.05, G_Alpha=0.1, G_Beta=0.85, Sig2_0=4.0, Trading_Clock='Yes')
+                G_Omega=0.05, G_Alpha=0.1, G_Beta=0.85, Sig2_0=4.0)
 
     def substeps(x):
         return [1.0] * int(x) + [x - int(x)]
@@ -862,7 +859,7 @@ def test_a_coarse_row_on_the_trading_clock_walks_sub_steps_of_at_most_one_calibr
     assert abs(month(pull, '0d 1m(1m)', Batch_Size=65536).var() / location(substeps(f)) - 1.0) < 0.03
 
     linear = {'Phi': 0.817, 'Nu': 5.0, 'Sigma': 0.0, 'Slow_Mean_Lambda': 0.96875, 'Mu_0': -2.35,
-              'Calibration_DT_Years': 1.0 / 252.0, 'Trading_Clock': 'Yes'}
+              'Calibration_DT_Years': 1.0 / 252.0}
     still, moved = (month(dict(linear, A=a), '0d 1m(1m)', Batch_Size=4096, vol=0.3) for a in (0.0, 0.5))
     spot, basis = still - still.mean(), moved - still - (moved - still).mean()
     steps = substeps(f)

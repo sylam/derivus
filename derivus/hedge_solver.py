@@ -707,8 +707,6 @@ class DiffSolver:
         '| `DiffV2_Position_State` | No | the frictional Bellman: `p` as state, the charge in the '
         'target |',
         '| `DiffV2_Book_Gradient_Label` | No | fit the slope in `p` to the charge\'s pathwise slope |',
-        '| `DiffV2_State_Gradient_Label` | No | label every revealed market column in the net\'s '
-        'coordinates, one no leaf measures left to the value term |',
         '| `DiffV2_Label_Horizon` | 1 | steps the value label realises along the greedy policy on '
         'the outer path before it bootstraps |',
         '| `DiffV2_Bank_Along_Ladder` | No | `DiffSolverV2`\'s bank books as rungs of the ladder, on '
@@ -801,8 +799,6 @@ class DiffSolver:
         self.position_state = bool(self.cfg.get("diffv2_position_state", False))
         # the book column's own pathwise label, the charge's slope in the standing book
         self.book_label = self.position_state and self.cfg["diffv2_book_gradient_label"]
-        # every revealed market column labelled in the net's coordinates, none labelled zero
-        self.state_label = self.cfg["diffv2_state_gradient_label"]
         # TD(k): the steps the value label realises along the greedy policy before it bootstraps
         self.label_horizon = self.cfg["diffv2_label_horizon"]
         # DiffSolverV2's training bank composed along the ladder, as the policy's own books are
@@ -1472,8 +1468,8 @@ class DiffSolver:
         state_suffixes)`, the suffixes being the process's DIFFERENTIABLE state coordinates.
         Layout: state columns first in declared order, the trailing price columns last. Factors
         with no state suffix map 1:1 raw to privileged or leave the non-price state unmeasured; a
-        factor missing a state leaf is unmeasured whole. An unmeasured column's gradient is 0, a
-        zero label unless `DiffV2_State_Gradient_Label` leaves it to the value term."""
+        factor missing a state leaf is unmeasured whole. An unmeasured column's gradient is 0,
+        and the mask leaves it to the value term."""
         g = torch.zeros(n, md, device=self.device)
         measured = torch.zeros(md, dtype=torch.bool, device=self.device)
         col = 0
@@ -1583,12 +1579,9 @@ class DiffSolver:
                          "cols vs state_t leaves; ≈0 ⇒ ∂Y/∂market_col == ∂Y/∂leaf): %s",
                          " ".join(errs))
         F_t1 = torch.stack([ig["F_t1"][r] for r in self.hedges], dim=-1) * live           # AAD-live
-        if self.state_label:
-            # the fork's own t mark moves with the leaves as F_{t+1} does: the outer one would
-            # label a column with the slope of F_{t+1} alone rather than of the move
-            F_t = torch.stack([ig["F_t"][r] for r in self.hedges], dim=-1) * live
-        else:
-            F_t = torch.stack([self.tradables_sim[r][t] for r in self.hedges], dim=-1).unsqueeze(1)
+        # the fork's own t mark moves with the leaves as F_{t+1} does: the outer one would label a
+        # column with the slope of F_{t+1} alone rather than of the move
+        F_t = torch.stack([ig["F_t"][r] for r in self.hedges], dim=-1) * live
         dF_g = (F_t1 - F_t)[rows]
         dL_g = (ig["L_t1"] - ig["L_t"])[rows]
         m1_g = ig["market_t1"][rows]
@@ -1620,17 +1613,13 @@ class DiffSolver:
         Y = Y.mean(1)                                                                     # (B,)
         grads = torch.autograd.grad(Y.sum(), [W0] + list(leaves.values()) + extra, allow_unused=True)
         gW = grads[0].detach()
-        # under the state label a leaf the label does not reach is measured, its slope exactly 0
-        leaf_grads = {k: (g.detach() if g is not None else
-                          torch.zeros_like(v) if self.state_label else None)
+        # a leaf the label does not reach is measured, its slope exactly 0
+        leaf_grads = {k: g.detach() if g is not None else torch.zeros_like(v)
                       for (k, v), g in zip(leaves.items(), grads[1:1 + len(leaves)])}
         g_market, measured = self._project_leaf_grads(leaf_grads, widths, rows, B, md)   # ∂Y/∂market_t (B,md)
-        if self.state_label:
-            g_market = g_market * ig["market_t_label_scale"][rows]      # in the net's coordinates
-            # indices, taken once: a boolean mask on the device syncs the host every Adam step
-            measured = measured.nonzero().squeeze(1)
-        else:
-            measured = None
+        g_market = g_market * ig["market_t_label_scale"][rows]          # in the net's coordinates
+        # indices, taken once: a boolean mask on the device syncs the host every Adam step
+        measured = measured.nonzero().squeeze(1)
         # ∂Y/∂p along the ladder: a move in p lands on the live legs as the step's Allocation_Weights
         # split it (evenly where none is declared), so a leg the ladder never moves carries no weight
         g_p = ((grads[-1].detach() * self.aspace._weights_at(t, live)).sum(-1) * self.total_abs_limit
@@ -1680,8 +1669,8 @@ class DiffSolver:
                 W = W1
             return ret + bootstrap(t + k, W, q) - one
 
-    def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p=None,
-                         measured=None):
+    def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p,
+                         measured):
         """Shared fit tail: advantage decomposition + standardized twin loss on the
         (value, wealth-grad, market-grad) labels. Called by both the single-fork and the
         sub-sliced large-B label paths of `_fit_step`.
@@ -1701,8 +1690,8 @@ class DiffSolver:
         `DiffV2_Book_Gradient_Label` hands in `g_p`, the label's slope in the standing book (the
         repositioning charge's), matched beside the others and normalized by its own variance.
 
-        `measured`, under `DiffV2_State_Gradient_Label`, indexes the market columns the slope term
-        matches, so a column no leaf measures is fitted by the value term alone.
+        `measured` indexes the market columns the slope term matches, so a column no leaf measures
+        is fitted by the value term alone.
 
         `DiffV2_Wealth_Free_Value` is the same discipline the other way: W is no longer an input,
         so it can no longer be a MEASURED COLUMN and its gradient term leaves the loss with it.
@@ -1731,8 +1720,7 @@ class DiffSolver:
         lam_g = float(self.cfg.get("diffv2_lambda_grad", 1.0))
         g_zn_W = self.w_std * (getattr(self, "state_notional", None) or 1.0) * a_gW          # (B,)
         g_zn_m = self.m_std * g_market                                                   # (B,md); u indep of market
-        if measured is not None:
-            g_zn_m = g_zn_m.index_select(1, measured)    # a column no leaf measures is not labelled
+        g_zn_m = g_zn_m.index_select(1, measured)        # a column no leaf measures is not labelled
         # per-term label-variance normalization
         nrm_v = a_val.var() + 1e-8
         nrm_w = g_zn_W.var() + 1e-8
@@ -1761,7 +1749,7 @@ class DiffSolver:
             # consumes, so `DiffV2_Wealth_Free_Value` takes W out of both at once
             das = torch.autograd.grad(a.sum(), ([mn] if self.wealth_free else [mn, wn])
                                       + ([] if g_p is None else [pn]), create_graph=True)
-            da_m = das[0] if measured is None else das[0].index_select(1, measured)
+            da_m = das[0].index_select(1, measured)
             w_term = 0.0 if self.wealth_free else lam_g * ((das[1] - g_zn_W) ** 2).mean() / nrm_w
             loss = (((a - a_val) ** 2).mean() / nrm_v
                     + w_term

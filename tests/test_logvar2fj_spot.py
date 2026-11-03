@@ -286,7 +286,7 @@ GARCH = {'Omega': 1.0e-5, 'Alpha': 0.05, 'Beta': 0.9, 'Nu': 8.0, 'H0': 2.0e-4, '
 def test_a_fork_starts_from_the_outer_path_s_state(caplog):
     """A solve on a `LogVar2FJSpotModel` world forks each outer path at every swept step from that path's
     own state: across the outer paths and steps, the log of each fork's spread of its first one-day log
-    return regressed on half the path's s + ell has slope 1 within 0.2 (0.982 measured, 1,224 forks of
+    return regressed on half the path's s + ell has slope 1 within 0.2 (1.001 measured, 1,224 forks of
     8 draws), the spread of a Gaussian residual being sqrt(v dt). 6 s.
 
     Killing mutation: the fork reading the outer run's seed keys, so every fork starts from the block's
@@ -305,7 +305,7 @@ def test_a_fork_starts_from_the_outer_path_s_state(caplog):
 def test_the_value_net_reads_the_filtered_state_and_refuses_a_garch_checkpoint(tmp_path):
     """The value net reads a `LogVar2FJSpotModel` spot as the filtered slow factor, the filtered total
     log variance and the price, one column more than a GARCH spot's log h and price: on the same
-    document the market dimension is 6 against 5, and a value function fitted in the GARCH world is
+    document the market dimension is 7 against 6, and a value function fitted in the GARCH world is
     refused in the LogVar2FJ one by the shape check naming 'md'. 15 s.
 
     Killing mutation: the filtered total dropped from the reveal (5 against 5, the GARCH checkpoint

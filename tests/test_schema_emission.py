@@ -1056,8 +1056,7 @@ def test_every_calibration_class_is_declared_under_a_process_and_dispatches_to_i
 
 
 def param_reads(cls):
-    """Every `param` key a calibration class reads, hard-keyed or `.get`, and the process switches it
-    `stamped` onto its block.
+    """Every `param` key a calibration class reads, hard-keyed or `.get`.
 
     Follows a local alias (`p = self.param`), which is how the Kalman calibration reads its ten
     knobs. Nothing else in these classes subscripts `self.param`."""
@@ -1074,7 +1073,7 @@ def param_reads(cls):
                 and n.func.attr == 'get' and ast.unparse(n.func.value) in aliases \
                 and isinstance(n.args[0], ast.Constant):
             read.add(n.args[0].value)
-    return read | {f.name for f in cls.__dict__.get('stamped', ())}
+    return read
 
 
 @pytest.mark.parametrize('model_type', sorted(calibration_classes()))
