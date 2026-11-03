@@ -1423,8 +1423,8 @@ class DiffSolver:
         for t in range(self.T_dec):
             if t not in self.steps:
                 # a row of no market time holds the book and wealth of the decision before it
-                W_list.append(W_list[-1] if W_list else W.clone())
-                q_list.append(q_list[-1] if q_list else q_prev.clone())
+                W_list.append(W_list[-1])
+                q_list.append(q_list[-1])
                 continue
             W_list.append(W.clone())
             q_list.append(q_prev.clone())
