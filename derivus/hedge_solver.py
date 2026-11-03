@@ -1386,14 +1386,15 @@ class DiffSolver:
     def _passive_hedge(self, t, live, batch):
         """The passive book at decision step t `(batch, n_hedge)`: minus the liability quantity
         still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`
-        and held in contracts, clamped to the position limits and projected into the corridor as
-        the textbook book is."""
+        clamped to the position limits, projected into the corridor as the textbook book is, and
+        apportioned to whole contracts carrying its rounded total, as the stepper books it."""
         unfixed = self.bundle.unfixed_at(self.bundle.initial_time_index + t)
         # a fully fixed swap holds nothing, also where no live leg is left to split it onto
         q = (-unfixed * self.aspace._weights_at(t, live) / self.contract_size if unfixed
              else torch.zeros(self.n_hedge, device=self.device))
         q = torch.minimum(torch.maximum(q, self.q_lo), self.q_hi)
-        return self.aspace.project_to_corridor(q[None].expand(batch, self.n_hedge), t)
+        q = self.aspace.project_to_corridor(q[None].expand(batch, self.n_hedge), t)
+        return self.aspace._largest_remainder(q, q.sum(-1, keepdim=True))
 
     def _build_bank(self, gen):
         """Operating-region bank — roll the OUTER paths forward (cheap; outer-realised

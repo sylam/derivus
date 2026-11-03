@@ -66,7 +66,7 @@ Under `DiffV2_First_Decision_From` 'Passive' the stepper roll's first greedy dec
 | `textbook` (`Run_Textbook_Benchmark`) | the single best CONSTANT position held to the horizon, frictionless, chosen by $E[u]$ on the held-out paths; a lower bound | `comparison`, ladder |
 | `textbook` (verdict) | per step, per active hedge $i$: $q_i=-\mathrm{Cov}(\Delta L,\Delta F_i)\,/\,(cs_i\,\mathrm{Var}(\Delta F_i)\,n_{active})$ over the outer paths, clamped to the position limits and projected into the corridor | `diagnostics.verdict` |
 | `nohedge` | no position | `diagnostics.verdict` |
-| `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared) in contracts, clamped to the position limits, projected into the corridor and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing | `diagnostics.verdict`, `stepper_verdict` |
+| `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), clamped to the position limits, projected into the corridor, apportioned to whole contracts carrying its rounded total and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing | `diagnostics.verdict`, `stepper_verdict` |
 
 The two tracks named `textbook` are different policies. Both report turnover cost as a diagnostic;
 the comparison track is never charged it, the verdict's only under `DiffV2_Position_State`.
@@ -87,3 +87,9 @@ fitted on, the columns are net and there are no `*_net` columns. Held by
 The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
 `Reference_Mode = Running_Wealth` the solver's $V_0$ is a sum of step utilities, so the ladder's
 order is not an acceptance statement and the run logs a warning.
+
+The stepper roll closes every book where the verdict does, at the terminal, the last live liability
+mark, so on one replayed path at zero rates the two close one book to one wealth; at non-zero rates
+the stepper also earns the daily interest on cash and margin, the realised accounting the verdict's
+wealth law leaves out. Held by
+`tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`.

@@ -1710,7 +1710,8 @@ class BundleStepper:
     Owns the realized accounting the frictionless `wealth_step` law abstracts away — overnight
     financing on cash/margin, per-instrument variation margin and settlement, transaction cost
     (with the optional calendar-spread rebate and vol-linked IM funding), position rounding to
-    integer contracts, and the terminal forced flatten. Each step returns a state dict the caller
+    integer contracts, and the forced flatten at the solver's terminal, the last live liability
+    mark, the verdict's close. Each step returns a state dict the caller
     inspects; the caller chooses the next action. Supports `copy.deepcopy(stepper)` to fork into
     counterfactual branches, and records its own trajectory for `write_diagnostic_csvs`.
 
@@ -1725,7 +1726,7 @@ class BundleStepper:
         'with the realized accounting the frictionless wealth law abstracts away — overnight',
         'financing on cash and margin, per-instrument variation margin and settlement, turnover cost',
         'with the optional calendar-spread rebate and vol-linked IM funding, rounding to integer',
-        'contracts, and the terminal forced flatten.',
+        'contracts, and the forced flatten at the last live liability mark, where the verdict closes.',
         '',
         'Each `step` returns a state dict and the caller chooses the next action. Vectorized over',
         'the whole batch — every path advances in lockstep, and an action may be a scalar',
@@ -1768,6 +1769,8 @@ class BundleStepper:
         self._device = bundle.device
         self._batch_size = bundle.batch_size
         self._last_idx = bundle.last_index
+        # the hedge closes at the terminal, the last live liability mark, as the verdict closes it
+        self._close_idx = bundle.initial_time_index + bundle.last_live_mtm_index
         self._decision_set = set(int(i) for i in bundle.business_indices)
         # the default re-mirrors THIS bundle's scale; False keeps a checkpoint's frame
         if mirror_scale:
@@ -2134,8 +2137,8 @@ class BundleStepper:
             next_positions[n] = (next_positions[n] + delta).round()
         self._apply_frictions(next_cash, deltas, state['tradable_values'], next_positions,
                               current, next_idx, vol_t)
-        if acc['force_flat_at_end'] and current >= last - 1:
-            self._flatten_cash(next_positions, next_cash, self._values_at(last), vol_t)
+        if acc['force_flat_at_end'] and current == self._close_idx - 1:
+            self._flatten_cash(next_positions, next_cash, self._values_at(next_idx), vol_t)
         # cash mode tracks no daily VM, but cumulative_pnl still resets at flat for the same
         # per-trade-lifetime semantics
         zero_vm = self._zeros_by_name(self._hedges)
@@ -2195,7 +2198,7 @@ class BundleStepper:
                          -self._cost(deltas[n], state['tradable_values'][n], n, vol_t))
         self._apply_frictions(next_margin, deltas, state['tradable_values'], next_positions,
                               current, settlement_idx, vol_t)
-        if acc['force_flat_at_end'] and current >= last - 1:
+        if acc['force_flat_at_end'] and current == self._close_idx - 1:
             self._flatten_futures(next_positions, next_margin, next_settlement, next_values, vol_t)
         next_state = {
             'done': torch.full_like(state['done'], settlement_idx >= last, dtype=torch.bool),

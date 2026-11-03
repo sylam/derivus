@@ -338,6 +338,15 @@ def _decisions(world):
     return {0} | {i - world.initial_time_index for i in world.business_indices}
 
 
+def _whole(q):
+    """The book `q` in whole contracts carrying its rounded total: each leg floored, the units left
+    over handed one each to the legs with the largest remainders, ties to the first."""
+    base = q.floor()
+    rest = (q - base).tolist()
+    given = sorted(range(len(rest)), key=lambda i: -rest[i])[:round(float(q.sum() - base.sum()))]
+    return base + torch.tensor([float(i in given) for i in range(len(rest))], device=q.device)
+
+
 def _passive_cfg(save=None, load=None):
     """The swap hedged on the July and October legs in a flat corridor the passive book sits
     inside; with `load`, the frozen eval of that checkpoint with the stepper rollout on."""
@@ -370,19 +379,19 @@ def _passive_cfg(save=None, load=None):
 def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp_path):
     """The passive book is short the swap's net unfixed ounces, the bought leg less the sold,
     sixteen contracts a leg before the first fixing and two fewer at each print, split by the
-    knot in force and inside the corridor, so no projection moves it. The verdict's terminal
-    wealth is that book's P&L by the wealth law, the sum over decisions of position times contract
-    size times the futures move to the next decision plus the liability's move, less the declared
-    cost (half the 10 bp spread on the path-mean mark per contract traded, entry from the opening
-    book and the unwind at the horizon), within 1e-10 relative; the frozen eval's stepper rollout
-    is that book driven through `create_stepper()`, to the bit.
+    knot in force in whole contracts and inside the corridor, so no projection moves it. The
+    verdict's terminal wealth is that book's P&L by the wealth law, the sum over decisions of
+    position times contract size times the futures move to the next decision plus the liability's
+    move, less the declared cost (half the 10 bp spread on the path-mean mark per contract traded,
+    entry from the opening book and the unwind at the horizon), within 1e-10 relative; the frozen
+    eval's stepper rollout is that book driven through `create_stepper()`, to the bit.
 
-    Killing mutations, the verdict's net and the stepper's mean against the book's 120150.09 and
-    -8400.92: the ramp read one fixing late (`fixing_day >= day` in `Bundle.unfixed_at`),
-    114879.48 and -5819.62; the side dropped (`Buy_Sell` unread in `leg_descriptors`), the book
+    Killing mutations, the verdict's net and the stepper's mean against the book's 120124.68 and
+    -8480.32: the ramp read one fixing late (`fixing_day >= day` in `Bundle.unfixed_at`),
+    114876.18 and -5603.66; the side dropped (`Buy_Sell` unread in `leg_descriptors`), the book
     clamped at -20 a leg, 110007.23 and 9730.19; the passive's turnover not charged in
-    `_verdict`, 124236.16; the stepper roll's passive branch dropped, rolling the greedy argmax,
-    155092.79."""
+    `_verdict`, 124265.91; the stepper roll's passive branch dropped, rolling the greedy argmax,
+    142344.35."""
     ckpt = str(tmp_path / 'value_fn_passive.pt')
     cfg = _passive_cfg(save=ckpt)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
@@ -394,8 +403,8 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
         date = world.scenario_dates[world.initial_time_index + t]
         unfixed = net_units / len(FIXINGS) * sum(pd.Timestamp(d) > date for d in FIXINGS)
         weights = [ws for step, ws in KNOTS if step <= t][-1]
-        return (-unfixed * torch.tensor(weights, device=world.device)
-                / torch.tensor(sizes, device=world.device))
+        return _whole(-unfixed * torch.tensor(weights, device=world.device)
+                      / torch.tensor(sizes, device=world.device))
 
     train = _run(cfg)
     v, world = train.evaluation_summary['diagnostics']['verdict'], train.bundle
@@ -466,7 +475,7 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
         date = world.scenario_dates[world.initial_time_index + t]
         unfixed = net_units / len(FIXINGS) * sum(pd.Timestamp(d) > date for d in FIXINGS)
         weights = [ws for step, ws in KNOTS if step <= t][-1]
-        return -unfixed * torch.tensor(weights, device=world.device) / torch.tensor(sizes, device=world.device)
+        return _whole(-unfixed * torch.tensor(weights, device=world.device) / torch.tensor(sizes, device=world.device))
 
     def kappa(t):
         return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t].mean() * size
@@ -690,6 +699,21 @@ def test_the_drift_monitor_scores_a_decision_only_once_its_move_has_printed(tmp_
 GARCH_SPOT = {'Omega': 1.0e-5, 'Alpha': 0.05, 'Beta': 0.9, 'Nu': 8.0, 'H0': 2.0e-4}
 
 
+def _tape(cfg, path, paths=2):
+    """`paths` paths of `cfg`'s world simulated from its first sim row on seed 3, one
+    `Observed_Scenario` tape each at `path` formatted with its index, the rows of no market time on
+    the job's calendar flagged filled; the tapes' paths."""
+    cfg['Calc']['Calculation'].update(Execution_Mode='simulate_only', Batch_Size=paths, Random_Seed=3)
+    world = _run(cfg).bundle
+    r0 = world.initial_time_index
+    filled = np.array([not world.business_day.is_on_offset(d) for d in world.scenario_dates[r0:]])
+    names = [path.format(k) for k in range(paths)]
+    for k, name in enumerate(names):
+        np.savez(name, Filled_Rows=filled,
+                 **{n: v[r0:].cpu().double().numpy()[..., k] for n, v in world.factors.items()})
+    return names
+
+
 def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path):
     """A decision is a market day holding its book to the next, and its fork lands there with that
     interval's market time. On the fixture with a `GARCHSpotModel` spot over `SLOW_BASIS`, a policy
@@ -709,13 +733,7 @@ def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path
         cfg['Calc']['Calculation']['Hedging_Problem'].get('Solver', {}).update(solver)
         return cfg
 
-    tape = on(jsonlib.load(open(FIXTURE)))
-    tape['Calc']['Calculation'].update(Execution_Mode='simulate_only', Batch_Size=2, Random_Seed=3)
-    world_b = _run(tape).bundle
-    rows = world_b.initial_time_index
-    path = str(tmp_path / 'tape.npz')
-    np.savez(path, Filled_Rows=np.array([not world_b.business_day.is_on_offset(d) for d in world_b.scenario_dates[rows:]]),
-             **{k: v[rows:].cpu().double().numpy()[..., 0] for k, v in world_b.factors.items()})
+    path = _tape(on(jsonlib.load(open(FIXTURE))), str(tmp_path / 'tape_{}.npz'))[0]
     ckpt = str(tmp_path / 'value_fn.pt')
     _run(on(_cfg(seed=7, save=ckpt), T_Min=60))
     roll = on(_cfg(seed=7, batch=8, load=ckpt), T_Min=60, DiffV2_Stepper_Rollout='Yes')
@@ -759,6 +777,39 @@ def test_the_last_decision_s_fork_lands_on_a_terminal_of_no_market_time(tmp_path
     e_dl = pd.read_csv(dump)['E_dL']
     level = float(world.liability_sim[:horizon + 1].abs().mean())
     assert len(e_dl) >= 3 and (e_dl.abs() < 0.01 * level).all(), (e_dl.tolist(), level)
+
+
+def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_path):
+    """On a replayed path of the swap world under the position state, at zero rates and no opening
+    cash, so the stepper's daily interest on cash and margin, which the verdict's wealth law leaves
+    out, is nil: the verdict and the stepper roll hold one greedy book at every decision and one
+    passive book in whole contracts, and each closes its book at the terminal, the last live
+    liability mark, at the declared 10 bp spread, so their terminal wealths agree within 5e-6
+    relative (greedy 1.9e-8, passive 5.1e-7), the no-hedge track's to the bit. 3 s.
+
+    Killing mutations: the stepper holding the last book one row past the terminal to the
+    clean-exit row and unwinding there (greedy +2,502, 1.8%); the passive book in fractional contracts
+    the stepper rounds to whole ones (passive +52.5, 2.0e-3)."""
+    def doc(**kw):
+        cfg = _passive_cfg(**kw)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        hp['Solver']['DiffV2_Position_State'] = 'Yes'
+        hp['Portfolio_State']['Cash_Balances']['USD_CASH'] = 0.0
+        sofr = cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['InterestRate.USD-SOFR']
+        sofr['Curve']['.Curve']['data'] = [[t, 0.0] for t, _ in sofr['Curve']['.Curve']['data']]
+        return cfg
+    path = _tape(doc(), str(tmp_path / 'tape_{}.npz'))[0]
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(doc(save=ckpt))
+    roll = doc(load=ckpt)
+    roll['Calc']['Calculation']['Observed_Scenario'] = path
+    roll['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
+    d = _run(roll).evaluation_summary['diagnostics']
+    v, sv = d['verdict'], d['stepper_verdict']
+    assert [v['greedy_q_traj'][t - d['root_t']] for t in sv['greedy_q_t']] == sv['greedy_q_traj']
+    assert v['nohedge']['wT_mean'] == sv['nohedge']['wT_mean'], (v['nohedge']['wT_mean'], sv['nohedge']['wT_mean'])
+    for p in ('greedy', 'passive'):
+        assert abs(sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0) < 5e-6, (p, v[p]['wT_mean'], sv[p]['wT_mean'])
 
 
 # --------------------------------------------------------------------------------------------
