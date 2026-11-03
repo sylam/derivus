@@ -4141,6 +4141,13 @@ def bracket_rows(ahead, path):
             path[torch.as_tensor(np.minimum(ahead, end), device=path.device)])
 
 
+def hold_last(path, rows):
+    """`path` held at its last row out to `rows` rows where it has fewer: per-factor scenario grids are
+    prefixes of one master grid, so a factor can outlive the path it reads by trailing rows."""
+    pad = rows - path.shape[0]
+    return path if pad <= 0 else torch.cat([path, path[-1:].expand(pad, *path.shape[1:])])
+
+
 def substep_schedule(f):
     """Step lengths spanning each interval of `f` steps: whole steps, then the fractional remainder,
     an interval of none one null step. len == 1 is a step of at most one; longer a coarse walk."""

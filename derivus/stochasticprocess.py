@@ -3349,12 +3349,7 @@ class GARCHSpotModel(StochasticProcess):
                     f'GARCHSpotModel {utils.check_tuple_name(self.factor_key)}: Carry_Drift=Yes but '
                     f'{utils.check_tuple_name(self.carry_key)} published no (key, \'z0\') series - '
                     f'its process must simulate (and publish the front carry) before this spot')
-            zt = z0.squeeze(1)
-            # per-factor scenario grids are PREFIXES of one master grid, so a composed spot can
-            # outlive its carry by a trailing row - held flat at the last simulated value
-            pad = self.dt_t.shape[0] - zt.shape[0]
-            if pad > 0:
-                zt = torch.cat([zt, zt[-1:].expand(pad, *zt.shape[1:])])
+            zt = utils.hold_last(z0.squeeze(1), self.dt_t.shape[0])
             # front[t] is what step t->t+1 drifts at while ds[t] LANDS at t, so the composite
             # shifts one row; row 0 rides dt_t[0] = 0, the anchor
             zt = torch.cat([zt[:1], zt[:-1]])
@@ -4301,8 +4296,10 @@ class FixingBridgeModel(StochasticProcess):
         'conditional-variance reduction of the next parent observation given the fixing exist in the',
         'simulated world. A simulation grid coarser than one market day is refused; past the last row',
         'the parent brackets, the fixing draws the forward intraday half alone,',
-        '$\\log B_t=\\log P_t+\\text{premium}+\\sqrt{Wh_t}\\,Z_t$. Held by',
-        '`tests/test_chained_basis.py::test_a_garch_spot_holds_across_a_weekend_and_steps_its_market_days`.',
+        '$\\log B_t=\\log P_t+\\text{premium}+\\sqrt{Wh_t}\\,Z_t$, on a parent held at its last row where',
+        'its path ends before the fixing\'s grid. Held by',
+        '`tests/test_chained_basis.py::test_a_garch_spot_holds_across_a_weekend_and_steps_its_market_days`',
+        'and `::test_a_fixing_outliving_its_spot_s_path_holds_the_spot_s_last_row`.',
         '',
         "- **Bridge_Weight**: $W$, the intraday share of the day's variance, in $(0,1)$",
         '- **Bridge_Premium**: mean log offset net of the bridge',
@@ -4377,16 +4374,17 @@ class FixingBridgeModel(StochasticProcess):
         self.b0 = tensor
 
     def generate(self, shared_mem):
-        """Vectorised bridge off the parent's finished path; Z is (T, B) outer, (T, B, B2)
-        inner. A market row brackets the parent's move to the next market row; one the parent does
-        not reach draws the forward intraday half alone; a weekend or holiday row holds the last
-        market row's."""
+        """Vectorised bridge off the parent's finished path, held at its last row out to this grid;
+        Z is (T, B) outer, (T, B, B2) inner. A market row brackets the parent's move to the next
+        market row; one the parent does not reach draws the forward intraday half alone; a weekend or
+        holiday row holds the last market row's."""
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
         T, batch = Z.shape[0], Z.shape[1:]
         inner = Z.ndim == 3
         P = shared_mem.t_Scenario_Buffer[self.linked_key]
-        h = shared_mem.t_Scenario_Buffer[(self.linked_key, 'garch_log_h')].squeeze(1)[:T].exp()
+        h = utils.hold_last(shared_mem.t_Scenario_Buffer[(self.linked_key, 'garch_log_h')].squeeze(1), T)[:T].exp()
         inside, ahead = utils.bracket_rows(self.next, P)
+        P = utils.hold_last(P, T)
         log_p, lp_next = P[:T].clamp_min(1.0e-30).log(), ahead.clamp_min(1.0e-30).log()
         log_b = torch.where(
             inside.view((-1,) + (1,) * len(batch)),

@@ -810,6 +810,43 @@ def test_a_garch_spot_holds_across_a_weekend_and_steps_its_market_days():
     assert abs(bridged.var() / (w * h) - 1.0) < 0.03, bridged.var() / (w * h)
 
 
+def test_a_fixing_outliving_its_spot_s_path_holds_the_spot_s_last_row():
+    """The weekend test's bridge and GARCH fix at no drift, its future on the `LBMA_AM.PM` fixing to
+    Friday 23 January beside one on the `LBMA_AM` spot to Wednesday 28, on 16,384 paths: the fixing's
+    grid runs a row past the spot's path, the bridge holds the spot at its last row and, where the
+    spot's next market row is past its end, draws the forward intraday half alone, so the fixing sits
+    off its spot by the bridge's variance W h on Wednesday 28, the spot's last row, within 5%
+    (1.009), as it does bracketed to Monday on Friday 23 (0.976). 2 s.
+
+    Killing mutations: the spot's rows read as they come beside the bridge's (15 rows against 14, the
+    run raising on the shapes); the bridge bracketing Wednesday against the held row (W(1 - W) h, a
+    ratio of 0.807)."""
+    h, w = 1.0e-4, 0.2
+    world = _world('LBMA_AM.PM', chained=False)
+    world['Calc']['Calculation'].update(Batch_Size=16384, Time_Grid='0d 1d(1d)', Deterministic_Kernels='Yes',
+                                        Calc_Scenarios='All')
+    futures = world['Calc']['Deals']['Deals']['Children'][0]['Children']
+    futures[0]['Instrument']['.Deal']['Maturity_Date'] = {'.Timestamp': '2026-01-23'}
+    futures.append(json.loads(json.dumps(futures[0])))
+    futures[1]['Instrument']['.Deal'].update(Reference='FUT_AM', Commodity='LBMA_AM',
+                                             Maturity_Date={'.Timestamp': '2026-01-28'})
+    market = world['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'CommodityPrice': 'GARCHSpotModel', 'ObservedBasis': 'FixingBridgeModel'},
+        'modelfilters': {}}}
+    market['Price Models'] = {
+        'GARCHSpotModel.LBMA_AM': {'Omega': 0.05 * h, 'Alpha': 0.05, 'Beta': 0.9, 'Nu': 8.0, 'H0': h, 'Log_Price': True},
+        'FixingBridgeModel.LBMA_AM.PM': {'Bridge_Weight': w, 'Bridge_Premium': 0.0}}
+    cx = rf.Context(path_transform={}, file_transform={})
+    cx.load_json((json.dumps(world), 'fixing_edge.json'))
+    spot, fixing = (pd.DataFrame(x.values.astype(np.float64), columns=pd.DatetimeIndex(x.columns).strftime('%m-%d'))
+                    for x in (cx.run_job()[1]['Results']['scenarios'][k]
+                              for k in ('CommodityPrice.LBMA_AM', 'ObservedBasis.LBMA_AM.PM')))
+    ratio = {d: float(np.log1p(fixing[d] / spot[d]).var() / (w * h)) for d in ('01-23', '01-28')}
+    assert spot.columns[-1] == '01-28' and fixing.columns[-1] > '01-28', (spot.columns[-1], fixing.columns[-1])
+    assert all(abs(r - 1.0) < 0.05 for r in ratio.values()), ratio
+
+
 def test_a_calendar_week_carries_its_five_business_days_and_holds_its_weekend():
     """The basis steps once a market day: on a calendar-daily grid the credit Monte Carlo of the one
     future on flat curves, the spot at no vol, so the mtm's move over the first calendar week, Thursday
