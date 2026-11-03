@@ -731,6 +731,63 @@ def _tape(cfg, path, paths=2):
                  **{n: v[r0:].cpu().double().numpy()[..., k] for n, v in world.factors.items()})
     return names
 
+#: A calendar of two consecutive weekday holidays (Tue 14, Wed 15 April), a four-day weekend (Fri 24
+#: and Mon 27 April around it) and two Monday holidays.
+HOLIDAYS = ('2026-04-14', '2026-04-15', '2026-04-24', '2026-04-27', '2026-05-04', '2026-05-25')
+
+
+def _testland(tmp_path):
+    """A calendar file whose `Testland` holds `HOLIDAYS` beside the weekends."""
+    path = str(tmp_path / 'calendars.cal')
+    with open(path, 'w') as f:
+        f.write('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday and Sunday" Holidays="'
+                + ', '.join(f'{d}|Holiday' for d in HOLIDAYS) + '"/>\n</Calendars>\n')
+    return path
+
+
+def _on(cfg, spot='GARCHSpotModel', block=GARCH_SPOT, calendar=None, **solver):
+    """`cfg` with its spot `spot` on `block` over `SLOW_BASIS`, on the calendar file `calendar`'s
+    Testland where one is given, its solver updated by `solver`."""
+    market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models'] = {f'{spot}.PLATINUM_LME': block, 'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': SLOW_BASIS}
+    market['Model Configuration'] = {'.ModelParams': {'modeldefaults': {'CommodityPrice': spot}, 'modelfilters': {}}}
+    if calendar is not None:
+        cfg['Calc']['CalendDataFile'] = calendar
+        cfg['Calc']['Calculation']['Calendar'] = 'Testland'
+    cfg['Calc']['Calculation']['Hedging_Problem'].get('Solver', {}).update(solver)
+    return cfg
+
+
+def test_consecutive_holidays_hold_every_factor_and_carry_one_market_step(tmp_path):
+    """On a calendar with two consecutive weekday holidays and a holiday either side of a weekend, a
+    simulated GARCH spot and its slow-mean basis hold to the bit on every holiday and weekend row,
+    and the move from Thursday 23 to Tuesday 28 April (five calendar days, one market day) and from
+    Monday 13 to Thursday 16 (three, one) each carry one market step's variance: against Tuesday
+    21 to Wednesday 22 within 15% at 8,192 paths (1.006 and 0.982 for the spot, 1.053 and 1.024 for
+    the basis); no decision row is a holiday. 1 s.
+
+    Killing mutation: a weekday clock blind to the job's holidays (`utils.market_days` counting
+    weekdays: the spot moving on Tuesday 14 April)."""
+    cfg = _on(jsonlib.load(open(FIXTURE)), calendar=_testland(tmp_path))
+    cfg['Calc']['Calculation'].update(Execution_Mode='simulate_only', Batch_Size=8192, Random_Seed=3)
+    world = _run(cfg).bundle
+    r0 = world.initial_time_index
+    dates = pd.DatetimeIndex(world.scenario_dates[r0:])
+    paths = {'spot': np.log(world.factors['CommodityPrice.PLATINUM_LME'][r0:].double().numpy()),
+             'basis': world.factors['ObservedBasis.PLATINUM_LME.LME_CME'][r0:].double().numpy()}
+    row = dates.get_loc
+    held = [d for d in dates[dates <= '2026-05-31'] if not world.business_day.is_on_offset(d)]
+    spans = {'hol_weekend': ('2026-04-23', '2026-04-28'), 'two_hol': ('2026-04-13', '2026-04-16'),
+             'one': ('2026-04-21', '2026-04-22')}
+    for name, x in paths.items():
+        for d in held:
+            assert np.array_equal(x[row(d)], x[row(d) - 1]), (name, d)
+        var = {k: np.var(x[row(pd.Timestamp(b))] - x[row(pd.Timestamp(a))]) for k, (a, b) in spans.items()}
+        for k in ('hol_weekend', 'two_hol'):
+            assert abs(var[k] / var['one'] - 1.0) < 0.15, (name, k, var[k] / var['one'])
+    decided = {str(world.scenario_dates[i].date()) for i in world.business_indices}
+    assert not decided & set(HOLIDAYS), decided & set(HOLIDAYS)
+
 
 def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path):
     """A decision is a market day holding its book to the next, and its fork lands there with that
@@ -742,19 +799,10 @@ def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path
 
     Killing mutations: the fork stepping one calendar row, a Friday's landing on a Saturday with no
     market time (Friday RMS 0); the realised move read over one calendar row (0.074)."""
-    world = {'Price Models': {'GARCHSpotModel.PLATINUM_LME': GARCH_SPOT, 'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': SLOW_BASIS},
-             'Model Configuration': {'.ModelParams': {'modeldefaults': {'CommodityPrice': 'GARCHSpotModel'},
-                                                      'modelfilters': {}}}}
-
-    def on(cfg, **solver):
-        cfg['Calc']['MergeMarketData']['ExplicitMarketData'].update(jsonlib.loads(jsonlib.dumps(world)))
-        cfg['Calc']['Calculation']['Hedging_Problem'].get('Solver', {}).update(solver)
-        return cfg
-
-    path = _tape(on(jsonlib.load(open(FIXTURE))), str(tmp_path / 'tape_{}.npz'))[0]
+    path = _tape(_on(jsonlib.load(open(FIXTURE))), str(tmp_path / 'tape_{}.npz'))[0]
     ckpt = str(tmp_path / 'value_fn.pt')
-    _run(on(_cfg(seed=7, save=ckpt), T_Min=60))
-    roll = on(_cfg(seed=7, batch=8, load=ckpt), T_Min=60, DiffV2_Stepper_Rollout='Yes')
+    _run(_on(_cfg(seed=7, save=ckpt), T_Min=60))
+    roll = _on(_cfg(seed=7, batch=8, load=ckpt), T_Min=60, DiffV2_Stepper_Rollout='Yes')
     roll['Calc']['Calculation']['Observed_Scenario'] = path
     roll['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
     sv = _run(roll).evaluation_summary['diagnostics']['stepper_verdict']
@@ -1267,6 +1315,34 @@ def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, cap
         _run(_band_state(path, garch=False, load=hidden))
 
 
+def test_a_garch_basis_without_a_slow_mean_reveals_its_log_variance_and_no_deviation(tmp_path, caplog):
+    """A basis on its own GARCH with no slow mean shows the value net its log sigma^2 before its level
+    and no deviation: one column more than the same document's basis with neither, inserted before
+    the level, the replay's published log sigma^2 at the swept step within 1e-6, every other column
+    the plain frame's to the bit. 2 s.
+
+    Killing mutation: the deviation revealed whatever the mean (a b - mu column off a mean the law
+    never publishes: the replay raises a KeyError on `basis_mu`)."""
+    rng = np.random.default_rng(3)
+    spot = 2055.0 + np.cumsum(rng.normal(0.0, 25.0, 160))
+    basis = -30.0 + 6.0 * np.sin(0.3 * np.arange(160)) + rng.normal(0.0, 1.0, 160)
+    path = str(tmp_path / 'replay.npz')
+    np.savez(path, **{'CommodityPrice.PLATINUM_LME': spot, 'ObservedBasis.PLATINUM_LME.LME_CME': basis})
+    plain_ck, garch_ck = str(tmp_path / 'plain.pt'), str(tmp_path / 'garch.pt')
+    plain = _run(_band_state(path, slow=False, garch=False, save=plain_ck))
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        garch = _run(_band_state(path, slow=False, garch=True, save=garch_ck))
+    md = [r.evaluation_summary['diagnostics']['market_dim'] for r in (plain, garch)]
+    line = next(r.getMessage() for r in caplog.records if r.getMessage().startswith('BASIS_REPLAY'))
+    replay = ast.literal_eval(line.split(' ', 2)[2])
+    before, after = (torch.load(c, map_location='cpu', weights_only=False)['m_mean'].tolist() for c in (plain_ck, garch_ck))
+    col = before.index(float(np.float32(basis[LAST_STEP])))
+    assert md[1] == md[0] + 1 and 'mu' not in replay, (md, list(replay))
+    assert after[:col] + after[col + 1:] == before, (after, before)
+    assert abs(after[col] - np.log(replay['sig2'][LAST_STEP])) < 1e-6, (after[col], replay['sig2'][LAST_STEP])
+
+
 #: A frictional LogWealth solve on the returns state, its basis a `Band_Mixture` revealing its band
 #: state: a 2 $/oz dead band with a 0.2 pull around the slow mean, 10% stress days at four times the
 #: quiet sd.
@@ -1340,6 +1416,31 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     last = on[LAST_STEP][1]
     assert abs(last[8]) < 0.01 * last[6], last
     assert np.allclose(rs[LAST_STEP][1][6:9], np.array([2055.0, 1.0, 2055.0]) * last[6:9], rtol=1e-5, atol=0.0),         (rs[LAST_STEP][1], last)
+
+
+def test_a_world_stating_the_folded_switches_off_runs_the_folded_law(caplog):
+    """`Trading_Clock`, `Reveal_Band_State` and `DiffV2_State_Gradient_Label` are folded, so a stored
+    world and solver stating each 'No' run the one law: the labelled-column document's state labels
+    and market dimension are the same to the bit with the three keys stated off as without them. 2 s.
+
+    Killing mutation: an off arm read again (the reveal's, its deviation column dropped where a block
+    states `Reveal_Band_State` 'No': market dimension 8 against 9)."""
+    def labels(off):
+        cfg = _cfg(seed=7)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        hp['Solver'].update(T_Min=LAST_STEP - 3, DiffV2_Fit_Iters=20)
+        basis = dict(SLOW_BASIS, **OWN_GARCH)
+        if off:
+            hp['Solver']['DiffV2_State_Gradient_Label'] = 'No'
+            basis.update(Trading_Clock='No', Reveal_Band_State='No')
+        cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
+            'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis}
+        caplog.clear()
+        with caplog.at_level(logging.DEBUG):
+            md = _run(cfg).evaluation_summary['diagnostics']['market_dim']
+        return md, [r.getMessage() for r in caplog.records if r.getMessage().startswith('STATE_LABEL ')]
+    on, off = labels(False), labels(True)
+    assert on[0] == off[0] and len(on[1]) >= 2 and on[1] == off[1], (on[0], off[0], len(on[1]))
 
 
 def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):

@@ -503,6 +503,25 @@ def test_a_fork_starts_from_the_outer_path_s_state(caplog):
     assert abs(intercept - 0.5 * math.log(LV['Calibration_DT_Years'])) < 0.15, intercept
 
 
+def test_a_fork_before_holidays_lands_after_them_on_one_market_step(tmp_path, caplog):
+    """On a calendar of consecutive and weekend-adjacent holidays, a `LogVar2FJSpotModel` solve swept
+    from step 0 forks every decision row, Monday 13 April (Tuesday and Wednesday holidays) and
+    Thursday 23 (Friday and Monday holidays) among them, to the next market row on one
+    `Calibration_DT_Years` of market time: every fork's debug line reads that one step. 6 s.
+
+    Killing mutation: the decision rows read off weekdays blind to the job's holidays (a fork from
+    Monday 13 landing on Tuesday 14 with no market time, dt 0)."""
+    cfg = solve._on(solve._cfg(batch=8), 'LogVar2FJSpotModel', LV, solve._testland(tmp_path), T_Min=0)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        solve._run(cfg)
+    forks = [ast.literal_eval(r.getMessage().split(' ', 1)[1]) for r in caplog.records
+             if r.getMessage().startswith('LV_FORK')]
+    assert len(forks) >= 60 and all(f['dt'] == LV['Calibration_DT_Years'] for f in forks), \
+        (len(forks), sorted({f['dt'] for f in forks}))
+
+
 def test_the_value_net_reads_the_filtered_state_and_refuses_a_garch_checkpoint(tmp_path):
     """The value net reads a `LogVar2FJSpotModel` spot as the filtered slow factor, the filtered total
     log variance and the price, one column more than a GARCH spot's log h and price: on the same
