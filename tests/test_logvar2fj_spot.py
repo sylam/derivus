@@ -1,6 +1,6 @@
 """`LogVar2FJSpotModel` - LogVar2FJ's two log-variance factors on a commodity spot, every parameter on
-its `Price Models` block - and `LogVar2FJCalibration` under `Return_Measurement` Yes, which fits it on a
-bar series beside the fix.
+its `Price Models` block - and `LogVar2FJSpotCalibration`, which fits it on a bar series beside the
+fix.
 
 Every gate is a document through the public verbs: a calibration document through
 `Config.calibrate_factors` on a synthetic archive, a credit Monte Carlo of one future, and the
@@ -174,8 +174,7 @@ def _fit(tmp_path, dates, px, bars, **tuning):
         'Version': ['JSONVersion', '22.05.30'],
         'CalibrationConfig': {
             'MarketDataArchiveFile': {'name': str(tmp_path / 'archive.csv'), 'skiprows': 0, 'index_column': 'Date'},
-            'Calibrations': {'LogVar2FJSpotModel': dict(retrieval, Method='LogVar2FJCalibration',
-                                                        Return_Measurement='Yes', **tuning)}}}
+            'Calibrations': {'LogVar2FJSpotModel': dict(retrieval, Method='LogVar2FJSpotCalibration', **tuning)}}}
     with io.open(tmp_path / 'calibration.json', 'w', encoding='utf-8') as handle:
         handle.write(json.dumps(document, indent=1, cls=CustomJsonEncoder))
     config = Config()
@@ -206,7 +205,7 @@ def _drawn(rng, n, th):
 
 
 def test_the_fit_writes_the_filter_s_state_after_its_last_row(tmp_path):
-    """A calibration document fits `LogVar2FJSpotModel` under `Return_Measurement` Yes on five years of a
+    """A calibration document fits `LogVar2FJSpotModel` by `LogVar2FJSpotCalibration` on five years of a
     fix and a bar beside it drawn from the model, a flat fix and twenty blank bars among them. The
     written block is the fit's own law with the state the filter leaves after the last row: `S0`, `Ell0`
     and `State_Cov` equal, within 1e-9 (2.0e-14 measured), the numpy recursion run here from the

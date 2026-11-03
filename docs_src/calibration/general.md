@@ -34,6 +34,7 @@ on [Cross Factor](cross_factor.md).
 | `LogOUSpotCalibration` | `LogOUSpotModel` | `CommodityPrice` | one spot | OU regression on the log price | [Commodity Spot](commodity_spot.md) |
 | `MarkovHMMSpotCalibration` | `MarkovHMMSpotModel` | `CommodityPrice` | one spot | Baum-Welch EM, moment-matched $\nu$ | [Commodity Spot](commodity_spot.md) |
 | `GARCHSpotCalibration` | `GARCHSpotModel` | `CommodityPrice` | one spot | GARCH(1,1)-t MLE | [Commodity Spot](commodity_spot.md) |
+| `LogVar2FJSpotCalibration` | `LogVar2FJSpotModel` | `CommodityPrice` | the fix, `,HIGH`/`,LOW`/`,CLOSE` of another market | Kalman and Laplace filter MLE | [Commodity Spot](commodity_spot.md) |
 | `BasisLinkedSpotCalibration` | `BasisLinkedSpotModel` | `ObservedBasis` | basis and its parent | OLS, joint ARX(1)-t MLE, or band reversion with a mixture EM | [Observed Basis](observed_basis.md) |
 | `ChainedBasisCalibration` | `ChainedBasisModel` | `ObservedBasis` | basis and its chain source | OLS link residuals, bridge identities | [Observed Basis](observed_basis.md) |
 | `FixingBridgeCalibration` | `FixingBridgeModel` | `ObservedBasis` | fixing basis and its parent | pooled bracket OLS | [Observed Basis](observed_basis.md) |

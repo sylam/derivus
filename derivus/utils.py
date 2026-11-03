@@ -1595,8 +1595,8 @@ def calculation_device(requested=None, job_id=0):
     """
     if requested is not None:
         device = torch.device(requested)
-    elif visible_device_count():
-        device = torch.device('cuda', job_id % visible_device_count())
+    elif count := visible_device_count():
+        device = torch.device('cuda', job_id % count)
     else:
         device = torch.device('cpu')
 
@@ -4103,6 +4103,14 @@ class LogVar2FJ:
 # sub-steps instead, and the framework's correlated draw enters as the sqrt(variance)-weighted
 # combination of the sub-step normals. Freeze h and the aggregate return collapses back to
 # sqrt(sum var)*z_fw, so this is a strict refinement of the mean bridge.
+
+def trading_clock(time_grid, dt_c):
+    """`(dt, f)` per scenario row: its years since the row before, the first row's 0 so a kept-base
+    inner grid starts at its own base, and those years in calibration steps of `dt_c` years."""
+    years = time_grid.time_grid_years
+    dt = np.diff(years, prepend=years[0])
+    return dt, dt / dt_c
+
 
 def substep_schedule(f):
     """Trading-time lengths spanning each interval of `f` calibration steps: whole steps, then the

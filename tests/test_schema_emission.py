@@ -253,6 +253,7 @@ SHAPELESS = {
     ('GARCHSpotModel', 'Drift_Initial_Probs'),
     ('QuadraticCarryCurveModel', 'Reference_Tenors'),
     ('BasisLinkedSpotModel', 'Sigma_By_State'),
+    ('LogVar2FJSpotModel', 'State_Cov'),
     ('CreditMonteCarlo', 'Credit_Valuation_Adjustment.CDS_Tenors'),
     # what remains is a map keyed by a NAME the author invents (deal Object then Reference;
     # instrument or commodity) or a plain list of factor names - shapes the vocabulary cannot state
@@ -1055,7 +1056,8 @@ def test_every_calibration_class_is_declared_under_a_process_and_dispatches_to_i
 
 
 def param_reads(cls):
-    """Every `param` key a calibration class reads, hard-keyed or `.get`.
+    """Every `param` key a calibration class reads, hard-keyed or `.get`, and the process switches it
+    `stamped` onto its block.
 
     Follows a local alias (`p = self.param`), which is how the Kalman calibration reads its ten
     knobs. Nothing else in these classes subscripts `self.param`."""
@@ -1072,7 +1074,7 @@ def param_reads(cls):
                 and n.func.attr == 'get' and ast.unparse(n.func.value) in aliases \
                 and isinstance(n.args[0], ast.Constant):
             read.add(n.args[0].value)
-    return read
+    return read | {f.name for f in cls.__dict__.get('stamped', ())}
 
 
 @pytest.mark.parametrize('model_type', sorted(calibration_classes()))

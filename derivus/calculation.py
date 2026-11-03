@@ -3592,9 +3592,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             by_name = {utils.check_tuple_name(k): k for k in self.stoch_factors}
             observed = {by_name[n]: shared_mem.one.new_tensor(npz[n]).unsqueeze(-1)
                         for n in npz.files if n in by_name}
-            # `<factor>,<series>` is a series the factor's replay reads beside its path, in double
-            series = {(by_name[n.split(',')[0]], n.split(',')[1]): torch.from_numpy(npz[n]).to(
-                shared_mem.one.device) for n in npz.files if ',' in n and n.split(',')[0] in by_name}
+            # `<factor>,<series>` is a series the factor's replay reads beside its path, on the host
+            series = {(by_name[n.split(',')[0]], n.split(',')[1]): npz[n]
+                      for n in npz.files if ',' in n and n.split(',')[0] in by_name}
             unmatched = [n for n in npz.files if n.split(',')[0] not in by_name]
             if unmatched:
                 raise ValueError(

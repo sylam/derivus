@@ -1627,6 +1627,8 @@ class DiffSolver:
         g_market, measured = self._project_leaf_grads(leaf_grads, widths, rows, B, md)   # ∂Y/∂market_t (B,md)
         if self.state_label:
             g_market = g_market * ig["market_t_label_scale"][rows]      # in the net's coordinates
+            # indices, taken once: a boolean mask on the device syncs the host every Adam step
+            measured = measured.nonzero().squeeze(1)
         else:
             measured = None
         # ∂Y/∂p along the ladder: a move in p lands on the live legs as the step's Allocation_Weights
@@ -1699,7 +1701,7 @@ class DiffSolver:
         `DiffV2_Book_Gradient_Label` hands in `g_p`, the label's slope in the standing book (the
         repositioning charge's), matched beside the others and normalized by its own variance.
 
-        `measured`, under `DiffV2_State_Gradient_Label`, masks the market columns the slope term
+        `measured`, under `DiffV2_State_Gradient_Label`, indexes the market columns the slope term
         matches, so a column no leaf measures is fitted by the value term alone.
 
         `DiffV2_Wealth_Free_Value` is the same discipline the other way: W is no longer an input,
@@ -1730,7 +1732,7 @@ class DiffSolver:
         g_zn_W = self.w_std * (getattr(self, "state_notional", None) or 1.0) * a_gW          # (B,)
         g_zn_m = self.m_std * g_market                                                   # (B,md); u indep of market
         if measured is not None:
-            g_zn_m = g_zn_m[:, measured]                 # a column no leaf measures is not labelled
+            g_zn_m = g_zn_m.index_select(1, measured)    # a column no leaf measures is not labelled
         # per-term label-variance normalization
         nrm_v = a_val.var() + 1e-8
         nrm_w = g_zn_W.var() + 1e-8
@@ -1759,7 +1761,7 @@ class DiffSolver:
             # consumes, so `DiffV2_Wealth_Free_Value` takes W out of both at once
             das = torch.autograd.grad(a.sum(), ([mn] if self.wealth_free else [mn, wn])
                                       + ([] if g_p is None else [pn]), create_graph=True)
-            da_m = das[0] if measured is None else das[0][:, measured]
+            da_m = das[0] if measured is None else das[0].index_select(1, measured)
             w_term = 0.0 if self.wealth_free else lam_g * ((das[1] - g_zn_W) ** 2).mean() / nrm_w
             loss = (((a - a_val) ** 2).mean() / nrm_v
                     + w_term
@@ -1842,7 +1844,7 @@ class DiffSolver:
         and the cost is accounted in PARALLEL, so the `*_net` columns are diagnostics on that
         approximation. Under it each step's wealth is charged `_reposition_charge`, the charge the
         labels are fitted net of, churn term included: every greedy decision reads the net wealth
-        its value was fitted on, the main columns are net, and the `*_net` columns repeat them.
+        its value was fitted on, the main columns are net, and there are no `*_net` columns.
 
         The greedy ARGMAX is charged when either `DiffV2_Cost_Aware_Argmax` or
         `DiffV2_Position_State` is on: a value function fitted against a charged selection must be
@@ -1958,10 +1960,10 @@ class DiffSolver:
         out["argmax_charged"] = bool(self.cost_aware or self.position_state)
         out["u_mean_is_step_sum"] = bool(self.running_wealth)
         for p in cost:
-            net_stats = (dict(out[p]) if self.position_state else
-                         _tail_stats(self._u, W[p] - cost[p], None if u_net is None else u_net[p]))
             out[p]["turnover_cost_mean"] = float(cost[p].mean())
-            out[p].update({f"{k}_net": v for k, v in net_stats.items()})
+            if not self.position_state:
+                out[p].update({f"{k}_net": v for k, v in _tail_stats(
+                    self._u, W[p] - cost[p], None if u_net is None else u_net[p]).items()})
         # greedy position summary: mean over the rollout of |q| per instrument (is it hedging?)
         gq = torch.tensor(q_traj["greedy"])                                              # (n_steps, n_hedge)
         out["greedy_mean_abs_q"] = gq.abs().mean(0).tolist()
@@ -2616,10 +2618,8 @@ class DiffSolver:
             self.B_outer, self.levels, self.fit_iters, self.lr, self.contract_size.tolist(),
             self.q_lo.tolist(), self.q_hi.tolist(), self.total_abs_limit)
 
-        # one inner-MC fork per swept t, reused for the argmax, the bootstrap, market_t and the
-        # bank's live legs
         self.sweep_ts = sweep_ts = list(range(self.t_min, self.T_dec))
-        self.inner_cache = inner_cache = {t: self._inner_step(t) for t in sweep_ts}
+        inner_cache = self._fork_sweep()
         W_bank, q_bank = self._build_bank(self.gen)
         if self.log_ratio and self.loaded_displacement is None and not self.displacement:
             self._set_displacement(W_bank)
@@ -2769,6 +2769,14 @@ class DiffSolver:
         self.root = rows[-1] if rows else {"t": self.t_min, "Y_mean": 0.0, "q_star_mean":
                                            [0.0] * self.n_hedge}
 
+    def _fork_sweep(self):
+        """One inner-MC fork per swept t on the bound world, reused for the argmax, the bootstrap,
+        market_t and the bank's live legs; the last world's forks are freed before these are made, or
+        both sets are live at once."""
+        self.inner_cache = None
+        self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
+        return self.inner_cache
+
     def step(self, bundle):
         """Continue training on a FRESH batch: re-bind, rebuild the exploration bank and the
         inner-MC cache on the new paths, then sweep again with the same nets, the same optimizer
@@ -2783,8 +2791,7 @@ class DiffSolver:
                          "eval, so this batch trains nothing")
             return
         self._bind(bundle)
-        self.inner_cache = None          # the last batch's forks are freed before the next are made
-        self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
+        self._fork_sweep()
         W_bank, q_bank = self._build_bank(self.gen)
         if self.log_ratio and self.loaded_displacement is None and not self.displacement:
             self._set_displacement(W_bank)
@@ -2924,10 +2931,7 @@ class DiffSolver:
         simplified `_verdict` wealth recursion mis-accrues expiry."""
         if bundle is not self.bundle:
             self._bind(bundle)
-            # the held-out world needs its OWN forks; the training batch's are freed first, or both
-            # sets are live at once
-            self.inner_cache = None
-            self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
+            self._fork_sweep()
         nets, sweep_ts, inner_cache = self.nets, self.sweep_ts, self.inner_cache
         loaded, rows, worst, root = self.loaded, self.rows, self.worst, self.root
         md, hidden = self.md, self.hidden

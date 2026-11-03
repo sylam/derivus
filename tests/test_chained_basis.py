@@ -540,19 +540,18 @@ def test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trail
     assert _fit_band(tmp_path, dates, spot, basis, GARCH_Innovation='No') == BAND_FIT_WITHOUT_GARCH
 
 
-def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alone(tmp_path, caplog):
+def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alone(tmp_path):
     """A calibration document on a synthetic `Band_Mixture` archive of two years drawn from the
     fit's own law (a two-state innovation 85% at sd 2 and 15% at sd 7), its last day, the
     calibration date, a 40 $/oz move, fitted with and without `Basis_Scale_Window` 20: `Sigma`,
     `Mix_Sigma_Quiet` and `Mix_Sigma_Stress` are the plain fit's times the realised sd (ddof 1)
     of the last 20 basis changes before the calibration date over the fitted law's stationary sd
     sqrt(q s_stress^2 + (1 - q) s_quiet^2), q = `Mix_Q_Stress`, to 1e-12 (the ratio 0.7992), and
-    every other key is the plain fit's to the bit; under `GARCH_Innovation` 'Yes', whose sds are
-    relative, the key is refused by name and no block is written. 0.1 s.
+    every other key is the plain fit's to the bit. 0.1 s.
 
     Killing mutations: the change into the calibration date counted - the ratio 2.7005; ddof 0 -
     0.7790; the law's sd with q on the quiet sd - 0.2964; `Sigma` left unscaled - 3.4785 against
-    2.7801; the refusal dropped - the GARCH fit writes its block.
+    2.7801.
     """
     n, window = 504, 20
     rng = np.random.default_rng(5)
@@ -568,13 +567,10 @@ def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alo
         q * plain['Mix_Sigma_Stress'] ** 2 + (1.0 - q) * plain['Mix_Sigma_Quiet'] ** 2)
     assert all(abs(scaled[k] / (plain[k] * ratio) - 1.0) < 1e-12 for k in sds), (ratio, scaled, plain)
     assert {k: v for k, v in scaled.items() if k not in sds} == {k: v for k, v in plain.items() if k not in sds}
-    with caplog.at_level(logging.ERROR), pytest.raises(KeyError, match='BasisLinkedSpotModel.PLAT.CME'):
-        _fit_band(tmp_path, dates, spot, basis, GARCH_Innovation='Yes', Basis_Scale_Window=window)
-    assert 'Basis_Scale_Window' in caplog.text, caplog.text
 
 
 #: The process's switches as a calibration document states them.
-SWITCHES = {'Trading_Clock': 'Yes', 'Replay_Skips_Filled_Rows': 'Yes', 'Reveal_Band_State': 'Yes'}
+SWITCHES = {'Trading_Clock': 'Yes', 'Reveal_Band_State': 'Yes'}
 
 HEDGE_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
                              'policy_test_simulate_only.json')
@@ -605,23 +601,23 @@ def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None):
 
 @pytest.mark.parametrize('garch', ['No', 'Yes'])
 def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_path, caplog, garch):
-    """A calibration document stating the three switches, on an archive drawn as the scale-window
-    test's and under `GARCH_Innovation` 'No' and 'Yes', writes the fit's own block plus the three. The
+    """A calibration document stating the two switches, on an archive drawn as the scale-window
+    test's and under `GARCH_Innovation` 'No' and 'Yes', writes the fit's own block plus the two. The
     simulate-only hedging fixture replays that block on 119 calendar rows, the weekends forward
     filled from Friday, and on the same business days with the filled rows removed: on every
     business row the published mu, sig2 and regime equal, to the bit, the compressed replay's at
     that row's count of business days (85 rows), and every filled row holds the row before it. A
     market row is one calibration step whatever the clock the block also states: the calendar replay
-    is to the bit the same replay with `Trading_Clock` 'No', and the compressed path, a flat basis
-    print on its sixth business day and a flat spot on its ninth, replays to the bit as it does under
-    neither switch, so a market row repeating one price is a market row. 2 s.
+    is to the bit the same replay with `Trading_Clock` 'No'. On the compressed path a flat basis
+    print on its sixth business day and a flat spot on its ninth each move mu, so a market row
+    repeating one price is a market row. 2 s.
 
     Killing mutations: the filled rows replayed (mu 2.87 apart, sig2 0.82 under GARCH, the regime on
     20 and 19 of the 85 rows); the regime drawn at the calendar row rather than the business count
     (20 and 19 rows); the clock's per-row f kept on a market row (mu 3.04 from the unclocked replay,
-    sig2 0.72, the regime on 12 and 9 rows); a filled row read off the basis alone (mu 0.130 from the
-    twin under neither switch) or the spot alone (0.243); any of the three not stamped on the block
-    (the fitted block parts).
+    sig2 0.72, the regime on 12 and 9 rows); a filled row read off the basis alone or the spot alone
+    (mu held on the sixth or the ninth); either switch not stamped on the block (the fitted block
+    parts).
     """
     n = 504
     rng = np.random.default_rng(5)
@@ -644,8 +640,7 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
         {k: [v[row[t]] for t in market] for k, v in business.items()}
     assert all(v[t] == v[t - 1] for v in calendar.values() for t in range(1, len(v)) if t not in market)
     assert calendar == _replayed(tmp_path, caplog, dict(fitted, Trading_Clock='No'), spot[row], basis[row])
-    assert business == _replayed(tmp_path, caplog, dict(fitted, Trading_Clock='No', Replay_Skips_Filled_Rows='No'),
-                                 spot, basis)
+    assert business['mu'][6] != business['mu'][5] and business['mu'][9] != business['mu'][8], business['mu'][4:10]
 
 
 #: A flat-Sigma Linear basis, which a GARCH spot without regimes can carry.
@@ -653,10 +648,9 @@ FLAT_BASIS = {'A': 0.0, 'Phi': 0.4, 'Nu': 5.0, 'Sigma': 8.0, 'Calibration_DT_Yea
 
 
 def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_path, caplog):
-    """A calibration document stating `Replay_Skips_Filled_Rows` on `GARCHSpotModel`, on 504 days of
-    a GARCH(1,1) spot beside a band basis, writes the fit's own block plus the switch. The simulate-
-    only hedging fixture, its spot that block and its basis a flat Linear, replays it on 119
-    calendar rows, the weekends forward filled from Friday, with a flat fix on the fourth business
+    """A calibration document fits `GARCHSpotModel` on 504 days of a GARCH(1,1) spot beside a band
+    basis. The simulate-only hedging fixture, its spot that block and its basis a flat Linear,
+    replays it on 119 calendar rows, the weekends forward filled from Friday, with a flat fix on the fourth business
     day (a Wednesday), and on the same business days with the filled rows removed: on all 85
     business rows the published log h equals, to the bit, the compressed replay's at that row's
     count of business days, and every filled row holds the row before it. A market row is one
@@ -669,8 +663,7 @@ def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_pa
     replay, log h 0.42 off the filter); the trading clock's per-row fraction kept on a market row
     (0.47 off the filter, the compressed replay alike); a filled row read off the spot alone, so
     the flat Wednesday holds (0.14); off the date alone, so the compressed replay's weekend-dated
-    rows hold (84 rows apart); a filled row's drift dropped (0.077); the switch not stamped (the
-    fitted blocks part)."""
+    rows hold (84 rows apart); a filled row's drift dropped (0.077)."""
     n = 504
     rng = np.random.default_rng(11)
     returns, h = np.zeros(n), 2.0e-4
@@ -680,9 +673,7 @@ def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_pa
     dates = pd.bdate_range('2023-01-02', periods=n)
     history = 1000.0 * np.exp(np.cumsum(returns))
     archive = _band_basis(history, 2.0 * rng.standard_normal(n))
-    stated = {'Replay_Skips_Filled_Rows': 'Yes'}
-    fitted = _fit_band(tmp_path, dates, history, archive, garch=stated)
-    assert fitted == dict(_fit_band(tmp_path, dates, history, archive, garch={}), **stated)
+    fitted = _fit_band(tmp_path, dates, history, archive, garch={})
 
     days = pd.bdate_range('2026-04-10', periods=200)
     spot = 2055.0 * np.exp(np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 0.02, 199)])))

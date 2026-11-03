@@ -49,11 +49,13 @@ import copy
 import json
 import logging
 import os
+import sys
 
 # expandable_segments frees ~20GB of allocator slack (measured 24.7GB->4.6GB reserved,
-# bit-identical V_0). Parsed once at first allocator use, so it MUST be set before torch is
-# imported (derivus pulls torch below) — a later setdefault would be too late to take effect.
-os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'expandable_segments:True')
+# bit-identical V_0); Windows has no such mode. Parsed once at first allocator use, so it is set
+# before derivus pulls torch in, and before any module importing this one allocates.
+os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'garbage_collection_threshold:0.6'
+                      if sys.platform == 'win32' else 'expandable_segments:True')
 
 import derivus as rf
 

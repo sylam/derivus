@@ -66,17 +66,12 @@ import sys
 import numpy as np
 import pandas as pd
 
-# Must precede the first torch/derivus import (pulled in via production_solver below):
-# PYTORCH_CUDA_ALLOC_CONF is parsed once at first allocator use. expandable_segments frees
-# ~20GB of reserved allocator slack, bit-identical results; Windows has no such mode.
-os.environ.setdefault('PYTORCH_CUDA_ALLOC_CONF', 'garbage_collection_threshold:0.6'
-                      if sys.platform == 'win32' else 'expandable_segments:True')
-
-import torch  # noqa: E402
+import torch
 
 from production_solver import apply_config, run
+from derivus.utils import visible_device_count
 
-if sys.platform == 'win32' and torch.cuda.device_count():
+if sys.platform == 'win32' and visible_device_count():
     # without a cap the caching allocator's reserve grows to the card and WDDM pages it out,
     # ten times slower; the cap makes it free its cache instead (bit-identical). The count, not
     # is_available(): the latter answers True with the devices hidden and this call would then

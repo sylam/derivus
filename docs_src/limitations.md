@@ -96,15 +96,11 @@ Grouped by where a validator meets them.
 ### The engine {#the-engine}
 
 - **The basis model's standing worlds draw a full business-day innovation on every grid row**
-  (2026-11-01). A `BasisLinkedSpotModel` block without `Trading_Clock` and `Replay_Skips_Filled_Rows`
-  is the old law, which on a calendar-daily grid carries seven basis shocks and pulls a week where the
-  data carry five, and on replay decays its GARCH filter over a forward-filled weekend (the
-  standardised innovation's second moment 1.97 on business days against 1.22 on a business-day grid,
-  on the platinum record's tape); the two declared switches address both, and stay off so the
-  standing record reproduces, moving it being a world change and a full retrain. The spot's
-  `GARCHSpotModel` replay decays its variance over the weekend too (its log h at 0.79 of the
-  business-day filter on the same tape), which its own `Replay_Skips_Filled_Rows` addresses, off in
-  the standing worlds as well; under it a forward-filled weekday holiday is still a zero-return
+  (2026-11-01). A `BasisLinkedSpotModel` block without `Trading_Clock` is the old law, which on a
+  calendar-daily grid carries seven basis shocks and pulls a week where the data carry five; the
+  declared switch addresses it, and stays off so the standing worlds reproduce, moving them being a
+  world change and a full retrain. A replay holds every recursion across a forward-filled weekend,
+  but the spot's `GARCHSpotModel` replay takes a forward-filled weekday holiday as a zero-return
   market day, one step of decay about eight times a year.
 - **A fitted structure leg's two-way charge uses its lognormal vega** (2026-09-21). A leg under a
   fitted spot model publishes no FX vol quote sensitivity, so the charge reads the same leg as a
