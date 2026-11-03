@@ -508,15 +508,18 @@ locking the frame, `step` per training batch, `finish` on the held-out last), so
 ## The inner-MC fork {#inner-mc-subsystem}
 
 `_run_inner_mc_at_t` forks each outer path's state at step `t` on process copies, truncates the grid
-and each deal's `Time_dep` to `t` and the rows to the next market row, the one the decision at `t`
-holds its book to (Monday from a Friday), and runs one pass of `Batch_Size × Inner_Sub_Batch`
+and each deal's `Time_dep` to `t` and the rows to its successor (`Bundle.successors`), the next
+market row or the terminal, which the decision at `t` holds its book to (Monday from a Friday, a
+Saturday terminal from a Friday), and runs one pass of `Batch_Size × Inner_Sub_Batch`
 samples, its memory set by those two fields. It draws (`reset_inner`), precalculates each
 process from `outer_buffer[key][t]` (a leaf under `with_grad`), publishes every seed before any
 generate (a seed may condition a process upstream), generates and calls `reseed_inner_state`, then
 publishes as a `ScenarioSource` every path series it wrote that the outer path carries — the outer
 past at `B_outer`, the forked rows flattened — and prices once. Every series, not every factor: a
 process's own `(key, kind)` publication (`basis_mu`) is read like a factor and needs the same grid;
-the fork's seeds are excluded by the same rule. **Not gated:** no test forks a process series.
+the fork's seeds are excluded by the same rule. The landing is **Held by**
+`tests/test_action_space_and_artifact.py::test_the_last_decision_s_fork_lands_on_a_terminal_of_no_market_time`.
+**Not gated:** no test forks a process series.
 
 The LogVar2FJ outer publishes its detached state (`lv_ell`, `lv_s`), grid days (`lv_days`)
 and a fork's seed (`ell0_inner`, `s0_inner`); `pricing.LogVar2FJKit.carried` reads the seed, else

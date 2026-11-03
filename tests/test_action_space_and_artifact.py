@@ -728,6 +728,39 @@ def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path
     assert friday.sum() >= 6 and all(0.5 < x < 2.0 for x in rms), (int(friday.sum()), rms)
 
 
+def _saturday_terminal(save=None, load=None, dump=None):
+    """The fixture's July average paying Saturday 8 August, so its terminal, the last live mark, is a
+    row of no market time: swept from Monday 3 August on 64 inner paths, the frozen roll on one path."""
+    cfg = _cfg(batch=2 if load else 8, inner=64, save=save, load=load)
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Randomize_Initial_State'] = 'No'
+    hp['Liabilities']['FloatingEnergyDeal']['PLAT_JUL29']['Payments']['Items'][0]['Payment_Date'] = {'.Timestamp': '2026-08-08'}
+    hp['Tradable_Instruments']['CashAccountDeal']['USD_CASH']['Investment_Horizon'] = {'.Timestamp': '2026-08-08'}
+    hp['Solver']['T_Min'] = 115
+    if load is not None:
+        hp['Solver'].update(DiffV2_Stepper_Rollout='Yes', DiffV2_Decision_Curve_Dump=dump)
+    return cfg
+
+
+def test_the_last_decision_s_fork_lands_on_a_terminal_of_no_market_time(tmp_path):
+    """A decision's fork lands on its successor, and the last decision's is the terminal whatever its
+    day: where the last live liability mark is a Saturday, the Friday fork lands there and its mean
+    liability move is a day's drift. On the frozen roll's decision dump every decision's `E_dL` is
+    within 1% of the liability's level, -7.01 to -6.68 on the four before the last and -6.58 on the
+    last against 200,210. 5 s.
+
+    Killing mutation: the fork's own landing, the next market row or the grid's last row, which past
+    a Friday is the clean-exit row where the liability has settled (the last `E_dL` +55,586)."""
+    ckpt, dump = str(tmp_path / 'vf.pt'), str(tmp_path / 'curve.csv')
+    _run(_saturday_terminal(save=ckpt))
+    world = _run(_saturday_terminal(load=ckpt, dump=dump)).bundle
+    r0, horizon = world.initial_time_index, world.last_live_mtm_index
+    assert world.scenario_dates[r0 + horizon].dayofweek == 5, world.scenario_dates[r0 + horizon]
+    e_dl = pd.read_csv(dump)['E_dL']
+    level = float(world.liability_sim[:horizon + 1].abs().mean())
+    assert len(e_dl) >= 3 and (e_dl.abs() < 0.01 * level).all(), (e_dl.tolist(), level)
+
+
 # --------------------------------------------------------------------------------------------
 # (vi) convergence - what a fit saves, what a roll loads, and the book column's label
 # --------------------------------------------------------------------------------------------

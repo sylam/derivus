@@ -886,11 +886,7 @@ class DiffSolver:
         if self.t_min >= self.T_dec:
             raise ValueError(
                 f"Solver.T_Min={self.t_min} must be < decision horizon T_dec={self.T_dec}")
-        # the decision rows, the market rows before the terminal, and each row's successor, the next
-        # decision row, which a decision holds its book to and its fork lands on
-        self.steps = sorted({0} | {i - bundle.initial_time_index for i in bundle.business_indices
-                                   if i - bundle.initial_time_index < self.T_dec})
-        self.nxt = [next((s for s in self.steps if s > t), self.T_dec) for t in range(self.T_dec)]
+        self.steps, self.nxt = bundle.decision_steps, bundle.successors
         self.prev = dict(zip(self.steps[1:], self.steps))
         self.utility_scale = float(bundle.utility_scale)      # locked here; re-asserted by _bind
         # ...and the per-step schedule with it: ONE frame, locked in one place. A streaming step

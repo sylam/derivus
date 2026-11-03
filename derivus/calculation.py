@@ -3857,16 +3857,16 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
     def _attach_inner_mc(self, bundle, outer_buffer, shared_mem, base_date, tradable_refs):
         """Attach the on-demand inner-MC forks to `bundle` as closures, so the solver can fork
-        without a calc handle. Every fork is windowed to t and the rows to the next market row -
-        generation and a real pricing pass on those rows - giving the exact per-tradable F_t1 and
+        without a calc handle. Every fork is windowed to t and the rows to the decision's successor
+        (`Bundle.successors`) - generation and a real pricing pass on those rows - giving the exact per-tradable F_t1 and
         L_t / L_t1 the diff-ML bootstrap reads. `outer_rows` lets the solver run the GRAD fork in outer-path sub-slices.
 
         The outer buffer is passed in rather than read off the calc: under streaming there is one
         bundle per batch, and each forks from ITS OWN batch."""
         bundle.inner_mc = lambda t: self._run_inner_mc_at_t(
-            t, outer_buffer, shared_mem, base_date, tradable_refs)
+            t, bundle.successors[t], outer_buffer, shared_mem, base_date, tradable_refs)
         bundle.inner_mc_grad = lambda t, outer_rows=None: self._run_inner_mc_at_t(
-            t, outer_buffer, shared_mem, base_date, tradable_refs,
+            t, bundle.successors[t], outer_buffer, shared_mem, base_date, tradable_refs,
             with_grad=True, outer_rows=outer_rows)
 
     def _publish_print_seeds(self, procs, state, t, shared_mem):
@@ -3881,16 +3881,16 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 keys.add(seed_key)
         return keys
 
-    def _run_inner_mc_at_t(self, t, outer_scenario_buffer, shared_mem, base_date,
+    def _run_inner_mc_at_t(self, t, successor, outer_scenario_buffer, shared_mem, base_date,
                            tradable_refs, with_grad=False, outer_rows=None):
-        """Run inner MC at a single outer timestep `t`, forking from `outer_scenario_buffer` - a
+        """Run inner MC at a single outer timestep `t` to the row `successor`, forking from `outer_scenario_buffer` - a
         snapshot of the outer `t_Scenario_Buffer` (factor keys plus every per-process aux key, batch
         dim B_outer). `outer_rows=(lo, hi)` forks only that contiguous outer-path range; labels are
         per-outer-path, so row slices are independent. The DP/MPC backward sweep calls this on
         demand outside the outer loop, via `Bundle.inner_mc`.
 
-        Returns the inner samples the solver bootstraps from, `t+1` the next market row, the one the
-        decision at t holds its book to (Monday from a Friday):
+        Returns the inner samples the solver bootstraps from, `t+1` the successor, the next market row
+        or the terminal, the one the decision at t holds its book to (Monday from a Friday):
             F_t, F_t1     {ref: (B_outer, B_inner)}       futures price at outer t and t+1
             L_t, L_t1     (B_outer, B_inner)              liability MTM at outer t and t+1
             market_t1     (B_outer, B_inner, market_dim)  inner market state at outer t+1
@@ -3906,7 +3906,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         naming this fork; that is the contract, not a knob.
 
         THE WINDOW: the inner grid and every deal's `Time_dep` are truncated to t and the rows to
-        the next market row, so the pricing chain runs for real on those rows, two on a weekday - exact per-tradable F_t1 and liability L_t / L_t1,
+        the successor, so the pricing chain runs for real on those rows, two on a weekday - exact per-tradable F_t1 and liability L_t / L_t1,
         and correct on mixed strips, where a market-only short-circuit would broadcast spot as every
         F_t1. One forward step is also what bounds the AAD tape.
 
@@ -3950,11 +3950,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         cutoff_idx = t
         inner_base_date = base_date + pd.Timedelta(days=t_days)
 
-        # THE WINDOW: inner grid truncated to t and the rows to the next market row, the one the
-        # decision at t holds its book to, so the AAD tape stays bounded
+        # THE WINDOW: inner grid truncated to t and the rows to the successor, the row the decision at
+        # t holds its book to, so the AAD tape stays bounded
         dates = sorted(inner_time_grid.scenario_dates)
-        ahead = min(int(utils.market_rows(utils.market_days(pd.DatetimeIndex(dates), shared_mem.business_day))[0][0]),
-                    len(dates) - 1)
+        ahead = successor - t
         window_end_idx = min(cutoff_idx + ahead, self.time_grid.mtm_time_grid.size - 1)
         if inner_time_grid.scen_time_grid.size > ahead + 1:
             kept = set(dates[:ahead + 1])

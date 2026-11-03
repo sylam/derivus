@@ -1207,6 +1207,7 @@ class Bundle:
         self.fixings = ()                   # ((day offset, signed quantity), ...) of the liability
         self.last_settlement_index = None
         self.last_live_mtm_index = 0
+        self.decision_steps, self.successors = [0], []    # the decision rows, each row's successor
         # inner-MC forks, attached by HedgeMonteCarlo.execute for Execution_Mode='solve_hedge'
         self.inner_mc = None
         self.inner_mc_grad = None
@@ -1320,7 +1321,12 @@ class Bundle:
                                                 dtype=tensor.dtype, device=tensor.device),
                                     tensor], dim=0)
             self.realized_cashflows[currency] = tensor
-        self.last_live_mtm_index = int(steps - 2)
+        self.last_live_mtm_index = T = int(steps - 2)
+        # sim-grid t: the first row and the market rows before the terminal, and each row's successor,
+        # the next of them or the terminal, which a decision holds its book to and its fork lands on
+        r0 = self.initial_time_index
+        self.decision_steps = sorted({0} | {i - r0 for i in self.business_indices if i - r0 < T})
+        self.successors = [next((s for s in self.decision_steps if s > t), T) for t in range(T)]
         if total_leg_volume:
             self.total_leg_volume = float(total_leg_volume)
         self.fixings = tuple(fixings)
