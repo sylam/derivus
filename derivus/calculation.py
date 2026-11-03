@@ -5715,8 +5715,9 @@ def worker_count(runparallel):
     """How many workers `runparallel` asks for - the knob is that argument, and there is no second.
 
     `True` keeps the historical meaning, one worker per visible CUDA device, but falls back to a
-    SINGLE worker where there is no CUDA rather than to zero: `torch.cuda.device_count()` returns 0
-    on a CPU box, and zero workers would leave the parent waiting on a queue nothing ever writes to.
+    SINGLE worker where there is no CUDA rather than to zero: `utils.visible_device_count` returns 0
+    on a CPU box or with the devices hidden, and zero workers would leave the parent waiting on a
+    queue nothing ever writes to.
     An int asks for exactly that many and is deliberately NOT capped by the device count - workers
     share devices through `job_id % device_count`, so a four-way shard runs on a two-device box and
     an n-way shard runs on a box with no device at all.
@@ -5724,7 +5725,7 @@ def worker_count(runparallel):
     `isinstance(True, int)` is True in Python, so the bool is matched by identity first.
     """
     if runparallel is True:
-        return torch.cuda.device_count() or 1
+        return utils.visible_device_count() or 1
     count = int(runparallel)
     if count < 1:
         raise ValueError(

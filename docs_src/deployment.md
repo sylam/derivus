@@ -313,8 +313,13 @@ CPU-only machine installs PyTorch's CPU wheel to avoid the much larger CUDA one
 How a run picks its device:
 
 - `utils.calculation_device` takes the first visible CUDA device where the process sees any, and the
-  CPU otherwise. Which devices are visible is `CUDA_VISIBLE_DEVICES`; hiding them all runs on the
-  CPU. The device is a property of the machine, never of the job document.
+  CPU otherwise. Which devices are visible is `CUDA_VISIBLE_DEVICES`; hiding them all, empty or led
+  by an entry naming no device such as `-1`, runs every job of the process on the CPU, even once
+  something in it has initialised CUDA (on Windows the runtime then counts the cards an empty list
+  hid). `utils.visible_device_count` is that rule, for the device and for `runparallel`'s worker
+  count alike. Held by `tests/test_hidden_devices_stay_hidden.py::test_a_job_after_a_training_step_stays_on_the_cpu`
+  for the device; the worker count is Not gated. The device is a property of the machine, never
+  of the job document.
 - A base valuation runs in double precision and a credit Monte Carlo in single precision.
 - `DV_Service` runs one job at a time on its device.
 - In process, `Context.Credit_Monte_Carlo` with `runparallel` shards one simulation over every

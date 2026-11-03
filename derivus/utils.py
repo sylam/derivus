@@ -1571,21 +1571,32 @@ class Calculation_State(object):
         return self.t_PreCalc[key]
 
 
-def calculation_device(requested=None, job_id=0):
-    """Which silicon a calculation runs on, and the cuBLAS pin its reductions need to reproduce.
+def visible_device_count():
+    """How many CUDA devices this process may run on: none where `CUDA_VISIBLE_DEVICES` names none,
+    empty or led by an entry that is neither an index nor a UUID (`-1`), else the device count.
 
     THE DEVICE COUNT, NOT `torch.cuda.is_available()`, which answers True on a box whose devices
     are hidden (CUDA_VISIBLE_DEVICES empty) where the count answers zero - and putting a tensor on
     the device it then names INITIALISES CUDA, after which the count answers with the box's devices
     rather than the visible ones. ONE spelling, here, or a document's device - and so the stream it
-    draws from - would depend on what ran before it in the process. `job_id` fixes WHICH device, so
-    a worker's assignment is a function of its index and nothing else; workers are not capped by
-    the count, and a surplus shares.
+    draws from - would depend on what ran before it in the process.
+    """
+    # once anything initialises CUDA (an optimizer's step asks `is_available()`) the count is the
+    # runtime's, which on Windows ignores an empty list
+    first = os.environ.get('CUDA_VISIBLE_DEVICES', '0').split(',')[0].strip()
+    return torch.cuda.device_count() if first[:1].isdigit() or first.startswith(('GPU-', 'MIG-')) else 0
+
+
+def calculation_device(requested=None, job_id=0):
+    """Which silicon a calculation runs on, and the cuBLAS pin its reductions need to reproduce:
+    `requested`, else a device `visible_device_count` counts, else the CPU. `job_id` fixes WHICH
+    device, so a worker's assignment is a function of its index and nothing else; workers are not
+    capped by the count, and a surplus shares.
     """
     if requested is not None:
         device = torch.device(requested)
-    elif torch.cuda.device_count():
-        device = torch.device('cuda', job_id % torch.cuda.device_count())
+    elif visible_device_count():
+        device = torch.device('cuda', job_id % visible_device_count())
     else:
         device = torch.device('cpu')
 
