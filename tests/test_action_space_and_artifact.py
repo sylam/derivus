@@ -371,18 +371,18 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
     """The passive book is short the swap's net unfixed ounces, the bought leg less the sold,
     sixteen contracts a leg before the first fixing and two fewer at each print, split by the
     knot in force and inside the corridor, so no projection moves it. The verdict's terminal
-    wealth is that book's P&L by the wealth law, the sum over steps of position times contract
-    size times futures move plus the liability's move, less the declared cost (half the 10 bp
-    spread on the path-mean mark per contract traded, entry from the opening book and the unwind
-    at the horizon), within 1e-10 relative; the frozen eval's stepper rollout is that book driven
-    through `create_stepper()`, to the bit.
+    wealth is that book's P&L by the wealth law, the sum over decisions of position times contract
+    size times the futures move to the next decision plus the liability's move, less the declared
+    cost (half the 10 bp spread on the path-mean mark per contract traded, entry from the opening
+    book and the unwind at the horizon), within 1e-10 relative; the frozen eval's stepper rollout
+    is that book driven through `create_stepper()`, to the bit.
 
-    Killing mutations, the verdict's net and the stepper's mean against the book's -34995.98 and
-    236429.42: the ramp read one fixing late (`fixing_day >= day` in `Bundle.unfixed_at`),
-    -36298.97 and 233941.29; the side dropped (`Buy_Sell` unread in `leg_descriptors`), the book
-    clamped at -20 a leg, -45476.94 and 228728.83; the passive's turnover not charged in
-    `_verdict`, -31108.75; the stepper roll's passive branch dropped, rolling the greedy argmax,
-    321804.17."""
+    Killing mutations, the verdict's net and the stepper's mean against the book's 120150.09 and
+    -8400.92: the ramp read one fixing late (`fixing_day >= day` in `Bundle.unfixed_at`),
+    114879.48 and -5819.62; the side dropped (`Buy_Sell` unread in `leg_descriptors`), the book
+    clamped at -20 a leg, 110007.23 and 9730.19; the passive's turnover not charged in
+    `_verdict`, 124236.16; the stepper roll's passive branch dropped, rolling the greedy argmax,
+    155092.79."""
     ckpt = str(tmp_path / 'value_fn_passive.pt')
     cfg = _passive_cfg(save=ckpt)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
@@ -409,12 +409,13 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
 
     W, q_prev, books = L[t0].clone(), torch.zeros(len(LEGS), device=world.device), []
     cost = torch.zeros_like(W)
-    for t in range(t0, horizon):
-        q = book(world, t) if t in decisions else q_prev
-        books.append(q.tolist())
+    steps = sorted(t for t in decisions if t0 <= t < horizon) + [horizon]
+    for t, t1 in zip(steps, steps[1:]):
+        q = book(world, t)
+        books.extend([q.tolist()] * (t1 - t))           # held over the rows to the next decision
         cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1)
-        dF = torch.stack([F[h][t + 1] - F[h][t] for h in LEGS], dim=-1)
-        W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t + 1] - L[t])
+        dF = torch.stack([F[h][t1] - F[h][t] for h in LEGS], dim=-1)
+        W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t1] - L[t])
         q_prev = q
     cost = cost + (q_prev.abs() * kappa(horizon)).sum(-1)
     assert books[0] == [-16.0, -16.0] and books[-1] == [0.0, 0.0]
@@ -473,11 +474,12 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
 
     W, q_prev = L[t0].clone(), torch.zeros(len(LEGS), device=world.device)
     cost = torch.zeros_like(W)
-    for t in range(t0, horizon):
-        q = book(t) if t in decisions else q_prev
+    steps = sorted(t for t in decisions if t0 <= t < horizon) + [horizon]
+    for t, t1 in zip(steps, steps[1:]):
+        q = book(t)
         cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1) + churn * ((q - q_prev) ** 2).sum(-1)
-        dF = torch.stack([F[h][t + 1] - F[h][t] for h in LEGS], dim=-1)
-        W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t + 1] - L[t])
+        dF = torch.stack([F[h][t1] - F[h][t] for h in LEGS], dim=-1)
+        W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t1] - L[t])
         q_prev = q
     cost = cost + (q_prev.abs() * kappa(horizon)).sum(-1)
     net = float((W - cost).mean())
@@ -564,21 +566,22 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     notional, in one spelling (`_w_norm`) on every path a net is fitted or read on. A training
     document under the scale-free LogWealth objective with the returns state on then fits its
     labels: the fitted residual tracks the bootstrap label from the first backward step, the
-    sweep's `V_0` reads 0.13223984837532043 on the CPU (0.1301 on a card: the twelve-path,
+    sweep's `V_0` reads 0.11008480936288834 on the CPU (0.0859 on a card: the twelve-path,
     five-iteration fit is device-rounded) and the same document at twice every dollar trains
     to the same `V_0` within 1e-6, since the frame is dimensionless.
 
     Killing mutation: the fit loop and the ensemble path feeding wealth in dollars to the
     fraction frame (the three spellings this gate retired) - the net sees a column a million
     standard deviations wide, fits a residual an order of magnitude too small at the first step,
-    the sweep reads V_0 0.036762408912181854 and the doubled document no longer trains alike."""
+    the sweep reads V_0 0.018413538113236427 (0.0162 on a card) and the doubled document no
+    longer trains alike."""
     cfg = _cfg(seed=7)
     cfg['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'     # the two fits repeat to the bit on a card
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Objective'] = {'Object': 'LogWealth'}
     hp['Solver']['DiffV2_Returns_State'] = 'Yes'
     v0 = _v0(_run(cfg))
-    assert 0.1 < v0 < 0.3 and abs(_v0(_run(_doubled(cfg))) - v0) <= 1e-6 * v0, v0
+    assert 0.05 < v0 < 0.3 and abs(_v0(_run(_doubled(cfg))) - v0) <= 1e-6 * v0, v0
 
 
 def _logwealth(cfg):
@@ -753,12 +756,11 @@ def growth(tmp_path_factory):
 def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tmp_path):
     """`DiffV2_Max_Value_Optimism` bounds V_0 less the held-out greedy utility, net of the
     repositioning charge under the position state the swap fixture carries: the value a fit claims
-    against what its own argmax earns on a world no fit step saw. Seed 5 claims V_0 +0.2779 while
-    its held-out batch ruins below the capital line its bank measured (greedy u -2.0562, 2.33
-    apart): the save is refused naming the field, V_0 and the held-out utility, and no
-    checkpoint is written (those are the CPU's draws; a card's seed 5 does not ruin, so the test
-    declares the bound at -10, below any fit's gap, and the refusal fires on either device). Seed
-    6 (V_0 +0.1538 on the CPU) saves, stamped with V_0 less its held-out greedy
+    against what its own argmax earns on a world no fit step saw. Seed 5 claims V_0 +0.1937
+    against a held-out greedy u of +0.2066 on the CPU (+0.1839 and +0.1990 on a card); the test
+    declares the bound at -10, below any fit's gap, so on either device the save is refused naming
+    the field, V_0 and the held-out utility, and no checkpoint is written. Seed 6 (V_0 +0.1639 on
+    the CPU, +0.1755 on a card) saves, stamped with V_0 less its held-out greedy
     `u_mean`; a roll declaring a bound below the stamp refuses the member by name, and the same
     checkpoint without the stamp, as every checkpoint saved before it, loads at that bound. 20 s.
 
@@ -791,7 +793,7 @@ def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tm
 def test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused(tmp_path):
     """`DiffV2_Max_Member_Disagreement` bounds the mean absolute difference, in contracts, between
     two ensemble members' swept net books. Two checkpoints of one document trained under seeds 7
-    and 11 sweep books 5.48 contracts apart on average over their 17 swept steps on the CPU: a
+    and 11 sweep books 4.64 contracts apart on average over their 12 swept steps on the CPU: a
     two-member roll loads at the default 8 and is refused at 0, naming the field, both
     members and the distance the two checkpoints' swept books give.
 
@@ -816,11 +818,11 @@ def test_the_book_column_is_fitted_to_the_repositioning_charge_s_slope(growth):
     harvests whatever slope it lands at. `DiffV2_Book_Gradient_Label` 'Yes' makes the book a leaf
     of the gradient fork, whose label is by the envelope theorem the repositioning charge's slope at
     the chosen action, and fits the net's dA/dp to it. On the swap fixture under seed 6 the field
-    omitted and 'No' train the same V_0 and root book to the bit (0.153822660446167, as before
+    omitted and 'No' train the same V_0 and root book to the bit (0.1638568490743637, as before
     the field existed); under 'Yes' the fitted slope's mean over the bank departs from the label's
-    by 9.1% of the label, summed over the 47 swept steps (bound 25%), and the root book moves. 30 s.
+    by 8.3% of the label, summed over the 32 swept steps (bound 25%), and the root book moves. 30 s.
 
-    Killing mutation: the slope term dropped from the fit's loss (the departure reads 170% and the
+    Killing mutation: the slope term dropped from the fit's loss (the departure reads 123% and the
     'Yes' fit is the 'No' fit to the bit, root book and all)."""
     _, omitted = growth
     reads = {}
@@ -855,14 +857,14 @@ def test_the_book_label_is_taken_along_the_ladder():
     on the live legs as the step's `Allocation_Weights` split them, intersected with the active
     legs, so a leg the ladder never moves carries no weight in the label whatever the bank books
     on it. The swap growth document under seed 6 with its first leg inactive and no bank noise
-    trains to the bit as the same document with that leg removed: V_0 (0.09422151744365692 on
-    the CPU), the root book (-8.998046875) and every swept step's `book_label` and `book_slope`;
+    trains to the bit as the same document with that leg removed: V_0 (0.10113716870546341 on
+    the CPU), the root book (-9.044921875) and every swept step's `book_label` and `book_slope`;
     both documents declare `Deterministic_Kernels` so the identity holds to the bit on a card too.
     30 s.
 
     Killing mutation: the gradient summed over the live legs and divided by their count (the
-    two-leg label reads 0.48 of the one-leg's, 52% apart summed over the 47 steps, and the fits
-    part: V_0 0.1542 against 0.1626, the root book -8.41 against -8.39)."""
+    two-leg label reads 0.50 of the one-leg's, 50% apart summed over the 32 steps, and the fits
+    part: V_0 0.0969 against 0.1011, the root book -9.047 against -9.045)."""
     cfg = _swap_growth(6)
     cfg['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update({
@@ -883,19 +885,19 @@ def test_the_bank_is_composed_along_the_ladder():
     active, one knot weighting the July leg 0 and `Calendar_Spread_Bps` 3; B has only the October
     leg active, no calendar and October's box floored at -12, so B's band stops at -12 on its box
     where A's stops on the corridor, and both stop at 5 on October's box where A's `net_bounds`
-    reaches 10. Under 'Yes' A trains to the bit as B: V_0 (0.06843073666095734 on the CPU), the
-    root book ([0, -3.71875]) and every swept step's label, slope and value; under 'No' they part
-    (V_0 0.0844 against 0.0680), and A with the field omitted is A under 'No' to the bit. Under an
+    reaches 10. Under 'Yes' A trains to the bit as B: V_0 (0.05139961093664169 on the CPU), the
+    root book ([0, -4.76953125]) and every swept step's label, slope and value; under 'No' they part
+    (V_0 0.0495 against 0.0482), and A with the field omitted is A under 'No' to the bit. Under an
     even (0.5, 0.5) knot a rung moves both legs the same way, so the calendar flag meets no matched
-    volume and the fits with and without it are one (V_0 0.08964155614376068).
+    volume and the fits with and without it are one (V_0 0.06728600710630417).
     `Deterministic_Kernels` holds the identities on a card too.
 
     Killing mutations, A's V_0 against B's: the constructed policy's three water-fills left on the
-    replication shape (0.0694 against 0.0684); the exploration drawn per active leg and projected
-    into the corridor, as the default bank's is (0.0758 against 0.0680; the even knot's fits part,
-    0.0926 against 0.0757); the noisy net left unclamped (0.0805 against 0.0768); the constructed
-    net spanning `net_bounds` (0.0914 against 0.0684); the reserve priced on the replication split
-    (0.0769 against 0.0684)."""
+    replication shape (0.0496 against 0.0514); the exploration drawn per active leg and projected
+    into the corridor, as the default bank's is (0.0508 against 0.0482; the even knot's fits part,
+    0.0662 against 0.0622); the noisy net left unclamped (0.0456 against 0.0470); the constructed
+    net spanning `net_bounds` (0.0470 against 0.0514); the reserve priced on the replication split
+    (0.0518 against 0.0514)."""
     def fit(ladder, weights=(0.0, 1.0), calendar=True, october_only=False):
         cfg = _swap_growth(6)
         calc = cfg['Calc']['Calculation']
@@ -931,7 +933,7 @@ def test_the_ladder_bank_reads_the_policy_s_live_legs_on_a_replayed_path(growth,
     the policy's ladder reads, so a contract the inner fork still prices is live on a day its mark
     did not move. The swap growth checkpoint rolls frozen on one replayed path, the carry and the
     rate at zero and day 20 a copy of day 19 (a forward-filled holiday), so neither leg's mark
-    moves into step 20: the roll under 'Yes' reads the roll under 'No' to the bit over its 47 steps,
+    moves into step 20: the roll under 'Yes' reads the roll under 'No' to the bit over its 32 steps,
     the bank being inert on a loaded checkpoint (greedy wT_mean -13054.20 on the CPU, net of its
     charges, the book at step 20 [3, 2]). `Deterministic_Kernels` holds the identity on a card too. 5 s.
 
@@ -963,13 +965,13 @@ def test_a_no_table_document_whose_legs_all_die_still_labels():
     """Absent an `Allocation_Weights` table the label's ladder is even over the live active legs,
     and a swept step where none can carry a contract has no direction: the label is zero there,
     as the passive holds nothing. The swap growth document on the Cartesian grid, both legs
-    expiring between the last fixing and settlement, trains under the label over 47 steps (V_0
-    0.1737 on the CPU) with the dead step 46 labelled zero and step 0 not, and its passive splits
+    expiring between the last fixing and settlement, trains under the label over 32 steps (V_0
+    0.1799 on the CPU) with the dead step 46 labelled zero and step 0 not, and its passive splits
     the 32 unfixed contracts evenly, 16 a leg. 20 s.
 
     Killing mutations: the no-table branch of `_weights_at` removed (refused at step 46, naming a
     table the document never declared); its normalisation dropped (the passive reads [-20, -20],
-    V_0 0.2751 against 0.2654 on the CPU)."""
+    V_0 0.1840 against 0.1799 on the CPU)."""
     cfg = _swap_growth(6)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Solver'].update({'DiffV2_Book_Gradient_Label': 'Yes', 'Active_Hedge_Indices': [0, 1],
@@ -986,11 +988,11 @@ def test_a_no_table_document_whose_legs_all_die_still_labels():
 
 def test_a_label_horizon_of_one_is_the_one_step_fit():
     """`DiffV2_Label_Horizon` 1 is the one-step bootstrap: the label test's document trains with
-    the field omitted and stated 1 to the bit, V_0 (0.09422151744365692 on the CPU, as before the
+    the field omitted and stated 1 to the bit, V_0 (0.10113716870546341 on the CPU, as before the
     field existed), the root book and every swept step's diagnostics. 30 s.
 
     Killing mutation: the default the solver block is read with moved to 2 (the omitted document
-    trains V_0 0.1680 against 0.1626)."""
+    trains V_0 0.1145 against 0.1011)."""
     cfg = _swap_growth(6)
     cfg['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update({
@@ -1029,20 +1031,20 @@ def test_a_label_past_the_horizon_is_what_its_greedy_policy_realises(objective, 
     the horizon the root label is then the utility the greedy policy realises on the training
     paths, net of its repositioning charges, up to the root's one-step cross-fit, once the roll
     charges each step's wealth as the label does, so each decision reads the net wealth its value
-    was fitted on: the swap growth document under seed 6 at a horizon of 100 steps, 47 past it,
+    was fitted on: the swap growth document under seed 6 at a horizon of 100 steps, past its 32,
     trains a V_0 within 0.006 of the `u_mean` its checkpoint's frozen roll on the training batch
-    realises (the roll's first greedy book the training root's). On
-    the CPU 0.0889 against 0.0900 under LogWealth and 0.1478 against 0.1486 under the fixture's
-    terminal utility. 35 s each.
+    realises (the roll's first greedy book the training root's). On the CPU 0.0981 against 0.0991
+    under LogWealth and 0.1627 against 0.1630 under the fixture's terminal utility; seeds 1 to 8
+    on a card read within 0.0031. 35 s each.
 
     Killing mutations, V_0 against the roll's utility: the roll's wealth recursion gross of the
-    charge (its `u_mean` 0.1616 and 0.2252 against the net 0.1439 and 0.2075, on every seed 1 to 8);
-    the correction's sign flipped (the recursion runs away, -1.1e10 and -3.0e10);
-    the k-step end read at the bank's own wealth (terminal 0.0530 against 0.1612; LogWealth's end
-    at the horizon is zero at any wealth); the rollout's charge dropped (0.1589 against 0.1441,
-    0.2235 against 0.2072); the rewards after the first move dropped (growth 0.0015 against
-    0.1089); k not clipped at the horizon (refused at the last step, which has no successor in the
-    cache)."""
+    charge (its `u_mean` 0.1113 and 0.1760 against the net 0.0991 and 0.1630, 0.010 to 0.016 above
+    V_0 on every seed 1 to 8); the correction's sign flipped (the recursion runs away, V_0 -1.5e6
+    under both); the k-step end read at the bank's own wealth (terminal 0.0529 against 0.1360;
+    LogWealth's end at the horizon is zero at any wealth); the rollout's charge dropped (0.1119
+    against 0.1010, 0.1735 against 0.1624); the rewards after the first move dropped (growth
+    0.0011 against 0.0757); k not clipped at the horizon (refused at the last step, which has no
+    successor in the cache)."""
     ckpt = str(tmp_path / 'value_fn.pt')
     train = _run(_horizon(objective, save=ckpt)).evaluation_summary['diagnostics']
     roll = _run(_horizon(objective, load=ckpt)).evaluation_summary['diagnostics']['verdict']
@@ -1081,11 +1083,11 @@ def test_the_label_charges_the_close_of_a_leg_that_dies_at_the_step():
     that step, as the roll pays it. With 10 contracts held into the last decision step at a fee of
     500 a contract, the last step's label sits below the fee-free document's by the close over the
     utility scale, 500 x 10 / 1e5 = 0.05, to 1e-6, and the step before's, whose two-step label
-    realises that close on the outer path, by the same within 1e-3 (7e-5 on the CPU). 3 s.
+    realises that close on the outer path, by the same within 1e-3 (2.3e-4 on the CPU). 3 s.
 
     Killing mutations: the standing book masked by the step's live legs before the charge (both
     shifts 0); in the one-step label alone (the last step's 0); in the k-step correction alone (the
-    step before's -7e-5). Not seen: the argmax's own spelling, the corridor and the expiry leaving
+    step before's -2.3e-4). Not seen: the argmax's own spelling, the corridor and the expiry leaving
     each step one candidate."""
     rows = [{r['t']: r['Y_mean'] for r in _run(_held_into_expiry(fee)).evaluation_summary['diagnostics']['per_t']}
             for fee in (0.0, 500.0)]
@@ -1176,14 +1178,14 @@ BAND_BASIS = {'A': 0.01, 'Phi': 0.9, 'Nu': 0.0, 'Sigma': 1.5, 'Reversion_Model':
 def _state_labels(caplog, returns=False, save=None, band=False):
     """`_cfg` swept over its last eight decision steps at 200 fit iterations, its basis `SLOW_BASIS`
     on `OWN_GARCH`, saving its value fn to `save`; under `band` the `FRICTIONAL` solve on 96 paths of
-    seed 11 with `BAND_BASIS` over its last three, the July average running to its payment date so
+    seed 11 with `BAND_BASIS` over its last six, the July average running to its payment date so
     the last decision step still hedges a fixing: each fitted step's `(slope, label)` bank means per
     market column,
     from the debug line."""
     cfg = _cfg(seed=11, batch=96) if band else _cfg(seed=7, save=save)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     solver = hp['Solver']
-    solver['T_Min'], solver['DiffV2_Fit_Iters'] = LAST_STEP - (4 if band else 11), 200
+    solver['T_Min'], solver['DiffV2_Fit_Iters'] = LAST_STEP - (7 if band else 11), 200
     if returns:
         solver['DiffV2_Returns_State'] = 'Yes'
     basis = dict(SLOW_BASIS, **OWN_GARCH)
@@ -1219,12 +1221,12 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     level's are 2,055 times the plain ones and log sigma^2's the plain one. 11 s.
 
     Killing mutations: the leaves not made (D's label 0); mu seeded off the outer level rather than
-    the level leaf (the level's label at the last step D's, 40% off in standardised slope); the
+    the level leaf (the level's label at the last step D's, 17% off in standardised slope); the
     seeds detached from their leaves (D's label 0); the returns state's map dropped (ratio 1), or
     read on log sigma^2 too (its ratio 2,055); the
     wealth step differencing the fork's t+1 marks against the outer t marks, which carry no
     gradient (the level's label at the last step 5.0 times D's, the price column's standardised
-    label -0.96 against a slope of 0.0014)."""
+    label -0.042 against a slope of -0.0007)."""
     ckpt = str(tmp_path / 'value_fn.pt')
     on, rs = _state_labels(caplog, save=ckpt), _state_labels(caplog, returns=True)
     slope_on, label_on = (sum(on[t][i] for t in on) for i in (0, 1))
@@ -1244,14 +1246,14 @@ def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
     price, the basis level) is labelled with the move's slope rather than the t+1 mark's. On the
     `FRICTIONAL` solve with `BAND_BASIS` (D the 7th of 8 market columns, the level the 8th), at the
     last step, whose continuation is the closed-form utility and whose book hedges the last fixing,
-    the level's label is 0.03% of D's label summed over the five swept steps (0.01% on the card,
+    the level's label is 0.009% of D's label summed over the six swept steps (0.025% on the card,
     bound 1%): moving the level and its slow mean together leaves the move unchanged; and D's fitted
-    slope sums within 7% of its label (9% on the card, bound 15%). Seeds 1 to 13 on either device
-    read at most 0.05% and 10%. 6 s.
+    slope sums within 0.2% of its label (2.2% on the card, bound 15%). Seeds 1 to 13 read at most
+    0.064% and 9% on the CPU, 0.026% and 16% on the card (its seed 9 past the bound). 7 s.
 
     Killing mutation: the wealth step differencing the fork's t+1 marks against the outer t marks,
-    which carry no gradient (the level's label at the last step 86% of D's summed label, 59% and
-    110% on the card's seeds 4 and 2)."""
+    which carry no gradient (the level's label at the last step 17% of D's summed label, 40% and
+    53% on seeds 2 and 4; 35%, 36% and 31% on the card)."""
     run = _state_labels(caplog, band=True)
     last = run[LAST_STEP][1]
     slope, label = (sum(run[t][i] for t in run) for i in (0, 1))
