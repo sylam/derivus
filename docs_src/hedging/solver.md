@@ -62,14 +62,16 @@ Under `DiffV2_First_Decision_From` 'Passive' the stepper roll's first greedy dec
 
 | Track | Policy | Reported in |
 | --- | --- | --- |
-| `HindsightDpSolver` (`Run_Hindsight_Diagnostic`) | clairvoyant and frictionless: at every step the grid position maximising that step's realized P&L; an upper bound on any deployable policy | `comparison`, ladder |
+| `HindsightDpSolver` (`Run_Hindsight_Diagnostic`) | clairvoyant and frictionless: at every decision the grid position maximising its realized P&L to the next, the decision rows and the terminal the solver steps; an upper bound on any deployable policy | `comparison`, ladder |
 | `textbook` (`Run_Textbook_Benchmark`) | the single best CONSTANT position held to the horizon, frictionless, chosen by $E[u]$ on the held-out paths; a lower bound | `comparison`, ladder |
 | `textbook` (verdict) | per step, per active hedge $i$: $q_i=-\mathrm{Cov}(\Delta L,\Delta F_i)\,/\,(cs_i\,\mathrm{Var}(\Delta F_i)\,n_{active})$ over the outer paths, clamped to the position limits and projected into the corridor | `diagnostics.verdict` |
 | `nohedge` | no position | `diagnostics.verdict` |
 | `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), clamped to the position limits, projected into the corridor, apportioned to whole contracts carrying its rounded total and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing | `diagnostics.verdict`, `stepper_verdict` |
 
 The two tracks named `textbook` are different policies. Both report turnover cost as a diagnostic;
-the comparison track is never charged it, the verdict's only under `DiffV2_Position_State`.
+the comparison track is never charged it, the verdict's only under `DiffV2_Position_State`. The
+hindsight bound steps the solver's decision rows (`Bundle.decision_steps`), held by
+`tests/test_action_space_and_artifact.py::test_the_hindsight_bound_decides_where_the_solver_does`.
 
 The verdict rolls the fitted argmax policy over every path of the held-out batch, flat at `T_Min`,
 beside the verdict's `textbook`, `nohedge` and `passive`, and reports per policy $E[u]$ (`u_mean`) and the

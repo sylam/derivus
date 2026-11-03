@@ -524,8 +524,9 @@ def run_textbook_benchmark(bundle, runtime):
 
 class HindsightDpSolver:
     """Clairvoyant upper-bound diagnostic, FRICTIONLESS (the shared DP objective). For each
-    realized outer path it picks, at EVERY step independently, the grid position maximizing
-    that step's realized P&L `q·cs·(F_{t+1}−F_t)` — perfect foresight + free repositioning.
+    realized outer path it picks, at EVERY decision independently, the grid position maximizing
+    its realized P&L `q·cs·(F_{t'}−F_t)` to its successor t' (`Bundle.successors`), the rows the
+    solver decides on and holds its book across — perfect foresight + free repositioning.
     No inner MC, no V̂: the realized path is its own one-sample future.
 
     `u_signed` is monotone and the liability terminal `L_T(b)` is path-fixed, so maximizing
@@ -538,8 +539,8 @@ class HindsightDpSolver:
 
     documentation = ('Solver', [
         'A clairvoyant UPPER BOUND, enabled by `Run_Hindsight_Diagnostic`. For each realized path',
-        "it picks, at every step independently, the grid position maximizing that step's realized",
-        'P&L — perfect foresight and free repositioning. No inner MC and no fitted value: the',
+        "it picks, at every decision independently, the grid position maximizing its realized P&L to",
+        'the next decision — perfect foresight and free repositioning. No inner MC and no fitted value: the',
         'realized path is its own one-sample future.',
         '',
         'It is a bound, not a policy. With no turnover cost the per-step choices decouple, so the',
@@ -561,21 +562,22 @@ class HindsightDpSolver:
         bundle, runtime, aspace = self.bundle, self.runtime, self.aspace
         acc = runtime["accounting"]
 
-        F, L_T, t_outer = bundle.realized_paths(runtime)               # F (n_h,t_outer,B)
+        F, L_T, _ = bundle.realized_paths(runtime)                     # F (n_h,t_outer,B)
         device = F.device
         b_outer = F.shape[-1]
         tradables_sim = bundle.tradables_sim
         cs = aspace.contract_size
 
-        # frictionless clairvoyant: independent per-step argmax over the realized move, within the
-        # per-t action universe. The net-of-cost trajectory is accumulated for the diagnostic.
+        # frictionless clairvoyant: independent per-decision argmax over the realized move to the
+        # decision's successor, within the per-t action universe. The net-of-cost trajectory is
+        # accumulated for the diagnostic.
         q_prev = aspace.initial_q(b_outer, device)                   # (B, n_h) opening book
         n_star_0 = None
         G = torch.zeros(b_outer, device=device)
         cost = torch.zeros(b_outer, device=device)
-        for t in range(t_outer - 1):
+        for t in bundle.decision_steps:
             grid = aspace.grid_at(t)                                   # (n_actions_t, n_h) per-t
-            dF = F[:, t + 1, :] - F[:, t, :]                           # (n_h, B)
+            dF = F[:, bundle.successors[t], :] - F[:, t, :]            # (n_h, B)
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
             best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
             q_now = grid[best_idx]                                     # (B, n_h)
