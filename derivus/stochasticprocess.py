@@ -5110,14 +5110,14 @@ class BasisLinkedSpotModel(StochasticProcess):
         return calibrated if seed is None else (seed.unsqueeze(-1) if inner else seed)
 
     def reveal_state_at(self, t, buffer):
-        """The level as the one CONTINUOUS segment; under `Reveal_Band_State` led by SUFFICIENT
-        ones: b_t - mu_t, mu_t the published `basis_mu` row t, the level step t->t+1 reverts to
-        (0 without a slow mean, as the law reads it), and under the own GARCH log sigma^2_t."""
+        """The level, CONTINUOUS; under `Reveal_Band_State` led by b_t - mu_t, a price difference and
+        CONTINUOUS too, mu_t the published `basis_mu` row t, the level step t->t+1 reverts to (0
+        without a slow mean, as the law reads it), and under the own GARCH log sigma^2_t, SUFFICIENT."""
         level = buffer[self.factor_key][t]
         if self.param.get('Reveal_Band_State', 'No') != 'Yes':
             return [(level, REVEAL_CONTINUOUS)]
         state = [(level - buffer[(self.factor_key, 'basis_mu')][t] if self.slow_mean else level,
-                  REVEAL_SUFFICIENT)]
+                  REVEAL_CONTINUOUS)]
         if self.garch:
             state.append((buffer[(self.factor_key, 'basis_sig2')][t].log(), REVEAL_SUFFICIENT))
         return state + [(level, REVEAL_CONTINUOUS)]
@@ -5341,7 +5341,8 @@ class BasisLinkedSpotCalibration(object):
         '`tests/test_chained_basis.py::test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trailing_level`.',
         '',
         '`Basis_Scale_Window` $N>0$ multiplies `Sigma` and the two mixture sds by one factor, the realised sd',
-        '(ddof 1) of the last $N$ daily changes of $b$ before the calibration date, the frame\'s last, over the',
+        '(ddof 1) of the last $N$ daily changes of $b$ before the calibration date, the frame\'s last, each',
+        'across at most 4 calendar days as the fit reads them, over the',
         "fitted law's stationary one-step sd $\\sqrt v$; every other field is the fit's, for a fit",
         'without `GARCH_Innovation`, whose sds are relative and whose level is the recursion\'s. Held by',
         '`tests/test_chained_basis.py::test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alone`.',
@@ -5561,8 +5562,8 @@ class BasisLinkedSpotCalibration(object):
         variance, `G_Omega` targets the window's variance and `Sig2_0` is the last `Vol_Window`'s.
 
         `Basis_Scale_Window` N > 0 multiplies Sigma and the two mixture sds by the realised sd of
-        the last N changes of `b` dated before `end`, the calibration date, over the fitted law's
-        stationary one-step sd."""
+        the last N changes of `b` dated before `end`, the calibration date, on adjacent business
+        days as the fit, over the fitted law's stationary one-step sd."""
         from scipy import optimize
         span = int(self.param.get('Slow_Mean_Span', 0))
         scale_window = int(self.param.get('Basis_Scale_Window', 0))
@@ -5647,7 +5648,9 @@ class BasisLinkedSpotCalibration(object):
                          'eta/sqrt(h) %.4f', g_alpha, g_beta, g_alpha + g_beta, garch['G_Omega'],
                          sigma ** 2, garch['Sig2_0'], v)
         if scale_window:
-            trailing = float(np.diff(b[index < end])[-scale_window:].std(ddof=1))
+            before = index < end
+            moves = np.diff(b[before])[np.diff(utils.excel_days(index[before])) <= 4]
+            trailing = float(moves[-scale_window:].std(ddof=1))
             scale = trailing / v ** 0.5
             param.update(Sigma=sigma * scale, Mix_Sigma_Quiet=s1 * scale, Mix_Sigma_Stress=s2 * scale)
             logging.info('basis band+mixture scale: the last %d changes before the calibration date at '

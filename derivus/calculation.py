@@ -3436,11 +3436,12 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
     def _reveal_transform(self, key, block, kind):
         """Returns-state coordinate map (identity when the switch is off): a CommodityPrice's
-        CONTINUOUS segment becomes log(x / calibrated t0 spot); an ObservedBasis segment becomes
-        x / that spot. Sufficient statistics (log h, beliefs) and rate curves pass through."""
-        if not self._returns_state:
+        CONTINUOUS segment becomes log(x / calibrated t0 spot); an ObservedBasis CONTINUOUS segment
+        becomes x / that spot. Sufficient statistics (log h, log sigma^2, beliefs) and rate curves
+        pass through."""
+        if not self._returns_state or kind != REVEAL_CONTINUOUS:
             return block
-        if key.type == 'CommodityPrice' and kind == REVEAL_CONTINUOUS:
+        if key.type == 'CommodityPrice':
             return (block / self._state_spot0).log()
         if key.type == 'ObservedBasis':
             return block / self._state_spot0

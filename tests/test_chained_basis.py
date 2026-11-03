@@ -547,11 +547,12 @@ def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alo
     `Mix_Sigma_Quiet` and `Mix_Sigma_Stress` are the plain fit's times the realised sd (ddof 1)
     of the last 20 basis changes before the calibration date over the fitted law's stationary sd
     sqrt(q s_stress^2 + (1 - q) s_quiet^2), q = `Mix_Q_Stress`, to 1e-12 (the ratio 0.7992), and
-    every other key is the plain fit's to the bit. 0.1 s.
+    every other key is the plain fit's to the bit. The same archive without five business days before
+    its last week reads the 20 changes across at most 4 calendar days, as the fit does (0.8643). 0.2 s.
 
     Killing mutations: the change into the calibration date counted - the ratio 2.7005; ddof 0 -
     0.7790; the law's sd with q on the quiet sd - 0.2964; `Sigma` left unscaled - 3.4785 against
-    2.7801.
+    2.7801; the move across the seven-day hole counted - 0.8809.
     """
     n, window = 504, 20
     rng = np.random.default_rng(5)
@@ -560,13 +561,15 @@ def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alo
     eta = np.where(rng.random(n) < 0.85, 2.0, 7.0) * rng.standard_normal(n)
     eta[-1] = 40.0
     basis = _band_basis(spot, eta)
-    plain = _fit_band(tmp_path, dates, spot, basis)
-    scaled = _fit_band(tmp_path, dates, spot, basis, Basis_Scale_Window=window)
-    q, sds = plain['Mix_Q_Stress'], ('Sigma', 'Mix_Sigma_Quiet', 'Mix_Sigma_Stress')
-    ratio = np.diff(basis[:-1])[-window:].std(ddof=1) / np.sqrt(
-        q * plain['Mix_Sigma_Stress'] ** 2 + (1.0 - q) * plain['Mix_Sigma_Quiet'] ** 2)
-    assert all(abs(scaled[k] / (plain[k] * ratio) - 1.0) < 1e-12 for k in sds), (ratio, scaled, plain)
-    assert {k: v for k, v in scaled.items() if k not in sds} == {k: v for k, v in plain.items() if k not in sds}
+    for keep in (np.arange(n), np.r_[0:n - 12, n - 7:n]):
+        plain = _fit_band(tmp_path, dates[keep], spot[keep], basis[keep])
+        scaled = _fit_band(tmp_path, dates[keep], spot[keep], basis[keep], Basis_Scale_Window=window)
+        q, sds = plain['Mix_Q_Stress'], ('Sigma', 'Mix_Sigma_Quiet', 'Mix_Sigma_Stress')
+        moves = np.diff(basis[keep][:-1])[np.diff(dates[keep][:-1].values) <= np.timedelta64(4, 'D')]
+        ratio = moves[-window:].std(ddof=1) / np.sqrt(
+            q * plain['Mix_Sigma_Stress'] ** 2 + (1.0 - q) * plain['Mix_Sigma_Quiet'] ** 2)
+        assert all(abs(scaled[k] / (plain[k] * ratio) - 1.0) < 1e-12 for k in sds), (ratio, scaled, plain)
+        assert {k: v for k, v in scaled.items() if k not in sds} == {k: v for k, v in plain.items() if k not in sds}
 
 
 #: The process's switches as a calibration document states them.
@@ -650,10 +653,10 @@ FLAT_BASIS = {'A': 0.0, 'Phi': 0.4, 'Nu': 5.0, 'Sigma': 8.0, 'Calibration_DT_Yea
 def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_path, caplog):
     """A calibration document fits `GARCHSpotModel` on 504 days of a GARCH(1,1) spot beside a band
     basis. The simulate-only hedging fixture, its spot that block and its basis a flat Linear,
-    replays it on 119 calendar rows, the weekends forward filled from Friday, with a flat fix on the fourth business
-    day (a Wednesday), and on the same business days with the filled rows removed: on all 85
-    business rows the published log h equals, to the bit, the compressed replay's at that row's
-    count of business days, and every filled row holds the row before it. A market row is one
+    replays it on 119 calendar rows, the weekends forward filled from Friday, with a flat fix on the
+    fourth business day (a Wednesday), and on the same business days with the filled rows removed:
+    on all 85 business rows the published log h equals, to the bit, the compressed replay's at that
+    row's count of business days, and every filled row holds the row before it. A market row is one
     calibration step and a filled row's drift is the next market row's: under a `Mu` of 0.5 the
     calendar replay's log h is the business-day filter written here, h' = Omega + Alpha r^2 + Beta h
     with r the log return less the drift over its calendar days plus h / 2, within 5e-5 on every

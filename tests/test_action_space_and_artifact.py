@@ -1029,12 +1029,15 @@ def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, cap
     market dimension is 9 where the same document without the field reads 7, the frame is the
     field-free one with two columns inserted before the level (-30.722), the first b - mu at the
     replay's published row of the step to the bit (-1.879) and the second log sigma^2 there within
-    1e-6 (2.0838, the frame's float32); and the field-free checkpoint loaded into the field's world
-    off the GARCH, one column wider, is refused by the shape check naming 'md' (7 against 8). 7 s.
+    1e-6 (2.0838, the frame's float32); under `DiffV2_Returns_State` the deviation and the level
+    are one fraction of the t0 spot and log sigma^2 is itself; and the field-free checkpoint loaded
+    into the field's world off the GARCH, one column wider, is refused by the shape check naming
+    'md' (7 against 8). 10 s.
 
     Killing mutations: mu revealed in place of b - mu (-28.843); the published mean read a row
     early (-1.978) or late (the fork's two-row grid out of bounds); log sigma^2 dropped (8 against
-    9); the level revealed first (-30.722 in the deviation's column)."""
+    9); the level revealed first (-30.722 in the deviation's column); log sigma^2 taken for a
+    fraction of the spot under the returns state (0.0010)."""
     rng = np.random.default_rng(3)
     spot = 2055.0 + np.cumsum(rng.normal(0.0, 25.0, 160))
     basis = -30.0 + 6.0 * np.sin(0.3 * np.arange(160)) + rng.normal(0.0, 1.0, 160)
@@ -1053,6 +1056,12 @@ def test_the_value_net_reads_the_band_deviation_the_world_declares(tmp_path, cap
     assert band['market_dim'] == plain['market_dim'] + 2, (band['market_dim'], plain['market_dim'])
     assert after[:col] + after[col + 2:] == before and after[col] == deviation, (after[col], deviation)
     assert abs(after[col + 1] - np.log(replay['sig2'][LAST_STEP])) < 1e-6, after[col + 1]
+    returns = _band_state(path, reveal='Yes', save=str(tmp_path / 'value_fn_returns.pt'))
+    returns['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Returns_State'] = 'Yes'
+    _run(returns)
+    fraction = torch.load(str(tmp_path / 'value_fn_returns.pt'), map_location='cpu', weights_only=False)['m_mean']
+    assert abs(fraction[col] * after[col + 2] / (after[col] * fraction[col + 2]) - 1.0) < 1e-5, fraction
+    assert abs(fraction[col + 1] - after[col + 1]) < 1e-6, fraction
     with pytest.raises(ValueError, match=re.escape(
             f"checkpoint mismatch on 'md': {hidden} saved {plain['market_dim']} vs this run {plain['market_dim'] + 1}")):
         _run(_band_state(path, reveal='Yes', garch=False, load=hidden))
@@ -1114,12 +1123,13 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     label in the bank mean of 24 states beside the value term, not exactly). At the last step, whose
     continuation is the closed-form utility, the level's label is 0.1% of D's (bound 1%): shifting
     the level and its slow mean together leaves the move's law unchanged; and under
-    `DiffV2_Returns_State`, whose columns are fractions of the 2,055 t0 spot, all three are 2,055
-    times the plain ones. 11 s.
+    `DiffV2_Returns_State`, whose basis price columns are fractions of the 2,055 t0 spot, D's and the
+    level's are 2,055 times the plain ones and log sigma^2's the plain one. 11 s.
 
     Killing mutations: the leaves not made (D's label 0); mu seeded off the outer level rather than
     the level leaf (the level's label at the last step D's, 40% off in standardised slope); the
-    seeds detached from their leaves (D's label 0); the returns state's map dropped (ratio 1); the
+    seeds detached from their leaves (D's label 0); the returns state's map dropped (ratio 1), or
+    read on log sigma^2 too (its ratio 2,055); the
     wealth step differencing the fork's t+1 marks against the outer t marks, which carry no
     gradient (the level's label at the last step 5.0 times D's, the price column's standardised
     label -0.96 against a slope of 0.0014)."""
@@ -1138,7 +1148,7 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     assert z_err.max() < 0.15 * z_label.max(), (z_err, z_label)
     last = on[LAST_STEP][1]
     assert abs(last[8]) < 0.01 * last[6], last
-    assert np.allclose(rs[LAST_STEP][1][6:9], 2055.0 * last[6:9], rtol=1e-5, atol=0.0), (rs[LAST_STEP][1], last)
+    assert np.allclose(rs[LAST_STEP][1][6:9], np.array([2055.0, 1.0, 2055.0]) * last[6:9], rtol=1e-5, atol=0.0),         (rs[LAST_STEP][1], last)
 
 
 def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
