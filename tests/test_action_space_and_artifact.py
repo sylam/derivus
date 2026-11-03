@@ -905,15 +905,20 @@ def test_a_label_horizon_of_one_is_the_one_step_fit():
 
 def _horizon(objective, save=None, load=None):
     """The swap growth document on 512 paths and 8 inner draws under `Deterministic_Kernels`, its
-    objective LogWealth or the fixture's terminal utility, trained with a label horizon of 100
-    steps; with `load`, the frozen roll of that checkpoint on a one-batch stream of the same seed
-    and shape, which is the training batch."""
+    objective LogWealth at a `DiffV2_Risk_Aversion` of 0.5 or the fixture's terminal utility,
+    trained with a label horizon of 100 steps; with `load`, the frozen roll of that checkpoint on a
+    one-batch stream of the same seed and shape, which is the training batch."""
     cfg = _swap_growth(6, save=save, load=load)
     calc = cfg['Calc']['Calculation']
     calc.update({'Deterministic_Kernels': 'Yes', 'Random_Seed': 6, 'Batch_Size': 512, 'Inner_Sub_Batch': 8})
     hp = calc['Hedging_Problem']
     if objective == 'terminal':
         hp['Objective'] = jsonlib.load(open(FIXTURE))['Calc']['Calculation']['Hedging_Problem']['Objective']
+    else:
+        # near the capital line the label, its charges compounded into the wealth it decides on,
+        # and the roll's net utility, read off gross wealth, part: 0.5 leaves the worst bank book
+        # 55% headroom where 1.0 leaves 9%
+        hp['Solver']['DiffV2_Risk_Aversion'] = 0.5
     if load is None:
         hp['Solver']['DiffV2_Label_Horizon'] = 100
     return cfg
@@ -927,15 +932,17 @@ def test_a_label_past_the_horizon_is_what_its_greedy_policy_realises(objective, 
     paths, net of its repositioning charges, up to the root's one-step cross-fit: the swap growth
     document under seed 6 at a horizon of 100 steps, 47 past it, trains a V_0 within 0.006 of
     what its checkpoint's frozen roll on the training batch reports net of cost (`u_mean_net`,
-    the roll's first greedy book the training root's): on the CPU 0.2551 against 0.2524 under
+    the roll's first greedy book the training root's): on the CPU 0.1435 against 0.1439 under
     LogWealth and 0.2058 against 0.2075 under the fixture's terminal utility, where the one-step
-    fit reads 0.2380 against 0.2506 and 0.2239 against 0.2023. 35 s each.
+    fit reads 0.1352 against 0.1441 and 0.2239 against 0.2023; on the card 0.1097 against 0.1083
+    under LogWealth. Seeds 1 to 8 on either device read LogWealth's V_0 within -0.0004 to +0.0042
+    of the roll. 35 s each.
 
     Killing mutations, V_0 against the roll's utility: the correction's sign flipped (the
-    recursion runs away, -3.7e9 and -3.0e10); the k-step end read at the bank's own wealth
+    recursion runs away, -1.1e10 and -3.0e10); the k-step end read at the bank's own wealth
     (terminal 0.0530 against 0.1615; LogWealth's end at the horizon is zero at any wealth); the
-    rollout's charge dropped (0.2824 against 0.2517, 0.2235 against 0.2073); the rewards after
-    the first move dropped (growth 0.0031 against 0.1996); k not clipped at the horizon (refused
+    rollout's charge dropped (0.1589 against 0.1429, 0.2235 against 0.2073); the rewards after
+    the first move dropped (growth 0.0015 against 0.1081); k not clipped at the horizon (refused
     at the last step, which has no successor in the cache)."""
     ckpt = str(tmp_path / 'value_fn.pt')
     train = _run(_horizon(objective, save=ckpt)).evaluation_summary['diagnostics']
@@ -1065,7 +1072,8 @@ def _state_labels(caplog, label=None, returns=False, save=None, band=False):
     """`_cfg` swept over its last five decision steps at 200 fit iterations, its basis `SLOW_BASIS`
     on `OWN_GARCH` revealing its band state, stating `DiffV2_State_Gradient_Label` `label` where
     given and saving its value fn to `save`; under `band` the `FRICTIONAL` solve on 96 paths of
-    seed 11 with `BAND_BASIS`: each fitted step's `(slope, label)` bank means per market column,
+    seed 11 with `BAND_BASIS`, the July average running to its payment date so the last decision
+    step still hedges a fixing: each fitted step's `(slope, label)` bank means per market column,
     from the debug line."""
     cfg = _cfg(seed=11, batch=96) if band else _cfg(seed=7, save=save)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
@@ -1081,6 +1089,8 @@ def _state_labels(caplog, label=None, returns=False, save=None, band=False):
         hp['Objective'] = {'Object': 'LogWealth', 'Utility_Scale_Mode': 'conditional_sim'}
         hp['Evaluator'].update(Max_Trade_Per_Step=10.0, Calendar_Spread_Bps=3.0)
         basis = BAND_BASIS
+        pay = hp['Liabilities']['FloatingEnergyDeal']['PLAT_JUL29']['Payments']['Items'][0]
+        pay['Period_End'] = pay['FX_Period_End'] = pay['Payment_Date']
     cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
         'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis}
     caplog.clear()
@@ -1135,15 +1145,17 @@ def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
     less its own t mark, both moving with the leaves, so a column the marks read (the carry, the
     price, the basis level) is labelled with the move's slope rather than the t+1 mark's. On the
     `FRICTIONAL` solve with `BAND_BASIS` (D the 7th of 8 market columns, the level the 8th), at the
-    last step, whose continuation is the closed-form utility, the level's label is 0.15% of D's
-    (bound 1%), and over the five swept steps D's fitted slope sums within 6% of its label (bound
-    15%). 6 s.
+    last step, whose continuation is the closed-form utility and whose book hedges the last fixing,
+    the level's label is 0.03% of D's label summed over the five swept steps (0.01% on the card,
+    bound 1%): moving the level and its slow mean together leaves the move unchanged; and D's fitted
+    slope sums within 7% of its label (9% on the card, bound 15%). Seeds 1 to 13 on either device
+    read at most 0.05% and 10%. 6 s.
 
     Killing mutation: the wealth step differencing the fork's t+1 marks against the outer t marks,
-    which carry no gradient (the level's label at the last step 5.0 times D's, summed -1.10 against
-    D's 0.132)."""
+    which carry no gradient (the level's label at the last step 86% of D's summed label, 59% and
+    110% on the card's seeds 4 and 2)."""
     run = _state_labels(caplog, 'Yes', band=True)
     last = run[LAST_STEP][1]
-    assert abs(last[7]) < 0.01 * last[6], last
     slope, label = (sum(run[t][i] for t in run) for i in (0, 1))
-    assert label[6] > 0.0 and abs(slope[6] / label[6] - 1.0) < 0.15, (slope[6], label[6])
+    assert label[6] > 0.0 and abs(last[7]) < 0.01 * label[6], (last[7], label[6])
+    assert abs(slope[6] / label[6] - 1.0) < 0.15, (slope[6], label[6])
