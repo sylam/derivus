@@ -472,6 +472,9 @@ publishing a surface on more than one row.
 adds `Scenario_Factors` (factors no deal reaches) and caps the grid at the liability terminal; a leg
 that fails to compile kills the run, a skipped leg changing the solver's problem (**Held by**
 `tests/test_fork_pricing_failures.py::test_a_hedge_book_leg_that_fails_to_compile_kills_the_run`).
+A batch starts from an empty scenario buffer (`CMC_State.reset`), so no batch reads a path, a seed
+or a drawn start of the last (**Held by**
+`tests/test_logvar2fj_spot.py::test_every_batch_draws_its_own_outer_starts`).
 Per batch it publishes print seeds first and drops them once generated (consumed state, not path
 series), burns in under `Randomize_Initial_State`, replays
 `Observed_Scenario` paths through `reseed_from_path`, and under `solve_hedge` snapshots the outer

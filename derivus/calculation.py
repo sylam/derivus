@@ -767,6 +767,8 @@ class CMC_State(utils.Calculation_State):
 
         self.reset_cashflows(time_grid)
 
+        # a batch starts clean: no process reads a path, a seed or a start drawn for the last one
+        self.t_Scenario_Buffer.clear()
         self.t_Buffer.clear()
         self.boundary_sets.clear()
 

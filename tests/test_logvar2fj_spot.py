@@ -443,6 +443,26 @@ def test_the_outer_walk_starts_from_the_filter_state_its_block_declares():
     assert abs(z) < 3.0, (z, x.mean() / er2[:30].sum())
 
 
+def test_every_batch_draws_its_own_outer_starts():
+    """A batch starts clean: the hedging fixture's world on this block, simulated in three batches of
+    four paths, starts each path of each batch from a state of its own, no row-0 `(ell, s)` among the
+    twelve repeating. 2 s.
+
+    Killing mutation: the scenario buffer kept across batches (`CMC_State.reset` leaving
+    `t_Scenario_Buffer`), so the first batch's drawn starts are every batch's (four states, each
+    three times)."""
+    cfg = json.load(open(solve.FIXTURE))
+    market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models'] = {'LogVar2FJSpotModel.PLATINUM_LME': LV, 'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': solve.SLOW_BASIS}
+    market['Model Configuration'] = {'.ModelParams': {'modeldefaults': {'CommodityPrice': 'LogVar2FJSpotModel'},
+                                                      'modelfilters': {}}}
+    cfg['Calc']['Calculation'].update(Execution_Mode='simulate_only', Batch_Size=4, Simulation_Batches=3, Random_Seed=3)
+    world = solve._run(cfg).bundle
+    starts = {tuple(x) for x in zip(*(v[world.initial_time_index].reshape(-1).tolist()
+                                      for v in world.privileged_factors.values()))}
+    assert len(starts) == 12, sorted(starts)
+
+
 def _solved(block, save=None, load=None):
     """The solve fixture at 48 paths swept from step 100, its spot `block` (a `LogVar2FJSpotModel` one
     where it states `Kappa_S`, else a `GARCHSpotModel` one) over the slow-mean basis, from the
