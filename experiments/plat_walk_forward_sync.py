@@ -375,7 +375,7 @@ def resolved_calibration_config(source, archive, out_path):
     return out_path
 
 
-def observed_scenario_npz(arch, base_date, path, horizon_days, knots, fix, max_gap=5,
+def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5,
                           cols=(CME_COL, BASIS_COL), to_date=False, bars=()):
     """Dense daily realized (CME primary, published basis, CARRY CURVE) from the base date,
     forward-filled. The framework composes the LBMA fixing S = P + b itself. The carry rides as
@@ -419,11 +419,11 @@ def observed_scenario_npz(arch, base_date, path, horizon_days, knots, fix, max_g
                       for k in knots], axis=1)
     # `cols` are the SCALAR factors replayed - one npz key per simulated factor name, which is
     # what the archive columns already are; the carry rides as its own (T, 2) curve tensor
-    # `bars` are a factor's bar series, each on its own day only: a fill would be a second bar; the
-    # flag is the days the London fixing `fix` did not print, which every replay holds across
+    # `bars` are a factor's bar series, each on its own day only: a fill would be a second bar; a
+    # column's flag is the days it did not print, which its own replay holds across
     np.savez(path, **{c: rows[c].to_numpy() for c in cols},
              **{'ForwardRate.PLATINUM_CARRY': carry}, **{c: arch[c].reindex(dates).to_numpy() for c in bars},
-             **{FILLED_ROWS: arch[fix].reindex(dates).isna().to_numpy()})
+             **{f'{c},{FILLED_ROWS}': arch[c].reindex(dates).isna().to_numpy() for c in cols})
     return min(dates.max(), arch.index[-1])
 
 
@@ -495,7 +495,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
     knots = carry_knots(trade_date, max(max(info['fixings']), max(info['mats'])))
     horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
-    observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, BASIS_COL, max_gap=args.max_gap)
+    observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap)
     ckpts, train_us, v0s, market_dim = [], [], [], None
     for seed in args.seeds:
         ckpt = os.path.abspath(os.path.join(run_dir, f'value_fn_{tag}_s{seed}.pt'))

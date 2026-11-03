@@ -32,6 +32,7 @@ import torch
 
 import derivus as rf
 from derivus.hedge_bundle import per_contract_kappa
+from derivus.stochasticprocess import FILLED_ROWS
 
 FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                        'fixtures', 'policy_test_simulate_only.json')
@@ -701,15 +702,15 @@ GARCH_SPOT = {'Omega': 1.0e-5, 'Alpha': 0.05, 'Beta': 0.9, 'Nu': 8.0, 'H0': 2.0e
 
 def _tape(cfg, path, paths=2):
     """`paths` paths of `cfg`'s world simulated from its first sim row on seed 3, one
-    `Observed_Scenario` tape each at `path` formatted with its index, the rows of no market time on
-    the job's calendar flagged filled; the tapes' paths."""
+    `Observed_Scenario` tape each at `path` formatted with its index, every factor's rows of no market
+    time on the job's calendar flagged filled; the tapes' paths."""
     cfg['Calc']['Calculation'].update(Execution_Mode='simulate_only', Batch_Size=paths, Random_Seed=3)
     world = _run(cfg).bundle
     r0 = world.initial_time_index
     filled = np.array([not world.business_day.is_on_offset(d) for d in world.scenario_dates[r0:]])
     names = [path.format(k) for k in range(paths)]
     for k, name in enumerate(names):
-        np.savez(name, Filled_Rows=filled,
+        np.savez(name, **{f'{n},{FILLED_ROWS}': filled for n in world.factors},
                  **{n: v[r0:].cpu().double().numpy()[..., k] for n, v in world.factors.items()})
     return names
 

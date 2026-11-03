@@ -476,10 +476,12 @@ Per batch it publishes print seeds first and drops them once generated (consumed
 series), burns in under `Randomize_Initial_State`, replays
 `Observed_Scenario` paths through `reseed_from_path`, and under `solve_hedge` snapshots the outer
 buffer for forks. A scenario key `<factor>,<series>` is a series that factor's replay reads beside its
-path, and `Filled_Rows` (`FILLED_ROWS`) the tape's forward-filled rows every replay holds across, each
+path, `<factor>,Filled_Rows` (`FILLED_ROWS`) the rows that factor's own column was forward-filled on,
+which its replay holds across (a tape of two calendars flags each column on its own), each
 published on the host for the call and dropped after it, a key naming no simulated factor refused
 (**Held by** `tests/test_logvar2fj_spot.py::test_a_replay_is_the_filter_on_the_bars_before_each_fix`,
-`tests/test_chained_basis.py::test_a_spot_replay_holds_its_variance_across_a_forward_filled_holiday`). A solve is a stream: a `Bundle` per batch to one `StreamingSolve` (`warmup`
+`tests/test_chained_basis.py::test_a_spot_replay_holds_its_variance_across_a_forward_filled_holiday`,
+`::test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill`). A solve is a stream: a `Bundle` per batch to one `StreamingSolve` (`warmup`
 locking the frame, `step` per training batch, `finish` on the held-out last), so
 `Simulation_Batches` is a stream length under `solve_hedge` and a path multiplier under
 `simulate_only`.

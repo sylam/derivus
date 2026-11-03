@@ -303,9 +303,9 @@ def observed_scenario_npz(arch, base_date, path):
             f'Observed window {base.date()}+220d ends {dates.max().date()} past archive end '
             f'{arch.index[-1].date()}: the realized roll would run on fabricated flat prices')
     rows = arch.reindex(arch.index.union(dates)).ffill().loc[dates]
-    np.savez(path, **{CME_COL: rows[CME_COL].to_numpy(),
-                      'ObservedBasis.PLATINUM_CME.LME_CME': rows[BASIS_COL].to_numpy(),
-                      FILLED_ROWS: arch[LME_COL].reindex(dates).isna().to_numpy()})
+    # each column's flag is the days it did not print, which its own replay holds across
+    np.savez(path, **{c: rows[c].to_numpy() for c in (CME_COL, BASIS_COL)},
+             **{f'{c},{FILLED_ROWS}': arch[c].reindex(dates).isna().to_numpy() for c in (CME_COL, BASIS_COL)})
 
 
 def pf_bound(arch, trade_date, mats, pay):

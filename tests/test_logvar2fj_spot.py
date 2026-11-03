@@ -34,6 +34,11 @@ LV = {'Kappa_S': 12.0, 'Sigma_S': 2.0, 'Kappa_L': 1.0, 'Sigma_L': 0.8, 'L': -2.6
 GK = 2.0 * math.log(2.0) - 1.0
 
 
+def _flagged(filled):
+    """`filled` as the forward-fill flag of the spot's column and the basis's."""
+    return {f'{n},{FILLED_ROWS}': filled for n in ('CommodityPrice.PLATINUM_LME', 'ObservedBasis.PLATINUM_LME.LME_CME')}
+
+
 def _step(th, prior, y, r):
     """One market row of the filter, `experiments/plat_sv_toy.py`'s recursion in numpy: the bar's log
     variance `y`, then the return `r` by a Laplace step on log v, then the leverage into the next row."""
@@ -130,7 +135,7 @@ def _tape(rng):
     return days, spot, high, low, close, row, {
         'CommodityPrice.PLATINUM_LME': spot[row], 'ObservedBasis.PLATINUM_LME.LME_CME': -30.0 + 0.0 * spot[row],
         'CommodityPrice.PLATINUM_LME,HIGH': cme_day(high), 'CommodityPrice.PLATINUM_LME,LOW': cme_day(low),
-        'CommodityPrice.PLATINUM_LME,CLOSE': cme_day(close), FILLED_ROWS: ~calendar.isin(days)}
+        'CommodityPrice.PLATINUM_LME,CLOSE': cme_day(close), **_flagged(~calendar.isin(days))}
 
 
 def test_a_replay_is_the_filter_on_the_bars_before_each_fix(tmp_path, caplog):
@@ -186,8 +191,9 @@ def test_a_scenario_without_bars_replays_as_one_whose_bars_are_blank(tmp_path, c
     Killing mutation: an absent bar series read as a flat bar of 1.0 rather than blank (every row a
     market row where the keys are absent)."""
     observed = _tape(np.random.default_rng(5))[-1]
-    plain = {k: v for k, v in observed.items() if ',' not in k}
-    blank = dict(plain, **{k: np.full(len(v), np.nan) for k, v in observed.items() if ',' in k})
+    bars = [k for k in observed if k.split(',')[-1] in ('HIGH', 'LOW', 'CLOSE')]
+    plain = {k: v for k, v in observed.items() if k not in bars}
+    blank = dict(plain, **{k: np.full(len(observed[k]), np.nan) for k in bars})
     a, b = _replayed(tmp_path, caplog, plain), _replayed(tmp_path, caplog, blank)
     assert np.isfinite(a).all() and np.array_equal(a, b)
 
@@ -547,7 +553,7 @@ def test_the_simulated_filter_is_as_certain_as_a_replay_of_its_own_law(tmp_path,
     for seed in (1, 2, 3, 4):
         px, bars = _law_tape(seed, len(days), th=LV)
         observed = {'CommodityPrice.PLATINUM_LME': px[row], 'ObservedBasis.PLATINUM_LME.LME_CME': np.full(len(row), -30.0),
-                    FILLED_ROWS: ~market}
+                    **_flagged(~market)}
         observed.update({'CommodityPrice.PLATINUM_LME,' + x: np.where(market, b[row], np.nan)
                          for x, b in zip(('HIGH', 'LOW', 'CLOSE'), bars)})
         rows = _replayed(tmp_path, caplog, observed)

@@ -599,15 +599,17 @@ def _holiday_tape():
             calendar.get_loc(pd.Timestamp('2026-05-04')))
 
 
-def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None, filled=None):
+def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None, filled=None, basis_filled=None):
     """The recursions `{'mu', 'sig2', 'regime'}` per row on the first path that the simulate-only
     hedging fixture, rolling daily from Friday 2026-04-10, publishes replaying the observed `spot`
-    and `basis`, the rows `filled` flagged forward-filled, its basis the `BasisLinkedSpotModel` block
-    `basis_block`; given `spot_block`, the spot is that `GARCHSpotModel` block and the recursion its
-    `{'log_h', 'h'}`, the terminal h."""
+    and `basis`, the rows `filled` flagged forward-filled on both columns, the basis's on
+    `basis_filled` where given, its basis the `BasisLinkedSpotModel` block `basis_block`; given
+    `spot_block`, the spot is that `GARCHSpotModel` block and the recursion its `{'log_h', 'h'}`,
+    the terminal h."""
     observed = str(tmp_path / 'observed.npz')
-    np.savez(observed, **{'CommodityPrice.PLATINUM_LME': spot, 'ObservedBasis.PLATINUM_LME.LME_CME': basis},
-             **({} if filled is None else {FILLED_ROWS: filled}))
+    paths = {'CommodityPrice.PLATINUM_LME': spot, 'ObservedBasis.PLATINUM_LME.LME_CME': basis}
+    flags = zip(paths, (filled, filled if basis_filled is None else basis_filled))
+    np.savez(observed, **paths, **{f'{n},{FILLED_ROWS}': f for n, f in flags if f is not None})
     cfg = json.load(open(HEDGE_FIXTURE))
     cfg['Calc']['Calculation'].update({'Batch_Size': 2, 'Observed_Scenario': observed})
     market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -668,6 +670,42 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
         mu.append(fitted['Slow_Mean_Lambda'] * mu[-1] + (1.0 - fitted['Slow_Mean_Lambda']) * b)
     assert np.abs(np.array(business['mu']) - mu).max() < 1e-4, np.abs(np.array(business['mu']) - mu).max()
     assert business['mu'][6] != business['mu'][5] and business['mu'][9] != business['mu'][8], business['mu'][4:10]
+
+
+def test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill(tmp_path, caplog):
+    """A tape of two calendars: the fix prints on London's business days, the CME basis on the days
+    London and New York both print, so on Friday 3 July, a US holiday London trades, the basis
+    column repeats Thursday's on a row the fix prints. Each column flags its own forward fill, and
+    the replay of a band fit under `GARCH_Innovation` holds the basis's every recursion on its own
+    filled rows, 3 July among them, and steps Monday 6 July one calibration step from Thursday's
+    basis and parent: on every basis market row its mu, sig2 and regime equal, to the bit, the
+    replay of the two columns on the days both calendars print at that row's count (83
+    rows), and every row it flags holds the row before. 2 s.
+
+    Killing mutation: one flag for the tape, the fix's, as a tape-level `Filled_Rows` was (the basis
+    steps 3 July as a market day of no move: mu and sig2 apart on the 24 rows from 3 July, by up to
+    0.30 and 0.41, the regime on 7)."""
+    n = 504
+    rng = np.random.default_rng(5)
+    dates = pd.bdate_range('2023-01-02', periods=n)
+    history = 1000.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 15.0, n - 1)]))
+    archive = _band_basis(history, np.where(rng.random(n) < 0.85, 2.0, 7.0) * rng.standard_normal(n))
+    fitted = _fit_band(tmp_path, dates, history, archive, GARCH_Innovation='Yes')
+
+    calendar = pd.date_range('2026-04-10', periods=200)
+    london = pd.bdate_range(calendar[0], calendar[-1]).drop(pd.Timestamp('2026-05-04'))
+    both = london.drop(pd.Timestamp('2026-07-03'))
+    spot = 2055.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 30.0, len(london) - 1)]))
+    basis = fitted['Mu_0'] + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 3.0, len(both) - 1)]))
+    row = np.searchsorted(both, calendar, side='right') - 1
+    taped = _replayed(tmp_path, caplog, fitted, spot[np.searchsorted(london, calendar, side='right') - 1],
+                      basis[row], filled=~calendar.isin(london), basis_filled=~calendar.isin(both))
+    compressed = _replayed(tmp_path, caplog, fitted, spot[london.get_indexer(both)], basis)
+    market = [t for t in range(len(taped['mu'])) if t == 0 or row[t] != row[t - 1]]
+    assert calendar[len(taped['mu']) - 1] > pd.Timestamp('2026-07-06') and set(taped) == {'mu', 'sig2', 'regime'}
+    assert {k: [v[t] for t in market] for k, v in taped.items()} == \
+        {k: [v[row[t]] for t in market] for k, v in compressed.items()}, len(market)
+    assert all(v[t] == v[t - 1] for v in taped.values() for t in range(1, len(v)) if t not in market)
 
 
 #: A flat-Sigma Linear basis, which a GARCH spot without regimes can carry.

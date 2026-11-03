@@ -31,7 +31,7 @@ from functools import partial, reduce
 
 from collections import namedtuple, defaultdict
 from .riskfactors import construct_factor
-from .stochasticprocess import FILLED_ROWS, REVEAL_CONTINUOUS, SuppliedValuesModel, construct_process
+from .stochasticprocess import REVEAL_CONTINUOUS, SuppliedValuesModel, construct_process
 from .instruments import (Deal, barrier_monitoring_rows, get_fxrate_factor, get_survival_component,
                           get_interest_factor, get_survival_factor)
 from .pricing import SensitivitiesEstimator, fixed_payments
@@ -3124,7 +3124,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       'as `type.name` strings'),
         F('Observed_Scenario', 'Text', default='', convention=True,
           description='Path to an npz of realized factor paths that replace the simulated draw, '
-                      'with the rows a forward fill wrote flagged Filled_Rows'),
+                      'the rows a forward fill wrote on each flagged `<factor>,Filled_Rows`'),
         F('Hedging_Problem', 'Container',
           description='The hedging problem itself - tradables, liabilities, objective, solver',
           sub_fields=[
@@ -3590,12 +3590,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             by_name = {utils.check_tuple_name(k): k for k in self.stoch_factors}
             observed = {by_name[n]: shared_mem.one.new_tensor(npz[n]).unsqueeze(-1)
                         for n in npz.files if n in by_name}
-            # `<factor>,<series>` is a series the factor's replay reads beside its path, on the host
+            # `<factor>,<series>` is a series the factor's replay reads beside its path, on the host,
+            # `<factor>,Filled_Rows` the rows its own column was forward-filled on
             series = {(by_name[n.split(',')[0]], n.split(',')[1]): npz[n]
                       for n in npz.files if ',' in n and n.split(',')[0] in by_name}
-            # the tape's forward-filled rows, one flag every replay reads
-            series.update({(key, FILLED_ROWS): npz[FILLED_ROWS] for key in observed} if FILLED_ROWS in npz.files else {})
-            unmatched = [n for n in npz.files if n != FILLED_ROWS and n.split(',')[0] not in by_name]
+            unmatched = [n for n in npz.files if n.split(',')[0] not in by_name]
             if unmatched:
                 raise ValueError(
                     f'Observed_Scenario keys matched no simulated factor: {unmatched}; '

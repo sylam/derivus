@@ -633,8 +633,8 @@ class StochasticProcess(object):
         pass
 
     def filled_rows(self, shared_mem, n):
-        """The first `n` rows of the replayed tape's `FILLED_ROWS` flag, on which no market time
-        passed; none where the tape states no flag."""
+        """The first `n` rows of this factor's `<factor>,Filled_Rows` flag on the replayed tape, the
+        rows its own column was forward-filled on and no market time passed; none where it states none."""
         flag = shared_mem.t_Scenario_Buffer.get((self.factor_key, FILLED_ROWS))
         return [False] * n if flag is None else np.asarray(flag[:n], bool).tolist()
 
@@ -3182,7 +3182,7 @@ class GARCHSpotModel(StochasticProcess):
         '`tests/test_chained_basis.py::test_a_garch_spot_holds_across_a_weekend_and_steps_its_market_days`.',
         '',
         'A replay runs the recursion on the realised returns of an observed path. A row the scenario flags',
-        "forward-filled (`Filled_Rows`, the London fixing calendar's fill: weekends and holidays) is one on",
+        "forward-filled (`<factor>,Filled_Rows`, its own column's fill: weekends and holidays) is one on",
         'which no market time passed: $h$ and the published $\\log h$ hold and its move and drift join the next',
         'market row, and every other row is one step, as on a simulated path, so a calendar tape replays on',
         'its market rows as the same tape with the filled rows removed. A scenario stating no flag replays',
@@ -4654,7 +4654,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         '`tests/test_chained_basis.py::test_the_average_price_swap_projects_the_basis_over_its_market_days`',
         'and `::test_a_coarse_row_walks_one_step_a_market_day`.',
         '',
-        'A replay holds a row its scenario flags forward-filled (`Filled_Rows`, as the spot replay reads it) as',
+        'A replay holds a row its scenario flags forward-filled (`<factor>,Filled_Rows`, its own column\'s) as',
         'one on which no market time passed: $\\mu$, $\\sigma^2$, the stress filter and the published regime',
         'hold, and the next market row is updated from the last market row\'s basis and parent as on the path',
         'without the filled rows, its regime drawn at its count of market rows, each market row one step as',
@@ -6827,7 +6827,7 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
         "states beside it (`<factor>,HIGH`, `,LOW`, `,CLOSE`, each on its own day) from the block's `S0`,",
         "`Ell0` and `State_Cov`, as the calibration runs it on the archive: a market row is one calibration",
         "step whose bar is the previous market row's, its close-to-close term on the last close the bar",
-        'carries, and a row the scenario flags forward-filled (`Filled_Rows`) holds the row before and its',
+        'carries, and a row the scenario flags its own forward fill (`<factor>,Filled_Rows`) holds the row before and its',
         'bar, a CME print on a London holiday, is not read: the filter reads the bars of London market days',
         'alone, as the calibration\'s archive, which has no holiday rows, gives them. A repeated fix is no',
         'return, and the first row\'s bar is',
