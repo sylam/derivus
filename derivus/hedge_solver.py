@@ -1854,7 +1854,8 @@ class DiffSolver:
         t0 = self.t_min
         n = L[t0][rows].shape[0]
         W = {p: L[t0][rows].clone() for p in ("greedy", "textbook", "nohedge", "passive")}
-        # parallel turnover-cost DIAGNOSTIC, entry measured from the opening book
+        # the turnover cost, entry measured from the opening book: paid inside the wealth under the
+        # position state, a diagnostic beside it otherwise
         cost = {p: torch.zeros(n, device=self.device) for p in ("greedy", "textbook", "passive")}
         q_traj = {p: [] for p in cost}                                                  # mean q per step
         q0 = self.aspace.initial_q(n, self.device)

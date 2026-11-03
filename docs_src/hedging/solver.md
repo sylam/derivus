@@ -82,7 +82,7 @@ book, every reposition and the unwind under `Force_Flat_At_End` (`turnover_cost_
 `DiffV2_Position_State` its wealth runs cost-free and the `*_net` columns subtract the cost beside
 it. Under it every step's wealth is charged the repositioning charge the labels are fitted net of
 (`DiffSolver._reposition_charge`), so each greedy decision reads the net wealth its value was
-fitted on, the columns are net and the `*_net` columns repeat them. Held by
+fitted on, the columns are net and there are no `*_net` columns. Held by
 `tests/test_action_space_and_artifact.py::test_a_label_past_the_horizon_is_what_its_greedy_policy_realises`.
 The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
 `Reference_Mode = Running_Wealth` the solver's $V_0$ is a sum of step utilities, so the ladder's

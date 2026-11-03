@@ -6479,7 +6479,8 @@ def pv_average_price_swap(shared, time_grid, deal_data):
                 piece = fall[k] ** np.clip(end[0] - k, 0.0, 1.0)
                 kept[k] = piece * kept[k + 1] + pi_b[k] * (1.0 - piece)
             row = np.minimum(np.floor(start[:, 0]), n - 1).astype(int)
-            piece = fall[row, None] ** np.clip(end - start, 0.0, row[:, None] + 1.0 - start)
+            # a row past the grid's last step, which holds its state, keeps the whole deviation
+            piece = fall[row, None] ** np.clip(end - start, 0.0, np.maximum(row[:, None] + 1.0 - start, 0.0))
             decay = piece * kept[row + 1] + pi_b[row, None] * (1.0 - piece)
         else:
             decay = pi_b + (1.0 - pi_b) * fall ** np.clip(end - start, 0.0, None)

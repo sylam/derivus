@@ -489,9 +489,9 @@ def arx1_t_mle(equations, nu_bounds=(3.0, 50.0), mean=None, garch=False):
                   for s, (_, _, x) in zip(starts[:-1], prepared)]}
 
 
-# State-reveal tags for `reveal_state_at`: a CONTINUOUS segment is a first-order-differentiable
-# risk factor (the diff-PCA pool); a SUFFICIENT segment is a minimal sufficient statistic (regime
-# belief) revealed verbatim, bypassing PCA.
+# State-reveal tags for `reveal_state_at`, read by `HedgeMonteCarlo._reveal_transform`: under the
+# returns state a CONTINUOUS segment, a price or a price difference, is mapped against the t0 spot,
+# and a SUFFICIENT one (log h, log sigma^2, a belief) is revealed as it is.
 REVEAL_CONTINUOUS = 'continuous'
 REVEAL_SUFFICIENT = 'sufficient'
 
@@ -2589,10 +2589,7 @@ class MarkovHMMSpotModel(StochasticProcess):
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
 
-        # Anchor at time_grid_years[0] so per-step dt is correct under both outer mode
-        # (scen_time_grid[0] = 0) and inner-MC kept-base mode (scen_time_grid[0] > 0).
-        tg_years = time_grid.time_grid_years
-        dt_arr = np.diff(np.hstack(([tg_years[0]], tg_years)))
+        dt_arr = utils.trading_clock(time_grid, float(self.param['Calibration_DT_Years']))[0]
         states = self.param['States']
         self.n_states = len(states)
 
@@ -5901,6 +5898,7 @@ class LogVar2FJCalibration(object):
         `r` the covariance is data-free, so the smoother needs nothing else.
         """
         aad = torch.is_tensor(theta['L'])
+        stack = torch.stack if aad else np.array
         if aad:
             (phi_s, w_s), (phi_l, w_l) = (utils.LogVar2FJ.ou_step_weights(
                 theta['Kappa_' + x], theta['Sigma_' + x], delta) for x in 'SL')
@@ -5918,9 +5916,7 @@ class LogVar2FJCalibration(object):
             rows += post[:2]
             cov += post[2:]
             ahead.append(prior)
-        if aad:
-            return loglik, torch.stack(rows).reshape(-1, 2), torch.stack(cov).reshape(-1, 3), ahead
-        return loglik, rows, cov, ahead
+        return loglik, stack(rows).reshape(-1, 2), stack(cov).reshape(-1, 3), ahead
 
     @staticmethod
     def step(theta, k, prior, y, r, offset, xp):

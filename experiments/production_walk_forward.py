@@ -74,9 +74,9 @@ from derivus.utils import visible_device_count
 
 if sys.platform == 'win32' and visible_device_count():
     # without a cap the caching allocator's reserve grows to the card and WDDM pages it out,
-    # ten times slower; the cap makes it free its cache instead (bit-identical). The count, not
-    # is_available(): the latter answers True with the devices hidden and this call would then
-    # initialise CUDA and put every job of the process on the card (utils.calculation_device)
+    # ten times slower; the cap makes it free its cache instead (bit-identical). The visible count,
+    # not is_available(), which answers True with the devices hidden: the cap would then open CUDA
+    # on cards the process was told not to use
     torch.cuda.set_per_process_memory_fraction(0.92)
 
 logging.basicConfig(level=logging.INFO, format='%(levelname)s %(name)s %(message)s')

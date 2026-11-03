@@ -393,9 +393,8 @@ def trade_world(arch, trade_date, calibrated_md, out_path, carry_drift):
                         spot_col=FIX_COL, basis_col=B_CME)
     md = json.load(open(out_path))
     pm = md['MarketData']['Price Models']
-    spot = pm[spot_key(pm)]
-    if 'Carry_Drift' in spot:                      # a spot with no carry switch drifts at its own Mu
-        spot['Carry_Drift'] = carry_drift
+    if spot_key(pm).startswith('GARCHSpotModel.'):     # the LV spot drifts at its own Mu
+        pm[spot_key(pm)]['Carry_Drift'] = carry_drift
     # Session-print conditioning needs no stamping: the t0 prints ARE state (the restamped
     # ObservedBasis Spots at the trade date), and the engine's `print_seed` protocol
     # conditions every start on the prints its state carries.
@@ -442,7 +441,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         # The overlay IS the drift hypothesis: Mu replaces the carry drift rather than
         # riding on top of it.
         cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'][spot_key(models)] = dict(
-            g, Mu=args.drift_overlay, **({'Carry_Drift': 'No'} if 'Carry_Drift' in g else {}))
+            g, Mu=args.drift_overlay,
+            **({'Carry_Drift': 'No'} if spot_key(models).startswith('GARCHSpotModel.') else {}))
     # the observed window BEFORE training: a month the gap guard refuses must refuse in seconds,
     # not after a policy whose roll can never run
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
