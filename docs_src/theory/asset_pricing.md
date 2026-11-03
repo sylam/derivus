@@ -343,4 +343,5 @@ term structure of implied vol in the implied variant; a log-spot Ornstein-Uhlenb
 [@uhlenbeck1930], Schwartz's one-factor commodity model [@schwartz1997]; a hidden-Markov
 regime model [@hamilton1989]; a GARCH(1,1) model [@bollerslev1986] with Student-t innovations
 [@bollerslev1987]; basis and fixing models built on them; and LogVar2FJ
-([Stochastic Volatility](stochastic_volatility.md)).
+([Stochastic Volatility](stochastic_volatility.md)), implied for an equity or an FX rate and fitted
+on history for a commodity (`LogVar2FJSpotModel`).

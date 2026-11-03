@@ -15,6 +15,7 @@ import collections
 import copy
 import itertools
 import logging
+import math
 import warnings
 
 import numpy as np
@@ -5881,6 +5882,29 @@ class LogVar2FJCalibration(object):
         '| `Random_Seed` | 0 | Seed of the gate |',
         "| `Implied_Values` | blank | `name=value` pairs of the fitted factor's Q values |",
         "| `Scale_To_Sector` | No | Yes writes the `Implied_Values` in place of the history's |",
+        "| `Return_Measurement` | No | Yes is the commodity spot's estimator below |",
+        '| `Window_Years` | 0 | Years the spot fit reads back from the last row, 0 every row |',
+        '| `Slow_Window_Years` | 0 | Years the spot fit takes $\\kappa_\\ell,\\sigma_\\ell$ from, 0 the one window |',
+        "| `Kappa_S_Max` | 120 | The spot fit's ceiling on $\\kappa_s$ |",
+        '',
+        "**The commodity spot (`Return_Measurement` Yes).** The block written is",
+        "[`LogVar2FJSpotModel`](../theory/asset_pricing.md#logvar2fjspotmodel)'s. The factor's column is the",
+        "fix and `<factor>,HIGH`, `,LOW` and `,CLOSE` another market's bar (PL1 for the LBMA fix), each on its",
+        "own day. Row $t$ measures its log variance twice: with the bar of the row before, which closes",
+        "after the fix, $y_t=\\log(\\mathrm{GK}_{t-1}/\\delta)$, its close-to-close term on the last close the",
+        "bar carries; and with its own log return, a Laplace step on $\\log v$ whose shock then loads on the",
+        "state's by $\\rho_s$ and $\\rho_\\ell$ into the next row. A blank or flat bar and a repeated fix",
+        "measure nothing. All nine parameters, the Offset of the bar against the fix and both rhos signed,",
+        'maximise that likelihood by L-BFGS-B on numerical gradients from two starts, the better kept,',
+        '$\\kappa_s,\\sigma_s,\\kappa_\\ell,\\sigma_\\ell,\\sigma_u$ in logs inside the box above, $\\kappa_s$ under',
+        '`Kappa_S_Max`, the Offset in $[-3,3]$, each rho in $[-0.9,0.9]$ and the pair scaled onto',
+        "$\\rho_s^2+\\rho_\\ell^2\\le1-C_{min}$: $\\kappa_\\ell,\\sigma_\\ell$ on `Slow_Window_Years`, then the rest on",
+        '`Window_Years` at those two. It writes the nine, `Drift` (the mean return), `Mu` 0 and the state the',
+        'filter leaves after the last row, `S0`, `Ell0` and `State_Cov`; `delta` is the return over the',
+        "filter's predicted sd, the correlation loading it on the return row alone. No standard errors are",
+        'written. On the platinum archive $\\kappa_s$ lands on its ceiling in nearly every five-year fit: the',
+        "fix's return shares the afternoon of the bar before it, which the likelihood reads as a fast factor.",
+        '**Held by** `tests/test_logvar2fj_spot.py::test_the_fit_writes_the_filter_s_state_after_its_last_row`.',
         '',
         '**Limitations.**',
         '',
@@ -5935,39 +5959,103 @@ class LogVar2FJCalibration(object):
         return name, bar.astype(np.float64), next(
             m for m, (cols, _, _) in cls.MEASURES.items() if set(cols) <= set(bar.columns))
 
-    @staticmethod
-    def filter(y, seen, theta, delta, offset):
+    @classmethod
+    def filter(cls, y, seen, theta, delta, offset, r=None, start=None):
         """The exact Gaussian likelihood of `log RV_t = l_t + s_t + offset + u_t` on the model's own
         two-factor OU state with its own step coefficients, started stationary.
 
         `seen` masks a day the measurement does not carry - a jump day, whose range is the jump's, an
         event day, a non-positive range - which the filter passes through as a pure prediction.
-        Returns `(loglik, m, cov)`, the filtered mean [T, 2] and covariance [T, 3] as (ss, sl, ll);
-        the covariance is data-free, so the smoother needs nothing else.
+        `r`, where given, is each row's own log return (NaN where it carries none), a second
+        measurement and the leverage into the next row (`step`); `start` the first row's prior
+        `(s, ell, ss, sl, ll)` in place of the stationary law. A `theta` of tensors gives tensors
+        back and one of floats floats. Returns `(loglik, m, cov, ahead)`, the filtered mean [T, 2]
+        and covariance [T, 3] as (ss, sl, ll) and the prior of the step after each row; without
+        `r` the covariance is data-free, so the smoother needs nothing else.
         """
-        phi_s, w_s = utils.LogVar2FJ.ou_step_weights(theta['Kappa_S'], theta['Sigma_S'], delta)
-        phi_l, w_l = utils.LogVar2FJ.ou_step_weights(theta['Kappa_L'], theta['Sigma_L'], delta)
-        level, su2 = theta['L'], theta['Sigma_U'] ** 2
-        m1, m2 = 0.0 * level, level + 0.0
-        p11 = theta['Sigma_S'] ** 2 / (2.0 * theta['Kappa_S'])
-        p22 = theta['Sigma_L'] ** 2 / (2.0 * theta['Kappa_L'])
-        p12, loglik, rows, cov = 0.0 * p11, 0.0 * level, [], []
+        aad = torch.is_tensor(theta['L'])
+        if aad:
+            (phi_s, w_s), (phi_l, w_l) = (utils.LogVar2FJ.ou_step_weights(
+                theta['Kappa_' + x], theta['Sigma_' + x], delta) for x in 'SL')
+        else:
+            (phi_s, phi_l), (w_s, w_l) = (x.tolist() for x in cls.ou_pair(theta, delta))
+        level, su2, p11 = theta['L'], theta['Sigma_U'] ** 2, theta['Sigma_S'] ** 2 / (2.0 * theta['Kappa_S'])
+        prior = start or (0.0 * level, level + 0.0, p11, 0.0 * p11,
+                          theta['Sigma_L'] ** 2 / (2.0 * theta['Kappa_L']))
+        loglik, rows, cov, ahead = 0.0 * level, [], [], []
         for t in range(len(seen)):
-            if t:
-                m1, m2 = phi_s * m1, level + phi_l * (m2 - level)
-                p11, p12, p22 = (phi_s * phi_s * p11 + w_s * w_s, phi_s * phi_l * p12,
-                                 phi_l * phi_l * p22 + w_l * w_l)
-            if seen[t]:
-                f = p11 + 2.0 * p12 + p22 + su2
-                v = y[t] - (m1 + m2 + offset)
-                k1, k2 = (p11 + p12) / f, (p12 + p22) / f
-                m1, m2 = m1 + k1 * v, m2 + k2 * v
-                p11, p12, p22 = (p11 - k1 * (p11 + p12), p12 - k1 * (p12 + p22),
-                                 p22 - k2 * (p12 + p22))
-                loglik = loglik - 0.5 * (torch.log(2.0 * np.pi * f) + v * v / f)
-            rows += [m1, m2]
-            cov += [p11, p12, p22]
-        return loglik, torch.stack(rows).reshape(-1, 2), torch.stack(cov).reshape(-1, 3)
+            ll, post, prior = cls.step(theta, (phi_s, phi_l, w_s, w_l, delta, su2), prior,
+                                       y[t] if seen[t] else None,
+                                       None if r is None or not r[t] == r[t] else r[t], offset, torch if aad else math)
+            loglik = loglik + ll
+            rows += post[:2]
+            cov += post[2:]
+            ahead.append(prior)
+        if aad:
+            return loglik, torch.stack(rows).reshape(-1, 2), torch.stack(cov).reshape(-1, 3), ahead
+        return loglik, rows, cov, ahead
+
+    @staticmethod
+    def step(theta, k, prior, y, r, offset, xp):
+        """One row: the measurement `y` updates the prior `(s, ell, ss, sl, ll)`, then the row's log
+        return `r` by a Laplace step on log v, Newton from between the prior mean and the return's
+        own log variance; the state then moves to the next row with the leverage the return implies
+        through `Rho_S` and `Rho_L`, its moments under that posterior in lognormal closed form.
+        `y` or `r` None where the row carries none, `k` the step's `(phi_s, phi_l, w_s, w_l, delta,
+        Sigma_U^2)` and `xp` math or torch. Returns `(the log-likelihood of what the row measured,
+        the posterior, the next row's prior)`."""
+        phi_s, phi_l, w_s, w_l, delta, su2 = k
+        m1, m2, p11, p12, p22 = prior
+        ll, level = 0.0, theta['L']
+        if y is not None:
+            f = p11 + 2.0 * p12 + p22 + su2
+            v = y - (m1 + m2 + offset)
+            k1, k2 = (p11 + p12) / f, (p12 + p22) / f
+            m1, m2 = m1 + k1 * v, m2 + k2 * v
+            p11, p12, p22 = p11 - k1 * (p11 + p12), p12 - k1 * (p12 + p22), p22 - k2 * (p12 + p22)
+            ll = -0.5 * (xp.log(2.0 * np.pi * f) + v * v / f)
+        if r is None:
+            return ll, (m1, m2, p11, p12, p22), (
+                phi_s * m1, level + phi_l * (m2 - level), phi_s * phi_s * p11 + w_s * w_s, phi_s * phi_l * p12,
+                phi_l * phi_l * p22 + w_l * w_l)
+        mg, vg = m1 + m2, p11 + 2.0 * p12 + p22
+        sd = (r - theta['Drift'] * delta / theta['Calibration_DT_Years']) / math.sqrt(delta)
+        a = sd * sd + 1e-300
+        x = xp.log(a) - mg
+        g = mg + 0.5 * (x + abs(x)) * vg / (vg + 2.0)
+        for _ in range(6):
+            q = a * xp.exp(-g)
+            g = g - (0.5 * q - 0.5 - (g - mg) / vg) / (-1.0 / vg - 0.5 * q)
+        q = a * xp.exp(-g)
+        vp = 1.0 / (1.0 / vg + 0.5 * q)
+        ll = ll - 0.5 * (math.log(2.0 * math.pi * delta) + g + q + (g - mg) ** 2 / vg) + 0.5 * xp.log(vp / vg)
+        k1, k2, dg, sh = (p11 + p12) / vg, (p12 + p22) / vg, g - mg, vg - vp
+        m1, m2 = m1 + k1 * dg, m2 + k2 * dg
+        p11, p12, p22 = p11 - k1 * k1 * sh, p12 - k1 * k2 * sh, p22 - k2 * k2 * sh
+        e = sd * xp.exp(0.125 * vp - 0.5 * g)
+        ve = sd * sd * xp.exp(0.25 * vp - g) * xp.expm1(0.25 * vp)
+        c1, c2 = -0.5 * vp * e * k1, -0.5 * vp * e * k2
+        rs, rl = theta['Rho_S'], theta['Rho_L']
+        a1, a2 = w_s * rs, w_l * rl
+        return ll, (m1, m2, p11, p12, p22), (
+            phi_s * m1 + a1 * e, level + phi_l * (m2 - level) + a2 * e,
+            phi_s * phi_s * p11 + w_s * w_s * (1.0 - rs * rs) + a1 * a1 * ve + 2.0 * phi_s * c1 * a1,
+            phi_s * phi_l * p12 - w_s * w_l * rs * rl + a1 * a2 * ve + phi_s * c1 * a2 + phi_l * c2 * a1,
+            phi_l * phi_l * p22 + w_l * w_l * (1.0 - rl * rl) + a2 * a2 * ve + 2.0 * phi_l * c2 * a2)
+
+    @staticmethod
+    def measured(px, high, low, close, delta):
+        """Each row's measurements off the fix `px` and the bar of another market beside it: the
+        previous row's Garman-Klass variance, the bar closing after this row's fix, as
+        log(variance / delta) with the close-to-close term on the last close the bar series carries,
+        and the row's own log return; NaN where the row carries none - no bar, a blank or flat bar,
+        a repeated fix."""
+        before = pd.Series(close).ffill().shift().to_numpy()
+        rv = LogVar2FJCalibration.MEASURES['Garman_Klass'][1](None, high, low, close, before)
+        with np.errstate(invalid='ignore', divide='ignore'):
+            y = np.log(np.where(rv > 0.0, rv, np.nan) / delta)
+            r = np.diff(np.log(px))
+        return [math.nan] + y[:-1].tolist(), [math.nan] + np.where(r != 0.0, r, np.nan).tolist()
 
     @classmethod
     def history_start(cls, y, seen, fixed):
@@ -6016,7 +6104,7 @@ class LogVar2FJCalibration(object):
         se = dict({n: 0.0 for n in fixed if n in cls.HIST_BOX},
                   **{n: float(spread[i].sqrt()) if spread[i] > 0 else float('inf')
                      for i, n in enumerate(free)})
-        loglik, m, cov = cls.filter(
+        loglik, m, cov, _ = cls.filter(
             y, seen, {n: torch.tensor(v, dtype=torch.float64) for n, v in theta.items()},
             delta, fixed.get('Offset', -0.5 * theta['Sigma_U'] ** 2))
         return theta, se, float(loglik), m.detach().numpy(), cov.detach().numpy()
@@ -6234,20 +6322,98 @@ class LogVar2FJCalibration(object):
                       'side of the P-vs-Q table, and what Scale_To_Sector scales onto'),
         F('Scale_To_Sector', 'Text', default='No', values=['Yes', 'No'],
           description='The no-liquid-surface mode: write the sector\'s implied values '
-                      'in place of the history\'s own, stating each ratio')
+                      'in place of the history\'s own, stating each ratio'),
+        F('Return_Measurement', 'Text', default='No', values=['Yes', 'No'],
+          description="Yes fits a commodity spot's LogVar2FJSpotModel block on another market's bar "
+                      "and the factor's own return"),
+        F('Window_Years', 'Float', default=0.0, description='Years the spot fit reads back from the last row, 0 all'),
+        F('Slow_Window_Years', 'Float', default=0.0,
+          description='Years the spot fit takes Kappa_L and Sigma_L from, 0 the one window'),
+        F('Kappa_S_Max', 'Float', default=120.0, description="The spot fit's ceiling on Kappa_S, per year")
     ]
+    #: the spot fit's names in the order it searches them, the ones it searches in logs, its box and
+    #: two starts, a daily and a monthly fast factor, the better fit kept
+    SPOT_NAMES = ('Kappa_S', 'Sigma_S', 'Kappa_L', 'Sigma_L', 'L', 'Sigma_U', 'Offset', 'Rho_S', 'Rho_L')
+    SPOT_LOGGED = ('Kappa_S', 'Sigma_S', 'Kappa_L', 'Sigma_L', 'Sigma_U')
+    SPOT_BOX = dict(HIST_BOX, Offset=(-3.0, 3.0), Rho_S=(-0.9, 0.9), Rho_L=(-0.9, 0.9))
+    SPOT_STARTS = (dict(Kappa_S=87.0, Sigma_S=4.9, Kappa_L=0.98, Sigma_L=0.85, Sigma_U=0.6, Offset=0.0, Rho_S=-0.05,
+                        Rho_L=0.0),
+                   dict(Kappa_S=10.0, Sigma_S=1.5, Kappa_L=0.5, Sigma_L=0.6, Sigma_U=0.8, Offset=0.0, Rho_S=0.0, Rho_L=0.0))
 
     def __init__(self, model, param):
         self.model = model
-        self.param = param
-        self.num_factors = 4
+        self.param = declared_defaults(type(self), param)
+        self.num_factors = 3 if self.param['Return_Measurement'] == 'Yes' else 4
 
     def implied(self):
         """The declared Q values of `Implied_Values`, the sanity table's right-hand side."""
         rows = [x for x in str(self.param['Implied_Values']).split(',') if x.strip()]
         return {name.strip(): float(value) for name, value in (x.split('=') for x in rows)}
 
+    def spot_fit(self, y, r, free, base):
+        """`base` with `free` maximising `filter`'s likelihood of the bars `y` and the returns `r` on
+        numerical gradients from the two starts, `L` from the returns' variance."""
+        from scipy.optimize import minimize
+        seen, rows = [x == x for x in y], [x for x in r if x == x]
+        logged = [n in self.SPOT_LOGGED for n in free]
+        bounds = dict(self.SPOT_BOX, Kappa_S=(self.SPOT_BOX['Kappa_S'][0], float(self.param['Kappa_S_Max'])))
+        box = [tuple(np.log(bounds[n])) if g else bounds[n] for n, g in zip(free, logged)]
+
+        def theta(z):
+            th = dict(base, **{n: math.exp(v) if g else float(v) for n, v, g in zip(free, z, logged)})
+            q = th['Rho_S'] ** 2 + th['Rho_L'] ** 2
+            if q > 1.0 - utils.LogVar2FJ.C_MIN:
+                th['Rho_S'], th['Rho_L'] = (th[x] * math.sqrt((1.0 - utils.LogVar2FJ.C_MIN) / q)
+                                            for x in ('Rho_S', 'Rho_L'))
+            return th
+
+        def negative(z):
+            th = theta(z)
+            return -self.filter(y, seen, th, th['Calibration_DT_Years'], th['Offset'], r)[0] / len(y)
+
+        best = None
+        for x in self.SPOT_STARTS:
+            x = dict(x, L=math.log(float(np.var(rows)) / base['Calibration_DT_Years']))
+            res = minimize(negative, np.clip([math.log(x[n]) if g else x[n] for n, g in zip(free, logged)],
+                                             *np.array(box).T), method='L-BFGS-B', bounds=box,
+                           options=dict(maxiter=600, ftol=1e-11, gtol=1e-7))
+            best = res if best is None or res.fun < best.fun else best
+        bound = [n for n, v, (a, b) in zip(free, best.x, box) if min(v - a, b - v) < 1e-5]
+        logging.info('LogVar2FJ spot fit of %s on %d rows, %d bars, %d returns: loglik %.2f%s', ', '.join(free),
+                     len(y), sum(seen), len(rows), -best.fun * len(y), '; on its bound: ' + ', '.join(bound) if bound else '')
+        return theta(best.x)
+
+    def spot(self, data_frame, delta):
+        """`Return_Measurement` Yes: Kappa_L and Sigma_L off the slow window, the rest off
+        `Window_Years`, each by the likelihood of bars and returns; the block written is the
+        process's with the filter's state after the last row."""
+        def window(years):
+            name = data_frame.columns[0]
+            frame = data_frame[data_frame.index > data_frame.index[-1] - 365.25 * years] if years else data_frame
+            return (frame,) + tuple(self.measured(*(frame[name + x].values for x in ('', ',HIGH', ',LOW', ',CLOSE')),
+                                                  delta))
+
+        slow, mean = float(self.param['Slow_Window_Years']), lambda v: float(np.nanmean(v))  # noqa: E731
+        base, held = {'Calibration_DT_Years': delta}, {}
+        if slow:
+            _, y, r = window(slow)
+            th = self.spot_fit(y, r, self.SPOT_NAMES, dict(base, Drift=mean(r)))
+            held = {'Kappa_L': th['Kappa_L'], 'Sigma_L': th['Sigma_L']}
+        frame, y, r = window(float(self.param['Window_Years']))
+        theta = self.spot_fit(y, r, [n for n in self.SPOT_NAMES if n not in held], dict(base, Drift=mean(r), **held))
+        ahead = self.filter(y, [x == x for x in y], theta, delta, theta['Offset'], r)[3]
+        logging.info('LogVar2FJ spot %s: %s', frame.columns[0], ' '.join('%s %.4g' % (n, theta[n]) for n in self.SPOT_NAMES))
+        keep = [t for t in range(1, len(r)) if r[t] == r[t]]
+        eps = [(r[t] - theta['Drift']) * math.exp(-0.5 * (ahead[t - 1][0] + ahead[t - 1][1])) / math.sqrt(delta)
+               for t in keep]
+        return utils.CalibrationInfo(
+            dict(theta, S0=ahead[-1][0], Ell0=ahead[-1][1], State_Cov=list(ahead[-1][2:]), Mu=0.0),
+            [[1.0], [0.0], [0.0]],
+            pd.DataFrame({frame.columns[0]: eps}, index=start_of_return(frame.index[keep], frame.index)))
+
     def calibrate(self, data_frame, vol_shift, num_business_days=252.0):
+        if self.param['Return_Measurement'] == 'Yes':
+            return self.spot(data_frame, 1.0 / float(num_business_days))
         threshold = float(self.param['Jump_Threshold'])
         delta = 1.0 / float(num_business_days)
         name, bar, mode = self.bars(data_frame)
@@ -6456,7 +6622,19 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     def correlation_name(self):
         # the return row keeps the key the implied GBM answers - a correlation is the factor's -
         # and the two log-variance shocks and the mixer are sub-factors of that same object
-        return 'LognormalDiffusionProcess', [(), ('S',), ('L',), ('G',)]
+        return 'LognormalDiffusionProcess', [(), ('S',), ('L',), ('G',)][:self.num_factors()]
+
+    def parameters(self, implied_tensor, shared):
+        """`(structural facts, leaves)` the walk reads: the parameter factor's own."""
+        return self.implied.curve_tenors(), implied_tensor
+
+    def state0(self):
+        """The `(ell, s)` a path starts from where no seed is published: the level, at rest."""
+        return self.curve[0], 0.0
+
+    def innovations(self, block):
+        """The return's Gaussian given the mixer and the two variance transitions (slow, fast)."""
+        return block[0], torch.stack([block[2], block[1]])
 
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
         """The carry curves - the underlying's own, `GBMAssetPriceTSModelImplied`'s pair."""
@@ -6485,7 +6663,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         """
         self.z_offset = process_ofs
         self.scenario_horizon = time_grid.scen_time_grid.size
-        structural = self.implied.curve_tenors()
+        structural, implied_tensor = self.parameters(implied_tensor, shared)
         self.gaussian = str(structural['Residual_Law']) == 'Gaussian'
         self.curves = {c: utils.TermStructure(structural[c], implied_tensor[c])
                        for c in utils.LogVar2FJ.CURVE_NAMES}
@@ -6622,7 +6800,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         """
         block = shared_mem.t_random_numbers[
                 self.z_offset:self.z_offset + self.num_factors(), :self.scenario_horizon]
-        Z, node = block[0], torch.stack([block[2], block[1]])
+        Z, node = self.innovations(block)
         batch, check = list(Z.shape[1:]), getattr(shared_mem, 'checkpoint_outer_walk', True)
         h = batch[-1] // 2
         mirror = not batch[-1] % 2 and torch.equal(Z[..., :h], -Z[..., h:])
@@ -6638,11 +6816,11 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
             return torch.utils.checkpoint.checkpoint(
                 fn, *args, use_reentrant=False, preserve_rng_state=False) if check else fn(*args)
 
-        start = [shared_mem.t_Scenario_Buffer.get((self.factor_key, x))
-                 for x in ('ell0_outer', 's0_outer')]
-        l = torch.zeros(batch, dtype=Z.dtype, device=Z.device) + (
-            self.curve[0] if start[0] is None else start[0])
-        s = torch.zeros_like(l) + (0.0 if start[1] is None else start[1])
+        # a fork starts each outer path's row from that path's own state, broadcast over its draws
+        mode = 'inner' if Z.ndim > 2 else 'outer'
+        start = [shared_mem.t_Scenario_Buffer.get((self.factor_key, x + mode)) for x in ('ell0_', 's0_')]
+        l, s = (torch.zeros(batch, dtype=Z.dtype, device=Z.device) + (
+            x if y is None else y.reshape(list(y.shape) + [1] * (Z.ndim - 1 - y.dim()))) for x, y in zip(self.state0(), start))
         M, var, ell, fast, drawn = [], [], [], [], 0
         for j, rows in enumerate(self.pieces):
             m, v = torch.zeros_like(l), torch.zeros_like(l)
@@ -6721,12 +6899,12 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         """REFUSED, by the model: the log-variance carries its OWN two shocks, so the state is not
         a function of the realised returns."""
         raise Exception(
-            'LogVar2FJImpliedSpotModel {}: an observed price path does not determine (ell, s). The '
+            '{} {}: an observed price path does not determine (ell, s). The '
             'log-variance carries its own two shocks, so the state is not a function of realised '
             'returns and recovering it is a FILTERING problem, not a replay - a particle filter in '
             'the `_forward_belief` pattern is the later item. Drive the scenario with a process '
             'whose state its path determines, or run this factor forward'.format(
-                utils.check_tuple_name(self.factor_key)))
+                type(self).__name__, utils.check_tuple_name(self.factor_key)))
 
     def calibrated_annual_vol(self):
         """The first `xi` segment's vol - `xi` being the expected TOTAL forward variance."""
@@ -6735,6 +6913,209 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
     def revealed_annual_vol(self, log_h):
         """`sqrt(exp(log h))` at `log_h = ell + s`: `h` is the ANNUALISED variance already."""
         return torch.sqrt(torch.exp(log_h))
+
+
+class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
+    """LogVar2FJ's two log-variance factors on a commodity spot under the historical measure, the
+    parameters the block's own, so a history fit needs no option quotes: a Gaussian residual, the
+    slow factor reverting to the constant `L`, and the framework's row the TOTAL return's
+    innovation, which the two variance shocks load on by `Rho_S` and `Rho_L`. The state the value
+    net reads is the one a live desk has, the filter `advance` run on a bar measurement simulated
+    beside the path; the calibration fits on PL1 bars and the replay filters them."""
+
+    documentation = ('Asset Pricing', [
+        'LogVar2FJ on a commodity spot under the historical measure, every parameter on its `Price Models`',
+        'block, so a [history fit](../calibration/asset_pricing.md#logvar2fjcalibration) is a world with',
+        'no option quotes. The annualised variance is $v=e^{s+\\ell}$, and over a step $\\delta$',
+        '',
+        "$$ s' = \\phi_s s + w_s\\eta_s,\\quad \\ell' = L + \\phi_\\ell(\\ell - L) + w_\\ell\\eta_\\ell,\\quad",
+        "\\log\\frac{S'}{S} = \\mu\\delta - \\tfrac12 v\\delta + \\sqrt{v\\delta}\\,\\varepsilon $$",
+        '',
+        "with $\\phi=e^{-\\kappa\\delta}$, $w=\\sigma\\sqrt{(1-\\phi^2)/2\\kappa}$ and $\\varepsilon$ the framework's row",
+        "for the spot, so a declared correlation is the TOTAL return's. The variance shocks load on it,",
+        '$\\mathrm{corr}(\\varepsilon,\\eta_s)=\\rho_s$, $\\mathrm{corr}(\\varepsilon,\\eta_\\ell)=\\rho_\\ell$, through two',
+        'idiosyncratic rows `.S` and `.L`: the leverage is a signed parameter of each world. The walk is',
+        "[LogVar2FJ](stochastic_volatility.md)'s at a Gaussian residual and the constant level $L$, and the",
+        'price is a martingale at `Mu` 0, whatever curves the factor states. **Held by**',
+        '`tests/test_logvar2fj_spot.py::test_a_commodity_with_no_drift_is_a_martingale`. A view is a value',
+        'stated on the block: every field is what the simulation reads.',
+        '',
+        '**The state is filtered.** A bar measures $y=s+\\ell+\\text{Offset}+\\sigma_u u$. Each step the filter',
+        'updates the state with the bar that closed inside it, then with the step\'s log return by a Laplace',
+        'step on $\\log v$, and carries it to the next step with the leverage the return implies, its moments',
+        'under that posterior in lognormal closed form. The outer path and each fork simulate the bar beside',
+        "the walk and filter it, a fork from the outer path's true state and its filter state, and the value",
+        'net reads the filtered slow factor and the filtered total $s+\\ell$, never the true fast factor:',
+        "three columns with the price against the GARCH spot's two, so a checkpoint fitted in either world",
+        'is refused in the other. The state-gradient label leaves both columns to the value term. **Held',
+        'by** `tests/test_logvar2fj_spot.py::test_a_fork_starts_from_the_outer_path_s_state`,',
+        '`::test_the_value_net_reads_the_filtered_state_and_refuses_a_garch_checkpoint`.',
+        '',
+        '**Replay.** On an observed scenario the filter runs on the fix and the bar series the scenario',
+        "states beside it (`<factor>,HIGH`, `,LOW`, `,CLOSE`, each on its own day) from the block's `S0`,",
+        "`Ell0` and `State_Cov`, as the calibration runs it on the archive: a market row is one calibration",
+        "step whose bar is the previous market row's, its close-to-close term on the last close the bar",
+        'carries, and a row repeating the fix with no bar - a weekend or a holiday, a row the archive does',
+        'not carry - holds the row before. A repeated fix is no return, and the first row\'s bar is',
+        'unmeasured. A scenario stating no bars filters the returns alone. The path\'s simulated state is',
+        "dropped, and each fork of a replayed row draws its own start from the filter's posterior",
+        '$N(\\text{mean}, P)$ off its anchor\'s two unread variance rows. **Held by**',
+        '`tests/test_logvar2fj_spot.py::test_a_replay_is_the_filter_on_the_bars_before_each_fix`,',
+        '`::test_a_replayed_fork_draws_its_state_from_the_filter_s_posterior`.',
+        '',
+        "**Not modelled:** the residual's tails; a time-varying level; the bar's noise sharing an afternoon",
+        'with the return the filter reads beside it (their innovations correlate about 0.19 on the platinum',
+        'archive), so the filter is overconfident by an unmeasured amount; and a step longer than a day in',
+        'the simulated filter, which reads the bar once a scenario interval.'])
+
+    factor_types = ('CommodityPrice',)
+    fields = [
+        F('Kappa_S', 'Float', default=0.0, description='Fast reversion speed, per year'),
+        F('Sigma_S', 'Float', default=0.0, description='Fast vol of log variance'),
+        F('Kappa_L', 'Float', default=0.0, description='Slow reversion speed, per year'),
+        F('Sigma_L', 'Float', default=0.0, description='Slow vol of log variance'),
+        F('L', 'Float', default=0.0, description='Log annualised variance the slow factor reverts to'),
+        F('Rho_S', 'Float', default=0.0, description='Correlation of the return with the fast shock'),
+        F('Rho_L', 'Float', default=0.0, description='Correlation of the return with the slow shock'),
+        F('Sigma_U', 'Float', default=0.0, description='Sd of the bar measurement of log variance'),
+        F('Offset', 'Float', default=0.0, description='Mean of the bar measurement less the log variance'),
+        F('Drift', 'Float', default=0.0, description='Mean log return a market row the filter centres on'),
+        F('Mu', 'Float', default=0.0, description='Annualised log drift of the simulated price'),
+        F('Ell0', 'Float', default=0.0, description='Filtered slow factor for the first step'),
+        F('S0', 'Float', default=0.0, description='Filtered fast factor for the first step'),
+        F('State_Cov', 'Table', default=[], description='Filter covariance (ss, sl, ll) for the first step'),
+        F('Calibration_DT_Years', 'Float', default=1.0 / 252.0, description='Years in one market row')]
+
+    @staticmethod
+    def num_factors():
+        return 3
+
+    @property
+    def steps_per_year(self):
+        return 1.0 / float(self.param['Calibration_DT_Years'])
+
+    def parameters(self, implied_tensor, shared):
+        """The block as a one-bucket parameter factor with a Gaussian residual."""
+        p = self.param
+        curves = {'Xi_Curve': 1.0, 'Rho_S': p['Rho_S'], 'Beta': 0.0, 'Sigma_S': p['Sigma_S'], 'Alpha': 1.0}
+        return (dict({c: np.zeros(1) for c in curves}, Residual_Law='Gaussian'),
+                dict({c: shared.one.new_tensor([float(v)]) for c, v in curves.items()},
+                     **{x: shared.one.new_tensor(float(p[x])) for x in utils.LogVar2FJ.PARAM_NAMES}))
+
+    def precalculate(self, ref_date, time_grid, tensor, shared, process_ofs, implied_tensor=None):
+        """The parent's walk at the constant level, and the filter's step over each scenario interval."""
+        super().precalculate(ref_date, time_grid, tensor, shared, process_ofs, implied_tensor)
+        self.curve = torch.full_like(self.curve, float(self.param['L']))
+        self.years = np.diff(np.insert(time_grid.time_grid_years, 0, 0.0))
+        self.coef = [tuple(np.concatenate(LogVar2FJCalibration.ou_pair(self.param, x)).tolist())
+                     + (x, float(self.param['Sigma_U']) ** 2) for x in self.years]
+
+    def state0(self):
+        return float(self.param['Ell0']), float(self.param['S0'])
+
+    def prior0(self):
+        """The filter's state for the first step: the `(s, ell)` means and the covariance (ss, sl, ll)."""
+        p = self.param
+        return (float(p['S0']), float(p['Ell0'])) + tuple(float(x) for x in p['State_Cov'])
+
+    def innovations(self, block):
+        """The return's innovation and two idiosyncratic rows, rotated into the residual given the two
+        variance shocks and those shocks, each loading on the return by its rho."""
+        rs, rl = float(self.param['Rho_S']), float(self.param['Rho_L'])
+        c, cs = math.sqrt(1.0 - rs * rs - rl * rl), math.sqrt(1.0 - rs * rs)
+        e_s = rs * block[0] + cs * block[1]
+        e_l = rl * block[0] + (c * block[2] - rs * rl * block[1]) / cs
+        return (block[0] - rs * e_s - rl * e_l) / c, torch.stack([e_l, e_s])
+
+    def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
+        """No curve: the price drifts at the block's `Mu`."""
+
+    def carry(self, shared_mem, ndim):
+        return self.spot0.new_tensor(float(self.param['Mu']) * self.years).reshape([-1] + [1] * (ndim - 1))
+
+    def generate(self, shared_mem):
+        """The parent's walk, then the bar measurement simulated beside it and filtered: the filter
+        state `(T, 5, ...batch)` is published as `lv_filter`, started from the block's, the burn-in's
+        or, in a fork, the outer path's."""
+        buf, key = shared_mem.t_Scenario_Buffer, self.factor_key
+        draw = buf.get((key, 'lv_filter0_inner'))
+        if draw is not None and (key, 'ell0_inner') not in buf:
+            # a replay knows the state only as the filter's posterior: each fork path draws its own off
+            # the anchor's two variance rows, which the walk leaves unread
+            z, f = shared_mem.t_random_numbers[self.z_offset + 1:self.z_offset + 3, 0].double(), draw.double().unsqueeze(-1)
+            l11 = utils.sqrt_or_zero(f[2])
+            l21 = f[3] / l11
+            buf[(key, 's0_inner')] = (f[0] + l11 * z[0]).to(shared_mem.t_random_numbers.dtype)
+            buf[(key, 'ell0_inner')] = (f[1] + l21 * z[0] + utils.sqrt_or_zero(f[4] - l21 * l21) * z[1]).to(
+                shared_mem.t_random_numbers.dtype)
+        path = super().generate(shared_mem)
+        # the day grid an equity's or an FX rate's OSS pricer reads its carried state on: no
+        # commodity pricer reads one, and a fork publishes only batch-last series
+        buf.pop((key, 'lv_days'))
+        ell, fast = (x.double() for x in self.last_state)
+        seed = buf.get((key, 'lv_filter0_' + ('inner' if path.dim() > 2 else 'outer')))
+        prior = list(self.prior0()) if seed is None else seed.double().reshape([5, -1] + [1] * (path.dim() - 2))
+        with torch.no_grad():
+            prior = [torch.zeros_like(ell[0]) + x for x in prior]
+            log_px, noise = path.detach().double().log(), float(self.param['Sigma_U']) * torch.randn_like(ell)
+            rows = [torch.stack(prior)]
+            for j in range(1, len(ell)):
+                bar = ell[j - 1] + fast[j - 1] + float(self.param['Offset']) + noise[j]
+                prior = LogVar2FJCalibration.step(self.param, self.coef[j], prior, bar, log_px[j] - log_px[j - 1],
+                                                  float(self.param['Offset']), torch)[2]
+                rows.append(torch.stack(prior))
+        self.last_filter = torch.stack(rows).to(path.dtype)
+        shared_mem.t_Scenario_Buffer[(self.factor_key, 'lv_filter')] = self.last_filter
+        if path.dim() > 2 and logging.getLogger().isEnabledFor(logging.DEBUG):
+            # each outer path's start and the spread of its fork's first log return
+            f = rows[0]
+            logging.debug('LV_FORK %r', {'state': (ell[0] + fast[0])[:, 0].tolist(),
+                                         'mean': (f[0] + f[1])[:, 0].tolist(),
+                                         'var': (f[2] + 2.0 * f[3] + f[4])[:, 0].tolist(),
+                                         'sd': log_px[1].sub(log_px[0]).std(-1).tolist()})
+        return path
+
+    def reveal_state_at(self, t, buffer):
+        """The filtered slow factor and the filtered total log variance, then the price."""
+        f = buffer[(self.factor_key, 'lv_filter')][t]
+        return [(torch.stack([f[1], f[0] + f[1]]), REVEAL_SUFFICIENT),
+                (buffer[self.factor_key][t].unsqueeze(0), REVEAL_CONTINUOUS)]
+
+    def inner_fork_seed(self, factor_key, outer_buf, t, leaves=None):
+        """The outer path's state where it simulated one, and its filter state, which the fork's own
+        filter starts from and a replay's fork draws its state from."""
+        own = super().inner_fork_seed(factor_key, outer_buf, t, leaves) if (factor_key, 'lv_ell') in outer_buf else {}
+        return {**own, (factor_key, 'lv_filter0_inner'): outer_buf[(factor_key, 'lv_filter')][t]}
+
+    def outer_reseed(self):
+        return {**super().outer_reseed(), (self.factor_key, 'lv_filter0_outer'): self.last_filter[-1]}
+
+    def reseed_from_path(self, simulated, shared_mem):
+        """The filter on the observed fix and the bars the scenario states beside it, from the block's
+        state at row 0, each market row one step; a row repeating the fix with no bar, a weekend or a
+        holiday the archive does not carry, holds the row before. The path's simulated state is
+        dropped: a replay has the filter's alone."""
+        buf, key, n = shared_mem.t_Scenario_Buffer, self.factor_key, len(simulated)
+        px = simulated.detach().reshape(n, -1)[:, 0].double().cpu().numpy()
+        high, low, close = (np.full(n, np.nan) if buf.get((key, x)) is None else buf[(key, x)].double().cpu().numpy()
+                            for x in ('HIGH', 'LOW', 'CLOSE'))
+        market = [t for t in range(n) if not (t and px[t] == px[t - 1] and not high[t] == high[t])]
+        dt = float(self.param['Calibration_DT_Years'])
+        y, r = LogVar2FJCalibration.measured(px[market], high[market], low[market], close[market], dt)
+        rows = [self.prior0()] + LogVar2FJCalibration.filter(
+            y[1:], [x == x for x in y[1:]], self.param, dt, float(self.param['Offset']), r[1:], self.prior0())[3]
+        rows = [rows[i] for i in np.searchsorted(market, np.arange(n), side='right') - 1]
+        buf[(key, 'lv_filter')] = simulated.new_tensor(rows).reshape([n, 5] + [1] * (simulated.dim() - 1)).expand(
+            n, 5, *simulated.shape[1:])
+        buf.pop((key, 'lv_ell'))
+        buf.pop((key, 'lv_s'))
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug('LV_REPLAY %s %r', utils.check_tuple_name(key), {'filter': rows})
+
+    def calibrated_annual_vol(self):
+        """sqrt(E[v]) under the stationary law."""
+        p = self.param
+        return float(np.sqrt(np.exp(p['L'] + 0.25 * (p['Sigma_S'] ** 2 / p['Kappa_S'] + p['Sigma_L'] ** 2 / p['Kappa_L']))))
 
 
 class SuppliedValuesModel(StochasticProcess):

@@ -350,12 +350,13 @@ def restamp_state_seeds(arch, trade_date, calibrated_md, out_path, window=750,
     if garch:
         bm['Sig2_0'] = float(sig2)
 
-    sm = models[f'GARCHSpotModel.{spot_col.split(".", 1)[1]}']
-    r = np.diff(np.log(p))
-    h = float(sm['Omega']) / max(1.0 - float(sm['Alpha']) - float(sm['Beta']), 1e-6)
-    for x in r:
-        h = float(sm['Omega']) + float(sm['Alpha']) * x * x + float(sm['Beta']) * h
-    sm['H0'] = float(h)
+    # a GARCH spot's state is a recursion on the fix; any other stands as its calibration left it
+    sm = models.get(f'GARCHSpotModel.{spot_col.split(".", 1)[1]}')
+    if sm is not None:
+        h = float(sm['Omega']) / max(1.0 - float(sm['Alpha']) - float(sm['Beta']), 1e-6)
+        for x in np.diff(np.log(p)):
+            h = float(sm['Omega']) + float(sm['Alpha']) * x * x + float(sm['Beta']) * h
+        sm['H0'] = float(h)
 
     _atomic_write_json(out_path, md)
     return out_path
@@ -374,7 +375,7 @@ def resolved_calibration_config(source, archive, out_path):
 
 
 def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5,
-                          cols=(CME_COL, BASIS_COL), to_date=False):
+                          cols=(CME_COL, BASIS_COL), to_date=False, bars=()):
     """Dense daily realized (CME primary, published basis, CARRY CURVE) from the base date,
     forward-filled. The framework composes the LBMA fixing S = P + b itself. The carry rides as
     the `(T, 2)` curve tensor the job's own two DATED knots imply: z at each knot's aged tenor,
@@ -417,8 +418,9 @@ def observed_scenario_npz(arch, base_date, path, horizon_days, knots, max_gap=5,
                       for k in knots], axis=1)
     # `cols` are the SCALAR factors replayed - one npz key per simulated factor name, which is
     # what the archive columns already are; the carry rides as its own (T, 2) curve tensor
+    # `bars` are a factor's bar series, each on its own day only: a fill would be a second bar
     np.savez(path, **{c: rows[c].to_numpy() for c in cols},
-             **{'ForwardRate.PLATINUM_CARRY': carry})
+             **{'ForwardRate.PLATINUM_CARRY': carry}, **{c: arch[c].reindex(dates).to_numpy() for c in bars})
     return min(dates.max(), arch.index[-1])
 
 

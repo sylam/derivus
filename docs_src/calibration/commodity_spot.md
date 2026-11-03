@@ -3,7 +3,9 @@
 Historical estimators for the three commodity spot processes documented on the Theory page
 [Asset Pricing](../theory/asset_pricing.md): `LogOUSpotModel`, `MarkovHMMSpotModel` and
 `GARCHSpotModel`. Each reads the factor's single `CommodityPrice.<Name>` column of daily closes.
-The conventions every estimator follows are on [Historical Calibration](general.md).
+The conventions every estimator follows are on [Historical Calibration](general.md). The fourth,
+`LogVar2FJSpotModel`, is fitted by [LogVar2FJCalibration](asset_pricing.md#logvar2fjcalibration) under
+`Return_Measurement` Yes, on another market's bar beside the fix.
 
 | | `LogOUSpotCalibration` | `MarkovHMMSpotCalibration` | `GARCHSpotCalibration` |
 |---|---|---|---|

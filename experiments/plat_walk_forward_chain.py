@@ -77,6 +77,11 @@ FIXING_CALENDAR = 'London'                      # the LBMA fixes on London busin
 WEEK = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
 
 
+def spot_key(models):
+    """The `Price Models` key of the fix's own process, whichever model the world routes it to."""
+    return next(k for k in models if k.split('.', 1)[1] == FIX_COL.split('.', 1)[1])
+
+
 def composed_cols(name):
     """The archive columns a composed commodity name sums, its positional chain: `LBMA_AM.PM.CME` is
     the fix `CommodityPrice.LBMA_AM`, then `ObservedBasis.LBMA_AM.PM`, then
@@ -388,8 +393,9 @@ def trade_world(arch, trade_date, calibrated_md, out_path, carry_drift):
                         spot_col=FIX_COL, basis_col=B_CME)
     md = json.load(open(out_path))
     pm = md['MarketData']['Price Models']
-    spot = pm[f'GARCHSpotModel.{FIX_COL.split(".", 1)[1]}']
-    spot['Carry_Drift'] = carry_drift
+    spot = pm[spot_key(pm)]
+    if 'Carry_Drift' in spot:                      # a spot with no carry switch drifts at its own Mu
+        spot['Carry_Drift'] = carry_drift
     # Session-print conditioning needs no stamping: the t0 prints ARE state (the restamped
     # ObservedBasis Spots at the trade date), and the engine's `print_seed` protocol
     # conditions every start on the prints its state carries.
@@ -431,25 +437,28 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     if args.drift_overlay is not None:
         # Stamp Mu on the recalibrated spot block (composes with Carry_Drift); rides
         # ExplicitMarketData so train and roll see the same world.
-        g = json.load(open(calibrated_md))['MarketData']['Price Models']['GARCHSpotModel.LBMA_AM']
+        models = json.load(open(calibrated_md))['MarketData']['Price Models']
+        g = models[spot_key(models)]
         # The overlay IS the drift hypothesis: Mu replaces the carry drift rather than
         # riding on top of it.
-        cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'][
-            'GARCHSpotModel.LBMA_AM'] = dict(g, Mu=args.drift_overlay, Carry_Drift='No')
+        cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'][spot_key(models)] = dict(
+            g, Mu=args.drift_overlay, **({'Carry_Drift': 'No'} if 'Carry_Drift' in g else {}))
     # the observed window BEFORE training: a month the gap guard refuses must refuse in seconds,
     # not after a policy whose roll can never run
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
     knots = carry_knots(trade_date, max(max(info['fixings']), max(info['mats'])))
     horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
     as_of = observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap,
-                                  cols=replayed_cols(cfg), to_date=args.to_date)
+                                  cols=replayed_cols(cfg), to_date=args.to_date,
+                                  bars=[c for c in arch.columns if c.startswith(FIX_COL + ',')])
     passive_from = None
     if args.vol_switch is not None:
         # the live ledger's spelling: the fix's last ten log returns through the day against the
         # month's calibrated GARCH vol, on every archive day the roll observes
         am = arch[FIX_COL].astype(float)
-        h0 = json.load(open(chain_md))['MarketData']['Price Models']['GARCHSpotModel.LBMA_AM']['H0']
-        cal = float(np.sqrt(h0 * 252))
+        models = json.load(open(chain_md))['MarketData']['Price Models']
+        spot = models[spot_key(models)]
+        cal = float(np.sqrt(spot['H0'] * 252 if 'H0' in spot else np.exp(spot['Ell0'] + spot['S0'])))
         for d in arch.index[(arch.index >= pd.Timestamp(trade_date)) & (arch.index <= as_of)]:
             rv10 = float(np.log(am.loc[:d]).diff().iloc[-10:].std() * np.sqrt(252))
             if rv10 > args.vol_switch * cal:
@@ -855,7 +864,7 @@ def main():
                     calibrate(os.path.abspath(args.marketdata), cal_cfg, cal_end, md_long,
                               start=cal_start_g)
                     _short = json.load(open(calibrated_md))
-                    _key = f'GARCHSpotModel.{FIX_COL.split(".", 1)[1]}'
+                    _key = spot_key(_short['MarketData']['Price Models'])
                     _short['MarketData']['Price Models'][_key] = json.load(
                         open(md_long))['MarketData']['Price Models'][_key]
                     _atomic_write_json(calibrated_md, _short)
