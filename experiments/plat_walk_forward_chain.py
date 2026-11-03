@@ -448,7 +448,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     obs_npz = os.path.abspath(os.path.join(run_dir, f'obs_{tag}.npz'))
     knots = carry_knots(trade_date, max(max(info['fixings']), max(info['mats'])))
     horizon = (info['pay'] - pd.Timestamp(trade_date)).days + 10
-    as_of = observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, max_gap=args.max_gap,
+    as_of = observed_scenario_npz(arch, trade_date, obs_npz, horizon, knots, FIX_COL, max_gap=args.max_gap,
                                   cols=replayed_cols(cfg), to_date=args.to_date,
                                   bars=[c for c in arch.columns if c.startswith(FIX_COL + ',')])
     passive_from = None

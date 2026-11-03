@@ -99,9 +99,7 @@ Grouped by where a validator meets them.
   (2026-11-01). A `BasisLinkedSpotModel` block without `Trading_Clock` is the old law, which on a
   calendar-daily grid carries seven basis shocks and pulls a week where the data carry five; the
   declared switch addresses it, and stays off so the standing worlds reproduce, moving them being a
-  world change and a full retrain. A replay holds every recursion across a forward-filled weekend,
-  but the spot's `GARCHSpotModel` replay takes a forward-filled weekday holiday as a zero-return
-  market day, one step of decay about eight times a year.
+  world change and a full retrain.
 - **A fitted structure leg's two-way charge uses its lognormal vega** (2026-09-21). A leg under a
   fitted spot model publishes no FX vol quote sensitivity, so the charge reads the same leg as a
   lognormal (`spread_source` says so): a vega a desk could hedge, but not the quoted price's.

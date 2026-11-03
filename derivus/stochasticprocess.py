@@ -495,6 +495,10 @@ def arx1_t_mle(equations, nu_bounds=(3.0, 50.0), mean=None, garch=False):
 REVEAL_CONTINUOUS = 'continuous'
 REVEAL_SUFFICIENT = 'sufficient'
 
+# The `Observed_Scenario` key of the tape's forward-filled rows, the London fixing calendar's fill:
+# every replay holds its state across a flagged row, and a tape stating none has none.
+FILLED_ROWS = 'Filled_Rows'
+
 
 class StochasticProcess(object):
     """Base class for all stochastic processes"""
@@ -627,6 +631,12 @@ class StochasticProcess(object):
         the generated one). Publishes to `shared_mem.t_Scenario_Buffer` under this process's own
         keys. Default: nothing to replay."""
         pass
+
+    def filled_rows(self, shared_mem, n):
+        """The first `n` rows of the replayed tape's `FILLED_ROWS` flag, on which no market time
+        passed; none where the tape states no flag."""
+        flag = shared_mem.t_Scenario_Buffer.get((self.factor_key, FILLED_ROWS))
+        return [False] * n if flag is None else np.asarray(flag[:n], bool).tolist()
 
     def reseed_inner_state(self, factor_key, simulated, outer_buf, t, shared_mem, opts, with_grad):
         """Post-generate inner-fork coherence: publish any path-dependent revealed state the
@@ -3176,16 +3186,13 @@ class GARCHSpotModel(StochasticProcess):
         'which is the recursion above at $f=1$ and keeps the long-run variance $\\omega/(1-\\alpha-\\beta)$ for',
         'any $f$; a step longer than one calibration step walks daily sub-steps.',
         '',
-        'A replay runs the recursion on the realised returns of an observed path. A Saturday or Sunday row',
-        'on which the spot repeats the previous row to the bit, as a forward fill writes a weekend, is one on',
-        'which no market time passed: $h$ and the published $\\log h$ hold and its drift joins the next market',
-        'row, and every other row is one calibration step whatever $f$ says, so a calendar tape replays on its',
-        'market rows as the same tape with the filled rows removed. A repeat alone is not a fill, since a',
-        'weekday can print the fix it printed the day before (about one business day in 34 on the LBMA',
-        'platinum AM fix), and a weekend never prints. A forward-filled weekday holiday is therefore a market',
-        'day with a zero return, one step of decay, about eight a year on the London calendar, **Not gated**.',
-        'Held by',
-        '`tests/test_chained_basis.py::test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend`.',
+        'A replay runs the recursion on the realised returns of an observed path. A row the scenario flags',
+        "forward-filled (`Filled_Rows`, the London fixing calendar's fill: weekends and holidays) is one on",
+        'which no market time passed: $h$ and the published $\\log h$ hold and its move and drift join the next',
+        'market row, and every other row is one calibration step whatever $f$ says, so a calendar tape replays',
+        'on its market rows as the same tape with the filled rows removed. A scenario stating no flag replays',
+        'every row as a market row. Held by',
+        '`tests/test_chained_basis.py::test_a_spot_replay_holds_its_variance_across_a_forward_filled_holiday`.',
         '',
         'Parameters:',
         '',
@@ -3313,8 +3320,6 @@ class GARCHSpotModel(StochasticProcess):
                          'the correlated draw rides the sqrt(E[h])-weighted combination.',
                          int(self.n_sub.max()))
         self._log_lr_var = float(np.log(self.param['Omega'] / (1.0 - self.param['Alpha'] - self.param['Beta'])))
-        # the rows on which no fix prints, the only ones a forward fill can be told from a flat print on
-        self.weekend = ((ref_date + pd.to_timedelta(time_grid.scen_time_grid, unit='D')).dayofweek >= 5).tolist()
 
         # AAD: spot0 stays on the graph, unreshaped so inner MC can pass (B,).
         self.spot0 = tensor
@@ -3546,11 +3551,10 @@ class GARCHSpotModel(StochasticProcess):
         1/2*Var(r) with the SAME convexity correction the forward sim applied, which keeps the
         h recursion identical between forward sim and replay.
 
-        A Saturday or Sunday row repeating the spot to the bit, as a forward fill writes a weekend,
-        is one on which no market time passed: h and the published log h hold and its drift joins
-        the next market row's, and every other row is one calibration step whatever the trading
-        clock says, so a calendar tape replays on its market rows as the same tape with the filled
-        rows removed."""
+        A row the tape flags filled (`FILLED_ROWS`) is one on which no market time passed: h and
+        the published log h hold and its move and drift join the next market row's, and every other
+        row is one calibration step whatever the trading clock says, so a calendar tape replays on
+        its market rows as the same tape with the filled rows removed."""
         # Replay is defined only on the daily grid: the intra-interval returns the variance
         # recursion replays are unobservable at coarser nodes.
         if np.any(self.n_sub >= 2):
@@ -3566,23 +3570,20 @@ class GARCHSpotModel(StochasticProcess):
         log_h = torch.empty_like(obs)
         log_h[0] = h.log()
         T = obs.shape[0]
-        # a weekday can print yesterday's fix again, so a repeat is a fill only on a weekend
-        same = (obs[1:] == obs[:-1]).reshape(T - 1, -1).all(dim=1).tolist()
-        filled = [False] + [weekend and repeat for weekend, repeat in zip(self.weekend[1:T], same)]
+        filled = self.filled_rows(shared_mem, T)
 
         def realized(var_step, t, due):                                      # realized innovation r_t
-            r = (logret[t] - logret[t - 1]) - due
+            r = (logret[t] - logret[last]) - due
             return r + 0.5 * var_step if self.convexity else r               # undo the −½Var(r) drift shift
 
-        carried = None
+        carried, last = None, 0
         for t in range(1, T):
             due = drift[t] if carried is None else carried + drift[t]
             if filled[t]:
                 log_h[t], carried = log_h[t - 1], due
                 continue
-            carried = None
             h, _, _ = self._advance_variance(h, t, lambda v: realized(v, t, due), 1.0)
-            log_h[t] = h.log()
+            log_h[t], carried, last = h.log(), None, t
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'garch_log_h')] = log_h.unsqueeze(1)
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'h0_outer')] = h
         if logging.getLogger().isEnabledFor(logging.DEBUG):
@@ -4687,13 +4688,12 @@ class BasisLinkedSpotModel(StochasticProcess):
         '`tests/test_chained_basis.py::test_the_average_price_swap_projects_the_basis_at_the_rate_the_clock_simulates`',
         'and `::test_a_coarse_row_on_the_trading_clock_walks_sub_steps_of_at_most_one_calibration_step`.',
         '',
-        'A replay holds a row on which the basis and its parent both repeat the previous row to the bit, as',
-        'a forward fill writes a weekend or a holiday, as one on which no market time passed: $\\mu$,',
-        '$\\sigma^2$, the stress filter and the published regime hold, and the next market row is updated as',
-        'on the path without the filled rows, its regime drawn at its count of market rows. A market row is',
-        'one calibration step whatever **Trading_Clock** says: the clock spreads five business days over',
-        'seven calendar rows, which a replay that knows its market rows does not need. A row repeating only',
-        'one of the two is a market row, and a replay whose parent is simulated has none to skip. Held by',
+        'A replay holds a row its scenario flags forward-filled (`Filled_Rows`, as the spot replay reads it) as',
+        'one on which no market time passed: $\\mu$, $\\sigma^2$, the stress filter and the published regime',
+        'hold, and the next market row is updated from the last market row\'s basis and parent as on the path',
+        'without the filled rows, its regime drawn at its count of market rows. A market row is one',
+        'calibration step whatever **Trading_Clock** says: the clock spreads five business days over seven',
+        'calendar rows, which a replay that knows its market rows does not need. Held by',
         '`tests/test_chained_basis.py::test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row`.',
         '',
         '**Reveal_Band_State** Yes shows the hedging value net, before the level, the deviation',
@@ -4910,12 +4910,13 @@ class BasisLinkedSpotModel(StochasticProcess):
                 f'shift would mis-anchor row 1 by (1−Phi)·b(0)')
         self.chain_t0_shift = p.reshape(-1) - self.b0.reshape(-1)
 
-    def _ds_linked(self, linked_path, t, k=None, share=1.0):
+    def _ds_linked(self, linked_path, t, k=None, share=1.0, since=None):
         """The concurrent-dS drive of step t, `share` of the parent's move over it on a sub-step,
-        with the row-1 seam conditioning folded in on the first market step, `k` counting them (t
-        unless a replay skips filled rows, 0 past a step's first sub-step) - shared by the forward
-        sim and the replay so the bias cannot drift between them."""
-        ds = share * self.A * (linked_path[t] - linked_path[t - 1])
+        from row `since` (t - 1 unless a replay held the rows between), with the row-1 seam
+        conditioning folded in on the first market step, `k` counting them (t unless a replay skips
+        filled rows, 0 past a step's first sub-step) - shared by the forward sim and the replay so
+        the bias cannot drift between them."""
+        ds = share * self.A * (linked_path[t] - linked_path[t - 1 if since is None else since])
         if (t if k is None else k) == 1 and self.chain_t0_shift is not None:
             s = self.chain_t0_shift
             ds = ds + (s.view(-1, 1) if ds.dim() == 2 and s.numel() > 1 else s)
@@ -5059,15 +5060,15 @@ class BasisLinkedSpotModel(StochasticProcess):
                 sig2 + f * (self.g_omega - (1.0 - self.g_beta) * sig2) + self.g_alpha * eta * eta
                 if self.garch else sig2)
 
-    def _walk(self, mu, sig2, prev, linked_path, t, k, steps, innovation):
+    def _walk(self, mu, sig2, prev, linked_path, t, k, steps, innovation, since=None):
         """Step t as its sub-steps `steps` (`(None,)` the step as calibrated): `_advance` on
-        each in turn, the parent's move over the step shared among them by length and the seam
+        each in turn, the parent's move since row `since` shared among them by length and the seam
         conditioning on the first, `innovation(mean, sig2, j)` sub-step j's supplier. Shared by
         the forward sim and the replay; returns `(b_t, mu, sigma^2)` after the last."""
         for j, f in enumerate(steps):
             prev, mu, sig2 = self._advance(
                 mu, sig2, prev, self._ds_linked(linked_path, t, k if j == 0 else 0,
-                                                1.0 if f is None else f / sum(steps)),
+                                                1.0 if f is None else f / sum(steps), since),
                 lambda mean, s2: innovation(mean, s2, j), f)
         return prev, mu, sig2
 
@@ -5177,9 +5178,9 @@ class BasisLinkedSpotModel(StochasticProcess):
         exactly from a rounded sum, which is why `_advance` takes the level from the innovation
         supplier rather than re-deriving it.
 
-        A row repeating both the basis and its parent to the bit, as a forward fill writes it, is
-        one on which no market time passed: every recursion and the published regime hold their
-        state, and the next market row is updated as one calibration step whatever `Trading_Clock`
+        A row the tape flags filled (`FILLED_ROWS`) is one on which no market time passed: every
+        recursion and the published regime hold their state, and the next market row is updated as
+        one calibration step from the last market row's basis and parent whatever `Trading_Clock`
         says, its regime drawn off the quasi stream at its count of market rows, as on the path
         without the filled rows."""
         self._chain_shift(shared_mem)
@@ -5190,10 +5191,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         inner = obs.ndim == 3
         mu, sig2, mu_path, sig2_path = self._recursion_state(shared_mem, obs, inner)
         T, batch = obs.shape[0], obs.shape[1:]
-        # a forward fill copies every column, so both series repeat to the bit; one repeating alone
-        # is a flat print on a market row
-        same = (obs[1:] == obs[:-1]) & (linked_path[1:T] == linked_path[:T - 1])
-        filled = [False] + same.reshape(T - 1, -1).all(dim=1).tolist()
+        filled = self.filled_rows(shared_mem, T)
 
         regime_path = None
         if self.band:
@@ -5221,7 +5219,7 @@ class BasisLinkedSpotModel(StochasticProcess):
                 last_eta[0] = eta_t / s2.sqrt() if self.garch else eta_t
             return eta_t, obs[t]
 
-        k = 0
+        k = last = 0
         for t in range(1, T):
             if filled[t]:
                 for path in (mu_path, sig2_path, regime_path):
@@ -5231,7 +5229,8 @@ class BasisLinkedSpotModel(StochasticProcess):
             k += 1
             # a market row carries one business day: the clock's uniform f is the simulation's
             # spreading of five business days over seven calendar rows
-            _, mu, sig2 = self._walk(mu, sig2, obs[t - 1], linked_path, t, k, (None,), realised)
+            _, mu, sig2 = self._walk(mu, sig2, obs[last], linked_path, t, k, (None,), realised, last)
+            last = t
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
@@ -6918,8 +6917,10 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
         "states beside it (`<factor>,HIGH`, `,LOW`, `,CLOSE`, each on its own day) from the block's `S0`,",
         "`Ell0` and `State_Cov`, as the calibration runs it on the archive: a market row is one calibration",
         "step whose bar is the previous market row's, its close-to-close term on the last close the bar",
-        'carries, and a row repeating the fix with no bar - a weekend or a holiday, a row the archive does',
-        'not carry - holds the row before. A repeated fix is no return, and the first row\'s bar is',
+        'carries, and a row the scenario flags forward-filled (`Filled_Rows`) holds the row before and its',
+        'bar, a CME print on a London holiday, is not read: the filter reads the bars of London market days',
+        'alone, as the calibration\'s archive, which has no holiday rows, gives them. A repeated fix is no',
+        'return, and the first row\'s bar is',
         'unmeasured. A scenario stating no bars filters the returns alone. The path\'s simulated state is',
         "dropped, and each fork of a replayed row draws its own start from the filter's posterior",
         '$N(\\text{mean}, P)$ off its anchor\'s two unread variance rows. **Held by**',
@@ -7054,14 +7055,14 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
 
     def reseed_from_path(self, simulated, shared_mem):
         """The filter on the observed fix and the bars the scenario states beside it, from the block's
-        state at row 0, each market row one step; a row repeating the fix with no bar, a weekend or a
-        holiday the archive does not carry, holds the row before. The path's simulated state is
-        dropped: a replay has the filter's alone."""
+        state at row 0, each market row one step; a row the tape flags filled (`FILLED_ROWS`) holds
+        the row before and its bar is not read, as the calibration's archive carries no such row. The
+        path's simulated state is dropped: a replay has the filter's alone."""
         buf, key, n = shared_mem.t_Scenario_Buffer, self.factor_key, len(simulated)
         px = simulated.detach().reshape(n, -1)[:, 0].double().cpu().numpy()
         high, low, close = (np.asarray(buf.get((key, x), np.full(n, np.nan)), np.float64)
                             for x in ('HIGH', 'LOW', 'CLOSE'))
-        market = [t for t in range(n) if not (t and px[t] == px[t - 1] and not high[t] == high[t])]
+        market = [t for t, held in enumerate(self.filled_rows(shared_mem, n)) if not (t and held)]
         dt = float(self.param['Calibration_DT_Years'])
         y, r = LogVar2FJSpotCalibration.measured(px[market], high[market], low[market], close[market], dt)
         rows = [self.prior0()] + LogVar2FJCalibration.filter(

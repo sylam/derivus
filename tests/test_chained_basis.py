@@ -32,6 +32,7 @@ import test_position_scaling as trials
 import trial_rates
 from derivus import instruments, utils
 from derivus.config import Config, CustomJsonEncoder, ModelParams
+from derivus.stochasticprocess import FILLED_ROWS
 
 BASE = pd.Timestamp('2026-01-15')
 
@@ -579,13 +580,25 @@ HEDGE_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtur
                              'policy_test_simulate_only.json')
 
 
-def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None):
+def _holiday_tape():
+    """119 calendar rows from Friday 2026-04-10 over 199 business days, London's 4 May bank holiday not
+    among them: `(the business days' calendar row, the calendar's flag of the rows the London fixing
+    calendar filled, the holiday's row)`."""
+    days = pd.bdate_range('2026-04-10', periods=200).drop(pd.Timestamp('2026-05-04'))
+    calendar = pd.date_range('2026-04-10', periods=200)
+    return (np.searchsorted(days, calendar, side='right') - 1, ~calendar.isin(days),
+            calendar.get_loc(pd.Timestamp('2026-05-04')))
+
+
+def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None, filled=None):
     """The recursions `{'mu', 'sig2', 'regime'}` per row on the first path that the simulate-only
     hedging fixture, rolling daily from Friday 2026-04-10, publishes replaying the observed `spot`
-    and `basis`, its basis the `BasisLinkedSpotModel` block `basis_block`; given `spot_block`, the
-    spot is that `GARCHSpotModel` block and the recursion its `{'log_h', 'h'}`, the terminal h."""
+    and `basis`, the rows `filled` flagged forward-filled, its basis the `BasisLinkedSpotModel` block
+    `basis_block`; given `spot_block`, the spot is that `GARCHSpotModel` block and the recursion its
+    `{'log_h', 'h'}`, the terminal h."""
     observed = str(tmp_path / 'observed.npz')
-    np.savez(observed, **{'CommodityPrice.PLATINUM_LME': spot, 'ObservedBasis.PLATINUM_LME.LME_CME': basis})
+    np.savez(observed, **{'CommodityPrice.PLATINUM_LME': spot, 'ObservedBasis.PLATINUM_LME.LME_CME': basis},
+             **({} if filled is None else {FILLED_ROWS: filled}))
     cfg = json.load(open(HEDGE_FIXTURE))
     cfg['Calc']['Calculation'].update({'Batch_Size': 2, 'Observed_Scenario': observed})
     market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -606,21 +619,23 @@ def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None):
 def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_path, caplog, garch):
     """A calibration document stating the two switches, on an archive drawn as the scale-window
     test's and under `GARCH_Innovation` 'No' and 'Yes', writes the fit's own block plus the two. The
-    simulate-only hedging fixture replays that block on 119 calendar rows, the weekends forward
-    filled from Friday, and on the same business days with the filled rows removed: on every
-    business row the published mu, sig2 and regime equal, to the bit, the compressed replay's at
-    that row's count of business days (85 rows), and every filled row holds the row before it. A
-    market row is one calibration step whatever the clock the block also states: the calendar replay
-    is to the bit the same replay with `Trading_Clock` 'No'. On the compressed path a flat basis
-    print on its sixth business day and a flat spot on its ninth each move mu, so a market row
-    repeating one price is a market row. 2 s.
+    simulate-only hedging fixture replays that block on 119 calendar rows, the weekends and London's
+    4 May bank holiday flagged forward-filled, the holiday printing a spot and a basis of its own (a
+    CME print), and on the same business days with the filled rows removed: on every business row
+    the published mu, sig2 and regime equal, to the bit, the compressed replay's at that row's count
+    of business days (84 rows), and every filled row holds the row before it. A market row is one
+    calibration step whatever the clock the block also states: the calendar replay is to the bit the
+    same replay with `Trading_Clock` 'No'. On the compressed path, which flags nothing, the basis
+    and the spot both flat on its sixth business day and the spot flat on its ninth each move mu.
+    2 s.
 
-    Killing mutations: the filled rows replayed (mu 2.87 apart, sig2 0.82 under GARCH, the regime on
-    20 and 19 of the 85 rows); the regime drawn at the calendar row rather than the business count
-    (20 and 19 rows); the clock's per-row f kept on a market row (mu 3.04 from the unclocked replay,
-    sig2 0.72, the regime on 12 and 9 rows); a filled row read off the basis alone or the spot alone
-    (mu held on the sixth or the ninth); either switch not stamped on the block (the fitted block
-    parts).
+    Killing mutations: the flag unread (mu 2.13 apart on 78 of the 84 rows, sig2 1.10 under GARCH,
+    the regime on 18 and 19); the regime drawn at the calendar row rather than the business count
+    (19 and 20 rows); the clock's per-row f kept on a market row (mu 0.124 from the unclocked replay
+    on the fifth row); the old rule, a row on which both prices repeat filled (mu held on the
+    sixth, 1.6523 twice); the parent's move and the basis read from the row before rather than the
+    last market row (sig2 0.040 under GARCH on 40 rows); either switch not stamped on the block (the
+    fitted block parts).
     """
     n = 504
     rng = np.random.default_rng(5)
@@ -630,19 +645,20 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
     fitted = _fit_band(tmp_path, dates, history, archive, GARCH_Innovation=garch, **SWITCHES)
     assert fitted == dict(_fit_band(tmp_path, dates, history, archive, GARCH_Innovation=garch), **SWITCHES)
 
-    days = pd.bdate_range('2026-04-10', periods=200)
-    spot = 2055.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 30.0, 199)]))
-    basis = fitted['Mu_0'] + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 3.0, 199)]))
-    basis[6], spot[9] = basis[5], spot[8]
-    row = np.searchsorted(days, pd.date_range('2026-04-10', periods=200), side='right') - 1
-    calendar = _replayed(tmp_path, caplog, fitted, spot[row], basis[row])
+    row, filled, holiday = _holiday_tape()
+    spot = 2055.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 30.0, 198)]))
+    basis = fitted['Mu_0'] + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 3.0, 198)]))
+    basis[6], spot[6], spot[9] = basis[5], spot[5], spot[8]
+    spot_cal, basis_cal = spot[row], basis[row]
+    spot_cal[holiday], basis_cal[holiday] = spot_cal[holiday] + 10.0, basis_cal[holiday] + 1.0
+    calendar = _replayed(tmp_path, caplog, fitted, spot_cal, basis_cal, filled=filled)
     business = _replayed(tmp_path, caplog, fitted, spot, basis)
     market = [t for t in range(len(calendar['mu'])) if t == 0 or row[t] != row[t - 1]]
-    assert len(market) == 85 and set(calendar) == {'mu', 'regime'} | ({'sig2'} if garch == 'Yes' else set())
+    assert len(market) == 84 and set(calendar) == {'mu', 'regime'} | ({'sig2'} if garch == 'Yes' else set())
     assert {k: [v[t] for t in market] for k, v in calendar.items()} == \
         {k: [v[row[t]] for t in market] for k, v in business.items()}
     assert all(v[t] == v[t - 1] for v in calendar.values() for t in range(1, len(v)) if t not in market)
-    assert calendar == _replayed(tmp_path, caplog, dict(fitted, Trading_Clock='No'), spot[row], basis[row])
+    assert calendar == _replayed(tmp_path, caplog, dict(fitted, Trading_Clock='No'), spot_cal, basis_cal, filled=filled)
     assert business['mu'][6] != business['mu'][5] and business['mu'][9] != business['mu'][8], business['mu'][4:10]
 
 
@@ -650,23 +666,24 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
 FLAT_BASIS = {'A': 0.0, 'Phi': 0.4, 'Nu': 5.0, 'Sigma': 8.0, 'Calibration_DT_Years': 1.0 / 252.0}
 
 
-def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_path, caplog):
+def test_a_spot_replay_holds_its_variance_across_a_forward_filled_holiday(tmp_path, caplog):
     """A calibration document fits `GARCHSpotModel` on 504 days of a GARCH(1,1) spot beside a band
     basis. The simulate-only hedging fixture, its spot that block and its basis a flat Linear,
-    replays it on 119 calendar rows, the weekends forward filled from Friday, with a flat fix on the
+    replays it on 119 calendar rows, the weekends and London's 4 May bank holiday flagged
+    forward-filled, the holiday printing a spot of its own (a CME print), with a flat fix on the
     fourth business day (a Wednesday), and on the same business days with the filled rows removed:
-    on all 85 business rows the published log h equals, to the bit, the compressed replay's at that
+    on all 84 business rows the published log h equals, to the bit, the compressed replay's at that
     row's count of business days, and every filled row holds the row before it. A market row is one
-    calibration step and a filled row's drift is the next market row's: under a `Mu` of 0.5 the
-    calendar replay's log h is the business-day filter written here, h' = Omega + Alpha r^2 + Beta h
-    with r the log return less the drift over its calendar days plus h / 2, within 5e-5 on every
-    market row (9.7e-6 on the CPU, the job's float32) and its terminal h to 5e-5 (9e-7). 5 s.
+    calibration step and a filled row's move and drift are the next market row's: under a `Mu` of
+    0.5 the calendar replay's log h is the business-day filter written here, h' = Omega + Alpha r^2 +
+    Beta h with r the log return less the drift over its calendar days plus h / 2, within 5e-5 on
+    every market row (9.1e-6 on the CPU, the job's float32) and its terminal h to 5e-5 (6.7e-7). 5 s.
 
-    Killing mutations: the filled rows replayed (84 of the 85 rows apart from the compressed
-    replay, log h 0.42 off the filter); the trading clock's per-row fraction kept on a market row
-    (0.47 off the filter, the compressed replay alike); a filled row read off the spot alone, so
-    the flat Wednesday holds (0.14); off the date alone, so the compressed replay's weekend-dated
-    rows hold (84 rows apart); a filled row's drift dropped (0.077)."""
+    Killing mutations: the flag unread (83 of the 84 rows apart, log h 0.51 off on 5 May); the old
+    rule, a weekend row repeating the spot filled, so the holiday steps (68 rows apart, 0.25 off on
+    5 May); the trading clock's per-row fraction kept on a market row (0.48 off the filter, the
+    compressed replay alike); the holiday's move dropped (68 rows apart, 0.19 off on 5 May); a
+    filled row's drift dropped (0.079 off the filter)."""
     n = 504
     rng = np.random.default_rng(11)
     returns, h = np.zeros(n), 2.0e-4
@@ -678,12 +695,14 @@ def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_pa
     archive = _band_basis(history, 2.0 * rng.standard_normal(n))
     fitted = _fit_band(tmp_path, dates, history, archive, garch={})
 
-    days = pd.bdate_range('2026-04-10', periods=200)
-    spot = 2055.0 * np.exp(np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 0.02, 199)])))
-    basis = -30.0 + np.cumsum(rng.normal(0.0, 3.0, 200))
+    row, filled, holiday = _holiday_tape()
+    days = pd.bdate_range('2026-04-10', periods=200).drop(pd.Timestamp('2026-05-04'))
+    spot = 2055.0 * np.exp(np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 0.02, 198)])))
+    basis = -30.0 + np.cumsum(rng.normal(0.0, 3.0, 199))
     spot[3] = spot[2]
-    row = np.searchsorted(days, pd.date_range('2026-04-10', periods=200), side='right') - 1
-    calendar = _replayed(tmp_path, caplog, FLAT_BASIS, spot[row], basis[row], spot_block=fitted)
+    spot_cal = spot[row]
+    spot_cal[holiday] *= 1.01
+    calendar = _replayed(tmp_path, caplog, FLAT_BASIS, spot_cal, basis[row], spot_block=fitted, filled=filled)
     business = _replayed(tmp_path, caplog, FLAT_BASIS, spot, basis, spot_block=fitted)
     log_h = calendar['log_h']
     market = [t for t in range(len(log_h)) if t == 0 or row[t] != row[t - 1]]
@@ -691,7 +710,8 @@ def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_pa
     held = all(log_h[t] == log_h[t - 1] for t in range(1, len(log_h)) if t not in market)
 
     mu = 0.5
-    drifted = _replayed(tmp_path, caplog, FLAT_BASIS, spot[row], basis[row], spot_block=dict(fitted, Mu=mu))
+    drifted = _replayed(tmp_path, caplog, FLAT_BASIS, spot_cal, basis[row], spot_block=dict(fitted, Mu=mu),
+                        filled=filled)
     tape = np.log(spot.astype(np.float32).astype(np.float64))
     years = np.diff(days.values).astype('timedelta64[D]').astype(float) / 365.25
     filtered = [fitted['H0']]
@@ -699,7 +719,7 @@ def test_a_spot_replay_holds_its_variance_across_a_forward_filled_weekend(tmp_pa
         r = tape[k] - tape[k - 1] - mu * years[k - 1] + 0.5 * filtered[-1]
         filtered.append(fitted['Omega'] + fitted['Alpha'] * r * r + fitted['Beta'] * filtered[-1])
     worst = max(abs(drifted['log_h'][t] - np.log(filtered[row[t]])) for t in market)
-    assert len(market) == 85 and apart == 0 and held, (len(market), apart, held)
+    assert len(market) == 84 and apart == 0 and held, (len(market), apart, held)
     assert worst < 5e-5 and abs(drifted['h'] / filtered[-1] - 1.0) < 5e-5, (worst, drifted['h'], filtered[-1])
 
 

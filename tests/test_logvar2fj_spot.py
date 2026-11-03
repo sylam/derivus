@@ -24,6 +24,7 @@ import derivus as rf
 import test_action_space_and_artifact as solve
 from test_chained_basis import _world
 from derivus.config import Config, CustomJsonEncoder, ModelParams
+from derivus.stochasticprocess import FILLED_ROWS
 
 #: A world block: a fast factor of a three-week half-life and a slow one of eight months, a return
 #: that loads +0.6 on the slow shock, and a start above the level.
@@ -113,7 +114,8 @@ def _replayed(tmp_path, caplog, observed, block=LV):
 def _tape(rng):
     """A fix on 199 business days from Friday 2026-04-10, London's 4 May bank holiday not among them, a
     flat fix on the fourth, and a PL1-like bar beside it, the eleventh flat and none on 3 July, a
-    CME holiday: `(business days, fix, high, low, close, the observed scenario on calendar rows)`."""
+    CME holiday, and one on 4 May, which CME trades: `(business days, fix, high, low, close, the
+    observed scenario on calendar rows, the rows the London fixing calendar filled flagged)`."""
     days = pd.bdate_range('2026-04-10', periods=200).drop(pd.Timestamp('2026-05-04'))
     spot = 2055.0 * np.exp(np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 0.02, len(days) - 1)])))
     spot[3] = spot[2]
@@ -122,29 +124,31 @@ def _tape(rng):
     close[days.get_loc(pd.Timestamp('2026-07-03'))] = np.nan
     calendar = pd.date_range('2026-04-10', periods=200)
     row = np.searchsorted(days, calendar, side='right') - 1
+    holiday = calendar.get_loc(pd.Timestamp('2026-05-04'))
     own_day = lambda x: np.where(calendar.isin(days), x[row], np.nan)  # noqa: E731
+    cme_day = lambda x: np.where(np.arange(len(calendar)) == holiday, 1.01 * x[row], own_day(x))  # noqa: E731
     return days, spot, high, low, close, row, {
         'CommodityPrice.PLATINUM_LME': spot[row], 'ObservedBasis.PLATINUM_LME.LME_CME': -30.0 + 0.0 * spot[row],
-        'CommodityPrice.PLATINUM_LME,HIGH': own_day(high), 'CommodityPrice.PLATINUM_LME,LOW': own_day(low),
-        'CommodityPrice.PLATINUM_LME,CLOSE': own_day(close)}
+        'CommodityPrice.PLATINUM_LME,HIGH': cme_day(high), 'CommodityPrice.PLATINUM_LME,LOW': cme_day(low),
+        'CommodityPrice.PLATINUM_LME,CLOSE': cme_day(close), FILLED_ROWS: ~calendar.isin(days)}
 
 
 def test_a_replay_is_the_filter_on_the_bars_before_each_fix(tmp_path, caplog):
     """The simulate-only hedging fixture replays a `LogVar2FJSpotModel` spot on 119 calendar rows of an
-    observed fix, the weekends and London's 4 May bank holiday forward filled, a flat fix on the fourth
-    business day, with a PL1-like bar beside it on its own business day (NaN on the filled rows, the
-    eleventh bar flat, none on 3 July, a CME holiday). On every row the published filter state - the
+    observed fix, the weekends and London's 4 May bank holiday flagged forward-filled, a flat fix on the
+    fourth business day, with a PL1-like bar beside it on its own business day (NaN on the weekends,
+    a CME print on 4 May, the eleventh bar flat, none on 3 July, a CME holiday). On every row the
+    published filter state - the
     (s, ell) means and their covariance for the next step - equals, within 1e-6 (5e-15
     measured), `experiments/plat_sv_toy.py`'s recursion written here in numpy on the business days
     alone, as the calibration's archive carries them, from the block's `S0`, `Ell0` and `State_Cov`:
     each market row's bar is the previous market row's, its close-to-close term on the last close the
     bar carries, the first unmeasured, a repeated fix is no return, and a filled row holds the row
-    before. 3 s.
+    before and its bar is unread. 3 s.
 
     Killing mutations: bar t read at row t (0.68 off); the returns left out of the filter (0.46);
-    the replay started from the stationary law (0.44); the old rule - a weekend alone is filled, so
-    the holiday steps, and the close-to-close term reads the row before's close, so the bar after a
-    holiday or a CME gap is lost (0.47)."""
+    the replay started from the stationary law (0.44); the old rule, a repeated fix with no bar
+    filled, so the holiday's CME bar is read (0.474); the flag unread (0.469)."""
     days, spot, high, low, close, row, observed = _tape(np.random.default_rng(5))
     replay = _replayed(tmp_path, caplog, observed)
     y, r = _measured(spot.astype(np.float32).astype(np.float64), high, low, close)

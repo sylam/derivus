@@ -69,6 +69,7 @@ import pandas as pd
 import torch
 
 from production_solver import apply_config, run
+from derivus.stochasticprocess import FILLED_ROWS
 from derivus.utils import visible_device_count
 
 if sys.platform == 'win32' and visible_device_count():
@@ -303,7 +304,8 @@ def observed_scenario_npz(arch, base_date, path):
             f'{arch.index[-1].date()}: the realized roll would run on fabricated flat prices')
     rows = arch.reindex(arch.index.union(dates)).ffill().loc[dates]
     np.savez(path, **{CME_COL: rows[CME_COL].to_numpy(),
-                      'ObservedBasis.PLATINUM_CME.LME_CME': rows[BASIS_COL].to_numpy()})
+                      'ObservedBasis.PLATINUM_CME.LME_CME': rows[BASIS_COL].to_numpy(),
+                      FILLED_ROWS: arch[LME_COL].reindex(dates).isna().to_numpy()})
 
 
 def pf_bound(arch, trade_date, mats, pay):
