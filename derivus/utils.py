@@ -1471,6 +1471,9 @@ class Calculation_State(object):
     #: The position every engine of the quasi-random stream starts at.
     QUASI_ANCHOR = 1024
 
+    #: The days a law's market time runs on, weekdays unless a calculation declares its calendar.
+    business_day = pd.offsets.BDay(1)
+
     #: The canonical inner block's chunk: an inner path is one Sobol point over all its fixings,
     #: read this many dimensions at a time - chunk c from dimension 64c of an engine 64(c+1) wide.
     INNER_CHUNK = 64
@@ -4104,21 +4107,38 @@ class LogVar2FJ:
 # combination of the sub-step normals. Freeze h and the aggregate return collapses back to
 # sqrt(sum var)*z_fw, so this is a strict refinement of the mean bridge.
 
-def trading_clock(time_grid, dt_c):
-    """`(dt, f)` per scenario row: its years since the row before, the first row's 0 so a kept-base
-    inner grid starts at its own base, and those years in calibration steps of `dt_c` years."""
+def trading_clock(ref_date, time_grid, business_day):
+    """`(dt, f)` per scenario row from `ref_date`: its years since the row before, the first row's 0
+    so a kept-base inner grid starts at its own base, and its market time, the `business_day` days in
+    (row before, row], one calibration step each, as the business-day archive a law is fitted on
+    counts them. A row of no market time holds every state a law carries."""
     years = time_grid.time_grid_years
-    dt = np.diff(years, prepend=years[0])
-    return dt, dt / dt_c
+    dates = pd.Timestamp(ref_date) + pd.to_timedelta(time_grid.scen_time_grid, unit='D')
+    passed = np.searchsorted(pd.date_range(dates[0], dates[-1], freq=business_day), dates, side='right')
+    return np.diff(years, prepend=years[0]), np.diff(passed, prepend=passed[0]).astype(np.float64)
+
+
+def market_rows(f):
+    """`(next, last)` per row of the market time `f`: the first later row carrying some, len(f)
+    where none does, and the last at or before the row carrying some, the anchor row 0 for none."""
+    index = np.arange(len(f))
+    market = (np.asarray(f) > 0) | (index == 0)
+    last = np.maximum.accumulate(np.where(market, index, 0))
+    ahead = np.minimum.accumulate(np.where(market, index, len(f))[::-1])[::-1]
+    return np.append(ahead[1:], len(f)), last
+
+
+def bracket_rows(ahead, path):
+    """`(bracketed, value)` per row whose next market row is `ahead` (`market_rows`): whether `path`
+    reaches that row, and `path` there, at its last row where it does not."""
+    end = path.shape[0] - 1
+    return (torch.as_tensor(ahead <= end, device=path.device),
+            path[torch.as_tensor(np.minimum(ahead, end), device=path.device)])
 
 
 def substep_schedule(f):
-    """Trading-time lengths spanning each interval of `f` calibration steps: whole steps, then the
-    fractional remainder.  A scenario grid is a CALENDAR object and the recursion is calibrated per
-    trading day, so f is essentially never an integer -- rounding it to whole days makes node
-    variance a step function of grid spacing, -13% on the default CVA grid.  len == 1 is the exact
-    fractional step every fine grid already took; longer is a coarse-grid walk.
-    """
+    """Step lengths spanning each interval of `f` steps: whole steps, then the fractional remainder,
+    an interval of none one null step. len == 1 is a step of at most one; longer a coarse walk."""
     schedule = []
     for x in f:
         whole = int(x)
@@ -4147,27 +4167,26 @@ def substep_normals(sqrt_var, z_fw):
     return e + w * (z_fw - (w * e).sum(0))
 
 
-def garch_correlated_substeps(h, z_fw, sub_dt, omega, alpha, beta, nu):
-    """Walk one coarse scenario interval as the `sub_dt` fractional GARCH(1,1)-t steps that span it.
-    Returns (h_end, var_sum, r_sum) with r_j = sqrt(h_j*dt_j)*eps_j: each eps_j is EXACTLY
+def garch_correlated_substeps(h, z_fw, n, omega, alpha, beta, nu):
+    """Walk one scenario interval of `n` market days as n GARCH(1,1)-t steps.
+    Returns (h_end, var_sum, r_sum) with r_j = sqrt(h_j)*eps_j: each eps_j is EXACTLY
     standardized Student-t, built by t-scaling the conditioned sub-step normals with fresh Gammas --
     the same scale mixture GARCHSpotModel.generate uses per step, so the correlated draw rides the
-    interval's Gaussian kernel.  Same fractional recursion as the fine grid.
+    interval's Gaussian kernel.
     """
     var_bar, mean = [], h
-    for dt in sub_dt:  # E[h_{j+1}] adds alpha*E[r^2] = alpha*h*dt
-        var_bar.append(mean * dt)
-        mean = mean + dt * (omega - (1.0 - beta) * mean) + alpha * mean * dt
+    for _ in range(n):  # E[h_{j+1}] adds alpha*E[r^2] = alpha*h
+        var_bar.append(mean)
+        mean = mean + (omega - (1.0 - beta) * mean) + alpha * mean
     z = substep_normals(torch.stack(var_bar).sqrt(), z_fw)
     W = torch.distributions.Gamma(nu / 2.0, 0.5).sample(z.shape).clamp_min(1.0e-6)
     eps = z * torch.sqrt(nu / W) * torch.sqrt((nu - 2.0).clamp_min(1.0e-3) / nu)
     var_sum, r_sum = torch.zeros_like(h), torch.zeros_like(h)
-    for j, dt in enumerate(sub_dt):
-        var_j = h * dt
-        var_sum = var_sum + var_j
-        r = var_j.sqrt() * eps[j]
+    for j in range(n):
+        var_sum = var_sum + h
+        r = h.sqrt() * eps[j]
         r_sum = r_sum + r
-        h = h + dt * (omega - (1.0 - beta) * h) + alpha * r * r
+        h = h + (omega - (1.0 - beta) * h) + alpha * r * r
     return h, var_sum, r_sum
 
 

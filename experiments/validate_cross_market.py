@@ -57,8 +57,7 @@ def add_lme_leg(cfg):
         'Spot': 0.0, 'Observed_Commodity': 'PLATINUM_LME'}
     emd.setdefault('Price Models', {})['BasisLinkedSpotModel.LME_FLAT'] = {
         'A': 0.0, 'Phi': 0.0, 'Nu': 5.0, 'Mu': 0.0,
-        'Sigma_By_State': [0.0, 0.0, 0.0],
-        'Calibration_DT_Years': 0.003968253968253968}
+        'Sigma_By_State': [0.0, 0.0, 0.0]}
     return cfg
 
 

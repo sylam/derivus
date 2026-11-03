@@ -59,7 +59,6 @@ param = {
     'A': float(a_hat),
     'Phi': float(phi_hat),
     'Sigma_By_State': sigma_by_state_list,
-    'Calibration_DT_Years': 1.0 / num_business_days,
 }
 ```
 

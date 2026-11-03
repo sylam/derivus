@@ -3095,7 +3095,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         F('Currency', 'Text', default=REQUIRED),
         F('Time_Grid', 'Text', default='0d 1d(1d) 4m'),
         F('Calendar', 'Text', default='', convention=True,
-          description='Holiday calendar naming the business day the roll steps on'),
+          description='Holiday calendar naming the business day the roll and every law step on'),
         F('Simulation_Batches', 'Integer', default=1),
         F('Batch_Size', 'Integer', default=1024),
         Calculation.RANDOM_SEED,
@@ -3368,13 +3368,17 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         the outer mode (inherited `reset()`) and the inner one (`reset_inner()`).
         HedgeMonteCarlo computes neither greeks nor FVA, so the parent's factor-index and
         survival-scaling setup is skipped."""
-        return CMC_State_Inner(
+        state = CMC_State_Inner(
             self.get_cholesky_decomp(), self.static_var, self.batch_size,
             torch.ones([1, 1], dtype=self.dtype, device=self.device), mcmc_sim, get_fxrate_factor(
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
             seed, quasi_seed, job_id, num_jobs,
             simulation_sub_batch=int(self.params.get('Inner_Sub_Batch', 0)),
             keep_tensor=True)  # hedge stepper replays need the kept tensor, unconditionally
+        # the roll's business day, and the market days every law steps
+        state.business_day = self.config.holidays.get(
+            self.params['Calendar'], {'businessday': state.business_day})['businessday']
+        return state
 
     @staticmethod
     def _require_all_compiled(declared, structure, role):
@@ -3561,8 +3565,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         (factor_tensor_blocks, tradable_blocks, hedge_profile_blocks,
          privileged_factor_blocks) = _new_blocks()
         total_leg_volume, last_payment_day, fixings = self._liability_schedule_scalars()
-        bus_day = self.config.holidays.get(
-            self.params['Calendar'], {'businessday': pd.offsets.BDay(1)})['businessday']
+        bus_day = shared_mem.business_day
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
         randomize_t0 = hedging_problem.get('Randomize_Initial_State', 'No') == 'Yes'
         # returns-state coordinates: dimensionless market columns off one constant divisor

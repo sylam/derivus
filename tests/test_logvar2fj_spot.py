@@ -357,8 +357,9 @@ def test_a_commodity_with_no_drift_is_a_martingale():
 
 
 def _paths(block, batch, seed=1):
-    """`(row lengths in years, log returns [paths, rows])` of a credit Monte Carlo of one future on a
-    `LogVar2FJSpotModel` fix `block`, on a calendar-daily grid over 95 days."""
+    """`(row market time in years, log returns [paths, rows])` of a credit Monte Carlo of one future on a
+    `LogVar2FJSpotModel` fix `block`, on a calendar-daily grid over 95 days, a business day one
+    `Calibration_DT_Years` and a weekend row none."""
     world = _world('LBMA_AM', chained=False)
     world['Calc']['Calculation'].update(Batch_Size=batch, Time_Grid='0d 1d(1d)', Calc_Scenarios='All',
                                         Random_Seed=seed)
@@ -371,7 +372,8 @@ def _paths(block, batch, seed=1):
     cx = rf.Context(path_transform={}, file_transform={})
     cx.load_json((json.dumps(world), 'lv_walk.json'))
     s = cx.run_job()[1]['Results']['scenarios']['CommodityPrice.LBMA_AM']
-    days = np.diff(s.columns.values).astype('timedelta64[D]').astype(float) / 365.25
+    dates = pd.DatetimeIndex(s.columns)
+    days = np.diff(np.searchsorted(pd.bdate_range(dates[0], dates[-1]), dates, side='right')) * block['Calibration_DT_Years']
     return days, np.diff(np.log(s.values.astype(np.float64)), axis=1)
 
 
@@ -398,15 +400,15 @@ def _forecast(block, days, cov=True):
 @pytest.mark.parametrize('rho', [(-0.15, 0.6), (-0.9, 0.0)])
 def test_the_outer_walk_realises_the_variance_and_leverage_its_filter_forecasts(rho):
     """From a point state (`State_Cov` 0) the walk's summed squared log returns over 30 and 91 calendar
-    rows are the OU closed form sum_k delta_k E[e^(s + ell)] within 3 standard errors, and the first
-    return times the later squared returns, the leverage the return's innovation loads on the next
-    state by `Rho_S` and `Rho_L`, is its closed form within 3 standard errors (z 0.16 to 1.03 and 0.04
-    to 0.26 measured at 32,768 paths; at `Rho_S` -0.9 the leverage moment is 9 standard errors from 0).
-    4 s each.
+    rows are the OU closed form sum_k delta_k E[e^(s + ell)] within 3 standard errors, delta_k a
+    row's market days, and the first return times the later squared returns, the leverage the
+    return's innovation loads on the next state by `Rho_S` and `Rho_L`, is its closed form within 3
+    standard errors (z 0.09 to 0.34 and 0.17 to 0.47 measured at 32,768 paths; at `Rho_S` -0.9 the
+    leverage moment is 10.9 standard errors from 0). 4 s each.
 
-    Killing mutations: the leverage's sign flipped in the walk (the -0.9 world's leverage moment about
-    18 standard errors off); the return read at the row's END state (about 5 standard errors off the
-    30-row variance, the state 0.3 above the level and reverting at 12 a year)."""
+    Killing mutations: the leverage's sign flipped in the walk (the -0.9 world's leverage moment 17.7
+    standard errors off); the return read at the row's END state (6.7 standard errors off the -0.9
+    world's 30-row variance, 11.5 off its leverage)."""
     block = dict(LV, Rho_S=rho[0], Rho_L=rho[1], State_Cov=[0.0, 0.0, 0.0])
     if rho[0] == -0.9:
         block.update(Kappa_S=40.0, Sigma_S=3.0)
@@ -427,7 +429,7 @@ def test_the_outer_walk_starts_from_the_filter_state_its_block_declares():
     standard errors. 4 s.
 
     Killing mutation: every outer path started at the point (Ell0, S0), `State_Cov` read only by its
-    filter (0.971 of the filter's forecast, z -14.3 at 32,768 paths)."""
+    filter (0.970 of the filter's forecast, z -13.2 at 32,768 paths; -0.39 unmutated)."""
     days, r = _paths(dict(LV), 32768)
     er2, _ = _forecast(LV, days)
     x = (r[:, :30] ** 2).sum(1)
@@ -453,9 +455,9 @@ GARCH = {'Omega': 1.0e-5, 'Alpha': 0.05, 'Beta': 0.9, 'Nu': 8.0, 'H0': 2.0e-4, '
 
 def test_a_fork_starts_from_the_outer_path_s_state(caplog):
     """A solve on a `LogVar2FJSpotModel` world forks each outer path at every swept step from that path's
-    own state: across the outer paths and steps, the log of each fork's spread of its first one-day log
-    return regressed on half the path's s + ell has slope 1 within 0.2 (1.001 measured, 1,224 forks of
-    8 draws), the spread of a Gaussian residual being sqrt(v dt). 6 s.
+    own state: across the outer paths and the steps whose next row is a market day, the log of each
+    fork's spread of its first log return regressed on half the path's s + ell has slope 1 within 0.2
+    (0.996 measured, 936 forks of 8 draws), the spread of a Gaussian residual being sqrt(v dt). 6 s.
 
     Killing mutation: the fork reading the outer run's seed keys, so every fork starts from the block's
     `Ell0` and `S0` (slope 0, the state one value)."""
@@ -464,8 +466,8 @@ def test_a_fork_starts_from_the_outer_path_s_state(caplog):
         _solved(LV)
     forks = [ast.literal_eval(r.getMessage().split(' ', 1)[1]) for r in caplog.records
              if r.getMessage().startswith('LV_FORK')]
-    state = 0.5 * np.concatenate([f['state'] for f in forks])
-    spread = np.log(np.concatenate([f['sd'] for f in forks]))
+    state = 0.5 * np.concatenate([f['state'] for f in forks if f['dt']])
+    spread = np.log(np.concatenate([f['sd'] for f in forks if f['dt']]))
     slope = np.polyfit(state, spread, 1)[0] if state.std() > 0 else 0.0
     assert len(state) >= 300 and abs(slope - 1.0) < 0.2, (len(state), slope)
 
@@ -492,11 +494,12 @@ def test_a_replayed_fork_draws_its_state_from_the_filter_s_posterior(tmp_path, c
     """A solve on a replayed `LogVar2FJSpotModel` path, its bars noisy and its fast factor wide so the
     filter's posterior of log v is wide, forks each replayed row at every swept step; a replay has no
     true state, so each fork path draws its own start from the posterior N(mean, P). Pooled over the
-    forks, the variance of a fork's first one-day log return is the posterior-mixed forecast
-    dt exp(mean + P/2), within 4% (1.0005 measured over 102 forks of 512 draws, each fork's second
-    moment about its own mean), where the mean's own exp(mean) reads 0.870 of it. 10 s.
+    forks whose next row is a market day, the variance of a fork's first log return is the
+    posterior-mixed forecast dt exp(mean + P/2), within 4% (1.0021 measured over 78 forks of 512
+    draws, each fork's second moment about its own mean), where the mean's own exp(mean) reads
+    0.869 of it. 10 s.
 
-    Killing mutation: each fork started from the posterior mean (0.872 of the mixed forecast)."""
+    Killing mutation: each fork started from the posterior mean (0.869 of the mixed forecast)."""
     path = str(tmp_path / 'observed.npz')
     np.savez(path, **_tape(np.random.default_rng(5))[-1])
     cfg = solve._cfg(batch=4, inner=512)
@@ -513,6 +516,35 @@ def test_a_replayed_fork_draws_its_state_from_the_filter_s_posterior(tmp_path, c
         solve._run(cfg)
     forks = [ast.literal_eval(r.getMessage().split(' ', 1)[1]) for r in caplog.records
              if r.getMessage().startswith('LV_FORK')]
-    mean, var, sd = (np.concatenate([f[x] for f in forks]) for x in ('mean', 'var', 'sd'))
-    seen, mixed, point = (sd ** 2).sum(), np.exp(mean + 0.5 * var).sum() / 365.25, np.exp(mean).sum() / 365.25
+    mean, var, sd, dt = (np.concatenate([np.broadcast_to(f[x], len(f['sd'])) for f in forks if f['dt']])
+                         for x in ('mean', 'var', 'sd', 'dt'))
+    seen, mixed, point = (sd ** 2).sum(), (dt * np.exp(mean + 0.5 * var)).sum(), (dt * np.exp(mean)).sum()
     assert len(sd) >= 50 and abs(seen / mixed - 1.0) < 0.04 and point / mixed < 0.9, (len(sd), seen / mixed, point / mixed)
+
+
+def test_the_simulated_filter_is_as_certain_as_a_replay_of_its_own_law(tmp_path, caplog):
+    """The outer path's filter steps once a market day, reading the bar its walk prints beside each
+    fix and nothing on a weekend, as the calibration's archive and a replay count them: its posterior
+    variance of log v at the solve's swept steps is, within 5%, a replay's of a tape drawn from the
+    block's own law on business days, over four seeds (0.0720 against 0.0716, the seeds 0.0696 to 0.0733). 15 s.
+
+    Killing mutation: the filter stepping every calendar row its calendar years, reading a bar on
+    the weekend's (0.0605, 15.5% under), as the simulated filter did before the market-time clock."""
+    caplog.clear()
+    with caplog.at_level(logging.DEBUG):
+        _solved(LV)
+    forks = [ast.literal_eval(r.getMessage().split(' ', 1)[1]) for r in caplog.records
+             if r.getMessage().startswith('LV_FORK')]
+    simulated, replayed = np.concatenate([f['var'] for f in forks]).mean(), []
+    days = pd.bdate_range('2026-04-10', periods=200)
+    calendar = pd.date_range(days[0], days[-1])
+    row, market = np.searchsorted(days, calendar, side='right') - 1, calendar.isin(days)
+    for seed in (1, 2, 3, 4):
+        px, bars = _law_tape(seed, len(days), th=LV)
+        observed = {'CommodityPrice.PLATINUM_LME': px[row], 'ObservedBasis.PLATINUM_LME.LME_CME': np.full(len(row), -30.0),
+                    FILLED_ROWS: ~market}
+        observed.update({'CommodityPrice.PLATINUM_LME,' + x: np.where(market, b[row], np.nan)
+                         for x, b in zip(('HIGH', 'LOW', 'CLOSE'), bars)})
+        rows = _replayed(tmp_path, caplog, observed)
+        replayed.append((rows[:, 2] + 2.0 * rows[:, 3] + rows[:, 4])[market[:len(rows)]][60:].mean())
+    assert abs(simulated / np.mean(replayed) - 1.0) < 0.05, (simulated, replayed)

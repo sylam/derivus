@@ -1041,8 +1041,7 @@ def test_the_label_charges_the_close_of_a_leg_that_dies_at_the_step():
 
 #: The fixture's basis reverting to a slow mean of lambda 0.95, and the GARCH(1,1) its innovation
 #: variance can run on.
-SLOW_BASIS = {'A': 0.05, 'Phi': 0.8, 'Nu': 5.0, 'Sigma': 4.0, 'Slow_Mean_Lambda': 0.95, 'Mu_0': -30.0,
-              'Calibration_DT_Years': 1.0 / 252.0}
+SLOW_BASIS = {'A': 0.05, 'Phi': 0.8, 'Nu': 5.0, 'Sigma': 4.0, 'Slow_Mean_Lambda': 0.95, 'Mu_0': -30.0}
 OWN_GARCH = {'G_Omega': 0.8, 'G_Alpha': 0.1, 'G_Beta': 0.85, 'Sig2_0': 25.0}
 LAST_STEP = 116
 
@@ -1117,8 +1116,7 @@ FRICTIONAL = {'DiffV2_Returns_State': 'Yes', 'DiffV2_Position_State': 'Yes', 'Di
               'DiffV2_Bank_Along_Ladder': 'Yes', 'DiffV2_Risk_Kappa': 0.2}
 BAND_BASIS = {'A': 0.01, 'Phi': 0.9, 'Nu': 0.0, 'Sigma': 1.5, 'Reversion_Model': 'Band_Mixture', 'Band_Kappa': 2.0,
               'Band_Beta': 0.2, 'Mix_Q_Stress': 0.1, 'Mix_Sigma_Quiet': 1.0, 'Mix_Sigma_Stress': 4.0,
-              'Mix_Stay_Stress': 0.8, 'Mix_P0_Stress': 0.1, 'Slow_Mean_Lambda': 0.95, 'Mu_0': -30.0,
-              'Calibration_DT_Years': 1.0 / 252.0}
+              'Mix_Stay_Stress': 0.8, 'Mix_P0_Stress': 0.1, 'Slow_Mean_Lambda': 0.95, 'Mu_0': -30.0}
 
 
 def _state_labels(caplog, returns=False, save=None, band=False):
@@ -1155,11 +1153,12 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     """The gradient fork is seeded from leaves at the basis's revealed deviation D = b - mu and log
     sigma^2, mu the level leaf less D, so each column's label is its slope at the others fixed: D's
     -dY/dmu, the level's dY/db + dY/dmu. On the fixture under the band (D the 7th market column, log
-    sigma^2 the 8th, the level the 9th), over the five swept steps: the fitted slopes in D and log
-    sigma^2 sum within 1.0% and 3.5% of their labels, and in the net's standardised
-    coordinates every column's within 3.6% of the largest label (bound 15%: the twin loss meets a
-    label in the bank mean of 24 states beside the value term, not exactly). At the last step, whose
-    continuation is the closed-form utility, the level's label is 0.1% of D's (bound 1%): shifting
+    sigma^2 the 8th, the level the 9th): the fitted slope in D sums within 5.1% of its label over the
+    five swept steps and in log sigma^2 within 1.2% over the first three, the last two its label
+    within noise of zero (-6e-6 and -4e-6 against 8e-5), and in the net's standardised coordinates
+    every column's within 4.2% of the largest label (bound 15%: the twin loss meets a label in the
+    bank mean of 24 states beside the value term, not exactly). At the last step, whose
+    continuation is the closed-form utility, the level's label is 0.07% of D's (bound 1%): shifting
     the level and its slow mean together leaves the move's law unchanged; and under
     `DiffV2_Returns_State`, whose basis price columns are fractions of the 2,055 t0 spot, D's and the
     level's are 2,055 times the plain ones and log sigma^2's the plain one. 11 s.
@@ -1174,9 +1173,10 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     ckpt = str(tmp_path / 'value_fn.pt')
     on, rs = _state_labels(caplog, save=ckpt), _state_labels(caplog, returns=True)
     slope_on, label_on = (sum(on[t][i] for t in on) for i in (0, 1))
-    for col in (6, 7):
-        assert label_on[col] > 0.0 and abs(slope_on[col] / label_on[col] - 1.0) < 0.15, \
-            (col, slope_on[col], label_on[col])
+    # the log variance's label is within noise of zero on the last two steps, the closed form one or two moves away
+    early = [sum(on[t][i][7] for t in on if t <= LAST_STEP - 2) for i in (0, 1)]
+    for col, (slope, label) in ((6, (slope_on[6], label_on[6])), (7, early)):
+        assert label > 0.0 and abs(slope / label - 1.0) < 0.15, (col, slope, label)
     m_std = np.asarray(torch.load(ckpt, map_location='cpu', weights_only=False)['m_std'])
     z_err, z_label = np.abs(slope_on - label_on) * m_std, np.abs(label_on) * m_std
     assert z_err.max() < 0.15 * z_label.max(), (z_err, z_label)

@@ -411,7 +411,7 @@ def garchify_md(hmm_md, arch, cal_end, out_md):
 
     persist = block['Alpha'] + block['Beta']
     lr_vol = float(np.sqrt(block['Omega'] / (1.0 - persist) / block['Calibration_DT_Years']))
-    kappa = float(-np.log(Phi) / lme['Calibration_DT_Years']) if 0.0 < Phi < 1.0 else float('nan')
+    kappa = float(-np.log(Phi) / block['Calibration_DT_Years']) if 0.0 < Phi < 1.0 else float('nan')
     # martingale-by-state on realized data: filter h, bucket ΔlogP by log-h decile, E[r|bucket]≈μ=0
     r = np.log(P).diff().dropna().values
     r = r[np.abs(r) < 0.25]
