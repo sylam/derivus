@@ -547,15 +547,13 @@ def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alo
     """A calibration document on a synthetic `Band_Mixture` archive of two years drawn from the
     fit's own law (a two-state innovation 85% at sd 2 and 15% at sd 7), its last day, the
     calibration date, a 40 $/oz move, fitted with and without `Basis_Scale_Window` 20: `Sigma`,
-    `Mix_Sigma_Quiet` and `Mix_Sigma_Stress` are the plain fit's times the realised sd (ddof 1)
-    of the last 20 basis changes before the calibration date over the fitted law's stationary sd
-    sqrt(q s_stress^2 + (1 - q) s_quiet^2), q = `Mix_Q_Stress`, to 1e-12 (the ratio 0.7992), and
-    every other key is the plain fit's to the bit. The same archive without five business days before
-    its last week reads the 20 changes across at most 4 calendar days, as the fit does (0.8643). 0.2 s.
+    `Mix_Sigma_Quiet` and `Mix_Sigma_Stress` move by one factor, the realised sd (ddof 1) of the
+    fit's last 20 innovations before the calibration date over the law's stationary sd of them, to
+    1e-12, and every other key is the plain fit's to the bit; the factor is below 1 (0.7518), the
+    calibration date's move not among the 20. 0.2 s.
 
-    Killing mutations: the change into the calibration date counted - the ratio 2.7005; ddof 0 -
-    0.7790; the law's sd with q on the quiet sd - 0.2964; `Sigma` left unscaled - 3.4785 against
-    2.7801; the move across the seven-day hole counted - 0.8809.
+    Killing mutations: the change into the calibration date counted - the shocked archive's factor
+    2.6876; `Sigma` left unscaled - the three sds part.
     """
     n, window = 504, 20
     rng = np.random.default_rng(5)
@@ -564,15 +562,31 @@ def test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alo
     eta = np.where(rng.random(n) < 0.85, 2.0, 7.0) * rng.standard_normal(n)
     eta[-1] = 40.0
     basis = _band_basis(spot, eta)
-    for keep in (np.arange(n), np.r_[0:n - 12, n - 7:n]):
-        plain = _fit_band(tmp_path, dates[keep], spot[keep], basis[keep])
-        scaled = _fit_band(tmp_path, dates[keep], spot[keep], basis[keep], Basis_Scale_Window=window)
-        q, sds = plain['Mix_Q_Stress'], ('Sigma', 'Mix_Sigma_Quiet', 'Mix_Sigma_Stress')
-        moves = np.diff(basis[keep][:-1])[np.diff(dates[keep][:-1].values) <= np.timedelta64(4, 'D')]
-        ratio = moves[-window:].std(ddof=1) / np.sqrt(
-            q * plain['Mix_Sigma_Stress'] ** 2 + (1.0 - q) * plain['Mix_Sigma_Quiet'] ** 2)
-        assert all(abs(scaled[k] / (plain[k] * ratio) - 1.0) < 1e-12 for k in sds), (ratio, scaled, plain)
-        assert {k: v for k, v in scaled.items() if k not in sds} == {k: v for k, v in plain.items() if k not in sds}
+    plain = _fit_band(tmp_path, dates, spot, basis)
+    scaled = _fit_band(tmp_path, dates, spot, basis, Basis_Scale_Window=window)
+    sds, ratio = ('Sigma', 'Mix_Sigma_Quiet', 'Mix_Sigma_Stress'), scaled['Sigma'] / plain['Sigma']
+    assert all(abs(scaled[k] / (plain[k] * ratio) - 1.0) < 1e-12 for k in sds) and ratio < 1.0, (ratio, scaled, plain)
+    assert {k: v for k, v in scaled.items() if k not in sds} == {k: v for k, v in plain.items() if k not in sds}
+
+
+@pytest.mark.parametrize('a', [0.05, 0.3])
+def test_a_window_spanning_the_fit_on_the_fit_s_own_law_leaves_its_sds(tmp_path, a):
+    """Four years of a `Band_Mixture` basis drawn from the fit's law (85% at sd 2, 15% at sd 7, the spot
+    loading A, a 63-day slow mean), fitted with and without `Basis_Scale_Window` 1,005, every
+    innovation before the calibration date: `Sigma` scaled within 3% of the plain fit's (1.0003 and
+    1.0002). 1 s each.
+
+    Killing mutations: the raw changes of b in place of the innovations, which also carry A dS and
+    the pull (1.065 at A 0.05, 1.779 at A 0.3); the law's sd with q on the quiet sd (0.509, 0.515)."""
+    n = 1008
+    rng = np.random.default_rng(5)
+    dates = pd.bdate_range('2021-01-04', periods=n)
+    spot = 1000.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 15.0, n - 1)]))
+    eta = np.where(rng.random(n) < 0.85, 2.0, 7.0) * rng.standard_normal(n)
+    basis = _band_basis(spot, eta, a=a)
+    plain = _fit_band(tmp_path, dates, spot, basis)
+    full = _fit_band(tmp_path, dates, spot, basis, Basis_Scale_Window=n - 3)
+    assert abs(full['Sigma'] / plain['Sigma'] - 1.0) < 0.03, (full['Sigma'] / plain['Sigma'], plain['A'])
 
 
 HEDGE_FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',

@@ -95,6 +95,39 @@ Grouped by where a validator meets them.
 
 ### The engine {#the-engine}
 
+- **The LogVar2FJ spot's filter reads the bar and the return as independent** (2026-11-03). The bar
+  of day t-1 and the fix's return into day t share day t-1's afternoon, their innovations
+  correlating 0.186 (se 0.035) on the platinum archive, so `LogVar2FJCalibration.step` counts part of
+  one measurement twice and its posterior is overconfident by an UNMEASURED amount. The fix is the
+  two measurements' covariance in the step.
+- **The LogVar2FJ spot filter's Laplace step leaves its log variance low** (2026-11-03): by 0.017 of
+  its posterior sd on the test world and 0.087 with bars as noisy as `Sigma_U` 1.5, so the mixed
+  forecast reads realised variance 0.9% and 6% low. The fix is a second-order update of the step.
+- **The simulated LogVar2FJ spot filter reads a bar on every calendar row** (2026-11-03), where a
+  replay and the calibration hold weekends and holidays: its posterior variance of log v is 0.060
+  in simulation against 0.079 in the replay on the test world, so a value net trains on a filter
+  more certain than the one it rolls with. The fix needs the job's business calendar at the
+  process's `precalculate` and a ruling on the market time a walk spends on a non-market row.
+- **The LogVar2FJ spot fit writes no standard errors** (2026-11-03). `LogVar2FJSpotCalibration`
+  maximises on numerical gradients in float (1.3 s for a five-year fit against the history fit's
+  AAD path's 32 s), so nothing downstream can weight its parameters. The fix is the AAD Hessian the
+  history fit already takes.
+- **The basis's own GARCH on its trading clock inflates the long-run variance** (2026-11-03). The
+  clock scales the stress chain's switching by each row's length, which makes the chain persistent
+  from row to row, and the GARCH recursion feeds on the clustered draws: the band GARCH fit of
+  `tests/test_chained_basis.py::test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trailing_level`
+  simulates a long-run daily variance 1.29 of its window's on a calendar-daily grid against 1.02 at
+  one calibration step a row. No record world has a basis GARCH. The fix is the chain composed
+  exactly over a sub-step.
+- **A LogVar2FJ month world's start state goes stale under `--recal-months` above 1**
+  (2026-11-03). The walk-forward chain stamps a world's `S0`, `Ell0` and `State_Cov` at its
+  calibration and re-filters the GARCH and basis seeds to each later trade date, not the LogVar2FJ
+  spot's, so the second and later months start from an older state. UNMEASURED; the fix is the
+  LogVar2FJ filter run to the trade date in the chain's restamp.
+- **`--carry-drift Yes` is a no-op for a LogVar2FJ world** (2026-11-03). `LogVar2FJSpotModel`
+  drifts at its block's `Mu` (0 as calibrated) and declares no carry switch, so under the flag its
+  futures still roll down the carry curve. UNMEASURED; the fix is a carry drift on the spot.
+
 - **A fitted structure leg's two-way charge uses its lognormal vega** (2026-09-21). A leg under a
   fitted spot model publishes no FX vol quote sensitivity, so the charge reads the same leg as a
   lognormal (`spread_source` says so): a vega a desk could hedge, but not the quoted price's.

@@ -1822,8 +1822,9 @@ class DiffSolver:
         Under `Objective.Reference_Mode='Running_Wealth'` `u_mean` is the SUM of the rollout's
         per-step utilities, because that is the objective the DP maximised. It is therefore NOT
         comparable to a terminal-utility `u_mean`, nor to `run_textbook_benchmark` /
-        `HindsightDpSolver`, which stay terminal-based. `wT_mean` and the tail columns are raw
-        dollars under either mode; `u_mean_is_step_sum` says which regime produced the number.
+        `HindsightDpSolver`, which stay terminal-based. `wT_mean` and the tail columns are terminal
+        wealth in dollars under either mode, under the position state net of the repositioning charge,
+        its `DiffV2_Churn_Lambda` penalty included; `u_mean_is_step_sum` says which regime produced it.
 
         Each traded policy (greedy, textbook, passive) pays turnover cost on the same three-part
         rule the two benchmark tracks price their execution with: entry from the OPENING book

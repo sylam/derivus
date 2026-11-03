@@ -5317,11 +5317,11 @@ class BasisLinkedSpotCalibration(object):
         '`tests/test_chained_basis.py::test_the_band_fit_under_garch_simulates_the_window_s_variance_from_its_trailing_level`.',
         '',
         '`Basis_Scale_Window` $N>0$ multiplies `Sigma` and the two mixture sds by one factor, the realised sd',
-        '(ddof 1) of the last $N$ daily changes of $b$ before the calibration date, the frame\'s last, each',
-        'across at most 4 calendar days as the fit reads them, over the',
-        "fitted law's stationary one-step sd $\\sqrt v$; every other field is the fit's, for a fit",
+        "(ddof 1) of the fit's last $N$ innovations $\\eta$ before the calibration date, the frame's last, over",
+        "the fitted law's stationary sd of them $\\sqrt v$; every other field is the fit's, for a fit",
         'without `GARCH_Innovation`, whose sds are relative and whose level is the recursion\'s. Held by',
-        '`tests/test_chained_basis.py::test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alone`.',
+        '`tests/test_chained_basis.py::test_a_scale_window_moves_the_band_fit_s_three_sds_by_the_trailing_level_alone`',
+        'and `::test_a_window_spanning_the_fit_on_the_fit_s_own_law_leaves_its_sds`.',
         '',
         'A row more than 4 calendar days after its predecessor is one observation of a different law: a',
         'move across a holiday enters neither the location fit nor the mixture. Held by',
@@ -5393,8 +5393,8 @@ class BasisLinkedSpotCalibration(object):
                       'the AR(1) fits - the Q-Q-ruled law for a physically arbitraged '
                       'spread. Needs Slow_Mean_Span > 0'),
         F('Basis_Scale_Window', 'Integer', default=0,
-          description='Under Band_Mixture, the number of daily basis changes before the calibration '
-                      'date whose realised sd the fitted sds are scaled to - 0 writes the fit\'s own'),
+          description='Under Band_Mixture, the number of the fit\'s last innovations before the '
+                      'calibration date whose realised sd the fitted sds are scaled to - 0 writes the fit\'s own'),
     ]
 
     def __init__(self, model, param):
@@ -5526,8 +5526,8 @@ class BasisLinkedSpotCalibration(object):
         variance, `G_Omega` targets the window's variance and `Sig2_0` is the last `Vol_Window`'s.
 
         `Basis_Scale_Window` N > 0 multiplies Sigma and the two mixture sds by the realised sd of
-        the last N changes of `b` dated before `end`, the calibration date, on adjacent business
-        days as the fit, over the fitted law's stationary one-step sd."""
+        the fit's last N innovations dated before `end`, the calibration date, over the fitted law's
+        stationary sd of them."""
         from scipy import optimize
         span = int(self.param.get('Slow_Mean_Span', 0))
         scale_window = int(self.param.get('Basis_Scale_Window', 0))
@@ -5612,12 +5612,11 @@ class BasisLinkedSpotCalibration(object):
                          'eta/sqrt(h) %.4f', g_alpha, g_beta, g_alpha + g_beta, garch['G_Omega'],
                          sigma ** 2, garch['Sig2_0'], v)
         if scale_window:
-            before = index < end
-            moves = np.diff(b[before])[np.diff(utils.excel_days(index[before])) <= 4]
-            trailing = float(moves[-scale_window:].std(ddof=1))
+            # the statistic the law's sds measure: a raw change of b also carries A dS and the pull
+            trailing = float(eta[index[2:][fit_m] < end][-scale_window:].std(ddof=1))
             scale = trailing / v ** 0.5
             param.update(Sigma=sigma * scale, Mix_Sigma_Quiet=s1 * scale, Mix_Sigma_Stress=s2 * scale)
-            logging.info('basis band+mixture scale: the last %d changes before the calibration date at '
+            logging.info('basis band+mixture scale: the last %d innovations before the calibration date at '
                          'sd %.4f over the law\'s %.4f, x%.4f', scale_window, trailing, v ** 0.5, scale)
         delta = pd.DataFrame({basis_col: z_all}, index=start_of_return(index[2:], index))
         return utils.CalibrationInfo(param, [[1.0]], delta)
@@ -6870,11 +6869,13 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
         'updates the state with the bar that closed inside it, then with the step\'s log return by a Laplace',
         'step on $\\log v$, and carries it to the next step with the leverage the return implies, its moments',
         'under that posterior in lognormal closed form. The outer path and each fork simulate the bar beside',
-        "the walk and filter it, a fork from the outer path's true state and its filter state, and the value",
+        "the walk and filter it, an outer path from a draw of $N((S_0,\\ell_0),\\text{State\\_Cov})$, the filter",
+        "state its block declares, a fork from the outer path's true state and its filter state, and the value",
         'net reads the filtered slow factor and the filtered total $s+\\ell$, never the true fast factor:',
         "three columns with the price against the GARCH spot's two, so a checkpoint fitted in either world",
         'is refused in the other. The state-gradient label leaves both columns to the value term. **Held',
         'by** `tests/test_logvar2fj_spot.py::test_a_fork_starts_from_the_outer_path_s_state`,',
+        '`::test_the_outer_walk_starts_from_the_filter_state_its_block_declares`,',
         '`::test_the_value_net_reads_the_filtered_state_and_refuses_a_garch_checkpoint`.',
         '',
         '**Replay.** On an observed scenario the filter runs on the fix and the bar series the scenario',
@@ -6893,8 +6894,12 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
         '',
         "**Not modelled:** the residual's tails; a time-varying level; the bar's noise sharing an afternoon",
         'with the return the filter reads beside it (their innovations correlate about 0.19 on the platinum',
-        'archive), so the filter is overconfident by an unmeasured amount; and a step longer than a day in',
-        'the simulated filter, which reads the bar once a scenario interval.'])
+        'archive), so the filter is overconfident by an unmeasured amount; the Laplace step, which leaves the',
+        'filtered log variance low by 0.017 of its posterior sd on the test world and 0.087 with bars as',
+        'noisy as `Sigma_U` 1.5, so the mixed forecast reads realised variance 0.9% and 6% low; the',
+        'simulated filter reading a bar every calendar row where a replay holds weekends and holidays,',
+        'its posterior variance of $\\log v$ 0.060 against the replay\'s 0.079 on the test world; and a step',
+        'longer than a day in the simulated filter, which reads the bar once a scenario interval.'])
 
     factor_types = ('CommodityPrice',)
     fields = [
@@ -6965,16 +6970,17 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
         state `(T, 5, ...batch)` is published as `lv_filter`, started from the block's, the burn-in's
         or, in a fork, the outer path's."""
         buf, key = shared_mem.t_Scenario_Buffer, self.factor_key
-        draw = buf.get((key, 'lv_filter0_inner'))
-        if draw is not None and (key, 'ell0_inner') not in buf:
-            # a replay knows the state only as the filter's posterior: each fork path draws its own off
-            # the anchor's two variance rows, which the walk leaves unread
-            z, f = shared_mem.t_random_numbers[self.z_offset + 1:self.z_offset + 3, 0].double(), draw.double().unsqueeze(-1)
+        z = shared_mem.t_random_numbers[self.z_offset + 1:self.z_offset + 3, 0]
+        mode = 'inner' if z.dim() > 2 else 'outer'
+        if (key, 'ell0_' + mode) not in buf:
+            # the state is known only as a filter's, the block's on an outer path and a replayed fork's
+            # anchor's: each path draws its own off the anchor's two variance rows, which the walk leaves unread
+            f = (buf[(key, 'lv_filter0_inner')].unsqueeze(-1) if mode == 'inner' else z.new_tensor(self.prior0(), dtype=torch.float64)).double()
             l11 = utils.sqrt_or_zero(f[2])
-            l21 = f[3] / l11
-            buf[(key, 's0_inner')] = (f[0] + l11 * z[0]).to(shared_mem.t_random_numbers.dtype)
-            buf[(key, 'ell0_inner')] = (f[1] + l21 * z[0] + utils.sqrt_or_zero(f[4] - l21 * l21) * z[1]).to(
-                shared_mem.t_random_numbers.dtype)
+            l21 = f[3] / l11.clamp_min(1e-300)
+            buf[(key, 's0_' + mode)] = (f[0] + l11 * z[0].double()).to(z.dtype)
+            buf[(key, 'ell0_' + mode)] = (f[1] + l21 * z[0].double()
+                                          + utils.sqrt_or_zero(f[4] - l21 * l21) * z[1].double()).to(z.dtype)
         path = super().generate(shared_mem)
         # the day grid an equity's or an FX rate's OSS pricer reads its carried state on: no
         # commodity pricer reads one, and a fork publishes only batch-last series
@@ -6999,7 +7005,7 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
             logging.debug('LV_FORK %r', {'state': (ell[0] + fast[0])[:, 0].tolist(),
                                          'mean': (f[0] + f[1])[:, 0].tolist(),
                                          'var': (f[2] + 2.0 * f[3] + f[4])[:, 0].tolist(),
-                                         'sd': log_px[1].sub(log_px[0]).std(-1).tolist()})
+                                         'sd': log_px[1].sub(log_px[0]).std(-1, correction=0).tolist()})
         return path
 
     def reveal_state_at(self, t, buffer):

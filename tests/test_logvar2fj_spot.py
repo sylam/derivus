@@ -92,13 +92,13 @@ def _bars(rng, n, vol=0.02):
     return high, low, close
 
 
-def _replayed(tmp_path, caplog, observed, block=LV):
+def _replayed(tmp_path, caplog, observed, block=LV, batch=2):
     """The filter rows `LV_REPLAY` publishes replaying `observed` (npz key to array) on the simulate-only
-    hedging fixture, rolling daily from Friday 2026-04-10, its spot `block`."""
+    hedging fixture at `Batch_Size` `batch`, rolling daily from Friday 2026-04-10, its spot `block`."""
     path = str(tmp_path / 'observed.npz')
     np.savez(path, **observed)
     cfg = json.load(open(solve.FIXTURE))
-    cfg['Calc']['Calculation'].update({'Batch_Size': 2, 'Observed_Scenario': path})
+    cfg['Calc']['Calculation'].update({'Batch_Size': batch, 'Observed_Scenario': path})
     market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Models'] = {'LogVar2FJSpotModel.PLATINUM_LME': block,
                               'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': solve.SLOW_BASIS}
@@ -157,6 +157,39 @@ def test_a_replay_is_the_filter_on_the_bars_before_each_fix(tmp_path, caplog):
         states.append(_step(LV, states[-1], y[k], r[k]))
     worst = float(np.abs(replay - np.array([states[row[t]] for t in range(len(replay))])).max())
     assert len(replay) == 119 and worst < 1e-6, (len(replay), worst)
+
+
+def test_a_replay_is_the_compressed_tape_s_on_its_market_rows_whatever_the_batch(tmp_path, caplog):
+    """The 119-row calendar tape of `test_a_replay_is_the_filter_on_the_bars_before_each_fix` (weekends
+    and London's 4 May holiday flagged forward-filled, a CME bar on the holiday, a flat fix on a
+    business day with its bar, no bar on 3 July): its filter rows at `Batch_Size` 5 equal those at 2 to the bit, and on its 84
+    market rows they equal, to the bit, the rows of the same tape compressed to its business days. 6 s.
+
+    Killing mutation: every calendar row a market row (the calendar's market rows leave the
+    compressed tape's at the first weekend)."""
+    days, spot, high, low, close, row, observed = _tape(np.random.default_rng(5))
+    calendar = _replayed(tmp_path, caplog, observed)
+    assert np.array_equal(calendar, _replayed(tmp_path, caplog, observed, batch=5))
+    n = len(calendar)
+    compressed = _replayed(tmp_path, caplog, {
+        'CommodityPrice.PLATINUM_LME': spot[:n], 'ObservedBasis.PLATINUM_LME.LME_CME': -30.0 + 0.0 * spot[:n],
+        'CommodityPrice.PLATINUM_LME,HIGH': high[:n], 'CommodityPrice.PLATINUM_LME,LOW': low[:n],
+        'CommodityPrice.PLATINUM_LME,CLOSE': close[:n]})
+    market = [t for t in range(n) if t == 0 or row[t] != row[t - 1]]
+    assert len(market) == 84 and np.array_equal(calendar[market], compressed[:len(market)])
+
+
+def test_a_scenario_without_bars_replays_as_one_whose_bars_are_blank(tmp_path, caplog):
+    """The calendar tape replayed with no `<factor>,HIGH/LOW/CLOSE` keys and with all three stated
+    and blank: the filter rows are equal to the bit and finite, the returns alone measured. 4 s.
+
+    Killing mutation: an absent bar series read as a flat bar of 1.0 rather than blank (every row a
+    market row where the keys are absent)."""
+    observed = _tape(np.random.default_rng(5))[-1]
+    plain = {k: v for k, v in observed.items() if ',' not in k}
+    blank = dict(plain, **{k: np.full(len(v), np.nan) for k, v in observed.items() if ',' in k})
+    a, b = _replayed(tmp_path, caplog, plain), _replayed(tmp_path, caplog, blank)
+    assert np.isfinite(a).all() and np.array_equal(a, b)
 
 
 def _fit(tmp_path, dates, px, bars, **tuning):
@@ -243,10 +276,66 @@ def test_the_fit_writes_the_filter_s_state_after_its_last_row(tmp_path):
     assert abs(capped['Kappa_S'] - 20.0) < 1e-9 < abs(fitted['Kappa_S'] - 20.0), (capped['Kappa_S'], fitted['Kappa_S'])
 
 
+#: A fast factor of a ten-day half-life, a slow one of five months, a return loading -0.35 on the fast
+#: shock and +0.5 on the slow, a bar 12% under the variance it measures at sd 0.45 in logs.
+TRUE = {'Kappa_S': 25.0, 'Sigma_S': 2.5, 'Kappa_L': 1.5, 'Sigma_L': 0.9, 'L': -2.8, 'Rho_S': -0.35, 'Rho_L': 0.5,
+        'Sigma_U': 0.45, 'Offset': -0.12}
+#: Each parameter's sd over nine seeds of the 2,520-row tape (seeds 1-9, on the CPU).
+SPREAD = {'Kappa_S': 5.59, 'Sigma_S': 0.215, 'Kappa_L': 0.46, 'Sigma_L': 0.18, 'L': 0.21, 'Rho_S': 0.044,
+          'Rho_L': 0.144, 'Sigma_U': 0.0081, 'Offset': 0.026}
+
+
+def _law_tape(seed, n, th=TRUE, dt=1.0 / 252.0):
+    """`n` business days of the documented law: e^(s + ell) a year drives row k's return, whose
+    innovation loads on the shocks into row k + 1 by `Rho_S` and `Rho_L`, the two shocks uncorrelated;
+    row k's bar, closing after fix k, has a Garman-Klass of row k + 1's variance times
+    e^(Offset + Sigma_U u), its close a walk of its own."""
+    rng = np.random.default_rng(seed)
+    ps, pl = math.exp(-th['Kappa_S'] * dt), math.exp(-th['Kappa_L'] * dt)
+    ws = th['Sigma_S'] * math.sqrt(-math.expm1(-2 * th['Kappa_S'] * dt) / (2 * th['Kappa_S']))
+    wl = th['Sigma_L'] * math.sqrt(-math.expm1(-2 * th['Kappa_L'] * dt) / (2 * th['Kappa_L']))
+    rs, rl = th['Rho_S'], th['Rho_L']
+    s = rng.normal() * th['Sigma_S'] / math.sqrt(2 * th['Kappa_S'])
+    ell = th['L'] + rng.normal() * th['Sigma_L'] / math.sqrt(2 * th['Kappa_L'])
+    logv, ret = np.empty(n + 1), np.empty(n)
+    for k in range(n + 1):
+        logv[k] = s + ell
+        if k == n:
+            break
+        e, a, b = rng.standard_normal(3)
+        es = rs * e + math.sqrt(1 - rs * rs) * a
+        el = rl * e + (math.sqrt(1 - rs * rs - rl * rl) * b - rs * rl * a) / math.sqrt(1 - rs * rs)
+        ret[k] = math.exp(0.5 * logv[k]) * math.sqrt(dt) * e
+        s, ell = ps * s + ws * es, th['L'] + pl * (ell - th['L']) + wl * el
+    px = 1500.0 * np.exp(np.cumsum(ret))
+    close = 1600.0 * np.exp(np.cumsum(rng.normal(0.0, 0.012, n)))
+    gk = dt * np.exp(logv[1:] + th['Offset'] + th['Sigma_U'] * rng.standard_normal(n))
+    prev = np.concatenate([[close[0]], close[:-1]])
+    span = np.sqrt(2.0 * (gk + GK * np.log(close / prev) ** 2))
+    return px, (close * np.exp(0.5 * span), close * np.exp(-0.5 * span), close)
+
+
+def test_the_spot_fit_recovers_the_law_it_filters(tmp_path):
+    """A calibration document fits `LogVar2FJSpotModel` by `LogVar2FJSpotCalibration` on ten years of a fix
+    and a bar beside it drawn from the documented law: every one of the nine parameters lands within
+    three of its seed-to-seed sds of the truth, both leverages with their signs (seed 1: Kappa_S 29.2,
+    Sigma_S 2.40, Kappa_L 1.26, Sigma_L 0.81, L -2.88, Rho_S -0.300, Rho_L +0.478, Sigma_U 0.448, Offset
+    -0.126; over nine seeds every mean within 2.05 standard errors of the truth). 17 s.
+
+    Killing mutation: both leverages flipped in `LogVar2FJCalibration.step` (the fitted rhos of
+    the opposite sign: Rho_S +0.300 and Rho_L -0.478, 14.8 and 6.8 spreads off). Not killed: the bar of
+    row t read at row t (within every bound), which `test_the_fit_writes_the_filter_s_state_after_its_last_row` holds."""
+    n = 2520
+    px, bars = _law_tape(1, n)
+    fitted = _fit(tmp_path, pd.bdate_range('2006-01-02', periods=n), px, bars)
+    off = {k: (fitted[k] - TRUE[k]) / SPREAD[k] for k in TRUE}
+    assert all(abs(v) < 3.0 for v in off.values()), off
+
+
 def test_a_commodity_with_no_drift_is_a_martingale():
     """A credit Monte Carlo of one future on a `LogVar2FJSpotModel` fix at `Mu` 0, its factor stating a
     rate and a carry curve, simulates 4,096 paths a year out on a monthly grid at a 48% vol: the mean of
-    S_T / S_0 is within two standard errors of one (1.0033, se 0.0087), since the walk's compensator is
+    S_T / S_0 is within two standard errors of one (0.9989, se 0.0086), since the walk's compensator is
     the variance the rotated rows realise and nothing reads the curves. 1 s.
 
     Killing mutation: the residual given the variance shocks not divided by its sd sqrt(c) (0.9729,
@@ -265,6 +354,85 @@ def test_a_commodity_with_no_drift_is_a_martingale():
     ratio = s[:, -1] / s[:, 0]
     se = ratio.std() / np.sqrt(len(ratio))
     assert s.shape[1] == 13 and abs(ratio.mean() - 1.0) < 2.0 * se, (ratio.mean(), se)
+
+
+def _paths(block, batch, seed=1):
+    """`(row lengths in years, log returns [paths, rows])` of a credit Monte Carlo of one future on a
+    `LogVar2FJSpotModel` fix `block`, on a calendar-daily grid over 95 days."""
+    world = _world('LBMA_AM', chained=False)
+    world['Calc']['Calculation'].update(Batch_Size=batch, Time_Grid='0d 1d(1d)', Calc_Scenarios='All',
+                                        Random_Seed=seed)
+    future = world['Calc']['Deals']['Deals']['Children'][0]['Children'][0]['Instrument']['.Deal']
+    future['Maturity_Date'] = {'.Timestamp': '2026-04-20'}
+    market = world['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'CommodityPrice': 'LogVar2FJSpotModel'}, 'modelfilters': {}}}
+    market['Price Models'] = {'LogVar2FJSpotModel.LBMA_AM': block}
+    cx = rf.Context(path_transform={}, file_transform={})
+    cx.load_json((json.dumps(world), 'lv_walk.json'))
+    s = cx.run_job()[1]['Results']['scenarios']['CommodityPrice.LBMA_AM']
+    days = np.diff(s.columns.values).astype('timedelta64[D]').astype(float) / 365.25
+    return days, np.diff(np.log(s.values.astype(np.float64)), axis=1)
+
+
+def _forecast(block, days, cov=True):
+    """`E[r_k^2]` per row from the block's state: `delta_k E[e^(s + ell)]` at the row's start, the two OU
+    factors Gaussian from `(S0, Ell0)` with the declared `State_Cov` (or none), plus the -v delta / 2
+    drift's square; and `E[r_1 r_k^2]`, k >= 2, the leverage the first return loads on the state."""
+    t = np.concatenate([[0.0], np.cumsum(days)])
+    ks, ss, kl, sl, lv = (block[x] for x in ('Kappa_S', 'Sigma_S', 'Kappa_L', 'Sigma_L', 'L'))
+    p11, p12, p22 = block['State_Cov'] if cov else (0.0, 0.0, 0.0)
+    m = block['S0'] * np.exp(-ks * t) + lv + (block['Ell0'] - lv) * np.exp(-kl * t)
+    var = (ss ** 2 / (2 * ks) * -np.expm1(-2 * ks * t) + sl ** 2 / (2 * kl) * -np.expm1(-2 * kl * t)
+           + p11 * np.exp(-2 * ks * t) + 2 * p12 * np.exp(-(ks + kl) * t) + p22 * np.exp(-2 * kl * t))
+    ev = np.exp(m + 0.5 * var)
+    er2 = days * ev[:-1] + 0.25 * days ** 2 * np.exp(2 * m[:-1] + 2 * var[:-1])
+    d1, v0 = days[0], math.exp(block['S0'] + block['Ell0'])
+    ws1 = ss * math.sqrt(-math.expm1(-2 * ks * d1) / (2 * ks))
+    wl1 = sl * math.sqrt(-math.expm1(-2 * kl * d1) / (2 * kl))
+    lag = t[1:-1] - t[1]
+    load = block['Rho_S'] * ws1 * np.exp(-ks * lag) + block['Rho_L'] * wl1 * np.exp(-kl * lag)
+    return er2, math.sqrt(v0 * d1) * days[1:] * load * ev[1:-1] - 0.5 * v0 * d1 * er2[1:]
+
+
+@pytest.mark.parametrize('rho', [(-0.15, 0.6), (-0.9, 0.0)])
+def test_the_outer_walk_realises_the_variance_and_leverage_its_filter_forecasts(rho):
+    """From a point state (`State_Cov` 0) the walk's summed squared log returns over 30 and 91 calendar
+    rows are the OU closed form sum_k delta_k E[e^(s + ell)] within 3 standard errors, and the first
+    return times the later squared returns, the leverage the return's innovation loads on the next
+    state by `Rho_S` and `Rho_L`, is its closed form within 3 standard errors (z 0.16 to 1.03 and 0.04
+    to 0.26 measured at 32,768 paths; at `Rho_S` -0.9 the leverage moment is 9 standard errors from 0).
+    4 s each.
+
+    Killing mutations: the leverage's sign flipped in the walk (the -0.9 world's leverage moment about
+    18 standard errors off); the return read at the row's END state (about 5 standard errors off the
+    30-row variance, the state 0.3 above the level and reverting at 12 a year)."""
+    block = dict(LV, Rho_S=rho[0], Rho_L=rho[1], State_Cov=[0.0, 0.0, 0.0])
+    if rho[0] == -0.9:
+        block.update(Kappa_S=40.0, Sigma_S=3.0)
+    days, r = _paths(block, 32768)
+    er2, cross = _forecast(block, days)
+    for n in (30, 91):
+        x, y = (r[:, :n] ** 2).sum(1), r[:, 0] * (r[:, 1:n] ** 2).sum(1)
+        z_var = (x.mean() - er2[:n].sum()) / (x.std() / math.sqrt(len(x)))
+        z_lev = (y.mean() - cross[:n - 1].sum()) / (y.std() / math.sqrt(len(y)))
+        assert abs(z_var) < 3.0 and abs(z_lev) < 3.0, (n, z_var, z_lev)
+
+
+def test_the_outer_walk_starts_from_the_filter_state_its_block_declares():
+    """The block's `S0`, `Ell0` and `State_Cov` are the filter's state for the first step: the outer
+    path's own filter starts from that posterior (`prior0`), and a replayed fork draws its start from
+    it, so the walk the paths realise should forecast what that filter forecasts, the 30-row summed
+    squared return sum_k delta_k E[e^(s + ell)] with the state N((S0, Ell0), State_Cov), within 3
+    standard errors. 4 s.
+
+    Killing mutation: every outer path started at the point (Ell0, S0), `State_Cov` read only by its
+    filter (0.971 of the filter's forecast, z -14.3 at 32,768 paths)."""
+    days, r = _paths(dict(LV), 32768)
+    er2, _ = _forecast(LV, days)
+    x = (r[:, :30] ** 2).sum(1)
+    z = (x.mean() - er2[:30].sum()) / (x.std() / math.sqrt(len(x)))
+    assert abs(z) < 3.0, (z, x.mean() / er2[:30].sum())
 
 
 def _solved(block, save=None, load=None):
@@ -325,8 +493,8 @@ def test_a_replayed_fork_draws_its_state_from_the_filter_s_posterior(tmp_path, c
     filter's posterior of log v is wide, forks each replayed row at every swept step; a replay has no
     true state, so each fork path draws its own start from the posterior N(mean, P). Pooled over the
     forks, the variance of a fork's first one-day log return is the posterior-mixed forecast
-    dt exp(mean + P/2), within 4% (1.0025 measured over 102 forks of 512 draws), where the
-    mean's own exp(mean) reads 0.870 of it. 10 s.
+    dt exp(mean + P/2), within 4% (1.0005 measured over 102 forks of 512 draws, each fork's second
+    moment about its own mean), where the mean's own exp(mean) reads 0.870 of it. 10 s.
 
     Killing mutation: each fork started from the posterior mean (0.872 of the mixed forecast)."""
     path = str(tmp_path / 'observed.npz')

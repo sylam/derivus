@@ -429,6 +429,52 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
         == float(wT.mean())
 
 
+@pytest.mark.parametrize('churn', [0.0, 50.0])
+def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(churn):
+    """The swap document's passive track under `DiffV2_Position_State`, `DiffV2_Churn_Lambda` 0 and
+    50: its terminal wealth `wT_mean` is the hand-rolled book's P&L less half the 10 bp spread on the
+    path-mean mark per contract traded (entry from the opening book, the unwind at the horizon) and
+    the churn term lambda * sum |dq|^2, within 1e-6 relative; `turnover_cost_mean` is that charge;
+    no `wT_mean_net` is written. 5 s each.
+
+    Killing mutations: the charge accounted beside the recursion (wT gross by the cost); the unwind
+    dropped at the last decision (wT above by the unwind); the churn term left out of the wealth."""
+    cfg = _passive_cfg()
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Solver']['DiffV2_Position_State'] = 'Yes'
+    hp['Solver']['DiffV2_Churn_Lambda'] = churn
+    sizes = [float(hp['Tradable_Instruments']['CommodityFutureDeal'][h]['Contract_Size']) for h in LEGS]
+    net_units = sum((1.0 if side == 'Buy' else -1.0) * units for side, units, _ in SWAP_LEGS)
+    train = _run(cfg)
+    v, world = train.evaluation_summary['diagnostics']['verdict'], train.bundle
+    F, L, horizon = world.tradables_sim, world.liability_sim, world.last_live_mtm_index
+
+    def book(t):
+        date = world.scenario_dates[world.initial_time_index + t]
+        unfixed = net_units / len(FIXINGS) * sum(pd.Timestamp(d) > date for d in FIXINGS)
+        weights = [ws for step, ws in KNOTS if step <= t][-1]
+        return -unfixed * torch.tensor(weights, device=world.device) / torch.tensor(sizes, device=world.device)
+
+    def kappa(t):
+        return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t].mean() * size
+                            for h, size in zip(LEGS, sizes)])
+
+    W, q_prev = L[PASSIVE_T_MIN].clone(), torch.zeros(len(LEGS), device=world.device)
+    cost = torch.zeros_like(W)
+    for t in range(PASSIVE_T_MIN, horizon):
+        q = book(t)
+        cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1) + churn * ((q - q_prev) ** 2).sum(-1)
+        dF = torch.stack([F[h][t + 1] - F[h][t] for h in LEGS], dim=-1)
+        W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t + 1] - L[t])
+        q_prev = q
+    cost = cost + (q_prev.abs() * kappa(horizon)).sum(-1)
+    net = float((W - cost).mean())
+    assert 'wT_mean_net' not in v['passive']
+    assert abs(v['passive']['wT_mean'] - net) <= 1e-6 * abs(net), (v['passive']['wT_mean'], net, float(W.mean()))
+    assert abs(v['passive']['turnover_cost_mean'] - float(cost.mean())) <= 1e-6 * float(cost.mean()), \
+        (v['passive']['turnover_cost_mean'], float(cost.mean()))
+
+
 def test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day(tmp_path):
     """`DiffV2_Passive_From` hands the stepper roll's greedy policy to the passive book from the
     first decision day on or after the date: on the same decision days, the greedy book is the

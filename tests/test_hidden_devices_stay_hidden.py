@@ -20,6 +20,19 @@ JOBS = ("import sys, torch, derivus as rf\n"
         "    cx.load_json((open(sys.argv[1]).read(), 'job.json'))\n"
         "    return str(cx.run_job()[1].bundle.device)\n"
         "print(device(), device(), int(torch.cuda.is_initialized()), torch.cuda.device_count())")
+HIDDEN = ['', ' ', '-1', ' -1', '-1,0', '-1, 0', ',0', ' ,0', 'none', 'NoDevFiles', 'cpu', '-', 'gpu']
+SPELLINGS = """
+import os, sys, json, torch
+asked = []
+real = torch.cuda.device_count
+torch.cuda.device_count = lambda: asked.append(1) or real()
+from derivus import utils, calculation
+out = {}
+for spelling in json.loads(sys.argv[1]):
+    os.environ['CUDA_VISIBLE_DEVICES'] = spelling
+    out[spelling] = [utils.visible_device_count(), calculation.worker_count(True), str(utils.calculation_device())]
+print(json.dumps([out, int(torch.cuda.is_initialized()), len(asked)]))
+"""
 
 
 def _hidden(*args, **kwargs):
@@ -60,3 +73,19 @@ def test_a_job_after_a_training_step_stays_on_the_cpu(tmp_path):
     job.write_text(json.dumps(cfg))
     first, second, initialised, count = _hidden(JOBS, str(job), cwd=ROOT)
     assert first == second == 'cpu', (first, second, initialised, count)
+
+
+def test_every_hidden_spelling_stays_on_the_cpu_without_asking_the_runtime():
+    """Each spelling reads (0, 1, 'cpu'), CUDA is not initialised, and the runtime's count is never
+    asked (the probe counts calls to `torch.cuda.device_count`, which it wraps, not replaces). 4 s.
+
+    Killing mutation: `worker_count(True)` returning the count alone (0 workers, red). Not run, since
+    it would ask the runtime with the devices named: `visible_device_count` reading
+    `torch.cuda.device_count()` before the parse (asked > 0)."""
+    env = dict(os.environ, CUDA_VISIBLE_DEVICES='-1', PYTHONPATH=ROOT)
+    run = subprocess.run([sys.executable, '-c', SPELLINGS, json.dumps(HIDDEN)], env=env, capture_output=True,
+                         text=True, timeout=300, cwd=ROOT)
+    assert run.returncode == 0, run.stderr[-2000:]
+    out, initialised, asked = json.loads(run.stdout.splitlines()[-1])
+    assert all(out[s] == [0, 1, 'cpu'] for s in HIDDEN), out
+    assert (initialised, asked) == (0, 0), (initialised, asked)
