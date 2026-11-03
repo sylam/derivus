@@ -1387,7 +1387,7 @@ class DiffSolver:
 
     def _passive_hedge(self, t, live, batch):
         """The passive book at decision step t `(batch, n_hedge)`: minus the liability quantity
-        still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`
+        still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`,
         clamped to the position limits, projected into the corridor as the textbook book is, and
         apportioned to whole contracts carrying its rounded total, as the stepper books it."""
         unfixed = self.bundle.unfixed_at(self.bundle.initial_time_index + t)
