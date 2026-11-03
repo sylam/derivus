@@ -508,7 +508,8 @@ locking the frame, `step` per training batch, `finish` on the held-out last), so
 ## The inner-MC fork {#inner-mc-subsystem}
 
 `_run_inner_mc_at_t` forks each outer path's state at step `t` on process copies, truncates the grid
-and each deal's `Time_dep` to `{t, t+1}`, and runs one pass of `Batch_Size × Inner_Sub_Batch`
+and each deal's `Time_dep` to `t` and the rows to the next market row, the one the decision at `t`
+holds its book to (Monday from a Friday), and runs one pass of `Batch_Size × Inner_Sub_Batch`
 samples, its memory set by those two fields. It draws (`reset_inner`), precalculates each
 process from `outer_buffer[key][t]` (a leaf under `with_grad`), publishes every seed before any
 generate (a seed may condition a process upstream), generates and calls `reseed_inner_state`, then

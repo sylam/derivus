@@ -4114,8 +4114,13 @@ def trading_clock(ref_date, time_grid, business_day):
     counts them. A row of no market time holds every state a law carries."""
     years = time_grid.time_grid_years
     dates = pd.Timestamp(ref_date) + pd.to_timedelta(time_grid.scen_time_grid, unit='D')
+    return np.diff(years, prepend=years[0]), market_days(dates, business_day)
+
+
+def market_days(dates, business_day):
+    """The `business_day` days in (date before, date] of each of the sorted `dates`, the first's 0."""
     passed = np.searchsorted(pd.date_range(dates[0], dates[-1], freq=business_day), dates, side='right')
-    return np.diff(years, prepend=years[0]), np.diff(passed, prepend=passed[0]).astype(np.float64)
+    return np.diff(passed, prepend=passed[0]).astype(np.float64)
 
 
 def market_rows(f):

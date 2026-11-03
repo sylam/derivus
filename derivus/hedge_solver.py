@@ -886,6 +886,12 @@ class DiffSolver:
         if self.t_min >= self.T_dec:
             raise ValueError(
                 f"Solver.T_Min={self.t_min} must be < decision horizon T_dec={self.T_dec}")
+        # the decision rows, the market rows before the terminal, and each row's successor, the next
+        # decision row, which a decision holds its book to and its fork lands on
+        self.steps = sorted({0} | {i - bundle.initial_time_index for i in bundle.business_indices
+                                   if i - bundle.initial_time_index < self.T_dec})
+        self.nxt = [next((s for s in self.steps if s > t), self.T_dec) for t in range(self.T_dec)]
+        self.prev = dict(zip(self.steps[1:], self.steps))
         self.utility_scale = float(bundle.utility_scale)      # locked here; re-asserted by _bind
         # ...and the per-step schedule with it: ONE frame, locked in one place. A streaming step
         # re-binds to a batch that measured its own, which must not reach the reward.
@@ -1070,7 +1076,7 @@ class DiffSolver:
         discontinuity. Read at `T_dec`, the pre-settlement row — the same row the benchmark
         tracks charge their own unwind at."""
         return (self.aspace.kappa(self.tradables_sim, self.T_dec)
-                if self.position_state and self.force_flat and t + 1 >= self.T_dec else None)
+                if self.position_state and self.force_flat and self.nxt[t] >= self.T_dec else None)
 
     def _calendar_kappa(self, t):
         """The MATCHED-leg kappa at decision step t (None with no `Evaluator.Calendar_Spread_Bps`)
@@ -1179,11 +1185,12 @@ class DiffSolver:
         return wealth_step(W, q, self.contract_size, dF, dL)
 
     def _outer_dF(self, t, rows=slice(None)):
-        """The OUTER-realized one-step hedge move `F_{t+1} − F_t`, stacked `(..., n_hedge)` in
-        hedge order — the one spelling behind the bank roll, the verdict, the stepper rollout's
-        drift monitor and the constructed policy."""
+        """The OUTER-realized hedge move over decision t's interval, `F_{t+1} − F_t` with t+1 the
+        next decision row (`self.nxt`), stacked `(..., n_hedge)` in hedge order — the one spelling
+        behind the bank roll, the verdict, the stepper rollout's drift monitor and the constructed
+        policy."""
         return torch.stack(
-            [self.tradables_sim[r][t + 1][rows] - self.tradables_sim[r][t][rows]
+            [self.tradables_sim[r][self.nxt[t]][rows] - self.tradables_sim[r][t][rows]
              for r in self.hedges], dim=-1)
 
     def _risk_adjusted(self, C1f):
@@ -1199,7 +1206,8 @@ class DiffSolver:
     # ---- inner-MC one-step quantities at outer t -----------------------------
     def _inner_step(self, t):
         """Fork inner MC at t (resolve_structure / resolve_hedge_structure under the hood)
-        and return the one-step move tensors the bootstrap needs:
+        and return the move tensors the bootstrap needs over decision t's interval, t+1 the next
+        decision row:
           dF   (B_outer, B_inner, n_hedge)  per-instrument futures move t→t+1
           dL   (B_outer, B_inner)           liability mark change t→t+1
           m1   (B_outer, B_inner, market_dim) market state at t+1
@@ -1296,11 +1304,11 @@ class DiffSolver:
                 C1f = self._continuation(
                     nets,
                     market_t1[:, None].expand(B, c, Bi, md).reshape(-1, md),
-                    W1.reshape(-1), t + 1, p1).reshape(B, c, Bi)                          # (B,c,Bi)
+                    W1.reshape(-1), self.nxt[t], p1).reshape(B, c, Bi)                    # (B,c,Bi)
                 if self.running_wealth:
                     # the DAY's reward, read off the CHARGED W1 so a move pays its toll inside the
                     # step that made it rather than at a terminal the reward no longer reaches
-                    C1f = C1f + self._reward(W1, W[:, None, None], t + 1)
+                    C1f = C1f + self._reward(W1, W[:, None, None], self.nxt[t])
                 C1 = self._risk_adjusted(C1f)                                             # E_inner[C] (B,c)
                 if limit:
                     dq_c = a_live[None, :, :] - q_live[:, None, :]                        # (B,c,n_h)
@@ -1343,11 +1351,11 @@ class DiffSolver:
                 p_inc = ((q_live.sum(-1) / self.total_abs_limit)[:, None, None]
                          .expand(B, 1, Bi).reshape(-1) if self.position_state else None)
                 C1f_inc = self._continuation(
-                    nets, market_t1.reshape(-1, md), W1.reshape(-1), t + 1,
+                    nets, market_t1.reshape(-1, md), W1.reshape(-1), self.nxt[t],
                     p_inc).reshape(B, Bi)
                 if self.running_wealth:
                     # the incumbent earns its own day's increment, priced as every rival's
-                    C1f_inc = C1f_inc + self._reward(W1, W[:, None, None], t + 1).reshape(B, Bi)
+                    C1f_inc = C1f_inc + self._reward(W1, W[:, None, None], self.nxt[t]).reshape(B, Bi)
                 inc = self._risk_adjusted(C1f_inc)
                 diff = best_f - C1f_inc                                                   # (B,Bi) paired
                 se = diff.std(-1) / math.sqrt(Bi)
@@ -1362,14 +1370,14 @@ class DiffSolver:
 
     # ---- operating-region bank ----------------------------------------------
     def _replication_hedge(self, t):
-        """Per-instrument diagonal min-var hedge from the OUTER one-step moves at t:
+        """Per-instrument diagonal min-var hedge from the OUTER moves to t's successor:
         q_i = −Cov(dL, dF_i)/(cs_i·Var(dF_i)) / n_active, clamped to [lo,hi]. Inactive → 0."""
         L = self.liability_sim
-        dL = (L[t + 1] - L[t])                                                            # (B_outer,)
+        dL = (L[self.nxt[t]] - L[t])                                                      # (B_outer,)
         q = torch.zeros(self.n_hedge, device=self.device)
         for i in self.active:
             ref = self.hedges[i]
-            dF = self.tradables_sim[ref][t + 1] - self.tradables_sim[ref][t]              # (B_outer,)
+            dF = self.tradables_sim[ref][self.nxt[t]] - self.tradables_sim[ref][t]        # (B_outer,)
             var = dF.var()
             # skip degenerate OR non-finite instruments: an expired-contract row can carry a NaN
             # mark, and clamp(NaN) = NaN would poison the whole textbook book
@@ -1414,6 +1422,11 @@ class DiffSolver:
         mask = self.aspace.active_mask
         oob = []                                                                         # per-t bank corridor-breach diagnostic
         for t in range(self.T_dec):
+            if t not in self.steps:
+                # a row of no market time holds the book and wealth of the decision before it
+                W_list.append(W_list[-1] if W_list else W.clone())
+                q_list.append(q_list[-1] if q_list else q_prev.clone())
+                continue
             W_list.append(W.clone())
             q_list.append(q_prev.clone())
             q_rep = self._replication_hedge(t)                                            # (n_hedge,)
@@ -1437,7 +1450,7 @@ class DiffSolver:
                 oob.append((t, lo, hi, float((tot < lo - tol).float().mean()
                                              + (tot > hi + tol).float().mean()),
                             float(tot.min()), float(tot.max())))
-            W = self._wealth_step(W, q, self._outer_dF(t), L[t + 1] - L[t])
+            W = self._wealth_step(W, q, self._outer_dF(t), L[self.nxt[t]] - L[t])
             q_prev = q
         if oob:
             worst = max(oob, key=lambda r: r[3])
@@ -1604,12 +1617,12 @@ class DiffSolver:
                 q_star, q_prev, kappa_t, self._unwind_kappa(t), self._calendar_kappa(t))[:, None]
             p1 = (q_star.sum(-1) / self.total_abs_limit)[:, None].expand(B, Bi_e).reshape(-1)
         Y = self._continuation(
-            nets, m1_g.reshape(-1, md), W1.reshape(-1), t + 1, p1).reshape(B, Bi_e)       # (B,Bi)
+            nets, m1_g.reshape(-1, md), W1.reshape(-1), self.nxt[t], p1).reshape(B, Bi_e)  # (B,Bi)
         if self.running_wealth:
             # Y = u(W1 - W_t) + C_{t+1}, the same expression `_decide` ranked with. The increment
             # is level-free, so it contributes 0 to the wealth label and its MARKET slope joins
             # g_market - the reward is part of what the twin loss differentiates.
-            Y = Y + self._u_step(W1, W0[:, None], t + 1)
+            Y = Y + self._u_step(W1, W0[:, None], self.nxt[t])
         Y = Y.mean(1)                                                                     # (B,)
         grads = torch.autograd.grad(Y.sum(), [W0] + list(leaves.values()) + extra, allow_unused=True)
         gW = grads[0].detach()
@@ -1625,7 +1638,7 @@ class DiffSolver:
         g_p = ((grads[-1].detach() * self.aspace._weights_at(t, live)).sum(-1) * self.total_abs_limit
                if extra else None)
         Y = Y.detach()
-        k = min(self.label_horizon, self.T_dec - t)
+        k = min(self.label_horizon, sum(s >= t for s in self.steps))
         if k > 1:
             Y = Y + self._horizon_correction(nets, W0_bank, q_star, q_prev, kappa_t, t, k, rows)
         return self._fit_from_labels(nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p,
@@ -1642,7 +1655,7 @@ class DiffSolver:
         L = self.liability_sim
 
         def move(s, W, q, q_prev, kappa):
-            W1 = self._wealth_step(W, q, self._outer_dF(s, rows), (L[s + 1] - L[s])[rows])
+            W1 = self._wealth_step(W, q, self._outer_dF(s, rows), (L[self.nxt[s]] - L[s])[rows])
             if not self.position_state:
                 return W1
             return W1 - self._reposition_charge(
@@ -1655,9 +1668,10 @@ class DiffSolver:
 
         with torch.no_grad():
             W = move(t, W0, q, q_prev, kappa)
-            one = bootstrap(t + 1, W, q)
+            s = self.nxt[t]
+            one = bootstrap(s, W, q)
             ret = torch.zeros_like(W)
-            for s in range(t + 1, t + k):
+            for _ in range(k - 1):
                 dF, dL, m1, _, live = self.inner_cache[s]
                 kappa = self.aspace.kappa(self.tradables_sim, s) if self.position_state else None
                 q_prev = q
@@ -1665,9 +1679,9 @@ class DiffSolver:
                                     kappa=kappa, live=live, rate_limit=False)
                 W1 = move(s, W, q, q_prev, kappa)
                 if self.running_wealth:
-                    ret = ret + self._u_step(W1, W, s + 1)
-                W = W1
-            return ret + bootstrap(t + k, W, q) - one
+                    ret = ret + self._u_step(W1, W, self.nxt[s])
+                W, s = W1, self.nxt[s]
+            return ret + bootstrap(s, W, q) - one
 
     def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p,
                          measured):
@@ -1710,7 +1724,7 @@ class DiffSolver:
         net = nets[t]
         # the chain: the terminal net anchors and trains the full budget, while every earlier net
         # inherits its fitted successor on its FIRST fit and only corrects it
-        ref = nets[t + 1] if t + 1 < self.T_dec else None
+        ref = nets[self.nxt[t]] if self.nxt[t] < self.T_dec else None
         if ref is not None and self._opts.get(t) is None:
             net.load_state_dict(ref.state_dict())
         prox_ref = (torch.cat([p.detach().reshape(-1) for p in ref.parameters()])
@@ -1840,7 +1854,7 @@ class DiffSolver:
         rolled under the same rule, or the policy reported is not the policy trained.
         `argmax_charged` says which regime produced these numbers."""
         L = self.liability_sim
-        t0 = self.t_min
+        t0 = sweep_ts[0]
         n = L[t0][rows].shape[0]
         W = {p: L[t0][rows].clone() for p in ("greedy", "textbook", "nohedge", "passive")}
         # the turnover cost, entry measured from the opening book: paid inside the wealth under the
@@ -1861,7 +1875,7 @@ class DiffSolver:
         with torch.no_grad():
             for t in sweep_ts:
                 dF_o = self._outer_dF(t, rows)                                     # (n, n_hedge)
-                dL_o = (L[t + 1] - L[t])[rows]
+                dL_o = (L[self.nxt[t]] - L[t])[rows]
                 dF, dL, m1, _, live = inner_cache[t]
                 # in-sim validation CUSUM: the fork's expectation minus the outer realized move,
                 # averaged over paths and summed over steps - a mean-zero tripwire within the
@@ -1908,16 +1922,18 @@ class DiffSolver:
                     # indexed by the step the increment ARRIVES at, as every other seam does: the
                     # knee an increment is measured under belongs to the day it lands on
                     for p in W:
-                        u_run[p] = u_run[p] + self._reward(W[p], W_pre[p], t + 1)
+                        u_run[p] = u_run[p] + self._reward(W[p], W_pre[p], self.nxt[t])
                 if u_net is not None:
                     for p in u_net:
                         last_net_inc[p] = W[p] - W_pre[p] - step_cost[p]
                         last_W_pre[p] = W_pre[p]
                         u_net[p] = u_net[p] + self._reward(
-                            W_pre[p] + last_net_inc[p], W_pre[p], t + 1)
-                q_traj["greedy"].append(q_g.mean(0).tolist())
-                q_traj["textbook"].append(q_tb.mean(0).tolist())
-                q_traj["passive"].append(q_pa.mean(0).tolist())
+                            W_pre[p] + last_net_inc[p], W_pre[p], self.nxt[t])
+                # a row each, the book held over the rows of no market time to the next decision
+                for _ in range(t, self.nxt[t]):
+                    q_traj["greedy"].append(q_g.mean(0).tolist())
+                    q_traj["textbook"].append(q_tb.mean(0).tolist())
+                    q_traj["passive"].append(q_pa.mean(0).tolist())
             if self.force_flat and not self.position_state:
                 # the unwind both benchmark tracks charge, so all three price one execution; under
                 # the position state the last step's charge carried it
@@ -1995,9 +2011,9 @@ class DiffSolver:
             market = market_t1[:, None].expand(B, K, Bi, md).reshape(-1, md)
 
             def rank(Wx):
-                C1f = self._continuation(nets, market, Wx.reshape(-1), t + 1, p1).reshape(B, K, Bi)
+                C1f = self._continuation(nets, market, Wx.reshape(-1), self.nxt[t], p1).reshape(B, K, Bi)
                 if self.running_wealth:
-                    C1f = C1f + self._reward(Wx, W[:, None, None], t + 1)   # the day's own reward
+                    C1f = C1f + self._reward(Wx, W[:, None, None], self.nxt[t])   # the day's own reward
                 return self._risk_adjusted(C1f)[0]
 
             charged = rank(W1c)
@@ -2041,9 +2057,9 @@ class DiffSolver:
         `Σ_i w_i·cs_i·dF_i`, with `w` the `Allocation_Weights` split in force or the uniform split
         over the live, active legs."""
         obj = self.runtime["objective"]
-        # the knee the RUNGS divide by: `_score_actions` reads every continuation at t+1, so that
-        # is the step whose entry they consume. Under a flat scale the distinction is inert.
-        c = _utility_scale(obj, t + 1)
+        # the knee the RUNGS divide by: `_score_actions` reads every continuation at t's successor,
+        # so that is the step whose entry they consume. Under a flat scale the distinction is inert.
+        c = _utility_scale(obj, self.nxt[t])
         R = float(obj.get("reference_wealth", 0.0))
         # the knee is huber's; shapes without one take a unit of c as the near-reference band
         delta = (float(obj.get("huber_delta", 1.0))
@@ -2053,8 +2069,8 @@ class DiffSolver:
         # Running_Wealth. Reporting the level under an increment objective logs a curved ranking
         # as a flat one.
         w_rank = 0.0 if self.running_wealth else w0
-        u1, ara = (_loss_side_curvature(self.runtime, t + 1) if self.running_wealth
-                   else _utility_local_curvature(w_rank, self.runtime, t + 1))
+        u1, ara = (_loss_side_curvature(self.runtime, self.nxt[t]) if self.running_wealth
+                   else _utility_local_curvature(w_rank, self.runtime, self.nxt[t]))
         x0 = (w_rank - R) / c
 
         q_live = q_prev if live is None else q_prev * live                          # (1,n_hedge)
@@ -2216,7 +2232,7 @@ class DiffSolver:
                             drift["cum_dL_usd"] += pending[1]
                             drift["cum_z"] += pending[2]
                         obs_dF = self._outer_dF(t)                                # (B, n_h)
-                        obs_dL = self.liability_sim[t + 1] - self.liability_sim[t]
+                        obs_dL = self.liability_sim[self.nxt[t]] - self.liability_sim[t]
                         rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
                         rL = dL.mean(1) - obs_dL                                  # (B,)
                         sF = dF.std(1).clamp_min(1e-9)
@@ -2608,7 +2624,9 @@ class DiffSolver:
             self.B_outer, self.levels, self.fit_iters, self.lr, self.contract_size.tolist(),
             self.q_lo.tolist(), self.q_hi.tolist(), self.total_abs_limit)
 
-        self.sweep_ts = sweep_ts = list(range(self.t_min, self.T_dec))
+        self.sweep_ts = sweep_ts = [t for t in self.steps if t >= self.t_min]
+        if not sweep_ts:
+            raise ValueError(f"Solver.T_Min={self.t_min} leaves no market row before T_dec={self.T_dec}")
         inner_cache = self._fork_sweep()
         W_bank, q_bank = self._build_bank(self.gen)
         if self.log_ratio and self.loaded_displacement is None and not self.displacement:
@@ -2725,7 +2743,7 @@ class DiffSolver:
                          self._capital_line(ck)))           # the member's own capital line
                 logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
             self.worst = float(loaded["max_abs_Y_boot"])
-            self.root = {"t": self.t_min, "Y_mean": float(loaded["V_0"]),
+            self.root = {"t": sweep_ts[0], "Y_mean": float(loaded["V_0"]),
                          "q_star_mean": list(loaded["n_star_0"])}
         else:
             self._sweep(W_bank, q_bank)
@@ -2739,14 +2757,15 @@ class DiffSolver:
         streaming step runs it again on fresh paths with the same nets and optimizers.
 
         `live_prev` is the leg mask of the step that SET the book standing at t — the one mask
-        rule for the position state (`_fit_step`). The first swept step has no predecessor in the
-        cache and `nets[t_min]` is fitted but never queried (every `_decide` reads `nets[t+1]`, and
-        t_min−1 is outside the sweep), so it falls back to its own."""
+        rule for the position state (`_fit_step`). The sweep runs over the decision rows, each a
+        market row whose successor is the next one (`self.nxt`); the first swept step has no
+        predecessor in the cache and `nets[t_min]` is fitted but never queried, so it falls back to
+        its own."""
         rows = []
         for t in reversed(self.sweep_ts):
             r = self._fit_step(self.nets, W_bank, t, self.inner_cache[t], q_bank,
                                rows=self.train,
-                               live_prev=self.inner_cache.get(t - 1, (None,) * 5)[4])
+                               live_prev=self.inner_cache.get(self.prev.get(t), (None,) * 5)[4])
             rows.append(r)
             logging.info(
                 "DiffSolver C[t=%d] fitted (%d iters): val_loss=%.4g |Y_boot|=%.4g |A|=%.4g "
@@ -2756,7 +2775,7 @@ class DiffSolver:
         self.rows = rows
         self.worst = max((r["Y_absmean"] for r in rows if math.isfinite(r["Y_absmean"])),
                          default=0.0)
-        self.root = rows[-1] if rows else {"t": self.t_min, "Y_mean": 0.0, "q_star_mean":
+        self.root = rows[-1] if rows else {"t": self.sweep_ts[0], "Y_mean": 0.0, "q_star_mean":
                                            [0.0] * self.n_hedge}
 
     def _fork_sweep(self):
@@ -3276,10 +3295,11 @@ class DiffSolverV2(DiffSolver):
         step's net spans the `HedgeActionSpace.ladder` band, is held as its `rung` and its reserve
         is priced on the ladder's weights; absent `live`, the net spans `net_bounds` and is
         water-filled onto the replication hedge's shape, its reserve priced in that shape. Returns
-        `(q per step (B, n_hedge), curves per step, terminal book)`."""
+        `(q per decision row (B, n_hedge), curves per decision row, terminal book)`, each decision
+        holding its book to the next."""
         L, T = self.liability_sim, self.T_dec
-        rep = [self._replication_hedge(t) for t in range(T)]
-        dF = [self._outer_dF(t) for t in range(T)]
+        rep = {t: self._replication_hedge(t) for t in self.steps}
+        dF = {t: self._outer_dF(t) for t in self.steps}
         LT = L[T]
 
         def band(t):
@@ -3295,30 +3315,30 @@ class DiffSolverV2(DiffSolver):
         # known remaining path can be played without dipping under the floor. Days a futures hedge
         # cannot defend propagate their need BACKWARD, so the forward pass pre-positions.
         floor = 1.0 * self.leg_volume
-        m_t, lo_is, hi_is = [], [], []
-        for t in range(T):
+        m_t, lo_is, hi_is = {}, {}, {}
+        for t in self.steps:
             rs = float(rep[t].abs().sum())
             lo_t, hi_t = band(t)
-            lo_is.append(math.ceil(lo_t - 1e-9))
-            hi_is.append(math.floor(hi_t + 1e-9))
+            lo_is[t] = math.ceil(lo_t - 1e-9)
+            hi_is[t] = math.floor(hi_t + 1e-9)
             if rs < 0.5:
-                m_t.append(torch.zeros(self.B_outer, device=self.device))
+                m_t[t] = torch.zeros(self.B_outer, device=self.device)
             else:
                 w = rep[t] / rep[t].sum() if live is None else self.aspace._weights_at(t, live[t])
-                m_t.append(torch.einsum('i,ib->b', w * self.contract_size,
-                                        torch.stack([self.tradables_sim[r][t + 1]
+                m_t[t] = (torch.einsum('i,ib->b', w * self.contract_size,
+                                        torch.stack([self.tradables_sim[r][self.nxt[t]]
                                                      - self.tradables_sim[r][t]
                                                      for r in self.hedges])))
         req = LT.new_full((self.B_outer,), floor)
-        reqs = [None] * T
-        for t in range(T - 1, -1, -1):
+        reqs = {}
+        for t in reversed(self.steps):
             reqs[t] = req.clone()
             best = torch.maximum(hi_is[t] * m_t[t], lo_is[t] * m_t[t])
-            req = torch.maximum(req - (L[t + 1] - L[t]) - best,
+            req = torch.maximum(req - (L[self.nxt[t]] - L[t]) - best,
                                 torch.full_like(req, floor))
-        q, W = [], L[0].clone()
+        q, W = {}, L[0].clone()
         curves = []
-        for t in range(T):
+        for t in self.steps:
             # the strike is the FLOOR, $1/oz over the leg volume. The danger measured is terminal
             # capital breach rather than a high-water ratchet, so a rallying book with no breach
             # risk reads d ~ 0 and the map parks the seed at the TOP of the bound.
@@ -3340,16 +3360,16 @@ class DiffSolverV2(DiffSolver):
                 # THE FLOOR BINDS, made enforceable by the seed's one-day hindsight: where the
                 # delta base would let tomorrow's book breach it, hold the smallest position that
                 # keeps it above. A day too small to defend keeps the delta base.
-                m, dL = m_t[t], L[t + 1] - L[t]
+                m, dL = m_t[t], L[self.nxt[t]] - L[t]
                 # tomorrow's book must clear tomorrow's RESERVE, not just the floor. `reqs[t]` IS
                 # the requirement at t+1, since the backward loop clones before it updates.
                 target = reqs[t]
-                if t == 0 or not floored:
+                if t == self.steps[0] or not floored:
                     # t0 is the ONE decision deployment shares with the seed - a single real state
                     # and a single position - so it takes the uniform honest delta with NO
                     # clairvoyance; paths needing more catch up at t1
-                    q.append(compose(t, net.unsqueeze(-1)))
-                    W = self._wealth_step(W, q[-1], dF[t], L[t + 1] - L[t])
+                    q[t] = compose(t, net.unsqueeze(-1))
+                    W = self._wealth_step(W, q[t], dF[t], L[self.nxt[t]] - L[t])
                     continue
                 # the floor constraint q*m >= need is a HALF-LINE, and the repair is the delta base
                 # PROJECTED onto it: the least change, rounded toward the feasible side. An
@@ -3376,8 +3396,8 @@ class DiffSolverV2(DiffSolver):
                                         torch.zeros_like(m))
                     net = (net.squeeze(-1) + extra).clamp(lo_i, hi_i).unsqueeze(-1)
                     qt = torch.minimum(torch.maximum(compose(t, net), self.q_lo), self.q_hi)
-            q.append(qt)
-            W = self._wealth_step(W, qt, dF[t], L[t + 1] - L[t])
+            q[t] = qt
+            W = self._wealth_step(W, qt, dF[t], L[self.nxt[t]] - L[t])
         return q, curves, W
 
     @staticmethod
@@ -3471,15 +3491,15 @@ class DiffSolverV2(DiffSolver):
         if self.bank_ladder:
             # the policy's live legs, the inner guard's mask of the sweep's own fork; a step before
             # the sweep is forked for its mask alone
-            live = [(self.inner_cache[t] if t in self.inner_cache else self._inner_step(t))[4]
-                    for t in range(self.T_dec)]
+            live = {t: (self.inner_cache[t] if t in self.inner_cache else self._inner_step(t))[4]
+                    for t in self.steps}
         q_star, curves, WT = self._constructed_policy(live=live)
         # the floored seed keeps every training book above the floor, so a deep-under-water state
         # would never appear and the net would extrapolate there. Half the paths therefore roll the
         # clairvoyant seed and half the UNDEFENDED delta base.
         q_base, _, _ = self._constructed_policy(floored=False, live=live)
         half = self.B_outer // 2
-        for t in range(self.T_dec):
+        for t in self.steps:
             q_star[t] = torch.cat([q_star[t][:half], q_base[t][half:]], dim=0)
         self.phi_curves = [(bx.detach().cpu(), bp.detach().cpu()) for bx, bp in curves]
         phi0 = float(self._phi_apply(curves[0], self.liability_sim[0][:1])[0])
@@ -3495,6 +3515,11 @@ class DiffSolverV2(DiffSolver):
         rng = (self.q_hi - self.q_lo)
         mask = self.aspace.active_mask
         for t in range(self.T_dec):
+            if t not in self.steps:
+                # a row of no market time holds the book and wealth of the decision before it
+                W_list.append(W_list[-1])
+                q_list.append(q_list[-1])
+                continue
             W_list.append(W.clone())
             q_list.append(q_prev.clone())
             if live is None:
@@ -3511,7 +3536,7 @@ class DiffSolverV2(DiffSolver):
                     self.B_outer, 1, generator=gen, device=self.device)
                 net = (q_star[t][:, legs].sum(-1, keepdim=True) + noise).clamp(lo, hi)
                 q = self.aspace.rung(t, net, live[t])
-            W = self._wealth_step(W, q, self._outer_dF(t), L[t + 1] - L[t])
+            W = self._wealth_step(W, q, self._outer_dF(t), L[self.nxt[t]] - L[t])
             q_prev = q
         if self.log_ratio:
             bw = torch.stack(W_list)

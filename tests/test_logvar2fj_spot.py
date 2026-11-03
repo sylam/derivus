@@ -455,21 +455,26 @@ GARCH = {'Omega': 1.0e-5, 'Alpha': 0.05, 'Beta': 0.9, 'Nu': 8.0, 'H0': 2.0e-4, '
 
 def test_a_fork_starts_from_the_outer_path_s_state(caplog):
     """A solve on a `LogVar2FJSpotModel` world forks each outer path at every swept step from that path's
-    own state: across the outer paths and the steps whose next row is a market day, the log of each
-    fork's spread of its first log return regressed on half the path's s + ell has slope 1 within 0.2
-    (0.996 measured, 936 forks of 8 draws), the spread of a Gaussian residual being sqrt(v dt). 6 s.
+    own state, each fork stepping one market day to the next market row (Monday from a Friday):
+    across the outer paths and steps, the log of each fork's spread of its log return over that step
+    regressed on half the path's s + ell has slope 1 within 0.2 and intercept log sqrt(dt) within
+    0.15, dt one `Calibration_DT_Years` (1.008 and -2.791 against -2.765 measured, 864 forks of 8 draws), the
+    spread of a Gaussian residual being sqrt(v dt). 6 s.
 
-    Killing mutation: the fork reading the outer run's seed keys, so every fork starts from the block's
-    `Ell0` and `S0` (slope 0, the state one value)."""
+    Killing mutations: the fork reading the outer run's seed keys, so every fork starts from the block's
+    `Ell0` and `S0` (slope 0, the state one value); the fork stepping one calendar row, so a Friday's
+    lands on a Saturday with no market time (its dt 0, the slope NaN)."""
     caplog.clear()
     with caplog.at_level(logging.DEBUG):
         _solved(LV)
     forks = [ast.literal_eval(r.getMessage().split(' ', 1)[1]) for r in caplog.records
              if r.getMessage().startswith('LV_FORK')]
-    state = 0.5 * np.concatenate([f['state'] for f in forks if f['dt']])
-    spread = np.log(np.concatenate([f['sd'] for f in forks if f['dt']]))
-    slope = np.polyfit(state, spread, 1)[0] if state.std() > 0 else 0.0
+    state = 0.5 * np.concatenate([f['state'] for f in forks])
+    spread = np.log(np.concatenate([f['sd'] for f in forks]))
+    slope, intercept = np.polyfit(state, spread, 1) if state.std() > 0 else (0.0, 0.0)
+    assert all(f['dt'] == LV['Calibration_DT_Years'] for f in forks), sorted({f['dt'] for f in forks})
     assert len(state) >= 300 and abs(slope - 1.0) < 0.2, (len(state), slope)
+    assert abs(intercept - 0.5 * math.log(LV['Calibration_DT_Years'])) < 0.15, intercept
 
 
 def test_the_value_net_reads_the_filtered_state_and_refuses_a_garch_checkpoint(tmp_path):
@@ -494,12 +499,12 @@ def test_a_replayed_fork_draws_its_state_from_the_filter_s_posterior(tmp_path, c
     """A solve on a replayed `LogVar2FJSpotModel` path, its bars noisy and its fast factor wide so the
     filter's posterior of log v is wide, forks each replayed row at every swept step; a replay has no
     true state, so each fork path draws its own start from the posterior N(mean, P). Pooled over the
-    forks whose next row is a market day, the variance of a fork's first log return is the
-    posterior-mixed forecast dt exp(mean + P/2), within 4% (1.0021 measured over 78 forks of 512
+    forks, each one market day to the next market row, the variance of a fork's log return is the
+    posterior-mixed forecast dt exp(mean + P/2), within 4% (1.0001 measured over 72 forks of 512
     draws, each fork's second moment about its own mean), where the mean's own exp(mean) reads
-    0.869 of it. 10 s.
+    0.870 of it. 10 s.
 
-    Killing mutation: each fork started from the posterior mean (0.869 of the mixed forecast)."""
+    Killing mutation: each fork started from the posterior mean (0.870 of the mixed forecast)."""
     path = str(tmp_path / 'observed.npz')
     np.savez(path, **_tape(np.random.default_rng(5))[-1])
     cfg = solve._cfg(batch=4, inner=512)
@@ -516,7 +521,7 @@ def test_a_replayed_fork_draws_its_state_from_the_filter_s_posterior(tmp_path, c
         solve._run(cfg)
     forks = [ast.literal_eval(r.getMessage().split(' ', 1)[1]) for r in caplog.records
              if r.getMessage().startswith('LV_FORK')]
-    mean, var, sd, dt = (np.concatenate([np.broadcast_to(f[x], len(f['sd'])) for f in forks if f['dt']])
+    mean, var, sd, dt = (np.concatenate([np.broadcast_to(f[x], len(f['sd'])) for f in forks])
                          for x in ('mean', 'var', 'sd', 'dt'))
     seen, mixed, point = (sd ** 2).sum(), (dt * np.exp(mean + 0.5 * var)).sum(), (dt * np.exp(mean)).sum()
     assert len(sd) >= 50 and abs(seen / mixed - 1.0) < 0.04 and point / mixed < 0.9, (len(sd), seen / mixed, point / mixed)

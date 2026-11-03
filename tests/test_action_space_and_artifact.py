@@ -258,7 +258,7 @@ def _corridor_at(sched, t):
 
 def test_a_corridor_trained_policy_rolls_in_its_fence_and_loads_only_into_it(tmp_path):
     """Trained inside a SIGN-CROSSING `Total_Position_Schedule`: the held-out greedy book sums
-    inside the fence at every step, short early and long late; the artifact stamps that schedule;
+    inside the fence at every decision step, short early and long late; the artifact stamps that schedule;
     a frozen eval in the same corridor reports the trained V_0 to the bit, and one under another
     corridor or none is refused by name - the frozen value fn learned other reachable wealth.
 
@@ -269,7 +269,10 @@ def test_a_corridor_trained_policy_rolls_in_its_fence_and_loads_only_into_it(tmp
     diag = train.evaluation_summary['diagnostics']
     t0 = int(diag['root_t'])
     saw_short = saw_long = False
+    decisions = {r['t'] for r in diag['per_t']}
     for i, book in enumerate(diag['verdict']['greedy_q_traj']):
+        if t0 + i not in decisions:
+            continue                     # the book a decision holds over a row of no market time
         lo, hi = _corridor_at(SIGN_CROSSING, t0 + i)
         assert lo - 1e-3 <= sum(book) <= hi + 1e-3, (t0 + i, sum(book), lo, hi)
         saw_short, saw_long = saw_short or hi < 0, saw_long or lo > 0
@@ -328,6 +331,11 @@ LEGS = ('PL_JUL_2026', 'PL_OCT_2026')
 #: Half and half, then from Step 25 a quarter and three quarters.
 KNOTS = ((0, (0.5, 0.5)), (25, (0.25, 0.75)))
 PASSIVE_T_MIN = 15
+
+
+def _decisions(world):
+    """The sim-grid rows a solver decides on: the market rows of the job's calendar and the first row."""
+    return {0} | {i - world.initial_time_index for i in world.business_indices}
 
 
 def _passive_cfg(save=None, load=None):
@@ -392,15 +400,17 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
     train = _run(cfg)
     v, world = train.evaluation_summary['diagnostics']['verdict'], train.bundle
     F, L, horizon = world.tradables_sim, world.liability_sim, world.last_live_mtm_index
+    decisions = _decisions(world)
+    t0 = min(t for t in decisions if t >= PASSIVE_T_MIN)
 
     def kappa(t):
         return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t].mean()
                             * size for h, size in zip(LEGS, sizes)])
 
-    W, q_prev, books = L[PASSIVE_T_MIN].clone(), torch.zeros(len(LEGS), device=world.device), []
+    W, q_prev, books = L[t0].clone(), torch.zeros(len(LEGS), device=world.device), []
     cost = torch.zeros_like(W)
-    for t in range(PASSIVE_T_MIN, horizon):
-        q = book(world, t)
+    for t in range(t0, horizon):
+        q = book(world, t) if t in decisions else q_prev
         books.append(q.tolist())
         cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1)
         dF = torch.stack([F[h][t + 1] - F[h][t] for h in LEGS], dim=-1)
@@ -448,6 +458,8 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
     train = _run(cfg)
     v, world = train.evaluation_summary['diagnostics']['verdict'], train.bundle
     F, L, horizon = world.tradables_sim, world.liability_sim, world.last_live_mtm_index
+    decisions = _decisions(world)
+    t0 = min(t for t in decisions if t >= PASSIVE_T_MIN)
 
     def book(t):
         date = world.scenario_dates[world.initial_time_index + t]
@@ -459,10 +471,10 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
         return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t].mean() * size
                             for h, size in zip(LEGS, sizes)])
 
-    W, q_prev = L[PASSIVE_T_MIN].clone(), torch.zeros(len(LEGS), device=world.device)
+    W, q_prev = L[t0].clone(), torch.zeros(len(LEGS), device=world.device)
     cost = torch.zeros_like(W)
-    for t in range(PASSIVE_T_MIN, horizon):
-        q = book(t)
+    for t in range(t0, horizon):
+        q = book(t) if t in decisions else q_prev
         cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1) + churn * ((q - q_prev) ** 2).sum(-1)
         dF = torch.stack([F[h][t + 1] - F[h][t] for h in LEGS], dim=-1)
         W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t + 1] - L[t])
@@ -662,13 +674,55 @@ def test_the_drift_monitor_scores_a_decision_only_once_its_move_has_printed(tmp_
             {'DiffV2_Drift_Threshold_Sigmas': 1e-6, 'DiffV2_Drift_Beta': beta})
         sv = _run(cfg).evaluation_summary['diagnostics']['stepper_verdict']
         return sv['drift_monitor'], sv['greedy_q_traj']
-    plain_m, plain_q = roll(0.0)
-    beta_m, beta_q = roll(5.0)
+    (plain_m, plain_q), (beta_m, beta_q) = roll(0.0), roll(5.0)
     assert len(plain_m['z_path']) == len(plain_m['t']) >= 3
     assert plain_m['z_path'][0] == 0.0 and plain_m['tripped'][0] is False, (plain_m['z_path'][:2], plain_m['tripped'][:2])
     assert all(plain_m['tripped'][1:]) and all(beta_m['tripped'][1:]), plain_m['tripped']
     assert beta_m['z_path'] == plain_m['z_path'], (beta_m['z_path'][:3], plain_m['z_path'][:3])
     assert beta_q[0] == plain_q[0], (beta_q[0], plain_q[0])
+
+
+#: A spot whose one market day of variance the fork and a replay share exactly: its GARCH(1,1)
+#: variance is a recursion on the realised path.
+GARCH_SPOT = {'Omega': 1.0e-5, 'Alpha': 0.05, 'Beta': 0.9, 'Nu': 8.0, 'H0': 2.0e-4}
+
+
+def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path):
+    """A decision is a market day holding its book to the next, and its fork lands there with that
+    interval's market time. On the fixture with a `GARCHSpotModel` spot over `SLOW_BASIS`, a policy
+    trained from step 60 rolls frozen on a tape drawn from the world's own law, its weekends and
+    holidays flagged filled: the drift monitor's standardised residual, each decision's fork forecast
+    against the move to the next decision, reads an RMS of 1.200 over the 7 Friday decisions, each
+    Friday to Monday, and 1.110 over the 32 others, both within 0.5 to 2. 9 s.
+
+    Killing mutations: the fork stepping one calendar row, a Friday's landing on a Saturday with no
+    market time (Friday RMS 0); the realised move read over one calendar row (0.074)."""
+    world = {'Price Models': {'GARCHSpotModel.PLATINUM_LME': GARCH_SPOT, 'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': SLOW_BASIS},
+             'Model Configuration': {'.ModelParams': {'modeldefaults': {'CommodityPrice': 'GARCHSpotModel'},
+                                                      'modelfilters': {}}}}
+
+    def on(cfg, **solver):
+        cfg['Calc']['MergeMarketData']['ExplicitMarketData'].update(jsonlib.loads(jsonlib.dumps(world)))
+        cfg['Calc']['Calculation']['Hedging_Problem'].get('Solver', {}).update(solver)
+        return cfg
+
+    tape = on(jsonlib.load(open(FIXTURE)))
+    tape['Calc']['Calculation'].update(Execution_Mode='simulate_only', Batch_Size=2, Random_Seed=3)
+    world_b = _run(tape).bundle
+    rows = world_b.initial_time_index
+    path = str(tmp_path / 'tape.npz')
+    np.savez(path, Filled_Rows=np.array([not world_b.business_day.is_on_offset(d) for d in world_b.scenario_dates[rows:]]),
+             **{k: v[rows:].cpu().double().numpy()[..., 0] for k, v in world_b.factors.items()})
+    ckpt = str(tmp_path / 'value_fn.pt')
+    _run(on(_cfg(seed=7, save=ckpt), T_Min=60))
+    roll = on(_cfg(seed=7, batch=8, load=ckpt), T_Min=60, DiffV2_Stepper_Rollout='Yes')
+    roll['Calc']['Calculation']['Observed_Scenario'] = path
+    roll['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
+    sv = _run(roll).evaluation_summary['diagnostics']['stepper_verdict']
+    z = np.diff(sv['drift_monitor']['z_path'])
+    friday = pd.DatetimeIndex(sv['greedy_q_dates'][:len(z)]).dayofweek == 4
+    rms = [float(np.sqrt(np.mean(z[x] ** 2))) for x in (friday, ~friday)]
+    assert friday.sum() >= 6 and all(0.5 < x < 2.0 for x in rms), (int(friday.sum()), rms)
 
 
 # --------------------------------------------------------------------------------------------
@@ -778,7 +832,7 @@ def test_the_book_column_is_fitted_to_the_repositioning_charge_s_slope(growth):
     rows = reads['Yes']['per_t']
     departs = (sum(abs(r['book_slope'] - r['book_label']) for r in rows)
                / sum(abs(r['book_label']) for r in rows))
-    assert len(rows) == 47 and departs < 0.25, (len(rows), departs)
+    assert len(rows) == 32 and departs < 0.25, (len(rows), departs)
     assert reads['Yes']['n_star_0'] != reads['No']['n_star_0'], reads['Yes']['n_star_0']
 
 
@@ -817,7 +871,7 @@ def test_the_book_label_is_taken_along_the_ladder():
     one = _run(_without_first_leg(cfg)).evaluation_summary['diagnostics']
     assert (two['V_0'], two['n_star_0']) == (one['V_0'], [0.0] + one['n_star_0']), (two['V_0'], one['V_0'])
     labels = [[(r['book_label'], r['book_slope']) for r in d['per_t']] for d in (two, one)]
-    assert len(labels[0]) == 47 and labels[0] == labels[1]
+    assert len(labels[0]) == 32 and labels[0] == labels[1]
 
 
 def test_the_bank_is_composed_along_the_ladder():
@@ -926,7 +980,7 @@ def test_a_no_table_document_whose_legs_all_die_still_labels():
         hp['Tradable_Instruments']['CommodityFutureDeal'][leg]['Maturity_Date'] = {'.Timestamp': '2026-05-25'}
     diag = _run(cfg).evaluation_summary['diagnostics']
     labels = {r['t']: r['book_label'] for r in diag['per_t']}
-    assert len(labels) == 47 and labels[46] == 0.0 and labels[0] != 0.0, (labels[46], labels[0])
+    assert len(labels) == 32 and labels[46] == 0.0 and labels[0] != 0.0, (labels[46], labels[0])
     assert diag['verdict']['passive_q_traj'][0] == [-16.0, -16.0], diag['verdict']['passive_q_traj'][0]
 
 
@@ -1008,7 +1062,7 @@ def _held_into_expiry(fee):
     hp = calc['Hedging_Problem']
     hp['Objective'] = {'Object': 'AsymmetricUtility_Huber', 'Huber_Aversion': 0.0,
                        'Utility_Scale_Explicit': 1.0e5}
-    hp['Solver'].update({'DiffV2_Position_State': 'Yes', 'T_Min': 45, 'Active_Hedge_Indices': [1],
+    hp['Solver'].update({'DiffV2_Position_State': 'Yes', 'T_Min': 42, 'Active_Hedge_Indices': [1],
                          'DiffV2_Bank_Noise_Frac': 0.0, 'Training_Action_Grid_Levels_Per_Axis': 26,
                          'DiffV2_Label_Horizon': 2})
     ev = hp['Evaluator']
@@ -1035,8 +1089,8 @@ def test_the_label_charges_the_close_of_a_leg_that_dies_at_the_step():
     each step one candidate."""
     rows = [{r['t']: r['Y_mean'] for r in _run(_held_into_expiry(fee)).evaluation_summary['diagnostics']['per_t']}
             for fee in (0.0, 500.0)]
-    shift = {t: rows[1][t] - rows[0][t] for t in (45, 46)}
-    assert abs(shift[46] + 0.05) < 1e-6 and abs(shift[45] + 0.05) < 1e-3, shift
+    shift = {t: rows[1][t] - rows[0][t] for t in (42, 46)}
+    assert abs(shift[46] + 0.05) < 1e-6 and abs(shift[42] + 0.05) < 1e-3, shift
 
 
 #: The fixture's basis reverting to a slow mean of lambda 0.95, and the GARCH(1,1) its innovation
@@ -1120,15 +1174,16 @@ BAND_BASIS = {'A': 0.01, 'Phi': 0.9, 'Nu': 0.0, 'Sigma': 1.5, 'Reversion_Model':
 
 
 def _state_labels(caplog, returns=False, save=None, band=False):
-    """`_cfg` swept over its last five decision steps at 200 fit iterations, its basis `SLOW_BASIS`
+    """`_cfg` swept over its last eight decision steps at 200 fit iterations, its basis `SLOW_BASIS`
     on `OWN_GARCH`, saving its value fn to `save`; under `band` the `FRICTIONAL` solve on 96 paths of
-    seed 11 with `BAND_BASIS`, the July average running to its payment date so the last decision
-    step still hedges a fixing: each fitted step's `(slope, label)` bank means per market column,
+    seed 11 with `BAND_BASIS` over its last three, the July average running to its payment date so
+    the last decision step still hedges a fixing: each fitted step's `(slope, label)` bank means per
+    market column,
     from the debug line."""
     cfg = _cfg(seed=11, batch=96) if band else _cfg(seed=7, save=save)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     solver = hp['Solver']
-    solver['T_Min'], solver['DiffV2_Fit_Iters'] = LAST_STEP - 4, 200
+    solver['T_Min'], solver['DiffV2_Fit_Iters'] = LAST_STEP - (4 if band else 11), 200
     if returns:
         solver['DiffV2_Returns_State'] = 'Yes'
     basis = dict(SLOW_BASIS, **OWN_GARCH)
@@ -1153,12 +1208,12 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     """The gradient fork is seeded from leaves at the basis's revealed deviation D = b - mu and log
     sigma^2, mu the level leaf less D, so each column's label is its slope at the others fixed: D's
     -dY/dmu, the level's dY/db + dY/dmu. On the fixture under the band (D the 7th market column, log
-    sigma^2 the 8th, the level the 9th): the fitted slope in D sums within 5.1% of its label over the
-    five swept steps and in log sigma^2 within 1.2% over the first three, the last two its label
-    within noise of zero (-6e-6 and -4e-6 against 8e-5), and in the net's standardised coordinates
-    every column's within 4.2% of the largest label (bound 15%: the twin loss meets a label in the
-    bank mean of 24 states beside the value term, not exactly). At the last step, whose
-    continuation is the closed-form utility, the level's label is 0.07% of D's (bound 1%): shifting
+    sigma^2 the 8th, the level the 9th), over the eight swept decision steps, Friday's forking to
+    Monday among them: the fitted slopes in D and log sigma^2 sum within 1.4% and 0.9% of their
+    labels, and in the net's standardised coordinates every column's within 1.2% of the largest
+    label (bound 15%: the twin loss meets a label in the bank mean of 24 states beside the value
+    term, not exactly). At the last step, whose continuation is the closed-form utility, the level's
+    label is 0.1% of D's (bound 1%): shifting
     the level and its slow mean together leaves the move's law unchanged; and under
     `DiffV2_Returns_State`, whose basis price columns are fractions of the 2,055 t0 spot, D's and the
     level's are 2,055 times the plain ones and log sigma^2's the plain one. 11 s.
@@ -1173,10 +1228,8 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     ckpt = str(tmp_path / 'value_fn.pt')
     on, rs = _state_labels(caplog, save=ckpt), _state_labels(caplog, returns=True)
     slope_on, label_on = (sum(on[t][i] for t in on) for i in (0, 1))
-    # the log variance's label is within noise of zero on the last two steps, the closed form one or two moves away
-    early = [sum(on[t][i][7] for t in on if t <= LAST_STEP - 2) for i in (0, 1)]
-    for col, (slope, label) in ((6, (slope_on[6], label_on[6])), (7, early)):
-        assert label > 0.0 and abs(slope / label - 1.0) < 0.15, (col, slope, label)
+    for col in (6, 7):
+        assert label_on[col] > 0.0 and abs(slope_on[col] / label_on[col] - 1.0) < 0.15,             (col, slope_on[col], label_on[col])
     m_std = np.asarray(torch.load(ckpt, map_location='cpu', weights_only=False)['m_std'])
     z_err, z_label = np.abs(slope_on - label_on) * m_std, np.abs(label_on) * m_std
     assert z_err.max() < 0.15 * z_label.max(), (z_err, z_label)

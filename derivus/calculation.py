@@ -3857,9 +3857,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
     def _attach_inner_mc(self, bundle, outer_buffer, shared_mem, base_date, tradable_refs):
         """Attach the on-demand inner-MC forks to `bundle` as closures, so the solver can fork
-        without a calc handle. Every fork is windowed to {t, t+1} - 2-row generation and a real
-        2-row pricing pass - giving the exact per-tradable F_t1 and L_t / L_t1 the diff-ML bootstrap
-        reads. `outer_rows` lets the solver run the GRAD fork in outer-path sub-slices.
+        without a calc handle. Every fork is windowed to t and the rows to the next market row -
+        generation and a real pricing pass on those rows - giving the exact per-tradable F_t1 and
+        L_t / L_t1 the diff-ML bootstrap reads. `outer_rows` lets the solver run the GRAD fork in outer-path sub-slices.
 
         The outer buffer is passed in rather than read off the calc: under streaming there is one
         bundle per batch, and each forks from ITS OWN batch."""
@@ -3889,7 +3889,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         per-outer-path, so row slices are independent. The DP/MPC backward sweep calls this on
         demand outside the outer loop, via `Bundle.inner_mc`.
 
-        Returns the inner samples the solver bootstraps from:
+        Returns the inner samples the solver bootstraps from, `t+1` the next market row, the one the
+        decision at t holds its book to (Monday from a Friday):
             F_t, F_t1     {ref: (B_outer, B_inner)}       futures price at outer t and t+1
             L_t, L_t1     (B_outer, B_inner)              liability MTM at outer t and t+1
             market_t1     (B_outer, B_inner, market_dim)  inner market state at outer t+1
@@ -3904,8 +3905,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         (`Batch_Size`, `Inner_Sub_Batch`) and nothing else. Too wide for the card raises CUDA OOM
         naming this fork; that is the contract, not a knob.
 
-        THE WINDOW: the inner grid and every deal's `Time_dep` are truncated to {t, t+1}, so the
-        pricing chain runs for real on 2 rows - exact per-tradable F_t1 and liability L_t / L_t1,
+        THE WINDOW: the inner grid and every deal's `Time_dep` are truncated to t and the rows to
+        the next market row, so the pricing chain runs for real on those rows, two on a weekday - exact per-tradable F_t1 and liability L_t / L_t1,
         and correct on mixed strips, where a market-only short-circuit would broadcast spot as every
         F_t1. One forward step is also what bounds the AAD tape.
 
@@ -3949,10 +3950,14 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         cutoff_idx = t
         inner_base_date = base_date + pd.Timedelta(days=t_days)
 
-        # THE WINDOW: inner grid truncated to {t, t+1}, so the AAD tape stays bounded
-        window_end_idx = min(cutoff_idx + 1, self.time_grid.mtm_time_grid.size - 1)
-        if inner_time_grid.scen_time_grid.size > 2:
-            kept = set(sorted(inner_time_grid.scenario_dates)[:2])
+        # THE WINDOW: inner grid truncated to t and the rows to the next market row, the one the
+        # decision at t holds its book to, so the AAD tape stays bounded
+        dates = sorted(inner_time_grid.scenario_dates)
+        ahead = min(int(utils.market_rows(utils.market_days(pd.DatetimeIndex(dates), shared_mem.business_day))[0][0]),
+                    len(dates) - 1)
+        window_end_idx = min(cutoff_idx + ahead, self.time_grid.mtm_time_grid.size - 1)
+        if inner_time_grid.scen_time_grid.size > ahead + 1:
+            kept = set(dates[:ahead + 1])
             inner_time_grid = utils.TimeGrid(
                 kept,
                 kept & set(inner_time_grid.mtm_dates),
@@ -4017,8 +4022,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                         key, simulated, outer_scenario_buffer, t, shared_mem, self._inner_state_opts, with_grad)
                     if with_grad:
                         state_t_leaves.update(inner_leaves)
-                    # market state at outer t+1 (inner-time index 1), in reveal order
-                    for block, _kind in proc_inner.reveal_state_at(1, shared_mem.t_Scenario_Buffer):
+                    # market state at the next market row (inner-time index `ahead`), in reveal order
+                    for block, _kind in proc_inner.reveal_state_at(ahead, shared_mem.t_Scenario_Buffer):
                         market_t1_parts.append(
                             self._reveal_transform(key, block, _kind).reshape(-1, B_outer, B_inner))
 
@@ -4091,9 +4096,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                         F_t[ref] = F_t1[ref] = zero_bs
                         continue
                     td = td[cutoff_idx:]                                # (T_inner, B_outer, B_inner)
-                    # td has < 2 time points when the tradable's last deal event is at t
-                    # (it expires this step) — no t+1 slice; freeze it (dF == 0).
-                    F_t1[ref] = (td[1] if td.shape[0] >= 2 else td[-1]).clone()
+                    # td stops short of the next market row when the tradable's last deal event
+                    # is before it (it expires this step); freeze it at its last (dF == 0).
+                    F_t1[ref] = td[min(ahead, td.shape[0] - 1)].clone()
                     F_t[ref] = td[0]
                 # market state - every simulated factor's informative state concatenated;
                 # factor order is the `stoch_factors_inner` order, identical for t and t+1
@@ -4125,8 +4130,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 # indexing as F_t1) - not a Jacobian linearization
                 mtm_fwd = inner_mtm[cutoff_idx:]                            # (T_inner, B_outer, B_inner)
                 L_t_inner = mtm_fwd[0].clone()                             # outer-t (shared across draws)
-                L_t1_inner = (mtm_fwd[1] if mtm_fwd.shape[0] >= 2
-                              else mtm_fwd[-1]).clone()                     # outer-t+1 per inner draw
+                L_t1_inner = mtm_fwd[min(ahead, mtm_fwd.shape[0] - 1)].clone()   # the next market row's
                 result.update(
                     t=t, cutoff_idx=cutoff_idx, L_T=None,
                     L_t=L_t_inner, L_t1=L_t1_inner, F_t=F_t, F_t1=F_t1,

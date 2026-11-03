@@ -6948,13 +6948,13 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
         self.last_filter = torch.stack(rows).to(path.dtype)
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'lv_filter')] = self.last_filter
         if path.dim() > 2 and logging.getLogger().isEnabledFor(logging.DEBUG):
-            # each outer path's start, the spread of its fork's first log return and that row's market years
+            # each outer path's start, and the spread of its fork's log return to the next market row and its years
             f = rows[0]
             logging.debug('LV_FORK %r', {'state': (ell[0] + fast[0])[:, 0].tolist(),
                                          'mean': (f[0] + f[1])[:, 0].tolist(),
                                          'var': (f[2] + 2.0 * f[3] + f[4])[:, 0].tolist(),
-                                         'sd': log_px[1].sub(log_px[0]).std(-1, correction=0).tolist(),
-                                         'dt': float(self.years[1])})
+                                         'sd': log_px[-1].sub(log_px[0]).std(-1, correction=0).tolist(),
+                                         'dt': float(self.years[1:].sum())})
         return path
 
     def reveal_state_at(self, t, buffer):
