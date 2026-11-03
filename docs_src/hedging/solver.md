@@ -42,7 +42,7 @@ The capital line travels with that frame: a checkpoint stamps the notional its f
 
 An ensemble (`DiffV2_Load_Value_Fn` listing several checkpoints) scores every candidate book as the mean over members of each member's own value: its residual net in its own standardisation frame and, under `LogWealth`, the day's growth at its own capital line (`DiffSolver._reward`), so the greedy book does not depend on the order the checkpoints are listed in; its drift tripwire's null sigma is the mean of the members' stamped nulls. Held by `tests/test_action_space_and_artifact.py::test_an_ensemble_scores_each_member_in_its_own_frame`.
 
-A fit is held to what its own argmax earns on the held-out batch: a fit whose $V_0$ exceeds the held-out greedy `u_mean`, net of the repositioning charge under `DiffV2_Position_State` (`u_mean_net`), by more than `DiffV2_Max_Value_Optimism` (default 1.0) writes no checkpoint and is refused by name with both numbers, since a bootstrap that outruns its own policy has either fed a slope no label supervises back into $V_0$ or ruins out of sample. A checkpoint stamps that gap (`value_optimism`) and its swept mean book per decision step (`q_star_path`); a roll refuses a member stamped above its declared bound, and an ensemble any two of whose members' swept net books lie more than `DiffV2_Max_Member_Disagreement` contracts apart on average (default 8), by name. A checkpoint saved before the stamps loads as before. On the platinum record the healthy members read 0.04 to 0.62 nats of optimism and the three diverged 1.40 to 2.05; the PM-frame pairs agree within 1.7 to 5.2 contracts. Held by `tests/test_action_space_and_artifact.py::test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing` and `::test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused`.
+A fit is held to what its own argmax earns on the held-out batch: a fit whose $V_0$ exceeds the held-out greedy `u_mean`, net of the repositioning charge under `DiffV2_Position_State` as $V_0$ is, by more than `DiffV2_Max_Value_Optimism` (default 1.0) writes no checkpoint and is refused by name with both numbers, since a bootstrap that outruns its own policy has either fed a slope no label supervises back into $V_0$ or ruins out of sample. A checkpoint stamps that gap (`value_optimism`) and its swept mean book per decision step (`q_star_path`); a roll refuses a member stamped above its declared bound, and an ensemble any two of whose members' swept net books lie more than `DiffV2_Max_Member_Disagreement` contracts apart on average (default 8), by name. A checkpoint saved before the stamps loads as before. On the platinum record the healthy members read 0.04 to 0.62 nats of optimism and the three diverged 1.40 to 2.05; the PM-frame pairs agree within 1.7 to 5.2 contracts. Held by `tests/test_action_space_and_artifact.py::test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing` and `::test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused`.
 
 The repositioning charge is on the move from the standing book, as the step that set it left it, to the new book on the live legs, in the argmax, the label and the k-step correction alike, so a position on a leg that dies at the step pays its close there, as the roll and the verdict charge it. Held by `tests/test_action_space_and_artifact.py::test_the_label_charges_the_close_of_a_leg_that_dies_at_the_step` for the label and the correction; the argmax's spelling, which reaches a ranking only where a leg dies beside a live one, is Not gated.
 
@@ -68,8 +68,8 @@ Under `DiffV2_First_Decision_From` 'Passive' the stepper roll's first greedy dec
 | `nohedge` | no position | `diagnostics.verdict` |
 | `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared) in contracts, clamped to the position limits, projected into the corridor and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing | `diagnostics.verdict`, `stepper_verdict` |
 
-The two tracks named `textbook` are different policies. Both benchmarks report turnover cost as a
-diagnostic and are never charged it.
+The two tracks named `textbook` are different policies. Both report turnover cost as a diagnostic;
+the comparison track is never charged it, the verdict's only under `DiffV2_Position_State`.
 
 The verdict rolls the fitted argmax policy over every path of the held-out batch, flat at `T_Min`,
 beside the verdict's `textbook`, `nohedge` and `passive`, and reports per policy $E[u]$ (`u_mean`) and the
@@ -77,6 +77,13 @@ mean, 5th percentile and CVaR at 5% of terminal wealth (`wT_mean`, `wT_p5`, `wT_
 the mean of the paths at or below the 5th percentile). It flags `verdict_beats_nohedge_on_utility`
 and `verdict_beats_textbook_on_utility` (greedy `u_mean` at least the other's) and
 `verdict_tail_competitive_vs_textbook` (greedy CVaR5 no worse than the textbook's less 5% of its
-magnitude). The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
+magnitude). Each traded policy pays turnover cost on the benchmarks' rule, entry from the opening
+book, every reposition and the unwind under `Force_Flat_At_End` (`turnover_cost_mean`). Without
+`DiffV2_Position_State` its wealth runs cost-free and the `*_net` columns subtract the cost beside
+it. Under it every step's wealth is charged the repositioning charge the labels are fitted net of
+(`DiffSolver._reposition_charge`), so each greedy decision reads the net wealth its value was
+fitted on, the columns are net and the `*_net` columns repeat them. Held by
+`tests/test_action_space_and_artifact.py::test_a_label_past_the_horizon_is_what_its_greedy_policy_realises`.
+The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
 `Reference_Mode = Running_Wealth` the solver's $V_0$ is a sum of step utilities, so the ladder's
 order is not an acceptance statement and the run logs a warning.

@@ -654,17 +654,18 @@ def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tm
     """`DiffV2_Max_Value_Optimism` bounds V_0 less the held-out greedy utility, net of the
     repositioning charge under the position state the swap fixture carries: the value a fit claims
     against what its own argmax earns on a world no fit step saw. Seed 5 claims V_0 +0.2779 while
-    its held-out batch ruins below the capital line its bank measured (greedy u -1.9864 net,
-    2.26 apart): the save is refused naming the field, V_0 and the held-out utility, and no
+    its held-out batch ruins below the capital line its bank measured (greedy u -2.0562, 2.33
+    apart): the save is refused naming the field, V_0 and the held-out utility, and no
     checkpoint is written (those are the CPU's draws; a card's seed 5 does not ruin, so the test
     declares the bound at -10, below any fit's gap, and the refusal fires on either device). Seed
-    6 (+0.2322 against +0.2447 net on the CPU) saves, stamped with its optimism; a roll declaring a
+    6 (+0.2322 against +0.2483 on the CPU) saves, stamped with its optimism; a roll declaring a
     bound below the stamp refuses the member by name, and the same checkpoint without the stamp,
     as every checkpoint saved before it, loads at that bound. 20 s.
 
     Killing mutations: the save's check removed (seed 5 writes its checkpoint); the roll's check
-    removed (the stamped member loads below its stamp); the held-out utility read gross of the
-    charge (seed 6 stamps -0.0456 where V_0 less the net utility is -0.0125)."""
+    removed (the stamped member loads below its stamp); the verdict's wealth recursion gross of the
+    charge (seed 6 stamps V_0 less the gross utility, -0.0456, where less the net it reads
+    -0.0125)."""
     ruined = str(tmp_path / 'value_fn_s5.pt')
     cfg = _swap_growth(5, save=ruined)
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Max_Value_Optimism'] = -10.0
@@ -833,8 +834,8 @@ def test_the_ladder_bank_reads_the_policy_s_live_legs_on_a_replayed_path(growth,
     did not move. The swap growth checkpoint rolls frozen on one replayed path, the carry and the
     rate at zero and day 20 a copy of day 19 (a forward-filled holiday), so neither leg's mark
     moves into step 20: the roll under 'Yes' reads the roll under 'No' to the bit over its 47 steps,
-    the bank being inert on a loaded checkpoint (greedy wT_mean -12345.93 on the CPU, the book at
-    step 20 [3, 2]). `Deterministic_Kernels` holds the identity on a card too. 5 s.
+    the bank being inert on a loaded checkpoint (greedy wT_mean -13054.20 on the CPU, net of its
+    charges, the book at step 20 [3, 2]). `Deterministic_Kernels` holds the identity on a card too. 5 s.
 
     Killing mutation: the bank's live legs read off the outer marks, a leg live while its mark
     moved into the step (refused at step 20: "Allocation_Weights knot in force at step 20 puts no
@@ -915,9 +916,8 @@ def _horizon(objective, save=None, load=None):
     if objective == 'terminal':
         hp['Objective'] = jsonlib.load(open(FIXTURE))['Calc']['Calculation']['Hedging_Problem']['Objective']
     else:
-        # near the capital line the label, its charges compounded into the wealth it decides on,
-        # and the roll's net utility, read off gross wealth, part: 0.5 leaves the worst bank book
-        # 55% headroom where 1.0 leaves 9%
+        # 0.5 leaves the worst bank book 55% headroom where 1.0 leaves 9%, where some draws hold a
+        # path near enough the line to swamp the root's one-step cross-fit
         hp['Solver']['DiffV2_Risk_Aversion'] = 0.5
     if load is None:
         hp['Solver']['DiffV2_Label_Horizon'] = 100
@@ -929,26 +929,29 @@ def test_a_label_past_the_horizon_is_what_its_greedy_policy_realises(objective, 
     """Under `DiffV2_Label_Horizon` k the value label gains, on the outer path, the k-step bootstrap
     along the fitted greedy policy less the one-step one, k clipped at the decision horizon. Past
     the horizon the root label is then the utility the greedy policy realises on the training
-    paths, net of its repositioning charges, up to the root's one-step cross-fit: the swap growth
-    document under seed 6 at a horizon of 100 steps, 47 past it, trains a V_0 within 0.006 of
-    what its checkpoint's frozen roll on the training batch reports net of cost (`u_mean_net`,
-    the roll's first greedy book the training root's): on the CPU 0.1435 against 0.1439 under
-    LogWealth and 0.2058 against 0.2075 under the fixture's terminal utility, where the one-step
-    fit reads 0.1352 against 0.1441 and 0.2239 against 0.2023; on the card 0.1097 against 0.1083
-    under LogWealth. Seeds 1 to 8 on either device read LogWealth's V_0 within -0.0004 to +0.0042
-    of the roll. 35 s each.
+    paths, net of its repositioning charges, up to the root's one-step cross-fit, once the roll
+    charges each step's wealth as the label does, so each decision reads the net wealth its value
+    was fitted on: the swap growth document under seed 6 at a horizon of 100 steps, 47 past it,
+    trains a V_0 within 0.006 of the `u_mean` its checkpoint's frozen roll on the training batch
+    realises, which its `u_mean_net` repeats (the roll's first greedy book the training root's). On
+    the CPU 0.1435 against 0.1450 under LogWealth and 0.2058 against 0.2072 under the fixture's
+    terminal utility, where the one-step fit reads 0.1352 against 0.1453 and 0.2239 against
+    0.2022; seeds 1 to 8 read LogWealth's V_0 within -0.0015 to +0.0025 of the roll. 35 s each.
 
-    Killing mutations, V_0 against the roll's utility: the correction's sign flipped (the
-    recursion runs away, -1.1e10 and -3.0e10); the k-step end read at the bank's own wealth
-    (terminal 0.0530 against 0.1615; LogWealth's end at the horizon is zero at any wealth); the
-    rollout's charge dropped (0.1589 against 0.1429, 0.2235 against 0.2073); the rewards after
-    the first move dropped (growth 0.0015 against 0.1081); k not clipped at the horizon (refused
-    at the last step, which has no successor in the cache)."""
+    Killing mutations, V_0 against the roll's utility: the roll's wealth recursion gross of the
+    charge (its `u_mean` gross, 0.1616 and 0.2252 against `u_mean_net` 0.1439 and 0.2075, on every
+    seed 1 to 8); the correction's sign flipped (the recursion runs away, -1.1e10 and -3.0e10);
+    the k-step end read at the bank's own wealth (terminal 0.0530 against 0.1612; LogWealth's end
+    at the horizon is zero at any wealth); the rollout's charge dropped (0.1589 against 0.1441,
+    0.2235 against 0.2072); the rewards after the first move dropped (growth 0.0015 against
+    0.1089); k not clipped at the horizon (refused at the last step, which has no successor in the
+    cache)."""
     ckpt = str(tmp_path / 'value_fn.pt')
     train = _run(_horizon(objective, save=ckpt)).evaluation_summary['diagnostics']
     roll = _run(_horizon(objective, load=ckpt)).evaluation_summary['diagnostics']['verdict']
     assert roll['greedy_q_traj'][0] == train['n_star_0'], (roll['greedy_q_traj'][0], train['n_star_0'])
-    realised = roll['greedy']['u_mean_net']
+    realised = roll['greedy']['u_mean']
+    assert roll['greedy']['u_mean_net'] == realised, (roll['greedy']['u_mean_net'], realised)
     assert abs(train['V_0'] - realised) < 0.006, (train['V_0'], realised)
 
 

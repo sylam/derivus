@@ -1835,11 +1835,14 @@ class DiffSolver:
         `HindsightDpSolver`, which stay terminal-based. `wT_mean` and the tail columns are raw
         dollars under either mode; `u_mean_is_step_sum` says which regime produced the number.
 
-        Turnover cost is accounted in PARALLEL — entry from the OPENING book `q0`, per-step
-        repositioning, and the terminal unwind under `Force_Flat_At_End` — the same three-part rule
-        the two benchmark tracks price their execution with, so every `*_net` column compares.
-        The wealth recursion itself stays cost-free, so these are DIAGNOSTICS on that
-        approximation.
+        Each traded policy (greedy, textbook, passive) pays turnover cost on the same three-part
+        rule the two benchmark tracks price their execution with: entry from the OPENING book
+        `q0`, per-step repositioning, and the terminal unwind under `Force_Flat_At_End`
+        (`turnover_cost_mean`). Without `DiffV2_Position_State` the wealth recursion is cost-free
+        and the cost is accounted in PARALLEL, so the `*_net` columns are diagnostics on that
+        approximation. Under it each step's wealth is charged `_reposition_charge`, the charge the
+        labels are fitted net of, churn term included: every greedy decision reads the net wealth
+        its value was fitted on, the main columns are net, and the `*_net` columns repeat them.
 
         The greedy ARGMAX is charged when either `DiffV2_Cost_Aware_Argmax` or
         `DiffV2_Position_State` is on: a value function fitted against a charged selection must be
@@ -1860,7 +1863,7 @@ class DiffSolver:
         u_run = ({p: torch.zeros(n, device=self.device) for p in W}
                  if self.running_wealth else None)
         u_net = ({p: torch.zeros(n, device=self.device) for p in cost}
-                 if self.running_wealth else None)
+                 if self.running_wealth and not self.position_state else None)
         last_net_inc = {}          # the final step's net increment, which the unwind belongs to
         last_W_pre = {}            # ...and the wealth it launched from (the ratio needs the base)
         with torch.no_grad():
@@ -1891,22 +1894,30 @@ class DiffSolver:
                 q_pa = self._passive_hedge(t, live, n)
                 z = torch.zeros(n, self.n_hedge, device=self.device)
                 kappa_cal_t = self.aspace.calendar_kappa(self.tradables_sim, t)
+                kappa_T = self._unwind_kappa(t)
                 step_cost = {}
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("passive", q_pa)):
-                    step_cost[p] = self.aspace.turnover_cost(q_now - q_prev[p], kappa_t,
-                                                             kappa_cal_t)
+                    step_cost[p] = (self._reposition_charge(q_now, q_prev[p], kappa_t, kappa_T,
+                                                            kappa_cal_t)
+                                    if self.position_state else
+                                    self.aspace.turnover_cost(q_now - q_prev[p], kappa_t,
+                                                              kappa_cal_t))
                     cost[p] = cost[p] + step_cost[p]
                     q_prev[p] = q_now
                 W_pre = dict(W)
-                W["greedy"] = self._wealth_step(W["greedy"], q_g, dF_o, dL_o)
-                W["textbook"] = self._wealth_step(W["textbook"], q_tb, dF_o, dL_o)
-                W["nohedge"] = self._wealth_step(W["nohedge"], z, dF_o, dL_o)
-                W["passive"] = self._wealth_step(W["passive"], q_pa, dF_o, dL_o)
+                for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
+                                 ("passive", q_pa)):
+                    W[p] = self._wealth_step(W[p], q_now, dF_o, dL_o)
+                    if self.position_state and p in step_cost:
+                        # the charge inside the step, as the label pays it, so the next decision
+                        # reads the wealth its value was fitted on
+                        W[p] = W[p] - step_cost[p]
                 if u_run is not None:
                     # indexed by the step the increment ARRIVES at, as every other seam does: the
                     # knee an increment is measured under belongs to the day it lands on
                     for p in W:
                         u_run[p] = u_run[p] + self._reward(W[p], W_pre[p], t + 1)
+                if u_net is not None:
                     for p in u_net:
                         last_net_inc[p] = W[p] - W_pre[p] - step_cost[p]
                         last_W_pre[p] = W_pre[p]
@@ -1915,8 +1926,9 @@ class DiffSolver:
                 q_traj["greedy"].append(q_g.mean(0).tolist())
                 q_traj["textbook"].append(q_tb.mean(0).tolist())
                 q_traj["passive"].append(q_pa.mean(0).tolist())
-            if self.force_flat:
-                # the unwind both benchmark tracks charge, so all three price one execution
+            if self.force_flat and not self.position_state:
+                # the unwind both benchmark tracks charge, so all three price one execution; under
+                # the position state the last step's charge carried it
                 kappa_T = self.aspace.kappa(self.tradables_sim, self.T_dec)
                 for p in cost:
                     unwind = self.aspace.turnover_cost(q_prev[p], kappa_T)
@@ -1946,7 +1958,8 @@ class DiffSolver:
         out["argmax_charged"] = bool(self.cost_aware or self.position_state)
         out["u_mean_is_step_sum"] = bool(self.running_wealth)
         for p in cost:
-            net_stats = _tail_stats(self._u, W[p] - cost[p], None if u_net is None else u_net[p])
+            net_stats = (dict(out[p]) if self.position_state else
+                         _tail_stats(self._u, W[p] - cost[p], None if u_net is None else u_net[p]))
             out[p]["turnover_cost_mean"] = float(cost[p].mean())
             out[p].update({f"{k}_net": v for k, v in net_stats.items()})
         # greedy position summary: mean over the rollout of |q| per instrument (is it hedging?)
@@ -2935,8 +2948,8 @@ class DiffSolver:
         if loaded is None:
             # the fitted value against what its own argmax earns held out: a bootstrap that
             # outruns it has ratcheted an unfitted slope into V_0, or its policy ruins. Under the
-            # position state V_0 is fitted net of the repositioning charge, so it is read net too.
-            u_held = float(verdict["greedy"]["u_mean_net" if self.position_state else "u_mean"])
+            # position state both are net of the repositioning charge.
+            u_held = float(verdict["greedy"]["u_mean"])
             optimism = V_0 - u_held
             artifact = self._policy_artifact(nets, md, hidden, V_0, n_star_0, worst, optimism)
             if save_path:
