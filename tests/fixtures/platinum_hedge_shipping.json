@@ -67,27 +67,8 @@
      "Cash_Balances": {
       "USD_CASH": 125000.0
      },
-     "Settlement_Prices": {
-      "PL_M1": 1666.7819,
-      "PL_M2": 1674.7606,
-      "PL_M3": 1673.2864
-     },
      "Margin_Balances": {
       "USD_CASH": 0.0
-     },
-     "Initial_Margin": {
-      "PL_M1": {
-       "Method": "per_contract",
-       "Amount": 7084.0
-      },
-      "PL_M2": {
-       "Method": "per_contract",
-       "Amount": 7118.0
-      },
-      "PL_M3": {
-       "Method": "per_contract",
-       "Amount": 7111.0
-      }
      }
     },
     "Objective": {

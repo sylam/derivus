@@ -260,7 +260,6 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     if getattr(args, 'huber_aversion', None) is not None:
         hp['Objective']['Huber_Aversion'] = float(args.huber_aversion)
 
-    p0, state = float(row[CME_COL]), carry_state(row)
     basis_model = json.load(open(calibrated_md))['MarketData']['Price Models'][
         f'BasisLinkedSpotModel.{BASIS_COL.split(".", 1)[1]}']
 
@@ -279,21 +278,18 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
 
     # --- tradables: the listed CME ladder, each referencing the martingale primary -------------
     mats = listed_expiries(args.expiries, trade_date)
-    futs, positions, setts, margins, limits = {}, {}, {}, {}, {}
+    futs, positions, limits = {}, {}, {}
     for i, mat in enumerate(mats, 1):
         name = f'PL_M{i}'
         futs[name] = {'Maturity_Date': _ts(mat), 'Currency': 'USD', 'Carry': 'PLATINUM_CARRY',
                       'Repo_Rate': ZERO_CURVE, 'Commodity': CME_COL.split('.')[1],
                       'Contract_Size': CONTRACT_SIZE}
         positions[name] = 0
-        setts[name] = round(float(forward(p0, state, (mat - pd.Timestamp(trade_date)).days / DAYS_IN_YEAR)), 4)
-        margins[name] = {'Method': 'per_contract', 'Amount': round(0.085 * setts[name] * CONTRACT_SIZE, 0)}
         limits[name] = {'Min_Position': -50, 'Max_Position': 0}
     hp['Tradable_Instruments']['CommodityFutureDeal'] = futs
     hp['Tradable_Instruments']['CashAccountDeal']['USD_CASH']['Investment_Horizon'] = _ts(pay)
     state_block = hp['Portfolio_State']
-    state_block['Positions'], state_block['Settlement_Prices'] = positions, setts
-    state_block['Initial_Margin'] = margins
+    state_block['Positions'] = positions
     hp['Evaluator']['Position_Limits'] = limits
     if delta_corridor is not None:
         hp['Evaluator']['Total_Position_Schedule'] = delta_corridor_schedule(

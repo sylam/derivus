@@ -240,20 +240,16 @@ def build_deal_config(template, arch, trade_date, calibrated_md, margin, volume,
         'Realized_Average': 0.0, 'FX_Realized_Average': 0.0, 'Fixed_Basis': -(k_fair - margin)})
 
     # --- tradables: CME strip at the tenor ladder (Commodity=PLATINUM_CME = the primary P) -------
-    futs, positions, setts, margins, limits = {}, {}, {}, {}, {}
-    for i, (mat, c, tau) in enumerate(zip(mats, carry, taus), 1):
+    futs, positions, limits = {}, {}, {}
+    for i, mat in enumerate(mats, 1):
         name = f'PL_M{i}'
         futs[name] = {'Maturity_Date': _ts(mat), 'Currency': 'USD', 'Carry': 'PLATINUM_CARRY',
                       'Repo_Rate': 'USD-SOFR', 'Commodity': 'PLATINUM_CME', 'Contract_Size': CONTRACT_SIZE}
         positions[name] = 0
-        setts[name] = round(p0 * float(np.exp(c * tau)), 4)
-        margins[name] = {'Method': 'per_contract', 'Amount': round(0.085 * setts[name] * CONTRACT_SIZE, 0)}
         limits[name] = {'Min_Position': -50, 'Max_Position': 0}
     hp['Tradable_Instruments']['CommodityFutureDeal'] = futs
     ps = hp['Portfolio_State']
     ps['Positions'] = positions
-    ps['Settlement_Prices'] = setts
-    ps['Initial_Margin'] = margins
     hp['Evaluator']['Position_Limits'] = limits
     # Optional causal delta-ramp corridor on Σq_i (both TRAIN and ROLL configs carry it — the DP
     # should learn within the corridor; for the roll-only validation phase re-rolls activate it on

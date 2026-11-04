@@ -67,27 +67,8 @@
      "Cash_Balances": {
       "USD_CASH": 125000.0
      },
-     "Settlement_Prices": {
-      "PL_APR_2026": 2026.1718,
-      "PL_JUL_2026": 2047.0685,
-      "PL_OCT_2026": 2070.7498
-     },
      "Margin_Balances": {
       "USD_CASH": 0.0
-     },
-     "Initial_Margin": {
-      "PL_APR_2026": {
-       "Method": "per_contract",
-       "Amount": 8500.0
-      },
-      "PL_JUL_2026": {
-       "Method": "per_contract",
-       "Amount": 9000.0
-      },
-      "PL_OCT_2026": {
-       "Method": "per_contract",
-       "Amount": 9500.0
-      }
      },
      "Spot_Price_History": {
       "CommodityPrice.PLATINUM_LME": {

@@ -288,7 +288,6 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     merge['MarketDataFile'] = calibrated_md
     apply_objective_flags(hp['Objective'], args)
 
-    state = carry_state(row)
     models = json.load(open(calibrated_md))['MarketData']['Price Models']
 
     # --- liability: the averaging month `--avg-lead-months` out (3: the desk's product; 0: the
@@ -315,19 +314,14 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
     # --- tradables: the listed CME ladder on the COMPOSED fix+basis reference -------------------
     futs = hp['Tradable_Instruments']['CommodityFutureDeal']
     mats = listed_expiries(args.expiries, trade_date, n=len(futs))
-    positions, setts, margins, limits = {}, {}, {}, {}
-    spot_cme = sum(float(row[c]) for c in hedge_cols(template))   # the synthetic CME spot
+    positions, limits = {}, {}
     for name, mat in zip(sorted(futs), mats):
         futs[name]['Maturity_Date'] = _ts(mat)
         positions[name] = 0
-        setts[name] = round(float(forward(
-            spot_cme, state, (mat - pd.Timestamp(trade_date)).days / DAYS_IN_YEAR)), 4)
-        margins[name] = {'Method': 'per_contract',
-                         'Amount': round(0.085 * setts[name] * futs[name]['Contract_Size'], 0)}
         limits[name] = dict(hp['Evaluator']['Position_Limits'][name])
     hp['Tradable_Instruments']['CashAccountDeal']['USD_CASH']['Investment_Horizon'] = _ts(pay)
     ps = hp['Portfolio_State']
-    ps['Positions'], ps['Settlement_Prices'], ps['Initial_Margin'] = positions, setts, margins
+    ps['Positions'] = positions
     hp['Evaluator']['Position_Limits'] = limits
     if delta_corridor is not None:
         # with a long cap, the corridor's clamps widen into the asymmetric net range - the

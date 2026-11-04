@@ -133,7 +133,7 @@ WORLD  = os.path.join(REPO, 'data', 'plat_world_am', 'MarketDataRF_platinum_am.j
 # column of the dashboard: this file must reproduce them from the JSON alone.  #
 # --------------------------------------------------------------------------- #
 ENGINE = {
-    'F0':          (1644.2975, 1657.5973, 1671.7285),   # job Portfolio_State/Settlement_Prices
+    'F0':          (1644.2975, 1657.5973, 1671.7285),   # the job's opening futures marks
     'fix_vol':     0.34,          # annualised, today's H0 state (band 0.30-0.38 as GARCH decays)
     'fix_vol_lr':  0.247,         # the unconditional it decays toward
     'F_drift':     (0.003, 0.010, 0.011),               # E[F]/F per year, per leg

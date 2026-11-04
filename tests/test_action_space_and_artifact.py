@@ -417,8 +417,7 @@ def _passive_cfg(save=None, load=None):
     del hp['Tradable_Instruments']['CommodityFutureDeal']['PL_APR_2026']
     hp['Tradable_Instruments']['CashAccountDeal']['USD_CASH']['Investment_Horizon'] = {
         '.Timestamp': '2026-05-27'}
-    for key in ('Positions', 'Settlement_Prices', 'Initial_Margin'):
-        del hp['Portfolio_State'][key]['PL_APR_2026']
+    del hp['Portfolio_State']['Positions']['PL_APR_2026']
     ev = hp['Evaluator']
     ev['Position_Limits'] = {h: {'Min_Position': -20, 'Max_Position': 5} for h in LEGS}
     ev['Total_Position_Abs_Limit'] = 40
@@ -695,7 +694,7 @@ def _logwealth(cfg):
 
 def _doubled(cfg):
     """Every dollar of the document doubled, nothing else: the liability's volume, each future's
-    contract size, the margins and the cash; prices, paths and contract counts unchanged."""
+    contract size, the margin and the cash balances; prices, paths and contract counts unchanged."""
     cfg = jsonlib.loads(jsonlib.dumps(cfg))
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     for deal in hp['Liabilities']['FloatingEnergyDeal'].values():
@@ -704,8 +703,6 @@ def _doubled(cfg):
     for fut in hp['Tradable_Instruments']['CommodityFutureDeal'].values():
         fut['Contract_Size'] *= 2
     ps = hp['Portfolio_State']
-    for im in ps['Initial_Margin'].values():
-        im['Amount'] *= 2
     for key in ('Cash_Balances', 'Margin_Balances'):
         for k in ps.get(key, {}):
             ps[key][k] *= 2
@@ -1416,13 +1413,12 @@ def test_the_book_column_is_fitted_to_the_repositioning_charge_s_slope(growth):
 
 
 def _without_first_leg(cfg):
-    """`cfg` with its first hedge leg removed: the future, its position, settlement price and
-    margin, its position limits and its allocation rows, the whole net on the leg left."""
+    """`cfg` with its first hedge leg removed: the future, its position, its position limits and
+    its allocation rows, the whole net on the leg left."""
     gone, kept = LEGS
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     del hp['Tradable_Instruments']['CommodityFutureDeal'][gone]
-    for key in ('Positions', 'Settlement_Prices', 'Initial_Margin'):
-        del hp['Portfolio_State'][key][gone]
+    del hp['Portfolio_State']['Positions'][gone]
     del hp['Evaluator']['Position_Limits'][gone]
     hp['Evaluator']['Allocation_Weights'] = [{'Step': 0, 'Instrument': kept, 'Weight': 1.0}]
     hp['Solver']['Active_Hedge_Indices'] = [0]

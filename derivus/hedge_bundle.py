@@ -665,9 +665,6 @@ def construct_hedge_runtime(
                               for n, v in portfolio_state.get("Cash_Balances", {}).items()},
             "margin_balances": {str(n): float(v)
                                 for n, v in portfolio_state.get("Margin_Balances", {}).items()},
-            "initial_margin": {
-                str(n): {"method": str(spec["Method"]), "amount": float(spec["Amount"])}
-                for n, spec in portfolio_state.get("Initial_Margin", {}).items()},
             "spot_price_history": _spot_price_history(
                 hedging_problem, history_lookback, referenced_commodities),
         },
@@ -1292,10 +1289,9 @@ class Bundle:
                                     tensor], dim=0)
             self.realized_cashflows[currency] = tensor
         self.last_live_mtm_index = T = int(steps - 2)
-        # sim-grid t: the first row and the rows of market time before the terminal, the business
-        # days of the job's calendar each carries (`utils.market_days`, the clock the laws step on),
-        # and each row's successor, the next of them or the terminal, which a decision holds its
-        # book to and its fork lands on
+        # decisions on the rows of market time, the clock the laws step on, so none sits on a row
+        # whose prices cannot move and none is skipped where they do; the first row whatever its
+        # day, where the opening book is traded
         market = utils.market_days(self.scenario_dates[self.initial_time_index:], self.business_day)
         self.decision_steps = [0] + [t for t in range(1, T) if market[t] > 0]
         self.successors = [next((s for s in self.decision_steps if s > t), T) for t in range(T)]
@@ -1916,10 +1912,7 @@ class BundleStepper:
             'positions': self._seed_by_name(portfolio_state['positions'], self._hedges),
             'cash_accounts': self._seed_by_name(portfolio_state['cash_balances'], self._cash_names),
             'margin_accounts': self._seed_by_name(portfolio_state['margin_balances'], self._cash_names),
-            'realized_pnl': self._zeros_by_name(self._hedges),
             'variation_margin': self._zeros_by_name(self._hedges),
-            'cumulative_pnl': self._zeros_by_name(self._hedges),
-            'time_held': self._zeros_by_name(self._hedges),
             'cumulative_liability_value': torch.zeros(self._batch_size, dtype=torch.float32,
                                                       device=self._device),
         }
@@ -1938,10 +1931,7 @@ class BundleStepper:
             'positions': state['positions'],
             'cash_accounts': state['cash_accounts'],
             'margin_accounts': state['margin_accounts'],
-            'realized_pnl': state['realized_pnl'],
             'variation_margin': state['variation_margin'],
-            'cumulative_pnl': state['cumulative_pnl'],
-            'time_held': state['time_held'],
             'tradable_values': self._values_at(time_index),
             'liability_mtm_value': self.bundle.liability_at(time_index),
             'realized_cashflow_value': self.bundle.cashflow_at(time_index),
@@ -2027,18 +2017,6 @@ class BundleStepper:
         safe because balances are always rebound to new tensors, never mutated in place)."""
         return {n: (bal * factors[n] if n in factors else bal) for n, bal in accounts.items()}
 
-    def _step_time_held(self, time_held, next_positions):
-        # Increment where the position is non-zero, reset where it returned to flat.
-        return {name: torch.where(next_positions[name].abs() > 0, prev + 1.0, torch.zeros_like(prev))
-                for name, prev in time_held.items()}
-
-    def _step_cumulative_pnl(self, cumulative_pnl, variation_margin, next_positions):
-        """Per-trade running P&L: accumulate VM while a position is open, reset to 0 when flat —
-        the same lifetime-of-current-trade semantics as `_step_time_held`."""
-        return {name: torch.where(next_positions[name].abs() > 0,
-                                  prev + variation_margin[name], torch.zeros_like(prev))
-                for name, prev in cumulative_pnl.items()}
-
     def _flatten_cash(self, positions, cash_accounts, terminal_values, vol):
         for n in self._hedges:
             delta = -positions[n]
@@ -2089,19 +2067,13 @@ class BundleStepper:
         if acc['force_flat_at_end'] and current == self._close_idx - 1:
             self._flatten_cash(next_positions, next_cash, self._values_at(next_idx),
                                self.bundle.vol_at(next_idx))
-        # cash mode tracks no daily VM, but cumulative_pnl still resets at flat for the same
-        # per-trade-lifetime semantics
-        zero_vm = self._zeros_by_name(self._hedges)
         next_state = {
             'done': torch.full_like(state['done'], next_idx >= last, dtype=torch.bool),
             'positions': next_positions,
             'cash_accounts': next_cash,
             'margin_accounts': state['margin_accounts'],
-            'realized_pnl': self._zeros_by_name(self._hedges),
-            'variation_margin': zero_vm,
-            'cumulative_pnl': self._step_cumulative_pnl(state['cumulative_pnl'], zero_vm,
-                                                        next_positions),
-            'time_held': self._step_time_held(state['time_held'], next_positions),
+            # cash mode tracks no daily VM
+            'variation_margin': self._zeros_by_name(self._hedges),
             'cumulative_liability_value': state['cumulative_liability_value'],
             'initial_portfolio_value': state['initial_portfolio_value'],
         }
@@ -2125,7 +2097,6 @@ class BundleStepper:
         growth = self._growth_factors(current, settlement_idx)
         next_cash = self._compound(state['cash_accounts'], growth)
         next_margin = self._compound(state['margin_accounts'], growth)
-        realized_pnl = self._zeros_by_name(self._hedges)
         variation_margin = self._zeros_by_name(self._hedges)
         deltas = self._trade_deltas(action)
         next_values = self._values_at(settlement_idx)
@@ -2134,7 +2105,6 @@ class BundleStepper:
             cs = float(self.runtime['tradables'][n]['contract_size'])
             next_positions[n] = (next_positions[n] + deltas[n]).round()
             vm = next_positions[n] * (next_values[n] - state['tradable_values'][n]) * cs
-            realized_pnl[n] = vm
             variation_margin[n] = vm
             self._credit(next_margin, self._account_of[n], vm)
         vol_t = self.bundle.vol_at(current)
@@ -2154,11 +2124,7 @@ class BundleStepper:
             'positions': next_positions,
             'cash_accounts': next_cash,
             'margin_accounts': next_margin,
-            'realized_pnl': realized_pnl,
             'variation_margin': variation_margin,
-            'cumulative_pnl': self._step_cumulative_pnl(state['cumulative_pnl'], variation_margin,
-                                                        next_positions),
-            'time_held': self._step_time_held(state['time_held'], next_positions),
             'cumulative_liability_value': state['cumulative_liability_value'],
             'initial_portfolio_value': state['initial_portfolio_value'],
         }

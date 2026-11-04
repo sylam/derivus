@@ -147,13 +147,12 @@ PINNED = {
         '527697bee31bb2b4754ddc0ed1c193f4c5d546ae4a400a4c1db9c99dae5c40b8', 5, 0),
     'fx_tarf_job.json': (
         'd67e0afd059b2c5db7a2b8be15076633e9b4b6d94d236db834257adbbd664b5e', 5, 0),
-    # re-pinned 2026-09-16: both market files carried a null Base_Date, which the loader fills
-    # with the wall clock, so these two plans moved with the calendar. Each file now carries
-    # its job's own base date; the runs are unmoved, the date being the calculation's to set
+    # re-pinned 2026-11-04: the DOCUMENTS changed, their `Portfolio_State` losing
+    # `Settlement_Prices` and `Initial_Margin`, keys no program read; the universes are unmoved
     'platinum_hedge_shipping.json': (
-        'b66abdf6ba8bac152725ecb5b5cd0e78583544cbeade7f65de6591733bbac871', 2, 0),
+        '0512c68c6f8391fd441afe405cefa987ec45946ab6a2f251e7a017046e0d25da', 2, 0),
     'policy_test_simulate_only.json': (
-        'e12946b4d7e53cfc5d65bc34fd6f90b7d133bc18b4e6203be1971b0a54b79fb8', 2, 0),
+        '85678869b611282536cc1fe29127d10ca0c0d6ac6d8a88cfbdeeb30457844b03', 2, 0),
 }
 
 

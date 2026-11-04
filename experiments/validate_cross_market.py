@@ -48,10 +48,7 @@ def add_lme_leg(cfg):
         'Implied_Basis': 'LME_FLAT', 'Contract_Size': 50,
     }
     hp['Evaluator']['Position_Limits'][LME_NAME] = {'Min_Position': -50, 'Max_Position': 0}
-    ps = hp['Portfolio_State']
-    ps['Positions'][LME_NAME] = 0
-    ps['Settlement_Prices'][LME_NAME] = 2079.6060
-    ps['Initial_Margin'][LME_NAME] = {'Method': 'per_contract', 'Amount': 9000.0}
+    hp['Portfolio_State']['Positions'][LME_NAME] = 0
     emd = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
     emd['Price Factors']['CommodityBasis.LME_FLAT'] = {
         'Spot': 0.0, 'Observed_Commodity': 'PLATINUM_LME'}
