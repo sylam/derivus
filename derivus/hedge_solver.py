@@ -2355,8 +2355,8 @@ class DiffSolver:
         self.md = md = M.shape[-1]
         # returns-state: the wealth column and its frame live in fractions of the t0 book notional,
         # so a stamped frame travels across price epochs like the market columns do
-        self.state_notional = (float(self.runtime["objective"].get("state_notional") or 0.0)
-                               if self.cfg["diffv2_returns_state"] else 0.0) or None
+        self.state_notional = (float(self.runtime["objective"]["state_notional"])
+                               if self.cfg["diffv2_returns_state"] else None)
 
         hidden = self.cfg["diffv2_hidden"]
         load_cfg = self.cfg["diffv2_load_value_fn"]
@@ -2721,7 +2721,7 @@ class DiffSolver:
         logging.info(
             "DiffSolver greedy positions: mean|q| per instrument=%s | q@t0=%s | q@mid=%s "
             "(textbook q@t0=%s)", ["%.2f" % v for v in verdict["greedy_mean_abs_q"]],
-            verdict.get("greedy_q_first"), verdict.get("greedy_q_mid"),
+            verdict["greedy_q_first"], verdict["greedy_q_mid"],
             (verdict["textbook_q_traj"] or [None])[0])
 
         return SolverResult(
@@ -2779,9 +2779,8 @@ class StreamingSolve:
     def warmup(self, bundle):
         """Batch 1: build the solver(s) and fit the first backward sweep. The frame (utility
         scale, z-frame, trust region) is locked here and frozen for every later batch."""
-        n_seed = max(1, self.cfg["multi_seed_count"])
         cls = DiffSolverV2 if self.cfg["object"] == "diffsolverv2" else DiffSolver
-        self.solvers = [cls(bundle, self.runtime) for _ in range(n_seed)]
+        self.solvers = [cls(bundle, self.runtime) for _ in range(self.cfg["multi_seed_count"])]
         for solver in self.solvers:
             solver.warmup(bundle)
         # same rule as `step`: a loaded checkpoint fits nothing, so this batch was not a training one
@@ -2841,7 +2840,7 @@ def assemble_hedge_result(primary_runs, bundle, runtime, aspace):
                                 ("textbook", "textbook")) if key in comparison]
     ladder = {"order": rungs,
               "holds": all(rungs[i][1] >= rungs[i + 1][1] - 1.0e-6 for i in range(len(rungs) - 1))}
-    if len(rungs) > 1 and (runtime["objective"] or {}).get("reference_mode") == "running_wealth":
+    if len(rungs) > 1 and runtime["objective"]["reference_mode"] == "running_wealth":
         logging.warning(
             "solve_hedge ladder under Objective.Reference_Mode='Running_Wealth': the solver's V_0 "
             "is a SUM of per-step utilities while the hindsight/textbook tracks are terminal — the "
