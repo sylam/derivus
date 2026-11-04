@@ -287,12 +287,32 @@ def test_the_saved_checkpoint_carries_the_drift_null_the_verdict_measured(free):
     """The policy artifact is built after the training verdict, so the checkpoint carries the
     drift monitor's null sigma that verdict measured, and a frozen roll's tripwire is scaled by it.
 
-    Killing mutation: the artifact built and saved before `_verdict`, so the stamp is None."""
+    Killing mutation: the artifact built and saved before `_verdict`, so the stamp is the unit
+    null 1.0."""
     ckpt, train = free
     measured = train.evaluation_summary['diagnostics']['verdict']['drift_null_sigma']
     assert measured > 0.0, measured
     stamped = torch.load(ckpt, map_location='cpu', weights_only=False)['drift_null_sigma']
     assert stamped is not None and round(stamped, 4) == measured, (stamped, measured)
+
+
+def test_an_unstamped_checkpoint_s_roll_reads_one_drift_null(free, tmp_path):
+    """A frozen roll of a checkpoint that stamps no drift null reads the unit null everywhere: on
+    the training document's checkpoint with its stamp removed, the verdict reports a null sigma of
+    1.0 and the stepper roll's monitor scores and reports 1.0. 3 s.
+
+    Killing mutation: the three readers' own defaults, the verdict's `getattr(self,
+    "drift_null_sigma", 0.0)` beside the monitor's 1.0: (0.0, 1.0)."""
+    ckpt, _ = free
+    bare = str(tmp_path / 'bare.pt')
+    stamp = torch.load(ckpt, map_location='cpu', weights_only=False)
+    del stamp['drift_null_sigma']
+    torch.save(stamp, bare)
+    roll = _cfg(batch=2, seed=7, load=bare)
+    roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Stepper_Rollout'] = 'Yes'
+    d = _run(roll).evaluation_summary['diagnostics']
+    nulls = (d['verdict']['drift_null_sigma'], d['stepper_verdict']['drift_monitor']['null_sigma'])
+    assert nulls == (1.0, 1.0), nulls
 
 
 # --------------------------------------------------------------------------------------------

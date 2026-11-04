@@ -826,6 +826,9 @@ class DiffSolver:
         self.cost_aware = bool(self.cfg.get("diffv2_cost_aware_argmax", False))
         # quadratic churn charge lambda*sum((q-q_prev)^2) at every argmax that knows q_prev
         self.churn_lambda = float(self.cfg.get("diffv2_churn_lambda", 0.0))
+        # the drift monitor's null: the unit z until a training verdict measures one or a load
+        # stamps one, the value every reader takes
+        self.drift_null_sigma = 1.0
         # FRICTIONAL BELLMAN: the net book fraction p = Sum(q)/Q_max becomes a state coordinate and
         # the repositioning charge enters the regressed target. Q_max is the Evaluator's cap - the
         # only declared scale p can be measured in - so an absent cap fails loud.
@@ -2059,7 +2062,7 @@ class DiffSolver:
             # law. On a LOADED roll the same statistic reads model-vs-market drift, and stamping
             # that as the null would inflate the tripwire's threshold with the signal it detects.
             self.drift_null_sigma = max(1e-6, (vdrift_s2 / max(1, vdrift_n)) ** 0.5)
-        out["drift_null_sigma"] = round(getattr(self, "drift_null_sigma", 0.0) or 0.0, 4)
+        out["drift_null_sigma"] = round(self.drift_null_sigma, 4)
         # which regime chose the greedy book, and whether `u_mean` is a terminal utility or a sum
         # of per-step ones - neither is readable off the figures
         out["argmax_charged"] = bool(self.cost_aware or self.position_state)
@@ -2329,7 +2332,7 @@ class DiffSolver:
                         drift["z_path"].append(round(drift["cum_z"], 4))
                         n_so_far = max(1, len(drift["t"]) - 1)         # residuals scored so far
                         boundary = (float(self.cfg.get("diffv2_drift_threshold_sigmas", 3.0))
-                                    * getattr(self, "drift_null_sigma", 1.0)
+                                    * self.drift_null_sigma
                                     * (n_so_far ** 0.5))
                         tripped = abs(drift["cum_z"]) > boundary
                         drift["tripped"].append(bool(tripped))
@@ -2381,7 +2384,7 @@ class DiffSolver:
             n_dec = max(1, len(drift["t"]) - 1)        # the last decision's residual is never scored
             drift["max_abs_z"] = max((abs(z) for z in drift["z_path"]), default=0.0)
             drift["n_tripped"] = int(sum(drift["tripped"]))
-            drift["null_sigma"] = round(getattr(self, "drift_null_sigma", 1.0), 4)
+            drift["null_sigma"] = round(self.drift_null_sigma, 4)
             drift["final_z_per_sqrt_n"] = drift["cum_z"] / (n_dec ** 0.5)
             wT = (last["transition_pnl_excess"]
                   + last["transition_liability_value"]).to(torch.float64)
@@ -2965,7 +2968,7 @@ class DiffSolver:
             # the notional the returns-state frame divides wealth by; the roll scales the
             # displacement by its own notional over this one, so the reward stays in the frame
             "state_notional": getattr(self, "state_notional", None),
-            "drift_null_sigma": getattr(self, "drift_null_sigma", None),
+            "drift_null_sigma": self.drift_null_sigma,
             "risk_aversion": getattr(self, "aversion", None),
             "phi_curves": getattr(self, "phi_curves", None),
             "solver_version": SOLVER_VERSION,
