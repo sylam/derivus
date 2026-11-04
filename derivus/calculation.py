@@ -3403,7 +3403,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             torch.ones([1, 1], dtype=self.dtype, device=self.device), mcmc_sim, get_fxrate_factor(
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
             seed, quasi_seed, job_id, num_jobs,
-            simulation_sub_batch=int(self.params.get('Inner_Sub_Batch', 0)),
+            simulation_sub_batch=int(self.params['Inner_Sub_Batch']),
             keep_tensor=True)  # hedge stepper replays need the kept tensor, unconditionally
         # the roll's business day, and the market days every law steps
         state.business_day = self.config.holidays.get(
@@ -3436,7 +3436,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         through liability end and any residual position closes out at fair value there."""
         dependent_factors, stochastic_factors, _, reset_dates, settlement_currencies = self.config.calculate_dependencies(
             params, base_date, self.input_time_grid)
-        for name in params.get('Scenario_Factors', []):
+        for name in params['Scenario_Factors']:
             factor_type, factor_name = name.split('.', 1)
             dependent_factors.setdefault(utils.Factor(factor_type, utils.check_rate_name(factor_name)), [])
 

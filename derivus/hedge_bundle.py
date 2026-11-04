@@ -206,8 +206,7 @@ def _spot_price_history(hedging_problem: Mapping[str, Any], lookback: int,
     normalized: Dict[str, Dict[str, Any]] = {}
     for commodity, payload in raw_history.items():
         name = str(commodity)
-        dates_raw = payload.get("Dates", ())
-        prices_raw = payload.get("Prices", ())
+        dates_raw, prices_raw = payload["Dates"], payload["Prices"]
         if len(dates_raw) != len(prices_raw):
             raise ValueError(
                 f"Spot_Price_History['{name}']: Dates and Prices must have equal length "
