@@ -1268,9 +1268,8 @@ class DiffSolver:
             # each move's reward off the CHARGED wealth, so a move pays its toll inside the step that
             # made it, all at s's knee: a running reward's is flat, `conditional_sim` refused beside it
             # and LogWealth's ratio reading none
-            for r in self._reward(path, torch.cat([W[None, :, None, None].expand(1, B, c, Bi),
-                                                   path[:-1]]), s):
-                C = C + r
+            C = C + self._reward(path, torch.cat([W[None, :, None, None].expand(1, B, c, Bi),
+                                                  path[:-1]]), s).sum(0)
         return C, W1
 
     # ---- inner-MC one-step quantities at outer t -----------------------------
@@ -1309,11 +1308,18 @@ class DiffSolver:
         s = self.landing[t]
         if s == self.nxt[t]:
             return None
-        held = [r for r in self.steps + [self.T_dec] if t < r <= s] if self.running_wealth else [s]
-        dF, dL, market, _, _ = self._inner_step(t, held)
+        dF, dL, market, _, _ = self._inner_step(t, self._held(t)[0])
         if s >= self.T_dec:
             return dF, dL, None, None
         return dF, dL, market, self.inner_cache[self.prev[s]][4]
+
+    def _held(self, t):
+        """`(rows, intervals)`: the decision rows decision t's risk fork reads its marks on, every
+        one to its landing under `Running_Wealth`, whose reward sums over them, else the landing
+        alone, and the decision intervals from t to each."""
+        rows = [r for r in self.steps + [self.T_dec] if t < r <= self.landing[t]]
+        intervals = list(range(1, len(rows) + 1))
+        return (rows, intervals) if self.running_wealth else (rows[-1:], intervals[-1:])
 
     # ---- external argmax (Bellman max outside the fitted value) --------------
     def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, live=None,
@@ -2336,6 +2342,12 @@ class DiffSolver:
                                 [-beta * c / n_so_far for c in drift["cum_dF_usd"]],
                                 device=self.device)
                             dF = dF + adj.view(1, 1, -1)
+                            if ahead is not None:
+                                # the risk fork's move to each of its rows by that drift over the
+                                # decision intervals to it
+                                ahead = (ahead[0] + adj * torch.tensor(
+                                    self._held(t)[1], device=self.device).view(-1, 1, 1, 1),
+                                    *ahead[1:])
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
                         if not q_log["t"]:
                             q_prev = self._first_book(t, live, B)

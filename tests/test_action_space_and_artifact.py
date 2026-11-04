@@ -1890,6 +1890,29 @@ def test_a_risk_horizon_leaves_the_held_out_world_alone():
     assert tracks[0] == tracks[1], tracks
 
 
+def test_a_declared_drift_shifts_the_risk_horizon_s_fork(tmp_path):
+    """`DiffV2_Drift_Beta` shifts the risk horizon's fork by the drift it declares, each row's move by
+    its decision intervals' worth, as it shifts the one-step fork's: on the held roll of
+    `CONSTANT_VOL` under the default Huber shape at k = 5 with a hair trigger and beta 5, the first
+    decision, before any trip, reads the beta-off semideviation to the bit, and the 79 later
+    decisions whose risk term lands past their successor read it moved by 3.5% on average (at most
+    30%), above 1%; a decision whose shifted draws stay on a linear arm of the utility cannot move.
+    17 s.
+
+    Killing mutation: the risk fork left unshifted in the stepper roll, the 79 moved by 0.001% on
+    average, the rounding of the one-step mean the shift does move."""
+    huber = {'Huber_Aversion': 2.5}
+    ckpt = str(tmp_path / 'value_fn.pt')
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt), CONSTANT_VOL, **huber))
+    rolls = {(kappa, beta): _risk_roll(
+        ckpt, str(tmp_path / f'{kappa}_{beta}.csv'), CONSTANT_VOL, objective=huber,
+        DiffV2_Risk_Kappa=kappa, DiffV2_Risk_Horizon=5, DiffV2_Drift_Threshold_Sigmas=1e-6,
+        DiffV2_Drift_Beta=beta)[0] for kappa in (0.0, 1.0) for beta in (0.0, 5.0)}
+    shift = (_semideviations(rolls[0.0, 5.0], rolls[1.0, 5.0])
+             / _semideviations(rolls[0.0, 0.0], rolls[1.0, 0.0]) - 1.0)
+    assert len(shift) == 81 and shift[0] == 0.0 and np.abs(shift[1:-1]).mean() > 0.01, shift.tolist()
+
+
 def test_the_sweep_s_labels_score_the_risk_horizon():
     """The label's argmax and the label horizon's greedy steps rank by the risk term over the risk
     horizon as the roll does: training with no fit on `DRIFTING` at `DiffV2_Label_Horizon` 2, kappa

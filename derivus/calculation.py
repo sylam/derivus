@@ -737,12 +737,14 @@ class CMC_State(utils.Calculation_State):
     @contextlib.contextmanager
     def own_stream(self, seed):
         """Draw on streams of their own seeded by `seed`, the generator's and the quasi stream's,
-        leaving this state's where they stood."""
+        the quasi one by its low 32 bits, leaving this state's where they stood."""
         held = self.quasi_seed, self.sobol_position, self.sobol_engine, self.t_quasi_rng_batch
         with torch.random.fork_rng(devices=[self.one.device] if self.one.is_cuda else []):
             torch.manual_seed(seed)
+            # a quasi seed is shifted 20 bits clear of a walk's segment (`LogVar2FJKit.blocks`) and
+            # the shifted key must fit a generator's 64
             self.quasi_seed, self.sobol_position, self.sobol_engine, self.t_quasi_rng_batch = (
-                seed, {}, {}, {})
+                seed & 0xFFFFFFFF, {}, {}, {})
             try:
                 yield
             finally:

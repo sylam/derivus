@@ -518,9 +518,9 @@ and each deal's `Time_dep` to `t` and the rows to its successor (`Bundle.success
 row of market time or the terminal, which the decision at `t` holds its book to (Monday from a
 Friday, a Saturday terminal from a Friday), and runs one pass of `Batch_Size × Inner_Sub_Batch`
 samples, its memory set by those two fields and the rows. The risk horizon's fork
-(`DiffV2_Risk_Horizon`) runs to the last of the decision rows it holds its book across, reads its
-marks on each, and draws iid on streams of its own (`CMC_State.own_stream`), so it moves no other
-draw. It draws (`reset_inner`), precalculates each
+(`DiffV2_Risk_Horizon`) runs to the decision row it lands on, reads its marks there, or under
+`Running_Wealth` on each decision row it holds its book across, and draws iid on streams of its own
+(`CMC_State.own_stream`), so it moves no other draw. It draws (`reset_inner`), precalculates each
 process from `outer_buffer[key][t]` (a leaf under `with_grad`), publishes every seed before any
 generate (a seed may condition a process upstream), generates and calls `reseed_inner_state`, then
 publishes as a `ScenarioSource` every path series it wrote that the outer path carries — the outer
