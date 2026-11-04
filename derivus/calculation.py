@@ -3438,15 +3438,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         params = declared_defaults(type(self), self.judged(params))
         params['Hedging_Problem'] = declared_block(
             schema.declared_fields(type(self))['Hedging_Problem'].sub_fields, params['Hedging_Problem'])
-        # `.get` with no fallback on purpose: HedgeMonteCarlo declares no `Greeks` field, so there
-        # is no default to publish - it only refuses the value that would silently do nothing
-        if params.get('Greeks') == 'All':
-            raise Exception(
-                "Greeks: 'All' is not a HedgeMonteCarlo parameter - this calculation reports a "
-                'hedge, not a sensitivity block, and nothing here reads Greeks at all, so the key '
-                'would be silently ignored rather than honoured. The second-order block is '
-                "BaseValuation's ('Greeks': 'All' there); the AAD this calculation does run is the "
-                'solver\'s own pathwise gradient, configured under Hedging_Problem.')
         base_date = pd.Timestamp(params['Run_Date'])
         self.input_time_grid = params['Time_Grid']
         params['Simulation_Batches'] = params['Simulation_Batches'] // num_jobs
@@ -3651,17 +3642,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     dense[int(t_idx)] = payoff
                 hedge_profile_blocks['realized_cashflows'][str(currency)].append(dense.detach().clone())
 
-            if factor_tensor_blocks is not None:
-                for key in self.stoch_factors:
-                    factor_tensor_blocks[utils.check_tuple_name(key)].append(
-                        shared_mem.t_Scenario_Buffer[key].detach().clone()
-                    )
-
-            trade_tensors = self.netting_sets.tensor_marks()
-
-            if tradable_blocks is not None:
-                for instrument_name, instrument_tensor in trade_tensors.items():
-                    tradable_blocks[instrument_name].append(instrument_tensor.detach().clone())
+            for key in self.stoch_factors:
+                factor_tensor_blocks[utils.check_tuple_name(key)].append(
+                    shared_mem.t_Scenario_Buffer[key].detach().clone())
+            for instrument_name, instrument_tensor in self.netting_sets.tensor_marks().items():
+                tradable_blocks[instrument_name].append(instrument_tensor.detach().clone())
 
             shared_mem.t_Buffer.clear()
 
@@ -3705,24 +3690,19 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             fixings=fixings,
         )
 
-        evaluation_summary = None
-        policy_artifact = None
         # A solve already ran batch by batch; all that is left is the held-out verdict + the
         # tracks. `simulate_only` rolls its accumulated bundle with zero trades.
         optimization_result = (streaming_solve.finish(held_out) if solve_hedge_mode
                                else run_hedge_execution(bundle, normalized_runtime))
-        if optimization_result is not None:
-            evaluation_summary = optimization_result['evaluation_output']
-            policy_artifact = optimization_result['policy_artifact']
-
-        if evaluation_summary is not None and bundle is not None:
-            # world-before-solver tripwire: each hedge leg's expected drift over the live window,
-            # in the sim the policy trains on, so a conditional-mean seam prints HERE
-            hedges = normalized_runtime['names']['hedges']
-            moves = bundle.move(0, bundle.last_live_mtm_index, hedges, dim=0)
-            drift = {h: round(float(m.mean()), 4) for h, m in zip(hedges, moves)}
-            evaluation_summary.setdefault('diagnostics', {})['hedge_drift'] = drift
-            logging.info('hedge window drift E[dF] per leg: %s', drift)
+        evaluation_summary = optimization_result['evaluation_output']
+        policy_artifact = optimization_result['policy_artifact']
+        # world-before-solver tripwire: each hedge leg's expected drift over the live window,
+        # in the sim the policy trains on, so a conditional-mean seam prints HERE
+        hedges = normalized_runtime['names']['hedges']
+        moves = bundle.move(0, bundle.last_live_mtm_index, hedges, dim=0)
+        drift = {h: round(float(m.mean()), 4) for h, m in zip(hedges, moves)}
+        evaluation_summary['diagnostics']['hedge_drift'] = drift
+        logging.info('hedge window drift E[dF] per leg: %s', drift)
 
         return HedgeRuntimeExecutionResult(
             bundle=bundle,

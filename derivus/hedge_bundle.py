@@ -839,10 +839,7 @@ def _pnl_excess(state, runtime):
     makes the utility's floor at zero meaningful. The initial baseline is snapshotted when the
     stepper builds its opening state and threaded through every transition."""
     pv = _portfolio_value(state, runtime)
-    initial = state.get("initial_portfolio_value")
-    if initial is None:
-        return pv
-    return pv - initial.to(device=pv.device, dtype=pv.dtype)
+    return pv - state["initial_portfolio_value"].to(device=pv.device, dtype=pv.dtype)
 
 
 def _tracking_error_value(state, runtime):
@@ -1448,8 +1445,7 @@ class BundleStepper:
 
     def evaluation_output(self, timing=None):
         """Terminal P&L summary in the `evaluation_summary` shape `HedgeMonteCarlo.execute`
-        publishes. `simulate_only` rolls the no-trade policy, so the policy and the reference
-        baseline are the same trajectory and the difference block is identically zero."""
+        publishes, of the policy this stepper was rolled under."""
         last = {k: self._terminal_transition[k].detach()
                 for k in ('pnl_excess', 'liability_value', 'net_pnl')}
         net = terminal_stats(last['net_pnl'])
@@ -1468,12 +1464,8 @@ class BundleStepper:
                 'margin_accounts': cpu(self._state['margin_accounts']),
                 **cpu(last),
             },
-            'diagnostics': {'num_episodes': int(last['net_pnl'].shape[0]),
-                            'num_batches': self.bundle.num_batches,
-                            'trainer_type': 'simulate'},
+            'diagnostics': {'num_batches': self.bundle.num_batches},
             'timing': dict(timing or {}),
-            'reference': {'no_trade': {'metrics': metrics},
-                          'policy_minus_no_trade': {k: 0.0 for k in metrics}},
         }
 
     def write_diagnostic_csvs(self, output_dir: str, label: str = 'custom') -> None:
@@ -1528,6 +1520,7 @@ class BundleStepper:
             'cash_accounts': self._seed_by_name(portfolio_state['cash_balances'], self._cash_names),
             'margin_accounts': self._seed_by_name(portfolio_state['margin_balances'], self._cash_names),
             'variation_margin': self._zeros_by_name(self._hedges),
+            'initial_portfolio_value': None,
         }
         state = self._refresh(state, initial_time_index)
         # the baseline `_pnl_excess` measures the change from
@@ -1546,7 +1539,7 @@ class BundleStepper:
             'variation_margin': state['variation_margin'],
             'tradable_values': self._values_at(time_index),
             'liability_value': self.bundle.liability_at(time_index),
-            'initial_portfolio_value': state.get('initial_portfolio_value'),
+            'initial_portfolio_value': state['initial_portfolio_value'],
         }
 
     def _step_state(self, state, action):
@@ -1683,10 +1676,10 @@ class BundleStepper:
             'net_pnl': self._terminal_transition['net_pnl'].detach().cpu(),
         }
 
-    def _diag_fields(self, rollout=None):
+    def _diag_fields(self, rollout):
         """Per-instrument (T, B) per-day cashflow tensors plus portfolio totals, reconstructed on
-        CPU from the recorded trajectory; the spot column is the primary spot's."""
-        rollout = self._rollout() if rollout is None else rollout
+        CPU from the recorded trajectory `rollout` (`_rollout`); the spot column is the primary
+        spot's."""
         bundle, runtime = self.bundle, self.runtime
         spot = bundle.factors[bundle.primary].detach().cpu().float()
         T, B = spot.shape

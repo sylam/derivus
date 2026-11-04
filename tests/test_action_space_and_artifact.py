@@ -44,7 +44,7 @@ _HEDGES = ('PL_APR_2026', 'PL_JUL_2026', 'PL_OCT_2026')
 _LISTED_ARTIFACT_KEYS = {
     'state_dicts', 'm_mean', 'm_std', 'w_mean', 'w_std', 'utility_scale', 'a_bounds',
     'hedges', 'active_hedge_indices', 'total_position_schedule', 'T_dec', 't_min', 'hidden',
-    'solver_version', 'config_hash',
+    'solver_version',
 }
 
 #: Short early, long late on symmetric [-50, 50] limits: the sign flips at Step 107, inside the
@@ -272,7 +272,7 @@ def test_the_returned_artifact_is_the_file_the_run_saved(free):
     assert isinstance(artifact, dict)
     missing = _LISTED_ARTIFACT_KEYS - set(artifact)
     assert not missing, f'artifact missing listed keys: {missing}'
-    assert artifact['solver_version'] and isinstance(artifact['config_hash'], str)
+    assert artifact['solver_version']
 
     def same(a, b):
         if torch.is_tensor(a):
@@ -2370,12 +2370,12 @@ def _semideviations(mean, risk):
 
 @pytest.fixture(scope='module')
 def held_risk(tmp_path_factory):
-    """`(checkpoint, dir, rolls)`: the checkpoint `_spot_alone` saves on `CONSTANT_VOL` and its held
-    rolls there, `(dump, result)` each, at `DiffV2_Risk_Kappa` 0 and at 1 over a risk horizon of one
+    """`(checkpoint, dir, rolls)`: the checkpoint `_spot_alone` saves on `CONSTANT_VOL`, varying the
+    October leg alone, and its held rolls there, `(dump, result)` each, at `DiffV2_Risk_Kappa` 0 and at 1 over a risk horizon of one
     and of five decisions."""
     d = tmp_path_factory.mktemp('risk_horizon')
     ckpt = str(d / 'value_fn.pt')
-    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt), CONSTANT_VOL))
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt, active=[2]), CONSTANT_VOL))
     rolls = {name: _risk_roll(ckpt, str(d / f'{name}.csv'), CONSTANT_VOL, **solver)
              for name, solver in (('mean', {}), ('one', {'DiffV2_Risk_Kappa': 1.0}),
                                   ('five', {'DiffV2_Risk_Kappa': 1.0, 'DiffV2_Risk_Horizon': 5}))}
@@ -2497,7 +2497,7 @@ def test_a_band_over_the_whole_grid_is_no_band_under_the_risk_horizon(tmp_path):
     decisions and 51% of the verdict's rows; the band disarmed (`limit` False in `_decide`), the band
     of 12 moving 50 contracts."""
     ckpt = str(tmp_path / 'value_fn.pt')
-    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt), CONSTANT_VOL))
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt, active=[2]), CONSTANT_VOL))
     books = {}
     for band in (None, 50.0, 12.0):
         cfg = _free(_cfg(batch=2, inner=64, load=ckpt), DiffV2_Stepper_Rollout='Yes', **SCALED[1])
@@ -2531,7 +2531,7 @@ def test_a_running_reward_over_the_risk_horizon_sums_its_decisions(tmp_path):
     Killing mutation: one reward over the whole move (`_landed` rewarding the landing's wealth
     against the decision's alone), 1.38 of it."""
     ckpt = str(tmp_path / 'value_fn.pt')
-    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt), CONSTANT_VOL, **RUNNING))
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt, active=[2]), CONSTANT_VOL, **RUNNING))
     mean, one, five = [
         _risk_roll(ckpt, str(tmp_path / f'{name}.csv'), CONSTANT_VOL, objective=RUNNING, **solver)[0]
         for name, solver in (('mean', {}), ('one', {'DiffV2_Risk_Kappa': 1.0}),
@@ -2585,7 +2585,7 @@ def test_a_declared_drift_shifts_the_risk_horizon_s_fork(tmp_path):
     average, the rounding of the one-step mean the shift does move."""
     huber = {'Huber_Aversion': 2.5}
     ckpt = str(tmp_path / 'value_fn.pt')
-    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt), CONSTANT_VOL, **huber))
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt, active=[2]), CONSTANT_VOL, **huber))
     rolls = {(kappa, beta): _risk_roll(
         ckpt, str(tmp_path / f'{kappa}_{beta}.csv'), CONSTANT_VOL, objective=huber,
         DiffV2_Risk_Kappa=kappa, DiffV2_Risk_Horizon=5, DiffV2_Drift_Threshold_Sigmas=1e-6,

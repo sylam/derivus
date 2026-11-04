@@ -18,9 +18,9 @@ import torch
 
 from . import utils
 from .hedge_bundle import (
-    _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed, _utility_x,
-    MONEY, initial_q_from_runtime, kappa_pair, mirror_frame, terminal_stats, turnover_charge,
-    wealth_step,
+    _loss_side_curvature, _tracking_error_value, _utility_local_curvature, _utility_scale,
+    _utility_wrap_signed, _utility_x, BundleStepper, MONEY, initial_q_from_runtime, kappa_pair,
+    mirror_frame, terminal_stats, turnover_charge, wealth_step,
 )
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
@@ -691,7 +691,7 @@ class DiffSolver:
         # marks that bind as the warmup one; `_bounds_frozen` turns `a_bounds` from
         # fitted-per-batch into frozen-and-reported.
         self.utility_scale = None
-        self._bounds_frozen = False
+        self._bounds_frozen = self._proj_checked = False
         self._breaches = []
         self._bind(bundle)
         self.T_dec = int(bundle.last_live_mtm_index)
@@ -740,18 +740,6 @@ class DiffSolver:
                      "(this batch resolved %.6g)", self.B_outer, self.utility_scale,
                      float(bundle.utility_scale))
         mirror_frame(self.runtime, self.utility_scale, self.utility_scale_schedule)
-
-    def _config_hash(self):
-        """sha1 of the stable-JSON solver cfg — the stamp identifying this TRAINING RECIPE.
-        The persistence paths are excluded so the same recipe hashes identically regardless of
-        where its checkpoint lives — and the decision-curve dump path with them, because a
-        diagnostic that is switched on beside a run must not make it a different recipe, and the
-        two convergence bounds, which accept or refuse a fit without changing it."""
-        stable = {k: v for k, v in self.cfg.items()
-                  if k not in ("diffv2_save_value_fn", "diffv2_load_value_fn",
-                               "diffv2_decision_curve_dump", "diffv2_max_value_optimism",
-                               "diffv2_max_member_disagreement")}
-        return hashlib.sha1(json.dumps(stable, sort_keys=True, default=str).encode()).hexdigest()
 
     # ---- utility anchor ------------------------------------------------------
     def _anchor(self, W, t, schedule=None):
@@ -1125,11 +1113,6 @@ class DiffSolver:
         dead = rate_limit and q_prev is not None and self.aspace.deadband_sigma > 0.0
         with torch.no_grad():
             B, Bi, _ = market_t1.shape
-            if dead and Bi < 2:
-                raise ValueError(
-                    "Decision_Deadband_Sigma needs Inner_Sub_Batch >= 2: the hold test is a "
-                    "PAIRED standard error over the inner draws, so one draw makes it NaN, every "
-                    "comparison False, and the book would silently never trade again")
             rows = torch.arange(B, device=market_t1.device)
             # the standing book on the live legs, which the band and the incumbent hold
             q_live = None if q_prev is None else q_prev * live
@@ -1407,7 +1390,7 @@ class DiffSolver:
         # GRAD inner-MC fork: AAD-live t -> t+1 quantities plus the state-at-t leaves
         ig = self.bundle.inner_mc_grad(t)
         leaves, widths = ig["state_t_leaves"], ig["state_t_leaf_widths"]
-        if not getattr(self, "_proj_checked", False):
+        if not self._proj_checked:
             self._proj_checked = True                  # one-time self-check of the label projection
             mt = ig["market_t"].detach()                       # detach: numeric self-check only
             errs = [f"{utils.check_tuple_name(key)}[" + (",".join(
@@ -1971,7 +1954,6 @@ class DiffSolver:
         running-wealth sum. `Solver.DiffV2_Decision_Curve_Dump` hangs a per-decision CSV off the
         greedy roll; no branch below it depends on whether it is on. From the first decision day
         on or after `Solver.DiffV2_Passive_From` the greedy roll holds the passive book."""
-        from .hedge_bundle import BundleStepper, _tracking_error_value
         hist = self.bundle.initial_time_index
         sweep_set = set(int(t) for t in sweep_ts)
         if self.curve_dump and self.B_outer != 1:
@@ -2159,8 +2141,8 @@ class DiffSolver:
         `_check_calendar_spread`, a narrowed `Allocation_Weights` universe or a
         `Calendar_Spread_Bps` that moved under position state.
 
-        Warned: a stale `solver_version`, a missing corridor/universe/rate stamp under a live one,
-        and a pre-stream frame. Corridor-FREE training spans the widest wealth support, so rolling
+        Warned: a stale `solver_version` and a missing corridor/universe/rate stamp under a live
+        one. Corridor-FREE training spans the widest wealth support, so rolling
         it inside any corridor only restricts to a learned subset, and so does a corridor INSIDE the
         trained one; a policy trained inside a corridor is off-support under a wider, a different
         or an absent one."""
@@ -2230,11 +2212,6 @@ class DiffSolver:
                 f"DiffV2_Max_Value_Optimism: {src} was saved with V_0={ck['V_0']:+.6g} outrunning its "
                 f"held-out greedy utility by {optimism:.6g}, above this run's {bound:g}. Its DP had "
                 f"not converged, so its argmax ranks on a value no roll earns - redraw the member.")
-        if "streaming" in ck and not ck["streaming"]:
-            logging.warning(
-                "DiffV2_Load_Value_Fn: %s carries a pre-stream frame, locked on a whole "
-                "fixed simulation rather than a warmup batch — the policy evaluates in "
-                "ITS frame, not this run's.", src)
         return ck_ver
 
     def _check_action_universe(self, ck, src):
@@ -2373,7 +2350,7 @@ class DiffSolver:
         self.utility_scale = float(sum(scales) / len(scales))
         mirror_frame(self.runtime, self.utility_scale, self.utility_scale_schedule)
 
-    def warmup(self, bundle=None):
+    def warmup(self, bundle):
         """Fit the value function on the first (or only) bundle and LOCK the frame: the
         standardization stats, the utility scale and the per-t trust region are computed here and
         frozen for every later batch. Re-fitting them per batch would mean batch 1's C_t and batch
@@ -2390,8 +2367,7 @@ class DiffSolver:
         over all paths. A LIST of checkpoints is an ensemble argmax: each member evaluated in its
         own frame, continuations averaged. `_check_load_provenance` holds every member against this
         run first."""
-        if bundle is not None:
-            self._bind(bundle)
+        self._bind(bundle)
         logging.info(
             "DiffSolver setup: n_hedge=%d active=%s T_dec=%d (the last-live mtm) "
             "B_outer=%d levels=%d fit_iters=%d lr=%.3g | "
@@ -2454,12 +2430,6 @@ class DiffSolver:
                     "market drift vs train frame: max %.3g σ | utility_scale %.6g | frame %s",
                     src, ck["V_0"], float(drift), ck["utility_scale"], ck.get("frame_stamp"))
                 members.append(ck)
-            if len({bool(ck.get("streaming", False)) for ck in members}) > 1:
-                raise ValueError(
-                    "DiffV2_Load_Value_Fn ensemble mixes a streaming-locked frame with a "
-                    "fixed-set one. The argmax averages the members' continuations, which is "
-                    "only meaningful when each member standardizes the same state the same way — "
-                    "load one provenance or the other, never both.")
             if len(versions) > 1:
                 raise ValueError(
                     f"DiffV2_Load_Value_Fn: the ensemble mixes solver versions {sorted(versions)} "
@@ -2481,8 +2451,16 @@ class DiffSolver:
             self._restore_frame(members)
             hidden = int(loaded["hidden"])
         in_dim = self._in_dim(md)             # (market | [W] | [p]) — the row `_standardize` builds
-        nets = [_DiffV2Residual(in_dim, hidden=hidden).to(self.device)
-                for _ in range(self.T_dec)]
+
+        def residual_nets(ck=None):
+            # one residual net a step, fresh at this run's width or a checkpoint's, frozen
+            nets = [_DiffV2Residual(in_dim, hidden=hidden if ck is None else int(ck["hidden"]))
+                    .to(self.device) for _ in range(self.T_dec)]
+            for net, sd in zip(nets, [] if ck is None else self._pad_steps(ck["state_dicts"], self.T_dec)):
+                net.load_state_dict(sd)
+                net.eval()
+            return nets
+        nets = residual_nets(loaded)
         # per-t trust region for A_t evaluation, set at fit time or restored from a checkpoint;
         # None = unclamped
         self.a_bounds = (self._pad_steps(loaded["a_bounds"], self.T_dec)
@@ -2496,20 +2474,14 @@ class DiffSolver:
         self.loaded = loaded
         self.rows = []
         if loaded is not None:
-            for net, sd in zip(nets, self._pad_steps(loaded["state_dicts"], self.T_dec)):
-                net.load_state_dict(sd)
-                net.eval()
             if len(members) > 1:
-                # ensemble: per-member net stacks and frames; _continuation averages members
+                # ensemble: per-member net stacks and frames, the first the run's; _continuation
+                # averages members
+                pad = self.cfg["diffv2_load_horizon_pad"]
                 for ck in members:
-                    m_nets = [_DiffV2Residual(in_dim, hidden=int(ck["hidden"])).to(self.device)
-                              for _ in range(self.T_dec)]
-                    for net, sd in zip(m_nets, self._pad_steps(ck["state_dicts"], self.T_dec)):
-                        net.load_state_dict(sd)
-                        net.eval()
-                    pad = self.cfg["diffv2_load_horizon_pad"]
                     self._ensemble.append(_Member(
-                        m_nets, (ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"]),
+                        nets if ck is loaded else residual_nets(ck),
+                        (ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"]),
                         self._pad_steps(ck.get("a_bounds"), self.T_dec) if pad
                         else ck.get("a_bounds"),
                         self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 1)
@@ -2622,8 +2594,7 @@ class DiffSolver:
             # (None = unconstrained). A load under a DIFFERENT corridor fails loud.
             "total_position_schedule": self.aspace.schedule_key(self.aspace.schedule),
             # action-universe provenance: the Allocation_Weights this argmax searched (None = the
-            # Cartesian grid). `config_hash` cannot stand in - it hashes runtime['solver'] while
-            # this and the corridor live under runtime['accounting'].
+            # Cartesian grid)
             "allocation_weights": self.aspace.weights_key(self.aspace.weights),
             # friction provenance: under the position state the calendar rate is a term of the
             # charge entering the regressed TARGET, so another rate is a different value function
@@ -2637,9 +2608,7 @@ class DiffSolver:
             "state_notional": self.state_notional,
             "drift_null_sigma": self.drift_null_sigma,
             "risk_aversion": self.aversion,
-            "phi_curves": getattr(self, "phi_curves", None),
             "solver_version": SOLVER_VERSION,
-            "config_hash": self._config_hash(),
             # Frame provenance: WHICH path population locked the frame this policy reads its
             # inputs through, and a stamp over the frame itself (loads compare both).
             "frame_stamp": self._frame_stamp(),
@@ -2653,7 +2622,7 @@ class DiffSolver:
 
     def _frame_stamp(self):
         """sha1 of the LOCKED frame — the utility scale AND its per-step schedule, the
-        z-frame (market/wealth mean+std), the trust-region envelope and the streaming flag. Two
+        z-frame (market/wealth mean+std) and the trust-region envelope. Two
         checkpoints with the same stamp compute the same function of the same standardized
         state; a different stamp is a different frame,
         which is exactly what makes averaging them in one argmax (or reloading under a re-locked
@@ -2885,23 +2854,14 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     of per-step utilities instead, so the rungs are not on one scale and their ORDER says nothing;
     the per-track table and the verdict's `wT_mean` stay comparable."""
     solver_cfg = runtime["solver"]
-    obj = solver_cfg["object"]
-    have_liability = bundle.liability_value is not None
     primary = primary_runs[0]
     comparison = {primary.solver_name: SolverResult.multiseed_summary(primary_runs)}
-
-    # benchmark tracks, assembled alongside the DiffSolver-family deliverable
-    if obj in ("diffsolver", "diffsolverv2"):
-        for flag, label in (("run_hindsight_diagnostic", "hindsight"),
-                             ("run_textbook_benchmark", "textbook")):
-            if solver_cfg[flag] and not have_liability:
-                logging.warning("solve_hedge: %s requested but bundle has no "
-                                 "liability_value — track skipped", label)
-        if solver_cfg["run_hindsight_diagnostic"] and have_liability:
-            comparison["HindsightDpSolver"] = SolverResult.multiseed_summary(
-                [HindsightDpSolver(bundle, runtime).solve()])     # deterministic — one run
-        if solver_cfg["run_textbook_benchmark"] and have_liability:
-            comparison["textbook"] = run_textbook_benchmark(bundle, runtime)
+    # the benchmark tracks, on the held-out world the solver's verdict was rolled on
+    if solver_cfg["run_hindsight_diagnostic"]:
+        comparison["HindsightDpSolver"] = SolverResult.multiseed_summary(
+            [HindsightDpSolver(bundle, runtime).solve()])     # deterministic — one run
+    if solver_cfg["run_textbook_benchmark"]:
+        comparison["textbook"] = run_textbook_benchmark(bundle, runtime)
 
     # acceptance ordering - hindsight >= DiffSolver >= textbook over the tracks present, with a
     # tolerance for Monte-Carlo noise
@@ -2961,16 +2921,11 @@ class DiffSolverV2(DiffSolver):
         '',
         'The hindsight shapes WHERE the nets are trained, not the deployed decision, which is the',
         "argmax over the fitted value on information at $t$; the verdict is out of sample as in",
-        "`DiffSolver`. The step curves are part of the frame: measured at warmup, saved with the",
-        'checkpoint, and a checkpoint written by the other solver class is refused by name. Under',
+        "`DiffSolver`; a checkpoint written by the other solver class is refused by name. Under",
         "`Evaluator.Allocation_Mode: Carry_Variance` this solver derives the per-step leg weights",
         "from the outer paths, a long-only minimum of tracking variance less carry at the capital",
         "line's exchange rate.",
     ])
-
-    def __init__(self, bundle, runtime):
-        super().__init__(bundle, runtime)
-        self.phi_curves = None
 
     # ---- the forward pass -------------------------------------------------
     @staticmethod
@@ -3203,7 +3158,6 @@ class DiffSolverV2(DiffSolver):
         half = self.B_outer // 2
         for t in self.steps:
             q_star[t] = torch.cat([q_star[t][:half], q_base[t][half:]], dim=0)
-        self.phi_curves = [(bx.detach().cpu(), bp.detach().cpu()) for bx, bp in curves]
         phi0 = float(self._phi_apply(curves[0], self.liability_sim[0][:1])[0])
         logging.info(
             "DiffSolverV2 forward pass: aversion=%.2f d_0=%.3f q*_0 net=%.2f "
