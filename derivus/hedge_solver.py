@@ -523,11 +523,12 @@ class HindsightDpSolver:
         cost = torch.zeros(b_outer, dtype=MONEY, device=device)
         paths = slice(None)                                            # each path's own mark
         for t in steps:
-            grid = aspace.grid_at(t, bundle.marked(t, aspace.hedges))  # (n_actions_t, n_h) per-t
+            live = bundle.marked(t, aspace.hedges)
+            grid = aspace.grid_at(t, live)                             # (n_actions_t, n_h) per-t
             dF = bundle.move(t, bundle.successors[t], aspace.hedges, dim=0).to(MONEY)  # (n_h, B)
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
             best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
-            q_now = grid[best_idx]                                     # (B, n_h)
+            q_now = grid[best_idx] * live                              # (B, n_h) as booked
             cost = cost + turnover_charge(q_now - q_prev, *aspace.kappa(tradables_sim, t, rows=paths))
             G = G + best_pnl
             q_prev = q_now

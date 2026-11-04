@@ -160,6 +160,20 @@ def test_the_hindsight_bound_decides_where_the_solver_does():
     assert got == pytest.approx(want, abs=1e-5), (got, want, world.scenario_dates[world.initial_time_index + t0])
 
 
+def test_the_hindsight_bound_books_a_decision_on_the_legs_live_there():
+    """The clairvoyant bound books each decision on the legs live there, as every track does: on the
+    fixture with the benchmarks at seed 11, April's marks still from before the first decision at or
+    after row 100, its first book (path mean) holds nothing on April. 3 s.
+
+    Killing mutation: the bound's book read off its grid row unmasked (`grid[best_idx]`), the grid
+    admitting any cover parked on the expired leg, the first book (-50, -12.5, -12.5)."""
+    r = _run(_cfg(seed=11, benchmarks=True))
+    first = r.evaluation_summary['diagnostics']['verdict']['greedy_q_t'][0]
+    april = r.bundle.tradables_sim['PL_APR_2026']
+    book = r.evaluation_summary['comparison']['HindsightDpSolver']['n_star']
+    assert bool((april[first:] == april[first]).all()) and book[0] == 0.0 and any(book), (first, book)
+
+
 def test_the_textbook_bound_holds_its_book_to_the_terminal():
     """The static-hold benchmark telescopes its constant book to the terminal T, the last live
     liability mark where `L_T` is read and the book's unwind is charged: on the fixture with
