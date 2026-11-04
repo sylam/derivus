@@ -1375,6 +1375,36 @@ def test_an_opening_book_s_pnl_runs_from_the_first_row_in_the_stepper_and_its_cs
     _csv_against_the_stepper(tmp_path, stepper, last)
 
 
+def test_a_standing_book_is_marked_at_the_terminal_while_its_cash_compounds_to_the_last_row():
+    """Under `Force_Flat_At_End` 'No' a book left standing is valued at the terminal's mark while the
+    cash account beside it compounds to the last row: on the simulate-only fixture in cash-account
+    accounting at its own SOFR, opening short 10 `PL_OCT_2026` beside 125,000 of cash whose horizon
+    lies past the clean-exit row, held untouched, the stepper's `pnl_excess` is on each path
+    -10 x 50 x (F_T - F_0) plus 125,000 x (C_last / C_0 - 1), C the cash account's mark, within 0.5
+    (at most 0.067, the float32 rounding of a book of 1.1 million stepped daily). 1 s.
+
+    Killing mutations: the cash account held at the terminal's mark with the hedge legs
+    (`_values_at` clamping every tradable), the last day's interest lost (9.1 to 14.7 a path); a
+    hedge leg marked past the terminal (`_values_at` unclamped), the book carried to the clean-exit
+    row (path 0 -7,226)."""
+    cfg = jsonlib.load(open(FIXTURE))
+    cfg['Calc']['Calculation'].update(Batch_Size=4, Random_Seed=3)
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Evaluator'].update(Accounting_Mode='cash_account', Force_Flat_At_End='No')
+    hp['Portfolio_State']['Positions']['PL_OCT_2026'] = -10
+    hp['Tradable_Instruments']['CashAccountDeal']['USD_CASH']['Investment_Horizon'] = {'.Timestamp': '2026-09-30'}
+    result = _run(cfg)
+    world = result.bundle
+    r0, T = world.initial_time_index, world.initial_time_index + world.last_live_mtm_index
+    stepper = result.create_stepper()
+    while not stepper.done:
+        last = stepper.step(None)
+    F, cash = world.tradables['PL_OCT_2026'].double(), world.tradables['USD_CASH'].double()
+    want = -10.0 * 50.0 * (F[T] - F[r0]) + 125000.0 * (cash[-1] / cash[r0] - 1.0)
+    got = last['transition_pnl_excess'].double()
+    assert T == F.shape[0] - 2 and torch.allclose(got, want, rtol=0.0, atol=0.5), ((got - want).tolist(), want.tolist())
+
+
 def test_a_first_row_of_no_market_time_is_one_decision_for_the_verdict_and_the_stepper(tmp_path):
     """A job whose first row is a holiday of its calendar, Friday 10 April on a Testland calendar:
     the solver decides at row 0, so the stepper roll of the same frozen policy on the same replayed
@@ -1954,6 +1984,33 @@ def test_a_risk_horizon_past_the_terminal_lands_on_it(held_risk, tmp_path):
     ratio = _semideviations(rolls['mean'][0], far) / _semideviations(rolls['mean'][0], rolls['one'][0])
     ratio = ratio / np.sqrt(np.arange(n, 0, -1))
     assert abs(ratio.mean() - 1.0) < 0.03 and ratio[-1] == 1.0, (ratio.mean(), ratio[-1])
+
+
+def test_a_band_over_the_whole_grid_is_no_band_under_the_risk_horizon(tmp_path):
+    """`Max_Trade_Per_Step` takes the best book inside its band by the score every ranking reads, the
+    mean less kappa times the semideviation over the risk horizon: on `DRIFTING`, the October leg
+    alone against the whole liability under kappa 0.6 / sqrt(5) at k = 5, where the mean and the risk
+    term pull the book apart, a band of 50 contracts, every move the leg's [-50, 0] grid offers, rolls
+    the free roll's books to the bit in the verdict and the stepper roll alike, while a band of 12
+    holds every move of the stepper roll's book to 12 contracts (-12 where the free roll holds -50).
+    13 s.
+
+    Killing mutations: the band ranking its candidates on the one-step mean (`C1f.mean(-1)` for `C1`
+    in `_decide`'s band), the band of 50 holding the free roll's book on 30% of the stepper roll's
+    decisions and 51% of the verdict's rows; the band disarmed (`limit` False in `_decide`), the band
+    of 12 moving 50 contracts."""
+    ckpt = str(tmp_path / 'value_fn.pt')
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt), CONSTANT_VOL))
+    books = {}
+    for band in (None, 50.0, 12.0):
+        cfg = _free(_cfg(batch=2, inner=64, load=ckpt), DiffV2_Stepper_Rollout='Yes', **SCALED[1])
+        if band is not None:
+            cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']['Max_Trade_Per_Step'] = band
+        diag = _run(cfg).evaluation_summary['diagnostics']
+        books[band] = (diag['verdict']['greedy_q_traj'], diag['stepper_verdict']['greedy_q_traj'])
+    assert books[50.0] == books[None], 'a band over the whole grid moved the books'
+    nets = [0.0] + [sum(q) for q in books[12.0][1]]
+    assert books[12.0] != books[None] and max(abs(b - a) for a, b in zip(nets, nets[1:])) <= 12.0, nets
 
 
 def _huber(x, aversion=2.5, knee=1.0):
