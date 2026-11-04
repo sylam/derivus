@@ -919,6 +919,7 @@ class Bundle:
         self.fixings = ()                   # ((day offset, signed quantity), ...) of the liability
         self.last_live_mtm_index = 0
         self.decision_steps, self.successors = [0], []    # the decision rows, each row's successor
+        self._marked = {}                   # `marked`'s masks, one a (row, legs)
         # inner-MC forks, attached by HedgeMonteCarlo.execute for Execution_Mode='solve_hedge'
         self.inner_mc = None
         self.inner_mc_grad = None
@@ -1267,10 +1268,13 @@ class Bundle:
     def marked(self, t, refs):
         """`(len(refs),)` 1 or 0: whether each tradable of `refs` is still marked on sim-grid row
         `t`, its deal's dates pricing it there (`last_marked`): the one liveness rule, a leg
-        trading at t where it is marked at t."""
-        mask = [float(t <= self.last_marked[r]) for r in refs]
-        logging.debug('marked on row %d: %s', t, mask)
-        return torch.tensor(mask, device=self.device)
+        trading at t where it is marked at t. Built once a row and legs."""
+        key = (t, tuple(refs))
+        if key not in self._marked:
+            mask = [float(t <= self.last_marked[r]) for r in refs]
+            logging.debug('marked on row %d: %s', t, mask)
+            self._marked[key] = torch.tensor(mask, device=self.device)
+        return self._marked[key]
 
     def moving(self, t, refs):
         """`(len(refs),)` 1 or 0: whether each tradable of `refs` moves over decision row `t`'s one

@@ -152,7 +152,8 @@ class HedgeActionSpace:
         self.mode = acc["allocation_mode"]
         self.calendar_bps = acc["calendar_spread_bps"]
         self._grid_cache = None
-        self._ladder_cache = {}
+        # a step's ladder, rungs and admitted grid by `(kind, t, live)`, each built once
+        self._cache = {}
         solver_cfg = runtime["solver"]
         self.levels = int(solver_cfg["training_action_grid_levels_per_axis"])
         active = solver_cfg["active_hedge_indices"]
@@ -231,15 +232,23 @@ class HedgeActionSpace:
         rank.scatter_(-1, order, torch.arange(x.shape[-1], device=x.device).expand_as(order))
         return base + (rank < need).to(x.dtype)
 
+    def _key(self, kind, t, live):
+        # the cache key of a step's `kind` on the legs `live` marks: the mask's one host read
+        return kind, t, None if live is None else tuple(live.tolist())
+
     def ladder(self, t, live=None):
         """The ladder at decision step t, `(weights, legs, box_lo, box_hi, lo, hi)`: the
         `_weights_at` split over `live`, the indices of the legs it weighs and their `bounds`, the
         net's band snapped INWARD to whole contracts, since a fractional band would emit rungs, or
-        book a hedge, that round outside their own mandate."""
-        weights = self._weights_at(t, live)
-        usable = (weights > 0).to(self.q_lo.dtype)
-        box_lo, box_hi, lo, hi = self.bounds(t, usable)
-        return (weights, usable.nonzero().flatten().tolist(), box_lo, box_hi, *self.inward(lo, hi))
+        book a hedge, that round outside their own mandate. Built once a `(t, live)`."""
+        key = self._key("ladder", t, live)
+        if key not in self._cache:
+            weights = self._weights_at(t, live)
+            usable = (weights > 0).to(self.q_lo.dtype)
+            box_lo, box_hi, lo, hi = self.bounds(t, usable)
+            self._cache[key] = (weights, usable.nonzero().flatten().tolist(), box_lo, box_hi,
+                                *self.inward(lo, hi))
+        return self._cache[key]
 
     @staticmethod
     def inward(lo, hi):
@@ -279,8 +288,8 @@ class HedgeActionSpace:
             collapse.
         Cached per `(t, live)`. The corridor filter downstream in `grid_at` is then a no-op: the
         rungs a caller is offered are rungs it can realize."""
-        key = (t, None if live is None else tuple(live.tolist()))
-        if key not in self._ladder_cache:
+        key = self._key("rungs", t, live)
+        if key not in self._cache:
             _, legs, _, _, lo, hi = self.ladder(t, live)
             if lo > hi:
                 raise ValueError(
@@ -293,8 +302,8 @@ class HedgeActionSpace:
                     f"{self.levels} rungs, a quantum above one contract: raise "
                     f"Training_Action_Grid_Levels_Per_Axis to at least {hi - lo + 1}.")
             net = torch.linspace(lo, hi, self.levels, device=self.device).unsqueeze(-1)  # (L,1)
-            self._ladder_cache[key] = self.rung(t, net, live).unique(dim=0)
-        return self._ladder_cache[key]
+            self._cache[key] = self.rung(t, net, live).unique(dim=0)
+        return self._cache[key]
 
     def grid_at(self, t, live=None):
         """Action grid at decision step t: the rows of the base `grid()` — or of the factored
@@ -304,16 +313,19 @@ class HedgeActionSpace:
 
         The rule holds the REALIZED book, the position that survives expiry masking: a row parked
         on an expired leg cannot carry the live legs past the cap, nor a corridor-satisfying short
-        be masked to 0 and silently under-hedge."""
-        rows = self.grid() if self.weights is None else self.allocation_grid(t, live)
-        grid = rows[self.admissible(rows, t, live)]
-        logging.debug('grid_at step %d admits %d of %d rows', t, grid.shape[0], rows.shape[0])
-        if grid.shape[0] == 0:
-            raise ValueError(
-                f"action grid empty at step {t} — no row lies in the live legs' boxes with its "
-                f"signed net in {self.bounds(t, live)[2:]}, Total_Position_Abs_Limit and the "
-                f"Total_Position_Schedule corridor")
-        return grid
+        be masked to 0 and silently under-hedge. Built once a `(t, live)`."""
+        key = self._key("grid", t, live)
+        if key not in self._cache:
+            rows = self.grid() if self.weights is None else self.allocation_grid(t, live)
+            grid = rows[self.admissible(rows, t, live)]
+            logging.debug('grid_at step %d admits %d of %d rows', t, grid.shape[0], rows.shape[0])
+            if grid.shape[0] == 0:
+                raise ValueError(
+                    f"action grid empty at step {t} — no row lies in the live legs' boxes with its "
+                    f"signed net in {self.bounds(t, live)[2:]}, Total_Position_Abs_Limit and the "
+                    f"Total_Position_Schedule corridor")
+            self._cache[key] = grid
+        return self._cache[key]
 
     def bounds(self, t, live=None):
         """The bounds of a book at decision step t on the active legs the mask `live` marks (every
@@ -385,6 +397,7 @@ class HedgeActionSpace:
         if self.weights is not None:
             raise ValueError("HedgeActionSpace.install_weights: a weights table already stands")
         self.weights = self.weights_key(weights)
+        self._cache.clear()
 
     def kappa(self, tradables_sim, t_index, rows=None, matched=True):
         """The per-hedge turnover rates `(κ, κ_cal)` at sim-grid `t_index` (`hedge_bundle.kappa_pair`):
@@ -716,6 +729,7 @@ class DiffSolver:
         own frame at build time, and letting a later one reach the runtime would rescale the
         objective, and every fitted C_t with it, mid-training."""
         self.bundle = bundle
+        self._moves = {}                                              # `_outer_move`'s, this bundle's
         self.aspace.vol_sim = bundle.vol_sim
         self.tradables_sim = bundle.tradables_sim
         self.liability_sim = bundle.liability_sim                     # (n_steps, B_outer)
@@ -944,11 +958,18 @@ class DiffSolver:
         `to`: the hedges' `Bundle.move` `(..., n_hedge)` in hedge order and the liability's
         `L_to − L_t` `(...)`, differenced in `MONEY` where `money` (the verdict's wealth law). The
         one spelling behind the bank rolls, the labels' k-step side, the verdict, the stepper
-        rollout's drift monitor, the textbook hedge and the constructed policy."""
+        rollout's drift monitor, the textbook hedge and the constructed policy, over every path
+        taken once a bound bundle."""
         to = self.nxt[t] if to is None else to
-        L = self.liability_sim
-        dL = (L[to].to(MONEY) - L[t].to(MONEY) if money else L[to] - L[t])[rows]
-        return self.bundle.move(t, to, self.aspace.hedges, rows), dL
+        every = isinstance(rows, slice) and rows == slice(None)
+        if not every or (t, to, money) not in self._moves:
+            L = self.liability_sim
+            dL = (L[to].to(MONEY) - L[t].to(MONEY) if money else L[to] - L[t])[rows]
+            move = self.bundle.move(t, to, self.aspace.hedges, rows), dL
+            if not every:
+                return move
+            self._moves[(t, to, money)] = move
+        return self._moves[(t, to, money)]
 
     def _p(self, book, live=None):
         """The position state `p = Σq / Q_max` of `book` `(..., n_hedge)` on the legs `live` marks
@@ -1205,7 +1226,7 @@ class DiffSolver:
         still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`
         and booked as the execution books it (`HedgeActionSpace.book`), as the stepper holds it."""
         q = (-self.bundle.unfixed_at(self.bundle.initial_time_index + t)
-             * self.aspace._weights_at(t, live) / self.aspace.contract_size)
+             * self.aspace.ladder(t, live)[0] / self.aspace.contract_size)
         return self.aspace.book(q[None].expand(batch, self.aspace.n_hedge), t, live)
 
     def _first_book(self, t, live, batch):
@@ -1434,7 +1455,7 @@ class DiffSolver:
         measured = measured.nonzero().squeeze(1)
         # ∂Y/∂p along the ladder: a move in p lands on the live legs as the step's Allocation_Weights
         # split it (evenly where none is declared), so a leg the ladder never moves carries no weight
-        g_p = ((grads[-1].detach() * self.aspace._weights_at(t, live)).sum(-1) * self.aspace.total_abs_limit
+        g_p = ((grads[-1].detach() * self.aspace.ladder(t, live)[0]).sum(-1) * self.aspace.total_abs_limit
                if extra else None)
         Y = Y.detach()
         k = min(self.label_horizon, sum(s >= t for s in self.steps))
@@ -1882,7 +1903,7 @@ class DiffSolver:
         span, width = float(cs[-1] - cs[0]), float(ns[-1] - ns[0])
         chord = (cs[0] + (cs[-1] - cs[0]) * (ns - ns[0]) / width) if width else cs
         # a unit of net cover under the composition the schedule mandates
-        w = self.aspace._weights_at(t, live)
+        w = self.aspace.ladder(t, live)[0]
         dfn = (dF * (w * self.aspace.contract_size)).reshape(-1, self.aspace.n_hedge).sum(-1)
         dl = dL.reshape(-1)
 
@@ -2976,7 +2997,7 @@ class DiffSolverV2(DiffSolver):
             if self._dust(rep[t]):
                 m_t[t] = torch.zeros(self.B_outer, device=self.device)
             else:
-                w = rep[t] / rep[t].sum() if live is None else self.aspace._weights_at(t, live[t])
+                w = rep[t] / rep[t].sum() if live is None else self.aspace.ladder(t, live[t])[0]
                 m_t[t] = torch.einsum('i,ib->b', w * self.aspace.contract_size, moves[t][0].T.contiguous())
         req = LT.new_full((self.B_outer,), floor)
         reqs = {}
