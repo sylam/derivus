@@ -937,6 +937,37 @@ def test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal(mode, 
     assert torch.allclose(short - flat, want, rtol=1e-5, atol=0.0), ((short - flat).tolist(), want.tolist())
 
 
+def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path):
+    """A client short 10 `PL_OCT_2026` from the first decision through `create_stepper()`, on the
+    simulate-only fixture at zero rates paying Monday 10 August, so the row before its terminal is a
+    Sunday the stepper does not decide on: `write_diagnostic_csvs` books the forced close on the
+    terminal, +10 at Monday's mark, the book flat from there and -10 the day before, and on each
+    path it writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L within 1e-5
+    relative. 2 s.
+
+    Killing mutations: the CSV recording the trades of the decision rows alone, the close of the
+    step into the terminal lost (trade 0 on the terminal, the book held short to the clean-exit
+    row: the mean path's last 49,863.81 against 50,038.13); `_hold` after the forced close, the
+    close booked on Sunday at Sunday's mark (49,984.73)."""
+    cfg = _paying(_zero_rates(jsonlib.load(open(FIXTURE))), '2026-08-10')
+    cfg['Calc']['Calculation'].update(Batch_Size=4, Random_Seed=3)
+    result = _run(cfg)
+    stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
+    while not stepper.done:
+        last = stepper.step({'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
+    stepper.write_diagnostic_csvs(str(tmp_path), 'short')
+    csv = pd.read_csv(tmp_path / 'short_paths.csv')
+    pnl = last['transition_pnl_excess'].double()
+    for case, rows in csv.groupby('case'):
+        rows = rows.set_index('day')
+        assert rows.loc['2026-08-10', 'PL_OCT_2026_trade'] == 10.0, (case, rows['PL_OCT_2026_trade'].tail(3))
+        assert rows.loc['2026-08-09', 'PL_OCT_2026_position'] == -10.0
+        assert (rows.loc['2026-08-10':, 'PL_OCT_2026_position'] == 0.0).all()
+        want = float(pnl.mean() if case == 'mean' else pnl[int(rows['path_idx'].iloc[0])])
+        got = rows['hedge_portfolio_ex_funding'].iloc[-1]
+        assert abs(got / want - 1.0) < 1e-5, (case, got, want)
+
+
 def test_a_first_row_of_no_market_time_is_one_decision_for_the_verdict_and_the_stepper(tmp_path):
     """A job whose first row is a holiday of its calendar, Friday 10 April on a Testland calendar:
     the solver decides at row 0, so the stepper roll of the same frozen policy on the same replayed

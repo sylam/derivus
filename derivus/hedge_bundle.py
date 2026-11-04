@@ -1779,11 +1779,8 @@ class BundleStepper:
         if mirror_scale:
             bundle.mirror_utility_scale(runtime)
         self._state = self._initial_state()
-        # per-decision recording, always on so write_diagnostic_csvs has data to use
-        self._times = []
-        self._position_history = {n: [] for n in self._hedges}
-        self._trade_history = {n: [] for n in self._hedges}
-        self._price_history = {n: [] for n in self._hedges}
+        # the opening book, then the book held over each row stepped: what write_diagnostic_csvs reads
+        self._held = {n: [self._state['positions'][n].detach().cpu().clone()] for n in self._hedges}
         self._terminal_transition = None
 
     # ---- public surface ------------------------------------------------------
@@ -1817,21 +1814,10 @@ class BundleStepper:
         zero trades. Returns the post-step observation plus this transition's per-path
         pnl_excess + liability_value."""
         was_decision_step = self.is_decision_step
-        if was_decision_step:
-            # record the pre-step position and price for the diagnostic CSV
-            self._times.append(self.time_index)
-            for n in self._hedges:
-                self._position_history[n].append(self._state['positions'][n].detach().cpu().clone())
-                self._price_history[n].append(self._state['tradable_values'][n].detach().cpu().clone())
         structured = (self._structured_action(action)
                       if (action is not None and was_decision_step) else None)
         next_state = self._step_state(self._state, structured)
         transition = self._payoff(next_state)
-        if was_decision_step:
-            # realized trade = post-step position - pre-step position, so env clips and forces land
-            for n in self._hedges:
-                self._trade_history[n].append(
-                    next_state['positions'][n].detach().cpu() - self._position_history[n][-1])
         if self._batch_size == 1 and logging.getLogger().isEnabledFor(logging.DEBUG):
             # reconciliation organ for B=1 rolls, every step so the daily identities close exactly
             cur = self.time_index
@@ -2055,6 +2041,11 @@ class BundleStepper:
                                                  vol_t, dt).items():
                 self._credit(accounts, self._account_of[n], -funding)
 
+    def _hold(self, positions):
+        # the book held over this step's row, before a close at its end books at the next row's mark
+        for n in self._hedges:
+            self._held[n].append(positions[n].detach().cpu().clone())
+
     def _credit(self, accounts, account_name, amount):
         if account_name is not None:
             accounts[account_name] = accounts[account_name] + amount
@@ -2140,6 +2131,7 @@ class BundleStepper:
             next_positions[n] = (next_positions[n] + delta).round()
         self._apply_frictions(next_cash, deltas, state['tradable_values'], next_positions,
                               current, next_idx, vol_t)
+        self._hold(next_positions)
         if acc['force_flat_at_end'] and current == self._close_idx - 1:
             self._flatten_cash(next_positions, next_cash, self._values_at(next_idx), vol_t)
         # cash mode tracks no daily VM, but cumulative_pnl still resets at flat for the same
@@ -2201,6 +2193,7 @@ class BundleStepper:
                          -self._cost(deltas[n], state['tradable_values'][n], n, vol_t))
         self._apply_frictions(next_margin, deltas, state['tradable_values'], next_positions,
                               current, settlement_idx, vol_t)
+        self._hold(next_positions)
         if acc['force_flat_at_end'] and current == self._close_idx - 1:
             self._flatten_futures(next_positions, next_margin, next_settlement, next_values, vol_t)
         next_state = {
@@ -2233,12 +2226,10 @@ class BundleStepper:
 
     # ---- diagnostic CSV assembly ---------------------------------------------
     def _rollout(self):
-        """The recorded trajectory, stacked per instrument over decision steps."""
+        """The recorded trajectory: per instrument the opening book and the book held over each row
+        stepped, stacked."""
         return {
-            'times': self._times,
-            'position': {n: torch.stack(self._position_history[n], dim=0) for n in self._hedges},
-            'trade': {n: torch.stack(self._trade_history[n], dim=0) for n in self._hedges},
-            'price': {n: torch.stack(self._price_history[n], dim=0) for n in self._hedges},
+            'held': {n: torch.stack(self._held[n], dim=0) for n in self._hedges},
             'net_pnl': (self._terminal_transition['pnl_excess']
                         + self._terminal_transition['liability_value']).detach().cpu(),
         }
@@ -2268,21 +2259,17 @@ class BundleStepper:
         # None when no vol series was built, and inert on the scalar-spread fast path
         vol_series = bundle.step_annual_vol
         diag_vol = None if vol_series is None else vol_series.detach().cpu().float().unsqueeze(-1)
-        times = [int(t) for t in rollout['times']]
         per_instr = {}
         for name in self._hedges:
             cs = float(runtime['tradables'][name]['contract_size'])
             fut = bundle.tradables[name].detach().cpu().float()
+            # a row trades the change of the book it holds, at its own mark, so the forced close
+            # sits on the terminal, where it is booked
+            held = rollout['held'][name].float()
+            rows = slice(bundle.initial_time_index, bundle.initial_time_index + held.shape[0] - 1)
             pos = torch.zeros((T, B)); trd = torch.zeros((T, B))
-            cur = torch.zeros(B); j = 0
-            rollout_pos = rollout['position'][name]
-            rollout_trd = rollout['trade'][name]
-            for t in range(T):
-                if j < len(times) and t == times[j]:
-                    trd[t] = rollout_trd[j].cpu().float()
-                    cur = rollout_pos[j].cpu().float() + rollout_trd[j].cpu().float()
-                    j += 1
-                pos[t] = cur
+            pos[rows], trd[rows] = held[1:], held.diff(dim=0)
+            pos[rows.stop:] = held[-1]
             trade_cash = -trd * fut * cs
             trade_cost = trd.abs() * per_contract_kappa(runtime, fut, name, diag_vol)
             per_instr[name] = {
