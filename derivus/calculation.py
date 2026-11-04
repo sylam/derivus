@@ -3288,7 +3288,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'the ladder on its live legs, the ladder being the Allocation_Weights split or, absent one, '
                                   'the even split over the live active legs, which the Cartesian '
                                   'policy need not hold; No water-fills the bank\'s net onto the '
-                                  'replication hedge\'s shape over the active legs'),
+                                  'replication hedge\'s shape over the live active legs'),
                     F('DiffV2_Label_Horizon', 'Integer', default=1,
                       description='Steps the value label realises along the fitted greedy '
                                   'policy on the outer path before it bootstraps, clipped at the '

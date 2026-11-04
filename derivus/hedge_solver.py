@@ -335,8 +335,7 @@ class HedgeActionSpace:
         sum inside `Total_Position_Abs_Limit` and the `Total_Position_Schedule` corridor. The one
         rule every track's book is held to (`admissible`) and built inside (`ladder`, the bank), so
         it is also the support the position state p = Σq/Q_max is queried over."""
-        alive = None if live is None else live.tolist()
-        legs = [i for i in self.active if alive is None or alive[i] > 0]
+        legs = self.active if live is None else self.live_legs(live)
         on = self.active_mask if live is None else self.active_mask * live
         lo = sum(self.boxes[i][0] for i in legs)
         hi = sum(self.boxes[i][1] for i in legs)
@@ -347,6 +346,11 @@ class HedgeActionSpace:
             lo, hi = max(lo, c_lo), min(hi, c_hi)
         logging.debug('bounds at step %d: live active legs %s, net band (%s, %s)', t, legs, lo, hi)
         return self.q_lo * on, self.q_hi * on, lo, hi
+
+    def live_legs(self, live):
+        """The active legs the mask `live` marks, on the host: the legs a book at its step trades."""
+        alive = live.tolist()
+        return [i for i in self.active if alive[i] > 0]
 
     def admissible(self, q, t, live=None):
         """`(K,)`: whether each book of `q` `(K, n_hedge)`, held on the legs the mask `live` marks
@@ -1240,9 +1244,10 @@ class DiffSolver:
 
     def _build_bank(self, gen):
         """Operating-region bank — roll the OUTER paths forward (cheap; outer-realised
-        moves only, no inner MC): hold q = clamp(q_rep_t + noise), its net water-filled into the
-        `bounds(t)` band, each step, accumulate W = cum hedge P&L + L_t. Returns per-t lists W_t (B_outer,) and q_prev (B_outer,
-        n_hedge). The bank-state `market_t` is read lazily from the SAME inner-MC fork the
+        moves only, no inner MC): hold q = clamp(q_rep_t + noise) on the legs live at the step
+        (`Bundle.marked`), its net water-filled onto them into their `bounds(t, live)` band, each
+        step, accumulate W = cum hedge P&L + L_t. Returns per-t lists W_t (B_outer,) and q_prev
+        (B_outer, n_hedge). The bank-state `market_t` is read lazily from the SAME inner-MC fork the
         backward sweep makes at t (no extra inner-MC passes).
 
         Under the position state the bank also has to COVER THE p AXIS: p is an input the
@@ -1255,19 +1260,20 @@ class DiffSolver:
         mask = self.aspace.active_mask
 
         def explore(t):
-            lo_t, hi_t = self.aspace.bounds(t)[2:]                                        # its net band at t
+            live = self.bundle.marked(t, self.aspace.hedges)
+            legs, (lo_t, hi_t) = self.aspace.live_legs(live), self.aspace.bounds(t, live)[2:]
             q_rep = self._replication_hedge(t)                                            # (n_hedge,)
             noise = self.noise_frac * rng * torch.randn(
                 self.B_outer, self.aspace.n_hedge, generator=gen, device=self.device)
-            q = (q_rep[None] + noise * mask).clamp(self.aspace.q_lo, self.aspace.q_hi)
+            q = (q_rep[None] + noise * mask).clamp(self.aspace.q_lo, self.aspace.q_hi) * live
             if self.position_state:
                 # cover the p axis the argmax queries
                 u = lo_t + (hi_t - lo_t) * torch.rand(
                     self.B_outer, 1, generator=gen, device=self.device)
-                q = self.aspace.waterfill(q, u, u)
+                q = self.aspace.waterfill(q, u, u, legs)
             # the bank's books inside the bounds every track's are held to, so the value fn trains
             # on reachable states only
-            return self.aspace.waterfill(q, lo_t, hi_t)
+            return self.aspace.waterfill(q, lo_t, hi_t, legs)
         return self._roll_bank(explore)
 
     def _roll_bank(self, policy):
@@ -1290,7 +1296,7 @@ class DiffSolver:
             q_list.append(q_prev.clone())
             q_prev = policy(t)
             if logging.getLogger().isEnabledFor(logging.DEBUG):
-                net = q_prev[:, self.aspace.active].sum(-1)
+                net = (q_prev * self.bundle.marked(t, self.aspace.hedges))[:, self.aspace.active].sum(-1)
                 logging.debug('BANK %d %r', t, (float(net.min()), float(net.max())))
             W = wealth_step(W, q_prev, self.aspace.contract_size, *self._outer_move(t))
         if self.log_ratio:
@@ -2964,14 +2970,15 @@ class DiffSolverV2(DiffSolver):
         # the curve is float32 by construction, read in the books' own precision
         return torch.lerp(bp[idx - 1].to(w.dtype), bp[idx].to(w.dtype), w)
 
-    def _constructed_policy(self, live=None):
+    def _constructed_policy(self, live):
         """One deterministic pass, measured once and constructed twice: the delta
         `d_t(L) = P(L_T < floor | L_t = L)` is measured on the FLAT liability, the only book that
         exists before a policy does, and the policy rolls once against those curves, read at its own
-        book, so no fixed point is needed. Given the per-step mask `live` of the legs that still price, each
-        step's net spans the `HedgeActionSpace.ladder` band, is held as its `rung` and its reserve
-        is priced on the ladder's weights; absent `live`, the net spans the `bounds` band and is
-        water-filled onto the replication hedge's shape, its reserve priced in that shape. Returns
+        book, so no fixed point is needed. Each step's book is held on the legs its mask `live[t]`
+        marks: under `DiffV2_Bank_Along_Ladder` its net spans the `HedgeActionSpace.ladder` band, is
+        held as its `rung` and its reserve is priced on the ladder's weights; without, the net spans
+        the `bounds` band and is water-filled onto the replication hedge's shape, its reserve priced
+        in that shape. Returns
         `(the floored q per decision row (B, n_hedge), the undefended delta's, curves per decision
         row, the floored terminal book)`, each decision holding its book to the next."""
         L, T = self.liability_sim, self.T_dec
@@ -2981,10 +2988,11 @@ class DiffSolverV2(DiffSolver):
         logging.debug("constructed policy: measured once over %d decision rows", len(self.steps))
 
         def compose(t, net):
-            if live is not None:
+            if self.bank_ladder:
                 return self.aspace.rung(t, net, live[t])
             return self.aspace._largest_remainder(self.aspace.waterfill(
-                rep[t][None].expand(self.B_outer, self.aspace.n_hedge).clone(), net, net), net)
+                rep[t][None].expand(self.B_outer, self.aspace.n_hedge).clone(), net, net,
+                self.aspace.live_legs(live[t])), net)
 
         # THE CLAIRVOYANT RESERVE, backward per path: req_t is the minimum book at t from which the
         # known remaining path can be played without dipping under the floor. Days a futures hedge
@@ -2993,13 +3001,13 @@ class DiffSolverV2(DiffSolver):
         floor = self.cfg["diffv2_book_floor_per_unit"] * self.leg_volume
         m_t, bands, lo_is, hi_is = {}, {}, {}, {}
         for t in self.steps:
-            bands[t] = lo_t, hi_t = (self.aspace.bounds(t)[2:] if live is None
-                                     else self.aspace.ladder(t, live[t])[4:])
+            bands[t] = lo_t, hi_t = (self.aspace.ladder(t, live[t])[4:] if self.bank_ladder
+                                     else self.aspace.bounds(t, live[t])[2:])
             lo_is[t], hi_is[t] = self.aspace.inward(lo_t, hi_t)
             if self._dust(rep[t]):
                 m_t[t] = torch.zeros(self.B_outer, device=self.device)
             else:
-                w = rep[t] / rep[t].sum() if live is None else self.aspace.ladder(t, live[t])[0]
+                w = self.aspace.ladder(t, live[t])[0] if self.bank_ladder else rep[t] / rep[t].sum()
                 m_t[t] = torch.einsum('i,ib->b', w * self.aspace.contract_size, moves[t][0].T.contiguous())
         req = LT.new_full((self.B_outer,), floor)
         reqs = {}
@@ -3147,7 +3155,7 @@ class DiffSolverV2(DiffSolver):
         constructed policy's neighbourhood is the point of the forward pass. Under
         `DiffV2_Bank_Along_Ladder` the exploration is drawn on the net, as `DiffV2_Bank_Noise_Frac`
         of the ladder band's width, clamped into the band, and every bank book is that net's
-        `rung` on the legs live at the step (`Bundle.marked`)."""
+        `rung`; either way every bank book is held on the legs live at the step (`Bundle.marked`)."""
         if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
                 and not self.cfg["diffv2_load_value_fn"]):
             sched = self._carry_variance_weights()
@@ -3156,13 +3164,11 @@ class DiffSolverV2(DiffSolver):
                 "DiffSolverV2 Carry_Variance allocator: %d knot(s); w(t=0)=%s w(mid)=%s",
                 len(sched), sched[0][1] if sched else None,
                 sched[len(sched) // 2][1] if sched else None)
-        live = None
-        if self.bank_ladder:
-            live = {t: self.bundle.marked(t, self.aspace.hedges) for t in self.steps}
+        live = {t: self.bundle.marked(t, self.aspace.hedges) for t in self.steps}
         # the floored seed keeps every training book above the floor, so a deep-under-water state
         # would never appear and the net would extrapolate there. Half the paths therefore roll the
         # clairvoyant seed and half the UNDEFENDED delta base.
-        q_star, q_base, curves, WT = self._constructed_policy(live=live)
+        q_star, q_base, curves, WT = self._constructed_policy(live)
         half = self.B_outer // 2
         for t in self.steps:
             q_star[t] = torch.cat([q_star[t][:half], q_base[t][half:]], dim=0)
@@ -3176,11 +3182,12 @@ class DiffSolverV2(DiffSolver):
         mask = self.aspace.active_mask
 
         def explore(t):
-            if live is None:
+            if not self.bank_ladder:
                 noise = self.noise_frac * rng * torch.randn(
                     self.B_outer, self.aspace.n_hedge, generator=gen, device=self.device)
                 q = self.aspace.waterfill((q_star[t] + noise * mask).clamp(
-                    self.aspace.q_lo, self.aspace.q_hi), *self.aspace.bounds(t)[2:])
+                    self.aspace.q_lo, self.aspace.q_hi) * live[t], *self.aspace.bounds(t, live[t])[2:],
+                    self.aspace.live_legs(live[t]))
             else:
                 # the exploration rides the net and the book stays a rung, inside the band and so
                 # inside the corridor
