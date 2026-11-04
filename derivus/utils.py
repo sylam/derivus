@@ -2541,10 +2541,6 @@ class TensorCashFlows(TensorSchedule):
         """Summed |notional| across the schedule."""
         return float(np.abs(self.schedule[:, CASHFLOW_INDEX_Nominal]).sum())
 
-    def last_pay_day(self):
-        """Latest payment day (offset in days from base_date), None where nothing is left to pay."""
-        return float(self.schedule[:, CASHFLOW_INDEX_Pay_Day].max()) if len(self.schedule) else None
-
     def get_par_swap_rate(self, base_date, ir_curve):
         """Used to calculate the par swap rate for these cashflows given an interest rate curve"""
         Dt = ir_curve.get_day_count_accrual(base_date, self.schedule[:, CASHFLOW_INDEX_Pay_Day])

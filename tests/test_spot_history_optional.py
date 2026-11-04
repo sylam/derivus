@@ -170,8 +170,8 @@ def test_spot_price_history_optional_trains_via_calibrated_scale():
     c = bundle.utility_scale
     assert c > 1.0e3, f'utility_scale collapsed to the floor: {c}'
     # c = total_leg_volume · spot · σ · √τ — reproduce it from the parts.
-    first, last = (bundle.scenario_dates[i] for i in (bundle.initial_time_index,
-                                                       int(bundle.last_settlement_index)))
+    first, last = (bundle.scenario_dates[i] for i in (
+        bundle.initial_time_index, bundle.initial_time_index + bundle.last_live_mtm_index))
     days = len(pd.date_range(first + pd.Timedelta(days=1), last, freq=bundle.business_day))
     tau = max(days / 252.0, 1.0 / 252.0)
     expected_c = bundle.total_leg_volume * spot * sigma * (tau ** 0.5)

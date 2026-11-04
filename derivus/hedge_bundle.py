@@ -1138,7 +1138,6 @@ class Bundle:
         self.utility_scale_schedule = None
         self.total_leg_volume = 0.0
         self.fixings = ()                   # ((day offset, signed quantity), ...) of the liability
-        self.last_settlement_index = None
         self.last_live_mtm_index = 0
         self.decision_steps, self.successors = [0], []    # the decision rows, each row's successor
         # inner-MC forks, attached by HedgeMonteCarlo.execute for Execution_Mode='solve_hedge'
@@ -1149,8 +1148,7 @@ class Bundle:
     @classmethod
     def from_batch(cls, base_date, business_day, time_grid_days, tradable_blocks,
                    factor_tensor_blocks, hedge_profile_blocks, num_batches, stoch_factors,
-                   runtime, privileged_factor_blocks=None, total_leg_volume=None,
-                   last_payment_day=None, fixings=()):
+                   runtime, privileged_factor_blocks=None, total_leg_volume=None, fixings=()):
         """Assemble the per-batch tensor blocks the HedgeMonteCarlo simulator produced into one
         bundle: join them along the batch axis, then run the four resolve stages.
 
@@ -1170,7 +1168,7 @@ class Bundle:
             + [int(t.shape[0]) for t in tradables.values()]
             + [int(t.shape[0]) for t in factors.values()])
         self._resolve_tradables(tradables, time_grid_days, steps, runtime)
-        self._resolve_liability(mtm, cashflows, steps, total_leg_volume, last_payment_day, fixings)
+        self._resolve_liability(mtm, cashflows, steps, total_leg_volume, fixings)
         self._resolve_factors(factors, privileged_factor_blocks or {}, stoch_factors, steps)
         self._resolve_frame(runtime, stoch_factors)
         return self
@@ -1239,10 +1237,9 @@ class Bundle:
             return realized.to(dtype=tensor.dtype)
         return tensor[:1].expand((self.history_rows,) + tuple(tensor.shape[1:])).contiguous()
 
-    def _resolve_liability(self, mtm, cashflows, steps, total_leg_volume, last_payment_day,
-                           fixings):
+    def _resolve_liability(self, mtm, cashflows, steps, total_leg_volume, fixings):
         """Stage 2 — the liability's value, its mark plus the cash it has paid on earlier rows, the
-        two schedule scalars the utility scale needs and the liability's fixings `unfixed_at` reads.
+        leg volume the utility scale needs and the liability's fixings `unfixed_at` reads.
         `last_live_mtm_index` is the structural pre-settlement terminal: the grid appends one
         clean-exit row where the liability settles to zero, so the last LIVE mtm row is
         `steps - 2` — the single source for the DP depth and the L_T read."""
@@ -1264,13 +1261,8 @@ class Bundle:
         if total_leg_volume:
             self.total_leg_volume = float(total_leg_volume)
         self.fixings = tuple(fixings)
-        if last_payment_day is not None:
-            # Last (history-prefixed) grid step still strictly before the final payment.
-            pending = [i for i, d in enumerate(self.time_grid_days_cpu) if d < last_payment_day]
-            if pending:
-                self.last_settlement_index = pending[-1]
-        logging.info('liability scalars: total_leg_volume=%s last_settlement_index=%s',
-                     self.total_leg_volume or None, self.last_settlement_index)
+        logging.info('liability scalars: total_leg_volume=%s close=%d',
+                     self.total_leg_volume or None, T)
 
     def _resolve_factors(self, factors, privileged_factor_blocks, stoch_factors, steps):
         """Stage 3 — the simulated factor paths and the per-process privileged surfaces (the
@@ -1421,11 +1413,11 @@ class Bundle:
                     'utility_scale Explicit override: c=%.4g (below the $1k '
                     'production floor — test mode; trust mode active)', c_explicit)
             return c_explicit
-        # tau measures the SIM horizon, so anchor it at the sim-grid origin
+        # tau measures the SIM horizon: the market time from the sim-grid origin through the close
         H = self.initial_time_index
-        if self.last_settlement_index is None:
-            return _degenerate("last_settlement_index missing from the bundle")
-        market = self.grid_market_days[H + 1:int(self.last_settlement_index) + 1].sum()
+        market = self.market_time[1:self.last_live_mtm_index + 1].sum()
+        logging.debug('utility scale horizon: %s market days through the close row %d',
+                      float(market), self.last_live_mtm_index)
         tau_years = max(float(market) / 252.0, 1.0 / 252.0)
         if not self.spot_price_history and self.calibrated_utility_inputs is None:
             return _degenerate(

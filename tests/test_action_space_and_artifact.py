@@ -918,14 +918,15 @@ def test_consecutive_holidays_hold_every_factor_and_carry_one_market_step(tmp_pa
 def test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar(tmp_path):
     """Under the default `vol_scaled_notional` the utility scale is the leg volume times the spot
     times its annual vol times sqrt(tau), tau the business days of the job's calendar from the first
-    simulated row to the last settlement over 252, the market clock the vol is annualised on. The
-    simulate-only fixture on the Testland calendar of `HOLIDAYS` counts 76 market days there against
-    82 on a calendar of weekends alone, the volume, the spot and its vol being one history's on
-    either, so its scale reads sqrt(76 / 82) = 0.9627 of the other's, to 1e-12. 2 s.
+    simulated row through the last settlement, the close, over 252, the market clock the vol is
+    annualised on. The simulate-only fixture on the Testland calendar of `HOLIDAYS` counts 77 market
+    days there against 83 on a calendar of weekends alone, the volume, the spot and its vol being one
+    history's on either, so its scale reads sqrt(77 / 83) = 0.9632 of the other's, to 1e-12. 2 s.
 
-    Killing mutation: tau read as the calendar rows from the first simulated row to the last
-    settlement (`int(self.last_settlement_index) - H` in `Bundle._resolve_utility_scale`), 116 on
-    either calendar, so the two scales agree (a ratio of 1, 3.9% off)."""
+    Killing mutations: tau read as the calendar rows from the first simulated row to the close
+    (`self.last_live_mtm_index` in `Bundle._resolve_utility_scale`), 117 on either calendar, so the
+    two scales agree (a ratio of 1, 3.8% off); tau stopping one row short of the close, the last row
+    before the final payment day (the scan the close replaced), 76 and 82 days."""
     calendar = str(tmp_path / 'calendars.cal')
     with open(calendar, 'w') as f:
         f.write('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday and Sunday" Holidays="'
@@ -938,11 +939,12 @@ def test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar(tmp_path):
         cfg['Calc']['Calculation'].update(Calendar=name, Batch_Size=2, Random_Seed=3)
         world = _run(cfg).bundle
         after = [(world.scenario_dates[i] + pd.Timedelta(days=1)).date()
-                 for i in (world.initial_time_index, world.last_settlement_index)]
+                 for i in (world.initial_time_index,
+                           world.initial_time_index + world.last_live_mtm_index)]
         days[name] = int(np.busday_count(*after, holidays=holidays))
         scale[name] = world.utility_scale
     ratio = scale['Testland'] / scale['Weekdays'] / np.sqrt(days['Testland'] / days['Weekdays'])
-    assert days == {'Testland': 76, 'Weekdays': 82} and abs(ratio - 1.0) < 1e-12, (days, scale)
+    assert days == {'Testland': 77, 'Weekdays': 83} and abs(ratio - 1.0) < 1e-12, (days, scale)
 
 
 def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path):
