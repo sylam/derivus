@@ -27,7 +27,6 @@ def _cfg(inner_antithetic='Yes'):
     calc['Execution_Mode'] = 'solve_hedge'
     calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2   # 24 fitted, 24 held out
     calc['Inner_Sub_Batch'] = 8
-    calc['Inner_MC_Enabled'] = 'Yes'
     calc['Inner_Antithetic'] = inner_antithetic
     calc['Random_Seed'] = 1234
     hp = calc['Hedging_Problem']

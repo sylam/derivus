@@ -3020,11 +3020,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         '',
         '### Inner-MC Calculation fields',
         '',
-        'The nested simulation is configured alongside the outer `Batch_Size`:',
-        '`Inner_MC_Enabled` (`Yes`/`No`, required by `solve_hedge`), `Inner_Sub_Batch` (inner draws',
-        'per outer path), `Inner_Antithetic` (`Yes` mirrors the Sobol draws as (z, −z) pairs — needs',
-        'an even `Inner_Sub_Batch`), and `Inner_Draws` (`sobol` default, or `random` for iid',
-        'Gaussians).',
+        'The nested simulation runs under `Execution_Mode: solve_hedge` and is configured alongside',
+        'the outer `Batch_Size`: `Inner_Sub_Batch` (inner draws per outer path), `Inner_Antithetic`',
+        '(`Yes` mirrors the Sobol draws as (z, −z) pairs — needs an even `Inner_Sub_Batch`), and',
+        '`Inner_Draws` (`sobol` default, or `random` for iid Gaussians).',
         '',
         'Each fork runs in ONE pass at `Batch_Size x Inner_Sub_Batch` flat samples, so peak memory',
         'is a function of those two fields and nothing else — there is no cap, no partition and no',
@@ -3110,8 +3109,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         F('Antithetic', 'Text', default='No', values=['Yes', 'No']),
         F('Execution_Mode', 'Text', default='simulate_only',
           values=['simulate_only', 'solve_hedge']),
-        F('Inner_MC_Enabled', 'Text', default='No', values=['Yes', 'No'],
-          description='Required by solve_hedge - the nested simulation the DP sweep prices on'),
         F('Inner_Sub_Batch', 'Integer', default=0,
           description='Inner draws per outer path; peak memory is Batch_Size x this'),
         F('Inner_Antithetic', 'Text', default='No', values=['Yes', 'No'],
@@ -3530,14 +3527,12 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # spot-leaf pass and `_find_spot_key` read it rather than re-deriving it
         self._underlying_names = set(normalized_runtime['referenced_commodities'])
 
-        # Inner-MC setup; the copies below are forked only after outer setup precalc has run
-        inner_mc_enabled = params['Inner_MC_Enabled'] == 'Yes'
-        tradable_refs = sorted(normalized_runtime['names']['hedges']) if inner_mc_enabled else ()
-
         # solve_hedge: inner MC runs in the backward DP/MPC sweep, not the outer loop, so the
-        # per-batch outer scenario buffer is cached for it to fork on demand
+        # per-batch outer scenario buffer is cached for it to fork on demand; the copies below are
+        # forked only after outer setup precalc has run
         solve_hedge_mode = execution_mode == 'solve_hedge'
-        if inner_mc_enabled:
+        tradable_refs = sorted(normalized_runtime['names']['hedges']) if solve_hedge_mode else ()
+        if solve_hedge_mode:
             self.stoch_factors_inner = {k: proc.copy() for k, proc in self.stoch_factors.items()}
         streaming_solve = StreamingSolve(normalized_runtime) if solve_hedge_mode else None
         held_out = None

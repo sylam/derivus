@@ -65,7 +65,6 @@ def build_cfg(template, dual, prof, seed):
     # a solve is a stream: fit batches, then a held-out one. (B, 1)+OOS 0.5 -> (B/2, 2)
     calc['Batch_Size'], calc['Simulation_Batches'] = prof['batch'] // 2, 2
     calc['Inner_Sub_Batch'] = prof['inner']
-    calc['Inner_MC_Enabled'] = 'Yes'
     calc['Inner_Antithetic'] = 'Yes'
     calc['Random_Seed'] = seed
     hp = calc['Hedging_Problem']

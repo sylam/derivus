@@ -47,7 +47,7 @@ def _cfg(t_min):
     calc = cfg['Calc']['Calculation']
     calc.update({'Execution_Mode': 'solve_hedge', 'Batch_Size': 8, 'Simulation_Batches': 2,
                  'Inner_Sub_Batch': 4,
-                 'Inner_MC_Enabled': 'Yes', 'Random_Seed': 1234})
+                 'Random_Seed': 1234})
     calc['Hedging_Problem']['Randomize_Initial_State'] = 'Yes'
     calc['Hedging_Problem']['Solver'] = {
         'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 3,

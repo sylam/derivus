@@ -71,7 +71,6 @@ BEST_CALC = {
     'Batch_Size': 4096,        # outer paths PER BATCH; the only axis fork memory depends on
     'Simulation_Batches': 5,   # stream length: 4 fit batches (16384 paths), then a held-out one
     'Inner_Sub_Batch': 64,     # inner draws — the selection floor for near-identical hedges
-    'Inner_MC_Enabled': 'Yes',
     'Inner_Antithetic': 'Yes', # mirrored (z,-z) inner pairs — halves argmax selection variance
 }
 BEST_SOLVER = {

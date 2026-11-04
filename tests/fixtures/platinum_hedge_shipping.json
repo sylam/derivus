@@ -154,7 +154,6 @@
     }
    },
    "Inner_Sub_Batch": 64,
-   "Inner_MC_Enabled": "Yes",
    "Inner_Antithetic": "Yes"
   },
   "MergeMarketData": {

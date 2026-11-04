@@ -1449,7 +1449,7 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
                 raise NotImplementedError(
                     "HullWhite2FactorImpliedInterestRateModel stochastic-deflation (grid_index) "
                     "mode returns a dict of curves and is not supported under nested (inner-MC) "
-                    "simulation. Run with Inner_MC_Enabled='No' or disable deflation.")
+                    "simulation. Run with Execution_Mode 'simulate_only' or disable deflation.")
             return sim_curve(self.drift, self.BtT[0].unsqueeze(-1), self.BtT[1].unsqueeze(-1),
                              factor1, factor2, self.factor_tenor.unsqueeze(-1))
 

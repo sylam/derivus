@@ -62,7 +62,7 @@ def solve_cfg(world):
     cfg = json.load(open(FIX))
     c = cfg['Calc']['Calculation']
     c.update({'Execution_Mode': 'solve_hedge', 'Batch_Size': 48, 'Inner_Sub_Batch': 8,
-              'Inner_MC_Enabled': 'Yes', 'Inner_Antithetic': 'Yes', 'Random_Seed': 1234})
+              'Inner_Antithetic': 'Yes', 'Random_Seed': 1234})
     c['Hedging_Problem']['Randomize_Initial_State'] = 'Yes'
     c['Hedging_Problem']['Solver'] = {
         'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 5,

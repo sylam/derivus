@@ -514,8 +514,6 @@ def construct_hedge_runtime(
     if execution_mode == "solve_hedge":
         if solver_config is None:
             raise ValueError("Execution_Mode 'solve_hedge' requires Hedging_Problem['Solver']")
-        if str(config["Inner_MC_Enabled"]) != "Yes":
-            raise ValueError("Execution_Mode 'solve_hedge' requires Inner_MC_Enabled='Yes'")
         if str(solver_config.get("Object", "")).lower() not in ("diffsolver", "diffsolverv2"):
             raise ValueError(
                 "Execution_Mode 'solve_hedge' requires Solver.Object='DiffSolver' or "

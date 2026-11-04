@@ -63,7 +63,6 @@ def _cfg(*, batch=48, inner=8, seed=7, positions=None, active=None,
     calc['Execution_Mode'] = 'solve_hedge'
     calc['Batch_Size'], calc['Simulation_Batches'] = batch // 2, 1 if load else 2
     calc['Inner_Sub_Batch'] = inner
-    calc['Inner_MC_Enabled'] = 'Yes'
     calc['Inner_Antithetic'] = 'Yes'
     calc['Random_Seed'] = seed
     hp = calc['Hedging_Problem']

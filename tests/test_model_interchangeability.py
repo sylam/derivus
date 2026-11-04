@@ -42,7 +42,6 @@ def _cfg(market_file, mode):
         calc['Hedging_Problem'].pop('Solver', None)
     else:
         calc['Inner_Sub_Batch'] = 4
-        calc['Inner_MC_Enabled'] = 'Yes'
         calc['Hedging_Problem']['Randomize_Initial_State'] = 'No'
         sol = calc['Hedging_Problem']['Solver']
         sol['DiffV2_Fit_Iters'] = 1

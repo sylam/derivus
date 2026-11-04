@@ -31,7 +31,6 @@ def _cfg_without_history():
     calc['Execution_Mode'] = 'solve_hedge'
     calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
     calc['Inner_Sub_Batch'] = 8
-    calc['Inner_MC_Enabled'] = 'Yes'
     calc['Random_Seed'] = 1234
     hp = calc['Hedging_Problem']
     hp['Randomize_Initial_State'] = 'Yes'
@@ -54,7 +53,6 @@ def with_history():
     calc['Execution_Mode'] = 'solve_hedge'
     calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
     calc['Inner_Sub_Batch'] = 8
-    calc['Inner_MC_Enabled'] = 'Yes'
     calc['Random_Seed'] = 1234
     calc['Hedging_Problem']['Solver'] = {
         'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 5,
@@ -76,7 +74,6 @@ def test_a_history_row_at_the_base_date_is_refused():
     calc['Execution_Mode'] = 'solve_hedge'
     calc['Batch_Size'], calc['Simulation_Batches'] = 24, 2
     calc['Inner_Sub_Batch'] = 8
-    calc['Inner_MC_Enabled'] = 'Yes'
     hp = calc['Hedging_Problem']
     hp['Solver'] = {'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 3,
                     'Training_Action_Chunk_Size': 64, 'T_Min': 100, 'DiffV2_Fit_Iters': 2}

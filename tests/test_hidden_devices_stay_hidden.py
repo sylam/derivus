@@ -65,7 +65,7 @@ def test_a_job_after_a_training_step_stays_on_the_cpu(tmp_path):
     cfg = json.load(open(os.path.join(HERE, 'fixtures', 'policy_test_simulate_only.json')))
     calc = cfg['Calc']['Calculation']
     calc.update({'Execution_Mode': 'solve_hedge', 'Batch_Size': 4, 'Simulation_Batches': 2,
-                 'Inner_Sub_Batch': 2, 'Inner_MC_Enabled': 'Yes'})
+                 'Inner_Sub_Batch': 2})
     calc['Hedging_Problem']['Solver'] = {
         'Object': 'DiffSolverV2', 'Training_Action_Grid_Levels_Per_Axis': 3,
         'Training_Action_Chunk_Size': 64, 'T_Min': 116, 'DiffV2_Fit_Iters': 1}
