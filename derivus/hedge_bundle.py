@@ -105,7 +105,7 @@ def _position_schedule(evaluator_config: Mapping[str, Any]):
     rightmost knot with `Step <= t`. Absent → None (no corridor). Returns a sorted tuple of
     `(step, min_total, max_total)` with strictly ascending, non-negative steps and
     Min_Total <= Max_Total per knot."""
-    raw = evaluator_config.get("Total_Position_Schedule")
+    raw = evaluator_config["Total_Position_Schedule"]
     if not raw:
         return None
     knots = sorted(
@@ -321,7 +321,7 @@ def _objective_config(objective_config):
         # `utility_scale` and its schedule are mirrored in from the frame (`mirror_frame`)
         "utility_scale_mode": str(objective_config["Utility_Scale_Mode"]).lower(),
         "utility_scale_explicit":
-            (None if objective_config.get("Utility_Scale_Explicit") is None
+            (None if objective_config["Utility_Scale_Explicit"] is None
              else float(objective_config["Utility_Scale_Explicit"])),
         "utility_scale_floor_frac": floor_frac,
         "reference_mode": reference_mode,
@@ -408,8 +408,8 @@ def construct_hedge_runtime(
         if factor.type == 'CommodityPrice'))
     portfolio_state = hedging_problem["Portfolio_State"]
     vol_scale = evaluator_config.get("Bid_Offer_Spread_Vol_Scale")
-    calendar_spread_bps = (float(evaluator_config["Calendar_Spread_Bps"])
-                           if evaluator_config.get("Calendar_Spread_Bps") is not None else None)
+    calendar_spread_bps = (None if evaluator_config["Calendar_Spread_Bps"] is None
+                           else float(evaluator_config["Calendar_Spread_Bps"]))
     # a rate <= 0 makes matched volume free or PAID FOR, and `turnover_charge` then returns a
     # negative cost the argmax maximizes by churning; absence is the off switch
     if calendar_spread_bps is not None and calendar_spread_bps <= 0.0:
@@ -460,6 +460,10 @@ def construct_hedge_runtime(
         "objective": _objective_config(objective_config),
         "solver": _solver_config(solver_config),
         "history_lookback_business_days": history_lookback,
+        # the burn-in the calculation draws each batch's opening state by, and the inner fork's
+        # belief switch a process reads (`reseed_inner_state`)
+        "randomize_initial_state": hedging_problem["Randomize_Initial_State"] == "Yes",
+        "inner_belief_filter": hedging_problem["Inner_Belief_Filter"] == "Yes",
         "portfolio_state": {
             # whole contracts, as `Position_Limits` are read
             "positions": {str(n): int(v) for n, v in portfolio_state["Positions"].items()},

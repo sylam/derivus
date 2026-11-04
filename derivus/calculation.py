@@ -3094,7 +3094,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='How the utility scale c is derived from the book; '
                                   'conditional_sim measures a per-decision-step schedule off the '
                                   'warmup batch instead of one number'),
-                    F('Utility_Scale_Explicit', 'Float', default=None,
+                    F('Utility_Scale_Explicit', 'Float', default=None, convention=True,
                       description='Literal c in money, overriding the formula'),
                     F('Utility_Scale_Floor_Frac', 'Float', default=0.05,
                       description='Floor of the conditional_sim schedule, as a fraction of its '
@@ -3144,7 +3144,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                     description='The annualized vol a quoted spread holds at'),
                                   F('Beta', 'Float', default=0.0, convention=True,
                                     description='The power of the vol ratio; 0 when omitted')]),
-                    F('Calendar_Spread_Bps', 'Float', default=None,
+                    F('Calendar_Spread_Bps', 'Float', default=None, convention=True,
                       description='Full spread bps of a calendar roll leg, half of it charged on a matched leg; setting it arms the '
                                   'matched-leg pricing everywhere'),
                     F('IM_Funding_Spread_Bps', 'Float', default=0.0,
@@ -3166,7 +3166,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Standard errors of the paired inner-draw difference by which '
                                   'the argmax must beat HOLDING the book before it trades; 0 = '
                                   'trade on any improvement'),
-                    F('Total_Position_Schedule', 'Table', default=None,
+                    F('Total_Position_Schedule', 'Table', default=None, convention=True,
                       row=Row([F('Step', 'Integer', default=0),
                                F('Min_Total', 'Float', default=0.0),
                                F('Max_Total', 'Float', default=0.0)]),
@@ -3461,9 +3461,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
         execution_mode = params['Execution_Mode']
         hedging_problem = params['Hedging_Problem']
-        # forwarded to each process's `reseed_inner_state` OPAQUELY - the calc never reads a model
-        # switch out of it; a process owns which keys mean what to it
-        self._inner_state_opts = hedging_problem
 
         instruments = self.config.deals_from_object_map(hedging_problem['Tradable_Instruments'])
         liabilities = self.config.deals_from_object_map(hedging_problem['Liabilities'])
@@ -3492,6 +3489,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         normalized_runtime = construct_hedge_runtime(
             params, stoch_factors=self.stoch_factors,
         )
+        # each process's `reseed_inner_state` reads its own switches off the runtime by name
+        self._inner_state_opts = normalized_runtime
         # canonical underlying (commodity-spot) factor-name set, derived once by the runtime; the
         # spot-leaf pass reads it rather than re-deriving it
         self._underlying_names = set(normalized_runtime['referenced_commodities'])
@@ -3523,7 +3522,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         total_leg_volume, fixings = self.liabilities.aggregate_leg_descriptors()
         bus_day = shared_mem.business_day
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
-        randomize_t0 = hedging_problem['Randomize_Initial_State'] == 'Yes'
+        randomize_t0 = normalized_runtime['randomize_initial_state']
         # returns-state coordinates: dimensionless market columns off one constant divisor
         # per run, so outer rows and fork reveals share a coordinate system across epochs
         self._returns_state = bool(normalized_runtime['solver']
@@ -3535,7 +3534,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 self._state_spot0 * total_leg_volume)
         # walk-forward replay: substitute observed paths; the driver owns all the prep
         observed = None
-        if params.get('Observed_Scenario'):
+        if params['Observed_Scenario']:
             npz = np.load(params['Observed_Scenario'])
             by_name = {utils.check_tuple_name(k): k for k in self.stoch_factors}
             observed = {by_name[n]: shared_mem.one.new_tensor(npz[n]).unsqueeze(-1)

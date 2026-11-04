@@ -9,16 +9,19 @@
 
 ## One boundary
 
-`construct_hedge_runtime` (`hedge_bundle.py`) is the only place the `Hedging_Problem` JSON block
-is read and validated. It returns the normalized **runtime** every consumer indexes by key:
-canonical lowercased modes, the instrument / cash-account / hedge name sets, per-instrument
-metadata, the accounting rules (position limits, turnover cost, spreads, margin funding, corridor),
-the objective, the solver config and the portfolio state.
+`construct_hedge_runtime` (`hedge_bundle.py`) reads and validates the completed `Hedging_Problem`
+block into the normalized **runtime** every consumer indexes by key: canonical lowercased modes,
+the instrument / cash-account / hedge name sets, per-instrument metadata, the accounting rules
+(position limits, turnover cost, spreads, margin funding, corridor), the objective, the solver
+config, the portfolio state, and the burn-in and inner-belief switches the calculation and a
+process read; the calculation reads the block's deal containers, `Tradable_Instruments` and
+`Liabilities`, to price them, and nothing else of it.
 
 Past that boundary the runtime **is** the contract — downstream code indexes it directly rather
-than re-checking it. A malformed schedule, a partial spot history, an unknown `Execution_Mode` or a
-`Simulation_Batches` that contradicts the mode all fail there, naming the field, and a solver
-refuses at construction, by name, a combination of declared values it cannot run.
+than re-checking it. A malformed schedule, a partial spot history or a `Simulation_Batches` that
+contradicts the mode fails there, naming the field (an `Execution_Mode` outside its two values is
+refused where the block is judged, before it), and a solver refuses at construction, by name, a
+combination of declared values it cannot run.
 
 `Simulation_Batches` is the number of batches of `Batch_Size` paths simulated in either mode; its
 field says what each mode does with them.

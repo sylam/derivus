@@ -641,8 +641,8 @@ class StochasticProcess(object):
     def reseed_inner_state(self, factor_key, simulated, outer_buf, t, shared_mem, opts, with_grad):
         """Post-generate inner-fork coherence: publish any path-dependent revealed state the
         bootstrap's `reveal_state_at` consumes at t+1 (e.g. a filtered belief), keyed by this
-        process. `opts` forwards hedging-problem switches opaquely (the calc never interprets
-        them). Returns grad-leaf entries `{key: leaf}` to fold into the twin-loss `state_t_leaves`
+        process. `opts` is the hedge runtime (`hedge_bundle.construct_hedge_runtime`), whose
+        switches a process reads by name. Returns grad-leaf entries `{key: leaf}` to fold into the twin-loss `state_t_leaves`
         when `with_grad`. Default: nothing to publish, no leaves."""
         return {}
 
@@ -2817,7 +2817,7 @@ class MarkovHMMSpotModel(StochasticProcess):
         when `Inner_Belief_Filter` is not 'Yes' or no outer belief was published. With grad, the
         belief seed is a leaf so the twin loss supervises the belief column."""
         belief0 = outer_buf.get((factor_key, 'regime_belief'))
-        if not (opts.get('Inner_Belief_Filter', 'Yes') == 'Yes' and belief0 is not None):
+        if not (opts['inner_belief_filter'] and belief0 is not None):
             return {}
         seed = belief0[t]
         leaves = {}
