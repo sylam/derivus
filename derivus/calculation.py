@@ -3553,8 +3553,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 self.stoch_factors.items(), t0_state, 0, shared_mem)
 
             if randomize_t0:
-                # REWIND to the calibrated t=0 first, or the batch sequence random-walks away from
-                # it (measured: symlog scale 592k -> 1.15M over 5 batches, NaN sweeps some months)
+                # REWIND to the calibrated t=0 first, or the batch sequence random-walks away from it
                 if run:
                     for key, proc in self.stoch_factors.items():
                         scenario_grid, implied_tensor = self._factor_precalc_args[key]

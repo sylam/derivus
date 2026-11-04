@@ -218,9 +218,7 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         raise ValueError("Hedging_Problem['Solver'] requires an 'Object' field")
     gamma = float(solver_config["DiffV2_Risk_Aversion"])
     if not 0.1 <= gamma <= 10.0:
-        raise ValueError(f"DiffV2_Risk_Aversion must be in [0.1, 10.0] (the DP's aversion: it "
-                         f"divides the LogWealth capital line — the clairvoyant seed's floor "
-                         f"has no causal equivalent, this dial is its proxy); got {gamma}")
+        raise ValueError(f"DiffV2_Risk_Aversion must be in [0.1, 10.0]; got {gamma}")
     return {
         "object": str(solver_config["Object"]).lower(),
         "multi_seed_count": int(solver_config["Multi_Seed_Count"]),
@@ -306,15 +304,10 @@ def _objective_config(objective_config):
     # makes c_0 = 0, x = (W-R)/c_0 infinite, and every label from step 0 a NaN
     floor_frac = float(objective_config["Utility_Scale_Floor_Frac"])
     if not floor_frac > 0.0:
-        raise ValueError(
-            f"Objective.Utility_Scale_Floor_Frac must be > 0; got {floor_frac}. It floors the "
-            f"conditional_sim scale schedule at a fraction of its terminal entry, and the first "
-            f"steps carry no dispersion at all, so a zero floor is a zero knee and a NaN reward.")
+        raise ValueError(f"Objective.Utility_Scale_Floor_Frac must be > 0; got {floor_frac}")
     if floor_frac > 1.0:
-        logging.warning(
-            "Objective.Utility_Scale_Floor_Frac=%.4g is above 1: the floor then exceeds the "
-            "schedule's terminal entry, which flattens every knee onto one number and retires "
-            "the per-step shape the mode exists for.", floor_frac)
+        logging.warning("Objective.Utility_Scale_Floor_Frac=%.4g is above 1: every knee of the "
+                        "conditional_sim schedule is its floor", floor_frac)
     return {
         # canonical lowercased form: every dispatch site compares against the lowercase literal
         "object": str(objective_config["Object"]).lower(),
@@ -552,9 +545,7 @@ def turnover_charge(delta, kappa, kappa_cal=None, legs=False):
     leg and crosses that leg's bid/offer.
 
     ONE pairing rule, because the decision charge and the realized accounting have to be the same
-    function. Global netting (`paired = (Σ|Δ| − |ΣΔ|)/2`) pairs the front against the back with no
-    listed spread between them and under-charges a non-adjacent move by up to 5x; a `|Δ|`-share
-    blend of the leg kappas over-charges leftover front-month lots by up to 2.4x."""
+    function, and consecutive pairs alone, the maturities a calendar spread is listed between."""
     if kappa_cal is None:
         charge = delta.abs() * kappa
     else:
@@ -1076,16 +1067,15 @@ class Bundle:
                 # No Spot_Price_History ⇒ source (spot, σ) from the CALIBRATED market data instead.
                 self.calibrated_utility_inputs = self._calibrated_utility_inputs(stoch_factors)
             self.utility_scale = self._resolve_utility_scale(runtime)
-            logging.info('utility_scale (symlog c) resolved to {0:.2f}'.format(self.utility_scale))
+            logging.info('utility_scale c resolved to %.2f', self.utility_scale)
             mirror_frame(runtime, self.utility_scale, self.utility_scale_schedule)
             if self.utility_scale_schedule is not None:
                 self._log_scale_dose(runtime)
         self.step_annual_vol = self._resolve_step_vol(runtime, stoch_factors)
 
     def _spot_realized_vol(self, window=PRICE_ZSCORE_WINDOW, min_periods=5):
-        """Annualized rolling realized log-vol of each underlying spot, `{commodity: (T, B)}`. In
-        mean-reverting regimes with σ scaled to hold the stationary std fixed, realized vol rises
-        with kappa, which makes this a regime signal as well as the utility-scale σ source."""
+        """Annualized rolling realized log-vol of each spot with a realized history,
+        `{commodity: (T, B)}`, zero on its first `min_periods` rows: the utility scale's σ."""
         out = {}
         for commodity in (c for c in self.spot_price_history if c in self.factors):
             rv = _rolling_realized_vol(self.factors[commodity].float(), self.grid_market_days, window)
@@ -1129,10 +1119,7 @@ class Bundle:
             if explicit is not None:
                 raise ValueError(
                     "Objective.Utility_Scale_Explicit is set beside "
-                    "Utility_Scale_Mode='conditional_sim': the schedule measures the LEVEL of c "
-                    "as well as its shape (the scalar is its terminal entry), so a literal "
-                    "value is a second source for the same number and silently picking a winner "
-                    "is how the two drift apart. Drop one of them.")
+                    "Utility_Scale_Mode='conditional_sim', which measures c: drop one of them.")
             self.utility_scale_schedule = self._conditional_sim_schedule(objective)
             if self.utility_scale_schedule is not None:
                 return float(self.utility_scale_schedule[-1])
@@ -1168,23 +1155,16 @@ class Bundle:
         return self.total_leg_volume * initial_spot * sigma * (tau_years ** 0.5)
 
     def _log_scale_dose(self, runtime):
-        """Log what a `conditional_sim` schedule DOES to the objective, not only what it measured.
-
-        The schedule sets the LEVEL of c as well as its shape, and the utility's shape params are
-        DIMENSIONLESS in units of c, so arming the mode re-doses the risk aversion by the same
-        factor. This reports the absolute risk aversion per unit of money the shape applies at the
-        reference, under the first knee and the terminal one, so a stale `Huber_Aversion` is
-        visible in the run log."""
+        """Log the `conditional_sim` schedule and the absolute risk aversion per unit of money the
+        shape applies a hair below the reference under its first knee and its terminal one, the
+        dose the schedule's level sets (Hedging Overview, the scale table)."""
         sched = self.utility_scale_schedule
         _, ara_0 = _loss_side_curvature(runtime, 0)
         _, ara_T = _loss_side_curvature(runtime, len(sched) - 1)
         logging.info(
-            'utility_scale SCHEDULE (conditional_sim): %d steps, c_0=%.6g c_mid=%.6g c_T=%.6g. '
-            'The schedule sets the objective LEVEL as well as its shape, and the shape params are '
-            'dimensionless in units of c — so the DOSE moved with it: absolute risk aversion at '
-            'the reference is %.4g per $ at t=0 and %.4g per $ at the terminal. Re-dose '
-            'Huber_Aversion against THIS scale (Utility_Scale_Explicit does not exist under this '
-            'mode).', len(sched), sched[0], sched[len(sched) // 2], sched[-1], ara_0, ara_T)
+            'utility_scale schedule (conditional_sim): %d steps, c_0=%.6g c_mid=%.6g c_T=%.6g | '
+            'absolute risk aversion at the reference %.4g per unit of money at t=0, %.4g at the '
+            'terminal', len(sched), sched[0], sched[len(sched) // 2], sched[-1], ara_0, ara_T)
 
     def _conditional_sim_schedule(self, objective):
         """The `conditional_sim` schedule (Hedging Overview, the scale table): one entry per row to
@@ -1421,16 +1401,18 @@ class BundleStepper:
             # reconciliation organ for B=1 rolls, every step so the daily identities close exactly
             cur = self.time_index
             deltas = self._trade_deltas(structured)
-            cost = leg_charges(self.runtime, deltas, self._state['tradable_values'], self.bundle.vol_at(cur))
+            # the step's booked charges: its trade's, then on the step into the terminal the close's
+            closed = self._charged[self._hedges[0]][-1][0] == self._close_idx != cur
+            cost = {n: float(self._charged[n][-2 if closed else -1][1][0]) for n in self._hedges}
             legs = {n: (float(self._state['tradable_values'][n][0]),
                         int(next_state['positions'][n][0]), int(deltas[n][0]),
-                        float(cost[n][0]), self._account_of[n]) for n in self._hedges}
+                        cost[n], self._account_of[n]) for n in self._hedges}
             logging.debug(
-                'STEP %s t=%d dec=%d legs(mark,q,dq,cost,account)=%s vm=%.6f cost=%.6f margin=%.6f '
-                'cash_tv=%s pnl_excess=%.6f liability=%.6f',
+                'STEP %s t=%d dec=%d legs(mark,q,dq,cost,account)=%s vm=%.6f cost=%.6f close=%.6f '
+                'margin=%.6f cash_tv=%s pnl_excess=%.6f liability=%.6f',
                 self.bundle.scenario_dates[cur].date(), cur, int(was_decision_step), legs,
-                sum(float(v[0]) for v in next_state.get('variation_margin', {}).values()),
-                sum(float(c[0]) for c in cost.values()),
+                sum(float(v[0]) for v in next_state['variation_margin'].values()), sum(cost.values()),
+                sum(float(self._charged[n][-1][1][0]) for n in self._hedges) if closed else 0.0,
                 sum(float(b[0]) for b in next_state['margin_accounts'].values()),
                 {n: float(self._state['tradable_values'][n][0]) for n in self._cash_names
                  if n in self._state['tradable_values']},
@@ -1599,8 +1581,8 @@ class BundleStepper:
         return resolved
 
     def _structured_action(self, action_dict):
-        """Client action → the integer-contract trade deltas the env books. Position limits are
-        enforced reward-side, not clipped here."""
+        """Client action → the trade deltas the env books, rounded to whole contracts and booked
+        as given: the bounds are the policy's (`HedgeActionSpace`), not the environment's."""
         deltas = {}
         for name in self._hedges:
             v = action_dict.get(name, 0)

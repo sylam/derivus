@@ -95,7 +95,12 @@ class HedgeActionSpace:
         '  rounded to whole contracts, each inactive leg pinned at 0.',
         '- `allocation_grid(...)`: under `Evaluator.Allocation_Mode` Exposure or Carry_Variance, one',
         '  ladder of rungs on the signed net cover, each split across the legs by the weights in force',
-        '  (`rung`), so the search is over how much cover to carry, not over its composition.',
+        '  (`rung`), so the search is over how much cover to carry, not over its composition, in steps',
+        '  of one contract at most where the Cartesian grid moves the net by the per-axis step times',
+        '  the legs.',
+        '- `static_grid()`: the universe the textbook\'s constant hold is chosen from, under a ladder',
+        '  every knot\'s held to the entry corridor, so the gap to the solver holds no action-space',
+        '  difference: the hold cannot track the schedule, only choose the composition it sits in.',
         '- `ladder(...)` / `book(...)`: the whole-contract band of the signed net on the legs a ladder',
         '  trades, and a book as the execution books it: clamped into those legs\' boxes, nothing on',
         '  any other, its net water-filled into the band and apportioned to whole contracts. The',
@@ -260,14 +265,9 @@ class HedgeActionSpace:
             self.waterfill((net * weights).clamp(box_lo, box_hi), net, net, legs), net)
 
     def allocation_grid(self, t, live=None):
-        """The FACTORED action universe at decision step t: a Q-LADDER over the signed NET cover,
-        each rung split across the legs by the `Allocation_Weights` knot in force. The solver then
-        chooses one number — how much cover to carry — and a deterministic allocator decides where
-        it sits.
-
-        The Cartesian grid's quantum on the NET is the per-axis step times the number of legs, so a
-        3-leg 9-level book moves the net in jumps larger than any realistic friction can smooth.
-        `Training_Action_Grid_Levels_Per_Axis` counts rungs on the TOTAL here instead.
+        """The FACTORED action universe at decision step t: a Q-LADDER of
+        `Training_Action_Grid_Levels_Per_Axis` rungs over the signed NET cover, each rung split
+        across the legs by the `Allocation_Weights` knot in force.
 
         Construction runs on the legs that can carry a contract — `_weights_at(t, live)` drops the
         inactive and expired ones and renormalizes, and every bound is summed over what survives:
@@ -290,11 +290,8 @@ class HedgeActionSpace:
             if hi - lo > self.levels - 1:
                 raise ValueError(
                     f"Allocation_Weights ladder at step {t} spans {hi - lo} contracts over "
-                    f"{self.levels} rungs — a quantum of {(hi - lo) / (self.levels - 1):.2f} "
-                    f"contracts. Under a weight schedule "
-                    f"Training_Action_Grid_Levels_Per_Axis counts rungs on the TOTAL, and a "
-                    f"quantum above 1 rebuilds the coarse net grid the schedule exists to "
-                    f"replace; raise it to at least {hi - lo + 1}.")
+                    f"{self.levels} rungs, a quantum above one contract: raise "
+                    f"Training_Action_Grid_Levels_Per_Axis to at least {hi - lo + 1}.")
             net = torch.linspace(lo, hi, self.levels, device=self.device).unsqueeze(-1)  # (L,1)
             self._ladder_cache[key] = self.rung(t, net, live).unique(dim=0)
         return self._ladder_cache[key]
@@ -401,21 +398,14 @@ class HedgeActionSpace:
 
     def universe_size(self):
         """Row count of the action universe a diagnostic should report: the entry step's grid, the
-        Cartesian one inside its bounds or the LADDER under `Allocation_Weights`. Never the meshgrid
-        under a schedule — at 5 legs and 51 levels that is ~345M rows built and discarded for a
-        51-row search."""
+        Cartesian one inside its bounds or the LADDER under `Allocation_Weights`, never the
+        meshgrid of every leg's levels under a ladder."""
         return int(self.grid_at(0).shape[0])
 
     def static_grid(self):
         """The universe a CONSTANT hold is chosen from (`run_textbook_benchmark`). Cartesian: the
         entry-step grid. Under `Allocation_Weights`: every knot's ladder, deduped and held to the
-        ENTRY corridor — every composition the schedule offers, any one of which a hold could have
-        carried from day one.
-
-        Not just the entry knot: the DP recomposes at every knot and a constant hold cannot, so
-        pinning the benchmark to the entry ray would put an action-space difference inside the
-        DP-vs-textbook gap. The hold still cannot TRACK the schedule, only choose which
-        composition to sit in."""
+        ENTRY corridor."""
         if self.weights is None:
             return self.grid_at(0)
         rows = torch.cat([self.allocation_grid(step) for step, _ in self.weights]).unique(dim=0)
@@ -1129,7 +1119,7 @@ class DiffSolver:
                 # book must not liquidate for free
                 charge = self._charge(t, a_live[None], None if q_prev is None else q_prev[:, None, :],
                                       kappa)
-                charge = None if charge is None else charge[:, :, None]                   # (B,c,1) $
+                charge = None if charge is None else charge[:, :, None]                   # (B,c,1) money
                 C1f, _ = self._landed(nets, W, a_live[None, :, None, :], (dF, dL, market_t1, live),
                                       charge, self.nxt[t])
                 Ckf = None if ahead is None else self._landed(
@@ -1494,15 +1484,10 @@ class DiffSolver:
         """Shared fit tail: advantage decomposition + standardized twin loss on the
         (value, wealth-grad, market-grad) labels of `_fit_step`.
 
-        The twin loss matches gradients in STANDARDIZED space (`g_zn = std·g_raw`). Raw-space
-        matching is mis-scaled — `∂A/∂W` ~ 1e-6 in money and `∂A/∂spot` ~ 1e-4, both inert
-        against the O(0.1) value term — while standardized both are O(1) and the gradient match
-        actually regularizes.
-
-        Each term is normalized by its own label variance: with W ~ $1e6 and utility ~ O(1) the
-        standardized W-gradient label is ~600x the value label, so an unnormalized sum would let it
-        drown both the value fit and the market gradient, and `lam_g` would not balance
-        value against gradient as intended.
+        The twin loss matches gradients in STANDARDIZED space (`g_zn = std·g_raw`), where a
+        raw-space slope is inert against the value term. Each term is normalized by its own label
+        variance, so no label's scale drowns the others and `lam_g` balances value against
+        gradient.
 
         `p_bank` is a control the bank samples rather than a simulated coordinate, so the AAD fork
         measures no slope in it and it is supervised by the value term alone, unless
@@ -1946,8 +1931,8 @@ class DiffSolver:
         """Deployment-faithful backtest: roll the frozen policy day-by-day along the bundle's
         observed path through `BundleStepper`, which owns the real futures accounting. Each day
         the book is chosen by `_decide` from the CAUSAL one-step fork forecast (`inner_cache[t]`)
-        and the STEPPER'S OWN net wealth, never a verdict wealth recursion, so the decision cannot
-        be contaminated by mis-accrued P&L.
+        and the STEPPER'S OWN net wealth, its real accounting's, not the verdict's frictionless
+        wealth law.
 
         Returns `{greedy, textbook, nohedge, passive}` terminal-P&L stats in the verdict shape,
         with `u_mean_is_step_sum` stating whether `u_mean` is a terminal utility or the
@@ -2665,8 +2650,8 @@ class DiffSolver:
         The downside verdict — greedy policy against textbook delta hedge, no hedge and passive — is
         OUT-OF-SAMPLE by construction, since `finish` always runs on a world no fit step saw. With
         a checkpoint loaded and `DiffV2_Stepper_Rollout` set, `_rollout_on_stepper` adds the
-        deployment-faithful backtest, which is the trustworthy P&L for a walk-forward because the
-        simplified `_verdict` wealth recursion mis-accrues expiry."""
+        deployment-faithful backtest, the real accounting (financing, margin, the per-row record)
+        beside the verdict's frictionless wealth law."""
         if bundle is not self.bundle:
             self._bind(bundle)
             self._fork_sweep()
@@ -2679,7 +2664,7 @@ class DiffSolver:
         if loaded is None:
             logging.info(
                 "DiffSolver sweep complete: t=%d→%d | max|Y_boot|=%.4g (%s) | "
-                "V_0=%+.6g | n_star@t=%d=%s", self.T_dec - 1, self.t_min, worst,
+                "V_0=%+.6g | n_star@t=%d=%s", self.sweep_ts[-1], self.sweep_ts[0], worst,
                 "BOUNDED" if bounded else "EXPLODED", V_0, root["t"], n_star_0)
         # downside verdict, OUT-OF-SAMPLE by construction: all rows of the held-out world
         verdict = self._verdict(nets, inner_cache, sweep_ts, rows=slice(None))
@@ -3068,7 +3053,7 @@ class DiffSolverV2(DiffSolver):
         """argmin_w [Q²·wᵀΣw + 2Q·wᵀc] / (2·scale) − Q·wᵀμ  s.t. Σw = 1, w ≥ 0.
 
         The carry/tracking allocator for ONE step: Σ and c are the covariance of the legs'
-        remaining-horizon P&L (per contract, $) with each other and with the liability's, μ
+        remaining-horizon P&L (per contract, in money) with each other and with the liability's, μ
         their means, Q the signed reference net (short < 0), and the variance/mean exchange rate
         ½/scale at the frame scale `utility_scale / aversion`. Active-set over ≤ n legs: solve
         the equality-constrained stationarity, drop the most negative weight, repeat."""
@@ -3097,7 +3082,7 @@ class DiffSolverV2(DiffSolver):
         knots, last = [], None
         for t in range(self.T_dec):
             dF, RL = self._outer_move(t, to=self.T_dec)                  # the remaining horizon's
-            R = (self.aspace.contract_size * dF).T.contiguous()                 # (n_h, B) $ per contract
+            R = (self.aspace.contract_size * dF).T.contiguous()                 # (n_h, B) money a contract
             X = R - R.mean(-1, keepdim=True)
             # population moments, as the replication hedge's
             Sig = (X @ X.transpose(0, 1)) / R.shape[-1]
