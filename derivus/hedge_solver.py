@@ -3135,18 +3135,18 @@ class DiffSolverV2(DiffSolver):
 
     def _carry_variance_weights(self):
         """Derive the per-step `Allocation_Weights` table from the outer sims: per decision
-        step, each leg's remaining-horizon P&L per contract (marks freeze at expiry, so a dead
-        leg's variance is ~0 and it drops out of the active set on its own), the liability's
-        remaining P&L, and the step's capital — solved by `_carry_variance_solve` at the
-        replication net. Knots are emitted only where the split MOVES."""
+        step, the population moments of each leg's remaining-horizon P&L per contract (marks freeze
+        at expiry, so a dead leg's variance is ~0 and it drops out of the active set on its own) and
+        the liability's remaining P&L, solved by `_carry_variance_solve` at the replication net.
+        Knots are emitted only where the split MOVES."""
         knots, last = [], None
         for t in range(self.T_dec):
             dF, RL = self._outer_move(t, to=self.T_dec)                  # the remaining horizon's
             R = (self.aspace.contract_size * dF).T.contiguous()                 # (n_h, B) $ per contract
             X = R - R.mean(-1, keepdim=True)
-            n = R.shape[-1] - 1
-            Sig = (X @ X.transpose(0, 1)) / n
-            c = (X * (RL - RL.mean())[None]).sum(-1) / n
+            # population moments, as the replication hedge's
+            Sig = (X @ X.transpose(0, 1)) / R.shape[-1]
+            c = (X * (RL - RL.mean())[None]).sum(-1) / R.shape[-1]
             alive = Sig.diagonal() > 1.0e-4
             rep = self._replication_hedge(t)
             Qb = float(rep.sum())

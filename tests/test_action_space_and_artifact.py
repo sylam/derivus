@@ -1324,6 +1324,49 @@ def test_a_table_is_the_exposure_universe_alone(mode, table):
         _run(cfg)
 
 
+def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths():
+    """Under `Allocation_Mode` Carry_Variance the solver splits the net cover by weights it derives
+    from the warmup batch's outer paths: per step the long-only minimum of
+    [Q²·wᵀΣw + 2Q·wᵀc]/(2s) − Q·wᵀμ over the legs' remaining-horizon P&L per contract, Σ, c and μ
+    its population covariance, its covariance with the liability's and its mean, Q the replication
+    net and s the frame scale over `DiffV2_Risk_Aversion`. On the training document at an explicit
+    scale of 1e5 over 51 rungs, its first knot is that minimum on the warmup world, the same document
+    simulating that batch alone, (0.118, 0.882, 0) within 1e-4. 4 s.
+
+    Killing mutation: the sample moments (n - 1 for n in `_carry_variance_weights`), the first knot
+    0.038 off on 4 paths a batch."""
+    cfg = _cfg(seed=7, batch=8, inner=4)
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Evaluator']['Allocation_Mode'] = 'Carry_Variance'
+    hp['Objective']['Utility_Scale_Explicit'], scale = 1.0e5, 1.0e5
+    hp['Solver']['Training_Action_Grid_Levels_Per_Axis'] = 51
+    step, got = _run(cfg).policy_artifact['allocation_weights'][0]
+    calc = cfg['Calc']['Calculation']
+    calc['Execution_Mode'], calc['Simulation_Batches'] = 'simulate_only', 1
+    world = _run(cfg).bundle
+    F = torch.stack([world.tradables_sim[h].double() for h in _HEDGES], -1)            # (T, B, 3)
+    L, T, nxt = world.liability_sim.double(), world.last_live_mtm_index, world.successors[0]
+    R, RL = 50.0 * (F[T] - F[0]).T, L[T] - L[0]                                      # (3, B), (B,)
+    X = R - R.mean(-1, keepdim=True)
+    sig, c, mu = X @ X.T / R.shape[-1], (X * (RL - RL.mean())).mean(-1), R.mean(-1)
+    d1, l1 = F[nxt] - F[0], L[nxt] - L[0]
+    beta = ((d1 - d1.mean(0)) * (l1 - l1.mean())[:, None]).mean(0) / d1.var(0, unbiased=False)
+    Q = float((-beta / (50.0 * 3)).clamp(-50.0, 0.0).sum())
+    idx = [0, 1, 2]
+    while True:
+        S = sig[idx][:, idx] + 1e-8 * sig[idx][:, idx].diagonal().mean() * torch.eye(len(idx), dtype=sig.dtype)
+        w = (scale / Q ** 2) * torch.linalg.solve(S, Q * mu[idx] - (Q / scale) * c[idx])
+        k = (scale / Q ** 2) * torch.linalg.solve(S, torch.ones(len(idx), dtype=sig.dtype))
+        w = w - ((w.sum() - 1.0) / k.sum()) * k
+        if bool((w >= -1e-9).all()):
+            break
+        idx.pop(int(w.argmin()))
+    want = [0.0] * 3
+    for i, x in zip(idx, w.tolist()):
+        want[i] = x
+    assert step == 0 and 0.05 < want[0] < 0.95 and max(abs(a - b) for a, b in zip(got, want)) < 1e-4, (got, want)
+
+
 def test_logwealth_refuses_a_stated_terminal_reference():
     """`LogWealth` is the per-step growth, so its reference is the day's increment: the training
     document under LogWealth stating `Reference_Mode` Fixed is refused by name before a path is
