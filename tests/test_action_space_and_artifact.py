@@ -1506,10 +1506,10 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     the forced close on the terminal, +10 at Monday's mark, the book flat from there and -10 the day
     before, or under `Force_Flat_At_End` 'No' the book short to the last row valued at the
     terminal's mark, and on each path it
-    writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L within 1e-5 relative;
-    so too under a spread scaled by the step's vol in either accounting mode, the close paying it at
-    the terminal's vol, and long 10 `PL_JUL_2026` beside the short under `Calendar_Spread_Bps`, the
-    entry a matched roll and the forced close outright. 2 s each.
+    writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L within 1e-5 relative,
+    the close's charge on the terminal ten contracts at the terminal's mark and vol, outright, within
+    1e-5 relative; so too under a spread scaled by the step's vol in either accounting mode, and long
+    10 `PL_JUL_2026` beside the short under `Calendar_Spread_Bps`, the entry a matched roll. 2 s each.
 
     Killing mutations: the CSV recording the trades of the decision rows alone, the close of the
     step into the terminal lost (trade 0 on the terminal, the book held short to the clean-exit
@@ -1517,17 +1517,22 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     accounting step, the close booked on Sunday at Sunday's mark (49,984.73); the CSV's book left
     flat past the stepped rows (`pos[rows.stop:]` at zero), the book dropped on the clean-exit row
     under 'No'; the forced close charged at the vol of the row before it (`vol_t` handed to
-    `_flatten` in futures mode, the stepper 2.3e-4 off its CSV on the best path; in cash mode, 2.3e-4
-    on the cash-account document's); the CSV pricing the forced close matched as a roll
-    (3.7% above the stepper); the CSV marking the held book past the terminal (the 'held' case's
-    best path -12,180 against the stepper's -9,648)."""
+    `_flatten`) or matched as a roll (`matched=False` dropped there), off the terminal's outright
+    charge; the CSV marking the held book past the terminal (the 'held' case's best path -12,180
+    against the stepper's -9,648)."""
     result = _run(_client(mode, force_flat, evaluator=evaluator))
     stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
     while not stepper.done:
         last = stepper.step({'PL_OCT_2026': -10.0, **book} if stepper.time_index == r0 else None)
+    world = result.bundle
+    vol_T = world.vol_at(list(world.scenario_dates).index(pd.Timestamp('2026-08-10')))
     for case, rows in _csv_against_the_stepper(tmp_path, stepper, last).items():
         assert rows.loc['2026-08-09', 'PL_OCT_2026_position'] == -10.0
         closed = force_flat == 'Yes'
+        charge = 10.0 * float(per_contract_kappa(
+            result.runtime, rows.loc['2026-08-10', 'PL_OCT_2026_futures'], 'PL_OCT_2026', vol_T)) * closed
+        got = rows.loc['2026-08-10', 'PL_OCT_2026_trade_cost']
+        assert abs(got - charge) <= 1e-5 * charge, (case, got, charge)
         assert rows.loc['2026-08-10', 'PL_OCT_2026_trade'] == (10.0 if closed else 0.0), (case, rows['PL_OCT_2026_trade'].tail(3))
         assert (rows.loc['2026-08-10':, 'PL_OCT_2026_position'] == (0.0 if closed else -10.0)).all()
 

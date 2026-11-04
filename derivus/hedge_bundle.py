@@ -1695,6 +1695,9 @@ class BundleStepper:
         self._state = self._initial_state()
         # the opening book, then the book held over each row stepped: what write_diagnostic_csvs reads
         self._held = {n: [self._state['positions'][n]] for n in self._hedges}
+        # each leg's turnover charges as booked, `(row, (B,))`: a trade's on its row, the close's on
+        # the terminal
+        self._charged = {n: [] for n in self._hedges}
         self._terminal_transition = None
 
     # ---- public surface ------------------------------------------------------
@@ -1938,6 +1941,7 @@ class BundleStepper:
         flows through `_portfolio_value` → `_pnl_excess` → the utility."""
         for n, cost in leg_charges(self.runtime, deltas, prices, vol_t).items():
             self._credit(accounts, self._account_of[n], -cost)
+            self._charged[n].append((current, cost))
         if self._accounting['im_funding_spread_bps']:
             dt = self.bundle.calendar_dt(current, next_idx)
             for n, funding in _im_funding_charge(next_positions, prices, self.runtime,
@@ -1967,6 +1971,7 @@ class BundleStepper:
         its turnover charge and, in cash mode, its consideration, from its own account."""
         deltas = {n: -positions[n] for n in self._hedges}
         for n, cost in leg_charges(self.runtime, deltas, values, vol, matched=False).items():
+            self._charged[n].append((self._close_idx, cost))
             cs = float(self.runtime['tradables'][n]['contract_size'])
             self._credit(accounts, self._account_of[n],
                          -(deltas[n] * values[n] * cs + cost) if cash_mode else -cost)
@@ -2001,11 +2006,6 @@ class BundleStepper:
         bundle, runtime = self.bundle, self.runtime
         spot = bundle.factors[bundle.primary].detach().cpu().float()
         T, B = spot.shape
-
-        # per-step vol `(T, 1)` for the vol-scaled kappa, index-aligned with the full-grid marks;
-        # None when no vol series was built, and inert on the scalar-spread fast path
-        vol_series = bundle.step_annual_vol
-        diag_vol = None if vol_series is None else vol_series.detach().cpu().float().unsqueeze(-1)
         per_instr = {}
         # each mark held at the terminal past it, as `_values_at`, gathered by index: a copy, where
         # `.cpu().float()` of a CPU float32 world is the world's own tensor
@@ -2027,19 +2027,15 @@ class BundleStepper:
             trade_cash = -trd * fut * cs
             # the opening book enters at the first row's mark, where the stepper's P&L starts
             trade_cash[rows.start] -= held[0] * fut[rows.start] * cs
+            # the leg's turnover charges as the stepper booked them, each on its row
+            cost = torch.zeros((T, B))
+            for row, charge in self._charged[name]:
+                cost[row] += charge.detach().cpu().float()
             per_instr[name] = {
                 'fut': fut, 'cs': cs, 'pos': pos, 'trd': trd,
                 'trade_cash': trade_cash, 'position_mtm': pos * fut * cs,
-                'cum_cash': trade_cash.cumsum(0),
+                'cum_cash': trade_cash.cumsum(0), 'trade_cost': cost, 'cum_cost': cost.cumsum(0),
             }
-        # each leg's share of its row's turnover charge at the step's vol, the forced close
-        # outright, as the stepper books them
-        trades, marks = ({h: per_instr[h][k] for h in self._hedges} for k in ('trd', 'fut'))
-        matched, outright = (leg_charges(runtime, trades, marks, diag_vol, m) for m in (True, False))
-        closing = (torch.arange(T) >= self._close_idx).unsqueeze(1)
-        for name in self._hedges:
-            cost = torch.where(closing, outright[name], matched[name])
-            per_instr[name].update(trade_cost=cost, cum_cost=cost.cumsum(0))
         portfolio_pos_mtm = sum(p['position_mtm'] for p in per_instr.values())
         portfolio_cum_cash = sum(p['cum_cash'] for p in per_instr.values())
         portfolio_cum_cost = sum(p['cum_cost'] for p in per_instr.values())
