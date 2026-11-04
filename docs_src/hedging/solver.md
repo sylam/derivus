@@ -67,17 +67,21 @@ Under `DiffV2_Risk_Horizon` k > 1 the downside semideviation `DiffV2_Risk_Kappa`
 | `HindsightDpSolver` (`Run_Hindsight_Diagnostic`) | clairvoyant and frictionless: at every decision the grid position maximising its realized P&L to the next, the decision rows and the terminal the solver steps; an upper bound on any deployable policy | `comparison`, ladder |
 | `textbook` (`Run_Textbook_Benchmark`) | the single best CONSTANT position held to the terminal, the last live liability mark, frictionless, chosen by $E[u]$ on the held-out paths; a lower bound | `comparison`, ladder |
 | `textbook` (verdict) | per step, per active hedge $i$: $q_i=-\mathrm{Cov}(\Delta L,\Delta F_i)\,/\,(cs_i\,\mathrm{Var}(\Delta F_i)\,n_{active})$ over the outer paths, booked as the passive book is | `diagnostics.verdict`, `stepper_verdict` |
-| `nohedge` | no position | `diagnostics.verdict` |
+| `nohedge` | no position from the first decision, the opening book closed there at the declared turnover cost | `diagnostics.verdict`, `stepper_verdict` |
 | `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), booked as the execution books it (clamped to the position limits of the legs the step's `Allocation_Weights` knot weighs, the live active legs where none is declared, nothing on any other, its net on those legs inside the cap and the corridor snapped inward to whole contracts, apportioned to whole contracts carrying that net) and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing, or the nearest whole-contract edge of a corridor that excludes zero | `diagnostics.verdict`, `stepper_verdict` |
 
 The passive book stays inside its band, in whole contracts inside each leg's box with nothing on a
 leg the knot weighs zero, its net inside the corridor, a fractional edge included, and inside the
 cap on the signed net; the verdict and the stepper roll hold one textbook book, and on the
 Cartesian grid, whose levels are `linspace(Min_Position, Max_Position, levels)` rounded to whole
-contracts, one greedy book. Held by
+contracts, one greedy book. Each step's grid keeps the rows whose signed net on the step's live
+legs lies inside the cap and the corridor (`HedgeActionSpace.grid_at`), whatever their gross, so a
+row parked on an expired leg cannot carry the live legs past the cap. Held by
 `tests/test_action_space_and_artifact.py::test_the_passive_book_stays_inside_a_fractional_corridor`,
-`::test_the_verdict_and_the_stepper_hold_one_textbook_book` and
-`::test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid`. The constant hold telescopes to the
+`::test_the_verdict_and_the_stepper_hold_one_textbook_book`,
+`::test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid`,
+`::test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book` and
+`::test_the_cap_holds_the_book_the_live_legs_carry`. The constant hold telescopes to the
 terminal, where the hindsight bound stops too, held by
 `tests/test_action_space_and_artifact.py::test_the_textbook_bound_holds_its_book_to_the_terminal`.
 
@@ -106,9 +110,12 @@ order is not an acceptance statement and the run logs a warning.
 The stepper decides on the solver's decision rows (`Bundle.decision_steps`), the first row whatever
 its day and no row at or past the terminal, and the stepper roll closes every book where the verdict
 does, at the terminal, the last live liability mark, so on one replayed path at zero rates the two
-close one book to one wealth; at non-zero rates the stepper also earns the daily interest on cash
-and margin, the realised accounting the verdict's wealth law leaves out. Held by
+close one book to one wealth; every track holds the opening book from the first row to the first
+decision in both, the no-hedge track closing it there; at non-zero rates the stepper also earns the
+daily interest on cash and margin, the realised accounting the verdict's wealth law leaves out.
+Held by
 `tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`,
+`::test_the_verdict_and_the_stepper_carry_one_opening_book`,
 `::test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal` and
 `::test_a_first_row_of_no_market_time_is_one_decision_for_the_verdict_and_the_stepper`.
 The stepper's diagnostic CSV (`BundleStepper.write_diagnostic_csvs`) books each trade on the row at

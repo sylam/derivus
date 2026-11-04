@@ -186,20 +186,29 @@ def test_the_textbook_bound_holds_its_book_to_the_terminal():
 # (ii) initial inventory — first-step turnover measured from the OPENING book q0, not flat
 # --------------------------------------------------------------------------------------------
 def test_first_step_turnover_measured_from_opening_book():
-    """Killing mutation: the textbook's entry charged from flat, `n_star - 0` for `n_star - q0`."""
+    """Killing mutations: the textbook's entry charged from flat, `n_star - 0` for `n_star - q0`;
+    the verdict's wealth started at the liability's mark at its first decision (`L[t0]`), the
+    no-hedge track's terminal wealth unmoved by the opening book's 9,164.21 to that decision."""
     positions = {'PL_APR_2026': -1, 'PL_JUL_2026': -4, 'PL_OCT_2026': 0}
     flat = _run(_cfg(seed=11, positions=None, benchmarks=True))
     book = _run(_cfg(seed=11, positions=positions, benchmarks=True))
 
     fb, bb = flat.evaluation_summary, book.evaluation_summary
 
-    # The value function is POSITION-FREE: the opening book must NOT move any V_0/u track.
+    # The value function is POSITION-FREE: the opening book must NOT move any V_0 track...
     assert bb['comparison']['textbook']['v0_mean'] == fb['comparison']['textbook']['v0_mean']
     assert bb['comparison']['HindsightDpSolver']['v0_mean'] \
         == fb['comparison']['HindsightDpSolver']['v0_mean']
-    for k in ('u_mean', 'wT_mean', 'wT_p5', 'wT_cvar5'):
-        assert bb['diagnostics']['verdict']['greedy'][k] \
-            == fb['diagnostics']['verdict']['greedy'][k], f'greedy {k} moved with the book'
+    # ...while the verdict holds it from the first row to its first decision, as the stepper roll
+    # does, so the no-hedge track's terminal wealth moves by exactly the book's P&L there
+    runtime, bundle = book.runtime, book.bundle
+    hist, t0 = bundle.initial_time_index, bb['diagnostics']['root_t']
+    carried = sum(positions[h] * float(runtime['tradables'][h]['contract_size'])
+                  * float((bundle.tradables[h][hist + t0] - bundle.tradables[h][hist]).double().mean())
+                  for h in _HEDGES)
+    moved = (bb['diagnostics']['verdict']['nohedge']['wT_mean']
+             - fb['diagnostics']['verdict']['nohedge']['wT_mean'])
+    assert abs(moved - carried) < 1e-3 * (abs(carried) + 1.0), (moved, carried)
 
     # ...but the NET-OF-COST turnover DOES shift, because entry is now |q_target − q0|.
     tb_flat = fb['comparison']['textbook']['turnover_cost_mean']
@@ -216,8 +225,6 @@ def test_first_step_turnover_measured_from_opening_book():
     # signature of "first-step turnover measured from q0, not from flat".
     n_star = bb['comparison']['textbook']['n_star']
     assert fb['comparison']['textbook']['n_star'] == n_star     # position-free selection
-    runtime, bundle = book.runtime, book.bundle
-    hist = bundle.initial_time_index
     expected_diff = sum(
         (abs(n_star[i] - float(positions[h])) - abs(n_star[i]))
         * float(per_contract_kappa(runtime, bundle.tradables[h][hist:][0].mean(), h))
@@ -1015,6 +1022,31 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
         assert abs(sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0) < 5e-6, (p, v[p]['wT_mean'], sv[p]['wT_mean'])
 
 
+@pytest.mark.parametrize('t_min', [0, 15], ids=['first_row', 'row_17'])
+def test_the_verdict_and_the_stepper_carry_one_opening_book(tmp_path, t_min):
+    """Every track holds the opening book from the first row to its first decision and trades from
+    it there, in the verdict as in the stepper roll: on the swap replay opening short 5 July and 5
+    October, swept from the first row or from step 15, its first decision Monday 27 April (row 17),
+    the greedy, passive, textbook and no-hedge tracks close to one terminal wealth in both, within
+    5e-6 relative (at most 4.7e-7). 4 s each.
+
+    Killing mutations: the no-hedge track's close of the opening book left uncharged in the verdict
+    (`_verdict` charging it from its own book), the stepper's no-hedge wealth 85,811.79 against the
+    verdict's 86,331.25 from the first row (6.0e-3); the verdict's wealth started at the liability's
+    mark at its first decision (`L[t0]`), every traded track 1,828.68 under the stepper's from row
+    17, the opening book's P&L to it (greedy 1.3%, passive 6.7%, no hedge 2.1%)."""
+    def doc(**kw):
+        cfg = _swap(**kw)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        hp['Portfolio_State']['Positions'].update({'PL_JUL_2026': -5, 'PL_OCT_2026': -5})
+        hp['Solver']['T_Min'] = t_min
+        return cfg
+    d = _replayed_roll(tmp_path, doc)
+    v, sv = d['verdict'], d['stepper_verdict']
+    gaps = {p: sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0 for p in ('greedy', 'passive', 'textbook', 'nohedge')}
+    assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
+
+
 def _cartesian(save=None, load=None):
     """The fixture's July average on its three legs under the position state at zero rates and no
     opening cash, the greedy on the Cartesian grid of 5 levels a leg over [-50, 0] in a corridor
@@ -1053,8 +1085,8 @@ def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
     legs sum to -15, 0 or 15, a long 30 July against a short 30 October among them, of the 25 the
     levels make. 3 s.
 
-    Killing mutation: the grid's rows dropped by their gross sum (`grid.abs().sum(-1)` in
-    `HedgeActionSpace.grid`), which leaves the 5 books of at most one leg's 15 contracts."""
+    Killing mutation: the grid's rows dropped by their gross sum (`.abs()` before the sum in
+    `HedgeActionSpace._within`), which leaves the 5 books of at most one leg's 15 contracts."""
     cfg = _cfg(batch=8, inner=4, active=[1, 2])
     ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
     for leg in LEGS:
@@ -1064,6 +1096,23 @@ def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
     want = sum(abs(a + b) <= 20 for a in levels for b in levels)
     got = _run(cfg).evaluation_summary['diagnostics']['action_grid_size']
     assert want == 13 and got == want, (got, want)
+
+
+def test_the_cap_holds_the_book_the_live_legs_carry():
+    """`Total_Position_Abs_Limit` caps the signed book the live legs carry, so a row parked on an
+    expired leg cannot carry the live ones past it: on the training document with the April leg's
+    box long [0, 50] under the cap of 50, the April leg dead at every decision of the sweep from
+    step 100, the verdict's greedy book on the live legs sums inside the cap on every path, its
+    path mean -50 to -18.75. 3 s.
+
+    Killing mutation: the cap held on a row's total over every leg (`rows.sum(-1)` in
+    `HedgeActionSpace._within`), which admits (+50, -50, -50) at -50 and masks it to -100 on the
+    live legs: a path-mean net of -62.5."""
+    cfg = _cfg(batch=16, inner=8, seed=7)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']['Position_Limits']['PL_APR_2026'] = {
+        'Min_Position': 0, 'Max_Position': 50}
+    nets = [sum(q) for q in _run(cfg).evaluation_summary['diagnostics']['verdict']['greedy_q_traj']]
+    assert max(abs(x) for x in nets) <= 50 + 1e-9, nets
 
 
 def test_the_verdict_and_the_stepper_hold_one_textbook_book(tmp_path):

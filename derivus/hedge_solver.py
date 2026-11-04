@@ -91,8 +91,9 @@ class HedgeActionSpace:
     stepper rollout — so they optimize over the same positions and price the same frictions.
 
       * `axis_levels()` / `grid()` — the MASK-AWARE target-position grid in whole contracts:
-        active hedge axes span `[min, max]` at `levels` points, inactive axes pin to a single 0,
-        and rows whose signed net is over the total-position cap are dropped.
+        active hedge axes span `[min, max]` at `levels` points, inactive axes pin to a single 0;
+        `grid_at(t, live)` keeps the rows whose signed net on the live legs lies in
+        `net_bounds(t)`, the cap and the corridor.
       * `allocation_grid(t)` — the FACTORED alternative under `Allocation_Weights`: one ladder over
         the signed NET cover, each rung split across the legs by the schedule. `grid_at` dispatches
         on which universe is configured; downstream consumes the rows either way.
@@ -113,8 +114,9 @@ class HedgeActionSpace:
         '',
         '- `grid()` / `axis_levels()` — the target-position grid in whole contracts. Active hedge',
         '  axes span `[Min_Position, Max_Position]` at `Training_Action_Grid_Levels_Per_Axis`',
-        '  points rounded to whole contracts, inactive axes pin to a single 0, and rows whose',
-        '  signed net breaches `Total_Position_Abs_Limit` are dropped.',
+        '  points rounded to whole contracts, inactive axes pin to a single 0, and a step keeps the',
+        '  rows whose signed net on its live legs lies inside `Total_Position_Abs_Limit` and the',
+        '  `Total_Position_Schedule` corridor.',
         '- `allocation_grid(...)` — under `Evaluator.Allocation_Weights`, the FACTORED universe',
         '  instead: the levels count rungs on the signed NET cover and the schedule splits each',
         '  rung across the legs, so the search is over how much cover to carry, not over its',
@@ -191,18 +193,12 @@ class HedgeActionSpace:
                 for i in range(self.n_hedge)]
 
     def grid(self):
-        """Mask-aware target-position grid `(n_actions, n_hedge)`: inactive axes pinned to 0,
-        rows whose signed net is over the total-position cap dropped. Cached (deterministic) —
-        `grid_at(t)` reslices this base grid per decision step without rebuilding the meshgrid."""
+        """Mask-aware target-position grid `(n_actions, n_hedge)`, the product of `axis_levels`,
+        inactive axes pinned to 0. Cached (deterministic): `grid_at(t)` filters this base grid per
+        decision step without rebuilding the meshgrid."""
         if self._grid_cache is None:
             mesh = torch.meshgrid(*self.axis_levels(), indexing="ij")
-            grid = torch.stack([m.reshape(-1) for m in mesh], dim=-1)
-            if self.total_abs_limit > 0.0:
-                grid = grid[grid.sum(-1).abs() <= self.total_abs_limit + 1e-9]
-            if grid.shape[0] == 0:
-                raise ValueError(
-                    "action grid empty — Position_Limits infeasible under Total_Position_Abs_Limit")
-            self._grid_cache = grid
+            self._grid_cache = torch.stack([m.reshape(-1) for m in mesh], dim=-1)
         return self._grid_cache
 
     def _corridor_at(self, t):
@@ -340,26 +336,30 @@ class HedgeActionSpace:
 
     def grid_at(self, t, live=None):
         """Action grid at decision step t: the base `grid()` — or the factored `allocation_grid(t)`
-        when `Allocation_Weights` is configured — filtered to rows whose SIGNED total position lies
-        in the `Total_Position_Schedule` corridor at t. No schedule → that grid unchanged. The
-        single per-t filter site every track shares; empty after filtering ⇒ infeasible corridor.
+        when `Allocation_Weights` is configured — filtered by `_within` to rows whose SIGNED total
+        position lies in `net_bounds(t)`, the `Total_Position_Abs_Limit` cap and the
+        `Total_Position_Schedule` corridor. The single per-t filter site every track shares; empty
+        after filtering ⇒ infeasible bounds.
 
-        The corridor bounds the REALIZED signed total, the position that survives expiry masking,
-        so passing the step-t `live` leg mask filters on `Σ(q_i·live_i)`: a corridor-satisfying
-        short cannot be parked on an expired leg only to be masked to 0 and silently under-hedge.
-        Absent `live` ⇒ `Σq_i` over all legs."""
-        grid = self.grid() if self.weights is None else self.allocation_grid(t, live)
-        if self.schedule is None:
-            return grid
-        lo, hi = self._corridor_at(t)
-        tot = (grid * live).sum(-1) if live is not None else grid.sum(-1)
-        grid_t = grid[(tot >= lo - 1e-9) & (tot <= hi + 1e-9)]
-        if grid_t.shape[0] == 0:
+        The bounds hold the REALIZED signed total, the position that survives expiry masking, so
+        passing the step-t `live` leg mask filters on `Σ(q_i·live_i)`: a row parked on an expired
+        leg cannot carry the live legs past the cap, nor a corridor-satisfying short be masked to 0
+        and silently under-hedge. Absent `live` ⇒ `Σq_i` over all legs."""
+        grid = self._within(self.grid() if self.weights is None else self.allocation_grid(t, live),
+                            t, live)
+        if grid.shape[0] == 0:
             raise ValueError(
-                f"action grid empty at step {t} — Total_Position_Schedule corridor "
-                f"[{lo}, {hi}] infeasible on live legs (grid Σq·live spans "
-                f"[{float(tot.min())}, {float(tot.max())}])")
-        return grid_t
+                f"action grid empty at step {t} — no row's signed total on the live legs lies in "
+                f"net_bounds {self.net_bounds(t)}, Total_Position_Abs_Limit and the "
+                f"Total_Position_Schedule corridor")
+        return grid
+
+    def _within(self, rows, t, live=None):
+        """`rows` `(K, n_hedge)` whose signed total on the `live` legs (every leg where None) lies
+        in `net_bounds(t)`."""
+        lo, hi = self.net_bounds(t)
+        tot = (rows if live is None else rows * live).sum(-1)
+        return rows[(tot >= lo - 1e-9) & (tot <= hi + 1e-9)]
 
     def project_to_corridor(self, q, t):
         """Project the SIGNED total of the ACTIVE legs of `q` `(B, n_hedge)` into the
@@ -443,10 +443,11 @@ class HedgeActionSpace:
                 if self.calendar_bps is not None else None)
 
     def universe_size(self):
-        """Row count of the action universe a diagnostic should report: the Cartesian grid, or the
-        entry-step LADDER under `Allocation_Weights`. Never the meshgrid under a schedule — at 5
-        legs and 51 levels that is ~345M rows built and discarded for a 51-row search."""
-        return int((self.grid_at(0) if self.weights is not None else self.grid()).shape[0])
+        """Row count of the action universe a diagnostic should report: the entry step's grid, the
+        Cartesian one inside its bounds or the LADDER under `Allocation_Weights`. Never the meshgrid
+        under a schedule — at 5 legs and 51 levels that is ~345M rows built and discarded for a
+        51-row search."""
+        return int(self.grid_at(0).shape[0])
 
     def static_grid(self):
         """The universe a CONSTANT hold is chosen from (`run_textbook_benchmark`). Cartesian: the
@@ -460,11 +461,8 @@ class HedgeActionSpace:
         composition to sit in."""
         if self.weights is None:
             return self.grid_at(0)
-        rows = torch.cat([self.allocation_grid(step) for step, _ in self.weights]).unique(dim=0)
-        if self.schedule is None:
-            return rows
-        lo, hi = self._corridor_at(0)
-        return rows[(rows.sum(-1) >= lo - 1e-9) & (rows.sum(-1) <= hi + 1e-9)]
+        return self._within(
+            torch.cat([self.allocation_grid(step) for step, _ in self.weights]).unique(dim=0), 0)
 
     def initial_q(self, batch, device):
         """The opening book `q0` `(batch, n_hedge)` (hedge legs only, `names['hedges']`
@@ -1220,13 +1218,14 @@ class DiffSolver:
         `(..., n_hedge)`, `dL` is `(...)`. Expiry is composed by callers through `live` on dF."""
         return wealth_step(W, q, self.contract_size, dF, dL)
 
-    def _outer_dF(self, t, rows=slice(None)):
+    def _outer_dF(self, t, rows=slice(None), to=None):
         """The OUTER-realized hedge move over decision t's interval, `F_{t+1} − F_t` with t+1 the
-        next decision row (`self.nxt`), stacked `(..., n_hedge)` in hedge order — the one spelling
-        behind the bank roll, the verdict, the stepper rollout's drift monitor and the constructed
-        policy."""
+        next decision row (`self.nxt`), or the row `to`, stacked `(..., n_hedge)` in hedge order —
+        the one spelling behind the bank roll, the verdict, the stepper rollout's drift monitor and
+        the constructed policy."""
+        to = self.nxt[t] if to is None else to
         return torch.stack(
-            [self.tradables_sim[r][self.nxt[t]][rows] - self.tradables_sim[r][t][rows]
+            [self.tradables_sim[r][to][rows] - self.tradables_sim[r][t][rows]
              for r in self.hedges], dim=-1)
 
     def _risk_adjusted(self, C1f, Ckf=None):
@@ -1910,9 +1909,10 @@ class DiffSolver:
     # ---- greedy-rollout downside verdict -------------------------------------
     def _verdict(self, nets, inner_cache, sweep_ts, rows=slice(None)):
         """Roll the fitted argmax policy forward over [t_min, T_dec] on the OUTER paths in
-        `rows` (wealth advanced by the outer-realised dF/dL), starting FLAT at t_min, and
-        compare terminal-wealth downside against a textbook diagonal-min-var delta hedge, no
-        hedge, and the passive hedge short the liability's unfixed quantity (`_passive_hedge`).
+        `rows` (wealth advanced by the outer-realised dF/dL), every track holding the opening book
+        `q0` from the first row to t_min as the stepper roll does, and compare terminal-wealth
+        downside against a textbook diagonal-min-var delta hedge, no hedge (flat from the first
+        decision), and the passive hedge short the liability's unfixed quantity (`_passive_hedge`).
         The argmax uses the cached inner-MC E[C_{t+1}] estimate; the realised
         outcome uses the outer path. Pass held-out `rows` for an honest OUT-OF-SAMPLE verdict.
 
@@ -1927,15 +1927,16 @@ class DiffSolver:
         wealth in dollars under either mode, under the position state net of the repositioning charge,
         its `DiffV2_Churn_Lambda` penalty included; `u_mean_is_step_sum` says which regime produced it.
 
-        Each traded policy (greedy, textbook, passive) pays turnover cost on the same three-part
-        rule the two benchmark tracks price their execution with: entry from the OPENING book
-        `q0`, per-step repositioning, and the terminal unwind under `Force_Flat_At_End`
-        (`turnover_cost_mean`); the first greedy decision is measured from `_first_book`, as the
-        stepper roll's is. Without `DiffV2_Position_State` the wealth recursion is cost-free
-        and the cost is accounted in PARALLEL, so the `*_net` columns are diagnostics on that
-        approximation. Under it each step's wealth is charged `_reposition_charge`, the charge the
-        labels are fitted net of, churn term included: every greedy decision reads the net wealth
-        its value was fitted on, the main columns are net, and there are no `*_net` columns.
+        Each policy (greedy, textbook, passive and the no-hedge book's close) pays turnover cost on
+        the same three-part rule the two benchmark tracks price their execution with: entry from
+        the OPENING book `q0`, per-step repositioning, and the terminal unwind under
+        `Force_Flat_At_End` (`turnover_cost_mean`); the first greedy decision is measured from
+        `_first_book`, as the stepper roll's is. Without `DiffV2_Position_State` the wealth
+        recursion is cost-free and the cost is accounted in PARALLEL, so the `*_net` columns are
+        diagnostics on that approximation. Under it each step's wealth is charged
+        `_reposition_charge`, the charge the labels are fitted net of, churn term included: every
+        greedy decision reads the net wealth its value was fitted on, the main columns are net, and
+        there are no `*_net` columns.
 
         The greedy ARGMAX is charged when either `DiffV2_Cost_Aware_Argmax` or
         `DiffV2_Position_State` is on: a value function fitted against a charged selection must be
@@ -1944,12 +1945,14 @@ class DiffSolver:
         L = self.liability_sim
         t0 = sweep_ts[0]
         n = L[t0][rows].shape[0]
-        W = {p: L[t0][rows].clone() for p in ("greedy", "textbook", "nohedge", "passive")}
+        q0 = self.aspace.initial_q(n, self.device)
+        # the opening book's P&L from the first row to the first decision, every track's
+        W0 = self._wealth_step(L[t0][rows], q0, self._outer_dF(0, rows, t0), 0.0)
+        W = {p: W0.clone() for p in ("greedy", "textbook", "nohedge", "passive")}
         # the turnover cost, entry measured from the opening book: paid inside the wealth under the
         # position state, a diagnostic beside it otherwise
-        cost = {p: torch.zeros(n, device=self.device) for p in ("greedy", "textbook", "passive")}
-        q_traj = {p: [] for p in cost}                                                  # mean q per step
-        q0 = self.aspace.initial_q(n, self.device)
+        cost = {p: torch.zeros(n, device=self.device) for p in W}
+        q_traj = {p: [] for p in ("greedy", "textbook", "passive")}                     # mean q per step
         q_prev = {p: q0.clone() for p in cost}
         # running-wealth: the rollout's value is the SUM of the per-step rewards, accumulated along
         # the roll, and the net sum charges each step's own turnover into that step's increment
@@ -1988,7 +1991,8 @@ class DiffSolver:
                 kappa_cal_t = self.aspace.calendar_kappa(self.tradables_sim, t)
                 kappa_T = self._unwind_kappa(t)
                 step_cost = {}
-                for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("passive", q_pa)):
+                for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
+                                 ("passive", q_pa)):
                     step_cost[p] = (self._reposition_charge(q_now, q_prev[p], kappa_t, kappa_T,
                                                             kappa_cal_t)
                                     if self.position_state else
@@ -2000,7 +2004,7 @@ class DiffSolver:
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
                                  ("passive", q_pa)):
                     W[p] = self._wealth_step(W[p], q_now, dF_o, dL_o)
-                    if self.position_state and p in step_cost:
+                    if self.position_state:
                         # the charge inside the step, as the label pays it, so the next decision
                         # reads the wealth its value was fitted on
                         W[p] = W[p] - step_cost[p]
@@ -3078,7 +3082,7 @@ class DiffSolver:
         beats_tb = g["u_mean"] >= tb["u_mean"]
         tail_vs_tb = g["wT_cvar5"] >= tb["wT_cvar5"] - abs(tb["wT_cvar5"]) * 0.05
         logging.info(
-            "DiffSolver VERDICT (%s rollout t=%d→T over %d outer paths, start flat):\n"
+            "DiffSolver VERDICT (%s rollout t=%d→T over %d outer paths, from the opening book):\n"
             "  policy    u(W_T)mean    W_T mean       W_T p5         W_T CVaR5\n"
             "  greedy    %+.5f    %+.4e   %+.4e   %+.4e\n"
             "  textbook  %+.5f    %+.4e   %+.4e   %+.4e\n"
