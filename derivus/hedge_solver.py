@@ -3071,19 +3071,19 @@ class DiffSolverV2(DiffSolver):
         return q_star, construct(False)[0], curves, WT
 
     @staticmethod
-    def _carry_variance_solve(mu, Sig, c, Q, scale):
-        """argmin_w [Q²·wᵀΣw + 2Q·wᵀc] / (2·scale) − Q·wᵀμ  s.t. Σw = 1, w ≥ 0.
+    def _carry_variance_solve(mu, Sig, c, Q, scale, idx):
+        """argmin_w [Q²·wᵀΣw + 2Q·wᵀc] / (2·scale) − Q·wᵀμ  s.t. Σw = 1, w ≥ 0 over the legs `idx`,
+        every other leg's weight 0.
 
         The carry/tracking allocator for ONE step: Σ and c are the covariance of the legs'
         remaining-horizon P&L (per contract, in money) with each other and with the liability's, μ
         their means, Q the signed reference net (short < 0), and the variance/mean exchange rate
-        ½/scale at the frame scale `utility_scale / aversion`. Active-set over ≤ n legs: solve
-        the equality-constrained stationarity, drop the most negative weight, repeat."""
-        idx = list(range(int(mu.shape[0])))
+        ½/scale at the frame scale `utility_scale / aversion`. Active-set over `idx`: solve the
+        equality-constrained stationarity, drop the most negative weight, repeat."""
+        idx = list(idx)
         while True:
             S = Sig[idx][:, idx].double()
-            S = S + 1.0e-8 * S.diagonal().mean().clamp_min(1e-12) * torch.eye(
-                len(idx), dtype=S.dtype, device=S.device)
+            S = S + 1.0e-8 * S.diagonal().mean() * torch.eye(len(idx), dtype=S.dtype, device=S.device)
             Si = torch.linalg.inv(S)
             w = (scale / Q ** 2) * (Si @ (Q * mu[idx].double()
                                           - (Q / scale) * c[idx].double()))
@@ -3096,13 +3096,13 @@ class DiffSolverV2(DiffSolver):
             idx.pop(int(w.argmin()))
 
     def _carry_variance_weights(self):
-        """Derive the per-step `Allocation_Weights` table from the outer sims: per decision
-        step, the population moments of each leg's remaining-horizon P&L per contract (marks freeze
-        at expiry, so a dead leg's variance is ~0 and it drops out of the active set on its own) and
-        the liability's remaining P&L, solved by `_carry_variance_solve` at the replication net.
-        Knots are emitted only where the split MOVES."""
+        """Derive the per-step `Allocation_Weights` table from the outer sims: at each decision
+        step, the population moments of each leg's remaining-horizon P&L per contract and the
+        liability's remaining P&L, solved by `_carry_variance_solve` at the replication net on the
+        legs whose remaining P&L still varies (a leg's marks freeze at its expiry). Knots are
+        emitted only where the split MOVES."""
         knots, last = [], None
-        for t in range(self.T_dec):
+        for t in self.steps:
             dF, RL = self._outer_move(t, to=self.T_dec)                  # the remaining horizon's
             R = (self.aspace.contract_size * dF).T.contiguous()                 # (n_h, B) money a contract
             X = R - R.mean(-1, keepdim=True)
@@ -3116,14 +3116,13 @@ class DiffSolverV2(DiffSolver):
                 w = last if last is not None else tuple(
                     1.0 / self.aspace.n_hedge for _ in range(self.aspace.n_hedge))
             else:
-                mu = R.mean(-1)
-                big = 1.0e12 * Sig.diagonal().max()
-                Sig = Sig + torch.diag(torch.where(alive, torch.zeros_like(mu), big))
+                legs = alive.nonzero().flatten().tolist()
                 # the frame scale, which exists at bind; the LogWealth capital line is
                 # measured on the bank this ladder builds, so it cannot be read here
                 sol = self._carry_variance_solve(
-                    mu, Sig, c, Qb, float(self.utility_scale) / self.aversion)
+                    R.mean(-1), Sig, c, Qb, float(self.utility_scale) / self.aversion, legs)
                 w = tuple(round(float(x), 9) for x in sol)
+                logging.debug('carry-variance split at step %d on legs %s: %s', t, legs, w)
             if w != last:
                 knots.append((t, w))
                 last = w
