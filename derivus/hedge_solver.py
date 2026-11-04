@@ -854,37 +854,39 @@ class DiffSolver:
         scale. A launch at or under it is ruin, and the reward there is capped at zero."""
         return 1.0e-4 * self.utility_scale
 
-    def _u_step(self, W1, W0, t, capital=None):
-        """The per-step reward both step-sum objectives share. Running_Wealth: u((W1−W0)/c_t),
-        the scaled increment. LogWealth: log(W1/W0) — the day's growth ratio, zero iff the step
-        is perfectly hedged, scale-free (no c_t anywhere). Below `eps` the log continues
+    def _u_step(self, dW, W0, t, capital=None):
+        """The per-step reward both step-sum objectives share, of the step's move `dW` from the
+        wealth `W0`. Running_Wealth: u(dW/c_t), the scaled increment. LogWealth: log(W1/W0) —
+        the day's growth ratio, zero iff the step is perfectly hedged, scale-free (no c_t
+        anywhere), read as log1p of the move over the base. Below `eps` the log continues
         linearly so a breached path keeps gradient while paying an unbounded-in-level penalty,
         and a step LAUNCHED at or under the floor can only score <= 0: ruin is absorbing, not a
         rebirth against a clamped denominator. `capital` reads the ratio at another member's
         capital line (the ensemble's `_reward`); None is this run's own."""
         if not self.log_ratio:
-            return _utility_wrap_signed(W1 - W0, self.runtime, t)
+            return _utility_wrap_signed(dW, self.runtime, t)
         # the CAPITAL line: wealth in the ratio is capital + MTM, so "wealth 1" is one unit of
         # backing capital and ruin is losing it. Both legs sit on the SAME step's c, so the inner
         # fork is measured against its own launch.
         c = self.capital if capital is None else capital
         eps = 1.0e-3
         base = (c + W0).clamp_min(self.w_floor)
-        r = (c + W1) / base
-        u = torch.where(r > eps, r.clamp_min(eps).log(), math.log(eps) + (r - eps) / eps)
+        x = (dW + (c + W0 - base)) / base                                    # r - 1, off the move
+        u = torch.where(x > eps - 1.0, x.clamp_min(eps - 1.0).log1p(), math.log(eps) + (x + 1.0 - eps) / eps)
         # BOUNDED CONDITIONING: the log's economic content lives within a few nats, and beyond
         # ruin there are only magnitudes that wreck the fit. -20 nats is ruin by e^20, so the
         # cliff stays a cliff and the labels stay a distribution.
         u = u.clamp_min(-20.0)
         return torch.where((c + W0) > self.w_floor, u, u.clamp_max(0.0))
 
-    def _reward(self, W1, W0, t):
-        """The day's reward in the frame the value it is added to was fitted in: `_u_step`, or over
-        an ensemble under LogWealth the mean of each member's growth at its OWN capital line, so a
-        two-member roll ranks the same book whichever checkpoint is listed first."""
+    def _reward(self, dW, W0, t):
+        """The day's reward of the move `dW` from `W0` in the frame the value it is added to was
+        fitted in: `_u_step`, or over an ensemble under LogWealth the mean of each member's growth
+        at its OWN capital line, so a two-member roll ranks the same book whichever checkpoint is
+        listed first."""
         if not self._ensemble or not self.log_ratio:
-            return self._u_step(W1, W0, t)
-        return sum(self._u_step(W1, W0, t, m.capital) for m in self._ensemble) / len(self._ensemble)
+            return self._u_step(dW, W0, t)
+        return sum(self._u_step(dW, W0, t, m.capital) for m in self._ensemble) / len(self._ensemble)
 
 
     def _set_displacement(self, W_bank):
@@ -958,9 +960,9 @@ class DiffSolver:
         row's reward, the expression the label regresses on. Returns the scores and the wealths
         landed on, each `(B, c, Bi)`."""
         dF, dL, market, live = fork
-        path = wealth_step(W[:, None, None], book, self.aspace.contract_size,
-                           dF.reshape((-1,) + dF.shape[-3:])[:, :, None],
-                           dL.reshape((-1,) + dL.shape[-2:])[:, :, None])                 # (m,B,c,Bi)
+        moves = (book, self.aspace.contract_size, dF.reshape((-1,) + dF.shape[-3:])[:, :, None],
+                 dL.reshape((-1,) + dL.shape[-2:])[:, :, None])
+        path = wealth_step(W[:, None, None], *moves)                                     # (m,B,c,Bi)
         if charge is not None:
             path = path - charge
         W1 = path[-1]
@@ -976,8 +978,10 @@ class DiffSolver:
             # each move's reward off the CHARGED wealth, so a move pays its toll inside the step that
             # made it, all at s's knee: a running reward's is flat, `conditional_sim` refused beside it
             # and LogWealth's ratio reading none
-            C = C + self._reward(path, torch.cat([W[None, :, None, None].expand(1, B, c, Bi),
-                                                  path[:-1]]), s).sum(0)
+            moved = wealth_step(0.0, *moves) - (0.0 if charge is None else charge)    # from t
+            C = C + self._reward(torch.diff(moved, dim=0, prepend=torch.zeros_like(moved[:1])),
+                                 torch.cat([W[None, :, None, None].expand(1, B, c, Bi), path[:-1]]),
+                                 s).sum(0)
         return C, W1
 
     # ---- inner-MC one-step quantities at outer t -----------------------------
@@ -1384,6 +1388,7 @@ class DiffSolver:
         W0 = W0_bank.clone().requires_grad_(True)
         q = q_star[:, None, :]                                                           # (B,1,n_hedge)
         W1 = wealth_step(W0[:, None], q, self.aspace.contract_size, dF_g, dL_g)           # (B,Bi)
+        dW = wealth_step(0.0, q, self.aspace.contract_size, dF_g, dL_g)                   # its move
         B, Bi_e, md = m1_g.shape
         p_bank = p1 = None
         extra = []
@@ -1396,7 +1401,8 @@ class DiffSolver:
                 extra = [q_prev]
             # the charge the SELECTION above ranked with, now inside the regressed TARGET, and the
             # successor read at the book the chosen action leaves standing
-            W1 = W1 - self._charge(t, q_star, q_prev, kappa_t)[:, None]
+            charge = self._charge(t, q_star, q_prev, kappa_t)[:, None]
+            W1, dW = W1 - charge, dW - charge
             p1 = self._p(q_star)[:, None].expand(B, Bi_e).reshape(-1)
         Y = self._continuation(
             nets, m1_g.reshape(-1, md), W1.reshape(-1), self.nxt[t], p1).reshape(B, Bi_e)  # (B,Bi)
@@ -1404,13 +1410,12 @@ class DiffSolver:
             # Y = u(W1 - W_t) + C_{t+1}, the same expression `_decide` ranked with. The increment
             # is level-free, so it contributes 0 to the wealth label and its MARKET slope joins
             # g_market - the reward is part of what the twin loss differentiates.
-            Y = Y + self._u_step(W1, W0[:, None], self.nxt[t])
+            Y = Y + self._u_step(dW, W0[:, None], self.nxt[t])
         Y = Y.mean(1)                                                                     # (B,)
-        grads = torch.autograd.grad(Y.sum(), [W0] + list(leaves.values()) + extra, allow_unused=True)
-        gW = grads[0].detach()
         # a leaf the label does not reach is measured, its slope exactly 0
-        leaf_grads = {k: g.detach() if g is not None else torch.zeros_like(v)
-                      for (k, v), g in zip(leaves.items(), grads[1:1 + len(leaves)])}
+        grads = torch.autograd.grad(Y.sum(), [W0] + list(leaves.values()) + extra, materialize_grads=True)
+        gW = grads[0].detach()
+        leaf_grads = {k: g.detach() for k, g in zip(leaves, grads[1:1 + len(leaves)])}
         g_market, measured = self._project_leaf_grads(leaf_grads, widths, rows, B, md)   # ∂Y/∂market_t (B,md)
         g_market = g_market * ig["market_t_label_scale"][rows]          # in the net's coordinates
         # indices, taken once: a boolean mask on the device syncs the host every Adam step
@@ -1435,10 +1440,10 @@ class DiffSolver:
         rewards of the moves after t join the k-step side; both ends are `_continuation` at the
         outer market state, the policy's wealth and the book it leaves standing."""
         def move(s, W, q, q_prev, kappa):
-            W1 = wealth_step(W, q, self.aspace.contract_size, *self._outer_move(s, rows))
-            if not self.position_state:
-                return W1
-            return W1 - self._charge(s, q, q_prev, kappa)
+            # the wealth landed on and the step's move
+            step = (q, self.aspace.contract_size, *self._outer_move(s, rows))
+            charge = self._charge(s, q, q_prev, kappa) if self.position_state else 0.0
+            return wealth_step(W, *step) - charge, wealth_step(0.0, *step) - charge
 
         def bootstrap(s, W, q):
             market = self.inner_cache[s][3][rows] if s < self.T_dec else None
@@ -1446,7 +1451,7 @@ class DiffSolver:
             return self._continuation(nets, market, W, s, p)
 
         with torch.no_grad():
-            W = move(t, W0, q, q_prev, kappa)
+            W = move(t, W0, q, q_prev, kappa)[0]
             s = self.nxt[t]
             one = bootstrap(s, W, q)
             ret = torch.zeros_like(W)
@@ -1457,9 +1462,9 @@ class DiffSolver:
                 q = self._decide(nets, m1[rows], dF[rows], dL[rows], W, s, q_prev=q_prev,
                                  kappa=kappa, live=live, rate_limit=False,
                                  ahead=_on_rows(ahead, rows))
-                W1 = move(s, W, q, q_prev, kappa)
+                W1, dW = move(s, W, q, q_prev, kappa)
                 if self.running_wealth:
-                    ret = ret + self._u_step(W1, W, self.nxt[s])
+                    ret = ret + self._u_step(dW, W, self.nxt[s])
                 W, s = W1, self.nxt[s]
             return ret + bootstrap(s, W, q) - one
 
@@ -1677,25 +1682,25 @@ class DiffSolver:
                                     turnover_charge(q_now - q_prev[p], *kappa_p))
                     cost[p] = cost[p] + step_cost[p]
                     q_prev[p] = q_now
-                W_pre = dict(W)
+                W_pre, moved = dict(W), {}
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
                                  ("passive", q_pa)):
-                    W[p] = wealth_step(W[p], q_now, self.aspace.contract_size, dF_o.to(MONEY), dL_o)
+                    step = (q_now, self.aspace.contract_size, dF_o.to(MONEY), dL_o)
+                    W[p], moved[p] = wealth_step(W[p], *step), wealth_step(0.0, *step)
                     if self.position_state:
                         # the charge inside the step, as the label pays it, so the next decision
                         # reads the wealth its value was fitted on
-                        W[p] = W[p] - step_cost[p]
+                        W[p], moved[p] = W[p] - step_cost[p], moved[p] - step_cost[p]
                 if u_run is not None:
                     # indexed by the step the increment ARRIVES at, as every other seam does: the
                     # knee an increment is measured under belongs to the day it lands on
                     for p in W:
-                        u_run[p] = u_run[p] + self._reward(W[p], W_pre[p], self.nxt[t])
+                        u_run[p] = u_run[p] + self._reward(moved[p], W_pre[p], self.nxt[t])
                 if u_net is not None:
                     for p in u_net:
-                        last_net_inc[p] = W[p] - W_pre[p] - step_cost[p]
+                        last_net_inc[p] = moved[p] - step_cost[p]
                         last_W_pre[p] = W_pre[p]
-                        u_net[p] = u_net[p] + self._reward(
-                            W_pre[p] + last_net_inc[p], W_pre[p], self.nxt[t])
+                        u_net[p] = u_net[p] + self._reward(last_net_inc[p], W_pre[p], self.nxt[t])
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("passive", q_pa)):
                     q_traj[p].append(q_now.mean(0).tolist())
             if self.force_flat and not self.position_state:
@@ -1709,11 +1714,8 @@ class DiffSolver:
                         # the liquidation belongs INSIDE the last increment, where training charged
                         # it; u is nonlinear, so appending u(-unwind) as its own term would report
                         # a different objective than the one optimised
-                        u_net[p] = (u_net[p]
-                                    - self._reward(last_W_pre[p] + last_net_inc[p],
-                                                   last_W_pre[p], self.T_dec)
-                                    + self._reward(last_W_pre[p] + last_net_inc[p] - unwind,
-                                                   last_W_pre[p], self.T_dec))
+                        u_net[p] = (u_net[p] - self._reward(last_net_inc[p], last_W_pre[p], self.T_dec)
+                                    + self._reward(last_net_inc[p] - unwind, last_W_pre[p], self.T_dec))
 
         out = {p: _tail_stats(self.runtime, W[p], None if u_run is None else u_run[p]) for p in W}
         out["validation_drift_z"] = round(vdrift_z / max(1, vdrift_n) * (vdrift_n ** 0.5), 4)
@@ -1963,8 +1965,9 @@ class DiffSolver:
                     W = _tracking_error_value(state, self.runtime).to(self.device)     # (B,) net wealth
                     B = W.shape[0]
                     if self.running_wealth:
+                        # the stepper books levels in MONEY, so its move is their difference
                         u_sum = (torch.zeros_like(W) if w_prev is None
-                                 else u_sum + self._reward(W, w_prev, t))
+                                 else u_sum + self._reward(W - w_prev, w_prev, t))
                         w_prev = W
                     if policy == "nohedge":
                         q = torch.zeros(B, self.aspace.n_hedge, device=self.device)
@@ -2045,7 +2048,7 @@ class DiffSolver:
             drift["final_z_per_sqrt_n"] = drift["cum_z"] / (n_dec ** 0.5)
             wT = last["transition_net_pnl"]
             if u_sum is not None:
-                u_sum = u_sum + self._reward(wT, w_prev, self.T_dec)  # tail
+                u_sum = u_sum + self._reward(wT - w_prev, w_prev, self.T_dec)  # tail
             return wT, u_sum, drift
 
         rolled = {p: roll(p) for p in ("greedy", "textbook", "nohedge", "passive")}
