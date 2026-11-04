@@ -1004,35 +1004,80 @@ def test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal(mode, 
     assert torch.allclose(short - flat, want, rtol=1e-5, atol=0.0), ((short - flat).tolist(), want.tolist())
 
 
-def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path):
-    """A client short 10 `PL_OCT_2026` from the first decision through `create_stepper()`, on the
-    simulate-only fixture at zero rates paying Monday 10 August, so the row before its terminal is a
-    Sunday the stepper does not decide on: `write_diagnostic_csvs` books the forced close on the
-    terminal, +10 at Monday's mark, the book flat from there and -10 the day before, and on each
-    path it writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L within 1e-5
-    relative. 2 s.
-
-    Killing mutations: the CSV recording the trades of the decision rows alone, the close of the
-    step into the terminal lost (trade 0 on the terminal, the book held short to the clean-exit
-    row: the mean path's last 49,863.81 against 50,038.13); `_hold` after the forced close, the
-    close booked on Sunday at Sunday's mark (49,984.73)."""
+def _client(mode='futures', force_flat='Yes', positions=None, evaluator=None):
+    """The simulate-only fixture at zero rates paying Monday 10 August, so the row before its
+    terminal is a Sunday the stepper does not decide on, on 4 paths: in accounting `mode`, under
+    `Force_Flat_At_End` `force_flat`, opening on `positions`, its `Evaluator` updated by
+    `evaluator`."""
     cfg = _paying(_zero_rates(jsonlib.load(open(FIXTURE))), '2026-08-10')
     cfg['Calc']['Calculation'].update(Batch_Size=4, Random_Seed=3)
-    result = _run(cfg)
-    stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
-    while not stepper.done:
-        last = stepper.step({'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
-    stepper.write_diagnostic_csvs(str(tmp_path), 'short')
-    csv = pd.read_csv(tmp_path / 'short_paths.csv')
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Evaluator'].update(Accounting_Mode=mode, Force_Flat_At_End=force_flat, **(evaluator or {}))
+    hp['Portfolio_State']['Positions'].update(positions or {})
+    return cfg
+
+
+def _csv_against_the_stepper(tmp_path, stepper, last):
+    """The diagnostic CSV `stepper` writes, by case and day, each case's last
+    `hedge_portfolio_ex_funding` checked against the stepper's `pnl_excess` within 1e-5 relative."""
+    stepper.write_diagnostic_csvs(str(tmp_path), 'client')
     pnl = last['transition_pnl_excess'].double()
-    for case, rows in csv.groupby('case'):
-        rows = rows.set_index('day')
-        assert rows.loc['2026-08-10', 'PL_OCT_2026_trade'] == 10.0, (case, rows['PL_OCT_2026_trade'].tail(3))
-        assert rows.loc['2026-08-09', 'PL_OCT_2026_position'] == -10.0
-        assert (rows.loc['2026-08-10':, 'PL_OCT_2026_position'] == 0.0).all()
+    cases = {case: rows.set_index('day') for case, rows in pd.read_csv(tmp_path / 'client_paths.csv').groupby('case')}
+    for case, rows in cases.items():
         want = float(pnl.mean() if case == 'mean' else pnl[int(rows['path_idx'].iloc[0])])
         got = rows['hedge_portfolio_ex_funding'].iloc[-1]
         assert abs(got / want - 1.0) < 1e-5, (case, got, want)
+    return cases
+
+
+@pytest.mark.parametrize('mode, force_flat', [('futures', 'Yes'), ('cash_account', 'Yes'), ('futures', 'No')])
+def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mode, force_flat):
+    """A client short 10 `PL_OCT_2026` from the first decision through `create_stepper()`, on the
+    simulate-only fixture at zero rates paying Monday 10 August, so the row before its terminal is a
+    Sunday the stepper does not decide on, in either accounting mode: `write_diagnostic_csvs` books
+    the forced close on the terminal, +10 at Monday's mark, the book flat from there and -10 the day
+    before, or under `Force_Flat_At_End` 'No' the book short to the last row, and on each path it
+    writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L within 1e-5 relative.
+    2 s each.
+
+    Killing mutations: the CSV recording the trades of the decision rows alone, the close of the
+    step into the terminal lost (trade 0 on the terminal, the book held short to the clean-exit
+    row: the mean path's last 49,863.81 against 50,038.13); `_hold` after the forced close in either
+    accounting step, the close booked on Sunday at Sunday's mark (49,984.73); the CSV's book left
+    flat past the stepped rows (`pos[rows.stop:]` at zero), the book dropped on the clean-exit row
+    under 'No'."""
+    result = _run(_client(mode, force_flat))
+    stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
+    while not stepper.done:
+        last = stepper.step({'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
+    for case, rows in _csv_against_the_stepper(tmp_path, stepper, last).items():
+        assert rows.loc['2026-08-09', 'PL_OCT_2026_position'] == -10.0
+        closed = force_flat == 'Yes'
+        assert rows.loc['2026-08-10', 'PL_OCT_2026_trade'] == (10.0 if closed else 0.0), (case, rows['PL_OCT_2026_trade'].tail(3))
+        assert (rows.loc['2026-08-10':, 'PL_OCT_2026_position'] == (0.0 if closed else -10.0)).all()
+
+
+def test_an_opening_book_s_pnl_runs_from_the_first_row_in_the_stepper_and_its_csv(tmp_path):
+    """An opening book short 10 `PL_OCT_2026`, its declared settlement off the first row's mark,
+    held untouched to the forced close on the client fixture: the stepper's `pnl_excess`, the wealth
+    change since inception, is on every path the book's P&L from the first row, -10 x 50 x (F_T -
+    F_0) less half the 10 bp spread on F_T a contract closed, within 1e-5 relative, and the CSV's
+    last `hedge_portfolio_ex_funding` is that P&L on each path it writes. 2 s.
+
+    Killing mutations: the inception baseline taken with the opening book settled at its declared
+    price, the seed-to-first-row gain in the baseline and never in the value (`pnl_excess` below
+    the P&L by 20,965 a path); the CSV's first row booking no trade cash for the opening book, its
+    notional entering as P&L (the best path's last -1,024,063 against -9,652)."""
+    result = _run(_client(positions={'PL_OCT_2026': -10}))
+    stepper = result.create_stepper()
+    while not stepper.done:
+        last = stepper.step(None)
+    world = result.bundle
+    F, T = world.tradables_sim['PL_OCT_2026'].double(), world.last_live_mtm_index
+    want = -10.0 * 50.0 * (F[T] - F[0]) - 10.0 * 0.5 * 10.0 * 1e-4 * 50.0 * F[T]
+    got = last['transition_pnl_excess'].double()
+    assert torch.allclose(got, want, rtol=1e-5, atol=0.0), ((got - want).tolist(), want.tolist())
+    _csv_against_the_stepper(tmp_path, stepper, last)
 
 
 def test_a_first_row_of_no_market_time_is_one_decision_for_the_verdict_and_the_stepper(tmp_path):

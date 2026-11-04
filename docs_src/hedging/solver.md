@@ -109,3 +109,6 @@ The stepper's diagnostic CSV (`BundleStepper.write_diagnostic_csvs`) books each 
 whose mark it trades, the forced close on the terminal whatever the row before it, so at zero rates
 its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L. Held by
 `tests/test_action_space_and_artifact.py::test_the_diagnostic_csv_books_the_forced_close_on_the_terminal`.
+An opening book (`Portfolio_State.Positions`) is marked at the first row's prices, so the stepper's
+P&L since inception and the CSV's both run from that row. Held by
+`tests/test_action_space_and_artifact.py::test_an_opening_book_s_pnl_runs_from_the_first_row_in_the_stepper_and_its_csv`.

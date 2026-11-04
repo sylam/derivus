@@ -669,8 +669,6 @@ def construct_hedge_runtime(
                           for n, v in portfolio_state.get("Positions", {}).items()},
             "cash_balances": {str(n): float(v)
                               for n, v in portfolio_state.get("Cash_Balances", {}).items()},
-            "settlement_prices": {str(n): float(v)
-                                  for n, v in portfolio_state.get("Settlement_Prices", {}).items()},
             "margin_balances": {str(n): float(v)
                                 for n, v in portfolio_state.get("Margin_Balances", {}).items()},
             "initial_margin": {
@@ -1051,8 +1049,8 @@ def _im_funding_charge(positions, prices, runtime, vol, dt):
 
 
 def _portfolio_value(state, runtime):
-    """Absolute total wealth: cash + margin + unrealized VM + position value where applicable.
-    `_pnl_excess` is the wealth change since inception, which is what the asymmetric utility needs.
+    """Absolute total wealth: cash + margin + position value where applicable. `_pnl_excess` is the
+    wealth change since inception, which is what the asymmetric utility needs.
 
     Cash and margin balances are raw dollars compounded daily (each step multiplies by
     `cash_tv(next)/cash_tv(curr)` ≈ 1 + SOFR·dt, then adds today's flows), so each dollar earns
@@ -1060,9 +1058,7 @@ def _portfolio_value(state, runtime):
 
     Two accounting modes. `cash_account`: position × price × contract_size plus the cash balances.
     Futures: cash is FROZEN at starting capital and margin carries every VM and trade-cost flow
-    since inception, so the unrealized `position × (price − last_settlement) × cs` term closes the
-    gap between the most recent settlement and the current observable price — zero within an
-    episode, non-zero at t=0 when the book opens with an overnight position."""
+    since inception, every row settled at its own mark."""
     hedges = runtime["names"]["hedges"]
     tradables = runtime["tradables"]
     positions, prices = state["positions"], state["tradable_values"]
@@ -1077,7 +1073,6 @@ def _portfolio_value(state, runtime):
             v = balance.to(dtype=torch.float32)
             cash = v if cash is None else cash + v
         return total if cash is None else total + cash
-    # futures mode: margin carries the flows, the unrealized term closes the settlement/price gap
     for accounts in (state["margin_accounts"], state["cash_accounts"]):
         balances = None
         for balance in accounts.values():
@@ -1085,14 +1080,6 @@ def _portfolio_value(state, runtime):
             balances = v if balances is None else balances + v
         if balances is not None:
             total = total + balances
-    settlements = state["settlement_prices"]
-    for name in hedges:
-        if name not in settlements or name not in prices:
-            continue
-        total = total + (positions[name].to(dtype=torch.float32)
-                         * (prices[name].to(dtype=torch.float32)
-                            - settlements[name].to(dtype=torch.float32))
-                         * float(tradables[name]["contract_size"]))
     return total
 
 
@@ -1931,16 +1918,10 @@ class BundleStepper:
     def _initial_state(self):
         """The opening state at sim-day-0 (bundle row `initial_time_index`) — the history prefix
         feeds features only, never the simulator, so JSON-supplied positions are today's overnight
-        book rather than H days ago.
-
-        `settlement_prices` are re-seated to the sim-day-0 price once the inception baseline is
-        snapshotted: the seed-to-sim-day-0 gap has just been absorbed into
-        `initial_portfolio_value` through the unrealized-VM term, so subsequent VM is clean
-        step-over-step P&L rather than carrying `(price_H − seed) × delta × cs`."""
+        book rather than H days ago, marked at the first row's prices: the P&L since inception
+        (`_pnl_excess`) is the book's from that row."""
         portfolio_state = self.runtime['portfolio_state']
         initial_time_index = self.bundle.initial_time_index
-        fallback = self._values_at(initial_time_index)
-        seeded_settlement = portfolio_state['settlement_prices']
         state = {
             'done': torch.zeros(self._batch_size, dtype=torch.bool, device=self._device),
             'positions': self._seed_by_name(portfolio_state['positions'], self._hedges),
@@ -1952,19 +1933,10 @@ class BundleStepper:
             'time_held': self._zeros_by_name(self._hedges),
             'cumulative_liability_value': torch.zeros(self._batch_size, dtype=torch.float32,
                                                       device=self._device),
-            'settlement_prices': {
-                name: torch.full((self._batch_size,), float(seeded_settlement[name]),
-                                 dtype=torch.float32, device=self._device)
-                if name in seeded_settlement else fallback[name].clone()
-                for name in self._hedges if name in fallback},
         }
         state = self._refresh(state, initial_time_index)
-        # snapshot the inception baseline so `_pnl_excess` returns the change
+        # the baseline `_pnl_excess` measures the change from
         state['initial_portfolio_value'] = _portfolio_value(state, self.runtime).detach().clone()
-        # re-seat settlement to the sim-day-0 price; the seed gap now lives in the baseline
-        for name, current_price in state['tradable_values'].items():
-            if name in state['settlement_prices']:
-                state['settlement_prices'][name] = current_price.detach().clone()
         return state
 
     def _refresh(self, state, time_index):
@@ -1981,7 +1953,6 @@ class BundleStepper:
             'variation_margin': state['variation_margin'],
             'cumulative_pnl': state['cumulative_pnl'],
             'time_held': state['time_held'],
-            'settlement_prices': state['settlement_prices'],
             'tradable_values': self._values_at(time_index),
             'liability_mtm_value': self.bundle.liability_at(time_index),
             'realized_cashflow_value': self.bundle.cashflow_at(time_index),
@@ -2089,20 +2060,13 @@ class BundleStepper:
                                           - (delta * terminal_values[n] * cs + cost))
             positions[n] = positions[n] + delta
 
-    def _flatten_futures(self, positions, margin_accounts, settlement_prices, terminal_values, vol):
-        """Close hedge positions at `terminal_values` and capture any residual variation margin
-        (`position × (terminal − settlement) × cs`) so no P&L leaks between the last settlement and
-        the close. When the caller has already advanced settlement to terminal (the normal path)
-        the residual is 0 and only the trade cost is debited. `vol` scales the forced-flat turnover
-        exactly like every other decision-step debit."""
+    def _flatten_futures(self, positions, margin_accounts, terminal_values, vol):
+        """Close hedge positions at `terminal_values`, the row they were just settled at, debiting
+        the turnover cost at `vol`."""
         for n in self._hedges:
-            cs = float(self.runtime['tradables'][n]['contract_size'])
-            residual_vm = positions[n] * (terminal_values[n] - settlement_prices[n]) * cs
             delta = -positions[n]
-            cost = self._cost(delta, terminal_values[n], n, vol)
-            account = self._account_of[n]
-            self._credit(margin_accounts, account, residual_vm)
-            self._credit(margin_accounts, account, -cost)
+            self._credit(margin_accounts, self._account_of[n],
+                         -self._cost(delta, terminal_values[n], n, vol))
             positions[n] = positions[n] + delta
 
     def _cash_account_step(self, state, action):
@@ -2148,7 +2112,6 @@ class BundleStepper:
                                                         next_positions),
             'time_held': self._step_time_held(state['time_held'], next_positions),
             'cumulative_liability_value': state['cumulative_liability_value'],
-            'settlement_prices': state['settlement_prices'],
             'initial_portfolio_value': state['initial_portfolio_value'],
         }
         return self._refresh(next_state, next_idx)
@@ -2171,7 +2134,6 @@ class BundleStepper:
         growth = self._growth_factors(current, settlement_idx)
         next_cash = self._compound(state['cash_accounts'], growth)
         next_margin = self._compound(state['margin_accounts'], growth)
-        next_settlement = dict(state['settlement_prices'])
         realized_pnl = self._zeros_by_name(self._hedges)
         variation_margin = self._zeros_by_name(self._hedges)
         deltas = self._trade_deltas(action)
@@ -2180,10 +2142,9 @@ class BundleStepper:
         for n in self._hedges:
             cs = float(self.runtime['tradables'][n]['contract_size'])
             next_positions[n] = (next_positions[n] + deltas[n]).round()
-            vm = next_positions[n] * (next_values[n] - state['settlement_prices'][n]) * cs
+            vm = next_positions[n] * (next_values[n] - state['tradable_values'][n]) * cs
             realized_pnl[n] = vm
             variation_margin[n] = vm
-            next_settlement[n] = next_values[n].clone()
             self._credit(next_margin, self._account_of[n], vm)
         vol_t = self.bundle.vol_at(current)
         for n in self._hedges:
@@ -2195,12 +2156,11 @@ class BundleStepper:
                               current, settlement_idx, vol_t)
         self._hold(next_positions)
         if acc['force_flat_at_end'] and current == self._close_idx - 1:
-            self._flatten_futures(next_positions, next_margin, next_settlement, next_values, vol_t)
+            self._flatten_futures(next_positions, next_margin, next_values, vol_t)
         next_state = {
             'done': torch.full_like(state['done'], settlement_idx >= last, dtype=torch.bool),
             'positions': next_positions,
             'cash_accounts': next_cash,
-            'settlement_prices': next_settlement,
             'margin_accounts': next_margin,
             'realized_pnl': realized_pnl,
             'variation_margin': variation_margin,
@@ -2271,6 +2231,8 @@ class BundleStepper:
             pos[rows], trd[rows] = held[1:], held.diff(dim=0)
             pos[rows.stop:] = held[-1]
             trade_cash = -trd * fut * cs
+            # the opening book enters at the first row's mark, where the stepper's P&L starts
+            trade_cash[rows.start] -= held[0] * fut[rows.start] * cs
             trade_cost = trd.abs() * per_contract_kappa(runtime, fut, name, diag_vol)
             per_instr[name] = {
                 'fut': fut, 'cs': cs, 'pos': pos, 'trd': trd,
