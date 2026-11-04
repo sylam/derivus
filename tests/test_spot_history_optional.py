@@ -158,14 +158,13 @@ def test_spot_price_history_optional_trains_via_calibrated_scale():
     assert not bundle.spot_price_history
     assert bundle.initial_time_index == 0
 
-    # Utility scale came from the calibrated fallback (spot + stationary σ), not the floor.
+    # Utility scale came from the calibrated fallback (spot + stationary σ).
     calib = bundle.calibrated_utility_inputs
     assert calib is not None, 'calibrated fallback not assembled'
     commodity, spot, sigma = calib
     assert commodity == 'CommodityPrice.PLATINUM_LME'
     assert spot > 0.0 and sigma > 0.0
     c = bundle.utility_scale
-    assert c > 1.0e3, f'utility_scale collapsed to the floor: {c}'
     # c = total_leg_volume · spot · σ · √τ — reproduce it from the parts.
     first, last = (bundle.scenario_dates[i] for i in (
         bundle.initial_time_index, bundle.initial_time_index + bundle.last_live_mtm_index))

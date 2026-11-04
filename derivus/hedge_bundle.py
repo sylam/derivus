@@ -1284,14 +1284,16 @@ class Bundle:
         Nothing here may be recomputed per rollout: a drifting c silently rescales the whole
         objective, and the vol series drives realized transaction cost."""
         self.spot_realized_vol = self._spot_realized_vol()
-        if not self.spot_price_history:
-            # No Spot_Price_History ⇒ source (spot, σ) from the CALIBRATED market data instead.
-            self.calibrated_utility_inputs = self._calibrated_utility_inputs(runtime, stoch_factors)
-        self.utility_scale = self._resolve_utility_scale(runtime)
-        logging.info('utility_scale (symlog c) resolved to {0:.2f}'.format(self.utility_scale))
-        mirror_frame(runtime, self.utility_scale, self.utility_scale_schedule)
-        if self.utility_scale_schedule is not None:
-            self._log_scale_dose(runtime)
+        # a run with no Objective reads no scale
+        if runtime['objective'] is not None:
+            if not self.spot_price_history:
+                # No Spot_Price_History ⇒ source (spot, σ) from the CALIBRATED market data instead.
+                self.calibrated_utility_inputs = self._calibrated_utility_inputs(runtime, stoch_factors)
+            self.utility_scale = self._resolve_utility_scale(runtime)
+            logging.info('utility_scale (symlog c) resolved to {0:.2f}'.format(self.utility_scale))
+            mirror_frame(runtime, self.utility_scale, self.utility_scale_schedule)
+            if self.utility_scale_schedule is not None:
+                self._log_scale_dose(runtime)
         self.step_annual_vol = self._resolve_step_vol(runtime, stoch_factors)
 
     def _spot_timeline(self, commodity):
@@ -1345,7 +1347,7 @@ class Bundle:
         return (commodity, float(self.factors[commodity][0].median().item()), sigma)
 
     def _resolve_utility_scale(self, runtime):
-        """The dollar scale `c` mapping dollars to utility (u(x; c) = sign(x)·log1p(|x|/c) for
+        """The money scale `c` mapping wealth to utility (u(x; c) = sign(x)·log1p(|x|/c) for
         symlog). Single source of truth — every reward and penalty reads `Bundle.utility_scale`.
 
         Modes (`Objective.Utility_Scale_Mode`): `vol_scaled_notional` (default) gives
@@ -1354,35 +1356,29 @@ class Bundle:
         is annualised on; `conditional_sim` measures a per-decision-step SCHEDULE off this batch
         instead and takes its terminal entry as the scalar (`_conditional_sim_schedule`);
         `Objective.Utility_Scale_Explicit` overrides the
-        formula with a literal dollar value and is REFUSED beside the schedule mode.
+        formula with a literal value and is REFUSED beside the schedule mode.
 
-        Under a utility objective every degenerate path RAISES: a floor-c symlog breaks tail
-        compression (log1p($1M/$1k) ≈ 7 against log1p($100M/$1k) ≈ 11.5 — a 100x dollar gap
-        becomes a 1.6x utility gap). The identity objective does not consume c and gets the $1k
-        floor.
+        A degenerate input (no history and no calibrated vol, no volume, a non-positive σ) raises:
+        no stand-in c is meaningful in every currency, and `_utility_scale` refuses a
+        non-positive one.
 
         The history path reads spot and realized σ at the history/sim boundary H as a BATCH MEDIAN
         rather than slot [H, 0]: `full[H]` is the first sim step, and a process emitting a
         stochastic initial draw would otherwise make c path-dependent off path 0."""
-        objective = runtime['objective'] or {}
-        needs_scale = _is_utility_objective(runtime)   # symlog / huber / cara all consume c
+        objective = runtime['objective']
 
         def _degenerate(reason):
-            if needs_scale:
-                raise ValueError(
-                    f"utility scale: cannot compute a meaningful c — {reason}. "
-                    "A floor-c symlog silently compresses tails and defeats the reward shape. "
-                    "Fix the bundle/config, or set Objective.Utility_Scale_Explicit to a "
-                    "literal dollar value.")
-            return 1.0e3
+            raise ValueError(
+                f"utility scale: cannot compute a meaningful c — {reason}. Fix the bundle/config, "
+                "or set Objective.Utility_Scale_Explicit to a literal value.")
 
-        mode = str(objective.get('utility_scale_mode', 'vol_scaled_notional')).lower()
+        mode = objective['utility_scale_mode']
         if mode not in ('vol_scaled_notional', 'conditional_sim'):
             raise ValueError(
                 f"Unsupported Objective.Utility_Scale_Mode: {mode!r}. "
                 "Supported modes: 'vol_scaled_notional' | 'conditional_sim'. Set "
                 "Utility_Scale_Explicit to override the formula with a literal dollar value.")
-        explicit = objective.get('utility_scale_explicit')
+        explicit = objective['utility_scale_explicit']
         if mode == 'conditional_sim':
             if explicit is not None:
                 raise ValueError(
@@ -1397,14 +1393,7 @@ class Bundle:
             # one outer path carries no cross-section to measure, so the formula below stands in
             # as the placeholder frame a frozen roll replaces from its checkpoint
         if explicit is not None:
-            # an EXPLICIT override is honored exactly, including below the $1k production floor,
-            # which only guards the formula path
-            c_explicit = float(explicit)
-            if c_explicit < 1.0e3:
-                logging.info(
-                    'utility_scale Explicit override: c=%.4g (below the $1k '
-                    'production floor — test mode; trust mode active)', c_explicit)
-            return c_explicit
+            return explicit
         # tau measures the SIM horizon: the market time from the sim-grid origin through the close
         H = self.initial_time_index
         market = self.market_time[1:self.last_live_mtm_index + 1].sum()
@@ -1412,17 +1401,17 @@ class Bundle:
                       float(market), self.last_live_mtm_index)
         tau_years = max(float(market) / 252.0, 1.0 / 252.0)
         if not self.spot_price_history and self.calibrated_utility_inputs is None:
-            return _degenerate(
+            _degenerate(
                 "spot_price_history is empty and no calibrated underlying vol is available "
                 "(no referenced CommodityPrice process reports calibrated_annual_vol)")
         if not self.total_leg_volume:
-            return _degenerate("total_leg_volume is zero")
+            _degenerate("total_leg_volume is zero")
         if self.spot_price_history:
             # history path: spot and realized sigma read at the history/sim boundary H
             commodity = next(iter(self.spot_price_history))
             full = self._spot_timeline(commodity)
             if full is None or H >= int(full.shape[0]):
-                return _degenerate(
+                _degenerate(
                     f"spot timeline for {commodity!r} has length "
                     f"{0 if full is None else int(full.shape[0])} ≤ history_lookback H={H}")
             # batch-median at H, never slot [H, 0]: keeps c path-independent under a stochastic
@@ -1433,16 +1422,10 @@ class Bundle:
         else:
             commodity, initial_spot, sigma = self.calibrated_utility_inputs
         if sigma <= 0.0:
-            return _degenerate(
+            _degenerate(
                 f"realized vol for {commodity!r} is non-positive (σ={sigma}) — "
                 "likely early-calibration window or upstream calc bug")
-        c = self.total_leg_volume * initial_spot * sigma * (tau_years ** 0.5)
-        if c < 1.0e3:
-            return _degenerate(
-                f"formula produced c=${c:,.2f} < $1k floor "
-                f"(volume={self.total_leg_volume}, spot={initial_spot:.2f}, σ={sigma:.4f}, "
-                f"√τ={tau_years ** 0.5:.3f})")
-        return c
+        return self.total_leg_volume * initial_spot * sigma * (tau_years ** 0.5)
 
     def _log_scale_dose(self, runtime):
         """Log what a `conditional_sim` schedule DOES to the objective, not only what it measured.
