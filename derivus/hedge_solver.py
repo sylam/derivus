@@ -142,12 +142,8 @@ class HedgeActionSpace:
         self.n_hedge = len(self.hedges)
         acc = runtime["accounting"]
         limits = acc["position_limits"]
-        self.q_lo = torch.tensor(
-            [float(limits.get(r, {}).get("min_position", 0.0)) for r in self.hedges],
-            device=device)
-        self.q_hi = torch.tensor(
-            [float(limits.get(r, {}).get("max_position", 0.0)) for r in self.hedges],
-            device=device)
+        self.q_lo = torch.tensor([float(limits[r]["min_position"]) for r in self.hedges], device=device)
+        self.q_hi = torch.tensor([float(limits[r]["max_position"]) for r in self.hedges], device=device)
         # the boxes on the host too, which `bounds` sums at every decision without a sync
         self.boxes = list(zip(self.q_lo.tolist(), self.q_hi.tolist()))
         self.contract_size = torch.tensor(
@@ -3272,8 +3268,8 @@ class DiffSolverV2(DiffSolver):
         # THE CLAIRVOYANT RESERVE, backward per path: req_t is the minimum book at t from which the
         # known remaining path can be played without dipping under the floor. Days a futures hedge
         # cannot defend propagate their need BACKWARD, so the forward pass pre-positions.
-        # the floor: one currency unit per unit of the liability's leg volume (`Bundle.total_leg_volume`)
-        floor = 1.0 * self.leg_volume
+        # the floor, per unit of the liability's leg volume (`Bundle.total_leg_volume`)
+        floor = self.cfg["diffv2_book_floor_per_unit"] * self.leg_volume
         m_t, bands, lo_is, hi_is = {}, {}, {}, {}
         for t in self.steps:
             bands[t] = lo_t, hi_t = (self.aspace.bounds(t)[2:] if live is None

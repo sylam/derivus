@@ -390,14 +390,16 @@ def declared_defaults(cls, params):
 
 def declared_block(fields, block):
     """`block` completed by `fields` as `declared_defaults` completes a class's, and every container
-    it states completed by that container's own children, so a reader indexes any key a stated
-    block offers at any depth; a container left unstated stays absent."""
+    it states, or a convention container it omits, completed by that container's own children, so
+    a reader indexes any key a stated block offers at any depth; any other container left unstated
+    stays absent."""
     merged = {key: copy.deepcopy(default) for key, default in offered(
         [f for f in fields if f.sub_fields is None]).items()}
     merged.update(block)
     for f in fields:
-        if f.sub_fields is not None and isinstance(block.get(f.key), dict):
-            merged[f.key] = declared_block(f.sub_fields, block[f.key])
+        stated = block.get(f.key, {} if f.convention else None)
+        if f.sub_fields is not None and isinstance(stated, dict):
+            merged[f.key] = declared_block(f.sub_fields, stated)
     return merged
 
 

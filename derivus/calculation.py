@@ -3134,8 +3134,19 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 description='Deal blocks keyed by Object then by Reference'),
               F('Liabilities', 'Container', default={},
                 description='Deal blocks keyed by Object then by Reference'),
-              F('Portfolio_State', 'Container', default={},
-                description='Opening positions, cash balances and posted margin'),
+              F('Portfolio_State', 'Container', convention=True,
+                description='Opening positions, cash balances and posted margin; none when omitted',
+                sub_fields=[
+                    F('Positions', 'Container', default={}, convention=True,
+                      description='The opening book, whole contracts by hedge leg; flat when omitted'),
+                    F('Cash_Balances', 'Container', default={}, convention=True,
+                      description='Each cash account\'s opening balance; zero when omitted'),
+                    F('Margin_Balances', 'Container', default={}, convention=True,
+                      description='The margin each cash account has posted at the start; zero when omitted'),
+                    F('Spot_Price_History', 'Container', default={}, convention=True,
+                      description='Realized `{Dates, Prices}` by CommodityPrice factor before the base date, '
+                                  'the rolling features\' lookback; none when omitted'),
+                ]),
               F('Objective', 'Container',
                 description='The utility SHAPE and its parameters, dispatched on Object',
                 sub_fields=[
@@ -3180,6 +3191,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Accounting_Mode', 'Text', default='futures',
                       values=['futures', 'cash_account'],
                       description='Whether a rebalance settles variation margin or moves cash'),
+                    F('Cash_Instruments', 'Container', default=[], convention=True,
+                      description='The tradables that are cash accounts, every other being a hedge leg; '
+                                  'none when omitted'),
+                    F('Position_Limits', 'Container', default=REQUIRED,
+                      description='Each hedge leg\'s `{Min_Position, Max_Position}` box, whole contracts'),
                     F('Transaction_Cost_Per_Unit', 'Float', default=0.0,
                       description='Flat turnover cost per contract, before the spread charge'),
                     F('Bid_Offer_Spread_Bps', 'Float', default=0.0,
@@ -3197,7 +3213,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Force_Flat_At_End', 'Text', default='Yes', values=['Yes', 'No'],
                       description='Close any residual book at the liability terminal'),
                     F('Total_Position_Abs_Limit', 'Float', default=0.0,
-                      description='Cap on the absolute signed book total; 0 = uncapped'),
+                      description='Cap on the absolute signed book total, the unit the position state '
+                                  'measures the book in; 0 = uncapped'),
                     F('Max_Trade_Per_Step', 'Float', default=0.0,
                       description='Per-leg cap on |position change| per decision step at the '
                                   'argmax; 0 = uncapped'),
@@ -3244,6 +3261,12 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('DiffV2_LR', 'Float', default=2.0e-3, description='Adam learning rate'),
                     F('DiffV2_Bank_Noise_Frac', 'Float', default=0.15,
                       description='Bank q-exploration noise as a fraction of each [Min,Max] range'),
+                    F('Active_Hedge_Indices', 'Container', default=None, convention=True,
+                      description='The hedge legs the solver varies, by index in hedge order, the rest '
+                                  'held at zero; every leg when omitted'),
+                    F('DiffV2_Book_Floor_Per_Unit', 'Float', default=1.0, convention=True,
+                      description='The constructed bank policy\'s wealth floor per unit of the liability\'s '
+                                  'leg volume'),
                     F('DiffV2_Risk_Aversion', 'Float', default=1.0,
                       description='The backward DP aversion, dividing the capital line in the '
                                   'LogWealth reward (1.0 neutral; higher = less capital at risk = '

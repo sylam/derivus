@@ -227,7 +227,7 @@ def _spot_price_history(hedging_problem: Mapping[str, Any], lookback: int,
     PARTIAL history (some but not all referenced commodities) IS an error, as are ragged
     dates/prices, a series shorter than the lookback, non-ascending dates, and two commodities
     whose date axes disagree."""
-    raw_history = hedging_problem["Portfolio_State"].get("Spot_Price_History") or {}
+    raw_history = hedging_problem["Portfolio_State"]["Spot_Price_History"]
     if not raw_history:
         return {}
     normalized: Dict[str, Dict[str, Any]] = {}
@@ -412,9 +412,10 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_max_value_optimism": float(solver_config["DiffV2_Max_Value_Optimism"]),
         "diffv2_max_member_disagreement":
             float(solver_config["DiffV2_Max_Member_Disagreement"]),
-        "active_hedge_indices":
-            (list(solver_config["Active_Hedge_Indices"])
-             if solver_config.get("Active_Hedge_Indices") is not None else None),
+        "active_hedge_indices": (None if solver_config["Active_Hedge_Indices"] is None
+                                 else list(solver_config["Active_Hedge_Indices"])),
+        # the constructed policy's wealth floor, per unit of the liability's leg volume
+        "diffv2_book_floor_per_unit": float(solver_config["DiffV2_Book_Floor_Per_Unit"]),
         # Benchmark tracks assembled alongside the DiffSolver deliverable (hindsight upper
         # bound / textbook lower bound).
         "run_hindsight_diagnostic": solver_config["Run_Hindsight_Diagnostic"] == "Yes",
@@ -517,7 +518,7 @@ def construct_hedge_runtime(
 
     # --- instruments: the tradable universe splits into cash accounts and hedge legs ---
     tradables = _flatten_deals(hedging_problem["Tradable_Instruments"])
-    cash_account_names = tuple(str(n) for n in evaluator_config.get("Cash_Instruments") or ())
+    cash_account_names = tuple(str(n) for n in evaluator_config["Cash_Instruments"])
     for account_name in cash_account_names:
         if account_name not in tradables:
             raise ValueError(
@@ -629,19 +630,16 @@ def construct_hedge_runtime(
         "history_lookback_business_days": history_lookback,
         "portfolio_state": {
             # whole contracts, as `Position_Limits` are read
-            "positions": {str(n): int(v) for n, v in portfolio_state.get("Positions", {}).items()},
-            "cash_balances": {str(n): float(v)
-                              for n, v in portfolio_state.get("Cash_Balances", {}).items()},
-            "margin_balances": {str(n): float(v)
-                                for n, v in portfolio_state.get("Margin_Balances", {}).items()},
+            "positions": {str(n): int(v) for n, v in portfolio_state["Positions"].items()},
+            "cash_balances": {str(n): float(v) for n, v in portfolio_state["Cash_Balances"].items()},
+            "margin_balances": {str(n): float(v) for n, v in portfolio_state["Margin_Balances"].items()},
             "spot_price_history": _spot_price_history(
                 hedging_problem, history_lookback, referenced_commodities),
         },
         "accounting": {
             "position_limits": {
-                str(n): {"min_position": int(limit["Min_Position"]),
-                         "max_position": int(limit["Max_Position"])}
-                for n, limit in evaluator_config.get("Position_Limits", {}).items()},
+                n: {"min_position": int(limit["Min_Position"]), "max_position": int(limit["Max_Position"])}
+                for n, limit in ((n, evaluator_config["Position_Limits"][n]) for n in hedge_names)},
             "instrument_to_cash_account": {
                 n: account_by_currency.get(meta["currency"], fallback_account)
                 for n, meta in normalized_tradables.items()},
