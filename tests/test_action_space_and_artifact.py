@@ -1110,6 +1110,28 @@ def _swap_paying_early(**kw):
     return cfg
 
 
+def test_a_payment_inside_a_fork_s_window_is_no_move_of_the_liability(tmp_path):
+    """A fork values the liability as the bundle does, its mark plus the cash paid since the decision:
+    beside a third swap settling Monday 11 May, its fixings done the Friday before, the frozen roll's
+    decision dump on one path reads the plain swap's `E_dL` at the Monday decision, -1,039.89 in both,
+    the payment no move. 12 s.
+
+    Killing mutation: the fork's landing read as the liability's mark alone (`L_t1` without the
+    window's cash), the payment a move (E_dL +42,844.80)."""
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(_swap(save=ckpt))
+    e_dl = []
+    for doc in (_swap, _swap_paying_early):
+        roll, dump = doc(load=ckpt), str(tmp_path / f'{doc.__name__}.csv')
+        roll['Calc']['Calculation']['Batch_Size'] = 1
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Decision_Curve_Dump'] = dump
+        world = _run(roll).bundle
+        rows = pd.read_csv(dump).set_index('t')['E_dL']
+        dates = world.scenario_dates[world.initial_time_index:]
+        e_dl.append(float(rows[next(t for t in rows.index if str(dates[t].date()) == '2026-05-11')]))
+    assert abs(e_dl[1] - e_dl[0]) < 1e-4 * abs(e_dl[0]), e_dl
+
+
 def _swap_held(**kw):
     """The swap document leaving its last book standing, `Force_Flat_At_End` 'No'."""
     cfg = _swap(**kw)

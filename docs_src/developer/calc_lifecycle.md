@@ -518,7 +518,11 @@ knob: a world too wide for the device fails naming the fork. The risk horizon's 
 process from `outer_buffer[key][t]` (a leaf under `with_grad`), publishes every seed before any
 generate (a seed may condition a process upstream), generates and calls `reseed_inner_state`, then
 publishes as a `ScenarioSource` every path series it wrote that the outer path carries — the outer
-past at `B_outer`, the forked rows flattened — and prices once. Every series, not every factor: a
+past at `B_outer`, the forked rows flattened — and prices once. A landing reads the liability's
+value as the outer bundle does, its mark plus the cash the window pays from `t` to the row before
+it, so a payment is no move (**Held by**
+`tests/test_action_space_and_artifact.py::test_a_payment_inside_a_fork_s_window_is_no_move_of_the_liability`).
+Every series, not every factor: a
 process's own `(key, kind)` publication (`basis_mu`) is read like a factor and needs the same grid;
 the fork's seeds are excluded by the same rule. The landing is **Held by**
 `tests/test_action_space_and_artifact.py::test_the_last_decision_s_fork_lands_on_a_terminal_of_no_market_time`.

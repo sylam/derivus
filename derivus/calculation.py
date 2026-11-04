@@ -3783,10 +3783,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         Returns the inner samples the solver bootstraps from, `t+1` the row `landing`: the
         decision's successor, the next row of market time or the terminal, the one the decision at
         t holds its book to (Monday from a Friday); or a list, the decision rows
-        `DiffV2_Risk_Horizon` holds it across, `F_t1` and `L_t1` then the marks on each stacked on
-        a leading axis and `market_t1` the last's:
+        `DiffV2_Risk_Horizon` holds it across, `F_t1` and `L_t1` then stacked over them on a
+        leading axis and `market_t1` the last's:
             F_t, F_t1     {ref: (B_outer, B_inner)}       futures price at outer t and t+1
-            L_t, L_t1     (B_outer, B_inner)              liability MTM at outer t and t+1
+            L_t, L_t1     (B_outer, B_inner)              liability mark at outer t, value at t+1
+                                                          (the mark plus the cash paid from t)
             market_t1     (B_outer, B_inner, market_dim)  inner market state at outer t+1
             market_t      (B_outer, market_dim)           outer-realised market state at t
             t, cutoff_idx
@@ -4001,8 +4002,18 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 # exact liability MTM at outer-t and outer-t+1 on the inner draws (same time
                 # indexing as F_t1) - not a Jacobian linearization
                 mtm_fwd = inner_mtm[cutoff_idx:]                            # (T_inner, B_outer, B_inner)
+                # a row's value is its mark plus the cash paid from t to the row before it, as
+                # `Bundle._resolve_liability` values the outer liability: a payment is no move
+                n = min(ahead, mtm_fwd.shape[0] - 1)
+                rows = range(cutoff_idx, cutoff_idx + n)
+                zero = mtm_fwd.new_zeros(B_flat)
+                paid = [sum((f[r].expand(B_flat) for f in shared_mem.t_Cashflows.values() if r in f), zero)
+                        for r in rows]
+                logging.debug('fork at %d: liability cash on window rows %s', t,
+                              [r for r in rows if any(r in f for f in shared_mem.t_Cashflows.values())])
+                value = mtm_fwd[:n + 1] + torch.stack([zero] + paid).cumsum(0).reshape(-1, B_outer, B_inner)
                 L_t_inner = mtm_fwd[0].clone()                             # outer-t (shared across draws)
-                L_t1_inner = mtm_fwd[np.minimum(at, mtm_fwd.shape[0] - 1).tolist()].clone()
+                L_t1_inner = value[np.minimum(at, n).tolist()]
                 result.update(
                     t=t, cutoff_idx=cutoff_idx, L_T=None,
                     L_t=L_t_inner, L_t1=L_t1_inner, F_t=F_t, F_t1=F_t1,
