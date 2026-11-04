@@ -350,21 +350,6 @@ class HedgeActionSpace:
             return dq.sum(-1).abs() <= self.max_trade
         return (dq.abs() <= self.max_trade).all(-1)
 
-    def project_to_corridor(self, q, t):
-        """Project the SIGNED total of the ACTIVE legs of `q` `(B, n_hedge)` into the net band of
-        `bounds(t)` at decision step t (the boxes' sum inside the cap and the
-        `Total_Position_Schedule` corridor), keeping every leg inside its own `[Min,Max]` via
-        headroom water-filling: shift the active legs by the deficit `d = clamp(Σq, lo, hi) − Σq`,
-        distributed in proportion to each leg's remaining room in d's direction, so `Σ_active`
-        lands exactly on the nearest edge and no leg leaves its box. No schedule → `q` unchanged.
-
-        Where `grid_at` FILTERS a discrete action universe for the argmax, this CONTINUOUSLY nudges
-        an exploration position: the bank rolls continuous q around the min-var hedge, so a filter
-        has nothing to select from."""
-        if self.schedule is None:
-            return q
-        return self.waterfill(q, *self.bounds(t)[2:])
-
     def waterfill(self, q, lo, hi, idx=None):
         """Shift the ACTIVE legs of `q` `(B, n_hedge)` so their signed total lands in `[lo, hi]`,
         each leg staying inside its own `[Min,Max]`: the deficit `d = clamp(Σq, lo, hi) − Σq` is
@@ -1261,8 +1246,8 @@ class DiffSolver:
 
     def _build_bank(self, gen):
         """Operating-region bank — roll the OUTER paths forward (cheap; outer-realised
-        moves only, no inner MC): hold q = clamp(q_rep_t + noise) each step, accumulate
-        W = cum hedge P&L + L_t. Returns per-t lists W_t (B_outer,) and q_prev (B_outer,
+        moves only, no inner MC): hold q = clamp(q_rep_t + noise), its net water-filled into the
+        `bounds(t)` band, each step, accumulate W = cum hedge P&L + L_t. Returns per-t lists W_t (B_outer,) and q_prev (B_outer,
         n_hedge). The bank-state `market_t` is read lazily from the SAME inner-MC fork the
         backward sweep makes at t (no extra inner-MC passes).
 
@@ -1274,7 +1259,6 @@ class DiffSolver:
         hedge, the total spans what the argmax can ask for, and p_bank is inside [-1, 1]."""
         rng = (self.aspace.q_hi - self.aspace.q_lo)
         mask = self.aspace.active_mask
-        oob = []                                                                         # per-t bank corridor-breach diagnostic
 
         def explore(t):
             lo_t, hi_t = self.aspace.bounds(t)[2:]                                        # its net band at t
@@ -1283,31 +1267,14 @@ class DiffSolver:
                 self.B_outer, self.aspace.n_hedge, generator=gen, device=self.device)
             q = (q_rep[None] + noise * mask).clamp(self.aspace.q_lo, self.aspace.q_hi)
             if self.position_state:
-                # cover the p axis the argmax queries. Subsumes the corridor projection below,
-                # since the bounds already intersect the corridor.
+                # cover the p axis the argmax queries
                 u = lo_t + (hi_t - lo_t) * torch.rand(
                     self.B_outer, 1, generator=gen, device=self.device)
                 q = self.aspace.waterfill(q, u, u)
-            if self.aspace.schedule is not None:
-                # keep the exploration IN the corridor so the value fn trains on reachable wealth
-                # states only; the diagnostic below confirms ~0 residual breach
-                q = self.aspace.project_to_corridor(q, t)
-                tot = q[:, self.aspace.active].sum(-1)                   # bank signed total (active legs)
-                tol = 1e-3                     # float32 headroom-fill lands on the edge to ~1e-6
-                oob.append((t, lo_t, hi_t, float((tot < lo_t - tol).float().mean()
-                                                 + (tot > hi_t + tol).float().mean()),
-                            float(tot.min()), float(tot.max())))
-            return q
-        banked = self._roll_bank(explore)
-        if oob:
-            worst = max(oob, key=lambda r: r[3])
-            logging.info(
-                "DiffSolver bank IN Total_Position_Schedule (post-projection): residual "
-                "frac(Σq outside corridor) min=%.3f mean=%.3f max=%.3f | worst t=%d "
-                "corridor=[%.4g, %.4g] bank Σq∈[%.4g, %.4g] frac_oob=%.3f (≈0 ⇒ projection clean)",
-                min(r[3] for r in oob), sum(r[3] for r in oob) / len(oob),
-                worst[3], worst[0], worst[1], worst[2], worst[4], worst[5], worst[3])
-        return banked
+            # the bank's books inside the bounds every track's are held to, so the value fn trains
+            # on reachable states only
+            return self.aspace.waterfill(q, lo_t, hi_t)
+        return self._roll_bank(explore)
 
     def _roll_bank(self, policy):
         """Roll the outer paths from the opening book under `policy(t)`, the book `(B, n_hedge)` held
@@ -1328,6 +1295,9 @@ class DiffSolver:
             W_list.append(W.clone())
             q_list.append(q_prev.clone())
             q_prev = policy(t)
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                net = q_prev[:, self.aspace.active].sum(-1)
+                logging.debug('BANK %d %r', t, (float(net.min()), float(net.max())))
             W = wealth_step(W, q_prev, self.aspace.contract_size, *self._outer_move(t))
         if self.log_ratio:
             self._bank_worst = float(torch.minimum(torch.stack(W_list).min(), W.min()))
@@ -3254,9 +3224,8 @@ class DiffSolverV2(DiffSolver):
             if live is None:
                 noise = self.noise_frac * rng * torch.randn(
                     self.B_outer, self.aspace.n_hedge, generator=gen, device=self.device)
-                q = (q_star[t] + noise * mask).clamp(self.aspace.q_lo, self.aspace.q_hi)
-                if self.aspace.schedule is not None:
-                    q = self.aspace.project_to_corridor(q, t)
+                q = self.aspace.waterfill((q_star[t] + noise * mask).clamp(
+                    self.aspace.q_lo, self.aspace.q_hi), *self.aspace.bounds(t)[2:])
             else:
                 # the exploration rides the net and the book stays a rung, inside the band and so
                 # inside the corridor

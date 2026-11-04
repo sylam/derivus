@@ -1336,6 +1336,21 @@ def test_the_cap_holds_the_book_the_live_legs_carry(deadband, positions):
     assert max(abs(x) for x in nets) <= 50 + 1e-9, nets
 
 
+def test_the_training_bank_holds_every_book_inside_the_cap(caplog):
+    """The training bank's books are held inside the bounds every track's book is, the cap whether
+    or not a corridor is declared: on the training document, its cap 50 on three legs boxed
+    [-50, 0] and no corridor, every bank book's net lies in [-50, 0] at every decision, from the
+    debug line. 3 s.
+
+    Killing mutation: the bank water-filled into the band only under a `Total_Position_Schedule`
+    (the deleted `project_to_corridor`'s no-schedule return), its nets down to -79.7."""
+    with caplog.at_level(logging.DEBUG):
+        _run(_cfg(seed=7, batch=8, inner=4))
+    nets = [ast.literal_eval(r.getMessage().split(' ', 2)[2]) for r in caplog.records
+            if r.getMessage().startswith('BANK ')]
+    assert nets and all(-50.0 - 1e-4 <= lo <= hi <= 1e-4 for lo, hi in nets), (len(nets), min(nets))
+
+
 def test_a_dead_leg_s_box_bounds_nothing_on_the_legs_still_live():
     """The bounds of a step sum the boxes of its live legs only, a dead leg holding nothing whatever
     its box: on the training document with every leg's box [-50, -5] and no cap, the April leg dead
