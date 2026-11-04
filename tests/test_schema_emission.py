@@ -265,6 +265,7 @@ SHAPELESS = {
     ('HedgeMonteCarlo', 'Hedging_Problem.Portfolio_State.Spot_Price_History'),
     ('HedgeMonteCarlo', 'Hedging_Problem.Evaluator.Cash_Instruments'),
     ('HedgeMonteCarlo', 'Hedging_Problem.Evaluator.Position_Limits'),
+    ('HedgeMonteCarlo', 'Hedging_Problem.Evaluator.Bid_Offer_Spread_Per_Instrument'),
     ('HedgeMonteCarlo', 'Hedging_Problem.Solver.Active_Hedge_Indices'),
     ('HedgeMonteCarlo', 'Scenario_Factors'),
     ('ScenarioValuation', 'Scenarios'),

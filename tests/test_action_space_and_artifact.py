@@ -1490,7 +1490,7 @@ def _csv_against_the_stepper(tmp_path, stepper, last):
 
 
 #: A spread of 10 bp at a 30% vol, scaled by the step's vol; a calendar spread of 3 bp.
-VOL_SPREAD = {'Bid_Offer_Spread_Bps': {'Default_Bps': 10.0, 'Vol_Scale': {'Ref_Vol': 0.3, 'Beta': 1.0}}}
+VOL_SPREAD = {'Bid_Offer_Spread_Bps': 10.0, 'Bid_Offer_Spread_Vol_Scale': {'Ref_Vol': 0.3, 'Beta': 1.0}}
 CALENDAR = {'Calendar_Spread_Bps': 3.0}
 
 

@@ -124,33 +124,6 @@ def _instrument_metadata(entry, hedge):
     return meta
 
 
-def _bid_offer_spread(evaluator_config: Mapping[str, Any]):
-    """`Evaluator.Bid_Offer_Spread_Bps` normalized to `(scalar_bps, spec)`.
-
-    The key is EITHER the scalar FULL quoted bid-offer spread in bps, applied to every instrument
-    (each trade pays HALF of it — mid to touch), OR a spec dict for maturity- and vol-dependent
-    spreads:
-
-        {"Default_Bps": d,
-         "Per_Instrument": {name: base_bps, ...},
-         "Vol_Scale": {"Ref_Vol": r, "Beta": b}}
-
-    The effective full spread for `name` at annualized vol σ_t is
-    `base_bps[name] · (σ_t/Ref_Vol)**Beta`, where `base_bps[name]` falls back to `Default_Bps` and
-    the vol factor is 1 when Vol_Scale is absent, Beta == 0, or σ_t is unknown. `spec` is None in
-    the scalar case; `scalar_bps` is the `Default_Bps` in the dict case."""
-    raw = evaluator_config["Bid_Offer_Spread_Bps"]
-    if not isinstance(raw, Mapping):
-        return float(raw), None
-    default_bps = float(raw.get("Default_Bps", 0.0))
-    vs = raw.get("Vol_Scale") or {}
-    return default_bps, {
-        "default_bps": default_bps,
-        "per_instrument": {str(k): float(v) for k, v in (raw.get("Per_Instrument") or {}).items()},
-        "vol_scale": ({"ref_vol": float(vs["Ref_Vol"]), "beta": float(vs.get("Beta", 0.0))}
-                      if vs else None)}
-
-
 def _position_schedule(evaluator_config: Mapping[str, Any]):
     """Optional per-decision-step corridor on the SIGNED total position Σq_i. A list of
     `{Step, Min_Total, Max_Total}` knots (piecewise-constant between knots): at sim-grid
@@ -580,7 +553,7 @@ def construct_hedge_runtime(
         utils.check_tuple_name(factor) for factor in (stoch_factors or {})
         if factor.type == 'CommodityPrice'))
     portfolio_state = hedging_problem["Portfolio_State"]
-    scalar_spread_bps, spread_spec = _bid_offer_spread(evaluator_config)
+    vol_scale = evaluator_config.get("Bid_Offer_Spread_Vol_Scale")
     calendar_spread_bps = (float(evaluator_config["Calendar_Spread_Bps"])
                            if evaluator_config.get("Calendar_Spread_Bps") is not None else None)
     # a rate <= 0 makes matched volume free or PAID FOR, and `turnover_charge` then returns a
@@ -645,11 +618,12 @@ def construct_hedge_runtime(
                 for n, meta in normalized_tradables.items()},
             "transaction_cost_per_unit":
                 float(evaluator_config["Transaction_Cost_Per_Unit"]),
-            # Scalar half-spread bps (fast-path + diagnostic display); `spec` is None for a scalar
-            # Bid_Offer_Spread_Bps and a normalized per-instrument/vol-scale dict otherwise —
-            # resolved in `per_contract_kappa`.
-            "bid_offer_spread_bps": scalar_spread_bps,
-            "bid_offer_spread_spec": spread_spec,
+            # the full quoted spread a leg pays half of: its own, else the default, at the vol scale
+            "bid_offer_spread_bps": float(evaluator_config["Bid_Offer_Spread_Bps"]),
+            "bid_offer_spread_per_instrument": {
+                str(n): float(v) for n, v in evaluator_config["Bid_Offer_Spread_Per_Instrument"].items()},
+            "bid_offer_spread_vol_scale": (None if vol_scale is None else {
+                "ref_vol": float(vol_scale["Ref_Vol"]), "beta": float(vol_scale["Beta"])}),
             # a rate prices the matched half of a rebalance across adjacent maturities at one
             # calendar crossing, in the solver's charge and the realized accounting alike
             "calendar_spread_bps": calendar_spread_bps,
@@ -687,10 +661,9 @@ def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     spread leg's mark goes negative, its notional does not). Single source for the solver's
     decision-time kappa, the env's realized debit and the diagnostic CSV writer.
 
-    `spread_bps` is the scalar `Bid_Offer_Spread_Bps` unless a spread SPEC is configured, in which
-    case it is the instrument's `Per_Instrument` base (falling back to `Default_Bps`) scaled by
-    `(vol/Ref_Vol)**Beta` when the spec declares a `Vol_Scale` and an annualized `vol` is supplied.
-    `vol=None`, a scalar spread, or no `Vol_Scale` ⇒ vol-independent.
+    `spread_bps` is the leg's `Bid_Offer_Spread_Per_Instrument` entry, else `Bid_Offer_Spread_Bps`,
+    scaled by `(vol/Ref_Vol)**Beta` under a `Bid_Offer_Spread_Vol_Scale` and an annualized `vol`;
+    `vol=None` or no vol scale ⇒ vol-independent.
 
     `calendar=True` prices one contract of a CALENDAR SPREAD quoted against this leg instead: the
     spread is `Evaluator.Calendar_Spread_Bps` on this leg's notional under the same vol scale, and
@@ -702,15 +675,9 @@ def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     OUTRIGHT half of every charge reads each leg's own base."""
     acc = runtime["accounting"]
     contract_size = float(runtime["tradables"][name]["contract_size"])
-    spec = acc["bid_offer_spread_spec"]
-    scale = 1.0
-    if spec is None:
-        spread_bps = acc["bid_offer_spread_bps"]
-    else:
-        spread_bps = spec["per_instrument"].get(str(name), spec["default_bps"])
-        vscale = spec["vol_scale"]
-        if vscale is not None and vol is not None:
-            scale = (vol / vscale["ref_vol"]) ** vscale["beta"]
+    spread_bps = acc["bid_offer_spread_per_instrument"].get(str(name), acc["bid_offer_spread_bps"])
+    vscale = acc["bid_offer_spread_vol_scale"]
+    scale = 1.0 if vscale is None or vol is None else (vol / vscale["ref_vol"]) ** vscale["beta"]
     fee = acc["transaction_cost_per_unit"]
     if calendar:
         spread_bps, fee = acc["calendar_spread_bps"], 2.0 * fee
@@ -1514,8 +1481,7 @@ class Bundle:
         once per build: a silent proxy fallback under a GARCH retrain would invalidate the whole
         vol coupling."""
         acc = runtime['accounting']
-        spec = acc['bid_offer_spread_spec']
-        vol_scale_active = bool(spec and spec['vol_scale'])
+        vol_scale_active = acc['bid_offer_spread_vol_scale'] is not None
         im_funding_active = bool(acc['im_funding_spread_bps'])
         if not (vol_scale_active or im_funding_active):
             return None
@@ -1650,8 +1616,8 @@ class BundleStepper:
         '',
         'The JSON that drives it lives under `Evaluator`: position limits,',
         '`Transaction_Cost_Per_Unit`, `Bid_Offer_Spread_Bps` (the FULL quoted spread — each trade',
-        'pays half — or a spec with',
-        '`Per_Instrument` bases and a `Vol_Scale` making the spread vol-dependent), margin funding,',
+        'pays half — by default, `Bid_Offer_Spread_Per_Instrument` a leg\'s own and',
+        '`Bid_Offer_Spread_Vol_Scale` making it vol-dependent), margin funding,',
         'and the optional `Total_Position_Schedule` corridor on the signed book total.',
         '',
         '!!! note "`runtime` is a parameter of the replay"',

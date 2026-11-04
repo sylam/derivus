@@ -3199,8 +3199,17 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Transaction_Cost_Per_Unit', 'Float', default=0.0,
                       description='Flat turnover cost per contract, before the spread charge'),
                     F('Bid_Offer_Spread_Bps', 'Float', default=0.0,
-                      description='Full quoted spread in bps on notional, half of it charged on each trade; a spec dict may replace the '
-                                  'scalar for maturity- and vol-dependent spreads'),
+                      description='Full quoted spread in bps on notional, half of it charged on each trade, '
+                                  'of every leg `Bid_Offer_Spread_Per_Instrument` does not name'),
+                    F('Bid_Offer_Spread_Per_Instrument', 'Container', default={}, convention=True,
+                      description='A leg\'s own full quoted spread in bps, by hedge leg; none when omitted'),
+                    F('Bid_Offer_Spread_Vol_Scale', 'Container',
+                      description='Scales every spread by (vol / Ref_Vol) ** Beta at the step\'s vol; '
+                                  'vol-independent when omitted',
+                      sub_fields=[F('Ref_Vol', 'Float', default=REQUIRED,
+                                    description='The annualized vol a quoted spread holds at'),
+                                  F('Beta', 'Float', default=0.0, convention=True,
+                                    description='The power of the vol ratio; 0 when omitted')]),
                     F('Calendar_Spread_Bps', 'Float', default=None,
                       description='Full spread bps of a calendar roll leg, half of it charged on a matched leg; setting it arms the '
                                   'matched-leg pricing everywhere'),
