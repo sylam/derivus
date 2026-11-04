@@ -122,7 +122,7 @@ def _bid_offer_spread(evaluator_config: Mapping[str, Any]):
     `base_bps[name] · (σ_t/Ref_Vol)**Beta`, where `base_bps[name]` falls back to `Default_Bps` and
     the vol factor is 1 when Vol_Scale is absent, Beta == 0, or σ_t is unknown. `spec` is None in
     the scalar case; `scalar_bps` is the `Default_Bps` in the dict case."""
-    raw = evaluator_config.get("Bid_Offer_Spread_Bps", 0.0)
+    raw = evaluator_config["Bid_Offer_Spread_Bps"]
     if not isinstance(raw, Mapping):
         return float(raw), None
     default_bps = float(raw.get("Default_Bps", 0.0))
@@ -210,7 +210,7 @@ def _spot_price_history(hedging_problem: Mapping[str, Any], lookback: int,
     PARTIAL history (some but not all referenced commodities) IS an error, as are ragged
     dates/prices, a series shorter than the lookback, non-ascending dates, and two commodities
     whose date axes disagree."""
-    raw_history = (hedging_problem.get("Portfolio_State") or {}).get("Spot_Price_History") or {}
+    raw_history = hedging_problem["Portfolio_State"].get("Spot_Price_History") or {}
     if not raw_history:
         return {}
     normalized: Dict[str, Dict[str, Any]] = {}
@@ -288,7 +288,7 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         return None
     if "Object" not in solver_config:
         raise ValueError("Hedging_Problem['Solver'] requires an 'Object' field")
-    gamma = float(solver_config.get("DiffV2_Risk_Aversion", 1.0))
+    gamma = float(solver_config["DiffV2_Risk_Aversion"])
     if not 0.1 <= gamma <= 10.0:
         raise ValueError(f"DiffV2_Risk_Aversion must be in [0.1, 10.0] (the DP's aversion: it "
                          f"divides the LogWealth capital line — the clairvoyant seed's floor "
@@ -297,111 +297,168 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         # 'diffsolverv2' is its OWN object: the constructed put-delta bank is part of the fitted
         # function, not a spelling of DiffSolver
         "object": str(solver_config["Object"]).lower(),
-        "multi_seed_count": int(solver_config.get("Multi_Seed_Count", 1)),
+        "multi_seed_count": int(solver_config["Multi_Seed_Count"]),
         # Backward-sweep depth: fit C_t for t in [t_outer-2 .. t_min]. 0 = full sweep to the
         # initial decision; t_min near t_outer-1 = a shallow (bounded) sweep.
-        "t_min": int(solver_config.get("T_Min", 0)),
+        "t_min": int(solver_config["T_Min"]),
         # Greedy-decision action grid (levels per hedge axis) + batched-argmax chunk size.
         "training_action_grid_levels_per_axis":
-            int(solver_config.get("Training_Action_Grid_Levels_Per_Axis", 11)),
-        "training_action_chunk_size": int(solver_config.get("Training_Action_Chunk_Size", 64)),
+            int(solver_config["Training_Action_Grid_Levels_Per_Axis"]),
+        "training_action_chunk_size": int(solver_config["Training_Action_Chunk_Size"]),
         # DiffSolver knobs (see docstring): per-t residual-net Adam iters / lr, bank noise.
-        "diffv2_fit_iters": int(solver_config.get("DiffV2_Fit_Iters", 150)),
-        "diffv2_lr": float(solver_config.get("DiffV2_LR", 2.0e-3)),
-        "diffv2_bank_noise_frac": float(solver_config.get("DiffV2_Bank_Noise_Frac", 0.15)),
+        "diffv2_fit_iters": int(solver_config["DiffV2_Fit_Iters"]),
+        "diffv2_lr": float(solver_config["DiffV2_LR"]),
+        "diffv2_bank_noise_frac": float(solver_config["DiffV2_Bank_Noise_Frac"]),
         # The DP's aversion: divides the capital line in the LogWealth reward. The forward pass
         # takes no dial.
         "diffv2_risk_aversion": gamma,
         # The drift tripwire: the tail multiple on the validation-measured null dispersion of the
         # cumsum, and the strength of the on-trip correction toward the realized drift (0 = report)
         "diffv2_drift_threshold_sigmas":
-            float(solver_config.get("DiffV2_Drift_Threshold_Sigmas", 3.0)),
-        "diffv2_drift_beta": float(solver_config.get("DiffV2_Drift_Beta", 0.0)),
+            float(solver_config["DiffV2_Drift_Threshold_Sigmas"]),
+        "diffv2_drift_beta": float(solver_config["DiffV2_Drift_Beta"]),
         # the stepper roll's handover: the greedy policy holds the passive book from this date
-        "diffv2_passive_from": str(solver_config.get("DiffV2_Passive_From", "") or ""),
+        "diffv2_passive_from": str(solver_config["DiffV2_Passive_From"] or ""),
         "diffv2_first_decision_from":
-            str(solver_config.get("DiffV2_First_Decision_From", "Opening_Book")).lower(),
+            str(solver_config["DiffV2_First_Decision_From"]).lower(),
         # Residual-net regularization: the twin-loss pathwise-gradient match (diffv2_lambda_grad)
         # in STANDARDIZED space, plus optional weight decay for outer-path-starved problems.
-        "diffv2_weight_decay": float(solver_config.get("DiffV2_Weight_Decay", 0.0)),
-        "diffv2_hidden": int(solver_config.get("DiffV2_Hidden", 32)),
-        "diffv2_lambda_grad": float(solver_config.get("DiffV2_Lambda_Grad", 1.0)),
+        "diffv2_weight_decay": float(solver_config["DiffV2_Weight_Decay"]),
+        "diffv2_hidden": int(solver_config["DiffV2_Hidden"]),
+        "diffv2_lambda_grad": float(solver_config["DiffV2_Lambda_Grad"]),
         # Downside-aware SELECTION: mean(C) - kappa · semidev(C) at the argmax. 0 = off.
-        "diffv2_risk_kappa": float(solver_config.get("DiffV2_Risk_Kappa", 0.0)),
+        "diffv2_risk_kappa": float(solver_config["DiffV2_Risk_Kappa"]),
         # ...the semideviation of the continuation this many decisions ahead, the book held
-        "diffv2_risk_horizon": int(solver_config.get("DiffV2_Risk_Horizon", 1)),
+        "diffv2_risk_horizon": int(solver_config["DiffV2_Risk_Horizon"]),
         # Quadratic churn charge at the argmax and the label argmax; the fitted value targets
         # stay cost-free.
-        "diffv2_churn_lambda": float(solver_config.get("DiffV2_Churn_Lambda", 0.0)),
+        "diffv2_churn_lambda": float(solver_config["DiffV2_Churn_Lambda"]),
         # Successor-inheritance extras: parameter proximity to the fitted neighbour, and the
         # early-termination tolerance an inherited fit stops at (the anchor runs the budget).
         "diffv2_temporal_proximity":
-            float(solver_config.get("DiffV2_Temporal_Proximity", 0.0)),
-        "diffv2_fit_tol": float(solver_config.get("DiffV2_Fit_Tol", 1e-3)),
+            float(solver_config["DiffV2_Temporal_Proximity"]),
+        "diffv2_fit_tol": float(solver_config["DiffV2_Fit_Tol"]),
         # Cost-aware EXECUTION: the verdict rollout charges the L1 repositioning cost
         # (Transaction_Cost_Per_Unit + half Bid_Offer_Spread_Bps) at the argmax, trading
         # expected value against the cost of getting there. Training stays cost-free.
         "diffv2_cost_aware_argmax":
-            solver_config.get("DiffV2_Cost_Aware_Argmax", "No") == "Yes",
+            solver_config["DiffV2_Cost_Aware_Argmax"] == "Yes",
         # FRICTIONAL Bellman: the net book fraction becomes a state coordinate and the charge
         # enters the fitted TARGET (see docstring). 'No' = the position-free value.
         "diffv2_position_state":
-            solver_config.get("DiffV2_Position_State", "No") == "Yes",
+            solver_config["DiffV2_Position_State"] == "Yes",
         # The book column's own pathwise label under the position state: the charge's slope in the
         # standing book joins the twin loss. 'No' = the column fitted by the value term alone.
         "diffv2_book_gradient_label":
-            solver_config.get("DiffV2_Book_Gradient_Label", "No") == "Yes",
+            solver_config["DiffV2_Book_Gradient_Label"] == "Yes",
         # The DiffSolverV2 bank's books as rungs of the ladder on its live legs, the noise on the
         # net. 'No' = the net water-filled onto the replication hedge's shape over the active legs.
         "diffv2_bank_along_ladder":
-            solver_config.get("DiffV2_Bank_Along_Ladder", "No") == "Yes",
+            solver_config["DiffV2_Bank_Along_Ladder"] == "Yes",
         # TD(k): the value label realises k steps along the greedy policy on the outer path before
         # it bootstraps. 1 = the one-step bootstrap.
-        "diffv2_label_horizon": int(solver_config.get("DiffV2_Label_Horizon", 1)),
+        "diffv2_label_horizon": int(solver_config["DiffV2_Label_Horizon"]),
         # Load a checkpoint fitted on a different decision horizon: per-step structures clamp
         # to the saved range (the tail repeats the last fitted step). 'No' = exact-shape loads.
         "diffv2_load_horizon_pad":
-            solver_config.get("DiffV2_Load_Horizon_Pad", "No") == "Yes",
+            solver_config["DiffV2_Load_Horizon_Pad"] == "Yes",
         # Dimensionless state coordinates: price -> log-return vs calibrated t0 spot, basis ->
         # fraction of it, wealth -> fraction of t0 book notional. A different coordinate system
         # is a different function; checkpoints stamp it and refuse a mismatch.
         "diffv2_returns_state":
-            solver_config.get("DiffV2_Returns_State", "No") == "Yes",
+            solver_config["DiffV2_Returns_State"] == "Yes",
         # WEALTH-FREE residual: drop the W input column of the value net, so the ranking's
         # wealth dependence is the utility anchor's alone. 'No' = the wealth-bearing residual.
         "diffv2_wealth_free_value":
-            solver_config.get("DiffV2_Wealth_Free_Value", "No") == "Yes",
+            solver_config["DiffV2_Wealth_Free_Value"] == "Yes",
         # Deployment-faithful backtest: with a frozen policy loaded, roll it day-by-day on the
         # observed path via BundleStepper (real futures accounting; decisions off the stepper's
         # own wealth). Exposes diagnostics['stepper_verdict']. 'No' = only the fast _verdict.
         "diffv2_stepper_rollout":
-            solver_config.get("DiffV2_Stepper_Rollout", "No") == "Yes",
+            solver_config["DiffV2_Stepper_Rollout"] == "Yes",
         # Pure DIAGNOSTIC: a CSV of the stepper rollout's per-step ranking curve and the local
         # shape of the utility it was ranked under. '' (or absent) = off, and nothing about the
         # roll changes when it is on.
         "diffv2_decision_curve_dump":
-            str(solver_config.get("DiffV2_Decision_Curve_Dump", "") or ""),
+            str(solver_config["DiffV2_Decision_Curve_Dump"] or ""),
         # Per-input-column greek normalization in the twin loss. 'No' = legacy pooled variance.
         "diffv2_per_column_grad_norm":
-            solver_config.get("DiffV2_Per_Column_Grad_Norm", "Yes") == "Yes",
+            solver_config["DiffV2_Per_Column_Grad_Norm"] == "Yes",
         # Save the fitted nets, or load (a path, or a LIST for ensemble-argmax) and skip training.
-        "diffv2_save_value_fn": str(solver_config.get("DiffV2_Save_Value_Fn", "") or ""),
+        "diffv2_save_value_fn": str(solver_config["DiffV2_Save_Value_Fn"] or ""),
         "diffv2_load_value_fn":
             ([str(p) for p in solver_config["DiffV2_Load_Value_Fn"]]
-             if isinstance(solver_config.get("DiffV2_Load_Value_Fn"), (list, tuple))
-             else str(solver_config.get("DiffV2_Load_Value_Fn", "") or "")),
+             if isinstance(solver_config["DiffV2_Load_Value_Fn"], (list, tuple))
+             else str(solver_config["DiffV2_Load_Value_Fn"] or "")),
         # Convergence declarations: the value's optimism over its held-out greedy utility a fit
         # saves and a roll loads, and how far an ensemble's members' swept books may disagree.
-        "diffv2_max_value_optimism": float(solver_config.get("DiffV2_Max_Value_Optimism", 1.0)),
+        "diffv2_max_value_optimism": float(solver_config["DiffV2_Max_Value_Optimism"]),
         "diffv2_max_member_disagreement":
-            float(solver_config.get("DiffV2_Max_Member_Disagreement", 8.0)),
+            float(solver_config["DiffV2_Max_Member_Disagreement"]),
         "active_hedge_indices":
             (list(solver_config["Active_Hedge_Indices"])
              if solver_config.get("Active_Hedge_Indices") is not None else None),
         # Benchmark tracks assembled alongside the DiffSolver deliverable (hindsight upper
         # bound / textbook lower bound).
-        "run_hindsight_diagnostic": solver_config.get("Run_Hindsight_Diagnostic", "No") == "Yes",
-        "run_textbook_benchmark": solver_config.get("Run_Textbook_Benchmark", "No") == "Yes",
+        "run_hindsight_diagnostic": solver_config["Run_Hindsight_Diagnostic"] == "Yes",
+        "run_textbook_benchmark": solver_config["Run_Textbook_Benchmark"] == "Yes",
+    }
+
+
+def _objective_config(objective_config):
+    """Normalize the `Objective` block, None without one. Its dials are dispatched on downstream by
+    EQUALITY (`== 'running_wealth'`, `== 'conditional_sim'`), so a near-miss spelling would quietly
+    mean the default: `Reference_Mode` is validated here, `Utility_Scale_Mode` refuses its own.
+    LogWealth's reward is the day's log ratio of capital + MTM, running-wealth shaped whatever
+    `Reference_Mode` says."""
+    if objective_config is None:
+        return None
+    reference_mode = str(objective_config["Reference_Mode"]).lower()
+    if reference_mode not in ("fixed", "running_wealth"):
+        raise ValueError(
+            f"Unsupported Objective.Reference_Mode: "
+            f"{objective_config['Reference_Mode']!r}. Supported: 'Fixed' (the utility "
+            f"is applied to TERMINAL wealth) | 'Running_Wealth' (to the day's wealth increment). "
+            f"The value is dispatched on by equality, so a near-miss would silently run 'Fixed'.")
+    if str(objective_config["Object"]).lower() == "logwealth":
+        reference_mode = "running_wealth"
+    # every outer path shares L_0, so the raw dispersion at t=0 is exactly 0: a non-positive floor
+    # makes c_0 = 0, x = (W-R)/c_0 infinite, and every label from step 0 a NaN
+    floor_frac = float(objective_config["Utility_Scale_Floor_Frac"])
+    if not floor_frac > 0.0:
+        raise ValueError(
+            f"Objective.Utility_Scale_Floor_Frac must be > 0; got {floor_frac}. It floors the "
+            f"conditional_sim scale schedule at a fraction of its terminal entry, and the first "
+            f"steps carry no dispersion at all, so a zero floor is a zero knee and a NaN reward.")
+    if floor_frac > 1.0:
+        logging.warning(
+            "Objective.Utility_Scale_Floor_Frac=%.4g is above 1: the floor then exceeds the "
+            "schedule's terminal entry, which flattens every knee onto one number and retires "
+            "the per-step shape the mode exists for.", floor_frac)
+    return {
+        # canonical lowercased form: every dispatch site compares against the lowercase literal
+        "object": str(objective_config["Object"]).lower(),
+        # utility-transform scale, consumed by any utility Object; `utility_scale` is mirrored
+        # in from the bundle's resolved c (hedge_bundle.Bundle.mirror_utility_scale)
+        "utility_scale_mode": str(objective_config["Utility_Scale_Mode"]).lower(),
+        "utility_scale_explicit":
+            (None if objective_config.get("Utility_Scale_Explicit") is None
+             else float(objective_config["Utility_Scale_Explicit"])),
+        # Floor of the 'conditional_sim' schedule, as a fraction of its terminal entry —
+        # inert under every other mode.
+        "utility_scale_floor_frac": floor_frac,
+        # WHAT the utility is applied to: terminal wealth ('fixed'), or the DAY's wealth
+        # increment ('running_wealth', a per-step reward the DP sums down the recursion).
+        "reference_mode": reference_mode,
+        # The benchmark wealth the utility is measured against, in DOLLARS (not c-units) —
+        # every shape subtracts it before the /c scaling.
+        "reference_wealth": float(objective_config["Reference_Wealth"]),
+        # Utility SHAPE params (dimensionless, in units of c); Symlog ignores all of them.
+        "huber_aversion": float(objective_config["Huber_Aversion"]),
+        "huber_delta": float(objective_config["Huber_Delta"]),
+        "up_aversion": float(objective_config["Up_Aversion"]),
+        "up_knee": float(objective_config["Up_Knee"]),
+        "cara_gamma": float(objective_config["CARA_Gamma"]),
     }
 
 
@@ -427,24 +484,19 @@ def construct_hedge_runtime(
     terminal entry; it owns the LEVEL of c as well as its shape, so `Utility_Scale_Explicit` is
     refused beside it and `Huber_Aversion` is dosed against the MEASURED scale.
 
-    Both are dispatched on by equality downstream and are therefore VALIDATED here: a near-miss
-    spelling would otherwise mean the default, silently.
+    Both are dispatched on by equality downstream and are therefore VALIDATED at this boundary
+    (`_objective_config`): a near-miss spelling would otherwise mean the default, silently.
 
     `im_funding_*` is a vol-linked initial-margin FUNDING charge on the post-trade book (realized
     accounting only). Per hedge leg i at step t the desk posts
     `IM_i = IM_Vol_Multiplier·(σ_t/IM_Ref_Vol)·F_i·|q_i^post|·cs_i` and pays
     `IM_Funding_Spread_Bps·1e-4·dt` to fund it over the calendar step, above the risk-free the
     margin ledger already earns. Spread default 0.0 ⇒ the term is exactly 0 and never executes."""
-    config = config if "Hedging_Problem" in config else config["Calc"]["Calculation"]
     hedging_problem = config["Hedging_Problem"]
     evaluator_config = hedging_problem["Evaluator"]
     objective_config = hedging_problem.get("Objective")
     solver_config = hedging_problem.get("Solver")
-    execution_mode = str(config.get("Execution_Mode", "simulate_only")).lower()
-    if execution_mode not in ("solve_hedge", "simulate_only"):
-        raise ValueError(
-            f"Unknown Execution_Mode {config.get('Execution_Mode')!r}; supported: 'solve_hedge' | "
-            "'simulate_only'.")
+    execution_mode = config["Execution_Mode"]
 
     # --- instruments: the tradable universe splits into cash accounts and hedge legs ---
     tradables = _flatten_deals(hedging_problem["Tradable_Instruments"])
@@ -462,11 +514,11 @@ def construct_hedge_runtime(
     if execution_mode == "solve_hedge":
         if solver_config is None:
             raise ValueError("Execution_Mode 'solve_hedge' requires Hedging_Problem['Solver']")
-        if str(config.get("Inner_MC_Enabled", "No")) != "Yes":
+        if str(config["Inner_MC_Enabled"]) != "Yes":
             raise ValueError("Execution_Mode 'solve_hedge' requires Inner_MC_Enabled='Yes'")
         min_inner = (2 if str(solver_config.get("Object", "")).lower()
                      in ("diffsolver", "diffsolverv2") else 128)
-        if int(config.get("Inner_Sub_Batch", 0)) < min_inner:
+        if int(config["Inner_Sub_Batch"]) < min_inner:
             raise ValueError(
                 "Execution_Mode 'solve_hedge' requires Inner_Sub_Batch >= "
                 f"{min_inner} for Solver.Object={solver_config.get('Object')!r}")
@@ -478,8 +530,8 @@ def construct_hedge_runtime(
                 "Run_Hindsight_Diagnostic track.")
         # A solve is a STREAM: Simulation_Batches - 1 fit batches, then a held-out batch no fit
         # step saw. A loaded checkpoint fits nothing, so it is a stream of one.
-        n_batches = int(config.get("Simulation_Batches", 1))
-        if solver_config.get("DiffV2_Load_Value_Fn"):
+        n_batches = int(config["Simulation_Batches"])
+        if solver_config["DiffV2_Load_Value_Fn"]:
             if n_batches != 1:
                 raise ValueError(
                     "Execution_Mode 'solve_hedge' with DiffV2_Load_Value_Fn requires "
@@ -491,7 +543,7 @@ def construct_hedge_runtime(
                 f"a held-out batch no fit step saw); got {n_batches}. Simulation_Batches is a path "
                 "MULTIPLIER under 'simulate_only' and a STREAM LENGTH here, and derivus_batch "
                 "divides it by the job count before this check.")
-        if solver_config.get("DiffV2_Load_Value_Fn") and solver_config.get("DiffV2_Save_Value_Fn"):
+        if solver_config["DiffV2_Load_Value_Fn"] and solver_config["DiffV2_Save_Value_Fn"]:
             raise ValueError(
                 "Solver.DiffV2_Save_Value_Fn is set alongside DiffV2_Load_Value_Fn: a loaded "
                 "checkpoint is a frozen-policy EVALUATION and fits nothing, so there is no new "
@@ -506,41 +558,7 @@ def construct_hedge_runtime(
                 "The DP recursion lives in utility space: an identity (legacy) objective leaves "
                 "V-hat unbounded in dollars and the backward sweep blows up multiplicatively.")
 
-    # Objective dials are validated here because they are dispatched on downstream by EQUALITY:
-    # both are consumed as `== 'running_wealth'` / `== 'conditional_sim'` deep in the solver, so an
-    # unrecognised spelling would quietly mean the DEFAULT. `Utility_Scale_Mode` refuses its own.
-    reference_mode = str((objective_config or {}).get("Reference_Mode", "Fixed")).lower()
-    if reference_mode not in ("fixed", "running_wealth"):
-        raise ValueError(
-            f"Unsupported Objective.Reference_Mode: "
-            f"{(objective_config or {}).get('Reference_Mode')!r}. Supported: 'Fixed' (the utility "
-            f"is applied to TERMINAL wealth) | 'Running_Wealth' (to the day's wealth increment). "
-            f"The value is dispatched on by equality, so a near-miss would silently run 'Fixed'.")
-    # LogWealth's reward is the day's log ratio of capital + MTM, so it IS running-wealth-shaped
-    # and a terminal Reference_Mode beside it is a contradiction the run refuses
-    if str((objective_config or {}).get("Object", "")).lower() == "logwealth":
-        rm_declared = (objective_config or {}).get("Reference_Mode")
-        if rm_declared is not None and str(rm_declared).lower() == "fixed":
-            raise ValueError(
-                "Objective 'LogWealth' is a per-step growth objective (reward = log(W1/W0)) — "
-                "Reference_Mode='Fixed' (terminal utility) contradicts it. Omit Reference_Mode "
-                "or set 'Running_Wealth'.")
-        reference_mode = "running_wealth"
-    # every outer path shares L_0, so the raw dispersion at t=0 is exactly 0: a non-positive floor
-    # makes c_0 = 0, x = (W-R)/c_0 infinite, and every label from step 0 a NaN
-    floor_frac = float((objective_config or {}).get("Utility_Scale_Floor_Frac", 0.05))
-    if not floor_frac > 0.0:
-        raise ValueError(
-            f"Objective.Utility_Scale_Floor_Frac must be > 0; got {floor_frac}. It floors the "
-            f"conditional_sim scale schedule at a fraction of its terminal entry, and the first "
-            f"steps carry no dispersion at all, so a zero floor is a zero knee and a NaN reward.")
-    if floor_frac > 1.0:
-        logging.warning(
-            "Objective.Utility_Scale_Floor_Frac=%.4g is above 1: the floor then exceeds the "
-            "schedule's terminal entry, which flattens every knee onto one number and retires "
-            "the per-step shape the mode exists for.", floor_frac)
-
-    history_lookback = int(hedging_problem.get("History_Lookback_Business_Days", 30))
+    history_lookback = int(hedging_problem["History_Lookback_Business_Days"])
     if history_lookback < 0:
         raise ValueError("Hedging_Problem.History_Lookback_Business_Days must be non-negative")
     # Commodity names come from the live CommodityPrice factors the instruments created at
@@ -548,7 +566,7 @@ def construct_hedge_runtime(
     referenced_commodities = tuple(dict.fromkeys(
         utils.check_tuple_name(factor) for factor in (stoch_factors or {})
         if factor.type == 'CommodityPrice'))
-    portfolio_state = hedging_problem.get("Portfolio_State") or {}
+    portfolio_state = hedging_problem["Portfolio_State"]
     scalar_spread_bps, spread_spec = _bid_offer_spread(evaluator_config)
     calendar_spread_bps = (float(evaluator_config["Calendar_Spread_Bps"])
                            if evaluator_config.get("Calendar_Spread_Bps") is not None else None)
@@ -566,11 +584,11 @@ def construct_hedge_runtime(
             normalized_tradables[account_name]["currency"], account_name)
     fallback_account = cash_account_names[0] if cash_account_names else None
 
-    alloc_mode = str(evaluator_config.get("Allocation_Mode", "Exposure")).lower()
+    alloc_mode = str(evaluator_config["Allocation_Mode"]).lower()
     if alloc_mode not in ("exposure", "carry_variance"):
         raise ValueError(
             f"Unsupported Evaluator.Allocation_Mode: "
-            f"{evaluator_config.get('Allocation_Mode')!r}. Supported: 'Exposure' (the declared "
+            f"{evaluator_config['Allocation_Mode']!r}. Supported: 'Exposure' (the declared "
             f"Allocation_Weights table) | 'Carry_Variance' (solver-derived). Dispatched by "
             f"equality, so a near-miss would silently run 'Exposure'.")
     if alloc_mode == "carry_variance":
@@ -585,7 +603,7 @@ def construct_hedge_runtime(
                 "weights (there are no sims to measure carry/tracking from in a non-solve "
                 "mode). Declare Allocation_Weights instead.")
     return {
-        "accounting_mode": str(evaluator_config.get("Accounting_Mode", "futures")).lower(),
+        "accounting_mode": str(evaluator_config["Accounting_Mode"]).lower(),
         "names": {
             "tradables": tuple(normalized_tradables),
             # the hedge legs ARE the action set; the solver builds its action grid over them
@@ -594,32 +612,7 @@ def construct_hedge_runtime(
         },
         "referenced_commodities": referenced_commodities,
         "tradables": normalized_tradables,
-        "objective": None if objective_config is None else {
-            # canonical lowercased form: every dispatch site compares against the lowercase literal
-            "object": str(objective_config["Object"]).lower(),
-            # utility-transform scale, consumed by any utility Object; `utility_scale` is mirrored
-            # in from the bundle's resolved c (hedge_bundle.Bundle.mirror_utility_scale)
-            "utility_scale_mode":
-                str(objective_config.get("Utility_Scale_Mode", "vol_scaled_notional")).lower(),
-            "utility_scale_explicit":
-                (None if objective_config.get("Utility_Scale_Explicit") is None
-                 else float(objective_config["Utility_Scale_Explicit"])),
-            # Floor of the 'conditional_sim' schedule, as a fraction of its terminal entry —
-            # inert under every other mode. Both dials are validated above.
-            "utility_scale_floor_frac": floor_frac,
-            # WHAT the utility is applied to: terminal wealth ('fixed'), or the DAY's wealth
-            # increment ('running_wealth', a per-step reward the DP sums down the recursion).
-            "reference_mode": reference_mode,
-            # The benchmark wealth the utility is measured against, in DOLLARS (not c-units) —
-            # every shape subtracts it before the /c scaling.
-            "reference_wealth": float(objective_config.get("Reference_Wealth", 0.0)),
-            # Utility SHAPE params (dimensionless, in units of c); Symlog ignores all of them.
-            "huber_aversion": float(objective_config.get("Huber_Aversion", 2.5)),
-            "huber_delta": float(objective_config.get("Huber_Delta", 1.0)),
-            "up_aversion": float(objective_config.get("Up_Aversion", 0.0)),
-            "up_knee": float(objective_config.get("Up_Knee", 0.15)),
-            "cara_gamma": float(objective_config.get("CARA_Gamma", 1.0)),
-        },
+        "objective": _objective_config(objective_config),
         "solver": _solver_config(solver_config),
         "history_lookback_business_days": history_lookback,
         "portfolio_state": {
@@ -641,7 +634,7 @@ def construct_hedge_runtime(
                 n: account_by_currency.get(meta["currency"], fallback_account)
                 for n, meta in normalized_tradables.items()},
             "transaction_cost_per_unit":
-                float(evaluator_config.get("Transaction_Cost_Per_Unit", 0.0)),
+                float(evaluator_config["Transaction_Cost_Per_Unit"]),
             # Scalar half-spread bps (fast-path + diagnostic display); `spec` is None for a scalar
             # Bid_Offer_Spread_Bps and a normalized per-instrument/vol-scale dict otherwise —
             # resolved in `per_contract_kappa`.
@@ -652,12 +645,12 @@ def construct_hedge_runtime(
             "calendar_spread_bps": calendar_spread_bps,
             # Vol-linked IM funding charge on the post-trade book (realized accounting only).
             # Spread 0.0 ⇒ the term is exactly 0 and never executes.
-            "im_funding_spread_bps": float(evaluator_config.get("IM_Funding_Spread_Bps", 0.0)),
-            "im_vol_multiplier": float(evaluator_config.get("IM_Vol_Multiplier", 0.0)),
-            "im_ref_vol": float(evaluator_config.get("IM_Ref_Vol", 1.0)),
-            "force_flat_at_end": evaluator_config.get("Force_Flat_At_End", "Yes") == "Yes",
+            "im_funding_spread_bps": float(evaluator_config["IM_Funding_Spread_Bps"]),
+            "im_vol_multiplier": float(evaluator_config["IM_Vol_Multiplier"]),
+            "im_ref_vol": float(evaluator_config["IM_Ref_Vol"]),
+            "force_flat_at_end": evaluator_config["Force_Flat_At_End"] == "Yes",
             "total_position_abs_limit":
-                float(evaluator_config.get("Total_Position_Abs_Limit", 0.0)),
+                float(evaluator_config["Total_Position_Abs_Limit"]),
             "total_position_schedule": _position_schedule(evaluator_config),
             # Optional per-decision-step split of the NET cover across the legs. Present ⇒ the
             # action universe is the Q-ladder rather than the Cartesian product (see
@@ -666,11 +659,11 @@ def construct_hedge_runtime(
             "allocation_mode": alloc_mode,
             # Per-leg |Δq| cap per decision step at the ARGMAX (0 = off). Execution policy
             # only — training labels never see it.
-            "max_trade_per_step": float(evaluator_config.get("Max_Trade_Per_Step", 0.0)),
+            "max_trade_per_step": float(evaluator_config["Max_Trade_Per_Step"]),
             # significance the argmax must beat the STANDING book by before it trades, in standard
             # errors of the paired inner-draw difference (0 = off). Execution policy only.
             "decision_deadband_sigma":
-                float(evaluator_config.get("Decision_Deadband_Sigma", 0.0)),
+                float(evaluator_config["Decision_Deadband_Sigma"]),
         },
         "privileged_layout": derive_privileged_layout(stoch_factors),
     }

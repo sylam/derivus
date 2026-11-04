@@ -37,8 +37,8 @@ from .instruments import (Deal, barrier_monitoring_rows, get_fxrate_factor, get_
 from .pricing import SensitivitiesEstimator, fixed_payments
 from . import utils, instruments, pricing, riskfactors
 from . import schema
-from .schema import (F, REQUIRED, Row, declared_defaults, declared_settlements, index_named,
-                     settlement_days)
+from .schema import (F, REQUIRED, Row, declared_block, declared_defaults, declared_settlements,
+                     index_named, settlement_days)
 from .utils import (CASHFLOW_INDEX_FixedAmt, CASHFLOW_INDEX_FixedRate, CASHFLOW_INDEX_Nominal,
                     CASHFLOW_INDEX_Pay_Day, CASHFLOW_INDEX_Year_Frac, RESET_INDEX_Reset_Day,
                     RESET_INDEX_Value, TensorCashFlows, TensorResets, walk_schedules)
@@ -3181,7 +3181,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Reference_Mode', 'Text', default='Fixed',
                       values=['Fixed', 'Running_Wealth'],
                       description='What the utility is applied to: TERMINAL wealth, or the '
-                                  "day's wealth increment (a per-step reward the DP sums)"),
+                                  "day's wealth increment (a per-step reward the DP sums); "
+                                  'LogWealth, a per-step growth, is always the increment'),
                     F('Reference_Wealth', 'Float', default=0.0,
                       description='Benchmark wealth in DOLLARS the utility is measured against; '
                                   'every shape works in x = (W - this) / c'),
@@ -3499,8 +3500,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         d(value)/d(spot) via AAD. The diff-ML solver differentiates the continuation off its own
         fresh state-at-t leaves (`Bundle.inner_mc_grad`), so it needs no outer leaf.
         """
-        # the declaration is the single source of an omitted field's default
+        # the declaration is the single source of an omitted field's default, at every depth the
+        # hedging problem states
         params = declared_defaults(type(self), self.judged(params))
+        params['Hedging_Problem'] = declared_block(
+            schema.declared_fields(type(self))['Hedging_Problem'].sub_fields, params['Hedging_Problem'])
         # `.get` with no fallback on purpose: HedgeMonteCarlo declares no `Greeks` field, so there
         # is no default to publish - it only refuses the value that would silently do nothing
         if params.get('Greeks') == 'All':
@@ -3522,14 +3526,14 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         self.calc_stats['Simulation_Batches'] = params['Simulation_Batches']
         self.calc_stats['Random_Seed'] = params['Random_Seed']
 
-        execution_mode = params.get('Execution_Mode', 'simulate_only')
-        hedging_problem = params.get('Hedging_Problem', {})
+        execution_mode = params['Execution_Mode']
+        hedging_problem = params['Hedging_Problem']
         # forwarded to each process's `reseed_inner_state` OPAQUELY - the calc never reads a model
         # switch out of it; a process owns which keys mean what to it
         self._inner_state_opts = hedging_problem
 
-        instruments = self.config.deals_from_object_map(hedging_problem.get('Tradable_Instruments', {}))
-        liabilities = self.config.deals_from_object_map(hedging_problem.get('Liabilities', {}))
+        instruments = self.config.deals_from_object_map(hedging_problem['Tradable_Instruments'])
+        liabilities = self.config.deals_from_object_map(hedging_problem['Liabilities'])
         self.config.set_calculation_children(instruments + liabilities)
         # cap the grid at the liability terminal - past it there is nothing to hedge
         end_date = DealStructure.max_settlement_date(liabilities, self.config.holidays)
@@ -3560,12 +3564,12 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         self._underlying_names = set(normalized_runtime['referenced_commodities'])
 
         # Inner-MC setup; the copies below are forked only after outer setup precalc has run
-        inner_mc_enabled = params.get('Inner_MC_Enabled', 'No') == 'Yes'
+        inner_mc_enabled = params['Inner_MC_Enabled'] == 'Yes'
         tradable_refs = sorted(normalized_runtime['names']['hedges']) if inner_mc_enabled else ()
 
         # solve_hedge: inner MC runs in the backward DP/MPC sweep, not the outer loop, so the
         # per-batch outer scenario buffer is cached for it to fork on demand
-        solve_hedge_mode = str(execution_mode).lower() == 'solve_hedge'
+        solve_hedge_mode = execution_mode == 'solve_hedge'
         if inner_mc_enabled:
             self.stoch_factors_inner = {k: proc.copy() for k, proc in self.stoch_factors.items()}
         streaming_solve = StreamingSolve(normalized_runtime) if solve_hedge_mode else None
@@ -3586,11 +3590,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         total_leg_volume, last_payment_day, fixings = self._liability_schedule_scalars()
         bus_day = shared_mem.business_day
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
-        randomize_t0 = hedging_problem.get('Randomize_Initial_State', 'No') == 'Yes'
+        randomize_t0 = hedging_problem['Randomize_Initial_State'] == 'Yes'
         # returns-state coordinates: dimensionless market columns off one constant divisor
         # per run, so outer rows and fork reveals share a coordinate system across epochs
-        self._returns_state = (hedging_problem.get('Solver') or {}).get(
-            'DiffV2_Returns_State', 'No') == 'Yes'
+        self._returns_state = bool(normalized_runtime['solver']
+                                   and normalized_runtime['solver']['diffv2_returns_state'])
         self._state_spot0 = None
         if self._returns_state:
             price_keys = [k for k in self.stoch_factors if k.type == 'CommodityPrice']
@@ -3623,8 +3627,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
         for run in range(params['Simulation_Batches']):
             shared_mem.reset(
-                self.num_factors, self.time_grid,
-                use_antithetic=params.get('Antithetic', 'No') == 'Yes')
+                self.num_factors, self.time_grid, use_antithetic=params['Antithetic'] == 'Yes')
 
             # session-print conditioning from STATE: the calibrated t0 values ARE this batch's first
             # step, so a process informing another off a print there publishes its shift here
@@ -3655,8 +3658,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     outer_reseeds.update(proc.outer_reseed())
                 # independent innovation stream for the main run
                 shared_mem.reset(
-                    self.num_factors, self.time_grid,
-                    use_antithetic=params.get('Antithetic', 'No') == 'Yes')
+                    self.num_factors, self.time_grid, use_antithetic=params['Antithetic'] == 'Yes')
                 for key, init_state in initial_t0.items():
                     scenario_grid, implied_tensor = self._factor_precalc_args[key]
                     self.stoch_factors[key].precalculate(
@@ -3796,9 +3798,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             runtime_diagnostics = {
                 'num_episodes': int(evaluation_summary.get('diagnostics', {}).get('num_episodes', 0)),
                 'derivus_simulation_pricing_time_seconds': float(self.calc_stats.get(execution_label, 0.0)),
-                'accounting_mode': normalized_runtime.get('accounting_mode'),
-                'tradable_names': tuple(normalized_runtime.get('names', {}).get('tradables', ())),
-                'cash_account_names': tuple(normalized_runtime.get('names', {}).get('cash_accounts', ())),
+                'accounting_mode': normalized_runtime['accounting_mode'],
+                'tradable_names': normalized_runtime['names']['tradables'],
+                'cash_account_names': normalized_runtime['names']['cash_accounts'],
             }
 
         if evaluation_summary is not None and bundle is not None:
@@ -3807,7 +3809,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             t_live = bundle.last_live_mtm_index
             drift = {h: round(float((bundle.tradables_sim[h][t_live]
                                      - bundle.tradables_sim[h][0]).mean()), 4)
-                     for h in normalized_runtime.get('names', {}).get('hedges', ())}
+                     for h in normalized_runtime['names']['hedges']}
             evaluation_summary.setdefault('diagnostics', {})['hedge_drift_usd'] = drift
             logging.info('hedge window drift E[dF] per leg (USD): %s', drift)
 
@@ -4007,9 +4009,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             try:
                 shared_mem.simulation_batch = B_outer
                 shared_mem.reset_inner(self.num_factors, inner_time_grid,
-                                       use_antithetic=self.params.get('Inner_Antithetic', 'No') == 'Yes',
-                                       use_random=stream is not None or str(
-                                           self.params.get('Inner_Draws', 'sobol')).lower() == 'random')
+                                       use_antithetic=self.params['Inner_Antithetic'] == 'Yes',
+                                       use_random=stream is not None
+                                       or self.params['Inner_Draws'] == 'random')
 
                 market_t1_parts = []
                 # the fork BORROWS this buffer, so an entry it does not rewrite is still the outer

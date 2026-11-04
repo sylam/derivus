@@ -388,6 +388,19 @@ def declared_defaults(cls, params):
     return merged
 
 
+def declared_block(fields, block):
+    """`block` completed by `fields` as `declared_defaults` completes a class's, and every container
+    it states completed by that container's own children, so a reader indexes any key a stated
+    block offers at any depth; a container left unstated stays absent."""
+    merged = {key: copy.deepcopy(default) for key, default in offered(
+        [f for f in fields if f.sub_fields is None]).items()}
+    merged.update(block)
+    for f in fields:
+        if f.sub_fields is not None and isinstance(block.get(f.key), dict):
+            merged[f.key] = declared_block(f.sub_fields, block[f.key])
+    return merged
+
+
 def engine_default(field):
     """One declared default in the form the ENGINE reads, not the form a widget shows.
 
