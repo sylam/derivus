@@ -824,7 +824,6 @@ class DiffSolver:
         self.lr = float(self.cfg.get("diffv2_lr", 2.0e-3))
         self.noise_frac = float(self.cfg.get("diffv2_bank_noise_frac", 0.15))
         self.t_min = int(self.cfg.get("t_min", 0))
-        self.use_adv = bool(self.cfg.get("use_advantage_decomp", True))
         # downside-aware action selection; 0 = plain E[C] argmax
         self.risk_kappa = float(self.cfg.get("diffv2_risk_kappa", 0.0))
         # ...of the continuation this many decisions ahead, the book held; with no penalty, none
@@ -996,17 +995,17 @@ class DiffSolver:
         verdict's u(W_T), which the benchmark tracks take at the same scale."""
         return _utility_wrap_signed(W, self.runtime, t)
 
-    def _member_anchor(self, W, t, schedule):
-        """u(W) at ONE ensemble member's own step knee. A member's `utility_scale_schedule` is
-        part of its frame exactly as its z-stats are, so its continuation is evaluated at the
-        scale it was fitted against — the schedules of an ensemble are never averaged or
-        otherwise reconciled (see `_restore_frame`).
-
-        Under a step-sum objective (Running_Wealth / LogWealth) the continuation carries NO
-        terminal utility, so the member anchor is exactly zero rather than a wrap call the growth
-        objective refuses by name."""
+    def _anchor(self, W, t, schedule=None):
+        """The anchor u(W) of `C_t = u(W) + A_t` at decision step t, the one the fit subtracts and
+        the read adds back: at the run's step knee, or under `schedule` at ONE ensemble member's
+        own, since a member's `utility_scale_schedule` is part of its frame exactly as its z-stats
+        are (see `_restore_frame`). Under a step-sum objective (Running_Wealth / LogWealth) the
+        continuation carries NO terminal utility, so the anchor is exactly zero rather than a wrap
+        call the growth objective refuses by name."""
         if self.running_wealth:
             return torch.zeros_like(W)
+        if schedule is None:
+            return self._u(W, t)
         return _utility_wrap_signed(
             W, {"objective": dict(self.runtime["objective"],
                                   utility_scale_schedule=schedule)}, t)
@@ -1073,7 +1072,7 @@ class DiffSolver:
         support the zero-init MLP extrapolates freely, and the argmax then chases a phantom
         direction that poisons the t−1 bootstrap labels. Outside the clamp the gradient is zero,
         so the differential labels ignore those directions too."""
-        base = torch.zeros_like(W) if self.running_wealth else self._u(W, t)
+        base = self._anchor(W, t)
         ensemble = getattr(self, "_ensemble", None)
         if t >= self.T_dec and not ensemble:
             return base
@@ -1084,7 +1083,7 @@ class DiffSolver:
                     # the member's own step KNEE, as much a part of its frame as its z-stats.
                     # Written as a correction to the shared anchor so a schedule-free ensemble
                     # stays arithmetically untouched.
-                    acc = acc + (self._member_anchor(W, t, m_sched) - base)
+                    acc = acc + (self._anchor(W, t, m_sched) - base)
                 if t >= self.T_dec:
                     # the TERMINAL has no residual, so this correction is the WHOLE of the
                     # member's continuation - which is what the last decision is ranked on
@@ -1816,15 +1815,13 @@ class DiffSolver:
         so it can no longer be a MEASURED COLUMN and its gradient term leaves the loss with it.
         Matching `∂A/∂wn` against a measured `g_zn_W` while wn is absent would ask the market
         columns to absorb the wealth slope, which is the slope the switch exists to remove."""
-        # advantage decomposition: fit A = C - u(W0), subtracting the anchor's wealth slope. Under
-        # `Reference_Mode='Running_Wealth'` C_t = A_t alone, so there is no anchor to subtract.
-        if self.use_adv and not self.running_wealth:
+        # fit A = C - anchor(W0), the anchor `_continuation` adds back, and its wealth slope; a
+        # step-sum objective's anchor is zero, so there is no slope to subtract
+        a_val, a_gW = Y - self._anchor(W0_bank, t), gW
+        if not self.running_wealth:
             Wb = W0_bank.clone().requires_grad_(True)
-            (dB_dW,) = torch.autograd.grad(self._u(Wb, t).sum(), Wb)
-            a_val = Y - self._u(W0_bank, t)
-            a_gW = gW - dB_dW.detach()
-        else:
-            a_val, a_gW = Y, gW
+            a_gW = gW - torch.autograd.grad(self._anchor(Wb, t).sum(), Wb)[0].detach()
+        logging.debug('step %d fits the residual over a mean anchor %s', t, (Y - a_val).mean())
 
         net = nets[t]
         # the chain: the terminal net anchors and trains the full budget, while every earlier net

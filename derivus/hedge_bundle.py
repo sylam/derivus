@@ -323,8 +323,6 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "training_action_grid_levels_per_axis":
             int(solver_config.get("Training_Action_Grid_Levels_Per_Axis", 11)),
         "training_action_chunk_size": int(solver_config.get("Training_Action_Chunk_Size", 64)),
-        # Advantage decomposition: fit A = C - u(W) (NN residual over the bounded-utility anchor).
-        "use_advantage_decomp": solver_config.get("Use_Advantage_Decomp", "Yes") == "Yes",
         # DiffSolver knobs (see docstring): per-t residual-net Adam iters / lr, bank noise.
         "diffv2_fit_iters": int(solver_config.get("DiffV2_Fit_Iters", 150)),
         "diffv2_lr": float(solver_config.get("DiffV2_LR", 2.0e-3)),

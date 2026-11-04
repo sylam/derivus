@@ -3261,9 +3261,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'the NET cover under Evaluator.Allocation_Weights'),
                     F('Training_Action_Chunk_Size', 'Integer', default=64,
                       description='Actions scored per batched argmax pass'),
-                    F('Use_Advantage_Decomp', 'Text', default='Yes', values=['Yes', 'No'],
-                      description='Fit the NN residual over the bounded-utility anchor rather '
-                                  'than the continuation itself'),
                     F('DiffV2_Fit_Iters', 'Integer', default=150,
                       description='Adam iterations per residual net'),
                     F('DiffV2_LR', 'Float', default=2.0e-3, description='Adam learning rate'),
