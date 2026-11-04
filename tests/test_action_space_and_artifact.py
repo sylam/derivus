@@ -1052,7 +1052,7 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     relative (greedy 1.6e-7, passive 5.1e-7), the no-hedge track's to the bit; so too under a
     `Max_Trade_Per_Step` of 2 on the roll, with its first greedy decision measured from the passive
     book under `DiffV2_First_Decision_From` 'Passive', and with the matched half of a roll at a 3 bp
-    `Calendar_Spread_Bps`, which the verdict's charge and the stepper's rebate both read; and under
+    `Calendar_Spread_Bps`, which the verdict's charge and the stepper's both read; and under
     `Force_Flat_At_End` 'No', the last book left standing valued at the terminal's mark in both and
     carried over no settlement row. 3 s each.
 
@@ -1061,9 +1061,9 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     the stepper rounds to whole ones (passive +52.5, 2.0e-3); the stepper roll's `_decide` without
     its band (`rate_limit=False`), its first book (3, 2) against the verdict's (1, 1), greedy 48%
     apart; the verdict's first decision measured from the opening book under 'Passive' (its first
-    book (1, 1) against the stepper's (-15, -15), greedy 46% apart); the stepper's
-    rebate unarmed, the verdict's charge pricing the roll the stepper pays outright (passive 2.0%);
-    the stepper marking a hedge leg past the terminal (`BundleStepper._values_at` unclamped), the
+    book (1, 1) against the stepper's (-15, -15), greedy 46% apart); the stepper's charge priced
+    outright (`_cost` unmatched), the verdict's charge pricing the roll the stepper pays outright
+    (passive 2.0%); the stepper marking a hedge leg past the terminal (`BundleStepper._values_at` unclamped), the
     standing book carried to the clean-exit row (greedy 134,981 against 137,484, 1.8%)."""
     d = _replayed_roll(tmp_path, doc, **declared)
     v, sv = d['verdict'], d['stepper_verdict']
@@ -1478,7 +1478,7 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     flat past the stepped rows (`pos[rows.stop:]` at zero), the book dropped on the clean-exit row
     under 'No'; the forced close charged at the vol of the row before it (`vol_t` handed to
     `_flatten_futures`, the stepper 2.3e-4 off its CSV on the best path; to `_flatten_cash`, 2.3e-4
-    on the cash-account document's); the CSV crediting the matched-roll rebate on the forced close
+    on the cash-account document's); the CSV pricing the forced close matched as a roll
     (3.7% above the stepper); the CSV marking the held book past the terminal (the 'held' case's
     best path -12,180 against the stepper's -9,648)."""
     result = _run(_client(mode, force_flat, evaluator=evaluator))
@@ -1491,6 +1491,43 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
         assert rows.loc['2026-08-10', 'PL_OCT_2026_trade'] == (10.0 if closed else 0.0), (case, rows['PL_OCT_2026_trade'].tail(3))
         assert (rows.loc['2026-08-10':, 'PL_OCT_2026_position'] == (0.0 if closed else -10.0)).all()
 
+
+def test_each_leg_pays_its_share_of_the_turnover_charge_from_its_own_account():
+    """Each leg pays its own share of a reposition's turnover charge, from the account its currency
+    routes it to: on the client document with `PL_APR_2026` in ZAR on a ZAR cash account and the
+    other legs in USD, long 10 `PL_JUL_2026` and short 10 `PL_OCT_2026` at the first row, a 3 bp
+    `Calendar_Spread_Bps` saves the USD account the matched pair's outright price less its calendar
+    one, 10·(κ_JUL + κ_OCT) − 10·½(κcal_JUL + κcal_OCT), within 1e-5 relative on every path, and
+    leaves the ZAR account, whose leg does not trade, as it was to the bit. 3 s.
+
+    Killing mutation: the matched roll's saving credited to the first leg's account
+    (`_account_of[hedges[0]]`), the ZAR account 880.39 up on every path and the USD account's
+    saving 0."""
+    def roll(evaluator):
+        cfg = _client(evaluator=evaluator)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        deals = hp['Tradable_Instruments']
+        deals['CommodityFutureDeal']['PL_APR_2026']['Currency'] = 'ZAR'
+        deals['CashAccountDeal']['ZAR_CASH'] = dict(deals['CashAccountDeal']['USD_CASH'], Currency='ZAR',
+                                                    Discount_Rate='ZAR-SWAP')
+        hp['Evaluator']['Cash_Instruments'] = ['USD_CASH', 'ZAR_CASH']
+        for balances in ('Cash_Balances', 'Margin_Balances'):
+            hp['Portfolio_State'][balances]['ZAR_CASH'] = 0.0
+        result = _run(cfg)
+        stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
+        while not stepper.done:
+            stepper.step({'PL_JUL_2026': 10.0, 'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
+        return result, stepper.evaluation_output()['final_state']['margin_accounts']
+
+    result, matched = roll(CALENDAR)
+    _, outright = roll({})
+    world = result.bundle
+    marks = {h: world.tradables[h][world.initial_time_index].double() for h in ('PL_JUL_2026', 'PL_OCT_2026')}
+    saving = sum(10.0 * (per_contract_kappa(result.runtime, m, h) - 0.5 * per_contract_kappa(result.runtime, m, h, None, True))
+                 for h, m in marks.items())
+    assert torch.equal(matched['ZAR_CASH'], outright['ZAR_CASH']), (matched['ZAR_CASH'] - outright['ZAR_CASH']).tolist()
+    got = (matched['USD_CASH'] - outright['USD_CASH']).double()
+    assert torch.allclose(got, saving, rtol=1e-5, atol=0.0), (got.tolist(), saving.tolist())
 
 def test_writing_the_csv_leaves_the_world_as_it_was(tmp_path):
     """Writing the diagnostic CSV leaves the world it describes as it was: on the client document

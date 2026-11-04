@@ -18,7 +18,7 @@ attribute. It owns the LOCKED frame (`utility_scale`, the per-step vol series), 
 views the solver indexes by `t`, and the inner-MC fork closures the calc attaches.
 
 `BundleStepper` is the environment: the real futures/cash accounting (variation margin,
-financing, transaction cost, roll rebate, IM funding, expiry flatten) advanced one day at a
+financing, each leg's turnover charge, IM funding, expiry flatten) advanced one day at a
 time under any explicit policy. `run_hedge_execution` dispatches by Execution_Mode:
 'solve_hedge' → the differential-ML solver (hedge_solver), 'simulate_only' → the no-trade
 baseline. Module level keeps only the pure math both sides share: the wealth law, the utility
@@ -715,11 +715,13 @@ def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     return fee + 0.5 * spread_bps * scale * 1.0e-4 * abs(price) * contract_size
 
 
-def turnover_charge(delta, kappa, kappa_cal=None):
+def turnover_charge(delta, kappa, kappa_cal=None, legs=False):
     """THE turnover-cost rule for a whole reposition, as `per_contract_kappa` is the rule for one
     contract. `delta` is `(..., n_hedge)` in `names['hedges']` (maturity) order; `kappa` and
     `kappa_cal` are per-leg and indexed `[..., i]`, so a `(n_hedge,)` decision kappa and a
-    per-path `(B, n_hedge)` realized one both work.
+    per-path `(B, n_hedge)` realized one both work. `legs=True` returns each leg's share
+    `(..., n_hedge)`, a matched pair's calendar price half on each of its legs at that leg's own
+    `kappa_cal`, so the shares sum to the charge and each leg pays its own.
 
     No `kappa_cal` ⇒ the L1 sum `Σ_i |Δ_i|·κ_i`, unchanged.
 
@@ -734,17 +736,31 @@ def turnover_charge(delta, kappa, kappa_cal=None):
     listed spread between them and under-charges a non-adjacent move by up to 5x; a `|Δ|`-share
     blend of the leg kappas over-charges leftover front-month lots by up to 2.4x."""
     if kappa_cal is None:
-        return (delta.abs() * kappa).sum(dim=-1)
-    rem = [delta[..., i] for i in range(delta.shape[-1])]
-    cost = torch.zeros_like(rem[0])
-    for i in range(len(rem) - 1):
-        di, dj = rem[i], rem[i + 1]
-        x = torch.minimum(di.abs(), dj.abs()) * ((di * dj) < 0)          # matched contracts
-        rem[i], rem[i + 1] = di - di.sign() * x, dj - dj.sign() * x
-        cost = cost + x * 0.5 * (kappa_cal[..., i] + kappa_cal[..., i + 1])
-    for i, residual in enumerate(rem):
-        cost = cost + residual.abs() * kappa[..., i]
-    return cost
+        charge = delta.abs() * kappa
+    else:
+        rem = list(delta.unbind(-1))
+        paid = [torch.zeros_like(r) for r in rem]
+        for i in range(len(rem) - 1):
+            di, dj = rem[i], rem[i + 1]
+            x = torch.minimum(di.abs(), dj.abs()) * ((di * dj) < 0)      # matched contracts
+            rem[i], rem[i + 1] = di - di.sign() * x, dj - dj.sign() * x
+            paid[i] = paid[i] + x * 0.5 * kappa_cal[..., i]
+            paid[i + 1] = paid[i + 1] + x * 0.5 * kappa_cal[..., i + 1]
+        charge = torch.stack(paid, -1) + torch.stack(rem, -1).abs() * kappa
+    return charge if legs else charge.sum(dim=-1)
+
+
+def leg_charges(runtime, deltas, prices, vol=None, matched=True):
+    """Each hedge leg's share `{name: (...)}` of the `turnover_charge` of a realized reposition
+    `deltas` at marks `prices` (both keyed by hedge name) and annualized `vol`: the charge the
+    solver ranks the move at, split across the legs that pay it. `matched=False` prices every lot
+    outright, as a forced close trades."""
+    hedges = runtime["names"]["hedges"]
+    kappa = torch.stack([per_contract_kappa(runtime, prices[h], h, vol) for h in hedges], dim=-1)
+    cal = (torch.stack([per_contract_kappa(runtime, prices[h], h, vol, True) for h in hedges], dim=-1)
+           if matched and runtime["accounting"]["calendar_spread_bps"] is not None else None)
+    charge = turnover_charge(torch.stack([deltas[h] for h in hedges], dim=-1), kappa, cal, legs=True)
+    return dict(zip(hedges, charge.unbind(-1)))
 
 
 def initial_q_from_runtime(runtime, batch, device):
@@ -956,24 +972,6 @@ def _history_key(commodity_field):
         return None
     return utils.check_tuple_name(
         utils.Factor('CommodityPrice', utils.check_rate_name(commodity_field)[:1]))
-
-
-def _roll_rebate(deltas, prices, runtime, vol=None):
-    """Calendar-spread rebate for a step's REALIZED turnover under `Evaluator.Calendar_Spread_Bps`.
-    A rebalance that REDUCES one contract month and INCREASES an adjacent month is a roll: the
-    matched quantity should pay a single calendar-spread crossing, not two independent outright
-    half-spreads. The env debits the full L1 turnover leg by leg; this is what it CREDITS back,
-    `(B,)` per path.
-
-    The matching and the pricing are `turnover_charge` — the same rule the solver's
-    decision charge reads, so the realized cost of a reposition and the cost the argmax ranked it
-    at are one function of one move. `deltas`/`prices` key by hedge name; `vol` is the step's
-    annualized vol."""
-    hedges = list(runtime["names"]["hedges"])
-    delta = torch.stack([deltas[h].to(torch.float32) for h in hedges], dim=-1)   # (B, n_hedge)
-    kappa = torch.stack([per_contract_kappa(runtime, prices[h], h, vol) for h in hedges], dim=-1)
-    cal = torch.stack([per_contract_kappa(runtime, prices[h], h, vol, True) for h in hedges], dim=-1)
-    return (delta.abs() * kappa).sum(-1) - turnover_charge(delta, kappa, cal)
 
 
 def _im_funding_charge(positions, prices, runtime, vol, dt):
@@ -1788,21 +1786,17 @@ class BundleStepper:
             # reconciliation organ for B=1 rolls, every step so the daily identities close exactly
             cur = self.time_index
             deltas = self._trade_deltas(structured)
-            vol_t = self.bundle.vol_at(cur)
-            cost = sum(float(self._cost(deltas[n], self._state['tradable_values'][n], n,
-                                        vol_t)[0]) for n in self._hedges)
-            reb = (float(_roll_rebate(deltas, {h: self._state['tradable_values'][h]
-                                               for h in self._hedges}, self.runtime, vol_t)[0])
-                   if self._accounting['calendar_spread_bps'] is not None else 0.0)
+            cost = self._cost(deltas, self._state['tradable_values'], self.bundle.vol_at(cur))
             legs = {n: (float(self._state['tradable_values'][n][0]),
-                        int(next_state['positions'][n][0]),
-                        int(deltas[n][0])) for n in self._hedges}
+                        int(next_state['positions'][n][0]), int(deltas[n][0]),
+                        float(cost[n][0]), self._account_of[n]) for n in self._hedges}
             logging.debug(
-                'STEP %s t=%d dec=%d legs(mark,q,dq)=%s vm=%.6f cost=%.6f reb=%.6f margin=%.6f '
+                'STEP %s t=%d dec=%d legs(mark,q,dq,cost,account)=%s vm=%.6f cost=%.6f margin=%.6f '
                 'cash_tv=%s pnl_excess=%.6f liability=%.6f',
                 self.bundle.scenario_dates[cur].date(), cur, int(was_decision_step), legs,
                 sum(float(v[0]) for v in next_state.get('variation_margin', {}).values()),
-                cost, reb, sum(float(b[0]) for b in next_state['margin_accounts'].values()),
+                sum(float(c[0]) for c in cost.values()),
+                sum(float(b[0]) for b in next_state['margin_accounts'].values()),
                 {n: float(self._state['tradable_values'][n][0]) for n in self._cash_names
                  if n in self._state['tradable_values']},
                 float(transition['pnl_excess'][0]), float(transition['liability_value'][0]))
@@ -1970,20 +1964,18 @@ class BundleStepper:
                               dim=1).round().to(dtype=torch.int64)
         return {'trade_deltas': {n: ordered[:, i] for i, n in enumerate(self._hedges)}}
 
-    def _cost(self, trade_delta, price, name, vol):
-        # Realized debit on |Δq| contracts at the turnover-cost rule (per_contract_kappa).
-        return trade_delta.abs() * per_contract_kappa(self.runtime, price, name, vol)
+    def _cost(self, deltas, prices, vol, matched=True):
+        # each leg's share of the trade's turnover charge, the one rule the solver ranks it by
+        return leg_charges(self.runtime, deltas, prices, vol, matched)
 
     def _apply_frictions(self, accounts, deltas, prices, next_positions, current, next_idx, vol_t):
-        """The two per-step friction flows both accounting modes share, credited into `accounts`
-        (cash in cash mode, margin in futures mode): the matched-roll rebate, and the vol-linked
-        IM funding debit — per leg, routed by currency, so each flows through `_portfolio_value`
-        → `_pnl_excess` → the utility."""
-        acc = self._accounting
-        if acc['calendar_spread_bps'] is not None:
-            rebate = _roll_rebate(deltas, {h: prices[h] for h in self._hedges}, self.runtime, vol_t)
-            self._credit(accounts, self._account_of[self._hedges[0]], rebate)
-        if acc['im_funding_spread_bps']:
+        """The per-step friction flows both accounting modes share, debited from `accounts` (cash
+        in cash mode, margin in futures mode), each leg's from its own account: its share of the
+        trade's turnover charge, and the vol-linked IM funding on the post-trade book, so each
+        flows through `_portfolio_value` → `_pnl_excess` → the utility."""
+        for n, cost in self._cost(deltas, prices, vol_t).items():
+            self._credit(accounts, self._account_of[n], -cost)
+        if self._accounting['im_funding_spread_bps']:
             dt = self.bundle.calendar_dt(current, next_idx)
             for n, funding in _im_funding_charge(next_positions, prices, self.runtime,
                                                  vol_t, dt).items():
@@ -2016,24 +2008,22 @@ class BundleStepper:
         return {n: (bal * factors[n] if n in factors else bal) for n, bal in accounts.items()}
 
     def _flatten_cash(self, positions, cash_accounts, terminal_values, vol):
-        for n in self._hedges:
-            delta = -positions[n]
-            cost = self._cost(delta, terminal_values[n], n, vol)
+        deltas = {n: -positions[n] for n in self._hedges}
+        for n, cost in self._cost(deltas, terminal_values, vol, matched=False).items():
             cs = float(self.runtime['tradables'][n]['contract_size'])
             account = self._account_of[n]
             if account is not None:
                 cash_accounts[account] = (cash_accounts[account]
-                                          - (delta * terminal_values[n] * cs + cost))
-            positions[n] = positions[n] + delta
+                                          - (deltas[n] * terminal_values[n] * cs + cost))
+            positions[n] = positions[n] + deltas[n]
 
     def _flatten_futures(self, positions, margin_accounts, terminal_values, vol):
         """Close hedge positions at `terminal_values`, the row they were just settled at, debiting
-        the turnover cost at `vol`."""
-        for n in self._hedges:
-            delta = -positions[n]
-            self._credit(margin_accounts, self._account_of[n],
-                         -self._cost(delta, terminal_values[n], n, vol))
-            positions[n] = positions[n] + delta
+        the turnover cost at `vol`, outright."""
+        deltas = {n: -positions[n] for n in self._hedges}
+        for n, cost in self._cost(deltas, terminal_values, vol, matched=False).items():
+            self._credit(margin_accounts, self._account_of[n], -cost)
+            positions[n] = positions[n] + deltas[n]
 
     def _cash_account_step(self, state, action):
         # `done` is a function of time_index against the last bundle index; checking the python int
@@ -2050,15 +2040,10 @@ class BundleStepper:
         deltas = self._trade_deltas(action)
         vol_t = self.bundle.vol_at(current)
         for n in self._hedges:
-            delta = deltas[n]
-            price = state['tradable_values'][n]
-            cost = self._cost(delta, price, n, vol_t)
+            # each contract is `contract_size` units of the underlying
             cs = float(self.runtime['tradables'][n]['contract_size'])
-            account = self._account_of[n]
-            if account is not None:
-                # each contract is `contract_size` units of the underlying
-                next_cash[account] = next_cash[account] - (delta * price * cs + cost)
-            next_positions[n] = (next_positions[n] + delta).round()
+            self._credit(next_cash, self._account_of[n], -deltas[n] * state['tradable_values'][n] * cs)
+            next_positions[n] = (next_positions[n] + deltas[n]).round()
         self._apply_frictions(next_cash, deltas, state['tradable_values'], next_positions,
                               current, next_idx, vol_t)
         self._hold(next_positions)
@@ -2105,14 +2090,10 @@ class BundleStepper:
             vm = next_positions[n] * (next_values[n] - state['tradable_values'][n]) * cs
             variation_margin[n] = vm
             self._credit(next_margin, self._account_of[n], vm)
-        vol_t = self.bundle.vol_at(current)
-        for n in self._hedges:
-            # trade cost references the DECISION-TIME price the agent acted on; next_values would
-            # let unrelated overnight mid moves distort the spread cost
-            self._credit(next_margin, self._account_of[n],
-                         -self._cost(deltas[n], state['tradable_values'][n], n, vol_t))
+        # trade cost references the DECISION-TIME price the agent acted on; next_values would
+        # let unrelated overnight mid moves distort the spread cost
         self._apply_frictions(next_margin, deltas, state['tradable_values'], next_positions,
-                              current, settlement_idx, vol_t)
+                              current, settlement_idx, self.bundle.vol_at(current))
         self._hold(next_positions)
         if acc['force_flat_at_end'] and current == self._close_idx - 1:
             self._flatten_futures(next_positions, next_margin, next_values,
@@ -2191,26 +2172,22 @@ class BundleStepper:
             trade_cash = -trd * fut * cs
             # the opening book enters at the first row's mark, where the stepper's P&L starts
             trade_cash[rows.start] -= held[0] * fut[rows.start] * cs
-            trade_cost = trd.abs() * per_contract_kappa(runtime, fut, name, diag_vol)
             per_instr[name] = {
                 'fut': fut, 'cs': cs, 'pos': pos, 'trd': trd,
-                'trade_cash': trade_cash, 'trade_cost': trade_cost,
-                'position_mtm': pos * fut * cs,
-                'cum_cash': trade_cash.cumsum(0), 'cum_cost': trade_cost.cumsum(0),
+                'trade_cash': trade_cash, 'position_mtm': pos * fut * cs,
+                'cum_cash': trade_cash.cumsum(0),
             }
+        # each leg's share of its row's turnover charge at the step's vol, the forced close
+        # outright, as the stepper books them
+        trades, marks = ({h: per_instr[h][k] for h in self._hedges} for k in ('trd', 'fut'))
+        matched, outright = (leg_charges(runtime, trades, marks, diag_vol, m) for m in (True, False))
+        closing = (torch.arange(T) >= self._close_idx).unsqueeze(1)
+        for name in self._hedges:
+            cost = torch.where(closing, outright[name], matched[name])
+            per_instr[name].update(trade_cost=cost, cum_cost=cost.cumsum(0))
         portfolio_pos_mtm = sum(p['position_mtm'] for p in per_instr.values())
         portfolio_cum_cash = sum(p['cum_cash'] for p in per_instr.values())
         portfolio_cum_cost = sum(p['cum_cost'] for p in per_instr.values())
-        # threaded with the SAME per-step vol as the cost above, so the matched-roll credit
-        # reconstructs the realized vol-scaled rebate
-        if runtime['accounting']['calendar_spread_bps'] is not None:
-            rebate = torch.stack([
-                _roll_rebate({h: per_instr[h]['trd'][t] for h in self._hedges},
-                             {h: per_instr[h]['fut'][t] for h in self._hedges}, runtime,
-                             None if diag_vol is None else diag_vol[t])
-                for t in range(T)])
-            rebate[self._close_idx:] = 0.0          # the forced close trades outright, as `_flatten_*`
-            portfolio_cum_cost = portfolio_cum_cost - rebate.cumsum(0)
         hp = portfolio_cum_cash + portfolio_pos_mtm - portfolio_cum_cost
         return {
             'spot': spot, 'spread_bps': float(runtime['accounting']['bid_offer_spread_bps']),
