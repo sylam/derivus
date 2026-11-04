@@ -1207,14 +1207,6 @@ class DiffSolver:
             "(aversion %.2f divides it; headroom %.1f%%)",
             worst, self.displacement, self.aversion, 100.0 * headroom)
 
-    def _capital(self, t):
-        """The DISPLACEMENT of the growth reward — a shifted-lognormal bias term: one constant per
-        run, the scalar utility scale, which is by contract the TERMINAL dispersion read.
-        Deliberately t-independent, because a per-step capital line would change the objective's
-        curvature day by day; the shift only keeps the log's argument positive and the curvature
-        stable. `t` is accepted for the call sites' sake and ignored."""
-        return float(self.utility_scale)
-
     def _wealth_step(self, W, q, dF, dL):
         """`W_{t+1} = W + Σ_i q_i·cs_i·dF_i + dL` — the frictionless analytic wealth law, owned by
         `hedge_bundle.wealth_step`, which `_futures_account_step` discretizes. `q` and `dF` are
@@ -3551,8 +3543,10 @@ class DiffSolverV2(DiffSolver):
                 mu = R.mean(-1)
                 big = 1.0e12 * Sig.diagonal().max().clamp_min(1.0)
                 Sig = Sig + torch.diag(torch.where(alive, torch.zeros_like(mu), big))
+                # the capital at the utility scale: the weights are derived before the bank
+                # the reward's displacement is measured on, which their ladder builds
                 sol = self._carry_variance_solve(
-                    mu, Sig, c, Qb, self._capital(t) / getattr(self, "aversion", 1.0))
+                    mu, Sig, c, Qb, float(self.utility_scale) / self.aversion)
                 w = tuple(round(float(x), 9) for x in sol)
             if w != last:
                 knots.append((t, w))
