@@ -1895,9 +1895,12 @@ class BundleStepper:
                                    dtype=torch.float32, device=self._device) for n in names}
 
     def _values_at(self, time_index):
-        """Current mark `{instrument: (B,)}` at full-grid `time_index`."""
+        """Current mark `{instrument: (B,)}` at full-grid `time_index`, a hedge leg's held at the
+        terminal past it: the objective ends at the last live liability mark, so a book left
+        standing under `Force_Flat_At_End` 'No' is valued there and carried over no settlement row."""
         tradables = self.bundle.tradables
-        return {n: tradables[n][time_index].to(dtype=torch.float32)
+        return {n: tradables[n][min(time_index, self._close_idx) if n in self._hedges
+                                else time_index].to(dtype=torch.float32)
                 for n in self._tradable_names if n in tradables}
 
     def _initial_state(self):
@@ -2181,6 +2184,7 @@ class BundleStepper:
         for name in self._hedges:
             cs = float(runtime['tradables'][name]['contract_size'])
             fut = bundle.tradables[name].detach().cpu().float()
+            fut[self._close_idx + 1:] = fut[self._close_idx]         # held at the terminal, as `_values_at`
             # a row trades the change of the book it holds, at its own mark, so the forced close
             # sits on the terminal, where it is booked
             held = rollout['held'][name].float()

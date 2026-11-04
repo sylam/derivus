@@ -109,8 +109,10 @@ order is not an acceptance statement and the run logs a warning.
 
 The stepper decides on the solver's decision rows (`Bundle.decision_steps`), the first row whatever
 its day and no row at or past the terminal, and the stepper roll closes every book where the verdict
-does, at the terminal, the last live liability mark, so on one replayed path at zero rates the two
-close one book to one wealth; every track holds the opening book from the first row to the first
+does, at the terminal, the last live liability mark, or under `Force_Flat_At_End` 'No' values it
+there, a hedge leg marked at the terminal past it (`BundleStepper._values_at`, and the CSV alike),
+so on one replayed path at zero rates the two close one book to one wealth; every track holds the
+opening book from the first row to the first
 decision in both, the no-hedge track closing it there; at non-zero rates the stepper also earns the
 daily interest on cash and margin, the realised accounting the verdict's wealth law leaves out.
 Held by

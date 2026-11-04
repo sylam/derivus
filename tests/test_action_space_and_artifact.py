@@ -989,10 +989,18 @@ def _swap_rolling(**kw):
     return cfg
 
 
+def _swap_held(**kw):
+    """The swap document leaving its last book standing, `Force_Flat_At_End` 'No'."""
+    cfg = _swap(**kw)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']['Force_Flat_At_End'] = 'No'
+    return cfg
+
+
 @pytest.mark.parametrize('doc, declared', [
     (_swap, {}), (_swap, {'Max_Trade_Per_Step': 2.0}),
-    (_swap, {'Max_Trade_Per_Step': 2.0, 'DiffV2_First_Decision_From': 'Passive'}), (_swap_rolling, {})],
-    ids=['plain', 'max_trade', 'first_from_passive', 'calendar'])
+    (_swap, {'Max_Trade_Per_Step': 2.0, 'DiffV2_First_Decision_From': 'Passive'}), (_swap_rolling, {}),
+    (_swap_held, {})],
+    ids=['plain', 'max_trade', 'first_from_passive', 'calendar', 'unflattened'])
 def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_path, doc, declared):
     """On a replayed path of the swap world under the position state, at zero rates and no opening
     cash, so the stepper's daily interest on cash and margin, which the verdict's wealth law leaves
@@ -1002,7 +1010,9 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     relative (greedy 1.6e-7, passive 5.1e-7), the no-hedge track's to the bit; so too under a
     `Max_Trade_Per_Step` of 2 on the roll, with its first greedy decision measured from the passive
     book under `DiffV2_First_Decision_From` 'Passive', and with the matched half of a roll at a 3 bp
-    `Calendar_Spread_Bps`, which the verdict's charge and the stepper's rebate both read. 3 s each.
+    `Calendar_Spread_Bps`, which the verdict's charge and the stepper's rebate both read; and under
+    `Force_Flat_At_End` 'No', the last book left standing valued at the terminal's mark in both and
+    carried over no settlement row. 3 s each.
 
     Killing mutations: the stepper holding the last book one row past the terminal to the
     clean-exit row and unwinding there (greedy +2,502, 1.8%); the passive book in fractional contracts
@@ -1010,7 +1020,9 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     its band (`rate_limit=False`), its first book (3, 2) against the verdict's (1, 1), greedy 48%
     apart; the verdict's first decision measured from the opening book under 'Passive' (its first
     book (1, 1) against the stepper's (-15, -15), greedy 46% apart); the stepper's
-    rebate unarmed, the verdict's charge pricing the roll the stepper pays outright (passive 2.0%)."""
+    rebate unarmed, the verdict's charge pricing the roll the stepper pays outright (passive 2.0%);
+    the stepper marking a hedge leg past the terminal (`BundleStepper._values_at` unclamped), the
+    standing book carried to the clean-exit row (greedy 134,981 against 137,484, 1.8%)."""
     d = _replayed_roll(tmp_path, doc, **declared)
     v, sv = d['verdict'], d['stepper_verdict']
     assert [v['greedy_q_traj'][t - d['root_t']] for t in sv['greedy_q_t']] == sv['greedy_q_traj']
@@ -1306,7 +1318,8 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     simulate-only fixture at zero rates paying Monday 10 August, so the row before its terminal is a
     Sunday the stepper does not decide on, in either accounting mode: `write_diagnostic_csvs` books
     the forced close on the terminal, +10 at Monday's mark, the book flat from there and -10 the day
-    before, or under `Force_Flat_At_End` 'No' the book short to the last row, and on each path it
+    before, or under `Force_Flat_At_End` 'No' the book short to the last row valued at the
+    terminal's mark, and on each path it
     writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L within 1e-5 relative;
     so too under a spread scaled by the step's vol in either accounting mode, the close paying it at
     the terminal's vol, and long 10 `PL_JUL_2026` beside the short under `Calendar_Spread_Bps`, the
@@ -1320,7 +1333,8 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     under 'No'; the forced close charged at the vol of the row before it (`vol_t` handed to
     `_flatten_futures`, the stepper 2.3e-4 off its CSV on the best path; to `_flatten_cash`, 2.3e-4
     on the cash-account document's); the CSV crediting the matched-roll rebate on the forced close
-    (3.7% above the stepper)."""
+    (3.7% above the stepper); the CSV marking the held book past the terminal (the 'held' case's
+    best path -12,180 against the stepper's -9,648)."""
     result = _run(_client(mode, force_flat, evaluator=evaluator))
     stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
     while not stepper.done:
