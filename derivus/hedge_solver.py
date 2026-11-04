@@ -1476,6 +1476,12 @@ class DiffSolver:
         logging.debug('replication hedge at step %d: %s contracts', t, q)
         return torch.minimum(torch.maximum(q, self.q_lo), self.q_hi)
 
+    @staticmethod
+    def _dust(rep):
+        """Whether a replication book `(n_hedge,)` nets under half a contract: its liability fixed
+        to within dust, a policy built on its net cover holds nothing."""
+        return abs(float(rep.sum())) < 0.5
+
     def _textbook_hedge(self, t, live, batch):
         """The textbook book at decision step t `(batch, n_hedge)`: the replication hedge booked as
         the execution books it (`HedgeActionSpace.book`), as the stepper holds it."""
@@ -3410,11 +3416,10 @@ class DiffSolverV2(DiffSolver):
         floor = 1.0 * self.leg_volume
         m_t, lo_is, hi_is = {}, {}, {}
         for t in self.steps:
-            rs = float(rep[t].abs().sum())
             lo_t, hi_t = band(t)
             lo_is[t] = math.ceil(lo_t - 1e-9)
             hi_is[t] = math.floor(hi_t + 1e-9)
-            if rs < 0.5:
+            if self._dust(rep[t]):
                 m_t[t] = torch.zeros(self.B_outer, device=self.device)
             else:
                 w = rep[t] / rep[t].sum() if live is None else self.aspace._weights_at(t, live[t])
@@ -3437,10 +3442,9 @@ class DiffSolverV2(DiffSolver):
             # risk reads d ~ 0 and the map parks the seed at the TOP of the bound.
             cv = self._phi_curve(L[t], LT < 1.0 * self.leg_volume)
             curves.append(cv)
-            if float(rep[t].abs().sum()) < 0.5:
-                # less than half a contract of remaining replication delta: the liability is fixed
-                # to within dust and the below-today comparison is float noise, so the constructed
-                # book is FLAT (the wealth step below still accrues the settling liability rows)
+            if self._dust(rep[t]):
+                # the below-today comparison is float noise, so the constructed book is FLAT (the
+                # wealth step below still accrues the settling liability rows)
                 qt = torch.zeros(self.B_outer, self.n_hedge, device=self.device)
             else:
                 g = self._phi_apply(cv, W)
@@ -3538,8 +3542,9 @@ class DiffSolverV2(DiffSolver):
             RL = RL_T - L[t]
             c = (X * (RL - RL.mean())[None]).sum(-1) / n
             alive = Sig.diagonal() > 1.0e-4
-            Qb = float(self._replication_hedge(t).sum())
-            if not bool(alive.any()) or abs(Qb) < 0.5:
+            rep = self._replication_hedge(t)
+            Qb = float(rep.sum())
+            if not bool(alive.any()) or self._dust(rep):
                 w = last if last is not None else tuple(
                     1.0 / self.n_hedge for _ in range(self.n_hedge))
             else:
