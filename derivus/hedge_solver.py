@@ -642,7 +642,7 @@ class _DiffV2Residual(torch.nn.Module):
     the TERMINAL net starts there; every earlier net starts at its fitted successor, and the
     trust-region clamp (`a_bounds`) is the brake covering the inherited starts."""
 
-    def __init__(self, in_dim, hidden=128):
+    def __init__(self, in_dim, hidden):
         super().__init__()
         self.body = torch.nn.Sequential(
             torch.nn.Linear(in_dim, hidden), torch.nn.SiLU(),
@@ -1832,7 +1832,7 @@ class DiffSolver:
         # per-column lambda_j: each market column normalized by its own label variance, so one
         # fat-tailed column cannot deflate the differential constraint for the rest
         nrm_m = (g_zn_m.var(dim=0, keepdim=True) + 1e-8
-                 if bool(self.cfg.get("diffv2_per_column_grad_norm", False))
+                 if self.cfg["diffv2_per_column_grad_norm"]
                  else g_zn_m.var() + 1e-8)
         # one optimizer per t, so a streaming step resumes the same Adam moments on a warm-started
         # net instead of restarting them on every batch
@@ -2738,7 +2738,7 @@ class DiffSolver:
             float(self.w_mean), float(self.w_std),
             self._replication_hedge(0).detach().cpu().tolist())
 
-        hidden = int(self.cfg.get("diffv2_hidden", 128))
+        hidden = self.cfg["diffv2_hidden"]
         load_cfg = self.cfg.get("diffv2_load_value_fn", "") or ""
         # a load member is either a checkpoint PATH or an already-materialised artifact DICT, so
         # the eval-from-artifact path treats an in-memory artifact exactly like a loaded file
