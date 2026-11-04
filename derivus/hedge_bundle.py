@@ -584,20 +584,12 @@ def construct_hedge_runtime(
     scalar_spread_bps, spread_spec = _bid_offer_spread(evaluator_config)
     calendar_spread_bps = (float(evaluator_config["Calendar_Spread_Bps"])
                            if evaluator_config.get("Calendar_Spread_Bps") is not None else None)
-    if calendar_spread_bps is not None:
-        # a rate <= 0 makes matched volume free or PAID FOR, and `turnover_charge` then returns a
-        # negative cost the argmax maximizes by churning; absence is the off switch
-        if calendar_spread_bps <= 0.0:
-            raise ValueError(
-                f"Evaluator.Calendar_Spread_Bps must be > 0; got {calendar_spread_bps}. Omit the "
-                f"key to price every contract at the outright spread.")
-        # ...and a rate beside an explicit refusal to price spreads is a contradiction: the rate
-        # says a matched roll is cheap, the switch says charge it twice
-        if evaluator_config.get("Roll_As_Calendar_Spread") == "No":
-            raise ValueError(
-                "Evaluator.Calendar_Spread_Bps is set beside Roll_As_Calendar_Spread='No': the "
-                "rate prices a matched roll as one calendar crossing and the switch refuses to. "
-                "Drop one of them.")
+    # a rate <= 0 makes matched volume free or PAID FOR, and `turnover_charge` then returns a
+    # negative cost the argmax maximizes by churning; absence is the off switch
+    if calendar_spread_bps is not None and calendar_spread_bps <= 0.0:
+        raise ValueError(
+            f"Evaluator.Calendar_Spread_Bps must be > 0; got {calendar_spread_bps}. Omit the "
+            f"key to price every contract at the outright spread.")
     # static instrument -> cash_account routing by currency: the first cash account whose currency
     # matches wins, else the first account
     account_by_currency = {}
@@ -694,12 +686,8 @@ def construct_hedge_runtime(
             # resolved in `per_contract_kappa`.
             "bid_offer_spread_bps": scalar_spread_bps,
             "bid_offer_spread_spec": spread_spec,
-            # when a rebalance offsets dq across adjacent maturities, the matched quantity pays one
-            # calendar half-cost instead of two outright half-spreads. A `Calendar_Spread_Bps` rate
-            # arms it on its own, so the solver's charge and the realized accounting's agree.
-            "roll_as_calendar_spread":
-                (evaluator_config.get("Roll_As_Calendar_Spread", "No") == "Yes"
-                 or calendar_spread_bps is not None),
+            # a rate prices the matched half of a rebalance across adjacent maturities at one
+            # calendar crossing, in the solver's charge and the realized accounting alike
             "calendar_spread_bps": calendar_spread_bps,
             # Vol-linked IM funding charge on the post-trade book (realized accounting only).
             # Spread 0.0 ⇒ the term is exactly 0 and never executes.
@@ -1005,8 +993,7 @@ def _history_key(commodity_field):
 
 
 def _roll_rebate(deltas, prices, runtime, vol=None):
-    """Calendar-spread rebate for a step's REALIZED turnover, armed by
-    `Evaluator.Roll_As_Calendar_Spread='Yes'` or by a `Calendar_Spread_Bps` rate on its own.
+    """Calendar-spread rebate for a step's REALIZED turnover under `Evaluator.Calendar_Spread_Bps`.
     A rebalance that REDUCES one contract month and INCREASES an adjacent month is a roll: the
     matched quantity should pay a single calendar-spread crossing, not two independent outright
     half-spreads. The env debits the full L1 turnover leg by leg; this is what it CREDITS back,
@@ -1014,16 +1001,14 @@ def _roll_rebate(deltas, prices, runtime, vol=None):
 
     The matching and the pricing are `turnover_charge` — the same rule the solver's
     decision charge reads, so the realized cost of a reposition and the cost the argmax ranked it
-    at are one function of one move. Absent a `Calendar_Spread_Bps` the matched leg falls back to
-    half the sum of the two OUTRIGHT kappas, by handing that rule the outright kappa as the
-    calendar one. `deltas`/`prices` key by hedge name; `vol` is the step's annualized vol."""
+    at are one function of one move. `deltas`/`prices` key by hedge name; `vol` is the step's
+    annualized vol."""
     hedges = list(runtime["names"]["hedges"])
     delta = torch.stack([deltas[h].to(torch.float32) for h in hedges], dim=-1)   # (B, n_hedge)
     kappa = torch.stack([per_contract_kappa(runtime, prices[h].abs(), h, vol)
                          for h in hedges], dim=-1)
-    cal = (torch.stack([per_contract_kappa(runtime, prices[h].abs(), h, vol, True)
-                        for h in hedges], dim=-1)
-           if runtime["accounting"]["calendar_spread_bps"] is not None else kappa)
+    cal = torch.stack([per_contract_kappa(runtime, prices[h].abs(), h, vol, True)
+                       for h in hedges], dim=-1)
     return (delta.abs() * kappa).sum(-1) - turnover_charge(delta, kappa, cal)
 
 
@@ -1814,7 +1799,7 @@ class BundleStepper:
                                         vol_t)[0]) for n in self._hedges)
             reb = (float(_roll_rebate(deltas, {h: self._state['tradable_values'][h]
                                                for h in self._hedges}, self.runtime, vol_t)[0])
-                   if self._accounting['roll_as_calendar_spread'] else 0.0)
+                   if self._accounting['calendar_spread_bps'] is not None else 0.0)
             legs = {n: (float(self._state['tradable_values'][n][0]),
                         int(next_state['positions'][n][0]),
                         int(deltas[n][0])) for n in self._hedges}
@@ -2003,7 +1988,7 @@ class BundleStepper:
         IM funding debit — per leg, routed by currency, so each flows through `_portfolio_value`
         → `_pnl_excess` → the utility."""
         acc = self._accounting
-        if acc['roll_as_calendar_spread']:
+        if acc['calendar_spread_bps'] is not None:
             rebate = _roll_rebate(deltas, {h: prices[h] for h in self._hedges}, self.runtime, vol_t)
             self._credit(accounts, self._account_of[self._hedges[0]], rebate)
         if acc['im_funding_spread_bps']:
@@ -2248,7 +2233,7 @@ class BundleStepper:
         portfolio_cum_cost = sum(p['cum_cost'] for p in per_instr.values())
         # threaded with the SAME per-step vol as the cost above, so the matched-roll credit
         # reconstructs the realized vol-scaled rebate
-        if runtime['accounting']['roll_as_calendar_spread']:
+        if runtime['accounting']['calendar_spread_bps'] is not None:
             rebate = torch.stack([
                 _roll_rebate({h: per_instr[h]['trd'][t] for h in self._hedges},
                              {h: per_instr[h]['fut'][t] for h in self._hedges}, runtime,

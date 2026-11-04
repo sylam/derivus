@@ -3190,9 +3190,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Bid_Offer_Spread_Bps', 'Float', default=0.0,
                       description='Full quoted spread in bps on notional, half of it charged on each trade; a spec dict may replace the '
                                   'scalar for maturity- and vol-dependent spreads'),
-                    F('Roll_As_Calendar_Spread', 'Text', default='No', values=['Yes', 'No'],
-                      description='Charge a matched roll one calendar half-cost instead of two '
-                                  'outright half-spreads'),
                     F('Calendar_Spread_Bps', 'Float', default=None,
                       description='Full spread bps of a calendar roll leg, half of it charged on a matched leg; setting it arms the '
                                   'matched-leg pricing everywhere'),
