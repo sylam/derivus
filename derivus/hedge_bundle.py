@@ -439,7 +439,7 @@ def _objective_config(objective_config):
         # canonical lowercased form: every dispatch site compares against the lowercase literal
         "object": str(objective_config["Object"]).lower(),
         # utility-transform scale, consumed by any utility Object; `utility_scale` is mirrored
-        # in from the bundle's resolved c (hedge_bundle.Bundle.mirror_utility_scale)
+        # in from the frame (hedge_bundle.mirror_frame)
         "utility_scale_mode": str(objective_config["Utility_Scale_Mode"]).lower(),
         "utility_scale_explicit":
             (None if objective_config.get("Utility_Scale_Explicit") is None
@@ -825,6 +825,16 @@ def _utility_scale(objective, t=None):
             f"the schedule's floor (Utility_Scale_Floor_Frac × its terminal entry) — the early "
             f"steps carry no dispersion of their own; otherwise it is Utility_Scale_Explicit.")
     return c
+
+
+def mirror_frame(runtime, scale, schedule):
+    """Cache a frame's utility scale `c` and its per-step `schedule` on `runtime['objective']`, where
+    every reward, penalty and utility transform reads them without taking the bundle or the solver
+    in its signature: a bundle's resolved frame, or the solver's locked one. A run with no objective
+    holds none."""
+    if runtime['objective'] is not None:
+        runtime['objective']['utility_scale'] = float(scale)
+        runtime['objective']['utility_scale_schedule'] = schedule
 
 
 def _utility_x(W, objective, t=None):
@@ -1285,22 +1295,10 @@ class Bundle:
             self.calibrated_utility_inputs = self._calibrated_utility_inputs(runtime, stoch_factors)
         self.utility_scale = self._resolve_utility_scale(runtime)
         logging.info('utility_scale (symlog c) resolved to {0:.2f}'.format(self.utility_scale))
-        self.mirror_utility_scale(runtime)
+        mirror_frame(runtime, self.utility_scale, self.utility_scale_schedule)
         if self.utility_scale_schedule is not None:
             self._log_scale_dose(runtime)
         self.step_annual_vol = self._resolve_step_vol(runtime, stoch_factors)
-
-    def mirror_utility_scale(self, runtime):
-        """Cache the resolved `c` on `runtime['objective']` so every reward, penalty and utility
-        transform reads one number without taking the bundle in its signature. Invariant:
-        `runtime['objective']['utility_scale'] == bundle.utility_scale` for any rollout that
-        computes rewards against this bundle.
-
-        The per-step SCHEDULE travels with it, so a caller that keeps a checkpoint's scale
-        (`BundleStepper(mirror_scale=False)`) keeps its knees too."""
-        if runtime['objective'] is not None:
-            runtime['objective']['utility_scale'] = float(self.utility_scale)
-            runtime['objective']['utility_scale_schedule'] = self.utility_scale_schedule
 
     def _spot_timeline(self, commodity):
         """The (H+T_sim, B) spot tensor for `commodity`: its JSON history rows 0..H-1 concatenated
@@ -1712,7 +1710,7 @@ class BundleStepper:
         self._decision_set = {bundle.initial_time_index + t for t in bundle.decision_steps}
         # the default re-mirrors THIS bundle's scale; False keeps a checkpoint's frame
         if mirror_scale:
-            bundle.mirror_utility_scale(runtime)
+            mirror_frame(runtime, bundle.utility_scale, bundle.utility_scale_schedule)
         self._state = self._initial_state()
         # the opening book, then the book held over each row stepped: what write_diagnostic_csvs reads
         self._held = {n: [self._state['positions'][n]] for n in self._hedges}

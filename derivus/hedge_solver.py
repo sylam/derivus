@@ -26,7 +26,7 @@ import torch
 from . import utils
 from .hedge_bundle import (
     _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed, _utility_x,
-    MONEY, initial_q_from_runtime, per_contract_kappa, turnover_charge, wealth_step,
+    MONEY, initial_q_from_runtime, mirror_frame, per_contract_kappa, turnover_charge, wealth_step,
 )
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
@@ -947,8 +947,7 @@ class DiffSolver:
         logging.info("DiffSolver bound batch: B_outer=%d | frame utility_scale=%.6g "
                      "(this batch resolved %.6g)", self.B_outer, self.utility_scale,
                      float(bundle.utility_scale))
-        self.runtime["objective"]["utility_scale"] = self.utility_scale
-        self.runtime["objective"]["utility_scale_schedule"] = self.utility_scale_schedule
+        mirror_frame(self.runtime, self.utility_scale, self.utility_scale_schedule)
 
     def _config_hash(self):
         """sha1 of the stable-JSON solver cfg — the stamp identifying this TRAINING RECIPE.
@@ -2309,7 +2308,7 @@ class DiffSolver:
                                 ahead = (ahead[0] + (adj * moved[-len(ahead[0]):])[:, None, None],
                                          *ahead[1:])
                         kappa_t = self._ranking_kappa(t)
-                        if not q_log["t"]:
+                        if t == sweep_ts[0]:
                             q_prev = self._first_book(t, live, B)
                         day = self.bundle.scenario_dates[hist + int(t)]    # the full grid, past the history
                         handed = self.passive_from is not None and day >= self.passive_from
@@ -2625,8 +2624,7 @@ class DiffSolver:
         self.m_mean, self.m_std = loaded["m_mean"], loaded["m_std"]
         self.w_mean, self.w_std = loaded["w_mean"], loaded["w_std"]
         self.utility_scale = float(sum(scales) / len(scales))
-        self.runtime["objective"]["utility_scale"] = self.utility_scale
-        self.runtime["objective"]["utility_scale_schedule"] = self.utility_scale_schedule
+        mirror_frame(self.runtime, self.utility_scale, self.utility_scale_schedule)
 
     def warmup(self, bundle=None):
         """Fit the value function on the first (or only) bundle and LOCK the frame: the
