@@ -1289,9 +1289,8 @@ class Bundle:
                                     tensor], dim=0)
             self.realized_cashflows[currency] = tensor
         self.last_live_mtm_index = T = int(steps - 2)
-        # decisions on the rows of market time, the clock the laws step on, so none sits on a row
-        # whose prices cannot move and none is skipped where they do; the first row whatever its
-        # day, where the opening book is traded
+        # decisions on the rows of market time, the rows the market-clock laws step on, and on the
+        # first row whatever its day, where the opening book is traded
         market = utils.market_days(self.scenario_dates[self.initial_time_index:], self.business_day)
         self.decision_steps = [0] + [t for t in range(1, T) if market[t] > 0]
         self.successors = [next((s for s in self.decision_steps if s > t), T) for t in range(T)]
@@ -1700,8 +1699,8 @@ class BundleStepper:
         'financing on cash and margin, per-instrument variation margin and settlement, turnover cost',
         'with the optional calendar-spread rebate and vol-linked IM funding, rounding to integer',
         'contracts, and the forced flatten at the last live liability mark, where the verdict closes.',
-        'It trades only on the rows the solver decides on, the first row and every market row of the',
-        "job's calendar before that mark (`Bundle.decision_steps`).",
+        'It trades only on the rows the solver decides on, the first row and every row of market',
+        "time on the job's calendar before that mark (`Bundle.decision_steps`).",
         '',
         'Each `step` returns a state dict and the caller chooses the next action. Vectorized over',
         'the whole batch — every path advances in lockstep, and an action may be a scalar',

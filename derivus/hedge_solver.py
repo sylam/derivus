@@ -267,11 +267,12 @@ class HedgeActionSpace:
         return (weights, usable.nonzero().flatten().tolist(), *self.band(t, usable))
 
     def band(self, t, usable):
-        """The whole-contract boxes `(box_lo, box_hi)` of the legs the mask `usable` marks, zero on
-        every other leg, and the band `(lo, hi)` of their signed net at decision step t,
-        `net_bounds(t)` intersected with those boxes and snapped INWARD to whole contracts, since a
-        fractional band would emit rungs, or book a hedge, that round outside their own mandate."""
-        box_lo, box_hi = torch.ceil(self.q_lo) * usable, torch.floor(self.q_hi) * usable
+        """The boxes `(box_lo, box_hi)` of the legs the mask `usable` marks, whole contracts as the
+        runtime reads `Position_Limits`, zero on every other leg, and the band `(lo, hi)` of their
+        signed net at decision step t, `net_bounds(t)` intersected with those boxes and snapped
+        INWARD to whole contracts, since a fractional band would emit rungs, or book a hedge, that
+        round outside their own mandate."""
+        box_lo, box_hi = self.q_lo * usable, self.q_hi * usable
         lo, hi = self.net_bounds(t)
         return (box_lo, box_hi, math.ceil(max(lo, float(box_lo.sum())) - 1e-9),
                 math.floor(min(hi, float(box_hi.sum())) + 1e-9))
@@ -1032,9 +1033,10 @@ class DiffSolver:
         IS the switch at this level.
 
         Market and wealth are z-scored against the locked bank frame; p is NOT, because it is
-        already a fraction of the cap on both sides of the seam — `grid()` drops any action over
-        `Total_Position_Abs_Limit` and `_build_bank` water-fills each sampled book onto
-        `aspace.net_bounds(t)` — so p arrives in [-1, 1] over a support the bank covers.
+        already a fraction of the cap on both sides of the seam — `grid_at` keeps only the actions
+        inside `Total_Position_Abs_Limit` (`HedgeActionSpace._within`) and `_build_bank`
+        water-fills each sampled book onto `aspace.net_bounds(t)` — so p arrives in [-1, 1] over a
+        support the bank covers.
 
         `DiffV2_Wealth_Free_Value` drops the W column instead of adding one. The two switches
         compose, each owning one column, so the layout is `(market | [W] | [p])` in that order
@@ -2851,7 +2853,7 @@ class DiffSolver:
 
         `live_prev` is the leg mask of the step that SET the book standing at t — the one mask
         rule for the position state (`_fit_step`). The sweep runs over the decision rows, each a
-        market row whose successor is the next one (`self.nxt`); the first swept step has no
+        row of market time whose successor is the next one (`self.nxt`); the first swept step has no
         predecessor in the cache and `nets[t_min]` is fitted but never queried, so it falls back to
         its own."""
         rows = []

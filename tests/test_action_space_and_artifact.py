@@ -663,15 +663,14 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     notional, in one spelling (`_w_norm`) on every path a net is fitted or read on. A training
     document under the scale-free LogWealth objective with the returns state on then fits its
     labels: the fitted residual tracks the bootstrap label from the first backward step, the
-    sweep's `V_0` reads 0.10793102532625198 on the CPU (0.0859 on a card: the twelve-path,
-    five-iteration fit is device-rounded) and the same document at twice every dollar trains
-    to the same `V_0` within 1e-6, since the frame is dimensionless.
+    sweep's `V_0` reads 0.10793102532625198 on the CPU and the same document at twice every dollar
+    trains to the same `V_0` within 1e-6, since the frame is dimensionless.
 
     Killing mutation: the fit loop and the ensemble path feeding wealth in dollars to the
     fraction frame (the three spellings this gate retired) - the net sees a column a million
     standard deviations wide, fits a residual an order of magnitude too small at the first step,
-    the sweep reads V_0 0.01840450055897236 (0.0162 on a card) and the doubled document no
-    longer trains alike."""
+    the sweep reads V_0 0.01840450055897236 on the CPU and the doubled document no longer trains
+    alike."""
     cfg = _cfg(seed=7)
     cfg['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'     # the two fits repeat to the bit on a card
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
@@ -1440,10 +1439,10 @@ def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tm
     """`DiffV2_Max_Value_Optimism` bounds V_0 less the held-out greedy utility, net of the
     repositioning charge under the position state the swap fixture carries: the value a fit claims
     against what its own argmax earns on a world no fit step saw. Seed 5 claims V_0 +0.1937
-    against a held-out greedy u of +0.2066 on the CPU (+0.1839 and +0.1990 on a card); the test
-    declares the bound at -10, below any fit's gap, so on either device the save is refused naming
-    the field, V_0 and the held-out utility, and no checkpoint is written. Seed 6 (V_0 +0.1639 on
-    the CPU, +0.1755 on a card) saves, stamped with V_0 less its held-out greedy
+    against a held-out greedy u of +0.2066 on the CPU; the test declares the bound at -10, below
+    any fit's gap, so on either device the save is refused naming the field, V_0 and the held-out
+    utility, and no checkpoint is written. Seed 6 (V_0 +0.1639 on the CPU) saves, stamped with V_0
+    less its held-out greedy
     `u_mean`; a roll declaring a bound below the stamp refuses the member by name, and the same
     checkpoint without the stamp, as every checkpoint saved before it, loads at that bound. 20 s.
 
@@ -1716,8 +1715,7 @@ def test_a_label_past_the_horizon_is_what_its_greedy_policy_realises(objective, 
     was fitted on: the swap growth document under seed 6 at a horizon of 100 steps, past its 32,
     trains a V_0 within 0.006 of the `u_mean` its checkpoint's frozen roll on the training batch
     realises (the roll's first greedy book the training root's). On the CPU 0.0981 against 0.0991
-    under LogWealth and 0.1899 against 0.1906 under the fixture's terminal utility; seeds 1 to 8
-    on a card read within 0.0031. 35 s each.
+    under LogWealth and 0.1899 against 0.1906 under the fixture's terminal utility. 35 s each.
 
     Killing mutations, V_0 against the roll's utility: the roll's wealth recursion gross of the
     charge (its `u_mean` 0.1113 and 0.2059 against the net 0.0991 and 0.1906, 0.010 to 0.016 above
@@ -2315,14 +2313,13 @@ def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
     price, the basis level) is labelled with the move's slope rather than the t+1 mark's. On the
     `FRICTIONAL` solve with `BAND_BASIS` (D the 7th of 8 market columns, the level the 8th), at the
     last step, whose continuation is the closed-form utility and whose book hedges the last fixing,
-    the level's label is 0.010% of D's label summed over the six swept steps (0.025% on the card,
-    bound 1%): moving the level and its slow mean together leaves the move unchanged; and D's fitted
-    slope sums within 1.1% of its label (2.2% on the card, bound 15%). Seeds 1 to 13 read at most
-    0.065% and 5.2% on the CPU, 0.026% and 16% on the card (its seed 9 past the bound). 7 s.
+    the level's label is 0.010% of D's label summed over the six swept steps (bound 1%): moving the
+    level and its slow mean together leaves the move unchanged; and D's fitted slope sums within
+    1.1% of its label (bound 15%). Seeds 1 to 13 read at most 0.065% and 5.2% on the CPU. 7 s.
 
     Killing mutation: the wealth step differencing the fork's t+1 marks against the outer t marks,
     which carry no gradient (the level's label at the last step 19% of D's summed label, 39% and
-    48% on seeds 2 and 4; 35%, 36% and 31% on the card)."""
+    48% on seeds 2 and 4)."""
     run = _state_labels(caplog, band=True)
     last = run[LAST_STEP][1]
     slope, label = (sum(run[t][i] for t in run) for i in (0, 1))
