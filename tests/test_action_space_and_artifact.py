@@ -1407,7 +1407,7 @@ def test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal(mode, 
     Killing mutations: the stepper deciding on every row of market time, a Wednesday terminal among
     them, so the trade it takes there is held unclosed (final position -10, the Wednesday cases); the
     close one row late at the clean-exit row (`current == self._close_idx` closing at
-    `_values_at(last)`) in `_futures_account_step` and in `_cash_account_step`, the hedge P&L
+    `_values_at(last)`) in `_step_state`, in either accounting mode, the hedge P&L
     picking up the Saturday-to-Sunday move (path 1 -305,396 against -334,473)."""
     cfg = _paying(_zero_rates(jsonlib.load(open(FIXTURE))), terminal)
     cfg['Calc']['Calculation'].update(Batch_Size=8, Random_Seed=3)
@@ -1492,7 +1492,7 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     accounting step, the close booked on Sunday at Sunday's mark (49,984.73); the CSV's book left
     flat past the stepped rows (`pos[rows.stop:]` at zero), the book dropped on the clean-exit row
     under 'No'; the forced close charged at the vol of the row before it (`vol_t` handed to
-    `_flatten_futures`, the stepper 2.3e-4 off its CSV on the best path; to `_flatten_cash`, 2.3e-4
+    `_flatten` in futures mode, the stepper 2.3e-4 off its CSV on the best path; in cash mode, 2.3e-4
     on the cash-account document's); the CSV pricing the forced close matched as a roll
     (3.7% above the stepper); the CSV marking the held book past the terminal (the 'held' case's
     best path -12,180 against the stepper's -9,648)."""

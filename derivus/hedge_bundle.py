@@ -1907,9 +1907,49 @@ class BundleStepper:
         }
 
     def _step_state(self, state, action):
-        if self.runtime['accounting_mode'] == 'cash_account':
-            return self._cash_account_step(state, action)
-        return self._futures_account_step(state, action)
+        """Advance one day: compound the balances overnight, trade at the DECISION-TIME marks, its
+        charge too (the next row's would let an unrelated overnight move distort the spread cost),
+        then settle. `cash_account` mode moves each trade's consideration through cash and tracks
+        no VM; futures mode freezes cash at starting capital and settles the post-trade book's
+        price(t) → price(t+1) variation margin into margin, so the new delta accrues the move it
+        traded into. A book adds whole contracts, `_structured_action` rounding the action; `done`
+        reads the python-int time index, so a step costs no CUDA-CPU sync."""
+        current = int(state['time_index'])
+        if current >= self._last_idx:
+            return state
+        nxt = current + 1
+        cash_mode = self.runtime['accounting_mode'] == 'cash_account'
+        marks, next_values = state['tradable_values'], self._values_at(nxt)
+        # shallow dict copies: tensors are replaced in-slot, never mutated in place
+        next_positions = dict(state['positions'])
+        next_cash = self._compound(state['cash_accounts'], marks, next_values)
+        next_margin = (state['margin_accounts'] if cash_mode
+                       else self._compound(state['margin_accounts'], marks, next_values))
+        accounts = next_cash if cash_mode else next_margin
+        variation_margin = self._zeros_by_name(self._hedges)
+        deltas = self._trade_deltas(action)
+        for n in self._hedges:
+            # each contract is `contract_size` units of the underlying
+            cs = float(self.runtime['tradables'][n]['contract_size'])
+            next_positions[n] = next_positions[n] + deltas[n]
+            if cash_mode:
+                self._credit(accounts, self._account_of[n], -deltas[n] * marks[n] * cs)
+            else:
+                variation_margin[n] = next_positions[n] * (next_values[n] - marks[n]) * cs
+                self._credit(accounts, self._account_of[n], variation_margin[n])
+        self._apply_frictions(accounts, deltas, marks, next_positions, current, nxt,
+                              self.bundle.vol_at(current))
+        self._hold(next_positions)
+        if self._accounting['force_flat_at_end'] and current == self._close_idx - 1:
+            self._flatten(next_positions, accounts, next_values, self.bundle.vol_at(nxt), cash_mode)
+        return self._refresh({
+            'done': torch.full_like(state['done'], nxt >= self._last_idx, dtype=torch.bool),
+            'positions': next_positions,
+            'cash_accounts': next_cash,
+            'margin_accounts': next_margin,
+            'variation_margin': variation_margin,
+            'initial_portfolio_value': state['initial_portfolio_value'],
+        }, nxt)
 
     def _trade_deltas(self, action):
         """Per-hedge trade deltas `(B,)` from a structured action (zeros for no action)."""
@@ -1963,121 +2003,23 @@ class BundleStepper:
         if account_name is not None:
             accounts[account_name] = accounts[account_name] + amount
 
-    def _growth_factors(self, current, next_idx):
-        """Per-cash-account one-day growth factor for compounding balances overnight. The cash
-        tradable value is `Units / D(t) × fx_rep`, so `tv(next)/tv(cur) = D(cur)/D(next)` is the
-        growth factor (≈ 1 + SOFR·dt). Empty when next_idx == current (terminal pass-through)."""
-        if current >= next_idx:
-            return {}
-        tv_curr = self._values_at(current)
-        tv_next = self._values_at(next_idx)
-        return {n: tv_next[n] / tv_curr[n] for n in self._cash_names
-                if n in tv_curr and n in tv_next}
+    def _compound(self, accounts, marks, next_marks):
+        """Each balance grown overnight by its cash account's mark ratio `tv(next)/tv(cur)`: the
+        cash tradable value is `Units / D(t) × fx_rep`, so the ratio is `D(cur)/D(next)`, about
+        1 + SOFR·dt. A balance with no mark passes through by reference, safe because balances are
+        always rebound to new tensors, never mutated in place."""
+        return {n: (bal * (next_marks[n] / marks[n]) if n in marks and n in next_marks else bal)
+                for n, bal in accounts.items()}
 
-    def _compound(self, accounts, factors):
-        """Multiply each balance by its growth factor (pass-through by reference when absent —
-        safe because balances are always rebound to new tensors, never mutated in place)."""
-        return {n: (bal * factors[n] if n in factors else bal) for n, bal in accounts.items()}
-
-    def _flatten_cash(self, positions, cash_accounts, terminal_values, vol):
+    def _flatten(self, positions, accounts, values, vol, cash_mode):
+        """Close the hedge book at `values`, the terminal's marks, outright at `vol`: each leg pays
+        its turnover charge and, in cash mode, its consideration, from its own account."""
         deltas = {n: -positions[n] for n in self._hedges}
-        for n, cost in self._cost(deltas, terminal_values, vol, matched=False).items():
+        for n, cost in self._cost(deltas, values, vol, matched=False).items():
             cs = float(self.runtime['tradables'][n]['contract_size'])
-            account = self._account_of[n]
-            if account is not None:
-                cash_accounts[account] = (cash_accounts[account]
-                                          - (deltas[n] * terminal_values[n] * cs + cost))
+            self._credit(accounts, self._account_of[n],
+                         -(deltas[n] * values[n] * cs + cost) if cash_mode else -cost)
             positions[n] = positions[n] + deltas[n]
-
-    def _flatten_futures(self, positions, margin_accounts, terminal_values, vol):
-        """Close hedge positions at `terminal_values`, the row they were just settled at, debiting
-        the turnover cost at `vol`, outright."""
-        deltas = {n: -positions[n] for n in self._hedges}
-        for n, cost in self._cost(deltas, terminal_values, vol, matched=False).items():
-            self._credit(margin_accounts, self._account_of[n], -cost)
-            positions[n] = positions[n] + deltas[n]
-
-    def _cash_account_step(self, state, action):
-        # `done` is a function of time_index against the last bundle index; checking the python int
-        # avoids a CUDA-CPU sync on every step
-        current = int(state['time_index'])
-        last = self._last_idx
-        if current >= last:
-            return state
-        next_idx = min(current + 1, last)
-        acc = self._accounting
-        # shallow dict copy: tensors are replaced in-slot, never mutated in place
-        next_positions = dict(state['positions'])
-        next_cash = self._compound(state['cash_accounts'], self._growth_factors(current, next_idx))
-        deltas = self._trade_deltas(action)
-        vol_t = self.bundle.vol_at(current)
-        for n in self._hedges:
-            # each contract is `contract_size` units of the underlying
-            cs = float(self.runtime['tradables'][n]['contract_size'])
-            self._credit(next_cash, self._account_of[n], -deltas[n] * state['tradable_values'][n] * cs)
-            next_positions[n] = (next_positions[n] + deltas[n]).round()
-        self._apply_frictions(next_cash, deltas, state['tradable_values'], next_positions,
-                              current, next_idx, vol_t)
-        self._hold(next_positions)
-        if acc['force_flat_at_end'] and current == self._close_idx - 1:
-            self._flatten_cash(next_positions, next_cash, self._values_at(next_idx),
-                               self.bundle.vol_at(next_idx))
-        next_state = {
-            'done': torch.full_like(state['done'], next_idx >= last, dtype=torch.bool),
-            'positions': next_positions,
-            'cash_accounts': next_cash,
-            'margin_accounts': state['margin_accounts'],
-            # cash mode tracks no daily VM
-            'variation_margin': self._zeros_by_name(self._hedges),
-            'initial_portfolio_value': state['initial_portfolio_value'],
-        }
-        return self._refresh(next_state, next_idx)
-
-    def _futures_account_step(self, state, action):
-        """Advance one day under futures accounting: `cash_accounts` is FROZEN at starting capital
-        and only margin tracks variation margin and trade cost.
-
-        The trade is applied BEFORE VM is computed so the new delta participates in the
-        price(t) → price(t+1) accrual: the agent transacted at the decision-time price and the
-        whole post-trade position is then marked at price(t+1). Positions round to integer
-        contracts so float drift cannot accumulate."""
-        current = int(state['time_index'])
-        last = self._last_idx
-        if current >= last:
-            return state
-        settlement_idx = min(current + 1, last)
-        acc = self._accounting
-        next_positions = dict(state['positions'])
-        growth = self._growth_factors(current, settlement_idx)
-        next_cash = self._compound(state['cash_accounts'], growth)
-        next_margin = self._compound(state['margin_accounts'], growth)
-        variation_margin = self._zeros_by_name(self._hedges)
-        deltas = self._trade_deltas(action)
-        next_values = self._values_at(settlement_idx)
-        # trade first, then mark: the new delta accrues price(t) -> price(t+1)
-        for n in self._hedges:
-            cs = float(self.runtime['tradables'][n]['contract_size'])
-            next_positions[n] = (next_positions[n] + deltas[n]).round()
-            vm = next_positions[n] * (next_values[n] - state['tradable_values'][n]) * cs
-            variation_margin[n] = vm
-            self._credit(next_margin, self._account_of[n], vm)
-        # trade cost references the DECISION-TIME price the agent acted on; next_values would
-        # let unrelated overnight mid moves distort the spread cost
-        self._apply_frictions(next_margin, deltas, state['tradable_values'], next_positions,
-                              current, settlement_idx, self.bundle.vol_at(current))
-        self._hold(next_positions)
-        if acc['force_flat_at_end'] and current == self._close_idx - 1:
-            self._flatten_futures(next_positions, next_margin, next_values,
-                                  self.bundle.vol_at(settlement_idx))
-        next_state = {
-            'done': torch.full_like(state['done'], settlement_idx >= last, dtype=torch.bool),
-            'positions': next_positions,
-            'cash_accounts': next_cash,
-            'margin_accounts': next_margin,
-            'variation_margin': variation_margin,
-            'initial_portfolio_value': state['initial_portfolio_value'],
-        }
-        return self._refresh(next_state, settlement_idx)
 
     def _payoff(self, state):
         """This transition's terminal read: `pnl_excess` is the wealth change since inception and
