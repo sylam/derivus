@@ -255,8 +255,12 @@ class HedgeActionSpace:
         weights = self._weights_at(t, live)
         usable = (weights > 0).to(self.q_lo.dtype)
         box_lo, box_hi, lo, hi = self.bounds(t, usable)
-        return (weights, usable.nonzero().flatten().tolist(), box_lo, box_hi,
-                math.ceil(lo - 1e-9), math.floor(hi + 1e-9))
+        return (weights, usable.nonzero().flatten().tolist(), box_lo, box_hi, *self.inward(lo, hi))
+
+    @staticmethod
+    def inward(lo, hi):
+        """The net band `[lo, hi]` snapped INWARD to whole contracts, every integer net inside it."""
+        return math.ceil(lo - 1e-9), math.floor(hi + 1e-9)
 
     def book(self, q, t, live):
         """`q` `(B, n_hedge)` as the execution books it at decision step t: each leg clamped into
@@ -3284,8 +3288,7 @@ class DiffSolverV2(DiffSolver):
         for t in self.steps:
             bands[t] = lo_t, hi_t = (self.aspace.bounds(t)[2:] if live is None
                                      else self.aspace.ladder(t, live[t])[4:])
-            lo_is[t] = math.ceil(lo_t - 1e-9)
-            hi_is[t] = math.floor(hi_t + 1e-9)
+            lo_is[t], hi_is[t] = self.aspace.inward(lo_t, hi_t)
             if self._dust(rep[t]):
                 m_t[t] = torch.zeros(self.B_outer, device=self.device)
             else:
