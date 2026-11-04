@@ -3485,23 +3485,23 @@ class DiffSolverV2(DiffSolver):
         return q, curves, W
 
     @staticmethod
-    def _carry_variance_solve(mu, Sig, c, Q, C):
-        """argmin_w [Q²·wᵀΣw + 2Q·wᵀc] / (2C) − Q·wᵀμ  s.t. Σw = 1, w ≥ 0.
+    def _carry_variance_solve(mu, Sig, c, Q, scale):
+        """argmin_w [Q²·wᵀΣw + 2Q·wᵀc] / (2·scale) − Q·wᵀμ  s.t. Σw = 1, w ≥ 0.
 
-        The growth-pinned carry/tracking allocator for ONE step: Σ and c are the covariance of
-        the legs' remaining-horizon P&L (per contract, $) with each other and with the
-        liability's, μ their means, Q the signed reference net (short < 0), C the capital at
-        the step — which fixes the variance/mean exchange rate at the log objective's ½/C, so
-        there is no free dial. Active-set over ≤ n legs: solve the equality-constrained
-        stationarity, drop the most negative weight, repeat."""
+        The carry/tracking allocator for ONE step: Σ and c are the covariance of the legs'
+        remaining-horizon P&L (per contract, $) with each other and with the liability's, μ
+        their means, Q the signed reference net (short < 0), and the variance/mean exchange rate
+        ½/scale at the frame scale `utility_scale / aversion`. Active-set over ≤ n legs: solve
+        the equality-constrained stationarity, drop the most negative weight, repeat."""
         idx = list(range(int(mu.shape[0])))
         while True:
             S = Sig[idx][:, idx].double()
             S = S + 1.0e-8 * S.diagonal().mean().clamp_min(1e-12) * torch.eye(
                 len(idx), dtype=S.dtype, device=S.device)
             Si = torch.linalg.inv(S)
-            w = (C / Q ** 2) * (Si @ (Q * mu[idx].double() - (Q / C) * c[idx].double()))
-            k = (C / Q ** 2) * (Si @ torch.ones(len(idx), dtype=S.dtype, device=S.device))
+            w = (scale / Q ** 2) * (Si @ (Q * mu[idx].double()
+                                          - (Q / scale) * c[idx].double()))
+            k = (scale / Q ** 2) * (Si @ torch.ones(len(idx), dtype=S.dtype, device=S.device))
             w = w - ((w.sum() - 1.0) / k.sum()) * k
             if bool((w >= -1e-9).all()) or len(idx) == 1:
                 out = torch.zeros_like(mu, dtype=S.dtype)
@@ -3538,8 +3538,8 @@ class DiffSolverV2(DiffSolver):
                 mu = R.mean(-1)
                 big = 1.0e12 * Sig.diagonal().max().clamp_min(1.0)
                 Sig = Sig + torch.diag(torch.where(alive, torch.zeros_like(mu), big))
-                # the capital at the utility scale: the weights are derived before the bank
-                # the reward's displacement is measured on, which their ladder builds
+                # the frame scale, which exists at bind; the LogWealth capital line is
+                # measured on the bank this ladder builds, so it cannot be read here
                 sol = self._carry_variance_solve(
                     mu, Sig, c, Qb, float(self.utility_scale) / self.aversion)
                 w = tuple(round(float(x), 9) for x in sol)
