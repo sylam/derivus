@@ -26,7 +26,8 @@ import torch
 from . import utils
 from .hedge_bundle import (
     _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed, _utility_x,
-    MONEY, initial_q_from_runtime, kappa_pair, mirror_frame, turnover_charge, wealth_step,
+    MONEY, initial_q_from_runtime, kappa_pair, mirror_frame, terminal_stats, turnover_charge,
+    wealth_step,
 )
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
@@ -53,11 +54,10 @@ def _on_rows(fork, rows):
 def _tail_stats(runtime, wT, u_sum=None):
     """Terminal-P&L stats shared by the verdict and the stepper rollout: the objective mean —
     the terminal utility of `wT` under `runtime`, or the accumulated step-sum when the caller
-    carries one — and the dollar tail."""
-    p5 = torch.quantile(wT, 0.05)
-    cvar5 = wT[wT <= p5].mean() if (wT <= p5).any() else p5
+    carries one — and the money tail (`terminal_stats`)."""
+    stats = terminal_stats(wT)
     return {"u_mean": float((_utility_wrap_signed(wT, runtime) if u_sum is None else u_sum).mean()),
-            "wT_mean": float(wT.mean()), "wT_p5": float(p5), "wT_cvar5": float(cvar5)}
+            "wT_mean": stats["mean"], "wT_p5": stats["p5"], "wT_cvar5": stats["cvar5"]}
 
 
 @dataclass

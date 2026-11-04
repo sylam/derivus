@@ -7,6 +7,7 @@ JSON in, run_job, drive the stepper. No internal imports.
 import json as jsonlib
 import os
 
+import pandas as pd
 import torch
 
 import derivus as rf
@@ -15,11 +16,13 @@ FIXTURE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
                        'policy_test_simulate_only.json')
 
 
-def test_no_trade_stepper_matches_framework_baseline():
+def test_no_trade_stepper_matches_framework_baseline(tmp_path):
     """The terminal P&L of a zero-trade client rollout - its mean and its worst path - is the
-    reported no-trade baseline to a dollar.
+    reported no-trade baseline to the bit, both read off the money the stepper carries, and the
+    stepper's summary CSV prints them to the cent.
 
-    Killing mutation: the baseline's `worst_net_pnl` read off the best path."""
+    Killing mutations: the baseline's `worst_net_pnl` read off the best path; the baseline read off
+    a float32 cast of the net (its mean 118,250.78 against the CSV's 118,250.77)."""
     cx = rf.Context()
     cx.load_json((jsonlib.dumps(jsonlib.load(open(FIXTURE))), 'stepper_test.json'))
     _, result = cx.run_job()
@@ -35,5 +38,8 @@ def test_no_trade_stepper_matches_framework_baseline():
     fw_mean = float(baseline['average_net_pnl'])
     fw_worst = float(baseline['worst_net_pnl'])
 
-    assert abs(stepper_mean - fw_mean) < 1.0, f"stepper mean ${stepper_mean:,.0f} ≠ framework ${fw_mean:,.0f}"
-    assert abs(stepper_worst - fw_worst) < 1.0, f"stepper worst ${stepper_worst:,.0f} ≠ framework ${fw_worst:,.0f}"
+    assert (stepper_mean, stepper_worst) == (fw_mean, fw_worst), (
+        stepper_mean, fw_mean, stepper_worst, fw_worst)
+    stepper.write_diagnostic_csvs(str(tmp_path), 'nt')
+    summary = pd.read_csv(tmp_path / 'nt_summary.csv').set_index('metric')['net_pnl']
+    assert (summary['mean'], summary['min']) == (round(fw_mean, 2), round(fw_worst, 2)), summary

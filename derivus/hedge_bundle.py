@@ -34,7 +34,6 @@ import time
 from copy import deepcopy
 from typing import Any, Dict, Mapping, Optional
 
-import numpy as np
 import pandas as pd
 import torch
 
@@ -1078,6 +1077,17 @@ def _tracking_error_value(state, runtime):
     return pnl_excess + state["liability_value"].to(dtype=MONEY, device=pnl_excess.device)
 
 
+def terminal_stats(x):
+    """The terminal-P&L summary every report reads off `x` `(B,)`, in `MONEY`: the mean, the
+    population std, the min and max, the median, the 5th and 95th percentiles (linear
+    interpolation) and the mean of the tail at or below the 5th."""
+    x = x.to(dtype=MONEY)
+    p5, median, p95 = torch.quantile(x, x.new_tensor([0.05, 0.5, 0.95]))
+    return {"mean": float(x.mean()), "std": float(x.std(unbiased=False)), "min": float(x.min()),
+            "max": float(x.max()), "median": float(median), "p5": float(p5), "p95": float(p95),
+            "cvar5": float(x[x <= p5].mean())}
+
+
 def _align_time_axis(tensor, steps):
     """Truncate/pad a time-major tensor to `steps` rows (padding repeats the last row) — the
     liability MTM grid is the reference axis every other series is aligned to."""
@@ -1752,15 +1762,13 @@ class BundleStepper:
         """Terminal P&L summary in the `evaluation_summary` shape `HedgeMonteCarlo.execute`
         publishes. `simulate_only` rolls the no-trade policy, so the policy and the reference
         baseline are the same trajectory and the difference block is identically zero."""
-        hedge_pnl = self._terminal_transition['pnl_excess'].detach().to(dtype=torch.float32)
-        liability = self._terminal_transition['liability_value'].detach().to(dtype=torch.float32)
-        net_pnl = self._terminal_transition['net_pnl'].detach().to(dtype=torch.float32)
+        last = {k: self._terminal_transition[k].detach()
+                for k in ('pnl_excess', 'liability_value', 'net_pnl')}
+        net = terminal_stats(last['net_pnl'])
         metrics = {
-            'average_net_pnl': float(net_pnl.mean().item()),
-            'median_net_pnl': float(torch.quantile(net_pnl.to(dtype=torch.float64), 0.5).item()),
-            'worst_net_pnl': float(net_pnl.min().item()),
-            'average_hedge_pnl': float(hedge_pnl.mean().item()),
-            'average_liability': float(liability.mean().item()),
+            'average_net_pnl': net['mean'], 'median_net_pnl': net['median'], 'worst_net_pnl': net['min'],
+            'average_hedge_pnl': float(last['pnl_excess'].mean()),
+            'average_liability': float(last['liability_value'].mean()),
         }
         cpu = lambda values: {str(n): t.detach().to(dtype=torch.float32).cpu()
                               for n, t in values.items()}
@@ -1770,11 +1778,9 @@ class BundleStepper:
                 'positions': cpu(self._state['positions']),
                 'cash_accounts': cpu(self._state['cash_accounts']),
                 'margin_accounts': cpu(self._state['margin_accounts']),
-                'pnl_excess': hedge_pnl.cpu(),
-                'liability_value': liability.cpu(),
-                'net_pnl': net_pnl.cpu(),
+                **cpu(last),
             },
-            'diagnostics': {'num_episodes': int(net_pnl.shape[0]),
+            'diagnostics': {'num_episodes': int(last['net_pnl'].shape[0]),
                             'num_batches': self.bundle.num_batches,
                             'trainer_type': 'simulate'},
             'timing': dict(timing or {}),
@@ -1795,23 +1801,11 @@ class BundleStepper:
         fields = self._diag_fields(rollout)
         os.makedirs(output_dir, exist_ok=True)
         self._diag_write_paths(fields, label, os.path.join(output_dir, f'{label}_paths.csv'))
-        net = rollout['net_pnl'].numpy()
-        total = fields['total_ex_funding_discount'][-1].numpy()
-        pd.DataFrame([
-            {'policy': label, 'metric': 'mean', 'net_pnl': float(net.mean()),
-             'total_ex_funding': float(total.mean())},
-            {'policy': label, 'metric': 'std', 'net_pnl': float(net.std()),
-             'total_ex_funding': float(total.std())},
-            {'policy': label, 'metric': 'min', 'net_pnl': float(net.min()),
-             'total_ex_funding': float(total.min())},
-            {'policy': label, 'metric': 'p5', 'net_pnl': float(np.percentile(net, 5)),
-             'total_ex_funding': float(np.percentile(total, 5))},
-            {'policy': label, 'metric': 'p95', 'net_pnl': float(np.percentile(net, 95)),
-             'total_ex_funding': float(np.percentile(total, 95))},
-            {'policy': label, 'metric': 'max', 'net_pnl': float(net.max()),
-             'total_ex_funding': float(total.max())},
-        ]).to_csv(os.path.join(output_dir, f'{label}_summary.csv'), index=False,
-                  float_format='%.2f')
+        net = terminal_stats(rollout['net_pnl'])
+        total = terminal_stats(fields['total_ex_funding_discount'][-1])
+        pd.DataFrame([{'policy': label, 'metric': m, 'net_pnl': net[m], 'total_ex_funding': total[m]}
+                      for m in ('mean', 'std', 'min', 'p5', 'p95', 'max')]).to_csv(
+            os.path.join(output_dir, f'{label}_summary.csv'), index=False, float_format='%.2f')
 
     # ---- state construction + transition -------------------------------------
     def _zeros_by_name(self, names):
