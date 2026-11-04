@@ -688,9 +688,8 @@ def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     `0.5·(κcal_i + κcal_j)` by `turnover_charge`, the result is both clearing fees plus one
     half-spread on the average leg notional.
 
-    LIMITATION: `Calendar_Spread_Bps` is one scalar rate, so the `Per_Instrument` base does not
-    carry over to the calendar leg and a per-maturity spread ladder is inexpressible. The OUTRIGHT
-    half of every charge still reads each leg's own base."""
+    The one scalar `Calendar_Spread_Bps` rate is a limitation (docs_src/limitations.md); the
+    OUTRIGHT half of every charge reads each leg's own base."""
     acc = runtime["accounting"]
     contract_size = float(runtime["tradables"][name]["contract_size"])
     spec = acc["bid_offer_spread_spec"]
@@ -962,8 +961,8 @@ def _rolling_realized_vol(spot, market, window=PRICE_ZSCORE_WINDOW):
 def _history_key(commodity_field):
     """The `spot_price_history` key for a deal's raw `Commodity` field: the PRIMARY spot's full
     factor name, which is the key space `_spot_price_history` validates the dict against. The deal
-    carries the bare name (`'PLATINUM_CME'`, or a composed `'PLATINUM_CME.LME_CME'` whose history
-    is its primary's), and keying the lookup by that raw field can never match."""
+    carries the bare name (`'X'`, or a composed `'X.Y'` whose history is its primary's), and
+    keying the lookup by that raw field can never match."""
     if not commodity_field:
         return None
     return utils.check_tuple_name(

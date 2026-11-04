@@ -3148,13 +3148,7 @@ class StreamingSolve:
         'structurally possible.',
         '',
         '`Simulation_Batches` is the stream length. Trained paths are',
-        '`(Simulation_Batches - 1) x Batch_Size`, and the minimum is 2. In one study on a',
-        'single-commodity futures hedge (four shapes, three seeds each; horizon and objective not',
-        "recorded here, so indicative and not a gate), STREAM LENGTH was the lever and batch width",
-        "was not: the solver's utility margin over the `textbook` benchmark at `4096 x 5`, the",
-        'shape `tests/fixtures/platinum_hedge_shipping.json` runs, was twice that at `4096 x 2`,',
-        'while `8192 x 5` bought a little more tail for twice the wall time, twice the memory and a',
-        'three-times wider seed spread.',
+        '`(Simulation_Batches - 1) x Batch_Size`, and the minimum is 2.',
         '',
         '!!! warning "A frozen evaluation is the stream of length one"',
         '    `DiffV2_Load_Value_Fn` fits nothing, so `Simulation_Batches` must be exactly 1 — that',
@@ -3380,6 +3374,7 @@ class DiffSolverV2(DiffSolver):
         # THE CLAIRVOYANT RESERVE, backward per path: req_t is the minimum book at t from which the
         # known remaining path can be played without dipping under the floor. Days a futures hedge
         # cannot defend propagate their need BACKWARD, so the forward pass pre-positions.
+        # the floor: one currency unit per unit of the liability's leg volume (`Bundle.total_leg_volume`)
         floor = 1.0 * self.leg_volume
         m_t, lo_is, hi_is = {}, {}, {}
         for t in self.steps:
@@ -3401,10 +3396,10 @@ class DiffSolverV2(DiffSolver):
         q, W = {}, L[0].clone()
         curves = []
         for t in self.steps:
-            # the strike is the FLOOR, $1/oz over the leg volume. The danger measured is terminal
-            # capital breach rather than a high-water ratchet, so a rallying book with no breach
-            # risk reads d ~ 0 and the map parks the seed at the TOP of the bound.
-            cv = self._phi_curve(L[t], LT < 1.0 * self.leg_volume)
+            # the strike is the FLOOR. The danger measured is terminal capital breach rather than a
+            # high-water ratchet, so a rallying book with no breach risk reads d ~ 0 and the map
+            # parks the seed at the TOP of the bound.
+            cv = self._phi_curve(L[t], LT < floor)
             curves.append(cv)
             if self._dust(rep[t]):
                 # the below-today comparison is float noise, so the constructed book is FLAT (the
