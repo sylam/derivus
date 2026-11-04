@@ -1544,13 +1544,14 @@ class Bundle:
         v = self.step_annual_vol
         return None if v is None else v[self.initial_time_index:]
 
-    def realized_paths(self, runtime):
-        """The realized outer-path data the no-inner-MC tracks (hindsight, textbook) consume:
-        `F` `(n_hedge, t_outer, B)` hedge prices and `L_T` `(B,)` the liability terminal MTM at the
-        pre-settlement `last_live_mtm_index`."""
-        tradables_sim = self.tradables_sim
-        F = torch.stack([tradables_sim[h] for h in runtime['names']['hedges']], dim=0)
-        return F, self.liability_sim[self.last_live_mtm_index]
+    def move(self, a, b, refs, rows=slice(None), dim=-1):
+        """The marks' move `F_b − F_a` from sim-grid row `a` to row `b` of each tradable of `refs`
+        over `rows`, stacked along `dim`: the one spelling of a held contract's realized P&L per
+        unit of its contract size."""
+        H = self.initial_time_index
+        logging.debug('marks moved from row %d to row %d', a, b)
+        return torch.stack([self.tradables[r][H + b][rows] - self.tradables[r][H + a][rows]
+                            for r in refs], dim=dim)
 
     def decisions_from(self, t_min):
         """The decision rows at or after sim-grid row `t_min` (`Solver.T_Min`): where the solver

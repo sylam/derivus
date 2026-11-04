@@ -503,17 +503,16 @@ def run_textbook_benchmark(bundle, runtime):
     corridor is a dynamic constraint a constant hold cannot track. Under `Allocation_Weights` the
     universe is `aspace.static_grid()`, every knot's composition rather than the entry knot's, so
     an action-space difference does not land inside the DP-vs-textbook gap."""
-    F, L_T = bundle.realized_paths(runtime)
-    device = F.device
+    T = bundle.last_live_mtm_index
+    L_T, device = bundle.liability_sim[T], bundle.device
     acc = runtime["accounting"]
     aspace = HedgeActionSpace(runtime, device, bundle.vol_sim)
     tradables_sim = bundle.tradables_sim
     # entry-step corridor only: a constant hold cannot track a per-t one
     grid = aspace.static_grid()                                      # (n_actions, n_hedge)
-    b_outer = F.shape[-1]
-    q0 = initial_q_from_runtime(runtime, b_outer, device)             # (B, n_hedge) opening book
+    q0 = initial_q_from_runtime(runtime, bundle.batch_size, device)   # (B, n_hedge) opening book
 
-    total_move = F[:, bundle.last_live_mtm_index, :] - F[:, 0, :]      # (n_h, B) telescoped
+    total_move = bundle.move(0, T, aspace.hedges, dim=0)               # (n_h, B) telescoped
     g_t = torch.einsum("ai,ib->ab", grid * aspace.contract_size, total_move)  # (n_actions, B)
     u = _utility_wrap_signed(L_T.unsqueeze(0) + g_t, runtime)         # FRICTIONLESS objective
     obj = u.mean(dim=-1)                                               # (n_actions,)
@@ -528,8 +527,7 @@ def run_textbook_benchmark(bundle, runtime):
         # unwound at the PRE-SETTLEMENT row, since the last row is the post-settlement clean exit
         # where there is nothing left to liquidate. Outright: flat against the market, not leg
         # against leg.
-        kappa_T = aspace.kappa(tradables_sim, int(bundle.last_live_mtm_index), rows=paths)
-        cost = cost + turnover_charge(n_star, kappa_T)                 # unwind to flat
+        cost = cost + turnover_charge(n_star, aspace.kappa(tradables_sim, T, rows=paths))
     u_net = _utility_wrap_signed(L_T + g_t[best] - cost, runtime)
     return {"v0_mean": float(obj[best]), "v0_std": 0.0,
             "v0_mean_net": float(u_net.mean()),
@@ -577,9 +575,8 @@ class HindsightDpSolver:
         bundle, runtime, aspace = self.bundle, self.runtime, self.aspace
         acc = runtime["accounting"]
 
-        F, L_T = bundle.realized_paths(runtime)                        # F (n_h,t_outer,B)
-        device = F.device
-        b_outer = F.shape[-1]
+        L_T, device = bundle.liability_sim[bundle.last_live_mtm_index], bundle.device
+        b_outer = bundle.batch_size
         tradables_sim = bundle.tradables_sim
         cs = aspace.contract_size
 
@@ -591,12 +588,12 @@ class HindsightDpSolver:
         logging.debug('hindsight bound decides on rows %s', steps)
         n_star_0 = None
         # the opening book held to the first decision
-        G = torch.einsum("bi,ib->b", q_prev * cs, F[:, steps[0], :] - F[:, 0, :])
+        G = torch.einsum("bi,ib->b", q_prev * cs, bundle.move(0, steps[0], aspace.hedges, dim=0))
         cost = torch.zeros(b_outer, device=device)
         paths = slice(None)                                            # each path's own mark
         for t in steps:
             grid = aspace.grid_at(t, bundle.marked(t, aspace.hedges))  # (n_actions_t, n_h) per-t
-            dF = F[:, bundle.successors[t], :] - F[:, t, :]            # (n_h, B)
+            dF = bundle.move(t, bundle.successors[t], aspace.hedges, dim=0)  # (n_h, B)
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
             best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
             q_now = grid[best_idx]                                     # (B, n_h)
@@ -1176,15 +1173,14 @@ class DiffSolver:
 
     def _outer_move(self, t, rows=slice(None), to=None, money=False):
         """The OUTER-realized move from row t to the next decision row (`self.nxt`), or the row
-        `to`: the hedges' `F_to − F_t` stacked `(..., n_hedge)` in hedge order and the liability's
+        `to`: the hedges' `Bundle.move` `(..., n_hedge)` in hedge order and the liability's
         `L_to − L_t` `(...)`, differenced in `MONEY` where `money` (the verdict's wealth law). The
         one spelling behind the bank rolls, the labels' k-step side, the verdict, the stepper
         rollout's drift monitor, the textbook hedge and the constructed policy."""
         to = self.nxt[t] if to is None else to
         L = self.liability_sim
         dL = (L[to].to(MONEY) - L[t].to(MONEY) if money else L[to] - L[t])[rows]
-        return torch.stack([self.tradables_sim[r][to][rows] - self.tradables_sim[r][t][rows]
-                            for r in self.aspace.hedges], dim=-1), dL
+        return self.bundle.move(t, to, self.aspace.hedges, rows), dL
 
     def _p(self, book, live=None):
         """The position state `p = Σq / Q_max` of `book` `(..., n_hedge)` on the legs `live` marks

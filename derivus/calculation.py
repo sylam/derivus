@@ -3762,10 +3762,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         if evaluation_summary is not None and bundle is not None:
             # world-before-solver tripwire: each hedge leg's expected drift over the live window,
             # in the sim the policy trains on, so a conditional-mean seam prints HERE
-            t_live = bundle.last_live_mtm_index
-            drift = {h: round(float((bundle.tradables_sim[h][t_live]
-                                     - bundle.tradables_sim[h][0]).mean()), 4)
-                     for h in normalized_runtime['names']['hedges']}
+            hedges = normalized_runtime['names']['hedges']
+            moves = bundle.move(0, bundle.last_live_mtm_index, hedges, dim=0)
+            drift = {h: round(float(m.mean()), 4) for h, m in zip(hedges, moves)}
             evaluation_summary.setdefault('diagnostics', {})['hedge_drift_usd'] = drift
             logging.info('hedge window drift E[dF] per leg (USD): %s', drift)
 
