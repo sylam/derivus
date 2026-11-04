@@ -51,8 +51,10 @@ values:
 
 $x^-=\max(-x,0)$ and $x^+=\max(x,0)$. Under `LogWealth` the capital line is
 $C=1.1\max(0,-\min W_{bank})/$`DiffV2_Risk_Aversion`, the worst wealth the training bank reaches;
-below a ratio of 1e-3 the log continues linearly, it is floored at −20, and a run whose worst bank
-wealth leaves no headroom is refused.
+below a ratio of 1e-3 the log continues linearly, it is floored at −20, and a training run whose
+worst bank wealth leaves no headroom is refused. The line is measured once, on warmup's bank; a
+frozen roll builds no bank and reads its checkpoint's. Held by
+`tests/test_action_space_and_artifact.py::test_a_frozen_roll_measures_no_frame_of_its_own`.
 
 The scale $c$ (`Objective.Utility_Scale_Mode`, or the `Utility_Scale_Explicit` override):
 

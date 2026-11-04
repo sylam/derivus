@@ -858,7 +858,6 @@ class DiffSolver:
         # less capital at risk. 1.0 is neutral, and it is inert under the other objectives.
         self.aversion = self.cfg["diffv2_risk_aversion"]
         self.displacement = 0.0                # measured off the bank at warmup, or restored
-        self.loaded_displacement = None
         self.scheduled_scale = obj["utility_scale_mode"] == "conditional_sim"
         if self.running_wealth and self.scheduled_scale and not self.log_ratio:
             raise ValueError(
@@ -1185,6 +1184,7 @@ class DiffSolver:
         displacement provides — at 1.1 the buffer is gone and every worse outcome lands on the
         saturated tail — so a domain break refuses and thin headroom warns."""
         worst = self._bank_worst
+        logging.debug("LogWealth displacement measured off the warmup bank: worst %.6g", worst)
         self.displacement = 1.1 * max(0.0, -worst)
         c = self.displacement / self.aversion
         headroom = 1.0 if worst >= 0 else (c + worst) / c
@@ -2638,9 +2638,9 @@ class DiffSolver:
         if self.cfg["diffv2_load_horizon_pad"]:
             self.utility_scale_schedule = self._pad_steps(self.utility_scale_schedule,
                                                           self.T_dec + 1)
-        self.loaded_displacement = loaded.get("displacement")
-        if self.loaded_displacement is not None:
-            self.displacement = self._capital_line(loaded)
+        c = self._capital_line(loaded)
+        if c is not None:
+            self.displacement = c
         nulls = [float(ck["drift_null_sigma"]) for ck in members if ck.get("drift_null_sigma") is not None]
         if nulls:
             # one tripwire for the ensemble's forecast: the members' nulls averaged, whatever their order
@@ -2691,31 +2691,14 @@ class DiffSolver:
         if not sweep_ts:
             raise ValueError(f"Solver.T_Min={self.t_min} leaves no market row before T_dec={self.T_dec}")
         inner_cache = self._fork_sweep()
-        W_bank, q_bank = self._build_bank(self.gen)
-        if self.log_ratio and self.loaded_displacement is None and not self.displacement:
-            self._set_displacement(W_bank)
-
-        # every path in this batch trains: the out-of-sample world is the HELD-OUT BATCH, an
-        # independent draw rather than sibling rows of the same call
-        self.train = train = slice(None)
-
-        # standardization stats: market and wealth from the TRAIN swept states, no test peeking
-        M = torch.cat([inner_cache[t][3][train] for t in sweep_ts], 0)                # (n_swept*B, md)
-        self.m_mean, self.m_std = M.mean(0), M.std(0).clamp_min(1e-6)
-        Wall = torch.stack([W_bank[t][train] for t in sweep_ts], 0).reshape(-1)
+        # the market columns the nets read, off the swept forks: every path, since the
+        # out-of-sample world is the HELD-OUT BATCH
+        M = torch.cat([inner_cache[t][3] for t in sweep_ts], 0)                       # (n_swept*B, md)
+        self.md = md = M.shape[-1]
         # returns-state: the wealth column and its frame live in fractions of the t0 book notional,
         # so a stamped frame travels across price epochs like the market columns do
         self.state_notional = (float(self.runtime["objective"].get("state_notional") or 0.0)
                                if self.cfg["diffv2_returns_state"] else 0.0) or None
-        if self.state_notional:
-            Wall = Wall / self.state_notional
-        self.w_mean, self.w_std = Wall.mean(), Wall.std().clamp_min(1e-6)
-        self.md = md = M.shape[-1]
-        logging.info(
-            "DiffSolver bank: market_dim=%d | swept W∈[%.4g, %.4g] mean=%.4g std=%.4g | "
-            "q_rep(t=0)=%s", md, float(Wall.min()), float(Wall.max()),
-            float(self.w_mean), float(self.w_std),
-            self._replication_hedge(0).detach().cpu().tolist())
 
         hidden = self.cfg["diffv2_hidden"]
         load_cfg = self.cfg["diffv2_load_value_fn"]
@@ -2726,7 +2709,23 @@ class DiffSolver:
                         else ([load_cfg] if isinstance(load_cfg, dict)
                               else ([str(load_cfg)] if load_cfg else [])))
         loaded = None
-        if load_members:
+        if not load_members:
+            # the frame, measured once on this training bank; a load reads the checkpoint's
+            logging.debug("DiffSolver warmup measures the frame on its bank")
+            W_bank, q_bank = self._build_bank(self.gen)
+            if self.log_ratio:
+                self._set_displacement(W_bank)
+            self.m_mean, self.m_std = M.mean(0), M.std(0).clamp_min(1e-6)
+            Wall = torch.stack([W_bank[t] for t in sweep_ts], 0).reshape(-1)
+            if self.state_notional:
+                Wall = Wall / self.state_notional
+            self.w_mean, self.w_std = Wall.mean(), Wall.std().clamp_min(1e-6)
+            logging.info(
+                "DiffSolver bank: market_dim=%d | swept W∈[%.4g, %.4g] mean=%.4g std=%.4g | "
+                "q_rep(t=0)=%s", md, float(Wall.min()), float(Wall.max()),
+                float(self.w_mean), float(self.w_std),
+                self._replication_hedge(0).detach().cpu().tolist())
+        else:
             # frozen-policy eval: restore the fitted nets AND each member's own frame
             members, srcs = [], []
             versions = set()
@@ -2827,7 +2826,6 @@ class DiffSolver:
         rows = []
         for t in reversed(self.sweep_ts):
             r = self._fit_step(self.nets, W_bank, t, self.inner_cache[t], q_bank,
-                               rows=self.train,
                                live_prev=self.inner_cache.get(self.prev.get(t), (None,) * 5)[4])
             rows.append(r)
             logging.info(
@@ -2867,8 +2865,6 @@ class DiffSolver:
         self._bind(bundle)
         self._fork_sweep()
         W_bank, q_bank = self._build_bank(self.gen)
-        if self.log_ratio and self.loaded_displacement is None and not self.displacement:
-            self._set_displacement(W_bank)
         self._breaches = []
         self._sweep(W_bank, q_bank)
         self._log_breaches()

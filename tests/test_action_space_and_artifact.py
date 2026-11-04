@@ -22,6 +22,7 @@ document through `load_json` + `run_job`.
 import ast
 import json as jsonlib
 import logging
+import math
 import os
 import re
 
@@ -770,6 +771,21 @@ def test_the_capital_line_travels_with_the_returns_state_frame(tmp_path):
         [(a, b) for a, b in zip(base['greedy_q_traj'], twice['greedy_q_traj']) if a != b][:3]
     assert abs(twice['greedy']['wT_mean'] - 2.0 * base['greedy']['wT_mean']) <= 1e-6 * abs(base['greedy']['wT_mean']), \
         (base['greedy']['wT_mean'], twice['greedy']['wT_mean'])
+
+
+def test_a_frozen_roll_measures_no_frame_of_its_own(tmp_path):
+    """A load's frame is the checkpoint's: the roll builds no bank and measures no displacement, so
+    a LogWealth checkpoint trained at `DiffV2_Risk_Aversion` 1.0 rolls in a document at 1.2, whose
+    own bank's headroom 1 - 1.2/1.1 lies outside the shifted log's domain, to a finite verdict.
+
+    Killing mutation: warmup building the eval world's bank and running the headroom gate before
+    the load replaces its displacement - the roll refuses with "LogWealth domain break"."""
+    ckpt = str(tmp_path / 'value_fn_growth.pt')
+    _run(_logwealth(_cfg(seed=7, save=ckpt)))
+    roll = _logwealth(_cfg(seed=7, load=ckpt))
+    roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Risk_Aversion'] = 1.2
+    greedy = _run(roll).evaluation_summary['diagnostics']['verdict']['greedy']
+    assert math.isfinite(greedy['wT_mean']), greedy
 
 
 def test_an_ensemble_scores_each_member_in_its_own_frame(tmp_path):
