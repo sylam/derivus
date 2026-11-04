@@ -2333,17 +2333,34 @@ class DiffSolver:
         return seq[:target] if len(seq) >= target else seq + [seq[-1]] * (target - len(seq))
 
     # ---- driver: warmup (fit + frame lock) -> step (fresh batch) -> finish (verdict) ----
+    def _provenance(self, md):
+        """The stamps that make a checkpoint a different function of a different state, `{key:
+        (this run's value, what sets it, the reading of a checkpoint saved before the stamp, None
+        where every checkpoint carries it)}`: `_policy_artifact` writes them and
+        `_check_load_provenance` refuses a load that differs on one, by name."""
+        return {
+            "t_min": (self.t_min, "Solver.T_Min", None), "T_dec": (self.T_dec, "the horizon", None),
+            "md": (md, "the market columns", None),
+            "hedges": (list(self.aspace.hedges), "the hedge legs", None),
+            "solver_object": (self.SOLVER_OBJECT, "Solver.Object", "DiffSolver"),
+            "position_state": (self.position_state, "Solver.DiffV2_Position_State", False),
+            "returns_state": (self.cfg["diffv2_returns_state"], "Solver.DiffV2_Returns_State", False),
+            "wealth_free": (self.wealth_free, "Solver.DiffV2_Wealth_Free_Value", False),
+            "reference_mode": ("running_wealth" if self.running_wealth else "fixed",
+                               "Objective.Reference_Mode", "fixed"),
+        }
+
     def _check_load_provenance(self, ck, src, md):
         """Hold one `DiffV2_Load_Value_Fn` member against this run and return its solver version
         (the ensemble collects them). Everything a checkpoint stamps that makes it a DIFFERENT
         FUNCTION OF A DIFFERENT STATE is refused here by name; everything that merely deserves
         saying out loud is warned.
 
-        Refused: the shape contract (`t_min`/`T_dec`/`md`/`hedges`); `DiffV2_Position_State` and
-        `DiffV2_Wealth_Free_Value`, each owning an input COLUMN, so a mismatch would otherwise
-        surface as a `load_state_dict` shape error naming a Linear weight; the two OBJECTIVE dials
-        (`Reference_Mode`, and whether a `conditional_sim` schedule is in force), neither of which
-        moves a tensor shape, so a mismatch has no symptom but a quietly wrong policy; a corridor
+        Refused: every `_provenance` stamp (the shape contract, the solver class whose bank shaped
+        the value, `DiffV2_Position_State`, `DiffV2_Returns_State` and `DiffV2_Wealth_Free_Value`,
+        each owning input columns or their coordinates, and `Reference_Mode`, which moves no
+        tensor shape, so a mismatch would have no symptom but a quietly wrong policy); whether a
+        `conditional_sim` schedule is in force, the setting against the stamped schedule; a corridor
         mismatch; a stamped `value_optimism` above `DiffV2_Max_Value_Optimism` (a checkpoint saved
         before the stamp loads as before); and, in `_check_action_universe` /
         `_check_calendar_spread`, a narrowed `Allocation_Weights` universe or a
@@ -2354,46 +2371,19 @@ class DiffSolver:
         it inside any corridor only restricts to a learned subset, and so does a corridor INSIDE the
         trained one; a policy trained inside a corridor is off-support under a wider, a different
         or an absent one."""
-        for key, want in (("t_min", self.t_min), ("T_dec", self.T_dec),
-                          ("md", md), ("hedges", list(self.aspace.hedges))):
-            if ck[key] != want:
-                if key in ("t_min", "T_dec") and self.cfg["diffv2_load_horizon_pad"]:
-                    # horizon pad: per-step structures clamp to the saved range at load, and the
-                    # tail repeats the last fitted step
-                    logging.info("DiffV2 load horizon pad: %r saved %r vs this run %r",
-                                 key, ck[key], want)
-                    continue
-                raise ValueError(
-                    f"DiffV2_Load_Value_Fn checkpoint mismatch on {key!r}: "
-                    f"{src} saved {ck[key]!r} vs this run {want!r}")
-        ck_obj = ck.get("solver_object", "DiffSolver")
-        if ck_obj != self.SOLVER_OBJECT:
+        for key, (want, name, unstamped) in self._provenance(md).items():
+            got = ck[key] if unstamped is None else ck.get(key, unstamped)
+            if got == want:
+                continue
+            if key in ("t_min", "T_dec") and self.cfg["diffv2_load_horizon_pad"]:
+                # horizon pad: per-step structures clamp to the saved range at load, and the
+                # tail repeats the last fitted step
+                logging.info("DiffV2 load horizon pad: %r saved %r vs this run %r", key, got, want)
+                continue
             raise ValueError(
-                f"Solver.Object mismatch: {src} was trained by {ck_obj} but this run's solver "
-                f"is {self.SOLVER_OBJECT} — the bank policy that "
-                f"shaped the fitted value is part of the function, not an execution detail")
-        if bool(ck.get("position_state", False)) != self.position_state:
-            raise ValueError(
-                f"DiffV2_Position_State mismatch: {src} was trained with DiffV2_Position_State="
-                f"{'Yes' if ck.get('position_state', False) else 'No'} but this run sets "
-                f"{'Yes' if self.position_state else 'No'}. The net book fraction p = Sum(q)/Q_max "
-                f"is an input column of the fitted value, so the two are different functions of "
-                f"different states — retrain, or match Solver.DiffV2_Position_State.")
-        if bool(ck.get("returns_state", False)) != self.cfg["diffv2_returns_state"]:
-            raise ValueError(
-                f"DiffV2_Returns_State mismatch: {src} was trained with returns_state="
-                f"{bool(ck.get('returns_state', False))} but this run sets "
-                f"{self.cfg['diffv2_returns_state']}. The state coordinates differ, "
-                f"so the two are different functions of different states - retrain, or match "
-                f"Solver.DiffV2_Returns_State.")
-        want_mode = "running_wealth" if self.running_wealth else "fixed"
-        if ck.get("reference_mode", "fixed") != want_mode:
-            raise ValueError(
-                f"Objective.Reference_Mode mismatch: {src} was trained with Reference_Mode="
-                f"{ck.get('reference_mode', 'fixed')!r} but this run sets {want_mode!r}. One "
-                f"value function scores TERMINAL wealth and the other a sum of daily increments, "
-                f"and they have the same input WIDTH — no shape error would ever surface it — so "
-                f"the two are refused here. Retrain, or match Objective.Reference_Mode.")
+                f"DiffV2_Load_Value_Fn checkpoint mismatch on {key!r}: {src} saved {got!r} vs this "
+                f"run {want!r} ({name}), a different function of a different state - retrain, or "
+                f"match it.")
         # the run side of this one is the SETTING, never the schedule this world measured: a frozen
         # roll is a single path and measures none, and the checkpoint's governs it
         if bool(ck.get("utility_scale_schedule")) != self.scheduled_scale:
@@ -2405,14 +2395,6 @@ class DiffSolver:
                 f"what the fitted residual's curvature is measured against, so a per-step "
                 f"schedule and a flat scalar are different utilities of the same wealth — "
                 f"retrain, or match Objective.Utility_Scale_Mode.")
-        if bool(ck.get("wealth_free", False)) != self.wealth_free:
-            raise ValueError(
-                f"DiffV2_Wealth_Free_Value mismatch: {src} was trained with "
-                f"DiffV2_Wealth_Free_Value="
-                f"{'Yes' if ck.get('wealth_free', False) else 'No'} but this run sets "
-                f"{'Yes' if self.wealth_free else 'No'}. The switch REMOVES the wealth column from "
-                f"the residual's inputs, so the two are different functions of different states — "
-                f"retrain, or match Solver.DiffV2_Wealth_Free_Value.")
         # the training ARCHITECTURE is part of what a version stamps, and an ensemble must not
         # average continuations trained under different ones
         ck_ver = ck.get("solver_version", "<pre-version checkpoint>")
@@ -2831,9 +2813,8 @@ class DiffSolver:
         `finish`) and returned AND `torch.save`d, so the file and the in-memory dict are the same
         object — the eval-from-artifact path is identical to loading the file.
 
-        Every key `_check_load_provenance` refuses on must be stamped HERE, which is why the two
-        live next to each other: a stamp the artifact forgets is a run that refuses its own
-        checkpoint (or worse, accepts a foreign one)."""
+        The stamps a load is refused on are written off `_provenance`, the table
+        `_check_load_provenance` holds a load to, so neither can forget one the other reads."""
         return {
             "state_dicts": [net.state_dict() for net in nets],
             "m_mean": self.m_mean, "m_std": self.m_std,
@@ -2842,11 +2823,9 @@ class DiffSolver:
             # the per-step knees this policy was fitted against (None = the single scalar), part of
             # the FRAME, so a load restores it rather than re-measuring
             "utility_scale_schedule": self.utility_scale_schedule,
-            # objective provenance: 'running_wealth' rewards the day's increment and retires the
-            # u(W) anchor, so the nets are a different function of the same input WIDTH
-            "reference_mode": "running_wealth" if self.running_wealth else "fixed",
+            # the stamps a load is refused on (`_provenance`)
+            **{key: want for key, (want, _, _) in self._provenance(md).items()},
             "a_bounds": self.a_bounds,
-            "hedges": list(self.aspace.hedges),
             "active_hedge_indices": list(self.aspace.active),
             # corridor provenance: the Total_Position_Schedule this policy was trained inside
             # (None = unconstrained). A load under a DIFFERENT corridor fails loud.
@@ -2858,16 +2837,7 @@ class DiffSolver:
             # friction provenance: under DiffV2_Position_State the calendar rate is a term of the
             # charge entering the regressed TARGET, so another rate is a different value function
             "calendar_spread_bps": self.aspace.calendar_bps,
-            # position-state provenance: p is an input column, so a load under the other setting is
-            # refused BY NAME rather than as a net shape error. wealth_free is the same for W.
-            "position_state": self.position_state,
-            "returns_state": self.cfg["diffv2_returns_state"],
-            "wealth_free": self.wealth_free,
-            "T_dec": self.T_dec, "t_min": self.t_min, "md": md, "hidden": hidden,
-            # bank-policy provenance: WHICH solver class shaped the wealth/position states the nets
-            # were fitted on, plus DiffSolverV2's forward-pass frame, so a replay reads the solved
-            # construction instead of re-measuring it on different paths
-            "solver_object": self.SOLVER_OBJECT,
+            "hidden": hidden,
             # the growth reward's shift, measured off the training bank's worst book - part of the
             # FRAME, since a roll under a different shift is a different utility
             "displacement": self.displacement,
