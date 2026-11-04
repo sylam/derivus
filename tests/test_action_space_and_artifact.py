@@ -1404,6 +1404,27 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths()
     assert dead == 19 and max(abs(a - b) for a, b in zip(got, want)) < 1e-4, (dead, got, want)
 
 
+def test_the_benchmarks_search_the_solver_s_action_universe():
+    """A run has one action universe: under `Allocation_Mode` Carry_Variance the hindsight bound
+    picks its books from the ladder the solver derived, so on the training document at an explicit
+    scale of 1e5 over 51 rungs, with the benchmarks, the split in force at its first decision being
+    the July leg alone, its first book (path mean) carries nothing on April or October:
+    (0, -50, 0). 5 s.
+
+    Killing mutation: the benchmarks building their own action space, which holds no derived table
+    and searches the product grid, the first book (-50, 0, -50)."""
+    cfg = _cfg(seed=7, batch=8, inner=4, benchmarks=True)
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Evaluator']['Allocation_Mode'] = 'Carry_Variance'
+    hp['Objective']['Utility_Scale_Explicit'] = 1.0e5
+    hp['Solver']['Training_Action_Grid_Levels_Per_Axis'] = 51
+    r = _run(cfg)
+    first = r.evaluation_summary['diagnostics']['verdict']['greedy_q_t'][0]
+    split = next(w for s, w in reversed(r.policy_artifact['allocation_weights']) if s <= first)
+    book = r.evaluation_summary['comparison']['HindsightDpSolver']['n_star']
+    assert split == (0.0, 1.0, 0.0) and book[0] == book[2] == 0.0 and book[1] < 0.0, (split, book)
+
+
 def test_logwealth_refuses_a_stated_terminal_reference():
     """`LogWealth` is the per-step growth, so its reference is the day's increment: the training
     document under LogWealth stating `Reference_Mode` Fixed is refused by name before a path is

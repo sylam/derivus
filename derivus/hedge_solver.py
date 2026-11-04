@@ -88,7 +88,8 @@ class HedgeActionSpace:
     documentation = ('Solver', [
         'The action universe, built once from the runtime and shared by every track (the solver,',
         'the benchmarks and the stepper roll), so no two can disagree about which books are',
-        'reachable or what a trade costs.',
+        'reachable or what a trade costs. **Held by**',
+        '`tests/test_action_space_and_artifact.py::test_the_benchmarks_search_the_solver_s_action_universe`.',
         '',
         '- `grid()` / `axis_levels()`: the Cartesian universe, each active leg at',
         '  `Training_Action_Grid_Levels_Per_Axis` levels of `linspace(Min_Position, Max_Position)`',
@@ -441,14 +442,14 @@ class HedgeActionSpace:
             (int(step), tuple(round(float(w), 9) for w in ws)) for step, ws in weights)
 
 
-def run_textbook_benchmark(bundle, runtime):
+def run_textbook_benchmark(bundle, runtime, aspace):
     """The comparison track's `textbook` (Solver page, Benchmarks and the verdict): the best
-    constant book of `HedgeActionSpace.static_grid` by E[u], held frictionless to the terminal, its
-    entry from the opening book and unwind there reported as a net-of-cost diagnostic."""
+    constant book of the run's action space's `static_grid` by E[u], held frictionless to the
+    terminal, its entry from the opening book and unwind there reported as a net-of-cost
+    diagnostic."""
     T = bundle.last_live_mtm_index
     L_T, device = bundle.liability_sim[T], bundle.device
     acc = runtime["accounting"]
-    aspace = HedgeActionSpace(runtime, device, bundle.vol_sim)
     tradables_sim = bundle.tradables_sim
     # entry-step corridor only: a constant hold cannot track a per-t one
     grid = aspace.static_grid()                                      # (n_actions, n_hedge)
@@ -491,10 +492,10 @@ class HindsightDpSolver:
         '`tests/test_action_space_and_artifact.py::test_the_hindsight_bound_decides_where_the_solver_does`.',
     ])
 
-    def __init__(self, bundle, runtime):
+    def __init__(self, bundle, runtime, aspace):
         self.bundle = bundle
         self.runtime = runtime
-        self.aspace = HedgeActionSpace(runtime, bundle.device, bundle.vol_sim)
+        self.aspace = aspace
 
     def solve(self):
         bundle, runtime, aspace = self.bundle, self.runtime, self.aspace
@@ -2846,15 +2847,16 @@ class StreamingSolve:
             "batch(es) — this world was never fitted, so the whole batch is out-of-sample",
             int(held_out.liability_sim.shape[-1]), self.trained_batches)
         runs = [solver.finish(held_out) for solver in self.solvers]
-        return assemble_hedge_result(runs, held_out, self.runtime)
+        return assemble_hedge_result(runs, held_out, self.runtime, self.solvers[0].aspace)
 
 
-def assemble_hedge_result(primary_runs, bundle, runtime):
+def assemble_hedge_result(primary_runs, bundle, runtime, aspace):
     """Assemble the primary solver runs (one per seed) plus the benchmark tracks (hindsight upper
     bound / textbook lower bound, enabled by the `Run_*` flags) into the `comparison` table —
     V_0 mean ± std per track — the acceptance ladder, and the result dict
     `HedgeMonteCarlo.execute` unpacks. `bundle` is the HELD-OUT batch, which is exactly the world
-    the verdict was rolled on, so the benchmark tracks measure the same paths.
+    the verdict was rolled on, and `aspace` the primary solver's action space, so the benchmark
+    tracks measure the same paths over the same universe.
 
     The ladder compares V_0 across tracks, and both benchmarks are TERMINAL-utility by
     construction. Under `Objective.Reference_Mode='Running_Wealth'` the solver's own V_0 is a sum
@@ -2866,9 +2868,9 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     # the benchmark tracks, on the held-out world the solver's verdict was rolled on
     if solver_cfg["run_hindsight_diagnostic"]:
         comparison["HindsightDpSolver"] = SolverResult.multiseed_summary(
-            [HindsightDpSolver(bundle, runtime).solve()])     # deterministic — one run
+            [HindsightDpSolver(bundle, runtime, aspace).solve()])     # deterministic — one run
     if solver_cfg["run_textbook_benchmark"]:
-        comparison["textbook"] = run_textbook_benchmark(bundle, runtime)
+        comparison["textbook"] = run_textbook_benchmark(bundle, runtime, aspace)
 
     # acceptance ordering - hindsight >= DiffSolver >= textbook over the tracks present, with a
     # tolerance for Monte-Carlo noise
