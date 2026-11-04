@@ -584,181 +584,67 @@ class _DiffV2Residual(torch.nn.Module):
 
 
 class DiffSolver:
-    """Differential-ML hedging solver: a backward DP whose per-step value is fitted by the
-    Huge–Savine twin loss. All dynamics come from the bundle's inner-MC closures
-    (`Bundle.inner_mc` / `Bundle.inner_mc_grad`), which fork the simulator and price through the
-    ordinary deal pricers — no analytic transition and no Jacobian reconstruction.
-
-    Wealth convention: `W_t` = cumulative hedge P&L + the marked liability `L_t`, stepping as
-    `W_{t+1} = W_t + Σ_i q_i·cs_i·(F_{t+1,i} − F_{t,i}) + (L_{t+1} − L_t)`, with terminal utility
-    `u(W_{T_dec})`.
-
-    The design:
-      * `C_t(market, q, W) = u(W) + A_t(market, q, W)`. `u` is the bounded utility anchor and `A`
-        a zero-init residual net — the only learned part. The bounded anchor is what keeps the
-        backward recursion from running away.
-      * External argmax — the Bellman max is a discrete grid search over target positions OUTSIDE
-        the fitted value, so the net never has to represent an argmax.
-      * Advantage decomposition — fit `A = C − u(W)` on the value AND the wealth-channel pathwise
-        gradient, so the unbounded residual cannot drift off u.
-      * Operating-region bank — roll the OUTER paths forward exploring q around the per-t
-        replication hedge, so wealth stays in-band and A stays on-support.
-      * Position-free value (the default) — with no turnover cost the held position is a freely
-        reset control, entering the value only through next-step wealth. The hedge instruments
-        live in the ACTION grid and the wealth step, not as a state coordinate.
-      * FRICTIONAL Bellman (`DiffV2_Repositioning_Charge` State) — once turnover costs money
-        the incoming position IS a state variable, so the net gains the signed net book fraction
-        `p = Σq/Q_max` and the repositioning charge is subtracted from the wealth that becomes
-        the regressed TARGET. A charge levied only at the argmax is a one-day toll the value
-        function never remembers, and no no-trade region can form out of a toll.
-      * RUNNING WEALTH (`Objective.Reference_Mode`) — the reward becomes the DAY's wealth
-        increment, `Y = u(W1 − W_t) + E[C_{t+1}]`, with `C_{T_dec} ≡ 0` and `C_t = A_t` alone.
-        Terminal wealth drifts outside the utility's knee by mid-horizon, which leaves the
-        objective affine and the argmax bang-bang; an increment is O(one day's move) every day.
-      * CONDITIONAL-SIM SCALE (`Objective.Utility_Scale_Mode`) — the same defect attacked from the
-        scale: a per-decision-step knee `c_t` measured off the warmup batch, so `x = (W − R)/c_t`
-        is a z-score on every day. It owns the LEVEL of c as well as its shape, which RE-DOSES the
-        dimensionless aversion. Independent of the mode above and REFUSED beside it.
-      * WEALTH-FREE residual (`DiffV2_Wealth_Free_Value`) — `A_t` loses its W input column, so the
-        ranking's whole wealth dependence is `u`'s own. A residual free to carry a wealth slope
-        over the action-induced span adds a term the anchor's curvature has to fight.
-    """
+    """The differential-ML value-function solver: a backward dynamic program fitted by the twin loss
+    on inner Monte Carlo labels, its maximum an external grid search; documented on the Solver
+    page."""
 
     documentation = ('Solver', [
-        'The production solver: a backward dynamic program whose per-step value is fitted by the',
-        "Huge-Savine twin loss (value plus the pathwise wealth gradient), consuming the bundle's",
-        'inner-MC closures. No analytic transition and no Jacobian reconstruction — the framework',
-        'prices every forked scenario through the ordinary deal pricers.',
-        '',
-        '`C_t(market, W) = u(W) + A_t(market, W)`: a bounded utility anchor plus a zero-init',
-        'residual net. Only `A` is learned, and fitting the RESIDUAL is what stops the backward',
-        'recursion running away. The Bellman maximum lives OUTSIDE the fitted value — a discrete',
-        'grid search over target positions — so the net never has to represent an argmax.',
-        '',
-        '### Shape of a run',
-        '',
-        'A solve is a stream (see `StreamingSolve`): `warmup` fits the first batch and LOCKS the',
-        'frame, `step` continues on fresh paths, `finish` reports on the held-out batch. Peak fork',
-        'memory is a function of `Batch_Size x Inner_Sub_Batch` and the rows a fork spans, which',
-        '`DiffV2_Risk_Horizon` lengthens, however long the stream is.',
-        '',
-        '### Knobs',
-        '',
-        '| key | default | meaning |',
-        '| --- | --- | --- |',
-        '| `T_Min` | 0 | backward-sweep depth; 0 sweeps to the first decision |',
-        '| `Training_Action_Grid_Levels_Per_Axis` | 11 | action-grid resolution per hedge axis |',
-        '| `DiffV2_Fit_Iters`, `DiffV2_LR`, `DiffV2_Hidden` | 150, 2e-3, 32 | per-t residual-net '
-        'optimizer (Adam iterations, rate, hidden width) |',
-        '| `DiffV2_Lambda_Grad` | 1.0 | weight on the pathwise-gradient half of the twin loss |',
-        '| `DiffV2_Per_Column_Grad_Norm` | Yes | normalize greeks per input column rather than '
-        'pooled |',
-        '| `DiffV2_Bank_Noise_Frac` | 0.15 | exploration around the per-t replication hedge, as a '
-        "fraction of each instrument's position range; under the ladder bank, of the band's width "
-        'on the net |',
-        '| `DiffV2_Risk_Kappa` | 0 | score actions by `mean(C) - kappa * downside-semidev(C)` |',
-        '| `DiffV2_Risk_Horizon` | 1 | decisions the candidate is held for the `C` whose '
-        'semideviation is penalised, capped at the terminal; the mean stays the next decision\'s |',
-        '| `DiffV2_Risk_Aversion` | 1.0 | divides the `LogWealth` capital line; in [0.1, 10] |',
-        '| `DiffV2_Repositioning_Charge` | No | what the move is charged: `Argmax` at the '
-        'execution argmax alone, `State` the frictional Bellman, `p` as state and the charge in '
-        'the target |',
-        '| `DiffV2_Book_Gradient_Label` | No | fit the slope in `p` to the charge\'s pathwise slope |',
-        '| `DiffV2_Label_Horizon` | 1 | steps the value label realises along the greedy policy on '
-        'the outer path before it bootstraps |',
-        '| `DiffV2_Bank_Along_Ladder` | No | `DiffSolverV2`\'s bank books as rungs of the ladder, on '
-        'its live legs |',
-        '| `DiffV2_Wealth_Free_Value` | No | drop `W` from the residual: the ranking bends only as '
-        '`u` does |',
-        '| `DiffV2_Decision_Curve_Dump` | off | CSV of the stepper rollout\'s full per-rung ranking '
-        'curve |',
-        '| `Active_Hedge_Indices` | all | which hedge axes vary; the rest pin to 0 |',
-        '| `Multi_Seed_Count` | 1 | independent solvers on the same batches |',
-        '',
-        'Two dials live under `Objective` rather than `Solver`, because they change what is being',
-        'maximised rather than how it is fitted. `Reference_Mode` = `Running_Wealth` makes the',
-        "reward the DAY's wealth increment (the value is then a SUM of per-step utilities, and the",
-        'reported `u_mean` is not comparable to a terminal-utility one), and',
-        '`Utility_Scale_Mode` = `conditional_sim` gives every decision step its own knee, measured',
-        'off the warmup batch and frozen. Each attacks the same defect — a terminal wealth that',
-        'has drifted outside the knee leaves the ranking affine — and they refuse to run together.',
-        '',
-        '!!! warning "`conditional_sim` re-doses the aversion"',
-        '    The measured schedule sets the LEVEL of `c`, not only its shape, and there is no',
-        '    `Utility_Scale_Explicit` under it. The shape parameters are dimensionless in units of',
-        '    `c`, so arming the mode moves the risk aversion by whatever factor the measured scale',
-        '    differs from the retired one: under it, `Huber_Aversion` is the aversion dial and it',
-        '    is dosed AGAINST THE MEASURED SCALE. The frame lock logs the resulting absolute risk',
-        '    aversion per unit of money so the re-dosing is visible rather than inferred.',
+        'The solver the Method section describes, its inner Monte Carlo forks priced through the',
+        'ordinary deal pricers. `C_t = u(W) + A_t`: the bounded utility anchor (`DiffSolver._anchor`)',
+        'plus a zero-initialised residual net, the only learned part, which keeps the backward',
+        'recursion from running away; the training bank rolls the outer paths exploring books around',
+        "each step's replication hedge, so each net is fitted where the policy lives.",
         '',
         '### Persistence',
         '',
-        '`DiffV2_Save_Value_Fn` writes the fitted nets with their standardization frame, utility',
-        'scale and trust region. `DiffV2_Load_Value_Fn` restores them and fits NOTHING — a frozen',
-        'evaluation. The two are separate runs, and setting both raises rather than silently',
-        'discarding a retrained net. Load accepts a LIST for an ensemble argmax: each member',
-        'evaluated in its own frame, the continuations averaged before the maximum, which reduces',
-        "the winner's curse. Mixing frame provenances inside one ensemble is refused.",
+        '`DiffV2_Save_Value_Fn` writes the fitted nets with their frame; `DiffV2_Load_Value_Fn`',
+        'restores them and fits nothing, a frozen evaluation (`StreamingSolve`), a list loading an',
+        'ensemble (the ensemble rule above). A checkpoint stamps what makes it a different function',
+        'of a different state (`_provenance`), and a load differing on one is refused by name.',
         '',
         '!!! warning "The frame is locked at warmup"',
-        '    The utility scale, the market/wealth standardization stats and the per-t trust region',
-        '    are computed on the first batch and frozen. Re-fitting them per batch would make each',
-        "    batch's `C_t` a different function of different inputs, and the recursion would compose",
-        '    mismatched frames. Later batches report how often their fitted targets fall outside the',
-        '    frozen region instead.',
+        '    The utility scale, the market and wealth standardisation and the per-step trust region',
+        '    are measured on the first batch and frozen: refitted per batch, each `C_t` would be a',
+        '    different function of different inputs and the recursion would compose mismatched',
+        '    frames. Later batches report how often their fitted targets fall outside the frozen',
+        '    region, and a loaded checkpoint evaluates in its own frame, measuring none of its own.',
+        '    **Held by**',
+        '    `tests/test_action_space_and_artifact.py::test_a_frozen_roll_measures_no_frame_of_its_own`;',
+        '    **Not gated**: a later training batch resolving a scale of its own.',
     ])
 
     # Bank-policy provenance: the name stamped into checkpoints and compared on load.
     SOLVER_OBJECT = "DiffSolver"
 
     def __init__(self, bundle, runtime):
-        """Build the solver against `bundle`: the shared action universe, the config knobs, the
-        bank RNG and the still-unlocked frame, then `_bind` to the bundle's sim views.
-
-        The decision horizon `T_dec` is the last LIVE liability mark, not the last row: the time
-        grid appends one post-settlement clean-exit row, so the meaningful terminal is the
-        bundle's `last_live_mtm_index`. Telescoping wealth THROUGH the settlement drop would
-        cancel the liability's settlement risk. Decisions run 0..T_dec-1; the terminal
-        continuation marks at T_dec."""
+        """Build the solver against `bundle`: the shared action universe, the knobs, the bank RNG and
+        the still-unlocked frame, then `_bind` to the bundle's sim views. The horizon `T_dec` is the
+        bundle's close, the last live liability mark (`Bundle.last_live_mtm_index`)."""
         self.bundle = bundle
         self.runtime = runtime
         self.cfg = runtime["solver"]
         self.device = bundle.device
-        # the SAME action universe the benchmark tracks and the stepper rollout consume, so every
-        # track optimizes over identical positions and prices identical frictions
         self.aspace = HedgeActionSpace(runtime, self.device, bundle.vol_sim)
         self.chunk = int(self.cfg["training_action_chunk_size"])
         self.fit_iters = self.cfg["diffv2_fit_iters"]
         self.lr = self.cfg["diffv2_lr"]
         self.noise_frac = self.cfg["diffv2_bank_noise_frac"]
         self.t_min = self.cfg["t_min"]
-        # downside-aware action selection; 0 = plain E[C] argmax
         self.risk_kappa = self.cfg["diffv2_risk_kappa"]
-        # ...of the continuation this many decisions ahead, the book held; with no penalty, none
+        # with no penalty there is no horizon to hold the book over
         self.risk_horizon = self.cfg["diffv2_risk_horizon"] if self.risk_kappa > 0.0 else 1
-        # the execution argmax (the verdict and the stepper roll) charges the move under 'argmax'
-        # and 'state'; training is charged under 'state' alone
         charge = self.cfg["diffv2_repositioning_charge"]
         self.argmax_charged = charge in ("argmax", "state")
-        # quadratic churn charge lambda*sum((q-q_prev)^2) at every argmax that knows q_prev
         self.churn_lambda = self.cfg["diffv2_churn_lambda"]
         # the drift monitor's null: the unit z until a training verdict measures one or a load
         # stamps one, the value every reader takes
         self.drift_null_sigma = 1.0
-        # FRICTIONAL BELLMAN: the net book fraction p = Sum(q)/Q_max becomes a state coordinate and
-        # the repositioning charge enters the regressed target. Q_max is the Evaluator's cap - the
-        # only declared scale p can be measured in - so an absent cap fails loud.
         self.position_state = charge == "state"
         logging.debug("DiffV2_Repositioning_Charge %s: argmax charged %s, position state %s",
                       charge, self.argmax_charged, self.position_state)
-        # the book column's own pathwise label, the charge's slope in the standing book
         self.book_label = self.position_state and self.cfg["diffv2_book_gradient_label"]
-        # TD(k): the steps the value label realises along the greedy policy before it bootstraps
         self.label_horizon = self.cfg["diffv2_label_horizon"]
-        # DiffSolverV2's training bank composed along the ladder, as the policy's own books are
         self.bank_ladder = self.cfg["diffv2_bank_along_ladder"]
-        # WEALTH-FREE residual: the value net's W input column is REMOVED, so C_t's whole
-        # dependence on wealth is the utility anchor's. Composes with the position state.
         self.wealth_free = self.cfg["diffv2_wealth_free_value"]
         if self.wealth_free and not self.position_state:
             raise ValueError(
@@ -773,16 +659,9 @@ class DiffSolver:
                 "Solver.DiffV2_Wealth_Free_Value='Yes' refuses DiffV2_Risk_Kappa > 0: the downside "
                 "semideviation is nonlinear over inner draws, so the residual's dispersion leaks "
                 "back into the ranking the switch exists to hand to the utility alone.")
-        # the two OBJECTIVE dials, read off the normalized runtime. RUNNING WEALTH rewards the
-        # day's wealth INCREMENT, which makes C_t a sum of per-step rewards and retires the u(W)
-        # anchor; SCHEDULED SCALE gives each decision step its own knee.
         obj = runtime["objective"]
         self.running_wealth = obj["reference_mode"] == "running_wealth"
-        # LogWealth: the per-step reward is the growth ratio log(W1/W0) - step-sum structure,
-        # scale-free, its domain the wealth floor the forward-constructed bank maintains
         self.log_ratio = obj["object"] == "logwealth"
-        # the DP's aversion: it divides the displacement into the LogWealth reward's capital line,
-        # so gamma > 1 puts less capital at risk. 1.0 is neutral, inert under the other objectives.
         self.aversion = self.cfg["diffv2_risk_aversion"]
         # measured off the bank at warmup, or the checkpoint's (`_restore_frame`)
         self.displacement = self.capital = 0.0
@@ -804,9 +683,7 @@ class DiffSolver:
                 "the offset the objective is made of. The successor WARM START is untouched and "
                 "still valid — it is an initial point, not a penalty.")
         self.force_flat = bool(runtime["accounting"]["force_flat_at_end"])
-        # pure diagnostic: where `_rollout_on_stepper` writes its per-decision ranking-curve CSV
         self.curve_dump = self.cfg["diffv2_decision_curve_dump"]
-        # the stepper roll's handover to the passive book, a trip rule read outside the engine
         passive_from = self.cfg["diffv2_passive_from"]
         self.passive_from = pd.Timestamp(passive_from) if passive_from else None
         self.first_from_passive = self.cfg["diffv2_first_decision_from"] == "passive"
@@ -816,9 +693,6 @@ class DiffSolver:
                 "Evaluator.Total_Position_Abs_Limit > 0 "
                 f"(it is {self.aspace.total_abs_limit}): the position state is p = Sum(q)/Q_max and the "
                 "cap is the scale it is measured in")
-        # early termination for non-anchor fits: a BLOCK-wise relative loss plateau (blocks of 8
-        # iters, floor of 2), so a cold-Adam stall cannot read as convergence. The terminal anchor
-        # always runs the full budget; 0 disables.
         self.fit_tol = self.cfg["diffv2_fit_tol"]
         self.prox = self.cfg["diffv2_temporal_proximity"]
         # bank exploration RNG - deterministic, and PERSISTENT across batches so each batch
@@ -835,7 +709,6 @@ class DiffSolver:
         self._bounds_frozen = False
         self._breaches = []
         self._bind(bundle)
-        # effective terminal = the last LIVE liability mark, not the last row
         self.T_dec = int(bundle.last_live_mtm_index)
         if self.t_min >= self.T_dec:
             raise ValueError(
@@ -2697,9 +2570,9 @@ class DiffSolver:
         self._bounds_frozen = True
 
     def _sweep(self, W_bank, q_bank):
-        """One backward pass over the swept range on the CURRENTLY BOUND bundle: fit C_t for
-        t = T_dec-1 .. t_min against the cached inner-MC forks. warmup runs it on batch 1, each
-        streaming step runs it again on fresh paths with the same nets and optimizers.
+        """One backward pass on the CURRENTLY BOUND bundle: fit C_t on each decision row from the last
+        down to `T_Min` (`Bundle.decisions_from`) against the cached inner-MC forks. warmup runs it on
+        batch 1, each streaming step again on fresh paths with the same nets and optimizers.
 
         `live_prev` is the leg mask of the step that SET the book standing at t — the one mask
         rule for the position state (`_fit_step`). The sweep runs over the decision rows, each a
@@ -3106,27 +2979,8 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
 
 
 class DiffSolverV2(DiffSolver):
-    """Forward-backward DiffSolver: the bank is a CONSTRUCTED asymmetric-hedge policy rather
-    than exploration noise around the replication hedge.
-
-    FORWARD PASS — the policy is constructed from the simulated liability distribution. Per
-    decision step the MEASURED delta `d_t(book) = P(terminal < max(today's book, 0) | book)` is
-    estimated cross-sectionally on the outer paths as a bucketed conditional mean, isotonic
-    decreasing in the book mark, ONCE: the strike rides the book, so hedging does not change the
-    measured object and the contracts held are known exactly after a single pass. The delta maps
-    AFFINELY onto the net band, `q_net = hi − d·(hi − lo)`, and the clairvoyant reserve then adds
-    the LEAST extra cover a path needs never to fall under the floor. The delta takes no dial —
-    the seed is clairvoyant, so `DiffV2_Risk_Aversion` belongs to the backward DP.
-
-    BACKWARD PASS — the standard sweep, fitted ON the constructed book: the bank's wealth and
-    position states are the constructed policy's own roll, plus the usual
-    `DiffV2_Bank_Noise_Frac` exploration so the argmax has local support. Every net therefore
-    trains where that policy lives, the terminal anchor is the constructed policy's terminal
-    distribution, and each earlier net still inherits its fitted successor.
-
-    The per-step Phi curves are FRAME: solved at warmup on the batch that locks the z-frame,
-    stamped into the checkpoint beside the nets, and a checkpoint written by a different solver
-    class is refused by name, because the bank policy shaped the fitted value."""
+    """`DiffSolver` with its training bank rolled by a policy constructed from the simulated
+    liability rather than noise around the replication hedge; documented on the Solver page."""
 
     SOLVER_OBJECT = "DiffSolverV2"
 
@@ -3136,10 +2990,10 @@ class DiffSolverV2(DiffSolver):
         'policy CONSTRUCTED from the simulated liability. The decision rule, the fitted value, the',
         'objective and the verdict are `DiffSolver`\'s.',
         '',
-        '- **Forward pass.** At each decision step $t$ the curve $d_t(L)=P(L_T<V\\mid L_t=L)$, $V$',
-        "  the book's total leg volume read as one currency unit per unit, is measured on the outer",
-        '  paths: up to 64 buckets in $L_t$ of at least 32 paths, made non-increasing in $L$. The',
-        '  net position is',
+        '- **Forward pass.** At each decision row $t$ the curve $d_t(L)=P(L_T<V\\mid L_t=L)$ is',
+        '  measured on the flat liability\'s outer paths, $V$ the floor `DiffV2_Book_Floor_Per_Unit`',
+        "  times the liability's leg volume: up to 64 buckets in $L_t$ of at least 32 paths, made",
+        '  non-increasing in $L$. The net position is',
         '  $q_{net}=hi-d_t(W_t)\\,(hi-lo)$ inside the feasible band, rounded away from zero to whole',
         '  contracts and water-filled onto the replication hedge\'s shape over the active legs, or',
         '  under `DiffV2_Bank_Along_Ladder` held as a rung of the ladder on its live legs.',
@@ -3192,11 +3046,10 @@ class DiffSolverV2(DiffSolver):
         return torch.lerp(bp[idx - 1].to(w.dtype), bp[idx].to(w.dtype), w)
 
     def _constructed_policy(self, live=None):
-        """ONE deterministic pass — measure once, then construct twice. The moving-strike delta
-        `d_t(book) = P(terminal book < book at t | book at t)` is measured on the FLAT liability,
-        the only book that exists before a policy does, and the policy rolls once against those
-        curves: the strike rides the book, so hedging does not change the measured object and no
-        fixed point is needed. Given the per-step mask `live` of the legs that still price, each
+        """One deterministic pass, measured once and constructed twice: the delta
+        `d_t(L) = P(L_T < floor | L_t = L)` is measured on the FLAT liability, the only book that
+        exists before a policy does, and the policy rolls once against those curves, read at its own
+        book, so no fixed point is needed. Given the per-step mask `live` of the legs that still price, each
         step's net spans the `HedgeActionSpace.ladder` band, is held as its `rung` and its reserve
         is priced on the ladder's weights; absent `live`, the net spans the `bounds` band and is
         water-filled onto the replication hedge's shape, its reserve priced in that shape. Returns

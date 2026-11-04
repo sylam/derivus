@@ -61,8 +61,11 @@ The scale $c$ (`Objective.Utility_Scale_Mode`, or the `Utility_Scale_Explicit` o
 | `Utility_Scale_Explicit` | the stated currency amount |
 | `conditional_sim` | per decision step, the cross-sectional standard deviation of the flat-book wealth $L_t$ on the warmup batch, floored at `Utility_Scale_Floor_Frac` (default 0.05) of its terminal entry; refuses `Utility_Scale_Explicit` beside it, and `Running_Wealth` except under `LogWealth` |
 
-$c$ is resolved once when the bundle is built and never recomputed: a per-rollout `c` silently
-rescales every reward, so a loaded checkpoint evaluates in **its own** frame.
+$c$ is part of the solver's frame, locked at warmup, a loaded checkpoint evaluating in its own
+([Solver](solver.md), `DiffSolver`). Under `conditional_sim` the measured schedule sets the level of
+$c$, not only its shape, so arming it re-doses every shape parameter, each in units of $c$:
+`Huber_Aversion` is then dosed against the measured scale, and the frame lock logs the absolute
+risk aversion per unit of money it lands on.
 
 ## Privileged factors
 
