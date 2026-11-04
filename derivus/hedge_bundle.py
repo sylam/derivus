@@ -55,6 +55,20 @@ _UTILITY_OBJECTS = (
     "asymmetricutility_symlog", "asymmetricutility_huber", "asymmetricutility_cara")
 
 
+def primary_spot(stoch_factors):
+    """The key of the spot a hedge reads as its one underlying: the CommodityPrice factor exposing a
+    revealed sufficient statistic (a non-empty `privileged_layout`), else the only CommodityPrice;
+    refused by name where neither is unique."""
+    spots = [k for k in stoch_factors if k.type == 'CommodityPrice']
+    keys = [k for k in spots if stoch_factors[k].privileged_layout(stoch_factors[k].param)] or spots
+    if len(keys) != 1:
+        raise ValueError(
+            f"the hedge reads one primary spot, the CommodityPrice exposing a revealed sufficient "
+            f"statistic, else the only CommodityPrice; this world simulates "
+            f"{[utils.check_tuple_name(k) for k in spots]}")
+    return keys[0]
+
+
 def _privileged_name(factor_name, attr_name, stoch_factors):
     """How a process's published state coordinate is keyed. Multi-commodity runs (more than one
     distinct primary factor name) prefix the attribute with `<factor>_` to disambiguate."""
@@ -1136,6 +1150,7 @@ class Bundle:
         self.last_marked = {}               # {instrument: the last sim-grid row its deal marks}
         self.factors = {}                   # {factor name: (T, …, B)} scenario paths
         self.privileged_factors = {}        # {name: (T, B, dim)} process-revealed state
+        self.primary = None                 # the primary spot's factor name (`primary_spot`)
         self.liability_value = None         # (T, B) the liability's value, or None
         self.spot_price_history = {}        # {commodity: (H, B)} realized history prefix
         # Frame + liability descriptors.
@@ -1164,6 +1179,7 @@ class Bundle:
         `stoch_factors` is the simulator's factor map (factor_key → process); the processes are
         asked for their privileged surfaces, calibrated vols and revealed conditional vol."""
         self = cls(base_date, business_day, num_batches)
+        self.primary = utils.check_tuple_name(primary_spot(stoch_factors))
         tradables = {n: torch.cat(blocks, dim=1) for n, blocks in tradable_blocks.items()}
         factors = {n: torch.cat(blocks, dim=-1) for n, blocks in factor_tensor_blocks.items()}
         mtm = (torch.cat(hedge_profile_blocks['mtm'], dim=1)
@@ -1293,7 +1309,7 @@ class Bundle:
         if runtime['objective'] is not None:
             if not self.spot_price_history:
                 # No Spot_Price_History ⇒ source (spot, σ) from the CALIBRATED market data instead.
-                self.calibrated_utility_inputs = self._calibrated_utility_inputs(runtime, stoch_factors)
+                self.calibrated_utility_inputs = self._calibrated_utility_inputs(stoch_factors)
             self.utility_scale = self._resolve_utility_scale(runtime)
             logging.info('utility_scale (symlog c) resolved to {0:.2f}'.format(self.utility_scale))
             mirror_frame(runtime, self.utility_scale, self.utility_scale_schedule)
@@ -1327,29 +1343,15 @@ class Bundle:
             out[commodity] = rv
         return out
 
-    def _calibrated_utility_inputs(self, runtime, stoch_factors):
+    def _calibrated_utility_inputs(self, stoch_factors):
         """Utility-scale `(commodity, spot, σ)` sourced from CALIBRATED market data — the
-        `Spot_Price_History`-absent fallback. Spot is the sim-day-0 CommodityPrice level; σ is the
-        process's calibrated annualized vol. With several CommodityPrice factors the
-        sufficient-statistic-owning primary is preferred. None when none reports a calibrated
-        vol."""
-        referenced = set(runtime['referenced_commodities'])
-        candidates = []
-        for key, proc in (stoch_factors or {}).items():
-            name = utils.check_tuple_name(key)
-            if name not in referenced or name not in self.factors:
-                continue
-            sigma = proc.calibrated_annual_vol()
-            if sigma is None or sigma <= 0.0:
-                continue
-            # spots exposing a revealed sufficient statistic (HMM belief, GARCH log-variance) sort
-            # first: the martingale primary of a cross-market strip
-            candidates.append((not bool(proc.privileged_layout(proc.param)), name, float(sigma)))
-        if not candidates:
+        `Spot_Price_History`-absent fallback: the primary spot's sim-day-0 level and its process's
+        calibrated annualized vol. None when the process reports none."""
+        process = {utils.check_tuple_name(k): p for k, p in stoch_factors.items()}[self.primary]
+        sigma = process.calibrated_annual_vol()
+        if sigma is None or sigma <= 0.0:
             return None
-        candidates.sort()
-        _, commodity, sigma = candidates[0]
-        return (commodity, float(self.factors[commodity][0].median().item()), sigma)
+        return (self.primary, float(self.factors[self.primary][0].median().item()), float(sigma))
 
     def _resolve_utility_scale(self, runtime):
         """The money scale `c` mapping wealth to utility (u(x; c) = sign(x)·log1p(|x|/c) for
@@ -1413,7 +1415,7 @@ class Bundle:
             _degenerate("total_leg_volume is zero")
         if self.spot_price_history:
             # history path: spot and realized sigma read at the history/sim boundary H
-            commodity = next(iter(self.spot_price_history))
+            commodity = self.primary
             full = self._spot_timeline(commodity)
             if full is None or H >= int(full.shape[0]):
                 _degenerate(
@@ -1525,13 +1527,10 @@ class Bundle:
             logging.info('step_annual_vol source: revealed %s log_h (Vol_Scale=%s IM_funding=%s)',
                          factor.name[0], vol_scale_active, im_funding_active)
             return proc.revealed_annual_vol(block[..., 0]).mean(dim=-1)                 # (T,)
-        commodity = next((c for c in runtime['referenced_commodities'] if c in self.factors), None)
-        if commodity is None:
-            return None
         logging.info('step_annual_vol source: realized-vol proxy on %s (Vol_Scale=%s IM_funding=%s)',
-                     commodity, vol_scale_active, im_funding_active)
+                     self.primary, vol_scale_active, im_funding_active)
         # batch-reduced to one scalar per step, floored so the warm-up window never zeros the spread
-        return _rolling_realized_vol(self._spot_timeline(commodity),
+        return _rolling_realized_vol(self._spot_timeline(self.primary),
                                      self.grid_market_days).mean(dim=-1).clamp_min(1e-6)
 
     # ---- accessors -----------------------------------------------------------
@@ -2013,16 +2012,10 @@ class BundleStepper:
 
     def _diag_fields(self, rollout=None):
         """Per-instrument (T, B) per-day cashflow tensors plus portfolio totals, reconstructed on
-        CPU from the recorded trajectory. Multi-commodity bundles raise — diagnostic CSVs for
-        multi-commodity are out of scope."""
+        CPU from the recorded trajectory; the spot column is the primary spot's."""
         rollout = self._rollout() if rollout is None else rollout
         bundle, runtime = self.bundle, self.runtime
-        spot_keys = [k for k in bundle.factors if k in runtime['referenced_commodities']]
-        if len(spot_keys) != 1:
-            raise ValueError(
-                f"Diagnostic CSV writer expects exactly one commodity-spot factor in the bundle; "
-                f"got {spot_keys}. Multi-commodity diagnostic output is not yet implemented.")
-        spot = bundle.factors[spot_keys[0]].detach().cpu().float()
+        spot = bundle.factors[bundle.primary].detach().cpu().float()
         T, B = spot.shape
 
         # per-step vol `(T, 1)` for the vol-scaled kappa, index-aligned with the full-grid marks;

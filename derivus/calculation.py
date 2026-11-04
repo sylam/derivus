@@ -43,7 +43,7 @@ from .utils import (CASHFLOW_INDEX_FixedAmt, CASHFLOW_INDEX_FixedRate, CASHFLOW_
                     CASHFLOW_INDEX_Pay_Day, CASHFLOW_INDEX_Year_Frac, RESET_INDEX_Reset_Day,
                     RESET_INDEX_Value, TensorCashFlows, TensorResets, walk_schedules)
 from .hedge_bundle import (Bundle, HedgeRuntimeExecutionResult, construct_hedge_runtime,
-                           run_hedge_execution)
+                           primary_spot, run_hedge_execution)
 from .hedge_solver import StreamingSolve
 
 class Aggregation(object):
@@ -3524,8 +3524,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             params, stoch_factors=self.stoch_factors,
         )
         # canonical underlying (commodity-spot) factor-name set, derived once by the runtime; the
-        # spot-leaf pass and `_find_spot_key` read it rather than re-deriving it
+        # spot-leaf pass reads it rather than re-deriving it
         self._underlying_names = set(normalized_runtime['referenced_commodities'])
+        # the one underlying: the returns-state anchor and the fork's outer width read it
+        self._primary = primary_spot(self.stoch_factors)
 
         # solve_hedge: inner MC runs in the backward DP/MPC sweep, not the outer loop, so the
         # per-batch outer scenario buffer is cached for it to fork on demand; the copies below are
@@ -3559,13 +3561,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                    and normalized_runtime['solver']['diffv2_returns_state'])
         self._state_spot0 = None
         if self._returns_state:
-            price_keys = [k for k in self.stoch_factors if k.type == 'CommodityPrice']
-            if len(price_keys) != 1:
-                raise ValueError(
-                    f'DiffV2_Returns_State=Yes needs exactly one simulated CommodityPrice to '
-                    f'anchor the coordinates; this world has {len(price_keys)}')
-            self._state_spot0 = float(
-                self.stoch_var[price_keys[0]].detach().reshape(-1)[0])
+            self._state_spot0 = float(self.stoch_var[self._primary].detach().reshape(-1)[0])
             normalized_runtime['objective']['state_notional'] = (
                 self._state_spot0 * total_leg_volume)
         # walk-forward replay: substitute observed paths; the driver owns all the prep
@@ -3794,21 +3790,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
     # Outer process instances are never touched - inner runs on shallow copies, so per-instance
     # precalc state cannot bleed across the outer/inner boundary.
 
-    def _find_spot_key(self):
-        """The unique underlying (commodity-spot) factor key, mapping the runtime-owned underlying
-        name set back to the live key object. Where more than one CommodityPrice is simulated,
-        prefers the martingale primary - the spot exposing a revealed sufficient statistic
-        (non-empty `privileged_layout`). Raises unless exactly one remains."""
-        spots = [k for k in self.stoch_factors
-                 if utils.check_tuple_name(k) in self._underlying_names]
-        primaries = [k for k in spots if self.stoch_factors[k].privileged_layout(self.stoch_factors[k].param)]
-        spot_keys = primaries or spots
-        if len(spot_keys) != 1:
-            raise ValueError(
-                f'Inner MC expects exactly one underlying spot factor; found {len(spot_keys)}: {spot_keys}'
-            )
-        return spot_keys[0]
-
     def _restricted_struct(self, outer_struct, cutoff_mtm_idx, window_end_idx=None):
         """Mirror `outer_struct` with each deal's `Time_dep` restricted to events at mtm positions
         >= `cutoff_mtm_idx`, or windowed to [`cutoff_mtm_idx`, `window_end_idx`] when that is given
@@ -3922,8 +3903,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         mid-fork raise leaves the state flat-sized and the next t-step fails on shapes rather than
         the real cause, and clears the fork's `t_Buffer` and `t_Scenario_Buffer`.
         """
-        spot_key = self._find_spot_key()
-        B_outer = outer_scenario_buffer[spot_key].shape[-1]
+        B_outer = outer_scenario_buffer[self._primary].shape[-1]
         B_inner = shared_mem.simulation_sub_batch
         t_days = int(self.time_grid.scen_time_grid[t])
         inner_time_grid = self.time_grid.truncate_to(base_date, t_days)
