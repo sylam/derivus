@@ -848,18 +848,18 @@ class DiffSolver:
         # the two OBJECTIVE dials, read off the normalized runtime. RUNNING WEALTH rewards the
         # day's wealth INCREMENT, which makes C_t a sum of per-step rewards and retires the u(W)
         # anchor; SCHEDULED SCALE gives each decision step its own knee.
-        obj = runtime.get("objective") or {}
-        self.running_wealth = obj.get("reference_mode") == "running_wealth"
+        obj = runtime["objective"]
+        self.running_wealth = obj["reference_mode"] == "running_wealth"
         # LogWealth: the per-step reward is the growth ratio log(W1/W0) - step-sum structure,
         # scale-free, its domain the wealth floor the forward-constructed bank maintains
-        self.log_ratio = obj.get("object") == "logwealth"
+        self.log_ratio = obj["object"] == "logwealth"
         self.w_floor = 1.0
         # the DP's aversion: it divides the capital line in the LogWealth reward, so gamma > 1 puts
         # less capital at risk. 1.0 is neutral, and it is inert under the other objectives.
         self.aversion = self.cfg["diffv2_risk_aversion"]
         self.displacement = 0.0                # measured off the bank at warmup, or restored
         self.loaded_displacement = None
-        self.scheduled_scale = obj.get("utility_scale_mode") == "conditional_sim"
+        self.scheduled_scale = obj["utility_scale_mode"] == "conditional_sim"
         if self.running_wealth and self.scheduled_scale and not self.log_ratio:
             raise ValueError(
                 "Objective.Reference_Mode='Running_Wealth' refuses "
@@ -1509,6 +1509,7 @@ class DiffSolver:
         oob = []                                                                         # per-t bank corridor-breach diagnostic
 
         def explore(t):
+            lo_t, hi_t = self.aspace.bounds(t)[2:]                                        # its net band at t
             q_rep = self._replication_hedge(t)                                            # (n_hedge,)
             noise = self.noise_frac * rng * torch.randn(
                 self.B_outer, self.n_hedge, generator=gen, device=self.device)
@@ -1516,7 +1517,6 @@ class DiffSolver:
             if self.position_state:
                 # cover the p axis the argmax queries. Subsumes the corridor projection below,
                 # since the bounds already intersect the corridor.
-                lo_t, hi_t = self.aspace.bounds(t)[2:]
                 u = lo_t + (hi_t - lo_t) * torch.rand(
                     self.B_outer, 1, generator=gen, device=self.device)
                 q = self.aspace.waterfill(q, u, u)
@@ -1524,11 +1524,10 @@ class DiffSolver:
                 # keep the exploration IN the corridor so the value fn trains on reachable wealth
                 # states only; the diagnostic below confirms ~0 residual breach
                 q = self.aspace.project_to_corridor(q, t)
-                lo, hi = self.aspace.bounds(t)[2:]                                        # its net band at t
                 tot = q[:, self.active].sum(-1)                                           # bank signed total (active legs)
                 tol = 1e-3                     # float32 headroom-fill lands on the edge to ~1e-6
-                oob.append((t, lo, hi, float((tot < lo - tol).float().mean()
-                                             + (tot > hi + tol).float().mean()),
+                oob.append((t, lo_t, hi_t, float((tot < lo_t - tol).float().mean()
+                                                 + (tot > hi_t + tol).float().mean()),
                             float(tot.min()), float(tot.max())))
             return q
         banked = self._roll_bank(explore)
@@ -3376,9 +3375,9 @@ class DiffSolverV2(DiffSolver):
         # cannot defend propagate their need BACKWARD, so the forward pass pre-positions.
         # the floor: one currency unit per unit of the liability's leg volume (`Bundle.total_leg_volume`)
         floor = 1.0 * self.leg_volume
-        m_t, lo_is, hi_is = {}, {}, {}
+        m_t, bands, lo_is, hi_is = {}, {}, {}, {}
         for t in self.steps:
-            lo_t, hi_t = band(t)
+            bands[t] = lo_t, hi_t = band(t)
             lo_is[t] = math.ceil(lo_t - 1e-9)
             hi_is[t] = math.floor(hi_t + 1e-9)
             if self._dust(rep[t]):
@@ -3407,8 +3406,7 @@ class DiffSolverV2(DiffSolver):
                 qt = torch.zeros(self.B_outer, self.n_hedge, device=self.device)
             else:
                 g = self._phi_apply(cv, W)
-                lo_t, hi_t = band(t)
-                lo_i, hi_i = math.ceil(lo_t - 1e-9), math.floor(hi_t + 1e-9)
+                (lo_t, hi_t), lo_i, hi_i = bands[t], lo_is[t], hi_is[t]
                 net = hi_t - g * (hi_t - lo_t)
                 # WHOLE contracts, rounded AWAY from zero (up, in cover terms); the box is snapped
                 # inward so every integer net is realizable
