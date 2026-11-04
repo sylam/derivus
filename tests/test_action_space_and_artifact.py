@@ -1294,6 +1294,23 @@ def test_a_table_is_the_exposure_universe_alone(mode, table):
         _run(cfg)
 
 
+def test_logwealth_refuses_a_stated_terminal_reference():
+    """`LogWealth` is the per-step growth, so its reference is the day's increment: the training
+    document under LogWealth stating `Reference_Mode` Fixed is refused by name before a path is
+    drawn, and stating Running_Wealth trains to the `V_0` of the one stating none.
+
+    Killing mutations: the stated Fixed read as the increment (the refusal dropped), which trains;
+    `Reference_Mode` declaring 'Fixed' as its default, which refuses the document stating none."""
+    def stating(mode):
+        cfg = _logwealth(_cfg(batch=8, inner=4))
+        if mode is not None:
+            cfg['Calc']['Calculation']['Hedging_Problem']['Objective']['Reference_Mode'] = mode
+        return cfg
+    with pytest.raises(ValueError, match="Reference_Mode 'Fixed' beside Object 'LogWealth'"):
+        _run(stating('Fixed'))
+    assert _v0(_run(stating('Running_Wealth'))) == _v0(_run(stating(None)))
+
+
 @pytest.mark.parametrize('deadband, positions', [
     (0.0, None), (1e6, {'PL_APR_2026': 50, 'PL_JUL_2026': -50, 'PL_OCT_2026': -50})],
     ids=['free', 'held'])

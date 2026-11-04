@@ -393,20 +393,24 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
 def _objective_config(objective_config):
     """Normalize the `Objective` block, None without one. Its dials are dispatched on downstream by
     EQUALITY (`== 'running_wealth'`, `== 'conditional_sim'`), so a near-miss spelling would quietly
-    mean the default: `Reference_Mode` is validated here, `Utility_Scale_Mode` refuses its own.
-    LogWealth's reward is the day's log ratio of capital + MTM, running-wealth shaped whatever
-    `Reference_Mode` says."""
+    mean the default: `Reference_Mode` is validated here, `Utility_Scale_Mode` refuses its own."""
     if objective_config is None:
         return None
-    reference_mode = str(objective_config["Reference_Mode"]).lower()
+    logwealth = str(objective_config["Object"]).lower() == "logwealth"
+    stated = objective_config["Reference_Mode"]
+    reference_mode = str(stated or ("Running_Wealth" if logwealth else "Fixed")).lower()
     if reference_mode not in ("fixed", "running_wealth"):
         raise ValueError(
             f"Unsupported Objective.Reference_Mode: "
             f"{objective_config['Reference_Mode']!r}. Supported: 'Fixed' (the utility "
             f"is applied to TERMINAL wealth) | 'Running_Wealth' (to the day's wealth increment). "
             f"The value is dispatched on by equality, so a near-miss would silently run 'Fixed'.")
-    if str(objective_config["Object"]).lower() == "logwealth":
-        reference_mode = "running_wealth"
+    if logwealth and reference_mode == "fixed":
+        raise ValueError(
+            "Objective.Reference_Mode 'Fixed' beside Object 'LogWealth', whose per-step growth is "
+            "the day's increment: a contradiction the run refuses rather than arbitrates.")
+    logging.debug("Objective.Reference_Mode %s%s", reference_mode,
+                  " (the Object's own)" if stated is None else "")
     # every outer path shares L_0, so the raw dispersion at t=0 is exactly 0: a non-positive floor
     # makes c_0 = 0, x = (W-R)/c_0 infinite, and every label from step 0 a NaN
     floor_frac = float(objective_config["Utility_Scale_Floor_Frac"])

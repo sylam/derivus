@@ -3157,8 +3157,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       values=['AsymmetricUtility_Symlog', 'AsymmetricUtility_Huber',
                               'AsymmetricUtility_CARA', 'LogWealth'],
                       description='The utility shape the DP recursion works in; LogWealth is '
-                                  'the per-step growth objective (reward = log(W1/W0), '
-                                  'scale-free, implies Running_Wealth)'),
+                                  'the per-step growth objective, reward log(W1/W0), scale-free'),
                     F('Utility_Scale_Mode', 'Text', default='vol_scaled_notional',
                       values=['vol_scaled_notional', 'conditional_sim'],
                       description='How the utility scale c is derived from the book; '
@@ -3169,11 +3168,12 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Utility_Scale_Floor_Frac', 'Float', default=0.05,
                       description='Floor of the conditional_sim schedule, as a fraction of its '
                                   'terminal entry; inert under every other scale mode'),
-                    F('Reference_Mode', 'Text', default='Fixed',
+                    F('Reference_Mode', 'Text', default=None, convention=True,
                       values=['Fixed', 'Running_Wealth'],
                       description='What the utility is applied to: TERMINAL wealth, or the '
-                                  "day's wealth increment (a per-step reward the DP sums); "
-                                  'LogWealth, a per-step growth, is always the increment'),
+                                  "day's wealth increment (a per-step reward the DP sums); when "
+                                  "omitted the Object's own, the increment under LogWealth, which "
+                                  'refuses Fixed, and terminal wealth under a utility shape'),
                     F('Reference_Wealth', 'Float', default=0.0,
                       description='Benchmark wealth in money the utility is measured against; '
                                   'every shape works in x = (W - this) / c'),
