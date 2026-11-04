@@ -2663,7 +2663,7 @@ class DiffSolver:
         self.utility_scale_schedule = loaded.get("utility_scale_schedule")
         if self.cfg.get("diffv2_load_horizon_pad"):
             self.utility_scale_schedule = self._pad_steps(self.utility_scale_schedule,
-                                                          self.T_dec + 2)
+                                                          self.T_dec + 1)
         self.loaded_displacement = loaded.get("displacement")
         if self.loaded_displacement is not None:
             self.displacement = self._capital_line(loaded)
@@ -2827,7 +2827,7 @@ class DiffSolver:
                         (m_nets, ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"],
                          self._pad_steps(ck.get("a_bounds"), self.T_dec) if pad
                          else ck.get("a_bounds"),
-                         self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 2)
+                         self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 1)
                          if pad else ck.get("utility_scale_schedule"),
                          self._capital_line(ck)))           # the member's own capital line
                 logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
