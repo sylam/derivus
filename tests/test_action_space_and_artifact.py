@@ -2022,6 +2022,36 @@ def test_a_declared_drift_shifts_the_risk_horizon_s_fork(tmp_path):
     assert len(shift) == 81 and shift[0] == 0.0 and np.abs(shift[1:-1]).mean() > 0.01, shift.tolist()
 
 
+def test_a_declared_drift_leaves_an_expired_leg_still(tmp_path):
+    """`DiffV2_Drift_Beta` shifts the fork's moves of the legs still live, so an expired leg's move
+    stays nil and a book parked on it earns nothing: the training document's frozen roll of one path
+    under a hair trigger at beta 5, swept from step 100, its July leg expiring on the 29th, reads the
+    July fork's mean move 0 at every decision from the 29th on, and after it, October alone live,
+    every row that books one live net scores one number. 6 s.
+
+    Killing mutations: the drift shifting every leg (`adj.view(1, 1, -1)` in the stepper roll), the
+    dead July leg's mean move -17.8 from the 29th; with it the one-step fork scored on the raw row
+    (`acts` for `a_live` in `_decide`), rows of one live book 0.0154 apart."""
+    ckpt, dump = str(tmp_path / 'vf.pt'), str(tmp_path / 'dump.csv')
+    _run(_cfg(seed=7, save=ckpt))
+    cfg = _cfg(batch=2, seed=7, load=ckpt)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update(
+        {'DiffV2_Stepper_Rollout': 'Yes', 'DiffV2_Decision_Curve_Dump': dump,
+         'DiffV2_Drift_Threshold_Sigmas': 1e-6, 'DiffV2_Drift_Beta': 5.0})
+    world = _run(cfg).bundle
+    rows = pd.read_csv(dump)
+    dates = world.scenario_dates[world.initial_time_index + rows['t'].to_numpy()]
+    dead = rows[dates >= '2026-07-29']
+    spread = 0.0
+    for _, row in rows[dates > '2026-07-29'].iterrows():
+        by = {}
+        for net, score in zip(row['curve_net'].split(), row['curve_pre'].split()):
+            by.setdefault(net, []).append(float(score))
+        spread = max(spread, max(max(v) - min(v) for v in by.values()))
+    assert len(dead) >= 3 and (dead['E_dF_PL_JUL_2026'] == 0.0).all() and spread == 0.0, (
+        dead['E_dF_PL_JUL_2026'].tolist(), spread)
+
+
 def test_the_sweep_s_labels_score_the_risk_horizon():
     """The label's argmax and the label horizon's greedy steps rank by the risk term over the risk
     horizon as the roll does: training with no fit on `DRIFTING` at `DiffV2_Label_Horizon` 2, kappa

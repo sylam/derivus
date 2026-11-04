@@ -1314,12 +1314,19 @@ class DiffSolver:
         return dF, dL, market, self.inner_cache[self.prev[s]][4]
 
     def _held(self, t):
-        """`(rows, intervals)`: the decision rows decision t's risk fork reads its marks on, every
-        one to its landing under `Running_Wealth`, whose reward sums over them, else the landing
-        alone, and the decision intervals from t to each."""
+        """`(rows, moving)`: the decision rows decision t's risk fork reads its marks on, every one
+        to its landing under `Running_Wealth`, whose reward sums over them, else the landing alone,
+        and per row `(m, n_hedge)` the decision intervals from t to it each leg moves over
+        (`_moving`)."""
         rows = [r for r in self.steps + [self.T_dec] if t < r <= self.landing[t]]
-        intervals = list(range(1, len(rows) + 1))
-        return (rows, intervals) if self.running_wealth else (rows[-1:], intervals[-1:])
+        moving = torch.stack([self._moving(d) for d in [t] + rows[:-1]]).cumsum(0)
+        return (rows, moving) if self.running_wealth else (rows[-1:], moving[-1:])
+
+    def _moving(self, t):
+        """The legs decision t's one-step fork moves `(n_hedge,)`: live and still dispersing, since
+        on a leg's final day its fork's dispersion collapses while the settling mark moves."""
+        dF, live = self.inner_cache[t][0], self.inner_cache[t][4]
+        return live * (dF.std(1).mean(0) > 0.5)
 
     # ---- external argmax (Bellman max outside the fitted value) --------------
     def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, live=None,
@@ -1386,7 +1393,6 @@ class DiffSolver:
             band_f = None
             for s in range(0, grid.shape[0], self.chunk):
                 acts = grid[s:s + self.chunk]                                            # (c, n_hedge)
-                q = acts[None, :, None, :]                                               # (1,c,1,n_hedge)
                 a_live = acts if live is None else acts * live                            # (c,n_hedge)
                 charge = None
                 # kappa_T rides OUTSIDE the q_prev gate: the terminal unwind is a property of the
@@ -1396,7 +1402,8 @@ class DiffSolver:
                     prev = a_live[None] if q_prev is None else q_prev[:, None, :]
                     charge = self._reposition_charge(                                     # (B,c,1) $
                         a_live[None, :, :], prev, kappa, kappa_T, kappa_cal)[:, :, None]
-                C1f, _ = self._landed(nets, W, q, (dF, dL, market_t1, live), charge, self.nxt[t])
+                C1f, _ = self._landed(nets, W, a_live[None, :, None, :], (dF, dL, market_t1, live),
+                                      charge, self.nxt[t])
                 Ckf = None if ahead is None else self._landed(
                     nets, W, a_live[None, :, None, :], ahead, charge, self.landing[t])[0]
                 C1 = self._risk_adjusted(C1f, Ckf)                                        # E_inner[C] (B,c)
@@ -2093,15 +2100,13 @@ class DiffSolver:
         kappa_T, kappa_cal = self._unwind_kappa(t), self._calendar_kappa(t)
         a_live = acts if live is None else acts * live
         with torch.no_grad():
-            # `_decide` steps wealth with the RAW row and charges the LIVE-masked one; dF is
-            # already zeroed on dead legs, so the two agree on W1 and differ only in the toll.
             charge = None
             if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
                 charge = self._reposition_charge(
                     a_live[None, :, :], q_prev[:, None, :], kappa, kappa_T, kappa_cal)[:, :, None]
 
             def rank(charge):
-                C1f, W1 = self._landed(nets, W, acts[None, :, None, :], (dF, dL, market_t1, live),
+                C1f, W1 = self._landed(nets, W, a_live[None, :, None, :], (dF, dL, market_t1, live),
                                        charge, self.nxt[t])
                 Ckf = None if ahead is None else self._landed(
                     nets, W, a_live[None, :, None, :], ahead, charge, self.landing[t])[0]
@@ -2318,10 +2323,9 @@ class DiffSolver:
                         rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
                         rL = dL.mean(1) - obs_dL                                  # (B,)
                         sF = dF.std(1).clamp_min(1e-9)
-                        # informative legs only: live AND still dispersing. On a leg's final day
-                        # the fork's dispersion collapses while the settling mark moves, and the
-                        # frozen-mark dust over the std clamp fabricates huge sigma readings.
-                        inf_m = live * (sF.mean(0) > 0.5)
+                        # informative legs only: the frozen-mark dust of a leg's final day over the
+                        # std clamp fabricates huge sigma readings
+                        inf_m = self._moving(t)
                         n_inf = float(inf_m.sum()).__int__() or 1
                         pending = ([float(b) for b in rF.mean(0)], float(rL.mean()),
                                    float(((rF / sF) * inf_m).sum() / (rF.shape[0] * n_inf)))
@@ -2341,13 +2345,12 @@ class DiffSolver:
                             adj = torch.tensor(
                                 [-beta * c / n_so_far for c in drift["cum_dF_usd"]],
                                 device=self.device)
-                            dF = dF + adj.view(1, 1, -1)
+                            dF = dF + adj * inf_m
                             if ahead is not None:
                                 # the risk fork's move to each of its rows by that drift over the
-                                # decision intervals to it
-                                ahead = (ahead[0] + adj * torch.tensor(
-                                    self._held(t)[1], device=self.device).view(-1, 1, 1, 1),
-                                    *ahead[1:])
+                                # decision intervals to it each leg moves over
+                                ahead = (ahead[0] + (adj * self._held(t)[1])[:, None, None],
+                                         *ahead[1:])
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
                         if not q_log["t"]:
                             q_prev = self._first_book(t, live, B)
