@@ -3916,10 +3916,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         demand outside the outer loop, via `Bundle.inner_mc`.
 
         Returns the inner samples the solver bootstraps from, `t+1` the row `landing`: the
-        decision's successor, the next market row or the terminal, the one the decision at t holds
-        its book to (Monday from a Friday); or a list, the decision rows `DiffV2_Risk_Horizon` holds
-        it across, `F_t1` and `L_t1` then the marks on each stacked on a leading axis and
-        `market_t1` the last's:
+        decision's successor, the next row of market time or the terminal, the one the decision at
+        t holds its book to (Monday from a Friday); or a list, the decision rows
+        `DiffV2_Risk_Horizon` holds it across, `F_t1` and `L_t1` then the marks on each stacked on
+        a leading axis and `market_t1` the last's:
             F_t, F_t1     {ref: (B_outer, B_inner)}       futures price at outer t and t+1
             L_t, L_t1     (B_outer, B_inner)              liability MTM at outer t and t+1
             market_t1     (B_outer, B_inner, market_dim)  inner market state at outer t+1

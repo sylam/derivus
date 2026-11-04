@@ -515,8 +515,8 @@ locking the frame, `step` per training batch, `finish` on the held-out last), so
 
 `_run_inner_mc_at_t` forks each outer path's state at step `t` on process copies, truncates the grid
 and each deal's `Time_dep` to `t` and the rows to its successor (`Bundle.successors`), the next
-market row or the terminal, which the decision at `t` holds its book to (Monday from a Friday, a
-Saturday terminal from a Friday), and runs one pass of `Batch_Size × Inner_Sub_Batch`
+row of market time or the terminal, which the decision at `t` holds its book to (Monday from a
+Friday, a Saturday terminal from a Friday), and runs one pass of `Batch_Size × Inner_Sub_Batch`
 samples, its memory set by those two fields and the rows. The risk horizon's fork
 (`DiffV2_Risk_Horizon`) runs to the last of the decision rows it holds its book across, reads its
 marks on each, and draws iid on streams of its own (`CMC_State.own_stream`), so it moves no other

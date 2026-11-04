@@ -1047,8 +1047,8 @@ def test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal(mode, 
     entering at row 0 and unwinding at the terminal T, the last live liability mark: the P&L of a
     book held from row 0 and closed at T, within 1e-5 relative. 2 s each.
 
-    Killing mutations: the stepper deciding on `business_indices`, which holds a Wednesday terminal,
-    so the trade it takes there is held unclosed (final position -10, the Wednesday cases); the
+    Killing mutations: the stepper deciding on every row of market time, a Wednesday terminal among
+    them, so the trade it takes there is held unclosed (final position -10, the Wednesday cases); the
     close one row late at the clean-exit row (`current == self._close_idx` closing at
     `_values_at(last)`) in `_futures_account_step` and in `_cash_account_step`, the hedge P&L
     picking up the Saturday-to-Sunday move (path 1 -305,396 against -334,473)."""
@@ -1176,8 +1176,8 @@ def test_a_first_row_of_no_market_time_is_one_decision_for_the_verdict_and_the_s
     its greedy, passive and no-hedge books to the verdict's terminal wealth within 5e-6 relative,
     as on a first row that is a market row. 5 s.
 
-    Killing mutation: the stepper deciding on `business_indices`, which leaves out a first row of no
-    market time, so its roll first decides on Monday 13 (row 3) and holds the opening book over the
+    Killing mutation: the stepper deciding on the rows of market time alone, which leave out a first
+    row of none, so its roll first decides on Monday 13 (row 3) and holds the opening book over the
     move the verdict holds its first book over (greedy -8.1%, passive -67%)."""
     calendar = str(tmp_path / 'calendars.cal')
     with open(calendar, 'w') as f:
@@ -1806,6 +1806,25 @@ def test_the_sweep_s_labels_score_the_risk_horizon():
     gap = np.abs(books[0] - books[1])
     assert np.mean(gap < 1e-6) >= 0.6 and gap.mean() < 5.0, (books[0].tolist(), books[1].tolist())
     assert np.abs(labels[0] - labels[1]).mean() < 0.05, np.abs(labels[0] - labels[1]).mean()
+
+
+def test_a_decision_is_a_row_of_market_time_on_a_coarse_grid():
+    """A decision is a row of market time, one carrying a business day of the job's calendar since
+    the row before (`utils.market_days`, the clock the laws step on), whatever the grid's spacing:
+    on the fixture rolled every second day from Friday 10 April a Sunday row carries no market day
+    and decides nothing, a Saturday row carries its Friday and decides. 1 s.
+
+    Killing mutation: the decision rows read off the calendar's business days (`is_on_offset`),
+    which leave out every Saturday row, so its Thursday's book is held over two market days."""
+    cfg = jsonlib.load(open(FIXTURE))
+    cfg['Calc']['Calculation'].update(Time_Grid='0d 2d(2d)', Batch_Size=2)
+    world = _run(cfg).bundle
+    dates = world.scenario_dates[world.initial_time_index:]
+    market = [len(pd.date_range(dates[t - 1] + pd.Timedelta(days=1), dates[t], freq=world.business_day))
+              for t in range(1, world.last_live_mtm_index)]
+    assert world.decision_steps == [0] + [t for t, m in enumerate(market, 1) if m], world.decision_steps
+    days = {dates[t].day_name() for t in world.decision_steps[1:]}
+    assert 'Saturday' in days and 'Sunday' not in days, days
 
 
 #: The fixture's basis reverting to a slow mean of lambda 0.95, and the GARCH(1,1) its innovation

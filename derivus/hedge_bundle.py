@@ -1160,7 +1160,6 @@ class Bundle:
         self.time_grid_days = None          # (T,) day offsets from base_date
         self.time_grid_days_cpu = []        # the same as python ints (sync-free step loop)
         self.scenario_dates = None          # DatetimeIndex over the full grid
-        self.business_indices = ()          # the calendar's market rows in the sim window
         self.initial_time_index = 0         # history/sim boundary
         self.history_rows = 0               # History_Lookback_Business_Days prefix rows
         # Simulated series.
@@ -1221,7 +1220,7 @@ class Bundle:
         history prefix. `History_Lookback_Business_Days` rows of realized spot are prepended so a
         rolling-window feature at sim-day-0 already has its lookback; a tradable whose `Commodity`
         has a history takes that series, every other series broadcasts its first row. Also derives
-        the CPU day mirror, the scenario dates, `initial_time_index` and the decision indices."""
+        the CPU day mirror, the scenario dates and `initial_time_index`."""
         grid = _align_time_axis(time_grid_days, steps)
         tradables = {n: _align_time_axis(t, steps) for n, t in tradables.items()}
         history = runtime['portfolio_state']['spot_price_history']
@@ -1262,9 +1261,6 @@ class Bundle:
         # day offsets); solvers strip this offset to index time tensors by sim-grid t
         self.initial_time_index = next(
             (i for i, d in enumerate(days) if int(d) >= 0), len(days))
-        self.business_indices = tuple(
-            i for i in range(max(len(self.scenario_dates) - 1, 0))
-            if i >= self.initial_time_index and self.business_day.is_on_offset(self.scenario_dates[i]))
 
     def _history_prefix(self, tensor, realized=None):
         """The `history_rows` prepended to a simulated series: the realized history broadcast
@@ -1296,10 +1292,12 @@ class Bundle:
                                     tensor], dim=0)
             self.realized_cashflows[currency] = tensor
         self.last_live_mtm_index = T = int(steps - 2)
-        # sim-grid t: the first row and the market rows before the terminal, and each row's successor,
-        # the next of them or the terminal, which a decision holds its book to and its fork lands on
-        r0 = self.initial_time_index
-        self.decision_steps = sorted({0} | {i - r0 for i in self.business_indices if i - r0 < T})
+        # sim-grid t: the first row and the rows of market time before the terminal, the business
+        # days of the job's calendar each carries (`utils.market_days`, the clock the laws step on),
+        # and each row's successor, the next of them or the terminal, which a decision holds its
+        # book to and its fork lands on
+        market = utils.market_days(self.scenario_dates[self.initial_time_index:], self.business_day)
+        self.decision_steps = [0] + [t for t in range(1, T) if market[t] > 0]
         self.successors = [next((s for s in self.decision_steps if s > t), T) for t in range(T)]
         if total_leg_volume:
             self.total_leg_volume = float(total_leg_volume)
