@@ -156,6 +156,32 @@ def test_the_hindsight_bound_decides_where_the_solver_does():
     assert result.evaluation_summary['comparison']['HindsightDpSolver']['n_star'] == pytest.approx(want, abs=1e-5)
 
 
+def test_the_textbook_bound_holds_its_book_to_the_terminal():
+    """The static-hold benchmark telescopes its constant book to the terminal T, the last live
+    liability mark where `L_T` is read and the book's unwind is charged: on the fixture with
+    `PL_OCT_2026` alone active under a CARA utility of gamma 1 at an explicit 100,000 scale, its
+    `v0_mean` is the path mean of u(L_T + n* x 50 x (F_T - F_0)) at its own n*, within 1e-5
+    relative (-2,386.49). 3 s.
+
+    Killing mutation: the hold read to the clean-exit row after the terminal (`F[:, -1]`, Thursday
+    6 August past Wednesday 5), the row the stepper and the hindsight bound were moved off: n* -25
+    reads -2,744.35."""
+    cfg = _cfg(active=[2], benchmarks=True)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Objective'].update(
+        Object='AsymmetricUtility_CARA', CARA_Gamma=1.0, Utility_Scale_Explicit=100000.0)
+    result = _run(cfg)
+    world = result.bundle
+    T = world.last_live_mtm_index
+    F = world.tradables_sim['PL_OCT_2026'].double()
+    L = world.liability_sim.double()
+    textbook = result.evaluation_summary['comparison']['textbook']
+    n = textbook['n_star'][2]
+    want = float((-torch.expm1(-(L[T] + n * 50.0 * (F[T] - F[0])) / 100000.0)).mean())
+    beyond = float((-torch.expm1(-(L[T] + n * 50.0 * (F[-1] - F[0])) / 100000.0)).mean())
+    assert n != 0.0 and T == F.shape[0] - 2, (n, T, F.shape)
+    assert abs(textbook['v0_mean'] / want - 1.0) < 1e-5, (textbook['v0_mean'], want, beyond)
+
+
 # --------------------------------------------------------------------------------------------
 # (ii) initial inventory — first-step turnover measured from the OPENING book q0, not flat
 # --------------------------------------------------------------------------------------------
@@ -908,6 +934,27 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     assert v['nohedge']['wT_mean'] == sv['nohedge']['wT_mean'], (v['nohedge']['wT_mean'], sv['nohedge']['wT_mean'])
     for p in ('greedy', 'passive'):
         assert abs(sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0) < 5e-6, (p, v[p]['wT_mean'], sv[p]['wT_mean'])
+
+
+def test_the_verdict_and_the_stepper_hold_one_textbook_book(tmp_path):
+    """The verdict and the stepper roll hold one textbook book on a simulated world, and with it one
+    wealth: on the swap document's frozen eval at zero rates on 12 simulated paths, where the
+    replication hedge is not zero as it is on a replayed path, and is one book on every path, so the
+    verdict's path-mean spread is each path's, the textbook's terminal wealth agrees within 5e-6
+    relative, as the passive's and the no-hedge's do. 4 s.
+
+    Killing mutations: the verdict's textbook book left fractional, the replication hedge projected
+    into the corridor (-10.62 and -10.26 contracts at the first decision; the stepper 1.43% below);
+    the stepper roll's own spelling, scaled to the gross cap, projected into the corridor and
+    rounded leg by leg (2.27% above)."""
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(_swap(save=ckpt))
+    roll = _swap(load=ckpt)
+    roll['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
+    d = _run(roll).evaluation_summary['diagnostics']
+    v, sv = d['verdict'], d['stepper_verdict']
+    gaps = {p: sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0 for p in ('textbook', 'passive', 'nohedge')}
+    assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
 
 
 @pytest.mark.parametrize('mode', ['futures', 'cash_account'])

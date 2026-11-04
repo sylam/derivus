@@ -356,8 +356,8 @@ class HedgeActionSpace:
         its box. Feasible whenever the corridor is grid-feasible. No schedule → `q` unchanged.
 
         Where `grid_at` FILTERS a discrete action universe for the argmax, this CONTINUOUSLY nudges
-        an exploration or benchmark position: the bank rolls continuous q around the min-var hedge,
-        so a filter has nothing to select from."""
+        an exploration position: the bank rolls continuous q around the min-var hedge, so a filter
+        has nothing to select from."""
         if self.schedule is None:
             return q
         return self.waterfill(q, *self._corridor_at(t))
@@ -488,11 +488,12 @@ class HedgeActionSpace:
 
 
 def run_textbook_benchmark(bundle, runtime):
-    """Static-hedge reference: the single best CONSTANT position, held over the whole horizon with
-    no rebalancing, evaluated FRICTIONLESS on the realized outer paths — a valid lower bound for
-    the dynamic DP, since rebalancing can only add value. No inner MC and no V̂; a static hold
-    telescopes the per-step P&L to `position · (F_T − F_0)`. Shares `HedgeActionSpace`, so it
-    respects `Active_Hedge_Indices` exactly like the greedy grid.
+    """Static-hedge reference: the single best CONSTANT position, held with no rebalancing to the
+    terminal T, the last live liability mark where `L_T` is read and the book unwound, evaluated
+    FRICTIONLESS on the realized outer paths — a valid lower bound for the dynamic DP, since
+    rebalancing can only add value. No inner MC and no V̂; a static hold telescopes the per-step
+    P&L to `position · (F_T − F_0)`. Shares `HedgeActionSpace`, so it respects
+    `Active_Hedge_Indices` exactly like the greedy grid.
 
     The turnover a real execution would pay — entry from the OPENING book `q0` plus a terminal
     unwind at the PRE-SETTLEMENT row, the one row all three tracks unwind at so their `*_net`
@@ -512,7 +513,7 @@ def run_textbook_benchmark(bundle, runtime):
     b_outer = F.shape[-1]
     q0 = aspace.initial_q(b_outer, device)                            # (B, n_hedge) opening book
 
-    total_move = F[:, -1, :] - F[:, 0, :]                              # (n_h, B) telescoped
+    total_move = F[:, bundle.last_live_mtm_index, :] - F[:, 0, :]      # (n_h, B) telescoped
     g_t = torch.einsum("ai,ib->ab", grid * aspace.contract_size, total_move)  # (n_actions, B)
     u = _utility_wrap_signed(L_T.unsqueeze(0) + g_t, runtime)         # FRICTIONLESS objective
     obj = u.mean(dim=-1)                                               # (n_actions,)
@@ -1399,6 +1400,12 @@ class DiffSolver:
             q[i] = (-beta / (self.contract_size[i] * max(self.n_active, 1)))
         return torch.minimum(torch.maximum(q, self.q_lo), self.q_hi)
 
+    def _textbook_hedge(self, t, live, batch):
+        """The textbook book at decision step t `(batch, n_hedge)`: the replication hedge booked as
+        the execution books it (`HedgeActionSpace.book`), as the stepper holds it."""
+        q = self._replication_hedge(t)[None].expand(batch, self.n_hedge)
+        return self.aspace.book(q, t, live)
+
     def _passive_hedge(self, t, live, batch):
         """The passive book at decision step t `(batch, n_hedge)`: minus the liability quantity
         still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`
@@ -1903,10 +1910,7 @@ class DiffSolver:
                     q_prev=q_prev["greedy"],
                     kappa=kappa_t if self.cost_aware or self.position_state else None, live=live)
                 q_g = q_g * live          # zero positions on expired contracts (wealth-neutral)
-                # textbook = diagonal min-var, PROJECTED into the corridor so the benchmark obeys
-                # the same mandate as greedy (no schedule = identity)
-                q_tb = self.aspace.project_to_corridor(
-                    self._replication_hedge(t)[None].expand(n, self.n_hedge), t)
+                q_tb = self._textbook_hedge(t, live, n)
                 q_pa = self._passive_hedge(t, live, n)
                 z = torch.zeros(n, self.n_hedge, device=self.device)
                 kappa_cal_t = self.aspace.calendar_kappa(self.tradables_sim, t)
@@ -1984,7 +1988,7 @@ class DiffSolver:
         gq = torch.tensor(q_traj["greedy"])                                              # (n_steps, n_hedge)
         out["greedy_mean_abs_q"] = gq.abs().mean(0).tolist()
         out["greedy_q_traj"] = q_traj["greedy"]          # full per-t mean book (audit trail)
-        out["textbook_q_traj"] = q_traj["textbook"]      # corridor-projected benchmark book (audit)
+        out["textbook_q_traj"] = q_traj["textbook"]      # the booked benchmark book (audit)
         out["passive_q_traj"] = q_traj["passive"]
         out["greedy_q_first"] = q_traj["greedy"][0] if q_traj["greedy"] else None
         out["greedy_q_mid"] = (q_traj["greedy"][len(q_traj["greedy"]) // 2]
@@ -2221,15 +2225,7 @@ class DiffSolver:
                     if policy == "nohedge":
                         q = torch.zeros(B, self.n_hedge, device=self.device)
                     elif policy == "textbook":
-                        qt = self._replication_hedge(t)     # (n_hedge,) per-instrument clamped
-                        # replication clamps per-instrument only, so scale down proportionally to
-                        # honour the TOTAL position cap as well
-                        tot = float(qt.abs().sum())
-                        if self.total_abs_limit > 0.0 and tot > self.total_abs_limit:
-                            qt = qt * (self.total_abs_limit / tot)
-                        # obey the corridor mandate too, so this is the same in-corridor min-var
-                        # benchmark the verdict rolls
-                        q = self.aspace.project_to_corridor(qt[None].expand(B, self.n_hedge), t)
+                        q = self._textbook_hedge(t, inner_cache[t][4], B)
                     elif policy == "passive":
                         q = self._passive_hedge(t, inner_cache[t][4], B)
                     else:
