@@ -1642,6 +1642,30 @@ def test_each_leg_pays_its_share_of_the_turnover_charge_from_its_own_account():
     got = (matched['USD_CASH'] - outright['USD_CASH']).double()
     assert torch.allclose(got, saving, rtol=1e-5, atol=0.0), (got.tolist(), saving.tolist())
 
+@pytest.mark.parametrize('mode', ['futures', 'cash_account'])
+def test_a_document_stating_no_cash_account_books_every_flow_on_one_ledger(mode):
+    """A document stating no `Cash_Instruments` books every leg's flows on one unmarked money ledger:
+    on the client document at zero rates, short 10 `PL_OCT_2026` from the first row, its terminal
+    hedge P&L on every path is, to the bit, the one the same document reads with its cash account,
+    whose mark a zero rate holds, in either accounting mode (70,168.50 on path 0). 2 s each.
+
+    Killing mutation: a leg routed to no account where none is declared and its flows dropped (the
+    boundary's `None` account and `_credit` skipping it), the P&L 0 on every path."""
+    def pnl(cash):
+        cfg = _client(mode)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        if not cash:
+            del hp['Tradable_Instruments']['CashAccountDeal'], hp['Evaluator']['Cash_Instruments']
+            hp['Portfolio_State']['Cash_Balances'], hp['Portfolio_State']['Margin_Balances'] = {}, {}
+        result = _run(cfg)
+        stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
+        while not stepper.done:
+            last = stepper.step({'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
+        return last['transition_pnl_excess']
+    with_cash, ledger = pnl(True), pnl(False)
+    assert (with_cash != 0.0).all() and torch.equal(ledger, with_cash), (ledger.tolist(), with_cash.tolist())
+
+
 def test_writing_the_csv_leaves_the_world_as_it_was(tmp_path):
     """Writing the diagnostic CSV leaves the world it describes as it was: on the client document
     under `Force_Flat_At_End` 'No', short 10 `PL_OCT_2026` from the first row, every tradable's

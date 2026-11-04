@@ -3127,7 +3127,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Whether a rebalance settles variation margin or moves cash'),
                     F('Cash_Instruments', 'Container', default=[], convention=True,
                       description='The tradables that are cash accounts, every other being a hedge leg; '
-                                  'none when omitted'),
+                                  'when omitted every leg books to one unmarked money ledger'),
                     F('Position_Limits', 'Container', default=REQUIRED,
                       description='Each hedge leg\'s `{Min_Position, Max_Position}` box, whole contracts'),
                     F('Transaction_Cost_Per_Unit', 'Float', default=0.0,

@@ -417,12 +417,13 @@ def construct_hedge_runtime(
             f"Evaluator.Calendar_Spread_Bps must be > 0; got {calendar_spread_bps}. Omit the "
             f"key to price every contract at the outright spread.")
     # static instrument -> cash_account routing by currency: the first cash account whose currency
-    # matches wins, else the first account
+    # matches wins, else the first account; none declared is one unmarked ledger, compounding nothing
+    ledgers = cash_account_names or ("money",)
+    logging.debug("ledgers: %s", ledgers)
     account_by_currency = {}
     for account_name in cash_account_names:
         account_by_currency.setdefault(
             normalized_tradables[account_name]["currency"], account_name)
-    fallback_account = cash_account_names[0] if cash_account_names else None
 
     alloc_mode = str(evaluator_config["Allocation_Mode"]).lower()
     if alloc_mode not in ("cartesian", "exposure", "carry_variance"):
@@ -452,7 +453,7 @@ def construct_hedge_runtime(
             "tradables": tuple(normalized_tradables),
             # the hedge legs ARE the action set; the solver builds its action grid over them
             "hedges": hedge_names,
-            "cash_accounts": cash_account_names,
+            "cash_accounts": ledgers,
         },
         "referenced_commodities": referenced_commodities,
         "tradables": normalized_tradables,
@@ -472,7 +473,7 @@ def construct_hedge_runtime(
                 n: {"min_position": int(limit["Min_Position"]), "max_position": int(limit["Max_Position"])}
                 for n, limit in ((n, evaluator_config["Position_Limits"][n]) for n in hedge_names)},
             "instrument_to_cash_account": {
-                n: account_by_currency.get(meta["currency"], fallback_account)
+                n: account_by_currency.get(meta["currency"], ledgers[0])
                 for n, meta in normalized_tradables.items()},
             "transaction_cost_per_unit":
                 float(evaluator_config["Transaction_Cost_Per_Unit"]),
@@ -817,27 +818,16 @@ def _portfolio_value(state, runtime):
     Two accounting modes. `cash_account`: position × price × contract_size plus the cash balances.
     Futures: cash is FROZEN at starting capital and margin carries every VM and trade-cost flow
     since inception, every row settled at its own mark."""
-    hedges = runtime["names"]["hedges"]
     tradables = runtime["tradables"]
     positions, prices = state["positions"], state["tradable_values"]
     total = torch.zeros_like(state["done"], dtype=MONEY)
+    cash = sum(balance.to(dtype=MONEY) for balance in state["cash_accounts"].values())
     if runtime["accounting_mode"] == "cash_account":
-        for name in hedges:
+        for name in runtime["names"]["hedges"]:
             total = total + (positions[name].to(dtype=MONEY) * prices[name].to(dtype=MONEY)
                              * float(tradables[name]["contract_size"]))
-        cash = None
-        for balance in state["cash_accounts"].values():
-            v = balance.to(dtype=MONEY)
-            cash = v if cash is None else cash + v
-        return total if cash is None else total + cash
-    for accounts in (state["margin_accounts"], state["cash_accounts"]):
-        balances = None
-        for balance in accounts.values():
-            v = balance.to(dtype=MONEY)
-            balances = v if balances is None else balances + v
-        if balances is not None:
-            total = total + balances
-    return total
+        return total + cash
+    return total + sum(balance.to(dtype=MONEY) for balance in state["margin_accounts"].values()) + cash
 
 
 def _pnl_excess(state, runtime):
@@ -1646,8 +1636,7 @@ class BundleStepper:
             self._held[n].append(positions[n])
 
     def _credit(self, accounts, account_name, amount):
-        if account_name is not None:
-            accounts[account_name] = accounts[account_name] + amount
+        accounts[account_name] = accounts[account_name] + amount
 
     def _compound(self, accounts, marks, next_marks):
         """Each balance grown overnight by its cash account's mark ratio `tv(next)/tv(cur)`: the
