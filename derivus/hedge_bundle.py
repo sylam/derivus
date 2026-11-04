@@ -828,6 +828,13 @@ def _utility_scale(objective, t=None):
     return c
 
 
+def _utility_x(W, objective, t=None):
+    """Wealth `W` in the utility's coordinate `x = (W − R)/c`: against `Reference_Wealth` R, at
+    the scale c in force at step t (`_utility_scale`). Every shape, its curvature and the
+    decision dump read it."""
+    return (W - float(objective["reference_wealth"])) / _utility_scale(objective, t)
+
+
 def _utility_wrap_signed(x_dollars, runtime, t=None):
     """The terminal UTILITY u(W) applied to signed wealth — the single source of truth for
     the objective, the DP recursion, and the solver's value labels. Dispatches on the
@@ -865,15 +872,13 @@ def _utility_wrap_signed(x_dollars, runtime, t=None):
     if not _is_utility_objective(runtime):
         return x_dollars
     obj = runtime["objective"]
-    x = (x_dollars - float(obj.get("reference_wealth", 0.0))) / _utility_scale(obj, t)
+    x = _utility_x(x_dollars, obj, t)
     shape = obj["object"]
     if shape == "asymmetricutility_symlog":
         return torch.sign(x) * torch.log1p(x.abs())
     if shape == "asymmetricutility_huber":
-        a = float(obj.get("huber_aversion", 2.5))
-        d = float(obj.get("huber_delta", 1.0))
-        au = float(obj.get("up_aversion", 0.0))
-        k = float(obj.get("up_knee", 0.15))
+        a, d = float(obj["huber_aversion"]), float(obj["huber_delta"])
+        au, k = float(obj["up_aversion"]), float(obj["up_knee"])
         loss = (-x).clamp(min=0.0)
         quad = a * loss * loss
         lin = a * d * d + 2.0 * a * d * (loss - d)
@@ -883,7 +888,7 @@ def _utility_wrap_signed(x_dollars, runtime, t=None):
         return (x - torch.where(loss <= d, quad, lin)
                 - torch.where(gain <= k, quad_up, lin_up))
     # asymmetricutility_cara
-    g = float(obj.get("cara_gamma", 1.0))
+    g = float(obj["cara_gamma"])
     return -torch.expm1(-g * x) / g
 
 
@@ -909,21 +914,19 @@ def _utility_local_curvature(W, runtime, t=None):
     if not _is_utility_objective(runtime):
         return 1.0, 0.0
     obj = runtime["objective"]
-    c = _utility_scale(obj, t)
-    x = (float(W) - float(obj.get("reference_wealth", 0.0))) / c
+    c, x = _utility_scale(obj, t), _utility_x(float(W), obj, t)
     shape = obj["object"]
     if shape == "asymmetricutility_symlog":
         f1 = 1.0 / (1.0 + abs(x))
         return f1 / c, math.copysign(f1, x) / c
     if shape == "asymmetricutility_huber":
         # the loss wing steepens the slope and the gain wing flattens it; curvature is +2a either way
-        a, knee, d, s = ((float(obj.get("huber_aversion", 2.5)), float(obj.get("huber_delta", 1.0)),
-                          -x, 1.0) if x < 0.0 else
-                         (float(obj.get("up_aversion", 0.0)), float(obj.get("up_knee", 0.15)),
-                          x, -1.0))
+        a, knee, d, s = ((float(obj["huber_aversion"]), float(obj["huber_delta"]), -x, 1.0)
+                         if x < 0.0 else
+                         (float(obj["up_aversion"]), float(obj["up_knee"]), x, -1.0))
         f1 = 1.0 + s * 2.0 * a * min(d, knee)
         return f1 / c, (0.0 if d > knee else 2.0 * a / (f1 * c))
-    g = float(obj.get("cara_gamma", 1.0))
+    g = float(obj["cara_gamma"])
     return math.exp(-g * x) / c, g / c
 
 
@@ -935,8 +938,8 @@ def _loss_side_curvature(runtime, t=None):
     curvature is `Up_Aversion` — zero for every book that never armed it. Callers reporting a DOSE
     rather than a position (the frame-lock log, and the decision-curve dump under an increment
     objective, where the increment is ~0 before the day happens) want this one."""
-    obj = runtime["objective"] or {}
-    reference = float(obj.get("reference_wealth", 0.0))
+    obj = runtime["objective"]
+    reference = float(obj["reference_wealth"])
     return _utility_local_curvature(reference - 1.0e-6 * _utility_scale(obj, t), runtime, t)
 
 

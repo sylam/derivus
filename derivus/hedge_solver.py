@@ -25,7 +25,7 @@ import torch
 
 from . import utils
 from .hedge_bundle import (
-    _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed,
+    _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed, _utility_x,
     MONEY, initial_q_from_runtime, per_contract_kappa, turnover_charge, wealth_step,
 )
 
@@ -200,15 +200,12 @@ class HedgeActionSpace:
             self._grid_cache = torch.stack([m.reshape(-1) for m in mesh], dim=-1)
         return self._grid_cache
 
-    def _corridor_at(self, t):
-        """`(min_total, max_total)` at decision step t — the rightmost `Total_Position_Schedule`
-        knot with `Step <= t` (piecewise-constant; clamps to the first knot for t before it)."""
-        lo, hi = self.schedule[0][1], self.schedule[0][2]
-        for step, mn, mx in self.schedule:
-            if step > t:
-                break
-            lo, hi = mn, mx
-        return lo, hi
+    @staticmethod
+    def knot_at(knots, t):
+        """The knot of a step-sorted schedule in force at decision step t: the rightmost with
+        `Step <= t`, the first before it (piecewise-constant). The one lookup behind the
+        `Total_Position_Schedule` corridor and the `Allocation_Weights` split."""
+        return next((k for k in reversed(knots) if k[0] <= t), knots[0])
 
     def _weights_at(self, t, live=None):
         """The `Allocation_Weights` split in force at decision step t — the rightmost knot with
@@ -222,11 +219,7 @@ class HedgeActionSpace:
         afterwards: a knot's weight on a dead leg is cover the book cannot realize, so leaving it
         in makes every rung advertise a net it masks away from and makes a corridor the live legs
         can satisfy look infeasible."""
-        w = (1.0,) * self.n_hedge if self.weights is None else self.weights[0][1]
-        for step, knot in self.weights or ():
-            if step > t:
-                break
-            w = knot
+        w = (1.0,) * self.n_hedge if self.weights is None else self.knot_at(self.weights, t)[1]
         w = torch.tensor(w, device=self.device) * self.active_mask
         if live is not None:
             w = w * live
@@ -361,7 +354,7 @@ class HedgeActionSpace:
         if self.total_abs_limit > 0.0:
             lo, hi = max(lo, -self.total_abs_limit), min(hi, self.total_abs_limit)
         if self.schedule is not None:
-            c_lo, c_hi = self._corridor_at(t)
+            c_lo, c_hi = self.knot_at(self.schedule, t)[1:]
             lo, hi = max(lo, c_lo), min(hi, c_hi)
         logging.debug('bounds at step %d: live active legs %s, net band (%s, %s)', t, legs, lo, hi)
         return self.q_lo * on, self.q_hi * on, lo, hi
@@ -375,6 +368,14 @@ class HedgeActionSpace:
         q = q if live is None else q * live
         net = q.sum(-1)
         return ((q >= box_lo) & (q <= box_hi)).all(-1) & (net >= lo - 1e-9) & (net <= hi + 1e-9)
+
+    def in_band(self, dq):
+        """Whether each move `dq` `(..., n_hedge)` lies inside `Max_Trade_Per_Step`: its net under
+        `Allocation_Weights`, the control being the net cover so a composition jump at a knot is the
+        schedule's mandate, each leg's move without one."""
+        if self.weights is not None:
+            return dq.sum(-1).abs() <= self.max_trade
+        return (dq.abs() <= self.max_trade).all(-1)
 
     def project_to_corridor(self, q, t):
         """Project the SIGNED total of the ACTIVE legs of `q` `(B, n_hedge)` into the net band of
@@ -1215,6 +1216,11 @@ class DiffSolver:
         return torch.stack([self.tradables_sim[r][to][rows] - self.tradables_sim[r][t][rows]
                             for r in self.hedges], dim=-1), dL
 
+    def _p(self, book, live=None):
+        """The position state `p = Σq / Q_max` of `book` `(..., n_hedge)` on the legs `live` marks
+        (every leg where None), measured in the `Total_Position_Abs_Limit` cap."""
+        return (book if live is None else book * live).sum(-1) / self.total_abs_limit
+
     def _risk_adjusted(self, C1f, Ckf=None):
         """`E_inner[C]` over the one-step draws `C1f`, downside-adjusted when `DiffV2_Risk_Kappa` is
         armed: the mean less kappa times the downside semideviation over the inner draws of `Ckf`,
@@ -1248,8 +1254,7 @@ class DiffSolver:
         if s < self.T_dec:
             x = market[:, None].expand(B, c, Bi, market.shape[-1]).reshape(-1, market.shape[-1])
             if self.position_state:
-                p = (((book if live is None else book * live).sum(-1) / self.total_abs_limit)
-                     .expand(B, c, Bi).reshape(-1))
+                p = self._p(book, live).expand(B, c, Bi).reshape(-1)
         C = self._continuation(nets, x, W1.reshape(-1), s, p).reshape(B, c, Bi)
         if self.running_wealth:
             # each move's reward off the CHARGED wealth, so a move pays its toll inside the step that
@@ -1396,12 +1401,7 @@ class DiffSolver:
                     nets, W, a_live[None, :, None, :], ahead, charge, self.landing[t])[0]
                 C1 = self._risk_adjusted(C1f, Ckf)                                        # E_inner[C] (B,c)
                 if limit:
-                    dq_c = a_live[None, :, :] - q_live[:, None, :]                        # (B,c,n_h)
-                    # under a weight schedule the control is the NET cover, so the band measures
-                    # |dSum q|: a per-leg band would strike out every row at a knot step
-                    infeas = ((dq_c.sum(-1).abs() > self.aspace.max_trade)
-                              if self.aspace.weights is not None
-                              else (dq_c.abs() > self.aspace.max_trade).any(-1))           # (B,c)
+                    infeas = ~self.aspace.in_band(a_live[None, :, :] - q_live[:, None, :])  # (B,c)
                     bv, ba = C1.masked_fill(infeas, float('-inf')).max(dim=1)
                     bq = a_live[ba]                        # index 0 on an all-infeasible chunk;
                     if band_val is None:                   # discarded by the isfinite mask below
@@ -1696,7 +1696,7 @@ class DiffSolver:
         p_bank = p1 = None
         extra = []
         if self.position_state:
-            p_bank = q_prev.sum(-1) / self.total_abs_limit                # state at t: live_{t-1}
+            p_bank = self._p(q_prev)                                      # state at t: live_{t-1}
             if self.book_label:
                 # the standing book a leaf of the fork: by the envelope theorem the label's slope
                 # in it is the charge's at the chosen action
@@ -1705,7 +1705,7 @@ class DiffSolver:
             # the charge the SELECTION above ranked with, now inside the regressed TARGET, and the
             # successor read at the book the chosen action leaves standing
             W1 = W1 - self._charge(t, q_star, q_prev, kappa_t)[:, None]
-            p1 = (q_star.sum(-1) / self.total_abs_limit)[:, None].expand(B, Bi_e).reshape(-1)
+            p1 = self._p(q_star)[:, None].expand(B, Bi_e).reshape(-1)
         Y = self._continuation(
             nets, m1_g.reshape(-1, md), W1.reshape(-1), self.nxt[t], p1).reshape(B, Bi_e)  # (B,Bi)
         if self.running_wealth:
@@ -1750,7 +1750,7 @@ class DiffSolver:
 
         def bootstrap(s, W, q):
             market = self.inner_cache[s][3][rows] if s < self.T_dec else None
-            p = q.sum(-1) / self.total_abs_limit if self.position_state else None
+            p = self._p(q) if self.position_state else None
             return self._continuation(nets, market, W, s, p)
 
         with torch.no_grad():
@@ -2142,10 +2142,9 @@ class DiffSolver:
         # the knee the RUNGS divide by: `_score_actions` reads every continuation at t's successor,
         # so that is the step whose entry they consume. Under a flat scale the distinction is inert.
         c = _utility_scale(obj, self.nxt[t])
-        R = float(obj.get("reference_wealth", 0.0))
+        R = float(obj["reference_wealth"])
         # the knee is huber's; shapes without one take a unit of c as the near-reference band
-        delta = (float(obj.get("huber_delta", 1.0))
-                 if obj.get("object") == "asymmetricutility_huber" else 1.0)
+        delta = float(obj["huber_delta"]) if obj["object"] == "asymmetricutility_huber" else 1.0
         w0 = float(W[0])
         # WHERE the ranking operates: the wealth LEVEL under Fixed, the day's INCREMENT under
         # Running_Wealth. Reporting the level under an increment objective logs a curved ranking
@@ -2153,7 +2152,7 @@ class DiffSolver:
         w_rank = 0.0 if self.running_wealth else w0
         u1, ara = (_loss_side_curvature(self.runtime, self.nxt[t]) if self.running_wealth
                    else _utility_local_curvature(w_rank, self.runtime, self.nxt[t]))
-        x0 = (w_rank - R) / c
+        x0 = _utility_x(w_rank, obj, self.nxt[t])
 
         q_live = q_prev if live is None else q_prev * live                          # (1,n_hedge)
         grid = self.aspace.grid_at(t, live)
@@ -2165,9 +2164,7 @@ class DiffSolver:
         # measures it - net under a weight schedule, per-leg without one - with its fallback
         pick = charged
         if self.aspace.max_trade > 0.0:
-            dq = a_live - q_live
-            feas = ((dq.sum(-1).abs() <= self.aspace.max_trade) if self.aspace.weights is not None
-                    else (dq.abs() <= self.aspace.max_trade).all(-1))
+            feas = self.aspace.in_band(a_live - q_live)
             pick = charged.masked_fill(~feas, float("-inf")) if bool(feas.any()) else charged
         k_star = int(pick.argmax())
         deep = int(net.abs().argmax())
@@ -2177,7 +2174,7 @@ class DiffSolver:
         _, _, W1p = self._score_actions(
             nets, t, probes, market_t1, dF, dL, W, q_prev, kappa, live, ahead)
         # ...on the same quantity `x0` is: the successor LEVEL, or the day's realized INCREMENT.
-        x1 = (W1p - (w0 if self.running_wealth else 0.0) - R) / c
+        x1 = _utility_x(W1p - (w0 if self.running_wealth else 0.0), obj, self.nxt[t])
         p_band = ((x1 > -delta) & (x1 < 0.0)).to(torch.float32).mean(-1)
 
         # The curve's shape: spread in dollars at the local u', and bow off the endpoint chord.
@@ -2610,15 +2607,8 @@ class DiffSolver:
         mine = self.aspace.schedule
         if not mine or not saved:
             return False
-
-        def at(sched, t):
-            lo, hi = sched[0][1], sched[0][2]
-            for step, mn, mx in sched:
-                if step > t:
-                    break
-                lo, hi = mn, mx
-            return lo, hi
-        return all(at(saved, t)[0] - 1e-9 <= at(mine, t)[0] and at(mine, t)[1] <= at(saved, t)[1] + 1e-9
+        knot = HedgeActionSpace.knot_at
+        return all(knot(saved, t)[1] - 1e-9 <= knot(mine, t)[1] and knot(mine, t)[2] <= knot(saved, t)[2] + 1e-9
                    for t in range(self.T_dec))
 
     def _restore_frame(self, members):
