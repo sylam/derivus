@@ -1106,8 +1106,9 @@ class Bundle:
     Built ONCE per simulation by `from_batch` (four stages — `_resolve_tradables`,
     `_resolve_liability`, `_resolve_factors`, `_resolve_frame`), then read-only. Time tensors
     carry a `History_Lookback_Business_Days` prefix of realized rows in front of the simulated
-    grid, so full-grid indexing is `initial_time_index + t`; the `*_sim` views strip that prefix
-    for solver code that indexes by simulation-grid `t`.
+    grid where a `Spot_Price_History` is declared (none where it is not), every series alike, so
+    full-grid indexing is `initial_time_index + t`; the `*_sim` views strip that prefix for solver
+    code that indexes by simulation-grid `t`.
 
     The frame — `utility_scale` (the objective's scale c, with its per-decision-step
     `utility_scale_schedule` under `Utility_Scale_Mode='conditional_sim'`, both mirrored onto the
@@ -1144,7 +1145,8 @@ class Bundle:
         '',
         '!!! warning "The history prefix"',
         '    Time tensors carry `History_Lookback_Business_Days` realized rows in FRONT of the',
-        '    simulated grid, so full-grid indexing is `initial_time_index + t` while the `*_sim`',
+        '    simulated grid where a `Spot_Price_History` is declared, every series alike, so',
+        '    full-grid indexing is `initial_time_index + t` while the `*_sim`',
         '    views strip the prefix. Indexing a full-grid tensor by simulation `t` silently reads',
         '    history.',
         '',
@@ -1219,19 +1221,23 @@ class Bundle:
 
     def _resolve_tradables(self, tradables, time_grid_days, steps, runtime):
         """Stage 1 — the time axis and the per-instrument mark series, both carrying the realized
-        history prefix. `History_Lookback_Business_Days` rows of realized spot are prepended so a
-        rolling-window feature at sim-day-0 already has its lookback; a tradable whose `Commodity`
-        has a history takes that series, every other series broadcasts its first row. Also derives
-        the CPU day mirror, the scenario dates and `initial_time_index`."""
+        history prefix, and the prefix's length `history_rows` every later stage applies:
+        `History_Lookback_Business_Days` rows of realized spot where a `Spot_Price_History` is
+        declared, none where it is not, so a rolling-window feature at sim-day-0 already has its
+        lookback; a tradable whose `Commodity` has a history takes that series, every other series
+        broadcasts its first row. Also derives the CPU day mirror, the scenario dates and
+        `initial_time_index`."""
         grid = _align_time_axis(time_grid_days, steps)
         # a deal's marks run to its last date and the alignment repeats that row after it
         self.last_marked = {n: min(int(t.shape[0]), steps) - 1 for n, t in tradables.items()}
         logging.debug('last marked sim-grid rows: %s', self.last_marked)
         tradables = {n: _align_time_axis(t, steps) for n, t in tradables.items()}
         history = runtime['portfolio_state']['spot_price_history']
-        self.history_rows = H = int(runtime['history_lookback_business_days'])
+        # the one prefix gate: the lookback where a realized history exists, none where it does not
+        self.history_rows = H = int(runtime['history_lookback_business_days']) if history else 0
+        logging.debug('history prefix: %d rows', H)
         base_ts = pd.Timestamp(self.base_date)
-        if H > 0 and history:
+        if H > 0:
             batch_size = int(next(iter(tradables.values())).shape[1])
             for commodity, payload in history.items():
                 late = [d for d in payload['dates'] if pd.Timestamp(d) >= base_ts]
@@ -1281,21 +1287,16 @@ class Bundle:
         `last_live_mtm_index` is the structural pre-settlement terminal: the grid appends one
         clean-exit row where the liability settles to zero, so the last LIVE mtm row is
         `steps - 2` — the single source for the DP depth and the L_T read."""
-        prefixed = bool(self.spot_price_history)          # the stage-1 prefix gate
         if mtm is not None:
             mtm = _align_time_axis(mtm, steps)
-            if prefixed:
-                mtm = torch.cat([self._history_prefix(mtm), mtm], dim=0)
+            mtm = torch.cat([self._history_prefix(mtm), mtm], dim=0)
         self.liability_mtm = mtm
         self.realized_cashflows = {}
         for currency, tensor in cashflows.items():
             tensor = _align_time_axis(tensor, steps)
-            if prefixed:
-                # Nothing was paid before the sim starts — the prefix is zeros, not a repeat.
-                tensor = torch.cat([torch.zeros((self.history_rows,) + tuple(tensor.shape[1:]),
-                                                dtype=tensor.dtype, device=tensor.device),
-                                    tensor], dim=0)
-            self.realized_cashflows[currency] = tensor
+            # nothing was paid before the sim starts: the prefix is zeros, not a repeat
+            self.realized_cashflows[currency] = torch.cat(
+                [torch.zeros_like(self._history_prefix(tensor)), tensor], dim=0)
         self.last_live_mtm_index = T = int(steps - 2)
         # decisions on the rows of market time, the rows the market-clock laws step on, and on the
         # first row whatever its day, where the opening book is traded
@@ -1316,19 +1317,12 @@ class Bundle:
 
     def _resolve_factors(self, factors, privileged_factor_blocks, stoch_factors, steps):
         """Stage 3 — the simulated factor paths and the per-process privileged surfaces (the
-        market state the value function consumes), both prefixed onto the history rows."""
-        self.factors = {n: _align_time_axis(t, steps) for n, t in factors.items()}
-        if self.spot_price_history:
-            self.factors = {n: torch.cat([self._history_prefix(t), t], dim=0)
-                            for n, t in self.factors.items()}
-        privileged = assemble_privileged_factors(privileged_factor_blocks, stoch_factors)
-        # the privileged prefix is gated on the lookback ALONE, so with a lookback but no
-        # Spot_Price_History these rows are prepended while nothing else is, which offsets the
-        # surface by `history_rows`
-        if self.history_rows > 0 and privileged:
-            privileged = {n: torch.cat([self._history_prefix(t), t], dim=0)
-                          for n, t in privileged.items()}
-        self.privileged_factors = privileged
+        market state the value function consumes), both prefixed by `history_rows`."""
+        self.factors = {n: torch.cat([self._history_prefix(t), t], dim=0)
+                        for n, t in ((n, _align_time_axis(t, steps)) for n, t in factors.items())}
+        self.privileged_factors = {
+            n: torch.cat([self._history_prefix(t), t], dim=0)
+            for n, t in assemble_privileged_factors(privileged_factor_blocks, stoch_factors).items()}
 
     def _resolve_frame(self, runtime, stoch_factors):
         """Stage 4 — the LOCKED frame: the realized-vol surface, the utility scale c and (under

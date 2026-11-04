@@ -1476,6 +1476,28 @@ def test_the_vol_scaled_spread_reads_the_spot_s_realized_history():
     assert abs(got / want - 1.0) < 1e-5, (got, want)
 
 
+def test_a_world_without_a_history_prefixes_none_of_its_series():
+    """Without a `Spot_Price_History` the bundle prefixes nothing, so every series keeps one row
+    per grid row: on the spot-alone GARCH document with its history removed, under a 10 bp spread
+    at a 30% vol, every tradable, factor and privileged surface and the step vol have the grid's
+    rows, the first of them the first simulated row. 2 s.
+
+    Killing mutation: the privileged surfaces prefixed by the lookback alone (the 30 rows of
+    `History_Lookback_Business_Days` in `Bundle._resolve_factors`), the GARCH `log_h` surface and
+    the step vol read off it 30 rows longer, `vol_at` 30 rows early."""
+    cfg = _spot_alone(_cfg(batch=4, inner=4), dict(CONSTANT_VOL, Calibration_DT_Years=1.0 / 252.0))
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Portfolio_State'].pop('Spot_Price_History')
+    hp['Evaluator'].update(VOL_SPREAD)
+    world = _run(cfg).bundle
+    rows = {name: int(v.shape[0]) for group in (world.tradables, world.factors,
+                                                world.privileged_factors) for name, v in group.items()}
+    rows['step_annual_vol'] = int(world.step_annual_vol.shape[0])
+    n = len(world.time_grid_days)
+    assert world.initial_time_index == 0 and world.privileged_factors and set(rows.values()) == {n}, (
+        n, rows)
+
+
 def test_an_opening_book_s_pnl_runs_from_the_first_row_in_the_stepper_and_its_csv(tmp_path):
     """An opening book short 10 `PL_OCT_2026`, held untouched to the forced close on the client
     fixture: the stepper's `pnl_excess`, the wealth
