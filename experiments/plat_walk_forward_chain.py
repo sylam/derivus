@@ -582,10 +582,11 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
         dates = pd.to_datetime(sv.get('greedy_q_dates') or [])
         i = int(np.searchsorted(dates, as_of, side='right')) - 1
         dm = sv.get('drift_monitor') or {}
+        vd = rdiag.get('verdict') or {}
         to_date = {'as_of': str(as_of.date()), 'decision_date': str(dates[i].date()),
                    'book': [round(float(x), 2) for x in q[i]],
                    'passive': [round(float(x), 2) for x in
-                               np.array((rdiag.get('verdict') or {}).get('passive_q_traj'))[sv['greedy_q_t'][i] - int(rdiag.get('root_t') or 0)]],
+                               vd['passive_q_traj'][vd['greedy_q_t'].index(sv['greedy_q_t'][i])]],
                    'drift_z': (dm.get('z_path') or [None])[min(i, len(dm.get('z_path') or []) - 1)],
                    'tripped': (dm.get('tripped') or [None])[min(i, len(dm.get('tripped') or []) - 1)]}
         logging.info('TO-DATE %s as of %s (decision %s): book %s contracts, passive %s, drift z %s tripped %s',

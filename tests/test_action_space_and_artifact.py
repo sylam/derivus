@@ -361,14 +361,11 @@ def test_a_corridor_trained_policy_rolls_in_its_fence_and_loads_only_into_it(tmp
     ckpt = str(tmp_path / 'value_fn_corr.pt')
     train = _run(_cfg(seed=7, save=ckpt, schedule=SIGN_CROSSING, symmetric=True))
     diag = train.evaluation_summary['diagnostics']
-    t0 = int(diag['root_t'])
     saw_short = saw_long = False
-    decisions = {r['t'] for r in diag['per_t']}
-    for i, book in enumerate(diag['verdict']['greedy_q_traj']):
-        if t0 + i not in decisions:
-            continue                     # the book a decision holds over a row of no market time
-        lo, hi = _corridor_at(SIGN_CROSSING, t0 + i)
-        assert lo - 1e-3 <= sum(book) <= hi + 1e-3, (t0 + i, sum(book), lo, hi)
+    v = diag['verdict']
+    for t, book in zip(v['greedy_q_t'], v['greedy_q_traj']):
+        lo, hi = _corridor_at(SIGN_CROSSING, t)
+        assert lo - 1e-3 <= sum(book) <= hi + 1e-3, (t, sum(book), lo, hi)
         saw_short, saw_long = saw_short or hi < 0, saw_long or lo > 0
     assert saw_short and saw_long, 'the sweep window did not cover both corridor signs'
     assert train.policy_artifact['total_position_schedule'] == (
@@ -518,7 +515,7 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
     steps = sorted(t for t in decisions if t >= t0) + [horizon]
     for t, t1 in zip(steps, steps[1:]):
         q = book(world, t)
-        books.extend([q.tolist()] * (t1 - t))           # held over the rows to the next decision
+        books.append(q.tolist())
         cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1)
         dF = torch.stack([F[h][t1].double() - F[h][t].double() for h in LEGS], dim=-1)
         W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t1].double() - L[t].double())
@@ -601,7 +598,7 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
     ids=['fractional', 'cap', 'long_only', 'one_leg'])
 def test_the_passive_book_stays_inside_a_fractional_corridor(units, corridor, limits, weights):
     """The swap's passive book at the edges of its band, on the verdict of its training document:
-    on every row in whole contracts, each leg inside its box and nothing on a leg the
+    at every decision in whole contracts, each leg inside its box and nothing on a leg the
     `Allocation_Weights` knot weighs zero, its signed net inside the corridor and the cap of 40.
     Bought on 2,425 oz, a net 32.5 contracts unfixed before the first fixing, in a corridor whose
     upper edge is -32.3 the book sums to -33, the corridor's whole edge, where the unfixed quantity
@@ -612,7 +609,7 @@ def test_the_passive_book_stays_inside_a_fractional_corridor(units, corridor, li
     Killing mutations: the net water-filled into the fractional corridor (the unsnapped `bounds`
     in `HedgeActionSpace.book`, not the whole-contract `ladder` band) and apportioned to its
     rounded total,
-    -32 on all 30 rows, outside the corridor; `book` without its water-fill, the clamped split
+    -32 at all 21 decisions, outside the corridor; `book` without its water-fill, the clamped split
     apportioned as it stands, (-30, -30) past the cap, (-16, -16) below the long-only floor and
     (-32, 0) outside the one-leg corridor; the deficit water-filled onto every live active leg
     (`book` on `active_mask * live`), the October leg -2 contracts on the one-leg document."""
@@ -628,7 +625,7 @@ def test_the_passive_book_stays_inside_a_fractional_corridor(units, corridor, li
     bad = [q for q in books if any(x != round(x) or not limits[0] <= x <= limits[1] for x in q)
            or not corridor[0] <= sum(q) <= corridor[1] or abs(sum(q)) > ev['Total_Position_Abs_Limit']
            or (len(weighed) == 1 and any(x and not w for x, w in zip(q, weighed[0])))]
-    assert len(books) == 30 and not bad, bad[:3]
+    assert len(books) == 21 and not bad, bad[:3]
 
 
 def test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day(tmp_path):
@@ -653,7 +650,8 @@ def test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day(
                 'DiffV2_Passive_From'] = passive_from
         diag = _run(cfg).evaluation_summary['diagnostics']
         sv = diag['stepper_verdict']
-        passive = [diag['verdict']['passive_q_traj'][t - diag['root_t']] for t in sv['greedy_q_t']]
+        assert diag['verdict']['greedy_q_t'] == sv['greedy_q_t']
+        passive = diag['verdict']['passive_q_traj']
         return sv, passive
 
     plain, passive = roll()
@@ -689,7 +687,7 @@ def test_the_first_decision_can_be_measured_from_the_passive_book(tmp_path):
         hp['Solver']['DiffV2_First_Decision_From'] = first_from
         diag = _run(cfg).evaluation_summary['diagnostics']
         sv = diag['stepper_verdict']
-        passive0 = diag['verdict']['passive_q_traj'][sv['greedy_q_t'][0] - diag['root_t']]
+        passive0 = diag['verdict']['passive_q_traj'][0]
         return sv, passive0
 
     book, passive0 = roll('Opening_Book')
@@ -1069,7 +1067,7 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     standing book carried to the clean-exit row (greedy 134,981 against 137,484, 1.8%)."""
     d = _replayed_roll(tmp_path, doc, **declared)
     v, sv = d['verdict'], d['stepper_verdict']
-    assert [v['greedy_q_traj'][t - d['root_t']] for t in sv['greedy_q_t']] == sv['greedy_q_traj']
+    assert v['greedy_q_t'] == sv['greedy_q_t'] and v['greedy_q_traj'] == sv['greedy_q_traj']
     assert v['nohedge']['wT_mean'] == sv['nohedge']['wT_mean'], (v['nohedge']['wT_mean'], sv['nohedge']['wT_mean'])
     for p in ('greedy', 'passive'):
         assert abs(sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0) < 5e-6, (p, v[p]['wT_mean'], sv[p]['wT_mean'])
@@ -1281,7 +1279,7 @@ def test_a_corridor_excluding_zero_is_held_on_the_legs_still_live():
     Friday 24 July, the April leg dead throughout and the July leg from its expiry on Wednesday 29,
     the passive and textbook books of a liability stating no fixings sit on the corridor's whole edge
     nearest zero, (0, -15, -15) to the 29th and (0, 0, -30) after it, and the greedy book's net on
-    the live legs lies in the corridor on every row, (0, 0, -38) once October alone is live, the one
+    the live legs lies in the corridor at every decision, (0, 0, -38) once October alone is live, the one
     level of its axis inside. 3 s.
 
     Killing mutations: `HedgeActionSpace.book` reading the ladder with no leg mask (`self.ladder(t)`),
@@ -1292,10 +1290,8 @@ def test_a_corridor_excluding_zero_is_held_on_the_legs_still_live():
     cfg = _cartesian()
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['T_Min'] = 105
     result = _run(cfg)
-    world, diag = result.bundle, result.evaluation_summary['diagnostics']
-    v = diag['verdict']
-    dates = [str(world.scenario_dates[world.initial_time_index + diag['root_t'] + i].date())
-             for i in range(len(v['greedy_q_traj']))]
+    v = result.evaluation_summary['diagnostics']['verdict']
+    dates = v['greedy_q_dates']
     assert dates[0] == '2026-07-24' and dates[-1] == '2026-08-04', dates
     for track in ('passive_q_traj', 'textbook_q_traj'):
         want = [[0.0, -15.0, -15.0] if d <= '2026-07-29' else [0.0, 0.0, -30.0] for d in dates]

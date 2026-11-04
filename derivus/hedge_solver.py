@@ -1972,7 +1972,7 @@ class DiffSolver:
         # the turnover cost, entry measured from the opening book: paid inside the wealth under the
         # position state, a diagnostic beside it otherwise
         cost = {p: torch.zeros(n, dtype=MONEY, device=self.device) for p in W}
-        q_traj = {p: [] for p in ("greedy", "textbook", "passive")}                     # mean q per step
+        q_traj = {p: [] for p in ("greedy", "textbook", "passive")}                 # mean q a decision
         q_prev = {p: q0.clone() for p in cost}
         # running-wealth: the rollout's value is the SUM of the per-step rewards, accumulated along
         # the roll, and the net sum charges each step's own turnover into that step's increment
@@ -2041,11 +2041,8 @@ class DiffSolver:
                         last_W_pre[p] = W_pre[p]
                         u_net[p] = u_net[p] + self._reward(
                             W_pre[p] + last_net_inc[p], W_pre[p], self.nxt[t])
-                # a row each, the book held over the rows of no market time to the next decision
-                for _ in range(t, self.nxt[t]):
-                    q_traj["greedy"].append(q_g.mean(0).tolist())
-                    q_traj["textbook"].append(q_tb.mean(0).tolist())
-                    q_traj["passive"].append(q_pa.mean(0).tolist())
+                for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("passive", q_pa)):
+                    q_traj[p].append(q_now.mean(0).tolist())
             if self.force_flat and not self.position_state:
                 # the unwind both benchmark tracks charge, so all three price one execution; under
                 # the position state the last step's charge carried it
@@ -2082,15 +2079,23 @@ class DiffSolver:
             if not self.position_state:
                 out[p].update({f"{k}_net": v for k, v in _tail_stats(
                     self._u, W[p] - cost[p], None if u_net is None else u_net[p]).items()})
-        # greedy position summary: mean over the rollout of |q| per instrument (is it hedging?)
-        gq = torch.tensor(q_traj["greedy"])                                              # (n_steps, n_hedge)
+        out.update(self._decision_record(sweep_ts, q_traj))
+        # greedy position summary over the rows: each decision's book held to the next (is it hedging?)
+        gq = torch.tensor(q_traj["greedy"]).repeat_interleave(
+            torch.tensor([self.nxt[t] - t for t in sweep_ts]), dim=0)                  # (rows, n_hedge)
         out["greedy_mean_abs_q"] = gq.abs().mean(0).tolist()
-        out["greedy_q_traj"] = q_traj["greedy"]          # full per-t mean book (audit trail)
-        out["textbook_q_traj"] = q_traj["textbook"]      # the booked benchmark book (audit)
-        out["passive_q_traj"] = q_traj["passive"]
-        out["greedy_q_first"] = q_traj["greedy"][0] if q_traj["greedy"] else None
-        out["greedy_q_mid"] = (q_traj["greedy"][len(q_traj["greedy"]) // 2]
-                               if q_traj["greedy"] else None)
+        out["greedy_q_first"] = q_traj["greedy"][0]
+        out["greedy_q_mid"] = gq[len(gq) // 2].tolist()
+        return out
+
+    def _decision_record(self, ts, books):
+        """The per-decision record a roll reports: each policy's mean book (`books[p]`, one entry a
+        decision) as `{p}_q_traj`, beside the decisions' rows `greedy_q_t` and dates
+        `greedy_q_dates`, which consumers join on."""
+        hist = self.bundle.initial_time_index
+        out = {f"{p}_q_traj": b for p, b in books.items()}
+        out["greedy_q_t"] = [int(t) for t in ts]
+        out["greedy_q_dates"] = [str(self.bundle.scenario_dates[hist + int(t)].date()) for t in ts]
         return out
 
     # ---- decision-curve diagnostic (Solver.DiffV2_Decision_Curve_Dump) --------
@@ -2281,7 +2286,7 @@ class DiffSolver:
                 f"path, and averaging them would describe a decision nothing took. Roll the dump "
                 f"at Batch_Size 1.")
 
-        q_log = {"greedy": [], "t": [], "date": [], "w": []}
+        q_log = {"greedy": [], "t": [], "w": []}
         dump_rows = [] if self.curve_dump else None
 
         def roll(policy):
@@ -2378,7 +2383,6 @@ class DiffSolver:
                             q = q * live
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
                         q_log["t"].append(int(t))
-                        q_log["date"].append(str(day.date()))
                         q_log["w"].append(float(W.mean()))
                         if dump_rows is not None and not handed:
                             dump_rows.append(self._decision_curve_row(
@@ -2410,10 +2414,8 @@ class DiffSolver:
             pd.DataFrame(dump_rows).to_csv(self.curve_dump, index=False, float_format="%.6g")
             logging.info("DiffV2_Decision_Curve_Dump: %d decision rows -> %s",
                          len(dump_rows), self.curve_dump)
-        out["greedy_q_traj"] = q_log["greedy"]        # per-decision mean book (audit)
-        out["greedy_q_t"] = q_log["t"]
-        out["greedy_q_dates"] = q_log["date"]         # calendar date of each decision — consumers
-        out["greedy_w_traj"] = q_log["w"]             # join on THIS, never on index arithmetic
+        out.update(self._decision_record(q_log["t"], {"greedy": q_log["greedy"]}))
+        out["greedy_w_traj"] = q_log["w"]
         return out
 
     def _pad_steps(self, seq, target):
