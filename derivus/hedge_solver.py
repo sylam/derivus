@@ -379,19 +379,19 @@ class HedgeActionSpace:
         return ((q >= box_lo) & (q <= box_hi)).all(-1) & (net >= lo - 1e-9) & (net <= hi + 1e-9)
 
     def project_to_corridor(self, q, t):
-        """Project the SIGNED total of the ACTIVE legs of `q` `(B, n_hedge)` into the
-        `Total_Position_Schedule` corridor at decision step t, keeping every leg inside its own
-        `[Min,Max]` via headroom water-filling: shift the active legs by the corridor deficit
-        `d = clamp(Σq, lo, hi) − Σq`, distributed in proportion to each leg's remaining room in
-        d's direction, so `Σ_active` lands exactly on the nearest corridor edge and no leg leaves
-        its box. Feasible whenever the corridor is grid-feasible. No schedule → `q` unchanged.
+        """Project the SIGNED total of the ACTIVE legs of `q` `(B, n_hedge)` into the net band of
+        `bounds(t)` at decision step t (the boxes' sum inside the cap and the
+        `Total_Position_Schedule` corridor), keeping every leg inside its own `[Min,Max]` via
+        headroom water-filling: shift the active legs by the deficit `d = clamp(Σq, lo, hi) − Σq`,
+        distributed in proportion to each leg's remaining room in d's direction, so `Σ_active`
+        lands exactly on the nearest edge and no leg leaves its box. No schedule → `q` unchanged.
 
         Where `grid_at` FILTERS a discrete action universe for the argmax, this CONTINUOUSLY nudges
         an exploration position: the bank rolls continuous q around the min-var hedge, so a filter
         has nothing to select from."""
         if self.schedule is None:
             return q
-        return self.waterfill(q, *self._corridor_at(t))
+        return self.waterfill(q, *self.bounds(t)[2:])
 
     def waterfill(self, q, lo, hi, idx=None):
         """Shift the ACTIVE legs of `q` `(B, n_hedge)` so their signed total lands in `[lo, hi]`,
@@ -1537,7 +1537,7 @@ class DiffSolver:
                 # keep the exploration IN the corridor so the value fn trains on reachable wealth
                 # states only; the diagnostic below confirms ~0 residual breach
                 q = self.aspace.project_to_corridor(q, t)
-                lo, hi = self.aspace._corridor_at(t)                                      # signed-total corridor at t
+                lo, hi = self.aspace.bounds(t)[2:]                                        # its net band at t
                 tot = q[:, self.active].sum(-1)                                           # bank signed total (active legs)
                 tol = 1e-3                     # float32 headroom-fill lands on the edge to ~1e-6
                 oob.append((t, lo, hi, float((tot < lo - tol).float().mean()
