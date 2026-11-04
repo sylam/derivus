@@ -1113,20 +1113,9 @@ class Bundle:
         return (self.primary, float(self.factors[self.primary][0].median().item()), float(sigma))
 
     def _resolve_utility_scale(self, runtime):
-        """The money scale `c` mapping wealth to utility (u(x; c) = sign(x)·log1p(|x|/c) for
-        symlog). Single source of truth — every reward and penalty reads `Bundle.utility_scale`.
-
-        Modes (`Objective.Utility_Scale_Mode`): `vol_scaled_notional` (default) gives
-        c = total_leg_volume × initial_spot × σ_annual × √τ, τ the business days of the job's
-        calendar from the first simulated row to the last settlement over 252, the market clock σ
-        is annualised on; `conditional_sim` measures a per-decision-step SCHEDULE off this batch
-        instead and takes its terminal entry as the scalar (`_conditional_sim_schedule`);
-        `Objective.Utility_Scale_Explicit` overrides the
-        formula with a literal value and is REFUSED beside the schedule mode.
-
-        A degenerate input (no history and no calibrated vol, no volume, a non-positive σ) raises:
-        no stand-in c is meaningful in every currency, and `_utility_scale` refuses a
-        non-positive one.
+        """The objective's scale `c` as this batch resolves it, by the rules of the Hedging
+        Overview's scale table: the formula, `Utility_Scale_Explicit`, or the terminal entry of the
+        `conditional_sim` schedule (`_conditional_sim_schedule`); a degenerate input raises.
 
         The history path reads spot and realized σ at the history/sim boundary H as a BATCH MEDIAN
         rather than slot [H, 0]: `full[H]` is the first sim step, and a process emitting a
