@@ -3054,7 +3054,7 @@ class StreamingSolve:
         'fit step sees paths no earlier step did, so overfitting to one simulated set is not',
         'structurally possible.',
         '',
-        '`Simulation_Batches` is the stream length. Trained paths are',
+        'The stream is the `Simulation_Batches` batches simulated: trained paths are',
         '`(Simulation_Batches - 1) x Batch_Size`, and the minimum is 2.',
         '',
         '!!! warning "A frozen evaluation is the stream of length one"',

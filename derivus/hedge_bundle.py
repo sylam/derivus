@@ -521,9 +521,8 @@ def construct_hedge_runtime(
         elif n_batches < 2:
             raise ValueError(
                 "Execution_Mode 'solve_hedge' requires Simulation_Batches >= 2 (fit batches, then "
-                f"a held-out batch no fit step saw); got {n_batches}. Simulation_Batches is a path "
-                "MULTIPLIER under 'simulate_only' and a STREAM LENGTH here, and derivus_batch "
-                "divides it by the job count before this check.")
+                f"a held-out batch no fit step saw); got {n_batches}, which derivus_batch "
+                "divides by the job count before this check.")
         if solver_config["DiffV2_Load_Value_Fn"] and solver_config["DiffV2_Save_Value_Fn"]:
             raise ValueError(
                 "Solver.DiffV2_Save_Value_Fn is set alongside DiffV2_Load_Value_Fn: a loaded "

@@ -486,9 +486,8 @@ published on the host for the call and dropped after it, a key naming no simulat
 (**Held by** `tests/test_logvar2fj_spot.py::test_a_replay_is_the_filter_on_the_bars_before_each_fix`,
 `tests/test_chained_basis.py::test_a_spot_replay_holds_its_variance_across_a_forward_filled_holiday`,
 `::test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill`). A solve is a stream: a `Bundle` per batch to one `StreamingSolve` (`warmup`
-locking the frame, `step` per training batch, `finish` on the held-out last), so
-`Simulation_Batches` is a stream length under `solve_hedge` and a path multiplier under
-`simulate_only`.
+locking the frame, `step` per training batch, `finish` on the held-out last), each of the
+`Simulation_Batches` batches simulated, which `simulate_only` pools into one bundle instead.
 
 !!! warning "Invariant — a frozen evaluation is the stream of length one"
     Under `DiffV2_Load_Value_Fn` nothing is fitted, so `Simulation_Batches` must be 1, that batch

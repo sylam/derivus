@@ -3040,10 +3040,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         'a persistent solver: warmup on batch 1, step on each later batch, finish on the final',
         'batch, which is never trained on. What follows from that:',
         '',
-        '- `Simulation_Batches` is a STREAM LENGTH here and a path MULTIPLIER under',
-        '  `simulate_only`. Trained paths = `(Simulation_Batches - 1) x Batch_Size`; the last',
-        '  batch is the held-out world the verdict and the benchmark tracks are measured on.',
-        '  Minimum 2. `derivus_batch` divides it by the job count before that check.',
+        '- The stream is the `Simulation_Batches` batches simulated: trained paths =',
+        '  `(Simulation_Batches - 1) x Batch_Size`; the last batch is the held-out world the',
+        '  verdict and the benchmark tracks are measured on. `derivus_batch` divides it by the job',
+        '  count first.',
         '- Inner-MC fork width follows `Batch_Size` alone, so peak fork memory is set by',
         '  `Batch_Size x Inner_Sub_Batch` however long the stream is.',
         '- Every fit step sees paths no earlier step did, so overfitting to the simulated set is',
@@ -3094,7 +3094,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         F('Time_Grid', 'Text', default='0d 1d(1d) 4m'),
         F('Calendar', 'Text', default='', convention=True,
           description='Holiday calendar naming the business day the roll and every law step on'),
-        F('Simulation_Batches', 'Integer', default=1),
+        F('Simulation_Batches', 'Integer', default=1,
+          description='Batches of Batch_Size paths simulated: simulate_only pools them into one '
+                      'bundle, solve_hedge fits on every batch but the last and holds the last '
+                      'out, so it simulates at least 2, and exactly 1 under DiffV2_Load_Value_Fn'),
         F('Batch_Size', 'Integer', default=1024),
         Calculation.RANDOM_SEED,
         Calculation.QUASI_SEED,
@@ -3473,8 +3476,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         hands it to a persistent solver as it is built - warmup on batch 1, step on each later
         batch, finish on a held-out final batch - so the inner-MC forks are only ever `Batch_Size`
         wide and every fit step sees fresh paths. `simulate_only` instead accumulates every batch
-        into one bundle, for which `Simulation_Batches` is a path multiplier rather than a stream
-        length.
+        into one bundle.
 
         LIABILITY-DRIVEN TIME-GRID CAP: the global grid stops at the liability's last cashflow /
         reval date. Past it there is nothing to hedge, and any residual position closes out at fair

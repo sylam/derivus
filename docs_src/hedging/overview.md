@@ -19,12 +19,8 @@ Past that boundary the runtime **is** the contract — downstream code indexes i
 than re-checking it. A malformed schedule, a partial spot history, an unknown `Execution_Mode` or a
 `Simulation_Batches` that contradicts the mode all fail there, naming the field.
 
-!!! warning "`Simulation_Batches` means two different things"
-    Under `simulate_only` it is a **path multiplier**: every batch is accumulated into one bundle of
-    `Batch_Size x Simulation_Batches` paths. Under `solve_hedge` it is a **stream length**: a bundle
-    per batch, `N-1` of them fitted and the last held out for the verdict. Minimum 2. That is a
-    genuine semantic difference between two verbs, not a hidden mode flag — size a solve like a
-    simulation and you will train on a fraction of the paths you meant to.
+`Simulation_Batches` is the number of batches of `Batch_Size` paths simulated in either mode; its
+field says what each mode does with them.
 
 ## Objective
 
