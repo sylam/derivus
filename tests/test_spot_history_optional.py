@@ -17,6 +17,7 @@ import os
 import pytest
 
 import numpy as np
+import pandas as pd
 
 import derivus as rf
 
@@ -140,9 +141,10 @@ def test_the_cash_account_prices_and_its_mark_accrues(with_history):
 
 def test_spot_price_history_optional_trains_via_calibrated_scale():
     """Without a history the utility scale is `volume spot sigma sqrt(tau)` off the calibrated HMM's
-    stationary regime-weighted vol, to 1e-9.
+    stationary regime-weighted vol, to 1e-9, tau the business days of the job's calendar from the
+    first simulated row to the last settlement over 252.
 
-    Killing mutation: the scale's `sqrt(tau)` dropped."""
+    Killing mutations: the scale's `sqrt(tau)` dropped; tau read as the calendar rows."""
     # the package under test must be this checkout, not another copy earlier on sys.path
     assert os.path.dirname(os.path.dirname(os.path.abspath(__file__))) in rf.__file__, rf.__file__
     cx = rf.Context()
@@ -168,8 +170,10 @@ def test_spot_price_history_optional_trains_via_calibrated_scale():
     c = bundle.utility_scale
     assert c > 1.0e3, f'utility_scale collapsed to the floor: {c}'
     # c = total_leg_volume · spot · σ · √τ — reproduce it from the parts.
-    tau = max(float(bundle.last_settlement_index - bundle.initial_time_index) / 252.0,
-              1.0 / 252.0)
+    first, last = (bundle.scenario_dates[i] for i in (bundle.initial_time_index,
+                                                       int(bundle.last_settlement_index)))
+    days = len(pd.date_range(first + pd.Timedelta(days=1), last, freq=bundle.business_day))
+    tau = max(days / 252.0, 1.0 / 252.0)
     expected_c = bundle.total_leg_volume * spot * sigma * (tau ** 0.5)
     assert math.isclose(c, expected_c, rel_tol=1e-6), (c, expected_c)
 
