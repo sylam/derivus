@@ -246,17 +246,31 @@ class HedgeActionSpace:
 
     def ladder(self, t, live=None):
         """The ladder at decision step t, `(weights, legs, box_lo, box_hi, lo, hi)`: the
-        `_weights_at` split over `live`, the indices of the legs it weighs, their whole-contract
-        boxes (snapped inward, zero on every other leg), and the band of the signed net,
-        `net_bounds(t)` intersected with those boxes and snapped INWARD to whole contracts, since a
-        fractional band would emit rungs that round outside their own mandate."""
+        `_weights_at` split over `live`, the indices of the legs it weighs and their `band`."""
         weights = self._weights_at(t, live)
         usable = (weights > 0).to(self.q_lo.dtype)
+        return (weights, usable.nonzero().flatten().tolist(), *self.band(t, usable))
+
+    def band(self, t, usable):
+        """The whole-contract boxes `(box_lo, box_hi)` of the legs the mask `usable` marks, zero on
+        every other leg, and the band `(lo, hi)` of their signed net at decision step t,
+        `net_bounds(t)` intersected with those boxes and snapped INWARD to whole contracts, since a
+        fractional band would emit rungs, or book a hedge, that round outside their own mandate."""
         box_lo, box_hi = torch.ceil(self.q_lo) * usable, torch.floor(self.q_hi) * usable
         lo, hi = self.net_bounds(t)
-        lo = math.ceil(max(lo, float(box_lo.sum())) - 1e-9)
-        hi = math.floor(min(hi, float(box_hi.sum())) + 1e-9)
-        return weights, usable.nonzero().flatten().tolist(), box_lo, box_hi, lo, hi
+        return (box_lo, box_hi, math.ceil(max(lo, float(box_lo.sum())) - 1e-9),
+                math.floor(min(hi, float(box_hi.sum())) + 1e-9))
+
+    def book(self, q, t, live):
+        """`q` `(B, n_hedge)` as the execution books it at decision step t: each leg clamped to its
+        position limits, the signed net of the live active legs water-filled into their `band`, so
+        inside the cap and the corridor in whole contracts, then apportioned to whole contracts
+        carrying that net by `_largest_remainder`."""
+        usable = self.active_mask * live
+        _, _, lo, hi = self.band(t, usable)
+        q = self.waterfill(torch.minimum(torch.maximum(q, self.q_lo), self.q_hi), lo, hi,
+                           usable.nonzero().flatten().tolist())
+        return self._largest_remainder(q, q.sum(-1, keepdim=True))
 
     def rung(self, t, net, live=None):
         """The whole-contract book `(B, n_hedge)` carrying each signed net cover of `net` `(B, 1)`,
@@ -1387,16 +1401,13 @@ class DiffSolver:
 
     def _passive_hedge(self, t, live, batch):
         """The passive book at decision step t `(batch, n_hedge)`: minus the liability quantity
-        still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`,
-        clamped to the position limits, projected into the corridor as the textbook book is, and
-        apportioned to whole contracts carrying its rounded total, as the stepper books it."""
+        still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`
+        and booked as the execution books it (`HedgeActionSpace.book`), as the stepper holds it."""
         unfixed = self.bundle.unfixed_at(self.bundle.initial_time_index + t)
-        # a fully fixed swap holds nothing, also where no live leg is left to split it onto
+        # a fully fixed swap splits nothing, also where no live leg is left to split it onto
         q = (-unfixed * self.aspace._weights_at(t, live) / self.contract_size if unfixed
              else torch.zeros(self.n_hedge, device=self.device))
-        q = torch.minimum(torch.maximum(q, self.q_lo), self.q_hi)
-        q = self.aspace.project_to_corridor(q[None].expand(batch, self.n_hedge), t)
-        return self.aspace._largest_remainder(q, q.sum(-1, keepdim=True))
+        return self.aspace.book(q[None].expand(batch, self.n_hedge), t, live)
 
     def _build_bank(self, gen):
         """Operating-region bank — roll the OUTER paths forward (cheap; outer-realised

@@ -66,7 +66,10 @@ Under `DiffV2_First_Decision_From` 'Passive' the stepper roll's first greedy dec
 | `textbook` (`Run_Textbook_Benchmark`) | the single best CONSTANT position held to the horizon, frictionless, chosen by $E[u]$ on the held-out paths; a lower bound | `comparison`, ladder |
 | `textbook` (verdict) | per step, per active hedge $i$: $q_i=-\mathrm{Cov}(\Delta L,\Delta F_i)\,/\,(cs_i\,\mathrm{Var}(\Delta F_i)\,n_{active})$ over the outer paths, clamped to the position limits and projected into the corridor | `diagnostics.verdict` |
 | `nohedge` | no position | `diagnostics.verdict` |
-| `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), clamped to the position limits, projected into the corridor, apportioned to whole contracts carrying its rounded total and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing | `diagnostics.verdict`, `stepper_verdict` |
+| `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), booked as the execution books it (clamped to the position limits, its net on the live legs inside the cap and the corridor snapped inward to whole contracts, apportioned to whole contracts carrying that net) and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing | `diagnostics.verdict`, `stepper_verdict` |
+
+The passive book's net stays inside a corridor with a fractional edge. Held by
+`tests/test_action_space_and_artifact.py::test_the_passive_book_stays_inside_a_fractional_corridor`.
 
 The two tracks named `textbook` are different policies. Both report turnover cost as a diagnostic;
 the comparison track is never charged it, the verdict's only under `DiffV2_Position_State`. The

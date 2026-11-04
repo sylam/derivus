@@ -516,6 +516,23 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
         (v['passive']['turnover_cost_mean'], float(cost.mean()))
 
 
+def test_the_passive_book_stays_inside_a_fractional_corridor():
+    """The swap bought on 2,425 oz, a net 32.5 contracts unfixed before the first fixing, hedged in
+    a corridor whose upper edge is -32.3 contracts: the verdict's passive book, in whole contracts,
+    sums inside [-40, -32.3] on every row, at -33, the corridor's whole edge, where the unfixed
+    quantity would round to -32. 2 s.
+
+    Killing mutation: the net water-filled into the fractional corridor (`net_bounds` in
+    `HedgeActionSpace.book`, not the whole-contract `band`) and apportioned to its rounded total,
+    -32 on all 30 rows, outside the corridor."""
+    cfg = _passive_cfg()
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Liabilities']['CommodityAveragePriceSwapDeal']['PLAT_APS_BUY']['Units'] = 2425.0
+    hp['Evaluator']['Total_Position_Schedule'] = [{'Step': 0, 'Min_Total': -40, 'Max_Total': -32.3}]
+    totals = [sum(q) for q in _run(cfg).evaluation_summary['diagnostics']['verdict']['passive_q_traj']]
+    assert len(totals) == 30 and all(-40.0 <= x <= -32.3 for x in totals), sorted(set(totals))
+
+
 def test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day(tmp_path):
     """`DiffV2_Passive_From` hands the stepper roll's greedy policy to the passive book from the
     first decision day on or after the date: on the same decision days, the greedy book is the
