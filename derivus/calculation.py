@@ -2999,93 +2999,25 @@ class ScenarioValuation(BaseValuation):
 
 class HedgeMonteCarlo(CreditMonteCarlo):
     documentation = ('Calculations', [
-        'A specialisation of `CreditMonteCarlo` that wires the same simulated scenario',
-        'engine into a dynamic-hedging solver. Instead of producing exposure profiles, the',
-        'calculation solves for a hedge of a portfolio of liabilities, trading a configured',
-        'set of futures (or other instruments) over time. The Monte Carlo engine is unchanged',
-        '— the additions are:',
+        'A specialisation of `CreditMonteCarlo` that runs the same scenario engine and harvests its',
+        'marks into a hedging problem rather than exposure profiles: it hedges a book of liabilities',
+        'with a configured set of tradables, anything a credit exposure run can price serving as',
+        'either. Per simulation batch it builds a bundle of the trajectories the solver reads, with an',
+        'on-demand inner Monte Carlo fork, off a runtime normalised from the `Hedging_Problem` block',
+        '([JSON reference](../json/index.md#calculation)); the [Hedging](../hedging/overview.md) pages',
+        'document the runtime, the bundle, the solvers and the benchmark tracks, and',
+        '[Calc Lifecycle](../developer/calc_lifecycle.md) the fork.',
         '',
-        '- A **bundle** built per simulation batch containing the trajectories the solver',
-        '  needs (tradable prices, liability MtM, factor history, leg metadata, AAD-derived',
-        '  hedge ratios) plus an on-demand inner-MC fork (`Bundle.inner_mc`).',
-        '- A **runtime** dict normalised from the JSON `Hedging_Problem` block (tradables,',
-        '  position limits, cash accounts, objective, solver config).',
-        '- A **differential-ML solver** (`DiffSolver`): a backward-DP value function fit by',
-        '  the Huge–Savine twin loss (value + AAD pathwise gradient) under an asymmetric',
-        '  utility objective, with `HindsightDpSolver` (clairvoyant upper bound) and the',
-        '  textbook averaging hedge (lower bound) as benchmark tracks.',
+        '- `Execution_Mode: solve_hedge` streams the batches to the `Solver.Object` and returns its',
+        "  value-function artifact, the greedy policy's verdict and the benchmark comparison and",
+        '  ladder.',
+        '- `Execution_Mode: simulate_only` pools the batches into one bundle and runs the no-trade',
+        "  baseline; the result's `create_stepper()` drives the simulator a row at a time under any",
+        '  explicit policy.',
         '',
-        'The configuration contract is documented in the',
-        '[Hedging_Problem](../json/index.md#calculation) section of the JSON reference.',
-        '',
-        '### Inner-MC Calculation fields',
-        '',
-        'The nested simulation runs under `Execution_Mode: solve_hedge` and is configured alongside',
-        'the outer `Batch_Size`: `Inner_Sub_Batch` (inner draws per outer path), `Inner_Antithetic`',
-        '(`Yes` mirrors the Sobol draws as (z, −z) pairs — needs an even `Inner_Sub_Batch`), and',
-        '`Inner_Draws` (`sobol` default, or `random` for iid Gaussians).',
-        '',
-        'Each fork runs in ONE pass at `Batch_Size x Inner_Sub_Batch` flat samples, so peak memory',
-        'is a function of those two fields and nothing else — there is no cap, no partition and no',
-        'host-dependent knob. A config too wide for the card raises CUDA OOM naming the fork: the',
-        'config is the contract, and results follow the config rather than the machine.',
-        '',
-        'Peak memory is linear in the flat samples `Batch_Size x Inner_Sub_Batch`, at a rate that',
-        'depends on the world (how many factors, how long the grid, how heavy the liability): size',
-        'against the world being run.',
-        '',
-        '### A solve is a stream (`Simulation_Batches`)',
-        '',
-        'A bundle is built per simulation batch inside the simulation loop and handed straight to',
-        'a persistent solver: warmup on batch 1, step on each later batch, finish on the final',
-        'batch, which is never trained on. What follows from that:',
-        '',
-        '- The stream is the `Simulation_Batches` batches simulated: trained paths =',
-        '  `(Simulation_Batches - 1) x Batch_Size`; the last batch is the held-out world the',
-        '  verdict and the benchmark tracks are measured on. `derivus_batch` divides it by the job',
-        '  count first.',
-        '- Inner-MC fork width follows `Batch_Size` alone, so peak fork memory is set by',
-        '  `Batch_Size x Inner_Sub_Batch` however long the stream is.',
-        '- Every fit step sees paths no earlier step did, so overfitting to the simulated set is',
-        '  not structurally possible.',
-        '- The **frame is locked on the warmup batch**: the utility scale `c`, the market/wealth',
-        '  standardization stats, and the per-t trust region are computed on batch 1 and frozen.',
-        '  Later batches report how often their fitted targets fall outside the frozen region',
-        '  (an INFO line per step) rather than re-fitting it.',
-        '- A loaded checkpoint (`DiffV2_Load_Value_Fn`) is a frozen EVALUATION: it fits nothing,',
-        '  so it is the degenerate stream of length one and `Simulation_Batches` must be 1 — that',
-        '  single batch is the held-out world, since frozen nets saw none of it.',
-        '- Checkpoints carry a `frame_stamp` (scale, z-frame, trust-region envelope); an ensemble',
-        '  that MIXES frame provenances is refused.',
-        '',
-        'The walk-forward smoke gate reproduces this end to end — `gates/wf_smoke_gate.sh` at',
-        '`--batch 512 --batches 5 --fit-iters 40`, seed 7 — pinning the training utility, the',
-        'value function at the start, the greedy and no-hedge P&L, the churn and the',
-        'policy-independent bound. It reads a walk-forward archive the repository does not carry.',
-        '',
-        '### Execution modes',
-        '',
-        '- `Execution_Mode = "solve_hedge"` — run the configured `Solver.Object` (DiffSolver).',
-        '  Returns the fitted value-function artifact, the greedy-policy verdict, and the',
-        '  benchmark comparison table + acceptance ladder.',
-        '- `Execution_Mode = "simulate_only"` — build the bundle and run the no-trade baseline.',
-        '  The result exposes `create_stepper()` to drive the simulator day-by-day with any',
-        '  explicit policy (e.g. the textbook hedge). Useful for offline analysis and reporting.',
-        '',
-        '### Output',
-        '',
-        '`out[\'Results\']` contains the solver artifact, the simulated bundle, the normalized',
-        'runtime, and an evaluation summary with terminal P&L statistics and a position-limit',
-        'audit. Wallclock and device statistics are in `out[\'Stats\']`.',
-        '',
-        '### Reusing the inherited Credit Monte Carlo simulator',
-        '',
-        'Because this class inherits from `CreditMonteCarlo`, the underlying scenario',
-        'engine — random factor generation, instrument valuation across paths, calendar',
-        'handling, AAD graph construction — is identical. Anything that can be priced for',
-        'a credit-exposure run can be priced as a hedging-problem leg or tradable. The only',
-        'difference is what we do with the simulated MtMs: aggregate into exposures, or',
-        'feed into a learning loop.'
+        'The run returns a `HedgeRuntimeExecutionResult`: the bundle, the normalised runtime, the',
+        'evaluation summary (the terminal P&L statistics and, under a solve, its `diagnostics`) and',
+        "the policy artifact; wallclock and device statistics are in the calculation's `calc_stats`.",
     ])
 
     fields = [
@@ -3113,7 +3045,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         F('Execution_Mode', 'Text', default='simulate_only',
           values=['simulate_only', 'solve_hedge']),
         F('Inner_Sub_Batch', 'Integer', default=0,
-          description='Inner draws per outer path; peak memory is Batch_Size x this'),
+          description='Inner draws per outer path, a fork running Batch_Size x this samples at once'),
         F('Inner_Antithetic', 'Text', default='No', values=['Yes', 'No'],
           description='Mirror the inner Sobol draws as (z, -z) pairs - needs an even '
                       'Inner_Sub_Batch'),
@@ -3189,7 +3121,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('CARA_Gamma', 'Float', default=1.0,
                       description='Absolute risk aversion of u = (1-exp(-gamma x))/gamma')]),
               F('Evaluator', 'Container',
-                description='Accounting mode and cash instruments, dispatched on Object',
+                description='The accounting, the hedge legs\' boxes and frictions, and the action universe',
                 sub_fields=[
                     F('Accounting_Mode', 'Text', default='futures',
                       values=['futures', 'cash_account'],
@@ -3228,8 +3160,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Cap on the absolute signed book total, the unit the position state '
                                   'measures the book in; 0 = uncapped'),
                     F('Max_Trade_Per_Step', 'Float', default=0.0,
-                      description='Per-leg cap on |position change| per decision step at the '
-                                  'argmax; 0 = uncapped'),
+                      description='Cap on the move per decision at the execution argmax, on the '
+                                  'net cover under a weight ladder and on each leg without one; '
+                                  '0 = uncapped'),
                     F('Decision_Deadband_Sigma', 'Float', default=0.0,
                       description='Standard errors of the paired inner-draw difference by which '
                                   'the argmax must beat HOLDING the book before it trades; 0 = '
@@ -3238,8 +3171,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       row=Row([F('Step', 'Integer', default=0),
                                F('Min_Total', 'Float', default=0.0),
                                F('Max_Total', 'Float', default=0.0)]),
-                      description='Piecewise-constant corridor on the signed book total, by '
-                                  'decision step'),
+                      description='Piecewise-constant corridor on the signed book total, each knot '
+                                  'in force from its Step, a simulation row'),
                     F('Allocation_Mode', 'Text', default='Cartesian', convention=True,
                       values=['Cartesian', 'Exposure', 'Carry_Variance'],
                       description='The action universe: Cartesian searches the product of per-leg '
@@ -3251,8 +3184,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                F('Instrument', 'Text', default=''),
                                F('Weight', 'Float', default=0.0)]),
                       description='Piecewise-constant split of the net cover across the hedge '
-                                  'legs, by decision step, which Allocation_Mode Exposure requires '
-                                  'and no other mode reads')]),
+                                  'legs, each knot in force from its Step, a simulation row, which '
+                                  'Allocation_Mode Exposure requires and no other mode reads')]),
               F('Solver', 'Container',
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[
@@ -3261,9 +3194,13 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='The value-function solver: DiffSolver, or DiffSolverV2, which '
                                   'trains on its constructed policy\'s bank'),
                     F('Multi_Seed_Count', 'Integer', default=1,
-                      description='Independent training seeds the artifact is selected across'),
+                      description='Independent solvers fitted on the same batches, their V_0 '
+                                  'reported as mean and std, the verdict and the artifact the '
+                                  'first seed\'s'),
                     F('T_Min', 'Integer', default=0,
-                      description='Earliest step the backward sweep fits; 0 = full sweep'),
+                      description='The first simulation row the backward sweep fits and the '
+                                  'verdict decides on, the opening book held to it; 0 = every '
+                                  'decision row'),
                     F('Training_Action_Grid_Levels_Per_Axis', 'Integer', default=11,
                       description='Levels per hedge axis in the greedy action grid, or rungs on '
                                   'the net cover under a ladder Evaluator.Allocation_Mode'),
@@ -3273,7 +3210,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Adam iterations per residual net'),
                     F('DiffV2_LR', 'Float', default=2.0e-3, description='Adam learning rate'),
                     F('DiffV2_Bank_Noise_Frac', 'Float', default=0.15,
-                      description='Bank q-exploration noise as a fraction of each [Min,Max] range'),
+                      description='The training bank\'s exploration noise, a fraction of each '
+                                  'leg\'s [Min, Max] range, or under DiffV2_Bank_Along_Ladder of '
+                                  'the ladder band\'s width on the net'),
                     F('Active_Hedge_Indices', 'Container', default=None, convention=True,
                       description='The hedge legs the solver varies, by index in hedge order, the rest '
                                   'held at zero; every leg when omitted'),
@@ -3347,9 +3286,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'the value term alone'),
                     F('DiffV2_Bank_Along_Ladder', 'Text', default='No', values=['Yes', 'No'],
                       description='Yes holds every DiffSolverV2 training-bank book as a rung of '
-                                  'the ladder on its live legs, its exploration '
-                                  'DiffV2_Bank_Noise_Frac of the ladder band\'s width on the net, '
-                                  'the ladder being the Allocation_Weights split or, absent one, '
+                                  'the ladder on its live legs, the ladder being the Allocation_Weights split or, absent one, '
                                   'the even split over the live active legs, which the Cartesian '
                                   'policy need not hold; No water-fills the bank\'s net onto the '
                                   'replication hedge\'s shape over the active legs'),
@@ -3382,7 +3319,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Run_Hindsight_Diagnostic', 'Text', default='No', values=['Yes', 'No'],
                       description='Assemble the clairvoyant upper-bound benchmark track'),
                     F('Run_Textbook_Benchmark', 'Text', default='No', values=['Yes', 'No'],
-                      description='Assemble the averaging-hedge lower-bound benchmark track')])])
+                      description='Assemble the comparison track\'s textbook, the best constant '
+                                  'book held to the terminal, a lower bound')])])
     ]
 
     @classmethod
@@ -3472,11 +3410,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         """Simulate the scenario engine over batches, building the tensor bundle (tradable prices,
         liability MtM, factor paths), and return a `HedgeRuntimeExecutionResult`.
 
-        A SOLVE IS A STREAM: `solve_hedge` builds one Bundle per batch inside the batch loop and
-        hands it to a persistent solver as it is built - warmup on batch 1, step on each later
-        batch, finish on a held-out final batch - so the inner-MC forks are only ever `Batch_Size`
-        wide and every fit step sees fresh paths. `simulate_only` instead accumulates every batch
-        into one bundle.
+        `solve_hedge` hands each batch's Bundle to `StreamingSolve` as it is built; `simulate_only`
+        accumulates every batch into one bundle.
 
         LIABILITY-DRIVEN TIME-GRID CAP: the global grid stops at the liability's last cashflow /
         reval date. Past it there is nothing to hedge, and any residual position closes out at fair
@@ -3489,8 +3424,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         needs, via a per-batch burn-in: run each process once from the calibrated t=0, snapshot the
         terminal state per path, re-precalculate from that snapshot. Batch k+1 REWINDS to the
         calibrated t=0 first, or the batch sequence random-walks away from it instead of drawing N
-        independent worlds (measured over 5 batches: the symlog scale drifted +94%, to NaN sweeps
-        some months). Single-batch runs never rewind, so every `Simulation_Batches=1` job is
+        independent worlds. Single-batch runs never rewind, so every `Simulation_Batches=1` job is
         bit-identical.
 
         `Observed_Scenario` (walk-forward backtest) replaces the simulated draw with grid-aligned
@@ -3806,13 +3740,13 @@ class HedgeMonteCarlo(CreditMonteCarlo):
     def _restricted_struct(self, outer_struct, cutoff_mtm_idx, window_end_idx=None):
         """Mirror `outer_struct` with each deal's `Time_dep` restricted to events at mtm positions
         >= `cutoff_mtm_idx`, or windowed to [`cutoff_mtm_idx`, `window_end_idx`] when that is given
-        (the one-step fork prices exactly {t, t+1}). `Factor_dep` is shared by reference and `Calc_res` is fresh, so
+        (a fork prices the rows from t to its landing). `Factor_dep` is shared by reference and `Calc_res` is fresh, so
         inner pricing cannot clobber outer storage; deals entirely in the past are dropped. Does not
         recurse into sub_structures.
 
         Aggregation storage is off while the per-deal `Calc_res` stays: the fork harvests on the
         DEVICE via `tensor_marks()` and `resolve_hedge_structure()`, and the aggregate's stored
-        'Value' D2H copy was 93% of the fork's host egress."""
+        'Value' copy to the host would dominate the fork's host egress."""
         inner = DealStructure(outer_struct.obj.Instrument, store_results=False)
         for dd in outer_struct.dependencies:
             keep = dd.Time_dep.deal_time_grid >= cutoff_mtm_idx
@@ -3883,38 +3817,14 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         reveal order; each process owns its packing via `reveal_state_at`, so the solvers consume
         the column block without knowing what the factors are.
 
-        SINGLE PASS: generation, stuffing, pricing and extraction all run at
-        `B_outer x Inner_Sub_Batch` flat, so peak memory is a function of two JSON fields
-        (`Batch_Size`, `Inner_Sub_Batch`) and the rows to `landing`. Too wide for the card raises
-        CUDA OOM naming this fork; that is the contract, not a knob.
-
-        THE WINDOW: the inner grid and every deal's `Time_dep` are truncated to t and the rows to
-        the landing, so the pricing chain runs for real on those rows, two on a weekday - exact per-tradable F_t1 and liability L_t / L_t1,
-        and correct on mixed strips, where a market-only short-circuit would broadcast spot as every
-        F_t1. One forward step is also what bounds the AAD tape. Under `stream`, a seed, the risk
-        horizon's fork draws its inner paths iid whatever `Inner_Draws` states, on streams of its
-        own (`CMC_State.own_stream`), so it moves no other draw.
-
-        TWO COORDINATE SYSTEMS: processes generate against the shifted-base `inner_time_grid`, while
-        pricers run against the full outer `self.time_grid` with each deal's `Time_dep` restricted.
-        Buffer stuffing prepends the outer-realized past so path-dependent payoffs see the realized
-        fixings, published as its own `ScenarioBlock` carrying a `past_columns` index rather than
-        materialized B_inner times. Every path series goes through that publication.
-
-        PER-PROCESS HOOKS, no isinstance branch anywhere: `inner_fork_seed` supplies the
-        per-outer-path t=0 privileged state, `reseed_inner_state` republishes whatever revealed
-        state `reveal_state_at` needs at t+1 and returns differentiable leaves for the twin loss
-        (`self._inner_state_opts` is forwarded opaquely), and `reveal_state_at` yields each factor's
-        informative segments - empty where a factor has no revealed sufficient statistic. Under
-        `with_grad`, `state_t_leaf_widths` pairs each leaf with the market_t width it occupies.
-
-        FAIL LOUDLY on both halves: a tradable live in this fork but missing from `tensor_marks()`
-        reads downstream as an expired contract, and a liability swallowed by the canonical deal
-        guard silently corrupts the solver's LABELS.
-
-        The fork BORROWS `shared_mem` and the `finally` restores it on ANY exit - without that a
-        mid-fork raise leaves the state flat-sized and the next t-step fails on shapes rather than
-        the real cause, and clears the fork's `t_Buffer` and `t_Scenario_Buffer`.
+        Processes generate against the shifted-base `inner_time_grid` while pricers run against the
+        outer `self.time_grid`, each deal's `Time_dep` windowed to t and the landing. Per process,
+        `inner_fork_seed` supplies each outer path's privileged state at t, `reseed_inner_state`
+        republishes the revealed state and returns the twin loss's leaves, and `reveal_state_at`
+        yields its revealed segments; under `with_grad`, `state_t_leaf_widths` pairs each leaf with
+        its market_t width, and under `stream`, a seed, the fork draws on streams of its own. Calc
+        Lifecycle's inner-MC fork section and its invariants state the window, the single pass, the
+        fail-loud halves and the borrowed `shared_mem`.
         """
         B_outer = outer_scenario_buffer[self._primary].shape[-1]
         B_inner = shared_mem.simulation_sub_batch
@@ -4031,7 +3941,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 shared_mem.t_Buffer.clear()
                 shared_mem.resize(B_flat)
                 # restricted DealStructures: same instruments and Factor_dep, fresh Time_dep
-                # windowed to [t, t+1], fresh Calc_res
+                # windowed to t and the landing, fresh Calc_res
                 inner_netting_sets = self._restricted_struct(self.netting_sets, cutoff_idx, window_end_idx)
                 inner_liabilities = self._restricted_struct(self.liabilities, cutoff_idx, window_end_idx)
                 inner_netting_sets.resolve_structure(shared_mem, self.time_grid)
@@ -4069,7 +3979,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
                 inner_trade_tensors = {
                     ref: _fan(t) for ref, t in inner_netting_sets.tensor_marks().items()}
-                # the window prices {t, t+1}, so no terminal row exists to read: `L_T` is None and
+                # the window stops at the landing, so no terminal row exists to read: `L_T` is None and
                 # the horizon stats are not produced
                 result = {}
                 F_t, F_t1 = {}, {}
