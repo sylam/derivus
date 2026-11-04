@@ -1767,7 +1767,7 @@ class BundleStepper:
             bundle.mirror_utility_scale(runtime)
         self._state = self._initial_state()
         # the opening book, then the book held over each row stepped: what write_diagnostic_csvs reads
-        self._held = {n: [self._state['positions'][n].detach().cpu().clone()] for n in self._hedges}
+        self._held = {n: [self._state['positions'][n]] for n in self._hedges}
         self._terminal_transition = None
 
     # ---- public surface ------------------------------------------------------
@@ -2013,9 +2013,10 @@ class BundleStepper:
                 self._credit(accounts, self._account_of[n], -funding)
 
     def _hold(self, positions):
-        # the book held over this step's row, before a close at its end books at the next row's mark
+        # the book held over this step's row, before a close at its end books at the next row's
+        # mark; a position tensor is rebound, never written in place, so its reference is the record
         for n in self._hedges:
-            self._held[n].append(positions[n].detach().cpu().clone())
+            self._held[n].append(positions[n])
 
     def _credit(self, accounts, account_name, amount):
         if account_name is not None:
@@ -2191,7 +2192,7 @@ class BundleStepper:
         """The recorded trajectory: per instrument the opening book and the book held over each row
         stepped, stacked."""
         return {
-            'held': {n: torch.stack(self._held[n], dim=0) for n in self._hedges},
+            'held': {n: torch.stack(self._held[n], dim=0).cpu() for n in self._hedges},
             'net_pnl': (self._terminal_transition['pnl_excess']
                         + self._terminal_transition['liability_value']).detach().cpu(),
         }
