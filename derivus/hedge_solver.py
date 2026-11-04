@@ -81,9 +81,9 @@ class HedgeActionSpace:
     and shared by every track — DiffSolver, HindsightDpSolver, `run_textbook_benchmark` and the
     stepper rollout — so they optimize over the same positions and price the same frictions.
 
-      * `axis_levels()` / `grid()` — the MASK-AWARE target-position grid: active hedge axes span
-        `[min, max]` at `levels` points, inactive axes pin to a single 0, and rows over the
-        total-position cap are dropped.
+      * `axis_levels()` / `grid()` — the MASK-AWARE target-position grid in whole contracts:
+        active hedge axes span `[min, max]` at `levels` points, inactive axes pin to a single 0,
+        and rows whose signed net is over the total-position cap are dropped.
       * `allocation_grid(t)` — the FACTORED alternative under `Allocation_Weights`: one ladder over
         the signed NET cover, each rung split across the legs by the schedule. `grid_at` dispatches
         on which universe is configured; downstream consumes the rows either way.
@@ -98,9 +98,10 @@ class HedgeActionSpace:
         'the benchmarks and the stepper rollout — so they all optimize over the same positions and',
         'price the same frictions.',
         '',
-        '- `grid()` / `axis_levels()` — the target-position grid. Active hedge axes span',
-        '  `[Min_Position, Max_Position]` at `Training_Action_Grid_Levels_Per_Axis` points,',
-        '  inactive axes pin to a single 0, and rows breaching the total-position cap are dropped.',
+        '- `grid()` / `axis_levels()` — the target-position grid in whole contracts. Active hedge',
+        '  axes span `[Min_Position, Max_Position]` at `Training_Action_Grid_Levels_Per_Axis`',
+        '  points rounded to whole contracts, inactive axes pin to a single 0, and rows whose',
+        '  signed net breaches `Total_Position_Abs_Limit` are dropped.',
         '- `allocation_grid(...)` — under `Evaluator.Allocation_Weights`, the FACTORED universe',
         '  instead: the levels count rungs on the signed NET cover and the schedule splits each',
         '  rung across the legs, so the search is over how much cover to carry, not over its',
@@ -164,22 +165,23 @@ class HedgeActionSpace:
         self.active_mask[self.active] = 1.0
 
     def axis_levels(self):
-        """Per-hedge 1-D level values: `linspace(lo, hi, levels)` on ACTIVE axes, a single 0
-        on inactive axes (pinned). The product of these is the action grid."""
+        """Per-hedge 1-D level values in whole contracts: `linspace(lo, hi, levels)` rounded on
+        ACTIVE axes, a level repeated by the rounding kept once, a single 0 on inactive axes
+        (pinned). The product of these is the action grid."""
         return [torch.linspace(float(self.q_lo[i]), float(self.q_hi[i]), self.levels,
-                               device=self.device)
+                               device=self.device).round().unique()
                 if i in self.active else torch.zeros(1, device=self.device)
                 for i in range(self.n_hedge)]
 
     def grid(self):
         """Mask-aware target-position grid `(n_actions, n_hedge)`: inactive axes pinned to 0,
-        rows over the total-position cap dropped. Cached (deterministic) — `grid_at(t)` reslices
-        this base grid per decision step without rebuilding the meshgrid."""
+        rows whose signed net is over the total-position cap dropped. Cached (deterministic) —
+        `grid_at(t)` reslices this base grid per decision step without rebuilding the meshgrid."""
         if self._grid_cache is None:
             mesh = torch.meshgrid(*self.axis_levels(), indexing="ij")
             grid = torch.stack([m.reshape(-1) for m in mesh], dim=-1)
             if self.total_abs_limit > 0.0:
-                grid = grid[grid.abs().sum(-1) <= self.total_abs_limit + 1e-9]
+                grid = grid[grid.sum(-1).abs() <= self.total_abs_limit + 1e-9]
             if grid.shape[0] == 0:
                 raise ValueError(
                     "action grid empty — Position_Limits infeasible under Total_Position_Abs_Limit")
@@ -262,14 +264,12 @@ class HedgeActionSpace:
                 math.floor(min(hi, float(box_hi.sum())) + 1e-9))
 
     def book(self, q, t, live):
-        """`q` `(B, n_hedge)` as the execution books it at decision step t: each leg clamped to its
-        position limits, the signed net of the live active legs water-filled into their `band`, so
-        inside the cap and the corridor in whole contracts, then apportioned to whole contracts
-        carrying that net by `_largest_remainder`."""
-        usable = self.active_mask * live
-        _, _, lo, hi = self.band(t, usable)
-        q = self.waterfill(torch.minimum(torch.maximum(q, self.q_lo), self.q_hi), lo, hi,
-                           usable.nonzero().flatten().tolist())
+        """`q` `(B, n_hedge)` as the execution books it at decision step t: each leg clamped into
+        its `ladder` box, zero on a leg the ladder does not trade, the signed net water-filled onto
+        the ladder's legs into its band, so inside the cap and the corridor in whole contracts, then
+        apportioned to whole contracts carrying that net by `_largest_remainder`."""
+        _, legs, box_lo, box_hi, lo, hi = self.ladder(t, live)
+        q = self.waterfill(torch.minimum(torch.maximum(q, box_lo), box_hi), lo, hi, legs)
         return self._largest_remainder(q, q.sum(-1, keepdim=True))
 
     def rung(self, t, net, live=None):
@@ -318,10 +318,7 @@ class HedgeActionSpace:
                     f"quantum above 1 rebuilds the coarse net grid the schedule exists to "
                     f"replace; raise it to at least {hi - lo + 1}.")
             net = torch.linspace(lo, hi, self.levels, device=self.device).unsqueeze(-1)  # (L,1)
-            rows = self.rung(t, net, live)
-            if self.total_abs_limit > 0.0:
-                rows = rows[rows.abs().sum(-1) <= self.total_abs_limit + 1e-9]
-            self._ladder_cache[key] = rows.unique(dim=0)
+            self._ladder_cache[key] = self.rung(t, net, live).unique(dim=0)
         return self._ladder_cache[key]
 
     def grid_at(self, t, live=None):

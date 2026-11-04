@@ -545,21 +545,39 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
         (v['passive']['turnover_cost_mean'], float(cost.mean()))
 
 
-def test_the_passive_book_stays_inside_a_fractional_corridor():
-    """The swap bought on 2,425 oz, a net 32.5 contracts unfixed before the first fixing, hedged in
-    a corridor whose upper edge is -32.3 contracts: the verdict's passive book, in whole contracts,
-    sums inside [-40, -32.3] on every row, at -33, the corridor's whole edge, where the unfixed
-    quantity would round to -32. 2 s.
+@pytest.mark.parametrize('units, corridor, limits, weights', [
+    (2425.0, (-40, -32.3), (-20, 5), KNOTS), (4800.0, (-60, 5), (-30, 5), KNOTS),
+    (2400.0, (2, 5), (-20, 5), KNOTS), (2400.0, (-40, -35), (-50, 5), ((0, (1.0, 0.0)),))],
+    ids=['fractional', 'cap', 'long_only', 'one_leg'])
+def test_the_passive_book_stays_inside_a_fractional_corridor(units, corridor, limits, weights):
+    """The swap's passive book at the edges of its band, on the verdict of its training document:
+    on every row in whole contracts, each leg inside its box and nothing on a leg the
+    `Allocation_Weights` knot weighs zero, its signed net inside the corridor and the cap of 40.
+    Bought on 2,425 oz, a net 32.5 contracts unfixed before the first fixing, in a corridor whose
+    upper edge is -32.3 the book sums to -33, the corridor's whole edge, where the unfixed quantity
+    would round to -32; bought on 4,800 oz, 80 contracts, the cap binds before the corridor; a
+    long-only corridor [2, 5] holds the book on its floor against the short the swap wants; the July
+    leg weighted alone in a corridor [-40, -35] holds the whole deficit. 2 s each.
 
-    Killing mutation: the net water-filled into the fractional corridor (`net_bounds` in
+    Killing mutations: the net water-filled into the fractional corridor (`net_bounds` in
     `HedgeActionSpace.book`, not the whole-contract `band`) and apportioned to its rounded total,
-    -32 on all 30 rows, outside the corridor."""
+    -32 on all 30 rows, outside the corridor; `book` without its water-fill, the clamped split
+    apportioned as it stands, (-30, -30) past the cap, (-16, -16) below the long-only floor and
+    (-32, 0) outside the one-leg corridor; the deficit water-filled onto every live active leg
+    (`book` on `active_mask * live`), the October leg -2 contracts on the one-leg document."""
     cfg = _passive_cfg()
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
-    hp['Liabilities']['CommodityAveragePriceSwapDeal']['PLAT_APS_BUY']['Units'] = 2425.0
-    hp['Evaluator']['Total_Position_Schedule'] = [{'Step': 0, 'Min_Total': -40, 'Max_Total': -32.3}]
-    totals = [sum(q) for q in _run(cfg).evaluation_summary['diagnostics']['verdict']['passive_q_traj']]
-    assert len(totals) == 30 and all(-40.0 <= x <= -32.3 for x in totals), sorted(set(totals))
+    hp['Liabilities']['CommodityAveragePriceSwapDeal']['PLAT_APS_BUY']['Units'] = units
+    ev = hp['Evaluator']
+    ev['Total_Position_Schedule'] = [{'Step': 0, 'Min_Total': corridor[0], 'Max_Total': corridor[1]}]
+    ev['Position_Limits'] = {h: {'Min_Position': limits[0], 'Max_Position': limits[1]} for h in LEGS}
+    ev['Allocation_Weights'] = [{'Step': s, 'Instrument': h, 'Weight': w} for s, ws in weights for h, w in zip(LEGS, ws)]
+    books = _run(cfg).evaluation_summary['diagnostics']['verdict']['passive_q_traj']
+    weighed = [[w > 0.0 for w in ws] for _, ws in weights]
+    bad = [q for q in books if any(x != round(x) or not limits[0] <= x <= limits[1] for x in q)
+           or not corridor[0] <= sum(q) <= corridor[1] or abs(sum(q)) > ev['Total_Position_Abs_Limit']
+           or (len(weighed) == 1 and any(x and not w for x, w in zip(q, weighed[0])))]
+    assert len(books) == 30 and not bad, bad[:3]
 
 
 def test_the_stepper_hands_the_greedy_book_to_the_passive_from_the_declared_day(tmp_path):
@@ -914,29 +932,84 @@ def _swap(**kw):
     return cfg
 
 
-def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_path):
+def _replayed_roll(tmp_path, doc, **declared):
+    """`doc()` trained and rolled frozen on the first path of a tape of its own world with
+    `Randomize_Initial_State` off, `declared` stated on the roll's `Evaluator`, or on its `Solver`
+    for a `DiffV2_` key: the roll's diagnostics."""
+    path = _tape(doc(), str(tmp_path / 'tape_{}.npz'))[0]
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(doc(save=ckpt))
+    roll = doc(load=ckpt)
+    roll['Calc']['Calculation']['Observed_Scenario'] = path
+    hp = roll['Calc']['Calculation']['Hedging_Problem']
+    hp['Randomize_Initial_State'] = 'No'
+    for key, value in declared.items():
+        hp['Solver' if key.startswith('DiffV2_') else 'Evaluator'][key] = value
+    return _run(roll).evaluation_summary['diagnostics']
+
+
+def _swap_rolling(**kw):
+    """The swap document with a matched roll priced at a 3 bp calendar spread."""
+    cfg = _swap(**kw)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']['Calendar_Spread_Bps'] = 3.0
+    return cfg
+
+
+@pytest.mark.parametrize('doc, declared', [(_swap, {}), (_swap, {'Max_Trade_Per_Step': 2.0}),
+                                           (_swap_rolling, {})],
+                         ids=['plain', 'max_trade', 'calendar'])
+def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_path, doc, declared):
     """On a replayed path of the swap world under the position state, at zero rates and no opening
     cash, so the stepper's daily interest on cash and margin, which the verdict's wealth law leaves
     out, is nil: the verdict and the stepper roll hold one greedy book at every decision and one
     passive book in whole contracts, and each closes its book at the terminal, the last live
     liability mark, at the declared 10 bp spread, so their terminal wealths agree within 5e-6
-    relative (greedy 1.9e-8, passive 5.1e-7), the no-hedge track's to the bit. 3 s.
+    relative (greedy 1.9e-8, passive 5.1e-7), the no-hedge track's to the bit; so too under a
+    `Max_Trade_Per_Step` of 2 on the roll, and with the matched half of a roll at a 3 bp
+    `Calendar_Spread_Bps`, which the verdict's charge and the stepper's rebate both read. 3 s each.
 
     Killing mutations: the stepper holding the last book one row past the terminal to the
     clean-exit row and unwinding there (greedy +2,502, 1.8%); the passive book in fractional contracts
-    the stepper rounds to whole ones (passive +52.5, 2.0e-3)."""
-    path = _tape(_swap(), str(tmp_path / 'tape_{}.npz'))[0]
-    ckpt = str(tmp_path / 'vf.pt')
-    _run(_swap(save=ckpt))
-    roll = _swap(load=ckpt)
-    roll['Calc']['Calculation']['Observed_Scenario'] = path
-    roll['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
-    d = _run(roll).evaluation_summary['diagnostics']
+    the stepper rounds to whole ones (passive +52.5, 2.0e-3); the stepper roll's `_decide` without
+    its band (`rate_limit=False`), its first book (3, 2) against the verdict's (1, 1); the stepper's
+    rebate unarmed, the verdict's charge pricing the roll the stepper pays outright (passive 2.0%)."""
+    d = _replayed_roll(tmp_path, doc, **declared)
     v, sv = d['verdict'], d['stepper_verdict']
     assert [v['greedy_q_traj'][t - d['root_t']] for t in sv['greedy_q_t']] == sv['greedy_q_traj']
     assert v['nohedge']['wT_mean'] == sv['nohedge']['wT_mean'], (v['nohedge']['wT_mean'], sv['nohedge']['wT_mean'])
     for p in ('greedy', 'passive'):
         assert abs(sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0) < 5e-6, (p, v[p]['wT_mean'], sv[p]['wT_mean'])
+
+
+def _cartesian(save=None, load=None):
+    """The fixture's July average on its three legs under the position state at zero rates and no
+    opening cash, the greedy on the Cartesian grid of 5 levels a leg over [-50, 0] in a corridor
+    [-40, -30]; with `load`, the frozen roll on one path."""
+    cfg = _zero_rates(_cfg(batch=2 if load else 12, seed=7, save=save, load=load,
+                           schedule=[{'Step': 0, 'Min_Total': -40, 'Max_Total': -30}]))
+    solver = cfg['Calc']['Calculation']['Hedging_Problem']['Solver']
+    solver['DiffV2_Position_State'] = 'Yes'
+    if load is not None:
+        solver['DiffV2_Stepper_Rollout'] = 'Yes'
+    return cfg
+
+
+def test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid(tmp_path):
+    """The greedy argmax on the Cartesian grid, the default without `Allocation_Weights`, offers
+    levels in whole contracts, `linspace(Min, Max, levels)` rounded: on a replayed path under the
+    position state at zero rates and no opening cash, the verdict and the stepper roll hold one
+    greedy book in whole contracts and agree within 5e-6 relative, as they do on the ladder and as
+    the passive and no-hedge books do. 4 s.
+
+    Killing mutation: the levels left fractional (-37.5 and -12.5 contracts on the fixture's
+    [-50, 0] at 5 levels), which the verdict holds and the stepper rounds each trade of
+    (`BundleStepper._structured_action`), so the two roll different books (greedy 6.1e-4 apart
+    where the passive agrees to 1e-7)."""
+    d = _replayed_roll(tmp_path, _cartesian)
+    v, sv = d['verdict'], d['stepper_verdict']
+    frac = sorted({x for r in v['greedy_q_traj'] for x in r if x != round(x)})
+    gaps = {p: sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0 for p in ('greedy', 'passive', 'nohedge')}
+    assert not frac and all(abs(g) < 5e-6 for g in gaps.values()), (frac, gaps)
 
 
 def test_the_verdict_and_the_stepper_hold_one_textbook_book(tmp_path):
