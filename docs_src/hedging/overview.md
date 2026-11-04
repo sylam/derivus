@@ -17,7 +17,8 @@ the objective, the solver config and the portfolio state.
 
 Past that boundary the runtime **is** the contract — downstream code indexes it directly rather
 than re-checking it. A malformed schedule, a partial spot history, an unknown `Execution_Mode` or a
-`Simulation_Batches` that contradicts the mode all fail there, naming the field.
+`Simulation_Batches` that contradicts the mode all fail there, naming the field, and a solver
+refuses at construction, by name, a combination of declared values it cannot run.
 
 `Simulation_Batches` is the number of batches of `Batch_Size` paths simulated in either mode; its
 field says what each mode does with them.
@@ -38,12 +39,12 @@ each day's wealth increment instead of $W_T$ and sums the step utilities.
 The DP recursion lives in utility space, so `solve_hedge` requires one of these `Objective.Object`
 values:
 
-| `Objective.Object` | $u(x)$ | parameters (default) |
+| `Objective.Object` | $u(x)$ | parameters |
 | --- | --- | --- |
 | `AsymmetricUtility_Symlog` | $\mathrm{sign}(x)\log(1+\lvert x\rvert)$ | none |
-| `AsymmetricUtility_Huber` | $x-a\,h_\delta(x^-)-a^+h_\kappa(x^+)$, with $h_k(y)=y^2$ for $y\le k$ and $k^2+2k(y-k)$ beyond | `Huber_Aversion` $a$ 2.5, `Huber_Delta` $\delta$ 1.0, `Up_Aversion` $a^+$ 0, `Up_Knee` $\kappa$ 0.15 |
-| `AsymmetricUtility_CARA` | $(1-e^{-\gamma x})/\gamma$ | `CARA_Gamma` $\gamma$ 1.0 |
-| `LogWealth` | per step $\log\big((C+W_{t+1})/(C+W_t)\big)$, summed; no $c$ | `Solver.DiffV2_Risk_Aversion` 1.0, in [0.1, 10] |
+| `AsymmetricUtility_Huber` | $x-a\,h_\delta(x^-)-a^+h_\kappa(x^+)$, with $h_k(y)=y^2$ for $y\le k$ and $k^2+2k(y-k)$ beyond | `Huber_Aversion` $a$, `Huber_Delta` $\delta$, `Up_Aversion` $a^+$, `Up_Knee` $\kappa$ |
+| `AsymmetricUtility_CARA` | $(1-e^{-\gamma x})/\gamma$ | `CARA_Gamma` $\gamma$ |
+| `LogWealth` | per step $\log\big((C+W_{t+1})/(C+W_t)\big)$, summed; no $c$ | `Solver.DiffV2_Risk_Aversion`, in [0.1, 10] |
 
 $x^-=\max(-x,0)$ and $x^+=\max(x,0)$. Under `LogWealth` the capital line is
 $C=1.1\max(0,-\min W_{bank})/$`DiffV2_Risk_Aversion`, the worst wealth the training bank reaches;
@@ -59,7 +60,7 @@ The scale $c$ (`Objective.Utility_Scale_Mode`, or the `Utility_Scale_Explicit` o
 | --- | --- |
 | `vol_scaled_notional` (default) | total leg volume × initial spot × annual vol × $\sqrt\tau$, $\tau$ the business days of the job's calendar from the first simulated row to the last settlement / 252, the market clock the vol is annualised on, a window's squared moves over the market days it holds (`tests/test_action_space_and_artifact.py::test_realised_vol_counts_the_market_days_its_window_holds`); spot and vol are batch medians at the start of the simulation, from the spot history or the calibrated process; refused below 1,000; the horizon held by `tests/test_action_space_and_artifact.py::test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar` |
 | `Utility_Scale_Explicit` | the stated currency amount |
-| `conditional_sim` | per decision step, the cross-sectional standard deviation of the flat-book wealth $L_t$ on the warmup batch, floored at `Utility_Scale_Floor_Frac` (default 0.05) of its terminal entry; refuses `Utility_Scale_Explicit` beside it, and `Running_Wealth` except under `LogWealth` |
+| `conditional_sim` | per row to the close, the cross-sectional standard deviation of the flat-book wealth's move $L_t-L_0$ on the warmup batch, floored at `Utility_Scale_Floor_Frac` of its terminal entry; refuses `Utility_Scale_Explicit` beside it, and `Running_Wealth` except under `LogWealth` |
 
 $c$ is part of the solver's frame, locked at warmup, a loaded checkpoint evaluating in its own
 ([Solver](solver.md), `DiffSolver`). Under `conditional_sim` the measured schedule sets the level of
