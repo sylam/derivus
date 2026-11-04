@@ -92,12 +92,13 @@ class HedgeActionSpace:
 
       * `axis_levels()` / `grid()` — the MASK-AWARE target-position grid in whole contracts:
         active hedge axes span `[min, max]` at `levels` points, inactive axes pin to a single 0;
-        `grid_at(t, live)` keeps the rows whose signed net on the live legs lies in
-        `net_bounds(t)`, the cap and the corridor.
+        `grid_at(t, live)` keeps the rows the step admits (`admissible`): each live active leg
+        inside its box, every other leg at zero, the signed net inside the cap and the corridor
+        (`bounds`).
       * `allocation_grid(t)` — the FACTORED alternative under `Allocation_Weights`: one ladder over
         the signed NET cover, each rung split across the legs by the schedule. `grid_at` dispatches
         on which universe is configured; downstream consumes the rows either way.
-      * `band(t, usable)` / `book(q, t, live)` — the whole-contract band of the signed net on the
+      * `ladder(t, live)` / `book(q, t, live)` — the whole-contract band of the signed net on the
         legs a mask marks, and a book as the execution books it: clamped into the `ladder` boxes,
         its net water-filled into the band on the ladder's legs, apportioned to whole contracts.
         The passive and textbook books are booked by it.
@@ -115,16 +116,18 @@ class HedgeActionSpace:
         '- `grid()` / `axis_levels()` — the target-position grid in whole contracts. Active hedge',
         '  axes span `[Min_Position, Max_Position]` at `Training_Action_Grid_Levels_Per_Axis`',
         '  points rounded to whole contracts, inactive axes pin to a single 0, and a step keeps the',
-        '  rows whose signed net on its live legs lies inside `Total_Position_Abs_Limit` and the',
-        '  `Total_Position_Schedule` corridor.',
+        '  rows it admits on its live legs (`admissible`): each live active leg inside its box,',
+        '  every other leg at zero, the signed net inside `Total_Position_Abs_Limit` and the',
+        '  `Total_Position_Schedule` corridor. Every track holds its books to that one rule.',
         '- `allocation_grid(...)` — under `Evaluator.Allocation_Weights`, the FACTORED universe',
         '  instead: the levels count rungs on the signed NET cover and the schedule splits each',
         '  rung across the legs, so the search is over how much cover to carry, not over its',
         '  composition.',
-        '- `band(...)` / `book(...)` — the whole-contract band of the signed net on the legs the',
-        '  ladder trades, and a book as the execution books it: clamped into those legs\' boxes,',
-        '  nothing on any other, its net water-filled into the band and apportioned to whole',
-        '  contracts. The passive and textbook books are booked by it, as the stepper holds them.',
+        '- `ladder(...)` / `book(...)` — the whole-contract band of the signed net on the legs',
+        '  the ladder trades, and a book as the execution books it: clamped into those legs\'',
+        '  boxes, nothing on any other, its net water-filled into the band and apportioned to',
+        '  whole contracts. The passive and textbook books are booked by it, as the stepper holds',
+        '  them.',
         '- `kappa(...)` — the per-hedge turnover cost at a step, off the single',
         '  `per_contract_kappa` rule the environment and the diagnostic CSVs also use.',
         '- `initial_q(...)` — the opening book.',
@@ -152,6 +155,8 @@ class HedgeActionSpace:
         self.q_hi = torch.tensor(
             [float(limits.get(r, {}).get("max_position", 0.0)) for r in self.hedges],
             device=device)
+        # the boxes on the host too, which `bounds` sums at every decision without a sync
+        self.boxes = list(zip(self.q_lo.tolist(), self.q_hi.tolist()))
         self.contract_size = torch.tensor(
             [float(runtime["tradables"][r]["contract_size"]) for r in self.hedges],
             device=device)
@@ -261,21 +266,14 @@ class HedgeActionSpace:
 
     def ladder(self, t, live=None):
         """The ladder at decision step t, `(weights, legs, box_lo, box_hi, lo, hi)`: the
-        `_weights_at` split over `live`, the indices of the legs it weighs and their `band`."""
+        `_weights_at` split over `live`, the indices of the legs it weighs and their `bounds`, the
+        net's band snapped INWARD to whole contracts, since a fractional band would emit rungs, or
+        book a hedge, that round outside their own mandate."""
         weights = self._weights_at(t, live)
         usable = (weights > 0).to(self.q_lo.dtype)
-        return (weights, usable.nonzero().flatten().tolist(), *self.band(t, usable))
-
-    def band(self, t, usable):
-        """The boxes `(box_lo, box_hi)` of the legs the mask `usable` marks, whole contracts as the
-        runtime reads `Position_Limits`, zero on every other leg, and the band `(lo, hi)` of their
-        signed net at decision step t, `net_bounds(t)` intersected with those boxes and snapped
-        INWARD to whole contracts, since a fractional band would emit rungs, or book a hedge, that
-        round outside their own mandate."""
-        box_lo, box_hi = self.q_lo * usable, self.q_hi * usable
-        lo, hi = self.net_bounds(t)
-        return (box_lo, box_hi, math.ceil(max(lo, float(box_lo.sum())) - 1e-9),
-                math.floor(min(hi, float(box_hi.sum())) + 1e-9))
+        box_lo, box_hi, lo, hi = self.bounds(t, usable)
+        return (weights, usable.nonzero().flatten().tolist(), box_lo, box_hi,
+                math.ceil(lo - 1e-9), math.floor(hi + 1e-9))
 
     def book(self, q, t, live):
         """`q` `(B, n_hedge)` as the execution books it at decision step t: each leg clamped into
@@ -307,8 +305,8 @@ class HedgeActionSpace:
 
         Construction runs on the legs that can carry a contract — `_weights_at(t, live)` drops the
         inactive and expired ones and renormalizes, and every bound is summed over what survives:
-          * the band is the `ladder` band: `net_bounds(t)` (cap ∩ corridor ∩ boxes) intersected
-            with those legs' own boxes, snapped INWARD to whole contracts;
+          * the band is the `ladder` band: `bounds` over those legs (their boxes ∩ cap ∩
+            corridor), snapped INWARD to whole contracts;
           * each rung is `rung(t, Q, live)`: `Q·w` clamped into the per-leg boxes and water-filled
             back onto Q over the SAME leg set, so nothing puts cover on a leg the schedule zeroed,
             then rounded by `_largest_remainder` to whole contracts summing to Q; duplicate rungs
@@ -321,8 +319,8 @@ class HedgeActionSpace:
             if lo > hi:
                 raise ValueError(
                     f"action ladder empty at step {t} — no whole-contract net is reachable on the "
-                    f"weighted live legs {[self.hedges[i] for i in legs]} inside net_bounds "
-                    f"{self.net_bounds(t)}")
+                    f"weighted live legs {[self.hedges[i] for i in legs]} inside the band "
+                    f"{(lo, hi)}")
             if hi - lo > self.levels - 1:
                 raise ValueError(
                     f"Allocation_Weights ladder at step {t} spans {hi - lo} contracts over "
@@ -336,36 +334,53 @@ class HedgeActionSpace:
         return self._ladder_cache[key]
 
     def grid_at(self, t, live=None):
-        """Action grid at decision step t: the base `grid()` — or the factored `allocation_grid(t)`
-        when `Allocation_Weights` is configured — filtered by `_within` to rows whose SIGNED total
-        position lies in `net_bounds(t)`, the `Total_Position_Abs_Limit` cap and the
-        `Total_Position_Schedule` corridor. The single per-t filter site every track shares; empty
-        after filtering ⇒ infeasible bounds.
+        """Action grid at decision step t: the rows of the base `grid()` — or of the factored
+        `allocation_grid(t)` when `Allocation_Weights` is configured — that the step admits on the
+        `live` legs (`admissible`). The single per-t filter site every track shares; empty after
+        filtering ⇒ infeasible bounds.
 
-        The bounds hold the REALIZED signed total, the position that survives expiry masking, so
-        passing the step-t `live` leg mask filters on `Σ(q_i·live_i)`: a row parked on an expired
-        leg cannot carry the live legs past the cap, nor a corridor-satisfying short be masked to 0
-        and silently under-hedge. Absent `live` ⇒ `Σq_i` over all legs."""
-        grid = self._within(self.grid() if self.weights is None else self.allocation_grid(t, live),
-                            t, live)
+        The rule holds the REALIZED book, the position that survives expiry masking: a row parked
+        on an expired leg cannot carry the live legs past the cap, nor a corridor-satisfying short
+        be masked to 0 and silently under-hedge."""
+        rows = self.grid() if self.weights is None else self.allocation_grid(t, live)
+        grid = rows[self.admissible(rows, t, live)]
+        logging.debug('grid_at step %d admits %d of %d rows', t, grid.shape[0], rows.shape[0])
         if grid.shape[0] == 0:
             raise ValueError(
-                f"action grid empty at step {t} — no row's signed total on the live legs lies in "
-                f"net_bounds {self.net_bounds(t)}, Total_Position_Abs_Limit and the "
+                f"action grid empty at step {t} — no row lies in the live legs' boxes with its "
+                f"signed net in {self.bounds(t, live)[2:]}, Total_Position_Abs_Limit and the "
                 f"Total_Position_Schedule corridor")
         return grid
 
-    def _within(self, rows, t, live=None):
-        """`rows` `(K, n_hedge)` whose signed total on the `live` legs (every leg where None) lies
-        in `net_bounds(t)`."""
-        return rows[self._inside(rows, t, live)]
+    def bounds(self, t, live=None):
+        """The bounds of a book at decision step t on the active legs the mask `live` marks (every
+        active leg where None): `(box_lo, box_hi)` `(n_hedge,)`, each such leg's `Position_Limits`
+        box and zero on every other leg, and `(lo, hi)`, the band of its signed net, those boxes'
+        sum inside `Total_Position_Abs_Limit` and the `Total_Position_Schedule` corridor. The one
+        rule every track's book is held to (`admissible`) and built inside (`ladder`, the bank), so
+        it is also the support the position state p = Σq/Q_max is queried over."""
+        alive = None if live is None else live.tolist()
+        legs = [i for i in self.active if alive is None or alive[i] > 0]
+        on = self.active_mask if live is None else self.active_mask * live
+        lo = sum(self.boxes[i][0] for i in legs)
+        hi = sum(self.boxes[i][1] for i in legs)
+        if self.total_abs_limit > 0.0:
+            lo, hi = max(lo, -self.total_abs_limit), min(hi, self.total_abs_limit)
+        if self.schedule is not None:
+            c_lo, c_hi = self._corridor_at(t)
+            lo, hi = max(lo, c_lo), min(hi, c_hi)
+        logging.debug('bounds at step %d: live active legs %s, net band (%s, %s)', t, legs, lo, hi)
+        return self.q_lo * on, self.q_hi * on, lo, hi
 
-    def _inside(self, rows, t, live=None):
-        """`(K,)`: whether each of `rows` has its signed total on the `live` legs (every leg where
-        None) in `net_bounds(t)`, the cap and the corridor."""
-        lo, hi = self.net_bounds(t)
-        tot = (rows if live is None else rows * live).sum(-1)
-        return (tot >= lo - 1e-9) & (tot <= hi + 1e-9)
+    def admissible(self, q, t, live=None):
+        """`(K,)`: whether each book of `q` `(K, n_hedge)`, held on the legs the mask `live` marks
+        (every leg where None), is one decision step t admits (`bounds`): each live active leg
+        inside its box, every other leg at zero, and its signed net inside the cap and the
+        corridor."""
+        box_lo, box_hi, lo, hi = self.bounds(t, live)
+        q = q if live is None else q * live
+        net = q.sum(-1)
+        return ((q >= box_lo) & (q <= box_hi)).all(-1) & (net >= lo - 1e-9) & (net <= hi + 1e-9)
 
     def project_to_corridor(self, q, t):
         """Project the SIGNED total of the ACTIVE legs of `q` `(B, n_hedge)` into the
@@ -415,20 +430,6 @@ class HedgeActionSpace:
             raise ValueError("HedgeActionSpace.install_weights: a weights table already stands")
         self.weights = self.weights_key(weights)
 
-    def net_bounds(self, t):
-        """The feasible band of the SIGNED active total at decision step t — the per-leg boxes
-        intersected with `Total_Position_Abs_Limit` and with the `Total_Position_Schedule`
-        corridor. Exactly the interval `grid_at(t)` can realize, so it is the support the position
-        state p = Σq/Q_max is queried over and therefore the one the bank must explore."""
-        lo = float(self.q_lo[self.active].sum())
-        hi = float(self.q_hi[self.active].sum())
-        if self.total_abs_limit > 0.0:
-            lo, hi = max(lo, -self.total_abs_limit), min(hi, self.total_abs_limit)
-        if self.schedule is not None:
-            c_lo, c_hi = self._corridor_at(t)
-            lo, hi = max(lo, c_lo), min(hi, c_hi)
-        return lo, hi
-
     def kappa(self, tradables_sim, t_index, calendar=False):
         """Per-hedge kappa `(n_hedge,)` at sim-grid `t_index` — each instrument's mean mark
         through `hedge_bundle.per_contract_kappa` (the single turnover-cost rule). The step's
@@ -467,8 +468,8 @@ class HedgeActionSpace:
         composition to sit in."""
         if self.weights is None:
             return self.grid_at(0)
-        return self._within(
-            torch.cat([self.allocation_grid(step) for step, _ in self.weights]).unique(dim=0), 0)
+        rows = torch.cat([self.allocation_grid(step) for step, _ in self.weights]).unique(dim=0)
+        return rows[self.admissible(rows, 0)]
 
     def initial_q(self, batch, device):
         """The opening book `q0` `(batch, n_hedge)` (hedge legs only, `names['hedges']`
@@ -1034,9 +1035,9 @@ class DiffSolver:
 
         Market and wealth are z-scored against the locked bank frame; p is NOT, because it is
         already a fraction of the cap on both sides of the seam — `grid_at` keeps only the actions
-        inside `Total_Position_Abs_Limit` (`HedgeActionSpace._within`) and `_build_bank`
-        water-fills each sampled book onto `aspace.net_bounds(t)` — so p arrives in [-1, 1] over a
-        support the bank covers.
+        the step admits inside `Total_Position_Abs_Limit` (`HedgeActionSpace.admissible`) and
+        `_build_bank` water-fills each sampled book onto `aspace.bounds(t)` — so p arrives in
+        [-1, 1] over a support the bank covers.
 
         `DiffV2_Wealth_Free_Value` drops the W column instead of adding one. The two switches
         compose, each owning one column, so the layout is `(market | [W] | [p])` in that order
@@ -1348,10 +1349,11 @@ class DiffSolver:
         (`self.landing`), the candidate held to it and charged as its one-step wealth is; None reads
         it off the one-step draws.
 
-        The action universe is `aspace.grid_at(t, live)`: the base grid filtered to the
-        `Total_Position_Schedule` corridor at t, or the FACTORED Q-ladder under
-        `Allocation_Weights`. The `live` leg mask enters the filter so the corridor bounds the
-        REALIZED `Σ(q_i·live_i)` rather than a target the expiry mask then guts.
+        The action universe is `aspace.grid_at(t, live)`: the books of the base grid, or of the
+        FACTORED Q-ladder under `Allocation_Weights`, that the step admits on its live legs
+        (`HedgeActionSpace.admissible`: each live active leg inside its box, every other leg at
+        zero, the net inside the cap and the corridor), so the bounds hold the REALIZED book rather
+        than a target the expiry mask then guts.
 
         `q_prev` carries the standing book and arms up to four decision-time corrections, each with
         its own switch: the cost-aware turnover charge (`kappa` present, priced net/paired when
@@ -1372,10 +1374,10 @@ class DiffSolver:
 
         `Decision_Deadband_Sigma` makes the standing book the INCUMBENT candidate: the winner only
         trades when it beats holding by that many standard errors of the difference PAIRED across
-        the common inner draws. Holding an infeasible book is not on offer — a path whose live
-        `q_prev` sits outside the cap or the corridor at t (`HedgeActionSpace._inside`) moves
-        regardless — and the incumbent runs through the SAME `_reposition_charge` as every rival,
-        so the paired difference subtracts two readings of one
+        the common inner draws. Holding an inadmissible book is not on offer — a path whose live
+        `q_prev` the step does not admit (`HedgeActionSpace.admissible`) moves regardless, though a
+        split off the step's rungs it admits is held — and the incumbent runs through the SAME
+        `_reposition_charge` as every rival, so the paired difference subtracts two readings of one
         function. The move test compares RISK-NEUTRAL means even when `DiffV2_Risk_Kappa` is on: a
         paired standard error is a statement about E[C], and a semideviation is not a mean."""
         grid = self.aspace.grid_at(t, live)
@@ -1455,8 +1457,12 @@ class DiffSolver:
                 diff = best_f - C1f_inc                                                   # (B,Bi) paired
                 se = diff.std(-1) / math.sqrt(Bi)
                 move = diff.mean(-1) > self.aspace.deadband_sigma * se
-                # holding is only on offer while the LIVE book lies in the bounds at t
-                move = move | ~self.aspace._inside(q_live, t, live)
+                # holding is only on offer while the step admits the LIVE book
+                held = self.aspace.admissible(q_live, t, live)
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug('deadband at step %d admits %d of %d standing books', t,
+                                  int(held.sum()), held.shape[0])
+                move = move | ~held
                 best_q = torch.where(move.unsqueeze(-1), best_q, q_live)
             return best_q
 
@@ -1511,7 +1517,7 @@ class DiffSolver:
         backward sweep makes at t (no extra inner-MC passes).
 
         Under `DiffV2_Position_State` the bank also has to COVER THE p AXIS: p is an input the
-        argmax queries over the whole of `aspace.net_bounds(t)` while the roll only wanders
+        argmax queries over the whole of `aspace.bounds(t)` while the roll only wanders
         `Bank_Noise_Frac` around the replication hedge, which would leave the learned hysteresis
         slope extrapolating where it matters. Each path therefore draws a UNIFORM net target across
         the feasible band and water-fills onto it, so the per-leg shape stays the noisy replication
@@ -1539,8 +1545,8 @@ class DiffSolver:
             q = torch.minimum(torch.maximum(q_rep[None] + noise * mask, self.q_lo), self.q_hi)
             if self.position_state:
                 # cover the p axis the argmax queries. Subsumes the corridor projection below,
-                # since net_bounds already intersects the corridor.
-                lo_t, hi_t = self.aspace.net_bounds(t)
+                # since the bounds already intersect the corridor.
+                lo_t, hi_t = self.aspace.bounds(t)[2:]
                 u = lo_t + (hi_t - lo_t) * torch.rand(
                     self.B_outer, 1, generator=gen, device=self.device)
                 q = self.aspace.waterfill(q, u, u)
@@ -3390,7 +3396,7 @@ class DiffSolverV2(DiffSolver):
         curves: the strike rides the book, so hedging does not change the measured object and no
         fixed point is needed. Given the per-step mask `live` of the legs that still price, each
         step's net spans the `HedgeActionSpace.ladder` band, is held as its `rung` and its reserve
-        is priced on the ladder's weights; absent `live`, the net spans `net_bounds` and is
+        is priced on the ladder's weights; absent `live`, the net spans the `bounds` band and is
         water-filled onto the replication hedge's shape, its reserve priced in that shape. Returns
         `(q per decision row (B, n_hedge), curves per decision row, terminal book)`, each decision
         holding its book to the next."""
@@ -3400,7 +3406,7 @@ class DiffSolverV2(DiffSolver):
         LT = L[T]
 
         def band(t):
-            return self.aspace.net_bounds(t) if live is None else self.aspace.ladder(t, live[t])[4:]
+            return self.aspace.bounds(t)[2:] if live is None else self.aspace.ladder(t, live[t])[4:]
 
         def compose(t, net):
             if live is not None:

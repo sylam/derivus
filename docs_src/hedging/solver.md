@@ -74,15 +74,21 @@ The passive book stays inside its band, in whole contracts inside each leg's box
 leg the knot weighs zero, its net inside the corridor, a fractional edge included, and inside the
 cap on the signed net; the verdict and the stepper roll hold one textbook book, and on the
 Cartesian grid, whose levels are `linspace(Min_Position, Max_Position, levels)` rounded to whole
-contracts, one greedy book. Each step's grid keeps the rows whose signed net on the step's live
-legs lies inside the cap and the corridor (`HedgeActionSpace.grid_at`), whatever their gross, so a
-row parked on an expired leg cannot carry the live legs past the cap, and `Decision_Deadband_Sigma`
-holds the standing book only while its live net lies inside them (`HedgeActionSpace._inside`). Held by
+contracts, one greedy book. Every track holds its books to one rule
+(`HedgeActionSpace.admissible`): on the step's live legs each active leg inside its box, every other
+leg at zero, and the signed net inside the cap and the corridor. Each step's grid keeps the rows it
+admits (`HedgeActionSpace.grid_at`), whatever their gross, so a row parked on an expired leg cannot
+carry the live legs past the cap, nor an expired leg's box bound the live ones; the ladder, the
+passive and textbook books and the bank are built inside the same bounds
+(`HedgeActionSpace.bounds`); and `Decision_Deadband_Sigma` holds the standing book only while the
+step admits it, a split off the step's rungs included. Held by
 `tests/test_action_space_and_artifact.py::test_the_passive_book_stays_inside_a_fractional_corridor`,
 `::test_the_verdict_and_the_stepper_hold_one_textbook_book`,
 `::test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid`,
-`::test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book` and
-`::test_the_cap_holds_the_book_the_live_legs_carry`. The constant hold telescopes to the
+`::test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book`,
+`::test_the_cap_holds_the_book_the_live_legs_carry`,
+`::test_a_dead_leg_s_box_bounds_nothing_on_the_legs_still_live` and
+`::test_the_deadband_holds_only_a_book_the_step_admits`. The constant hold telescopes to the
 terminal, where the hindsight bound stops too, held by
 `tests/test_action_space_and_artifact.py::test_the_textbook_bound_holds_its_book_to_the_terminal`.
 

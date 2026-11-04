@@ -565,8 +565,9 @@ def test_the_passive_book_stays_inside_a_fractional_corridor(units, corridor, li
     long-only corridor [2, 5] holds the book on its floor against the short the swap wants; the July
     leg weighted alone in a corridor [-40, -35] holds the whole deficit. 2 s each.
 
-    Killing mutations: the net water-filled into the fractional corridor (`net_bounds` in
-    `HedgeActionSpace.book`, not the whole-contract `band`) and apportioned to its rounded total,
+    Killing mutations: the net water-filled into the fractional corridor (the unsnapped `bounds`
+    in `HedgeActionSpace.book`, not the whole-contract `ladder` band) and apportioned to its
+    rounded total,
     -32 on all 30 rows, outside the corridor; `book` without its water-fill, the clamped split
     apportioned as it stands, (-30, -30) past the cap, (-16, -16) below the long-only floor and
     (-32, 0) outside the one-leg corridor; the deficit water-filled onto every live active leg
@@ -1129,7 +1130,7 @@ def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
     levels make. 3 s.
 
     Killing mutation: the grid's rows dropped by their gross sum (`.abs()` before the sum in
-    `HedgeActionSpace._within`), which leaves the 5 books of at most one leg's 15 contracts."""
+    `HedgeActionSpace.admissible`), which leaves the 5 books of at most one leg's 15 contracts."""
     cfg = _cfg(batch=8, inner=4, active=[1, 2])
     ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
     for leg in LEGS:
@@ -1153,16 +1154,62 @@ def test_the_cap_holds_the_book_the_live_legs_carry(deadband, positions):
     every move from an opening book (+50, -50, -50), -50 inside the cap and -100 on the live legs,
     which the first decision leaves at once. 3 s each.
 
-    Killing mutations: the cap held on a row's total over every leg (`rows.sum(-1)` in
-    `HedgeActionSpace._within`), which admits (+50, -50, -50) at -50 and masks it to -100 on the
-    live legs: a path-mean net of -62.5; the incumbent held while its book is corridor-feasible
-    alone (`project_to_corridor` in `_decide`'s hold test), the held book -100 throughout."""
+    Killing mutations: the cap held on a row's total over every leg (the net of `q` before its
+    live mask in `HedgeActionSpace.admissible`), which admits (+50, -50, -50) at -50 and masks it
+    to -100 on the live legs: a path-mean net of -62.5; the incumbent held while its book is
+    corridor-feasible alone (`project_to_corridor` in `_decide`'s hold test), the held book -100
+    throughout."""
     cfg = _cfg(batch=16, inner=8, seed=7, positions=positions)
     ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
     ev['Position_Limits']['PL_APR_2026'] = {'Min_Position': 0, 'Max_Position': 50}
     ev['Decision_Deadband_Sigma'] = deadband
     nets = [sum(q) for q in _run(cfg).evaluation_summary['diagnostics']['verdict']['greedy_q_traj']]
     assert max(abs(x) for x in nets) <= 50 + 1e-9, nets
+
+
+def test_a_dead_leg_s_box_bounds_nothing_on_the_legs_still_live():
+    """The bounds of a step sum the boxes of its live legs only, a dead leg holding nothing whatever
+    its box: on the training document with every leg's box [-50, -5] and no cap, the April leg dead
+    at every decision of the sweep from step 100, a deadband refusing every move holds the opening
+    book (-5, -5, -5) on its live legs at every decision, (0, -5, -5) to the July leg's expiry, its
+    live net -10 on the live legs' edge, and (0, 0, -5) after it. 3 s.
+
+    Killing mutation: `HedgeActionSpace.bounds` summing every active leg's box whatever `live`
+    marks, the dead April leg's -5 putting the edge at -15 and the held book outside it, so it
+    moves at the first decision, to a path-mean (0, -35.875, -34.5)."""
+    cfg = _cfg(batch=16, inner=8, seed=7, positions={h: -5 for h in _HEDGES})
+    ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
+    ev['Position_Limits'] = {h: {'Min_Position': -50, 'Max_Position': -5} for h in _HEDGES}
+    ev['Total_Position_Abs_Limit'], ev['Decision_Deadband_Sigma'] = 0.0, 1e6
+    books = _run(cfg).evaluation_summary['diagnostics']['verdict']['greedy_q_traj']
+    held = [[0.0, -5.0, -5.0], [0.0, 0.0, -5.0]]
+    assert all(q in held for q in books) and books == sorted(books, key=held.index), books
+
+
+@pytest.mark.parametrize('active, positions', [
+    ([0, 2], {'PL_APR_2026': 0, 'PL_JUL_2026': -20, 'PL_OCT_2026': -20}),
+    (None, {'PL_APR_2026': 0, 'PL_JUL_2026': 10, 'PL_OCT_2026': -40})], ids=['inactive', 'box'])
+def test_the_deadband_holds_only_a_book_the_step_admits(active, positions):
+    """The deadband's incumbent is held only while the step admits its live book, each live active
+    leg inside its box and every other leg at zero: on the training document under a deadband
+    refusing every move,
+    an opening book short 20 on the July leg `Active_Hedge_Indices` leaves out, and one long 10 on
+    July, outside its box [-50, 0], each with its net (-40, -30) inside the cap of 50, moves at the
+    first decision, the greedy book's path mean inside every box at every decision, nothing on the
+    leg left out. 3 s each.
+
+    Killing mutation: the per-leg box test dropped from `HedgeActionSpace.admissible`, the net
+    alone tested, each opening book held to the July leg's expiry, 10 of the 16 decisions."""
+    cfg = _cfg(batch=16, inner=8, seed=7, active=active, positions=positions)
+    ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
+    ev['Decision_Deadband_Sigma'] = 1e6
+    boxes = [(ev['Position_Limits'][h]['Min_Position'], ev['Position_Limits'][h]['Max_Position'])
+             for h in _HEDGES]
+    if active is not None:
+        boxes = [box if i in active else (0, 0) for i, box in enumerate(boxes)]
+    books = _run(cfg).evaluation_summary['diagnostics']['verdict']['greedy_q_traj']
+    out = [q for q in books if any(not lo <= x <= hi for x, (lo, hi) in zip(q, boxes))]
+    assert not out, (len(out), len(books), out[:2])
 
 
 def test_a_corridor_excluding_zero_is_held_on_the_legs_still_live():
@@ -1176,9 +1223,9 @@ def test_a_corridor_excluding_zero_is_held_on_the_legs_still_live():
 
     Killing mutations: `HedgeActionSpace.book` reading the ladder with no leg mask (`self.ladder(t)`),
     a third of the edge on each leg, dead ones included (-10, -10, -10); `grid_at` filtering each
-    row's total over every leg (`self._within(..., t)` with no `live`), cover parked on the dead April
-    leg counted inside the corridor and masked away, the greedy's live net -12.7 on the first row and
-    -19.0 on Monday 3 August, October alone live."""
+    row's total over every leg (`self.admissible(rows, t)` with no `live`), cover parked on the dead
+    April leg counted inside the corridor and masked away, the greedy's live net -12.7 on the first
+    row and -19.0 on Monday 3 August, October alone live."""
     cfg = _cartesian()
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['T_Min'] = 105
     result = _run(cfg)
@@ -1595,8 +1642,8 @@ def test_the_bank_is_composed_along_the_ladder():
     paths, 8 inner draws, 20 fit iterations, the book label, a [-12, 10] corridor) A has both legs
     active, one knot weighting the July leg 0 and `Calendar_Spread_Bps` 3; B has only the October
     leg active, no calendar and October's box floored at -12, so B's band stops at -12 on its box
-    where A's stops on the corridor, and both stop at 5 on October's box where A's `net_bounds`
-    reaches 10. Under 'Yes' A trains to the bit as B: V_0 (0.05139961093664169 on the CPU), the
+    where A's stops on the corridor, and both stop at 5 on October's box where A's `bounds`
+    reach 10. Under 'Yes' A trains to the bit as B: V_0 (0.05139961093664169 on the CPU), the
     root book ([0, -4.76953125]) and every swept step's label, slope and value; under 'No' they part
     (V_0 0.0495 against 0.0482), and A with the field omitted is A under 'No' to the bit. Under an
     even (0.5, 0.5) knot a rung moves both legs the same way, so the calendar flag meets no matched
@@ -1607,8 +1654,8 @@ def test_the_bank_is_composed_along_the_ladder():
     replication shape (0.0496 against 0.0514); the exploration drawn per active leg and projected
     into the corridor, as the default bank's is (0.0508 against 0.0482; the even knot's fits part,
     0.0662 against 0.0622); the noisy net left unclamped (0.0456 against 0.0470); the constructed
-    net spanning `net_bounds` (0.0470 against 0.0514); the reserve priced on the replication split
-    (0.0518 against 0.0514)."""
+    net spanning the `bounds` band (0.0470 against 0.0514); the reserve priced on the replication
+    split (0.0518 against 0.0514)."""
     def fit(ladder, weights=(0.0, 1.0), calendar=True, october_only=False):
         cfg = _swap_growth(6)
         calc = cfg['Calc']['Calculation']
