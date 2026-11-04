@@ -746,7 +746,7 @@ def test_the_first_decision_can_be_measured_from_the_passive_book(tmp_path):
 def test_the_returns_state_fits_the_wealth_column_it_reads():
     """Under `DiffV2_Returns_State` the value state is dimensionless: price columns as log-returns
     against the t0 spot, the basis as a fraction of it and wealth as a fraction of the t0 book
-    notional, in one spelling (`_w_norm`) on every path a net is fitted or read on. A training
+    notional, in one spelling (`_standardize`) on every path a net is fitted or read on. A training
     document under the scale-free LogWealth objective with the returns state on then fits its
     labels: the fitted residual tracks the bootstrap label from the first backward step, the
     sweep's `V_0` reads 0.10793102532625198 on the CPU and the same document at twice every dollar

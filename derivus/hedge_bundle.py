@@ -1440,7 +1440,7 @@ class BundleStepper:
             'average_hedge_pnl': float(last['pnl_excess'].mean()),
             'average_liability': float(last['liability_value'].mean()),
         }
-        cpu = lambda values: {str(n): t.detach().to(dtype=torch.float32).cpu()
+        cpu = lambda values: {str(n): t.detach().to(dtype=MONEY).cpu()
                               for n, t in values.items()}
         return {
             'metrics': metrics,
