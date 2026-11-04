@@ -80,8 +80,7 @@ class SolverResult:
         mean = sum(v0) / len(v0)
         std = (sum((x - mean) ** 2 for x in v0) / len(v0)) ** 0.5 if len(v0) > 1 else 0.0
         return {"v0_mean": mean, "v0_std": std, "v0_seeds": v0,
-                "n_star": runs[0].diagnostics.get("n_star_0")
-                          or runs[0].diagnostics.get("n_star")}
+                "n_star": runs[0].diagnostics["n_star_0"]}
 
 
 class HedgeActionSpace:
@@ -3044,7 +3043,6 @@ class DiffSolver:
             diagnostics={
                 "V_0": V_0,
                 "n_star_0": n_star_0,
-                "n_star": n_star_0,
                 "max_abs_Y_boot": worst,
                 "bounded": bool(bounded),
                 "root_t": int(root["t"]),
@@ -3198,8 +3196,6 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
             "comparison": comparison,
             "ladder": ladder,
         },
-        "optimizer_diagnostics": {**primary.diagnostics,
-                                  "comparison": comparison, "ladder": ladder},
         "policy_artifact": primary.value_fn_artifacts,
     }
 

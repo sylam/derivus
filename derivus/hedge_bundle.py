@@ -2103,14 +2103,11 @@ class HedgeRuntimeExecutionResult:
     downstream consumers work without touching framework internals. `create_stepper()` spawns a
     `BundleStepper` to drive the simulator day by day under any explicit policy.
     """
-    def __init__(self, *, bundle=None, runtime=None, evaluation_summary=None,
-                 optimizer_diagnostics=None, policy_artifact=None, metadata=None):
+    def __init__(self, *, bundle=None, runtime=None, evaluation_summary=None, policy_artifact=None):
         self.bundle = bundle
         self.runtime = runtime
         self.evaluation_summary = evaluation_summary
-        self.optimizer_diagnostics = optimizer_diagnostics
         self.policy_artifact = policy_artifact
-        self.metadata = metadata or {}
 
     def create_stepper(self) -> 'BundleStepper':
         """An interactive `BundleStepper` for the bundle, so client code drives the simulator one
@@ -2127,6 +2124,6 @@ def run_hedge_execution(bundle, runtime):
     stepper = BundleStepper(bundle, runtime)
     while not stepper.done:
         stepper.step(None)
-    return {'policy_artifact': None, 'optimizer_diagnostics': None,
+    return {'policy_artifact': None,
             'evaluation_output': stepper.evaluation_output(
                 timing={'evaluation_time_seconds': float(time.perf_counter() - started)})}

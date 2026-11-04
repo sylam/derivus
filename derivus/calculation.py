@@ -3738,26 +3738,14 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         )
 
         evaluation_summary = None
-        optimizer_diagnostics = None
         policy_artifact = None
-        runtime_present = False
-        runtime_diagnostics = {}
         # A solve already ran batch by batch; all that is left is the held-out verdict + the
         # tracks. `simulate_only` rolls its accumulated bundle with zero trades.
         optimization_result = (streaming_solve.finish(held_out) if solve_hedge_mode
                                else run_hedge_execution(bundle, normalized_runtime))
         if optimization_result is not None:
             evaluation_summary = optimization_result['evaluation_output']
-            optimizer_diagnostics = optimization_result['optimizer_diagnostics']
             policy_artifact = optimization_result['policy_artifact']
-            runtime_present = True
-            runtime_diagnostics = {
-                'num_episodes': int(evaluation_summary.get('diagnostics', {}).get('num_episodes', 0)),
-                'derivus_simulation_pricing_time_seconds': float(self.calc_stats.get(execution_label, 0.0)),
-                'accounting_mode': normalized_runtime['accounting_mode'],
-                'tradable_names': normalized_runtime['names']['tradables'],
-                'cash_account_names': normalized_runtime['names']['cash_accounts'],
-            }
 
         if evaluation_summary is not None and bundle is not None:
             # world-before-solver tripwire: each hedge leg's expected drift over the live window,
@@ -3772,17 +3760,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             bundle=bundle,
             runtime=normalized_runtime,
             evaluation_summary=evaluation_summary,
-            optimizer_diagnostics=optimizer_diagnostics,
             policy_artifact=policy_artifact,
-            metadata={
-                'execution_mode': execution_mode,
-                'bundle_present': bundle is not None,
-                'num_batches': params['Simulation_Batches'],
-                'num_paths': self.numscenarios,
-                'optimizer_diagnostics_present': optimizer_diagnostics is not None,
-                'runtime_present': runtime_present,
-                'runtime_diagnostics': runtime_diagnostics,
-            },
         )
 
     # Inner-MC subsystem: forks the simulator from each outer-path state at an outer timestep.

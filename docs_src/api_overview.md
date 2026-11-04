@@ -170,13 +170,12 @@ result.policy_artifact
 ```
 
 `Hedge_Monte_Carlo` returns `(calc, result)` where `result` is a `HedgeRuntimeExecutionResult`
-(`hedge_bundle.py`) — a plain attribute object with `bundle`, `runtime`, `evaluation_summary`,
-`optimizer_diagnostics`, `policy_artifact` and `metadata`, and **no** `__getitem__`, so
-`result['Results']` raises `TypeError`.
+(`hedge_bundle.py`) — a plain attribute object with `bundle`, `runtime`, `evaluation_summary` and
+`policy_artifact`, and **no** `__getitem__`, so `result['Results']` raises `TypeError`.
 
 When `Execution_Mode` is `solve_hedge`, the solver fits the value function in-process:
 `result.policy_artifact` is the fitted value function, `result.evaluation_summary` the held-out
-verdict, `result.optimizer_diagnostics` the solver's own numbers. When `Execution_Mode` is
+verdict with the solver's own numbers (`diagnostics`, `comparison`, `ladder`). When `Execution_Mode` is
 `simulate_only`, only the scenario bundle is computed and the no-trade baseline is run (useful for
 offline analysis).
 
