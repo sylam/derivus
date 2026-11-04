@@ -38,7 +38,8 @@ import numpy as np
 import pandas as pd
 import torch
 
-from . import utils
+from . import instruments, utils
+from .schema import DealFields
 
 
 # Rolling window (business days) for the realized-vol series feeding the symlog utility scale
@@ -98,13 +99,16 @@ def _flatten_deals(config: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
             for deal_type, deals in config.items() for name, params in deals.items()}
 
 
-def _instrument_metadata(entry):
-    """Per-tradable metadata the engine reads: the currency cash routes by, the contract size and
-    the deal's parameters."""
+def _instrument_metadata(entry, hedge):
+    """Per-tradable metadata the engine reads: the currency cash routes by, the deal's parameters
+    and, on a hedge leg, the `Contract_Size` its deal class declares."""
     params = entry["params"]
     # _flatten_deals already deep-copied `params` per entry
-    return {"currency": params.get("Currency"),
-            "contract_size": float(params.get("Contract_Size", 1.0)), "params": params}
+    meta = {"currency": params.get("Currency"), "params": params}
+    if hedge:
+        meta["contract_size"] = float(
+            DealFields(params, getattr(instruments, entry["deal_type"]))["Contract_Size"])
+    return meta
 
 
 def _bid_offer_spread(evaluator_config: Mapping[str, Any]):
@@ -509,7 +513,8 @@ def construct_hedge_runtime(
     if not hedge_names:
         raise ValueError("no hedge instruments: Tradable_Instruments has only cash accounts")
 
-    normalized_tradables = {name: _instrument_metadata(entry) for name, entry in tradables.items()}
+    normalized_tradables = {name: _instrument_metadata(entry, name in hedge_names)
+                            for name, entry in tradables.items()}
 
     if execution_mode == "solve_hedge":
         if solver_config is None:

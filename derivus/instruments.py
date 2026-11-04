@@ -5380,7 +5380,10 @@ class CommodityFutureDeal(Deal):
         F('Carry', 'Text', default='', factors=['ForwardRate']),
         F('Currency', 'Text', default='', factors=['FxRate']),
         F('Units', 'Float', default=1.0, convention=True, sized=True,
-          description='The number of contracts, one when omitted')
+          description='The number of contracts, one when omitted'),
+        F('Contract_Size', 'Float', default=1.0, convention=True,
+          description='The units of the commodity one contract is for, which a hedge position '
+                      'scales its mark by; one when omitted')
     ])]
 
     documentation = ('Energy', [
