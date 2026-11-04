@@ -2180,10 +2180,12 @@ class BundleStepper:
         vol_series = bundle.step_annual_vol
         diag_vol = None if vol_series is None else vol_series.detach().cpu().float().unsqueeze(-1)
         per_instr = {}
+        # each mark held at the terminal past it, as `_values_at`, gathered by index: a copy, where
+        # `.cpu().float()` of a CPU float32 world is the world's own tensor
+        held_at = torch.arange(T).clamp(max=self._close_idx)
         for name in self._hedges:
             cs = float(runtime['tradables'][name]['contract_size'])
-            fut = bundle.tradables[name].detach().cpu().float()
-            fut[self._close_idx + 1:] = fut[self._close_idx]         # held at the terminal, as `_values_at`
+            fut = bundle.tradables[name].detach().cpu().float()[held_at]
             # a row trades the change of the book it holds, at its own mark, so the forced close
             # sits on the terminal, where it is booked
             held = rollout['held'][name].float()

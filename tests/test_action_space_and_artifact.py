@@ -1399,6 +1399,26 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
         assert (rows.loc['2026-08-10':, 'PL_OCT_2026_position'] == (0.0 if closed else -10.0)).all()
 
 
+def test_writing_the_csv_leaves_the_world_as_it_was(tmp_path):
+    """Writing the diagnostic CSV leaves the world it describes as it was: on the client document
+    under `Force_Flat_At_End` 'No', short 10 `PL_OCT_2026` from the first row, every tradable's
+    marks after `write_diagnostic_csvs` are its marks before it on every row. 2 s.
+
+    Killing mutation: the CSV's marks held at the terminal written into the tensor it reads
+    (`fut[close + 1:] = fut[close]` on `bundle.tradables[name].detach().cpu().float()`, the world's
+    own tensor on a CPU float32 world), the October leg's mark on the last row moved to the
+    terminal's."""
+    result = _run(_client(force_flat='No'))
+    world = result.bundle
+    before = {h: v.clone() for h, v in world.tradables.items()}
+    stepper, r0 = result.create_stepper(), world.initial_time_index
+    while not stepper.done:
+        stepper.step({'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
+    stepper.write_diagnostic_csvs(str(tmp_path), 'client')
+    moved = {h: (v != before[h]).any(-1).nonzero().flatten().tolist() for h, v in world.tradables.items()}
+    assert not any(moved.values()), moved
+
+
 def test_an_opening_book_s_pnl_runs_from_the_first_row_in_the_stepper_and_its_csv(tmp_path):
     """An opening book short 10 `PL_OCT_2026`, its declared settlement off the first row's mark,
     held untouched to the forced close on the client fixture: the stepper's `pnl_excess`, the wealth
