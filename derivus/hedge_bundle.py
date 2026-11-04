@@ -1133,7 +1133,9 @@ class Bundle:
         '- **Frame** — `utility_scale` (the objective scale `c`), its optional per-decision-step',
         '  schedule `utility_scale_schedule` (`Objective.Utility_Scale_Mode=\'conditional_sim\'`:',
         '  the cross-sectional dispersion of the flat-book wealth at each step, floored), and',
-        '  `step_annual_vol` (the per-step vol driving state-dependent spreads and IM funding).',
+        '  `step_annual_vol` (the per-step vol driving state-dependent spreads and IM funding: a',
+        '  process\'s revealed conditional vol, else the primary spot\'s trailing realised vol with',
+        '  its `Spot_Price_History` spliced in front, as the utility scale reads it).',
         '',
         'The frame is resolved at build time and never recomputed. A per-rollout `c` would silently',
         'rescale every reward, which is why a loaded checkpoint evaluates in ITS frame rather than',
@@ -1351,16 +1353,16 @@ class Bundle:
             runtime['objective']['utility_scale_schedule'] = self.utility_scale_schedule
 
     def _spot_timeline(self, commodity):
-        """The (H+T_sim, B) spot tensor for `commodity`: JSON history rows 0..H-1 concatenated
-        with the simulator's CommodityPrice factor from row H. `commodity` is the canonical
-        factor name (`utils.check_tuple_name`), which both dicts key by."""
-        hist = self.spot_price_history.get(commodity)
+        """The (H+T_sim, B) spot tensor for `commodity`: its JSON history rows 0..H-1 concatenated
+        with the simulator's CommodityPrice factor from row H, the factor alone where it has no
+        history, None where there is no such factor. `commodity` is the canonical factor name
+        (`utils.check_tuple_name`), which both dicts key by."""
         sim = self.factors.get(commodity)
-        if hist is None or sim is None:
+        if sim is None:
             return None
-        sim_full = sim.to(dtype=torch.float32)
-        hist_t = hist.to(dtype=torch.float32, device=sim_full.device)
-        return torch.cat([hist_t, sim_full[int(hist_t.shape[0]):]], dim=0)
+        sim = sim.to(dtype=torch.float32)
+        hist = self.spot_price_history.get(commodity, sim[:0]).to(sim)
+        return torch.cat([hist, sim[int(hist.shape[0]):]], dim=0)
 
     def _spot_realized_vol(self, window=PRICE_ZSCORE_WINDOW, min_periods=5):
         """Annualized rolling realized log-vol of each underlying spot, `{commodity: (T, B)}`. In
@@ -1578,9 +1580,11 @@ class Bundle:
         ONLY when a Vol_Scale spec OR IM funding is active — None otherwise, so `per_contract_kappa`
         ignores vol and no funding accrues. The source PREFERS a process-revealed conditional vol
         (GARCH publishes log h_t → σ_t = √(exp(log h_t)/dt_c)), falling back to the trailing
-        realized-vol proxy off the primary spot factor path. Batch-reduced to one scalar per step,
-        matching the solver's mean-mark kappa. The chosen source is logged once per build: a silent
-        proxy fallback under a GARCH retrain would invalidate the whole vol coupling."""
+        realized-vol proxy off the primary spot's timeline, its realized history spliced in front
+        of the simulated path as the utility scale's σ reads it (`_spot_timeline`). Batch-reduced
+        to one scalar per step, matching the solver's mean-mark kappa. The chosen source is logged
+        once per build: a silent proxy fallback under a GARCH retrain would invalidate the whole
+        vol coupling."""
         acc = runtime['accounting']
         spec = acc['bid_offer_spread_spec']
         vol_scale_active = bool(spec and spec['vol_scale'])
@@ -1598,7 +1602,7 @@ class Bundle:
         logging.info('step_annual_vol source: realized-vol proxy on %s (Vol_Scale=%s IM_funding=%s)',
                      commodity, vol_scale_active, im_funding_active)
         # batch-reduced to one scalar per step, floored so the warm-up window never zeros the spread
-        return _rolling_realized_vol(self.factors[commodity]).mean(dim=-1).clamp_min(1e-6)
+        return _rolling_realized_vol(self._spot_timeline(commodity)).mean(dim=-1).clamp_min(1e-6)
 
     # ---- accessors -----------------------------------------------------------
     @property

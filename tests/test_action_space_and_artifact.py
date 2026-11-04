@@ -1419,6 +1419,29 @@ def test_writing_the_csv_leaves_the_world_as_it_was(tmp_path):
     assert not any(moved.values()), moved
 
 
+def test_the_vol_scaled_spread_reads_the_spot_s_realized_history():
+    """The vol a spread scaled by the step's vol reads is the spot's trailing realized vol with its
+    `Spot_Price_History` spliced in front of the simulated path: on the client document under a
+    10 bp spread at a 30% vol, the vol at the first simulated row is the annualised root mean
+    square of the 20 daily log returns ending there, from the last 20 history prices to each path's
+    first spot, averaged over the paths, within 1e-5 relative. 2 s.
+
+    Killing mutation: the vol read off the factor's own path (`self.factors[commodity]` in
+    `Bundle._resolve_step_vol`), whose history rows repeat its first row, so the window at the
+    first row reads no move and the vol floors at 1e-6."""
+    cfg = _client(evaluator=VOL_SPREAD)
+    (name, history), = cfg['Calc']['Calculation']['Hedging_Problem']['Portfolio_State'][
+        'Spot_Price_History'].items()
+    world = _run(cfg).bundle
+    r0 = world.initial_time_index
+    first = world.factors[name][r0].double().numpy()                                 # (B,)
+    prices = np.repeat(np.array(history['Prices'][-20:], dtype=float)[:, None], first.size, 1)
+    returns = np.diff(np.log(np.concatenate([prices, first[None]])), axis=0)
+    want = np.sqrt(252.0 * (returns ** 2).mean(0)).mean()
+    got = float(world.vol_at(r0))
+    assert abs(got / want - 1.0) < 1e-5, (got, want)
+
+
 def test_an_opening_book_s_pnl_runs_from_the_first_row_in_the_stepper_and_its_csv(tmp_path):
     """An opening book short 10 `PL_OCT_2026`, its declared settlement off the first row's mark,
     held untouched to the forced close on the client fixture: the stepper's `pnl_excess`, the wealth
