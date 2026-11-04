@@ -141,6 +141,7 @@ terminal's mark and vol as the stepper and the verdict close a book, so at zero 
 it was. Held by
 `tests/test_action_space_and_artifact.py::test_the_diagnostic_csv_books_the_forced_close_on_the_terminal`
 and `::test_writing_the_csv_leaves_the_world_as_it_was`.
-An opening book (`Portfolio_State.Positions`) is marked at the first row's prices, so the stepper's
+An opening book (`Portfolio_State.Positions`, read as whole contracts as `Position_Limits` are, the
+one book every track holds, `initial_q_from_runtime`) is marked at the first row's prices, so the stepper's
 P&L since inception and the CSV's both run from that row. Held by
 `tests/test_action_space_and_artifact.py::test_an_opening_book_s_pnl_runs_from_the_first_row_in_the_stepper_and_its_csv`.

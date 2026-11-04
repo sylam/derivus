@@ -104,7 +104,6 @@ class HedgeActionSpace:
         The passive and textbook books are booked by it.
       * `kappa(tradables_sim, t)` — the per-hedge turnover kappa at sim-grid `t`, off the single
         `hedge_bundle.per_contract_kappa` rule.
-      * `initial_q(batch, device)` — the opening book `q0`.
       * `turnover_cost(dq, kappa)` / `schedule_key(schedule)` — the friction charge on a reposition
         and the comparison-stable corridor stamp."""
 
@@ -130,7 +129,6 @@ class HedgeActionSpace:
         '  them.',
         '- `kappa(...)` — the per-hedge turnover cost at a step, off the single',
         '  `per_contract_kappa` rule the environment and the diagnostic CSVs also use.',
-        '- `initial_q(...)` — the opening book.',
         '- `turnover_cost(...)` — the charge on a reposition: L1, or (under',
         '  `Evaluator.Calendar_Spread_Bps`) an outright charge on the net change plus a cheaper',
         '  spread charge on the matched half.',
@@ -471,11 +469,6 @@ class HedgeActionSpace:
         rows = torch.cat([self.allocation_grid(step) for step, _ in self.weights]).unique(dim=0)
         return rows[self.admissible(rows, 0)]
 
-    def initial_q(self, batch, device):
-        """The opening book `q0` `(batch, n_hedge)` (hedge legs only, `names['hedges']`
-        order) from the normalized `Portfolio_State` positions."""
-        return initial_q_from_runtime(self.runtime, batch, device)
-
     def turnover_cost(self, delta_contracts, kappa, kappa_cal=None):
         """The solver-side name for `hedge_bundle.turnover_charge`, the single reposition-cost
         rule the realized accounting reads too: the L1 sum `Σ_i |Δ_i|·κ_i`, or — with the matched
@@ -530,7 +523,7 @@ def run_textbook_benchmark(bundle, runtime):
     # entry-step corridor only: a constant hold cannot track a per-t one
     grid = aspace.static_grid()                                      # (n_actions, n_hedge)
     b_outer = F.shape[-1]
-    q0 = aspace.initial_q(b_outer, device)                            # (B, n_hedge) opening book
+    q0 = initial_q_from_runtime(runtime, b_outer, device)             # (B, n_hedge) opening book
 
     total_move = F[:, bundle.last_live_mtm_index, :] - F[:, 0, :]      # (n_h, B) telescoped
     g_t = torch.einsum("ai,ib->ab", grid * aspace.contract_size, total_move)  # (n_actions, B)
@@ -605,7 +598,7 @@ class HindsightDpSolver:
         # frictionless clairvoyant: independent per-decision argmax over the realized move to the
         # decision's successor, within the per-t action universe. The net-of-cost trajectory is
         # accumulated for the diagnostic.
-        q_prev = aspace.initial_q(b_outer, device)                   # (B, n_h) opening book
+        q_prev = initial_q_from_runtime(runtime, b_outer, device)    # (B, n_h) opening book
         n_star_0 = None
         G = torch.zeros(b_outer, device=device)
         cost = torch.zeros(b_outer, device=device)
@@ -1500,7 +1493,7 @@ class DiffSolver:
         passive book there, or the opening book. Every track's accounting enters from the opening
         book either way."""
         return (self._passive_hedge(t, live, batch) if self.first_from_passive
-                else self.aspace.initial_q(batch, self.device))
+                else initial_q_from_runtime(self.runtime, batch, self.device))
 
     def _build_bank(self, gen):
         """Operating-region bank — roll the OUTER paths forward (cheap; outer-realised
@@ -1519,7 +1512,7 @@ class DiffSolver:
         W = L[0].clone()                                                                 # (B_outer,) = cum_pnl(0)+L_0
         # seed q_prev from the OPENING book. Position-free this only labels q_list[0]; under
         # `DiffV2_Position_State` q_list[t] IS the sampled position state at t.
-        q_prev = self.aspace.initial_q(self.B_outer, self.device)
+        q_prev = initial_q_from_runtime(self.runtime, self.B_outer, self.device)
         W_list, q_list = [], []
         rng = (self.q_hi - self.q_lo)
         mask = self.aspace.active_mask
@@ -1961,7 +1954,7 @@ class DiffSolver:
         L = self.liability_sim
         t0 = sweep_ts[0]
         n = L[t0][rows].shape[0]
-        q0 = self.aspace.initial_q(n, self.device)
+        q0 = initial_q_from_runtime(self.runtime, n, self.device)
         # the opening book's P&L from the first row to the first decision, every track's
         W0 = self._wealth_step(L[t0][rows], q0, self._outer_dF(0, rows, t0), 0.0)
         W = {p: W0.clone() for p in ("greedy", "textbook", "nohedge", "passive")}
@@ -3604,7 +3597,7 @@ class DiffSolverV2(DiffSolver):
             float(q_star[0].sum(-1).mean()), float(WT.mean()), float((WT < 0).float().mean()))
         L = self.liability_sim
         W = L[0].clone()
-        q_prev = self.aspace.initial_q(self.B_outer, self.device)
+        q_prev = initial_q_from_runtime(self.runtime, self.B_outer, self.device)
         W_list, q_list = [], []
         rng = (self.q_hi - self.q_lo)
         mask = self.aspace.active_mask

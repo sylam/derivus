@@ -657,8 +657,8 @@ def construct_hedge_runtime(
         "solver": _solver_config(solver_config),
         "history_lookback_business_days": history_lookback,
         "portfolio_state": {
-            "positions": {str(n): float(v)
-                          for n, v in portfolio_state.get("Positions", {}).items()},
+            # whole contracts, as `Position_Limits` are read
+            "positions": {str(n): int(v) for n, v in portfolio_state.get("Positions", {}).items()},
             "cash_balances": {str(n): float(v)
                               for n, v in portfolio_state.get("Cash_Balances", {}).items()},
             "margin_balances": {str(n): float(v)
@@ -784,10 +784,10 @@ def turnover_charge(delta, kappa, kappa_cal=None):
 
 def initial_q_from_runtime(runtime, batch, device):
     """Per-hedge initial contract book `q0` `(batch, n_hedge)` from the normalized
-    `Portfolio_State` positions, in `runtime['names']['hedges']` order - hedge legs only, cash
-    accounts excluded. The seed the stepper applies to its opening positions, exposed so the
-    solver's bank / verdict / benchmark tracks measure FIRST-step turnover from the real opening
-    book rather than from flat.
+    `Portfolio_State` positions, whole contracts, in `runtime['names']['hedges']` order - hedge
+    legs only, cash accounts excluded. The one opening book every track holds: the stepper seeds
+    its positions from it, and the solver's bank / verdict / benchmark tracks measure FIRST-step
+    turnover from it rather than from flat.
 
     The value function is POSITION-FREE by default, so `q0` affects only first-step turnover
     diagnostics and the rolled P&L. Under `Solver.DiffV2_Position_State` it is also the standing
@@ -1930,7 +1930,8 @@ class BundleStepper:
         initial_time_index = self.bundle.initial_time_index
         state = {
             'done': torch.zeros(self._batch_size, dtype=torch.bool, device=self._device),
-            'positions': self._seed_by_name(portfolio_state['positions'], self._hedges),
+            'positions': dict(zip(self._hedges, initial_q_from_runtime(
+                self.runtime, self._batch_size, self._device).unbind(-1))),
             'cash_accounts': self._seed_by_name(portfolio_state['cash_balances'], self._cash_names),
             'margin_accounts': self._seed_by_name(portfolio_state['margin_balances'], self._cash_names),
             'variation_margin': self._zeros_by_name(self._hedges),
