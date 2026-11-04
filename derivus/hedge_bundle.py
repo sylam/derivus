@@ -1666,11 +1666,11 @@ class Bundle:
 
     def realized_paths(self, runtime):
         """The realized outer-path data the no-inner-MC tracks (hindsight, textbook) consume:
-        `F` `(n_hedge, t_outer, B)` hedge prices, `L_T` `(B,)` the liability terminal MTM at the
-        pre-settlement `last_live_mtm_index`, and `t_outer`."""
+        `F` `(n_hedge, t_outer, B)` hedge prices and `L_T` `(B,)` the liability terminal MTM at the
+        pre-settlement `last_live_mtm_index`."""
         tradables_sim = self.tradables_sim
         F = torch.stack([tradables_sim[h] for h in runtime['names']['hedges']], dim=0)
-        return F, self.liability_sim[self.last_live_mtm_index], self.n_outer_steps
+        return F, self.liability_sim[self.last_live_mtm_index]
 
     def liability_at(self, time_index):
         """Marked liability `(B,)` at full-grid step `time_index` (zeros when there is none)."""

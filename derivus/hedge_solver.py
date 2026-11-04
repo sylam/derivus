@@ -503,7 +503,7 @@ def run_textbook_benchmark(bundle, runtime):
     corridor is a dynamic constraint a constant hold cannot track. Under `Allocation_Weights` the
     universe is `aspace.static_grid()`, every knot's composition rather than the entry knot's, so
     an action-space difference does not land inside the DP-vs-textbook gap."""
-    F, L_T, t_outer = bundle.realized_paths(runtime)
+    F, L_T = bundle.realized_paths(runtime)
     device = F.device
     acc = runtime["accounting"]
     aspace = HedgeActionSpace(runtime, device, bundle.vol_sim)
@@ -577,7 +577,7 @@ class HindsightDpSolver:
         bundle, runtime, aspace = self.bundle, self.runtime, self.aspace
         acc = runtime["accounting"]
 
-        F, L_T, _ = bundle.realized_paths(runtime)                     # F (n_h,t_outer,B)
+        F, L_T = bundle.realized_paths(runtime)                        # F (n_h,t_outer,B)
         device = F.device
         b_outer = F.shape[-1]
         tradables_sim = bundle.tradables_sim

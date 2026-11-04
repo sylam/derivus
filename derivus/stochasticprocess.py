@@ -6827,8 +6827,8 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
         "states beside it (`<factor>,HIGH`, `,LOW`, `,CLOSE`, each on its own day) from the block's `S0`,",
         "`Ell0` and `State_Cov`, as the calibration runs it on the archive: a market row is one calibration",
         "step whose bar is the previous market row's, its close-to-close term on the last close the bar",
-        'carries, and a row the scenario flags its own forward fill (`<factor>,Filled_Rows`) holds the row before and its',
-        'bar, a CME print on a London holiday, is not read: the filter reads the bars of London market days',
+        "carries, and a row the scenario's `<factor>,Filled_Rows` marks forward-filled holds the row before",
+        'while its bar, a CME print on a London holiday, is not read: the filter reads the bars of London market days',
         'alone, as the calibration\'s archive, which has no holiday rows, gives them. A repeated fix is no',
         'return, and the first row\'s bar is',
         'unmeasured. A scenario stating no bars filters the returns alone. The path\'s simulated state is',
@@ -6948,7 +6948,7 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
         self.last_filter = torch.stack(rows).to(path.dtype)
         shared_mem.t_Scenario_Buffer[(self.factor_key, 'lv_filter')] = self.last_filter
         if path.dim() > 2 and logging.getLogger().isEnabledFor(logging.DEBUG):
-            # each outer path's start, and the spread of its fork's log return to the next market row and its years
+            # each outer path's start, and the spread of its fork's log return to the successor and its years
             f = rows[0]
             logging.debug('LV_FORK %r', {'state': (ell[0] + fast[0])[:, 0].tolist(),
                                          'mean': (f[0] + f[1])[:, 0].tolist(),

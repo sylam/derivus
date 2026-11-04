@@ -3126,7 +3126,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       'as `type.name` strings'),
         F('Observed_Scenario', 'Text', default='', convention=True,
           description='Path to an npz of realized factor paths that replace the simulated draw, '
-                      'the rows a forward fill wrote on each flagged `<factor>,Filled_Rows`'),
+                      'each `<factor>,Filled_Rows` array marking the rows that column was '
+                      'forward-filled on'),
         F('Hedging_Problem', 'Container',
           description='The hedging problem itself - tradables, liabilities, objective, solver',
           sub_fields=[
@@ -4022,7 +4023,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                         key, simulated, outer_scenario_buffer, t, shared_mem, self._inner_state_opts, with_grad)
                     if with_grad:
                         state_t_leaves.update(inner_leaves)
-                    # market state at the next market row (inner-time index `ahead`), in reveal order
+                    # market state at the successor (inner-time index `ahead`), in reveal order
                     for block, _kind in proc_inner.reveal_state_at(ahead, shared_mem.t_Scenario_Buffer):
                         market_t1_parts.append(
                             self._reveal_transform(key, block, _kind).reshape(-1, B_outer, B_inner))
@@ -4096,8 +4097,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                         F_t[ref] = F_t1[ref] = zero_bs
                         continue
                     td = td[cutoff_idx:]                                # (T_inner, B_outer, B_inner)
-                    # td stops short of the next market row when the tradable's last deal event
-                    # is before it (it expires this step); freeze it at its last (dF == 0).
+                    # td stops short of the successor when the tradable's last deal event is
+                    # before it (it expires this step); freeze it at its last (dF == 0).
                     F_t1[ref] = td[min(ahead, td.shape[0] - 1)].clone()
                     F_t[ref] = td[0]
                 # market state - every simulated factor's informative state concatenated;
@@ -4130,7 +4131,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 # indexing as F_t1) - not a Jacobian linearization
                 mtm_fwd = inner_mtm[cutoff_idx:]                            # (T_inner, B_outer, B_inner)
                 L_t_inner = mtm_fwd[0].clone()                             # outer-t (shared across draws)
-                L_t1_inner = mtm_fwd[min(ahead, mtm_fwd.shape[0] - 1)].clone()   # the next market row's
+                L_t1_inner = mtm_fwd[min(ahead, mtm_fwd.shape[0] - 1)].clone()   # the successor's
                 result.update(
                     t=t, cutoff_idx=cutoff_idx, L_T=None,
                     L_t=L_t_inner, L_t1=L_t1_inner, F_t=F_t, F_t1=F_t1,
