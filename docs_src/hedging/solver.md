@@ -90,8 +90,11 @@ The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
 `Reference_Mode = Running_Wealth` the solver's $V_0$ is a sum of step utilities, so the ladder's
 order is not an acceptance statement and the run logs a warning.
 
-The stepper roll closes every book where the verdict does, at the terminal, the last live liability
-mark, so on one replayed path at zero rates the two close one book to one wealth; at non-zero rates
-the stepper also earns the daily interest on cash and margin, the realised accounting the verdict's
-wealth law leaves out. Held by
-`tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`.
+The stepper decides on the solver's decision rows (`Bundle.decision_steps`), the first row whatever
+its day and no row at or past the terminal, and the stepper roll closes every book where the verdict
+does, at the terminal, the last live liability mark, so on one replayed path at zero rates the two
+close one book to one wealth; at non-zero rates the stepper also earns the daily interest on cash
+and margin, the realised accounting the verdict's wealth law leaves out. Held by
+`tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`,
+`::test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal` and
+`::test_a_first_row_of_no_market_time_is_one_decision_for_the_verdict_and_the_stepper`.

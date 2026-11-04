@@ -1186,7 +1186,7 @@ class Bundle:
         self.time_grid_days = None          # (T,) day offsets from base_date
         self.time_grid_days_cpu = []        # the same as python ints (sync-free step loop)
         self.scenario_dates = None          # DatetimeIndex over the full grid
-        self.business_indices = ()          # decision steps: business days in the sim window
+        self.business_indices = ()          # the calendar's market rows in the sim window
         self.initial_time_index = 0         # history/sim boundary
         self.history_rows = 0               # History_Lookback_Business_Days prefix rows
         # Simulated series.
@@ -1711,8 +1711,9 @@ class BundleStepper:
     financing on cash/margin, per-instrument variation margin and settlement, transaction cost
     (with the optional calendar-spread rebate and vol-linked IM funding), position rounding to
     integer contracts, and the forced flatten at the solver's terminal, the last live liability
-    mark, the verdict's close. Each step returns a state dict the caller
-    inspects; the caller chooses the next action. Supports `copy.deepcopy(stepper)` to fork into
+    mark, the verdict's close. It trades only on the solver's decision rows
+    (`Bundle.decision_steps`). Each step returns a state dict the caller inspects; the caller
+    chooses the next action. Supports `copy.deepcopy(stepper)` to fork into
     counterfactual branches, and records its own trajectory for `write_diagnostic_csvs`.
 
     Vectorized over the bundle's full batch (B paths advance in lockstep). Action values may be
@@ -1727,6 +1728,8 @@ class BundleStepper:
         'financing on cash and margin, per-instrument variation margin and settlement, turnover cost',
         'with the optional calendar-spread rebate and vol-linked IM funding, rounding to integer',
         'contracts, and the forced flatten at the last live liability mark, where the verdict closes.',
+        'It trades only on the rows the solver decides on, the first row and every market row of the',
+        "job's calendar before that mark (`Bundle.decision_steps`).",
         '',
         'Each `step` returns a state dict and the caller chooses the next action. Vectorized over',
         'the whole batch — every path advances in lockstep, and an action may be a scalar',
@@ -1771,7 +1774,7 @@ class BundleStepper:
         self._last_idx = bundle.last_index
         # the hedge closes at the terminal, the last live liability mark, as the verdict closes it
         self._close_idx = bundle.initial_time_index + bundle.last_live_mtm_index
-        self._decision_set = set(int(i) for i in bundle.business_indices)
+        self._decision_set = {bundle.initial_time_index + t for t in bundle.decision_steps}
         # the default re-mirrors THIS bundle's scale; False keeps a checkpoint's frame
         if mirror_scale:
             bundle.mirror_utility_scale(runtime)

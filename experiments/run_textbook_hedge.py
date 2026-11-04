@@ -127,7 +127,7 @@ def build_schedule_rows(result, instruments: Optional[list[str]] = None) -> list
     bundle = result.bundle
     dates = bundle.scenario_dates
     business_day = bundle.business_day
-    decision_indices = set(bundle.business_indices)
+    decision_indices = {bundle.initial_time_index + t for t in bundle.decision_steps}
     chosen_instruments = instruments or runtime_instrument_order(result)
     rows: list[dict[str, Any]] = []
     for idx, date in enumerate(dates):

@@ -812,14 +812,20 @@ def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path
     assert friday.sum() >= 6 and all(0.5 < x < 2.0 for x in rms), (int(friday.sum()), rms)
 
 
+def _paying(cfg, day):
+    """`cfg` with the fixture's July average paying `day`, the cash account's horizon with it."""
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Liabilities']['FloatingEnergyDeal']['PLAT_JUL29']['Payments']['Items'][0]['Payment_Date'] = {'.Timestamp': day}
+    hp['Tradable_Instruments']['CashAccountDeal']['USD_CASH']['Investment_Horizon'] = {'.Timestamp': day}
+    return cfg
+
+
 def _saturday_terminal(save=None, load=None, dump=None):
     """The fixture's July average paying Saturday 8 August, so its terminal, the last live mark, is a
     row of no market time: swept from Monday 3 August on 64 inner paths, the frozen roll on one path."""
-    cfg = _cfg(batch=2 if load else 8, inner=64, save=save, load=load)
+    cfg = _paying(_cfg(batch=2 if load else 8, inner=64, save=save, load=load), '2026-08-08')
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Randomize_Initial_State'] = 'No'
-    hp['Liabilities']['FloatingEnergyDeal']['PLAT_JUL29']['Payments']['Items'][0]['Payment_Date'] = {'.Timestamp': '2026-08-08'}
-    hp['Tradable_Instruments']['CashAccountDeal']['USD_CASH']['Investment_Horizon'] = {'.Timestamp': '2026-08-08'}
     hp['Solver']['T_Min'] = 115
     if load is not None:
         hp['Solver'].update(DiffV2_Stepper_Rollout='Yes', DiffV2_Decision_Curve_Dump=dump)
@@ -845,6 +851,23 @@ def test_the_last_decision_s_fork_lands_on_a_terminal_of_no_market_time(tmp_path
     assert len(e_dl) >= 3 and (e_dl.abs() < 0.01 * level).all(), (e_dl.tolist(), level)
 
 
+def _zero_rates(cfg):
+    """`cfg` at zero SOFR and no opening cash, so neither the stepper's daily interest on cash and
+    margin, which the verdict's wealth law leaves out, nor a margin's growth moves a P&L."""
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Portfolio_State']['Cash_Balances']['USD_CASH'] = 0.0
+    sofr = cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['InterestRate.USD-SOFR']
+    sofr['Curve']['.Curve']['data'] = [[t, 0.0] for t, _ in sofr['Curve']['.Curve']['data']]
+    return cfg
+
+
+def _swap(**kw):
+    """The swap document of the passive tests under the position state at zero rates."""
+    cfg = _zero_rates(_passive_cfg(**kw))
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Position_State'] = 'Yes'
+    return cfg
+
+
 def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_path):
     """On a replayed path of the swap world under the position state, at zero rates and no opening
     cash, so the stepper's daily interest on cash and margin, which the verdict's wealth law leaves
@@ -856,18 +879,10 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     Killing mutations: the stepper holding the last book one row past the terminal to the
     clean-exit row and unwinding there (greedy +2,502, 1.8%); the passive book in fractional contracts
     the stepper rounds to whole ones (passive +52.5, 2.0e-3)."""
-    def doc(**kw):
-        cfg = _passive_cfg(**kw)
-        hp = cfg['Calc']['Calculation']['Hedging_Problem']
-        hp['Solver']['DiffV2_Position_State'] = 'Yes'
-        hp['Portfolio_State']['Cash_Balances']['USD_CASH'] = 0.0
-        sofr = cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['InterestRate.USD-SOFR']
-        sofr['Curve']['.Curve']['data'] = [[t, 0.0] for t, _ in sofr['Curve']['.Curve']['data']]
-        return cfg
-    path = _tape(doc(), str(tmp_path / 'tape_{}.npz'))[0]
+    path = _tape(_swap(), str(tmp_path / 'tape_{}.npz'))[0]
     ckpt = str(tmp_path / 'vf.pt')
-    _run(doc(save=ckpt))
-    roll = doc(load=ckpt)
+    _run(_swap(save=ckpt))
+    roll = _swap(load=ckpt)
     roll['Calc']['Calculation']['Observed_Scenario'] = path
     roll['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
     d = _run(roll).evaluation_summary['diagnostics']
@@ -876,6 +891,85 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     assert v['nohedge']['wT_mean'] == sv['nohedge']['wT_mean'], (v['nohedge']['wT_mean'], sv['nohedge']['wT_mean'])
     for p in ('greedy', 'passive'):
         assert abs(sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0) < 5e-6, (p, v[p]['wT_mean'], sv[p]['wT_mean'])
+
+
+@pytest.mark.parametrize('mode', ['futures', 'cash_account'])
+@pytest.mark.parametrize('terminal', ['2026-08-05', '2026-08-08'])
+def test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal(mode, terminal):
+    """A client driving `create_stepper()` short 10 `PL_OCT_2026` at every row the stepper calls a
+    decision, on the simulate-only fixture at zero rates paying Wednesday 5 August (a market row) or
+    Saturday 8 August (none), ends flat under `Force_Flat_At_End`, and against the no-trade roll
+    earns per path -10 x 50 x (F_T - F_0) less half the 10 bp spread on each path's own mark,
+    entering at row 0 and unwinding at the terminal T, the last live liability mark: the P&L of a
+    book held from row 0 and closed at T, within 1e-5 relative. 2 s each.
+
+    Killing mutations: the stepper deciding on `business_indices`, which holds a Wednesday terminal,
+    so the trade it takes there is held unclosed (final position -10, the Wednesday cases); the
+    close one row late at the clean-exit row (`current == self._close_idx` closing at
+    `_values_at(last)`) in `_futures_account_step` and in `_cash_account_step`, the hedge P&L
+    picking up the Saturday-to-Sunday move (path 1 -305,396 against -334,473)."""
+    cfg = _paying(_zero_rates(jsonlib.load(open(FIXTURE))), terminal)
+    cfg['Calc']['Calculation'].update(Batch_Size=8, Random_Seed=3)
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Evaluator']['Accounting_Mode'] = mode
+    result = _run(cfg)
+    world = result.bundle
+    T = world.last_live_mtm_index
+    assert str(world.scenario_dates[world.initial_time_index + T].date()) == terminal
+
+    def roll(book):
+        stepper = result.create_stepper()
+        while not stepper.done:
+            if stepper.is_decision_step:
+                held = stepper.observe()['positions']['PL_OCT_2026']
+                last = stepper.step({'PL_OCT_2026': book - held})
+            else:
+                last = stepper.step(None)
+        wealth = (last['transition_pnl_excess'] + last['transition_liability_value']).double()
+        return wealth, stepper.observe()['positions']['PL_OCT_2026']
+
+    flat, _ = roll(0.0)
+    short, final = roll(-10.0)
+    F = world.tradables_sim['PL_OCT_2026'].double()
+    kappa = 0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * 50.0
+    want = -10.0 * 50.0 * (F[T] - F[0]) - 10.0 * kappa * (F[0] + F[T])
+    assert (final == 0).all(), final.tolist()
+    assert torch.allclose(short - flat, want, rtol=1e-5, atol=0.0), ((short - flat).tolist(), want.tolist())
+
+
+def test_a_first_row_of_no_market_time_is_one_decision_for_the_verdict_and_the_stepper(tmp_path):
+    """A job whose first row is a holiday of its calendar, Friday 10 April on a Testland calendar:
+    the solver decides at row 0, so the stepper roll of the same frozen policy on the same replayed
+    swap path, swept from `T_Min` 0, decides on the same rows, the root first among them, and closes
+    its greedy, passive and no-hedge books to the verdict's terminal wealth within 5e-6 relative,
+    as on a first row that is a market row. 5 s.
+
+    Killing mutation: the stepper deciding on `business_indices`, which leaves out a first row of no
+    market time, so its roll first decides on Monday 13 (row 3) and holds the opening book over the
+    move the verdict holds its first book over (greedy -5.9%, passive -67%)."""
+    calendar = str(tmp_path / 'calendars.cal')
+    with open(calendar, 'w') as f:
+        f.write('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday and Sunday" '
+                'Holidays="2026-04-10|Holiday"/>\n</Calendars>\n')
+
+    def doc(**kw):
+        cfg = _swap(**kw)
+        cfg['Calc']['CalendDataFile'] = calendar
+        cfg['Calc']['Calculation']['Calendar'] = 'Testland'
+        cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['T_Min'] = 0
+        return cfg
+
+    path = _tape(doc(), str(tmp_path / 'tape_{}.npz'))[0]
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(doc(save=ckpt))
+    roll = doc(load=ckpt)
+    roll['Calc']['Calculation']['Observed_Scenario'] = path
+    roll['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
+    d = _run(roll).evaluation_summary['diagnostics']
+    v, sv = d['verdict'], d['stepper_verdict']
+    gaps = {p: sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0 for p in ('greedy', 'passive', 'nohedge')}
+    assert sv['greedy_q_t'][0] == d['root_t'], (sv['greedy_q_t'][:3], d['root_t'])
+    assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
 
 
 # --------------------------------------------------------------------------------------------
