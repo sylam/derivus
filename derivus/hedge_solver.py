@@ -1463,20 +1463,22 @@ class DiffSolver:
     # ---- operating-region bank ----------------------------------------------
     def _replication_hedge(self, t):
         """Per-instrument diagonal min-var hedge from the OUTER moves to t's successor:
-        q_i = −Cov(dL, dF_i)/(cs_i·Var(dF_i)) / n_active, clamped to [lo,hi]. Inactive → 0."""
+        q_i = −Cov(dL, dF_i)/(cs_i·Var(dF_i)) / n_active, both moments the outer paths' population,
+        clamped to [lo,hi]. Inactive → 0."""
         L = self.liability_sim
         dL = (L[self.nxt[t]] - L[t])                                                      # (B_outer,)
         q = torch.zeros(self.n_hedge, device=self.device)
         for i in self.active:
             ref = self.hedges[i]
             dF = self.tradables_sim[ref][self.nxt[t]] - self.tradables_sim[ref][t]        # (B_outer,)
-            var = dF.var()
+            var = dF.var(unbiased=False)
             # skip degenerate OR non-finite instruments: an expired-contract row can carry a NaN
             # mark, and clamp(NaN) = NaN would poison the whole textbook book
             if not float(var) > 1e-12 or not torch.isfinite(dF).all():
                 continue
             beta = ((dL - dL.mean()) * (dF - dF.mean())).mean() / var
             q[i] = (-beta / (self.contract_size[i] * max(self.n_active, 1)))
+        logging.debug('replication hedge at step %d: %s contracts', t, q)
         return torch.minimum(torch.maximum(q, self.q_lo), self.q_hi)
 
     def _textbook_hedge(self, t, live, batch):

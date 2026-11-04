@@ -1286,6 +1286,40 @@ def test_the_verdict_and_the_stepper_hold_one_textbook_book(tmp_path):
     assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
 
 
+def test_the_textbook_book_is_the_min_var_hedge_of_the_outer_moves(tmp_path):
+    """The textbook book is each live leg's min-var hedge of the liability over the step,
+    -Cov(dL, dF) / (contract size x Var(dF)) shared over the active legs, both moments of the
+    outer paths' population, booked to whole contracts: on the training document's frozen eval
+    on 4 paths, the verdict's textbook book at the first decision is that hedge's, its July and
+    October legs rounded to the whole contracts summing to their net. 4 s.
+
+    Killing mutation: the variance taken unbiased beside the population covariance (`dF.var()` in
+    `DiffSolver._replication_hedge`), the hedge 3/4 of the min-var one on 4 paths: the book
+    (0, -2, -2) for (0, -3, -3)."""
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(_cfg(seed=7, save=ckpt))
+    result = _run(_cfg(batch=8, seed=7, load=ckpt))
+    world, d = result.bundle, result.evaluation_summary['diagnostics']
+    t0 = d['root_t']
+    s = world.successors[t0]
+    L = world.liability_sim.double().numpy()
+    dL = L[s] - L[t0]
+    want = []
+    for i, name in enumerate(_HEDGES):
+        F = world.tradables_sim[name].double().numpy()
+        dF = F[s] - F[t0]
+        live = world.marked(t0, [name])[0] > 0 and dF.var() > 0.0
+        want.append(min(0.0, max(-50.0, -((dL - dL.mean()) * (dF - dF.mean())).mean()
+                                 / (50.0 * dF.var()) / 3.0)) if live else 0.0)
+    net = round(sum(want))
+    base = np.floor(want)
+    order = np.argsort(-(np.array(want) - base), kind='stable')
+    for j in order[:int(round(net - base.sum()))]:
+        base[j] += 1.0
+    got = d['verdict']['textbook_q_traj'][0]
+    assert got == base.tolist(), (got, want)
+
+
 @pytest.mark.parametrize('mode', ['futures', 'cash_account'])
 @pytest.mark.parametrize('terminal', ['2026-08-05', '2026-08-08'])
 def test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal(mode, terminal):
