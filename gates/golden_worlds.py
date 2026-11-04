@@ -135,7 +135,7 @@ def run_sim(out):
             obs = stepper.step(None)
         traj.append({'t': obs['time_index'], 'pos': snap(obs['positions']),
                      'pnl': snap(obs['transition_pnl_excess']),
-                     'liab': snap(obs['transition_liability_value'])})
+                     'liab': snap(obs['liability_value'])})
     rec['traj'] = traj
     rec['state'] = {k: snap(v) for k, v in stepper._state.items()}
     d = os.path.join('/tmp', '_golden_csv')

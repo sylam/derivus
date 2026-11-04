@@ -27,7 +27,7 @@ def test_no_trade_stepper_matches_framework_baseline():
     last = None
     while not stepper.done:
         last = stepper.step(None)  # zero trades every step
-    pnl = (last['transition_pnl_excess'] + last['transition_liability_value']).to(dtype=torch.float64)
+    pnl = last['transition_net_pnl'].to(dtype=torch.float64)
     stepper_mean = float(pnl.mean().item())
     stepper_worst = float(pnl.min().item())
 

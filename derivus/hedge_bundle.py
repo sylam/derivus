@@ -1774,7 +1774,7 @@ class BundleStepper:
         return {
             **self.observe(),
             'transition_pnl_excess': transition['pnl_excess'],
-            'transition_liability_value': transition['liability_value'],
+            'transition_net_pnl': transition['net_pnl'],
         }
 
     def evaluation_output(self, timing=None):
@@ -1783,7 +1783,7 @@ class BundleStepper:
         baseline are the same trajectory and the difference block is identically zero."""
         hedge_pnl = self._terminal_transition['pnl_excess'].detach().to(dtype=torch.float32)
         liability = self._terminal_transition['liability_value'].detach().to(dtype=torch.float32)
-        net_pnl = hedge_pnl + liability
+        net_pnl = self._terminal_transition['net_pnl'].detach().to(dtype=torch.float32)
         metrics = {
             'average_net_pnl': float(net_pnl.mean().item()),
             'median_net_pnl': float(torch.quantile(net_pnl.to(dtype=torch.float64), 0.5).item()),
@@ -2008,14 +2008,16 @@ class BundleStepper:
             positions[n] = positions[n] + deltas[n]
 
     def _payoff(self, state):
-        """This transition's terminal read: `pnl_excess` is the wealth change since inception and
-        is only marked at the terminal step (a sync-free check on time_index — `done` is uniform
-        across the batch since every scenario advances together); `liability_value` is the
-        liability's value at the row, always carried."""
-        pnl_excess = (_pnl_excess(state, self.runtime).to(device=self._device)
-                      if int(state['time_index']) >= self._last_idx
-                      else torch.zeros(self._batch_size, dtype=MONEY, device=self._device))
-        return {'pnl_excess': pnl_excess,
+        """This transition's terminal read: `pnl_excess`, the wealth change since inception, and
+        `net_pnl`, the net P&L `_tracking_error_value`, are only marked at the terminal step (a
+        sync-free check on time_index — `done` is uniform across the batch since every scenario
+        advances together); `liability_value` is the liability's value at the row, always carried."""
+        zero = torch.zeros(self._batch_size, dtype=MONEY, device=self._device)
+        terminal = int(state['time_index']) >= self._last_idx
+        return {'pnl_excess': (_pnl_excess(state, self.runtime).to(device=self._device)
+                               if terminal else zero),
+                'net_pnl': (_tracking_error_value(state, self.runtime).to(device=self._device)
+                            if terminal else zero),
                 'liability_value': state['liability_value'].to(device=self._device)}
 
     # ---- diagnostic CSV assembly ---------------------------------------------
@@ -2024,8 +2026,7 @@ class BundleStepper:
         stepped, stacked."""
         return {
             'held': {n: torch.stack(self._held[n], dim=0).cpu() for n in self._hedges},
-            'net_pnl': (self._terminal_transition['pnl_excess']
-                        + self._terminal_transition['liability_value']).detach().cpu(),
+            'net_pnl': self._terminal_transition['net_pnl'].detach().cpu(),
         }
 
     def _diag_fields(self, rollout=None):

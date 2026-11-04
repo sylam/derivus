@@ -539,7 +539,7 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
             last = stepper.step({h: q[i] - held[h] for i, h in enumerate(LEGS)})
         else:
             last = stepper.step(None)
-    wT = (last['transition_pnl_excess'] + last['transition_liability_value']).to(torch.float64)
+    wT = last['transition_net_pnl'].to(torch.float64)
     assert frozen.evaluation_summary['diagnostics']['stepper_verdict']['passive']['wT_mean'] \
         == float(wT.mean())
 
@@ -1444,7 +1444,7 @@ def test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal(mode, 
                 last = stepper.step({'PL_OCT_2026': book - held})
             else:
                 last = stepper.step(None)
-        wealth = (last['transition_pnl_excess'] + last['transition_liability_value']).double()
+        wealth = last['transition_net_pnl'].double()
         return wealth, stepper.observe()['positions']['PL_OCT_2026']
 
     flat, _ = roll(0.0)

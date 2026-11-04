@@ -2336,7 +2336,7 @@ class DiffSolver:
             drift["n_tripped"] = int(sum(drift["tripped"]))
             drift["null_sigma"] = round(null, 4)
             drift["final_z_per_sqrt_n"] = drift["cum_z"] / (n_dec ** 0.5)
-            wT = last["transition_pnl_excess"] + last["transition_liability_value"]
+            wT = last["transition_net_pnl"]
             if u_sum is not None:
                 u_sum = u_sum + self._reward(wT, w_prev, self.T_dec)  # tail
             return wT, u_sum, drift
