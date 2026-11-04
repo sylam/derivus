@@ -122,7 +122,7 @@ def test_the_realized_history_reaches_the_tradable_prefix(with_history):
 def test_the_cash_account_prices_and_its_mark_accrues(with_history):
     """`CashAccountDeal` is a PRICED tradable - `Units / D(t)` - and its mark ratio is the ONLY
     financing path: a skipped cash deal loses interest on cash AND margin while everything else
-    stays plausible (missing `Units` -> KeyError -> no tensor mark -> `_growth_factors` {} ->
+    stays plausible (missing `Units` -> KeyError -> no tensor mark -> no growth factor ->
     every balance flat, with a repeated CRITICAL as the only evidence). Worth $0.54/oz at 2026
     rates. Any non-zero `Units` restores it - only the mark RATIO is consumed.
 

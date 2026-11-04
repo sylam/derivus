@@ -2,7 +2,7 @@
 
 The textbook hedge is a deterministic policy expressed entirely in client code:
 short the full leg volume from t=0, then ramp linearly back to zero across the
-averaging window (period_start → window_end). Used as a baseline benchmark for
+averaging window (period_start → period_end). Used as a baseline benchmark for
 the trained ML policy.
 
 Same shape as train_daily.py — derives cfg from the test fixture, applies CLI
@@ -237,12 +237,10 @@ def _textbook_targets(result, hedge_instrument):
 
     period_start = pd.Timestamp(items[0]['Period_Start'])
     period_end = pd.Timestamp(items[0]['Period_End'])
-    last_trade = runtime['tradables'][hedge_instrument].get('last_trade_date')
-    window_end = min(pd.Timestamp(last_trade), period_end) if last_trade else period_end
     dates = bundle.scenario_dates
     bday = bundle.business_day
     buyback_indices = [i for i, d in enumerate(dates)
-                       if period_start <= d <= window_end and bday.is_on_offset(d)]
+                       if period_start <= d <= period_end and bday.is_on_offset(d)]
     tn_idx = next(i for i, d in enumerate(dates) if d >= period_start)
     N = len(buyback_indices)
     target_at_idx = {idx: -short_at_start * (1.0 - (i + 1) / N)
