@@ -1044,6 +1044,41 @@ def test_the_verdict_and_the_stepper_carry_one_opening_book(tmp_path, t_min):
     assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
 
 
+@pytest.mark.parametrize('objective', [
+    {'Object': 'AsymmetricUtility_Huber', 'Reference_Mode': 'Running_Wealth'}, {'Object': 'LogWealth'}],
+    ids=['running', 'growth'])
+def test_the_verdict_and_the_stepper_sum_one_step_reward_from_an_opening_book(tmp_path, objective):
+    """Under the step-sum objectives the verdict and the stepper roll report one objective, the sum of
+    each decision's reward from the first decision to the terminal, the opening book's P&L before
+    the first decision entering the wealth the first reward is measured from: on the swap replay
+    opening short 5 July and 5 October swept from step 15, under `Running_Wealth` on the default
+    Huber shape and under `LogWealth`, whose growth reads that wealth's level, the greedy, passive,
+    textbook and no-hedge tracks agree on `u_mean` and on `wT_mean` within 5e-6 relative (at most
+    1.1e-6). 4 s each.
+
+    Killing mutations: the stepper roll's reward from the last decision to the terminal dropped
+    (`_rollout_on_stepper`'s tail), its greedy `u_mean` 4.0% and 3.5% below the verdict's; the
+    verdict's wealth started at the liability's mark at the first decision (`L[t0]`), the opening
+    book's P&L left out of the base the growth is read from, the greedy and passive `u_mean` 0.54%
+    and 0.72% off under `LogWealth`, where the increments' sum under `Running_Wealth` does not move
+    (its `wT_mean` 1.3% off)."""
+    def doc(**kw):
+        cfg = _swap(**kw)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        hp['Portfolio_State']['Positions'].update({'PL_JUL_2026': -5, 'PL_OCT_2026': -5})
+        hp['Objective'] = dict(objective)
+        # the five-iteration fit ruins its held-out batch under the growth reward (`_logwealth`),
+        # and the gate holds the two rolls' accounting, not convergence
+        hp['Solver'].update(T_Min=15, DiffV2_Max_Value_Optimism=1.0e3)
+        return cfg
+    d = _replayed_roll(tmp_path, doc)
+    v, sv = d['verdict'], d['stepper_verdict']
+    assert v['u_mean_is_step_sum'] and sv['u_mean_is_step_sum']
+    gaps = {(p, k): sv[p][k] / v[p][k] - 1.0
+            for p in ('greedy', 'passive', 'textbook', 'nohedge') for k in ('u_mean', 'wT_mean')}
+    assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
+
+
 def _cartesian(save=None, load=None):
     """The fixture's July average on its three legs under the position state at zero rates and no
     opening cash, the greedy on the Cartesian grid of 5 levels a leg over [-50, 0] in a corridor
@@ -1110,6 +1145,59 @@ def test_the_cap_holds_the_book_the_live_legs_carry():
         'Min_Position': 0, 'Max_Position': 50}
     nets = [sum(q) for q in _run(cfg).evaluation_summary['diagnostics']['verdict']['greedy_q_traj']]
     assert max(abs(x) for x in nets) <= 50 + 1e-9, nets
+
+
+def test_a_corridor_excluding_zero_is_held_on_the_legs_still_live():
+    """The corridor holds the signed book the live legs carry, so a step on which every leg but one
+    is dead books on that leg alone: on the Cartesian document, its corridor [-40, -30], swept from
+    Friday 24 July, the April leg dead throughout and the July leg from its expiry on Wednesday 29,
+    the passive and textbook books of a liability stating no fixings sit on the corridor's whole edge
+    nearest zero, (0, -15, -15) to the 29th and (0, 0, -30) after it, and the greedy book's net on
+    the live legs lies in the corridor on every row, (0, 0, -38) once October alone is live, the one
+    level of its axis inside. 3 s.
+
+    Killing mutations: `HedgeActionSpace.book` reading the ladder with no leg mask (`self.ladder(t)`),
+    a third of the edge on each leg, dead ones included (-10, -10, -10); `grid_at` filtering each
+    row's total over every leg (`self._within(..., t)` with no `live`), cover parked on the dead April
+    leg counted inside the corridor and masked away, the greedy's live net -12.7 on the first row and
+    -19.0 on Monday 3 August, October alone live."""
+    cfg = _cartesian()
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['T_Min'] = 105
+    result = _run(cfg)
+    world, diag = result.bundle, result.evaluation_summary['diagnostics']
+    v = diag['verdict']
+    dates = [str(world.scenario_dates[world.initial_time_index + diag['root_t'] + i].date())
+             for i in range(len(v['greedy_q_traj']))]
+    assert dates[0] == '2026-07-24' and dates[-1] == '2026-08-04', dates
+    for track in ('passive_q_traj', 'textbook_q_traj'):
+        want = [[0.0, -15.0, -15.0] if d <= '2026-07-29' else [0.0, 0.0, -30.0] for d in dates]
+        assert v[track] == want, (track, list(zip(dates, v[track])))
+    nets = [sum(q) for q in v['greedy_q_traj']]
+    assert all(-40.0 - 1e-6 <= x <= -30.0 + 1e-6 for x in nets), list(zip(dates, nets))
+    assert all(q == [0.0, 0.0, -38.0] for d, q in zip(dates, v['greedy_q_traj']) if d > '2026-07-29'), \
+        list(zip(dates, v['greedy_q_traj']))
+
+
+def test_an_opening_book_on_a_leg_dead_before_the_first_decision_is_closed_there_in_both(tmp_path):
+    """An opening book on a leg that expires before the first decision earns its move to the expiry
+    and is closed at the first decision at its last mark, in the verdict as in the stepper roll: on
+    the Cartesian replay under the position state opening short 5 April, which expires on Wednesday
+    29 April, and short 3 July, swept from step 100, the greedy, passive, textbook and no-hedge
+    tracks close to one terminal wealth in both within 5e-6 relative (at most 2.2e-7). 4 s.
+
+    Killing mutation: the verdict's charge measured from the standing book masked by the step's live
+    legs (`q_prev[p] * live` in `_verdict`'s `_reposition_charge`), the dead April leg's close at the
+    first decision uncharged where the stepper pays it, the no-hedge track's wealth 1.7e-4 off the
+    stepper's (the passive's 6.8e-4 and the greedy's 1.5e-3, July's close at its expiry with it)."""
+    def doc(**kw):
+        cfg = _cartesian(**kw)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Portfolio_State']['Positions'].update(
+            {'PL_APR_2026': -5, 'PL_JUL_2026': -3})
+        return cfg
+    d = _replayed_roll(tmp_path, doc)
+    v, sv = d['verdict'], d['stepper_verdict']
+    gaps = {p: sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0 for p in ('greedy', 'passive', 'textbook', 'nohedge')}
+    assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
 
 
 def test_the_verdict_and_the_stepper_hold_one_textbook_book(tmp_path):
@@ -1700,12 +1788,15 @@ def _spot_alone(cfg, block, **objective):
     return cfg
 
 
-def _risk_roll(ckpt, path, block, held=True, objective=None, **solver):
+def _risk_roll(ckpt, path, block, held=True, objective=None, draws=None, **solver):
     """The frozen roll of `ckpt` on one path of `_spot_alone`'s world on `block` (under `objective`)
-    at 256 inner draws, trading the October leg alone; where `held`, the liability cut to one ounce
-    and the book pinned short 25 contracts, which trade past the terminal, so every such roll's
-    wealth moves as that future does. The decision dump it writes at `path`, and its result."""
+    at 256 inner draws, `Inner_Draws` `draws` where given, trading the October leg alone; where
+    `held`, the liability cut to one ounce and the book pinned short 25 contracts, which trade past
+    the terminal, so every such roll's wealth moves as that future does. The decision dump it writes
+    at `path`, and its result."""
     cfg = _spot_alone(_cfg(batch=2, inner=256, load=ckpt), block, **(objective or {}))
+    if draws is not None:
+        cfg['Calc']['Calculation']['Inner_Draws'] = draws
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     if held:
         hp['Liabilities']['FloatingEnergyDeal']['PLAT_JUL29']['Payments']['Items'][0]['Volume'] = 1.0
@@ -1798,6 +1889,28 @@ def test_a_variance_above_its_mean_holds_the_risk_horizon_below_its_root(held_ri
     assert abs((ratio / forecast)[first].mean() - 1.0) < 0.08, (ratio / forecast)[first]
     assert (ratio / np.sqrt(10.0))[first].mean() < 0.85, (ratio / np.sqrt(10.0))[first]
     assert abs((ratio / forecast).mean() - 1.0) < 0.04, (ratio / forecast).mean()
+
+
+def test_the_risk_horizon_s_fork_draws_its_own_paths_whatever_inner_draws_states(held_risk, tmp_path):
+    """The risk horizon's fork draws iid inner paths on streams seeded by the batch's seed and the
+    decision alone, whatever `Inner_Draws` states, so on one world its draws are the same under
+    'random' as under 'sobol', where every one-step fork's are not: on `CONSTANT_VOL`'s held roll at
+    k = 5, each of the 80 decisions whose risk term lands past its successor reads one downside
+    semideviation under either, within the dump's six significant digits (at most 1.0e-5 on values
+    near 0.2, against a bound of 2e-5, two roundings of the curve each side), and the last decision,
+    whose risk term reads its one-step draws, reads them apart. 6 s with the fixture.
+
+    Killing mutations: the fork's streams left unseeded (`torch.manual_seed(seed)` dropped from
+    `CMC_State.own_stream`), its draws following whatever the run drew before (up to 0.032 apart);
+    the window's inner paths drawn as `Inner_Draws` states (`stream is not None` dropped from
+    `use_random` in `_run_inner_mc_at_t`), one Sobol stream strided over its rows under 'sobol' (up
+    to 0.28 apart)."""
+    ckpt, _, rolls = held_risk
+    five = {'DiffV2_Risk_Kappa': 1.0, 'DiffV2_Risk_Horizon': 5}
+    random = [_risk_roll(ckpt, str(tmp_path / f'{name}.csv'), CONSTANT_VOL, draws='random', **solver)[0]
+              for name, solver in (('mean', {}), ('five', five))]
+    gap = np.abs(_semideviations(*random) - _semideviations(rolls['mean'][0], rolls['five'][0]))
+    assert len(gap) == 81 and gap[:-1].max() <= 2e-5 and gap[-1] > 2e-5, (gap[:-1].max(), gap[-1])
 
 
 def test_a_risk_horizon_past_the_terminal_lands_on_it(held_risk, tmp_path):
