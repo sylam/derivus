@@ -1413,6 +1413,14 @@ class DiffSolver:
              else torch.zeros(self.n_hedge, device=self.device))
         return self.aspace.book(q[None].expand(batch, self.n_hedge), t, live)
 
+    def _first_book(self, t, live, batch):
+        """The standing book `(batch, n_hedge)` the first greedy decision, at decision step t, is
+        measured from by the trade band and the position state (`DiffV2_First_Decision_From`): the
+        passive book there, or the opening book. Every track's accounting enters from the opening
+        book either way."""
+        return (self._passive_hedge(t, live, batch) if self.first_from_passive
+                else self.aspace.initial_q(batch, self.device))
+
     def _build_bank(self, gen):
         """Operating-region bank — roll the OUTER paths forward (cheap; outer-realised
         moves only, no inner MC): hold q = clamp(q_rep_t + noise) each step, accumulate
@@ -1857,7 +1865,8 @@ class DiffSolver:
         Each traded policy (greedy, textbook, passive) pays turnover cost on the same three-part
         rule the two benchmark tracks price their execution with: entry from the OPENING book
         `q0`, per-step repositioning, and the terminal unwind under `Force_Flat_At_End`
-        (`turnover_cost_mean`). Without `DiffV2_Position_State` the wealth recursion is cost-free
+        (`turnover_cost_mean`); the first greedy decision is measured from `_first_book`, as the
+        stepper roll's is. Without `DiffV2_Position_State` the wealth recursion is cost-free
         and the cost is accounted in PARALLEL, so the `*_net` columns are diagnostics on that
         approximation. Under it each step's wealth is charged `_reposition_charge`, the charge the
         labels are fitted net of, churn term included: every greedy decision reads the net wealth
@@ -1904,7 +1913,7 @@ class DiffSolver:
                 kappa_t = self.aspace.kappa(self.tradables_sim, t)
                 q_g, _ = self._decide(
                     nets, m1[rows], dF[rows], dL[rows], W["greedy"], t,
-                    q_prev=q_prev["greedy"],
+                    q_prev=self._first_book(t, live, n) if t == t0 else q_prev["greedy"],
                     kappa=kappa_t if self.cost_aware or self.position_state else None, live=live)
                 q_g = q_g * live          # zero positions on expired contracts (wealth-neutral)
                 q_tb = self._textbook_hedge(t, live, n)
@@ -2200,10 +2209,6 @@ class DiffSolver:
             rewards, accumulated here too, over the DECISION days the policy acted on plus the
             tail to the terminal."""
             stepper = BundleStepper(self.bundle, self.runtime, mirror_scale=False)
-            # seed the cost-aware decision q_prev from the OPENING book, where the stepper's own
-            # positions open too. Position-free it only shifts first-step cost and P&L; under
-            # `DiffV2_Position_State` it is the standing book the charge and p' ride.
-            q_prev = self.aspace.initial_q(self.B_outer, self.device)
             last = None
             u_sum = w_prev = None
             drift = {"t": [], "cum_dF_usd": [0.0] * self.n_hedge, "cum_dL_usd": 0.0,
@@ -2264,11 +2269,8 @@ class DiffSolver:
                                 device=self.device)
                             dF = dF + adj.view(1, 1, -1)
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
-                        if self.first_from_passive and not q_log["t"]:
-                            # the swap hedged at inception: the first decision's band and
-                            # position state ride the passive book, the stepper still enters from
-                            # its opening book at this day's price
-                            q_prev = self._passive_hedge(t, live, B)
+                        if not q_log["t"]:
+                            q_prev = self._first_book(t, live, B)
                         day = self.bundle.scenario_dates[hist + int(t)]    # the full grid, past the history
                         handed = self.passive_from is not None and day >= self.passive_from
                         if handed:

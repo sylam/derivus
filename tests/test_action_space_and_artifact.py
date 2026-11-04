@@ -955,9 +955,10 @@ def _swap_rolling(**kw):
     return cfg
 
 
-@pytest.mark.parametrize('doc, declared', [(_swap, {}), (_swap, {'Max_Trade_Per_Step': 2.0}),
-                                           (_swap_rolling, {})],
-                         ids=['plain', 'max_trade', 'calendar'])
+@pytest.mark.parametrize('doc, declared', [
+    (_swap, {}), (_swap, {'Max_Trade_Per_Step': 2.0}),
+    (_swap, {'Max_Trade_Per_Step': 2.0, 'DiffV2_First_Decision_From': 'Passive'}), (_swap_rolling, {})],
+    ids=['plain', 'max_trade', 'first_from_passive', 'calendar'])
 def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_path, doc, declared):
     """On a replayed path of the swap world under the position state, at zero rates and no opening
     cash, so the stepper's daily interest on cash and margin, which the verdict's wealth law leaves
@@ -965,13 +966,16 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     passive book in whole contracts, and each closes its book at the terminal, the last live
     liability mark, at the declared 10 bp spread, so their terminal wealths agree within 5e-6
     relative (greedy 1.9e-8, passive 5.1e-7), the no-hedge track's to the bit; so too under a
-    `Max_Trade_Per_Step` of 2 on the roll, and with the matched half of a roll at a 3 bp
+    `Max_Trade_Per_Step` of 2 on the roll, with its first greedy decision measured from the passive
+    book under `DiffV2_First_Decision_From` 'Passive', and with the matched half of a roll at a 3 bp
     `Calendar_Spread_Bps`, which the verdict's charge and the stepper's rebate both read. 3 s each.
 
     Killing mutations: the stepper holding the last book one row past the terminal to the
     clean-exit row and unwinding there (greedy +2,502, 1.8%); the passive book in fractional contracts
     the stepper rounds to whole ones (passive +52.5, 2.0e-3); the stepper roll's `_decide` without
-    its band (`rate_limit=False`), its first book (3, 2) against the verdict's (1, 1); the stepper's
+    its band (`rate_limit=False`), its first book (3, 2) against the verdict's (1, 1); the verdict's
+    first decision measured from the opening book under 'Passive' (its first book (1, 1) against
+    the stepper's (-15, -15)); the stepper's
     rebate unarmed, the verdict's charge pricing the roll the stepper pays outright (passive 2.0%)."""
     d = _replayed_roll(tmp_path, doc, **declared)
     v, sv = d['verdict'], d['stepper_verdict']

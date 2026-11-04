@@ -3269,10 +3269,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'trip of a rule read outside the engine; blank = never'),
                     F('DiffV2_First_Decision_From', 'Text', default='Opening_Book',
                       values=['Opening_Book', 'Passive'],
-                      description='The standing book the stepper roll\'s first greedy decision is '
-                                  'measured from by the trade band and the position state: the '
-                                  'declared opening book, or the passive book at that step (the '
-                                  'swap hedged at inception, the sleeve entering through the band)'),
+                      description='The standing book the first greedy decision, of the verdict '
+                                  'and of the stepper roll alike, is measured from by the trade '
+                                  'band and the position state: the declared opening book, or the '
+                                  'passive book at that step (the swap hedged at inception, the '
+                                  'sleeve entering through the band)'),
                     F('DiffV2_Load_Horizon_Pad', 'Text', default='No', values=['Yes', 'No'],
                       description='Yes loads a value-function checkpoint fitted on another '
                                   'decision horizon, clamped to its saved range with the last '
