@@ -3268,9 +3268,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Weight pulling each net\'s parameters toward its fitted '
                                   'successor\'s during the fit; 0 = off'),
                     F('DiffV2_Churn_Lambda', 'Float', default=0.0,
-                      description='Quadratic repositioning charge in currency per contract^2, '
-                                  'taken off the wealth entering the continuation at the argmax '
-                                  'and the training-label argmax; 0 = off'),
+                      description="The repositioning charge's quadratic term in money per "
+                                  'contract^2, taken wherever DiffV2_Repositioning_Charge takes '
+                                  'the turnover charge, so nowhere under No; 0 = off'),
                     F('DiffV2_Repositioning_Charge', 'Text', default='No', convention=True,
                       values=['No', 'Argmax', 'State'],
                       description='What the move from the standing book is charged: No nothing, '

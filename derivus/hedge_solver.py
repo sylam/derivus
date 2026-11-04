@@ -617,8 +617,8 @@ class DiffSolver:
         # stamps one, the value every reader takes
         self.drift_null_sigma = 1.0
         self.position_state = charge == "state"
-        logging.debug("DiffV2_Repositioning_Charge %s: argmax charged %s, position state %s",
-                      charge, self.argmax_charged, self.position_state)
+        logging.debug("DiffV2_Repositioning_Charge %s: argmax charged %s, position state %s, its "
+                      "churn term %g", charge, self.argmax_charged, self.position_state, self.churn_lambda)
         self.book_label = self.position_state and self.cfg["diffv2_book_gradient_label"]
         self.label_horizon = self.cfg["diffv2_label_horizon"]
         self.bank_ladder = self.cfg["diffv2_bank_along_ladder"]
@@ -872,11 +872,13 @@ class DiffSolver:
 
     def _charge(self, t, acts, q_prev, kappa, rows=None):
         """The repositioning charge of the books `acts` (broadcastable `(..., n_hedge)`) from the
-        standing `q_prev` at decision t, or None where none applies: the turnover toll at the rates
-        `kappa` (`HedgeActionSpace.kappa`'s pair; None: none), the move's matched half at the
-        calendar rate under `Calendar_Spread_Bps`, the quadratic churn term (`DiffV2_Churn_Lambda`), and the outright unwind
-        of `acts` `_unwind_kappa` says t owes; with no standing book (`q_prev` None) the unwind
-        alone. `rows` prices each path at its own mark, as `HedgeActionSpace.kappa`.
+        standing `q_prev` at decision t, or None where none applies: at the rates `kappa`
+        (`HedgeActionSpace.kappa`'s pair, which `_ranking_kappa` hands where
+        `DiffV2_Repositioning_Charge` charges; None: none) the turnover toll, the move's matched half
+        at the calendar rate under `Calendar_Spread_Bps`, and the quadratic churn term
+        (`DiffV2_Churn_Lambda`), then the outright unwind of `acts` `_unwind_kappa` says t owes;
+        with no standing book (`q_prev` None) the unwind alone. `rows` prices each path at its own
+        mark, as `HedgeActionSpace.kappa`.
 
         ONE assembly, called from every seam: the wealth that RANKS a candidate in `_decide`, the
         wealth the INCUMBENT holds against it, the chosen action's regressed TARGET in `_fit_step`,
@@ -885,14 +887,13 @@ class DiffSolver:
         live-masked and `q_prev` as the step that set it left it: a leg dying at the step pays its
         close, one dead before it no phantom toll."""
         kappa_T = self._unwind_kappa(t, rows)
-        if kappa_T is None and (q_prev is None or (kappa is None and not self.churn_lambda > 0.0)):
-            return None
-        dq = acts - (acts if q_prev is None else q_prev)
-        charge = self.churn_lambda * dq.pow(2).sum(-1)
-        if kappa is not None:
-            charge = charge + turnover_charge(dq, *kappa)
+        charge = None
+        if q_prev is not None and kappa is not None:
+            dq = acts - q_prev
+            charge = self.churn_lambda * dq.pow(2).sum(-1) + turnover_charge(dq, *kappa)
         if kappa_T is not None:
-            charge = charge + turnover_charge(acts, kappa_T)
+            unwind = turnover_charge(acts, kappa_T)
+            charge = unwind if charge is None else charge + unwind
         return charge
 
     # ---- one-step wealth move ------------------------------------------------
@@ -1097,9 +1098,9 @@ class DiffSolver:
         zero, the net inside the cap and the corridor), so the bounds hold the REALIZED book rather
         than a target the expiry mask then guts.
 
-        `q_prev` carries the standing book and arms up to four decision-time corrections, each with
-        its own switch: the cost-aware turnover charge (`kappa` present, priced net/paired when
-        `Calendar_Spread_Bps` gives a calendar rate), the quadratic churn charge, the
+        `q_prev` carries the standing book and arms up to three decision-time corrections, each with
+        its own switch: the repositioning charge (`kappa` present: the turnover charge, priced
+        net/paired when `Calendar_Spread_Bps` gives a calendar rate, and its churn term), the
         `Max_Trade_Per_Step` band (`rate_limit` True, so the label path keeps the band
         execution-only) and the `Decision_Deadband_Sigma` incumbent. The band takes the best action
         INSIDE the reachable set and falls back to the unrestricted best when nothing is reachable.
@@ -1397,7 +1398,7 @@ class DiffSolver:
         market0 = market0[rows]
         W0_bank = W_bank[t][rows]
         # the standing book masked by the step that set it: the position state and the book the
-        # charge moves from. With churn_lambda 0 and no kappa the book is inert.
+        # charge moves from. With no kappa the book is inert.
         q_prev = q_bank[t][rows] * (live if live_prev is None else live_prev)
         kappa_t = self._ranking_kappa(t, execution=False)
         # SELECT the action on the NO-GRAD inner draws; EVALUATE its value and pathwise gradients

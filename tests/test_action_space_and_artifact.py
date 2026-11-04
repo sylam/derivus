@@ -1266,6 +1266,23 @@ def test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid(
     assert not frac and all(abs(g) < 5e-6 for g in gaps.values()), (frac, gaps)
 
 
+def test_the_churn_term_is_charged_only_where_the_repositioning_charge_is():
+    """`DiffV2_Churn_Lambda` is a term of the repositioning charge, so under
+    `DiffV2_Repositioning_Charge` 'No' nothing is charged it: the training document at a churn of
+    1e4 a contract squared trains to the V_0 and the greedy books of the one at 0, to the bit. 6 s.
+
+    Killing mutation: the churn term charged wherever a standing book is (`_charge` reading it on
+    its own), the label argmax and the verdict's greedy held flat at the opening book: V_0 0.0280
+    against 0.0794, the greedy net 0 at every decision against -28 at the first."""
+    def trained(churn):
+        cfg = _cfg(seed=7, batch=8, inner=4)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Churn_Lambda'] = churn
+        d = _run(cfg).evaluation_summary['diagnostics']
+        return d['V_0'], d['verdict']['greedy_q_traj']
+    free, churned = trained(0.0), trained(1.0e4)
+    assert churned == free and any(any(q) for q in free[1]), (churned, free)
+
+
 def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
     """`Total_Position_Abs_Limit` caps the absolute signed book total, so the Cartesian grid keeps
     every row whose signed net is inside the cap whatever its gross: the July and October legs on
