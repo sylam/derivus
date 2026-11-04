@@ -378,8 +378,11 @@ PASSIVE_T_MIN = 15
 
 
 def _decisions(world):
-    """The sim-grid rows a solver decides on: the market rows of the job's calendar and the first row."""
-    return {0} | {i - world.initial_time_index for i in world.business_indices}
+    """The sim-grid rows a solver decides on, read off the job's calendar: the first row and every
+    market row before the terminal, the last live liability mark."""
+    r0 = world.initial_time_index
+    return {0} | {t for t in range(world.last_live_mtm_index)
+                  if world.business_day.is_on_offset(world.scenario_dates[r0 + t])}
 
 
 def _whole(q):
@@ -462,7 +465,7 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
 
     W, q_prev, books = L[t0].clone(), torch.zeros(len(LEGS), device=world.device), []
     cost = torch.zeros_like(W)
-    steps = sorted(t for t in decisions if t0 <= t < horizon) + [horizon]
+    steps = sorted(t for t in decisions if t >= t0) + [horizon]
     for t, t1 in zip(steps, steps[1:]):
         q = book(world, t)
         books.extend([q.tolist()] * (t1 - t))           # held over the rows to the next decision
@@ -527,7 +530,7 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
 
     W, q_prev = L[t0].clone(), torch.zeros(len(LEGS), device=world.device)
     cost = torch.zeros_like(W)
-    steps = sorted(t for t in decisions if t0 <= t < horizon) + [horizon]
+    steps = sorted(t for t in decisions if t >= t0) + [horizon]
     for t, t1 in zip(steps, steps[1:]):
         q = book(t)
         cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1) + churn * ((q - q_prev) ** 2).sum(-1)
@@ -828,7 +831,7 @@ def test_consecutive_holidays_hold_every_factor_and_carry_one_market_step(tmp_pa
         var = {k: np.var(x[row(pd.Timestamp(b))] - x[row(pd.Timestamp(a))]) for k, (a, b) in spans.items()}
         for k in ('hol_weekend', 'two_hol'):
             assert abs(var[k] / var['one'] - 1.0) < 0.15, (name, k, var[k] / var['one'])
-    decided = {str(world.scenario_dates[i].date()) for i in world.business_indices}
+    decided = {str(world.scenario_dates[r0 + t].date()) for t in world.decision_steps}
     assert not decided & set(HOLIDAYS), decided & set(HOLIDAYS)
 
 
