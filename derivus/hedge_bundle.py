@@ -803,7 +803,7 @@ def _portfolio_value(state, runtime):
     interest only from the day it landed.
 
     Two accounting modes. `cash_account`: position × price × contract_size plus the cash balances.
-    Futures: cash is FROZEN at starting capital and margin carries every VM and trade-cost flow
+    Futures: cash takes no flows and compounds, and margin carries every VM and trade-cost flow
     since inception, every row settled at its own mark."""
     tradables = runtime["tradables"]
     positions, prices = state["positions"], state["tradable_values"]
@@ -1520,7 +1520,7 @@ class BundleStepper:
         """Advance one day: compound the balances overnight, trade at the DECISION-TIME marks, its
         charge too (the next row's would let an unrelated overnight move distort the spread cost),
         then settle. `cash_account` mode moves each trade's consideration through cash and tracks
-        no VM; futures mode freezes cash at starting capital and settles the post-trade book's
+        no VM; futures mode leaves cash to compound, taking no flows, and settles the post-trade book's
         price(t) → price(t+1) variation margin into margin, so the new delta accrues the move it
         traded into. A book adds whole contracts, `_structured_action` rounding the action; `done`
         reads the python-int time index, so a step costs no CUDA-CPU sync."""
