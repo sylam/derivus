@@ -184,7 +184,7 @@ def run_position_target_schedule(result, target_positions_by_date: dict[str, dic
 
 
 def summarize_terminal_pnl(last):
-    pnl = (last['transition_pnl_excess'] + last['transition_liability_value']).to(dtype=torch.float64)
+    pnl = last['transition_net_pnl'].to(dtype=torch.float64)
     return {
         'mean': float(pnl.mean()),
         'median': float(torch.quantile(pnl, 0.5)),
