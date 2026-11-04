@@ -599,10 +599,13 @@ class HindsightDpSolver:
         # decision's successor, within the per-t action universe. The net-of-cost trajectory is
         # accumulated for the diagnostic.
         q_prev = initial_q_from_runtime(runtime, b_outer, device)    # (B, n_h) opening book
+        steps = bundle.decisions_from(runtime["solver"]["t_min"])
+        logging.debug('hindsight bound decides on rows %s', steps)
         n_star_0 = None
-        G = torch.zeros(b_outer, device=device)
+        # the opening book held to the first decision
+        G = torch.einsum("bi,ib->b", q_prev * cs, F[:, steps[0], :] - F[:, 0, :])
         cost = torch.zeros(b_outer, device=device)
-        for t in bundle.decision_steps:
+        for t in steps:
             grid = aspace.grid_at(t, bundle.marked(t, aspace.hedges))  # (n_actions_t, n_h) per-t
             dF = F[:, bundle.successors[t], :] - F[:, t, :]            # (n_h, B)
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
@@ -612,7 +615,7 @@ class HindsightDpSolver:
                                                aspace.calendar_kappa(tradables_sim, t))
             G = G + best_pnl
             q_prev = q_now
-            if t == 0:
+            if n_star_0 is None:
                 n_star_0 = q_now
         if acc["force_flat_at_end"]:
             # pre-settlement row, as in `run_textbook_benchmark` and `DiffSolver._unwind_kappa`
@@ -2713,7 +2716,7 @@ class DiffSolver:
             self.B_outer, self.levels, self.fit_iters, self.lr, self.contract_size.tolist(),
             self.q_lo.tolist(), self.q_hi.tolist(), self.total_abs_limit)
 
-        self.sweep_ts = sweep_ts = [t for t in self.steps if t >= self.t_min]
+        self.sweep_ts = sweep_ts = self.bundle.decisions_from(self.t_min)
         if not sweep_ts:
             raise ValueError(f"Solver.T_Min={self.t_min} leaves no market row before T_dec={self.T_dec}")
         inner_cache = self._fork_sweep()

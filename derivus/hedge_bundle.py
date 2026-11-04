@@ -1648,6 +1648,11 @@ class Bundle:
         F = torch.stack([tradables_sim[h] for h in runtime['names']['hedges']], dim=0)
         return F, self.liability_sim[self.last_live_mtm_index]
 
+    def decisions_from(self, t_min):
+        """The decision rows at or after sim-grid row `t_min` (`Solver.T_Min`): where the solver
+        sweeps and every bound decides, the opening book held before the first."""
+        return [t for t in self.decision_steps if t >= t_min]
+
     def marked(self, t, refs):
         """`(len(refs),)` 1 or 0: whether each tradable of `refs` is still marked on sim-grid row
         `t`, its deal's dates pricing it there (`last_marked`): the one liveness rule, a leg

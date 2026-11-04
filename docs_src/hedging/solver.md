@@ -95,7 +95,8 @@ terminal, where the hindsight bound stops too, held by
 
 The two tracks named `textbook` are different policies. Both report turnover cost as a diagnostic;
 the comparison track is never charged it, the verdict's only under `DiffV2_Position_State`. The
-hindsight bound steps the solver's decision rows (`Bundle.decision_steps`), held by
+hindsight bound decides where the solver does, on the decision rows from `T_Min`
+(`Bundle.decisions_from`), the opening book held before the first, held by
 `tests/test_action_space_and_artifact.py::test_the_hindsight_bound_decides_where_the_solver_does`.
 
 The verdict rolls the fitted argmax policy over every path of the held-out batch from `T_Min`,

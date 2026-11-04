@@ -140,20 +140,24 @@ def test_active_mask_zeroes_inactive_legs_on_all_tracks():
 
 
 def test_the_hindsight_bound_decides_where_the_solver_does():
-    """The clairvoyant bound decides on the solver's decision rows, each book held to the next: on
-    the fixture with `PL_OCT_2026` alone active, its first book is per path the grid's best position
-    on the realised move from the first row to the next market row, -50 where the move falls and 0
-    where it rises, -29.17 contracts on average (14 of 24 paths short, the move from Friday 10 April
-    to Monday). 3 s.
+    """The clairvoyant bound decides where the solver does, on the decision rows from `T_Min`, each
+    book held to the next and the opening book before the first: on the fixture with `PL_OCT_2026`
+    alone active, swept from row 100, its first book is per path the grid's best position on the
+    realised move from the first decision at or after row 100 to the next, -50 where the move falls
+    and 0 where it rises, -31.25 contracts on average (15 of 24 paths short, the move from
+    Monday 20 July to Tuesday). 3 s.
 
-    Killing mutation: the bound stepping every calendar row (its first book read on the move to the
-    next calendar row, Saturday's, -33.33)."""
+    Killing mutations: the bound stepping every calendar row (its first book read on the move to the
+    next calendar row); the bound deciding from row 0 (`bundle.decision_steps`), its first book read
+    on the move from the first row (-29.17)."""
     result = _run(_cfg(active=[2], benchmarks=True))
     world = result.bundle
     fut = world.tradables_sim['PL_OCT_2026']
-    move = fut[min(t for t in _decisions(world) if t > 0)] - fut[0]
+    t0 = min(t for t in _decisions(world) if t >= 100)
+    move = fut[min(t for t in _decisions(world) if t > t0)] - fut[t0]
     want = [0.0, 0.0, -50.0 * float((move < 0).double().mean())]
-    assert result.evaluation_summary['comparison']['HindsightDpSolver']['n_star'] == pytest.approx(want, abs=1e-5)
+    got = result.evaluation_summary['comparison']['HindsightDpSolver']['n_star']
+    assert got == pytest.approx(want, abs=1e-5), (got, want, world.scenario_dates[world.initial_time_index + t0])
 
 
 def test_the_textbook_bound_holds_its_book_to_the_terminal():
