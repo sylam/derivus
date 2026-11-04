@@ -1520,39 +1520,49 @@ class DiffSolver:
             return None
         return torch.cat([p[..., rows].reshape(-1, n) for p in parts])
 
-    def _project_leaf_grads(self, leaf_grads, widths, rows, n, md):
-        """Map `∂Y/∂(state_t leaf)` for each simulated factor into the `(n, md)` gradient w.r.t.
-        the privileged market_t columns the value net consumes, with the `(md,)` mask of the
-        columns a leaf measured. `widths` is in market-column order as `(key, width,
-        state_suffixes)`, the suffixes being the process's DIFFERENTIABLE state coordinates.
-        Layout: state columns first in declared order, the trailing price columns last. Factors
-        with no state suffix map 1:1 raw to privileged or leave the non-price state unmeasured; a
-        factor missing a state leaf is unmeasured whole. An unmeasured column's gradient is 0,
-        and the mask leaves it to the value term."""
-        g = torch.zeros(n, md, device=self.device)
-        measured = torch.zeros(md, dtype=torch.bool, device=self.device)
+    @classmethod
+    def _leaf_columns(cls, leaves, widths, rows, n):
+        """The market_t columns each factor's state-at-t `leaves` (or their slopes) fill: per factor
+        of `widths` (`(key, width, state_suffixes)` in market-column order, the suffixes the
+        process's DIFFERENTIABLE state coordinates) `(key, segments)`, each segment `(kind,
+        columns, (n, w) block)` over the outer paths in `rows`. Layout: state columns first in
+        declared order, the trailing price columns last; a factor with no state suffix maps 1:1
+        raw to privileged or leaves the non-price state unmeasured, and a factor missing a state
+        leaf is unmeasured whole (no segment). The one walk behind the label projection and its
+        self-check."""
         col = 0
         for key, width, suffixes in widths:
             if width <= 0:                                      # privileged-empty factor (not in market_t)
                 continue
-            gr = leaf_grads.get(key)
+            gr = leaves.get(key)
             kr = (gr[..., rows].numel() // n) if gr is not None else 0         # raw-leaf column count (price)
+            raw = gr[..., rows].reshape(kr, n).transpose(0, 1) if kr else None   # the raw leaf's block
+            price = slice(col + width - kr, col + width)
+            segments = []
             if suffixes:
-                gb = self._state_block(leaf_grads, key, suffixes, rows, n)
+                gb = cls._state_block(leaves, key, suffixes, rows, n)
                 if gb is not None and gb.shape[0] == width - kr:
-                    nb = width - kr
-                    g[:, col:col + nb] = gb.transpose(0, 1)
-                    measured[col:col + nb] = True
-                    if gr is not None and kr >= 1:
-                        g[:, col + nb:col + width] = gr[..., rows].reshape(kr, n).transpose(0, 1)
-                        measured[col + nb:col + width] = True
+                    segments.append(('state', slice(col, col + width - kr), gb.transpose(0, 1)))
+                    if kr >= 1:
+                        segments.append(('price', price, raw))
             elif kr == width:                                                 # 1:1 raw → privileged (curve)
-                g[:, col:col + width] = gr[..., rows].reshape(width, n).transpose(0, 1)
-                measured[col:col + width] = True
-            elif gr is not None and kr >= 1:                                  # unmeasured state + price (raw last)
-                g[:, col + width - kr:col + width] = gr[..., rows].reshape(kr, n).transpose(0, 1)
-                measured[col + width - kr:col + width] = True
+                segments.append(('1:1', price, raw))
+            elif kr >= 1:                                         # unmeasured state + price (raw last)
+                segments.append(('price', price, raw))
+            yield key, segments
             col += width
+
+    def _project_leaf_grads(self, leaf_grads, widths, rows, n, md):
+        """Map `∂Y/∂(state_t leaf)` for each simulated factor into the `(n, md)` gradient w.r.t.
+        the privileged market_t columns the value net consumes (`_leaf_columns`), with the `(md,)`
+        mask of the columns a leaf measured. An unmeasured column's gradient is 0, and the mask
+        leaves it to the value term."""
+        g = torch.zeros(n, md, device=self.device)
+        measured = torch.zeros(md, dtype=torch.bool, device=self.device)
+        for _, segments in self._leaf_columns(leaf_grads, widths, rows, n):
+            for _, cols, block in segments:
+                g[:, cols] = block
+                measured[cols] = True
         return g, measured
 
     # ---- one backward step: bootstrap + advantage twin fit -------------------
@@ -1608,31 +1618,11 @@ class DiffSolver:
         leaves, widths = ig["state_t_leaves"], ig["state_t_leaf_widths"]
         if not getattr(self, "_proj_checked", False):
             self._proj_checked = True                  # one-time self-check of the label projection
-            mt, col, errs = ig["market_t"].detach(), 0, []      # detach: numeric self-check only
-            n = mt.shape[0]
-            for key, width, suffixes in widths:
-                if width <= 0:
-                    continue
-                pl = leaves.get(key)
-                pl = pl.detach() if pl is not None else None
-                kr = (pl.numel() // n) if pl is not None else 0
-                bl = self._state_block(leaves, key, suffixes, slice(None), n)
-                bl = bl.detach() if bl is not None else None
-                if bl is not None and bl.shape[0] == width - kr:               # state + price
-                    nb = width - kr
-                    be = float((mt[:, col:col + nb] - bl.transpose(0, 1)).abs().max())
-                    pe = float((mt[:, col + nb:col + width] - pl.reshape(kr, -1).transpose(0, 1)).abs().max()) \
-                        if pl is not None and kr >= 1 else -1.0
-                    errs.append(f"{utils.check_tuple_name(key)}[state={be:.1g},price={pe:.1g}]")
-                elif not suffixes and pl is not None and kr == width:          # 1:1 raw → privileged
-                    e = float((mt[:, col:col + width] - pl.reshape(width, -1).transpose(0, 1)).abs().max())
-                    errs.append(f"{utils.check_tuple_name(key)}[1:1={e:.1g}]")
-                elif not suffixes and pl is not None and kr >= 1:              # masked state + price
-                    pe = float((mt[:, col + width - kr:col + width] - pl.reshape(kr, -1).transpose(0, 1)).abs().max())
-                    errs.append(f"{utils.check_tuple_name(key)}[maskedstate,price={pe:.1g}]")
-                else:                                                          # leaf absent → masked
-                    errs.append(f"{utils.check_tuple_name(key)}[unmeasured]")
-                col += width
+            mt = ig["market_t"].detach()                       # detach: numeric self-check only
+            errs = [f"{utils.check_tuple_name(key)}[" + (",".join(
+                f"{kind}={float((mt[:, cols] - block.detach()).abs().max()):.1g}"
+                for kind, cols, block in segments) or "unmeasured") + "]"
+                for key, segments in self._leaf_columns(leaves, widths, slice(None), mt.shape[0])]
             logging.info("DiffSolver differential-label projection check (privileged market_t "
                          "cols vs state_t leaves; ≈0 ⇒ ∂Y/∂market_col == ∂Y/∂leaf): %s",
                          " ".join(errs))
