@@ -3095,30 +3095,34 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'conditional_sim measures a per-decision-step schedule off the '
                                   'warmup batch instead of one number'),
                     F('Utility_Scale_Explicit', 'Float', default=None, convention=True,
-                      description='Literal c in money, overriding the formula'),
+                      description='Literal c in money, overriding the vol_scaled_notional formula, '
+                                  'unread under conditional_sim'),
                     F('Utility_Scale_Floor_Frac', 'Float', default=0.05,
                       description='Floor of the conditional_sim schedule, as a fraction of its '
                                   'terminal entry; inert under every other scale mode'),
                     F('Reference_Mode', 'Text', default=None, convention=True,
                       values=['Fixed', 'Running_Wealth'],
-                      description='What the utility is applied to: TERMINAL wealth, or the '
-                                  "day's wealth increment (a per-step reward the DP sums); when "
-                                  "omitted the Object's own, the increment under LogWealth, which "
-                                  'refuses Fixed, and terminal wealth under a utility shape'),
+                      description='What a utility shape is applied to, TERMINAL wealth (when '
+                                  "omitted) or the day's wealth increment, a per-step reward the "
+                                  'DP sums; unread under LogWealth, whose reward is the increment'),
                     F('Reference_Wealth', 'Float', default=0.0,
                       description='Benchmark wealth in money the utility is measured against; '
                                   'every shape works in x = (W - this) / c'),
                     F('Huber_Aversion', 'Float', default=2.5,
-                      description='Curvature of the quadratic loss arm, in units of c'),
+                      description='Curvature of the quadratic loss arm, in units of c, read under '
+                                  'AsymmetricUtility_Huber alone'),
                     F('Huber_Delta', 'Float', default=1.0,
-                      description='Knee beyond which the loss arm goes linear, in units of c'),
+                      description='Knee beyond which the loss arm goes linear, in units of c, read '
+                                  'under AsymmetricUtility_Huber alone'),
                     F('Up_Aversion', 'Float', default=0.0,
-                      description='Curvature of the quadratic GAIN arm, in units of c; 0 leaves '
-                                  'gains exactly linear'),
+                      description='Curvature of the quadratic GAIN arm, in units of c, 0 leaving '
+                                  'gains exactly linear, read under AsymmetricUtility_Huber alone'),
                     F('Up_Knee', 'Float', default=0.15,
-                      description='Knee beyond which the gain arm goes linear, in units of c'),
+                      description='Knee beyond which the gain arm goes linear, in units of c, read '
+                                  'under AsymmetricUtility_Huber alone'),
                     F('CARA_Gamma', 'Float', default=1.0,
-                      description='Absolute risk aversion of u = (1-exp(-gamma x))/gamma')]),
+                      description='Absolute risk aversion of u = (1-exp(-gamma x))/gamma, read '
+                                  'under AsymmetricUtility_CARA alone')]),
               F('Evaluator', 'Container',
                 description='The accounting, the hedge legs\' boxes and frictions, and the action universe',
                 sub_fields=[
@@ -3183,8 +3187,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                F('Instrument', 'Text', default=''),
                                F('Weight', 'Float', default=0.0)]),
                       description='Piecewise-constant split of the net cover across the hedge '
-                                  'legs, each knot in force from its Step, a simulation row, which '
-                                  'Allocation_Mode Exposure requires and no other mode reads')]),
+                                  'legs, each knot in force from its Step, a simulation row, read '
+                                  'under Allocation_Mode Exposure alone, which splits it evenly '
+                                  'over the live active legs when omitted')]),
               F('Solver', 'Container',
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[

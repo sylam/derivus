@@ -1324,25 +1324,37 @@ def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
     assert want == 13 and got == want, (got, want)
 
 
-@pytest.mark.parametrize('mode, table', [(None, True), ('Exposure', False), ('Carry_Variance', True)])
-def test_a_table_is_the_exposure_universe_alone(mode, table):
-    """`Allocation_Weights` is read under `Allocation_Mode` Exposure alone, which requires it: the
-    policy fixture stating a one-knot table under the default mode (Cartesian) or under
-    Carry_Variance, and Exposure stating none, are each refused by name before a path is drawn.
+#: A one-knot table on the October leg, and the even split of the three legs.
+ONE_KNOT = [{'Step': 0, 'Instrument': _HEDGES[2], 'Weight': 1.0}]
+EVEN = [{'Step': 0, 'Instrument': h, 'Weight': 1.0 / 3.0} for h in _HEDGES]
 
-    Killing mutations: the refusal narrowed to Carry_Variance, its old site (a table under Cartesian
-    is read as a ladder, refused only for its 5 rungs over 50 contracts, and Exposure with none
-    searches the product grid), and Exposure's requirement dropped (the latter alone)."""
-    cfg = _cfg()
-    ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
-    if mode is not None:
-        ev['Allocation_Mode'] = mode
-    if table:
-        ev['Allocation_Weights'] = [{'Step': 0, 'Instrument': _HEDGES[2], 'Weight': 1.0}]
-    with pytest.raises(ValueError, match=re.escape(
-            f"Allocation_Mode={mode or 'Cartesian'!r} {'with' if table else 'without'} an "
-            f"Allocation_Weights table")):
-        _run(cfg)
+
+@pytest.mark.parametrize('mode, stated, read', [
+    (None, ONE_KNOT, None), ('Carry_Variance', ONE_KNOT, None), ('Exposure', None, EVEN)],
+    ids=['cartesian', 'carry_variance', 'exposure_omitted'])
+def test_a_table_stated_outside_exposure_changes_nothing(mode, stated, read):
+    """`Allocation_Weights` is read under `Allocation_Mode` Exposure alone, which splits the net
+    cover evenly over the live active legs where it is omitted: the training document stating a
+    one-knot table under the default mode (Cartesian) or, over 51 rungs, under Carry_Variance trains
+    to the V_0 and the greedy books of the one stating none, to the bit, and Exposure stating none
+    to those of Exposure stating the even split. 4 s each.
+
+    Killing mutations: the table read under every mode (`allocation_weights` built whatever the
+    mode, a Cartesian document then searching the October ladder); an omitted table under Exposure
+    read as none (the product grid)."""
+    def trained(table):
+        cfg = _cfg(seed=7, batch=8, inner=4)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        if mode is not None:
+            hp['Evaluator']['Allocation_Mode'] = mode
+        if table is not None:
+            hp['Evaluator']['Allocation_Weights'] = table
+        hp['Objective']['Utility_Scale_Explicit'] = 1.0e5
+        if mode is not None:
+            hp['Solver']['Training_Action_Grid_Levels_Per_Axis'] = 51
+        d = _run(cfg).evaluation_summary['diagnostics']
+        return d['V_0'], d['verdict']['greedy_q_traj']
+    assert trained(stated) == trained(read)
 
 
 def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths():
@@ -1424,21 +1436,20 @@ def test_the_benchmarks_search_the_solver_s_action_universe():
     assert split == (0.0, 1.0, 0.0) and book[0] == book[2] == 0.0 and book[1] < 0.0, (split, book)
 
 
-def test_logwealth_refuses_a_stated_terminal_reference():
-    """`LogWealth` is the per-step growth, so its reference is the day's increment: the training
-    document under LogWealth stating `Reference_Mode` Fixed is refused by name before a path is
-    drawn, and stating Running_Wealth trains to the `V_0` of the one stating none.
+def test_a_reference_mode_stated_beside_logwealth_changes_nothing():
+    """`LogWealth` is the per-step growth, its reward the day's increment, so it reads no
+    `Reference_Mode`: the training document under LogWealth stating Fixed or Running_Wealth trains
+    to the `V_0` of the one stating none, to the bit. 3 s each.
 
-    Killing mutations: the stated Fixed read as the increment (the refusal dropped), which trains;
-    `Reference_Mode` declaring 'Fixed' as its default, which refuses the document stating none."""
+    Killing mutation: a stated Fixed read under LogWealth (the reference taken off the document
+    whatever the Object), which fails, LogWealth defining no terminal utility."""
     def stating(mode):
         cfg = _logwealth(_cfg(batch=8, inner=4))
         if mode is not None:
             cfg['Calc']['Calculation']['Hedging_Problem']['Objective']['Reference_Mode'] = mode
-        return cfg
-    with pytest.raises(ValueError, match="Reference_Mode 'Fixed' beside Object 'LogWealth'"):
-        _run(stating('Fixed'))
-    assert _v0(_run(stating('Running_Wealth'))) == _v0(_run(stating(None)))
+        return _v0(_run(cfg))
+    none = stating(None)
+    assert stating('Fixed') == none and stating('Running_Wealth') == none
 
 
 @pytest.mark.parametrize('deadband, positions', [

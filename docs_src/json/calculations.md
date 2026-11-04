@@ -49,7 +49,7 @@ A container the block states (`Credit_Valuation_Adjustment`, `Funding_Valuation_
 does not reach inside it, so an omitted sub-field reads as whatever the consuming code falls back
 to. `HedgeMonteCarlo` is the exception: it completes its `Hedging_Problem` at every depth it states
 from the declarations (`schema.declared_block`), so there an omitted sub-field reads as its declared
-default (**Held by** `tests/test_action_space_and_artifact.py::test_logwealth_refuses_a_stated_terminal_reference`,
+default (**Held by** `tests/test_action_space_and_artifact.py::test_a_reference_mode_stated_beside_logwealth_changes_nothing`,
 whose document stating no `Reference_Mode` reads its null convention). For the `CreditMonteCarlo`
 containers that is:
 

@@ -37,7 +37,11 @@ where $W_t$ is the cumulative hedge P&L plus the marked liability $L_t$, $F_i$ t
 instrument's mark, $cs_i$ its contract size, $R$ = `Reference_Wealth` and $c$
 the utility scale. This frictionless law is what the solver fits; the environment adds financing,
 margin, costs and rounding ([Bundle](bundle.md)). `Reference_Mode: Running_Wealth` applies $u$ to
-each day's wealth increment instead of $W_T$ and sums the step utilities.
+each day's wealth increment instead of $W_T$ and sums the step utilities; `LogWealth`, whose
+reward is the increment's growth, reads no `Reference_Mode`. A key is read under the mode its
+description names and nowhere else, so stating it under another changes nothing (**Held by**
+`tests/test_action_space_and_artifact.py::test_a_table_stated_outside_exposure_changes_nothing`,
+`::test_a_reference_mode_stated_beside_logwealth_changes_nothing`).
 
 The DP recursion lives in utility space, so `solve_hedge` requires one of these `Objective.Object`
 values:
@@ -62,8 +66,8 @@ The scale $c$ (`Objective.Utility_Scale_Mode`, or the `Utility_Scale_Explicit` o
 | Setting | $c$ |
 | --- | --- |
 | `vol_scaled_notional` (default) | total leg volume × initial spot × annual vol × $\sqrt\tau$, $\tau$ the business days of the job's calendar from the first simulated row to the last settlement / 252, the market clock the vol is annualised on, a window's squared moves over the market days it holds (`tests/test_action_space_and_artifact.py::test_realised_vol_counts_the_market_days_its_window_holds`); spot and vol are batch medians at the start of the simulation, from the spot history or the calibrated process; a degenerate input (no history and no calibrated vol, no volume, a non-positive vol) refused; the horizon held by `tests/test_action_space_and_artifact.py::test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar` |
-| `Utility_Scale_Explicit` | the stated currency amount |
-| `conditional_sim` | per row to the close, the cross-sectional standard deviation of the flat-book wealth's move $L_t-L_0$ on the warmup batch, floored at `Utility_Scale_Floor_Frac` of its terminal entry; refuses `Utility_Scale_Explicit` beside it, and `Running_Wealth` except under `LogWealth` |
+| `Utility_Scale_Explicit` | the stated amount of money, read under `vol_scaled_notional` |
+| `conditional_sim` | per row to the close, the cross-sectional standard deviation of the flat-book wealth's move $L_t-L_0$ on the warmup batch, floored at `Utility_Scale_Floor_Frac` of its terminal entry; reads no `Utility_Scale_Explicit`, and refuses `Running_Wealth` except under `LogWealth` |
 
 $c$ is part of the solver's frame, locked at warmup, a loaded checkpoint evaluating in its own
 ([Solver](solver.md), `DiffSolver`). Under `conditional_sim` the measured schedule sets the level of

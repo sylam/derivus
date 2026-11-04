@@ -127,7 +127,8 @@ def _position_schedule(evaluator_config: Mapping[str, Any]):
 def _allocation_weights(evaluator_config: Mapping[str, Any], hedge_names):
     """The declared ALLOCATION SCHEDULE of `Allocation_Mode` Exposure, which FACTORS the action
     space: the solver chooses one signed NET cover on a fine ladder and this splits it across the
-    hedge legs, instead of searching the Cartesian product of per-leg levels. Absent → None.
+    hedge legs, instead of searching the Cartesian product of per-leg levels. Absent → one knot
+    splitting it evenly, over the live active legs once `HedgeActionSpace._weights_at` reads it.
 
     Declared long — a list of `{Step, Instrument, Weight}` rows, the rows sharing a `Step` being
     one KNOT, piecewise-constant in the decision step like `Total_Position_Schedule`.
@@ -138,7 +139,7 @@ def _allocation_weights(evaluator_config: Mapping[str, Any], hedge_names):
     than reinterpreting intent, and the ladder's `Σ_i round(Q·w_i) == Q` apportionment is exact."""
     raw = evaluator_config["Allocation_Weights"]
     if not raw:
-        return None
+        return ((0, (1.0 / len(hedge_names),) * len(hedge_names)),)
     by_step: Dict[int, Dict[str, float]] = {}
     for row in raw:
         step, name, weight = int(row["Step"]), str(row["Instrument"]), float(row["Weight"])
@@ -285,29 +286,26 @@ def _objective_config(objective_config):
     mean the default: `Reference_Mode` is validated here, `Utility_Scale_Mode` refuses its own."""
     if objective_config is None:
         return None
+    # LogWealth's per-step growth is the day's increment, whatever Reference_Mode states
     logwealth = str(objective_config["Object"]).lower() == "logwealth"
-    stated = objective_config["Reference_Mode"]
-    reference_mode = str(stated or ("Running_Wealth" if logwealth else "Fixed")).lower()
+    reference_mode = ("running_wealth" if logwealth
+                      else str(objective_config["Reference_Mode"] or "Fixed").lower())
     if reference_mode not in ("fixed", "running_wealth"):
         raise ValueError(
             f"Unsupported Objective.Reference_Mode: "
             f"{objective_config['Reference_Mode']!r}. Supported: 'Fixed' (the utility "
             f"is applied to TERMINAL wealth) | 'Running_Wealth' (to the day's wealth increment). "
             f"The value is dispatched on by equality, so a near-miss would silently run 'Fixed'.")
-    if logwealth and reference_mode == "fixed":
-        raise ValueError(
-            "Objective.Reference_Mode 'Fixed' beside Object 'LogWealth', whose per-step growth is "
-            "the day's increment: a contradiction the run refuses rather than arbitrates.")
-    logging.debug("Objective.Reference_Mode %s%s", reference_mode,
-                  " (the Object's own)" if stated is None else "")
-    # every outer path shares L_0, so the raw dispersion at t=0 is exactly 0: a non-positive floor
-    # makes c_0 = 0, x = (W-R)/c_0 infinite, and every label from step 0 a NaN
+    logging.debug("Objective.Reference_Mode %s%s", reference_mode, " (LogWealth's)" if logwealth else "")
     floor_frac = float(objective_config["Utility_Scale_Floor_Frac"])
-    if not floor_frac > 0.0:
-        raise ValueError(f"Objective.Utility_Scale_Floor_Frac must be > 0; got {floor_frac}")
-    if floor_frac > 1.0:
-        logging.warning("Objective.Utility_Scale_Floor_Frac=%.4g is above 1: every knee of the "
-                        "conditional_sim schedule is its floor", floor_frac)
+    if str(objective_config["Utility_Scale_Mode"]).lower() == "conditional_sim":
+        # every outer path shares L_0, so the raw dispersion at t=0 is exactly 0: a non-positive
+        # floor makes c_0 = 0 and every label from step 0 a NaN
+        if not floor_frac > 0.0:
+            raise ValueError(f"Objective.Utility_Scale_Floor_Frac must be > 0; got {floor_frac}")
+        if floor_frac > 1.0:
+            logging.warning("Objective.Utility_Scale_Floor_Frac=%.4g is above 1: every knee of the "
+                            "conditional_sim schedule is its floor", floor_frac)
     return {
         # canonical lowercased form: every dispatch site compares against the lowercase literal
         "object": str(objective_config["Object"]).lower(),
@@ -426,20 +424,13 @@ def construct_hedge_runtime(
             f"per-leg levels) | 'Exposure' (the declared Allocation_Weights table) | "
             f"'Carry_Variance' (solver-derived). Dispatched by equality, so a near-miss would "
             f"silently run another universe.")
-    if bool(evaluator_config["Allocation_Weights"]) != (alloc_mode == "exposure"):
-        raise ValueError(
-            f"Evaluator.Allocation_Mode={evaluator_config['Allocation_Mode']!r} "
-            f"{'with' if evaluator_config['Allocation_Weights'] else 'without'} an "
-            f"Allocation_Weights table: Exposure splits the net cover by the declared table and "
-            f"requires one, and no other mode reads it - a contradiction the run refuses rather "
-            f"than arbitrates.")
     if alloc_mode == "carry_variance" and solver_config is None:
         raise ValueError(
             "Evaluator.Allocation_Mode='Carry_Variance' needs a Solver to derive the "
             "weights (there are no sims to measure carry/tracking from in a non-solve "
             "mode). Declare Allocation_Weights under 'Exposure' instead.")
-    logging.debug("Evaluator.Allocation_Mode %s: %s", alloc_mode, "the declared table"
-                  if alloc_mode == "exposure" else "no table read")
+    logging.debug("Evaluator.Allocation_Mode %s: %s", alloc_mode, "the table, the even split when "
+                  "omitted" if alloc_mode == "exposure" else "no table read")
     return {
         "accounting_mode": str(evaluator_config["Accounting_Mode"]).lower(),
         "names": {
@@ -487,7 +478,8 @@ def construct_hedge_runtime(
             "total_position_abs_limit":
                 float(evaluator_config["Total_Position_Abs_Limit"]),
             "total_position_schedule": _position_schedule(evaluator_config),
-            "allocation_weights": _allocation_weights(evaluator_config, hedge_names),
+            "allocation_weights": (_allocation_weights(evaluator_config, hedge_names)
+                                   if alloc_mode == "exposure" else None),
             "allocation_mode": alloc_mode,
             "max_trade_per_step": float(evaluator_config["Max_Trade_Per_Step"]),
             "decision_deadband_sigma":
@@ -1117,16 +1109,12 @@ class Bundle:
                 "Utility_Scale_Explicit to override the formula with a literal value in money.")
         explicit = objective['utility_scale_explicit']
         if mode == 'conditional_sim':
-            if explicit is not None:
-                raise ValueError(
-                    "Objective.Utility_Scale_Explicit is set beside "
-                    "Utility_Scale_Mode='conditional_sim', which measures c: drop one of them.")
             self.utility_scale_schedule = self._conditional_sim_schedule(objective)
             if self.utility_scale_schedule is not None:
                 return float(self.utility_scale_schedule[-1])
             # one outer path carries no cross-section to measure, so the formula below stands in
             # as the placeholder frame a frozen roll replaces from its checkpoint
-        if explicit is not None:
+        elif explicit is not None:
             return explicit
         # tau measures the SIM horizon: the market time from the sim-grid origin through the close
         H = self.initial_time_index
