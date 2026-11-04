@@ -1045,16 +1045,10 @@ def _pnl_excess(state, runtime):
 
 
 def _tracking_error_value(state, runtime):
-    """The hedge-quality read — `pnl_excess + liability_mtm + cumulative_liability_value`, which
-    an optimal hedge holds at ≈0 at EVERY step.
-
-    All three channels are required: `liability_mtm` alone drops by the cashflow amount on a
-    payment date, injecting a ±cf shock unrelated to any action. The sum across the two liability
-    channels is continuous across that boundary and matches the terminal invariant."""
+    """The hedge-quality read — `pnl_excess + liability_value`, which an optimal hedge holds at ≈0
+    at EVERY step."""
     pnl_excess = _pnl_excess(state, runtime).to(dtype=MONEY)
-    liability_mtm = state["liability_mtm_value"].to(dtype=MONEY, device=pnl_excess.device)
-    cumulative = state["cumulative_liability_value"].to(dtype=MONEY, device=pnl_excess.device)
-    return pnl_excess + liability_mtm + cumulative
+    return pnl_excess + state["liability_value"].to(dtype=MONEY, device=pnl_excess.device)
 
 
 def _align_time_axis(tensor, steps):
@@ -1096,8 +1090,8 @@ class Bundle:
         '  price is ABSENT rather than zero. A leg is live on the rows its deal\'s dates mark',
         '  (`marked`) and moves over a step it is still marked at the end of, the step carrying',
         '  market time (`moving`): the one liveness rule every track reads.',
-        '- **Liability** — `liability_mtm` / `liability_sim`, plus `realized_cashflows`, and',
-        '  `unfixed_at`: the signed quantity its fixings still carry after a row.',
+        '- **Liability** — `liability_value` / `liability_sim`: its mark plus the cash it has paid',
+        '  on earlier rows, and `unfixed_at`: the signed quantity its fixings still carry after a row.',
         '- **Factors** — the simulated factor paths, and `privileged_factors`: whatever each process',
         '  publishes as market state.',
         '- **Frame** — `utility_scale` (the objective scale `c`), its optional per-decision-step',
@@ -1138,8 +1132,7 @@ class Bundle:
         self.last_marked = {}               # {instrument: the last sim-grid row its deal marks}
         self.factors = {}                   # {factor name: (T, …, B)} scenario paths
         self.privileged_factors = {}        # {name: (T, B, dim)} process-revealed state
-        self.liability_mtm = None           # (T, B) marked liability, or None
-        self.realized_cashflows = {}        # {currency: (T, B)} paid cashflows
+        self.liability_value = None         # (T, B) the liability's value, or None
         self.spot_price_history = {}        # {commodity: (H, B)} realized history prefix
         # Frame + liability descriptors.
         self.spot_realized_vol = {}         # {commodity: (T, B)} rolling realized vol
@@ -1253,21 +1246,19 @@ class Bundle:
 
     def _resolve_liability(self, mtm, cashflows, steps, total_leg_volume, last_payment_day,
                            fixings):
-        """Stage 2 — the marked liability, the realized cashflow ledger, the two schedule
-        scalars the utility scale needs and the liability's fixings `unfixed_at` reads.
+        """Stage 2 — the liability's value, its mark plus the cash it has paid on earlier rows, the
+        two schedule scalars the utility scale needs and the liability's fixings `unfixed_at` reads.
         `last_live_mtm_index` is the structural pre-settlement terminal: the grid appends one
         clean-exit row where the liability settles to zero, so the last LIVE mtm row is
         `steps - 2` — the single source for the DP depth and the L_T read."""
         if mtm is not None:
             mtm = _align_time_axis(mtm, steps)
-            mtm = torch.cat([self._history_prefix(mtm), mtm], dim=0)
-        self.liability_mtm = mtm
-        self.realized_cashflows = {}
-        for currency, tensor in cashflows.items():
-            tensor = _align_time_axis(tensor, steps)
-            # nothing was paid before the sim starts: the prefix is zeros, not a repeat
-            self.realized_cashflows[currency] = torch.cat(
-                [torch.zeros_like(self._history_prefix(tensor)), tensor], dim=0)
+            paid = sum((_align_time_axis(t, steps) for t in cashflows.values()), torch.zeros_like(mtm))
+            # the mark carries a payment on its own row and drops it after, so the cash paid on
+            # earlier rows joins it: the liability's value is continuous across a payment
+            value = mtm + torch.cat([torch.zeros_like(paid[:1]), paid.cumsum(0)[:-1]])
+            logging.debug('liability value: cash paid on rows %s', paid.any(-1).nonzero().flatten().tolist())
+            self.liability_value = torch.cat([self._history_prefix(value), value], dim=0)
         self.last_live_mtm_index = T = int(steps - 2)
         # decisions on the rows of market time, the rows the market-clock laws step on, and on the
         # first row whatever its day, where the opening book is traded
@@ -1504,7 +1495,7 @@ class Bundle:
         WHICH OBJECT. `liability_sim[t]` is the wealth the DP itself carries under a flat book —
         `DiffSolver._build_bank` opens at `W = L[0]` and telescopes `W + Σ q·cs·dF + (L[t+1] −
         L[t])` — so its dispersion at t is the money the day's decision is about, in the reward's
-        own units. `BundleStepper._tracking_error_value` is the same read one layer down, but it is
+        own units. `_tracking_error_value` is the same read one layer down, but it is
         POSITION-dependent and defined only on a rollout, so it cannot be frame-locked.
 
         THE FLOOR is a fraction of the TERMINAL entry. Every outer path shares `L_0`, so the
@@ -1524,11 +1515,11 @@ class Bundle:
         Measured ONCE at the frame lock, frozen by the solver, stamped into the checkpoint and
         refused on mismatch: it is deterministic in the state and identical across every world the
         policy is rolled in."""
-        if self.liability_mtm is None:
+        if self.liability_value is None:
             raise ValueError(
                 "Objective.Utility_Scale_Mode='conditional_sim' needs a marked liability: the "
                 "schedule is the dispersion of the flat-book wealth path and this bundle has no "
-                "liability_mtm to measure it on.")
+                "liability_value to measure it on.")
         L = self.liability_sim[:self.last_live_mtm_index + 1].to(dtype=torch.float32)
         if int(L.shape[-1]) < 2:
             return None
@@ -1598,8 +1589,8 @@ class Bundle:
 
     @property
     def liability_sim(self):
-        """History-stripped liability MTM `(t_outer, B)`."""
-        return self.liability_mtm[self.initial_time_index:]
+        """History-stripped liability value `(t_outer, B)`."""
+        return self.liability_value[self.initial_time_index:]
 
     @property
     def vol_sim(self):
@@ -1635,19 +1626,11 @@ class Bundle:
         return self.marked(landing, refs) * float(sum(self.market_time[t + 1:landing + 1]) > 0)
 
     def liability_at(self, time_index):
-        """Marked liability `(B,)` at full-grid step `time_index` (zeros when there is none), in
-        the accounting's `MONEY`."""
-        if self.liability_mtm is None:
+        """The liability's value `(B,)` at full-grid step `time_index` (zeros when there is none),
+        in the accounting's `MONEY`."""
+        if self.liability_value is None:
             return torch.zeros(self.batch_size, dtype=MONEY, device=self.device)
-        return self.liability_mtm[time_index].to(dtype=MONEY, device=self.device)
-
-    def cashflow_at(self, time_index):
-        """Realized cashflow `(B,)` paid at full-grid step `time_index`, summed over currencies,
-        in `MONEY`."""
-        total = torch.zeros(self.batch_size, dtype=MONEY, device=self.device)
-        for tensor in self.realized_cashflows.values():
-            total = total + tensor[time_index].to(dtype=MONEY, device=self.device)
-        return total
+        return self.liability_value[time_index].to(dtype=MONEY, device=self.device)
 
     def unfixed_at(self, time_index):
         """Signed liability quantity still to fix after full-grid step `time_index`: the summed
@@ -1769,7 +1752,7 @@ class BundleStepper:
             'done': self.done,
             'positions': dict(self._state['positions']),
             'tradable_values': dict(self._state['tradable_values']),
-            'cumulative_liability_value': self._state['cumulative_liability_value'],
+            'liability_value': self._state['liability_value'],
         }
 
     def step(self, action=None):
@@ -1906,8 +1889,6 @@ class BundleStepper:
             'cash_accounts': self._seed_by_name(portfolio_state['cash_balances'], self._cash_names),
             'margin_accounts': self._seed_by_name(portfolio_state['margin_balances'], self._cash_names),
             'variation_margin': self._zeros_by_name(self._hedges),
-            'cumulative_liability_value': torch.zeros(self._batch_size, dtype=MONEY,
-                                                      device=self._device),
         }
         state = self._refresh(state, initial_time_index)
         # the baseline `_pnl_excess` measures the change from
@@ -1916,9 +1897,8 @@ class BundleStepper:
 
     def _refresh(self, state, time_index):
         """Cheap per-step refresh: re-read the price/liability views at `time_index` and carry
-        the simulator state forward. `cumulative_liability_value` absorbs the step's realized
-        cashflow so the liability channel stays continuous across payment dates."""
-        refreshed = {
+        the simulator state forward."""
+        return {
             'time_index': int(time_index),
             'done': state['done'],
             'positions': state['positions'],
@@ -1926,13 +1906,9 @@ class BundleStepper:
             'margin_accounts': state['margin_accounts'],
             'variation_margin': state['variation_margin'],
             'tradable_values': self._values_at(time_index),
-            'liability_mtm_value': self.bundle.liability_at(time_index),
-            'realized_cashflow_value': self.bundle.cashflow_at(time_index),
+            'liability_value': self.bundle.liability_at(time_index),
             'initial_portfolio_value': state.get('initial_portfolio_value'),
         }
-        refreshed['cumulative_liability_value'] = (
-            state['cumulative_liability_value'] + refreshed['realized_cashflow_value'])
-        return refreshed
 
     def _step_state(self, state, action):
         if self.runtime['accounting_mode'] == 'cash_account':
@@ -2057,7 +2033,6 @@ class BundleStepper:
             'margin_accounts': state['margin_accounts'],
             # cash mode tracks no daily VM
             'variation_margin': self._zeros_by_name(self._hedges),
-            'cumulative_liability_value': state['cumulative_liability_value'],
             'initial_portfolio_value': state['initial_portfolio_value'],
         }
         return self._refresh(next_state, next_idx)
@@ -2104,7 +2079,6 @@ class BundleStepper:
             'cash_accounts': next_cash,
             'margin_accounts': next_margin,
             'variation_margin': variation_margin,
-            'cumulative_liability_value': state['cumulative_liability_value'],
             'initial_portfolio_value': state['initial_portfolio_value'],
         }
         return self._refresh(next_state, settlement_idx)
@@ -2113,12 +2087,12 @@ class BundleStepper:
         """This transition's terminal read: `pnl_excess` is the wealth change since inception and
         is only marked at the terminal step (a sync-free check on time_index — `done` is uniform
         across the batch since every scenario advances together); `liability_value` is the
-        cumulative realized liability, always carried."""
+        liability's value at the row, always carried."""
         pnl_excess = (_pnl_excess(state, self.runtime).to(device=self._device)
                       if int(state['time_index']) >= self._last_idx
                       else torch.zeros(self._batch_size, dtype=MONEY, device=self._device))
         return {'pnl_excess': pnl_excess,
-                'liability_value': state['cumulative_liability_value'].to(device=self._device)}
+                'liability_value': state['liability_value'].to(device=self._device)}
 
     # ---- diagnostic CSV assembly ---------------------------------------------
     def _rollout(self):
@@ -2142,14 +2116,7 @@ class BundleStepper:
                 f"Diagnostic CSV writer expects exactly one commodity-spot factor in the bundle; "
                 f"got {spot_keys}. Multi-commodity diagnostic output is not yet implemented.")
         spot = bundle.factors[spot_keys[0]].detach().cpu().float()
-        mtm_running = bundle.liability_mtm.detach().cpu().float()
-        T, B = mtm_running.shape
-
-        nonzero = (mtm_running != 0)
-        last_nz = (nonzero * torch.arange(T).unsqueeze(1)).max(dim=0).values
-        fill_mask = torch.arange(T).unsqueeze(1).expand(T, B) > last_nz.unsqueeze(0)
-        realised = mtm_running.gather(0, last_nz.unsqueeze(0)).expand(T, B)
-        mtm = torch.where(fill_mask, realised, mtm_running)
+        T, B = spot.shape
 
         # per-step vol `(T, 1)` for the vol-scaled kappa, index-aligned with the full-grid marks;
         # None when no vol series was built, and inert on the scalar-spread fast path
@@ -2159,6 +2126,10 @@ class BundleStepper:
         # each mark held at the terminal past it, as `_values_at`, gathered by index: a copy, where
         # `.cpu().float()` of a CPU float32 world is the world's own tensor
         held_at = torch.arange(T).clamp(max=self._close_idx)
+        # the liability's value, the stepper's, held at the terminal past it as the marks are
+        liability = bundle.liability_value.detach().cpu().float()[held_at]
+        logging.debug('CSV liability at the terminal row %d: %s', self._close_idx,
+                      liability[self._close_idx].tolist())
         for name in self._hedges:
             cs = float(runtime['tradables'][name]['contract_size'])
             fut = bundle.tradables[name].detach().cpu().float()[held_at]
@@ -2191,12 +2162,12 @@ class BundleStepper:
         hp = portfolio_cum_cash + portfolio_pos_mtm - portfolio_cum_cost
         return {
             'spot': spot, 'spread_bps': float(runtime['accounting']['bid_offer_spread_bps']),
-            'per_instr': per_instr, 'mtm': mtm,
+            'per_instr': per_instr, 'liability': liability,
             'portfolio_position_mtm': portfolio_pos_mtm,
             'portfolio_cum_trade_cash': portfolio_cum_cash,
             'portfolio_cum_trade_cost': portfolio_cum_cost,
             'hedge_portfolio_ex_funding': hp,
-            'total_ex_funding_discount': mtm + hp,
+            'total_ex_funding_discount': liability + hp,
         }
 
     def _diag_write_paths(self, fields, label, csv_path):
@@ -2227,7 +2198,7 @@ class BundleStepper:
             row['portfolio_cum_trade_cash'] = float(getter(fields['portfolio_cum_trade_cash'][t]).item())
             row['portfolio_cum_trade_cost'] = float(getter(fields['portfolio_cum_trade_cost'][t]).item())
             row['hedge_portfolio_ex_funding'] = float(getter(fields['hedge_portfolio_ex_funding'][t]).item())
-            row['mtm_ex_post_settle_discount'] = float(getter(fields['mtm'][t]).item())
+            row['liability_ex_post_settle_discount'] = float(getter(fields['liability'][t]).item())
             row['total_ex_funding_discount'] = float(getter(fields['total_ex_funding_discount'][t]).item())
             return row
 

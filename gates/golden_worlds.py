@@ -22,8 +22,8 @@ import torch
 
 FIX = os.path.join(REPO, 'tests/fixtures/policy_test_simulate_only.json')
 BUNDLE_KEYS = (
-    'time_grid_days', 'time_grid_days_cpu', 'tradables', 'factors', 'liability_mtm',
-    'realized_cashflows', 'spot_price_history', 'spot_realized_vol', 'privileged_factors',
+    'time_grid_days', 'time_grid_days_cpu', 'tradables', 'factors', 'liability_value',
+    'spot_price_history', 'spot_realized_vol', 'privileged_factors',
     'step_annual_vol', 'utility_scale', 'initial_time_index', 'last_live_mtm_index',
     'decision_steps', 'total_leg_volume', 'last_settlement_index', 'scenario_dates',
     'calibrated_utility_inputs',

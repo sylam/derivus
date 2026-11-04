@@ -155,6 +155,11 @@ terminal's mark and vol as the stepper and the verdict close a book, so at zero 
 it was. Held by
 `tests/test_action_space_and_artifact.py::test_the_diagnostic_csv_books_the_forced_close_on_the_terminal`
 and `::test_writing_the_csv_leaves_the_world_as_it_was`.
+The liability's value at a row is its mark plus the cash it has paid on earlier rows
+(`Bundle.liability_value`; the mark carries a payment on its own row and drops it after), the one
+series the solver, the verdict, the stepper and its CSV read, so a payment before the terminal
+stays in every track's wealth. Held by
+`tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`.
 Each leg pays its own share of a reposition's turnover charge (`hedge_bundle.leg_charges`, the
 charge the solver ranks the move at split by `turnover_charge`, a matched pair's calendar price half
 on each of its legs) from the account its currency routes it to, in the stepper and its CSV alike.

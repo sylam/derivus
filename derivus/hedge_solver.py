@@ -3237,7 +3237,7 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     the per-track table and the verdict's `wT_mean` stay comparable."""
     solver_cfg = runtime["solver"]
     obj = solver_cfg["object"]
-    have_liability = bundle.liability_mtm is not None
+    have_liability = bundle.liability_value is not None
     primary = primary_runs[0]
     comparison = {primary.solver_name: SolverResult.multiseed_summary(primary_runs)}
 
@@ -3247,7 +3247,7 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
                              ("run_textbook_benchmark", "textbook")):
             if solver_cfg[flag] and not have_liability:
                 logging.warning("solve_hedge: %s requested but bundle has no "
-                                 "liability_mtm — track skipped", label)
+                                 "liability_value — track skipped", label)
         if solver_cfg["run_hindsight_diagnostic"] and have_liability:
             comparison["HindsightDpSolver"] = SolverResult.multiseed_summary(
                 [HindsightDpSolver(bundle, runtime).solve()])     # deterministic — one run
