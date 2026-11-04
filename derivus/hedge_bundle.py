@@ -1410,9 +1410,11 @@ class Bundle:
         symlog). Single source of truth — every reward and penalty reads `Bundle.utility_scale`.
 
         Modes (`Objective.Utility_Scale_Mode`): `vol_scaled_notional` (default) gives
-        c = total_leg_volume × initial_spot × σ_annual × √τ; `conditional_sim` measures a
-        per-decision-step SCHEDULE off this batch instead and takes its terminal entry as the
-        scalar (`_conditional_sim_schedule`); `Objective.Utility_Scale_Explicit` overrides the
+        c = total_leg_volume × initial_spot × σ_annual × √τ, τ the business days of the job's
+        calendar from the first simulated row to the last settlement over 252, the market clock σ
+        is annualised on; `conditional_sim` measures a per-decision-step SCHEDULE off this batch
+        instead and takes its terminal entry as the scalar (`_conditional_sim_schedule`);
+        `Objective.Utility_Scale_Explicit` overrides the
         formula with a literal dollar value and is REFUSED beside the schedule mode.
 
         Under a utility objective every degenerate path RAISES: a floor-c symlog breaks tail
@@ -1468,7 +1470,9 @@ class Bundle:
         H = self.initial_time_index
         if self.last_settlement_index is None:
             return _degenerate("last_settlement_index missing from the bundle")
-        tau_years = max(float(int(self.last_settlement_index) - H) / 252.0, 1.0 / 252.0)
+        market = utils.market_days(self.scenario_dates[H:int(self.last_settlement_index) + 1],
+                                   self.business_day).sum()
+        tau_years = max(float(market) / 252.0, 1.0 / 252.0)
         if not self.spot_price_history and self.calibrated_utility_inputs is None:
             return _degenerate(
                 "spot_price_history is empty and no calibrated underlying vol is available "

@@ -47,13 +47,13 @@ def _cfg(inner_antithetic='Yes'):
 
 def test_diffsolverv2_bounded_and_hedges_oos():
     """The antithetic inner fold (mirrored (z, -z) pairs on the inner axis), seed 1234, read on
-    the held-out batch: V_0 0.186 and max|Y_boot| 0.195 against a bound of 1; the April contract
-    has expired before the sweep window and carries no position; greedy E[u] 0.100 against
-    no-hedge 0.077. The plain Sobol fold reads 0.180, 0.192 and 0.115 - the same gates.
+    the held-out batch: V_0 0.139 and max|Y_boot| 0.231 against a bound of 1; the April contract
+    has expired before the sweep window and carries no position; greedy E[u] 0.0425 against
+    no-hedge 0.0135. The plain Sobol fold reads 0.138, 0.230 and 0.0541 - the same gates.
 
-    Killing mutations: the expired-contract guard off (`live` all ones in `_inner_step`) - V_0 and
-    max|Y_boot| 10.37, 41.9 contracts parked on the dead April leg, greedy no better than no-hedge;
-    the greedy book inverted - E[u] 0.053 against no-hedge 0.077."""
+    Killing mutations: the expired-contract guard off (`live` all ones in `_inner_step`) - 42.2
+    contracts parked on the dead April leg; the greedy book inverted - E[u] -0.0195 against
+    no-hedge 0.0135."""
     cx = rf.Context()
     cx.load_json((jsonlib.dumps(_cfg()), 'diffml_v2_oos.json'))
     _, result = cx.run_job()

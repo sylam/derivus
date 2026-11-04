@@ -657,14 +657,14 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     notional, in one spelling (`_w_norm`) on every path a net is fitted or read on. A training
     document under the scale-free LogWealth objective with the returns state on then fits its
     labels: the fitted residual tracks the bootstrap label from the first backward step, the
-    sweep's `V_0` reads 0.11008480936288834 on the CPU (0.0859 on a card: the twelve-path,
+    sweep's `V_0` reads 0.10793102532625198 on the CPU (0.0859 on a card: the twelve-path,
     five-iteration fit is device-rounded) and the same document at twice every dollar trains
     to the same `V_0` within 1e-6, since the frame is dimensionless.
 
     Killing mutation: the fit loop and the ensemble path feeding wealth in dollars to the
     fraction frame (the three spellings this gate retired) - the net sees a column a million
     standard deviations wide, fits a residual an order of magnitude too small at the first step,
-    the sweep reads V_0 0.018413538113236427 (0.0162 on a card) and the doubled document no
+    the sweep reads V_0 0.01840450055897236 (0.0162 on a card) and the doubled document no
     longer trains alike."""
     cfg = _cfg(seed=7)
     cfg['Calc']['Calculation']['Deterministic_Kernels'] = 'Yes'     # the two fits repeat to the bit on a card
@@ -965,7 +965,7 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     out, is nil: the verdict and the stepper roll hold one greedy book at every decision and one
     passive book in whole contracts, and each closes its book at the terminal, the last live
     liability mark, at the declared 10 bp spread, so their terminal wealths agree within 5e-6
-    relative (greedy 1.9e-8, passive 5.1e-7), the no-hedge track's to the bit; so too under a
+    relative (greedy 1.6e-7, passive 5.1e-7), the no-hedge track's to the bit; so too under a
     `Max_Trade_Per_Step` of 2 on the roll, with its first greedy decision measured from the passive
     book under `DiffV2_First_Decision_From` 'Passive', and with the matched half of a roll at a 3 bp
     `Calendar_Spread_Bps`, which the verdict's charge and the stepper's rebate both read. 3 s each.
@@ -973,9 +973,9 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     Killing mutations: the stepper holding the last book one row past the terminal to the
     clean-exit row and unwinding there (greedy +2,502, 1.8%); the passive book in fractional contracts
     the stepper rounds to whole ones (passive +52.5, 2.0e-3); the stepper roll's `_decide` without
-    its band (`rate_limit=False`), its first book (3, 2) against the verdict's (1, 1); the verdict's
-    first decision measured from the opening book under 'Passive' (its first book (1, 1) against
-    the stepper's (-15, -15)); the stepper's
+    its band (`rate_limit=False`), its first book (3, 2) against the verdict's (1, 1), greedy 48%
+    apart; the verdict's first decision measured from the opening book under 'Passive' (its first
+    book (1, 1) against the stepper's (-15, -15), greedy 46% apart); the stepper's
     rebate unarmed, the verdict's charge pricing the roll the stepper pays outright (passive 2.0%)."""
     d = _replayed_roll(tmp_path, doc, **declared)
     v, sv = d['verdict'], d['stepper_verdict']
@@ -1178,7 +1178,7 @@ def test_a_first_row_of_no_market_time_is_one_decision_for_the_verdict_and_the_s
 
     Killing mutation: the stepper deciding on `business_indices`, which leaves out a first row of no
     market time, so its roll first decides on Monday 13 (row 3) and holds the opening book over the
-    move the verdict holds its first book over (greedy -5.9%, passive -67%)."""
+    move the verdict holds its first book over (greedy -8.1%, passive -67%)."""
     calendar = str(tmp_path / 'calendars.cal')
     with open(calendar, 'w') as f:
         f.write('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday and Sunday" '
@@ -1269,7 +1269,7 @@ def test_a_fit_whose_value_outruns_its_held_out_utility_saves_nothing(growth, tm
 def test_an_ensemble_whose_members_disagree_beyond_the_declaration_is_refused(tmp_path):
     """`DiffV2_Max_Member_Disagreement` bounds the mean absolute difference, in contracts, between
     two ensemble members' swept net books. Two checkpoints of one document trained under seeds 7
-    and 11 sweep books 4.64 contracts apart on average over their 12 swept steps on the CPU: a
+    and 11 sweep books 4.73 contracts apart on average over their 12 swept steps on the CPU: a
     two-member roll loads at the default 8 and is refused at 0, naming the field, both
     members and the distance the two checkpoints' swept books give.
 
@@ -1510,15 +1510,15 @@ def test_a_label_past_the_horizon_is_what_its_greedy_policy_realises(objective, 
     was fitted on: the swap growth document under seed 6 at a horizon of 100 steps, past its 32,
     trains a V_0 within 0.006 of the `u_mean` its checkpoint's frozen roll on the training batch
     realises (the roll's first greedy book the training root's). On the CPU 0.0981 against 0.0991
-    under LogWealth and 0.1627 against 0.1630 under the fixture's terminal utility; seeds 1 to 8
+    under LogWealth and 0.1899 against 0.1906 under the fixture's terminal utility; seeds 1 to 8
     on a card read within 0.0031. 35 s each.
 
     Killing mutations, V_0 against the roll's utility: the roll's wealth recursion gross of the
-    charge (its `u_mean` 0.1113 and 0.1760 against the net 0.0991 and 0.1630, 0.010 to 0.016 above
+    charge (its `u_mean` 0.1113 and 0.2059 against the net 0.0991 and 0.1906, 0.010 to 0.016 above
     V_0 on every seed 1 to 8); the correction's sign flipped (the recursion runs away, V_0 -1.5e6
-    under both); the k-step end read at the bank's own wealth (terminal 0.0529 against 0.1360;
+    under both); the k-step end read at the bank's own wealth (terminal 0.0625 against 0.1592;
     LogWealth's end at the horizon is zero at any wealth); the rollout's charge dropped (0.1119
-    against 0.1010, 0.1735 against 0.1624); the rewards after the first move dropped (growth
+    against 0.1010, 0.2049 against 0.1910); the rewards after the first move dropped (growth
     0.0011 against 0.0757); k not clipped at the horizon (refused at the last step, which has no
     successor in the cache)."""
     ckpt = str(tmp_path / 'value_fn.pt')
@@ -1715,22 +1715,22 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     sigma^2, mu the level leaf less D, so each column's label is its slope at the others fixed: D's
     -dY/dmu, the level's dY/db + dY/dmu. On the fixture under the band (D the 7th market column, log
     sigma^2 the 8th, the level the 9th), over the eight swept decision steps, Friday's forking to
-    Monday among them: the fitted slopes in D and log sigma^2 sum within 1.4% and 0.9% of their
-    labels, and in the net's standardised coordinates every column's within 1.2% of the largest
+    Monday among them: the fitted slopes in D and log sigma^2 sum within 0.3% and 2.2% of their
+    labels, and in the net's standardised coordinates every column's within 2.8% of the largest
     label (bound 15%: the twin loss meets a label in the bank mean of 24 states beside the value
     term, not exactly). At the last step, whose continuation is the closed-form utility, the level's
-    label is 0.1% of D's (bound 1%): shifting
+    label is 0.11% of D's (bound 1%): shifting
     the level and its slow mean together leaves the move's law unchanged; and under
     `DiffV2_Returns_State`, whose basis price columns are fractions of the 2,055 t0 spot, D's and the
     level's are 2,055 times the plain ones and log sigma^2's the plain one. 11 s.
 
     Killing mutations: the leaves not made (D's label 0); mu seeded off the outer level rather than
-    the level leaf (the level's label at the last step D's, 17% off in standardised slope); the
+    the level leaf (the level's label at the last step D's, 16% off in standardised slope); the
     seeds detached from their leaves (D's label 0); the returns state's map dropped (ratio 1), or
     read on log sigma^2 too (its ratio 2,055); the
     wealth step differencing the fork's t+1 marks against the outer t marks, which carry no
-    gradient (the level's label at the last step 5.0 times D's, the price column's standardised
-    label -0.042 against a slope of -0.0007)."""
+    gradient (the level's label at the last step 5.0 times D's, a price column's standardised
+    label -0.045 against a slope of 0.0033)."""
     ckpt = str(tmp_path / 'value_fn.pt')
     on, rs = _state_labels(caplog, save=ckpt), _state_labels(caplog, returns=True)
     slope_on, label_on = (sum(on[t][i] for t in on) for i in (0, 1))
@@ -1775,14 +1775,14 @@ def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
     price, the basis level) is labelled with the move's slope rather than the t+1 mark's. On the
     `FRICTIONAL` solve with `BAND_BASIS` (D the 7th of 8 market columns, the level the 8th), at the
     last step, whose continuation is the closed-form utility and whose book hedges the last fixing,
-    the level's label is 0.009% of D's label summed over the six swept steps (0.025% on the card,
+    the level's label is 0.010% of D's label summed over the six swept steps (0.025% on the card,
     bound 1%): moving the level and its slow mean together leaves the move unchanged; and D's fitted
-    slope sums within 0.2% of its label (2.2% on the card, bound 15%). Seeds 1 to 13 read at most
-    0.064% and 9% on the CPU, 0.026% and 16% on the card (its seed 9 past the bound). 7 s.
+    slope sums within 1.1% of its label (2.2% on the card, bound 15%). Seeds 1 to 13 read at most
+    0.065% and 5.2% on the CPU, 0.026% and 16% on the card (its seed 9 past the bound). 7 s.
 
     Killing mutation: the wealth step differencing the fork's t+1 marks against the outer t marks,
-    which carry no gradient (the level's label at the last step 17% of D's summed label, 40% and
-    53% on seeds 2 and 4; 35%, 36% and 31% on the card)."""
+    which carry no gradient (the level's label at the last step 19% of D's summed label, 39% and
+    48% on seeds 2 and 4; 35%, 36% and 31% on the card)."""
     run = _state_labels(caplog, band=True)
     last = run[LAST_STEP][1]
     slope, label = (sum(run[t][i] for t in run) for i in (0, 1))
