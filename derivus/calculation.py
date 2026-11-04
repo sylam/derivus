@@ -734,6 +734,21 @@ class CMC_State(utils.Calculation_State):
         self.quasi_batch = batch_num
         self.t_quasi_rng_batch = {}
 
+    @contextlib.contextmanager
+    def own_stream(self, seed):
+        """Draw on streams of their own seeded by `seed`, the generator's and the quasi stream's,
+        leaving this state's where they stood."""
+        held = self.quasi_seed, self.sobol_position, self.sobol_engine, self.t_quasi_rng_batch
+        with torch.random.fork_rng(devices=[self.one.device] if self.one.is_cuda else []):
+            torch.manual_seed(seed)
+            self.quasi_seed, self.sobol_position, self.sobol_engine, self.t_quasi_rng_batch = (
+                seed, {}, {}, {})
+            try:
+                yield
+            finally:
+                (self.quasi_seed, self.sobol_position, self.sobol_engine,
+                 self.t_quasi_rng_batch) = held
+
     def reset_cashflows(self, time_grid):
         self.t_Cashflows = {k: {t_i: self.one.new_zeros(self.simulation_batch)
                                 for t_i in np.where(v >= 0)[0]} for k, v in time_grid.CurrencyMap.items()}
@@ -3291,6 +3306,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Twin-loss weight on the pathwise-gradient term'),
                     F('DiffV2_Risk_Kappa', 'Float', default=0.0,
                       description='Downside semideviation penalty at the argmax; 0 = plain E[C]'),
+                    F('DiffV2_Risk_Horizon', 'Integer', default=1, convention=True,
+                      description='Decisions the candidate book is held for the continuation '
+                                  'whose downside semideviation DiffV2_Risk_Kappa penalises, '
+                                  'capped at the terminal; 1 = the next decision'),
                     F('DiffV2_Cost_Aware_Argmax', 'Text', default='No', values=['Yes', 'No'],
                       description='Charge the L1 repositioning cost at the verdict argmax'),
                     F('DiffV2_Fit_Tol', 'Float', default=0.001,
@@ -3729,7 +3748,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     privileged_factor_blocks=privileged_factor_blocks,
                     total_leg_volume=total_leg_volume, last_payment_day=last_payment_day,
                     fixings=fixings)
-                self._attach_inner_mc(bundle, batch_buffer, shared_mem, base_date, tradable_refs)
+                self._attach_inner_mc(bundle, batch_buffer, shared_mem, base_date, tradable_refs, run)
                 if run == 0:
                     streaming_solve.warmup(bundle)
                 elif run < params['Simulation_Batches'] - 1:
@@ -3855,16 +3874,23 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             ))
         return inner
 
-    def _attach_inner_mc(self, bundle, outer_buffer, shared_mem, base_date, tradable_refs):
+    def _attach_inner_mc(self, bundle, outer_buffer, shared_mem, base_date, tradable_refs, batch):
         """Attach the on-demand inner-MC forks to `bundle` as closures, so the solver can fork
-        without a calc handle. Every fork is windowed to t and the rows to the decision's successor
-        (`Bundle.successors`) - generation and a real pricing pass on those rows - giving the exact per-tradable F_t1 and
+        without a calc handle. Every fork is windowed to t and the rows to the row it lands on,
+        `inner_mc`'s `landing` and the GRAD fork's the decision's successor (`Bundle.successors`) -
+        generation and a real pricing pass on those rows - giving the exact per-tradable F_t1 and
         L_t / L_t1 the diff-ML bootstrap reads. `outer_rows` lets the solver run the GRAD fork in outer-path sub-slices.
+
+        A fork landing past the decision's successor, the risk horizon's, draws on streams of its
+        own, seeded by `batch_seed` of the batch's seed (`batch` its index in the run) and the
+        decision.
 
         The outer buffer is passed in rather than read off the calc: under streaming there is one
         bundle per batch, and each forks from ITS OWN batch."""
-        bundle.inner_mc = lambda t: self._run_inner_mc_at_t(
-            t, bundle.successors[t], outer_buffer, shared_mem, base_date, tradable_refs)
+        seed = batch_seed(self.params['Random_Seed'], batch)
+        bundle.inner_mc = lambda t, landing: self._run_inner_mc_at_t(
+            t, landing, outer_buffer, shared_mem, base_date, tradable_refs,
+            stream=None if np.max(landing) == bundle.successors[t] else batch_seed(seed, t))
         bundle.inner_mc_grad = lambda t, outer_rows=None: self._run_inner_mc_at_t(
             t, bundle.successors[t], outer_buffer, shared_mem, base_date, tradable_refs,
             with_grad=True, outer_rows=outer_rows)
@@ -3881,16 +3907,19 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 keys.add(seed_key)
         return keys
 
-    def _run_inner_mc_at_t(self, t, successor, outer_scenario_buffer, shared_mem, base_date,
-                           tradable_refs, with_grad=False, outer_rows=None):
-        """Run inner MC at a single outer timestep `t` to the row `successor`, forking from `outer_scenario_buffer` - a
+    def _run_inner_mc_at_t(self, t, landing, outer_scenario_buffer, shared_mem, base_date,
+                           tradable_refs, with_grad=False, outer_rows=None, stream=None):
+        """Run inner MC at a single outer timestep `t` to the row `landing`, forking from `outer_scenario_buffer` - a
         snapshot of the outer `t_Scenario_Buffer` (factor keys plus every per-process aux key, batch
         dim B_outer). `outer_rows=(lo, hi)` forks only that contiguous outer-path range; labels are
         per-outer-path, so row slices are independent. The DP/MPC backward sweep calls this on
         demand outside the outer loop, via `Bundle.inner_mc`.
 
-        Returns the inner samples the solver bootstraps from, `t+1` the successor, the next market row
-        or the terminal, the one the decision at t holds its book to (Monday from a Friday):
+        Returns the inner samples the solver bootstraps from, `t+1` the row `landing`: the
+        decision's successor, the next market row or the terminal, the one the decision at t holds
+        its book to (Monday from a Friday); or a list, the decision rows `DiffV2_Risk_Horizon` holds
+        it across, `F_t1` and `L_t1` then the marks on each stacked on a leading axis and
+        `market_t1` the last's:
             F_t, F_t1     {ref: (B_outer, B_inner)}       futures price at outer t and t+1
             L_t, L_t1     (B_outer, B_inner)              liability MTM at outer t and t+1
             market_t1     (B_outer, B_inner, market_dim)  inner market state at outer t+1
@@ -3902,13 +3931,15 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
         SINGLE PASS: generation, stuffing, pricing and extraction all run at
         `B_outer x Inner_Sub_Batch` flat, so peak memory is a function of two JSON fields
-        (`Batch_Size`, `Inner_Sub_Batch`) and nothing else. Too wide for the card raises CUDA OOM
-        naming this fork; that is the contract, not a knob.
+        (`Batch_Size`, `Inner_Sub_Batch`) and the rows to `landing`. Too wide for the card raises
+        CUDA OOM naming this fork; that is the contract, not a knob.
 
         THE WINDOW: the inner grid and every deal's `Time_dep` are truncated to t and the rows to
-        the successor, so the pricing chain runs for real on those rows, two on a weekday - exact per-tradable F_t1 and liability L_t / L_t1,
+        the landing, so the pricing chain runs for real on those rows, two on a weekday - exact per-tradable F_t1 and liability L_t / L_t1,
         and correct on mixed strips, where a market-only short-circuit would broadcast spot as every
-        F_t1. One forward step is also what bounds the AAD tape.
+        F_t1. One forward step is also what bounds the AAD tape. Under `stream`, a seed, the risk
+        horizon's fork draws its inner paths iid whatever `Inner_Draws` states, on streams of its
+        own (`CMC_State.own_stream`), so it moves no other draw.
 
         TWO COORDINATE SYSTEMS: processes generate against the shifted-base `inner_time_grid`, while
         pricers run against the full outer `self.time_grid` with each deal's `Time_dep` restricted.
@@ -3950,10 +3981,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         cutoff_idx = t
         inner_base_date = base_date + pd.Timedelta(days=t_days)
 
-        # THE WINDOW: inner grid truncated to t and the rows to the successor, the row the decision at
-        # t holds its book to, so the AAD tape stays bounded
+        # THE WINDOW: inner grid truncated to t and the rows to the landing, the last row the fork
+        # reads its marks on, so the AAD tape stays bounded
         dates = sorted(inner_time_grid.scenario_dates)
-        ahead = successor - t
+        at = np.asarray(landing) - t
+        ahead = int(at.max())
         window_end_idx = min(cutoff_idx + ahead, self.time_grid.mtm_time_grid.size - 1)
         if inner_time_grid.scen_time_grid.size > ahead + 1:
             kept = set(dates[:ahead + 1])
@@ -3973,12 +4005,16 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # what the fork BORROWS, to give back exactly as found (see the finally below): a fork over
         # an outer-path SLICE would otherwise leave the state slice-sized
         borrowed_batch, borrowed_fill = shared_mem.simulation_batch, shared_mem.fillvalue
-        with grad_ctx:
+        # iid on its own streams: one Sobol stream strided over a window's rows hands an inner path
+        # nearly the same point on each
+        own = contextlib.nullcontext() if stream is None else shared_mem.own_stream(stream)
+        with grad_ctx, own:
             try:
                 shared_mem.simulation_batch = B_outer
                 shared_mem.reset_inner(self.num_factors, inner_time_grid,
                                        use_antithetic=self.params.get('Inner_Antithetic', 'No') == 'Yes',
-                                       use_random=str(self.params.get('Inner_Draws', 'sobol')).lower() == 'random')
+                                       use_random=stream is not None or str(
+                                           self.params.get('Inner_Draws', 'sobol')).lower() == 'random')
 
                 market_t1_parts = []
                 # the fork BORROWS this buffer, so an entry it does not rewrite is still the outer
@@ -4021,7 +4057,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                         key, simulated, outer_scenario_buffer, t, shared_mem, self._inner_state_opts, with_grad)
                     if with_grad:
                         state_t_leaves.update(inner_leaves)
-                    # market state at the successor (inner-time index `ahead`), in reveal order
+                    # market state at the landing (inner-time index `ahead`), in reveal order
                     for block, _kind in proc_inner.reveal_state_at(ahead, shared_mem.t_Scenario_Buffer):
                         market_t1_parts.append(
                             self._reveal_transform(key, block, _kind).reshape(-1, B_outer, B_inner))
@@ -4092,12 +4128,12 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     td = inner_trade_tensors.get(ref)
                     if td is None:
                         # Tradable expired before this fork — zero moves, no position.
-                        F_t[ref] = F_t1[ref] = zero_bs
+                        F_t[ref], F_t1[ref] = zero_bs, zero_bs.expand(at.shape + zero_bs.shape)
                         continue
                     td = td[cutoff_idx:]                                # (T_inner, B_outer, B_inner)
-                    # td stops short of the successor when the tradable's last deal event is
+                    # td stops short of the landing when the tradable's last deal event is
                     # before it (it expires this step); freeze it at its last (dF == 0).
-                    F_t1[ref] = td[min(ahead, td.shape[0] - 1)].clone()
+                    F_t1[ref] = td[np.minimum(at, td.shape[0] - 1).tolist()].clone()
                     F_t[ref] = td[0]
                 # market state - every simulated factor's informative state concatenated;
                 # factor order is the `stoch_factors_inner` order, identical for t and t+1
@@ -4129,7 +4165,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 # indexing as F_t1) - not a Jacobian linearization
                 mtm_fwd = inner_mtm[cutoff_idx:]                            # (T_inner, B_outer, B_inner)
                 L_t_inner = mtm_fwd[0].clone()                             # outer-t (shared across draws)
-                L_t1_inner = mtm_fwd[min(ahead, mtm_fwd.shape[0] - 1)].clone()   # the successor's
+                L_t1_inner = mtm_fwd[np.minimum(at, mtm_fwd.shape[0] - 1).tolist()].clone()
                 result.update(
                     t=t, cutoff_idx=cutoff_idx, L_T=None,
                     L_t=L_t_inner, L_t1=L_t1_inner, F_t=F_t, F_t1=F_t1,

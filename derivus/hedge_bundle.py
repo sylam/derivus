@@ -348,6 +348,8 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_lambda_grad": float(solver_config.get("DiffV2_Lambda_Grad", 1.0)),
         # Downside-aware SELECTION: mean(C) - kappa · semidev(C) at the argmax. 0 = off.
         "diffv2_risk_kappa": float(solver_config.get("DiffV2_Risk_Kappa", 0.0)),
+        # ...the semideviation of the continuation this many decisions ahead, the book held
+        "diffv2_risk_horizon": int(solver_config.get("DiffV2_Risk_Horizon", 1)),
         # Quadratic churn charge at the argmax and the label argmax; the fitted value targets
         # stay cost-free.
         "diffv2_churn_lambda": float(solver_config.get("DiffV2_Churn_Lambda", 0.0)),

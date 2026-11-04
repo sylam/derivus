@@ -1571,6 +1571,243 @@ def test_the_label_charges_the_close_of_a_leg_that_dies_at_the_step():
     assert abs(shift[46] + 0.05) < 1e-6 and abs(shift[42] + 0.05) < 1e-3, shift
 
 
+#: A spot of one variance a market day, a GARCH(1,1) at alpha = beta = 0; and one whose long-run
+#: variance that is, started at nine times it and reverting at beta 0.8 with alpha 0, so its variance
+#: path is its forecast, E[h_{m+j}] = hbar + beta^j (h_m - hbar).
+HBAR, REVERSION = 2.5e-5, 0.8
+CONSTANT_VOL = {'Omega': HBAR, 'Alpha': 0.0, 'Beta': 0.0, 'Nu': 30.0, 'H0': HBAR}
+HIGH_VOL = {'Omega': HBAR * (1.0 - REVERSION), 'Alpha': 0.0, 'Beta': REVERSION, 'Nu': 30.0,
+            'H0': 9.0 * HBAR}
+#: `CONSTANT_VOL` drifting at 50% a year, so the mean and the risk term pull a free book apart.
+DRIFTING = dict(CONSTANT_VOL, Mu=0.5)
+#: kappa 0.6 over one decision, and kappa 0.6 / sqrt(5) over five.
+SCALED = ({'DiffV2_Risk_Kappa': 0.6}, {'DiffV2_Risk_Kappa': 0.6 / np.sqrt(5.0), 'DiffV2_Risk_Horizon': 5})
+#: The default Huber shape on the day's increment.
+RUNNING = {'Reference_Mode': 'Running_Wealth', 'Huber_Aversion': 2.5}
+
+
+def _spot_alone(cfg, block, **objective):
+    """`cfg` from its calibrated opening state with its spot a GARCH spot on `block` and every other
+    factor constant, under a linear utility at a declared scale of 1e5 (its `Objective` updated by
+    `objective`), swept from the first decision with no fit, so each continuation is the wealth over
+    the scale plus a constant."""
+    market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models'] = {'GARCHSpotModel.PLATINUM_LME': block}
+    market['Model Configuration'] = {'.ModelParams': {'modelfilters': {}, 'modeldefaults': {
+        'CommodityPrice': 'GARCHSpotModel', 'ForwardRate': '', 'InterestRate': '', 'ObservedBasis': ''}}}
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Randomize_Initial_State'] = 'No'
+    hp['Objective'] = {'Object': 'AsymmetricUtility_Huber', 'Huber_Aversion': 0.0,
+                       'Utility_Scale_Explicit': 1.0e5, **objective}
+    hp['Solver'].update({'T_Min': 0, 'DiffV2_Fit_Iters': 0})
+    return cfg
+
+
+def _risk_roll(ckpt, path, block, held=True, objective=None, **solver):
+    """The frozen roll of `ckpt` on one path of `_spot_alone`'s world on `block` (under `objective`)
+    at 256 inner draws, trading the October leg alone; where `held`, the liability cut to one ounce
+    and the book pinned short 25 contracts, which trade past the terminal, so every such roll's
+    wealth moves as that future does. The decision dump it writes at `path`, and its result."""
+    cfg = _spot_alone(_cfg(batch=2, inner=256, load=ckpt), block, **(objective or {}))
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    if held:
+        hp['Liabilities']['FloatingEnergyDeal']['PLAT_JUL29']['Payments']['Items'][0]['Volume'] = 1.0
+        hp['Evaluator']['Total_Position_Schedule'] = [{'Step': 0, 'Min_Total': -25, 'Max_Total': -25}]
+    hp['Solver'].update({'Active_Hedge_Indices': [2], 'DiffV2_Stepper_Rollout': 'Yes',
+                         'DiffV2_Decision_Curve_Dump': path, **solver})
+    result = _run(cfg)
+    return pd.read_csv(path), result
+
+
+def _free(cfg, **solver):
+    """`_spot_alone`'s `cfg` on `DRIFTING`, trading the October leg alone against the whole
+    liability, no optimism bound on its unfitted value."""
+    cfg = _spot_alone(cfg, DRIFTING)
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update(
+        {'Active_Hedge_Indices': [2], 'DiffV2_Max_Value_Optimism': 1.0e9, **solver})
+    return cfg
+
+
+def _semideviations(mean, risk):
+    """Each decision's downside semideviation of the held book's continuation: its one rung's score
+    in a held roll's dump at `DiffV2_Risk_Kappa` 0 less its score in one at 1."""
+    return (mean['curve_pre'] - risk['curve_pre']).to_numpy()
+
+
+@pytest.fixture(scope='module')
+def held_risk(tmp_path_factory):
+    """`(checkpoint, dir, rolls)`: the checkpoint `_spot_alone` saves on `CONSTANT_VOL` and its held
+    rolls there, `(dump, result)` each, at `DiffV2_Risk_Kappa` 0 and at 1 over a risk horizon of one
+    and of five decisions."""
+    d = tmp_path_factory.mktemp('risk_horizon')
+    ckpt = str(d / 'value_fn.pt')
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt), CONSTANT_VOL))
+    rolls = {name: _risk_roll(ckpt, str(d / f'{name}.csv'), CONSTANT_VOL, **solver)
+             for name, solver in (('mean', {}), ('one', {'DiffV2_Risk_Kappa': 1.0}),
+                                  ('five', {'DiffV2_Risk_Kappa': 1.0, 'DiffV2_Risk_Horizon': 5}))}
+    return ckpt, d, rolls
+
+
+def test_the_risk_horizon_s_semideviation_grows_as_its_root_on_a_constant_variance(held_risk):
+    """`DiffV2_Risk_Horizon` k scores a candidate by the mean of its next decision's continuation less
+    kappa times the downside semideviation of the one k decisions on, the book held, capped at the
+    terminal T, which on a spot of one variance a market day is sqrt(k) times the one-step one, so
+    kappa / sqrt(k) chooses the books kappa does. On `CONSTANT_VOL`, every decision a market day and
+    T one, the held book's ratio at k = 5 is sqrt(min(5, d)), d a decision's market days to T: it
+    reads 0.996 of it over the 81 decisions (0.066 a decision), within 3%; and with the spot drifting
+    at 50% a year, the free roll against the whole liability at kappa 0.6 holds the October book of
+    kappa 0.6 / sqrt(5) at k = 5, in the stepper roll on 90% of its 81 decisions and in the verdict
+    on 93% of its 117 rows, neither below 85%. 20 s with the fixture.
+
+    Killing mutations: the window's inner paths drawn on a Sobol stream, which hands a path nearly
+    one point on every row (2.19); the risk term read off the one-step draws (0.46, the roll's books
+    agreeing on 28%); the landing one decision short (0.89); the verdict's `_decide` handed no risk
+    fork (its books agreeing on 50%)."""
+    ckpt, d, rolls = held_risk
+    one = _semideviations(rolls['mean'][0], rolls['one'][0])
+    five = _semideviations(rolls['mean'][0], rolls['five'][0])
+    days = np.arange(len(one), 0, -1)
+    ratio = five / one / np.sqrt(np.minimum(5, days))
+    assert len(ratio) == 81 and abs(ratio.mean() - 1.0) < 0.03, (len(ratio), ratio.mean())
+    diagnostics = [_risk_roll(ckpt, str(d / f'free_{k}.csv'), DRIFTING, held=False, **solver)[1]
+                   .evaluation_summary['diagnostics'] for k, solver in enumerate(SCALED)]
+    for track in ('stepper_verdict', 'verdict'):
+        nets = [np.array([sum(q) for q in diag[track]['greedy_q_traj']]) for diag in diagnostics]
+        assert np.mean(nets[0] == nets[1]) >= 0.85, (track, nets[0].tolist(), nets[1].tolist())
+
+
+def test_a_variance_above_its_mean_holds_the_risk_horizon_below_its_root(held_risk, tmp_path):
+    """The risk term's semideviation over k decisions follows the spot's variance forecast, so a
+    variance reverting from above its mean prices a held book's risk below sqrt(k) times its next
+    decision's, which the constant-variance rule cannot. On `HIGH_VOL` the held book's ratio at
+    k = 10 is the forecast sqrt(sum_{j<min(10, d)} h_{m+j} / h_m), m a decision's market days from
+    the first and d to T, at the first ten decisions 0.71 to 0.85 of sqrt(10): it reads 0.99 of the
+    forecast there, 0.76 of sqrt(10), and 0.99 of it over the 81 (0.060 a decision), the first ten
+    within 8% and below 0.85 sqrt(10), the 81 within 4%. 11 s with the fixture.
+
+    Killing mutations: the k-decision semideviation taken as sqrt(k) times the one-step one, the
+    constant-variance rule (1.30 of the forecast at the first ten); the window's inner paths drawn
+    on a Sobol stream (3.18)."""
+    ckpt = held_risk[0]
+    mean, one, ten = [
+        _risk_roll(ckpt, str(tmp_path / f'{name}.csv'), HIGH_VOL, **solver)[0]
+        for name, solver in (('mean', {}), ('one', {'DiffV2_Risk_Kappa': 1.0}),
+                             ('ten', {'DiffV2_Risk_Kappa': 1.0, 'DiffV2_Risk_Horizon': 10}))]
+    ratio = _semideviations(mean, ten) / _semideviations(mean, one)
+    n = len(ratio)
+    h = HBAR + REVERSION ** np.arange(n) * (HIGH_VOL['H0'] - HBAR)
+    forecast = np.sqrt([h[m:min(m + 10, n)].sum() / h[m] for m in range(n)])
+    first = slice(0, 10)
+    assert abs((ratio / forecast)[first].mean() - 1.0) < 0.08, (ratio / forecast)[first]
+    assert (ratio / np.sqrt(10.0))[first].mean() < 0.85, (ratio / np.sqrt(10.0))[first]
+    assert abs((ratio / forecast).mean() - 1.0) < 0.04, (ratio / forecast).mean()
+
+
+def test_a_risk_horizon_past_the_terminal_lands_on_it(held_risk, tmp_path):
+    """A decision's k-th successor past the terminal is the terminal T, the last live liability mark,
+    where the continuation is the terminal utility. On `CONSTANT_VOL` the held roll at a risk horizon
+    of 10,000 decisions dumps the roll at n, the decisions from the first, whose n-th successor is
+    T, to the bit; its last decision, whose successor is T, scores on the one-step fork as a horizon
+    of one does, to the bit; and each decision's semideviation is sqrt(d) times the one-step one, d
+    its market days to T: 0.994 of it over the 81 (0.067 a decision), within 3%. 15 s with the
+    fixture.
+
+    Killing mutations: the landing capped at the last decision row (the last decision forks to its
+    own row, a semideviation of 0, the ratio there NaN and 0.71 at the decision before); the landing
+    one decision short (the roll at 10,000 no longer the roll at n); the window's inner paths drawn
+    on a Sobol stream (6.8)."""
+    ckpt, _, rolls = held_risk
+    n = len(rolls['one'][1].bundle.decision_steps)
+    far, at_n = [_risk_roll(ckpt, str(tmp_path / f'{k}.csv'), CONSTANT_VOL, DiffV2_Risk_Kappa=1.0,
+                            DiffV2_Risk_Horizon=k)[0] for k in (10_000, n)]
+    assert far.equals(at_n), far.compare(at_n)
+    assert far['curve_pre'].iloc[-1] == rolls['one'][0]['curve_pre'].iloc[-1]
+    ratio = _semideviations(rolls['mean'][0], far) / _semideviations(rolls['mean'][0], rolls['one'][0])
+    ratio = ratio / np.sqrt(np.arange(n, 0, -1))
+    assert abs(ratio.mean() - 1.0) < 0.03 and ratio[-1] == 1.0, (ratio.mean(), ratio[-1])
+
+
+def _huber(x, aversion=2.5, knee=1.0):
+    """The Huber utility of `x` in units of the scale, linear gains and a quadratic loss arm to
+    `knee`, linear beyond it."""
+    loss = np.maximum(-x, 0.0)
+    return x - np.where(loss <= knee, aversion * loss ** 2,
+                        aversion * knee ** 2 + 2.0 * aversion * knee * (loss - knee))
+
+
+def test_a_running_reward_over_the_risk_horizon_sums_its_decisions(tmp_path):
+    """Under `Running_Wealth` the risk horizon's score holds the reward of each decision's move,
+    summed over the decisions the book is held across as the objective the DP fits sums it, not the
+    reward of the whole move. On `CONSTANT_VOL` under the default Huber shape on the move (aversion
+    2.5, its loss arm quadratic to a knee of the scale) the held book's moves are near-iid
+    Student-t(30), their sd s in units of the scale read off each decision's one-step fork (0.12 to
+    0.13), so its k = 5 semideviation is that of a sum of min(5, d) rewards: by Monte Carlo at each
+    decision's s, 0.96 sqrt(min(5, d)) times the one-step one, and the roll's ratio reads 0.997 of
+    it over the 81 decisions (0.080 a decision), within 4%. 15 s.
+
+    Killing mutation: one reward over the whole move (`_landed` rewarding the landing's wealth
+    against the decision's alone), 1.38 of it."""
+    ckpt = str(tmp_path / 'value_fn.pt')
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt), CONSTANT_VOL, **RUNNING))
+    mean, one, five = [
+        _risk_roll(ckpt, str(tmp_path / f'{name}.csv'), CONSTANT_VOL, objective=RUNNING, **solver)[0]
+        for name, solver in (('mean', {}), ('one', {'DiffV2_Risk_Kappa': 1.0}),
+                             ('five', {'DiffV2_Risk_Kappa': 1.0, 'DiffV2_Risk_Horizon': 5}))]
+    ratio = _semideviations(mean, five) / _semideviations(mean, one)
+    # each decision's move, 25 contracts of 50 ounces short of the October leg and an ounce owed
+    s = np.sqrt(625.0 * mean['var_dFnet'] - 50.0 * mean['cov_dFnet_dL'] + mean['sd_dL'] ** 2) / 1.0e5
+    z = np.random.default_rng(0).standard_t(30.0, (2 ** 17, 5)) * np.sqrt(28.0 / 30.0)
+
+    def semideviation(c):
+        return np.sqrt((np.minimum(c - c.mean(), 0.0) ** 2).mean())
+
+    days = np.minimum(5, np.arange(len(ratio), 0, -1))
+    oracle = np.array([semideviation(_huber(x * z[:, :m]).sum(1)) / semideviation(_huber(x * z[:, 0]))
+                       for x, m in zip(s.to_numpy(), days)])
+    assert len(ratio) == 81 and abs((ratio / oracle).mean() - 1.0) < 0.04, (
+        (ratio / oracle).mean(), (oracle / np.sqrt(days)).mean(), s.min(), s.max())
+
+
+def test_a_risk_horizon_leaves_the_held_out_world_alone():
+    """The risk horizon changes how a candidate is scored, not the world it is scored on: a training
+    stream, a fit batch and a held-out one, at kappa 0.5 rolls the same held-out world at a horizon
+    of one and of five, its outer paths and its one-step forks, so its no-hedge and textbook tracks
+    and its in-simulation drift reading agree to the bit. 5 s.
+
+    Killing mutations: the risk horizon's forks drawn on the run's streams (no
+    `CMC_State.own_stream`): the no-hedge wT_mean -177,070 at k = 1 and +351,232 at k = 5; their
+    generator their own and the quasi stream the run's: the one-step forks' drift reading -0.497 at
+    k = 1 and -0.176 at k = 5."""
+    tracks = []
+    for k in (1, 5):
+        cfg = _cfg(batch=16, inner=8, seed=7)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update(
+            {'DiffV2_Risk_Kappa': 0.5, 'DiffV2_Risk_Horizon': k, 'Run_Textbook_Benchmark': 'Yes'})
+        verdict = _run(cfg).evaluation_summary['diagnostics']['verdict']
+        tracks.append({name: verdict[name] for name in ('nohedge', 'textbook', 'validation_drift_z',
+                                                        'drift_null_sigma')})
+    assert tracks[0] == tracks[1], tracks
+
+
+def test_the_sweep_s_labels_score_the_risk_horizon():
+    """The label's argmax and the label horizon's greedy steps rank by the risk term over the risk
+    horizon as the roll does: training with no fit on `DRIFTING` at `DiffV2_Label_Horizon` 2, kappa
+    0.6 / sqrt(5) at k = 5 labels each swept step at kappa 0.6's book at k = 1, its mean over the fit
+    batch's paths, the same on 81% of the 81 steps and 1.4 contracts apart on average, not below
+    60% nor beyond 5; and its label, the next decision's greedy book held to the one after, 0.018
+    apart on average, within 0.05. 15 s.
+
+    Killing mutations: `_fit_step`'s `_decide` handed no risk fork (the books the same on 28%, 31.6
+    contracts apart); `_horizon_correction`'s `_decide` handed none (the labels 0.095 apart)."""
+    rows = [_run(_free(_cfg(batch=16, inner=64), DiffV2_Label_Horizon=2, **solver))
+            .evaluation_summary['diagnostics']['per_t'] for solver in SCALED]
+    books = [np.array([r['q_star_mean'][2] for r in per_t]) for per_t in rows]
+    labels = [np.array([r['Y_mean'] for r in per_t]) for per_t in rows]
+    gap = np.abs(books[0] - books[1])
+    assert np.mean(gap < 1e-6) >= 0.6 and gap.mean() < 5.0, (books[0].tolist(), books[1].tolist())
+    assert np.abs(labels[0] - labels[1]).mean() < 0.05, np.abs(labels[0] - labels[1]).mean()
+
+
 #: The fixture's basis reverting to a slow mean of lambda 0.95, and the GARCH(1,1) its innovation
 #: variance can run on.
 SLOW_BASIS = {'A': 0.05, 'Phi': 0.8, 'Nu': 5.0, 'Sigma': 4.0, 'Slow_Mean_Lambda': 0.95, 'Mu_0': -30.0}

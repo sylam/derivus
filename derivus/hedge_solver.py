@@ -41,6 +41,15 @@ def _packed(values):
     return " ".join("%.6g" % float(v) for v in values)
 
 
+def _on_rows(fork, rows):
+    """The risk term's fork `(dF, dL, market, live)` (`DiffSolver._ahead`) on the outer paths
+    `rows`, or None."""
+    if fork is None:
+        return None
+    dF, dL, market, live = fork
+    return dF[:, rows], dL[:, rows], None if market is None else market[rows], live
+
+
 def _tail_stats(u_fn, wT, u_sum=None):
     """Terminal-P&L stats shared by the verdict and the stepper rollout: the objective mean —
     `u_fn(wT)`, or the accumulated step-sum when the caller carries one — and the dollar tail."""
@@ -707,7 +716,8 @@ class DiffSolver:
         '',
         'A solve is a stream (see `StreamingSolve`): `warmup` fits the first batch and LOCKS the',
         'frame, `step` continues on fresh paths, `finish` reports on the held-out batch. Peak fork',
-        'memory is a function of `Batch_Size x Inner_Sub_Batch` alone, however long the stream is.',
+        'memory is a function of `Batch_Size x Inner_Sub_Batch` and the rows a fork spans, which',
+        '`DiffV2_Risk_Horizon` lengthens, however long the stream is.',
         '',
         '### Knobs',
         '',
@@ -724,6 +734,8 @@ class DiffSolver:
         "fraction of each instrument's position range; under the ladder bank, of the band's width "
         'on the net |',
         '| `DiffV2_Risk_Kappa` | 0 | score actions by `mean(C) - kappa * downside-semidev(C)` |',
+        '| `DiffV2_Risk_Horizon` | 1 | decisions the candidate is held for the `C` whose '
+        'semideviation is penalised, capped at the terminal; the mean stays the next decision\'s |',
         '| `DiffV2_Risk_Aversion` | 1.0 | divides the `LogWealth` capital line; in [0.1, 10] |',
         '| `DiffV2_Cost_Aware_Argmax` | No | charge the L1 repositioning cost at the argmax |',
         '| `DiffV2_Position_State` | No | the frictional Bellman: `p` as state, the charge in the '
@@ -810,6 +822,8 @@ class DiffSolver:
         self.use_adv = bool(self.cfg.get("use_advantage_decomp", True))
         # downside-aware action selection; 0 = plain E[C] argmax
         self.risk_kappa = float(self.cfg.get("diffv2_risk_kappa", 0.0))
+        # ...of the continuation this many decisions ahead, the book held; with no penalty, none
+        self.risk_horizon = self.cfg["diffv2_risk_horizon"] if self.risk_kappa > 0.0 else 1
         # cost-aware EXECUTION: the verdict rollout charges kappa*|q - q_prev| at the argmax;
         # training and selection stay cost-free
         self.cost_aware = bool(self.cfg.get("diffv2_cost_aware_argmax", False))
@@ -910,6 +924,10 @@ class DiffSolver:
                 f"Solver.T_Min={self.t_min} must be < decision horizon T_dec={self.T_dec}")
         self.steps, self.nxt = bundle.decision_steps, bundle.successors
         self.prev = dict(zip(self.steps[1:], self.steps))
+        # the row each decision's risk term lands on: its risk_horizon-th successor, T_dec past it
+        held = self.steps + [self.T_dec]
+        self.landing = {t: held[min(i + self.risk_horizon, len(self.steps))]
+                        for i, t in enumerate(self.steps)}
         self.utility_scale = float(bundle.utility_scale)      # locked here; re-asserted by _bind
         # ...and the per-step schedule with it: ONE frame, locked in one place. A streaming step
         # re-binds to a batch that measured its own, which must not reach the reward.
@@ -1211,21 +1229,57 @@ class DiffSolver:
             [self.tradables_sim[r][self.nxt[t]][rows] - self.tradables_sim[r][t][rows]
              for r in self.hedges], dim=-1)
 
-    def _risk_adjusted(self, C1f):
-        """`E_inner[C]`, downside-adjusted when `DiffV2_Risk_Kappa` is armed: the mean less kappa
-        times the downside semideviation over the inner draws. The one scoring rule of `_decide`'s
-        chunk loop, its incumbent, and `_score_actions`."""
+    def _risk_adjusted(self, C1f, Ckf=None):
+        """`E_inner[C]` over the one-step draws `C1f`, downside-adjusted when `DiffV2_Risk_Kappa` is
+        armed: the mean less kappa times the downside semideviation over the inner draws of `Ckf`,
+        the score at the decision's `DiffV2_Risk_Horizon` landing row, or of `C1f` where that row is
+        the successor. The one scoring rule of `_decide`'s chunk loop and `_score_actions`."""
         C1 = C1f.mean(-1)
         if self.risk_kappa > 0.0:
-            dev = (C1f - C1.unsqueeze(-1)).clamp(max=0.0)
+            Ck, mk = (C1f, C1) if Ckf is None else (Ckf, Ckf.mean(-1))
+            dev = (Ck - mk.unsqueeze(-1)).clamp(max=0.0)
             C1 = C1 - self.risk_kappa * (dev ** 2).mean(-1).sqrt()
         return C1
 
+    def _landed(self, nets, W, book, fork, charge, s):
+        """Each inner draw's score of holding `book` `(1|B, c, 1, n_hedge)` from the wealth `W`
+        `(B,)` to row `s`, less `charge` `(B, c, 1)` (None for none). `fork`, `(dF, dL, market,
+        live)`, carries the moves from t to `s`, or under `Running_Wealth` to each decision row up to
+        it, `(m, B, Bi, n_hedge)` and `(m, B, Bi)` (a one-step fork's without the row axis), the
+        market state at `s` and the leg mask the book fraction `p` the book leaves standing there is
+        read under. The score is `C_s` at the wealth landed on, plus under `Running_Wealth` each
+        row's reward, the expression the label regresses on. Returns the scores and the wealths
+        landed on, each `(B, c, Bi)`."""
+        dF, dL, market, live = fork
+        path = self._wealth_step(W[:, None, None], book, dF.reshape((-1,) + dF.shape[-3:])[:, :, None],
+                                 dL.reshape((-1,) + dL.shape[-2:])[:, :, None])           # (m,B,c,Bi)
+        if charge is not None:
+            path = path - charge
+        W1 = path[-1]
+        B, c, Bi = W1.shape
+        # the terminal's continuation reads neither the market nor the book
+        x = p = None
+        if s < self.T_dec:
+            x = market[:, None].expand(B, c, Bi, market.shape[-1]).reshape(-1, market.shape[-1])
+            if self.position_state:
+                p = (((book if live is None else book * live).sum(-1) / self.total_abs_limit)
+                     .expand(B, c, Bi).reshape(-1))
+        C = self._continuation(nets, x, W1.reshape(-1), s, p).reshape(B, c, Bi)
+        if self.running_wealth:
+            # each move's reward off the CHARGED wealth, so a move pays its toll inside the step that
+            # made it, all at s's knee: a running reward's is flat, `conditional_sim` refused beside it
+            # and LogWealth's ratio reading none
+            for r in self._reward(path, torch.cat([W[None, :, None, None].expand(1, B, c, Bi),
+                                                   path[:-1]]), s):
+                C = C + r
+        return C, W1
+
     # ---- inner-MC one-step quantities at outer t -----------------------------
-    def _inner_step(self, t):
+    def _inner_step(self, t, landing=None):
         """Fork inner MC at t (resolve_structure / resolve_hedge_structure under the hood)
-        and return the move tensors the bootstrap needs over decision t's interval, t+1 the next
-        decision row:
+        and return the move tensors the bootstrap needs over decision t's interval, t+1 the row
+        `landing`, by default the next decision row, or for a list `landing` its moves to each row
+        on a leading axis and the market state at the last:
           dF   (B_outer, B_inner, n_hedge)  per-instrument futures move t→t+1
           dL   (B_outer, B_inner)           liability mark change t→t+1
           m1   (B_outer, B_inner, market_dim) market state at t+1
@@ -1236,22 +1290,44 @@ class DiffSolver:
         at the last traded price, so a naive `F_t1 − F_t` mints a spurious ~−F_t move a short would
         mine fake P&L from. A dead contract's one-step move is forced to 0; `live_i` says the
         contract still prices at t+1."""
-        inner = self.bundle.inner_mc(t)
+        inner = self.bundle.inner_mc(t, self.nxt[t] if landing is None else landing)
         F_t = torch.stack([self.tradables_sim[ref][t] for ref in self.hedges], dim=-1)   # (B_outer, n_hedge)
-        F_t1 = torch.stack([inner["F_t1"][ref] for ref in self.hedges], dim=-1)          # (B_outer, B_inner, n_hedge)
+        F_t1 = torch.stack([inner["F_t1"][ref] for ref in self.hedges], dim=-1)          # ([m,] B_outer, B_inner, n_hedge)
         # EXPIRED-CONTRACT GUARD: a dead contract's one-step move is forced to 0
-        live = (F_t1.abs().amax(dim=(0, 1)) > 0).to(F_t1.dtype)                        # (n_hedge,)
+        live = (F_t1.abs().flatten(0, -2).amax(0) > 0).to(F_t1.dtype)                   # (n_hedge,)
         dF = (F_t1 - F_t.unsqueeze(1)) * live
         dL = inner["L_t1"] - inner["L_t"]                                                # (B_outer, B_inner)
         return dF, dL, inner["market_t1"], inner["market_t"], live
 
+    def _ahead(self, t):
+        """The risk term's fork at decision t to its landing row `s = self.landing[t]`, `(dF, dL,
+        market, live)`: the moves from t to `s`, or under `Running_Wealth`, whose reward sums over
+        them, to each decision row up to it, `(m, B_outer, B_inner, n_hedge)` and
+        `(m, B_outer, B_inner)`, and at `s` the inner market state and the leg mask of the decision
+        before it, the step that set the book standing there (`_fit_step`'s one-mask rule), both None
+        at the terminal, which reads neither. None where `s` is t's successor, whose fork is the
+        one-step one."""
+        s = self.landing[t]
+        if s == self.nxt[t]:
+            return None
+        held = [r for r in self.steps + [self.T_dec] if t < r <= s] if self.running_wealth else [s]
+        dF, dL, market, _, _ = self._inner_step(t, held)
+        if s >= self.T_dec:
+            return dF, dL, None, None
+        return dF, dL, market, self.inner_cache[self.prev[s]][4]
+
     # ---- external argmax (Bellman max outside the fitted value) --------------
     def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, live=None,
-                rate_limit=True):
+                rate_limit=True, ahead=None):
         """Pick the grid action maximising `E_inner[C_{t+1}]` per outer path. No grad. Under
         `Objective.Reference_Mode='Running_Wealth'` the score is `E_inner[u(W1 − W_t) + C_{t+1}]`
         instead — the same expression the LABEL regresses on in `_fit_step`, so the ranking and the
         labels cannot score different things.
+
+        `ahead`, the risk term's fork on the same outer paths (`_ahead`), moves the semideviation
+        `DiffV2_Risk_Kappa` penalises to the score at t's `DiffV2_Risk_Horizon` landing row
+        (`self.landing`), the candidate held to it and charged as its one-step wealth is; None reads
+        it off the one-step draws.
 
         The action universe is `aspace.grid_at(t, live)`: the base grid filtered to the
         `Total_Position_Schedule` corridor at t, or the FACTORED Q-ladder under
@@ -1286,7 +1362,7 @@ class DiffSolver:
         limit = rate_limit and q_prev is not None and self.aspace.max_trade > 0.0
         dead = rate_limit and q_prev is not None and self.aspace.deadband_sigma > 0.0
         with torch.no_grad():
-            B, Bi, md = market_t1.shape
+            B, Bi, _ = market_t1.shape
             if dead and Bi < 2:
                 raise ValueError(
                     "Decision_Deadband_Sigma needs Inner_Sub_Batch >= 2: the hold test is a "
@@ -1305,29 +1381,20 @@ class DiffSolver:
             band_f = None
             for s in range(0, grid.shape[0], self.chunk):
                 acts = grid[s:s + self.chunk]                                            # (c, n_hedge)
-                c = acts.shape[0]
                 q = acts[None, :, None, :]                                               # (1,c,1,n_hedge)
                 a_live = acts if live is None else acts * live                            # (c,n_hedge)
-                W1 = self._wealth_step(W[:, None, None], q, dF[:, None], dL[:, None])     # (B,c,Bi)
+                charge = None
                 # kappa_T rides OUTSIDE the q_prev gate: the terminal unwind is a property of the
                 # ACTION, so a step with no standing book must not liquidate for free.
                 if kappa_T is not None or (q_prev is not None
                                            and (kappa is not None or self.churn_lambda > 0.0)):
                     prev = a_live[None] if q_prev is None else q_prev[:, None, :]
-                    W1 = W1 - self._reposition_charge(                                    # (B,c) $
+                    charge = self._reposition_charge(                                     # (B,c,1) $
                         a_live[None, :, :], prev, kappa, kappa_T, kappa_cal)[:, :, None]
-                # the successor is queried at the book the CANDIDATE leaves standing
-                p1 = ((a_live.sum(-1) / self.total_abs_limit)[None, :, None]
-                      .expand(B, c, Bi).reshape(-1) if self.position_state else None)
-                C1f = self._continuation(
-                    nets,
-                    market_t1[:, None].expand(B, c, Bi, md).reshape(-1, md),
-                    W1.reshape(-1), self.nxt[t], p1).reshape(B, c, Bi)                    # (B,c,Bi)
-                if self.running_wealth:
-                    # the DAY's reward, read off the CHARGED W1 so a move pays its toll inside the
-                    # step that made it rather than at a terminal the reward no longer reaches
-                    C1f = C1f + self._reward(W1, W[:, None, None], self.nxt[t])
-                C1 = self._risk_adjusted(C1f)                                             # E_inner[C] (B,c)
+                C1f, _ = self._landed(nets, W, q, (dF, dL, market_t1, live), charge, self.nxt[t])
+                Ckf = None if ahead is None else self._landed(
+                    nets, W, a_live[None, :, None, :], ahead, charge, self.landing[t])[0]
+                C1 = self._risk_adjusted(C1f, Ckf)                                        # E_inner[C] (B,c)
                 if limit:
                     dq_c = a_live[None, :, :] - q_live[:, None, :]                        # (B,c,n_h)
                     # under a weight schedule the control is the NET cover, so the band measures
@@ -1356,25 +1423,15 @@ class DiffSolver:
             if limit:
                 ok = torch.isfinite(band_val)
                 best_q = torch.where(ok.unsqueeze(-1), band_q, best_q)
-                best_val = torch.where(ok, band_val, best_val)
                 best_f = torch.where(ok.unsqueeze(-1), band_f, best_f)
             if dead:
                 # the incumbent is a CANDIDATE priced by the same rules: dq = 0 on the live legs
                 # kills the L1 and churn terms there, leaving a dying leg's close and the unwind
-                W1 = self._wealth_step(W[:, None, None], q_live[:, None, None, :],
-                                       dF[:, None], dL[:, None])                          # (B,1,Bi)
-                if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
-                    W1 = W1 - self._reposition_charge(
-                        q_live, q_prev, kappa, kappa_T, kappa_cal)[:, None, None]
-                p_inc = ((q_live.sum(-1) / self.total_abs_limit)[:, None, None]
-                         .expand(B, 1, Bi).reshape(-1) if self.position_state else None)
-                C1f_inc = self._continuation(
-                    nets, market_t1.reshape(-1, md), W1.reshape(-1), self.nxt[t],
-                    p_inc).reshape(B, Bi)
-                if self.running_wealth:
-                    # the incumbent earns its own day's increment, priced as every rival's
-                    C1f_inc = C1f_inc + self._reward(W1, W[:, None, None], self.nxt[t]).reshape(B, Bi)
-                inc = self._risk_adjusted(C1f_inc)
+                charge = (self._reposition_charge(
+                    q_live, q_prev, kappa, kappa_T, kappa_cal)[:, None, None]
+                    if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0 else None)
+                C1f_inc = self._landed(nets, W, q_live[:, None, None, :], (dF, dL, market_t1, live),
+                                       charge, self.nxt[t])[0][:, 0]                      # (B,Bi)
                 diff = best_f - C1f_inc                                                   # (B,Bi) paired
                 se = diff.std(-1) / math.sqrt(Bi)
                 move = diff.mean(-1) > self.aspace.deadband_sigma * se
@@ -1383,8 +1440,7 @@ class DiffSolver:
                            <= 1e-9).all(-1)
                 move = move | ~hold_ok
                 best_q = torch.where(move.unsqueeze(-1), best_q, q_live)
-                best_val = torch.where(move, best_val, inc)
-            return best_q, best_val
+            return best_q
 
     # ---- operating-region bank ----------------------------------------------
     def _replication_hedge(self, t):
@@ -1574,7 +1630,7 @@ class DiffSolver:
 
         Under `DiffV2_Label_Horizon` k > 1 the value label gains `_horizon_correction`, k clipped at
         the decision horizon; the gradient labels stay the one-step cross-fitted ones."""
-        dF_ng, dL_ng, m1_ng, market0, live = inner                                       # no-grad cache
+        dF_ng, dL_ng, m1_ng, market0, live, ahead = inner                                # no-grad cache
         market0 = market0[rows]
         W0_bank = W_bank[t][rows]
         # the standing book masked by the step that set it: the position state and the book the
@@ -1583,9 +1639,9 @@ class DiffSolver:
         kappa_t = self.aspace.kappa(self.tradables_sim, t) if self.position_state else None
         # SELECT the action on the NO-GRAD inner draws; EVALUATE its value and pathwise gradients
         # on a fresh GRAD inner, so independent draws cross-fit away the winner's-curse max bias
-        q_star, _ = self._decide(
+        q_star = self._decide(
             nets, m1_ng[rows], dF_ng[rows], dL_ng[rows], W0_bank, t, live=live,
-            q_prev=q_prev, kappa=kappa_t, rate_limit=False)
+            q_prev=q_prev, kappa=kappa_t, rate_limit=False, ahead=_on_rows(ahead, rows))
         q_star = q_star * live          # expired contracts: dF=0 ⇒ wealth-neutral; report 0, not the tie
 
         # GRAD inner-MC fork: AAD-live t -> t+1 quantities plus the state-at-t leaves
@@ -1702,11 +1758,12 @@ class DiffSolver:
             one = bootstrap(s, W, q)
             ret = torch.zeros_like(W)
             for _ in range(k - 1):
-                dF, dL, m1, _, live = self.inner_cache[s]
+                dF, dL, m1, _, live, ahead = self.inner_cache[s]
                 kappa = self.aspace.kappa(self.tradables_sim, s) if self.position_state else None
                 q_prev = q
-                q, _ = self._decide(nets, m1[rows], dF[rows], dL[rows], W, s, q_prev=q_prev,
-                                    kappa=kappa, live=live, rate_limit=False)
+                q = self._decide(nets, m1[rows], dF[rows], dL[rows], W, s, q_prev=q_prev,
+                                 kappa=kappa, live=live, rate_limit=False,
+                                 ahead=_on_rows(ahead, rows))
                 W1 = move(s, W, q, q_prev, kappa)
                 if self.running_wealth:
                     ret = ret + self._u_step(W1, W, self.nxt[s])
@@ -1907,7 +1964,7 @@ class DiffSolver:
             for t in sweep_ts:
                 dF_o = self._outer_dF(t, rows)                                     # (n, n_hedge)
                 dL_o = (L[self.nxt[t]] - L[t])[rows]
-                dF, dL, m1, _, live = inner_cache[t]
+                dF, dL, m1, _, live, ahead = inner_cache[t]
                 # in-sim validation CUSUM: the fork's expectation minus the outer realized move,
                 # averaged over paths and summed over steps - a mean-zero tripwire within the
                 # model, whose deployment twin is the stepper roll's market-drift monitor
@@ -1919,10 +1976,11 @@ class DiffSolver:
                 vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
                 kappa_t = self.aspace.kappa(self.tradables_sim, t)
-                q_g, _ = self._decide(
+                q_g = self._decide(
                     nets, m1[rows], dF[rows], dL[rows], W["greedy"], t,
                     q_prev=self._first_book(t, live, n) if t == t0 else q_prev["greedy"],
-                    kappa=kappa_t if self.cost_aware or self.position_state else None, live=live)
+                    kappa=kappa_t if self.cost_aware or self.position_state else None, live=live,
+                    ahead=_on_rows(ahead, rows))
                 q_g = q_g * live          # zero positions on expired contracts (wealth-neutral)
                 q_tb = self._textbook_hedge(t, live, n)
                 q_pa = self._passive_hedge(t, live, n)
@@ -2010,44 +2068,40 @@ class DiffSolver:
         return out
 
     # ---- decision-curve diagnostic (Solver.DiffV2_Decision_Curve_Dump) --------
-    def _score_actions(self, nets, t, acts, market_t1, dF, dL, W, q_prev, kappa, live):
+    def _score_actions(self, nets, t, acts, market_t1, dF, dL, W, q_prev, kappa, live, ahead):
         """Score `acts` `(K, n_hedge)` the way `_decide`'s chunk loop ranks its grid rows —
-        `E_inner[C_{t+1}]` before and after the repositioning charge — and hand back the CHARGED
-        per-draw `W1` the ranking's continuation was actually read at. Returns `(pre, charged,
-        W1)`, `(K,)`/`(K,)`/`(K, Bi)`: the single-path diagnostic drops the outer axis.
+        `E_inner[C_{t+1}]` before and after the repositioning charge, its risk term on the fork
+        `ahead` — and hand back the CHARGED per-draw `W1` the ranking's continuation was actually
+        read at. Returns `(pre, charged, W1)`, `(K,)`/`(K,)`/`(K, Bi)`: the single-path diagnostic
+        drops the outer axis.
 
         A SECOND PASS rather than a probe wired into `_decide`, so a run with the dump on is
         bit-identical to one with it off and `_decide` keeps no knowledge of it — no parameter, no
         branch, no extra continuation in the hot loop. The two rankings could drift apart, which is
         what the gate on the argmax column measures. The pass is affordable because the dump is a
         `Batch_Size = 1` diagnostic."""
-        B, Bi, md = market_t1.shape
-        K = acts.shape[0]
         kappa_T, kappa_cal = self._unwind_kappa(t), self._calendar_kappa(t)
         a_live = acts if live is None else acts * live
         with torch.no_grad():
             # `_decide` steps wealth with the RAW row and charges the LIVE-masked one; dF is
             # already zeroed on dead legs, so the two agree on W1 and differ only in the toll.
-            W1 = self._wealth_step(W[:, None, None], acts[None, :, None, :],
-                                   dF[:, None], dL[:, None])                         # (B,K,Bi)
-            W1c = W1
+            charge = None
             if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
-                W1c = W1 - self._reposition_charge(
+                charge = self._reposition_charge(
                     a_live[None, :, :], q_prev[:, None, :], kappa, kappa_T, kappa_cal)[:, :, None]
-            p1 = ((a_live.sum(-1) / self.total_abs_limit)[None, :, None]
-                  .expand(B, K, Bi).reshape(-1) if self.position_state else None)
-            market = market_t1[:, None].expand(B, K, Bi, md).reshape(-1, md)
 
-            def rank(Wx):
-                C1f = self._continuation(nets, market, Wx.reshape(-1), self.nxt[t], p1).reshape(B, K, Bi)
-                if self.running_wealth:
-                    C1f = C1f + self._reward(Wx, W[:, None, None], self.nxt[t])   # the day's own reward
-                return self._risk_adjusted(C1f)[0]
+            def rank(charge):
+                C1f, W1 = self._landed(nets, W, acts[None, :, None, :], (dF, dL, market_t1, live),
+                                       charge, self.nxt[t])
+                Ckf = None if ahead is None else self._landed(
+                    nets, W, a_live[None, :, None, :], ahead, charge, self.landing[t])[0]
+                return self._risk_adjusted(C1f, Ckf)[0], W1
 
-            charged = rank(W1c)
-            return (charged if W1c is W1 else rank(W1)), charged, W1c[0]
+            charged, W1c = rank(charge)
+            return (charged if charge is None else rank(None)[0]), charged, W1c[0]
 
-    def _decision_curve_row(self, nets, t, market_t1, dF, dL, W, q_prev, q_chosen, live, kappa):
+    def _decision_curve_row(self, nets, t, market_t1, dF, dL, W, q_prev, q_chosen, live, kappa,
+                            ahead):
         """One CSV row of `Solver.DiffV2_Decision_Curve_Dump`: everything about decision `t` that
         says WHY the ranking chose the book it chose, and nothing that changes it.
 
@@ -2077,8 +2131,9 @@ class DiffSolver:
         the standing book, the deepest rung), measured on the same quantity `x0` is.
 
         *What it was ranking over.* The one-step moments of the fork feeding it, plus a SECOND
-        independent fork at the same `t`: `fork_disagree` says whether a rung won on signal or on
-        inner-MC noise.
+        independent one-step fork at the same `t`, its risk term on the risk fork `ahead`, which
+        the decision's own stream would draw again: `fork_disagree` says whether a rung won on
+        signal or on inner-MC noise.
 
         Conventions. Moments are population (÷N) over the flattened outer × inner draws. `dF_net`
         is the tradable move a UNIT of net cover earns, reduced as `_wealth_step` reduces a book —
@@ -2106,7 +2161,7 @@ class DiffSolver:
         a_live = grid if live is None else grid * live                              # (K,n_hedge)
         net = a_live.sum(-1)                                                        # (K,)
         pre, charged, _ = self._score_actions(
-            nets, t, grid, market_t1, dF, dL, W, q_prev, kappa, live)
+            nets, t, grid, market_t1, dF, dL, W, q_prev, kappa, live, ahead)
         # the rate-limit band the executed argmax searched inside, measured exactly as `_decide`
         # measures it - net under a weight schedule, per-leg without one - with its fallback
         pick = charged
@@ -2121,7 +2176,7 @@ class DiffSolver:
         # P_band at the three reference books, off the SAME charged W1 the ranking is built on.
         probes = torch.stack([torch.zeros_like(q_live[0]), q_live[0], a_live[deep]])
         _, _, W1p = self._score_actions(
-            nets, t, probes, market_t1, dF, dL, W, q_prev, kappa, live)
+            nets, t, probes, market_t1, dF, dL, W, q_prev, kappa, live, ahead)
         # ...on the same quantity `x0` is: the successor LEVEL, or the day's realized INCREMENT.
         x1 = (W1p - (w0 if self.running_wealth else 0.0) - R) / c
         p_band = ((x1 > -delta) & (x1 < 0.0)).to(torch.float32).mean(-1)
@@ -2136,10 +2191,11 @@ class DiffSolver:
         dfn = (dF * (w * self.contract_size)).reshape(-1, self.n_hedge).sum(-1)
         dl = dL.reshape(-1)
 
-        # a SECOND fork at the same t: the stream advances, so this is an independent draw of the
-        # same conditional law, decided under identical rules
+        # a SECOND one-step fork at the same t: the stream advances, so this is an independent draw
+        # of the same conditional law, decided under identical rules
         dF2, dL2, m2, _, live2 = self._inner_step(t)
-        q_b, _ = self._decide(nets, m2, dF2, dL2, W, t, q_prev=q_prev, live=live2, kappa=kappa)
+        q_b = self._decide(nets, m2, dF2, dL2, W, t, q_prev=q_prev, live=live2, kappa=kappa,
+                           ahead=ahead)
         q_b = q_b * live2
 
         row = {
@@ -2239,7 +2295,7 @@ class DiffSolver:
                     elif policy == "passive":
                         q = self._passive_hedge(t, inner_cache[t][4], B)
                     else:
-                        dF, dL, m1, _, live = inner_cache[t]
+                        dF, dL, m1, _, live, ahead = inner_cache[t]
                         # MODEL-DRIFT CUSUM: each decision's one-day forecast minus what the market
                         # then did, standardized by the fork's own dispersion, entering at the NEXT
                         # decision so a trip reads only printed moves
@@ -2284,9 +2340,10 @@ class DiffSolver:
                         if handed:
                             q = self._passive_hedge(t, live, B)
                         else:
-                            q, _ = self._decide(
+                            q = self._decide(
                                 nets, m1, dF, dL, W, t, q_prev=q_prev, live=live,
-                                kappa=kappa_t if self.cost_aware or self.position_state else None)
+                                kappa=kappa_t if self.cost_aware or self.position_state else None,
+                                ahead=ahead)
                             q = q * live
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
                         q_log["t"].append(int(t))
@@ -2295,7 +2352,7 @@ class DiffSolver:
                         if dump_rows is not None and not handed:
                             dump_rows.append(self._decision_curve_row(
                                 nets, t, m1, dF, dL, W, q_prev, q, live,
-                                kappa_t if self.cost_aware or self.position_state else None))
+                                kappa_t if self.cost_aware or self.position_state else None, ahead))
                     q_prev = q
                     cur = state["positions"]
                     delta = {n: q[:, j] - cur[n].to(dtype=q.dtype, device=q.device)
@@ -2793,10 +2850,12 @@ class DiffSolver:
 
     def _fork_sweep(self):
         """One inner-MC fork per swept t on the bound world, reused for the argmax, the bootstrap,
-        market_t and the bank's live legs; the last world's forks are freed before these are made, or
-        both sets are live at once."""
+        market_t and the bank's live legs, beside it the risk term's (`_ahead`); the last world's
+        forks are freed before these are made, or both sets are live at once."""
         self.inner_cache = None
         self.inner_cache = {t: self._inner_step(t) for t in self.sweep_ts}
+        # the risk term's forks read the leg mask at their landing off the one-step ones
+        self.inner_cache = {t: fork + (self._ahead(t),) for t, fork in self.inner_cache.items()}
         return self.inner_cache
 
     def step(self, bundle):

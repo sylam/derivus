@@ -358,6 +358,7 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 | `inner_block`: those points as integers | `Quasi_Seed` and its shape | pricers' [inner paths](#inner-block) at every outer batch size |
 | a `torch.Generator` per LogVar2FJ walk segment | the scenario walk: an integer off `Random_Seed`'s generator; a pricer's walk: `Quasi_Seed`; each plus the segment | the daily shocks, redrawn in backward |
 | a fit's fixed Sobol paths | the fitted block's own `Quasi_Seed`, the same convention | the Hull-White two-factor Monte Carlo pricing of its benchmarks, a LogVar2FJ fit under `Sampling: Sobol` |
+| a risk horizon fork's own generator and quasi stream (`CMC_State.own_stream`) | `batch_seed` of its batch's `batch_seed(Random_Seed, b)` and the decision | the fork's iid inner normals and every draw its processes take, the run's streams left where they stood |
 
 A base valuation has no scenario stream and declares no `Random_Seed`: every draw it reaches is
 `Quasi_Seed`'s, so a trade's mark is a function of the trade, the market and that seed whatever is
@@ -516,7 +517,10 @@ locking the frame, `step` per training batch, `finish` on the held-out last), so
 and each deal's `Time_dep` to `t` and the rows to its successor (`Bundle.successors`), the next
 market row or the terminal, which the decision at `t` holds its book to (Monday from a Friday, a
 Saturday terminal from a Friday), and runs one pass of `Batch_Size × Inner_Sub_Batch`
-samples, its memory set by those two fields. It draws (`reset_inner`), precalculates each
+samples, its memory set by those two fields and the rows. The risk horizon's fork
+(`DiffV2_Risk_Horizon`) runs to the last of the decision rows it holds its book across, reads its
+marks on each, and draws iid on streams of its own (`CMC_State.own_stream`), so it moves no other
+draw. It draws (`reset_inner`), precalculates each
 process from `outer_buffer[key][t]` (a leaf under `with_grad`), publishes every seed before any
 generate (a seed may condition a process upstream), generates and calls `reseed_inner_state`, then
 publishes as a `ScenarioSource` every path series it wrote that the outer path carries — the outer
