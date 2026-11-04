@@ -845,10 +845,11 @@ class DiffSolver:
         # scale-free, its domain the wealth floor the forward-constructed bank maintains
         self.log_ratio = obj["object"] == "logwealth"
         self.w_floor = 1.0
-        # the DP's aversion: it divides the capital line in the LogWealth reward, so gamma > 1 puts
-        # less capital at risk. 1.0 is neutral, and it is inert under the other objectives.
+        # the DP's aversion: it divides the displacement into the LogWealth reward's capital line,
+        # so gamma > 1 puts less capital at risk. 1.0 is neutral, inert under the other objectives.
         self.aversion = self.cfg["diffv2_risk_aversion"]
-        self.displacement = 0.0                # measured off the bank at warmup, or restored
+        # measured off the bank at warmup, or the checkpoint's (`_restore_frame`)
+        self.displacement = self.capital = 0.0
         self.scheduled_scale = obj["utility_scale_mode"] == "conditional_sim"
         if self.running_wealth and self.scheduled_scale and not self.log_ratio:
             raise ValueError(
@@ -1113,20 +1114,20 @@ class DiffSolver:
         return charge
 
     # ---- one-step wealth move ------------------------------------------------
-    def _u_step(self, W1, W0, t, displacement=None):
+    def _u_step(self, W1, W0, t, capital=None):
         """The per-step reward both step-sum objectives share. Running_Wealth: u((W1−W0)/c_t),
         the scaled increment. LogWealth: log(W1/W0) — the day's growth ratio, zero iff the step
         is perfectly hedged, scale-free (no c_t anywhere). Below `eps` the log continues
         linearly so a breached path keeps gradient while paying an unbounded-in-level penalty,
         and a step LAUNCHED at or under the floor can only score <= 0: ruin is absorbing, not a
-        rebirth against a clamped denominator. `displacement` reads the ratio at another
-        member's capital line (the ensemble's `_reward`); None is this run's own."""
+        rebirth against a clamped denominator. `capital` reads the ratio at another member's
+        capital line (the ensemble's `_reward`); None is this run's own."""
         if not self.log_ratio:
             return _utility_wrap_signed(W1 - W0, self.runtime, t)
         # the CAPITAL line: wealth in the ratio is capital + MTM, so "wealth 1" is one unit of
         # backing capital and ruin is losing it. Both legs sit on the SAME step's c, so the inner
         # fork is measured against its own launch.
-        c = (self.displacement if displacement is None else displacement) / self.aversion
+        c = self.capital if capital is None else capital
         eps = 1.0e-3
         base = (c + W0).clamp_min(self.w_floor)
         r = (c + W1) / base
@@ -1160,7 +1161,7 @@ class DiffSolver:
         worst = self._bank_worst
         logging.debug("LogWealth displacement measured off the warmup bank: worst %.6g", worst)
         self.displacement = 1.1 * max(0.0, -worst)
-        c = self.displacement / self.aversion
+        self.capital = c = self.displacement / self.aversion
         headroom = 1.0 if worst >= 0 else (c + worst) / c
         if headroom <= 0.0:
             raise ValueError(
@@ -2561,18 +2562,19 @@ class DiffSolver:
             "than the one it was tuned on.", src, ck["calendar_spread_bps"], want)
 
     def _capital_line(self, ck):
-        """A checkpoint's displacement in this run's dollars: under the returns state the frame is in
-        fractions of the t0 notional, so the line scales by this run's notional over the training one."""
-        c = ck.get("displacement")
-        if c is None or not self.state_notional:
-            return c
-        trained_on = ck.get("state_notional")
-        if not trained_on:
-            raise ValueError(
-                "a returns-state checkpoint carries no state_notional: its capital line cannot be read "
-                "in this run's frame; stamp it with its training world's t0 spot times the liability "
-                "volume, or retrain")
-        return float(c) * self.state_notional / float(trained_on)
+        """A checkpoint's capital line, its displacement over its own `risk_aversion`, in this run's
+        money: under the returns state the frame is in fractions of the t0 notional, so the line
+        scales by this run's notional over the training one."""
+        c = ck["displacement"]
+        if self.state_notional:
+            trained_on = ck.get("state_notional")
+            if not trained_on:
+                raise ValueError(
+                    "a returns-state checkpoint carries no state_notional: its capital line cannot be "
+                    "read in this run's frame; stamp it with its training world's t0 spot times the "
+                    "liability volume, or retrain")
+            c = float(c) * self.state_notional / float(trained_on)
+        return c / float(ck["risk_aversion"])
 
     def _corridor_inside(self, saved):
         """True when this run's `Total_Position_Schedule` lies inside the stamped `saved` one on every
@@ -2586,7 +2588,8 @@ class DiffSolver:
 
     def _restore_frame(self, members):
         """Adopt a loaded checkpoint's FRAME as this run's — the z-frame, the utility scale and
-        its per-decision-step schedule — and mirror it onto the runtime, so every reward and every
+        its per-decision-step schedule, the LogWealth capital line at the checkpoint's own aversion
+        — and mirror it onto the runtime, so every reward and every
         ranking reads the frame the nets were fitted against rather than the one this world
         resolved for itself.
 
@@ -2605,9 +2608,10 @@ class DiffSolver:
         if self.cfg["diffv2_load_horizon_pad"]:
             self.utility_scale_schedule = self._pad_steps(self.utility_scale_schedule,
                                                           self.T_dec + 1)
-        c = self._capital_line(loaded)
-        if c is not None:
-            self.displacement = c
+        self.capital = self._capital_line(loaded)
+        if float(loaded["risk_aversion"]) != self.aversion:
+            logging.info("DiffSolver frozen roll reads the checkpoint's DiffV2_Risk_Aversion %g with its "
+                         "capital line; this run's %g is not read", loaded["risk_aversion"], self.aversion)
         nulls = [float(ck["drift_null_sigma"]) for ck in members if ck.get("drift_null_sigma") is not None]
         if nulls:
             # one tripwire for the ensemble's forecast: the members' nulls averaged, whatever their order
@@ -2898,7 +2902,7 @@ class DiffSolver:
             "solver_object": self.SOLVER_OBJECT,
             # the growth reward's shift, measured off the training bank's worst book - part of the
             # FRAME, since a roll under a different shift is a different utility
-            "displacement": getattr(self, "displacement", 0.0),
+            "displacement": self.displacement,
             # the notional the returns-state frame divides wealth by; the roll scales the
             # displacement by its own notional over this one, so the reward stays in the frame
             "state_notional": getattr(self, "state_notional", None),

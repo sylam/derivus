@@ -773,18 +773,26 @@ def test_the_capital_line_travels_with_the_returns_state_frame(tmp_path):
 
 
 def test_a_frozen_roll_measures_no_frame_of_its_own(tmp_path):
-    """A load's frame is the checkpoint's: the roll builds no bank and measures no displacement, so
-    a LogWealth checkpoint trained at `DiffV2_Risk_Aversion` 1.0 rolls in a document at 1.2, whose
-    own bank's headroom 1 - 1.2/1.1 lies outside the shifted log's domain, to a finite verdict.
+    """A load's frame is the checkpoint's: the roll builds no bank and measures no displacement, and
+    its capital line is the checkpoint's displacement over the checkpoint's aversion, so a LogWealth
+    checkpoint trained at `DiffV2_Risk_Aversion` 1.0 rolls in a document at 1.2, whose own bank's
+    headroom 1 - 1.2/1.1 lies outside the shifted log's domain, to a finite verdict, the same greedy
+    book and wealth as the document at 1.0 rolls.
 
-    Killing mutation: warmup building the eval world's bank and running the headroom gate before
-    the load replaces its displacement - the roll refuses with "LogWealth domain break"."""
+    Killing mutations: warmup building the eval world's bank and running the headroom gate before
+    the load replaces its displacement - the roll refuses with "LogWealth domain break"; the run's
+    aversion dividing the restored displacement - the two rolls part."""
     ckpt = str(tmp_path / 'value_fn_growth.pt')
     _run(_logwealth(_cfg(seed=7, save=ckpt)))
-    roll = _logwealth(_cfg(seed=7, load=ckpt))
-    roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Risk_Aversion'] = 1.2
-    greedy = _run(roll).evaluation_summary['diagnostics']['verdict']['greedy']
-    assert math.isfinite(greedy['wT_mean']), greedy
+    rolls = []
+    for aversion in (1.0, 1.2):
+        roll = _logwealth(_cfg(seed=7, load=ckpt))
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Risk_Aversion'] = aversion
+        rolls.append(_run(roll).evaluation_summary['diagnostics']['verdict'])
+    neutral, averse = rolls
+    assert math.isfinite(averse['greedy']['wT_mean']), averse['greedy']
+    assert (averse['greedy_q_traj'], averse['greedy']['wT_mean']) == (
+        neutral['greedy_q_traj'], neutral['greedy']['wT_mean']), (averse['greedy'], neutral['greedy'])
 
 
 def test_an_ensemble_scores_each_member_in_its_own_frame(tmp_path):
