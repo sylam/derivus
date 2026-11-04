@@ -1178,9 +1178,9 @@ class DiffSolver:
         for i in self.aspace.active:
             dF = moves[:, i]
             var = dF.var(unbiased=False)
-            # skip degenerate OR non-finite instruments: an expired-contract row can carry a NaN
-            # mark, and clamp(NaN) = NaN would poison the whole textbook book
-            if not float(var) > 1e-12 or not torch.isfinite(dF).all():
+            # skip a move of no dispersion on its own scale, or a non-finite one: an expired-contract
+            # row can carry a NaN mark, and clamp(NaN) = NaN would poison the whole textbook book
+            if not float(var) > 1e-12 * float(dF.pow(2).mean()) or not torch.isfinite(dF).all():
                 continue
             beta = ((dL - dL.mean()) * (dF - dF.mean())).mean() / var
             q[i] = (-beta / (self.aspace.contract_size[i] * max(self.aspace.n_active, 1)))
@@ -2919,7 +2919,7 @@ class DiffSolverV2(DiffSolver):
         cannot raise the breach probability). Returns (bucket centers, probabilities) knots
         for linear interpolation; a degenerate x (t=0, every path at the same mark) is the
         flat unconditional mean."""
-        if float(x.std()) < 1e-9:
+        if float(x.std()) <= 1e-9 * float(x.abs().max()):
             m = y.float().mean()
             return x.new_tensor([-1e30, 1e30]), torch.stack([m, m])
         o = torch.argsort(x)
@@ -3020,7 +3020,7 @@ class DiffSolverV2(DiffSolver):
                     # the floor constraint q*m >= need is a HALF-LINE, and the repair is the delta base
                     # PROJECTED onto it: the least change, rounded toward the feasible side. An
                     # up-day's bound is a LIMIT on the short - rounding away from zero walks through.
-                    defensible = m.abs() > 1e-9
+                    defensible = m.abs() > 1e-9 * m.abs().max()
                     bound = (target - W - dL) / torch.where(defensible, m, torch.ones_like(m))
                     net = torch.where(defensible & (m > 0),
                                       torch.maximum(net, bound.ceil()), net)
@@ -3087,7 +3087,7 @@ class DiffSolverV2(DiffSolver):
             # population moments, as the replication hedge's
             Sig = (X @ X.transpose(0, 1)) / R.shape[-1]
             c = (X * (RL - RL.mean())[None]).sum(-1) / R.shape[-1]
-            alive = Sig.diagonal() > 1.0e-4
+            alive = Sig.diagonal() > 1.0e-12 * Sig.diagonal().max()
             rep = self._replication_hedge(t)
             Qb = float(rep.sum())
             if not bool(alive.any()) or self._dust(rep):
@@ -3095,7 +3095,7 @@ class DiffSolverV2(DiffSolver):
                     1.0 / self.aspace.n_hedge for _ in range(self.aspace.n_hedge))
             else:
                 mu = R.mean(-1)
-                big = 1.0e12 * Sig.diagonal().max().clamp_min(1.0)
+                big = 1.0e12 * Sig.diagonal().max()
                 Sig = Sig + torch.diag(torch.where(alive, torch.zeros_like(mu), big))
                 # the frame scale, which exists at bind; the LogWealth capital line is
                 # measured on the bank this ladder builds, so it cannot be read here
