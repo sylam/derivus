@@ -3165,7 +3165,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'conditional_sim measures a per-decision-step schedule off the '
                                   'warmup batch instead of one number'),
                     F('Utility_Scale_Explicit', 'Float', default=None,
-                      description='Literal dollar c, overriding the formula'),
+                      description='Literal c in money, overriding the formula'),
                     F('Utility_Scale_Floor_Frac', 'Float', default=0.05,
                       description='Floor of the conditional_sim schedule, as a fraction of its '
                                   'terminal entry; inert under every other scale mode'),
@@ -3175,7 +3175,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   "day's wealth increment (a per-step reward the DP sums); "
                                   'LogWealth, a per-step growth, is always the increment'),
                     F('Reference_Wealth', 'Float', default=0.0,
-                      description='Benchmark wealth in DOLLARS the utility is measured against; '
+                      description='Benchmark wealth in money the utility is measured against; '
                                   'every shape works in x = (W - this) / c'),
                     F('Huber_Aversion', 'Float', default=2.5,
                       description='Curvature of the quadratic loss arm, in units of c'),
@@ -3789,8 +3789,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             hedges = normalized_runtime['names']['hedges']
             moves = bundle.move(0, bundle.last_live_mtm_index, hedges, dim=0)
             drift = {h: round(float(m.mean()), 4) for h, m in zip(hedges, moves)}
-            evaluation_summary.setdefault('diagnostics', {})['hedge_drift_usd'] = drift
-            logging.info('hedge window drift E[dF] per leg (USD): %s', drift)
+            evaluation_summary.setdefault('diagnostics', {})['hedge_drift'] = drift
+            logging.info('hedge window drift E[dF] per leg: %s', drift)
 
         return HedgeRuntimeExecutionResult(
             bundle=bundle,

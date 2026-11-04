@@ -46,7 +46,7 @@ from .schema import DealFields
 PRICE_ZSCORE_WINDOW = 20
 
 
-# Terminal-utility SHAPES: each maps dollars→O(1) utility via the deal scale c (x = W/c) and
+# Terminal-utility SHAPES: each maps money→O(1) utility via the deal scale c (x = W/c) and
 # lives in utility space (the DP / value-fn recursion). symlog is odd/symmetric, huber and cara
 # downside-averse; any Object outside this tuple takes the identity (no-op) path. LogWealth is
 # NOT one — it consumes no scale c — and a solve admits it beside these by name.
@@ -436,7 +436,7 @@ def _objective_config(objective_config):
         # WHAT the utility is applied to: terminal wealth ('fixed'), or the DAY's wealth
         # increment ('running_wealth', a per-step reward the DP sums down the recursion).
         "reference_mode": reference_mode,
-        # The benchmark wealth the utility is measured against, in DOLLARS (not c-units) —
+        # The benchmark wealth the utility is measured against, in money (not c-units) —
         # every shape subtracts it before the /c scaling.
         "reference_wealth": float(objective_config["Reference_Wealth"]),
         # Utility SHAPE params (dimensionless, in units of c); Symlog ignores all of them.
@@ -456,7 +456,7 @@ def construct_hedge_runtime(
     dict every consumer indexes directly. Nothing downstream re-validates.
 
     The objective's utility SHAPE params are DIMENSIONLESS, in units of the utility scale c
-    (applied to x = (W − `Reference_Wealth`)/c; the reference is in DOLLARS and every shape reads
+    (applied to x = (W − `Reference_Wealth`)/c; the reference is in money and every shape reads
     it). Huber: quadratic small losses with curvature `huber_aversion`, a linear deep tail beyond
     the knee `huber_delta`, and the same form on the gain wing under `Up_Aversion`/`Up_Knee`
     (`Up_Aversion` 0 = exactly linear gains). CARA: u = (1−e^{−γx})/γ. Symlog ignores the shape
@@ -536,7 +536,7 @@ def construct_hedge_runtime(
                 "'AsymmetricUtility_Symlog' | 'AsymmetricUtility_Huber' | 'AsymmetricUtility_CARA' | "
                 "'LogWealth' (per-step growth). "
                 "The DP recursion lives in utility space: an identity (legacy) objective leaves "
-                "V-hat unbounded in dollars and the backward sweep blows up multiplicatively.")
+                "V-hat unbounded in money and the backward sweep blows up multiplicatively.")
 
     history_lookback = int(hedging_problem["History_Lookback_Business_Days"])
     if history_lookback < 0:
@@ -781,7 +781,7 @@ def _is_utility_objective(runtime):
 
 
 def _utility_scale(objective, t=None):
-    """The dollar scale `c` in force at decision step `t` — ONE resolution rule, shared by the
+    """The money scale `c` in force at decision step `t` — ONE resolution rule, shared by the
     utility transform, its closed-form curvature and the decision-curve dump.
 
     `Objective.Utility_Scale_Mode='conditional_sim'` locks a per-step SCHEDULE at the frame lock
@@ -827,7 +827,7 @@ def _utility_x(W, objective, t=None):
     return (W - float(objective["reference_wealth"])) / _utility_scale(objective, t)
 
 
-def _utility_wrap_signed(x_dollars, runtime, t=None):
+def _utility_wrap_signed(w, runtime, t=None):
     """The terminal UTILITY u(W) applied to signed wealth — the single source of truth for
     the objective, the DP recursion, and the solver's value labels. Dispatches on the
     configured shape (all in normalised wealth x = (W − R) / c), identity for the legacy objective:
@@ -838,7 +838,7 @@ def _utility_wrap_signed(x_dollars, runtime, t=None):
                (loss = max(−x,0), gain = max(x,0))   on the GAIN wing, off at a⁺ = 0
       cara   : (1 − exp(−γ·x)) / γ                  — bounded gains, exponentially-penalised loss
 
-    `reference_wealth` R (DOLLARS, default 0) is the benchmark the utility is measured against and
+    `reference_wealth` R (money, default 0) is the benchmark the utility is measured against and
     is subtracted BEFORE the /c scaling, which puts huber's knee at the operating point. All
     shapes read it.
 
@@ -862,9 +862,9 @@ def _utility_wrap_signed(x_dollars, runtime, t=None):
             "growth ratio (DiffSolver._u_step). This caller must be step-sum-aware or disabled "
             "under LogWealth.")
     if not _is_utility_objective(runtime):
-        return x_dollars
+        return w
     obj = runtime["objective"]
-    x = _utility_x(x_dollars, obj, t)
+    x = _utility_x(w, obj, t)
     shape = obj["object"]
     if shape == "asymmetricutility_symlog":
         return torch.sign(x) * torch.log1p(x.abs())
@@ -885,12 +885,12 @@ def _utility_wrap_signed(x_dollars, runtime, t=None):
 
 
 def _utility_local_curvature(W, runtime, t=None):
-    """`(u'(W), −u''(W)/u'(W))` in DOLLARS at one scalar wealth — the marginal utility and the
+    """`(u'(W), −u''(W)/u'(W))` in money at one scalar wealth — the marginal utility and the
     local absolute risk aversion the configured shape is actually applying there. `t` names the
     decision step, so a locked per-step scale schedule reports the knee in force on THAT day.
 
     The closed forms in `_utility_wrap_signed`'s normalised x = (W − R)/c, chain-ruled back to
-    dollars (u' = f'(x)/c and ARA = −f''(x)/(c·f'(x)), so the scale enters exactly once each):
+    money (u' = f'(x)/c and ARA = −f''(x)/(c·f'(x)), so the scale enters exactly once each):
 
       symlog : f' = 1/(1+|x|)                     −f''/f' = sign(x)/(1+|x|)  — risk-SEEKING below R
       huber  : f' = 1 + 2a·min(loss, δ)           −f''/f' = 2a/f'   inside the loss knee
@@ -991,8 +991,8 @@ def _portfolio_value(state, runtime):
     """Absolute total wealth: cash + margin + position value where applicable. `_pnl_excess` is the
     wealth change since inception, which is what the asymmetric utility needs.
 
-    Cash and margin balances are raw dollars compounded daily (each step multiplies by
-    `cash_tv(next)/cash_tv(curr)` ≈ 1 + SOFR·dt, then adds today's flows), so each dollar earns
+    Cash and margin balances are raw money compounded daily (each step multiplies by
+    `cash_tv(next)/cash_tv(curr)` ≈ 1 + SOFR·dt, then adds today's flows), so each unit earns
     interest only from the day it landed.
 
     Two accounting modes. `cash_account`: position × price × contract_size plus the cash balances.
@@ -1351,14 +1351,14 @@ class Bundle:
             raise ValueError(
                 f"Unsupported Objective.Utility_Scale_Mode: {mode!r}. "
                 "Supported modes: 'vol_scaled_notional' | 'conditional_sim'. Set "
-                "Utility_Scale_Explicit to override the formula with a literal dollar value.")
+                "Utility_Scale_Explicit to override the formula with a literal value in money.")
         explicit = objective['utility_scale_explicit']
         if mode == 'conditional_sim':
             if explicit is not None:
                 raise ValueError(
                     "Objective.Utility_Scale_Explicit is set beside "
                     "Utility_Scale_Mode='conditional_sim': the schedule measures the LEVEL of c "
-                    "as well as its shape (the scalar is its terminal entry), so a literal dollar "
+                    "as well as its shape (the scalar is its terminal entry), so a literal "
                     "value is a second source for the same number and silently picking a winner "
                     "is how the two drift apart. Drop one of them.")
             self.utility_scale_schedule = self._conditional_sim_schedule(objective)
@@ -1400,7 +1400,7 @@ class Bundle:
 
         The schedule sets the LEVEL of c as well as its shape, and the utility's shape params are
         DIMENSIONLESS in units of c, so arming the mode re-doses the risk aversion by the same
-        factor. This reports the absolute risk aversion per dollar the shape applies at the
+        factor. This reports the absolute risk aversion per unit of money the shape applies at the
         reference, under the first knee and the terminal one, so a stale `Huber_Aversion` is
         visible in the run log."""
         sched = self.utility_scale_schedule
@@ -1435,7 +1435,7 @@ class Bundle:
         materially tighter floor than a fraction of the maximum.
 
         THE LEVEL is the schedule's too, not only the shape: there is no `Utility_Scale_Explicit`
-        under this mode, and `_log_scale_dose` reports the resulting aversion per dollar.
+        under this mode, and `_log_scale_dose` reports the resulting aversion per unit of money.
 
         ONE ENTRY per step a continuation is ever read at: decisions 0..T_dec−1 plus the terminal
         mark T_dec (`last_live_mtm_index`). `None` when the batch carries a single outer path,

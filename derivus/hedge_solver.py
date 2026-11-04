@@ -732,7 +732,7 @@ class DiffSolver:
         '    `c`, so arming the mode moves the risk aversion by whatever factor the measured scale',
         '    differs from the retired one: under it, `Huber_Aversion` is the aversion dial and it',
         '    is dosed AGAINST THE MEASURED SCALE. The frame lock logs the resulting absolute risk',
-        '    aversion per dollar so the re-dosing is visible rather than inferred.',
+        '    aversion per unit of money so the re-dosing is visible rather than inferred.',
         '',
         '### Persistence',
         '',
@@ -985,7 +985,7 @@ class DiffSolver:
     def _w_norm(self, W, w_mean=None, w_std=None):
         """The wealth column as every net reads it: W in fractions of the t0 book notional under
         `DiffV2_Returns_State` (the frame `w_mean`/`w_std` was measured in), z-scored. One spelling
-        for the fit, the query and an ensemble member, so no path feeds dollars to a fraction frame."""
+        for the fit, the query and an ensemble member, so no path feeds money to a fraction frame."""
         sn = getattr(self, "state_notional", None)
         w = W / sn if sn else W
         return (w - (self.w_mean if w_mean is None else w_mean)) / (self.w_std if w_std is None else w_std)
@@ -1722,7 +1722,7 @@ class DiffSolver:
         (value, wealth-grad, market-grad) labels of `_fit_step`.
 
         The twin loss matches gradients in STANDARDIZED space (`g_zn = std·g_raw`). Raw-space
-        matching is mis-scaled — `∂A/∂W` ~ 1e-6 in dollars and `∂A/∂spot` ~ 1e-4, both inert
+        matching is mis-scaled — `∂A/∂W` ~ 1e-6 in money and `∂A/∂spot` ~ 1e-4, both inert
         against the O(0.1) value term — while standardized both are O(1) and the gradient match
         actually regularizes.
 
@@ -1868,7 +1868,7 @@ class DiffSolver:
         per-step utilities, because that is the objective the DP maximised. It is therefore NOT
         comparable to a terminal-utility `u_mean`, nor to `run_textbook_benchmark` /
         `HindsightDpSolver`, which stay terminal-based. `wT_mean` and the tail columns are terminal
-        wealth in dollars under either mode, under the position state net of the repositioning charge,
+        wealth in money under either mode, under the position state net of the repositioning charge,
         its `DiffV2_Churn_Lambda` penalty included; `u_mean_is_step_sum` says which regime produced it.
 
         Each policy (greedy, textbook, passive and the no-hedge book's close) pays turnover cost on
@@ -2067,7 +2067,7 @@ class DiffSolver:
 
         *What the ranking saw.* `curve_net` / `curve_pre` / `curve_charged` are the FULL per-rung
         curve, packed space-separated into three cells so a narrowed ladder does not ragged the
-        header. `range_CE` converts the charged curve's spread into dollars at the local `u'`, and
+        header. `range_CE` converts the charged curve's spread into money at the local `u'`, and
         `bow_span` is the curve's departure from the chord through its net-sorted endpoints — a
         straight ranking (bow ≈ 0) is one whose argmax can only be a corner. `P_band_*` is the
         chance the day ENDS in the same knee band, per inner draw, at three reference books (flat,
@@ -2121,7 +2121,7 @@ class DiffSolver:
         x1 = _utility_x(W1p - (w0 if self.running_wealth else 0.0), obj, self.nxt[t])
         p_band = ((x1 > -delta) & (x1 < 0.0)).to(torch.float32).mean(-1)
 
-        # The curve's shape: spread in dollars at the local u', and bow off the endpoint chord.
+        # The curve's shape: spread in money at the local u', and bow off the endpoint chord.
         order = torch.argsort(net, stable=True)
         cs, ns = charged[order], net[order]
         span, width = float(cs[-1] - cs[0]), float(ns[-1] - ns[0])
@@ -2214,7 +2214,7 @@ class DiffSolver:
             stepper = BundleStepper(self.bundle, self.runtime, mirror_scale=False)
             last = None
             u_sum = w_prev = None
-            drift = {"t": [], "cum_dF_usd": [0.0] * self.aspace.n_hedge, "cum_dL_usd": 0.0,
+            drift = {"t": [], "cum_dF": [0.0] * self.aspace.n_hedge, "cum_dL": 0.0,
                      "cum_z": 0.0, "z_path": [], "tripped": []}
             pending = None      # the last decision's residual, scored once its move has printed
             # the null of the path mean the monitor scores: the per-path null over the paths' root
@@ -2241,8 +2241,8 @@ class DiffSolver:
                         # then did, standardized by the fork's own dispersion, entering at the NEXT
                         # decision so a trip reads only printed moves
                         if pending is not None:
-                            drift["cum_dF_usd"] = [a + b for a, b in zip(drift["cum_dF_usd"], pending[0])]
-                            drift["cum_dL_usd"] += pending[1]
+                            drift["cum_dF"] = [a + b for a, b in zip(drift["cum_dF"], pending[0])]
+                            drift["cum_dL"] += pending[1]
                             drift["cum_z"] += pending[2]
                         obs_dF, obs_dL = self._outer_move(t)                      # (B, n_h), (B,)
                         rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
@@ -2264,7 +2264,7 @@ class DiffSolver:
                             # bias the forecast toward the REALIZED drift: the observed average
                             # residual per leg, scaled by beta, shifts the fork moves the ranking
                             # prices
-                            shift = [-beta * c / n_so_far for c in drift["cum_dF_usd"]]
+                            shift = [-beta * c / n_so_far for c in drift["cum_dF"]]
                             logging.debug('drift shift at step %d: %s a contract on the moving legs',
                                           t, shift)
                             adj = torch.tensor(shift, device=self.device)
