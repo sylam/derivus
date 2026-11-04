@@ -1,14 +1,6 @@
-"""Differential-ML dynamic-hedging solver (Execution_Mode='solve_hedge').
-
-`DiffSolver` is the production solver: a backward-DP / differential-ML value function
-fit by the Huge–Savine twin loss (value + AAD pathwise-gradient), consuming the simulated
-scenario bundle and forking inner MC on demand via `Bundle.inner_mc` / `Bundle.inner_mc_grad`
-(attached by `HedgeMonteCarlo.execute`). `HindsightDpSolver` (clairvoyant oracle, the
-upper-bound track) and `run_textbook_benchmark` (averaging / min-var lower-bound track)
-are kept as benchmarks. `StreamingSolve` is the driver — one bundle per simulation batch,
-warmup/step/finish — and `assemble_hedge_result` builds the comparison table + acceptance
-ladder.
-"""
+"""The hedge solver (`Execution_Mode` 'solve_hedge'): the action universe every track shares, the
+value-function solvers, the benchmark tracks, the streaming driver and the result assembly, each
+documented on the Hedging section's Solver page."""
 
 from __future__ import annotations
 
@@ -84,53 +76,42 @@ class SolverResult:
 
 
 class HedgeActionSpace:
-    """The solver-owned ACTION UNIVERSE and friction access, built ONCE from `(runtime, device)`
-    and shared by every track — DiffSolver, HindsightDpSolver, `run_textbook_benchmark` and the
-    stepper rollout — so they optimize over the same positions and price the same frictions.
-
-      * `axis_levels()` / `grid()` — the MASK-AWARE target-position grid in whole contracts:
-        active hedge axes span `[min, max]` at `levels` points, inactive axes pin to a single 0;
-        `grid_at(t, live)` keeps the rows the step admits (`admissible`): each live active leg
-        inside its box, every other leg at zero, the signed net inside the cap and the corridor
-        (`bounds`).
-      * `allocation_grid(t)` — the FACTORED alternative under `Allocation_Mode` Exposure or
-        Carry_Variance: one ladder over the signed NET cover, each rung split across the legs by
-        the weights. `grid_at` dispatches on the universe; downstream consumes the rows either way.
-      * `ladder(t, live)` / `book(q, t, live)` — the whole-contract band of the signed net on the
-        legs a mask marks, and a book as the execution books it: clamped into the `ladder` boxes,
-        its net water-filled into the band on the ladder's legs, apportioned to whole contracts.
-        The passive and textbook books are booked by it.
-      * `kappa(tradables_sim, t)` — the per-hedge turnover rates `(κ, κ_cal)` at sim-grid `t`,
-        off `hedge_bundle.kappa_pair`, which `hedge_bundle.turnover_charge` prices a reposition at.
-      * `schedule_key(schedule)` — the comparison-stable corridor stamp."""
+    """The action universe and the turnover rates every track optimises over and is charged at,
+    built once from `(runtime, device)`; documented on the Solver page."""
 
     documentation = ('Solver', [
-        'The action universe, built once from the runtime and shared by every track — the solver,',
-        'the benchmarks and the stepper rollout — so they all optimize over the same positions and',
-        'price the same frictions.',
+        'The action universe, built once from the runtime and shared by every track (the solver,',
+        'the benchmarks and the stepper roll), so no two can disagree about which books are',
+        'reachable or what a trade costs.',
         '',
-        '- `grid()` / `axis_levels()` — the target-position grid in whole contracts. Active hedge',
-        '  axes span `[Min_Position, Max_Position]` at `Training_Action_Grid_Levels_Per_Axis`',
-        '  points rounded to whole contracts, inactive axes pin to a single 0, and a step keeps the',
-        '  rows it admits on its live legs (`admissible`): each live active leg inside its box,',
-        '  every other leg at zero, the signed net inside `Total_Position_Abs_Limit` and the',
-        '  `Total_Position_Schedule` corridor. Every track holds its books to that one rule.',
-        '- `allocation_grid(...)` — under `Evaluator.Allocation_Mode` Exposure (the declared',
-        '  `Allocation_Weights`) or Carry_Variance (weights the solver derives), the FACTORED',
-        '  universe instead: the levels count rungs on the signed NET cover and the weights split',
-        '  each rung across the legs, so the search is over how much cover to carry, not over its',
-        '  composition.',
-        '- `ladder(...)` / `book(...)` — the whole-contract band of the signed net on the legs',
-        '  the ladder trades, and a book as the execution books it: clamped into those legs\'',
-        '  boxes, nothing on any other, its net water-filled into the band and apportioned to',
-        '  whole contracts. The passive and textbook books are booked by it, as the stepper holds',
-        '  them.',
-        '- `kappa(...)` — the per-hedge turnover rates at a step, off the one `kappa_pair` the',
-        '  environment and the diagnostic CSVs charge each leg at, priced into a reposition by',
-        '  `turnover_charge`.',
+        '- `grid()` / `axis_levels()`: the Cartesian universe, each active leg at',
+        '  `Training_Action_Grid_Levels_Per_Axis` levels of `linspace(Min_Position, Max_Position)`',
+        '  rounded to whole contracts, each inactive leg pinned at 0.',
+        '- `allocation_grid(...)`: under `Evaluator.Allocation_Mode` Exposure or Carry_Variance, one',
+        '  ladder of rungs on the signed net cover, each split across the legs by the weights in force',
+        '  (`rung`), so the search is over how much cover to carry, not over its composition.',
+        '- `ladder(...)` / `book(...)`: the whole-contract band of the signed net on the legs a ladder',
+        '  trades, and a book as the execution books it: clamped into those legs\' boxes, nothing on',
+        '  any other, its net water-filled into the band and apportioned to whole contracts. The',
+        '  passive and textbook books are booked by it.',
+        '- `kappa(...)`: the per-leg turnover rates at a step (`hedge_bundle.kappa_pair`), which',
+        '  `turnover_charge` prices a reposition at. A ranking prices a move at the cross-path mean',
+        '  mark; every charge, the verdict\'s and the benchmarks\' as the stepper\'s and its CSV\'s,',
+        '  at each path\'s own (`rows`, `per_contract_kappa` reading the mark\'s abs). **Held by**',
+        '  `tests/test_action_space_and_artifact.py::test_every_track_charges_each_path_at_its_own_mark`.',
         '',
-        'One object owning all of this is what makes a benchmark comparable to the solver: they',
-        'cannot disagree about which positions are reachable or what a trade costs.',
+        'Every track holds its books to one rule (`admissible`): on the step\'s live legs each active',
+        'leg inside its box, every other leg at zero, and the signed net inside',
+        '`Total_Position_Abs_Limit` and the `Total_Position_Schedule` corridor (`bounds`). Each step\'s',
+        'grid keeps the rows it admits (`grid_at`), whatever their gross, so a row parked on an expired',
+        'leg cannot carry the live legs past the cap, nor an expired leg\'s box bound the live ones; the',
+        'ladder, the passive and textbook books and the bank are built inside the same bounds; and',
+        '`Decision_Deadband_Sigma` holds the standing book only while the step admits it, a split off',
+        'the step\'s rungs included. **Held by**',
+        '`tests/test_action_space_and_artifact.py::test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book`,',
+        '`::test_the_cap_holds_the_book_the_live_legs_carry`,',
+        '`::test_a_dead_leg_s_box_bounds_nothing_on_the_legs_still_live` and',
+        '`::test_the_deadband_holds_only_a_book_the_step_admits`.',
     ])
 
     def __init__(self, runtime, device, vol_sim=None):
@@ -475,21 +456,9 @@ class HedgeActionSpace:
 
 
 def run_textbook_benchmark(bundle, runtime):
-    """Static-hedge reference: the single best CONSTANT position, held with no rebalancing to the
-    terminal T, the last live liability mark where `L_T` is read and the book unwound, evaluated
-    FRICTIONLESS on the realized outer paths — a valid lower bound for the dynamic DP, since
-    rebalancing can only add value. No inner MC and no V̂; a static hold telescopes the per-step
-    P&L to `position · (F_T − F_0)`. Shares `HedgeActionSpace`, so it respects
-    `Active_Hedge_Indices` exactly like the greedy grid.
-
-    The turnover a real execution would pay — entry from the OPENING book `q0` plus a terminal
-    unwind at the PRE-SETTLEMENT row, the one row all three tracks unwind at so their `*_net`
-    columns compare — is a net-of-cost DIAGNOSTIC, never charged against the V_0 track.
-
-    The corridor filter is the ENTRY-step one: the hold is chosen once at entry, and a per-t
-    corridor is a dynamic constraint a constant hold cannot track. Under `Allocation_Weights` the
-    universe is `aspace.static_grid()`, every knot's composition rather than the entry knot's, so
-    an action-space difference does not land inside the DP-vs-textbook gap."""
+    """The comparison track's `textbook` (Solver page, Benchmarks and the verdict): the best
+    constant book of `HedgeActionSpace.static_grid` by E[u], held frictionless to the terminal, its
+    entry from the opening book and unwind there reported as a net-of-cost diagnostic."""
     T = bundle.last_live_mtm_index
     L_T, device = bundle.liability_sim[T], bundle.device
     acc = runtime["accounting"]
@@ -522,34 +491,18 @@ def run_textbook_benchmark(bundle, runtime):
 
 
 class HindsightDpSolver:
-    """Clairvoyant upper-bound diagnostic, FRICTIONLESS (the shared DP objective). For each
-    realized outer path it picks, at EVERY decision independently, the grid position maximizing
-    its realized P&L `q·cs·(F_{t'}−F_t)` to its successor t' (`Bundle.successors`), the rows the
-    solver decides on and holds its book across — perfect foresight + free repositioning.
-    No inner MC, no V̂: the realized path is its own one-sample future.
-
-    `u_signed` is monotone and the liability terminal `L_T(b)` is path-fixed, so maximizing
-    `u_signed(W_T)` is maximizing the additive cash `G_T`; with no turnover cost the per-step
-    choices decouple and the max-plus DP collapses to a per-step argmax. `mean_b V_0(b)` is an
-    upper bound on any deployable policy's value. The turnover a real execution of this bang-bang
-    trajectory would pay — entry from the OPENING book, per-step repositioning, terminal unwind at
-    the PRE-SETTLEMENT row — is a net-of-cost DIAGNOSTIC, never charged against the V_0 track.
-    Shares `HedgeActionSpace`, so it respects `Active_Hedge_Indices` like the greedy grid."""
+    """The clairvoyant, frictionless upper-bound track; documented on the Solver page."""
 
     documentation = ('Solver', [
-        'A clairvoyant UPPER BOUND, enabled by `Run_Hindsight_Diagnostic`. For each realized path',
-        "it picks, at every decision independently, the grid position maximizing its realized P&L to",
-        'the next decision — perfect foresight and free repositioning. No inner MC and no fitted value: the',
-        'realized path is its own one-sample future.',
-        '',
-        'It is a bound, not a policy. With no turnover cost the per-step choices decouple, so the',
-        'dynamic program collapses to a per-step argmax, and the mean value is an upper bound on',
-        'any deployable policy — the reference the solver is measured against. The turnover a real',
-        'execution of that bang-bang trajectory would pay is reported as a net-of-cost diagnostic',
-        'and never charged against the bound.',
-        '',
-        'It shares `HedgeActionSpace`, so it respects `Active_Hedge_Indices` exactly as the greedy',
-        'grid does — a benchmark cannot trade an axis the solver had pinned off.',
+        'The clairvoyant upper bound, run under `Run_Hindsight_Diagnostic`. On each realized',
+        'held-out path it holds the opening book to the first decision, then at every decision row',
+        'from `T_Min` (`Bundle.decisions_from`), the rows the solver decides on, picks the grid book',
+        'maximising its realized P&L to the next decision (`Bundle.successors`): perfect foresight and',
+        'free repositioning, with no inner Monte Carlo and no fitted value. Frictionless, its per-step',
+        'choices decouple, so the dynamic program is a per-step argmax and its mean value bounds any',
+        'deployable policy; the turnover its path would pay is a net-of-cost diagnostic, never charged.',
+        '**Held by**',
+        '`tests/test_action_space_and_artifact.py::test_the_hindsight_bound_decides_where_the_solver_does`.',
     ])
 
     def __init__(self, bundle, runtime):
@@ -3033,40 +2986,22 @@ class DiffSolver:
 # `DiffSolver` is the production deliverable; `HindsightDpSolver` is the upper-bound benchmark
 # track and `run_textbook_benchmark` the lower-bound one.
 class StreamingSolve:
-    """The solve driver: one `Bundle` per simulation batch, handed over as it is built.
-
-    `HedgeMonteCarlo.execute` builds a `Bundle` INSIDE its simulation loop and hands each one
-    straight over: `warmup` on batch 1 (which constructs the solver(s) and locks the frame),
-    `step` on every later batch (fresh paths, same nets / optimizer moments / frame), and
-    `finish` on the final batch — never trained on, so it is the held-out world the verdict and
-    the benchmark tracks are measured on.
-
-    The inner-MC fork width is `Batch_Size` rather than the whole simulation, and every fit step
-    sees paths no earlier step did, so overfitting to one simulated set is not structurally
-    possible. A frozen-policy evaluation is the degenerate stream of length one: nothing to fit,
-    so warmup's batch IS the held-out world.
-
-    Multi-seed keeps one persistent solver per seed, all fed the same batches in the same order."""
+    """The solve driver, one `Bundle` per simulation batch; documented on the Solver page."""
 
     documentation = ('Solver', [
-        'The solve driver: one bundle per simulation batch, handed over as the calc builds it.',
-        '`warmup` on batch 1 (which constructs the solver(s) and locks the frame), `step` on every',
-        'later batch (fresh paths, same nets, optimizer moments and frame), and `finish` on the',
-        'final batch — never fitted, so it is the held-out world the verdict and the benchmark',
-        'tracks are measured on.',
+        'A solve is a stream. `HedgeMonteCarlo.execute` builds one bundle per simulation batch and',
+        'hands each over as it is built: `warmup` on the first, which constructs the solver, one per',
+        '`Multi_Seed_Count` seed fed the same batches, and locks its frame (`DiffSolver`); `step` on',
+        'every later batch but the last, fresh paths under the same nets, optimizer moments and',
+        'frame; and `finish` on the last, never fitted, the held-out world the verdict and the',
+        'benchmark tracks are measured on. A fork is as wide as one batch, and every fit step sees',
+        'paths no earlier step did.',
         '',
-        'Why this shape: fork width follows `Batch_Size` rather than the whole simulation, and every',
-        'fit step sees paths no earlier step did, so overfitting to one simulated set is not',
-        'structurally possible.',
-        '',
-        'The stream is the `Simulation_Batches` batches simulated: trained paths are',
-        '`(Simulation_Batches - 1) x Batch_Size`, and the minimum is 2.',
-        '',
-        '!!! warning "A frozen evaluation is the stream of length one"',
-        '    `DiffV2_Load_Value_Fn` fits nothing, so `Simulation_Batches` must be exactly 1 — that',
-        '    single batch is both the warmup bundle and the held-out world, since frozen nets saw',
-        '    none of it. The contract refuses anything else, so there are no `step` batches to',
-        '    sweep, and `step` refuses to sweep a loaded net regardless.',
+        '!!! warning "Invariant: a frozen evaluation is the stream of length one"',
+        '    Under `DiffV2_Load_Value_Fn` nothing is fitted, so the one batch is both warmup and',
+        '    held-out world; `step` skips a loaded net, and `finish` does not re-fork its own',
+        '    bundle, which would advance the Sobol stream and move the verdict. **Held by**',
+        '    `tests/test_frozen_policy_is_frozen.py`.',
     ])
 
     def __init__(self, runtime):

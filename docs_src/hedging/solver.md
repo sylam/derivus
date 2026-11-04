@@ -5,10 +5,8 @@ separate solver that adds a forward pass constructing the policy its training ba
 `DiffSolverV2` below); a checkpoint written by one is refused by the other. `HindsightDpSolver` is
 not a primary solver: it runs as the clairvoyant benchmark track (`Run_Hindsight_Diagnostic`).
 
-A solve is a **stream**: `StreamingSolve` takes one bundle per simulation batch as the calc builds
-it, fits on all but the last, and reports the verdict on the last — a world no fit step saw. Every
-track (the solver, the benchmarks, the stepper rollout) optimizes over the same
-`HedgeActionSpace`, so they trade the same positions and pay the same frictions.
+A solve is a stream of simulation batches (`StreamingSolve`), and every track optimises over one
+`HedgeActionSpace`; both are documented below.
 
 ## Method
 
@@ -71,40 +69,24 @@ Under `DiffV2_Risk_Horizon` k > 1 the downside semideviation `DiffV2_Risk_Kappa`
 
 | Track | Policy | Reported in |
 | --- | --- | --- |
-| `HindsightDpSolver` (`Run_Hindsight_Diagnostic`) | clairvoyant and frictionless: at every decision the grid position maximising its realized P&L to the next, the decision rows and the terminal the solver steps; an upper bound on any deployable policy | `comparison`, ladder |
+| `HindsightDpSolver` (`Run_Hindsight_Diagnostic`) | the clairvoyant, frictionless upper bound (`HindsightDpSolver` below) | `comparison`, ladder |
 | `textbook` (`Run_Textbook_Benchmark`) | the single best CONSTANT position held to the terminal, the last live liability mark, frictionless, chosen by $E[u]$ on the held-out paths; a lower bound | `comparison`, ladder |
 | `textbook` (verdict) | per step, per active hedge $i$: $q_i=-\mathrm{Cov}(\Delta L,\Delta F_i)\,/\,(cs_i\,\mathrm{Var}(\Delta F_i)\,n_{active})$ over the outer paths, booked as the passive book is | `diagnostics.verdict`, `stepper_verdict` |
 | `nohedge` | no position from the first decision, the opening book closed there at the declared turnover cost | `diagnostics.verdict`, `stepper_verdict` |
-| `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), booked as the execution books it (clamped to the position limits of the legs the step's `Allocation_Weights` knot weighs, the live active legs where none is declared, nothing on any other, its net on those legs inside the cap and the corridor snapped inward to whole contracts, apportioned to whole contracts carrying that net) and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing, or the nearest whole-contract edge of a corridor that excludes zero | `diagnostics.verdict`, `stepper_verdict` |
+| `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), booked by `HedgeActionSpace.book` and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing, or the nearest whole-contract edge of a corridor that excludes zero | `diagnostics.verdict`, `stepper_verdict` |
 
-The passive book stays inside its band, in whole contracts inside each leg's box with nothing on a
-leg the knot weighs zero, its net inside the corridor, a fractional edge included, and inside the
-cap on the signed net; the verdict and the stepper roll hold one textbook book, and on the
-Cartesian grid, whose levels are `linspace(Min_Position, Max_Position, levels)` rounded to whole
-contracts, one greedy book. Every track holds its books to one rule
-(`HedgeActionSpace.admissible`): on the step's live legs each active leg inside its box, every other
-leg at zero, and the signed net inside the cap and the corridor. Each step's grid keeps the rows it
-admits (`HedgeActionSpace.grid_at`), whatever their gross, so a row parked on an expired leg cannot
-carry the live legs past the cap, nor an expired leg's box bound the live ones; the ladder, the
-passive and textbook books and the bank are built inside the same bounds
-(`HedgeActionSpace.bounds`); and `Decision_Deadband_Sigma` holds the standing book only while the
-step admits it, a split off the step's rungs included. Held by
+The passive book stays inside its band (`HedgeActionSpace.admissible`), a fractional corridor edge
+included, and the verdict and the stepper roll hold one textbook book and, on the Cartesian grid,
+one greedy book. Held by
 `tests/test_action_space_and_artifact.py::test_the_passive_book_stays_inside_a_fractional_corridor`,
 `::test_a_corridor_excluding_zero_is_held_on_the_legs_still_live`,
-`::test_the_verdict_and_the_stepper_hold_one_textbook_book`,
-`::test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid`,
-`::test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book`,
-`::test_the_cap_holds_the_book_the_live_legs_carry`,
-`::test_a_dead_leg_s_box_bounds_nothing_on_the_legs_still_live` and
-`::test_the_deadband_holds_only_a_book_the_step_admits`. The constant hold telescopes to the
-terminal, where the hindsight bound stops too, held by
+`::test_the_verdict_and_the_stepper_hold_one_textbook_book` and
+`::test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid`. The constant hold
+telescopes to the terminal, where the hindsight bound stops too, held by
 `tests/test_action_space_and_artifact.py::test_the_textbook_bound_holds_its_book_to_the_terminal`.
 
 The two tracks named `textbook` are different policies. Both report turnover cost as a diagnostic;
-the comparison track is never charged it, the verdict's only under the position state. The
-hindsight bound decides where the solver does, on the decision rows from `T_Min`
-(`Bundle.decisions_from`), the opening book held before the first, held by
-`tests/test_action_space_and_artifact.py::test_the_hindsight_bound_decides_where_the_solver_does`.
+the comparison track is never charged it, the verdict's only under the position state.
 
 The verdict rolls the fitted argmax policy over every path of the held-out batch from `T_Min`,
 every track holding the opening book from the first row to it,
@@ -120,10 +102,6 @@ it. Under it every step's wealth is charged the repositioning charge the labels 
 (`DiffSolver._charge`), so each greedy decision reads the net wealth its value was
 fitted on, the columns are net and there are no `*_net` columns. Held by
 `tests/test_action_space_and_artifact.py::test_a_label_past_the_horizon_is_what_its_greedy_policy_realises`.
-A ranking prices a move at the cross-path mean mark; every charge, the verdict's and the
-benchmarks' as the stepper's and the CSV's, prices each path's move at that path's own mark
-(`HedgeActionSpace.kappa` with `rows`, `per_contract_kappa` reading the mark's abs), held by
-`tests/test_action_space_and_artifact.py::test_every_track_charges_each_path_at_its_own_mark`.
 Wealth is money: the verdict's recursion and the stepper's accounting carry it in float64
 (`hedge_bundle.MONEY`), cast to float32 only where a net reads it, so the two tracks read one wealth
 at every decision, held by

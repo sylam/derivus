@@ -485,15 +485,9 @@ which its replay holds across (a tape of two calendars flags each column on its 
 published on the host for the call and dropped after it, a key naming no simulated factor refused
 (**Held by** `tests/test_logvar2fj_spot.py::test_a_replay_is_the_filter_on_the_bars_before_each_fix`,
 `tests/test_chained_basis.py::test_a_spot_replay_holds_its_variance_across_a_forward_filled_holiday`,
-`::test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill`). A solve is a stream: a `Bundle` per batch to one `StreamingSolve` (`warmup`
-locking the frame, `step` per training batch, `finish` on the held-out last), each of the
-`Simulation_Batches` batches simulated, which `simulate_only` pools into one bundle instead.
-
-!!! warning "Invariant — a frozen evaluation is the stream of length one"
-    Under `DiffV2_Load_Value_Fn` nothing is fitted, so `Simulation_Batches` must be 1, that batch
-    both warmup and held-out world; `step` skips a loaded net, and `finish` does not re-fork its own
-    bundle, which would advance the Sobol stream and move the verdict. **Held by**
-    `tests/test_frozen_policy_is_frozen.py`.
+`::test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill`). Under `solve_hedge`
+each batch's `Bundle` goes to one `StreamingSolve` ([Solver](../hedging/solver.md)); `simulate_only`
+pools the batches into one bundle.
 
 !!! warning "Invariant — `Z.ndim` dispatch"
     One process's `generate()` serves both loops: outer `(T, B)` and inner `(T, B, B2)`, the
