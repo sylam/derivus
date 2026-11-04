@@ -3341,8 +3341,8 @@ class DiffSolverV2(DiffSolver):
         # the curve is float32 by construction, read in the books' own precision
         return torch.lerp(bp[idx - 1].to(w.dtype), bp[idx].to(w.dtype), w)
 
-    def _constructed_policy(self, floored=True, live=None):
-        """ONE deterministic pass — measure, then construct. The moving-strike delta
+    def _constructed_policy(self, live=None):
+        """ONE deterministic pass — measure once, then construct twice. The moving-strike delta
         `d_t(book) = P(terminal book < book at t | book at t)` is measured on the FLAT liability,
         the only book that exists before a policy does, and the policy rolls once against those
         curves: the strike rides the book, so hedging does not change the measured object and no
@@ -3350,15 +3350,13 @@ class DiffSolverV2(DiffSolver):
         step's net spans the `HedgeActionSpace.ladder` band, is held as its `rung` and its reserve
         is priced on the ladder's weights; absent `live`, the net spans the `bounds` band and is
         water-filled onto the replication hedge's shape, its reserve priced in that shape. Returns
-        `(q per decision row (B, n_hedge), curves per decision row, terminal book)`, each decision
-        holding its book to the next."""
+        `(the floored q per decision row (B, n_hedge), the undefended delta's, curves per decision
+        row, the floored terminal book)`, each decision holding its book to the next."""
         L, T = self.liability_sim, self.T_dec
         rep = {t: self._replication_hedge(t) for t in self.steps}
         moves = {t: self._outer_move(t) for t in self.steps}
         LT = L[T]
-
-        def band(t):
-            return self.aspace.bounds(t)[2:] if live is None else self.aspace.ladder(t, live[t])[4:]
+        logging.debug("constructed policy: measured once over %d decision rows", len(self.steps))
 
         def compose(t, net):
             if live is not None:
@@ -3373,7 +3371,8 @@ class DiffSolverV2(DiffSolver):
         floor = 1.0 * self.leg_volume
         m_t, bands, lo_is, hi_is = {}, {}, {}, {}
         for t in self.steps:
-            bands[t] = lo_t, hi_t = band(t)
+            bands[t] = lo_t, hi_t = (self.aspace.bounds(t)[2:] if live is None
+                                     else self.aspace.ladder(t, live[t])[4:])
             lo_is[t] = math.ceil(lo_t - 1e-9)
             hi_is[t] = math.floor(hi_t + 1e-9)
             if self._dust(rep[t]):
@@ -3388,67 +3387,69 @@ class DiffSolverV2(DiffSolver):
             best = torch.maximum(hi_is[t] * m_t[t], lo_is[t] * m_t[t])
             req = torch.maximum(req - moves[t][1] - best,
                                 torch.full_like(req, floor))
-        q, W = {}, L[0].clone()
-        curves = []
-        for t in self.steps:
-            # the strike is the FLOOR. The danger measured is terminal capital breach rather than a
-            # high-water ratchet, so a rallying book with no breach risk reads d ~ 0 and the map
-            # parks the seed at the TOP of the bound.
-            cv = self._phi_curve(L[t], LT < floor)
-            curves.append(cv)
-            if self._dust(rep[t]):
-                # the below-today comparison is float noise, so the constructed book is FLAT (the
-                # wealth step below still accrues the settling liability rows)
-                qt = torch.zeros(self.B_outer, self.n_hedge, device=self.device)
-            else:
-                g = self._phi_apply(cv, W)
-                (lo_t, hi_t), lo_i, hi_i = bands[t], lo_is[t], hi_is[t]
-                net = hi_t - g * (hi_t - lo_t)
-                # WHOLE contracts, rounded AWAY from zero (up, in cover terms); the box is snapped
-                # inward so every integer net is realizable
-                net = torch.where(net < 0, net.floor(), net.ceil()).clamp(lo_i, hi_i)
-                # THE FLOOR BINDS, made enforceable by the seed's one-day hindsight: where the
-                # delta base would let tomorrow's book breach it, hold the smallest position that
-                # keeps it above. A day too small to defend keeps the delta base.
-                m, dL = m_t[t], moves[t][1]
-                # tomorrow's book must clear tomorrow's RESERVE, not just the floor. `reqs[t]` IS
-                # the requirement at t+1, since the backward loop clones before it updates.
-                target = reqs[t]
-                if t == self.steps[0] or not floored:
-                    # t0 is the ONE decision deployment shares with the seed - a single real state
-                    # and a single position - so it takes the uniform honest delta with NO
-                    # clairvoyance; paths needing more catch up at t1
-                    q[t] = compose(t, net.unsqueeze(-1))
-                    W = self._wealth_step(W, q[t], *moves[t])
-                    continue
-                # the floor constraint q*m >= need is a HALF-LINE, and the repair is the delta base
-                # PROJECTED onto it: the least change, rounded toward the feasible side. An
-                # up-day's bound is a LIMIT on the short - rounding away from zero walks through.
-                defensible = m.abs() > 1e-9
-                bound = (target - W - dL) / torch.where(defensible, m, torch.ones_like(m))
-                net = torch.where(defensible & (m > 0),
-                                  torch.maximum(net, bound.ceil()), net)
-                net = torch.where(defensible & (m < 0),
-                                  torch.minimum(net, bound.floor()), net)
-                net = net.clamp(lo_i, hi_i).unsqueeze(-1)
-                qt = compose(t, net).clamp(self.q_lo, self.q_hi)
-                # EXECUTION-EXACT top-up: the bound above prices the hedge at the weighted basket
-                # move while the executed split deviates, so re-price the EXECUTED book and
-                # top the net up by the least whole contracts that clear the shortfall
-                exec_pnl = (qt * self.contract_size * moves[t][0]).sum(-1)
-                short = target - (W + dL + exec_pnl)
-                fix = defensible & (short > 0)
-                if bool(fix.any()):
-                    # +1 because the exact amount can be re-split away again on the integer
-                    # lattice; the floor's guarantee under whole-contract trading is therefore to
-                    # within one contract's day move
-                    extra = torch.where(fix, ((short / m.abs()).ceil() + 1.0) * torch.sign(m),
-                                        torch.zeros_like(m))
-                    net = (net.squeeze(-1) + extra).clamp(lo_i, hi_i).unsqueeze(-1)
+        # the strike is the FLOOR. The danger measured is terminal capital breach rather than a
+        # high-water ratchet, so a rallying book with no breach risk reads d ~ 0 and the map parks
+        # the seed at the TOP of the bound.
+        curves = [self._phi_curve(L[t], LT < floor) for t in self.steps]
+
+        def construct(floored):
+            q, W = {}, L[0].clone()
+            for t, cv in zip(self.steps, curves):
+                if self._dust(rep[t]):
+                    # the below-today comparison is float noise, so the constructed book is FLAT (the
+                    # wealth step below still accrues the settling liability rows)
+                    qt = torch.zeros(self.B_outer, self.n_hedge, device=self.device)
+                else:
+                    g = self._phi_apply(cv, W)
+                    (lo_t, hi_t), lo_i, hi_i = bands[t], lo_is[t], hi_is[t]
+                    net = hi_t - g * (hi_t - lo_t)
+                    # WHOLE contracts, rounded AWAY from zero (up, in cover terms); the box is snapped
+                    # inward so every integer net is realizable
+                    net = torch.where(net < 0, net.floor(), net.ceil()).clamp(lo_i, hi_i)
+                    # THE FLOOR BINDS, made enforceable by the seed's one-day hindsight: where the
+                    # delta base would let tomorrow's book breach it, hold the smallest position that
+                    # keeps it above. A day too small to defend keeps the delta base.
+                    m, dL = m_t[t], moves[t][1]
+                    # tomorrow's book must clear tomorrow's RESERVE, not just the floor. `reqs[t]` IS
+                    # the requirement at t+1, since the backward loop clones before it updates.
+                    target = reqs[t]
+                    if t == self.steps[0] or not floored:
+                        # t0 is the ONE decision deployment shares with the seed - a single real state
+                        # and a single position - so it takes the uniform honest delta with NO
+                        # clairvoyance; paths needing more catch up at t1
+                        q[t] = compose(t, net.unsqueeze(-1))
+                        W = self._wealth_step(W, q[t], *moves[t])
+                        continue
+                    # the floor constraint q*m >= need is a HALF-LINE, and the repair is the delta base
+                    # PROJECTED onto it: the least change, rounded toward the feasible side. An
+                    # up-day's bound is a LIMIT on the short - rounding away from zero walks through.
+                    defensible = m.abs() > 1e-9
+                    bound = (target - W - dL) / torch.where(defensible, m, torch.ones_like(m))
+                    net = torch.where(defensible & (m > 0),
+                                      torch.maximum(net, bound.ceil()), net)
+                    net = torch.where(defensible & (m < 0),
+                                      torch.minimum(net, bound.floor()), net)
+                    net = net.clamp(lo_i, hi_i).unsqueeze(-1)
                     qt = compose(t, net).clamp(self.q_lo, self.q_hi)
-            q[t] = qt
-            W = self._wealth_step(W, qt, *moves[t])
-        return q, curves, W
+                    # EXECUTION-EXACT top-up: the bound above prices the hedge at the weighted basket
+                    # move while the executed split deviates, so re-price the EXECUTED book and
+                    # top the net up by the least whole contracts that clear the shortfall
+                    exec_pnl = (qt * self.contract_size * moves[t][0]).sum(-1)
+                    short = target - (W + dL + exec_pnl)
+                    fix = defensible & (short > 0)
+                    if bool(fix.any()):
+                        # +1 because the exact amount can be re-split away again on the integer
+                        # lattice; the floor's guarantee under whole-contract trading is therefore to
+                        # within one contract's day move
+                        extra = torch.where(fix, ((short / m.abs()).ceil() + 1.0) * torch.sign(m),
+                                            torch.zeros_like(m))
+                        net = (net.squeeze(-1) + extra).clamp(lo_i, hi_i).unsqueeze(-1)
+                        qt = compose(t, net).clamp(self.q_lo, self.q_hi)
+                q[t] = qt
+                W = self._wealth_step(W, qt, *moves[t])
+            return q, W
+        q_star, WT = construct(True)
+        return q_star, construct(False)[0], curves, WT
 
     @staticmethod
     def _carry_variance_solve(mu, Sig, c, Q, scale):
@@ -3538,11 +3539,10 @@ class DiffSolverV2(DiffSolver):
         live = None
         if self.bank_ladder:
             live = {t: self.bundle.marked(t, self.hedges) for t in self.steps}
-        q_star, curves, WT = self._constructed_policy(live=live)
         # the floored seed keeps every training book above the floor, so a deep-under-water state
         # would never appear and the net would extrapolate there. Half the paths therefore roll the
         # clairvoyant seed and half the UNDEFENDED delta base.
-        q_base, _, _ = self._constructed_policy(floored=False, live=live)
+        q_star, q_base, curves, WT = self._constructed_policy(live=live)
         half = self.B_outer // 2
         for t in self.steps:
             q_star[t] = torch.cat([q_star[t][:half], q_base[t][half:]], dim=0)
