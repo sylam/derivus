@@ -1117,7 +1117,7 @@ class Bundle:
         '  the cross-sectional dispersion of the flat-book wealth at each step, floored), and',
         '  `step_annual_vol` (the per-step vol driving state-dependent spreads and IM funding: a',
         '  process\'s revealed conditional vol, else the primary spot\'s trailing realised vol with',
-        '  its `Spot_Price_History` spliced in front, as the utility scale reads it).',
+        '  its `Spot_Price_History` in front, as the utility scale reads it).',
         '',
         'The frame is resolved at build time and never recomputed. A per-rollout `c` would silently',
         'rescale every reward, which is why a loaded checkpoint evaluates in ITS frame rather than',
@@ -1203,9 +1203,9 @@ class Bundle:
         history prefix, and the prefix's length `history_rows` every later stage applies:
         `History_Lookback_Business_Days` rows of realized spot where a `Spot_Price_History` is
         declared, none where it is not, so a rolling-window feature at sim-day-0 already has its
-        lookback; a tradable whose `Commodity` has a history takes that series, every other series
-        broadcasts its first row. Also derives the CPU day mirror, the scenario dates and
-        `initial_time_index`."""
+        lookback; a tradable whose `Commodity` has a history and a spot factor that has one take
+        that series, every other series broadcasts its first row. Also derives the CPU day mirror,
+        the scenario dates and `initial_time_index`."""
         grid = _align_time_axis(time_grid_days, steps)
         # a deal's marks run to its last date and the alignment repeats that row after it
         self.last_marked = {n: min(int(t.shape[0]), steps) - 1 for n, t in tradables.items()}
@@ -1291,8 +1291,9 @@ class Bundle:
 
     def _resolve_factors(self, factors, privileged_factor_blocks, stoch_factors, steps):
         """Stage 3 — the simulated factor paths and the per-process privileged surfaces (the
-        market state the value function consumes), both prefixed by `history_rows`."""
-        self.factors = {n: torch.cat([self._history_prefix(t), t], dim=0)
+        market state the value function consumes), both prefixed by `history_rows`, a spot's by its
+        realized history."""
+        self.factors = {n: torch.cat([self._history_prefix(t, self.spot_price_history.get(n)), t], dim=0)
                         for n, t in ((n, _align_time_axis(t, steps)) for n, t in factors.items())}
         self.privileged_factors = {
             n: torch.cat([self._history_prefix(t), t], dim=0)
@@ -1317,28 +1318,13 @@ class Bundle:
                 self._log_scale_dose(runtime)
         self.step_annual_vol = self._resolve_step_vol(runtime, stoch_factors)
 
-    def _spot_timeline(self, commodity):
-        """The (H+T_sim, B) spot tensor for `commodity`: its JSON history rows 0..H-1 concatenated
-        with the simulator's CommodityPrice factor from row H, the factor alone where it has no
-        history, None where there is no such factor. `commodity` is the canonical factor name
-        (`utils.check_tuple_name`), which both dicts key by."""
-        sim = self.factors.get(commodity)
-        if sim is None:
-            return None
-        sim = sim.to(dtype=torch.float32)
-        hist = self.spot_price_history.get(commodity, sim[:0]).to(sim)
-        return torch.cat([hist, sim[int(hist.shape[0]):]], dim=0)
-
     def _spot_realized_vol(self, window=PRICE_ZSCORE_WINDOW, min_periods=5):
         """Annualized rolling realized log-vol of each underlying spot, `{commodity: (T, B)}`. In
         mean-reverting regimes with σ scaled to hold the stationary std fixed, realized vol rises
         with kappa, which makes this a regime signal as well as the utility-scale σ source."""
         out = {}
-        for commodity in self.spot_price_history:
-            S = self._spot_timeline(commodity)
-            if S is None:
-                continue
-            rv = _rolling_realized_vol(S, self.grid_market_days, window)
+        for commodity in (c for c in self.spot_price_history if c in self.factors):
+            rv = _rolling_realized_vol(self.factors[commodity].float(), self.grid_market_days, window)
             rv[:min_periods] = 0.0
             out[commodity] = rv
         return out
@@ -1416,16 +1402,10 @@ class Bundle:
         if self.spot_price_history:
             # history path: spot and realized sigma read at the history/sim boundary H
             commodity = self.primary
-            full = self._spot_timeline(commodity)
-            if full is None or H >= int(full.shape[0]):
-                _degenerate(
-                    f"spot timeline for {commodity!r} has length "
-                    f"{0 if full is None else int(full.shape[0])} ≤ history_lookback H={H}")
             # batch-median at H, never slot [H, 0]: keeps c path-independent under a stochastic
             # initial draw
-            initial_spot = float(full[H].median().item())
-            rv = self.spot_realized_vol.get(commodity)
-            sigma = float(rv[H].median().item()) if rv is not None and H < int(rv.shape[0]) else 0.0
+            initial_spot = float(self.factors[commodity][H].float().median().item())
+            sigma = float(self.spot_realized_vol[commodity][H].median().item())
         else:
             commodity, initial_spot, sigma = self.calibrated_utility_inputs
         if sigma <= 0.0:
@@ -1511,8 +1491,8 @@ class Bundle:
         ONLY when a Vol_Scale spec OR IM funding is active — None otherwise, so `per_contract_kappa`
         ignores vol and no funding accrues. The source PREFERS a process-revealed conditional vol
         (GARCH publishes log h_t → σ_t = √(exp(log h_t)/dt_c)), falling back to the trailing
-        realized-vol proxy off the primary spot's timeline, its realized history spliced in front
-        of the simulated path as the utility scale's σ reads it (`_spot_timeline`). Batch-reduced
+        realized-vol proxy off the primary spot, its realized history in front of the simulated
+        path as the utility scale's σ reads it. Batch-reduced
         to one scalar per step, matching the solver's mean-mark kappa. The chosen source is logged
         once per build: a silent proxy fallback under a GARCH retrain would invalidate the whole
         vol coupling."""
@@ -1530,7 +1510,7 @@ class Bundle:
         logging.info('step_annual_vol source: realized-vol proxy on %s (Vol_Scale=%s IM_funding=%s)',
                      self.primary, vol_scale_active, im_funding_active)
         # batch-reduced to one scalar per step, floored so the warm-up window never zeros the spread
-        return _rolling_realized_vol(self._spot_timeline(self.primary),
+        return _rolling_realized_vol(self.factors[self.primary].float(),
                                      self.grid_market_days).mean(dim=-1).clamp_min(1e-6)
 
     # ---- accessors -----------------------------------------------------------

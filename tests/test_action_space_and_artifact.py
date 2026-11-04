@@ -1590,22 +1590,24 @@ def test_writing_the_csv_leaves_the_world_as_it_was(tmp_path):
 
 
 def test_the_vol_scaled_spread_reads_the_spot_s_realized_history():
-    """The vol a spread scaled by the step's vol reads is the spot's trailing realized vol with its
-    `Spot_Price_History` spliced in front of the simulated path: on the client document under a
-    10 bp spread at a 30% vol, the vol at the first simulated row is the annualised root of the 20
-    squared log moves ending there, from the last 20 history prices to each path's first spot, over
-    the business days they span (21, the move into the first row spanning two), averaged over the
-    paths, within 1e-5 relative. 2 s.
+    """The vol a spread scaled by the step's vol reads is the spot's trailing realized vol over its
+    factor, whose history rows are its `Spot_Price_History`: on the client document under a 10 bp
+    spread at a 30% vol, the factor's history rows are the declared prices, and the vol at the first
+    simulated row is the annualised root of the 20 squared log moves ending there, from the last 20
+    history prices to each path's first spot, over the business days they span (21, the move into
+    the first row spanning two), averaged over the paths, within 1e-5 relative. 2 s.
 
-    Killing mutation: the vol read off the factor's own path (`self.factors[commodity]` in
-    `Bundle._resolve_step_vol`), whose history rows repeat its first row, so the window at the
-    first row reads no move and the vol floors at 1e-6."""
+    Killing mutation: the factor's history rows its first row repeated (`_history_prefix(t)` without
+    the realized series in `Bundle._resolve_factors`), so the window at the first row reads no move
+    and the run refuses its zero-vol utility scale."""
     cfg = _client(evaluator=VOL_SPREAD)
     (name, history), = cfg['Calc']['Calculation']['Hedging_Problem']['Portfolio_State'][
         'Spot_Price_History'].items()
     world = _run(cfg).bundle
     r0 = world.initial_time_index
     first = world.factors[name][r0].double().numpy()                                 # (B,)
+    declared = np.array(history['Prices'][-r0:], dtype=np.float32)[:, None]
+    assert (world.factors[name][:r0].numpy() == declared).all(), world.factors[name][:r0, 0]
     prices = np.repeat(np.array(history['Prices'][-20:], dtype=float)[:, None], first.size, 1)
     returns = np.diff(np.log(np.concatenate([prices, first[None]])), axis=0)
     dates = world.scenario_dates[r0 - 20:r0 + 1]
