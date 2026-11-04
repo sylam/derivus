@@ -87,8 +87,7 @@ def run_solve(world, out):
 
     def at(self, t, buf, shared, base, refs, *a, **kw):
         r = orig(self, t, buf, shared, base, refs, *a, **kw)
-        rec = {'t': int(t), 'grad': bool(kw.get('with_grad', False)),
-               'rows': kw.get('outer_rows')}
+        rec = {'t': int(t), 'grad': bool(kw.get('with_grad', False))}
         for k in ('L_t', 'L_t1', 'L_T', 'market_t', 'market_t1'):
             rec[k] = snap(r.get(k))
         rec['F_t1'] = snap(r.get('F_t1') or {})
