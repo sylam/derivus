@@ -3237,18 +3237,19 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                F('Max_Total', 'Float', default=0.0)]),
                       description='Piecewise-constant corridor on the signed book total, by '
                                   'decision step'),
-                    F('Allocation_Mode', 'Text', default='Exposure',
-                      values=['Exposure', 'Carry_Variance'],
-                      description='How the net cover splits across the hedge legs: Exposure = '
-                                  'the declared Allocation_Weights table; Carry_Variance = '
-                                  'per-step weights the solver DERIVES from the warmup sims'),
-                    F('Allocation_Weights', 'Table', default=None,
+                    F('Allocation_Mode', 'Text', default='Cartesian', convention=True,
+                      values=['Cartesian', 'Exposure', 'Carry_Variance'],
+                      description='The action universe: Cartesian searches the product of per-leg '
+                                  'levels, Exposure one ladder over the net cover split by '
+                                  'Allocation_Weights, Carry_Variance that ladder split by weights '
+                                  'the solver derives from the warmup sims'),
+                    F('Allocation_Weights', 'Table', default=None, convention=True,
                       row=Row([F('Step', 'Integer', default=0),
                                F('Instrument', 'Text', default=''),
                                F('Weight', 'Float', default=0.0)]),
-                      description='Piecewise-constant split of the NET cover across the hedge '
-                                  'legs, by decision step; absent, the argmax searches the product '
-                                  'of per-leg levels')]),
+                      description='Piecewise-constant split of the net cover across the hedge '
+                                  'legs, by decision step, which Allocation_Mode Exposure requires '
+                                  'and no other mode reads')]),
               F('Solver', 'Container',
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[
@@ -3262,7 +3263,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Earliest step the backward sweep fits; 0 = full sweep'),
                     F('Training_Action_Grid_Levels_Per_Axis', 'Integer', default=11,
                       description='Levels per hedge axis in the greedy action grid, or rungs on '
-                                  'the NET cover under Evaluator.Allocation_Weights'),
+                                  'the net cover under a ladder Evaluator.Allocation_Mode'),
                     F('Training_Action_Chunk_Size', 'Integer', default=64,
                       description='Actions scored per batched argmax pass'),
                     F('DiffV2_Fit_Iters', 'Integer', default=150,

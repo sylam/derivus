@@ -461,6 +461,7 @@ def _passive_cfg(save=None, load=None):
     ev = hp['Evaluator']
     ev['Position_Limits'] = {h: {'Min_Position': -20, 'Max_Position': 5} for h in LEGS}
     ev['Total_Position_Abs_Limit'] = 40
+    ev['Allocation_Mode'] = 'Exposure'
     ev['Allocation_Weights'] = [{'Step': s, 'Instrument': h, 'Weight': w}
                                 for s, ws in KNOTS for h, w in zip(LEGS, ws)]
     hp['Solver'].update({'Training_Action_Grid_Levels_Per_Axis': 46, 'T_Min': PASSIVE_T_MIN})
@@ -1243,6 +1244,27 @@ def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
     assert want == 13 and got == want, (got, want)
 
 
+@pytest.mark.parametrize('mode, table', [(None, True), ('Exposure', False), ('Carry_Variance', True)])
+def test_a_table_is_the_exposure_universe_alone(mode, table):
+    """`Allocation_Weights` is read under `Allocation_Mode` Exposure alone, which requires it: the
+    policy fixture stating a one-knot table under the default mode (Cartesian) or under
+    Carry_Variance, and Exposure stating none, are each refused by name before a path is drawn.
+
+    Killing mutations: the refusal narrowed to Carry_Variance, its old site (a table under Cartesian
+    is read as a ladder, refused only for its 5 rungs over 50 contracts, and Exposure with none
+    searches the product grid), and Exposure's requirement dropped (the latter alone)."""
+    cfg = _cfg()
+    ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
+    if mode is not None:
+        ev['Allocation_Mode'] = mode
+    if table:
+        ev['Allocation_Weights'] = [{'Step': 0, 'Instrument': _HEDGES[2], 'Weight': 1.0}]
+    with pytest.raises(ValueError, match=re.escape(
+            f"Allocation_Mode={mode or 'Cartesian'!r} {'with' if table else 'without'} an "
+            f"Allocation_Weights table")):
+        _run(cfg)
+
+
 @pytest.mark.parametrize('deadband, positions', [
     (0.0, None), (1e6, {'PL_APR_2026': 50, 'PL_JUL_2026': -50, 'PL_OCT_2026': -50})],
     ids=['free', 'held'])
@@ -2004,7 +2026,7 @@ def test_a_no_table_document_whose_legs_all_die_still_labels():
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Solver'].update({'DiffV2_Book_Gradient_Label': 'Yes', 'Active_Hedge_Indices': [0, 1],
                          'Training_Action_Grid_Levels_Per_Axis': 6})
-    del hp['Evaluator']['Allocation_Weights']
+    del hp['Evaluator']['Allocation_Weights'], hp['Evaluator']['Allocation_Mode']
     del hp['Evaluator']['Total_Position_Schedule']
     for leg in LEGS:
         hp['Tradable_Instruments']['CommodityFutureDeal'][leg]['Maturity_Date'] = {'.Timestamp': '2026-05-25'}
@@ -2095,7 +2117,7 @@ def _held_into_expiry(fee):
                          'DiffV2_Bank_Noise_Frac': 0.0, 'Training_Action_Grid_Levels_Per_Axis': 26,
                          'DiffV2_Label_Horizon': 2})
     ev = hp['Evaluator']
-    del ev['Allocation_Weights']
+    del ev['Allocation_Weights'], ev['Allocation_Mode']
     ev.update({'Bid_Offer_Spread_Bps': 0.0, 'Transaction_Cost_Per_Unit': fee,
                'Total_Position_Schedule': [{'Step': 0, 'Min_Total': -10, 'Max_Total': -10},
                                            {'Step': 46, 'Min_Total': -20, 'Max_Total': 5}]})

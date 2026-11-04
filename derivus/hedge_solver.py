@@ -93,9 +93,9 @@ class HedgeActionSpace:
         `grid_at(t, live)` keeps the rows the step admits (`admissible`): each live active leg
         inside its box, every other leg at zero, the signed net inside the cap and the corridor
         (`bounds`).
-      * `allocation_grid(t)` — the FACTORED alternative under `Allocation_Weights`: one ladder over
-        the signed NET cover, each rung split across the legs by the schedule. `grid_at` dispatches
-        on which universe is configured; downstream consumes the rows either way.
+      * `allocation_grid(t)` — the FACTORED alternative under `Allocation_Mode` Exposure or
+        Carry_Variance: one ladder over the signed NET cover, each rung split across the legs by
+        the weights. `grid_at` dispatches on the universe; downstream consumes the rows either way.
       * `ladder(t, live)` / `book(q, t, live)` — the whole-contract band of the signed net on the
         legs a mask marks, and a book as the execution books it: clamped into the `ladder` boxes,
         its net water-filled into the band on the ladder's legs, apportioned to whole contracts.
@@ -115,9 +115,10 @@ class HedgeActionSpace:
         '  rows it admits on its live legs (`admissible`): each live active leg inside its box,',
         '  every other leg at zero, the signed net inside `Total_Position_Abs_Limit` and the',
         '  `Total_Position_Schedule` corridor. Every track holds its books to that one rule.',
-        '- `allocation_grid(...)` — under `Evaluator.Allocation_Weights`, the FACTORED universe',
-        '  instead: the levels count rungs on the signed NET cover and the schedule splits each',
-        '  rung across the legs, so the search is over how much cover to carry, not over its',
+        '- `allocation_grid(...)` — under `Evaluator.Allocation_Mode` Exposure (the declared',
+        '  `Allocation_Weights`) or Carry_Variance (weights the solver derives), the FACTORED',
+        '  universe instead: the levels count rungs on the signed NET cover and the weights split',
+        '  each rung across the legs, so the search is over how much cover to carry, not over its',
         '  composition.',
         '- `ladder(...)` / `book(...)` — the whole-contract band of the signed net on the legs',
         '  the ladder trades, and a book as the execution books it: clamped into those legs\'',

@@ -151,9 +151,9 @@ def _position_schedule(evaluator_config: Mapping[str, Any]):
 
 
 def _allocation_weights(evaluator_config: Mapping[str, Any], hedge_names):
-    """Optional ALLOCATION SCHEDULE, which FACTORS the action space: the solver chooses one signed
-    NET cover on a fine ladder and this splits it across the hedge legs, instead of searching the
-    Cartesian product of per-leg levels. Absent → None (the Cartesian grid).
+    """The declared ALLOCATION SCHEDULE of `Allocation_Mode` Exposure, which FACTORS the action
+    space: the solver chooses one signed NET cover on a fine ladder and this splits it across the
+    hedge legs, instead of searching the Cartesian product of per-leg levels. Absent → None.
 
     Declared long — a list of `{Step, Instrument, Weight}` rows, the rows sharing a `Step` being
     one KNOT, piecewise-constant in the decision step like `Total_Position_Schedule`.
@@ -162,7 +162,7 @@ def _allocation_weights(evaluator_config: Mapping[str, Any], hedge_names):
     NORMALIZED to sum 1. A leg no row names gets 0, which is how an expired leg leaves the ladder.
     Weights must be non-negative and already sum to ~1, so normalizing removes float dust rather
     than reinterpreting intent, and the ladder's `Σ_i round(Q·w_i) == Q` apportionment is exact."""
-    raw = evaluator_config.get("Allocation_Weights")
+    raw = evaluator_config["Allocation_Weights"]
     if not raw:
         return None
     by_step: Dict[int, Dict[str, float]] = {}
@@ -571,23 +571,27 @@ def construct_hedge_runtime(
     fallback_account = cash_account_names[0] if cash_account_names else None
 
     alloc_mode = str(evaluator_config["Allocation_Mode"]).lower()
-    if alloc_mode not in ("exposure", "carry_variance"):
+    if alloc_mode not in ("cartesian", "exposure", "carry_variance"):
         raise ValueError(
             f"Unsupported Evaluator.Allocation_Mode: "
-            f"{evaluator_config['Allocation_Mode']!r}. Supported: 'Exposure' (the declared "
-            f"Allocation_Weights table) | 'Carry_Variance' (solver-derived). Dispatched by "
-            f"equality, so a near-miss would silently run 'Exposure'.")
-    if alloc_mode == "carry_variance":
-        if evaluator_config.get("Allocation_Weights"):
-            raise ValueError(
-                "Evaluator.Allocation_Mode='Carry_Variance' DERIVES the per-step weights from "
-                "the warmup sims — a declared Allocation_Weights table beside it is a "
-                "contradiction the run refuses rather than arbitrates. Remove one of the two.")
-        if solver_config is None:
-            raise ValueError(
-                "Evaluator.Allocation_Mode='Carry_Variance' needs a Solver to derive the "
-                "weights (there are no sims to measure carry/tracking from in a non-solve "
-                "mode). Declare Allocation_Weights instead.")
+            f"{evaluator_config['Allocation_Mode']!r}. Supported: 'Cartesian' (the product of "
+            f"per-leg levels) | 'Exposure' (the declared Allocation_Weights table) | "
+            f"'Carry_Variance' (solver-derived). Dispatched by equality, so a near-miss would "
+            f"silently run another universe.")
+    if bool(evaluator_config["Allocation_Weights"]) != (alloc_mode == "exposure"):
+        raise ValueError(
+            f"Evaluator.Allocation_Mode={evaluator_config['Allocation_Mode']!r} "
+            f"{'with' if evaluator_config['Allocation_Weights'] else 'without'} an "
+            f"Allocation_Weights table: Exposure splits the net cover by the declared table and "
+            f"requires one, and no other mode reads it - a contradiction the run refuses rather "
+            f"than arbitrates.")
+    if alloc_mode == "carry_variance" and solver_config is None:
+        raise ValueError(
+            "Evaluator.Allocation_Mode='Carry_Variance' needs a Solver to derive the "
+            "weights (there are no sims to measure carry/tracking from in a non-solve "
+            "mode). Declare Allocation_Weights under 'Exposure' instead.")
+    logging.debug("Evaluator.Allocation_Mode %s: %s", alloc_mode, "the declared table"
+                  if alloc_mode == "exposure" else "no table read")
     return {
         "accounting_mode": str(evaluator_config["Accounting_Mode"]).lower(),
         "names": {
@@ -636,9 +640,8 @@ def construct_hedge_runtime(
             "total_position_abs_limit":
                 float(evaluator_config["Total_Position_Abs_Limit"]),
             "total_position_schedule": _position_schedule(evaluator_config),
-            # Optional per-decision-step split of the NET cover across the legs. Present ⇒ the
-            # action universe is the Q-ladder rather than the Cartesian product (see
-            # HedgeActionSpace.allocation_grid); absent ⇒ today's grid, unchanged.
+            # Exposure's split of the NET cover across the legs by decision step, else None (see
+            # HedgeActionSpace.allocation_grid)
             "allocation_weights": _allocation_weights(evaluator_config, hedge_names),
             "allocation_mode": alloc_mode,
             # Per-leg |Δq| cap per decision step at the ARGMAX (0 = off). Execution policy
