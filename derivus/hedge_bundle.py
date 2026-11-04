@@ -1176,7 +1176,7 @@ class Bundle:
                 "Objective.Utility_Scale_Mode='conditional_sim' needs a marked liability: the "
                 "schedule is the dispersion of the flat-book wealth path and this bundle has no "
                 "liability_value to measure it on.")
-        L = self.liability_sim[:self.last_live_mtm_index + 1].to(dtype=torch.float32)
+        L = self.liability_sim[:self.last_live_mtm_index + 1].to(dtype=MONEY)
         if int(L.shape[-1]) < 2:
             return None
         # measured FROM THE START, so the knee is the dispersion the WORLD generates by day t
@@ -1663,33 +1663,33 @@ class BundleStepper:
         CPU from the recorded trajectory `rollout` (`_rollout`); the spot column is the primary
         spot's."""
         bundle, runtime = self.bundle, self.runtime
-        spot = bundle.factors[bundle.primary].detach().cpu().float()
+        spot = bundle.factors[bundle.primary].detach().cpu().to(MONEY)
         T, B = spot.shape
         per_instr = {}
-        # each mark held at the terminal past it, as `_values_at`, gathered by index: a copy, where
-        # `.cpu().float()` of a CPU float32 world is the world's own tensor
+        # each mark held at the terminal past it, as `_values_at`, gathered by index: a copy of the
+        # world's tensor, never a view of it
         held_at = torch.arange(T).clamp(max=self._close_idx)
         # the liability's value, the stepper's, held at the terminal past it as the marks are
-        liability = bundle.liability_value.detach().cpu().float()[held_at]
+        liability = bundle.liability_value.detach().cpu().to(MONEY)[held_at]
         logging.debug('CSV liability at the terminal row %d: %s', self._close_idx,
                       liability[self._close_idx].tolist())
         for name in self._hedges:
             cs = float(runtime['tradables'][name]['contract_size'])
-            fut = bundle.tradables[name].detach().cpu().float()[held_at]
+            fut = bundle.tradables[name].detach().cpu().to(MONEY)[held_at]
             # a row trades the change of the book it holds, at its own mark, so the forced close
             # sits on the terminal, where it is booked
-            held = rollout['held'][name].float()
+            held = rollout['held'][name].to(MONEY)
             rows = slice(bundle.initial_time_index, bundle.initial_time_index + held.shape[0] - 1)
-            pos = torch.zeros((T, B)); trd = torch.zeros((T, B))
+            pos, trd = torch.zeros((T, B), dtype=MONEY), torch.zeros((T, B), dtype=MONEY)
             pos[rows], trd[rows] = held[1:], held.diff(dim=0)
             pos[rows.stop:] = held[-1]
             trade_cash = -trd * fut * cs
             # the opening book enters at the first row's mark, where the stepper's P&L starts
             trade_cash[rows.start] -= held[0] * fut[rows.start] * cs
             # the leg's turnover charges as the stepper booked them, each on its row
-            cost = torch.zeros((T, B))
+            cost = torch.zeros((T, B), dtype=MONEY)
             for row, charge in self._charged[name]:
-                cost[row] += charge.detach().cpu().float()
+                cost[row] += charge.detach().cpu().to(MONEY)
             per_instr[name] = {
                 'fut': fut, 'cs': cs, 'pos': pos, 'trd': trd,
                 'trade_cash': trade_cash, 'position_mtm': pos * fut * cs,

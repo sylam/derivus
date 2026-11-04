@@ -1,6 +1,6 @@
 """End-to-end test for the interactive `BundleStepper`: a no-trade rollout driven from client code
 through `result.create_stepper()` lands on the framework's own no-trade baseline in
-`evaluation_summary.reference.no_trade.metrics`.
+`evaluation_summary.metrics`.
 
 JSON in, run_job, drive the stepper. No internal imports.
 """
@@ -34,7 +34,7 @@ def test_no_trade_stepper_matches_framework_baseline(tmp_path):
     stepper_mean = float(pnl.mean().item())
     stepper_worst = float(pnl.min().item())
 
-    baseline = result.evaluation_summary['reference']['no_trade']['metrics']
+    baseline = result.evaluation_summary['metrics']
     fw_mean = float(baseline['average_net_pnl'])
     fw_worst = float(baseline['worst_net_pnl'])
 

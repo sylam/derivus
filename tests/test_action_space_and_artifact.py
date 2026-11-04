@@ -1634,14 +1634,15 @@ def _client(mode='futures', force_flat='Yes', positions=None, evaluator=None):
 
 def _csv_against_the_stepper(tmp_path, stepper, last):
     """The diagnostic CSV `stepper` writes, by case and day, each case's last
-    `hedge_portfolio_ex_funding` checked against the stepper's `pnl_excess` within 1e-5 relative."""
+    `hedge_portfolio_ex_funding` checked against the stepper's `pnl_excess` as the CSV writes it,
+    to its six decimals."""
     stepper.write_diagnostic_csvs(str(tmp_path), 'client')
     pnl = last['transition_pnl_excess'].double()
     cases = {case: rows.set_index('day') for case, rows in pd.read_csv(tmp_path / 'client_paths.csv').groupby('case')}
     for case, rows in cases.items():
         want = float(pnl.mean() if case == 'mean' else pnl[int(rows['path_idx'].iloc[0])])
         got = rows['hedge_portfolio_ex_funding'].iloc[-1]
-        assert abs(got / want - 1.0) < 1e-5, (case, got, want)
+        assert got == float('%.6f' % want), (case, got, want)
     return cases
 
 
@@ -1662,8 +1663,8 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     the forced close on the terminal, +10 at Monday's mark, the book flat from there and -10 the day
     before, or under `Force_Flat_At_End` 'No' the book short to the last row valued at the
     terminal's mark, and on each path it
-    writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L within 1e-5 relative,
-    the close's charge on the terminal ten contracts at the terminal's mark and vol, outright, within
+    writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L to the six decimals it
+    writes, the close's charge on the terminal ten contracts at the terminal's mark and vol, outright, within
     1e-5 relative; so too under a spread scaled by the step's vol in either accounting mode, and long
     10 `PL_JUL_2026` beside the short under `Calendar_Spread_Bps`, the entry a matched roll. 2 s each.
 
@@ -1675,7 +1676,8 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     under 'No'; the forced close charged at the vol of the row before it (`vol_t` handed to
     `_flatten`) or matched as a roll (`matched=False` dropped there), off the terminal's outright
     charge; the CSV marking the held book past the terminal (the 'held' case's best path -12,180
-    against the stepper's -9,648)."""
+    against the stepper's -9,648); the CSV's marks, books and charges in float32, its best path's last
+    -10,159.605469 against the stepper's -10,159.666718."""
     result = _run(_client(mode, force_flat, evaluator=evaluator))
     stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
     while not stepper.done:
@@ -1759,10 +1761,9 @@ def test_writing_the_csv_leaves_the_world_as_it_was(tmp_path):
     under `Force_Flat_At_End` 'No', short 10 `PL_OCT_2026` from the first row, every tradable's
     marks after `write_diagnostic_csvs` are its marks before it on every row. 2 s.
 
-    Killing mutation: the CSV's marks held at the terminal written into the tensor it reads
-    (`fut[close + 1:] = fut[close]` on `bundle.tradables[name].detach().cpu().float()`, the world's
-    own tensor on a CPU float32 world), the October leg's mark on the last row moved to the
-    terminal's."""
+    Killing mutation: the CSV's marks held at the terminal written into the world's tensor
+    (`fut[close + 1:] = fut[close]` on `bundle.tradables[name]` itself), the October leg's mark on
+    the last row moved to the terminal's."""
     result = _run(_client(force_flat='No'))
     world = result.bundle
     before = {h: v.clone() for h, v in world.tradables.items()}

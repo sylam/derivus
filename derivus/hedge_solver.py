@@ -442,7 +442,7 @@ def run_textbook_benchmark(bundle, runtime):
     q0 = initial_q_from_runtime(runtime, bundle.batch_size, device)   # (B, n_hedge) opening book
 
     total_move = bundle.move(0, T, aspace.hedges, dim=0)               # (n_h, B) telescoped
-    g_t = torch.einsum("ai,ib->ab", grid * aspace.contract_size, total_move)  # (n_actions, B)
+    g_t = torch.einsum("ai,ib->ab", (grid * aspace.contract_size).to(MONEY), total_move.to(MONEY))
     u = _utility_wrap_signed(L_T.unsqueeze(0) + g_t, runtime)         # FRICTIONLESS objective
     obj = u.mean(dim=-1)                                               # (n_actions,)
     best = int(obj.argmax())
@@ -500,12 +500,13 @@ class HindsightDpSolver:
         logging.debug('hindsight bound decides on rows %s', steps)
         n_star_0 = None
         # the opening book held to the first decision
-        G = torch.einsum("bi,ib->b", q_prev * cs, bundle.move(0, steps[0], aspace.hedges, dim=0))
-        cost = torch.zeros(b_outer, device=device)
+        cs = cs.to(MONEY)
+        G = torch.einsum("bi,ib->b", q_prev * cs, bundle.move(0, steps[0], aspace.hedges, dim=0).to(MONEY))
+        cost = torch.zeros(b_outer, dtype=MONEY, device=device)
         paths = slice(None)                                            # each path's own mark
         for t in steps:
             grid = aspace.grid_at(t, bundle.marked(t, aspace.hedges))  # (n_actions_t, n_h) per-t
-            dF = bundle.move(t, bundle.successors[t], aspace.hedges, dim=0)  # (n_h, B)
+            dF = bundle.move(t, bundle.successors[t], aspace.hedges, dim=0).to(MONEY)  # (n_h, B)
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
             best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
             q_now = grid[best_idx]                                     # (B, n_h)
