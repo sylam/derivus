@@ -2097,7 +2097,8 @@ class BundleStepper:
                               current, next_idx, vol_t)
         self._hold(next_positions)
         if acc['force_flat_at_end'] and current == self._close_idx - 1:
-            self._flatten_cash(next_positions, next_cash, self._values_at(next_idx), vol_t)
+            self._flatten_cash(next_positions, next_cash, self._values_at(next_idx),
+                               self.bundle.vol_at(next_idx))
         # cash mode tracks no daily VM, but cumulative_pnl still resets at flat for the same
         # per-trade-lifetime semantics
         zero_vm = self._zeros_by_name(self._hedges)
@@ -2156,7 +2157,8 @@ class BundleStepper:
                               current, settlement_idx, vol_t)
         self._hold(next_positions)
         if acc['force_flat_at_end'] and current == self._close_idx - 1:
-            self._flatten_futures(next_positions, next_margin, next_values, vol_t)
+            self._flatten_futures(next_positions, next_margin, next_values,
+                                  self.bundle.vol_at(settlement_idx))
         next_state = {
             'done': torch.full_like(state['done'], settlement_idx >= last, dtype=torch.bool),
             'positions': next_positions,
@@ -2251,6 +2253,7 @@ class BundleStepper:
                              {h: per_instr[h]['fut'][t] for h in self._hedges}, runtime,
                              None if diag_vol is None else diag_vol[t])
                 for t in range(T)])
+            rebate[self._close_idx:] = 0.0          # the forced close trades outright, as `_flatten_*`
             portfolio_cum_cost = portfolio_cum_cost - rebate.cumsum(0)
         hp = portfolio_cum_cash + portfolio_pos_mtm - portfolio_cum_cost
         return {
