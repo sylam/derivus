@@ -930,16 +930,20 @@ def _loss_side_curvature(runtime, t=None):
     return _utility_local_curvature(reference - 1.0e-6 * _utility_scale(obj, t), runtime, t)
 
 
-def _rolling_realized_vol(spot, window=PRICE_ZSCORE_WINDOW):
-    """Annualized trailing-window realized log-vol of a `(T, B)` mark path, `(T, B)` — the one
-    spelling behind both the per-commodity vol surface and the per-step spread/IM-funding proxy."""
+def _rolling_realized_vol(spot, market, window=PRICE_ZSCORE_WINDOW):
+    """Annualized trailing-window realized log-vol of a `(T, B)` mark path, `(T, B)`: the squared
+    log moves of the last `window` rows over the market days they hold (`market` `(T,)`, a row of
+    none moving nothing and counting nothing), at 252 a market day, the one clock tau and the
+    decisions count. The one spelling behind the utility scale's sigma and the step vol."""
     log_ret = spot.clamp_min(1e-9).log().diff(dim=0)                                  # (T-1, B)
     ret_sq = torch.cat([torch.zeros_like(log_ret[:1]), log_ret * log_ret], dim=0)     # (T, B)
     cum = torch.cat([torch.zeros_like(ret_sq[:1]), ret_sq.cumsum(dim=0)], dim=0)      # (T+1, B)
+    held = torch.as_tensor(market, dtype=spot.dtype, device=spot.device).cumsum(0)
+    held = torch.cat([held.new_zeros(1), held])                                       # (T+1,)
     idx = torch.arange(ret_sq.shape[0] + 1, device=spot.device)
     lo = (idx - window).clamp_min(0)
-    count = (idx - lo).to(dtype=torch.float32).clamp_min(1.0).unsqueeze(-1)
-    return (252.0 * (cum[idx[1:]] - cum[lo[1:]]) / count[1:]).clamp_min(0.0).sqrt()   # (T, B)
+    count = (held[idx[1:]] - held[lo[1:]]).clamp_min(1.0).unsqueeze(-1)
+    return (252.0 * (cum[idx[1:]] - cum[lo[1:]]) / count).clamp_min(0.0).sqrt()   # (T, B)
 
 
 def _history_key(commodity_field):
@@ -1236,6 +1240,9 @@ class Bundle:
         # day offsets); solvers strip this offset to index time tensors by sim-grid t
         self.initial_time_index = next(
             (i for i, d in enumerate(days) if int(d) >= 0), len(days))
+        # the market days arriving on each row: the one clock decisions and realised vol count
+        self.grid_market_days = utils.market_days(self.scenario_dates, self.business_day)
+        logging.debug('market days a row: %s', self.grid_market_days.tolist())
 
     def _history_prefix(self, tensor, realized=None):
         """The `history_rows` prepended to a simulated series: the realized history broadcast
@@ -1264,7 +1271,7 @@ class Bundle:
         self.last_live_mtm_index = T = int(steps - 2)
         # decisions on the rows of market time, the rows the market-clock laws step on, and on the
         # first row whatever its day, where the opening book is traded
-        market = utils.market_days(self.scenario_dates[self.initial_time_index:], self.business_day)
+        market = self.grid_market_days[self.initial_time_index:]
         self.decision_steps = [0] + [t for t in range(1, T) if market[t] > 0]
         self.market_time = market           # market time arriving on each sim-grid row
         self.successors = [next((s for s in self.decision_steps if s > t), T) for t in range(T)]
@@ -1338,7 +1345,7 @@ class Bundle:
             S = self._spot_timeline(commodity)
             if S is None:
                 continue
-            rv = _rolling_realized_vol(S, window)
+            rv = _rolling_realized_vol(S, self.grid_market_days, window)
             rv[:min_periods] = 0.0
             out[commodity] = rv
         return out
@@ -1432,8 +1439,7 @@ class Bundle:
         H = self.initial_time_index
         if self.last_settlement_index is None:
             return _degenerate("last_settlement_index missing from the bundle")
-        market = utils.market_days(self.scenario_dates[H:int(self.last_settlement_index) + 1],
-                                   self.business_day).sum()
+        market = self.grid_market_days[H + 1:int(self.last_settlement_index) + 1].sum()
         tau_years = max(float(market) / 252.0, 1.0 / 252.0)
         if not self.spot_price_history and self.calibrated_utility_inputs is None:
             return _degenerate(
@@ -1567,7 +1573,8 @@ class Bundle:
         logging.info('step_annual_vol source: realized-vol proxy on %s (Vol_Scale=%s IM_funding=%s)',
                      commodity, vol_scale_active, im_funding_active)
         # batch-reduced to one scalar per step, floored so the warm-up window never zeros the spread
-        return _rolling_realized_vol(self._spot_timeline(commodity)).mean(dim=-1).clamp_min(1e-6)
+        return _rolling_realized_vol(self._spot_timeline(commodity),
+                                     self.grid_market_days).mean(dim=-1).clamp_min(1e-6)
 
     # ---- accessors -----------------------------------------------------------
     @property

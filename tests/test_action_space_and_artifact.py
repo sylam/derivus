@@ -1499,9 +1499,10 @@ def test_writing_the_csv_leaves_the_world_as_it_was(tmp_path):
 def test_the_vol_scaled_spread_reads_the_spot_s_realized_history():
     """The vol a spread scaled by the step's vol reads is the spot's trailing realized vol with its
     `Spot_Price_History` spliced in front of the simulated path: on the client document under a
-    10 bp spread at a 30% vol, the vol at the first simulated row is the annualised root mean
-    square of the 20 daily log returns ending there, from the last 20 history prices to each path's
-    first spot, averaged over the paths, within 1e-5 relative. 2 s.
+    10 bp spread at a 30% vol, the vol at the first simulated row is the annualised root of the 20
+    squared log moves ending there, from the last 20 history prices to each path's first spot, over
+    the business days they span (21, the move into the first row spanning two), averaged over the
+    paths, within 1e-5 relative. 2 s.
 
     Killing mutation: the vol read off the factor's own path (`self.factors[commodity]` in
     `Bundle._resolve_step_vol`), whose history rows repeat its first row, so the window at the
@@ -1514,9 +1515,32 @@ def test_the_vol_scaled_spread_reads_the_spot_s_realized_history():
     first = world.factors[name][r0].double().numpy()                                 # (B,)
     prices = np.repeat(np.array(history['Prices'][-20:], dtype=float)[:, None], first.size, 1)
     returns = np.diff(np.log(np.concatenate([prices, first[None]])), axis=0)
-    want = np.sqrt(252.0 * (returns ** 2).mean(0)).mean()
+    dates = world.scenario_dates[r0 - 20:r0 + 1]
+    days = sum(len(pd.date_range(a + pd.Timedelta(days=1), b, freq=world.business_day))
+               for a, b in zip(dates[:-1], dates[1:]))
+    want = np.sqrt(252.0 * (returns ** 2).sum(0) / days).mean()
     got = float(world.vol_at(r0))
-    assert abs(got / want - 1.0) < 1e-5, (got, want)
+    assert days == 21 and abs(got / want - 1.0) < 1e-5, (got, want, days)
+
+
+def test_realised_vol_counts_the_market_days_its_window_holds():
+    """Realised vol counts the market days its window holds, the one clock: on the client document
+    under a 10 bp spread at a 30% vol, a calendar-daily grid, the step vol 30 rows into the
+    simulation is the annualised root of the window's 20 squared daily log moves over the business
+    days among its rows, averaged over the paths, within 1e-5 relative. 2 s.
+
+    Killing mutation: the window's rows counted for its market days (`idx - lo` in
+    `_rolling_realized_vol`), a weekend row adding a zero to the sum and one to the count: the vol
+    0.837 of the market-day one (0.1496 against 0.1788, 14 business days in 20 rows)."""
+    world = _run(_client(evaluator=VOL_SPREAD)).bundle
+    (name, _), = [(n, v) for n, v in world.spot_price_history.items()]
+    r = world.initial_time_index + 30
+    spot = world.factors[name][r - 20:r + 1].double().numpy()                        # (21, B)
+    rows = world.scenario_dates[r - 19:r + 1]
+    days = sum(world.business_day.is_on_offset(d) for d in rows)
+    want = np.sqrt(252.0 * (np.diff(np.log(spot), axis=0) ** 2).sum(0) / days).mean()
+    got = float(world.vol_at(r))
+    assert days < 20 and abs(got / want - 1.0) < 1e-5, (got, want, days)
 
 
 def test_a_world_without_a_history_prefixes_none_of_its_series():
