@@ -2135,6 +2135,7 @@ class DiffSolver:
             "t_min": (self.t_min, "Solver.T_Min", None), "T_dec": (self.T_dec, "the horizon", None),
             "md": (md, "the market columns", None),
             "hedges": (list(self.aspace.hedges), "the hedge legs", None),
+            "active_hedge_indices": (list(self.aspace.active), "Solver.Active_Hedge_Indices", None),
             "solver_object": (self.SOLVER_OBJECT, "Solver.Object", "DiffSolver"),
             # the charge the fitted value carries, 'argmax' fitting the cost-free one; a checkpoint
             # stamped before the key carries the `position_state` bool
@@ -2153,8 +2154,8 @@ class DiffSolver:
         FUNCTION OF A DIFFERENT STATE is refused here by name; everything that merely deserves
         saying out loud is warned.
 
-        Refused: every `_provenance` stamp (the shape contract, the solver class whose bank shaped
-        the value, `DiffV2_Repositioning_Charge` (State or not), `DiffV2_Returns_State` and
+        Refused: every `_provenance` stamp (the shape contract, the legs the fit varied, the solver
+        class whose bank shaped the value, `DiffV2_Repositioning_Charge` (State or not), `DiffV2_Returns_State` and
         `DiffV2_Wealth_Free_Value`, each owning input columns or their coordinates, and
         `Reference_Mode`, which moves no
         tensor shape, so a mismatch would have no symptom but a quietly wrong policy); whether a
@@ -2624,7 +2625,6 @@ class DiffSolver:
             # the stamps a load is refused on (`_provenance`)
             **{key: want for key, (want, _, _) in self._provenance(md, {}).items()},
             "a_bounds": self.a_bounds,
-            "active_hedge_indices": list(self.aspace.active),
             # corridor provenance: the Total_Position_Schedule this policy was trained inside
             # (None = unconstrained). A load under a DIFFERENT corridor fails loud.
             "total_position_schedule": self.aspace.schedule_key(self.aspace.schedule),

@@ -338,6 +338,19 @@ def test_an_unstamped_checkpoint_s_roll_reads_one_drift_null(free, tmp_path):
     assert nulls == (1.0, 1.0), nulls
 
 
+def test_a_checkpoint_loads_only_where_the_legs_it_varied_are_the_legs_varied(tmp_path):
+    """A checkpoint stamps the legs its fit varied, and a roll varying others is refused by name: the
+    training document with `Active_Hedge_Indices` [2], its July and April legs held at zero, rolled
+    with every leg active. 4 s.
+
+    Killing mutation: the stamp written and not compared on load, the roll loading and holding
+    -25 on the July leg the fit never varied."""
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(_cfg(seed=7, batch=8, inner=4, active=[2], save=ckpt))
+    with pytest.raises(ValueError, match="mismatch on 'active_hedge_indices'"):
+        _run(_cfg(seed=7, batch=8, load=ckpt))
+
+
 def test_a_checkpoint_stamps_the_charge_its_value_carries(free, tmp_path):
     """A checkpoint stamps the repositioning charge its fitted value carries, 'state' or 'no', since
     `DiffV2_Repositioning_Charge` Argmax charges the execution argmax alone and fits the cost-free
