@@ -9,6 +9,7 @@ import json
 import logging
 import math
 import os
+from collections import namedtuple
 from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 
@@ -50,6 +51,11 @@ def _tail_stats(runtime, wT, u_sum=None):
     stats = terminal_stats(wT)
     return {"u_mean": float((_utility_wrap_signed(wT, runtime) if u_sum is None else u_sum).mean()),
             "wT_mean": stats["mean"], "wT_p5": stats["p5"], "wT_cvar5": stats["cvar5"]}
+
+
+#: one ensemble member as `DiffSolver._continuation` reads it: its nets, its standardisation frame
+#: `(m_mean, m_std, w_mean, w_std)`, trust region, step-knee schedule and capital line
+_Member = namedtuple('_Member', 'nets frame bounds schedule capital')
 
 
 @dataclass
@@ -642,6 +648,8 @@ class DiffSolver:
         self.aversion = self.cfg["diffv2_risk_aversion"]
         # measured off the bank at warmup, or the checkpoint's (`_restore_frame`)
         self.displacement = self.capital = 0.0
+        # the returns state's t0 book notional, set at warmup, and an ensemble's members at a load
+        self.state_notional, self._ensemble = None, []
         self.scheduled_scale = obj["utility_scale_mode"] == "conditional_sim"
         if self.running_wealth and self.scheduled_scale and not self.log_ratio:
             raise ValueError(
@@ -770,32 +778,25 @@ class DiffSolver:
         can only move the two together."""
         return md + int(not self.wealth_free) + int(self.position_state)
 
-    def _standardize(self, market, W, p):
-        """Standardized state for the residual net: `(market | W)`, plus the signed net book
-        fraction `p = Sum(q)/Q_max` as a trailing column under the position state. `p is None`
-        IS the switch at this level.
-
-        Market and wealth are z-scored against the locked bank frame; p is NOT, because it is
-        already a fraction of the cap on both sides of the seam — `grid_at` keeps only the actions
-        the step admits inside `Total_Position_Abs_Limit` (`HedgeActionSpace.admissible`) and
-        `_build_bank` water-fills each sampled book onto `aspace.bounds(t)` — so p arrives in
-        [-1, 1] over a support the bank covers.
-
-        `DiffV2_Wealth_Free_Value` drops the W column instead of adding one. The two switches
-        compose, each owning one column, so the layout is `(market | [W] | [p])` in that order
-        under every combination."""
-        cols = [(market - self.m_mean) / self.m_std]
+    def _standardize(self, market, W, p, frame=None):
+        """The residual net's input row `(market | [W] | [p])`, the one a net is fitted on and read
+        at, z-scored in `frame`, an ensemble member's `(m_mean, m_std, w_mean, w_std)`, else the
+        run's locked one: the market columns, W in fractions of the t0 book notional under
+        `DiffV2_Returns_State` (the frame `w_mean`/`w_std` was measured in) and dropped under
+        `DiffV2_Wealth_Free_Value`, and under the position state the signed net book fraction
+        `p = Sum(q)/Q_max` (None: no column), not z-scored, being a fraction of the cap the bounds
+        hold every book and every bank book to."""
+        m_mean, m_std, w_mean, w_std = frame or (self.m_mean, self.m_std, self.w_mean, self.w_std)
+        cols = [(market - m_mean) / m_std]
         if not self.wealth_free:
-            cols.append(self._w_norm(W).unsqueeze(-1))
+            w = W / self.state_notional if self.state_notional else W
+            cols.append(((w - w_mean) / w_std).unsqueeze(-1))
         return torch.cat(cols if p is None else cols + [p.unsqueeze(-1)], dim=-1)
 
-    def _w_norm(self, W, w_mean=None, w_std=None):
-        """The wealth column as every net reads it: W in fractions of the t0 book notional under
-        `DiffV2_Returns_State` (the frame `w_mean`/`w_std` was measured in), z-scored. One spelling
-        for the fit, the query and an ensemble member, so no path feeds money to a fraction frame."""
-        sn = getattr(self, "state_notional", None)
-        w = W / sn if sn else W
-        return (w - (self.w_mean if w_mean is None else w_mean)) / (self.w_std if w_std is None else w_std)
+    def _column_scales(self):
+        """`(m_std, w_scale)`: one unit of `_standardize`'s market columns and of its wealth column
+        in their own coordinates, the chain rule carrying a raw slope label into the net's."""
+        return self.m_std, self.w_std * (self.state_notional or 1.0)
 
     def _continuation(self, nets, market, W, t, p, chunk=400_000):
         """`C_t = u(W) + A_t(market, W[, p])`; terminal `C_{T_dec} = u(W)`. Row-chunked net eval.
@@ -807,8 +808,8 @@ class DiffSolver:
         there is no terminal utility of the level to anchor on. The per-step reward is added by the
         CALLER, the only place holding both W1 and the wealth it moved from.
 
-        Ensemble mode (list-of-checkpoints load): `A` = mean over members, each evaluated in its
-        OWN standardization frame — which under a `conditional_sim` schedule includes that member's
+        Ensemble mode (list-of-checkpoints load): `A` = mean over members (`_Member`), each
+        evaluated in its OWN standardization frame — which under a `conditional_sim` schedule includes that member's
         own step knee.
 
         `A_t` is CLAMPED to its fitted-target trust region (one range-width of headroom): off
@@ -816,28 +817,25 @@ class DiffSolver:
         direction that poisons the t−1 bootstrap labels. Outside the clamp the gradient is zero,
         so the differential labels ignore those directions too."""
         base = self._anchor(W, t)
-        ensemble = getattr(self, "_ensemble", None)
+        ensemble = self._ensemble
         if t >= self.T_dec and not ensemble:
             return base
         if ensemble:
             acc = torch.zeros_like(base)
-            for m_nets, m_mean, m_std, w_mean, w_std, m_bounds, m_sched, _m_disp in ensemble:
-                if m_sched is not None:
+            for m in ensemble:
+                if m.schedule is not None:
                     # the member's own step KNEE, as much a part of its frame as its z-stats.
                     # Written as a correction to the shared anchor so a schedule-free ensemble
                     # stays arithmetically untouched.
-                    acc = acc + (self._anchor(W, t, m_sched) - base)
+                    acc = acc + (self._anchor(W, t, m.schedule) - base)
                 if t >= self.T_dec:
                     # the TERMINAL has no residual, so this correction is the WHOLE of the
                     # member's continuation - which is what the last decision is ranked on
                     continue
-                cols = [(market - m_mean) / m_std]
-                if not self.wealth_free:
-                    cols.append(self._w_norm(W, w_mean, w_std).unsqueeze(-1))
-                x = torch.cat(cols + ([] if p is None else [p.unsqueeze(-1)]), dim=-1)
-                b = m_bounds[t] if m_bounds is not None else None
+                x = self._standardize(market, W, p, m.frame)
+                b = m.bounds[t] if m.bounds is not None else None
                 for i in range(0, x.shape[0], chunk):
-                    a = m_nets[t](x[i:i + chunk])
+                    a = m.nets[t](x[i:i + chunk])
                     acc[i:i + chunk] += a if b is None else torch.clamp(a, b[0], b[1])
             return base + acc / len(ensemble)
         x = self._standardize(market, W, p)
@@ -931,10 +929,9 @@ class DiffSolver:
         """The day's reward in the frame the value it is added to was fitted in: `_u_step`, or over
         an ensemble under LogWealth the mean of each member's growth at its OWN capital line, so a
         two-member roll ranks the same book whichever checkpoint is listed first."""
-        ensemble = getattr(self, "_ensemble", None)
-        if not ensemble or not self.log_ratio:
+        if not self._ensemble or not self.log_ratio:
             return self._u_step(W1, W0, t)
-        return sum(self._u_step(W1, W0, t, m[7]) for m in ensemble) / len(ensemble)
+        return sum(self._u_step(W1, W0, t, m.capital) for m in self._ensemble) / len(self._ensemble)
 
 
     def _set_displacement(self, W_bank):
@@ -1552,11 +1549,11 @@ class DiffSolver:
             net.load_state_dict(ref.state_dict())
         prox_ref = (torch.cat([p.detach().reshape(-1) for p in ref.parameters()])
                     if ref is not None and self.prox > 0.0 else None)
-        # twin loss in STANDARDIZED space: g_zn = std*g_raw, the wealth column's std carrying the
-        # t0 notional the column is divided by under the returns state (`_w_norm`)
+        # twin loss in STANDARDIZED space: g_zn = std*g_raw in `_standardize`'s columns
         lam_g = self.cfg["diffv2_lambda_grad"]
-        g_zn_W = self.w_std * (getattr(self, "state_notional", None) or 1.0) * a_gW          # (B,)
-        g_zn_m = self.m_std * g_market                                                   # (B,md); u indep of market
+        m_scale, w_scale = self._column_scales()
+        g_zn_W = w_scale * a_gW                                                          # (B,)
+        g_zn_m = m_scale * g_market                                                      # (B,md); u indep of market
         g_zn_m = g_zn_m.index_select(1, measured)        # a column no leaf measures is not labelled
         # per-term label-variance normalization
         nrm_v = a_val.var() + 1e-8
@@ -1575,24 +1572,20 @@ class DiffSolver:
                 weight_decay=self.cfg["diffv2_weight_decay"])
         prev_loss, iters_run = None, self.fit_iters
         nrm_p = None if g_p is None else g_p.var() + 1e-8
+        row = self._standardize(market0, W0_bank, p_bank).detach()
+        md = market0.shape[-1]
         for it in range(self.fit_iters):
-            mn = ((market0 - self.m_mean) / self.m_std).detach().requires_grad_(True)
-            wn = self._w_norm(W0_bank).detach().requires_grad_(True)
-            cols = [mn] if self.wealth_free else [mn, wn.unsqueeze(-1)]
-            pn = p_bank if g_p is None else p_bank.detach().requires_grad_(True)
-            a = net(torch.cat(cols
-                              + ([] if p_bank is None else [pn.unsqueeze(-1)]), dim=-1))
+            x = row.clone().requires_grad_(True)
+            a = net(x)
             # the MEASURED COLUMNS of the twin loss are exactly the input channels the net
             # consumes, so `DiffV2_Wealth_Free_Value` takes W out of both at once
-            das = torch.autograd.grad(a.sum(), ([mn] if self.wealth_free else [mn, wn])
-                                      + ([] if g_p is None else [pn]), create_graph=True)
-            da_m = das[0].index_select(1, measured)
-            w_term = 0.0 if self.wealth_free else lam_g * ((das[1] - g_zn_W) ** 2).mean() / nrm_w
+            (da,) = torch.autograd.grad(a.sum(), x, create_graph=True)
+            w_term = 0.0 if self.wealth_free else lam_g * ((da[:, md] - g_zn_W) ** 2).mean() / nrm_w
             loss = (((a - a_val) ** 2).mean() / nrm_v
                     + w_term
-                    + lam_g * (((da_m - g_zn_m) ** 2) / nrm_m).mean())
+                    + lam_g * (((da.index_select(1, measured) - g_zn_m) ** 2) / nrm_m).mean())
             if g_p is not None:
-                loss = loss + lam_g * ((das[-1] - g_p) ** 2).mean() / nrm_p
+                loss = loss + lam_g * ((da[:, -1] - g_p) ** 2).mean() / nrm_p
             if prox_ref is not None:
                 flat = torch.cat([p.reshape(-1) for p in net.parameters()])
                 loss = loss + self.prox * (flat - prox_ref).pow(2).mean()
@@ -2508,7 +2501,6 @@ class DiffSolver:
                 net.eval()
             if len(members) > 1:
                 # ensemble: per-member net stacks and frames; _continuation averages members
-                self._ensemble = []
                 for ck in members:
                     m_nets = [_DiffV2Residual(in_dim, hidden=int(ck["hidden"])).to(self.device)
                               for _ in range(self.T_dec)]
@@ -2516,13 +2508,13 @@ class DiffSolver:
                         net.load_state_dict(sd)
                         net.eval()
                     pad = self.cfg["diffv2_load_horizon_pad"]
-                    self._ensemble.append(
-                        (m_nets, ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"],
-                         self._pad_steps(ck.get("a_bounds"), self.T_dec) if pad
-                         else ck.get("a_bounds"),
-                         self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 1)
-                         if pad else ck.get("utility_scale_schedule"),
-                         self._capital_line(ck)))           # the member's own capital line
+                    self._ensemble.append(_Member(
+                        m_nets, (ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"]),
+                        self._pad_steps(ck.get("a_bounds"), self.T_dec) if pad
+                        else ck.get("a_bounds"),
+                        self._pad_steps(ck.get("utility_scale_schedule"), self.T_dec + 1)
+                        if pad else ck.get("utility_scale_schedule"),
+                        self._capital_line(ck)))
                 logging.info("DiffSolver ENSEMBLE argmax over %d value fns", len(members))
             self.worst = float(loaded["max_abs_Y_boot"])
             self.root = {"t": sweep_ts[0], "Y_mean": float(loaded["V_0"]),
@@ -2642,7 +2634,7 @@ class DiffSolver:
             "displacement": self.displacement,
             # the notional the returns-state frame divides wealth by; the roll scales the
             # displacement by its own notional over this one, so the reward stays in the frame
-            "state_notional": getattr(self, "state_notional", None),
+            "state_notional": self.state_notional,
             "drift_null_sigma": self.drift_null_sigma,
             "risk_aversion": self.aversion,
             "phi_curves": getattr(self, "phi_curves", None),
