@@ -2477,7 +2477,7 @@ class DiffSolver:
             raise ValueError(
                 f"DiffV2_Returns_State mismatch: {src} was trained with returns_state="
                 f"{bool(ck.get('returns_state', False))} but this run sets "
-                f"{bool(self.cfg.get('diffv2_returns_state'))}. The state coordinates differ, "
+                f"{self.cfg['diffv2_returns_state']}. The state coordinates differ, "
                 f"so the two are different functions of different states - retrain, or match "
                 f"Solver.DiffV2_Returns_State.")
         want_mode = "running_wealth" if self.running_wealth else "fixed"
@@ -3261,7 +3261,7 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
     if obj in ("diffsolver", "diffsolverv2"):
         for flag, label in (("run_hindsight_diagnostic", "hindsight"),
                              ("run_textbook_benchmark", "textbook")):
-            if solver_cfg.get(flag) and not have_liability:
+            if solver_cfg[flag] and not have_liability:
                 logging.warning("solve_hedge: %s requested but bundle has no "
                                  "liability_mtm — track skipped", label)
         if solver_cfg["run_hindsight_diagnostic"] and have_liability:
