@@ -649,8 +649,8 @@ class DiffSolver:
       * Position-free value (the default) — with no turnover cost the held position is a freely
         reset control, entering the value only through next-step wealth. The hedge instruments
         live in the ACTION grid and the wealth step, not as a state coordinate.
-      * FRICTIONAL Bellman (`DiffV2_Position_State`) — once turnover costs money the incoming
-        position IS a state variable, so the net gains the signed net book fraction
+      * FRICTIONAL Bellman (`DiffV2_Repositioning_Charge` State) — once turnover costs money
+        the incoming position IS a state variable, so the net gains the signed net book fraction
         `p = Σq/Q_max` and the repositioning charge is subtracted from the wealth that becomes
         the regressed TARGET. A charge levied only at the argmax is a one-day toll the value
         function never remembers, and no no-trade region can form out of a toll.
@@ -703,9 +703,9 @@ class DiffSolver:
         '| `DiffV2_Risk_Horizon` | 1 | decisions the candidate is held for the `C` whose '
         'semideviation is penalised, capped at the terminal; the mean stays the next decision\'s |',
         '| `DiffV2_Risk_Aversion` | 1.0 | divides the `LogWealth` capital line; in [0.1, 10] |',
-        '| `DiffV2_Cost_Aware_Argmax` | No | charge the L1 repositioning cost at the argmax |',
-        '| `DiffV2_Position_State` | No | the frictional Bellman: `p` as state, the charge in the '
-        'target |',
+        '| `DiffV2_Repositioning_Charge` | No | what the move is charged: `Argmax` at the '
+        'execution argmax alone, `State` the frictional Bellman, `p` as state and the charge in '
+        'the target |',
         '| `DiffV2_Book_Gradient_Label` | No | fit the slope in `p` to the charge\'s pathwise slope |',
         '| `DiffV2_Label_Horizon` | 1 | steps the value label realises along the greedy policy on '
         'the outer path before it bootstraps |',
@@ -779,11 +779,10 @@ class DiffSolver:
         self.risk_kappa = self.cfg["diffv2_risk_kappa"]
         # ...of the continuation this many decisions ahead, the book held; with no penalty, none
         self.risk_horizon = self.cfg["diffv2_risk_horizon"] if self.risk_kappa > 0.0 else 1
-        # cost-aware EXECUTION: the verdict rollout charges kappa*|q - q_prev| at the argmax;
-        # training and selection stay cost-free
-        self.cost_aware = self.cfg["diffv2_cost_aware_argmax"]
-        # the execution argmax charges the move: under the cost-aware switch or the position state
-        self.argmax_charged = self.cost_aware or self.cfg["diffv2_position_state"]
+        # the execution argmax (the verdict and the stepper roll) charges the move under 'argmax'
+        # and 'state'; training is charged under 'state' alone
+        charge = self.cfg["diffv2_repositioning_charge"]
+        self.argmax_charged = charge in ("argmax", "state")
         # quadratic churn charge lambda*sum((q-q_prev)^2) at every argmax that knows q_prev
         self.churn_lambda = self.cfg["diffv2_churn_lambda"]
         # the drift monitor's null: the unit z until a training verdict measures one or a load
@@ -792,7 +791,9 @@ class DiffSolver:
         # FRICTIONAL BELLMAN: the net book fraction p = Sum(q)/Q_max becomes a state coordinate and
         # the repositioning charge enters the regressed target. Q_max is the Evaluator's cap - the
         # only declared scale p can be measured in - so an absent cap fails loud.
-        self.position_state = self.cfg["diffv2_position_state"]
+        self.position_state = charge == "state"
+        logging.debug("DiffV2_Repositioning_Charge %s: argmax charged %s, position state %s",
+                      charge, self.argmax_charged, self.position_state)
         # the book column's own pathwise label, the charge's slope in the standing book
         self.book_label = self.position_state and self.cfg["diffv2_book_gradient_label"]
         # TD(k): the steps the value label realises along the greedy policy before it bootstraps
@@ -804,7 +805,8 @@ class DiffSolver:
         self.wealth_free = self.cfg["diffv2_wealth_free_value"]
         if self.wealth_free and not self.position_state:
             raise ValueError(
-                "Solver.DiffV2_Wealth_Free_Value='Yes' requires DiffV2_Position_State='Yes': an "
+                "Solver.DiffV2_Wealth_Free_Value='Yes' requires "
+                "DiffV2_Repositioning_Charge='State': an "
                 "action cannot move the market, so without p the residual A(m') is one constant "
                 "across every candidate and cancels from the argmax - the whole fit would be "
                 "decision-irrelevant and the run a myopic one-step E[u(W1)] policy wearing a "
@@ -854,7 +856,8 @@ class DiffSolver:
         self.first_from_passive = self.cfg["diffv2_first_decision_from"] == "passive"
         if self.position_state and not self.aspace.total_abs_limit > 0.0:
             raise ValueError(
-                "Solver.DiffV2_Position_State='Yes' requires Evaluator.Total_Position_Abs_Limit > 0 "
+                "Solver.DiffV2_Repositioning_Charge='State' requires "
+                "Evaluator.Total_Position_Abs_Limit > 0 "
                 f"(it is {self.aspace.total_abs_limit}): the position state is p = Sum(q)/Q_max and the "
                 "cap is the scale it is measured in")
         # early termination for non-anchor fits: a BLOCK-wise relative loss plateau (blocks of 8
@@ -960,14 +963,14 @@ class DiffSolver:
     # ---- input standardization ----------------------------------------------
     def _in_dim(self, md):
         """Input width of a residual net: the `md` privileged market columns, plus W unless
-        `DiffV2_Wealth_Free_Value` removes it, plus p under `DiffV2_Position_State`. The single
+        `DiffV2_Wealth_Free_Value` removes it, plus p under the position state. The single
         source `warmup` sizes every net from and `_standardize` builds every row to, so a switch
         can only move the two together."""
         return md + int(not self.wealth_free) + int(self.position_state)
 
     def _standardize(self, market, W, p):
         """Standardized state for the residual net: `(market | W)`, plus the signed net book
-        fraction `p = Sum(q)/Q_max` as a trailing column under `DiffV2_Position_State`. `p is None`
+        fraction `p = Sum(q)/Q_max` as a trailing column under the position state. `p is None`
         IS the switch at this level.
 
         Market and wealth are z-scored against the locked bank frame; p is NOT, because it is
@@ -1049,7 +1052,7 @@ class DiffSolver:
     # ---- friction: the one charge both the ranking and the label pay ---------
     def _unwind_kappa(self, t, rows=None):
         """The terminal liquidation kappa when decision `t`'s successor IS the terminal mark and
-        `Force_Flat_At_End` forces the book flat there — else None. Under `DiffV2_Position_State`
+        `Force_Flat_At_End` forces the book flat there — else None. Under the position state
         the last decision has to price the unwind of whatever it leaves standing; without it the
         final step accumulates a position for free and the frictional recursion ends in a
         discontinuity. Read at `T_dec`, the pre-settlement row — the same row the benchmark
@@ -1059,9 +1062,9 @@ class DiffSolver:
 
     def _ranking_kappa(self, t, execution=True):
         """The turnover rates `(κ, κ_cal)` a decision at t ranks its candidates with, at the
-        cross-path mean mark, or None for no turnover charge: under `DiffV2_Position_State` always, the charge being part
-        of the fitted value, and in execution (the verdict and the stepper roll) under
-        `DiffV2_Cost_Aware_Argmax` too."""
+        cross-path mean mark, or None for no turnover charge: under `DiffV2_Repositioning_Charge`
+        State always, the charge being part of the fitted value, and under Argmax in execution (the
+        verdict and the stepper roll) alone."""
         charged = self.argmax_charged if execution else self.position_state
         return self.aspace.kappa(self.tradables_sim, t) if charged else None
 
@@ -1294,7 +1297,7 @@ class DiffSolver:
         INSIDE the reachable set and falls back to the unrestricted best when nothing is reachable.
         Under `Allocation_Weights` it measures `|ΔΣq|` rather than per-leg `|Δq_i|`, because a
         composition jump at a knot is the schedule's mandate rather than a trade the argmax chose.
-        Without `DiffV2_Position_State` these shape SELECTION only and the fitted targets stay
+        Without the position state these shape SELECTION only and the fitted targets stay
         cost-free; with it, the same charge plus the terminal unwind enters the label's target and
         the successor is queried at `p' = Sum(a·live)/Q_max`, the book each candidate leaves.
 
@@ -1440,7 +1443,7 @@ class DiffSolver:
         n_hedge). The bank-state `market_t` is read lazily from the SAME inner-MC fork the
         backward sweep makes at t (no extra inner-MC passes).
 
-        Under `DiffV2_Position_State` the bank also has to COVER THE p AXIS: p is an input the
+        Under the position state the bank also has to COVER THE p AXIS: p is an input the
         argmax queries over the whole of `aspace.bounds(t)` while the roll only wanders
         `Bank_Noise_Frac` around the replication hedge, which would leave the learned hysteresis
         slope extrapolating where it matters. Each path therefore draws a UNIFORM net target across
@@ -1487,7 +1490,7 @@ class DiffSolver:
         """Roll the outer paths from the opening book under `policy(t)`, the book `(B, n_hedge)` held
         from decision row t to the next, a row of no market time holding the book and wealth of the
         decision before it. Returns per row `W_t` `(B,)` and the standing book `q_prev`
-        `(B, n_hedge)` (under `DiffV2_Position_State` the sampled position state), and under
+        `(B, n_hedge)` (under the position state, the sampled one), and under
         LogWealth sets `_bank_worst`, the worst wealth the bank reaches, its terminal included: in a
         crash month the terminal is often the minimum, and a bias measured only at decisions would
         leave the last fit step's states uncovered."""
@@ -1577,12 +1580,12 @@ class DiffSolver:
         `Y = E_inner[u(W1 − W_t) + C_{t+1}]` with `C_{T_dec} ≡ 0`, so the last decision's label is
         exactly `u(ΔW_T)` — the same expression `_decide` ranks candidates by.
 
-        Under `DiffV2_Position_State` the step is FRICTIONAL: the bank's own standing book supplies
+        Under the position state the step is FRICTIONAL: the bank's own standing book supplies
         the position state p at t, the selection is charged its repositioning cost, and the SAME
         charge is subtracted from the wealth entering the target, whose successor is read at the
         book the chosen action leaves standing. The toll then compounds down the recursion instead
-        of being re-paid and forgotten each day, which is what distinguishes this from
-        `DiffV2_Cost_Aware_Argmax`.
+        of being re-paid and forgotten each day, which is what distinguishes this from Argmax's
+        execution-time toll.
 
         THE ONE MASK RULE for p, the coordinate `nets[t]` is both fitted and queried on:
 
@@ -1679,7 +1682,7 @@ class DiffSolver:
         """The `DiffV2_Label_Horizon` correction to step t's value label `(rows,)`, no grad: from the
         chosen book `q` on the outer paths in `rows`, the k-step bootstrap along the greedy policy
         less the one-step bootstrap at t+1. Each step moves the wealth by the outer move, less the
-        repositioning charge from the book the step before left under `DiffV2_Position_State`; the
+        repositioning charge from the book the step before left under the position state; the
         book at t+j is `_decide` on that step's cached no-grad draws; under `Running_Wealth` the
         rewards of the moves after t join the k-step side; both ends are `_continuation` at the
         outer market state, the policy's wealth and the book it leaves standing."""
@@ -1871,17 +1874,17 @@ class DiffSolver:
         the same three-part rule the two benchmark tracks price their execution with: entry from
         the OPENING book `q0`, per-step repositioning, and the terminal unwind under
         `Force_Flat_At_End` (`turnover_cost_mean`); the first greedy decision is measured from
-        `_first_book`, as the stepper roll's is. Without `DiffV2_Position_State` the wealth
+        `_first_book`, as the stepper roll's is. Without the position state the wealth
         recursion is cost-free and the cost is accounted in PARALLEL, so the `*_net` columns are
         diagnostics on that approximation. Under it each step's wealth is charged
         `_charge`, the charge the labels are fitted net of, churn term included: every
         greedy decision reads the net wealth its value was fitted on, the main columns are net, and
         there are no `*_net` columns.
 
-        The greedy ARGMAX is charged when either `DiffV2_Cost_Aware_Argmax` or
-        `DiffV2_Position_State` is on: a value function fitted against a charged selection must be
-        rolled under the same rule, or the policy reported is not the policy trained.
-        `argmax_charged` says which regime produced these numbers."""
+        The greedy ARGMAX is charged under `DiffV2_Repositioning_Charge` Argmax and State: a value
+        function fitted against a charged selection must be rolled under the same rule, or the
+        policy reported is not the policy trained. `argmax_charged` says which regime produced
+        these numbers."""
         L = self.liability_sim
         t0 = sweep_ts[0]
         n = L[t0][rows].shape[0]
@@ -2330,17 +2333,21 @@ class DiffSolver:
         return seq[:target] if len(seq) >= target else seq + [seq[-1]] * (target - len(seq))
 
     # ---- driver: warmup (fit + frame lock) -> step (fresh batch) -> finish (verdict) ----
-    def _provenance(self, md):
+    def _provenance(self, md, ck):
         """The stamps that make a checkpoint a different function of a different state, `{key:
-        (this run's value, what sets it, the reading of a checkpoint saved before the stamp, None
-        where every checkpoint carries it)}`: `_policy_artifact` writes them and
+        (this run's value, what sets it, the reading of the checkpoint `ck` saved before the stamp,
+        None where every checkpoint carries it)}`: `_policy_artifact` writes them and
         `_check_load_provenance` refuses a load that differs on one, by name."""
         return {
             "t_min": (self.t_min, "Solver.T_Min", None), "T_dec": (self.T_dec, "the horizon", None),
             "md": (md, "the market columns", None),
             "hedges": (list(self.aspace.hedges), "the hedge legs", None),
             "solver_object": (self.SOLVER_OBJECT, "Solver.Object", "DiffSolver"),
-            "position_state": (self.position_state, "Solver.DiffV2_Position_State", False),
+            # the charge the fitted value carries, 'argmax' fitting the cost-free one; a checkpoint
+            # stamped before the key carries the `position_state` bool
+            "repositioning_charge": ("state" if self.position_state else "no",
+                                     "Solver.DiffV2_Repositioning_Charge",
+                                     "state" if ck.get("position_state") else "no"),
             "returns_state": (self.cfg["diffv2_returns_state"], "Solver.DiffV2_Returns_State", False),
             "wealth_free": (self.wealth_free, "Solver.DiffV2_Wealth_Free_Value", False),
             "reference_mode": ("running_wealth" if self.running_wealth else "fixed",
@@ -2354,8 +2361,9 @@ class DiffSolver:
         saying out loud is warned.
 
         Refused: every `_provenance` stamp (the shape contract, the solver class whose bank shaped
-        the value, `DiffV2_Position_State`, `DiffV2_Returns_State` and `DiffV2_Wealth_Free_Value`,
-        each owning input columns or their coordinates, and `Reference_Mode`, which moves no
+        the value, `DiffV2_Repositioning_Charge` (State or not), `DiffV2_Returns_State` and
+        `DiffV2_Wealth_Free_Value`, each owning input columns or their coordinates, and
+        `Reference_Mode`, which moves no
         tensor shape, so a mismatch would have no symptom but a quietly wrong policy); whether a
         `conditional_sim` schedule is in force, the setting against the stamped schedule; a corridor
         mismatch; a stamped `value_optimism` above `DiffV2_Max_Value_Optimism` (a checkpoint saved
@@ -2368,7 +2376,7 @@ class DiffSolver:
         it inside any corridor only restricts to a learned subset, and so does a corridor INSIDE the
         trained one; a policy trained inside a corridor is off-support under a wider, a different
         or an absent one."""
-        for key, (want, name, unstamped) in self._provenance(md).items():
+        for key, (want, name, unstamped) in self._provenance(md, ck).items():
             got = ck[key] if unstamped is None else ck.get(key, unstamped)
             if got == want:
                 continue
@@ -2447,7 +2455,7 @@ class DiffSolver:
         WIDEST set of books, so rolling it on a ladder only restricts it to a learned subset
         (valid, said out loud). A policy trained on one ladder and rolled on a different one — or
         on the full product — is queried on books it never scored, and under
-        `DiffV2_Position_State` on a p-support it never covered. Refused by name, because the
+        the position state on a p-support it never covered. Refused by name, because the
         symptom otherwise is a silently worse roll rather than an error."""
         want = self.aspace.weights_key(self.aspace.weights)
         saved = self.aspace.weights_key(ck["allocation_weights"]) if "allocation_weights" in ck \
@@ -2480,9 +2488,9 @@ class DiffSolver:
             f"Evaluator.Allocation_Weights.")
 
     def _check_calendar_spread(self, ck, src):
-        """`Calendar_Spread_Bps` provenance. Under `DiffV2_Position_State` the charge is a term of
+        """`Calendar_Spread_Bps` provenance. Under the position state the charge is a term of
         the regressed TARGET, so a different rate is a different value function and a mismatch is
-        refused — the same reasoning that refuses a `DiffV2_Position_State` mismatch itself.
+        refused — the same reasoning that refuses a `DiffV2_Repositioning_Charge` mismatch itself.
         Position-free, the charge only shapes SELECTION (the fitted value never saw it), so a
         re-roll under a new rate is the deliberate execution-policy re-roll `Max_Trade_Per_Step`
         and `Decision_Deadband_Sigma` also allow — warned, not refused."""
@@ -2497,8 +2505,8 @@ class DiffSolver:
             return
         if self.position_state:
             raise ValueError(
-                f"DiffV2_Load_Value_Fn Calendar_Spread_Bps mismatch under "
-                f"DiffV2_Position_State: {src} was trained at {ck['calendar_spread_bps']!r} and "
+                f"DiffV2_Load_Value_Fn Calendar_Spread_Bps mismatch under the position state: "
+                f"{src} was trained at {ck['calendar_spread_bps']!r} and "
                 f"this run rolls at {want!r}. Under position state the reposition charge enters "
                 f"the regressed target, so the two are different value functions — retrain, or "
                 f"match the Evaluator.Calendar_Spread_Bps.")
@@ -2821,7 +2829,7 @@ class DiffSolver:
             # the FRAME, so a load restores it rather than re-measuring
             "utility_scale_schedule": self.utility_scale_schedule,
             # the stamps a load is refused on (`_provenance`)
-            **{key: want for key, (want, _, _) in self._provenance(md).items()},
+            **{key: want for key, (want, _, _) in self._provenance(md, {}).items()},
             "a_bounds": self.a_bounds,
             "active_hedge_indices": list(self.aspace.active),
             # corridor provenance: the Total_Position_Schedule this policy was trained inside
@@ -2831,7 +2839,7 @@ class DiffSolver:
             # Cartesian grid). `config_hash` cannot stand in - it hashes runtime['solver'] while
             # this and the corridor live under runtime['accounting'].
             "allocation_weights": self.aspace.weights_key(self.aspace.weights),
-            # friction provenance: under DiffV2_Position_State the calendar rate is a term of the
+            # friction provenance: under the position state the calendar rate is a term of the
             # charge entering the regressed TARGET, so another rate is a different value function
             "calendar_spread_bps": self.aspace.calendar_bps,
             "hidden": hidden,

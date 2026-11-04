@@ -149,9 +149,10 @@ PINNED = {
         'd67e0afd059b2c5db7a2b8be15076633e9b4b6d94d236db834257adbbd664b5e', 5, 0),
     # re-pinned 2026-11-04: the DOCUMENTS changed, their `Portfolio_State` losing
     # `Settlement_Prices` and `Initial_Margin`, keys no program read, and the shipping job its
-    # `Inner_MC_Enabled`, which its mode says; the universes are unmoved
+    # `Inner_MC_Enabled`, which its mode says, and its cost-aware argmax restated as
+    # `DiffV2_Repositioning_Charge` Argmax; the universes are unmoved
     'platinum_hedge_shipping.json': (
-        '5be093e1cde4ad7e13030571bc1014400926d8abe7c1bce48dc0fd9be2c38fc0', 2, 0),
+        '6f51e0c5cb0a992def850aae06f4b9162ee8663f464e5dcf8986ff031e5941df', 2, 0),
     'policy_test_simulate_only.json': (
         '85678869b611282536cc1fe29127d10ca0c0d6ac6d8a88cfbdeeb30457844b03', 2, 0),
 }

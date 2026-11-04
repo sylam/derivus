@@ -252,19 +252,20 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
     lambda_j vector). 'No' = the pooled scalar variance, where one fat-tailed column deflates the
     constraint for all columns.
 
-    `DiffV2_Position_State` — the FRICTIONAL Bellman. The fitted value is position-free and
-    cost-free by default, so a repositioning charge levied at the argmax is a one-day toll the
-    value function never remembers and no no-trade region can form. Set, the signed net book
+    `DiffV2_Repositioning_Charge` — what the move from the standing book is charged. 'No' leaves
+    the fitted value position-free and cost-free; 'Argmax' charges the execution argmax (the
+    verdict and the stepper roll) alone, a one-day toll the value function never remembers, so no
+    no-trade region can form. 'State' is the FRICTIONAL Bellman: the signed net book
     fraction `p = Sum(q)/Total_Position_Abs_Limit` joins the net's input after the market columns
     (and after W, unless `DiffV2_Wealth_Free_Value` removes that column), the charge is subtracted
     from the wealth that becomes the regressed TARGET, the successor is read at the book the chosen
     action leaves standing, and a `Force_Flat_At_End` mandate makes the last decision pay for its
-    own unwind. A cap of 0 fails loud — it is the scale p is measured in. A checkpoint carries the
-    setting, and a mismatched load is refused by name.
+    own unwind. A cap of 0 fails loud — it is the scale p is measured in. A checkpoint stamps
+    whether its value carries the charge, and a mismatched load is refused by name.
 
     `DiffV2_Wealth_Free_Value` — removes the W column from the residual net, so
     `A_t = A_t(market[, p])` and the ranking's whole wealth dependence is the utility anchor
-    u(W1)'s. Requires `DiffV2_Position_State` (without p the residual is one constant per state)
+    u(W1)'s. Requires the position state (without p the residual is one constant per state)
     and refuses `DiffV2_Risk_Kappa` > 0 (the semideviation leaks the residual's inner-draw
     dispersion back into the ranking). Stamped on checkpoints.
 
@@ -328,15 +329,9 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_temporal_proximity":
             float(solver_config["DiffV2_Temporal_Proximity"]),
         "diffv2_fit_tol": float(solver_config["DiffV2_Fit_Tol"]),
-        # Cost-aware EXECUTION: the verdict rollout charges the L1 repositioning cost
-        # (Transaction_Cost_Per_Unit + half Bid_Offer_Spread_Bps) at the argmax, trading
-        # expected value against the cost of getting there. Training stays cost-free.
-        "diffv2_cost_aware_argmax":
-            solver_config["DiffV2_Cost_Aware_Argmax"] == "Yes",
-        # FRICTIONAL Bellman: the net book fraction becomes a state coordinate and the charge
-        # enters the fitted TARGET (see docstring). 'No' = the position-free value.
-        "diffv2_position_state":
-            solver_config["DiffV2_Position_State"] == "Yes",
+        # what the move from the standing book is charged: 'no', 'argmax' (the execution argmax)
+        # or 'state' (the frictional Bellman; see docstring)
+        "diffv2_repositioning_charge": str(solver_config["DiffV2_Repositioning_Charge"]).lower(),
         # The book column's own pathwise label under the position state: the charge's slope in the
         # standing book joins the twin loss. 'No' = the column fitted by the value term alone.
         "diffv2_book_gradient_label":
@@ -752,7 +747,7 @@ def initial_q_from_runtime(runtime, batch, device):
     turnover from it rather than from flat.
 
     The value function is POSITION-FREE by default, so `q0` affects only first-step turnover
-    diagnostics and the rolled P&L. Under `Solver.DiffV2_Position_State` it is also the standing
+    diagnostics and the rolled P&L. Under the position state it is also the standing
     position the first decision is charged from and the first position state the net reads."""
     positions = runtime["portfolio_state"]["positions"]
     hedges = runtime["names"]["hedges"]

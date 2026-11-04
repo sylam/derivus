@@ -338,6 +338,35 @@ def test_an_unstamped_checkpoint_s_roll_reads_one_drift_null(free, tmp_path):
     assert nulls == (1.0, 1.0), nulls
 
 
+def test_a_checkpoint_stamps_the_charge_its_value_carries(free, tmp_path):
+    """A checkpoint stamps the repositioning charge its fitted value carries, 'state' or 'no', since
+    `DiffV2_Repositioning_Charge` Argmax charges the execution argmax alone and fits the cost-free
+    value; a checkpoint stamped before the key carries the `position_state` bool, read as the one or
+    the other. The training document's checkpoint, stamped 'no', rolls frozen under Argmax with its
+    argmax charged and under No without; restamped as an older checkpoint with the bool at True, a
+    roll under No is refused by name. 4 s.
+
+    Killing mutations: the stamp written as the setting (the Argmax roll refused, saved 'no' against
+    'argmax'), and an older stamp read as 'no' whatever its bool (the True stamp loads)."""
+    ckpt, train = free
+    assert train.policy_artifact['repositioning_charge'] == 'no'
+
+    def roll(path, charge):
+        cfg = _cfg(batch=2, seed=7, load=path)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Repositioning_Charge'] = charge
+        return _run(cfg).evaluation_summary['diagnostics']['verdict']['argmax_charged']
+
+    assert (roll(ckpt, 'Argmax'), roll(ckpt, 'No')) == (True, False)
+    older = str(tmp_path / 'older.pt')
+    stamp = torch.load(ckpt, map_location='cpu', weights_only=False)
+    del stamp['repositioning_charge']
+    stamp['position_state'] = True
+    torch.save(stamp, older)
+    with pytest.raises(ValueError, match=re.escape(
+            "checkpoint mismatch on 'repositioning_charge': {} saved 'state' vs this run 'no'".format(older))):
+        roll(older, 'No')
+
+
 # --------------------------------------------------------------------------------------------
 # (iv) corridor — trained inside a fence, rolled inside it, loaded only into it
 # --------------------------------------------------------------------------------------------
@@ -546,7 +575,7 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
 
 @pytest.mark.parametrize('churn', [0.0, 50.0])
 def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(churn):
-    """The swap document's passive track under `DiffV2_Position_State`, `DiffV2_Churn_Lambda` 0 and
+    """The swap document's passive track under the position state, `DiffV2_Churn_Lambda` 0 and
     50: its terminal wealth `wT_mean` is the hand-rolled book's P&L less half the 10 bp spread on the
     path-mean mark per contract traded (entry from the opening book, the unwind at the horizon) and
     the churn term lambda * sum |dq|^2, within 1e-6 relative; `turnover_cost_mean` is that charge;
@@ -556,7 +585,7 @@ def test_the_position_state_verdict_charges_the_passive_book_inside_its_wealth(c
     dropped at the last decision (wT above by the unwind); the churn term left out of the wealth."""
     cfg = _passive_cfg()
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
-    hp['Solver']['DiffV2_Position_State'] = 'Yes'
+    hp['Solver']['DiffV2_Repositioning_Charge'] = 'State'
     hp['Solver']['DiffV2_Churn_Lambda'] = churn
     sizes = [float(hp['Tradable_Instruments']['CommodityFutureDeal'][h]['Contract_Size']) for h in LEGS]
     net_units = sum((1.0 if side == 'Buy' else -1.0) * units for side, units, _ in SWAP_LEGS)
@@ -1030,7 +1059,7 @@ def _zero_rates(cfg):
 def _swap(**kw):
     """The swap document of the passive tests under the position state at zero rates."""
     cfg = _zero_rates(_passive_cfg(**kw))
-    cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Position_State'] = 'Yes'
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Repositioning_Charge'] = 'State'
     return cfg
 
 
@@ -1200,7 +1229,7 @@ def _cartesian(save=None, load=None):
     cfg = _zero_rates(_cfg(batch=2 if load else 12, seed=7, save=save, load=load,
                            schedule=[{'Step': 0, 'Min_Total': -40, 'Max_Total': -30}]))
     solver = cfg['Calc']['Calculation']['Hedging_Problem']['Solver']
-    solver['DiffV2_Position_State'] = 'Yes'
+    solver['DiffV2_Repositioning_Charge'] = 'State'
     if load is not None:
         solver['DiffV2_Stepper_Rollout'] = 'Yes'
     return cfg
@@ -1790,7 +1819,7 @@ def _swap_growth(seed, save=None, load=None):
     calc = cfg['Calc']['Calculation']
     hp = calc['Hedging_Problem']
     hp['Objective'] = {'Object': 'LogWealth'}
-    hp['Solver'].update({'DiffV2_Position_State': 'Yes', 'DiffV2_Returns_State': 'Yes',
+    hp['Solver'].update({'DiffV2_Repositioning_Charge': 'State', 'DiffV2_Returns_State': 'Yes',
                          'DiffV2_Fit_Iters': 60, 'T_Min': 0, 'DiffV2_Stepper_Rollout': 'No'})
     if load is None:
         calc['Random_Seed'], calc['Batch_Size'], calc['Inner_Sub_Batch'] = seed, 512, 16
@@ -2113,7 +2142,7 @@ def _held_into_expiry(fee):
     hp = calc['Hedging_Problem']
     hp['Objective'] = {'Object': 'AsymmetricUtility_Huber', 'Huber_Aversion': 0.0,
                        'Utility_Scale_Explicit': 1.0e5}
-    hp['Solver'].update({'DiffV2_Position_State': 'Yes', 'T_Min': 42, 'Active_Hedge_Indices': [1],
+    hp['Solver'].update({'DiffV2_Repositioning_Charge': 'State', 'T_Min': 42, 'Active_Hedge_Indices': [1],
                          'DiffV2_Bank_Noise_Frac': 0.0, 'Training_Action_Grid_Levels_Per_Axis': 26,
                          'DiffV2_Label_Horizon': 2})
     ev = hp['Evaluator']
@@ -2638,7 +2667,7 @@ def test_a_garch_basis_without_a_slow_mean_reveals_its_log_variance_and_no_devia
 #: A frictional LogWealth solve on the returns state, its basis a `Band_Mixture` revealing its band
 #: state: a 2 $/oz dead band with a 0.2 pull around the slow mean, 10% stress days at four times the
 #: quiet sd.
-FRICTIONAL = {'DiffV2_Returns_State': 'Yes', 'DiffV2_Position_State': 'Yes', 'DiffV2_Book_Gradient_Label': 'Yes',
+FRICTIONAL = {'DiffV2_Returns_State': 'Yes', 'DiffV2_Repositioning_Charge': 'State', 'DiffV2_Book_Gradient_Label': 'Yes',
               'DiffV2_Bank_Along_Ladder': 'Yes', 'DiffV2_Risk_Kappa': 0.2}
 BAND_BASIS = {'A': 0.01, 'Phi': 0.9, 'Nu': 0.0, 'Sigma': 1.5, 'Reversion_Model': 'Band_Mixture', 'Band_Kappa': 2.0,
               'Band_Beta': 0.2, 'Mix_Q_Stress': 0.1, 'Mix_Sigma_Quiet': 1.0, 'Mix_Sigma_Stress': 4.0,

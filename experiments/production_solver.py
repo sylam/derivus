@@ -81,7 +81,7 @@ BEST_SOLVER = {
     'DiffV2_Fit_Iters': 60,
     'DiffV2_Hidden': 32,
     'DiffV2_LR': 0.002,
-    'DiffV2_Cost_Aware_Argmax': 'Yes',            # charge repositioning cost at the argmax
+    'DiffV2_Repositioning_Charge': 'Argmax',      # charge the move at the execution argmax
     'DiffV2_Per_Column_Grad_Norm': 'Yes',         # per-input-column differential normalization
 }
 

@@ -3320,8 +3320,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Decisions the candidate book is held for the continuation '
                                   'whose downside semideviation DiffV2_Risk_Kappa penalises, '
                                   'capped at the terminal; 1 = the next decision'),
-                    F('DiffV2_Cost_Aware_Argmax', 'Text', default='No', values=['Yes', 'No'],
-                      description='Charge the L1 repositioning cost at the verdict argmax'),
                     F('DiffV2_Fit_Tol', 'Float', default=0.001,
                       description='Relative loss-plateau tolerance at which an INHERITED '
                                   'net\'s fit stops early; 0 = never stop early'),
@@ -3332,15 +3330,18 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Quadratic repositioning charge in currency per contract^2, '
                                   'taken off the wealth entering the continuation at the argmax '
                                   'and the training-label argmax; 0 = off'),
-                    F('DiffV2_Position_State', 'Text', default='No', values=['Yes', 'No'],
-                      description='Frictional Bellman: the signed net book fraction becomes a '
-                                  'state coordinate of the fitted value and the repositioning '
-                                  'charge enters the regressed target'),
+                    F('DiffV2_Repositioning_Charge', 'Text', default='No', convention=True,
+                      values=['No', 'Argmax', 'State'],
+                      description='What the move from the standing book is charged: No nothing, '
+                                  'Argmax the turnover charge at the execution argmax alone, '
+                                  'State the frictional Bellman, the signed net book fraction a '
+                                  'state coordinate of the fitted value and the charge in its '
+                                  'regressed target'),
                     F('DiffV2_Book_Gradient_Label', 'Text', default='No', values=['Yes', 'No'],
                       description='Yes fits the value\'s slope in the standing book to its '
                                   'pathwise label, the repositioning charge\'s, under '
-                                  'DiffV2_Position_State; No leaves that column to the value '
-                                  'term alone'),
+                                  'DiffV2_Repositioning_Charge State; No leaves that column to '
+                                  'the value term alone'),
                     F('DiffV2_Bank_Along_Ladder', 'Text', default='No', values=['Yes', 'No'],
                       description='Yes holds every DiffSolverV2 training-bank book as a rung of '
                                   'the ladder on its live legs, its exploration '
@@ -3356,7 +3357,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('DiffV2_Wealth_Free_Value', 'Text', default='No', values=['Yes', 'No'],
                       description='Drop the wealth column from the value net\'s inputs, so the '
                                   'fitted residual reads market state (and the position, under '
-                                  'DiffV2_Position_State) alone'),
+                                  'DiffV2_Repositioning_Charge State) alone'),
                     F('DiffV2_Stepper_Rollout', 'Text', default='No', values=['Yes', 'No'],
                       description='Roll a frozen policy day-by-day through the real accounting'),
                     F('DiffV2_Decision_Curve_Dump', 'Text', default='',
@@ -3370,8 +3371,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description='Checkpoint to evaluate frozen; a LIST loads an ensemble'),
                     F('DiffV2_Max_Value_Optimism', 'Float', default=1.0,
                       description='The largest V_0 less the held-out greedy utility, net of the '
-                                  'repositioning charge under DiffV2_Position_State, a fit saves '
-                                  'and a roll loads'),
+                                  'repositioning charge under DiffV2_Repositioning_Charge State, '
+                                  'a fit saves and a roll loads'),
                     F('DiffV2_Max_Member_Disagreement', 'Float', default=8.0,
                       description='The largest mean absolute difference, in contracts, between '
                                   'two ensemble members\' swept net books a roll loads'),

@@ -149,7 +149,7 @@
      "DiffV2_Fit_Iters": 60,
      "DiffV2_Hidden": 32,
      "DiffV2_LR": 0.002,
-     "DiffV2_Cost_Aware_Argmax": "Yes",
+     "DiffV2_Repositioning_Charge": "Argmax",
      "DiffV2_Per_Column_Grad_Norm": "Yes"
     }
    },
