@@ -76,7 +76,8 @@ cap on the signed net; the verdict and the stepper roll hold one textbook book, 
 Cartesian grid, whose levels are `linspace(Min_Position, Max_Position, levels)` rounded to whole
 contracts, one greedy book. Each step's grid keeps the rows whose signed net on the step's live
 legs lies inside the cap and the corridor (`HedgeActionSpace.grid_at`), whatever their gross, so a
-row parked on an expired leg cannot carry the live legs past the cap. Held by
+row parked on an expired leg cannot carry the live legs past the cap, and `Decision_Deadband_Sigma`
+holds the standing book only while its live net lies inside them (`HedgeActionSpace._inside`). Held by
 `tests/test_action_space_and_artifact.py::test_the_passive_book_stays_inside_a_fractional_corridor`,
 `::test_the_verdict_and_the_stepper_hold_one_textbook_book`,
 `::test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid`,

@@ -357,9 +357,14 @@ class HedgeActionSpace:
     def _within(self, rows, t, live=None):
         """`rows` `(K, n_hedge)` whose signed total on the `live` legs (every leg where None) lies
         in `net_bounds(t)`."""
+        return rows[self._inside(rows, t, live)]
+
+    def _inside(self, rows, t, live=None):
+        """`(K,)`: whether each of `rows` has its signed total on the `live` legs (every leg where
+        None) in `net_bounds(t)`, the cap and the corridor."""
         lo, hi = self.net_bounds(t)
         tot = (rows if live is None else rows * live).sum(-1)
-        return rows[(tot >= lo - 1e-9) & (tot <= hi + 1e-9)]
+        return (tot >= lo - 1e-9) & (tot <= hi + 1e-9)
 
     def project_to_corridor(self, q, t):
         """Project the SIGNED total of the ACTIVE legs of `q` `(B, n_hedge)` into the
@@ -1365,9 +1370,10 @@ class DiffSolver:
 
         `Decision_Deadband_Sigma` makes the standing book the INCUMBENT candidate: the winner only
         trades when it beats holding by that many standard errors of the difference PAIRED across
-        the common inner draws. Holding an infeasible book is not on offer — a path whose `q_prev`
-        sits outside the corridor at t moves regardless — and the incumbent runs through the SAME
-        `_reposition_charge` as every rival, so the paired difference subtracts two readings of one
+        the common inner draws. Holding an infeasible book is not on offer — a path whose live
+        `q_prev` sits outside the cap or the corridor at t (`HedgeActionSpace._inside`) moves
+        regardless — and the incumbent runs through the SAME `_reposition_charge` as every rival,
+        so the paired difference subtracts two readings of one
         function. The move test compares RISK-NEUTRAL means even when `DiffV2_Risk_Kappa` is on: a
         paired standard error is a statement about E[C], and a semideviation is not a mean."""
         grid = self.aspace.grid_at(t, live)
@@ -1447,10 +1453,8 @@ class DiffSolver:
                 diff = best_f - C1f_inc                                                   # (B,Bi) paired
                 se = diff.std(-1) / math.sqrt(Bi)
                 move = diff.mean(-1) > self.aspace.deadband_sigma * se
-                # holding is only on offer while the LIVE book is corridor-feasible at t
-                hold_ok = ((self.aspace.project_to_corridor(q_live, t) - q_live).abs()
-                           <= 1e-9).all(-1)
-                move = move | ~hold_ok
+                # holding is only on offer while the LIVE book lies in the bounds at t
+                move = move | ~self.aspace._inside(q_live, t, live)
                 best_q = torch.where(move.unsqueeze(-1), best_q, q_live)
             return best_q
 

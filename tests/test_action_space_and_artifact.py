@@ -1142,19 +1142,26 @@ def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
     assert want == 13 and got == want, (got, want)
 
 
-def test_the_cap_holds_the_book_the_live_legs_carry():
+@pytest.mark.parametrize('deadband, positions', [
+    (0.0, None), (1e6, {'PL_APR_2026': 50, 'PL_JUL_2026': -50, 'PL_OCT_2026': -50})],
+    ids=['free', 'held'])
+def test_the_cap_holds_the_book_the_live_legs_carry(deadband, positions):
     """`Total_Position_Abs_Limit` caps the signed book the live legs carry, so a row parked on an
-    expired leg cannot carry the live ones past it: on the training document with the April leg's
-    box long [0, 50] under the cap of 50, the April leg dead at every decision of the sweep from
-    step 100, the verdict's greedy book on the live legs sums inside the cap on every path, its
-    path mean -50 to -18.75. 3 s.
+    expired leg cannot carry the live ones past it, nor can a book the deadband would hold: on the
+    training document with the April leg's box long [0, 50] under the cap of 50, the April leg dead
+    at every decision of the sweep from step 100, the verdict's greedy book's path-mean net on the
+    live legs lies inside the cap at every decision, -50 to -18.75; so too with a deadband refusing
+    every move from an opening book (+50, -50, -50), -50 inside the cap and -100 on the live legs,
+    which the first decision leaves at once. 3 s each.
 
-    Killing mutation: the cap held on a row's total over every leg (`rows.sum(-1)` in
+    Killing mutations: the cap held on a row's total over every leg (`rows.sum(-1)` in
     `HedgeActionSpace._within`), which admits (+50, -50, -50) at -50 and masks it to -100 on the
-    live legs: a path-mean net of -62.5."""
-    cfg = _cfg(batch=16, inner=8, seed=7)
-    cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']['Position_Limits']['PL_APR_2026'] = {
-        'Min_Position': 0, 'Max_Position': 50}
+    live legs: a path-mean net of -62.5; the incumbent held while its book is corridor-feasible
+    alone (`project_to_corridor` in `_decide`'s hold test), the held book -100 throughout."""
+    cfg = _cfg(batch=16, inner=8, seed=7, positions=positions)
+    ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
+    ev['Position_Limits']['PL_APR_2026'] = {'Min_Position': 0, 'Max_Position': 50}
+    ev['Decision_Deadband_Sigma'] = deadband
     nets = [sum(q) for q in _run(cfg).evaluation_summary['diagnostics']['verdict']['greedy_q_traj']]
     assert max(abs(x) for x in nets) <= 50 + 1e-9, nets
 
