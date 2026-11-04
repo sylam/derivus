@@ -2424,7 +2424,7 @@ def test_the_drift_monitor_reads_one_world_in_any_unit():
     and its null sigma 1.1299 in both. 8 s.
 
     Killing mutation: the monitor's legs read off the fork's dispersion (`dF.std(1).mean(0) > 0.5`
-    in `DiffSolver._moving`), a threshold in price units every leg falls below in thousandths: z 0.0
+    in `Bundle.moving`), a threshold in price units every leg falls below in thousandths: z 0.0
     and sigma 0.0 there."""
     zs = [_run(unit(_spot_alone(_cfg(batch=8, inner=8), CONSTANT_VOL))).evaluation_summary[
         'diagnostics']['verdict']['validation_drift_z'] for unit in (lambda c: c, _thousandths)]

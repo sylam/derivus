@@ -1614,10 +1614,11 @@ class Bundle:
         logging.debug('marked on row %d: %s', t, mask)
         return torch.tensor(mask, device=self.device)
 
-    def moving(self, t, landing, refs):
-        """`(len(refs),)` 1 or 0: whether each tradable of `refs` moves over the step from sim-grid
-        row `t` to `landing`: still marked at the landing (`marked`), the step carrying market
-        time, since a market-clock law's prices do not move over a step of none."""
+    def moving(self, t, refs):
+        """`(len(refs),)` 1 or 0: whether each tradable of `refs` moves over decision row `t`'s one
+        step, to its successor: still marked there (`marked`), the step carrying market time, since
+        a market-clock law's prices do not move over a step of none."""
+        landing = self.successors[t]
         return self.marked(landing, refs) * float(sum(self.market_time[t + 1:landing + 1]) > 0)
 
     def liability_at(self, time_index):
@@ -1764,7 +1765,7 @@ class BundleStepper:
             # reconciliation organ for B=1 rolls, every step so the daily identities close exactly
             cur = self.time_index
             deltas = self._trade_deltas(structured)
-            cost = self._cost(deltas, self._state['tradable_values'], self.bundle.vol_at(cur))
+            cost = leg_charges(self.runtime, deltas, self._state['tradable_values'], self.bundle.vol_at(cur))
             legs = {n: (float(self._state['tradable_values'][n][0]),
                         int(next_state['positions'][n][0]), int(deltas[n][0]),
                         float(cost[n][0]), self._account_of[n]) for n in self._hedges}
@@ -1975,16 +1976,12 @@ class BundleStepper:
                               dim=1).round().to(dtype=torch.int64)
         return {'trade_deltas': {n: ordered[:, i] for i, n in enumerate(self._hedges)}}
 
-    def _cost(self, deltas, prices, vol, matched=True):
-        # each leg's share of the trade's turnover charge, the one rule the solver ranks it by
-        return leg_charges(self.runtime, deltas, prices, vol, matched)
-
     def _apply_frictions(self, accounts, deltas, prices, next_positions, current, next_idx, vol_t):
         """The per-step friction flows both accounting modes share, debited from `accounts` (cash
         in cash mode, margin in futures mode), each leg's from its own account: its share of the
         trade's turnover charge, and the vol-linked IM funding on the post-trade book, so each
         flows through `_portfolio_value` → `_pnl_excess` → the utility."""
-        for n, cost in self._cost(deltas, prices, vol_t).items():
+        for n, cost in leg_charges(self.runtime, deltas, prices, vol_t).items():
             self._credit(accounts, self._account_of[n], -cost)
         if self._accounting['im_funding_spread_bps']:
             dt = self.bundle.calendar_dt(current, next_idx)
@@ -2014,7 +2011,7 @@ class BundleStepper:
         """Close the hedge book at `values`, the terminal's marks, outright at `vol`: each leg pays
         its turnover charge and, in cash mode, its consideration, from its own account."""
         deltas = {n: -positions[n] for n in self._hedges}
-        for n, cost in self._cost(deltas, values, vol, matched=False).items():
+        for n, cost in leg_charges(self.runtime, deltas, values, vol, matched=False).items():
             cs = float(self.runtime['tradables'][n]['contract_size'])
             self._credit(accounts, self._account_of[n],
                          -(deltas[n] * values[n] * cs + cost) if cash_mode else -cost)

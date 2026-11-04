@@ -3360,10 +3360,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         calc = cls(context, device=utils.calculation_device(), prec=prec)
         return calc, calc.execute(cls.parameters(context, overrides))
 
-    @staticmethod
-    def _factor_bundle_key(factor_key):
-        return utils.check_tuple_name(factor_key) if hasattr(factor_key, 'type') and hasattr(factor_key, 'name') else factor_key
-
     def _init_shared_mem(self, seed, quasi_seed, nomodel, reporting_currency, mcmc_sim, job_id,
                          num_jobs, calc_greeks=None):
         """Build the `CMC_State_Inner` this calculation runs on, so one shared_mem hosts both
@@ -3426,15 +3422,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         shared_mem = self._build_factor_state(
             dependent_factors, stochastic_factors, additional_factors, params, base_date, job_id, num_jobs)
         return shared_mem
-
-    def _liability_schedule_scalars(self):
-        """`(total_leg_volume, last_payment_day, fixings)` off the cashflow schedules - the summed
-        |notional| across all liability legs and the latest payment day as a day offset from
-        base_date, which the symlog utility-scale needs, and every liability fixing as a signed
-        `(day offset, quantity)` row, the exposure the passive hedge offsets as it fixes.
-        `Bundle.from_batch` maps that day onto the (history-prefixed) bundle time grid to recover
-        `last_settlement_index`."""
-        return self.liabilities.aggregate_leg_descriptors()
 
     def _reveal_transform(self, key, block, kind):
         """Returns-state coordinate map (identity when the switch is off): a CommodityPrice's
@@ -3560,7 +3547,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # Per-batch tensor accumulators. `simulate_only` appends every batch and concatenates once
         # at the end; a solve re-inits them each batch (one block per key).
         def _new_blocks():
-            return ({self._factor_bundle_key(key): [] for key in self.stoch_factors},
+            return ({utils.check_tuple_name(key): [] for key in self.stoch_factors},
                     defaultdict(list),
                     {'mtm': [], 'realized_cashflows': defaultdict(list)},
                     defaultdict(list))
@@ -3569,7 +3556,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # exposes via `privileged_factors()`.
         (factor_tensor_blocks, tradable_blocks, hedge_profile_blocks,
          privileged_factor_blocks) = _new_blocks()
-        total_leg_volume, last_payment_day, fixings = self._liability_schedule_scalars()
+        total_leg_volume, last_payment_day, fixings = self.liabilities.aggregate_leg_descriptors()
         bus_day = shared_mem.business_day
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
         randomize_t0 = hedging_problem['Randomize_Initial_State'] == 'Yes'
@@ -3709,7 +3696,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
             if factor_tensor_blocks is not None:
                 for key in self.stoch_factors:
-                    factor_tensor_blocks[self._factor_bundle_key(key)].append(
+                    factor_tensor_blocks[utils.check_tuple_name(key)].append(
                         shared_mem.t_Scenario_Buffer[key].detach().clone()
                     )
 
