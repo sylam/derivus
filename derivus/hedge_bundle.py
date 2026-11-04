@@ -248,7 +248,7 @@ def _spot_price_history(hedging_problem: Mapping[str, Any], lookback: int,
 
 def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[str, Any]]:
     """Normalize the `Solver` block (Execution_Mode='solve_hedge'). Accepts None for non-solve
-    modes; requires `Object` — 'DiffSolver' | 'DiffSolverV2' | 'HindsightDpSolver'.
+    modes; requires `Object` — 'DiffSolver' | 'DiffSolverV2'.
 
     Beyond the per-t residual-net Adam iters / lr: `DiffV2_Bank_Noise_Frac` is bank q-exploration
     noise as a fraction of each instrument's [Min, Max] range, and `Active_Hedge_Indices` selects
@@ -516,18 +516,14 @@ def construct_hedge_runtime(
             raise ValueError("Execution_Mode 'solve_hedge' requires Hedging_Problem['Solver']")
         if str(config["Inner_MC_Enabled"]) != "Yes":
             raise ValueError("Execution_Mode 'solve_hedge' requires Inner_MC_Enabled='Yes'")
-        min_inner = (2 if str(solver_config.get("Object", "")).lower()
-                     in ("diffsolver", "diffsolverv2") else 128)
-        if int(config["Inner_Sub_Batch"]) < min_inner:
-            raise ValueError(
-                "Execution_Mode 'solve_hedge' requires Inner_Sub_Batch >= "
-                f"{min_inner} for Solver.Object={solver_config.get('Object')!r}")
         if str(solver_config.get("Object", "")).lower() not in ("diffsolver", "diffsolverv2"):
             raise ValueError(
                 "Execution_Mode 'solve_hedge' requires Solver.Object='DiffSolver' or "
                 f"'DiffSolverV2' (the forward-backward solver); got "
                 f"{solver_config.get('Object')!r}. HindsightDpSolver remains available as the "
                 "Run_Hindsight_Diagnostic track.")
+        if int(config["Inner_Sub_Batch"]) < 2:
+            raise ValueError("Execution_Mode 'solve_hedge' requires Inner_Sub_Batch >= 2")
         # A solve is a STREAM: Simulation_Batches - 1 fit batches, then a held-out batch no fit
         # step saw. A loaded checkpoint fits nothing, so it is a stream of one.
         n_batches = int(config["Simulation_Batches"])

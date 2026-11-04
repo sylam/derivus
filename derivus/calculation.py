@@ -3230,9 +3230,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 description='The value-function solver and its schedule, dispatched on Object',
                 sub_fields=[
                     F('Object', 'Text', default=REQUIRED,
-                      values=['DiffSolver', 'DiffSolverV2', 'HindsightDpSolver'],
-                      description='The value-function solver; solve_hedge requires DiffSolver '
-                                  '(DiffSolver is the legacy spelling of the same solver)'),
+                      values=['DiffSolver', 'DiffSolverV2'],
+                      description='The value-function solver: DiffSolver, or DiffSolverV2, which '
+                                  'trains on its constructed policy\'s bank'),
                     F('Multi_Seed_Count', 'Integer', default=1,
                       description='Independent training seeds the artifact is selected across'),
                     F('T_Min', 'Integer', default=0,
