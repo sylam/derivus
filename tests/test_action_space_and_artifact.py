@@ -853,6 +853,36 @@ def test_consecutive_holidays_hold_every_factor_and_carry_one_market_step(tmp_pa
     assert not decided & set(HOLIDAYS), decided & set(HOLIDAYS)
 
 
+def test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar(tmp_path):
+    """Under the default `vol_scaled_notional` the utility scale is the leg volume times the spot
+    times its annual vol times sqrt(tau), tau the business days of the job's calendar from the first
+    simulated row to the last settlement over 252, the market clock the vol is annualised on. The
+    simulate-only fixture on the Testland calendar of `HOLIDAYS` counts 76 market days there against
+    82 on a calendar of weekends alone, the volume, the spot and its vol being one history's on
+    either, so its scale reads sqrt(76 / 82) = 0.9627 of the other's, to 1e-12. 2 s.
+
+    Killing mutation: tau read as the calendar rows from the first simulated row to the last
+    settlement (`int(self.last_settlement_index) - H` in `Bundle._resolve_utility_scale`), 116 on
+    either calendar, so the two scales agree (a ratio of 1, 3.9% off)."""
+    calendar = str(tmp_path / 'calendars.cal')
+    with open(calendar, 'w') as f:
+        f.write('<Calendars>\n  <Calendar Location="Testland" Weekends="Saturday and Sunday" Holidays="'
+                + ', '.join(f'{d}|Holiday' for d in HOLIDAYS) + '"/>\n'
+                '  <Calendar Location="Weekdays" Weekends="Saturday and Sunday" Holidays=""/>\n</Calendars>\n')
+    scale, days = {}, {}
+    for name, holidays in (('Testland', list(HOLIDAYS)), ('Weekdays', [])):
+        cfg = jsonlib.load(open(FIXTURE))
+        cfg['Calc']['CalendDataFile'] = calendar
+        cfg['Calc']['Calculation'].update(Calendar=name, Batch_Size=2, Random_Seed=3)
+        world = _run(cfg).bundle
+        after = [(world.scenario_dates[i] + pd.Timedelta(days=1)).date()
+                 for i in (world.initial_time_index, world.last_settlement_index)]
+        days[name] = int(np.busday_count(*after, holidays=holidays))
+        scale[name] = world.utility_scale
+    ratio = scale['Testland'] / scale['Weekdays'] / np.sqrt(days['Testland'] / days['Weekdays'])
+    assert days == {'Testland': 76, 'Weekdays': 82} and abs(ratio - 1.0) < 1e-12, (days, scale)
+
+
 def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path):
     """A decision is a market day holding its book to the next, and its fork lands there with that
     interval's market time. On the fixture with a `GARCHSpotModel` spot over `SLOW_BASIS`, a policy
@@ -1016,6 +1046,26 @@ def test_the_verdict_and_the_stepper_hold_one_greedy_book_on_the_cartesian_grid(
     assert not frac and all(abs(g) < 5e-6 for g in gaps.values()), (frac, gaps)
 
 
+def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
+    """`Total_Position_Abs_Limit` caps the absolute signed book total, so the Cartesian grid keeps
+    every row whose signed net is inside the cap whatever its gross: the July and October legs on
+    boxes [-30, 30] at five levels, -30 to 30 by 15, under a cap of 20, offer the 13 books whose
+    legs sum to -15, 0 or 15, a long 30 July against a short 30 October among them, of the 25 the
+    levels make. 3 s.
+
+    Killing mutation: the grid's rows dropped by their gross sum (`grid.abs().sum(-1)` in
+    `HedgeActionSpace.grid`), which leaves the 5 books of at most one leg's 15 contracts."""
+    cfg = _cfg(batch=8, inner=4, active=[1, 2])
+    ev = cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']
+    for leg in LEGS:
+        ev['Position_Limits'][leg] = {'Min_Position': -30, 'Max_Position': 30}
+    ev['Total_Position_Abs_Limit'] = 20
+    levels = np.linspace(-30, 30, 5)
+    want = sum(abs(a + b) <= 20 for a in levels for b in levels)
+    got = _run(cfg).evaluation_summary['diagnostics']['action_grid_size']
+    assert want == 13 and got == want, (got, want)
+
+
 def test_the_verdict_and_the_stepper_hold_one_textbook_book(tmp_path):
     """The verdict and the stepper roll hold one textbook book on a simulated world, and with it one
     wealth: on the swap document's frozen eval at zero rates on 12 simulated paths, where the
@@ -1114,8 +1164,9 @@ CALENDAR = {'Calendar_Spread_Bps': 3.0}
 
 @pytest.mark.parametrize('mode, force_flat, evaluator, book', [
     ('futures', 'Yes', {}, {}), ('cash_account', 'Yes', {}, {}), ('futures', 'No', {}, {}),
-    ('futures', 'Yes', VOL_SPREAD, {}), ('futures', 'Yes', CALENDAR, {'PL_JUL_2026': 10.0})],
-    ids=['futures', 'cash', 'held', 'vol_spread', 'calendar'])
+    ('futures', 'Yes', VOL_SPREAD, {}), ('cash_account', 'Yes', VOL_SPREAD, {}),
+    ('futures', 'Yes', CALENDAR, {'PL_JUL_2026': 10.0})],
+    ids=['futures', 'cash', 'held', 'vol_spread', 'cash_vol_spread', 'calendar'])
 def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mode, force_flat, evaluator, book):
     """A client short 10 `PL_OCT_2026` from the first decision through `create_stepper()`, on the
     simulate-only fixture at zero rates paying Monday 10 August, so the row before its terminal is a
@@ -1123,9 +1174,9 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     the forced close on the terminal, +10 at Monday's mark, the book flat from there and -10 the day
     before, or under `Force_Flat_At_End` 'No' the book short to the last row, and on each path it
     writes its last `hedge_portfolio_ex_funding` is the stepper's hedge P&L within 1e-5 relative;
-    so too under a spread scaled by the step's vol, the close paying it at the terminal's vol, and
-    long 10 `PL_JUL_2026` beside the short under `Calendar_Spread_Bps`, the entry a matched roll
-    and the forced close outright. 2 s each.
+    so too under a spread scaled by the step's vol in either accounting mode, the close paying it at
+    the terminal's vol, and long 10 `PL_JUL_2026` beside the short under `Calendar_Spread_Bps`, the
+    entry a matched roll and the forced close outright. 2 s each.
 
     Killing mutations: the CSV recording the trades of the decision rows alone, the close of the
     step into the terminal lost (trade 0 on the terminal, the book held short to the clean-exit
@@ -1133,8 +1184,9 @@ def test_the_diagnostic_csv_books_the_forced_close_on_the_terminal(tmp_path, mod
     accounting step, the close booked on Sunday at Sunday's mark (49,984.73); the CSV's book left
     flat past the stepped rows (`pos[rows.stop:]` at zero), the book dropped on the clean-exit row
     under 'No'; the forced close charged at the vol of the row before it (`vol_t` handed to
-    `_flatten_futures`, the stepper 2.3e-4 off its CSV on the best path); the CSV crediting the
-    matched-roll rebate on the forced close (3.7% above the stepper)."""
+    `_flatten_futures`, the stepper 2.3e-4 off its CSV on the best path; to `_flatten_cash`, 2.3e-4
+    on the cash-account document's); the CSV crediting the matched-roll rebate on the forced close
+    (3.7% above the stepper)."""
     result = _run(_client(mode, force_flat, evaluator=evaluator))
     stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
     while not stepper.done:
