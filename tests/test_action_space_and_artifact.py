@@ -192,17 +192,19 @@ def test_the_textbook_bound_holds_its_book_to_the_terminal():
 def test_first_step_turnover_measured_from_opening_book():
     """Killing mutations: the textbook's entry charged from flat, `n_star - 0` for `n_star - q0`;
     the verdict's wealth started at the liability's mark at its first decision (`L[t0]`), the
-    no-hedge track's terminal wealth unmoved by the opening book's 9,164.21 to that decision."""
+    no-hedge track's terminal wealth unmoved by the opening book's 9,164.21 to that decision; the
+    bound deciding from row 0 (`bundle.decision_steps`), its V_0 unmoved by the opening book."""
     positions = {'PL_APR_2026': -1, 'PL_JUL_2026': -4, 'PL_OCT_2026': 0}
     flat = _run(_cfg(seed=11, positions=None, benchmarks=True))
     book = _run(_cfg(seed=11, positions=positions, benchmarks=True))
 
     fb, bb = flat.evaluation_summary, book.evaluation_summary
 
-    # The value function is POSITION-FREE: the opening book must NOT move any V_0 track...
+    # The value function is POSITION-FREE: the opening book must NOT move the textbook's V_0 nor
+    # the bound's books, while the bound holds it to its first decision, so its move enters
     assert bb['comparison']['textbook']['v0_mean'] == fb['comparison']['textbook']['v0_mean']
-    assert bb['comparison']['HindsightDpSolver']['v0_mean'] \
-        == fb['comparison']['HindsightDpSolver']['v0_mean']
+    hb, hf = bb['comparison']['HindsightDpSolver'], fb['comparison']['HindsightDpSolver']
+    assert hb['n_star'] == hf['n_star'] and hb['v0_mean'] != hf['v0_mean'], (hb, hf)
     # ...while the verdict holds it from the first row to its first decision, as the stepper roll
     # does, so the no-hedge track's terminal wealth moves by exactly the book's P&L there
     runtime, bundle = book.runtime, book.bundle
