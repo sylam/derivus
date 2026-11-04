@@ -1309,6 +1309,16 @@ class DiffSolver:
         rows = [r for r in self.steps + [self.T_dec] if t < r <= self.landing[t]]
         return rows if self.running_wealth else rows[-1:]
 
+    def _residual_z(self, t, dF, obs):
+        """`(B,)` the drift residual at decision t on each path: the fork's mean move `dF`
+        `(B, B_inner, n_hedge)` less the realised one `obs` `(B, n_hedge)`, over the fork's own
+        dispersion, averaged over the legs that move over the step (`_moving`). The verdict's
+        CUSUM and the roll's monitor score its path mean; the null is the per-path RMS."""
+        m = self._moving(t)
+        z = (((dF.mean(1) - obs) / dF.std(1).clamp_min(1e-9)) * m).sum(-1) / (float(m.sum()) or 1.0)
+        logging.debug('residual z at step %d: path mean %s', t, z.mean())
+        return z
+
     def _moving(self, t):
         """The legs `(n_hedge,)` that move over decision t's one step (`Bundle.moving`)."""
         return self.bundle.moving(t, self.nxt[t], self.hedges)
@@ -1976,10 +1986,7 @@ class DiffSolver:
                 # in-sim validation CUSUM: the fork's expectation minus the outer realized move,
                 # averaged over paths and summed over steps - a mean-zero tripwire within the
                 # model, whose deployment twin is the stepper roll's market-drift monitor
-                sF_v = dF[rows].std(1).clamp_min(1e-9)
-                inf_m = self._moving(t)
-                zraw = ((dF[rows].mean(1) - dF_o) / sF_v) * inf_m
-                zstep = zraw.sum(-1) / (float(inf_m.sum()) or 1.0)                # (n,) per path
+                zstep = self._residual_z(t, dF[rows], dF_o)                         # (n,) per path
                 vdrift_z += float(zstep.mean())
                 vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
@@ -2285,6 +2292,8 @@ class DiffSolver:
             drift = {"t": [], "cum_dF_usd": [0.0] * self.n_hedge, "cum_dL_usd": 0.0,
                      "cum_z": 0.0, "z_path": [], "tripped": []}
             pending = None      # the last decision's residual, scored once its move has printed
+            # the null of the path mean the monitor scores: the per-path null over the paths' root
+            null = self.drift_null_sigma / math.sqrt(self.bundle.batch_size)
             while not stepper.done:
                 t = stepper.time_index - hist
                 if stepper.is_decision_step and t in sweep_set:
@@ -2314,19 +2323,16 @@ class DiffSolver:
                         obs_dL = self.liability_sim[self.nxt[t]] - self.liability_sim[t]
                         rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
                         rL = dL.mean(1) - obs_dL                                  # (B,)
-                        sF = dF.std(1).clamp_min(1e-9)
                         # the legs that move over the step only (`Bundle.moving`): a frozen mark's
                         # dust over the std clamp fabricates huge sigma readings
                         inf_m = self._moving(t)
-                        n_inf = float(inf_m.sum()).__int__() or 1
                         pending = ([float(b) for b in rF.mean(0)], float(rL.mean()),
-                                   float(((rF / sF) * inf_m).sum() / (rF.shape[0] * n_inf)))
+                                   float(self._residual_z(t, dF, obs_dF).sum() / B))
                         drift["t"].append(int(t))
                         drift["z_path"].append(round(drift["cum_z"], 4))
                         n_so_far = max(1, len(drift["t"]) - 1)         # residuals scored so far
                         boundary = (float(self.cfg.get("diffv2_drift_threshold_sigmas", 3.0))
-                                    * self.drift_null_sigma
-                                    * (n_so_far ** 0.5))
+                                    * null * (n_so_far ** 0.5))
                         tripped = abs(drift["cum_z"]) > boundary
                         drift["tripped"].append(bool(tripped))
                         beta = float(self.cfg.get("diffv2_drift_beta", 0.0))
@@ -2377,7 +2383,7 @@ class DiffSolver:
             n_dec = max(1, len(drift["t"]) - 1)        # the last decision's residual is never scored
             drift["max_abs_z"] = max((abs(z) for z in drift["z_path"]), default=0.0)
             drift["n_tripped"] = int(sum(drift["tripped"]))
-            drift["null_sigma"] = round(self.drift_null_sigma, 4)
+            drift["null_sigma"] = round(null, 4)
             drift["final_z_per_sqrt_n"] = drift["cum_z"] / (n_dec ** 0.5)
             wT = (last["transition_pnl_excess"]
                   + last["transition_liability_value"]).to(torch.float64)

@@ -302,6 +302,23 @@ def test_the_saved_checkpoint_carries_the_drift_null_the_verdict_measured(free):
     assert stamped is not None and round(stamped, 4) == measured, (stamped, measured)
 
 
+def test_the_monitor_scores_its_path_mean_against_the_null_of_a_path_mean(free):
+    """The stepper roll's monitor scores the path mean of the per-path residual (`_residual_z`), so
+    its null is the stamped per-path null over the root of its paths: frozen rolls of the training
+    document's checkpoint on 1 and on 4 paths report the stamped null and half of it. 4 s.
+
+    Killing mutation: the monitor scored against the per-path null whatever its paths (the spelling
+    before `_residual_z`), the 4-path roll's boundary twice as wide: the same null on both."""
+    ckpt, _ = free
+    nulls = []
+    for batch in (2, 8):
+        roll = _cfg(batch=batch, seed=7, load=ckpt)
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Stepper_Rollout'] = 'Yes'
+        d = _run(roll).evaluation_summary['diagnostics']
+        nulls.append(d['stepper_verdict']['drift_monitor']['null_sigma'])
+    assert abs(nulls[1] / nulls[0] - 0.5) < 1e-3, nulls
+
+
 def test_an_unstamped_checkpoint_s_roll_reads_one_drift_null(free, tmp_path):
     """A frozen roll of a checkpoint that stamps no drift null reads the unit null everywhere: on
     the training document's checkpoint with its stamp removed, the verdict reports a null sigma of
