@@ -98,31 +98,13 @@ def _flatten_deals(config: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
             for deal_type, deals in config.items() for name, params in deals.items()}
 
 
-def _instrument_metadata(name, entry, *, hedge_names, cash_account_names, liability_expiry):
-    """Per-tradable metadata: the expiry / last-trade dates the pricers and the expiry mask read,
-    the routing flags, and the contract size. Dates fall back Expiry_Date → Maturity_Date →
-    Investment_Horizon → the latest liability expiry."""
+def _instrument_metadata(entry):
+    """Per-tradable metadata the engine reads: the currency cash routes by, the contract size and
+    the deal's parameters."""
     params = entry["params"]
-    investment_horizon = params.get("Investment_Horizon")
-    maturity_date = params.get("Maturity_Date")
-    fallback = investment_horizon if investment_horizon is not None else liability_expiry
-    default = maturity_date if maturity_date is not None else fallback
-    return {
-        "name": str(name),
-        "deal_type": entry["deal_type"],
-        "is_hedge": name in hedge_names,
-        "is_cash_account": name in cash_account_names,
-        "currency": params.get("Currency"),
-        "last_trade_date": params.get("Last_Trade_Date", default),
-        "expiry_date": params.get("Expiry_Date", default),
-        "first_notice_date": params.get("First_Notice_Date"),
-        "auto_close_days_before_last_trade": int(params.get("Auto_Close_Days_Before_Last_Trade", 0)),
-        "allow_new_positions_until_last_trade":
-            params.get("Allow_New_Positions_Until_Last_Trade", "Yes") == "Yes",
-        "allow_holding_past_last_trade": params.get("Allow_Holding_Past_Last_Trade", "No") == "Yes",
-        "contract_size": float(params.get("Contract_Size", 1.0)),
-        "params": params,                     # _flatten_deals already deep-copied per entry
-    }
+    # _flatten_deals already deep-copied `params` per entry
+    return {"currency": params.get("Currency"),
+            "contract_size": float(params.get("Contract_Size", 1.0)), "params": params}
 
 
 def _bid_offer_spread(evaluator_config: Mapping[str, Any]):
@@ -475,21 +457,7 @@ def construct_hedge_runtime(
     if not hedge_names:
         raise ValueError("no hedge instruments: Tradable_Instruments has only cash accounts")
 
-    # --- liabilities: the book being hedged; its latest expiry dates the hedge instruments ---
-    liabilities = {
-        name: {"deal_type": entry["deal_type"],
-               "expiry_date": entry["params"].get("Expiry_Date"), "params": entry["params"]}
-        for name, entry in _flatten_deals(hedging_problem.get("Liabilities") or {}).items()}
-    liability_expiry = None
-    for liability in liabilities.values():
-        expiry_date = liability["expiry_date"]
-        if expiry_date is not None and (liability_expiry is None or expiry_date > liability_expiry):
-            liability_expiry = expiry_date
-    normalized_tradables = {
-        name: _instrument_metadata(name, entry, hedge_names=hedge_names,
-                                   cash_account_names=cash_account_names,
-                                   liability_expiry=liability_expiry)
-        for name, entry in tradables.items()}
+    normalized_tradables = {name: _instrument_metadata(entry) for name, entry in tradables.items()}
 
     if execution_mode == "solve_hedge":
         if solver_config is None:
@@ -617,7 +585,6 @@ def construct_hedge_runtime(
                 "weights (there are no sims to measure carry/tracking from in a non-solve "
                 "mode). Declare Allocation_Weights instead.")
     return {
-        "execution_mode": execution_mode,
         "accounting_mode": str(evaluator_config.get("Accounting_Mode", "futures")).lower(),
         "names": {
             "tradables": tuple(normalized_tradables),
@@ -627,7 +594,6 @@ def construct_hedge_runtime(
         },
         "referenced_commodities": referenced_commodities,
         "tradables": normalized_tradables,
-        "liabilities": liabilities,
         "objective": None if objective_config is None else {
             # canonical lowercased form: every dispatch site compares against the lowercase literal
             "object": str(objective_config["Object"]).lower(),
@@ -671,8 +637,6 @@ def construct_hedge_runtime(
                 str(n): {"min_position": int(limit["Min_Position"]),
                          "max_position": int(limit["Max_Position"])}
                 for n, limit in evaluator_config.get("Position_Limits", {}).items()},
-            "cash_accounts": {n: {"currency": normalized_tradables[n]["currency"]}
-                              for n in cash_account_names},
             "instrument_to_cash_account": {
                 n: account_by_currency.get(meta["currency"], fallback_account)
                 for n, meta in normalized_tradables.items()},
@@ -1629,10 +1593,6 @@ class Bundle:
     def liability_sim(self):
         """History-stripped liability MTM `(t_outer, B)`."""
         return self.liability_mtm[self.initial_time_index:]
-
-    @property
-    def n_outer_steps(self):
-        return int(self.liability_sim.shape[0])
 
     @property
     def vol_sim(self):

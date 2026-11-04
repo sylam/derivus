@@ -66,8 +66,6 @@ class SolverResult:
     solver_name: str
     actions: Any
     values: Any
-    terminal_pnl: Optional[Any] = None
-    terminal_utility: Optional[Any] = None
     value_fn_artifacts: Optional[Any] = None
     diagnostics: Dict[str, Any] = field(default_factory=dict)
 
@@ -545,8 +543,7 @@ def run_textbook_benchmark(bundle, runtime):
     return {"v0_mean": float(obj[best]), "v0_std": 0.0,
             "v0_mean_net": float(u_net.mean()),
             "turnover_cost_mean": float(cost.mean()),
-            "n_star": n_star.detach().cpu().tolist(),
-            "terminal_utility": u[best].detach().cpu()}
+            "n_star": n_star.detach().cpu().tolist()}
 
 
 class HindsightDpSolver:
@@ -628,8 +625,6 @@ class HindsightDpSolver:
             solver_name="HindsightDpSolver",
             actions=n_star_0.detach().cpu(),
             values=v0.detach().cpu(),
-            terminal_pnl=(L_T + G).detach().cpu(),
-            terminal_utility=v0.detach().cpu(),
             diagnostics={
                 "V_0": float(v0.mean()),
                 "V_0_net": float(v0_net.mean()),
@@ -953,9 +948,9 @@ class DiffSolver:
         objective, and every fitted C_t with it, mid-training."""
         self.bundle = bundle
         self.aspace.vol_sim = bundle.vol_sim
-        self.tradables_sim, self.n_steps = bundle.tradables_sim, bundle.n_outer_steps
+        self.tradables_sim = bundle.tradables_sim
         self.liability_sim = bundle.liability_sim                     # (n_steps, B_outer)
-        self.leg_volume = float(getattr(bundle, "total_leg_volume", 0.0) or 0.0)
+        self.leg_volume = float(bundle.total_leg_volume)
         self.B_outer = int(self.liability_sim.shape[-1])
         if self.log_ratio:
             # a hair above zero on the book's own dollar scale: a ratio against a launch below
@@ -1193,9 +1188,7 @@ class DiffSolver:
         at headroom `(c + worst)/c = 1 - aversion/1.1`. Aversion rescales the very buffer the
         displacement provides — at 1.1 the buffer is gone and every worse outcome lands on the
         saturated tail — so a domain break refuses and thin headroom warns."""
-        worst = getattr(self, "_bank_worst", None)
-        if worst is None:
-            worst = min(float(W_bank[t].min()) for t in range(self.T_dec))
+        worst = self._bank_worst
         self.displacement = 1.1 * max(0.0, -worst)
         c = self.displacement / self.aversion
         headroom = 1.0 if worst >= 0 else (c + worst) / c
@@ -1787,8 +1780,7 @@ class DiffSolver:
     def _fit_from_labels(self, nets, W0_bank, market0, Y, gW, g_market, t, q_star, p_bank, g_p,
                          measured):
         """Shared fit tail: advantage decomposition + standardized twin loss on the
-        (value, wealth-grad, market-grad) labels. Called by both the single-fork and the
-        sub-sliced large-B label paths of `_fit_step`.
+        (value, wealth-grad, market-grad) labels of `_fit_step`.
 
         The twin loss matches gradients in STANDARDIZED space (`g_zn = std·g_raw`). Raw-space
         matching is mis-scaled — `∂A/∂W` ~ 1e-6 in dollars and `∂A/∂spot` ~ 1e-4, both inert
@@ -2453,10 +2445,10 @@ class DiffSolver:
                     f"DiffV2_Load_Value_Fn checkpoint mismatch on {key!r}: "
                     f"{src} saved {ck[key]!r} vs this run {want!r}")
         ck_obj = ck.get("solver_object", "DiffSolver")
-        if ck_obj != getattr(self, "SOLVER_OBJECT", "DiffSolver"):
+        if ck_obj != self.SOLVER_OBJECT:
             raise ValueError(
                 f"Solver.Object mismatch: {src} was trained by {ck_obj} but this run's solver "
-                f"is {getattr(self, 'SOLVER_OBJECT', 'DiffSolver')} — the bank policy that "
+                f"is {self.SOLVER_OBJECT} — the bank policy that "
                 f"shaped the fitted value is part of the function, not an execution detail")
         if bool(ck.get("position_state", False)) != self.position_state:
             raise ValueError(
@@ -2709,10 +2701,10 @@ class DiffSolver:
         if bundle is not None:
             self._bind(bundle)
         logging.info(
-            "DiffSolver setup: n_hedge=%d active=%s T_dec=%d (of %d sim steps; last-live "
-            "mtm=[-2]) B_outer=%d levels=%d fit_iters=%d lr=%.3g | "
+            "DiffSolver setup: n_hedge=%d active=%s T_dec=%d (the last-live mtm) "
+            "B_outer=%d levels=%d fit_iters=%d lr=%.3g | "
             "contract_size=%s | q∈[%s, %s] total_abs_limit=%.3g",
-            self.n_hedge, self.active, self.T_dec, self.n_steps,
+            self.n_hedge, self.active, self.T_dec,
             self.B_outer, self.levels, self.fit_iters, self.lr, self.contract_size.tolist(),
             self.q_lo.tolist(), self.q_hi.tolist(), self.total_abs_limit)
 
@@ -2962,7 +2954,7 @@ class DiffSolver:
             # bank-policy provenance: WHICH solver class shaped the wealth/position states the nets
             # were fitted on, plus DiffSolverV2's forward-pass frame, so a replay reads the solved
             # construction instead of re-measuring it on different paths
-            "solver_object": getattr(self, "SOLVER_OBJECT", "DiffSolver"),
+            "solver_object": self.SOLVER_OBJECT,
             # the growth reward's shift, measured off the training bank's worst book - part of the
             # FRAME, since a roll under a different shift is a different utility
             "displacement": getattr(self, "displacement", 0.0),
@@ -2970,7 +2962,7 @@ class DiffSolver:
             # displacement by its own notional over this one, so the reward stays in the frame
             "state_notional": getattr(self, "state_notional", None),
             "drift_null_sigma": self.drift_null_sigma,
-            "risk_aversion": getattr(self, "aversion", None),
+            "risk_aversion": self.aversion,
             "phi_curves": getattr(self, "phi_curves", None),
             "solver_version": SOLVER_VERSION,
             "config_hash": self._config_hash(),

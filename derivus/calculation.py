@@ -3878,7 +3878,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         without a calc handle. Every fork is windowed to t and the rows to the row it lands on,
         `inner_mc`'s `landing` and the GRAD fork's the decision's successor (`Bundle.successors`) -
         generation and a real pricing pass on those rows - giving the exact per-tradable F_t1 and
-        L_t / L_t1 the diff-ML bootstrap reads. `outer_rows` lets the solver run the GRAD fork in outer-path sub-slices.
+        L_t / L_t1 the diff-ML bootstrap reads.
 
         A fork landing past the decision's successor, the risk horizon's, draws on streams of its
         own, seeded by `batch_seed` of the batch's seed (`batch` its index in the run) and the
@@ -3890,9 +3890,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         bundle.inner_mc = lambda t, landing: self._run_inner_mc_at_t(
             t, landing, outer_buffer, shared_mem, base_date, tradable_refs,
             stream=None if np.max(landing) == bundle.successors[t] else batch_seed(seed, t))
-        bundle.inner_mc_grad = lambda t, outer_rows=None: self._run_inner_mc_at_t(
+        bundle.inner_mc_grad = lambda t: self._run_inner_mc_at_t(
             t, bundle.successors[t], outer_buffer, shared_mem, base_date, tradable_refs,
-            with_grad=True, outer_rows=outer_rows)
+            with_grad=True)
 
     def _publish_print_seeds(self, procs, state, t, shared_mem):
         """Publish every process's `print_seed` off `state` (factor key -> row-indexable snapshot)
@@ -3907,11 +3907,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         return keys
 
     def _run_inner_mc_at_t(self, t, landing, outer_scenario_buffer, shared_mem, base_date,
-                           tradable_refs, with_grad=False, outer_rows=None, stream=None):
+                           tradable_refs, with_grad=False, stream=None):
         """Run inner MC at a single outer timestep `t` to the row `landing`, forking from `outer_scenario_buffer` - a
         snapshot of the outer `t_Scenario_Buffer` (factor keys plus every per-process aux key, batch
-        dim B_outer). `outer_rows=(lo, hi)` forks only that contiguous outer-path range; labels are
-        per-outer-path, so row slices are independent. The DP/MPC backward sweep calls this on
+        dim B_outer). The DP/MPC backward sweep calls this on
         demand outside the outer loop, via `Bundle.inner_mc`.
 
         Returns the inner samples the solver bootstraps from, `t+1` the row `landing`: the
@@ -3962,9 +3961,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         the real cause, and clears the fork's `t_Buffer` and `t_Scenario_Buffer`.
         """
         spot_key = self._find_spot_key()
-        if outer_rows is not None:
-            lo, hi = outer_rows
-            outer_scenario_buffer = {k: v[..., lo:hi] for k, v in outer_scenario_buffer.items()}
         B_outer = outer_scenario_buffer[spot_key].shape[-1]
         B_inner = shared_mem.simulation_sub_batch
         t_days = int(self.time_grid.scen_time_grid[t])
