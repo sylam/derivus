@@ -138,7 +138,8 @@ class HedgeActionSpace:
         limits = acc["position_limits"]
         self.q_lo = torch.tensor([float(limits[r]["min_position"]) for r in self.hedges], device=device)
         self.q_hi = torch.tensor([float(limits[r]["max_position"]) for r in self.hedges], device=device)
-        # the boxes on the host too, which `bounds` sums at every decision without a sync
+        # the boxes on the host too, so `bounds` sums them off the device (its one host read is
+        # the live mask, `live_legs`)
         self.boxes = list(zip(self.q_lo.tolist(), self.q_hi.tolist()))
         self.contract_size = torch.tensor(
             [float(runtime["tradables"][r]["contract_size"]) for r in self.hedges],
@@ -392,15 +393,7 @@ class HedgeActionSpace:
     def install_weights(self, weights):
         """One-shot install of a DERIVED `Allocation_Weights` schedule (Allocation_Mode
         'Carry_Variance'): the solver computes the table from the warmup sims — or restores a
-        checkpoint's stamped table — and the ladder reads it from here on. Refused outside the
-        derivation mode or over a standing table, so a declared universe can never be silently
-        replaced."""
-        if self.mode != "carry_variance":
-            raise ValueError(
-                "HedgeActionSpace.install_weights outside Allocation_Mode='Carry_Variance' — "
-                "a declared universe is data, not something a solver may overwrite")
-        if self.weights is not None:
-            raise ValueError("HedgeActionSpace.install_weights: a weights table already stands")
+        checkpoint's stamped table — and the ladder reads it from here on."""
         self.weights = self.weights_key(weights)
         self._cache.clear()
 
@@ -595,17 +588,12 @@ class DiffSolver:
         self.wealth_free = self.cfg["diffv2_wealth_free_value"]
         if self.wealth_free and not self.position_state:
             raise ValueError(
-                "Solver.DiffV2_Wealth_Free_Value='Yes' requires "
-                "DiffV2_Repositioning_Charge='State': an "
-                "action cannot move the market, so without p the residual A(m') is one constant "
-                "across every candidate and cancels from the argmax - the whole fit would be "
-                "decision-irrelevant and the run a myopic one-step E[u(W1)] policy wearing a "
-                "DP's verdict. Build the myopic baseline deliberately if it is wanted.")
+                "Solver.DiffV2_Wealth_Free_Value='Yes' requires DiffV2_Repositioning_Charge='State': "
+                "without the book a wealth-free residual is one constant across the candidates")
         if self.wealth_free and self.risk_kappa > 0.0:
             raise ValueError(
-                "Solver.DiffV2_Wealth_Free_Value='Yes' refuses DiffV2_Risk_Kappa > 0: the downside "
-                "semideviation is nonlinear over inner draws, so the residual's dispersion leaks "
-                "back into the ranking the switch exists to hand to the utility alone.")
+                "Solver.DiffV2_Wealth_Free_Value='Yes' refuses DiffV2_Risk_Kappa > 0: the "
+                "semideviation is nonlinear over the inner draws")
         obj = runtime["objective"]
         self.running_wealth = obj["reference_mode"] == "running_wealth"
         self.log_ratio = obj["object"] == "logwealth"
@@ -617,20 +605,12 @@ class DiffSolver:
         self.scheduled_scale = obj["utility_scale_mode"] == "conditional_sim"
         if self.running_wealth and self.scheduled_scale and not self.log_ratio:
             raise ValueError(
-                "Objective.Reference_Mode='Running_Wealth' refuses "
-                "Utility_Scale_Mode='conditional_sim': the increment already carries a per-step "
-                "scale of its own (one day's move, not the whole horizon's), so a second per-step "
-                "rescaling of it is a different objective again. Each is a separate experiment; "
-                "run them one at a time. (LogWealth is the exception: the schedule is its "
-                "CAPITAL line, not a rescaling.)")
+                "Objective.Reference_Mode='Running_Wealth' refuses Utility_Scale_Mode="
+                "'conditional_sim' under a utility shape: the increment carries a per-step scale of its own")
         if self.running_wealth and self.cfg["diffv2_temporal_proximity"] > 0.0:
             raise ValueError(
                 "Objective.Reference_Mode='Running_Wealth' refuses DiffV2_Temporal_Proximity > 0: "
-                "the proximity prior penalises the distance from A_t to its fitted SUCCESSOR, "
-                "which is the right prior only while C_t ≈ C_{t+1}. Under a per-step reward the "
-                "two differ by E[u(ΔW_t)] BY DEFINITION, so the regularizer pulls against exactly "
-                "the offset the objective is made of. The successor WARM START is untouched and "
-                "still valid — it is an initial point, not a penalty.")
+                "a per-step reward sets C_t apart from C_{t+1} by E[u(dW_t)]")
         self.force_flat = bool(runtime["accounting"]["force_flat_at_end"])
         self.curve_dump = self.cfg["diffv2_decision_curve_dump"]
         passive_from = self.cfg["diffv2_passive_from"]
@@ -640,8 +620,7 @@ class DiffSolver:
             raise ValueError(
                 "Solver.DiffV2_Repositioning_Charge='State' requires "
                 "Evaluator.Total_Position_Abs_Limit > 0 "
-                f"(it is {self.aspace.total_abs_limit}): the position state is p = Sum(q)/Q_max and the "
-                "cap is the scale it is measured in")
+                f"(it is {self.aspace.total_abs_limit}), the scale of the position state p = Sum(q)/Q_max")
         self.fit_tol = self.cfg["diffv2_fit_tol"]
         self.prox = self.cfg["diffv2_temporal_proximity"]
         # bank exploration RNG - deterministic, and PERSISTENT across batches so each batch
@@ -675,11 +654,8 @@ class DiffSolver:
         if (self.scheduled_scale and self.utility_scale_schedule is None
                 and not self.cfg["diffv2_load_value_fn"]):
             raise ValueError(
-                "Objective.Utility_Scale_Mode='conditional_sim' but this warmup batch measured no "
-                "schedule: c_t is the cross-sectional dispersion of the flat-book wealth across "
-                "OUTER PATHS, and a single-path batch has no cross-section. Raise Batch_Size (a "
-                "one-path world can only be a frozen roll, which takes its schedule from the "
-                "checkpoint).")
+                "Objective.Utility_Scale_Mode='conditional_sim' measured no schedule on this warmup "
+                "batch, a one-path batch having no cross-section: raise Batch_Size")
 
     def _bind(self, bundle):
         """Point the solver at a bundle: the history-stripped sim views the sweep indexes by `t`
@@ -1940,11 +1916,8 @@ class DiffSolver:
         sweep_set = set(int(t) for t in sweep_ts)
         if self.curve_dump and self.B_outer != 1:
             raise ValueError(
-                f"Solver.DiffV2_Decision_Curve_Dump is a SINGLE-PATH diagnostic but this roll "
-                f"carries {self.B_outer} outer paths. Every column it writes — the wealth entering "
-                f"the decision, the ranking curve over it, the band probabilities — belongs to one "
-                f"path, and averaging them would describe a decision nothing took. Roll the dump "
-                f"at Batch_Size 1.")
+                f"Solver.DiffV2_Decision_Curve_Dump is a single-path diagnostic and this roll carries "
+                f"{self.B_outer} outer paths: roll it at Batch_Size 1")
 
         q_log = {"greedy": [], "t": [], "w": []}
         dump_rows = [] if self.curve_dump else None
@@ -2149,10 +2122,8 @@ class DiffSolver:
                 f"Objective.Utility_Scale_Mode mismatch: {src} was trained "
                 f"{'WITH' if ck.get('utility_scale_schedule') else 'WITHOUT'} a conditional_sim "
                 f"scale schedule and this run declares "
-                f"{'conditional_sim' if self.scheduled_scale else 'a flat scale'}. The knee is "
-                f"what the fitted residual's curvature is measured against, so a per-step "
-                f"schedule and a flat scalar are different utilities of the same wealth — "
-                f"retrain, or match Objective.Utility_Scale_Mode.")
+                f"{'conditional_sim' if self.scheduled_scale else 'a flat scale'}: retrain, or "
+                f"match Objective.Utility_Scale_Mode")
         # the training ARCHITECTURE is part of what a version stamps, and an ensemble must not
         # average continuations trained under different ones
         ck_ver = ck.get("solver_version", "<pre-version checkpoint>")
@@ -2178,9 +2149,7 @@ class DiffSolver:
                 raise ValueError(
                     f"DiffV2_Load_Value_Fn corridor mismatch: {src} was trained under "
                     f"Total_Position_Schedule {saved_sched} but this run rolls under "
-                    f"{want_sched}. A policy trained inside a corridor is queried off its "
-                    f"learned wealth support under a different (or absent) one — retrain, "
-                    f"or match the Evaluator.Total_Position_Schedule.")
+                    f"{want_sched}: retrain, or match Evaluator.Total_Position_Schedule")
         elif want_sched is not None:
             logging.warning(
                 "DiffV2_Load_Value_Fn: %s predates corridor provenance (no "
@@ -2193,8 +2162,7 @@ class DiffSolver:
         if optimism is not None and not optimism <= bound:
             raise ValueError(
                 f"DiffV2_Max_Value_Optimism: {src} was saved with V_0={ck['V_0']:+.6g} outrunning its "
-                f"held-out greedy utility by {optimism:.6g}, above this run's {bound:g}. Its DP had "
-                f"not converged, so its argmax ranks on a value no roll earns - redraw the member.")
+                f"held-out greedy utility by {optimism:.6g}, above this run's {bound:g}")
         return ck_ver
 
     def _check_action_universe(self, ck, src):
@@ -2255,9 +2223,7 @@ class DiffSolver:
             raise ValueError(
                 f"DiffV2_Load_Value_Fn Calendar_Spread_Bps mismatch under the position state: "
                 f"{src} was trained at {ck['calendar_spread_bps']!r} and "
-                f"this run rolls at {want!r}. Under position state the reposition charge enters "
-                f"the regressed target, so the two are different value functions — retrain, or "
-                f"match the Evaluator.Calendar_Spread_Bps.")
+                f"this run rolls at {want!r}: retrain, or match Evaluator.Calendar_Spread_Bps")
         logging.warning(
             "DiffV2_Load_Value_Fn: %s was trained at Calendar_Spread_Bps %r and this run rolls "
             "at %r. Position-free the charge shapes SELECTION only, so this is a deliberate "
@@ -2273,9 +2239,8 @@ class DiffSolver:
             trained_on = ck.get("state_notional")
             if not trained_on:
                 raise ValueError(
-                    "a returns-state checkpoint carries no state_notional: its capital line cannot be "
-                    "read in this run's frame; stamp it with its training world's t0 spot times the "
-                    "liability volume, or retrain")
+                    "Solver.DiffV2_Returns_State: a checkpoint carrying no state_notional reads its "
+                    "capital line in no frame of this run: retrain")
             c = float(c) * self.state_notional / float(trained_on)
         return c / float(ck["risk_aversion"])
 
@@ -2686,8 +2651,7 @@ class DiffSolver:
                     raise ValueError(
                         f"DiffV2_Max_Value_Optimism: refusing to save the value fn to {save_path}: "
                         f"V_0={V_0:+.6g} outruns the held-out greedy utility {u_held:+.6g} by "
-                        f"{optimism:.6g}, above {bound:g}. The fit has not converged - redraw the "
-                        f"seed or lengthen the stream.")
+                        f"{optimism:.6g}, above {bound:g}")
                 tmp = save_path + ".tmp"
                 torch.save(artifact, tmp)
                 os.replace(tmp, save_path)                       # atomic on POSIX

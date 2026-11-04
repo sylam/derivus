@@ -291,11 +291,8 @@ def _objective_config(objective_config):
     reference_mode = ("running_wealth" if logwealth
                       else str(objective_config["Reference_Mode"] or "Fixed").lower())
     if reference_mode not in ("fixed", "running_wealth"):
-        raise ValueError(
-            f"Unsupported Objective.Reference_Mode: "
-            f"{objective_config['Reference_Mode']!r}. Supported: 'Fixed' (the utility "
-            f"is applied to TERMINAL wealth) | 'Running_Wealth' (to the day's wealth increment). "
-            f"The value is dispatched on by equality, so a near-miss would silently run 'Fixed'.")
+        raise ValueError(f"Unsupported Objective.Reference_Mode {objective_config['Reference_Mode']!r}: "
+                         f"'Fixed' | 'Running_Wealth'")
     logging.debug("Objective.Reference_Mode %s%s", reference_mode, " (LogWealth's)" if logwealth else "")
     floor_frac = float(objective_config["Utility_Scale_Floor_Frac"])
     if str(objective_config["Utility_Scale_Mode"]).lower() == "conditional_sim":
@@ -367,27 +364,21 @@ def construct_hedge_runtime(
             if n_batches != 1:
                 raise ValueError(
                     "Execution_Mode 'solve_hedge' with DiffV2_Load_Value_Fn requires "
-                    "Simulation_Batches == 1: a frozen policy fits nothing, so its one batch IS "
-                    f"the held-out world; got {n_batches}.")
+                    f"Simulation_Batches == 1, a frozen policy's one batch its held-out world; got {n_batches}")
         elif n_batches < 2:
             raise ValueError(
-                "Execution_Mode 'solve_hedge' requires Simulation_Batches >= 2 (fit batches, then "
-                f"a held-out batch no fit step saw); got {n_batches}, which derivus_batch "
-                "divides by the job count before this check.")
+                "Execution_Mode 'solve_hedge' requires Simulation_Batches >= 2, fit batches then a "
+                f"held-out one; got {n_batches}")
         if solver_config["DiffV2_Load_Value_Fn"] and solver_config["DiffV2_Save_Value_Fn"]:
             raise ValueError(
                 "Solver.DiffV2_Save_Value_Fn is set alongside DiffV2_Load_Value_Fn: a loaded "
-                "checkpoint is a frozen-policy EVALUATION and fits nothing, so there is no new "
-                "value fn to write. Train (save) and evaluate (load) are separate runs.")
+                "checkpoint fits nothing to save")
         # the DP lives in utility space: a scale-consuming shape, or LogWealth's per-step growth
         if str((objective_config or {}).get("Object", "")).lower() \
                 not in _UTILITY_OBJECTS + ("logwealth",):
             raise ValueError(
-                "Execution_Mode 'solve_hedge' requires a utility Objective.Object — one of "
-                "'AsymmetricUtility_Symlog' | 'AsymmetricUtility_Huber' | 'AsymmetricUtility_CARA' | "
-                "'LogWealth' (per-step growth). "
-                "The DP recursion lives in utility space: an identity (legacy) objective leaves "
-                "V-hat unbounded in money and the backward sweep blows up multiplicatively.")
+                "Execution_Mode 'solve_hedge' requires Objective.Object 'AsymmetricUtility_Symlog' | "
+                "'AsymmetricUtility_Huber' | 'AsymmetricUtility_CARA' | 'LogWealth'")
 
     history_lookback = int(hedging_problem["History_Lookback_Business_Days"])
     if history_lookback < 0:
@@ -418,17 +409,11 @@ def construct_hedge_runtime(
 
     alloc_mode = str(evaluator_config["Allocation_Mode"]).lower()
     if alloc_mode not in ("cartesian", "exposure", "carry_variance"):
-        raise ValueError(
-            f"Unsupported Evaluator.Allocation_Mode: "
-            f"{evaluator_config['Allocation_Mode']!r}. Supported: 'Cartesian' (the product of "
-            f"per-leg levels) | 'Exposure' (the declared Allocation_Weights table) | "
-            f"'Carry_Variance' (solver-derived). Dispatched by equality, so a near-miss would "
-            f"silently run another universe.")
+        raise ValueError(f"Unsupported Evaluator.Allocation_Mode {evaluator_config['Allocation_Mode']!r}: "
+                         f"'Cartesian' | 'Exposure' | 'Carry_Variance'")
     if alloc_mode == "carry_variance" and solver_config is None:
-        raise ValueError(
-            "Evaluator.Allocation_Mode='Carry_Variance' needs a Solver to derive the "
-            "weights (there are no sims to measure carry/tracking from in a non-solve "
-            "mode). Declare Allocation_Weights under 'Exposure' instead.")
+        raise ValueError("Evaluator.Allocation_Mode='Carry_Variance' requires a Solver, which derives "
+                         "its weights from the warmup sims")
     logging.debug("Evaluator.Allocation_Mode %s: %s", alloc_mode, "the table, the even split when "
                   "omitted" if alloc_mode == "exposure" else "no table read")
     return {
@@ -624,17 +609,12 @@ def _utility_scale(objective, t=None):
     schedule = objective.get("utility_scale_schedule")
     c = objective.get("utility_scale") if schedule is None or t is None else schedule[int(t)]
     if c is None:
-        raise ValueError(
-            "utility objective active but runtime['objective']['utility_scale'] is not set — "
-            "Bundle.from_batch mirrors it from the resolved utility_scale; a hand-built runtime "
-            "must set it explicitly.")
+        raise ValueError("a utility objective without runtime['objective']['utility_scale'], which "
+                         "`mirror_frame` sets from the bundle's frame")
     c = float(c)
     if not c > 0.0:
-        raise ValueError(
-            f"utility scale c = {c} at step {t}: x = (W − R)/c is then not a number and neither "
-            f"is any reward computed from it. Under Utility_Scale_Mode='conditional_sim' this is "
-            f"the schedule's floor (Utility_Scale_Floor_Frac × its terminal entry) — the early "
-            f"steps carry no dispersion of their own; otherwise it is Utility_Scale_Explicit.")
+        raise ValueError(f"utility scale c = {c} at step {t} is not positive: Utility_Scale_Explicit, "
+                         f"or the conditional_sim schedule's Utility_Scale_Floor_Frac")
     return c
 
 
@@ -665,10 +645,8 @@ def _utility_wrap_signed(w, runtime, t=None):
         # LogWealth has no terminal transform - its reward is the per-step ratio log(W1/W0), owned
         # by the solver's `_u_step`. Checked BEFORE `_is_utility_objective`, whose meaning is
         # "consumes a scale c": LogWealth does not, so it must not take the identity path either.
-        raise ValueError(
-            "Objective 'LogWealth' defines no terminal utility — the reward is the per-step "
-            "growth ratio (DiffSolver._u_step). This caller must be step-sum-aware or disabled "
-            "under LogWealth.")
+        raise ValueError("Objective 'LogWealth' defines no terminal utility: its reward is the "
+                         "per-step growth (`DiffSolver._u_step`)")
     if not _is_utility_objective(runtime):
         return w
     obj = runtime["objective"]
@@ -970,11 +948,8 @@ class Bundle:
                 late = [d for d in payload['dates'] if pd.Timestamp(d) >= base_ts]
                 if late:
                     raise ValueError(
-                        f"Spot_Price_History for {commodity!r} carries {len(late)} row(s) at/after "
-                        f"the base date ({min(late)}): history must be STRICTLY before it. A "
-                        f"base-date row duplicates sim day 0 in the bundle timeline and shifts "
-                        f"every *_sim view one row - the solver then scores each decision "
-                        f"against the step ENDING at its fork's anchor, a full day of lookahead")
+                        f"Spot_Price_History for {commodity!r} carries {len(late)} row(s) at or after "
+                        f"the base date ({min(late)}): history lies strictly before it")
             ref_dates = history[next(iter(history))]['dates'][-H:]
             prefix_days = torch.tensor([int((d - base_ts).days) for d in ref_dates],
                                        dtype=grid.dtype, device=grid.device)
@@ -1161,10 +1136,8 @@ class Bundle:
         `L_t - L_0` floored at `Utility_Scale_Floor_Frac` of its terminal entry; None for a batch of
         one outer path, which has no cross-section."""
         if self.liability_value is None:
-            raise ValueError(
-                "Objective.Utility_Scale_Mode='conditional_sim' needs a marked liability: the "
-                "schedule is the dispersion of the flat-book wealth path and this bundle has no "
-                "liability_value to measure it on.")
+            raise ValueError("Objective.Utility_Scale_Mode='conditional_sim' requires a marked "
+                             "liability, its schedule the flat-book wealth's dispersion")
         L = self.liability_sim[:self.last_live_mtm_index + 1].to(dtype=MONEY)
         if int(L.shape[-1]) < 2:
             return None
@@ -1176,8 +1149,7 @@ class Bundle:
         if not terminal > 0.0:
             raise ValueError(
                 f"Objective.Utility_Scale_Mode='conditional_sim' measured a terminal scale of "
-                f"{terminal}: the outer paths carry no dispersion at the last live liability mark, "
-                f"so every knee would floor at zero and x = (W − R)/c would be unbounded.")
+                f"{terminal}: the outer paths carry no dispersion at the close")
         floor = float(objective['utility_scale_floor_frac']) * terminal
         return tuple(float(v) for v in c.clamp_min(floor))
 

@@ -85,7 +85,7 @@ def test_a_history_row_at_the_base_date_is_refused():
     sph[fac]['Prices'].append(sph[fac]['Prices'][-1])
     cx = rf.Context(path_transform={}, file_transform={})
     cx.load_json((jsonlib.dumps(cfg), 'history_at_base.json'))
-    with pytest.raises(Exception, match='STRICTLY before'):
+    with pytest.raises(Exception, match='strictly before'):
         cx.run_job()
 
 
