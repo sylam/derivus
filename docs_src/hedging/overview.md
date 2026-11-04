@@ -31,7 +31,7 @@ $$\max_q\ \mathbb{E}\big[u(x)\big],\qquad x=\frac{W_T-R}{c},\qquad
 W_{t+1}=W_t+\sum_i q_i\,cs_i\,(F_{t+1,i}-F_{t,i})+(L_{t+1}-L_t),$$
 
 where $W_t$ is the cumulative hedge P&L plus the marked liability $L_t$, $F_i$ the hedge
-instrument's mark, $cs_i$ its contract size, $R$ = `Reference_Wealth` (currency, default 0) and $c$
+instrument's mark, $cs_i$ its contract size, $R$ = `Reference_Wealth` and $c$
 the utility scale. This frictionless law is what the solver fits; the environment adds financing,
 margin, costs and rounding ([Bundle](bundle.md)). `Reference_Mode: Running_Wealth` applies $u$ to
 each day's wealth increment instead of $W_T$ and sums the step utilities.
@@ -58,7 +58,7 @@ The scale $c$ (`Objective.Utility_Scale_Mode`, or the `Utility_Scale_Explicit` o
 
 | Setting | $c$ |
 | --- | --- |
-| `vol_scaled_notional` (default) | total leg volume × initial spot × annual vol × $\sqrt\tau$, $\tau$ the business days of the job's calendar from the first simulated row to the last settlement / 252, the market clock the vol is annualised on, a window's squared moves over the market days it holds (`tests/test_action_space_and_artifact.py::test_realised_vol_counts_the_market_days_its_window_holds`); spot and vol are batch medians at the start of the simulation, from the spot history or the calibrated process; refused below 1,000; the horizon held by `tests/test_action_space_and_artifact.py::test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar` |
+| `vol_scaled_notional` (default) | total leg volume × initial spot × annual vol × $\sqrt\tau$, $\tau$ the business days of the job's calendar from the first simulated row to the last settlement / 252, the market clock the vol is annualised on, a window's squared moves over the market days it holds (`tests/test_action_space_and_artifact.py::test_realised_vol_counts_the_market_days_its_window_holds`); spot and vol are batch medians at the start of the simulation, from the spot history or the calibrated process; a degenerate input (no history and no calibrated vol, no volume, a non-positive vol) refused; the horizon held by `tests/test_action_space_and_artifact.py::test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar` |
 | `Utility_Scale_Explicit` | the stated currency amount |
 | `conditional_sim` | per row to the close, the cross-sectional standard deviation of the flat-book wealth's move $L_t-L_0$ on the warmup batch, floored at `Utility_Scale_Floor_Frac` of its terminal entry; refuses `Utility_Scale_Explicit` beside it, and `Running_Wealth` except under `LogWealth` |
 
