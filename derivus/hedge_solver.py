@@ -824,7 +824,6 @@ class DiffSolver:
         # LogWealth: the per-step reward is the growth ratio log(W1/W0) - step-sum structure,
         # scale-free, its domain the wealth floor the forward-constructed bank maintains
         self.log_ratio = obj["object"] == "logwealth"
-        self.w_floor = 1.0
         # the DP's aversion: it divides the displacement into the LogWealth reward's capital line,
         # so gamma > 1 puts less capital at risk. 1.0 is neutral, inert under the other objectives.
         self.aversion = self.cfg["diffv2_risk_aversion"]
@@ -916,10 +915,6 @@ class DiffSolver:
         self.liability_sim = bundle.liability_sim                     # (n_steps, B_outer)
         self.leg_volume = float(bundle.total_leg_volume)
         self.B_outer = int(self.liability_sim.shape[-1])
-        if self.log_ratio:
-            # a hair above zero on the book's own dollar scale: a ratio against a launch below
-            # this is ruin, and the reward there is capped at zero
-            self.w_floor = 1.0e-4 * float(self.liability_sim[0].mean().abs() + 1.0)
         if self.utility_scale is None:
             return                                                    # construction; nothing locked yet
         if int(bundle.last_live_mtm_index) != self.T_dec:
@@ -1094,6 +1089,12 @@ class DiffSolver:
         return charge
 
     # ---- one-step wealth move ------------------------------------------------
+    @property
+    def w_floor(self):
+        """The LogWealth ratio's floor, a hair above zero in the frame's money: 1e-4 of its utility
+        scale. A launch at or under it is ruin, and the reward there is capped at zero."""
+        return 1.0e-4 * self.utility_scale
+
     def _u_step(self, W1, W0, t, capital=None):
         """The per-step reward both step-sum objectives share. Running_Wealth: u((W1−W0)/c_t),
         the scaled increment. LogWealth: log(W1/W0) — the day's growth ratio, zero iff the step
@@ -3485,7 +3486,7 @@ class DiffSolverV2(DiffSolver):
         W_list, q_list = self._roll_bank(explore)
         if self.log_ratio:
             logging.info(
-                "DiffSolverV2 bank floor (LogWealth domain): frac(W <= floor) = %.4f "
-                "min W (incl terminal) = %.4g",
+                "DiffSolverV2 bank floor (LogWealth domain): frac(W <= floor %.4g) = %.4f "
+                "min W (incl terminal) = %.4g", self.w_floor,
                 float((torch.stack(W_list) <= self.w_floor).float().mean()), self._bank_worst)
         return W_list, q_list
