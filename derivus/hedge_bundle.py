@@ -755,16 +755,25 @@ def turnover_charge(delta, kappa, kappa_cal=None, legs=False):
     return charge if legs else charge.sum(dim=-1)
 
 
-def leg_charges(runtime, deltas, prices, vol=None, matched=True):
-    """Each hedge leg's share `{name: (...)}` of the `turnover_charge` of a realized reposition
-    `deltas` at marks `prices` (both keyed by hedge name) and annualized `vol`: the charge the
-    solver ranks the move at, split across the legs that pay it. `matched=False` prices every lot
-    outright, as a forced close trades."""
+def kappa_pair(runtime, prices, vol=None, matched=True):
+    """The per-leg rates `(κ, κ_cal)` `turnover_charge` prices a reposition at, each `(..., n_hedge)`
+    in `names['hedges']` order, at the marks `prices` (keyed by hedge name) and annualized `vol`:
+    the outright rate and the matched leg's calendar rate, None where no `Calendar_Spread_Bps` is
+    configured (the one switch) or `matched` is False (every lot outright, as a forced close)."""
     hedges = runtime["names"]["hedges"]
     kappa = torch.stack([per_contract_kappa(runtime, prices[h], h, vol) for h in hedges], dim=-1)
     cal = (torch.stack([per_contract_kappa(runtime, prices[h], h, vol, True) for h in hedges], dim=-1)
            if matched and runtime["accounting"]["calendar_spread_bps"] is not None else None)
-    charge = turnover_charge(torch.stack([deltas[h] for h in hedges], dim=-1), kappa, cal, legs=True)
+    return kappa, cal
+
+
+def leg_charges(runtime, deltas, prices, vol=None, matched=True):
+    """Each hedge leg's share `{name: (...)}` of the `turnover_charge` of a realized reposition
+    `deltas` at marks `prices` (both keyed by hedge name) and annualized `vol`, at the rates
+    `kappa_pair` reads: the charge the solver ranks the move at, split across the legs that pay it."""
+    hedges = runtime["names"]["hedges"]
+    charge = turnover_charge(torch.stack([deltas[h] for h in hedges], dim=-1),
+                             *kappa_pair(runtime, prices, vol, matched), legs=True)
     return dict(zip(hedges, charge.unbind(-1)))
 
 

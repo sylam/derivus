@@ -26,7 +26,7 @@ import torch
 from . import utils
 from .hedge_bundle import (
     _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed, _utility_x,
-    MONEY, initial_q_from_runtime, mirror_frame, per_contract_kappa, turnover_charge, wealth_step,
+    MONEY, initial_q_from_runtime, kappa_pair, mirror_frame, turnover_charge, wealth_step,
 )
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
@@ -101,9 +101,8 @@ class HedgeActionSpace:
         legs a mask marks, and a book as the execution books it: clamped into the `ladder` boxes,
         its net water-filled into the band on the ladder's legs, apportioned to whole contracts.
         The passive and textbook books are booked by it.
-      * `kappa(tradables_sim, t)` / `calendar_kappa(...)` — the per-hedge turnover kappas at
-        sim-grid `t`, off the single `hedge_bundle.per_contract_kappa` rule, which
-        `hedge_bundle.turnover_charge` prices a reposition with.
+      * `kappa(tradables_sim, t)` — the per-hedge turnover rates `(κ, κ_cal)` at sim-grid `t`,
+        off `hedge_bundle.kappa_pair`, which `hedge_bundle.turnover_charge` prices a reposition at.
       * `schedule_key(schedule)` — the comparison-stable corridor stamp."""
 
     documentation = ('Solver', [
@@ -126,9 +125,9 @@ class HedgeActionSpace:
         '  boxes, nothing on any other, its net water-filled into the band and apportioned to',
         '  whole contracts. The passive and textbook books are booked by it, as the stepper holds',
         '  them.',
-        '- `kappa(...)` / `calendar_kappa(...)` — the per-hedge turnover cost at a step, off the',
-        '  single `per_contract_kappa` rule, priced into a reposition by `turnover_charge`, the',
-        '  rule the environment and the diagnostic CSVs charge each leg by.',
+        '- `kappa(...)` — the per-hedge turnover rates at a step, off the one `kappa_pair` the',
+        '  environment and the diagnostic CSVs charge each leg at, priced into a reposition by',
+        '  `turnover_charge`.',
         '',
         'One object owning all of this is what makes a benchmark comparable to the solver: they',
         'cannot disagree about which positions are reachable or what a trade costs.',
@@ -426,27 +425,15 @@ class HedgeActionSpace:
             raise ValueError("HedgeActionSpace.install_weights: a weights table already stands")
         self.weights = self.weights_key(weights)
 
-    def kappa(self, tradables_sim, t_index, calendar=False, rows=None):
-        """Per-hedge kappa at sim-grid `t_index` through `hedge_bundle.per_contract_kappa` (the
-        single turnover-cost rule): `(n_hedge,)` at each instrument's cross-path mean mark, the
-        price a RANKING reads, or `(n, n_hedge)` at the own marks of the paths `rows` in `MONEY`,
-        the price a CHARGE reads. The step's scalar vol (when a Vol_Scale spread is configured) drives
-        per_contract_kappa's Vol_Scale. `calendar=True` prices the MATCHED leg at
-        `Calendar_Spread_Bps` instead of the outright half-spread — the rate `turnover_charge`
-        charges matched volume at."""
+    def kappa(self, tradables_sim, t_index, rows=None, matched=True):
+        """The per-hedge turnover rates `(κ, κ_cal)` at sim-grid `t_index` (`hedge_bundle.kappa_pair`):
+        `(n_hedge,)` at each instrument's cross-path mean mark, the price a RANKING reads, or
+        `(n, n_hedge)` at the own marks of the paths `rows` in `MONEY`, the price a CHARGE reads.
+        The step's scalar vol drives a Vol_Scale spread; `matched=False` prices every lot outright."""
         vol = None if self.vol_sim is None else self.vol_sim[int(t_index)]
-        marks = [tradables_sim[r][t_index] for r in self.hedges]
-        return torch.stack(
-            [per_contract_kappa(self.runtime, m.mean() if rows is None else m[rows].to(MONEY), r,
-                                vol, calendar) for r, m in zip(self.hedges, marks)], dim=-1)
-
-    def calendar_kappa(self, tradables_sim, t_index, rows=None):
-        """The matched-leg kappa at `t_index`, or None when no `Calendar_Spread_Bps` is
-        configured. `None` IS the switch, and this is the ONE place that reads it: every charge —
-        the argmax's, the fitted target's, both benchmark tracks' and the verdict's — takes its
-        `kappa_cal` from here, so they cannot end up pricing a roll three different ways."""
-        return (self.kappa(tradables_sim, t_index, calendar=True, rows=rows)
-                if self.calendar_bps is not None else None)
+        marks = {r: tradables_sim[r][t_index] for r in self.hedges}
+        return kappa_pair(self.runtime, {r: m.mean() if rows is None else m[rows].to(MONEY)
+                                         for r, m in marks.items()}, vol, matched)
 
     def universe_size(self):
         """Row count of the action universe a diagnostic should report: the entry step's grid, the
@@ -521,13 +508,12 @@ def run_textbook_benchmark(bundle, runtime):
     # Net-of-cost diagnostic (shared kappa): entry |n_star − q0| + terminal unwind |0 − n_star|.
     paths = slice(None)                                                # each path's own mark
     cost = turnover_charge(n_star.unsqueeze(0) - q0,                   # (B,) entry from q0
-                           aspace.kappa(tradables_sim, 0, rows=paths),
-                           aspace.calendar_kappa(tradables_sim, 0, rows=paths))
+                           *aspace.kappa(tradables_sim, 0, rows=paths))
     if acc["force_flat_at_end"]:
         # unwound at the PRE-SETTLEMENT row, since the last row is the post-settlement clean exit
         # where there is nothing left to liquidate. Outright: flat against the market, not leg
         # against leg.
-        cost = cost + turnover_charge(n_star, aspace.kappa(tradables_sim, T, rows=paths))
+        cost = cost + turnover_charge(n_star, *aspace.kappa(tradables_sim, T, paths, matched=False))
     u_net = _utility_wrap_signed(L_T + g_t[best] - cost, runtime)
     return {"v0_mean": float(obj[best]), "v0_std": 0.0,
             "v0_mean_net": float(u_net.mean()),
@@ -597,16 +583,15 @@ class HindsightDpSolver:
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
             best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
             q_now = grid[best_idx]                                     # (B, n_h)
-            cost = cost + turnover_charge(q_now - q_prev, aspace.kappa(tradables_sim, t, rows=paths),
-                                          aspace.calendar_kappa(tradables_sim, t, rows=paths))
+            cost = cost + turnover_charge(q_now - q_prev, *aspace.kappa(tradables_sim, t, rows=paths))
             G = G + best_pnl
             q_prev = q_now
             if n_star_0 is None:
                 n_star_0 = q_now
         if acc["force_flat_at_end"]:
             # pre-settlement row, as in `run_textbook_benchmark` and `DiffSolver._unwind_kappa`
-            cost = cost + turnover_charge(
-                q_prev, aspace.kappa(tradables_sim, int(bundle.last_live_mtm_index), rows=paths))
+            cost = cost + turnover_charge(q_prev, *aspace.kappa(
+                tradables_sim, int(bundle.last_live_mtm_index), paths, matched=False))
         v0 = _utility_wrap_signed(L_T + G, runtime)                    # (B,) FRICTIONLESS
         v0_net = _utility_wrap_signed(L_T + G - cost, runtime)         # (B,) net-of-cost diagnostic
 
@@ -1073,12 +1058,12 @@ class DiffSolver:
         final step accumulates a position for free and the frictional recursion ends in a
         discontinuity. Read at `T_dec`, the pre-settlement row — the same row the benchmark
         tracks charge their own unwind at; `rows` as `HedgeActionSpace.kappa`."""
-        return (self.aspace.kappa(self.tradables_sim, self.T_dec, rows=rows)
+        return (self.aspace.kappa(self.tradables_sim, self.T_dec, rows, matched=False)[0]
                 if self.position_state and self.force_flat and self.nxt[t] >= self.T_dec else None)
 
     def _ranking_kappa(self, t, execution=True):
-        """The turnover kappa a decision at t ranks its candidates with, at the cross-path mean mark,
-        or None for no turnover charge: under `DiffV2_Position_State` always, the charge being part
+        """The turnover rates `(κ, κ_cal)` a decision at t ranks its candidates with, at the
+        cross-path mean mark, or None for no turnover charge: under `DiffV2_Position_State` always, the charge being part
         of the fitted value, and in execution (the verdict and the stepper roll) under
         `DiffV2_Cost_Aware_Argmax` too."""
         charged = self.argmax_charged if execution else self.position_state
@@ -1086,9 +1071,9 @@ class DiffSolver:
 
     def _charge(self, t, acts, q_prev, kappa, rows=None):
         """The repositioning charge of the books `acts` (broadcastable `(..., n_hedge)`) from the
-        standing `q_prev` at decision t, or None where none applies: the turnover toll at `kappa`
-        (None: none), spread-aware under `Calendar_Spread_Bps` (the move's matched half at the
-        calendar rate), the quadratic churn term (`DiffV2_Churn_Lambda`), and the outright unwind
+        standing `q_prev` at decision t, or None where none applies: the turnover toll at the rates
+        `kappa` (`HedgeActionSpace.kappa`'s pair; None: none), the move's matched half at the
+        calendar rate under `Calendar_Spread_Bps`, the quadratic churn term (`DiffV2_Churn_Lambda`), and the outright unwind
         of `acts` `_unwind_kappa` says t owes; with no standing book (`q_prev` None) the unwind
         alone. `rows` prices each path at its own mark, as `HedgeActionSpace.kappa`.
 
@@ -1104,8 +1089,7 @@ class DiffSolver:
         dq = acts - (acts if q_prev is None else q_prev)
         charge = self.churn_lambda * dq.pow(2).sum(-1)
         if kappa is not None:
-            charge = charge + turnover_charge(
-                dq, kappa, self.aspace.calendar_kappa(self.tradables_sim, t, rows))
+            charge = charge + turnover_charge(dq, *kappa)
         if kappa_T is not None:
             charge = charge + turnover_charge(acts, kappa_T)
         return charge
@@ -1955,15 +1939,14 @@ class DiffSolver:
                 z = torch.zeros(n, self.aspace.n_hedge, device=self.device)
                 # each path's charge at its own mark, where the ranking reads the mean
                 kappa_p = self.aspace.kappa(self.tradables_sim, t, rows=rows)
-                kappa_cal_t = self.aspace.calendar_kappa(self.tradables_sim, t, rows=rows)
                 logging.debug('verdict charge kappa at step %d: %s to %s over the paths', t,
-                              kappa_p.amin(0).tolist(), kappa_p.amax(0).tolist())
+                              kappa_p[0].amin(0).tolist(), kappa_p[0].amax(0).tolist())
                 step_cost = {}
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
                                  ("passive", q_pa)):
                     step_cost[p] = (self._charge(t, q_now, q_prev[p], kappa_p, rows)
                                     if self.position_state else
-                                    turnover_charge(q_now - q_prev[p], kappa_p, kappa_cal_t))
+                                    turnover_charge(q_now - q_prev[p], *kappa_p))
                     cost[p] = cost[p] + step_cost[p]
                     q_prev[p] = q_now
                 W_pre = dict(W)
@@ -1990,7 +1973,7 @@ class DiffSolver:
             if self.force_flat and not self.position_state:
                 # the unwind both benchmark tracks charge, so all three price one execution; under
                 # the position state the last step's charge carried it
-                kappa_T = self.aspace.kappa(self.tradables_sim, self.T_dec, rows=rows)
+                kappa_T = self.aspace.kappa(self.tradables_sim, self.T_dec, rows, matched=False)[0]
                 for p in cost:
                     unwind = turnover_charge(q_prev[p], kappa_T)
                     cost[p] = cost[p] + unwind
