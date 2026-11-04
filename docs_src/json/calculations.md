@@ -45,9 +45,13 @@ What follows from that order:
 ## Containers {#containers}
 
 A container the block states (`Credit_Valuation_Adjustment`, `Funding_Valuation_Adjustment`,
-`Collateral_Valuation_Adjustment`, `Initial_Margin`, `Hedging_Problem`) replaces its declared
-default whole. Step 4 does not reach inside it, so an omitted sub-field reads as whatever the
-consuming code falls back to. For the `CreditMonteCarlo` containers that is:
+`Collateral_Valuation_Adjustment`, `Initial_Margin`) replaces its declared default whole. Step 4
+does not reach inside it, so an omitted sub-field reads as whatever the consuming code falls back
+to. `HedgeMonteCarlo` is the exception: it completes its `Hedging_Problem` at every depth it states
+from the declarations (`schema.declared_block`), so there an omitted sub-field reads as its declared
+default (**Held by** `tests/test_action_space_and_artifact.py::test_logwealth_refuses_a_stated_terminal_reference`,
+whose document stating no `Reference_Mode` reads its null convention). For the `CreditMonteCarlo`
+containers that is:
 
 | Sub-fields | Read when the container omits them |
 |---|---|

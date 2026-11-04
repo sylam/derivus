@@ -3015,9 +3015,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         "  baseline; the result's `create_stepper()` drives the simulator a row at a time under any",
         '  explicit policy.',
         '',
-        'The run returns a `HedgeRuntimeExecutionResult`: the bundle, the normalised runtime, the',
-        'evaluation summary (the terminal P&L statistics and, under a solve, its `diagnostics`) and',
-        "the policy artifact; wallclock and device statistics are in the calculation's `calc_stats`.",
+        'A run returns the calculation and a `HedgeRuntimeExecutionResult`',
+        '([API Overview](../api_overview.md)).',
     ])
 
     fields = [

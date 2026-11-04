@@ -132,21 +132,13 @@ class HedgeActionSpace:
             [float(runtime["tradables"][r]["contract_size"]) for r in self.hedges],
             device=device)
         self.total_abs_limit = float(acc["total_position_abs_limit"])
-        # Optional per-decision-step corridor on the SIGNED total position Σq_i (sorted
-        # (step, min_total, max_total) knots or None). `grid_at(t)` filters the base grid to it.
         self.schedule = acc["total_position_schedule"]
-        # optional per-leg rate limit on |dq| per decision step (0 = off). EXECUTION policy only:
-        # the label path passes rate_limit=False, so the training argmax never arms the band.
+        # the band and the deadband are the execution argmax's: the label path passes
+        # rate_limit=False, so the training argmax never arms them
         self.max_trade = acc["max_trade_per_step"]
-        # Optional no-trade band in standard errors of the PAIRED inner-draw difference
-        # against the standing book (0 = off). Same execution-only path as `max_trade`.
         self.deadband_sigma = acc["decision_deadband_sigma"]
-        # Optional per-decision-step split of the NET cover across the legs (sorted
-        # (step, weights) knots or None). Present ⇒ `grid_at(t)` is the FACTORED Q-ladder.
         self.weights = acc["allocation_weights"]
         self.mode = acc["allocation_mode"]
-        # Half-spread bps of the matched (calendar) leg of a reposition, or None ⇒ every
-        # contract traded pays the outright rate.
         self.calendar_bps = acc["calendar_spread_bps"]
         self._grid_cache = None
         self._ladder_cache = {}
