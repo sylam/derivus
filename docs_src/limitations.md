@@ -109,6 +109,17 @@ Grouped by where a validator meets them.
   once a market day and hold on a weekend or holiday: a world mixing the HMM with them moves it on a
   row the others hold. The fix is its emission and chain on `utils.trading_clock`'s market days,
   its belief filter holding on a row of none.
+- **Sobol inner draws inflate a fork's variance where a calendar-clock law draws on more than one
+  of its rows** (2026-11-04). Under `Inner_Draws: sobol`, the default, `HedgeMonteCarlo` takes a
+  fork's inner normals off one Sobol stream strided over its rows and paths, which hands an inner
+  path nearly the same point on every row, so a law drawing on every calendar row (the GBM, log-OU,
+  Hull-White and CS forward models) moves together on the rows of a fork spanning a weekend or a
+  holiday: a Friday-to-Monday fork of a `LogOUSpotModel` spot reverting at 1e-6 a year reads 1.706
+  √3 times a weekday fork's sd over 16 Fridays and 65 weekdays, 2.9 times the variance. The
+  platinum record's laws (the GARCH spot, the basis, the carry, the fixing bridge and the LogVar2FJ
+  spot) draw once a market row, so once a fork, and `Inner_Draws: random` is exact (within 10% of
+  √3 there). The fix is a quasi-random dimension per row; it waits until the platinum campaign
+  closes, whose pre-registered reads need the record's forks unchanged: S.
 - **The LogVar2FJ spot fit writes no standard errors** (2026-11-03). `LogVar2FJSpotCalibration`
   maximises on numerical gradients in float (1.3 s for a five-year fit against the history fit's
   AAD path's 32 s), so nothing downstream can weight its parameters. The fix is the AAD Hessian the
