@@ -1116,7 +1116,8 @@ class Bundle:
     runtime objective) and `step_annual_vol` (the per-step vol driving the state-dependent spread
     and IM funding) — is resolved here and never recomputed: a per-rollout c silently rescales
     every reward. `inner_mc` / `inner_mc_grad` are attached by `HedgeMonteCarlo.execute` in
-    solve_hedge mode; they fork the simulator at a decision step and price the {t, t+1} window."""
+    solve_hedge mode; they fork the simulator at a decision step and price it to its landing row,
+    or to each row of a `DiffV2_Risk_Horizon` list."""
 
     documentation = ('Bundle', [
         'Every time-indexed tensor the solver and the environment read, built ONCE per batch by',
@@ -1150,7 +1151,8 @@ class Bundle:
         '    history.',
         '',
         'In `solve_hedge` mode `HedgeMonteCarlo.execute` attaches `inner_mc` / `inner_mc_grad`,',
-        'which fork the simulator at a decision step and price the `{t, t+1}` window on demand.',
+        'which fork the simulator at a decision step and price it to its landing row, or to each',
+        'row of a `DiffV2_Risk_Horizon` list, on demand.',
     ])
 
     def __init__(self, base_date=None, business_day=None, num_batches=1):

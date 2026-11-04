@@ -1443,15 +1443,16 @@ def test_the_vol_scaled_spread_reads_the_spot_s_realized_history():
 
 
 def test_an_opening_book_s_pnl_runs_from_the_first_row_in_the_stepper_and_its_csv(tmp_path):
-    """An opening book short 10 `PL_OCT_2026`, its declared settlement off the first row's mark,
-    held untouched to the forced close on the client fixture: the stepper's `pnl_excess`, the wealth
+    """An opening book short 10 `PL_OCT_2026`, held untouched to the forced close on the client
+    fixture: the stepper's `pnl_excess`, the wealth
     change since inception, is on every path the book's P&L from the first row, -10 x 50 x (F_T -
     F_0) less half the 10 bp spread on F_T a contract closed, within 1e-5 relative, and the CSV's
     last `hedge_portfolio_ex_funding` is that P&L on each path it writes. 2 s.
 
-    Killing mutations: the inception baseline taken with the opening book settled at its declared
-    price, the seed-to-first-row gain in the baseline and never in the value (`pnl_excess` below
-    the P&L by 20,965 a path); the CSV's first row booking no trade cash for the opening book, its
+    Killing mutations: the opening state marked on the last history row
+    (`self._refresh(state, initial_time_index - 1)` in `BundleStepper._initial_state`), the P&L
+    running from that row's mark (`pnl_excess` 160 a path below it); the CSV's first row booking no
+    trade cash for the opening book, its
     notional entering as P&L (the best path's last -1,024,063 against -9,652)."""
     result = _run(_client(positions={'PL_OCT_2026': -10}))
     stepper = result.create_stepper()

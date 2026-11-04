@@ -358,7 +358,7 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 | `inner_block`: those points as integers | `Quasi_Seed` and its shape | pricers' [inner paths](#inner-block) at every outer batch size |
 | a `torch.Generator` per LogVar2FJ walk segment | the scenario walk: an integer off `Random_Seed`'s generator; a pricer's walk: `Quasi_Seed`; each plus the segment | the daily shocks, redrawn in backward |
 | a fit's fixed Sobol paths | the fitted block's own `Quasi_Seed`, the same convention | the Hull-White two-factor Monte Carlo pricing of its benchmarks, a LogVar2FJ fit under `Sampling: Sobol` |
-| a risk horizon fork's own generator and quasi stream (`CMC_State.own_stream`) | `batch_seed` of its batch's `batch_seed(Random_Seed, b)` and the decision | the fork's iid inner normals and every draw its processes take, the run's streams left where they stood |
+| a risk horizon fork's own generator and quasi stream (`CMC_State.own_stream`) | `batch_seed` of its batch's `batch_seed(Random_Seed, b)` and the decision | the fork's iid inner normals and every draw its processes take, the run's streams left where they stood; held by `tests/test_action_space_and_artifact.py::test_the_risk_horizon_s_fork_draws_its_own_paths_whatever_inner_draws_states` |
 
 A base valuation has no scenario stream and declares no `Random_Seed`: every draw it reaches is
 `Quasi_Seed`'s, so a trade's mark is a function of the trade, the market and that seed whatever is

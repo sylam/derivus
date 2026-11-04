@@ -58,7 +58,7 @@ The scale $c$ (`Objective.Utility_Scale_Mode`, or the `Utility_Scale_Explicit` o
 
 | Setting | $c$ |
 | --- | --- |
-| `vol_scaled_notional` (default) | total leg volume × initial spot × annual vol × $\sqrt\tau$, $\tau$ the business days of the job's calendar from the first simulated row to the last settlement / 252, the market clock the vol is annualised on; spot and vol are batch medians at the start of the simulation, from the spot history or the calibrated process; refused below 1,000 |
+| `vol_scaled_notional` (default) | total leg volume × initial spot × annual vol × $\sqrt\tau$, $\tau$ the business days of the job's calendar from the first simulated row to the last settlement / 252, the market clock the vol is annualised on; spot and vol are batch medians at the start of the simulation, from the spot history or the calibrated process; refused below 1,000; the horizon held by `tests/test_action_space_and_artifact.py::test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar` |
 | `Utility_Scale_Explicit` | the stated currency amount |
 | `conditional_sim` | per decision step, the cross-sectional standard deviation of the flat-book wealth $L_t$ on the warmup batch, floored at `Utility_Scale_Floor_Frac` (default 0.05) of its terminal entry; refuses `Utility_Scale_Explicit` beside it, and `Running_Wealth` except under `LogWealth` |
 

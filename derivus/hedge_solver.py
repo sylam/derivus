@@ -1489,10 +1489,8 @@ class DiffSolver:
         """The passive book at decision step t `(batch, n_hedge)`: minus the liability quantity
         still to fix after t (`Bundle.unfixed_at`), split across the live legs by `_weights_at`
         and booked as the execution books it (`HedgeActionSpace.book`), as the stepper holds it."""
-        unfixed = self.bundle.unfixed_at(self.bundle.initial_time_index + t)
-        # a fully fixed swap splits nothing, also where no live leg is left to split it onto
-        q = (-unfixed * self.aspace._weights_at(t, live) / self.contract_size if unfixed
-             else torch.zeros(self.n_hedge, device=self.device))
+        q = (-self.bundle.unfixed_at(self.bundle.initial_time_index + t)
+             * self.aspace._weights_at(t, live) / self.contract_size)
         return self.aspace.book(q[None].expand(batch, self.n_hedge), t, live)
 
     def _first_book(self, t, live, batch):
