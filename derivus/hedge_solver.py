@@ -610,7 +610,7 @@ class HindsightDpSolver:
         G = torch.zeros(b_outer, device=device)
         cost = torch.zeros(b_outer, device=device)
         for t in bundle.decision_steps:
-            grid = aspace.grid_at(t)                                   # (n_actions_t, n_h) per-t
+            grid = aspace.grid_at(t, bundle.marked(t, aspace.hedges))  # (n_actions_t, n_h) per-t
             dF = F[:, bundle.successors[t], :] - F[:, t, :]            # (n_h, B)
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
             best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
@@ -1292,15 +1292,14 @@ class DiffSolver:
         plus the bank-state market at t (B_outer, market_dim).
 
         EXPIRED-CONTRACT GUARD (the returned `live` mask): the framework returns inner `F_t1 = 0`
-        for a tradable that expired before the fork's t+1, while the OUTER `tradables_sim` FREEZES
-        at the last traded price, so a naive `F_t1 − F_t` mints a spurious ~−F_t move a short would
-        mine fake P&L from. A dead contract's one-step move is forced to 0; `live_i` says the
-        contract still prices at t+1."""
+        for a tradable that expired before the fork, while the OUTER `tradables_sim` FREEZES at the
+        last traded price, so a naive `F_t1 − F_t` mints a spurious ~−F_t move a short would mine
+        fake P&L from. A dead contract's move is forced to 0; `live_i` says the contract still
+        trades at t (`Bundle.marked`)."""
         inner = self.bundle.inner_mc(t, self.nxt[t] if landing is None else landing)
         F_t = torch.stack([self.tradables_sim[ref][t] for ref in self.hedges], dim=-1)   # (B_outer, n_hedge)
         F_t1 = torch.stack([inner["F_t1"][ref] for ref in self.hedges], dim=-1)          # ([m,] B_outer, B_inner, n_hedge)
-        # EXPIRED-CONTRACT GUARD: a dead contract's one-step move is forced to 0
-        live = (F_t1.abs().flatten(0, -2).amax(0) > 0).to(F_t1.dtype)                   # (n_hedge,)
+        live = self.bundle.marked(t, self.hedges)                                        # (n_hedge,)
         dF = (F_t1 - F_t.unsqueeze(1)) * live
         dL = inner["L_t1"] - inner["L_t"]                                                # (B_outer, B_inner)
         return dF, dL, inner["market_t1"], inner["market_t"], live
@@ -1316,25 +1315,20 @@ class DiffSolver:
         s = self.landing[t]
         if s == self.nxt[t]:
             return None
-        dF, dL, market, _, _ = self._inner_step(t, self._held(t)[0])
+        dF, dL, market, _, _ = self._inner_step(t, self._held(t))
         if s >= self.T_dec:
             return dF, dL, None, None
         return dF, dL, market, self.inner_cache[self.prev[s]][4]
 
     def _held(self, t):
-        """`(rows, moving)`: the decision rows decision t's risk fork reads its marks on, every one
-        to its landing under `Running_Wealth`, whose reward sums over them, else the landing alone,
-        and per row `(m, n_hedge)` the decision intervals from t to it each leg moves over
-        (`_moving`)."""
+        """The decision rows decision t's risk fork reads its marks on: every one to its landing
+        under `Running_Wealth`, whose reward sums over them, else the landing alone."""
         rows = [r for r in self.steps + [self.T_dec] if t < r <= self.landing[t]]
-        moving = torch.stack([self._moving(d) for d in [t] + rows[:-1]]).cumsum(0)
-        return (rows, moving) if self.running_wealth else (rows[-1:], moving[-1:])
+        return rows if self.running_wealth else rows[-1:]
 
     def _moving(self, t):
-        """The legs decision t's one-step fork moves `(n_hedge,)`: live and still dispersing, since
-        on a leg's final day its fork's dispersion collapses while the settling mark moves."""
-        dF, live = self.inner_cache[t][0], self.inner_cache[t][4]
-        return live * (dF.std(1).mean(0) > 0.5)
+        """The legs `(n_hedge,)` that move over decision t's one step (`Bundle.moving`)."""
+        return self.bundle.moving(t, self.nxt[t], self.hedges)
 
     # ---- external argmax (Bellman max outside the fitted value) --------------
     def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, live=None,
@@ -1997,7 +1991,7 @@ class DiffSolver:
                 # averaged over paths and summed over steps - a mean-zero tripwire within the
                 # model, whose deployment twin is the stepper roll's market-drift monitor
                 sF_v = dF[rows].std(1).clamp_min(1e-9)
-                inf_m = live * (sF_v.mean(0) > 0.5)          # live AND still dispersing
+                inf_m = self._moving(t)
                 zraw = ((dF[rows].mean(1) - dF_o) / sF_v) * inf_m
                 zstep = zraw.sum(-1) / (float(inf_m.sum()) or 1.0)                # (n,) per path
                 vdrift_z += float(zstep.mean())
@@ -2335,8 +2329,8 @@ class DiffSolver:
                         rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
                         rL = dL.mean(1) - obs_dL                                  # (B,)
                         sF = dF.std(1).clamp_min(1e-9)
-                        # informative legs only: the frozen-mark dust of a leg's final day over the
-                        # std clamp fabricates huge sigma readings
+                        # the legs that move over the step only (`Bundle.moving`): a frozen mark's
+                        # dust over the std clamp fabricates huge sigma readings
                         inf_m = self._moving(t)
                         n_inf = float(inf_m.sum()).__int__() or 1
                         pending = ([float(b) for b in rF.mean(0)], float(rL.mean()),
@@ -2354,14 +2348,17 @@ class DiffSolver:
                             # bias the forecast toward the REALIZED drift: the observed average
                             # residual per leg, scaled by beta, shifts the fork moves the ranking
                             # prices
-                            adj = torch.tensor(
-                                [-beta * c / n_so_far for c in drift["cum_dF_usd"]],
-                                device=self.device)
+                            shift = [-beta * c / n_so_far for c in drift["cum_dF_usd"]]
+                            logging.debug('drift shift at step %d: %s a contract on the moving legs',
+                                          t, shift)
+                            adj = torch.tensor(shift, device=self.device)
                             dF = dF + adj * inf_m
                             if ahead is not None:
                                 # the risk fork's move to each of its rows by that drift over the
                                 # decision intervals to it each leg moves over
-                                ahead = (ahead[0] + (adj * self._held(t)[1])[:, None, None],
+                                moved = torch.stack([self._moving(d) for d in self.steps
+                                                     if t <= d < self.landing[t]]).cumsum(0)
+                                ahead = (ahead[0] + (adj * moved[-len(ahead[0]):])[:, None, None],
                                          *ahead[1:])
                         kappa_t = self.aspace.kappa(self.tradables_sim, t)
                         if not q_log["t"]:
@@ -3581,7 +3578,7 @@ class DiffSolverV2(DiffSolver):
         constructed policy's neighbourhood is the point of the forward pass. Under
         `DiffV2_Bank_Along_Ladder` the exploration is drawn on the net, as `DiffV2_Bank_Noise_Frac`
         of the ladder band's width, clamped into the band, and every bank book is that net's
-        `rung` on the legs the inner cache's expired-contract guard calls live at the step."""
+        `rung` on the legs live at the step (`Bundle.marked`)."""
         if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
                 and not (self.cfg.get("diffv2_load_value_fn") or "")):
             sched = self._carry_variance_weights()
@@ -3592,10 +3589,7 @@ class DiffSolverV2(DiffSolver):
                 sched[len(sched) // 2][1] if sched else None)
         live = None
         if self.bank_ladder:
-            # the policy's live legs, the inner guard's mask of the sweep's own fork; a step before
-            # the sweep is forked for its mask alone
-            live = {t: (self.inner_cache[t] if t in self.inner_cache else self._inner_step(t))[4]
-                    for t in self.steps}
+            live = {t: self.bundle.marked(t, self.hedges) for t in self.steps}
         q_star, curves, WT = self._constructed_policy(live=live)
         # the floored seed keeps every training book above the floor, so a deep-under-water state
         # would never appear and the net would extrapolate there. Half the paths therefore roll the

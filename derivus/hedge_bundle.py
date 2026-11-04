@@ -1125,7 +1125,9 @@ class Bundle:
         '',
         '- **Tradables** — `tradables` / `tradables_sim`: the per-instrument mark series, harvested',
         '  from the priced deal tree via `DealStructure.tensor_marks`. An instrument that fails to',
-        '  price is ABSENT rather than zero, and a fork reads absence as an expired contract.',
+        '  price is ABSENT rather than zero. A leg is live on the rows its deal\'s dates mark',
+        '  (`marked`) and moves over a step it is still marked at the end of, the step carrying',
+        '  market time (`moving`): the one liveness rule every track reads.',
         '- **Liability** — `liability_mtm` / `liability_sim`, plus `realized_cashflows`, and',
         '  `unfixed_at`: the signed quantity its fixings still carry after a row.',
         '- **Factors** — the simulated factor paths, and `privileged_factors`: whatever each process',
@@ -1163,6 +1165,7 @@ class Bundle:
         self.history_rows = 0               # History_Lookback_Business_Days prefix rows
         # Simulated series.
         self.tradables = {}                 # {instrument: (T, B)} marks
+        self.last_marked = {}               # {instrument: the last sim-grid row its deal marks}
         self.factors = {}                   # {factor name: (T, …, B)} scenario paths
         self.privileged_factors = {}        # {name: (T, B, dim)} process-revealed state
         self.liability_mtm = None           # (T, B) marked liability, or None
@@ -1221,6 +1224,9 @@ class Bundle:
         has a history takes that series, every other series broadcasts its first row. Also derives
         the CPU day mirror, the scenario dates and `initial_time_index`."""
         grid = _align_time_axis(time_grid_days, steps)
+        # a deal's marks run to its last date and the alignment repeats that row after it
+        self.last_marked = {n: min(int(t.shape[0]), steps) - 1 for n, t in tradables.items()}
+        logging.debug('last marked sim-grid rows: %s', self.last_marked)
         tradables = {n: _align_time_axis(t, steps) for n, t in tradables.items()}
         history = runtime['portfolio_state']['spot_price_history']
         self.history_rows = H = int(runtime['history_lookback_business_days'])
@@ -1295,6 +1301,7 @@ class Bundle:
         # first row whatever its day, where the opening book is traded
         market = utils.market_days(self.scenario_dates[self.initial_time_index:], self.business_day)
         self.decision_steps = [0] + [t for t in range(1, T) if market[t] > 0]
+        self.market_time = market           # market time arriving on each sim-grid row
         self.successors = [next((s for s in self.decision_steps if s > t), T) for t in range(T)]
         if total_leg_volume:
             self.total_leg_volume = float(total_leg_volume)
@@ -1646,6 +1653,20 @@ class Bundle:
         tradables_sim = self.tradables_sim
         F = torch.stack([tradables_sim[h] for h in runtime['names']['hedges']], dim=0)
         return F, self.liability_sim[self.last_live_mtm_index]
+
+    def marked(self, t, refs):
+        """`(len(refs),)` 1 or 0: whether each tradable of `refs` is still marked on sim-grid row
+        `t`, its deal's dates pricing it there (`last_marked`): the one liveness rule, a leg
+        trading at t where it is marked at t."""
+        mask = [float(t <= self.last_marked[r]) for r in refs]
+        logging.debug('marked on row %d: %s', t, mask)
+        return torch.tensor(mask, device=self.device)
+
+    def moving(self, t, landing, refs):
+        """`(len(refs),)` 1 or 0: whether each tradable of `refs` moves over the step from sim-grid
+        row `t` to `landing`: still marked at the landing (`marked`), the step carrying market
+        time, since a market-clock law's prices do not move over a step of none."""
+        return self.marked(landing, refs) * float(sum(self.market_time[t + 1:landing + 1]) > 0)
 
     def liability_at(self, time_index):
         """Marked liability `(B,)` at full-grid step `time_index` (zeros when there is none)."""

@@ -2188,6 +2188,38 @@ def test_a_declared_drift_shifts_the_risk_horizon_s_fork(tmp_path):
     assert len(shift) == 81 and shift[0] == 0.0 and np.abs(shift[1:-1]).mean() > 0.01, shift.tolist()
 
 
+def _thousandths(cfg, k=1000.0):
+    """`cfg` priced in thousandths of its unit: every spot, basis, forward and history price over
+    `k`, every contract size and liability volume times it, so every position's money is the same."""
+    md = cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    md['CommodityPrice.PLATINUM_LME']['Spot'] /= k
+    md['ObservedBasis.PLATINUM_LME.LME_CME']['Spot'] /= k
+    fp = md['ForwardPrice.PLATINUM']['Curve']['.Curve']
+    fp['data'] = [[t, v / k] for t, v in fp['data']]
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hist = hp['Portfolio_State']['Spot_Price_History']['CommodityPrice.PLATINUM_LME']
+    hist['Prices'] = [p / k for p in hist['Prices']]
+    for fut in hp['Tradable_Instruments']['CommodityFutureDeal'].values():
+        fut['Contract_Size'] *= k
+    for item in hp['Liabilities']['FloatingEnergyDeal']['PLAT_JUL29']['Payments']['Items']:
+        item['Volume'], item['Fixed_Basis'] = item['Volume'] * k, item['Fixed_Basis'] / k
+    return cfg
+
+
+def test_the_drift_monitor_reads_one_world_in_any_unit():
+    """The legs the drift monitor reads are the ones its deal dates mark and the step moves, a rule
+    without a unit: on the spot-alone GARCH document at a constant variance, priced in its unit and
+    in thousandths of it, the verdict's validation drift z reads -0.3076 and -0.3075, within 1e-3,
+    and its null sigma 1.1299 in both. 8 s.
+
+    Killing mutation: the monitor's legs read off the fork's dispersion (`dF.std(1).mean(0) > 0.5`
+    in `DiffSolver._moving`), a threshold in price units every leg falls below in thousandths: z 0.0
+    and sigma 0.0 there."""
+    zs = [_run(unit(_spot_alone(_cfg(batch=8, inner=8), CONSTANT_VOL))).evaluation_summary[
+        'diagnostics']['verdict']['validation_drift_z'] for unit in (lambda c: c, _thousandths)]
+    assert abs(zs[0]) > 0.1 and abs(zs[1] - zs[0]) < 1e-3, zs
+
+
 def test_a_declared_drift_leaves_an_expired_leg_still(tmp_path):
     """`DiffV2_Drift_Beta` shifts the fork's moves of the legs still live, so an expired leg's move
     stays nil and a book parked on it earns nothing: the training document's frozen roll of one path
