@@ -122,6 +122,10 @@ A ranking prices a move at the cross-path mean mark; every charge, the verdict's
 benchmarks' as the stepper's and the CSV's, prices each path's move at that path's own mark
 (`HedgeActionSpace.kappa` with `rows`, `per_contract_kappa` reading the mark's abs), held by
 `tests/test_action_space_and_artifact.py::test_every_track_charges_each_path_at_its_own_mark`.
+Wealth is money: the verdict's recursion and the stepper's accounting carry it in float64
+(`hedge_bundle.MONEY`), cast to float32 only where a net reads it, so the two tracks read one wealth
+at every decision, held by
+`tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`.
 The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
 `Reference_Mode = Running_Wealth` the solver's $V_0$ is a sum of step utilities, so the ladder's
 order is not an acceptance statement and the run logs a warning.

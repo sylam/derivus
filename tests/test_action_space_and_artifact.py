@@ -509,18 +509,19 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
     t0 = min(t for t in decisions if t >= PASSIVE_T_MIN)
 
     def kappa(t):
-        return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t]
+        return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t].double()
                             * size for h, size in zip(LEGS, sizes)], dim=-1)
 
-    W, q_prev, books = L[t0].clone(), torch.zeros(len(LEGS), device=world.device), []
+    # wealth is money, carried in float64 as the verdict carries it
+    W, q_prev, books = L[t0].double(), torch.zeros(len(LEGS), device=world.device), []
     cost = torch.zeros_like(W)
     steps = sorted(t for t in decisions if t >= t0) + [horizon]
     for t, t1 in zip(steps, steps[1:]):
         q = book(world, t)
         books.extend([q.tolist()] * (t1 - t))           # held over the rows to the next decision
         cost = cost + ((q - q_prev).abs() * kappa(t)).sum(-1)
-        dF = torch.stack([F[h][t1] - F[h][t] for h in LEGS], dim=-1)
-        W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t1] - L[t])
+        dF = torch.stack([F[h][t1].double() - F[h][t].double() for h in LEGS], dim=-1)
+        W = W + (q * torch.tensor(sizes, device=world.device) * dF).sum(-1) + (L[t1].double() - L[t].double())
         q_prev = q
     cost = cost + (q_prev.abs() * kappa(horizon)).sum(-1)
     assert books[0] == [-16.0, -16.0] and books[-1] == [0.0, 0.0]

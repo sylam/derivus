@@ -26,7 +26,7 @@ import torch
 from . import utils
 from .hedge_bundle import (
     _loss_side_curvature, _utility_local_curvature, _utility_scale, _utility_wrap_signed,
-    initial_q_from_runtime, per_contract_kappa, turnover_charge, wealth_step,
+    MONEY, initial_q_from_runtime, per_contract_kappa, turnover_charge, wealth_step,
 )
 
 # Bumped whenever the fitted-value-function on-disk/artifact contract changes shape. Stamped
@@ -429,16 +429,16 @@ class HedgeActionSpace:
     def kappa(self, tradables_sim, t_index, calendar=False, rows=None):
         """Per-hedge kappa at sim-grid `t_index` through `hedge_bundle.per_contract_kappa` (the
         single turnover-cost rule): `(n_hedge,)` at each instrument's cross-path mean mark, the
-        price a RANKING reads, or `(n, n_hedge)` at the own marks of the paths `rows`, the price a
-        CHARGE reads. The step's scalar vol (when a Vol_Scale spread is configured) drives
+        price a RANKING reads, or `(n, n_hedge)` at the own marks of the paths `rows` in `MONEY`,
+        the price a CHARGE reads. The step's scalar vol (when a Vol_Scale spread is configured) drives
         per_contract_kappa's Vol_Scale. `calendar=True` prices the MATCHED leg at
         `Calendar_Spread_Bps` instead of the outright half-spread — the rate `turnover_cost`
         charges matched volume at."""
         vol = None if self.vol_sim is None else self.vol_sim[int(t_index)]
         marks = [tradables_sim[r][t_index] for r in self.hedges]
         return torch.stack(
-            [per_contract_kappa(self.runtime, m.mean() if rows is None else m[rows], r, vol, calendar)
-             for r, m in zip(self.hedges, marks)], dim=-1)
+            [per_contract_kappa(self.runtime, m.mean() if rows is None else m[rows].to(MONEY), r,
+                                vol, calendar) for r, m in zip(self.hedges, marks)], dim=-1)
 
     def calendar_kappa(self, tradables_sim, t_index, rows=None):
         """The matched-leg kappa at `t_index`, or None when no `Calendar_Spread_Bps` is
@@ -1966,27 +1966,27 @@ class DiffSolver:
         t0 = sweep_ts[0]
         n = L[t0][rows].shape[0]
         q0 = initial_q_from_runtime(self.runtime, n, self.device)
-        # the opening book's P&L from the first row to the first decision, every track's
-        W0 = self._wealth_step(L[t0][rows], q0, self._outer_dF(0, rows, t0), 0.0)
+        # the opening book's P&L from the first row to the first decision, every track's, in MONEY
+        W0 = self._wealth_step(L[t0][rows].to(MONEY), q0, self._outer_dF(0, rows, t0).to(MONEY), 0.0)
         W = {p: W0.clone() for p in ("greedy", "textbook", "nohedge", "passive")}
         # the turnover cost, entry measured from the opening book: paid inside the wealth under the
         # position state, a diagnostic beside it otherwise
-        cost = {p: torch.zeros(n, device=self.device) for p in W}
+        cost = {p: torch.zeros(n, dtype=MONEY, device=self.device) for p in W}
         q_traj = {p: [] for p in ("greedy", "textbook", "passive")}                     # mean q per step
         q_prev = {p: q0.clone() for p in cost}
         # running-wealth: the rollout's value is the SUM of the per-step rewards, accumulated along
         # the roll, and the net sum charges each step's own turnover into that step's increment
         vdrift_z, vdrift_s2, vdrift_n = 0.0, 0.0, 0
-        u_run = ({p: torch.zeros(n, device=self.device) for p in W}
+        u_run = ({p: torch.zeros(n, dtype=MONEY, device=self.device) for p in W}
                  if self.running_wealth else None)
-        u_net = ({p: torch.zeros(n, device=self.device) for p in cost}
+        u_net = ({p: torch.zeros(n, dtype=MONEY, device=self.device) for p in cost}
                  if self.running_wealth and not self.position_state else None)
         last_net_inc = {}          # the final step's net increment, which the unwind belongs to
         last_W_pre = {}            # ...and the wealth it launched from (the ratio needs the base)
         with torch.no_grad():
             for t in sweep_ts:
                 dF_o = self._outer_dF(t, rows)                                     # (n, n_hedge)
-                dL_o = (L[self.nxt[t]] - L[t])[rows]
+                dL_o = (L[self.nxt[t]].to(MONEY) - L[t].to(MONEY))[rows]
                 dF, dL, m1, _, live, ahead = inner_cache[t]
                 # in-sim validation CUSUM: the fork's expectation minus the outer realized move,
                 # averaged over paths and summed over steps - a mean-zero tripwire within the
@@ -1996,8 +1996,9 @@ class DiffSolver:
                 vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
                 kappa_t = self.aspace.kappa(self.tradables_sim, t)
+                logging.debug('verdict wealth at step %d: %.17g', t, float(W["greedy"].mean()))
                 q_g = self._decide(
-                    nets, m1[rows], dF[rows], dL[rows], W["greedy"], t,
+                    nets, m1[rows], dF[rows], dL[rows], W["greedy"].float(), t,
                     q_prev=self._first_book(t, live, n) if t == t0 else q_prev["greedy"],
                     kappa=kappa_t if self.cost_aware or self.position_state else None, live=live,
                     ahead=_on_rows(ahead, rows))
@@ -2024,7 +2025,7 @@ class DiffSolver:
                 W_pre = dict(W)
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
                                  ("passive", q_pa)):
-                    W[p] = self._wealth_step(W[p], q_now, dF_o, dL_o)
+                    W[p] = self._wealth_step(W[p], q_now, dF_o.to(MONEY), dL_o)
                     if self.position_state:
                         # the charge inside the step, as the label pays it, so the next decision
                         # reads the wealth its value was fitted on
@@ -2369,8 +2370,9 @@ class DiffSolver:
                         if handed:
                             q = self._passive_hedge(t, live, B)
                         else:
+                            logging.debug('stepper wealth at step %d: %.17g', t, float(W.mean()))
                             q = self._decide(
-                                nets, m1, dF, dL, W, t, q_prev=q_prev, live=live,
+                                nets, m1, dF, dL, W.float(), t, q_prev=q_prev, live=live,
                                 kappa=kappa_t if self.cost_aware or self.position_state else None,
                                 ahead=ahead)
                             q = q * live
@@ -2380,7 +2382,7 @@ class DiffSolver:
                         q_log["w"].append(float(W.mean()))
                         if dump_rows is not None and not handed:
                             dump_rows.append(self._decision_curve_row(
-                                nets, t, m1, dF, dL, W, q_prev, q, live,
+                                nets, t, m1, dF, dL, W.float(), q_prev, q, live,
                                 kappa_t if self.cost_aware or self.position_state else None, ahead))
                     q_prev = q
                     cur = state["positions"]
@@ -2394,15 +2396,13 @@ class DiffSolver:
             drift["n_tripped"] = int(sum(drift["tripped"]))
             drift["null_sigma"] = round(null, 4)
             drift["final_z_per_sqrt_n"] = drift["cum_z"] / (n_dec ** 0.5)
-            wT = (last["transition_pnl_excess"]
-                  + last["transition_liability_value"]).to(torch.float64)
+            wT = last["transition_pnl_excess"] + last["transition_liability_value"]
             if u_sum is not None:
-                u_sum = u_sum + self._reward(wT.to(torch.float32), w_prev, self.T_dec)  # tail
+                u_sum = u_sum + self._reward(wT, w_prev, self.T_dec)  # tail
             return wT, u_sum, drift
 
         rolled = {p: roll(p) for p in ("greedy", "textbook", "nohedge", "passive")}
-        out = {p: _tail_stats(lambda w: self._u(w.to(torch.float32)), wT, u_sum)
-               for p, (wT, u_sum, _) in rolled.items()}
+        out = {p: _tail_stats(self._u, wT, u_sum) for p, (wT, u_sum, _) in rolled.items()}
         # one drift monitor per rollout policy; the greedy one is THE inference guard
         out["drift_monitor"] = rolled["greedy"][2]
         out["u_mean_is_step_sum"] = bool(self.running_wealth)

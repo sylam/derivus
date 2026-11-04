@@ -997,6 +997,10 @@ def _im_funding_charge(positions, prices, runtime, vol, dt):
             for n in runtime["names"]["hedges"]}
 
 
+# wealth is money accumulated over hundreds of rows: float64, cast once where a net reads it
+MONEY = torch.float64
+
+
 def _portfolio_value(state, runtime):
     """Absolute total wealth: cash + margin + position value where applicable. `_pnl_excess` is the
     wealth change since inception, which is what the asymmetric utility needs.
@@ -1011,21 +1015,20 @@ def _portfolio_value(state, runtime):
     hedges = runtime["names"]["hedges"]
     tradables = runtime["tradables"]
     positions, prices = state["positions"], state["tradable_values"]
-    total = torch.zeros_like(state["done"], dtype=torch.float32)
+    total = torch.zeros_like(state["done"], dtype=MONEY)
     if runtime["accounting_mode"] == "cash_account":
         for name in hedges:
-            total = total + (positions[name].to(dtype=torch.float32)
-                             * prices[name].to(dtype=torch.float32)
+            total = total + (positions[name].to(dtype=MONEY) * prices[name].to(dtype=MONEY)
                              * float(tradables[name]["contract_size"]))
         cash = None
         for balance in state["cash_accounts"].values():
-            v = balance.to(dtype=torch.float32)
+            v = balance.to(dtype=MONEY)
             cash = v if cash is None else cash + v
         return total if cash is None else total + cash
     for accounts in (state["margin_accounts"], state["cash_accounts"]):
         balances = None
         for balance in accounts.values():
-            v = balance.to(dtype=torch.float32)
+            v = balance.to(dtype=MONEY)
             balances = v if balances is None else balances + v
         if balances is not None:
             total = total + balances
@@ -1050,9 +1053,9 @@ def _tracking_error_value(state, runtime):
     All three channels are required: `liability_mtm` alone drops by the cashflow amount on a
     payment date, injecting a ±cf shock unrelated to any action. The sum across the two liability
     channels is continuous across that boundary and matches the terminal invariant."""
-    pnl_excess = _pnl_excess(state, runtime).to(dtype=torch.float32)
-    liability_mtm = state["liability_mtm_value"].to(dtype=torch.float32, device=pnl_excess.device)
-    cumulative = state["cumulative_liability_value"].to(dtype=torch.float32, device=pnl_excess.device)
+    pnl_excess = _pnl_excess(state, runtime).to(dtype=MONEY)
+    liability_mtm = state["liability_mtm_value"].to(dtype=MONEY, device=pnl_excess.device)
+    cumulative = state["cumulative_liability_value"].to(dtype=MONEY, device=pnl_excess.device)
     return pnl_excess + liability_mtm + cumulative
 
 
@@ -1634,16 +1637,18 @@ class Bundle:
         return self.marked(landing, refs) * float(sum(self.market_time[t + 1:landing + 1]) > 0)
 
     def liability_at(self, time_index):
-        """Marked liability `(B,)` at full-grid step `time_index` (zeros when there is none)."""
+        """Marked liability `(B,)` at full-grid step `time_index` (zeros when there is none), in
+        the accounting's `MONEY`."""
         if self.liability_mtm is None:
-            return torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
-        return self.liability_mtm[time_index].to(dtype=torch.float32, device=self.device)
+            return torch.zeros(self.batch_size, dtype=MONEY, device=self.device)
+        return self.liability_mtm[time_index].to(dtype=MONEY, device=self.device)
 
     def cashflow_at(self, time_index):
-        """Realized cashflow `(B,)` paid at full-grid step `time_index`, summed over currencies."""
-        total = torch.zeros(self.batch_size, dtype=torch.float32, device=self.device)
+        """Realized cashflow `(B,)` paid at full-grid step `time_index`, summed over currencies,
+        in `MONEY`."""
+        total = torch.zeros(self.batch_size, dtype=MONEY, device=self.device)
         for tensor in self.realized_cashflows.values():
-            total = total + tensor[time_index].to(dtype=torch.float32, device=self.device)
+            total = total + tensor[time_index].to(dtype=MONEY, device=self.device)
         return total
 
     def unfixed_at(self, time_index):
@@ -1876,20 +1881,21 @@ class BundleStepper:
 
     # ---- state construction + transition -------------------------------------
     def _zeros_by_name(self, names):
-        return {str(n): torch.zeros(self._batch_size, dtype=torch.float32, device=self._device)
+        return {str(n): torch.zeros(self._batch_size, dtype=MONEY, device=self._device)
                 for n in names}
 
     def _seed_by_name(self, seed_values, names):
         return {str(n): torch.full((self._batch_size,), float(seed_values.get(str(n), 0.0)),
-                                   dtype=torch.float32, device=self._device) for n in names}
+                                   dtype=MONEY, device=self._device) for n in names}
 
     def _values_at(self, time_index):
         """Current mark `{instrument: (B,)}` at full-grid `time_index`, a hedge leg's held at the
         terminal past it: the objective ends at the last live liability mark, so a book left
-        standing under `Force_Flat_At_End` 'No' is valued there and carried over no settlement row."""
+        standing under `Force_Flat_At_End` 'No' is valued there and carried over no settlement row.
+        In `MONEY`, so every flow off a mark is."""
         tradables = self.bundle.tradables
         return {n: tradables[n][min(time_index, self._close_idx) if n in self._hedges
-                                else time_index].to(dtype=torch.float32)
+                                else time_index].to(dtype=MONEY)
                 for n in self._tradable_names if n in tradables}
 
     def _initial_state(self):
@@ -1906,7 +1912,7 @@ class BundleStepper:
             'cash_accounts': self._seed_by_name(portfolio_state['cash_balances'], self._cash_names),
             'margin_accounts': self._seed_by_name(portfolio_state['margin_balances'], self._cash_names),
             'variation_margin': self._zeros_by_name(self._hedges),
-            'cumulative_liability_value': torch.zeros(self._batch_size, dtype=torch.float32,
+            'cumulative_liability_value': torch.zeros(self._batch_size, dtype=MONEY,
                                                       device=self._device),
         }
         state = self._refresh(state, initial_time_index)
@@ -1931,8 +1937,7 @@ class BundleStepper:
             'initial_portfolio_value': state.get('initial_portfolio_value'),
         }
         refreshed['cumulative_liability_value'] = (
-            state['cumulative_liability_value'].to(dtype=torch.float32)
-            + refreshed['realized_cashflow_value'])
+            state['cumulative_liability_value'] + refreshed['realized_cashflow_value'])
         return refreshed
 
     def _step_state(self, state, action):
@@ -2128,12 +2133,11 @@ class BundleStepper:
         is only marked at the terminal step (a sync-free check on time_index — `done` is uniform
         across the batch since every scenario advances together); `liability_value` is the
         cumulative realized liability, always carried."""
-        pnl_excess = (_pnl_excess(state, self.runtime).to(device=self._device, dtype=torch.float32)
+        pnl_excess = (_pnl_excess(state, self.runtime).to(device=self._device)
                       if int(state['time_index']) >= self._last_idx
-                      else torch.zeros(self._batch_size, dtype=torch.float32, device=self._device))
+                      else torch.zeros(self._batch_size, dtype=MONEY, device=self._device))
         return {'pnl_excess': pnl_excess,
-                'liability_value': state['cumulative_liability_value'].to(
-                    device=self._device, dtype=torch.float32)}
+                'liability_value': state['cumulative_liability_value'].to(device=self._device)}
 
     # ---- diagnostic CSV assembly ---------------------------------------------
     def _rollout(self):
