@@ -200,15 +200,7 @@
      }
     },
     "Objective": {
-     "Object": "AsymmetricUtility_Symlog",
-     "Floor_Penalty": 10.0,
-     "Surplus_Reward": 1.0,
-     "Power": 1.0,
-     "Expiry_Penalty": 1.0,
-     "Expiry_Threshold_Days": 4.0,
-     "Post_Deal_Trade_Penalty": 1.0,
-     "Position_Bounds_Penalty": 0.25,
-     "Per_Instrument_Bounds_Penalty": 0.5
+     "Object": "AsymmetricUtility_Symlog"
     },
     "Liabilities": {
      "FloatingEnergyDeal": {
@@ -250,7 +242,6 @@
      }
     },
     "Evaluator": {
-     "Object": "DynamicHedgeEvaluator",
      "Accounting_Mode": "futures",
      "Cash_Instruments": [
       "USD_CASH"

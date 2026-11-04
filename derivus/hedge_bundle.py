@@ -1700,8 +1700,7 @@ class BundleStepper:
         portfolio_cum_cost = sum(p['cum_cost'] for p in per_instr.values())
         hp = portfolio_cum_cash + portfolio_pos_mtm - portfolio_cum_cost
         return {
-            'spot': spot, 'spread_bps': float(runtime['accounting']['bid_offer_spread_bps']),
-            'per_instr': per_instr, 'liability': liability,
+            'spot': spot, 'per_instr': per_instr, 'liability': liability,
             'portfolio_position_mtm': portfolio_pos_mtm,
             'portfolio_cum_trade_cash': portfolio_cum_cash,
             'portfolio_cum_trade_cost': portfolio_cum_cost,
@@ -1722,8 +1721,7 @@ class BundleStepper:
 
         def _row(t, case, path_idx, getter):
             row = {'policy': label, 'case': case, 'path_idx': int(path_idx), 'day': day_strs[t],
-                   'spot': getter(fields['spot'][t]).item(),
-                   'spread_bps': fields['spread_bps']}
+                   'spot': getter(fields['spot'][t]).item()}
             for name in self._hedges:
                 p = fields['per_instr'][name]
                 row[f'{name}_futures'] = getter(p['fut'][t]).item()

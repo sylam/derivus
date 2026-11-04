@@ -116,7 +116,6 @@
      }
     },
     "Evaluator": {
-     "Object": "DynamicHedgeEvaluator",
      "Accounting_Mode": "futures",
      "Cash_Instruments": [
       "USD_CASH"

@@ -147,14 +147,12 @@ PINNED = {
         '527697bee31bb2b4754ddc0ed1c193f4c5d546ae4a400a4c1db9c99dae5c40b8', 5, 0),
     'fx_tarf_job.json': (
         'd67e0afd059b2c5db7a2b8be15076633e9b4b6d94d236db834257adbbd664b5e', 5, 0),
-    # re-pinned 2026-11-04: the DOCUMENTS changed, their `Portfolio_State` losing
-    # `Settlement_Prices` and `Initial_Margin`, keys no program read, and the shipping job its
-    # `Inner_MC_Enabled`, which its mode says, and its cost-aware argmax restated as
-    # `DiffV2_Repositioning_Charge` Argmax; the universes are unmoved
+    # re-pinned 2026-11-04: the DOCUMENTS changed, losing keys no program read (an `Evaluator`
+    # `Object`, eight undeclared `Objective` keys); the universes are unmoved
     'platinum_hedge_shipping.json': (
-        '6f51e0c5cb0a992def850aae06f4b9162ee8663f464e5dcf8986ff031e5941df', 2, 0),
+        '04d2b212e40ac8253110607d2b54ec2bbe6e706171e52ddcbe0117af2bc95dba', 2, 0),
     'policy_test_simulate_only.json': (
-        '85678869b611282536cc1fe29127d10ca0c0d6ac6d8a88cfbdeeb30457844b03', 2, 0),
+        'c04b98bb0dc1bf418b12409846d056dcf0563d55171e7d847cee75d4c6762f5c', 2, 0),
 }
 
 

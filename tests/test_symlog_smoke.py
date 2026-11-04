@@ -34,7 +34,7 @@ def test_unknown_utility_scale_mode_fails_loud():
     """A typo in Utility_Scale_Mode raises at bundle build, naming the spelling.
 
     Killing mutation: the mode check dropped, the typo read as the default formula."""
-    data = _load(Object='AsymmetricUtility_Symlog', Floor_Penalty=10.0,
+    data = _load(Object='AsymmetricUtility_Symlog',
                  Utility_Scale_Mode='vol_scled_notional')  # typo
     with pytest.raises(ValueError, match='vol_scled_notional'):
         _run(data)
@@ -44,6 +44,6 @@ def test_explicit_utility_scale_override():
     """Utility_Scale_Explicit overrides the formula, exactly.
 
     Killing mutation: the explicit branch skipped, the formula's c reported."""
-    data = _load(Object='AsymmetricUtility_Symlog', Floor_Penalty=10.0,
+    data = _load(Object='AsymmetricUtility_Symlog',
                  Utility_Scale_Explicit=5_000_000.0)
     assert float(_run(data).bundle.utility_scale) == 5_000_000.0
