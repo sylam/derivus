@@ -87,6 +87,10 @@ class HedgeActionSpace:
       * `allocation_grid(t)` — the FACTORED alternative under `Allocation_Weights`: one ladder over
         the signed NET cover, each rung split across the legs by the schedule. `grid_at` dispatches
         on which universe is configured; downstream consumes the rows either way.
+      * `band(t, usable)` / `book(q, t, live)` — the whole-contract band of the signed net on the
+        legs a mask marks, and a book as the execution books it: clamped into the `ladder` boxes,
+        its net water-filled into the band on the ladder's legs, apportioned to whole contracts.
+        The passive and textbook books are booked by it.
       * `kappa(tradables_sim, t)` — the per-hedge turnover kappa at sim-grid `t`, off the single
         `hedge_bundle.per_contract_kappa` rule.
       * `initial_q(batch, device)` — the opening book `q0`.
@@ -106,6 +110,10 @@ class HedgeActionSpace:
         '  instead: the levels count rungs on the signed NET cover and the schedule splits each',
         '  rung across the legs, so the search is over how much cover to carry, not over its',
         '  composition.',
+        '- `band(...)` / `book(...)` — the whole-contract band of the signed net on the legs the',
+        '  ladder trades, and a book as the execution books it: clamped into those legs\' boxes,',
+        '  nothing on any other, its net water-filled into the band and apportioned to whole',
+        '  contracts. The passive and textbook books are booked by it, as the stepper holds them.',
         '- `kappa(...)` — the per-hedge turnover cost at a step, off the single',
         '  `per_contract_kappa` rule the environment and the diagnostic CSVs also use.',
         '- `initial_q(...)` — the opening book.',
@@ -3029,7 +3037,7 @@ class DiffSolver:
             "DiffSolver greedy positions: mean|q| per instrument=%s | q@t0=%s | q@mid=%s "
             "(textbook q@t0=%s)", ["%.2f" % v for v in verdict["greedy_mean_abs_q"]],
             verdict.get("greedy_q_first"), verdict.get("greedy_q_mid"),
-            self._replication_hedge(self.t_min).detach().cpu().tolist())
+            (verdict["textbook_q_traj"] or [None])[0])
 
         return SolverResult(
             solver_name=type(self).__name__,
