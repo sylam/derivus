@@ -1066,13 +1066,13 @@ class DiffSolver:
         rows = [r for r in self.steps + [self.T_dec] if t < r <= self.landing[t]]
         return rows if self.running_wealth else rows[-1:]
 
-    def _residual_z(self, t, dF, obs):
+    def _residual_z(self, t, dF, obs, moving):
         """`(B,)` the drift residual at decision t on each path: the fork's mean move `dF`
         `(B, B_inner, n_hedge)` less the realised one `obs` `(B, n_hedge)`, over the fork's own
-        dispersion, averaged over the legs that move over the step (`Bundle.moving`). The verdict's
-        CUSUM and the roll's monitor score its path mean; the null is the per-path RMS."""
-        m = self.bundle.moving(t, self.aspace.hedges)
-        z = (((dF.mean(1) - obs) / dF.std(1).clamp_min(1e-9)) * m).sum(-1) / (float(m.sum()) or 1.0)
+        dispersion, averaged over the legs `moving` marks, those that move over the step
+        (`Bundle.moving`). The verdict's CUSUM and the roll's monitor score its path mean; the null
+        is the per-path RMS."""
+        z = (((dF.mean(1) - obs) / dF.std(1).clamp_min(1e-9)) * moving).sum(-1) / (float(moving.sum()) or 1.0)
         logging.debug('residual z at step %d: path mean %s', t, z.mean())
         return z
 
@@ -1701,7 +1701,7 @@ class DiffSolver:
                 # in-sim validation CUSUM: the fork's expectation minus the outer realized move,
                 # averaged over paths and summed over steps - a mean-zero tripwire within the
                 # model, whose deployment twin is the stepper roll's market-drift monitor
-                zstep = self._residual_z(t, dF[rows], dF_o)                         # (n,) per path
+                zstep = self._residual_z(t, dF[rows], dF_o, self.bundle.moving(t, self.aspace.hedges))
                 vdrift_z += float(zstep.mean())
                 vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
@@ -2031,13 +2031,13 @@ class DiffSolver:
                             drift["cum_dL"] += pending[1]
                             drift["cum_z"] += pending[2]
                         obs_dF, obs_dL = self._outer_move(t)                      # (B, n_h), (B,)
-                        rF = (dF.mean(1) - obs_dF) * live                         # (B, n_h)
-                        rL = dL.mean(1) - obs_dL                                  # (B,)
                         # the legs that move over the step only (`Bundle.moving`): a frozen mark's
                         # dust over the std clamp fabricates huge sigma readings
-                        inf_m = self.bundle.moving(t, self.aspace.hedges)
+                        moving = self.bundle.moving(t, self.aspace.hedges)
+                        rF = (dF.mean(1) - obs_dF) * moving                       # (B, n_h)
+                        rL = dL.mean(1) - obs_dL                                  # (B,)
                         pending = ([float(b) for b in rF.mean(0)], float(rL.mean()),
-                                   float(self._residual_z(t, dF, obs_dF).sum() / B))
+                                   float(self._residual_z(t, dF, obs_dF, moving).sum() / B))
                         drift["t"].append(int(t))
                         drift["z_path"].append(round(drift["cum_z"], 4))
                         n_so_far = max(1, len(drift["t"]) - 1)         # residuals scored so far
@@ -2054,7 +2054,7 @@ class DiffSolver:
                             logging.debug('drift shift at step %d: %s a contract on the moving legs',
                                           t, shift)
                             adj = torch.tensor(shift, device=self.device)
-                            dF = dF + adj * inf_m
+                            dF = dF + adj * moving
                             if ahead is not None:
                                 # the risk fork's move to each of its rows by that drift over the
                                 # decision intervals to it each leg moves over
