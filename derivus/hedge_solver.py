@@ -1291,7 +1291,7 @@ class DiffSolver:
         return z
 
     # ---- external argmax (Bellman max outside the fitted value) --------------
-    def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, live=None,
+    def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, *, live,
                 rate_limit=True, ahead=None):
         """Pick the grid action maximising `E_inner[C_{t+1}]` per outer path. No grad. Under
         `Objective.Reference_Mode='Running_Wealth'` the score is `E_inner[u(W1 − W_t) + C_{t+1}]`
@@ -1346,7 +1346,7 @@ class DiffSolver:
                     "comparison False, and the book would silently never trade again")
             rows = torch.arange(B, device=market_t1.device)
             # the standing book on the live legs, which the band and the incumbent hold
-            q_live = q_prev if q_prev is None or live is None else q_prev * live
+            q_live = None if q_prev is None else q_prev * live
             best_val = None
             best_q = None
             best_f = None
@@ -1355,7 +1355,7 @@ class DiffSolver:
             band_f = None
             for s in range(0, grid.shape[0], self.chunk):
                 acts = grid[s:s + self.chunk]                                            # (c, n_hedge)
-                a_live = acts if live is None else acts * live                            # (c,n_hedge)
+                a_live = acts * live                                                      # (c,n_hedge)
                 # the terminal unwind is a property of the ACTION, so a step with no standing
                 # book must not liquidate for free
                 charge = self._charge(t, a_live[None], None if q_prev is None else q_prev[:, None, :],
@@ -2058,7 +2058,7 @@ class DiffSolver:
         branch, no extra continuation in the hot loop. The two rankings could drift apart, which is
         what the gate on the argmax column measures. The pass is affordable because the dump is a
         `Batch_Size = 1` diagnostic."""
-        a_live = acts if live is None else acts * live
+        a_live = acts * live
         with torch.no_grad():
             charge = self._charge(t, a_live[None], q_prev[:, None, :], kappa)
             charge = None if charge is None else charge[:, :, None]
@@ -2128,9 +2128,9 @@ class DiffSolver:
                    else _utility_local_curvature(w_rank, self.runtime, self.nxt[t]))
         x0 = _utility_x(w_rank, obj, self.nxt[t])
 
-        q_live = q_prev if live is None else q_prev * live                          # (1,n_hedge)
+        q_live = q_prev * live                                                  # (1,n_hedge)
         grid = self.aspace.grid_at(t, live)
-        a_live = grid if live is None else grid * live                              # (K,n_hedge)
+        a_live = grid * live                                                      # (K,n_hedge)
         net = a_live.sum(-1)                                                        # (K,)
         pre, charged, _ = self._score_actions(
             nets, t, grid, market_t1, dF, dL, W, q_prev, kappa, live, ahead)
