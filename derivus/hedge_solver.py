@@ -1036,9 +1036,20 @@ class DiffSolver:
         dispersion, averaged over the legs `moving` marks, those that move over the step
         (`Bundle.moving`). The verdict's CUSUM and the roll's monitor score its path mean; the null
         is the per-path RMS."""
-        z = (((dF.mean(1) - obs) / dF.std(1).clamp_min(1e-9)) * moving).sum(-1) / (float(moving.sum()) or 1.0)
+        sd = dF.std(1)
+        # a leg of no fork dispersion on the legs' own scale, a dead one, scores nothing
+        z = torch.where(sd > 1e-9 * sd.amax(), (dF.mean(1) - obs) / sd, 0.0)
+        z = (z * moving).sum(-1) / (float(moving.sum()) or 1.0)
         logging.debug('residual z at step %d: path mean %s', t, z.mean())
         return z
+
+    @staticmethod
+    def _dispersion(x):
+        """The std over `x`'s first axis, per column, 1 where under 1e-6 of its largest |value|."""
+        s = x.std(0)
+        flat = s <= 1e-6 * x.abs().amax(0)
+        logging.debug('frame: %d of %d columns of no dispersion', int(flat.sum()), flat.numel())
+        return torch.where(flat, 1.0, s)
 
     # ---- external argmax (Bellman max outside the fitted value) --------------
     def _decide(self, nets, market_t1, dF, dL, W, t, q_prev=None, kappa=None, *, live,
@@ -2376,11 +2387,11 @@ class DiffSolver:
             W_bank, q_bank = self._build_bank(self.gen)
             if self.log_ratio:
                 self._set_displacement(W_bank)
-            self.m_mean, self.m_std = M.mean(0), M.std(0).clamp_min(1e-6)
+            self.m_mean, self.m_std = M.mean(0), self._dispersion(M)
             Wall = torch.stack([W_bank[t] for t in sweep_ts], 0).reshape(-1)
             if self.state_notional:
                 Wall = Wall / self.state_notional
-            self.w_mean, self.w_std = Wall.mean(), Wall.std().clamp_min(1e-6)
+            self.w_mean, self.w_std = Wall.mean(), self._dispersion(Wall)
             logging.info(
                 "DiffSolver bank: market_dim=%d | swept W∈[%.4g, %.4g] mean=%.4g std=%.4g | "
                 "q_rep(t=0)=%s", md, float(Wall.min()), float(Wall.max()),
