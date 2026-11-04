@@ -1102,32 +1102,37 @@ class DiffSolver:
         return (self.aspace.kappa(self.tradables_sim, self.T_dec, rows=rows)
                 if self.position_state and self.force_flat and self.nxt[t] >= self.T_dec else None)
 
-    def _calendar_kappa(self, t):
-        """The MATCHED-leg kappa at decision step t (None with no `Evaluator.Calendar_Spread_Bps`)
-        — the rate matched volume pays inside `_reposition_charge`. A one-line hop to
-        `aspace.calendar_kappa`, which the benchmark and verdict tracks read too, so the ranking
-        in `_decide`, the regressed target in `_fit_step` and every net-of-cost diagnostic cannot
-        price a roll three different ways."""
-        return self.aspace.calendar_kappa(self.tradables_sim, t)
+    def _ranking_kappa(self, t, execution=True):
+        """The turnover kappa a decision at t ranks its candidates with, at the cross-path mean mark,
+        or None for no turnover charge: under `DiffV2_Position_State` always, the charge being part
+        of the fitted value, and in execution (the verdict and the stepper roll) under
+        `DiffV2_Cost_Aware_Argmax` too."""
+        if self.position_state or (execution and self.cost_aware):
+            return self.aspace.kappa(self.tradables_sim, t)
+        return None
 
-    def _reposition_charge(self, acts, q_prev, kappa, kappa_T, kappa_cal=None):
-        """The frictional charge on moving `q_prev` to `acts` (broadcastable `(..., n_hedge)`): the
-        turnover toll at `kappa`, the quadratic churn term (`DiffV2_Churn_Lambda`), and the
-        terminal unwind of `acts` at `kappa_T` when `_unwind_kappa` says one applies.
+    def _charge(self, t, acts, q_prev, kappa, rows=None):
+        """The repositioning charge of the books `acts` (broadcastable `(..., n_hedge)`) from the
+        standing `q_prev` at decision t, or None where none applies: the turnover toll at `kappa`
+        (None: none), spread-aware under `Calendar_Spread_Bps` (the move's matched half at the
+        calendar rate), the quadratic churn term (`DiffV2_Churn_Lambda`), and the outright unwind
+        of `acts` `_unwind_kappa` says t owes; with no standing book (`q_prev` None) the unwind
+        alone. `rows` prices each path at its own mark, as `HedgeActionSpace.kappa`.
 
-        ONE expression, called from every seam: the wealth that RANKS a candidate in `_decide`, the
-        wealth the INCUMBENT holds against it, and the wealth that becomes the chosen action's
-        regressed TARGET in `_fit_step` all price the same friction. That equality is the whole of
-        the frictional Bellman. Callers pass `acts` live-masked and `q_prev` as the step that set it
-        left it: a leg dying at the step pays its close, one dead before it no phantom toll.
-
-        `kappa_cal` (from `_calendar_kappa`) makes the toll SPREAD-AWARE: the move's matched half
-        pays the calendar rate rather than two outright crossings. The terminal unwind stays
-        outright, taking the whole book to flat against the market rather than leg against leg."""
-        dq = acts - q_prev
+        ONE assembly, called from every seam: the wealth that RANKS a candidate in `_decide`, the
+        wealth the INCUMBENT holds against it, the chosen action's regressed TARGET in `_fit_step`,
+        the k-step correction, the verdict's charged wealth and the decision dump all price the
+        same friction. That equality is the whole of the frictional Bellman. Callers pass `acts`
+        live-masked and `q_prev` as the step that set it left it: a leg dying at the step pays its
+        close, one dead before it no phantom toll."""
+        kappa_T = self._unwind_kappa(t, rows)
+        if kappa_T is None and (q_prev is None or (kappa is None and not self.churn_lambda > 0.0)):
+            return None
+        dq = acts - (acts if q_prev is None else q_prev)
         charge = self.churn_lambda * dq.pow(2).sum(-1)
         if kappa is not None:
-            charge = charge + turnover_charge(dq, kappa, kappa_cal)
+            charge = charge + turnover_charge(
+                dq, kappa, self.aspace.calendar_kappa(self.tradables_sim, t, rows))
         if kappa_T is not None:
             charge = charge + turnover_charge(acts, kappa_T)
         return charge
@@ -1335,7 +1340,7 @@ class DiffSolver:
 
         `q_prev` carries the standing book and arms up to four decision-time corrections, each with
         its own switch: the cost-aware turnover charge (`kappa` present, priced net/paired when
-        `Calendar_Spread_Bps` gives `_calendar_kappa` a rate), the quadratic churn charge, the
+        `Calendar_Spread_Bps` gives a calendar rate), the quadratic churn charge, the
         `Max_Trade_Per_Step` band (`rate_limit` True, so the label path keeps the band
         execution-only) and the `Decision_Deadband_Sigma` incumbent. The band takes the best action
         INSIDE the reachable set and falls back to the unrestricted best when nothing is reachable.
@@ -1355,7 +1360,7 @@ class DiffSolver:
         the common inner draws. Holding an inadmissible book is not on offer — a path whose live
         `q_prev` the step does not admit (`HedgeActionSpace.admissible`) moves regardless, though a
         split off the step's rungs it admits is held — and the incumbent runs through the SAME
-        `_reposition_charge` as every rival, so the paired difference subtracts two readings of one
+        `_charge` as every rival, so the paired difference subtracts two readings of one
         function. The move test compares RISK-NEUTRAL means even when `DiffV2_Risk_Kappa` is on: a
         paired standard error is a statement about E[C], and a semideviation is not a mean."""
         grid = self.aspace.grid_at(t, live)
@@ -1368,8 +1373,6 @@ class DiffSolver:
                     "Decision_Deadband_Sigma needs Inner_Sub_Batch >= 2: the hold test is a "
                     "PAIRED standard error over the inner draws, so one draw makes it NaN, every "
                     "comparison False, and the book would silently never trade again")
-            kappa_T = self._unwind_kappa(t)
-            kappa_cal = self._calendar_kappa(t)
             rows = torch.arange(B, device=market_t1.device)
             # the standing book on the live legs, which the band and the incumbent hold
             q_live = q_prev if q_prev is None or live is None else q_prev * live
@@ -1382,14 +1385,11 @@ class DiffSolver:
             for s in range(0, grid.shape[0], self.chunk):
                 acts = grid[s:s + self.chunk]                                            # (c, n_hedge)
                 a_live = acts if live is None else acts * live                            # (c,n_hedge)
-                charge = None
-                # kappa_T rides OUTSIDE the q_prev gate: the terminal unwind is a property of the
-                # ACTION, so a step with no standing book must not liquidate for free.
-                if kappa_T is not None or (q_prev is not None
-                                           and (kappa is not None or self.churn_lambda > 0.0)):
-                    prev = a_live[None] if q_prev is None else q_prev[:, None, :]
-                    charge = self._reposition_charge(                                     # (B,c,1) $
-                        a_live[None, :, :], prev, kappa, kappa_T, kappa_cal)[:, :, None]
+                # the terminal unwind is a property of the ACTION, so a step with no standing
+                # book must not liquidate for free
+                charge = self._charge(t, a_live[None], None if q_prev is None else q_prev[:, None, :],
+                                      kappa)
+                charge = None if charge is None else charge[:, :, None]                   # (B,c,1) $
                 C1f, _ = self._landed(nets, W, a_live[None, :, None, :], (dF, dL, market_t1, live),
                                       charge, self.nxt[t])
                 Ckf = None if ahead is None else self._landed(
@@ -1427,9 +1427,8 @@ class DiffSolver:
             if dead:
                 # the incumbent is a CANDIDATE priced by the same rules: dq = 0 on the live legs
                 # kills the L1 and churn terms there, leaving a dying leg's close and the unwind
-                charge = (self._reposition_charge(
-                    q_live, q_prev, kappa, kappa_T, kappa_cal)[:, None, None]
-                    if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0 else None)
+                charge = self._charge(t, q_live, q_prev, kappa)
+                charge = None if charge is None else charge[:, None, None]
                 C1f_inc = self._landed(nets, W, q_live[:, None, None, :], (dF, dL, market_t1, live),
                                        charge, self.nxt[t])[0][:, 0]                      # (B,Bi)
                 diff = best_f - C1f_inc                                                   # (B,Bi) paired
@@ -1642,7 +1641,7 @@ class DiffSolver:
         # the standing book masked by the step that set it: the position state and the book the
         # charge moves from. With churn_lambda 0 and no kappa the book is inert.
         q_prev = q_bank[t][rows] * (live if live_prev is None else live_prev)
-        kappa_t = self.aspace.kappa(self.tradables_sim, t) if self.position_state else None
+        kappa_t = self._ranking_kappa(t, execution=False)
         # SELECT the action on the NO-GRAD inner draws; EVALUATE its value and pathwise gradients
         # on a fresh GRAD inner, so independent draws cross-fit away the winner's-curse max bias
         q_star = self._decide(
@@ -1705,8 +1704,7 @@ class DiffSolver:
                 extra = [q_prev]
             # the charge the SELECTION above ranked with, now inside the regressed TARGET, and the
             # successor read at the book the chosen action leaves standing
-            W1 = W1 - self._reposition_charge(
-                q_star, q_prev, kappa_t, self._unwind_kappa(t), self._calendar_kappa(t))[:, None]
+            W1 = W1 - self._charge(t, q_star, q_prev, kappa_t)[:, None]
             p1 = (q_star.sum(-1) / self.total_abs_limit)[:, None].expand(B, Bi_e).reshape(-1)
         Y = self._continuation(
             nets, m1_g.reshape(-1, md), W1.reshape(-1), self.nxt[t], p1).reshape(B, Bi_e)  # (B,Bi)
@@ -1748,8 +1746,7 @@ class DiffSolver:
             W1 = self._wealth_step(W, q, *self._outer_move(s, rows))
             if not self.position_state:
                 return W1
-            return W1 - self._reposition_charge(
-                q, q_prev, kappa, self._unwind_kappa(s), self._calendar_kappa(s))
+            return W1 - self._charge(s, q, q_prev, kappa)
 
         def bootstrap(s, W, q):
             market = self.inner_cache[s][3][rows] if s < self.T_dec else None
@@ -1763,7 +1760,7 @@ class DiffSolver:
             ret = torch.zeros_like(W)
             for _ in range(k - 1):
                 dF, dL, m1, _, live, ahead = self.inner_cache[s]
-                kappa = self.aspace.kappa(self.tradables_sim, s) if self.position_state else None
+                kappa = self._ranking_kappa(s, execution=False)
                 q_prev = q
                 q = self._decide(nets, m1[rows], dF[rows], dL[rows], W, s, q_prev=q_prev,
                                  kappa=kappa, live=live, rate_limit=False,
@@ -1936,7 +1933,7 @@ class DiffSolver:
         `_first_book`, as the stepper roll's is. Without `DiffV2_Position_State` the wealth
         recursion is cost-free and the cost is accounted in PARALLEL, so the `*_net` columns are
         diagnostics on that approximation. Under it each step's wealth is charged
-        `_reposition_charge`, the charge the labels are fitted net of, churn term included: every
+        `_charge`, the charge the labels are fitted net of, churn term included: every
         greedy decision reads the net wealth its value was fitted on, the main columns are net, and
         there are no `*_net` columns.
 
@@ -1976,13 +1973,11 @@ class DiffSolver:
                 vdrift_z += float(zstep.mean())
                 vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
-                kappa_t = self.aspace.kappa(self.tradables_sim, t)
                 logging.debug('verdict wealth at step %d: %.17g', t, float(W["greedy"].mean()))
                 q_g = self._decide(
                     nets, m1[rows], dF[rows], dL[rows], W["greedy"].float(), t,
                     q_prev=self._first_book(t, live, n) if t == t0 else q_prev["greedy"],
-                    kappa=kappa_t if self.cost_aware or self.position_state else None, live=live,
-                    ahead=_on_rows(ahead, rows))
+                    kappa=self._ranking_kappa(t), live=live, ahead=_on_rows(ahead, rows))
                 q_g = q_g * live          # zero positions on expired contracts (wealth-neutral)
                 q_tb = self._textbook_hedge(t, live, n)
                 q_pa = self._passive_hedge(t, live, n)
@@ -1990,14 +1985,12 @@ class DiffSolver:
                 # each path's charge at its own mark, where the ranking reads the mean
                 kappa_p = self.aspace.kappa(self.tradables_sim, t, rows=rows)
                 kappa_cal_t = self.aspace.calendar_kappa(self.tradables_sim, t, rows=rows)
-                kappa_T = self._unwind_kappa(t, rows=rows)
-                logging.debug('verdict charge kappa at step %d: %s to %s over the paths, %s at the mean',
-                              t, kappa_p.amin(0).tolist(), kappa_p.amax(0).tolist(), kappa_t.tolist())
+                logging.debug('verdict charge kappa at step %d: %s to %s over the paths', t,
+                              kappa_p.amin(0).tolist(), kappa_p.amax(0).tolist())
                 step_cost = {}
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
                                  ("passive", q_pa)):
-                    step_cost[p] = (self._reposition_charge(q_now, q_prev[p], kappa_p, kappa_T,
-                                                            kappa_cal_t)
+                    step_cost[p] = (self._charge(t, q_now, q_prev[p], kappa_p, rows)
                                     if self.position_state else
                                     turnover_charge(q_now - q_prev[p], kappa_p, kappa_cal_t))
                     cost[p] = cost[p] + step_cost[p]
@@ -2091,13 +2084,10 @@ class DiffSolver:
         branch, no extra continuation in the hot loop. The two rankings could drift apart, which is
         what the gate on the argmax column measures. The pass is affordable because the dump is a
         `Batch_Size = 1` diagnostic."""
-        kappa_T, kappa_cal = self._unwind_kappa(t), self._calendar_kappa(t)
         a_live = acts if live is None else acts * live
         with torch.no_grad():
-            charge = None
-            if kappa_T is not None or kappa is not None or self.churn_lambda > 0.0:
-                charge = self._reposition_charge(
-                    a_live[None, :, :], q_prev[:, None, :], kappa, kappa_T, kappa_cal)[:, :, None]
+            charge = self._charge(t, a_live[None], q_prev[:, None, :], kappa)
+            charge = None if charge is None else charge[:, :, None]
 
             def rank(charge):
                 C1f, W1 = self._landed(nets, W, a_live[None, :, None, :], (dF, dL, market_t1, live),
@@ -2346,7 +2336,7 @@ class DiffSolver:
                                                      if t <= d < self.landing[t]]).cumsum(0)
                                 ahead = (ahead[0] + (adj * moved[-len(ahead[0]):])[:, None, None],
                                          *ahead[1:])
-                        kappa_t = self.aspace.kappa(self.tradables_sim, t)
+                        kappa_t = self._ranking_kappa(t)
                         if not q_log["t"]:
                             q_prev = self._first_book(t, live, B)
                         day = self.bundle.scenario_dates[hist + int(t)]    # the full grid, past the history
@@ -2355,18 +2345,15 @@ class DiffSolver:
                             q = self._passive_hedge(t, live, B)
                         else:
                             logging.debug('stepper wealth at step %d: %.17g', t, float(W.mean()))
-                            q = self._decide(
-                                nets, m1, dF, dL, W.float(), t, q_prev=q_prev, live=live,
-                                kappa=kappa_t if self.cost_aware or self.position_state else None,
-                                ahead=ahead)
+                            q = self._decide(nets, m1, dF, dL, W.float(), t, q_prev=q_prev,
+                                             live=live, kappa=kappa_t, ahead=ahead)
                             q = q * live
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
                         q_log["t"].append(int(t))
                         q_log["w"].append(float(W.mean()))
                         if dump_rows is not None and not handed:
                             dump_rows.append(self._decision_curve_row(
-                                nets, t, m1, dF, dL, W.float(), q_prev, q, live,
-                                kappa_t if self.cost_aware or self.position_state else None, ahead))
+                                nets, t, m1, dF, dL, W.float(), q_prev, q, live, kappa_t, ahead))
                     q_prev = q
                     cur = state["positions"]
                     delta = {n: q[:, j] - cur[n].to(dtype=q.dtype, device=q.device)

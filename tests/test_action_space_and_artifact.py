@@ -1325,7 +1325,7 @@ def test_an_opening_book_on_a_leg_dead_before_the_first_decision_is_closed_there
     tracks close to one terminal wealth in both within 5e-6 relative (at most 2.2e-7). 4 s.
 
     Killing mutation: the verdict's charge measured from the standing book masked by the step's live
-    legs (`q_prev[p] * live` in `_verdict`'s `_reposition_charge`), the dead April leg's close at the
+    legs (`q_prev[p] * live` in `_verdict`'s `_charge`), the dead April leg's close at the
     first decision uncharged where the stepper pays it, the no-hedge track's wealth 1.7e-4 off the
     stepper's (the passive's 6.8e-4 and the greedy's 1.5e-3, July's close at its expiry with it)."""
     def doc(**kw):

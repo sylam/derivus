@@ -115,7 +115,7 @@ magnitude). Each traded policy pays turnover cost on the benchmarks' rule, entry
 book, every reposition and the unwind under `Force_Flat_At_End` (`turnover_cost_mean`). Without
 `DiffV2_Position_State` its wealth runs cost-free and the `*_net` columns subtract the cost beside
 it. Under it every step's wealth is charged the repositioning charge the labels are fitted net of
-(`DiffSolver._reposition_charge`), so each greedy decision reads the net wealth its value was
+(`DiffSolver._charge`), so each greedy decision reads the net wealth its value was
 fitted on, the columns are net and there are no `*_net` columns. Held by
 `tests/test_action_space_and_artifact.py::test_a_label_past_the_horizon_is_what_its_greedy_policy_realises`.
 A ranking prices a move at the cross-path mean mark; every charge, the verdict's and the
