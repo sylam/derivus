@@ -679,9 +679,10 @@ def construct_hedge_runtime(
 def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     """Per-contract turnover cost for tradable `name` at mark `price`: a flat
     `Transaction_Cost_Per_Unit` plus the half-spread charge on notional,
-    `0.5 · spread_bps · 1e-4 · price · contract_size`, where `spread_bps` is the FULL quoted spread
-    and the 0.5 is the mid-to-touch crossing. `price` is a scalar or tensor mark. Single source for
-    the solver's decision-time kappa, the env's realized debit and the diagnostic CSV writer.
+    `0.5 · spread_bps · 1e-4 · |price| · contract_size`, where `spread_bps` is the FULL quoted spread
+    and the 0.5 is the mid-to-touch crossing. `price` is a scalar or tensor mark, read by its abs (a
+    spread leg's mark goes negative, its notional does not). Single source for the solver's
+    decision-time kappa, the env's realized debit and the diagnostic CSV writer.
 
     `spread_bps` is the scalar `Bid_Offer_Spread_Bps` unless a spread SPEC is configured, in which
     case it is the instrument's `Per_Instrument` base (falling back to `Default_Bps`) scaled by
@@ -711,7 +712,7 @@ def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     fee = acc["transaction_cost_per_unit"]
     if calendar:
         spread_bps, fee = acc["calendar_spread_bps"], 2.0 * fee
-    return fee + 0.5 * spread_bps * scale * 1.0e-4 * price * contract_size
+    return fee + 0.5 * spread_bps * scale * 1.0e-4 * abs(price) * contract_size
 
 
 def turnover_charge(delta, kappa, kappa_cal=None):
@@ -970,10 +971,8 @@ def _roll_rebate(deltas, prices, runtime, vol=None):
     annualized vol."""
     hedges = list(runtime["names"]["hedges"])
     delta = torch.stack([deltas[h].to(torch.float32) for h in hedges], dim=-1)   # (B, n_hedge)
-    kappa = torch.stack([per_contract_kappa(runtime, prices[h].abs(), h, vol)
-                         for h in hedges], dim=-1)
-    cal = torch.stack([per_contract_kappa(runtime, prices[h].abs(), h, vol, True)
-                       for h in hedges], dim=-1)
+    kappa = torch.stack([per_contract_kappa(runtime, prices[h], h, vol) for h in hedges], dim=-1)
+    cal = torch.stack([per_contract_kappa(runtime, prices[h], h, vol, True) for h in hedges], dim=-1)
     return (delta.abs() * kappa).sum(-1) - turnover_charge(delta, kappa, cal)
 
 
@@ -1968,7 +1967,7 @@ class BundleStepper:
 
     def _cost(self, trade_delta, price, name, vol):
         # Realized debit on |Δq| contracts at the turnover-cost rule (per_contract_kappa).
-        return trade_delta.abs() * per_contract_kappa(self.runtime, price.abs(), name, vol)
+        return trade_delta.abs() * per_contract_kappa(self.runtime, price, name, vol)
 
     def _apply_frictions(self, accounts, deltas, prices, next_positions, current, next_idx, vol_t):
         """The two per-step friction flows both accounting modes share, credited into `accounts`

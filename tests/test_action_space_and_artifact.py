@@ -478,9 +478,9 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
     knot in force in whole contracts and inside the corridor, so no projection moves it. The
     verdict's terminal wealth is that book's P&L by the wealth law, the sum over decisions of
     position times contract size times the futures move to the next decision plus the liability's
-    move, less the declared cost (half the 10 bp spread on the path-mean mark per contract traded,
-    entry from the opening book and the unwind at the horizon), within 1e-10 relative; the frozen
-    eval's stepper rollout is that book driven through `create_stepper()`, to the bit.
+    move, less the declared cost (half the 10 bp spread on each path's own mark per contract
+    traded, entry from the opening book and the unwind at the horizon), within 1e-10 relative;
+    the frozen eval's stepper rollout is that book driven through `create_stepper()`, to the bit.
 
     Killing mutations, the verdict's net and the stepper's mean against the book's 120124.68 and
     -8480.32: the ramp read one fixing late (`fixing_day >= day` in `Bundle.unfixed_at`),
@@ -509,8 +509,8 @@ def test_the_passive_book_is_the_swaps_unfixed_quantity_at_the_declared_cost(tmp
     t0 = min(t for t in decisions if t >= PASSIVE_T_MIN)
 
     def kappa(t):
-        return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t].mean()
-                            * size for h, size in zip(LEGS, sizes)])
+        return torch.stack([0.5 * hp['Evaluator']['Bid_Offer_Spread_Bps'] * 1e-4 * F[h][t]
+                            * size for h, size in zip(LEGS, sizes)], dim=-1)
 
     W, q_prev, books = L[t0].clone(), torch.zeros(len(LEGS), device=world.device), []
     cost = torch.zeros_like(W)
@@ -1072,6 +1072,25 @@ def test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth(tmp_p
     assert v['nohedge']['wT_mean'] == sv['nohedge']['wT_mean'], (v['nohedge']['wT_mean'], sv['nohedge']['wT_mean'])
     for p in ('greedy', 'passive'):
         assert abs(sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0) < 5e-6, (p, v[p]['wT_mean'], sv[p]['wT_mean'])
+
+
+def test_every_track_charges_each_path_at_its_own_mark(tmp_path):
+    """A ranking prices a move at the cross-path mean mark, a charge at each path's own: on the swap
+    world rolled frozen on its own 12 paths at zero rates, the verdict's textbook and passive
+    books, one book on every path, close each path to the stepper roll's terminal wealth, so the
+    two tracks' 5% tails agree within 5e-6 relative (at most 3.1e-7). 8 s.
+
+    Killing mutation: the verdict charging every path at the mean mark (`_verdict`'s `kappa_p` read
+    without `rows`), the passive p5 -85,055.13 against the stepper's -84,893.16 (1.9e-3), the
+    textbook's 2.3e-3 apart."""
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(_swap(save=ckpt))
+    roll = _swap(load=ckpt)
+    roll['Calc']['Calculation']['Hedging_Problem']['Randomize_Initial_State'] = 'No'
+    d = _run(roll).evaluation_summary['diagnostics']
+    v, sv = d['verdict'], d['stepper_verdict']
+    gaps = {(p, k): sv[p][k] / v[p][k] - 1.0 for p in ('textbook', 'passive') for k in ('wT_p5', 'wT_cvar5')}
+    assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
 
 
 @pytest.mark.parametrize('t_min', [0, 15], ids=['first_row', 'row_17'])

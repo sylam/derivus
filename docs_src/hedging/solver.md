@@ -118,6 +118,10 @@ it. Under it every step's wealth is charged the repositioning charge the labels 
 (`DiffSolver._reposition_charge`), so each greedy decision reads the net wealth its value was
 fitted on, the columns are net and there are no `*_net` columns. Held by
 `tests/test_action_space_and_artifact.py::test_a_label_past_the_horizon_is_what_its_greedy_policy_realises`.
+A ranking prices a move at the cross-path mean mark; every charge, the verdict's and the
+benchmarks' as the stepper's and the CSV's, prices each path's move at that path's own mark
+(`HedgeActionSpace.kappa` with `rows`, `per_contract_kappa` reading the mark's abs), held by
+`tests/test_action_space_and_artifact.py::test_every_track_charges_each_path_at_its_own_mark`.
 The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
 `Reference_Mode = Running_Wealth` the solver's $V_0$ is a sum of step utilities, so the ladder's
 order is not an acceptance statement and the run logs a warning.
