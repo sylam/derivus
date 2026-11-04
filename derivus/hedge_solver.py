@@ -159,25 +159,25 @@ class HedgeActionSpace:
         self.total_abs_limit = float(acc["total_position_abs_limit"])
         # Optional per-decision-step corridor on the SIGNED total position Σq_i (sorted
         # (step, min_total, max_total) knots or None). `grid_at(t)` filters the base grid to it.
-        self.schedule = acc.get("total_position_schedule")
+        self.schedule = acc["total_position_schedule"]
         # optional per-leg rate limit on |dq| per decision step (0 = off). EXECUTION policy only:
         # the label path passes rate_limit=False, so the training argmax never arms the band.
-        self.max_trade = float(acc.get("max_trade_per_step", 0.0))
+        self.max_trade = acc["max_trade_per_step"]
         # Optional no-trade band in standard errors of the PAIRED inner-draw difference
         # against the standing book (0 = off). Same execution-only path as `max_trade`.
-        self.deadband_sigma = float(acc.get("decision_deadband_sigma", 0.0))
+        self.deadband_sigma = acc["decision_deadband_sigma"]
         # Optional per-decision-step split of the NET cover across the legs (sorted
         # (step, weights) knots or None). Present ⇒ `grid_at(t)` is the FACTORED Q-ladder.
-        self.weights = acc.get("allocation_weights")
-        self.mode = str(acc.get("allocation_mode", "exposure"))
+        self.weights = acc["allocation_weights"]
+        self.mode = acc["allocation_mode"]
         # Half-spread bps of the matched (calendar) leg of a reposition, or None ⇒ every
         # contract traded pays the outright rate.
-        self.calendar_bps = acc.get("calendar_spread_bps")
+        self.calendar_bps = acc["calendar_spread_bps"]
         self._grid_cache = None
         self._ladder_cache = {}
         solver_cfg = runtime["solver"]
         self.levels = int(solver_cfg["training_action_grid_levels_per_axis"])
-        active = solver_cfg.get("active_hedge_indices")
+        active = solver_cfg["active_hedge_indices"]
         self.active = (list(range(self.n_hedge)) if active is None
                        else [int(i) for i in active])
         self.n_active = len(self.active)
@@ -816,26 +816,26 @@ class DiffSolver:
         self.n_active = self.aspace.n_active
         self.levels = self.aspace.levels
         self.chunk = int(self.cfg["training_action_chunk_size"])
-        self.fit_iters = int(self.cfg.get("diffv2_fit_iters", 150))
-        self.lr = float(self.cfg.get("diffv2_lr", 2.0e-3))
-        self.noise_frac = float(self.cfg.get("diffv2_bank_noise_frac", 0.15))
-        self.t_min = int(self.cfg.get("t_min", 0))
+        self.fit_iters = self.cfg["diffv2_fit_iters"]
+        self.lr = self.cfg["diffv2_lr"]
+        self.noise_frac = self.cfg["diffv2_bank_noise_frac"]
+        self.t_min = self.cfg["t_min"]
         # downside-aware action selection; 0 = plain E[C] argmax
-        self.risk_kappa = float(self.cfg.get("diffv2_risk_kappa", 0.0))
+        self.risk_kappa = self.cfg["diffv2_risk_kappa"]
         # ...of the continuation this many decisions ahead, the book held; with no penalty, none
         self.risk_horizon = self.cfg["diffv2_risk_horizon"] if self.risk_kappa > 0.0 else 1
         # cost-aware EXECUTION: the verdict rollout charges kappa*|q - q_prev| at the argmax;
         # training and selection stay cost-free
-        self.cost_aware = bool(self.cfg.get("diffv2_cost_aware_argmax", False))
+        self.cost_aware = self.cfg["diffv2_cost_aware_argmax"]
         # quadratic churn charge lambda*sum((q-q_prev)^2) at every argmax that knows q_prev
-        self.churn_lambda = float(self.cfg.get("diffv2_churn_lambda", 0.0))
+        self.churn_lambda = self.cfg["diffv2_churn_lambda"]
         # the drift monitor's null: the unit z until a training verdict measures one or a load
         # stamps one, the value every reader takes
         self.drift_null_sigma = 1.0
         # FRICTIONAL BELLMAN: the net book fraction p = Sum(q)/Q_max becomes a state coordinate and
         # the repositioning charge enters the regressed target. Q_max is the Evaluator's cap - the
         # only declared scale p can be measured in - so an absent cap fails loud.
-        self.position_state = bool(self.cfg.get("diffv2_position_state", False))
+        self.position_state = self.cfg["diffv2_position_state"]
         # the book column's own pathwise label, the charge's slope in the standing book
         self.book_label = self.position_state and self.cfg["diffv2_book_gradient_label"]
         # TD(k): the steps the value label realises along the greedy policy before it bootstraps
@@ -844,7 +844,7 @@ class DiffSolver:
         self.bank_ladder = self.cfg["diffv2_bank_along_ladder"]
         # WEALTH-FREE residual: the value net's W input column is REMOVED, so C_t's whole
         # dependence on wealth is the utility anchor's. Composes with the position state.
-        self.wealth_free = bool(self.cfg.get("diffv2_wealth_free_value", False))
+        self.wealth_free = self.cfg["diffv2_wealth_free_value"]
         if self.wealth_free and not self.position_state:
             raise ValueError(
                 "Solver.DiffV2_Wealth_Free_Value='Yes' requires DiffV2_Position_State='Yes': an "
@@ -868,7 +868,7 @@ class DiffSolver:
         self.w_floor = 1.0
         # the DP's aversion: it divides the capital line in the LogWealth reward, so gamma > 1 puts
         # less capital at risk. 1.0 is neutral, and it is inert under the other objectives.
-        self.aversion = float(self.cfg.get("diffv2_risk_aversion", 1.0))
+        self.aversion = self.cfg["diffv2_risk_aversion"]
         self.displacement = 0.0                # measured off the bank at warmup, or restored
         self.loaded_displacement = None
         self.scheduled_scale = obj.get("utility_scale_mode") == "conditional_sim"
@@ -880,7 +880,7 @@ class DiffSolver:
                 "rescaling of it is a different objective again. Each is a separate experiment; "
                 "run them one at a time. (LogWealth is the exception: the schedule is its "
                 "CAPITAL line, not a rescaling.)")
-        if self.running_wealth and float(self.cfg.get("diffv2_temporal_proximity", 0.0)) > 0.0:
+        if self.running_wealth and self.cfg["diffv2_temporal_proximity"] > 0.0:
             raise ValueError(
                 "Objective.Reference_Mode='Running_Wealth' refuses DiffV2_Temporal_Proximity > 0: "
                 "the proximity prior penalises the distance from A_t to its fitted SUCCESSOR, "
@@ -890,12 +890,11 @@ class DiffSolver:
                 "still valid — it is an initial point, not a penalty.")
         self.force_flat = bool(runtime["accounting"]["force_flat_at_end"])
         # pure diagnostic: where `_rollout_on_stepper` writes its per-decision ranking-curve CSV
-        self.curve_dump = str(self.cfg.get("diffv2_decision_curve_dump", "") or "")
+        self.curve_dump = self.cfg["diffv2_decision_curve_dump"]
         # the stepper roll's handover to the passive book, a trip rule read outside the engine
-        passive_from = str(self.cfg.get("diffv2_passive_from", "") or "")
+        passive_from = self.cfg["diffv2_passive_from"]
         self.passive_from = pd.Timestamp(passive_from) if passive_from else None
-        self.first_from_passive = (str(self.cfg.get("diffv2_first_decision_from", "opening_book")).lower()
-                                   == "passive")
+        self.first_from_passive = self.cfg["diffv2_first_decision_from"] == "passive"
         if self.position_state and not self.total_abs_limit > 0.0:
             raise ValueError(
                 "Solver.DiffV2_Position_State='Yes' requires Evaluator.Total_Position_Abs_Limit > 0 "
@@ -904,8 +903,8 @@ class DiffSolver:
         # early termination for non-anchor fits: a BLOCK-wise relative loss plateau (blocks of 8
         # iters, floor of 2), so a cold-Adam stall cannot read as convergence. The terminal anchor
         # always runs the full budget; 0 disables.
-        self.fit_tol = float(self.cfg.get("diffv2_fit_tol", 1e-3))
-        self.prox = float(self.cfg.get("diffv2_temporal_proximity", 0.0))
+        self.fit_tol = self.cfg["diffv2_fit_tol"]
+        self.prox = self.cfg["diffv2_temporal_proximity"]
         # bank exploration RNG - deterministic, and PERSISTENT across batches so each batch
         # explores a fresh noise draw
         self.gen = torch.Generator(device=self.device)
@@ -936,7 +935,7 @@ class DiffSolver:
         # re-binds to a batch that measured its own, which must not reach the reward.
         self.utility_scale_schedule = bundle.utility_scale_schedule
         if (self.scheduled_scale and self.utility_scale_schedule is None
-                and not self.cfg.get("diffv2_load_value_fn")):
+                and not self.cfg["diffv2_load_value_fn"]):
             raise ValueError(
                 "Objective.Utility_Scale_Mode='conditional_sim' but this warmup batch measured no "
                 "schedule: c_t is the cross-sectional dispersion of the flat-book wealth across "
@@ -1837,7 +1836,7 @@ class DiffSolver:
                     if ref is not None and self.prox > 0.0 else None)
         # twin loss in STANDARDIZED space: g_zn = std*g_raw, the wealth column's std carrying the
         # t0 notional the column is divided by under the returns state (`_w_norm`)
-        lam_g = float(self.cfg.get("diffv2_lambda_grad", 1.0))
+        lam_g = self.cfg["diffv2_lambda_grad"]
         g_zn_W = self.w_std * (getattr(self, "state_notional", None) or 1.0) * a_gW          # (B,)
         g_zn_m = self.m_std * g_market                                                   # (B,md); u indep of market
         g_zn_m = g_zn_m.index_select(1, measured)        # a column no leaf measures is not labelled
@@ -1855,7 +1854,7 @@ class DiffSolver:
         if opt is None:
             opt = self._opts[t] = torch.optim.Adam(
                 net.parameters(), lr=self.lr,
-                weight_decay=float(self.cfg.get("diffv2_weight_decay", 0.0)))
+                weight_decay=self.cfg["diffv2_weight_decay"])
         prev_loss, iters_run = None, self.fit_iters
         nrm_p = None if g_p is None else g_p.var() + 1e-8
         for it in range(self.fit_iters):
@@ -2346,11 +2345,11 @@ class DiffSolver:
                         drift["t"].append(int(t))
                         drift["z_path"].append(round(drift["cum_z"], 4))
                         n_so_far = max(1, len(drift["t"]) - 1)         # residuals scored so far
-                        boundary = (float(self.cfg.get("diffv2_drift_threshold_sigmas", 3.0))
+                        boundary = (self.cfg["diffv2_drift_threshold_sigmas"]
                                     * null * (n_so_far ** 0.5))
                         tripped = abs(drift["cum_z"]) > boundary
                         drift["tripped"].append(bool(tripped))
-                        beta = float(self.cfg.get("diffv2_drift_beta", 0.0))
+                        beta = self.cfg["diffv2_drift_beta"]
                         if tripped and beta > 0.0:
                             # bias the forecast toward the REALIZED drift: the observed average
                             # residual per leg, scaled by beta, shifts the fork moves the ranking
@@ -2452,7 +2451,7 @@ class DiffSolver:
         for key, want in (("t_min", self.t_min), ("T_dec", self.T_dec),
                           ("md", md), ("hedges", list(self.hedges))):
             if ck[key] != want:
-                if key in ("t_min", "T_dec") and self.cfg.get("diffv2_load_horizon_pad"):
+                if key in ("t_min", "T_dec") and self.cfg["diffv2_load_horizon_pad"]:
                     # horizon pad: per-step structures clamp to the saved range at load, and the
                     # tail repeats the last fitted step
                     logging.info("DiffV2 load horizon pad: %r saved %r vs this run %r",
@@ -2474,7 +2473,7 @@ class DiffSolver:
                 f"{'Yes' if self.position_state else 'No'}. The net book fraction p = Sum(q)/Q_max "
                 f"is an input column of the fitted value, so the two are different functions of "
                 f"different states — retrain, or match Solver.DiffV2_Position_State.")
-        if bool(ck.get("returns_state", False)) != bool(self.cfg.get("diffv2_returns_state")):
+        if bool(ck.get("returns_state", False)) != self.cfg["diffv2_returns_state"]:
             raise ValueError(
                 f"DiffV2_Returns_State mismatch: {src} was trained with returns_state="
                 f"{bool(ck.get('returns_state', False))} but this run sets "
@@ -2583,7 +2582,7 @@ class DiffSolver:
                 "widest universe); rolling it on an Allocation_Weights ladder only restricts "
                 "to a learned subset — valid.", src)
             return
-        if self.cfg.get("diffv2_load_horizon_pad"):
+        if self.cfg["diffv2_load_horizon_pad"]:
             # a ladder is derived from the run's own calendar, so a knot-for-knot match is
             # impossible under a horizon-padded load and the run's own ladder is searched
             logging.info("DiffV2 load horizon pad: Allocation_Weights differ from the saved "
@@ -2673,7 +2672,7 @@ class DiffSolver:
         the primary member's and only the label and terminal reads consult it."""
         loaded = members[0]
         self.utility_scale_schedule = loaded.get("utility_scale_schedule")
-        if self.cfg.get("diffv2_load_horizon_pad"):
+        if self.cfg["diffv2_load_horizon_pad"]:
             self.utility_scale_schedule = self._pad_steps(self.utility_scale_schedule,
                                                           self.T_dec + 1)
         self.loaded_displacement = loaded.get("displacement")
@@ -2744,7 +2743,7 @@ class DiffSolver:
         # returns-state: the wealth column and its frame live in fractions of the t0 book notional,
         # so a stamped frame travels across price epochs like the market columns do
         self.state_notional = (float(self.runtime["objective"].get("state_notional") or 0.0)
-                               if self.cfg.get("diffv2_returns_state") else 0.0) or None
+                               if self.cfg["diffv2_returns_state"] else 0.0) or None
         if self.state_notional:
             Wall = Wall / self.state_notional
         self.w_mean, self.w_std = Wall.mean(), Wall.std().clamp_min(1e-6)
@@ -2756,7 +2755,7 @@ class DiffSolver:
             self._replication_hedge(0).detach().cpu().tolist())
 
         hidden = self.cfg["diffv2_hidden"]
-        load_cfg = self.cfg.get("diffv2_load_value_fn", "") or ""
+        load_cfg = self.cfg["diffv2_load_value_fn"]
         # a load member is either a checkpoint PATH or an already-materialised artifact DICT, so
         # the eval-from-artifact path treats an in-memory artifact exactly like a loaded file
         load_members = ([(p if isinstance(p, dict) else str(p)) for p in load_cfg]
@@ -2834,7 +2833,7 @@ class DiffSolver:
                     for net, sd in zip(m_nets, self._pad_steps(ck["state_dicts"], self.T_dec)):
                         net.load_state_dict(sd)
                         net.eval()
-                    pad = bool(self.cfg.get("diffv2_load_horizon_pad"))
+                    pad = self.cfg["diffv2_load_horizon_pad"]
                     self._ensemble.append(
                         (m_nets, ck["m_mean"], ck["m_std"], ck["w_mean"], ck["w_std"],
                          self._pad_steps(ck.get("a_bounds"), self.T_dec) if pad
@@ -2965,7 +2964,7 @@ class DiffSolver:
             # position-state provenance: p is an input column, so a load under the other setting is
             # refused BY NAME rather than as a net shape error. wealth_free is the same for W.
             "position_state": self.position_state,
-            "returns_state": bool(self.cfg.get("diffv2_returns_state")),
+            "returns_state": self.cfg["diffv2_returns_state"],
             "wealth_free": self.wealth_free,
             "T_dec": self.T_dec, "t_min": self.t_min, "md": md, "hidden": hidden,
             # bank-policy provenance: WHICH solver class shaped the wealth/position states the nets
@@ -3060,7 +3059,7 @@ class DiffSolver:
         # POLICY ARTIFACT, built ONCE here and after the verdict, whose drift null it stamps;
         # a LOADED run produces none
         artifact = None
-        save_path = str(self.cfg.get("diffv2_save_value_fn", "") or "")
+        save_path = self.cfg["diffv2_save_value_fn"]
         if loaded is None:
             # the fitted value against what its own argmax earns held out: a bootstrap that
             # outruns it has ratcheted an unfitted slope into V_0, or its policy ruins. Under the
@@ -3087,7 +3086,7 @@ class DiffSolver:
         # deployment-faithful backtest through BundleStepper: real futures accounting, decisions
         # off the stepper's own wealth
         stepper_verdict = None
-        if loaded is not None and bool(self.cfg.get("diffv2_stepper_rollout", False)):
+        if loaded is not None and self.cfg["diffv2_stepper_rollout"]:
             stepper_verdict = self._rollout_on_stepper(nets, inner_cache, sweep_ts)
             sg, stb, snh, spa = (stepper_verdict[k]
                                  for k in ("greedy", "textbook", "nohedge", "passive"))
@@ -3209,8 +3208,8 @@ class StreamingSolve:
     def warmup(self, bundle):
         """Batch 1: build the solver(s) and fit the first backward sweep. The frame (utility
         scale, z-frame, trust region) is locked here and frozen for every later batch."""
-        n_seed = max(1, int(self.cfg.get("multi_seed_count", 1)))
-        cls = DiffSolverV2 if self.cfg.get("object") == "diffsolverv2" else DiffSolver
+        n_seed = max(1, self.cfg["multi_seed_count"])
+        cls = DiffSolverV2 if self.cfg["object"] == "diffsolverv2" else DiffSolver
         self.solvers = [cls(bundle, self.runtime) for _ in range(n_seed)]
         for solver in self.solvers:
             solver.warmup(bundle)
@@ -3265,10 +3264,10 @@ def assemble_hedge_result(primary_runs, bundle, runtime):
             if solver_cfg.get(flag) and not have_liability:
                 logging.warning("solve_hedge: %s requested but bundle has no "
                                  "liability_mtm — track skipped", label)
-        if solver_cfg.get("run_hindsight_diagnostic") and have_liability:
+        if solver_cfg["run_hindsight_diagnostic"] and have_liability:
             comparison["HindsightDpSolver"] = SolverResult.multiseed_summary(
                 [HindsightDpSolver(bundle, runtime).solve()])     # deterministic — one run
-        if solver_cfg.get("run_textbook_benchmark") and have_liability:
+        if solver_cfg["run_textbook_benchmark"] and have_liability:
             comparison["textbook"] = run_textbook_benchmark(bundle, runtime)
 
     # acceptance ordering - hindsight >= DiffSolver >= textbook over the tracks present, with a
@@ -3584,7 +3583,7 @@ class DiffSolverV2(DiffSolver):
         of the ladder band's width, clamped into the band, and every bank book is that net's
         `rung` on the legs live at the step (`Bundle.marked`)."""
         if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
-                and not (self.cfg.get("diffv2_load_value_fn") or "")):
+                and not self.cfg["diffv2_load_value_fn"]):
             sched = self._carry_variance_weights()
             self.aspace.install_weights(sched)
             logging.info(
