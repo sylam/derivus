@@ -5,8 +5,8 @@
      pins the inactive legs to exactly zero across every track (the old benchmarks used the
      generic all-hedges grid and could trade a leg the greedy run had frozen).
   2. INITIAL INVENTORY — first-step turnover is measured from the OPENING book `q0`
-     (normalized `Portfolio_State` positions), not from flat, in the frictionless value
-     tracks' net-of-cost diagnostics and in the stepper rollout.
+     (normalized `Portfolio_State` positions), not from flat, in the verdict and in the stepper
+     rollout.
   3. POLICY ARTIFACT — a solver run returns ONE `value_fn_artifacts` dict, the same one
      `DiffV2_Save_Value_Fn` persists.
   4. CORRIDOR — a policy trained inside a `Total_Position_Schedule` rolls inside its fence,
@@ -204,10 +204,10 @@ def test_the_textbook_bound_holds_its_book_to_the_terminal():
 # (ii) initial inventory — first-step turnover measured from the OPENING book q0, not flat
 # --------------------------------------------------------------------------------------------
 def test_first_step_turnover_measured_from_opening_book():
-    """Killing mutations: the textbook's entry charged from flat, `n_star - 0` for `n_star - q0`;
-    the verdict's wealth started at the liability's mark at its first decision (`L[t0]`), the
-    no-hedge track's terminal wealth unmoved by the opening book's 9,164.21 to that decision; the
-    bound deciding from row 0 (`bundle.decision_steps`), its V_0 unmoved by the opening book."""
+    """Killing mutations: the verdict's wealth started at the liability's mark at its first
+    decision (`L[t0]`), the no-hedge track's terminal wealth unmoved by the opening book's 9,164.21
+    to that decision; the bound deciding from row 0 (`bundle.decision_steps`), its V_0 unmoved by
+    the opening book."""
     positions = {'PL_APR_2026': -1, 'PL_JUL_2026': -4, 'PL_OCT_2026': 0}
     flat = _run(_cfg(seed=11, positions=None, benchmarks=True))
     book = _run(_cfg(seed=11, positions=positions, benchmarks=True))
@@ -230,27 +230,12 @@ def test_first_step_turnover_measured_from_opening_book():
              - fb['diagnostics']['verdict']['nohedge']['wT_mean'])
     assert abs(moved - carried) < 1e-3 * (abs(carried) + 1.0), (moved, carried)
 
-    # ...but the NET-OF-COST turnover DOES shift, because entry is now |q_target − q0|.
-    tb_flat = fb['comparison']['textbook']['turnover_cost_mean']
-    tb_book = bb['comparison']['textbook']['turnover_cost_mean']
+    # ...but the verdict's turnover DOES shift, because its entry is now |q_target − q0|, and the
+    # textbook's hold, position-free, does not
     g_flat = fb['diagnostics']['verdict']['greedy']['turnover_cost_mean']
     g_book = bb['diagnostics']['verdict']['greedy']['turnover_cost_mean']
-    assert tb_book != tb_flat, 'textbook entry turnover ignored the opening book'
     assert g_book != g_flat, '_verdict entry turnover ignored the opening book'
-
-    # The frictionless argmax is position-independent, so both runs pick the SAME constant
-    # hold n_star and the SAME kappa0 (identical bundle). The ONLY thing that changed is the
-    # ENTRY term: |n_star − q0| (book) vs |n_star − 0| (flat). So the whole turnover
-    # difference must equal Σ_i (|n_star_i − q0_i| − |n_star_i|) · kappa0_i — the crisp
-    # signature of "first-step turnover measured from q0, not from flat".
-    n_star = bb['comparison']['textbook']['n_star']
-    assert fb['comparison']['textbook']['n_star'] == n_star     # position-free selection
-    expected_diff = sum(
-        (abs(n_star[i] - float(positions[h])) - abs(n_star[i]))
-        * float(per_contract_kappa(runtime, bundle.tradables[h][hist:][0].mean(), h))
-        for i, h in enumerate(_HEDGES))
-    assert abs((tb_book - tb_flat) - expected_diff) < 1e-3 * (abs(expected_diff) + 1.0), \
-        f'textbook turnover shift {tb_book - tb_flat} != Σ(|n*−q0|−|n*|)·kappa0 {expected_diff}'
+    assert fb['comparison']['textbook']['n_star'] == bb['comparison']['textbook']['n_star']
 
     # The stepper OPENS from q0 (its opening state seeds Portfolio_State), so its realized
     # first-step trade is measured from the same book — the deployment convention agrees.

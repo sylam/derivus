@@ -85,8 +85,8 @@ one greedy book. Held by
 telescopes to the terminal, where the hindsight bound stops too, held by
 `tests/test_action_space_and_artifact.py::test_the_textbook_bound_holds_its_book_to_the_terminal`.
 
-The two tracks named `textbook` are different policies. Both report turnover cost as a diagnostic;
-the comparison track is never charged it, the verdict's only under the position state.
+The two tracks named `textbook` are different policies: the comparison track's constant hold is
+frictionless and reports no cost, the verdict's is traded and pays it as every verdict policy does.
 
 The verdict rolls the fitted argmax policy over every path of the held-out batch from `T_Min`,
 every track holding the opening book from the first row to it,
@@ -95,7 +95,7 @@ mean, 5th percentile and CVaR at 5% of terminal wealth (`wT_mean`, `wT_p5`, `wT_
 the mean of the paths at or below the 5th percentile). It flags `verdict_beats_nohedge_on_utility`
 and `verdict_beats_textbook_on_utility` (greedy `u_mean` at least the other's) and
 `verdict_tail_competitive_vs_textbook` (greedy CVaR5 no worse than the textbook's less 5% of its
-magnitude). Each traded policy pays turnover cost on the benchmarks' rule, entry from the opening
+magnitude). Each traded policy pays turnover cost, entry from the opening
 book, every reposition and the unwind under `Force_Flat_At_End` (`turnover_cost_mean`). Without
 the position state its wealth runs cost-free and the `*_net` columns subtract the cost beside
 it. Under it every step's wealth is charged the repositioning charge the labels are fitted net of

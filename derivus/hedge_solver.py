@@ -448,37 +448,16 @@ class HedgeActionSpace:
 
 def run_textbook_benchmark(bundle, runtime, aspace):
     """The comparison track's `textbook` (Solver page, Benchmarks and the verdict): the best
-    constant book of the run's action space's `static_grid` by E[u], held frictionless to the
-    terminal, its entry from the opening book and unwind there reported as a net-of-cost
-    diagnostic."""
+    constant book of the run's action space's `static_grid` by E[u], held frictionless from the
+    first row to the terminal."""
     T = bundle.last_live_mtm_index
-    L_T, device = bundle.liability_sim[T], bundle.device
-    acc = runtime["accounting"]
-    tradables_sim = bundle.tradables_sim
     # entry-step corridor only: a constant hold cannot track a per-t one
     grid = aspace.static_grid()                                      # (n_actions, n_hedge)
-    q0 = initial_q_from_runtime(runtime, bundle.batch_size, device)   # (B, n_hedge) opening book
-
     total_move = bundle.move(0, T, aspace.hedges, dim=0)               # (n_h, B) telescoped
     g_t = torch.einsum("ai,ib->ab", (grid * aspace.contract_size).to(MONEY), total_move.to(MONEY))
-    u = _utility_wrap_signed(L_T.unsqueeze(0) + g_t, runtime)         # FRICTIONLESS objective
-    obj = u.mean(dim=-1)                                               # (n_actions,)
+    obj = _utility_wrap_signed(bundle.liability_sim[T].unsqueeze(0) + g_t, runtime).mean(dim=-1)
     best = int(obj.argmax())
-    n_star = grid[best]                                                # (n_hedge,)
-    # Net-of-cost diagnostic (shared kappa): entry |n_star − q0| + terminal unwind |0 − n_star|.
-    paths = slice(None)                                                # each path's own mark
-    cost = turnover_charge(n_star.unsqueeze(0) - q0,                   # (B,) entry from q0
-                           *aspace.kappa(tradables_sim, 0, rows=paths))
-    if acc["force_flat_at_end"]:
-        # unwound at the PRE-SETTLEMENT row, since the last row is the post-settlement clean exit
-        # where there is nothing left to liquidate. Outright: flat against the market, not leg
-        # against leg.
-        cost = cost + turnover_charge(n_star, *aspace.kappa(tradables_sim, T, paths, matched=False))
-    u_net = _utility_wrap_signed(L_T + g_t[best] - cost, runtime)
-    return {"v0_mean": float(obj[best]), "v0_std": 0.0,
-            "v0_mean_net": float(u_net.mean()),
-            "turnover_cost_mean": float(cost.mean()),
-            "n_star": n_star.detach().cpu().tolist()}
+    return {"v0_mean": float(obj[best]), "v0_std": 0.0, "n_star": grid[best].detach().cpu().tolist()}
 
 
 class HindsightDpSolver:
@@ -491,7 +470,7 @@ class HindsightDpSolver:
         'maximising its realized P&L to the next decision (`Bundle.successors`): perfect foresight and',
         'free repositioning, with no inner Monte Carlo and no fitted value. Frictionless, its per-step',
         'choices decouple, so the dynamic program is a per-step argmax and its mean value bounds any',
-        'deployable policy; the turnover its path would pay is a net-of-cost diagnostic, never charged.',
+        'deployable policy.',
         '**Held by**',
         '`tests/test_action_space_and_artifact.py::test_the_hindsight_bound_decides_where_the_solver_does`.',
     ])
@@ -503,56 +482,31 @@ class HindsightDpSolver:
 
     def solve(self):
         bundle, runtime, aspace = self.bundle, self.runtime, self.aspace
-        acc = runtime["accounting"]
-
-        L_T, device = bundle.liability_sim[bundle.last_live_mtm_index], bundle.device
-        b_outer = bundle.batch_size
-        tradables_sim = bundle.tradables_sim
-        cs = aspace.contract_size
-
+        cs = aspace.contract_size.to(MONEY)
         # frictionless clairvoyant: independent per-decision argmax over the realized move to the
-        # decision's successor, within the per-t action universe. The net-of-cost trajectory is
-        # accumulated for the diagnostic.
-        q_prev = initial_q_from_runtime(runtime, b_outer, device)    # (B, n_h) opening book
+        # decision's successor, within the per-t action universe
         steps = bundle.decisions_from(runtime["solver"]["t_min"])
         logging.debug('hindsight bound decides on rows %s', steps)
-        n_star_0 = None
         # the opening book held to the first decision
-        cs = cs.to(MONEY)
-        G = torch.einsum("bi,ib->b", q_prev * cs, bundle.move(0, steps[0], aspace.hedges, dim=0).to(MONEY))
-        cost = torch.zeros(b_outer, dtype=MONEY, device=device)
-        paths = slice(None)                                            # each path's own mark
+        q0 = initial_q_from_runtime(runtime, bundle.batch_size, bundle.device)
+        G = torch.einsum("bi,ib->b", q0 * cs, bundle.move(0, steps[0], aspace.hedges, dim=0).to(MONEY))
+        n_star_0 = None
         for t in steps:
             live = bundle.marked(t, aspace.hedges)
             grid = aspace.grid_at(t, live)                             # (n_actions_t, n_h) per-t
             dF = bundle.move(t, bundle.successors[t], aspace.hedges, dim=0).to(MONEY)  # (n_h, B)
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
             best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
-            q_now = grid[best_idx] * live                              # (B, n_h) as booked
-            cost = cost + turnover_charge(q_now - q_prev, *aspace.kappa(tradables_sim, t, rows=paths))
             G = G + best_pnl
-            q_prev = q_now
             if n_star_0 is None:
-                n_star_0 = q_now
-        if acc["force_flat_at_end"]:
-            # pre-settlement row, as in `run_textbook_benchmark` and `DiffSolver._unwind_kappa`
-            cost = cost + turnover_charge(q_prev, *aspace.kappa(
-                tradables_sim, int(bundle.last_live_mtm_index), paths, matched=False))
-        v0 = _utility_wrap_signed(L_T + G, runtime)                    # (B,) FRICTIONLESS
-        v0_net = _utility_wrap_signed(L_T + G - cost, runtime)         # (B,) net-of-cost diagnostic
-
+                n_star_0 = grid[best_idx] * live                       # (B, n_h) as booked
+        v0 = _utility_wrap_signed(bundle.liability_sim[bundle.last_live_mtm_index] + G, runtime)
         return SolverResult(
             solver_name="HindsightDpSolver",
             actions=n_star_0.detach().cpu(),
             values=v0.detach().cpu(),
-            diagnostics={
-                "V_0": float(v0.mean()),
-                "V_0_net": float(v0_net.mean()),
-                "turnover_cost_mean": float(cost.mean()),
-                "n_star_0": n_star_0.float().mean(dim=0).detach().cpu().tolist(),
-                "v0_abs_max": float(v0.abs().max()),
-                "action_grid_size": aspace.universe_size(),
-            },
+            diagnostics={"V_0": float(v0.mean()),
+                         "n_star_0": n_star_0.float().mean(dim=0).detach().cpu().tolist()},
         )
 
 
