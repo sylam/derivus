@@ -76,7 +76,7 @@ class SolverResult:
         report `std == 0`."""
         v0 = [float(r.diagnostics["V_0"]) for r in runs]
         mean = sum(v0) / len(v0)
-        std = (sum((x - mean) ** 2 for x in v0) / len(v0)) ** 0.5 if len(v0) > 1 else 0.0
+        std = (sum((x - mean) ** 2 for x in v0) / len(v0)) ** 0.5
         return {"v0_mean": mean, "v0_std": std, "v0_seeds": v0,
                 "n_star": runs[0].diagnostics["n_star_0"]}
 
@@ -1716,7 +1716,7 @@ class DiffSolver:
         q_prev = {p: q0.clone() for p in cost}
         # running-wealth: the rollout's value is the SUM of the per-step rewards, accumulated along
         # the roll, and the net sum charges each step's own turnover into that step's increment
-        vdrift_z, vdrift_s2, vdrift_n = 0.0, 0.0, 0
+        vdrift_z, vdrift_s2, vdrift_n = 0.0, 0.0, len(sweep_ts)
         u_run = ({p: torch.zeros(n, dtype=MONEY, device=self.device) for p in W}
                  if self.running_wealth else None)
         u_net = ({p: torch.zeros(n, dtype=MONEY, device=self.device) for p in cost}
@@ -1733,7 +1733,6 @@ class DiffSolver:
                 zstep = self._residual_z(t, dF[rows], dF_o, self.bundle.moving(t, self.aspace.hedges))
                 vdrift_z += float(zstep.mean())
                 vdrift_s2 += float(zstep.pow(2).mean())
-                vdrift_n += 1
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.debug('verdict wealth at step %d: %.17g', t, float(W["greedy"].mean()))
                 q_g = self._decide(
@@ -1792,14 +1791,14 @@ class DiffSolver:
                                     + self._reward(last_net_inc[p] - unwind, last_W_pre[p], self.T_dec))
 
         out = {p: _tail_stats(self.runtime, W[p], None if u_run is None else u_run[p]) for p in W}
-        out["validation_drift_z"] = round(vdrift_z / max(1, vdrift_n) * (vdrift_n ** 0.5), 4)
+        out["validation_drift_z"] = round(vdrift_z / vdrift_n * (vdrift_n ** 0.5), 4)
         # THE NULL: the per-step std of the within-model standardized residual, so the tripwire
         # boundary at inference is k * null_sigma * sqrt(t). Stamped with the frame.
         if self.loaded is None:
             # measured on TRAINING validation only, where the fork and the outer paths share one
             # law. On a LOADED roll the same statistic reads model-vs-market drift, and stamping
             # that as the null would inflate the tripwire's threshold with the signal it detects.
-            self.drift_null_sigma = max(1e-6, (vdrift_s2 / max(1, vdrift_n)) ** 0.5)
+            self.drift_null_sigma = max(1e-6, (vdrift_s2 / vdrift_n) ** 0.5)
         out["drift_null_sigma"] = round(self.drift_null_sigma, 4)
         # which regime chose the greedy book, and whether `u_mean` is a terminal utility or a sum
         # of per-step ones - neither is readable off the figures
@@ -2567,8 +2566,7 @@ class DiffSolver:
         self.rows = rows
         self.worst = max((r["Y_absmean"] for r in rows if math.isfinite(r["Y_absmean"])),
                          default=0.0)
-        self.root = rows[-1] if rows else {"t": self.sweep_ts[0], "Y_mean": 0.0, "q_star_mean":
-                                           [0.0] * self.aspace.n_hedge}
+        self.root = rows[-1]
 
     def _fork_sweep(self):
         """One inner-MC fork per swept t on the bound world, reused for the argmax, the bootstrap,
