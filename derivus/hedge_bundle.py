@@ -879,7 +879,7 @@ class Bundle:
         self.factors = {}                   # {factor name: (T, …, B)} scenario paths
         self.privileged_factors = {}        # {name: (T, B, dim)} process-revealed state
         self.primary = None                 # the primary spot's factor name (`primary_spot`)
-        self.liability_value = None         # (T, B) the liability's value, or None
+        self.liability_value = None         # (T, B) the liability's value
         self.spot_price_history = {}        # {commodity: (H, B)} realized history prefix
         # Frame + liability descriptors.
         self.spot_realized_vol = {}         # {commodity: (T, B)} rolling realized vol
@@ -914,16 +914,12 @@ class Bundle:
         factors = {n: torch.cat(blocks, dim=-1) for n, blocks in factor_tensor_blocks.items()}
         self.batch_size = int(factors[self.primary].shape[-1])
         logging.debug('bundle width %d paths, off the primary spot', self.batch_size)
-        mtm = (torch.cat(hedge_profile_blocks['mtm'], dim=1)
-               if hedge_profile_blocks.get('mtm') else None)
+        mtm = torch.cat(hedge_profile_blocks['mtm'], dim=1)
         cash = torch.cat(hedge_profile_blocks['cash'], dim=1)
         self.primary_fx = torch.cat(hedge_profile_blocks['fx'], dim=1)[0]
-        # The liability MTM sets the time axis (its native length is the mtm grid); everything
-        # else pads/truncates to it. No liability ⇒ the shortest simulated series wins.
-        steps = int(mtm.shape[0]) if mtm is not None else min(
-            [int(time_grid_days.shape[0])]
-            + [int(t.shape[0]) for t in tradables.values()]
-            + [int(t.shape[0]) for t in factors.values()])
+        # the liability's mark sets the time axis (its native length is the mtm grid); everything
+        # else pads/truncates to it
+        steps = int(mtm.shape[0])
         self._resolve_tradables(tradables, time_grid_days, steps, runtime)
         self._resolve_liability(mtm, cash, steps, total_leg_volume, fixings)
         self._resolve_factors(factors, privileged_factor_blocks or {}, stoch_factors, steps)
@@ -997,15 +993,14 @@ class Bundle:
         `last_live_mtm_index` is the structural pre-settlement terminal: the grid appends one
         clean-exit row where the liability settles to zero, so the last LIVE mtm row is
         `steps - 2` — the single source for the DP depth and the L_T read."""
-        if mtm is not None:
-            mtm = _align_time_axis(mtm, steps)
-            paid = _align_time_axis(cash, steps)
-            # the mark carries a payment on its own row and drops it after, so the cash paid on
-            # earlier rows joins it: the liability's value is continuous across a payment
-            value = mtm + torch.cat([torch.zeros_like(paid[:1]), paid.cumsum(0)[:-1]])
-            if logging.getLogger().isEnabledFor(logging.DEBUG):
-                logging.debug('liability value: cash paid on rows %s', paid.any(-1).nonzero().flatten().tolist())
-            self.liability_value = torch.cat([self._history_prefix(value), value], dim=0)
+        mtm = _align_time_axis(mtm, steps)
+        paid = _align_time_axis(cash, steps)
+        # the mark carries a payment on its own row and drops it after, so the cash paid on
+        # earlier rows joins it: the liability's value is continuous across a payment
+        value = mtm + torch.cat([torch.zeros_like(paid[:1]), paid.cumsum(0)[:-1]])
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug('liability value: cash paid on rows %s', paid.any(-1).nonzero().flatten().tolist())
+        self.liability_value = torch.cat([self._history_prefix(value), value], dim=0)
         self.last_live_mtm_index = T = int(steps - 2)
         # decisions on the rows of market time, the rows the market-clock laws step on, and on the
         # first row whatever its day, where the opening book is traded
@@ -1134,9 +1129,6 @@ class Bundle:
         the close, `last_live_mtm_index`, the cross-path std of the flat-book wealth's move
         `L_t - L_0` floored at `Utility_Scale_Floor_Frac` of its terminal entry; None for a batch of
         one outer path, which has no cross-section."""
-        if self.liability_value is None:
-            raise ValueError("Objective.Utility_Scale_Mode='conditional_sim' requires a marked "
-                             "liability, its schedule the flat-book wealth's dispersion")
         L = self.liability_sim[:self.last_live_mtm_index + 1].to(dtype=MONEY)
         if int(L.shape[-1]) < 2:
             return None
@@ -1239,10 +1231,7 @@ class Bundle:
         return self.marked(landing, refs) * float(sum(self.market_time[t + 1:landing + 1]) > 0)
 
     def liability_at(self, time_index):
-        """The liability's value `(B,)` at full-grid step `time_index` (zeros when there is none),
-        in the accounting's `MONEY`."""
-        if self.liability_value is None:
-            return torch.zeros(self.batch_size, dtype=MONEY, device=self.device)
+        """The liability's value `(B,)` at full-grid step `time_index`, in the accounting's `MONEY`."""
         return self.liability_value[time_index].to(dtype=MONEY, device=self.device)
 
     def unfixed_at(self, time_index):

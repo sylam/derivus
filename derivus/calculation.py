@@ -3636,9 +3636,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             # clear hedge cashflows so t_Cashflows after the next call holds only liability cashflows
             shared_mem.reset_cashflows(self.time_grid)
             # the liability mark, post-process-free (no per-batch GPU->CPU save_results copy)
-            mtm = self.liabilities.resolve_hedge_structure(shared_mem, self.time_grid).get('mtm')
-            if mtm is not None:
-                hedge_profile_blocks['mtm'].append(mtm.detach().clone())
+            hedge_profile_blocks['mtm'].append(
+                self.liabilities.resolve_hedge_structure(shared_mem, self.time_grid)['mtm'].detach().clone())
 
             hedge_profile_blocks['cash'].append(self._cash(
                 shared_mem, range(self.time_grid.mtm_time_grid.size), shared_mem.simulation_batch).detach())
