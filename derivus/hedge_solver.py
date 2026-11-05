@@ -843,9 +843,9 @@ class DiffSolver:
 
     def _u_step(self, dW, W0, t, capital=None):
         """The per-step reward both step-sum objectives share, of the step's move `dW` from the
-        wealth `W0`. Running_Wealth: u(dW/c_t), the scaled increment. LogWealth: log(W1/W0) —
-        the day's growth ratio, zero iff the step is perfectly hedged, scale-free (no c_t
-        anywhere), read as log1p of the move over the base. Below `eps` the log continues
+        wealth `W0`. Running_Wealth: u(dW/c_t), the scaled increment. LogWealth: log(W1/W0) on the
+        capital line, the day's growth ratio, zero iff the step is perfectly hedged, reading c only
+        in its floor (`w_floor`), as log1p of the move over the base. Below `eps` the log continues
         linearly so a breached path keeps gradient while paying an unbounded-in-level penalty,
         and a step LAUNCHED at or under the floor can only score <= 0: ruin is absorbing, not a
         rebirth against a clamped denominator. `capital` reads the ratio at another member's
@@ -2948,7 +2948,7 @@ class DiffSolverV2(DiffSolver):
         "  times the liability's leg volume: up to 64 buckets in $L_t$ of at least 32 paths, made",
         '  non-increasing in $L$. The net position is',
         '  $q_{net}=hi-d_t(W_t)\\,(hi-lo)$ inside the feasible band, rounded away from zero to whole',
-        '  contracts and water-filled onto the replication hedge\'s shape over the active legs, or',
+        '  contracts and water-filled onto the replication hedge\'s shape over the live active legs, or',
         '  under `DiffV2_Bank_Along_Ladder` held as a rung of the ladder on its live legs.',
         '- **Clairvoyant reserve.** After the first step, each path moves its position by the',
         '  fewest whole contracts that keep the next day\'s book above the reserve its own remaining',

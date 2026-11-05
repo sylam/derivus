@@ -57,11 +57,12 @@ values:
 | `AsymmetricUtility_Symlog` | $\mathrm{sign}(x)\log(1+\lvert x\rvert)$ | none |
 | `AsymmetricUtility_Huber` | $x-a\,h_\delta(x^-)-a^+h_\kappa(x^+)$, with $h_k(y)=y^2$ for $y\le k$ and $k^2+2k(y-k)$ beyond | `Huber_Aversion` $a$, `Huber_Delta` $\delta$, `Up_Aversion` $a^+$, `Up_Knee` $\kappa$ |
 | `AsymmetricUtility_CARA` | $(1-e^{-\gamma x})/\gamma$ | `CARA_Gamma` $\gamma$ |
-| `LogWealth` | per step $\log\big((C+W_{t+1})/(C+W_t)\big)$, summed; no $c$ | `Solver.DiffV2_Risk_Aversion`, in [0.1, 10] |
+| `LogWealth` | per step $\log\big((C+W_{t+1})/(C+W_t)\big)$, summed; $c$ only in its floor | `Solver.DiffV2_Risk_Aversion`, in [0.1, 10] |
 
 $x^-=\max(-x,0)$ and $x^+=\max(x,0)$. Under `LogWealth` the capital line is
 $C=1.1\max(0,-\min W_{bank})/$`DiffV2_Risk_Aversion`, the worst wealth the training bank reaches;
-below a ratio of 1e-3 the log continues linearly, it is floored at −20, and a training run whose
+below a ratio of 1e-3 the log continues linearly, it is floored at −20, a step launched from
+$C+W_t$ at or under $10^{-4}c$ scores at most zero (ruin is absorbing), and a training run whose
 worst bank wealth leaves no headroom is refused. The line is measured once, on warmup's bank; a
 frozen roll builds no bank and reads its checkpoint's, at the checkpoint's aversion (the run's
 `DiffV2_Risk_Aversion` is not read). Held by

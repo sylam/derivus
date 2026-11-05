@@ -480,7 +480,7 @@ def per_contract_kappa(runtime, price, name, vol=None, calendar=False):
     `0.5 · spread_bps · 1e-4 · |price| · contract_size`, where `spread_bps` is the FULL quoted spread
     and the 0.5 is the mid-to-touch crossing. `price` is a scalar or tensor mark, read by its abs (a
     spread leg's mark goes negative, its notional does not). Single source for the solver's
-    decision-time kappa, the env's realized debit and the diagnostic CSV writer.
+    decision-time kappa and the env's realized debit, whose booked charges the diagnostic CSV reads.
 
     `spread_bps` is the leg's `Bid_Offer_Spread_Per_Instrument` entry, else `Bid_Offer_Spread_Bps`,
     scaled by `(vol/Ref_Vol)**Beta` under a `Bid_Offer_Spread_Vol_Scale` and an annualized `vol`;
@@ -1076,7 +1076,7 @@ class Bundle:
         def _degenerate(reason):
             raise ValueError(
                 f"utility scale: cannot compute a meaningful c — {reason}. Fix the bundle/config, "
-                "or set Objective.Utility_Scale_Explicit to a literal value.")
+                "or under vol_scaled_notional set Objective.Utility_Scale_Explicit to a literal value.")
 
         mode = objective['utility_scale_mode']
         if mode not in ('vol_scaled_notional', 'conditional_sim'):
