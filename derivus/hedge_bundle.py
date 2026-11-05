@@ -830,7 +830,8 @@ class Bundle:
         '  solver locks warmup\'s), with its per-step `utility_scale_schedule` under `conditional_sim`',
         '  (Hedging Overview), and `step_annual_vol`, the per-step vol a vol-scaled spread and the',
         '  margin funding read: a process\'s revealed conditional vol, else the primary spot\'s',
-        '  trailing realised vol with its `Spot_Price_History` in front.',
+        '  trailing realised vol with its `Spot_Price_History` in front, or absent one the calibrated',
+        '  vol (`calibrated_sigma`, the utility scale\'s σ) on the rows before a full window.',
         '',
         'Under `solve_hedge` `HedgeMonteCarlo.execute` attaches `inner_mc` / `inner_mc_grad`, which',
         'fork the simulator at a decision row and price it to its landing row, or to each row of a',
@@ -1009,10 +1010,10 @@ class Bundle:
         Nothing here may be recomputed per rollout: a drifting c silently rescales the whole
         objective, and the vol series drives realized transaction cost."""
         self.spot_realized_vol = self._spot_realized_vol()
+        if not self.spot_price_history:
+            self.calibrated_sigma = self._calibrated_sigma(stoch_factors)
         # a run with no Objective reads no scale
         if runtime['objective'] is not None:
-            if not self.spot_price_history:
-                self.calibrated_sigma = self._calibrated_sigma(stoch_factors)
             self.utility_scale = self._resolve_utility_scale(runtime)
             logging.info('utility_scale c resolved to %.2f', self.utility_scale)
             mirror_frame(runtime, self.utility_scale, self.utility_scale_schedule)
@@ -1031,8 +1032,9 @@ class Bundle:
         return out
 
     def _calibrated_sigma(self, stoch_factors):
-        """The primary spot's process's calibrated annualized vol, the utility scale's σ where no
-        `Spot_Price_History` is declared; None when the process reports none."""
+        """The primary spot's process's calibrated annualized vol, read where no
+        `Spot_Price_History` is declared as the utility scale's σ and the step vol's before a full
+        window; None when the process reports none."""
         process = {utils.check_tuple_name(k): p for k, p in stoch_factors.items()}[self.primary]
         sigma = process.calibrated_annual_vol()
         return None if sigma is None or sigma <= 0.0 else float(sigma)
@@ -1124,7 +1126,8 @@ class Bundle:
         ignores vol and no funding accrues. The source PREFERS a process-revealed conditional vol
         (GARCH publishes log h_t → σ_t = √(exp(log h_t)/dt_c)), falling back to the trailing
         realized-vol proxy off the primary spot, its realized history in front of the simulated
-        path as the utility scale's σ reads it. Batch-reduced
+        path as the utility scale's σ reads it, or absent a history its rows before a full window
+        the calibrated vol (`calibrated_sigma`) where the process reports one. Batch-reduced
         to one scalar per step, matching the solver's mean-mark kappa. The chosen source is logged
         once per build: a silent proxy fallback under a GARCH retrain would invalidate the whole
         vol coupling."""
@@ -1140,9 +1143,13 @@ class Bundle:
             return proc.revealed_annual_vol(block[..., 0]).mean(dim=-1)                 # (T,)
         logging.info('step_annual_vol source: realized-vol proxy on %s (Vol_Scale=%s IM_funding=%s)',
                      self.primary, vol_scale_active, im_funding_active)
-        # batch-reduced to one scalar per step, floored so the warm-up window never zeros the spread
-        return _rolling_realized_vol(self.factors[self.primary].float(),
-                                     self.grid_market_days).mean(dim=-1).clamp_min(1e-6)
+        vol = _rolling_realized_vol(self.factors[self.primary].float(), self.grid_market_days).mean(dim=-1)
+        if self.calibrated_sigma is not None:
+            # the utility scale's fallback, one for the scale and the spread
+            vol[:PRICE_ZSCORE_WINDOW] = self.calibrated_sigma
+        logging.debug('step vol on its first rows: %s', vol[:2])
+        # floored so a window of no moves, or of no fallback, never zeros the spread
+        return vol.clamp_min(1e-6)
 
     # ---- accessors -----------------------------------------------------------
     @property

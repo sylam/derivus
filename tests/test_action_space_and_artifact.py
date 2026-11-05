@@ -2082,6 +2082,28 @@ def test_a_foreign_future_settles_its_own_currency_s_move_at_the_cross_where_it_
         _csv_against_the_stepper(tmp_path, stepper, last)
 
 
+def test_the_step_vol_reads_the_calibrated_vol_before_a_full_window(tmp_path):
+    """The step vol's rows before a full realized window read the calibrated vol, the utility
+    scale's fallback: the client document stating no `Spot_Price_History`, a 10 bp spread scaled by
+    the step's vol over a 20% reference, short 10 `PL_OCT_2026` at the first row, pays half the
+    spread on its notional at the primary's calibrated vol, `bundle.calibrated_sigma`, within 1e-6
+    relative. 2 s.
+
+    Killing mutation: the realized proxy's partial window read on those rows, floored at 1e-6 (the
+    first row having no move), the trade costing 0.0025 for 568.74."""
+    cfg = _client(evaluator={'Bid_Offer_Spread_Bps': 10.0, 'Bid_Offer_Spread_Vol_Scale': {'Ref_Vol': 0.2, 'Beta': 1.0}})
+    del cfg['Calc']['Calculation']['Hedging_Problem']['Portfolio_State']['Spot_Price_History']
+    result = _run(cfg)
+    stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
+    while not stepper.done:
+        stepper.step({'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
+    stepper.write_diagnostic_csvs(str(tmp_path), 'client')
+    rows = pd.read_csv(tmp_path / 'client_paths.csv')
+    first = rows[rows['case'] == 'mean'].iloc[0]
+    want = 10 * 50 * 0.5e-3 * result.bundle.calibrated_sigma / 0.2 * first['PL_OCT_2026_futures']
+    assert abs(first['PL_OCT_2026_trade_cost'] / want - 1.0) < 1e-6, (first['PL_OCT_2026_trade_cost'], want)
+
+
 def test_the_bundle_is_as_wide_as_its_primary_spot_whatever_tradable_is_stated_first():
     """The bundle is as wide as its primary spot's paths, whatever tradable the document states
     first: on the client document beside a ZAR cash account on the static ZAR-SWAP curve, whose mark
