@@ -865,6 +865,7 @@ class Bundle:
         self.base_date = base_date
         self.business_day = business_day
         self.num_batches = int(num_batches)
+        self.batch_size = 0                 # the paths, the primary spot's width
         # Time axis (history prefix + simulated grid).
         self.time_grid_days = None          # (T,) day offsets from base_date
         self.time_grid_days_cpu = []        # the same as python ints (sync-free step loop)
@@ -910,6 +911,8 @@ class Bundle:
         self.primary = utils.check_tuple_name(primary_spot(stoch_factors))
         tradables = {n: torch.cat(blocks, dim=1) for n, blocks in tradable_blocks.items()}
         factors = {n: torch.cat(blocks, dim=-1) for n, blocks in factor_tensor_blocks.items()}
+        self.batch_size = int(factors[self.primary].shape[-1])
+        logging.debug('bundle width %d paths, off the primary spot', self.batch_size)
         mtm = (torch.cat(hedge_profile_blocks['mtm'], dim=1)
                if hedge_profile_blocks.get('mtm') else None)
         cash = torch.cat(hedge_profile_blocks['cash'], dim=1)
@@ -945,7 +948,6 @@ class Bundle:
         logging.debug('history prefix: %d rows', H)
         base_ts = pd.Timestamp(self.base_date)
         if H > 0:
-            batch_size = int(next(iter(tradables.values())).shape[1])
             for commodity, payload in history.items():
                 late = [d for d in payload['dates'] if pd.Timestamp(d) >= base_ts]
                 if late:
@@ -959,7 +961,7 @@ class Bundle:
             self.spot_price_history = {
                 commodity: torch.tensor(payload['prices'][-H:], dtype=torch.float32,
                                         device=grid.device).unsqueeze(1)
-                                       .expand(-1, batch_size).contiguous()
+                                       .expand(-1, self.batch_size).contiguous()
                 for commodity, payload in history.items()}
             tradables = {
                 n: torch.cat([self._history_prefix(
@@ -1180,10 +1182,6 @@ class Bundle:
     @property
     def device(self):
         return self.time_grid_days.device
-
-    @property
-    def batch_size(self):
-        return int(next(iter(self.tradables.values())).shape[-1])
 
     @property
     def last_index(self):

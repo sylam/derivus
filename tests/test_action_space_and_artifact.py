@@ -1920,6 +1920,34 @@ def test_the_hedge_legs_are_read_in_maturity_order_whatever_the_order_stated():
         pnl.append(last['transition_pnl_excess'])
     assert torch.equal(*pnl), [p.tolist() for p in pnl]
 
+
+def test_the_bundle_is_as_wide_as_its_primary_spot_whatever_tradable_is_stated_first():
+    """The bundle is as wide as its primary spot's paths, whatever tradable the document states
+    first: on the client document beside a ZAR cash account on the static ZAR-SWAP curve, whose mark
+    is one column wide, short 10 `PL_OCT_2026` from the first row, the excess P&L reads the same on
+    each of the 4 paths, to the bit, the cash accounts stated before the futures or after them. 4 s.
+
+    Killing mutation: the width read off the first tradable stated (`Bundle.from_batch`), the cash
+    account's one column, so the history prefix fails to join the 4-wide paths."""
+    pnl = []
+    for first in ('CommodityFutureDeal', 'CashAccountDeal'):
+        cfg = _client()
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        deals = hp['Tradable_Instruments']
+        deals['CashAccountDeal'] = {'ZAR_CASH': {
+            'Currency': 'ZAR', 'Units': 1.0, 'Discount_Rate': 'ZAR-SWAP',
+            'Investment_Horizon': {'.Timestamp': '2026-08-10'}}, **deals['CashAccountDeal']}
+        hp['Tradable_Instruments'] = {first: deals[first], **{k: v for k, v in deals.items() if k != first}}
+        hp['Evaluator']['Cash_Instruments'] = ['USD_CASH', 'ZAR_CASH']
+        hp['Portfolio_State']['Cash_Balances']['ZAR_CASH'] = 0.0
+        result = _run(cfg)
+        stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
+        while not stepper.done:
+            last = stepper.step({'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
+        pnl.append(last['transition_pnl_excess'])
+    assert result.bundle.batch_size == 4 and torch.equal(*pnl), [p.tolist() for p in pnl]
+
+
 @pytest.mark.parametrize('mode', ['futures', 'cash_account'])
 def test_a_document_stating_no_cash_account_books_every_flow_on_one_ledger(mode):
     """A document stating no `Cash_Instruments` books every leg's flows on one unmarked money ledger:
