@@ -1219,7 +1219,7 @@ class DiffSolver:
             if bool((w >= -1e-9).all()) or len(idx) == 1:
                 out = torch.zeros_like(mu, dtype=S.dtype)
                 out[torch.tensor(idx, device=mu.device)] = w.clamp_min(0.0)
-                return (out / out.sum().clamp_min(1e-12)).to(mu.dtype)
+                return (out / out.sum()).to(mu.dtype)
             idx.pop(int(w.argmin()))
 
     def _carry_variance_weights(self, scale):
@@ -2511,7 +2511,7 @@ class DiffSolver:
             limit = self.cfg["diffv2_max_member_disagreement"]
             for i, (src_a, a) in enumerate(books):
                 for src_b, b in books[i + 1:]:
-                    apart = sum(abs(x - y) for x, y in zip(a, b)) / max(min(len(a), len(b)), 1)
+                    apart = sum(abs(x - y) for x, y in zip(a, b)) / min(len(a), len(b))
                     if apart > limit:
                         raise ValueError(
                             f"DiffV2_Max_Member_Disagreement: {src_a} and {src_b} sweep net books "

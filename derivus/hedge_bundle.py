@@ -1159,7 +1159,7 @@ class Bundle:
     @property
     def last_index(self):
         """Final grid row — the terminal the stepper stops at."""
-        return max(int(self.time_grid_days.shape[0]) - 1, 0)
+        return int(self.time_grid_days.shape[0]) - 1
 
     @property
     def tradables_sim(self):
