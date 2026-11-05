@@ -921,18 +921,16 @@ class DiffSolver:
         `to`: the hedges' `Bundle.move` `(..., n_hedge)` in hedge order and the liability's
         `L_to − L_t` `(...)`, differenced in `MONEY` where `money` (the verdict's wealth law). The
         one spelling behind the bank rolls, the labels' k-step side, the verdict, the stepper
-        rollout's drift monitor, the textbook hedge and the constructed policy, over every path
-        taken once a bound bundle."""
+        rollout's drift monitor, the textbook hedge and the constructed policy, the hedges' over
+        every path taken once a bound bundle."""
         to = self.nxt[t] if to is None else to
-        every = isinstance(rows, slice) and rows == slice(None)
-        if not every or (t, to, money) not in self._moves:
-            L = self.liability_sim
-            dL = (L[to].to(MONEY) - L[t].to(MONEY) if money else L[to] - L[t])[rows]
-            move = self.bundle.move(t, to, self.aspace.hedges, rows), dL
-            if not every:
-                return move
-            self._moves[(t, to, money)] = move
-        return self._moves[(t, to, money)]
+        L = self.liability_sim
+        dL = (L[to].to(MONEY) - L[t].to(MONEY) if money else L[to] - L[t])[rows]
+        if not (isinstance(rows, slice) and rows == slice(None)):
+            return self.bundle.move(t, to, self.aspace.hedges, rows), dL
+        if (t, to) not in self._moves:
+            self._moves[(t, to)] = self.bundle.move(t, to, self.aspace.hedges)
+        return self._moves[(t, to)], dL
 
     def _p(self, book, live=None):
         """The position state `p = Σq / Q_max` of `book` `(..., n_hedge)` on the legs `live` marks
@@ -1330,12 +1328,12 @@ class DiffSolver:
     def _roll_bank(self, policy):
         """Roll the outer paths from the opening book under `policy(t)`, the book `(B, n_hedge)` held
         from decision row t to the next, a row of no market time holding the book and wealth of the
-        decision before it. Returns per row `W_t` `(B,)` and the standing book `q_prev`
+        decision before it. Returns per row `W_t` `(B,)` in `MONEY` and the standing book `q_prev`
         `(B, n_hedge)` (under the position state, the sampled one), and under
         LogWealth sets `_bank_worst`, the worst wealth the bank reaches, its terminal included: in a
         crash month the terminal is often the minimum, and a bias measured only at decisions would
         leave the last fit step's states uncovered."""
-        W = self.liability_sim[0].clone()                                                 # cum_pnl(0) + L_0
+        W = self.liability_sim[0].to(MONEY)                                               # cum_pnl(0) + L_0
         q_prev = initial_q_from_runtime(self.runtime, self.B_outer, self.device)
         W_list, q_list = [], []
         for t in range(self.T_dec):
@@ -1349,7 +1347,9 @@ class DiffSolver:
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 net = (q_prev * self.bundle.marked(t, self.aspace.hedges))[:, self.aspace.active].sum(-1)
                 logging.debug('BANK %d %r', t, (float(net.min()), float(net.max())))
-            W = wealth_step(W, q_prev, self.aspace.contract_size, *self._outer_move(t))
+            dF, dL = self._outer_move(t, money=True)
+            W = wealth_step(W, q_prev, self.aspace.contract_size, dF.to(MONEY), dL)
+        logging.debug('bank wealth at the terminal: %s', W.mean())
         if self.log_ratio:
             self._bank_worst = float(torch.minimum(torch.stack(W_list).min(), W.min()))
         return W_list, q_list
@@ -1446,7 +1446,7 @@ class DiffSolver:
         the decision horizon; the gradient labels stay the one-step cross-fitted ones."""
         dF_ng, dL_ng, m1_ng, market0, live, ahead = inner                                # no-grad cache
         market0 = market0[rows]
-        W0_bank = W_bank[t][rows]
+        W0_bank = W_bank[t][rows].float()                    # the bank's MONEY, as the net reads it
         # the standing book masked by the step that set it: the position state and the book the
         # charge moves from. With no kappa the book is inert.
         q_prev = q_bank[t][rows] * (live if live_prev is None else live_prev)
@@ -2478,7 +2478,7 @@ class DiffSolver:
             Wall = torch.stack([W_bank[t] for t in sweep_ts], 0).reshape(-1)
             if self.state_notional:
                 Wall = Wall / self.state_notional
-            self.w_mean, self.w_std = Wall.mean(), self._dispersion(Wall)
+            self.w_mean, self.w_std = Wall.mean().float(), self._dispersion(Wall).float()
             logging.info(
                 "DiffSolver bank: market_dim=%d | swept W∈[%.4g, %.4g] mean=%.4g std=%.4g | "
                 "q_rep(t=0)=%s", md, float(Wall.min()), float(Wall.max()),
@@ -3011,7 +3011,8 @@ class DiffSolverV2(DiffSolver):
         row, the floored terminal book)`, each decision holding its book to the next."""
         L, T = self.liability_sim, self.T_dec
         rep = {t: self._replication_hedge(t) for t in self.steps}
-        moves = {t: self._outer_move(t) for t in self.steps}
+        moves = {t: self._outer_move(t, money=True) for t in self.steps}
+        money = {t: (dF.to(MONEY), dL) for t, (dF, dL) in moves.items()}           # the wealth law's
         LT = L[T]
         logging.debug("constructed policy: measured once over %d decision rows", len(self.steps))
 
@@ -3037,7 +3038,7 @@ class DiffSolverV2(DiffSolver):
             else:
                 w = self.aspace.ladder(t, live[t])[0] if self.bank_ladder else rep[t] / rep[t].sum()
                 m_t[t] = torch.einsum('i,ib->b', w * self.aspace.contract_size, moves[t][0].T.contiguous())
-        req = LT.new_full((self.B_outer,), floor)
+        req = torch.full((self.B_outer,), floor, dtype=MONEY, device=self.device)
         reqs = {}
         for t in reversed(self.steps):
             reqs[t] = req.clone()
@@ -3050,14 +3051,14 @@ class DiffSolverV2(DiffSolver):
         curves = [self._phi_curve(L[t], LT < floor) for t in self.steps]
 
         def construct(floored):
-            q, W = {}, L[0].clone()
+            q, W = {}, L[0].to(MONEY)
             for t, cv in zip(self.steps, curves):
                 if self._dust(rep[t]):
                     # the below-today comparison is float noise, so the constructed book is FLAT (the
                     # wealth step below still accrues the settling liability rows)
                     qt = torch.zeros(self.B_outer, self.aspace.n_hedge, device=self.device)
                 else:
-                    g = self._phi_apply(cv, W)
+                    g = self._phi_apply(cv, W.float())
                     (lo_t, hi_t), lo_i, hi_i = bands[t], lo_is[t], hi_is[t]
                     net = hi_t - g * (hi_t - lo_t)
                     # WHOLE contracts, rounded AWAY from zero (up, in cover terms); the box is snapped
@@ -3075,13 +3076,13 @@ class DiffSolverV2(DiffSolver):
                         # and a single position - so it takes the uniform honest delta with NO
                         # clairvoyance; paths needing more catch up at t1
                         q[t] = compose(t, net.unsqueeze(-1))
-                        W = wealth_step(W, q[t], self.aspace.contract_size, *moves[t])
+                        W = wealth_step(W, q[t], self.aspace.contract_size, *money[t])
                         continue
                     # the floor constraint q*m >= need is a HALF-LINE, and the repair is the delta base
                     # PROJECTED onto it: the least change, rounded toward the feasible side. An
                     # up-day's bound is a LIMIT on the short - rounding away from zero walks through.
                     defensible = m.abs() > 1e-9 * m.abs().max()
-                    bound = (target - W - dL) / torch.where(defensible, m, torch.ones_like(m))
+                    bound = ((target - W - dL) / torch.where(defensible, m, torch.ones_like(m))).float()
                     net = torch.where(defensible & (m > 0),
                                       torch.maximum(net, bound.ceil()), net)
                     net = torch.where(defensible & (m < 0),
@@ -3091,19 +3092,19 @@ class DiffSolverV2(DiffSolver):
                     # EXECUTION-EXACT top-up: the bound above prices the hedge at the weighted basket
                     # move while the executed split deviates, so re-price the EXECUTED book and
                     # top the net up by the least whole contracts that clear the shortfall
-                    exec_pnl = (qt * self.aspace.contract_size * moves[t][0]).sum(-1)
+                    exec_pnl = (qt * self.aspace.contract_size * money[t][0]).sum(-1)
                     short = target - (W + dL + exec_pnl)
                     fix = defensible & (short > 0)
                     if bool(fix.any()):
                         # +1 because the exact amount can be re-split away again on the integer
                         # lattice; the floor's guarantee under whole-contract trading is therefore to
                         # within one contract's day move
-                        extra = torch.where(fix, ((short / m.abs()).ceil() + 1.0) * torch.sign(m),
+                        extra = torch.where(fix, ((short / m.abs()).ceil().float() + 1.0) * torch.sign(m),
                                             torch.zeros_like(m))
                         net = (net.squeeze(-1) + extra).clamp(lo_i, hi_i).unsqueeze(-1)
                         qt = compose(t, net).clamp(self.aspace.q_lo, self.aspace.q_hi)
                 q[t] = qt
-                W = wealth_step(W, qt, self.aspace.contract_size, *moves[t])
+                W = wealth_step(W, qt, self.aspace.contract_size, *money[t])
             return q, W
         q_star, WT = construct(True)
         return q_star, construct(False)[0], curves, WT
