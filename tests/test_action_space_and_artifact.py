@@ -2104,6 +2104,23 @@ def test_the_step_vol_reads_the_calibrated_vol_before_a_full_window(tmp_path):
     assert abs(first['PL_OCT_2026_trade_cost'] / want - 1.0) < 1e-6, (first['PL_OCT_2026_trade_cost'], want)
 
 
+def test_a_simulation_reads_no_returns_state():
+    """The returns state is a solve's frame: the simulate-only client document stating no
+    Objective and a Solver under `DiffV2_Returns_State` 'Yes' runs, and reads the P&L of the one
+    whose Solver states nothing else. 2 s.
+
+    Killing mutation: the returns state armed off a stated Solver whatever the mode, the notional
+    written into the absent Objective (TypeError)."""
+    pnl = []
+    for solver in ({'Object': 'DiffSolverV2', 'DiffV2_Returns_State': 'Yes'}, {'Object': 'DiffSolverV2'}):
+        cfg = _client()
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        del hp['Objective']
+        hp['Solver'] = solver
+        pnl.append(_run(cfg).evaluation_summary['metrics']['average_net_pnl'])
+    assert pnl[0] == pnl[1], pnl
+
+
 def test_the_bundle_is_as_wide_as_its_primary_spot_whatever_tradable_is_stated_first():
     """The bundle is as wide as its primary spot's paths, whatever tradable the document states
     first: on the client document beside a ZAR cash account on the static ZAR-SWAP curve, whose mark

@@ -3535,9 +3535,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
         randomize_t0 = normalized_runtime['randomize_initial_state']
         # returns-state coordinates: dimensionless market columns off one constant divisor
-        # per run, so outer rows and fork reveals share a coordinate system across epochs
-        self._returns_state = bool(normalized_runtime['solver']
-                                   and normalized_runtime['solver']['diffv2_returns_state'])
+        # per run, so outer rows and fork reveals share a coordinate system across epochs; a solve's
+        self._returns_state = solve_hedge_mode and normalized_runtime['solver']['diffv2_returns_state']
+        logging.debug('returns state: %s', self._returns_state)
         self._state_spot0 = (float(self.stoch_var[self._primary].detach().reshape(-1)[0])
                              if self._returns_state else None)
         spot_currency = self.stoch_factors[self._primary].factor.get_currency()
