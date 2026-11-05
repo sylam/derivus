@@ -1222,12 +1222,19 @@ class DiffSolver:
                 return (out / out.sum().clamp_min(1e-12)).to(mu.dtype)
             idx.pop(int(w.argmin()))
 
-    def _carry_variance_weights(self):
+    def _carry_variance_weights(self, scale):
         """Derive the per-step `Allocation_Weights` table from the outer sims: at each decision
         step, the population moments of each leg's remaining-horizon P&L per contract and the
-        liability's remaining P&L, solved by `_carry_variance_solve` at the replication net on the
-        active legs whose remaining P&L still varies (a leg's marks freeze at its expiry). Knots are
-        emitted only where the split MOVES."""
+        liability's remaining P&L, solved by `_carry_variance_solve` at the replication net and the
+        frame scale `scale` (the utility scale over the aversion of the fit the table belongs to) on
+        the active legs whose remaining P&L still varies (a leg's marks freeze at its expiry). Knots
+        are emitted only where the split MOVES. A batch of one outer path, which has no
+        cross-section, is refused."""
+        if self.B_outer < 2:
+            raise ValueError(
+                "Evaluator.Allocation_Mode='Carry_Variance' derived no split on this batch, a one-path "
+                "batch having no cross-section: raise Batch_Size")
+        logging.debug('carry-variance split at the frame scale %.17g', scale)
         knots, last = [], None
         for t in self.steps:
             dF, RL = self._outer_move(t, to=self.T_dec)                  # the remaining horizon's
@@ -1245,10 +1252,9 @@ class DiffSolver:
                     1.0 / self.aspace.n_hedge for _ in range(self.aspace.n_hedge))
             else:
                 legs = alive.nonzero().flatten().tolist()
-                # the frame scale, which exists at bind; the LogWealth capital line is
-                # measured on the bank this ladder builds, so it cannot be read here
-                sol = self._carry_variance_solve(
-                    R.mean(-1), Sig, c, Qb, float(self.utility_scale) / self.aversion, legs)
+                # the frame scale, not the LogWealth capital line, which is measured on the bank
+                # this ladder builds
+                sol = self._carry_variance_solve(R.mean(-1), Sig, c, Qb, scale, legs)
                 w = tuple(round(float(x), 9) for x in sol)
                 logging.debug('carry-variance split at step %d on legs %s: %s', t, legs, w)
             if w != last:
@@ -2277,9 +2283,11 @@ class DiffSolver:
         Under `Allocation_Mode` Carry_Variance a load first installs the checkpoint's own derived
         table, since re-deriving from the eval world would refuse every load on Monte Carlo dust,
         and where the checkpoint stamps none (a Cartesian fit) the split derived on the roll's
-        world, as a fit derives it; later members must match the first's."""
+        world in the checkpoint's frame, its stamped scale over its aversion, as a fit derives it;
+        later members must match the first's."""
         if self.aspace.mode == "carry_variance" and self.aspace.weights is None:
-            self.aspace.install_weights(ck.get("allocation_weights") or self._carry_variance_weights())
+            self.aspace.install_weights(ck.get("allocation_weights") or self._carry_variance_weights(
+                float(ck["utility_scale"]) / float(ck["risk_aversion"])))
             logging.debug("Carry_Variance load installs %d knot(s), w(t=0)=%s",
                           len(self.aspace.weights), self.aspace.weights[0][1])
         want = self.aspace.weights_key(self.aspace.weights)
@@ -2459,7 +2467,8 @@ class DiffSolver:
             # the frame, measured once on this training bank; a load reads the checkpoint's
             logging.debug("DiffSolver warmup measures the frame on its bank")
             if self.aspace.mode == "carry_variance":
-                self.aspace.install_weights(self._carry_variance_weights())
+                self.aspace.install_weights(
+                    self._carry_variance_weights(float(self.utility_scale) / self.aversion))
                 logging.info("Carry_Variance allocator: %d knot(s), w(t=0)=%s",
                              len(self.aspace.weights), self.aspace.weights[0][1])
             W_bank, q_bank = self._build_bank(self.gen)

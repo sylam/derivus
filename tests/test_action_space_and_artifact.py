@@ -1419,11 +1419,11 @@ def test_a_table_stated_outside_exposure_changes_nothing(mode, stated, read):
 def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(tmp_path, solver, active, roll):
     """Under `Allocation_Mode` Carry_Variance either solver splits the net cover by weights it derives
     from the warmup batch's outer paths, and a roll of a checkpoint stamping no table (a Cartesian
-    fit's) from its own world's: per step the long-only minimum of
+    fit's) from its own world's in the checkpoint's frame: per step the long-only minimum of
     [Q²·wᵀΣw + 2Q·wᵀc]/(2s) − Q·wᵀμ over the legs' remaining-horizon P&L per contract, Σ, c and μ
     its population covariance, its covariance with the liability's and its mean, Q the replication
     net (shared over the active legs live at the step) and s the frame scale over
-    `DiffV2_Risk_Aversion`, on the active legs whose remaining P&L
+    `DiffV2_Risk_Aversion`, a roll's the checkpoint's, on the active legs whose remaining P&L
     still varies. On the training document at an explicit scale of 1e5 over 51 rungs, its first knot
     is that minimum on the warmup world, the same document simulating that batch alone, (0.118,
     0.882, 0) within 1e-4, or with legs 0 and 2 active (0.225, 0, 0.775), and the knot in force at
@@ -1441,14 +1441,15 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(t
     legs = list(range(3) if active is None else active)
     cfg = _cfg(seed=7, batch=8, inner=4, active=active)
     calc, hp = cfg['Calc']['Calculation'], cfg['Calc']['Calculation']['Hedging_Problem']
-    if roll:
-        # the roll's one batch is the fit's warmup world
-        ckpt = str(tmp_path / 'cartesian.pt')
-        _run(_cfg(seed=7, batch=8, inner=4, save=ckpt))
-        calc['Simulation_Batches'], hp['Solver']['DiffV2_Load_Value_Fn'] = 1, [ckpt]
     hp['Solver']['Object'] = solver
     hp['Evaluator']['Allocation_Mode'] = 'Carry_Variance'
     hp['Objective']['Utility_Scale_Explicit'], scale = 1.0e5, 1.0e5
+    if roll:
+        # the roll's one batch is the fit's warmup world, its split in the fit's frame
+        ckpt = str(tmp_path / 'cartesian.pt')
+        fit = _run(_cfg(seed=7, batch=8, inner=4, save=ckpt)).policy_artifact
+        calc['Simulation_Batches'], hp['Solver']['DiffV2_Load_Value_Fn'] = 1, [ckpt]
+        scale = fit['utility_scale'] / fit['risk_aversion']
     hp['Solver']['Training_Action_Grid_Levels_Per_Axis'] = 51
     result = _run(cfg)
     calc['Execution_Mode'], calc['Simulation_Batches'] = 'simulate_only', 1
@@ -1493,6 +1494,38 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(t
     dead = next(t for t in world.decision_steps if not bool((F[T, :, 0] != F[t, :, 0]).any()))
     got, want = next(w for s, w in reversed(result.policy_artifact['allocation_weights']) if s <= dead), minimum(dead)
     assert dead == 19 and max(abs(a - b) for a, b in zip(got, want)) < 1e-4, (dead, got, want)
+
+
+def test_a_carry_variance_roll_derives_its_split_in_the_checkpoint_s_frame(tmp_path):
+    """A roll derives the Carry_Variance split of a checkpoint stamping none in that checkpoint's
+    frame, its stamped utility scale over its stamped aversion, which a frozen roll reads: the
+    training document's Cartesian fit swept from the first row and rolled under Carry_Variance over
+    51 rungs reads one greedy book and utility whatever `DiffV2_Risk_Aversion` or
+    `Utility_Scale_Explicit` the roll states, and on one outer path, which has no cross-section,
+    the roll is refused by name. 20 s.
+
+    Killing mutation: the split derived at the roll world's scale over the roll's aversion
+    (`_check_action_universe` handing `utility_scale / aversion`): 4 knots at aversion 5 and 8 at
+    an explicit 1e5 for 2, the greedy u_mean 0.163769 and 0.163602 against 0.163902, the 1e5 roll's
+    first book (-4.5, -33, 0) against (0, -37.5, 0); the one-path roll deriving the even split."""
+    ckpt = str(tmp_path / 'cartesian.pt')
+    fit = _cfg(seed=7, batch=8, inner=4, save=ckpt)
+    fit['Calc']['Calculation']['Hedging_Problem']['Solver'].update(T_Min=0, DiffV2_Max_Value_Optimism=1.0e3)
+    _run(fit)
+
+    def roll(batch=8, **stated):
+        cfg = _cfg(batch=batch, seed=7, load=ckpt)
+        hp = cfg['Calc']['Calculation']['Hedging_Problem']
+        hp['Evaluator']['Allocation_Mode'] = 'Carry_Variance'
+        hp['Solver'].update(T_Min=0, Training_Action_Grid_Levels_Per_Axis=51)
+        for key, value in stated.items():
+            hp['Solver' if key.startswith('DiffV2_') else 'Objective'][key] = value
+        v = _run(cfg).evaluation_summary['diagnostics']['verdict']
+        return v['greedy']['u_mean'], v['greedy_q_traj']
+    plain = roll()
+    assert roll(DiffV2_Risk_Aversion=5.0) == plain and roll(Utility_Scale_Explicit=1.0e5) == plain
+    with pytest.raises(ValueError, match="Carry_Variance' derived no split on this batch, a one-path batch"):
+        roll(batch=2)
 
 
 def test_the_benchmarks_search_the_solver_s_action_universe():
