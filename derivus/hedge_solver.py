@@ -678,7 +678,7 @@ class DiffSolver:
         own frame at build time, and letting a later one reach the runtime would rescale the
         objective, and every fitted C_t with it, mid-training."""
         self.bundle = bundle
-        self._moves = {}                                              # `_outer_move`'s, this bundle's
+        self._moves, self._replications = {}, {}                      # `_outer_move`'s, `_replication_hedge`'s
         self.aspace.vol_sim = bundle.vol_sim
         self.tradables_sim = bundle.tradables_sim
         self.liability_sim = bundle.liability_sim                     # (n_steps, B_outer)
@@ -1172,7 +1172,9 @@ class DiffSolver:
         """Per-instrument diagonal min-var hedge from the OUTER moves to t's successor:
         q_i = −Cov(dL, dF_i)/(cs_i·Var(dF_i)) / n_live over the n_live active legs live at t
         (`Bundle.marked`), both moments the outer paths' population, clamped to [lo,hi]; 0 on
-        every other leg."""
+        every other leg. Built once a step of a bound bundle."""
+        if t in self._replications:
+            return self._replications[t]
         moves, dL = self._outer_move(t)                                                  # (B_outer, n_h), (B_outer,)
         q = torch.zeros(self.aspace.n_hedge, device=self.device)
         legs = self.aspace.live_legs(self.bundle.marked(t, self.aspace.hedges))
@@ -1186,7 +1188,8 @@ class DiffSolver:
             beta = ((dL - dL.mean()) * (dF - dF.mean())).mean() / var
             q[i] = -beta / (self.aspace.contract_size[i] * len(legs))
         logging.debug('replication hedge at step %d over the live active legs %s: %s contracts', t, legs, q)
-        return q.clamp(self.aspace.q_lo, self.aspace.q_hi)
+        self._replications[t] = q.clamp(self.aspace.q_lo, self.aspace.q_hi)
+        return self._replications[t]
 
     @staticmethod
     def _dust(rep):
