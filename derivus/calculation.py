@@ -3003,9 +3003,9 @@ class ScenarioValuation(BaseValuation):
 class HedgeMonteCarlo(CreditMonteCarlo):
     documentation = ('Calculations', [
         'A specialisation of `CreditMonteCarlo` that runs the same scenario engine and harvests its',
-        'marks into a hedging problem rather than exposure profiles: it hedges a book of liabilities',
-        'with a configured set of tradables, anything a credit exposure run can price serving as',
-        'either. Per simulation batch it builds a bundle of the trajectories the solver reads, with an',
+        'marks into a hedging problem rather than exposure profiles: it hedges a book of liabilities,',
+        'anything a credit exposure run can price, with commodity futures legs beside cash accounts',
+        '([Model Limitations](../limitations.md)). Per simulation batch it builds a bundle of the trajectories the solver reads, with an',
         'on-demand inner Monte Carlo fork, off a runtime normalised from the `Hedging_Problem` block',
         '([JSON reference](../json/index.md#calculation)); the [Hedging](../hedging/overview.md) pages',
         'document the runtime, the bundle, the solvers and the benchmark tracks, and',

@@ -109,14 +109,16 @@ Grouped by where a validator meets them.
   once a market day and hold on a weekend or holiday: a world mixing the HMM with them moves it on a
   row the others hold. The fix is its emission and chain on `utils.trading_clock`'s market days,
   its belief filter holding on a row of none.
-- **The hedging engine reads one underlying, one calendar spread rate and gross initial margin**
-  (2026-11-04). `HedgeMonteCarlo` and its bundle take the primary commodity spot as the one
-  underlying (`hedge_bundle.primary_spot`: the spot the utility scale, the step vol, the
-  returns-state coordinates, the fork's outer width and the diagnostic CSV read; a world whose
-  primary is not unique is refused by name), `Calendar_Spread_Bps` is one
-  scalar rate on every listed pair, so a per-maturity spread ladder is inexpressible, and the
-  initial-margin funding charge posts each leg's margin gross, over-margining a calendar spread.
-  UNMEASURED: no document carries two underlyings or a spread ladder.
+- **The hedging engine reads one underlying, commodity futures legs, one calendar spread rate and
+  gross initial margin** (2026-11-04). `HedgeMonteCarlo` and its bundle take the primary commodity
+  spot as the one underlying (`hedge_bundle.primary_spot`: the spot the utility scale, the step vol,
+  the returns-state coordinates, the bundle's width and the diagnostic CSV read; a world whose
+  primary is not unique is refused by name), its hedge legs are commodity futures deals, the one
+  type declaring the `Contract_Size` a position scales a mark by (a leg of another type fails on
+  that key), `Calendar_Spread_Bps` is one scalar rate on every listed pair, so a per-maturity spread
+  ladder is inexpressible, and the initial-margin funding charge posts each leg's margin gross,
+  over-margining a calendar spread. UNMEASURED: no document carries two underlyings, a leg of
+  another type or a spread ladder.
 - **Sobol inner draws inflate a fork's variance where a calendar-clock law draws on more than one
   of its rows** (2026-11-04). Under `Inner_Draws: sobol`, the default, `HedgeMonteCarlo` takes a
   fork's inner normals off one Sobol stream strided over its rows and paths, which hands an inner
