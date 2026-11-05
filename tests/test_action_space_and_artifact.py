@@ -1594,16 +1594,19 @@ def test_the_benchmarks_score_a_step_sum_objective_by_its_step_reward():
 @pytest.mark.parametrize('block, key, value, message', [
     ('Evaluator', 'Accounting_Mode', 'Foo', "Accounting_Mode is 'Foo', not one of futures, cash_account"),
     ('Objective', 'Reference_Mode', 'Foo', "Reference_Mode is 'Foo', not one of Fixed, Running_Wealth"),
-    ('Solver', 'DiffV2_Position_State', 'Yes', 'Solver declares no DiffV2_Position_State')],
-    ids=['accounting_mode', 'reference_mode', 'undeclared'])
+    ('Solver', 'DiffV2_Position_State', 'Yes', 'Solver declares no DiffV2_Position_State'),
+    ('Evaluator', 'Total_Position_Schedule', [{'Step': 0, 'Min_Total': -50, 'Max_Total': 0, 'Maxx_Total': 5}],
+     'Total_Position_Schedule declares no Maxx_Total - it declares Max_Total, Min_Total, Step')],
+    ids=['accounting_mode', 'reference_mode', 'undeclared', 'table_row'])
 def test_the_hedging_problem_is_judged_at_every_depth(block, key, value, message):
     """What `Hedging_Problem` states is judged at every depth by the schema
     (`HedgeMonteCarlo.refusals`, `schema.stated_messages`), as a calculation override is: on the
-    client document a menu value outside its `F`'s values, or a key no `F` declares, is refused by
-    name before anything is simulated. Under 1 s each.
+    client document a menu value outside its `F`'s values, or a key no `F` declares, a table row's
+    column among them, is refused by name before anything is simulated. Under 1 s each.
 
-    Killing mutation: the top level judged alone (`validate_block`), `Accounting_Mode` 'Foo' then
-    running as futures and the undeclared key read as nothing."""
+    Killing mutations: the top level judged alone (`validate_block`), `Accounting_Mode` 'Foo' then
+    running as futures and the undeclared key read as nothing; a table judged whole
+    (`stated_messages` without its row branch), the schedule's misspelt column run as nothing."""
     cfg = _client()
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp.setdefault(block, {'Object': 'DiffSolverV2'})[key] = value

@@ -535,8 +535,8 @@ def validate_block(cls, block):
 def stated_messages(owner, fields, block, known=()):
     """What `block` states that its declarations refuse: a key `owner` does not declare, nor
     `known` admits, a blank where a menu wants a choice, a value that is not what its field
-    declares, and a container's keys against its children - the judge of a block laid over
-    another, whose absences are the other's."""
+    declares, and a container's keys, or a table row's stated by its columns' names, against its
+    children - the judge of a block laid over another, whose absences are the other's."""
     declared = {f.key: f for f in fields}
     roster = ', '.join(sorted(set(declared).union(known)))
     messages = ['{} declares no {} - it declares {}'.format(owner, key, roster)
@@ -545,6 +545,11 @@ def stated_messages(owner, fields, block, known=()):
         field, value = declared[key], block[key]
         if field.sub_fields and isinstance(value, dict):
             messages += stated_messages(key, field.sub_fields, value)
+        elif field.row is not None and isinstance(value, list):
+            # a positional row (a list of cells) is its columns in order, not a block
+            logging.debug('%s: %d row(s) judged by their columns', key, len(value))
+            messages += [message for row in value if isinstance(row, dict)
+                         for message in stated_messages(key, field.row.fields, row)]
         elif not value and field.values is not None:
             messages.append('{} is blank, not one of {}'.format(key, ', '.join(field.values)))
         else:
