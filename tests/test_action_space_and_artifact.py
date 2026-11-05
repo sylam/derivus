@@ -1098,37 +1098,49 @@ def _swap_rolling(**kw):
     return cfg
 
 
-def _swap_paying_early(**kw):
+def _swap_paying_early(currency='USD', curve='USD-SOFR', **kw):
     """The swap document beside a third swap, bought 400 oz at 2,050 on the first six fixings and
-    settling Monday 11 May, so its cash is paid before the terminal."""
+    settling Monday 11 May in `currency`, discounted on `curve`, so its cash is paid before the terminal."""
     cfg = _swap(**kw)
     deals = cfg['Calc']['Calculation']['Hedging_Problem']['Liabilities']['CommodityAveragePriceSwapDeal']
     deals['PLAT_APS_EARLY'] = dict(deals['PLAT_APS_BUY'], Units=400.0, Fixed_Price=2050.0,
+                                   Currency=currency, Discount_Rate=curve,
                                    Settlement_Date={'.Timestamp': '2026-05-11'},
                                    Sampling_Data=[[{'.Timestamp': d}, 0.0, 1.0] for d in FIXINGS[:6]])
     return cfg
 
 
 def test_a_payment_inside_a_fork_s_window_is_no_move_of_the_liability(tmp_path):
-    """A fork values the liability as the bundle does, its mark plus the cash paid since the decision:
-    beside a third swap settling Monday 11 May, its fixings done the Friday before, the frozen roll's
-    decision dump on one path reads the plain swap's `E_dL` at the Monday decision, -1,039.89 in both,
-    the payment no move. 12 s.
+    """A fork values the liability as the bundle does, its mark plus the cash paid since the decision,
+    in the calculation `Currency`: beside a third swap settling Monday 11 May, its fixings done the
+    Friday before, in USD or in ZAR (its cash converted at its row by the static `FxRate.ZAR`, 0.0619,
+    as its mark is), the frozen roll's decision dump on one path reads the plain swap's `E_dL` at the
+    Monday decision, -1,039.89 (-1,039.90 in ZAR), and the outer value the third swap adds is the
+    same on Tuesday as on Monday (-43,884.72 and -43,884.71; -2,714.66 and -2,714.65 in ZAR): the
+    payment no move. 11 s.
 
-    Killing mutation: the fork's landing read as the liability's mark alone (`L_t1` without the
-    window's cash), the payment a move (E_dL +42,844.80)."""
+    Killing mutations: the fork's landing read as the liability's mark alone (`L_t1` without the
+    window's cash), the payment a move (E_dL +42,844.80); the cash summed in its own currency
+    (`HedgeMonteCarlo._cash` without its FX), in ZAR E_dL -42,210.00 and Tuesday's added value
+    -43,884.71 against Monday's -2,714.66."""
     ckpt = str(tmp_path / 'vf.pt')
     _run(_swap(save=ckpt))
-    e_dl = []
-    for doc in (_swap, _swap_paying_early):
-        roll, dump = doc(load=ckpt), str(tmp_path / f'{doc.__name__}.csv')
+    e_dl, value = [], []
+    for i, roll in enumerate((_swap(load=ckpt), _swap_paying_early(load=ckpt),
+                              _swap_paying_early('ZAR', 'ZAR-SWAP', load=ckpt))):
+        dump = str(tmp_path / f'{i}.csv')
         roll['Calc']['Calculation']['Batch_Size'] = 1
         roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Decision_Curve_Dump'] = dump
         world = _run(roll).bundle
         rows = pd.read_csv(dump).set_index('t')['E_dL']
         dates = world.scenario_dates[world.initial_time_index:]
-        e_dl.append(float(rows[next(t for t in rows.index if str(dates[t].date()) == '2026-05-11')]))
-    assert abs(e_dl[1] - e_dl[0]) < 1e-4 * abs(e_dl[0]), e_dl
+        t = next(t for t in rows.index if str(dates[t].date()) == '2026-05-11')
+        e_dl.append(float(rows[t]))
+        value.append(world.liability_value[world.initial_time_index + t:][:2, 0].double())
+    for e, v in zip(e_dl[1:], value[1:]):
+        added = v - value[0]
+        assert abs(e - e_dl[0]) < 1e-4 * abs(e_dl[0]) and abs(added[1] - added[0]) < 1e-3 * abs(added[0]), (
+            e_dl, added)
 
 
 def _swap_held(**kw):

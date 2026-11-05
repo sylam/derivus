@@ -3508,7 +3508,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         def _new_blocks():
             return ({utils.check_tuple_name(key): [] for key in self.stoch_factors},
                     defaultdict(list),
-                    {'mtm': [], 'realized_cashflows': defaultdict(list)},
+                    {'mtm': [], 'cash': []},
                     defaultdict(list))
 
         # `privileged_factor_blocks` is keyed by (factor_name, factor_attr) — whatever the process
@@ -3639,12 +3639,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             if mtm is not None:
                 hedge_profile_blocks['mtm'].append(mtm.detach().clone())
 
-            mtm_grid_size = self.time_grid.mtm_time_grid.size
-            for currency, by_time in (shared_mem.t_Cashflows or {}).items():
-                dense = shared_mem.one.new_zeros(mtm_grid_size, shared_mem.simulation_batch)
-                for t_idx, payoff in by_time.items():
-                    dense[int(t_idx)] = payoff
-                hedge_profile_blocks['realized_cashflows'][str(currency)].append(dense.detach().clone())
+            hedge_profile_blocks['cash'].append(self._cash(
+                shared_mem, range(self.time_grid.mtm_time_grid.size), shared_mem.simulation_batch).detach())
 
             for key in self.stoch_factors:
                 factor_tensor_blocks[utils.check_tuple_name(key)].append(
@@ -3765,6 +3761,25 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         bundle.inner_mc_grad = lambda t: self._run_inner_mc_at_t(
             t, bundle.successors[t], outer_buffer, shared_mem, base_date, tradable_refs,
             with_grad=True)
+
+    def _cash(self, shared_mem, rows, width):
+        """The cash the liability's `t_Cashflows` book on the mtm rows `rows`, `(len(rows), width)` in
+        the calculation `Currency`: each currency's converted at its row by the FX factor the
+        calculation carries, as a pricer converts its mark."""
+        rows = list(rows)
+        cash = shared_mem.one.new_zeros(len(rows), width)
+        for currency, by_row in shared_mem.t_Cashflows.items():
+            at = [i for i, r in enumerate(rows) if r in by_row]
+            if not at:
+                continue
+            fx = utils.calc_fx_cross(
+                get_fxrate_factor(utils.check_rate_name(currency), self.static_factors, self.stoch_factors),
+                shared_mem.Report_Currency, self.time_grid.time_grid[[rows[i] for i in at]], shared_mem)
+            cash[at] += torch.stack([by_row[rows[i]].expand(width) for i in at]) * fx
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.debug('liability cash in %s paid on rows %s, FX %s', currency,
+                              [rows[i] for i in at if bool(by_row[rows[i]].any())], fx.flatten()[:1].tolist())
+        return cash
 
     def _publish_print_seeds(self, procs, state, t, shared_mem):
         """Publish every process's `print_seed` off `state` (factor key -> row-indexable snapshot)
@@ -4010,13 +4025,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 # a row's value is its mark plus the cash paid from t to the row before it, as
                 # `Bundle._resolve_liability` values the outer liability: a payment is no move
                 n = min(ahead, mtm_fwd.shape[0] - 1)
-                rows = range(cutoff_idx, cutoff_idx + n)
-                zero = mtm_fwd.new_zeros(B_flat)
-                paid = [sum((f[r].expand(B_flat) for f in shared_mem.t_Cashflows.values() if r in f), zero)
-                        for r in rows]
-                logging.debug('fork at %d: liability cash on window rows %s', t,
-                              [r for r in rows if any(r in f for f in shared_mem.t_Cashflows.values())])
-                value = mtm_fwd[:n + 1] + torch.stack([zero] + paid).cumsum(0).reshape(-1, B_outer, B_inner)
+                paid = self._cash(shared_mem, range(cutoff_idx, cutoff_idx + n), B_flat)
+                value = mtm_fwd[:n + 1] + torch.cat([paid.new_zeros(1, B_flat), paid]).cumsum(0).reshape(
+                    -1, B_outer, B_inner)
                 L_t_inner = mtm_fwd[0].clone()                             # outer-t (shared across draws)
                 L_t1_inner = value[np.minimum(at, n).tolist()]
                 result.update(

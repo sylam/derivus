@@ -845,7 +845,8 @@ class Bundle:
         '  (`marked`) and moves over a step it is still marked at the end of, the step carrying',
         '  market time (`moving`): the one liveness rule every track reads.',
         '- **Liability** — `liability_value` / `liability_sim`: its mark plus the cash it has paid',
-        '  on earlier rows, and `unfixed_at`: the signed quantity its fixings still carry after a row.',
+        '  on earlier rows, both in the calculation `Currency`, and `unfixed_at`: the signed quantity',
+        '  its fixings still carry after a row.',
         '- **Factors** — the simulated factor paths, and `privileged_factors`: whatever each process',
         '  publishes as market state.',
         '- **Frame** — `utility_scale`, the objective\'s scale `c` as this batch resolves it (the',
@@ -910,8 +911,7 @@ class Bundle:
         factors = {n: torch.cat(blocks, dim=-1) for n, blocks in factor_tensor_blocks.items()}
         mtm = (torch.cat(hedge_profile_blocks['mtm'], dim=1)
                if hedge_profile_blocks.get('mtm') else None)
-        cashflows = {currency: torch.cat(blocks, dim=1) for currency, blocks
-                     in (hedge_profile_blocks.get('realized_cashflows') or {}).items()}
+        cash = torch.cat(hedge_profile_blocks['cash'], dim=1)
         # The liability MTM sets the time axis (its native length is the mtm grid); everything
         # else pads/truncates to it. No liability ⇒ the shortest simulated series wins.
         steps = int(mtm.shape[0]) if mtm is not None else min(
@@ -919,7 +919,7 @@ class Bundle:
             + [int(t.shape[0]) for t in tradables.values()]
             + [int(t.shape[0]) for t in factors.values()])
         self._resolve_tradables(tradables, time_grid_days, steps, runtime)
-        self._resolve_liability(mtm, cashflows, steps, total_leg_volume, fixings)
+        self._resolve_liability(mtm, cash, steps, total_leg_volume, fixings)
         self._resolve_factors(factors, privileged_factor_blocks or {}, stoch_factors, steps)
         self._resolve_frame(runtime, stoch_factors)
         return self
@@ -985,15 +985,16 @@ class Bundle:
             return realized.to(dtype=tensor.dtype)
         return tensor[:1].expand((self.history_rows,) + tuple(tensor.shape[1:])).contiguous()
 
-    def _resolve_liability(self, mtm, cashflows, steps, total_leg_volume, fixings):
-        """Stage 2 — the liability's value, its mark plus the cash it has paid on earlier rows, the
+    def _resolve_liability(self, mtm, cash, steps, total_leg_volume, fixings):
+        """Stage 2 — the liability's value, its mark plus the cash `cash` (in the calculation
+        `Currency`, `HedgeMonteCarlo._cash`) it has paid on earlier rows, the
         leg volume the utility scale needs and the liability's fixings `unfixed_at` reads.
         `last_live_mtm_index` is the structural pre-settlement terminal: the grid appends one
         clean-exit row where the liability settles to zero, so the last LIVE mtm row is
         `steps - 2` — the single source for the DP depth and the L_T read."""
         if mtm is not None:
             mtm = _align_time_axis(mtm, steps)
-            paid = sum((_align_time_axis(t, steps) for t in cashflows.values()), torch.zeros_like(mtm))
+            paid = _align_time_axis(cash, steps)
             # the mark carries a payment on its own row and drops it after, so the cash paid on
             # earlier rows joins it: the liability's value is continuous across a payment
             value = mtm + torch.cat([torch.zeros_like(paid[:1]), paid.cumsum(0)[:-1]])
