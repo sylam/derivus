@@ -776,6 +776,18 @@ def _logwealth(cfg):
     return cfg
 
 
+def _in_zar(cfg):
+    """`cfg` stated in ZAR at exactly 1/16 USD a rand, so every money of it is sixteen times the USD
+    document's: its calculation `Currency` and its cash and margin balances restated."""
+    cfg = jsonlib.loads(jsonlib.dumps(cfg))
+    cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.ZAR']['Spot'] = 0.0625
+    cfg['Calc']['Calculation']['Currency'] = 'ZAR'
+    ps = cfg['Calc']['Calculation']['Hedging_Problem']['Portfolio_State']
+    for key in ('Cash_Balances', 'Margin_Balances'):
+        ps[key] = {k: 16.0 * v for k, v in ps[key].items()}
+    return cfg
+
+
 def _doubled(cfg):
     """Every dollar of the document doubled, nothing else: the liability's volume, each future's
     contract size, the margin and the cash balances; prices, paths and contract counts unchanged."""
@@ -797,9 +809,11 @@ def test_the_capital_line_travels_with_the_returns_state_frame(tmp_path):
     """Under the returns state the value state is in fractions of the t0 notional, and so is the
     capital line the day's growth is read against: the checkpoint stamps its training notional and
     a roll scales the line by its own notional over it, so the same document at twice every
-    dollar rolls the same book with exactly twice the wealth.
+    dollar rolls the same book with exactly twice the wealth, and stated in ZAR at 1/16 USD a rand
+    (`_in_zar`), its notional the t0 spot in the calculation `Currency`, with sixteen times it.
 
-    Killing mutation: the displacement restored in the training world's dollars."""
+    Killing mutations: the displacement restored in the training world's dollars; the notional read
+    in the spot's quote currency (`fx` dropped from `state_notional`), the ZAR roll's book parting."""
     ckpt = str(tmp_path / 'value_fn_frame.pt')
     cfg = _logwealth(_cfg(seed=7, save=ckpt))
     cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Returns_State'] = 'Yes'
@@ -807,11 +821,12 @@ def test_the_capital_line_travels_with_the_returns_state_frame(tmp_path):
     roll = _logwealth(_cfg(seed=7, load=ckpt))
     roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Returns_State'] = 'Yes'
     base = _run(roll).evaluation_summary['diagnostics']['verdict']
-    twice = _run(_doubled(roll)).evaluation_summary['diagnostics']['verdict']
-    assert twice['greedy_q_traj'] == base['greedy_q_traj'], \
-        [(a, b) for a, b in zip(base['greedy_q_traj'], twice['greedy_q_traj']) if a != b][:3]
-    assert abs(twice['greedy']['wT_mean'] - 2.0 * base['greedy']['wT_mean']) <= 1e-6 * abs(base['greedy']['wT_mean']), \
-        (base['greedy']['wT_mean'], twice['greedy']['wT_mean'])
+    for scale, doc in ((2.0, _doubled(roll)), (16.0, _in_zar(roll))):
+        moved = _run(doc).evaluation_summary['diagnostics']['verdict']
+        assert moved['greedy_q_traj'] == base['greedy_q_traj'], \
+            (scale, [(a, b) for a, b in zip(base['greedy_q_traj'], moved['greedy_q_traj']) if a != b][:3])
+        assert abs(moved['greedy']['wT_mean'] - scale * base['greedy']['wT_mean']) <= 1e-6 * abs(base['greedy']['wT_mean']), \
+            (scale, base['greedy']['wT_mean'], moved['greedy']['wT_mean'])
 
 
 def test_a_frozen_roll_measures_no_frame_of_its_own(tmp_path):
@@ -994,6 +1009,21 @@ def test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar(tmp_path):
         scale[name] = world.utility_scale
     ratio = scale['Testland'] / scale['Weekdays'] / np.sqrt(days['Testland'] / days['Weekdays'])
     assert days == {'Testland': 77, 'Weekdays': 83} and abs(ratio - 1.0) < 1e-12, (days, scale)
+
+
+def test_the_utility_scale_reads_the_spot_in_the_calculation_currency():
+    """The utility scale reads the primary spot in the calculation `Currency`, through its FX cross
+    at the first row, as every mark is: the simulate-only fixture stated in ZAR at exactly 1/16 USD a
+    rand (`_in_zar`) is the USD document at sixteen times every money, its scale sixteen times the
+    USD document's to the bit. 2 s.
+
+    Killing mutation: the spot read in its quote currency (`primary_fx` dropped in
+    `Bundle._resolve_utility_scale`), the two scales equal."""
+    def scale(cfg):
+        cfg['Calc']['Calculation'].update(Batch_Size=2, Random_Seed=3)
+        return _run(cfg).bundle.utility_scale
+    usd = scale(jsonlib.load(open(FIXTURE)))
+    assert scale(_in_zar(jsonlib.load(open(FIXTURE)))) == 16.0 * usd, usd
 
 
 def test_a_friday_decision_forks_to_monday_and_is_scored_against_monday(tmp_path):

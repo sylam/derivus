@@ -3508,7 +3508,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         def _new_blocks():
             return ({utils.check_tuple_name(key): [] for key in self.stoch_factors},
                     defaultdict(list),
-                    {'mtm': [], 'cash': []},
+                    {'mtm': [], 'cash': [], 'fx': []},
                     defaultdict(list))
 
         # `privileged_factor_blocks` is keyed by (factor_name, factor_attr) — whatever the process
@@ -3523,11 +3523,9 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # per run, so outer rows and fork reveals share a coordinate system across epochs
         self._returns_state = bool(normalized_runtime['solver']
                                    and normalized_runtime['solver']['diffv2_returns_state'])
-        self._state_spot0 = None
-        if self._returns_state:
-            self._state_spot0 = float(self.stoch_var[self._primary].detach().reshape(-1)[0])
-            normalized_runtime['objective']['state_notional'] = (
-                self._state_spot0 * total_leg_volume)
+        self._state_spot0 = (float(self.stoch_var[self._primary].detach().reshape(-1)[0])
+                             if self._returns_state else None)
+        spot_currency = self.stoch_factors[self._primary].factor.get_currency()
         # walk-forward replay: substitute observed paths; the driver owns all the prep
         observed = None
         if params['Observed_Scenario']:
@@ -3641,6 +3639,15 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
             hedge_profile_blocks['cash'].append(self._cash(
                 shared_mem, range(self.time_grid.mtm_time_grid.size), shared_mem.simulation_batch).detach())
+            # the primary spot's FX cross into the calculation Currency on the first row, where the
+            # utility scale and the returns-state notional read the spot in the calculation's money
+            fx = self._fx(spot_currency, [0], shared_mem).expand(1, shared_mem.simulation_batch).detach()
+            hedge_profile_blocks['fx'].append(fx)
+            if self._returns_state and not run:
+                normalized_runtime['objective']['state_notional'] = (
+                    self._state_spot0 * float(fx.median()) * total_leg_volume)
+                logging.debug('returns-state notional %.17g at FX %.17g',
+                              normalized_runtime['objective']['state_notional'], float(fx.median()))
 
             for key in self.stoch_factors:
                 factor_tensor_blocks[utils.check_tuple_name(key)].append(
@@ -3762,20 +3769,24 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             t, bundle.successors[t], outer_buffer, shared_mem, base_date, tradable_refs,
             with_grad=True)
 
+    def _fx(self, currency, rows, shared_mem):
+        """The FX cross converting `currency` into the calculation `Currency` on the mtm rows `rows`,
+        by the FX factor the calculation carries, as a pricer converts its mark."""
+        return utils.calc_fx_cross(
+            get_fxrate_factor(utils.check_rate_name(currency), self.static_factors, self.stoch_factors),
+            shared_mem.Report_Currency, self.time_grid.time_grid[rows], shared_mem)
+
     def _cash(self, shared_mem, rows, width):
         """The cash the liability's `t_Cashflows` book on the mtm rows `rows`, `(len(rows), width)` in
-        the calculation `Currency`: each currency's converted at its row by the FX factor the
-        calculation carries, as a pricer converts its mark."""
+        the calculation `Currency`, each currency's converted at its row (`_fx`)."""
         rows = list(rows)
         cash = shared_mem.one.new_zeros(len(rows), width)
         for currency, by_row in shared_mem.t_Cashflows.items():
             at = [i for i, r in enumerate(rows) if r in by_row]
             if not at:
                 continue
-            fx = utils.calc_fx_cross(
-                get_fxrate_factor(utils.check_rate_name(currency), self.static_factors, self.stoch_factors),
-                shared_mem.Report_Currency, self.time_grid.time_grid[[rows[i] for i in at]], shared_mem)
-            cash[at] += torch.stack([by_row[rows[i]].expand(width) for i in at]) * fx
+            fx = self._fx(currency, [rows[i] for i in at], shared_mem)
+            cash[at] +=torch.stack([by_row[rows[i]].expand(width) for i in at]) * fx
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.debug('liability cash in %s paid on rows %s, FX %s', currency,
                               [rows[i] for i in at if bool(by_row[rows[i]].any())], fx.flatten()[:1].tolist())

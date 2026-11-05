@@ -26,7 +26,7 @@ BUNDLE_KEYS = (
     'spot_price_history', 'spot_realized_vol', 'privileged_factors',
     'step_annual_vol', 'utility_scale', 'initial_time_index', 'last_live_mtm_index',
     'decision_steps', 'total_leg_volume', 'scenario_dates',
-    'calibrated_utility_inputs',
+    'calibrated_sigma', 'primary_fx',
 )
 
 

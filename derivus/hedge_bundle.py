@@ -882,7 +882,8 @@ class Bundle:
         # Frame + liability descriptors.
         self.spot_realized_vol = {}         # {commodity: (T, B)} rolling realized vol
         self.step_annual_vol = None         # (T,) scalar vol per step, or None
-        self.calibrated_utility_inputs = None
+        self.primary_fx = None              # (B,) the primary spot's FX cross into the calculation Currency at H
+        self.calibrated_sigma = None        # the primary's calibrated vol, the scale's sigma absent a history
         self.utility_scale = None
         # per-step c_t under Utility_Scale_Mode='conditional_sim'
         self.utility_scale_schedule = None
@@ -912,6 +913,7 @@ class Bundle:
         mtm = (torch.cat(hedge_profile_blocks['mtm'], dim=1)
                if hedge_profile_blocks.get('mtm') else None)
         cash = torch.cat(hedge_profile_blocks['cash'], dim=1)
+        self.primary_fx = torch.cat(hedge_profile_blocks['fx'], dim=1)[0]
         # The liability MTM sets the time axis (its native length is the mtm grid); everything
         # else pads/truncates to it. No liability ⇒ the shortest simulated series wins.
         steps = int(mtm.shape[0]) if mtm is not None else min(
@@ -1034,8 +1036,7 @@ class Bundle:
         # a run with no Objective reads no scale
         if runtime['objective'] is not None:
             if not self.spot_price_history:
-                # No Spot_Price_History ⇒ source (spot, σ) from the CALIBRATED market data instead.
-                self.calibrated_utility_inputs = self._calibrated_utility_inputs(stoch_factors)
+                self.calibrated_sigma = self._calibrated_sigma(stoch_factors)
             self.utility_scale = self._resolve_utility_scale(runtime)
             logging.info('utility_scale c resolved to %.2f', self.utility_scale)
             mirror_frame(runtime, self.utility_scale, self.utility_scale_schedule)
@@ -1053,15 +1054,12 @@ class Bundle:
             out[commodity] = rv
         return out
 
-    def _calibrated_utility_inputs(self, stoch_factors):
-        """Utility-scale `(commodity, spot, σ)` sourced from CALIBRATED market data — the
-        `Spot_Price_History`-absent fallback: the primary spot's sim-day-0 level and its process's
-        calibrated annualized vol. None when the process reports none."""
+    def _calibrated_sigma(self, stoch_factors):
+        """The primary spot's process's calibrated annualized vol, the utility scale's σ where no
+        `Spot_Price_History` is declared; None when the process reports none."""
         process = {utils.check_tuple_name(k): p for k, p in stoch_factors.items()}[self.primary]
         sigma = process.calibrated_annual_vol()
-        if sigma is None or sigma <= 0.0:
-            return None
-        return (self.primary, float(self.factors[self.primary][0].median().item()), float(sigma))
+        return None if sigma is None or sigma <= 0.0 else float(sigma)
 
     def _resolve_utility_scale(self, runtime):
         """The objective's scale `c` as this batch resolves it, by the rules of the Hedging
@@ -1070,7 +1068,8 @@ class Bundle:
 
         The history path reads spot and realized σ at the history/sim boundary H as a BATCH MEDIAN
         rather than slot [H, 0]: `full[H]` is the first sim step, and a process emitting a
-        stochastic initial draw would otherwise make c path-dependent off path 0."""
+        stochastic initial draw would otherwise make c path-dependent off path 0. The spot is read in
+        the calculation `Currency`, through its FX cross at H (`primary_fx`), as every mark is."""
         objective = runtime['objective']
 
         def _degenerate(reason):
@@ -1099,26 +1098,21 @@ class Bundle:
         logging.debug('utility scale horizon: %s market days through the close row %d',
                       float(market), self.last_live_mtm_index)
         tau_years = max(float(market) / 252.0, 1.0 / 252.0)
-        if not self.spot_price_history and self.calibrated_utility_inputs is None:
+        if not self.spot_price_history and self.calibrated_sigma is None:
             _degenerate(
                 "spot_price_history is empty and no calibrated underlying vol is available "
                 "(no referenced CommodityPrice process reports calibrated_annual_vol)")
         if not self.total_leg_volume:
             _degenerate("total_leg_volume is zero")
-        if self.spot_price_history:
-            # history path: spot and realized sigma read at the history/sim boundary H
-            commodity = self.primary
-            # batch-median at H, never slot [H, 0]: keeps c path-independent under a stochastic
-            # initial draw
-            initial_spot = float(self.factors[commodity][H].float().median().item())
-            sigma = float(self.spot_realized_vol[commodity][H].median().item())
-        else:
-            commodity, initial_spot, sigma = self.calibrated_utility_inputs
+        sigma = (float(self.spot_realized_vol[self.primary][H].median().item()) if self.spot_price_history
+                 else self.calibrated_sigma)
         if sigma <= 0.0:
             _degenerate(
-                f"realized vol for {commodity!r} is non-positive (σ={sigma}) — "
+                f"realized vol for {self.primary!r} is non-positive (σ={sigma}) — "
                 "likely early-calibration window or upstream calc bug")
-        return self.total_leg_volume * initial_spot * sigma * (tau_years ** 0.5)
+        spot = float((self.factors[self.primary][H] * self.primary_fx).float().median().item())
+        logging.debug('utility scale spot %.17g in the calculation Currency, sigma %.17g', spot, sigma)
+        return self.total_leg_volume * spot * sigma * (tau_years ** 0.5)
 
     def _log_scale_dose(self, runtime):
         """Log the `conditional_sim` schedule and the absolute risk aversion per unit of money the
