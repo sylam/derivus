@@ -737,17 +737,6 @@ def _rolling_realized_vol(spot, market, window=PRICE_ZSCORE_WINDOW):
     return (252.0 * (cum[idx[1:]] - cum[lo[1:]]) / count).clamp_min(0.0).sqrt()   # (T, B)
 
 
-def _history_key(commodity_field):
-    """The `spot_price_history` key for a deal's raw `Commodity` field: the PRIMARY spot's full
-    factor name, which is the key space `_spot_price_history` validates the dict against. The deal
-    carries the bare name (`'X'`, or a composed `'X.Y'` whose history is its primary's), and
-    keying the lookup by that raw field can never match."""
-    if not commodity_field:
-        return None
-    return utils.check_tuple_name(
-        utils.Factor('CommodityPrice', utils.check_rate_name(commodity_field)[:1]))
-
-
 def _im_funding_charge(positions, prices, runtime, vol, dt):
     """Per-hedge-leg initial-margin funding debit `{name: (B,)}` on a step's POST-trade book:
 
@@ -927,13 +916,13 @@ class Bundle:
         return self
 
     def _resolve_tradables(self, tradables, time_grid_days, steps, runtime):
-        """Stage 1 — the time axis and the per-instrument mark series, both carrying the realized
-        history prefix, and the prefix's length `history_rows` every later stage applies:
-        `History_Lookback_Business_Days` rows of realized spot where a `Spot_Price_History` is
-        declared, none where it is not, so a rolling-window feature at sim-day-0 already has its
-        lookback; a tradable whose `Commodity` has a history and a spot factor that has one take
-        that series, every other series broadcasts its first row. Also derives the CPU day mirror,
-        the scenario dates and `initial_time_index`."""
+        """Stage 1 — the time axis and the per-instrument mark series, both carrying the history
+        prefix, and the prefix's length `history_rows` every later stage applies:
+        `History_Lookback_Business_Days` rows where a `Spot_Price_History` is declared, none where it
+        is not, so a rolling-window read of a spot at sim-day-0 already has its lookback (stage 3); a
+        mark's prefix is its first row repeated, no reader of a mark starting before
+        `initial_time_index`. Also derives the CPU day mirror, the scenario dates and
+        `initial_time_index`."""
         grid = _align_time_axis(time_grid_days, steps)
         # a deal's marks run to its last date and the alignment repeats that row after it
         self.last_marked = {n: min(int(t.shape[0]), steps) - 1 for n, t in tradables.items()}
@@ -960,13 +949,8 @@ class Bundle:
                                         device=grid.device).unsqueeze(1)
                                        .expand(-1, self.batch_size).contiguous()
                 for commodity, payload in history.items()}
-            tradables = {
-                n: torch.cat([self._history_prefix(
-                    t, self.spot_price_history.get(_history_key(
-                        runtime['tradables'][n]['params'].get('Commodity')))), t], dim=0)
-                for n, t in tradables.items()}
         self.time_grid_days = grid
-        self.tradables = tradables
+        self.tradables = {n: torch.cat([self._history_prefix(t), t], dim=0) for n, t in tradables.items()}
         self.time_grid_days_cpu = grid.detach().cpu().to(dtype=torch.int64).tolist()
         days = self.time_grid_days_cpu
         self.scenario_dates = pd.DatetimeIndex(

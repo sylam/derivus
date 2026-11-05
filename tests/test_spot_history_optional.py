@@ -9,7 +9,7 @@ With no `Portfolio_State.Spot_Price_History`, the solver must still train sane:
   * the history prefix no-ops (`initial_time_index == 0`), value bounded, artifact present.
 
 JSON-is-the-contract: load_json + run_job, history removed in code (the fixture template is
-never edited). The document WITH its history is solved once and read by two gates."""
+never edited). The document WITH its history is solved once, for the cash account's gate."""
 import json as jsonlib
 import math
 import os
@@ -59,7 +59,7 @@ def with_history():
         'Training_Action_Chunk_Size': 64, 'T_Min': 100, 'DiffV2_Fit_Iters': 5}
     cx = rf.Context()
     cx.load_json((jsonlib.dumps(cfg), 'spot_history_prefix.json'))
-    return cfg, cx.run_job()[1]
+    return cx.run_job()[1]
 
 
 def test_a_history_row_at_the_base_date_is_refused():
@@ -89,36 +89,6 @@ def test_a_history_row_at_the_base_date_is_refused():
         cx.run_job()
 
 
-def test_the_realized_history_reaches_the_tradable_prefix(with_history):
-    """With `Spot_Price_History` present, a commodity tradable's history prefix must BE the
-    realized series, not the flat first-row broadcast. The lookup resolves the deal's raw
-    `Commodity` field (a composed name) to the primary spot's full factor name - the key space
-    `_spot_price_history` validates against. Keyed by the raw field it never matches: `.get()` ->
-    None -> `tensor[:1].expand` -> thirty flat rows ahead of every rolling feature, silently. So
-    this asserts variation AND the values.
-
-    Killing mutation: the prefix looked up by the raw `Commodity` field."""
-    cfg, result = with_history
-    hp = cfg['Calc']['Calculation']['Hedging_Problem']
-    bundle, runtime = result.bundle, result.runtime
-
-    H = bundle.history_rows
-    assert H > 0 and bundle.initial_time_index == H, (H, bundle.initial_time_index)
-    declared = {k: [float(p) for p in v['Prices'][-H:]]
-                for k, v in hp['Portfolio_State']['Spot_Price_History'].items()}
-    checked = 0
-    for n, meta in runtime['tradables'].items():
-        raw = (meta.get('params') or {}).get('Commodity')
-        key = 'CommodityPrice.' + raw.split('.')[0] if raw else None
-        if key not in declared:
-            continue
-        got = bundle.tradables[n][:H, 0].detach().cpu().numpy()
-        assert np.ptp(got) > 0.0, f'{n}: flat prefix - the realized branch never engaged'
-        assert np.allclose(got, declared[key], rtol=1e-5), (n, got[:3], declared[key][:3])
-        checked += 1
-    assert checked > 0, 'no tradable reached the realized-prefix assertion'
-
-
 def test_the_cash_account_prices_and_its_mark_accrues(with_history):
     """`CashAccountDeal` is a PRICED tradable - `Units / D(t)` - and its mark ratio is the ONLY
     financing path: a skipped cash deal loses interest on cash AND margin while everything else
@@ -127,7 +97,7 @@ def test_the_cash_account_prices_and_its_mark_accrues(with_history):
     rates. Any non-zero `Units` restores it - only the mark RATIO is consumed.
 
     Killing mutation: the mark `Units * D(t)`, a balance that decays."""
-    bundle = with_history[1].bundle
+    bundle = with_history.bundle
     assert 'USD_CASH' in bundle.tradables, 'the cash account produced no mark - financing is off'
     cash = bundle.tradables['USD_CASH'][bundle.initial_time_index:, 0].detach().cpu().numpy()
     d = np.diff(cash)
