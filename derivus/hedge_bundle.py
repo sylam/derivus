@@ -414,9 +414,6 @@ def construct_hedge_runtime(
     if alloc_mode not in ("cartesian", "exposure", "carry_variance"):
         raise ValueError(f"Unsupported Evaluator.Allocation_Mode {evaluator_config['Allocation_Mode']!r}: "
                          f"'Cartesian' | 'Exposure' | 'Carry_Variance'")
-    if alloc_mode == "carry_variance" and solver_config is None:
-        raise ValueError("Evaluator.Allocation_Mode='Carry_Variance' requires a Solver, which derives "
-                         "its weights from the warmup sims")
     logging.debug("Evaluator.Allocation_Mode %s: %s", alloc_mode, "the table, the even split when "
                   "omitted" if alloc_mode == "exposure" else "no table read")
     return {

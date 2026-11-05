@@ -1337,6 +1337,21 @@ def test_the_cartesian_grid_caps_the_signed_net_of_a_mixed_sign_book():
 
 
 #: A one-knot table on the October leg, and the even split of the three legs.
+def test_a_simulate_only_run_reads_no_action_universe():
+    """`simulate_only` rolls no policy, so it reads no action universe: the fixture under
+    `Allocation_Mode` Carry_Variance, stating no Solver to derive weights, rolls to the default
+    mode's terminal P&L on every path, to the bit. 2 s.
+
+    Killing mutation: Carry_Variance refused without a Solver (the refusal this replaced)."""
+    pnl = []
+    for mode in ('Cartesian', 'Carry_Variance'):
+        cfg = jsonlib.load(open(FIXTURE))
+        cfg['Calc']['Calculation'].update(Batch_Size=4, Random_Seed=3)
+        cfg['Calc']['Calculation']['Hedging_Problem']['Evaluator']['Allocation_Mode'] = mode
+        pnl.append(_run(cfg).evaluation_summary['final_state']['net_pnl'])
+    assert torch.equal(*pnl), pnl
+
+
 ONE_KNOT = [{'Step': 0, 'Instrument': _HEDGES[2], 'Weight': 1.0}]
 EVEN = [{'Step': 0, 'Instrument': h, 'Weight': 1.0 / 3.0} for h in _HEDGES]
 
