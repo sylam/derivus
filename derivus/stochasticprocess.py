@@ -319,6 +319,17 @@ def hmm_forward_backward(log_pi, log_P, log_emit):
     return gamma, xi, log_lik
 
 
+def stress_belief(p, e, stay, enter, var):
+    """P(stress) after the innovation `e` from `p` before it, in a two-state chain that stays in stress
+    with probability `stay` and enters it with `enter`, `e` Gaussian of variance `var` = (quiet, stress)
+    by state: the chain's step, then Bayes on the two likelihoods. Arrays or tensors alike."""
+    exp = torch.exp if isinstance(e, torch.Tensor) else np.exp
+    prior = p * stay + (1.0 - p) * enter
+    e2 = e * e
+    lq, ls = (exp(-0.5 * e2 / v) / v ** 0.5 for v in var)
+    return prior * ls / (prior * ls + (1.0 - prior) * lq)
+
+
 def garch11_t_mle(x):
     """Zero-mean GARCH(1,1) with standardised Student-t innovations, MLE on the series `x`.
 
@@ -4633,10 +4644,17 @@ class BasisLinkedSpotModel(StochasticProcess):
         'with $q$ = **Mix_Q_Stress**, as the calibration writes them: the persistence is then',
         "**G_Alpha** + **G_Beta**, where other sds make it **G_Alpha** times that variance plus **G_Beta**. Held by",
         '`tests/test_chained_basis.py::test_a_band_basis_on_a_constant_garch_variance_is_the_band_with_its_sds_scaled`',
-        'and `::test_the_garch_seed_sets_the_band_basis_dispersion_over_its_first_month`. A replayed path',
-        'filters its stress state on $\\eta_t/\\sigma_t$. **Not gated**.',
+        'and `::test_the_garch_seed_sets_the_band_basis_dispersion_over_its_first_month`.',
         '',
-        'Both recursions are deterministic functions of the realised path and draw no randomness.',
+        'Under Band_Mixture the stress belief $p_t=P(\\text{stress}\\mid\\eta_1,\\dots,\\eta_t)$ is carried beside',
+        "$\\mu$ and $\\sigma^2$: one filter step, the chain's move then Bayes on the two Gaussian likelihoods of",
+        '$\\eta_t$ ($\\eta_t/\\sigma_t$ under GARCH), updates it on the drawn innovation of a simulated path and',
+        "on the realised one of a replay, from **Mix_P0_Stress** or the belief a fork or a burn-in carries over;",
+        'a replay draws its published stress state from it. Held by',
+        '`tests/test_basis_regime_state.py::test_the_revealed_belief_rises_on_a_large_innovation_and_decays_over_quiet_rows`',
+        'and `::test_a_fork_starts_from_the_outer_path_s_belief_at_the_fork_row`.',
+        '',
+        'Every recursion is a deterministic function of the realised path and draws no randomness.',
         '',
         "The law steps as calibrated once a market day, the job's business days in a row counted by",
         "`utils.trading_clock` (`GARCHSpotModel`'s clock): a weekend or holiday row holds the level, $\\mu$,",
@@ -4660,10 +4678,11 @@ class BasisLinkedSpotModel(StochasticProcess):
         '`tests/test_chained_basis.py::test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row`.',
         '',
         'The hedging value net reads, before the level, the deviation $b_t-\\mu_t$ from the slow level the',
-        "next step reverts to where the basis has a slow mean, and $\\log\\sigma^2_t$ where it has the",
-        "innovation's own GARCH, both off the published recursions on a simulated and a replayed path alike.",
-        'Held by',
-        '`tests/test_action_space_and_artifact.py::test_the_value_net_reads_the_band_deviation_the_world_declares`.',
+        "next step reverts to where the basis has a slow mean, $\\log\\sigma^2_t$ where it has the",
+        "innovation's own GARCH, and the stress belief $p_t$ under **Reveal_Regime** Yes on a Band_Mixture",
+        'basis, each off the published recursions on a simulated and a replayed path alike. Held by',
+        '`tests/test_action_space_and_artifact.py::test_the_value_net_reads_the_band_deviation_the_world_declares`',
+        'and `tests/test_basis_regime_state.py::test_the_revealed_belief_rises_on_a_large_innovation_and_decays_over_quiet_rows`.',
         '',
         "- **A**: the loading $a$ on the parent's concurrent move",
         '- **Phi**: the AR(1) coefficient (under Band_Mixture, an effective one used only to project the',
@@ -4673,6 +4692,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         '- **Slow_Mean_Lambda, Mu_0**: decay and seed of the slow mean',
         '- **G_Omega, G_Alpha, G_Beta, Sig2_0**: the own-GARCH innovation variance and its seed',
         '- **Band_Kappa, Band_Beta** and the **Mix_** fields: the Band_Mixture law',
+        '- **Reveal_Regime**: Yes shows the hedging value net the Band_Mixture stress belief',
         '',
         '[BasisLinkedSpotCalibration](../calibration/observed_basis.md#basislinkedspotcalibration) estimates',
         'the block.',
@@ -4731,6 +4751,8 @@ class BasisLinkedSpotModel(StochasticProcess):
         F('Mix_P0_Stress', 'Float', default=0.0,
           description='P(stress) at the first simulated step - the filtered posterior at the '
                       'end of the calibration sample'),
+        F('Reveal_Regime', 'Text', default='No', values=['Yes', 'No'], convention=True,
+          description='Yes reveals the Band_Mixture stress belief to the hedging value net, before the level'),
     ]
 
     def __init__(self, factor, param, implied_factor=None):
@@ -4811,6 +4833,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         # pull Band_Beta outside it, and Gaussian innovations whose scale is a 2-state Markov
         # mixture riding the GARCH variance when it is on - the mixture supplies the tails
         self.band = str(self.param.get('Reversion_Model', 'Linear')) == 'Band_Mixture'
+        self.reveal_regime = self.band and str(self.param.get('Reveal_Regime', 'No')) == 'Yes'
         if self.band:
             assert self.slow_mean, 'Band_Mixture reversion needs Slow_Mean_Lambda > 0'
             # the mixture IS the innovation under the band, so a declared regime vector would be
@@ -4915,7 +4938,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         # Per-path recursion state, seeded from the inner fork / burn-in when either published one.
         mu, sig2, mu_path, sig2_path = self._recursion_state(shared_mem, out, inner)
 
-        s = regime_path = u_regime = None
+        s = regime_path = u_regime = belief = belief_path = None
         if self.band:
             # regime uniforms off the independent quasi stream, the HMM's own convention, so the
             # mixture switch never consumes or correlates with the Gaussian innovation
@@ -4932,17 +4955,21 @@ class BasisLinkedSpotModel(StochasticProcess):
                 s = (seed.unsqueeze(-1).expand(batch) if inner else seed).to(dtype)
             regime_path = torch.empty(Z.shape, device=device, dtype=dtype)
             regime_path[0] = s
+            belief = self._recursion_seed(shared_mem, 'belief0', Z.new_tensor(self.p0_stress), inner)
+            belief_path = torch.empty(Z.shape, device=device, dtype=dtype)
+            belief_path[0] = belief
 
         def drawn(mean, s2, j):
             """Forward sim: day j's eta is DRAWN - regime-scaled Gaussian under the band
-            mixture, its state moved first, rescaled by the live sigma^2 under GARCH (the
-            mixture's too), else t-scaled."""
-            nonlocal s
+            mixture, its state moved first and its stress belief updated on it, rescaled by the
+            live sigma^2 under GARCH (the mixture's too), else t-scaled."""
+            nonlocal s, belief
             if self.band:
                 s = torch.where(s > 0.5, (u[j] < self.mix_stay_s).to(dtype), (u[j] < self.mix_enter).to(dtype))
                 eta_t = self.mix_sig2[s.long()].sqrt() * z[j]
                 if self.garch:
                     eta_t = s2.sqrt() * eta_t
+                belief = self._believe(belief, eta_t, s2)
             else:
                 eta_t = s2.sqrt() * z[j] * w[j] if self.garch else sigma[t] * z[j] * w[j]
             return eta_t, mean + eta_t
@@ -4965,12 +4992,15 @@ class BasisLinkedSpotModel(StochasticProcess):
             else:
                 out[t] = out[t - 1]
             if self.band:
-                regime_path[t] = s
+                regime_path[t], belief_path[t] = s, belief
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
                 sig2_path[t] = sig2
-        self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path)
+        if inner and self.band and logging.getLogger().isEnabledFor(logging.DEBUG):
+            # the stress belief each outer path's fork starts from
+            logging.debug('BASIS_FORK %r', belief_path[0].reshape(batch[0], -1)[:, 0].tolist())
+        self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path, belief_path)
         return out
 
     def _advance(self, mu, sig2, prev, ds, innovation):
@@ -4993,6 +5023,12 @@ class BasisLinkedSpotModel(StochasticProcess):
         return (b,
                 self.lam * mu + (1.0 - self.lam) * b if self.slow_mean else mu,
                 self.g_omega + self.g_alpha * eta * eta + self.g_beta * sig2 if self.garch else sig2)
+
+    def _believe(self, p, eta, s2):
+        """The stress belief after the innovation `eta` from `p` before it, `eta` standardised by the
+        GARCH variance `s2` where the law has one: the one filter step the forward sim and the replay share."""
+        return stress_belief(p, eta / s2.sqrt() if self.garch else eta, self.mix_stay_s, self.mix_enter,
+                             self.mix_sig2)
 
     def _walk(self, mu, sig2, prev, linked_path, t, k, n, innovation, since=None):
         """Step t as its `n` market days: `_advance` on each in turn, the parent's move since row
@@ -5018,12 +5054,12 @@ class BasisLinkedSpotModel(StochasticProcess):
                 paths[i][0] = seed
         return (mu, sig2, *paths)
 
-    def _publish_recursions(self, shared_mem, mu_path, sig2_path, regime_path=None):
+    def _publish_recursions(self, shared_mem, mu_path, sig2_path, regime_path, belief_path):
         """Publish whichever recursions ran, and stash them for `outer_reseed`, so a replayed
         run's terminal state is the REPLAYED path's rather than the discarded simulated one's."""
-        self.last_mu, self.last_sig2, self.last_regime = mu_path, sig2_path, regime_path
+        self.last_mu, self.last_sig2, self.last_regime, self.last_belief = mu_path, sig2_path, regime_path, belief_path
         for kind, path in (('basis_mu', mu_path), ('basis_sig2', sig2_path),
-                           ('basis_regime', regime_path)):
+                           ('basis_regime', regime_path), ('basis_belief', belief_path)):
             if path is not None:
                 shared_mem.t_Scenario_Buffer[(self.factor_key, kind)] = path
 
@@ -5038,11 +5074,14 @@ class BasisLinkedSpotModel(StochasticProcess):
     def reveal_state_at(self, t, buffer):
         """The level, CONTINUOUS, led by the state the law carries: with a slow mean b_t - mu_t, a
         price difference and CONTINUOUS too, mu_t the published `basis_mu` row t, the level step
-        t->t+1 reverts to, and with the own GARCH log sigma^2_t, SUFFICIENT."""
+        t->t+1 reverts to, with the own GARCH log sigma^2_t, SUFFICIENT, and under `Reveal_Regime`
+        the stress belief, SUFFICIENT."""
         level = buffer[self.factor_key][t]
         state = [(level - buffer[(self.factor_key, 'basis_mu')][t], REVEAL_CONTINUOUS)] if self.slow_mean else []
         if self.garch:
             state.append((buffer[(self.factor_key, 'basis_sig2')][t].log(), REVEAL_SUFFICIENT))
+        if self.reveal_regime:
+            state.append((buffer[(self.factor_key, 'basis_belief')][t], REVEAL_SUFFICIENT))
         return state + [(level, REVEAL_CONTINUOUS)]
 
     def inner_fork_seed(self, factor_key, outer_buf, t, leaves=None):
@@ -5052,11 +5091,11 @@ class BasisLinkedSpotModel(StochasticProcess):
         step 0->1, so the fork is an index read. Detached: the inner tape differentiates back to
         its own `state_t` leaves, never through the outer path.
 
-        With `leaves` the revealed b_t - mu_t and log sigma^2_t are the leaves `basis_dev` and
-        `basis_log_sig2`, mu_t the level leaf less the deviation."""
+        With `leaves` the revealed b_t - mu_t, log sigma^2_t and stress belief are the leaves
+        `basis_dev`, `basis_log_sig2` and `basis_belief`, mu_t the level leaf less the deviation."""
         seeds = {(factor_key, seed): outer_buf[(factor_key, kind)][t].detach()
                  for kind, seed in (('basis_mu', 'mu0_inner'), ('basis_sig2', 'sig20_inner'),
-                                    ('basis_regime', 'regime0_inner'))
+                                    ('basis_regime', 'regime0_inner'), ('basis_belief', 'belief0_inner'))
                  if (factor_key, kind) in outer_buf}
         if leaves is None:
             return seeds
@@ -5068,24 +5107,28 @@ class BasisLinkedSpotModel(StochasticProcess):
             log_sig2 = leaves[(factor_key, 'basis_log_sig2')] = \
                 seeds[(factor_key, 'sig20_inner')].log().requires_grad_(True)
             seeds[(factor_key, 'sig20_inner')] = log_sig2.exp()
+        if self.reveal_regime:
+            seeds[(factor_key, 'belief0_inner')] = leaves[(factor_key, 'basis_belief')] = \
+                seeds[(factor_key, 'belief0_inner')].clone().requires_grad_(True)
         return seeds
 
     def diff_state_leaves(self):
-        return (('basis_dev',) if self.slow_mean else ()) + (('basis_log_sig2',) if self.garch else ())
+        return ((('basis_dev',) if self.slow_mean else ()) + (('basis_log_sig2',) if self.garch else ())
+                + (('basis_belief',) if self.reveal_regime else ()))
 
     def outer_reseed(self):
-        """t=0 seeds for the next outer run's burn-in: this run's terminal mean / variance state,
-        so a burn-in that carries the terminal basis LEVEL over carries the state that level was
-        generated under with it. Nothing to seed when both recursions are off."""
+        """t=0 seeds for the next outer run's burn-in: this run's terminal mean / variance / stress
+        state, so a burn-in that carries the terminal basis LEVEL over carries the state that level
+        was generated under with it. Nothing to seed when every recursion is off."""
         return {(self.factor_key, seed): path[-1].detach()
                 for seed, path in (('mu0_outer', self.last_mu), ('sig20_outer', self.last_sig2),
-                                   ('regime0_outer', self.last_regime))
+                                   ('regime0_outer', self.last_regime), ('belief0_outer', self.last_belief))
                 if path is not None}
 
     def reseed_from_path(self, simulated, shared_mem):
-        """Observed-path replay: rerun both observable recursions ALONG the supplied basis path
-        and republish `basis_mu` / `basis_sig2`, so a fork or a reveal at any row reads the
-        REPLAYED path's state rather than the discarded simulated one's.
+        """Observed-path replay: rerun the observable recursions ALONG the supplied basis path
+        and republish `basis_mu` / `basis_sig2` / `basis_belief`, so a fork or a reveal at any row
+        reads the REPLAYED path's state rather than the discarded simulated one's.
 
         Both are pure functions of the realised path - mu_t needs only b, and sigma_t^2 needs
         eta_t, which is b_t minus the model's own conditional mean - so the replay is `_advance`
@@ -5112,7 +5155,7 @@ class BasisLinkedSpotModel(StochasticProcess):
         T, batch = obs.shape[0], obs.shape[1:]
         filled = self.filled_rows(shared_mem, T)
 
-        regime_path = None
+        regime_path = belief_path = None
         if self.band:
             # the regime is UNOBSERVED on a realised path: forward-filter P(stress | eta_1..t)
             # and draw the published state off the quasi stream generate uses, so the replayed
@@ -5122,26 +5165,23 @@ class BasisLinkedSpotModel(StochasticProcess):
                     0, 1).contiguous().reshape(T + 1, *batch)
             else:
                 u = shared_mem.quasi_rng(T + 1, batch[0])[1].transpose(0, 1).contiguous()
-            seed = shared_mem.t_Scenario_Buffer.get(
-                (self.factor_key, 'regime0' + ('_inner' if inner else '_outer')))
-            p = obs.new_full(batch, self.p0_stress) if seed is None else \
-                (seed.unsqueeze(-1).expand(batch) if inner else seed).to(obs.dtype)
-            regime_path = torch.empty_like(obs)
-            regime_path[0] = (u[0] < p).to(obs.dtype)
-            sq2, ss2 = self.mix_sig2[0], self.mix_sig2[1]
-            last_eta = [None]
+            p = self._recursion_seed(shared_mem, 'belief0', obs.new_full(batch, self.p0_stress), inner)
+            regime_path, belief_path = torch.empty_like(obs), torch.empty_like(obs)
+            regime_path[0], belief_path[0] = (u[0] < p).to(obs.dtype), p
 
         def realised(mean, s2, j):
-            """Replay: the level is DATA and eta is its deviation from the conditional mean."""
+            """Replay: the level is DATA and eta is its deviation from the conditional mean, the
+            stress belief updated on it."""
+            nonlocal p
             eta_t = obs[t] - mean
             if self.band:
-                last_eta[0] = eta_t / s2.sqrt() if self.garch else eta_t
+                p = self._believe(p, eta_t, s2)
             return eta_t, obs[t]
 
         k = last = 0
         for t in range(1, T):
             if filled[t]:
-                for path in (mu_path, sig2_path, regime_path):
+                for path in (mu_path, sig2_path, regime_path, belief_path):
                     if path is not None:
                         path[t] = path[t - 1]
                 continue
@@ -5153,18 +5193,14 @@ class BasisLinkedSpotModel(StochasticProcess):
             if self.garch:
                 sig2_path[t] = sig2
             if self.band:
-                prior = p * self.mix_stay_s + (1.0 - p) * self.mix_enter
-                eta2 = last_eta[0] * last_eta[0]
-                lq = torch.exp(-0.5 * eta2 / sq2) / sq2.sqrt()
-                ls = torch.exp(-0.5 * eta2 / ss2) / ss2.sqrt()
-                p = prior * ls / (prior * ls + (1.0 - prior) * lq)
-                regime_path[t] = (u[k] < p).to(obs.dtype)
-        self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path)
+                regime_path[t], belief_path[t] = (u[k] < p).to(obs.dtype), p
+        self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path, belief_path)
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             # the replayed recursions on the first path, which the filled-row gate reads
             logging.debug('BASIS_REPLAY %s %r', utils.check_tuple_name(self.factor_key), {
                 kind: path.reshape(path.shape[0], -1)[:, 0].tolist()
-                for kind, path in (('mu', mu_path), ('sig2', sig2_path), ('regime', regime_path))
+                for kind, path in (('mu', mu_path), ('sig2', sig2_path), ('regime', regime_path),
+                                   ('belief', belief_path))
                 if path is not None})
 
 
@@ -5211,7 +5247,7 @@ class BasisLinkedSpotCalibration(object):
         '|---|---|',
         '| default | ordinary least squares, moment $\\nu$, regime volatilities by rolling-volatility terciles |',
         '| `Slow_Mean_Span` $>0$ or `GARCH_Innovation` Yes | one Student-t likelihood for the whole system |',
-        '| `Reversion_Model` `Band_Mixture` (needs `Slow_Mean_Span` $>0$, else refused) | band reversion by alternating least squares, a two-state mixture by EM [@dempster1977], under `GARCH_Innovation` Yes on the innovation its own GARCH(1,1) standardises |',
+        '| `Reversion_Model` `Band_Mixture` (needs `Slow_Mean_Span` $>0$, else refused) | band reversion by alternating least squares, a two-state Gaussian Markov chain by Baum-Welch [@baum1970], under `GARCH_Innovation` Yes on the innovation its own GARCH(1,1) standardises |',
         '',
         '**Default fit.** $b_t=a\\Delta S_t+\\phi b_{t-1}+\\eta_t$ by least squares with no intercept. With',
         "$\\hat K$ the sample excess kurtosis of $\\eta$ (a t's is $6/(\\nu-4)$),",
@@ -5238,14 +5274,19 @@ class BasisLinkedSpotCalibration(object):
         '$$d_t-d_{t-1}=A\\Delta S_t-\\beta\\,\\mathrm{sign}(d_{t-1})\\big(\\lvert d_{t-1}\\rvert-\\kappa\\big)^++\\eta_t$$',
         '',
         '$(A,\\kappa,\\beta)$ by three rounds of alternating least squares from $(0,5,0.2)$ with',
-        '$\\kappa\\in[0,25]$, $\\beta\\in[0,1]$. $\\eta$ is a two-state Gaussian scale mixture fitted by 300 EM',
-        'iterations from (weight 0.7, sd $0.4\\,\\mathrm{sd}(\\eta)$ and $1.8\\,\\mathrm{sd}(\\eta)$); the stress',
-        'persistence is the share of posterior-stress days followed by another, and `Mix_P0_Stress` the',
-        "forward-filtered stress probability at the sample's end. `Phi` is the no-intercept regression",
-        'slope of $d_t$ on $d_{t-1}$, written for the basis-decay projection only.',
+        '$\\kappa\\in[0,25]$, $\\beta\\in[0,1]$. $\\eta$ is a zero-mean two-state Gaussian hidden Markov chain',
+        'fitted by Baum-Welch from sds $0.4\\,\\mathrm{sd}(\\eta)$ and $1.8\\,\\mathrm{sd}(\\eta)$ and transitions',
+        '$P=[[0.9,0.1],[0.1,0.9]]$, started at its stationary law, to a relative log-likelihood change of',
+        '$10^{-8}$ or 300 iterations, the states ordered by sd: `Mix_Sigma_Quiet` and `Mix_Sigma_Stress` are the',
+        'two sds, `Mix_Stay_Stress` is $P_{ss}$, `Mix_Q_Stress` the stationary stress probability',
+        "$q=(1-P_{qq})/(2-P_{qq}-P_{ss})$, at which the model's entry probability $q(1-P_{ss})/(1-q)$ is",
+        "$1-P_{qq}$, and `Mix_P0_Stress` the stress belief the model's filter reaches at the sample's end",
+        'from $q$. `Phi` is the no-intercept regression slope of $d_t$ on $d_{t-1}$, written for the',
+        'basis-decay projection only. Held by',
+        '`tests/test_basis_regime_state.py::test_the_fit_recovers_a_persistent_stress_chain`.',
         '',
         'Under `GARCH_Innovation` Yes a zero-mean GARCH(1,1)-t is first fitted to $\\eta$ (its $\\nu$ unused,',
-        '`Max_Persistence` applied as in the joint fit), and the mixture, its persistence and the filter read',
+        '`Max_Persistence` applied as in the joint fit), and the chain and the filter read',
         '$z_t=\\eta_t/\\sqrt{h_t}$, a move across a gap divided by $\\mathrm{sd}(\\eta)$. With',
         '$v=q\\,s_{\\text{stress}}^2+(1-q)\\,s_{\\text{quiet}}^2$ and $q$ = `Mix_Q_Stress`, the two sds are written',
         "divided by $\\sqrt v$, so the mixture's stationary variance is one; $h$ and the mixture's variance of $z$",
@@ -5274,11 +5315,11 @@ class BasisLinkedSpotCalibration(object):
         "| default, or joint without GARCH | `Sigma_By_State`, the terciles above applied to that fit's $\\eta$ |",
         '| joint with GARCH [@bollerslev1986] | `Sigma` $=\\mathrm{sd}(\\eta)$, `G_Omega`, `G_Alpha`, `G_Beta`, `Sig2_0` (the conditional variance of the last observation) |',
         "| with a span | `Slow_Mean_Lambda` $=\\lambda$, `Mu_0` the mean at the sample's end |",
-        '| Band_Mixture | `Sigma` $=\\mathrm{sd}(\\eta)$, `Nu` 0, `Reversion_Model`, `Band_Kappa`, `Band_Beta`, `Mix_Q_Stress`, `Mix_Sigma_Quiet`, `Mix_Sigma_Stress`, `Mix_Stay_Stress`, `Mix_P0_Stress`, `Slow_Mean_Lambda`, `Mu_0` |',
+        '| Band_Mixture | `Sigma` $=\\mathrm{sd}(\\eta)$, `Nu` 0, `Reversion_Model`, `Band_Kappa`, `Band_Beta`, `Mix_Q_Stress`, `Mix_Sigma_Quiet`, `Mix_Sigma_Stress`, `Mix_Stay_Stress`, `Mix_P0_Stress`, `Reveal_Regime` as stated, `Slow_Mean_Lambda`, `Mu_0` |',
         '| Band_Mixture with GARCH | also `G_Alpha`, `G_Beta`, `G_Omega` $=(1-\\alpha_b-\\beta_b)\\,$`Sigma`$^2$, `Sig2_0` the variance of the last `Vol_Window` innovations, the two mixture sds of unit stationary variance |',
         '',
         '`delta` is $\\eta_t$, standardised under GARCH, and under `Band_Mixture` divided by the',
-        'posterior-blended mixture sd (by the unconditional one on rows outside the fit); `correlation` is',
+        'sd the smoothed state probabilities blend (by the stationary one on rows outside the fit); `correlation` is',
         '`[[1.0]]`.',
         '',
         '**Tuning.**',
@@ -5292,6 +5333,7 @@ class BasisLinkedSpotCalibration(object):
         '| `GARCH_Innovation` | No |',
         '| `Reversion_Model` | `Linear` |',
         '| `Basis_Scale_Window` | 0 (off) |',
+        '| `Reveal_Regime` | No |',
         '',
         '**Limitations.**',
         '',
@@ -5302,8 +5344,7 @@ class BasisLinkedSpotCalibration(object):
         '  $a$, the t likelihood splits it differently; both ends come from one fit.',
         '- The default fit pairs a Gaussian-loss regression with a moment-matched $\\nu$.',
         "- The `Band_Mixture` fit's left side is the change of the deviation, the process's the change of",
-        "  the level; they differ by the slow mean's own daily change. The mixture is fitted as independent",
-        '  draws and its persistence read off afterwards.',
+        "  the level; they differ by the slow mean's own daily change.",
         ])
     model_type = 'BasisLinkedSpotModel'
     fields = [
@@ -5328,12 +5369,14 @@ class BasisLinkedSpotCalibration(object):
                       'mixture\'s relative sds scale'),
         F('Reversion_Model', 'Text', default='Linear', values=['Linear', 'Band_Mixture'],
           description='Band_Mixture fits dead-band reversion around the slow level with 2-state '
-                      'Markov mixture innovations (alternating least squares + EM) in place of '
+                      'Markov mixture innovations (alternating least squares + Baum-Welch) in place of '
                       'the AR(1) fits - the Q-Q-ruled law for a physically arbitraged '
                       'spread. Needs Slow_Mean_Span > 0'),
         F('Basis_Scale_Window', 'Integer', default=0,
           description='Under Band_Mixture, the number of the fit\'s last innovations before the '
                       'calibration date whose realised sd the fitted sds are scaled to - 0 writes the fit\'s own'),
+        F('Reveal_Regime', 'Text', default='No', values=['Yes', 'No'], convention=True,
+          description='Under Band_Mixture, the model block\'s Reveal_Regime, written as stated'),
     ]
 
     def __init__(self, model, param):
@@ -5452,15 +5495,17 @@ class BasisLinkedSpotCalibration(object):
 
     def _calibrate_band_mixture(self, basis_col, b, dlme, ewm, index, fit_garch, end):
         """The Q-Q-ruled law: dead-band reversion around the lagged slow level plus a 2-state
-        Gaussian scale mixture. Location (A, kappa, beta) by alternating least squares, the
-        mixture by EM, stress persistence from the posterior state runs, and Mix_P0_Stress from
-        the forward filter at the sample end. FIT on adjacent business days only (a hole spanning
-        several days is one observation of a different law); the delta residuals cover every row
-        so the correlation consolidation stays date-aligned with the other factors.
+        Gaussian scale mixture on a Markov chain. Location (A, kappa, beta) by alternating least
+        squares, the chain by Baum-Welch on a zero-mean two-state Gaussian HMM of the innovations,
+        and Mix_P0_Stress from the forward filter at the sample end. FIT on adjacent business days
+        only (a hole spanning several days is one observation of a different law); the delta
+        residuals cover every row so the correlation consolidation stays date-aligned with the
+        other factors. The model's entry probability q (1 - stay) / (1 - q) is 1 - P_qq at the
+        written stationary q.
 
-        `fit_garch` fits the innovation's own GARCH(1,1) first: the mixture, its runs and the
-        filter read the innovation it standardises, the two sds are written at unit stationary
-        variance, `G_Omega` targets the window's variance and `Sig2_0` is the last `Vol_Window`'s.
+        `fit_garch` fits the innovation's own GARCH(1,1) first: the chain and the filter read the
+        innovation it standardises, the two sds are written at unit stationary variance,
+        `G_Omega` targets the window's variance and `Sig2_0` is the last `Vol_Window`'s.
 
         `Basis_Scale_Window` N > 0 multiplies Sigma and the two mixture sds by the realised sd of
         the fit's last N innovations dated before `end`, the calibration date, over the fitted law's
@@ -5501,43 +5546,42 @@ class BasisLinkedSpotCalibration(object):
             root_h[fit_m] = np.sqrt(h)
             eta_all = eta_all / root_h
             eta = eta_all[fit_m]
-        p_q, s1, s2 = 0.7, eta.std() * 0.4, eta.std() * 1.8
+        sd, P, last = eta.std() * np.array([0.4, 1.8]), np.array([[0.9, 0.1], [0.1, 0.9]]), -np.inf
         for _ in range(300):
-            f1 = p_q * np.exp(-0.5 * (eta / s1) ** 2) / s1
-            f2 = (1.0 - p_q) * np.exp(-0.5 * (eta / s2) ** 2) / s2
-            w = f1 / (f1 + f2)
-            p_q = float(w.mean())
-            s1 = float(np.sqrt((w * eta ** 2).sum() / w.sum()))
-            s2 = float(np.sqrt(((1.0 - w) * eta ** 2).sum() / (1.0 - w).sum()))
-        stress = w < 0.5
-        stay = float((stress[1:] & stress[:-1]).sum() / max(stress[:-1].sum(), 1))
-        q = 1.0 - p_q
+            q = (1.0 - P[0, 0]) / (2.0 - P[0, 0] - P[1, 1])
+            gamma, xi, log_lik = hmm_forward_backward(
+                np.log([1.0 - q, q]), np.log(P), MarkovHMMSpotCalibration._emission_logprob(eta, 0.0, sd))
+            if abs(log_lik - last) < 1.0e-8 * abs(log_lik):
+                break
+            last, P = log_lik, xi.sum(axis=0)
+            P /= P.sum(axis=1, keepdims=True)
+            sd = np.sqrt((gamma * eta[:, None] ** 2).sum(axis=0) / gamma.sum(axis=0))
+        order = np.argsort(sd)
+        (s1, s2), P, w = sd[order], P[np.ix_(order, order)], gamma[:, order[0]]
+        q, stay = (1.0 - P[0, 0]) / (2.0 - P[0, 0] - P[1, 1]), float(P[1, 1])
         # forward filter over the full series for the t0 stress posterior
-        enter = q * (1.0 - stay) / (1.0 - q)
         p = q
         for e_t in eta_all:
-            prior = p * stay + (1.0 - p) * enter
-            lq = np.exp(-0.5 * (e_t / s1) ** 2) / s1
-            ls = np.exp(-0.5 * (e_t / s2) ** 2) / s2
-            p = prior * ls / (prior * ls + (1.0 - prior) * lq)
+            p = stress_belief(p, e_t, stay, 1.0 - P[0, 0], (s1 ** 2, s2 ** 2))
         phi_eff = float((d0[fit_m] * d[1:][fit_m]).sum() / max((d0[fit_m] ** 2).sum(), 1.0e-12))
         logging.info(
             'basis band+mixture fit: kappa=$%.2f beta=%.3f A=%+.4f | quiet %.0f%% sd %.2f, '
             'stress %.0f%% sd %.2f, stay=%.2f p0=%.2f | phi_eff=%.3f (n_fit=%d of %d)',
-            kappa, beta, a_hat, 100 * p_q, s1, 100 * (1 - p_q), s2, stay, p, phi_eff,
+            kappa, beta, a_hat, 100 * (1 - q), s1, 100 * q, s2, stay, p, phi_eff,
             fit_m.sum(), len(dd))
 
         sig_blend = np.sqrt(w * s1 ** 2 + (1.0 - w) * s2 ** 2)   # posterior-blended per-obs scale
         z_all = np.empty_like(eta_all)
         z_all[fit_m] = eta / sig_blend
-        z_all[~fit_m] = eta_all[~fit_m] / float(np.sqrt(p_q * s1 ** 2 + (1 - p_q) * s2 ** 2))
+        z_all[~fit_m] = eta_all[~fit_m] / float(np.sqrt((1 - q) * s1 ** 2 + q * s2 ** 2))
         param = {
             'A': a_hat, 'Phi': phi_eff, 'Nu': 0.0,
             'Sigma': sigma,
             'Reversion_Model': 'Band_Mixture',
             'Band_Kappa': kappa, 'Band_Beta': beta,
-            'Mix_Q_Stress': q, 'Mix_Sigma_Quiet': s1, 'Mix_Sigma_Stress': s2,
+            'Mix_Q_Stress': float(q), 'Mix_Sigma_Quiet': float(s1), 'Mix_Sigma_Stress': float(s2),
             'Mix_Stay_Stress': stay, 'Mix_P0_Stress': float(p),
+            'Reveal_Regime': self.param.get('Reveal_Regime', 'No'),
             'Slow_Mean_Lambda': 1.0 - 2.0 / (span + 1.0), 'Mu_0': float(ewm[-1]),
         }
         v = q * s2 ** 2 + (1.0 - q) * s1 ** 2                   # the mixture's stationary variance

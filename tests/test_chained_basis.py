@@ -487,9 +487,9 @@ def test_the_band_fit_leaves_a_jump_across_a_calendar_gap_out_of_the_innovation(
 BAND_FIT_WITHOUT_GARCH = {
     'A': 0.04241021394456613, 'Phi': 0.8174279678972644, 'Nu': 0.0, 'Sigma': 3.8213804346664833,
     'Reversion_Model': 'Band_Mixture', 'Band_Kappa': 4.093865983658383,
-    'Band_Beta': 0.32257990121444935, 'Mix_Q_Stress': 0.11168874340078161,
-    'Mix_Sigma_Quiet': 2.5231836261197125, 'Mix_Sigma_Stress': 8.954691898496261,
-    'Mix_Stay_Stress': 0.10344827586206896, 'Mix_P0_Stress': 0.04033416302268044,
+    'Band_Beta': 0.32257990121444935, 'Mix_Q_Stress': 0.32590083494760685,
+    'Mix_Sigma_Quiet': 2.10231416098639, 'Mix_Sigma_Stress': 5.981123715010372,
+    'Mix_Stay_Stress': 0.942772143227749, 'Mix_P0_Stress': 0.0770064355342423, 'Reveal_Regime': 'No',
     'Slow_Mean_Lambda': 0.96875, 'Mu_0': 10.822116754114283}
 
 
@@ -600,7 +600,7 @@ def _holiday_tape():
 
 
 def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None, filled=None, basis_filled=None):
-    """The recursions `{'mu', 'sig2', 'regime'}` per row on the first path that the simulate-only
+    """The recursions `{'mu', 'sig2', 'regime', 'belief'}` per row on the first path that the simulate-only
     hedging fixture, rolling daily from Friday 2026-04-10, publishes replaying the observed `spot`
     and `basis`, the rows `filled` flagged forward-filled on both columns, the basis's on
     `basis_filled` where given, its basis the `BasisLinkedSpotModel` block `basis_block`; given
@@ -633,7 +633,7 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
     calendar rows, the weekends and London's
     4 May bank holiday flagged forward-filled, the holiday printing a spot and a basis of its own (a
     CME print), and on the same business days with the filled rows removed: on every business row
-    the published mu, sig2 and regime equal, to the bit, the compressed replay's at that row's count
+    the published mu, sig2, regime and stress belief equal, to the bit, the compressed replay's at that row's count
     of business days (84 rows), and every filled row holds the row before it. A market row is one
     calibration step: the compressed replay's mu is the slow mean's own recursion
     mu' = lambda mu + (1 - lambda) b on every row within 1e-4 (1.1e-8, the job's float32). On the compressed path, which flags nothing, the basis and the spot both flat on its
@@ -661,7 +661,7 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
     calendar = _replayed(tmp_path, caplog, fitted, spot_cal, basis_cal, filled=filled)
     business = _replayed(tmp_path, caplog, fitted, spot, basis)
     market = [t for t in range(len(calendar['mu'])) if t == 0 or row[t] != row[t - 1]]
-    assert len(market) == 84 and set(calendar) == {'mu', 'regime'} | ({'sig2'} if garch == 'Yes' else set())
+    assert len(market) == 84 and set(calendar) == {'mu', 'regime', 'belief'} | ({'sig2'} if garch == 'Yes' else set())
     assert {k: [v[t] for t in market] for k, v in calendar.items()} == \
         {k: [v[row[t]] for t in market] for k, v in business.items()}
     assert all(v[t] == v[t - 1] for v in calendar.values() for t in range(1, len(v)) if t not in market)
@@ -678,7 +678,7 @@ def test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill(tmp_
     column repeats Thursday's on a row the fix prints. Each column flags its own forward fill, and
     the replay of a band fit under `GARCH_Innovation` holds the basis's every recursion on its own
     filled rows, 3 July among them, and steps Monday 6 July one calibration step from Thursday's
-    basis and parent: on every basis market row its mu, sig2 and regime equal, to the bit, the
+    basis and parent: on every basis market row its mu, sig2, regime and belief equal, to the bit, the
     replay of the two columns on the days both calendars print at that row's count (83
     rows), and every row it flags holds the row before. 2 s.
 
@@ -702,7 +702,7 @@ def test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill(tmp_
                       basis[row], filled=~calendar.isin(london), basis_filled=~calendar.isin(both))
     compressed = _replayed(tmp_path, caplog, fitted, spot[london.get_indexer(both)], basis)
     market = [t for t in range(len(taped['mu'])) if t == 0 or row[t] != row[t - 1]]
-    assert calendar[len(taped['mu']) - 1] > pd.Timestamp('2026-07-06') and set(taped) == {'mu', 'sig2', 'regime'}
+    assert calendar[len(taped['mu']) - 1] > pd.Timestamp('2026-07-06') and set(taped) == {'mu', 'sig2', 'regime', 'belief'}
     assert {k: [v[t] for t in market] for k, v in taped.items()} == \
         {k: [v[row[t]] for t in market] for k, v in compressed.items()}, len(market)
     assert all(v[t] == v[t - 1] for v in taped.values() for t in range(1, len(v)) if t not in market)
