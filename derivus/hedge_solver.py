@@ -196,7 +196,7 @@ class HedgeActionSpace:
         `(n_hedge,)` tensor, intersected with the legs that can actually carry a contract and
         renormalized over what is left: the INACTIVE legs (`Active_Hedge_Indices`) and, when the
         caller passes one, the EXPIRED legs (`live`). Absent a table the live active legs weigh
-        evenly, and a step where none can carry a contract has no direction (every weight 0).
+        evenly; a step where none can carry a contract has no direction, table or not (every weight 0).
 
         The live intersection happens HERE, before the ladder is built, rather than as a filter
         afterwards: a knot's weight on a dead leg is cover the book cannot realize, so leaving it
@@ -206,14 +206,9 @@ class HedgeActionSpace:
         w = torch.tensor(w, device=self.device) * self.active_mask
         if live is not None:
             w = w * live
-        if self.weights is None:
-            # no table: even over the legs that can carry a contract, no direction where none can
-            return w / max(1.0, float(w.sum()))
-        if not float(w.sum()) > 0.0:
-            raise ValueError(
-                f"Allocation_Weights knot in force at step {t} puts no weight on a LIVE, ACTIVE "
-                f"hedge leg — the ladder has nothing to allocate onto")
-        return w / w.sum()
+        total = float(w.sum())
+        logging.debug('weights at step %d sum to %s on the live active legs', t, total)
+        return w / total if total > 0.0 else w
 
     @staticmethod
     def _largest_remainder(x, target):

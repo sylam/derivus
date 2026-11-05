@@ -1387,7 +1387,7 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(s
     the ridge then off its diagonal, the knot at step 19 (2e-9, 0.5, 0.5); the derivation on
     `DiffSolverV2` alone, `DiffSolver` searching the Cartesian grid and stamping no table (None); the
     solve over every leg that varies, the inactive July included, the first knot with legs 0 and 2
-    active (0.119, 0.881, 0)."""
+    active (0.118, 0.882, 0)."""
     legs = list(range(3) if active is None else active)
     cfg = _cfg(seed=7, batch=8, inner=4, active=active)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
@@ -2288,23 +2288,25 @@ def test_the_ladder_bank_reads_the_policy_s_live_legs_on_a_replayed_path(growth,
     assert yes == roll('No'), yes['greedy']
 
 
-def test_a_no_table_document_whose_legs_all_die_still_labels():
+@pytest.mark.parametrize('mode, levels', [('Cartesian', 6), ('Exposure', 51)])
+def test_a_no_table_document_whose_legs_all_die_still_labels(mode, levels):
     """Absent an `Allocation_Weights` table the label's ladder is even over the live active legs,
-    and a swept step where none can carry a contract has no direction: the label is zero there,
-    as the passive holds nothing. The swap growth document on the Cartesian grid, both legs
-    expiring between the last fixing and settlement, trains under the label over 32 steps (V_0
-    0.1799 on the CPU) with the dead step 46 labelled zero and step 0 not, and its passive splits
-    the 32 unfixed contracts evenly, 16 a leg. 20 s.
+    and a swept step where none can carry a contract has no direction, the declared split or the even
+    one alike: the label is zero there, as the passive holds nothing. The swap growth document on the
+    Cartesian grid or Exposure's even ladder, both legs expiring between the last fixing and
+    settlement, trains under the label over 32 steps (V_0 0.1816 and 0.1813 on the CPU) with the dead
+    step 46 labelled zero and step 0 not, and its passive splits the 32 unfixed contracts evenly, 16 a
+    leg. 13 s each.
 
-    Killing mutations: the no-table branch of `_weights_at` removed (refused at step 46, naming a
-    table the document never declared); its normalisation dropped (the passive reads [-20, -20],
-    V_0 0.1840 against 0.1799 on the CPU)."""
+    Killing mutations: a split with no live active leg refused (Exposure refused at step 46); its
+    normalisation dropped (the Cartesian passive reads [-20, -20], V_0 0.1844 against 0.1816 on the
+    CPU)."""
     cfg = _swap_growth(6)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Solver'].update({'DiffV2_Book_Gradient_Label': 'Yes', 'Active_Hedge_Indices': [0, 1],
-                         'Training_Action_Grid_Levels_Per_Axis': 6})
-    del hp['Evaluator']['Allocation_Weights'], hp['Evaluator']['Allocation_Mode']
-    del hp['Evaluator']['Total_Position_Schedule']
+                         'Training_Action_Grid_Levels_Per_Axis': levels})
+    del hp['Evaluator']['Allocation_Weights'], hp['Evaluator']['Total_Position_Schedule']
+    hp['Evaluator']['Allocation_Mode'] = mode
     for leg in LEGS:
         hp['Tradable_Instruments']['CommodityFutureDeal'][leg]['Maturity_Date'] = {'.Timestamp': '2026-05-25'}
     diag = _run(cfg).evaluation_summary['diagnostics']
