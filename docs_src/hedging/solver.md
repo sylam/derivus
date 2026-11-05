@@ -153,6 +153,12 @@ verdict, the stepper and its CSV read, so a payment before the terminal stays in
 wealth. Held by
 `tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`
 and `::test_a_payment_inside_a_fork_s_window_is_no_move_of_the_liability`.
+Under futures accounting a leg's variation margin on a row is its move in its contract's currency
+times its FX cross at the row it settles on: the outer moves (`Bundle.move`), the fork's, the
+stepper's margin and its CSV read the leg's `Bundle.settled` series, the converted mark less the FX
+carry of the contract-currency mark (`HedgeMonteCarlo._settled`), while a `cash_account`
+consideration, the spread and the IM funding read the converted mark. Held by
+`tests/test_action_space_and_artifact.py::test_a_foreign_future_settles_its_own_currency_s_move_at_the_cross_where_it_settles`.
 Each leg pays its own share of a reposition's turnover charge (`hedge_bundle.leg_charges`, the
 charge the solver ranks the move at split by `turnover_charge`, a matched pair's calendar price half
 on each of its legs) from the account its currency routes it to, in the stepper and its CSV alike.

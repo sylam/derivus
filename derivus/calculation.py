@@ -42,7 +42,7 @@ from .schema import (F, REQUIRED, Row, declared_block, declared_defaults, declar
 from .utils import (CASHFLOW_INDEX_FixedAmt, CASHFLOW_INDEX_FixedRate, CASHFLOW_INDEX_Nominal,
                     CASHFLOW_INDEX_Pay_Day, CASHFLOW_INDEX_Year_Frac, RESET_INDEX_Reset_Day,
                     RESET_INDEX_Value, TensorCashFlows, TensorResets, walk_schedules)
-from .hedge_bundle import (Bundle, HedgeRuntimeExecutionResult, construct_hedge_runtime,
+from .hedge_bundle import (MONEY, Bundle, HedgeRuntimeExecutionResult, construct_hedge_runtime,
                            primary_spot, run_hedge_execution)
 from .hedge_solver import StreamingSolve
 
@@ -3499,8 +3499,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         normalized_runtime = construct_hedge_runtime(
             params, stoch_factors=self.stoch_factors,
         )
-        # each process's `reseed_inner_state` reads its own switches off the runtime by name
-        self._inner_state_opts = normalized_runtime
+        # the fork's accounting and legs, and each process's `reseed_inner_state` switches by name
+        self._runtime = normalized_runtime
         # canonical underlying (commodity-spot) factor-name set, derived once by the runtime; the
         # spot-leaf pass reads it rather than re-deriving it
         self._underlying_names = set(normalized_runtime['referenced_commodities'])
@@ -3523,12 +3523,13 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             return ({utils.check_tuple_name(key): [] for key in self.stoch_factors},
                     defaultdict(list),
                     {'mtm': [], 'cash': [], 'fx': []},
-                    defaultdict(list))
+                    defaultdict(list), defaultdict(list))
 
         # `privileged_factor_blocks` is keyed by (factor_name, factor_attr) — whatever the process
         # exposes via `privileged_factors()`.
         (factor_tensor_blocks, tradable_blocks, hedge_profile_blocks,
-         privileged_factor_blocks) = _new_blocks()
+         privileged_factor_blocks, settled_blocks) = _new_blocks()
+        futures = normalized_runtime['accounting_mode'] == 'futures'
         total_leg_volume, fixings = self.liabilities.aggregate_leg_descriptors()
         bus_day = shared_mem.business_day
         # per-batch burn-in: variance in z_0 for the diff-ML boundary label
@@ -3665,8 +3666,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             for key in self.stoch_factors:
                 factor_tensor_blocks[utils.check_tuple_name(key)].append(
                     shared_mem.t_Scenario_Buffer[key].detach().clone())
-            for instrument_name, instrument_tensor in self.netting_sets.tensor_marks().items():
-                tradable_blocks[instrument_name].append(instrument_tensor.detach().clone())
+            for name, mark in self.netting_sets.tensor_marks().items():
+                tradable_blocks[name].append(mark.detach().clone())
+                if futures and name in normalized_runtime['names']['hedges']:
+                    settled_blocks[name].append(self._settled(name, mark.detach(), 0, shared_mem))
 
             shared_mem.t_Buffer.clear()
 
@@ -3678,7 +3681,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     tradable_blocks, factor_tensor_blocks, hedge_profile_blocks, 1,
                     self.stoch_factors, normalized_runtime,
                     privileged_factor_blocks=privileged_factor_blocks,
-                    total_leg_volume=total_leg_volume, fixings=fixings)
+                    total_leg_volume=total_leg_volume, fixings=fixings, settled_blocks=settled_blocks)
                 self._attach_inner_mc(bundle, batch_buffer, shared_mem, base_date, tradable_refs, run)
                 if run == 0:
                     streaming_solve.warmup(bundle)
@@ -3691,7 +3694,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 # fresh accumulators - this batch is consumed. The solver's forks borrowed
                 # `shared_mem` and handed it back as found, so outer generation resumes unaffected
                 (factor_tensor_blocks, tradable_blocks, hedge_profile_blocks,
-                 privileged_factor_blocks) = _new_blocks()
+                 privileged_factor_blocks, settled_blocks) = _new_blocks()
 
         self.calc_stats[execution_label] = time.monotonic() - self.calc_stats[execution_label]
 
@@ -3708,6 +3711,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             privileged_factor_blocks=privileged_factor_blocks,
             total_leg_volume=total_leg_volume,
             fixings=fixings,
+            settled_blocks=settled_blocks,
         )
 
         # A solve already ran batch by batch; all that is left is the held-out verdict + the
@@ -3788,6 +3792,18 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         return utils.calc_fx_cross(
             get_fxrate_factor(utils.check_rate_name(currency), self.static_factors, self.stoch_factors),
             shared_mem.Report_Currency, self.time_grid.time_grid[rows], shared_mem)
+
+    def _settled(self, ref, marks, first, shared_mem):
+        """Hedge leg `ref`'s marks `(rows, B)` from mtm row `first` as its variation margin settles
+        them under futures accounting: the marks less the FX carry of the contract-currency mark,
+        `F[k] (X[k+1] - X[k])` summed to each row, `X` its cross (`_fx`), so a row's move is the
+        contract-currency move times the cross there; in `MONEY`, cast to the marks' dtype."""
+        fx = self._fx(self._runtime['tradables'][ref]['currency'], range(first, first + marks.shape[0]),
+                      shared_mem).to(MONEY).expand_as(marks)
+        money = marks.to(MONEY)
+        carry = (money[:-1] / fx[:-1] * fx.diff(dim=0)).cumsum(0)
+        logging.debug('%s settles from row %d, FX carry to its last row %s', ref, first, carry[-1:].mean())
+        return (money - torch.cat([carry.new_zeros(1, *carry.shape[1:]), carry])).to(marks.dtype)
 
     def _cash(self, shared_mem, rows, width):
         """The cash the liability's `t_Cashflows` book on the mtm rows `rows`, `(len(rows), width)` in
@@ -3936,7 +3952,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     shared_mem.t_Scenario_Buffer[key] = simulated
                     # post-generate coherence: publish revealed state at t+1, return twin-loss leaves
                     inner_leaves = proc_inner.reseed_inner_state(
-                        key, simulated, outer_scenario_buffer, t, shared_mem, self._inner_state_opts, with_grad)
+                        key, simulated, outer_scenario_buffer, t, shared_mem, self._runtime, with_grad)
                     if with_grad:
                         state_t_leaves.update(inner_leaves)
                     # market state at the landing (inner-time index `ahead`), in reveal order
@@ -3991,16 +4007,20 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 inner_mtm = mtm_flat.reshape(*mtm_flat.shape[:-1], B_outer, B_inner)
 
                 def _fan(t):
-                    # a STATIC tradable (a cash account off an unsimulated curve) marks with a
-                    # 1-wide batch, which is a legitimate mark - broadcast it. Any other width is a
-                    # shape error and expand fails loud.
+                    # a STATIC leg (off an unsimulated spot) marks with a 1-wide batch, which is a
+                    # legitimate mark - broadcast it. Any other width is a shape error and expand
+                    # fails loud.
                     if t.shape[-1] == B_outer * B_inner:
                         return t.reshape(*t.shape[:-1], B_outer, B_inner)
                     core = t.squeeze(-1) if t.shape[-1] == 1 else t
                     return core.reshape(*core.shape, 1, 1).expand(*core.shape, B_outer, B_inner)
 
+                # each leg from t as its variation margin settles (`_settled`)
+                futures = self._runtime['accounting_mode'] == 'futures'
                 inner_trade_tensors = {
-                    ref: _fan(t) for ref, t in inner_netting_sets.tensor_marks().items()}
+                    ref: _fan(self._settled(ref, t[cutoff_idx:], cutoff_idx, shared_mem) if futures
+                              else t[cutoff_idx:])
+                    for ref, t in inner_netting_sets.tensor_marks().items() if ref in tradable_refs}
                 # the window stops at the landing, so no terminal row exists to read: `L_T` is None and
                 # the horizon stats are not produced
                 result = {}
@@ -4012,9 +4032,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                         # Tradable expired before this fork — zero moves, no position.
                         F_t[ref], F_t1[ref] = zero_bs, zero_bs.expand(at.shape + zero_bs.shape)
                         continue
-                    td = td[cutoff_idx:]                                # (T_inner, B_outer, B_inner)
-                    # td stops short of the landing when the tradable's last deal event is
-                    # before it (it expires this step); freeze it at its last (dF == 0).
+                    # td (T_inner, B_outer, B_inner) stops short of the landing when the tradable's
+                    # last deal event is before it (it expires this step); freeze it at its last (dF == 0).
                     F_t1[ref] = td[np.minimum(at, td.shape[0] - 1).tolist()].clone()
                     F_t[ref] = td[0]
                 # market state - every simulated factor's informative state concatenated;

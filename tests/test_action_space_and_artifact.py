@@ -2005,6 +2005,50 @@ def test_a_leg_s_mark_is_read_per_unit_of_its_deal_and_its_contract_size_sizes_a
     assert torch.equal(2.0 * half, one) and 2.0 * cost_half == cost_one, (half, one, cost_half, cost_one)
 
 
+@pytest.mark.parametrize('account', ['ZAR', 'USD'])
+def test_a_foreign_future_settles_its_own_currency_s_move_at_the_cross_where_it_settles(tmp_path, account):
+    """A future's variation margin on a row is its move in the contract's currency times the FX
+    cross at the row it settles on: the client document in a ZAR calculation, the rand simulated at
+    a 15% vol, short 10 USD `PL_OCT_2026` from the first row to the terminal at no spread, books on
+    every path each row's VM so converted, credited to its margin account and compounded there to
+    the last row, within 1e-6 of the largest path (at most 2.3e-7): the daily-converted VM where the margin is
+    a rand account at zero rates, as the CSV writes it to its six decimals, each day's revalued by
+    the dollar to the last where it is the fixture's dollar account. 3 s each.
+
+    Killing mutation: the VM read off the converted mark (`Bundle.settled` the marks), booking each
+    row the FX move of the whole notional, `q cs F_ccy[k] (X[k+1] - X[k])`: path 0 -1,134,488 rand
+    against 422,800, 34.5% of the largest path (the dollar account's 33.1%), at a zero FX vol the
+    two readings one; the CSV's trade cash and position value read off the converted mark
+    (`BundleStepper._diag_fields`), its worst path -6,711,056.64 against the stepper's
+    -4,988,089.84."""
+    cfg = _client(force_flat='No', positions={'PL_OCT_2026': -10}, evaluator={'Bid_Offer_Spread_Bps': 0.0})
+    cfg['Calc']['Calculation']['Currency'] = 'ZAR'
+    market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+    market.setdefault('Price Models', {})['GBMAssetPriceModel.ZAR'] = {'Vol': 0.15, 'Drift': 0.0}
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    if account == 'ZAR':
+        curve = market['Price Factors']['InterestRate.ZAR-SWAP']['Curve']['.Curve']
+        curve['data'] = [[t, 0.0] for t, _ in curve['data']]
+        cash = hp['Tradable_Instruments']['CashAccountDeal']
+        cash['ZAR_CASH'] = dict(cash.pop('USD_CASH'), Currency='ZAR', Discount_Rate='ZAR-SWAP')
+        hp['Evaluator']['Cash_Instruments'] = ['ZAR_CASH']
+    hp['Portfolio_State'].update(Cash_Balances={f'{account}_CASH': 0.0}, Margin_Balances={f'{account}_CASH': 0.0})
+    result = _run(cfg)
+    world, stepper = result.bundle, result.create_stepper()
+    while not stepper.done:
+        last = stepper.step(None)
+    H, T = world.initial_time_index, world.last_live_mtm_index
+    usd_per_zar = world.factors['FxRate.ZAR'][H:H + T + 1].double()
+    usd = world.tradables['PL_OCT_2026'][H:H + T + 1].double() * usd_per_zar
+    vm = -10.0 * 50.0 * usd.diff(dim=0) / usd_per_zar[1:]
+    margin = world.tradables[f'{account}_CASH'][H:].double()
+    want = (vm * margin[-1] / margin[1:T + 1]).sum(0)
+    got = last['transition_pnl_excess'].double()
+    assert float(((got - want) / want.abs().max()).abs().max()) < 1e-6, (got, want, vm.sum(0))
+    if account == 'ZAR':
+        _csv_against_the_stepper(tmp_path, stepper, last)
+
+
 def test_the_bundle_is_as_wide_as_its_primary_spot_whatever_tradable_is_stated_first():
     """The bundle is as wide as its primary spot's paths, whatever tradable the document states
     first: on the client document beside a ZAR cash account on the static ZAR-SWAP curve, whose mark

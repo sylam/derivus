@@ -813,7 +813,11 @@ class Bundle:
         '`_resolve_frame`) and read-only after; consumers index it by attribute.',
         '',
         '- **Tradables** — `tradables` / `tradables_sim`: the per-instrument mark series per unit of',
-        '  its deal\'s `Units`, harvested from the priced deal tree via `DealStructure.tensor_marks`.',
+        '  its deal\'s `Units`, harvested from the priced deal tree via `DealStructure.tensor_marks`,',
+        '  and `settled`, the series a held contract books: under futures accounting a leg\'s mark less',
+        '  the FX carry of its contract-currency mark (`HedgeMonteCarlo._settled`), so its move over a',
+        '  row is the contract-currency move times the FX cross at the row it settles on; the mark',
+        '  itself otherwise, a cash account\'s and under `cash_account`.',
         '  A leg is live on the rows its deal\'s dates mark (`marked`) and moves over a step it is',
         '  still marked at the end of, the step carrying',
         '  market time (`moving`): the one liveness rule every track reads.',
@@ -847,6 +851,7 @@ class Bundle:
         self.history_rows = 0               # History_Lookback_Business_Days prefix rows
         # Simulated series.
         self.tradables = {}                 # {instrument: (T, B)} marks
+        self.settled = {}                   # {instrument: (T, B)} the series a held contract books
         self.last_marked = {}               # {instrument: the last sim-grid row its deal marks}
         self.factors = {}                   # {factor name: (T, …, B)} scenario paths
         self.privileged_factors = {}        # {name: (T, B, dim)} process-revealed state
@@ -874,7 +879,8 @@ class Bundle:
     @classmethod
     def from_batch(cls, base_date, business_day, time_grid_days, tradable_blocks,
                    factor_tensor_blocks, hedge_profile_blocks, num_batches, stoch_factors,
-                   runtime, privileged_factor_blocks=None, total_leg_volume=None, fixings=()):
+                   runtime, privileged_factor_blocks=None, total_leg_volume=None, fixings=(),
+                   settled_blocks=None):
         """Assemble the per-batch tensor blocks the HedgeMonteCarlo simulator produced into one
         bundle: join them along the batch axis, then run the four resolve stages.
 
@@ -883,6 +889,7 @@ class Bundle:
         self = cls(base_date, business_day, num_batches)
         self.primary = utils.check_tuple_name(primary_spot(stoch_factors))
         tradables = {n: torch.cat(blocks, dim=1) for n, blocks in tradable_blocks.items()}
+        settled = {n: torch.cat(blocks, dim=1) for n, blocks in (settled_blocks or {}).items()}
         factors = {n: torch.cat(blocks, dim=-1) for n, blocks in factor_tensor_blocks.items()}
         self.batch_size = int(factors[self.primary].shape[-1])
         logging.debug('bundle width %d paths, off the primary spot', self.batch_size)
@@ -892,15 +899,16 @@ class Bundle:
         # the liability's mark sets the time axis (its native length is the mtm grid); everything
         # else pads/truncates to it
         steps = int(mtm.shape[0])
-        self._resolve_tradables(tradables, time_grid_days, steps, runtime)
+        self._resolve_tradables(tradables, settled, time_grid_days, steps, runtime)
         self._resolve_liability(mtm, cash, steps, total_leg_volume, fixings)
         self._resolve_factors(factors, privileged_factor_blocks or {}, stoch_factors, steps)
         self._resolve_frame(runtime, stoch_factors)
         return self
 
-    def _resolve_tradables(self, tradables, time_grid_days, steps, runtime):
-        """Stage 1 — the time axis and the per-instrument mark series, both carrying the history
-        prefix, and the prefix's length `history_rows` every later stage applies:
+    def _resolve_tradables(self, tradables, settled, time_grid_days, steps, runtime):
+        """Stage 1 — the time axis and the per-instrument mark series, a leg's `settled` series
+        where it has one, all carrying the history prefix, and the prefix's length `history_rows`
+        every later stage applies:
         `History_Lookback_Business_Days` rows where a `Spot_Price_History` is declared, none where it
         is not, so a rolling-window read of a spot at sim-day-0 already has its lookback (stage 3); a
         mark's prefix is its first row repeated, no reader of a mark starting before
@@ -934,6 +942,9 @@ class Bundle:
                 for commodity, payload in history.items()}
         self.time_grid_days = grid
         self.tradables = {n: torch.cat([self._history_prefix(t), t], dim=0) for n, t in tradables.items()}
+        self.settled = dict(self.tradables, **{
+            n: torch.cat([self._history_prefix(t), t], dim=0)
+            for n, t in ((n, _align_time_axis(t, steps)) for n, t in settled.items())})
         self.time_grid_days_cpu = grid.detach().cpu().to(dtype=torch.int64).tolist()
         days = self.time_grid_days_cpu
         self.scenario_dates = pd.DatetimeIndex(
@@ -1161,12 +1172,12 @@ class Bundle:
         return None if v is None else v[self.initial_time_index:]
 
     def move(self, a, b, refs, rows=slice(None), dim=-1):
-        """The marks' move `F_b − F_a` from sim-grid row `a` to row `b` of each tradable of `refs`
-        over `rows`, stacked along `dim`: the one spelling of a held contract's realized P&L per
-        unit of its contract size."""
+        """The `settled` series' move `S_b − S_a` from sim-grid row `a` to row `b` of each tradable
+        of `refs` over `rows`, stacked along `dim`: the one spelling of a held contract's realized
+        P&L per unit of its contract size."""
         H = self.initial_time_index
         logging.debug('marks moved from row %d to row %d', a, b)
-        return torch.stack([self.tradables[r][H + b][rows] - self.tradables[r][H + a][rows]
+        return torch.stack([self.settled[r][H + b][rows] - self.settled[r][H + a][rows]
                             for r in refs], dim=dim)
 
     def decisions_from(self, t_min):
@@ -1388,12 +1399,13 @@ class BundleStepper:
         return {str(n): torch.full((self._batch_size,), float(seed_values.get(str(n), 0.0)),
                                    dtype=MONEY, device=self._device) for n in names}
 
-    def _values_at(self, time_index):
-        """Current mark `{instrument: (B,)}` at full-grid `time_index`, a hedge leg's held at the
+    def _values_at(self, time_index, series=None):
+        """Current mark `{instrument: (B,)}` at full-grid `time_index`, off `series` (the bundle's
+        `tradables` by default, its `settled` for the variation margin), a hedge leg's held at the
         terminal past it: the objective ends at the last live liability mark, so a book left
         standing under `Force_Flat_At_End` 'No' is valued there and carried over no settlement row.
         In `MONEY`, so every flow off a mark is."""
-        tradables = self.bundle.tradables
+        tradables = self.bundle.tradables if series is None else series
         return {n: tradables[n][min(time_index, self._close_idx) if n in self._hedges
                                 else time_index].to(dtype=MONEY)
                 for n in self._tradable_names if n in tradables}
@@ -1456,6 +1468,8 @@ class BundleStepper:
         accounts = next_cash if cash_mode else next_margin
         variation_margin = self._zeros_by_name(self._hedges)
         deltas = self._trade_deltas(action)
+        if not cash_mode:
+            settle, next_settle = (self._values_at(i, self.bundle.settled) for i in (current, nxt))
         for n in self._hedges:
             # each contract is `contract_size` units of the underlying
             cs = float(self.runtime['tradables'][n]['contract_size'])
@@ -1463,7 +1477,7 @@ class BundleStepper:
             if cash_mode:
                 self._credit(accounts, self._account_of[n], -deltas[n] * marks[n] * cs)
             else:
-                variation_margin[n] = next_positions[n] * (next_values[n] - marks[n]) * cs
+                variation_margin[n] = next_positions[n] * (next_settle[n] - settle[n]) * cs
                 self._credit(accounts, self._account_of[n], variation_margin[n])
         self._apply_frictions(accounts, deltas, marks, next_positions, current, nxt,
                               self.bundle.vol_at(current))
@@ -1586,6 +1600,8 @@ class BundleStepper:
         for name in self._hedges:
             cs = float(runtime['tradables'][name]['contract_size'])
             fut = bundle.tradables[name].detach().cpu().to(MONEY)[held_at]
+            # a position books its settled series, the mark itself but for a futures leg's FX carry
+            settle = bundle.settled[name].detach().cpu().to(MONEY)[held_at]
             # a row trades the change of the book it holds, at its own mark, so the forced close
             # sits on the terminal, where it is booked
             held = rollout['held'][name].to(MONEY)
@@ -1593,16 +1609,16 @@ class BundleStepper:
             pos, trd = torch.zeros((T, B), dtype=MONEY), torch.zeros((T, B), dtype=MONEY)
             pos[rows], trd[rows] = held[1:], held.diff(dim=0)
             pos[rows.stop:] = held[-1]
-            trade_cash = -trd * fut * cs
+            trade_cash = -trd * settle * cs
             # the opening book enters at the first row's mark, where the stepper's P&L starts
-            trade_cash[rows.start] -= held[0] * fut[rows.start] * cs
+            trade_cash[rows.start] -= held[0] * settle[rows.start] * cs
             # the leg's turnover charges as the stepper booked them, each on its row
             cost = torch.zeros((T, B), dtype=MONEY)
             for row, charge in self._charged[name]:
                 cost[row] += charge.detach().cpu().to(MONEY)
             per_instr[name] = {
                 'fut': fut, 'cs': cs, 'pos': pos, 'trd': trd,
-                'trade_cash': trade_cash, 'position_mtm': pos * fut * cs,
+                'trade_cash': trade_cash, 'position_mtm': pos * settle * cs,
                 'cum_cash': trade_cash.cumsum(0), 'trade_cost': cost, 'cum_cost': cost.cumsum(0),
             }
         portfolio_pos_mtm = sum(p['position_mtm'] for p in per_instr.values())
