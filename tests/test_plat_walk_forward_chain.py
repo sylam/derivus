@@ -55,23 +55,25 @@ def regime(arch, days):
 
 def test_the_regime_ramp_is_the_record_at_one_and_the_passive_at_zero_off_the_day_before(tmp_path, monkeypatch):
     """One trade's job (2024-03-01, its June fixings, the record's corridor [-60, +10] by `--long-cap 10`) with and
-    without `--regime-ramp`. Where r = 1 at a decision the knot in force there is the record's corridor, and a trade
+    without `--regime-ramp 1`. Where r = 1 at a decision the knot in force there is the record's corridor, and a trade
     seeing r = 1 at every decision writes the record's job itself; where r = 0 both sides are the passive net, the
     liability's quantity still to fix after the day over the contract size, whole and short, read off the job's own
     `Sampling_Data`; and the knot at a decision moves with a basis spike on the archive row before it and not with
-    one on its own row, which reaches the next decision's.
+    one on its own row, which reaches the next decision's. Under `--regime-ramp 3` the r = 1 and r = 0 knots are the
+    same and a knot between lies inside the linear one by the factor r^2 on each side.
 
     Killing mutation: the ratio read through the decision day itself (`regime_ramp`'s `searchsorted(decisions)` with
     `side='right'`): 2024-04-15, r = 1 off the row before, reads (-58.44, 0.66), and the spike on 2024-06-12's own
     row opens its knot from the passive's (-30, -30) to (-60, 10), each red alone. Also red: the passive counted with
     the decision day's fixing still unfixed (`fixings > day` as `>=`), the r = 0 knots from 2024-06-03 a fixing
-    short (-50 where the passive is -48)."""
+    short (-50 where the passive is -48); the power dropped (`** power` gone), the steep knots equal the linear."""
     # the harness caps a visible card's memory at import, so the driver is imported with the cards hidden
     monkeypatch.setenv('CUDA_VISIBLE_DEVICES', '-1')
     monkeypatch.syspath_prepend(os.path.join(os.path.dirname(os.path.dirname(__file__)), 'experiments'))
     chain = importlib.import_module('plat_walk_forward_chain')
     template, md, flags = world(tmp_path)
-    ramp, record = chain.parse_args(flags + ['--regime-ramp']), chain.parse_args(flags)
+    ramp, record = chain.parse_args(flags + ['--regime-ramp', '1']), chain.parse_args(flags)
+    steep = chain.parse_args(flags + ['--regime-ramp', '3'])
     arch = archive()
 
     def knots(a, args=ramp):
@@ -92,6 +94,12 @@ def test_the_regime_ramp_is_the_record_at_one_and_the_passive_at_zero_off_the_da
     assert all(at(schedule, d) == (-60.0, 10.0) for d in days[r == 1])
     assert all(at(schedule, d) == (p, p) for d, p, ri in zip(days, passive, r) if ri == 0)
     assert len({p for p, ri in zip(passive, r) if ri == 0}) > 10            # the r = 0 knots follow the fixings
+    s3 = knots(arch, steep)[1]
+    assert all(at(s3, d) == at(schedule, d) for d, ri in zip(days, r) if ri in (0.0, 1.0))
+    for d, p, ri in zip(days, passive, r):
+        if 0 < ri < 1:
+            (lo1, hi1), (lo3, hi3) = at(schedule, d), at(s3, d)
+            assert abs((hi3 - p) - (hi1 - p) * ri ** 2) < 1e-9 and abs((p - lo3) - (p - lo1) * ri ** 2) < 1e-9
 
     hot = archive(hot=1000.0)
     assert (regime(hot, days) == 1).all()

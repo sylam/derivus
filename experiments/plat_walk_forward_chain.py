@@ -223,11 +223,12 @@ def allocation_knots(trade_date, fixings, mats, names):
     return knots
 
 
-def regime_ramp(arch, trade_date, schedule, legs, futs, fixings, decisions):
-    """`--regime-ramp`'s `Total_Position_Schedule`: at each of the `decisions` (the job's business
-    days from the trade date, keyed by calendar-day offset as `allocation_knots` keys) the
-    `schedule` knot in force, [lo, hi], shrunk linearly toward the passive's net p by the regime r,
-    to [p - r (p - lo), p + r (hi - p)], a knot written where it moves.
+def regime_ramp(arch, trade_date, schedule, legs, futs, fixings, decisions, power):
+    """`--regime-ramp POWER`'s `Total_Position_Schedule`: at each of the `decisions` (the job's
+    business days from the trade date, keyed by calendar-day offset as `allocation_knots` keys)
+    the `schedule` knot in force, [lo, hi], shrunk toward the passive's net p by the regime r
+    raised to `power`, to [p - r (p - lo), p + r (hi - p)], a knot written where it moves; 1 is the
+    linear ramp, 3 closes the long side of an asymmetric corridor at small r.
 
     r is the percentile of the basis-swing / spot-risk ratio (the AM.CME basis's `RAMP_ROWS`-row sd
     over the sd of the fix's daily dollar change on the same rows) through the archive row before
@@ -241,7 +242,7 @@ def regime_ramp(arch, trade_date, schedule, legs, futs, fixings, decisions):
     # through the archive row before each decision, the last the desk has read when it decides
     pct = np.searchsorted(seen, ratio.values[ratio.index.searchsorted(decisions) - 1],
                           side='right') / len(seen)
-    r = np.clip((pct - 1 / 3) * 3, 0.0, 1.0)
+    r = np.clip((pct - 1 / 3) * 3, 0.0, 1.0) ** power
     (size,) = {float(f['Contract_Size']) for f in futs.values()}
     cover = -sum((1.0 if leg['Buy_Sell'] == 'Buy' else -1.0) * leg['Units']
                  for leg in legs.values()) / size / len(fixings)       # contracts a fixing
@@ -252,8 +253,8 @@ def regime_ramp(arch, trade_date, schedule, legs, futs, fixings, decisions):
         lo, hi = float(p - ri * (p - rec['Min_Total'])), float(p + ri * (rec['Max_Total'] - p))
         if not knots or (knots[-1]['Min_Total'], knots[-1]['Max_Total']) != (lo, hi):
             knots.append({'Step': step, 'Min_Total': lo, 'Max_Total': hi})
-    logging.debug('REGIME-RAMP %s: r min %.3f median %.3f max %.3f, %.2f of %d decisions at 0 and '
-                  '%.2f at 1, %d knots', trade_date.date(), r.min(), np.median(r), r.max(),
+    logging.debug('REGIME-RAMP %s power %g: r min %.3f median %.3f max %.3f, %.2f of %d decisions at 0 '
+                  'and %.2f at 1, %d knots', trade_date.date(), power, r.min(), np.median(r), r.max(),
                   (r == 0).mean(), len(r), (r == 1).mean(), len(knots))
     return knots
 
@@ -393,10 +394,10 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
         if delta_corridor is None and not args.no_schedule:
             hp['Evaluator']['Total_Position_Schedule'] = [
                 {'Step': 0, 'Min_Total': -60.0, 'Max_Total': float(args.long_cap)}]
-    if args.regime_ramp:
+    if args.regime_ramp is not None:
         hp['Evaluator']['Total_Position_Schedule'] = regime_ramp(
             arch, trade_date, hp['Evaluator']['Total_Position_Schedule'], legs, futs, fixings,
-            pd.date_range(trade_date, pay, freq=fixing_day(template, calc['Calendar'])))
+            pd.date_range(trade_date, pay, freq=fixing_day(template, calc['Calendar'])), args.regime_ramp)
 
     # No Spot_Price_History: its only live consumer is the utility-scale formula, which the
     # template's Utility_Scale_Explicit overrides; the policy's features are process-revealed
@@ -844,11 +845,12 @@ def parse_args(argv=None):
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll.')
-    ap.add_argument('--regime-ramp', action='store_true',
+    ap.add_argument('--regime-ramp', type=float, default=None, metavar='POWER',
                     help='Shrink the corridor (--long-cap or --delta-corridor) toward the passive '
-                         'net at each decision by the basis regime (see regime_ramp): the corridor '
-                         'at r = 1, the passive at r = 0. Applied to TRAIN and ROLL; a re-roll, '
-                         'since the ramped corridor lies inside the one a checkpoint trained in.')
+                         'net at each decision by the basis regime raised to POWER (see '
+                         'regime_ramp; 1 the linear ramp, 3 the steep one): the corridor at r = 1, '
+                         'the passive at r = 0. Applied to TRAIN and ROLL; a re-roll, since the '
+                         'ramped corridor lies inside the one a checkpoint trained in.')
     ap.add_argument('--solver-set', action='append', metavar='KEY=VALUE',
                     help='Stamp an arbitrary Hedging_Problem.Solver field (repeatable).')
     ap.add_argument('--calc-set', action='append', metavar='KEY=VALUE',
