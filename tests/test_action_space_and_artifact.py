@@ -1369,8 +1369,9 @@ def test_a_table_stated_outside_exposure_changes_nothing(mode, stated, read):
     assert trained(stated) == trained(read)
 
 
-def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths():
-    """Under `Allocation_Mode` Carry_Variance the solver splits the net cover by weights it derives
+@pytest.mark.parametrize('solver', ['DiffSolverV2', 'DiffSolver'])
+def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(solver):
+    """Under `Allocation_Mode` Carry_Variance either solver splits the net cover by weights it derives
     from the warmup batch's outer paths: per step the long-only minimum of
     [Q²·wᵀΣw + 2Q·wᵀc]/(2s) − Q·wᵀμ over the legs' remaining-horizon P&L per contract, Σ, c and μ
     its population covariance, its covariance with the liability's and its mean, Q the replication
@@ -1378,13 +1379,15 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths()
     varies. On the training document at an explicit scale of 1e5 over 51 rungs, its first knot is
     that minimum on the warmup world, the same document simulating that batch alone, (0.118, 0.882,
     0) within 1e-4, and the knot in force at the first decision past April's last move, step 19, the
-    minimum on July and October alone, (0, 1, 0). 4 s.
+    minimum on July and October alone, (0, 1, 0). 4 s each.
 
     Killing mutations: the sample moments (n - 1 for n in `_carry_variance_weights`), the first knot
     0.038 off on 4 paths a batch; the expired leg kept in the solve under a penalty on its variance,
-    the ridge then off its diagonal, the knot at step 19 (2e-9, 0.5, 0.5)."""
+    the ridge then off its diagonal, the knot at step 19 (2e-9, 0.5, 0.5); the derivation on
+    `DiffSolverV2` alone, `DiffSolver` searching the Cartesian grid and stamping no table (None)."""
     cfg = _cfg(seed=7, batch=8, inner=4)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Solver']['Object'] = solver
     hp['Evaluator']['Allocation_Mode'] = 'Carry_Variance'
     hp['Objective']['Utility_Scale_Explicit'], scale = 1.0e5, 1.0e5
     hp['Solver']['Training_Action_Grid_Levels_Per_Axis'] = 51

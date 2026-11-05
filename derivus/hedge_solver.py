@@ -535,6 +535,12 @@ class DiffSolver:
         'recursion from running away; the training bank rolls the outer paths exploring books around',
         "each step's replication hedge, so each net is fitted where the policy lives.",
         '',
+        'Under `Evaluator.Allocation_Mode: Carry_Variance` either solver derives the per-step leg',
+        "weights from the warmup batch's outer paths before its bank (`_carry_variance_weights`), a",
+        'long-only minimum of tracking variance less carry at the frame scale over',
+        "`DiffV2_Risk_Aversion`, and a load installs its checkpoint's. **Held by**",
+        '`tests/test_action_space_and_artifact.py::test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths`.',
+        '',
         '### Persistence',
         '',
         '`DiffV2_Save_Value_Fn` writes the fitted nets with their frame; `DiffV2_Load_Value_Fn`',
@@ -1165,6 +1171,64 @@ class DiffSolver:
         """Whether a replication book `(n_hedge,)` nets under half a contract: its liability fixed
         to within dust, a policy built on its net cover holds nothing."""
         return abs(float(rep.sum())) < 0.5
+
+    @staticmethod
+    def _carry_variance_solve(mu, Sig, c, Q, scale, idx):
+        """argmin_w [Q²·wᵀΣw + 2Q·wᵀc] / (2·scale) − Q·wᵀμ  s.t. Σw = 1, w ≥ 0 over the legs `idx`,
+        every other leg's weight 0.
+
+        The carry/tracking allocator for ONE step: Σ and c are the covariance of the legs'
+        remaining-horizon P&L (per contract, in money) with each other and with the liability's, μ
+        their means, Q the signed reference net (short < 0), and the variance/mean exchange rate
+        ½/scale at the frame scale `utility_scale / aversion`. Active-set over `idx`: solve the
+        equality-constrained stationarity, drop the most negative weight, repeat."""
+        idx = list(idx)
+        while True:
+            S = Sig[idx][:, idx].double()
+            S = S + 1.0e-8 * S.diagonal().mean() * torch.eye(len(idx), dtype=S.dtype, device=S.device)
+            Si = torch.linalg.inv(S)
+            w = (scale / Q ** 2) * (Si @ (Q * mu[idx].double()
+                                          - (Q / scale) * c[idx].double()))
+            k = (scale / Q ** 2) * (Si @ torch.ones(len(idx), dtype=S.dtype, device=S.device))
+            w = w - ((w.sum() - 1.0) / k.sum()) * k
+            if bool((w >= -1e-9).all()) or len(idx) == 1:
+                out = torch.zeros_like(mu, dtype=S.dtype)
+                out[torch.tensor(idx, device=mu.device)] = w.clamp_min(0.0)
+                return (out / out.sum().clamp_min(1e-12)).to(mu.dtype)
+            idx.pop(int(w.argmin()))
+
+    def _carry_variance_weights(self):
+        """Derive the per-step `Allocation_Weights` table from the outer sims: at each decision
+        step, the population moments of each leg's remaining-horizon P&L per contract and the
+        liability's remaining P&L, solved by `_carry_variance_solve` at the replication net on the
+        legs whose remaining P&L still varies (a leg's marks freeze at its expiry). Knots are
+        emitted only where the split MOVES."""
+        knots, last = [], None
+        for t in self.steps:
+            dF, RL = self._outer_move(t, to=self.T_dec)                  # the remaining horizon's
+            R = (self.aspace.contract_size * dF).T.contiguous()                 # (n_h, B) money a contract
+            X = R - R.mean(-1, keepdim=True)
+            # population moments, as the replication hedge's
+            Sig = (X @ X.transpose(0, 1)) / R.shape[-1]
+            c = (X * (RL - RL.mean())[None]).sum(-1) / R.shape[-1]
+            alive = Sig.diagonal() > 1.0e-12 * Sig.diagonal().max()
+            rep = self._replication_hedge(t)
+            Qb = float(rep.sum())
+            if not bool(alive.any()) or self._dust(rep):
+                w = last if last is not None else tuple(
+                    1.0 / self.aspace.n_hedge for _ in range(self.aspace.n_hedge))
+            else:
+                legs = alive.nonzero().flatten().tolist()
+                # the frame scale, which exists at bind; the LogWealth capital line is
+                # measured on the bank this ladder builds, so it cannot be read here
+                sol = self._carry_variance_solve(
+                    R.mean(-1), Sig, c, Qb, float(self.utility_scale) / self.aversion, legs)
+                w = tuple(round(float(x), 9) for x in sol)
+                logging.debug('carry-variance split at step %d on legs %s: %s', t, legs, w)
+            if w != last:
+                knots.append((t, w))
+                last = w
+        return tuple(knots)
 
     def _textbook_hedge(self, t, live, batch):
         """The textbook book at decision step t `(batch, n_hedge)`: the replication hedge booked as
@@ -2172,7 +2236,14 @@ class DiffSolver:
         (valid, said out loud). A policy trained on one ladder and rolled on a different one — or
         on the full product — is queried on books it never scored, and under
         the position state on a p-support it never covered. Refused by name, because the
-        symptom otherwise is a silently worse roll rather than an error."""
+        symptom otherwise is a silently worse roll rather than an error.
+
+        Under `Allocation_Mode` Carry_Variance a load first installs the checkpoint's own derived
+        table, since re-deriving from the eval world would refuse every load on Monte Carlo dust;
+        later members must match the first's."""
+        if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
+                and ck.get("allocation_weights")):
+            self.aspace.install_weights(ck["allocation_weights"])
         want = self.aspace.weights_key(self.aspace.weights)
         saved = self.aspace.weights_key(ck["allocation_weights"]) if "allocation_weights" in ck \
             else None
@@ -2349,6 +2420,10 @@ class DiffSolver:
         if not load_members:
             # the frame, measured once on this training bank; a load reads the checkpoint's
             logging.debug("DiffSolver warmup measures the frame on its bank")
+            if self.aspace.mode == "carry_variance":
+                self.aspace.install_weights(self._carry_variance_weights())
+                logging.info("Carry_Variance allocator: %d knot(s), w(t=0)=%s",
+                             len(self.aspace.weights), self.aspace.weights[0][1])
             W_bank, q_bank = self._build_bank(self.gen)
             if self.log_ratio:
                 self._set_displacement(W_bank)
@@ -2868,10 +2943,7 @@ class DiffSolverV2(DiffSolver):
         '',
         'The hindsight shapes WHERE the nets are trained, not the deployed decision, which is the',
         "argmax over the fitted value on information at $t$; the verdict is out of sample as in",
-        "`DiffSolver`; a checkpoint written by the other solver class is refused by name. Under",
-        "`Evaluator.Allocation_Mode: Carry_Variance` this solver derives the per-step leg weights",
-        "from the outer paths, a long-only minimum of tracking variance less carry at the capital",
-        "line's exchange rate.",
+        "`DiffSolver`; a checkpoint written by the other solver class is refused by name.",
     ])
 
     # ---- the forward pass -------------------------------------------------
@@ -3012,74 +3084,6 @@ class DiffSolverV2(DiffSolver):
         q_star, WT = construct(True)
         return q_star, construct(False)[0], curves, WT
 
-    @staticmethod
-    def _carry_variance_solve(mu, Sig, c, Q, scale, idx):
-        """argmin_w [Q²·wᵀΣw + 2Q·wᵀc] / (2·scale) − Q·wᵀμ  s.t. Σw = 1, w ≥ 0 over the legs `idx`,
-        every other leg's weight 0.
-
-        The carry/tracking allocator for ONE step: Σ and c are the covariance of the legs'
-        remaining-horizon P&L (per contract, in money) with each other and with the liability's, μ
-        their means, Q the signed reference net (short < 0), and the variance/mean exchange rate
-        ½/scale at the frame scale `utility_scale / aversion`. Active-set over `idx`: solve the
-        equality-constrained stationarity, drop the most negative weight, repeat."""
-        idx = list(idx)
-        while True:
-            S = Sig[idx][:, idx].double()
-            S = S + 1.0e-8 * S.diagonal().mean() * torch.eye(len(idx), dtype=S.dtype, device=S.device)
-            Si = torch.linalg.inv(S)
-            w = (scale / Q ** 2) * (Si @ (Q * mu[idx].double()
-                                          - (Q / scale) * c[idx].double()))
-            k = (scale / Q ** 2) * (Si @ torch.ones(len(idx), dtype=S.dtype, device=S.device))
-            w = w - ((w.sum() - 1.0) / k.sum()) * k
-            if bool((w >= -1e-9).all()) or len(idx) == 1:
-                out = torch.zeros_like(mu, dtype=S.dtype)
-                out[torch.tensor(idx, device=mu.device)] = w.clamp_min(0.0)
-                return (out / out.sum().clamp_min(1e-12)).to(mu.dtype)
-            idx.pop(int(w.argmin()))
-
-    def _carry_variance_weights(self):
-        """Derive the per-step `Allocation_Weights` table from the outer sims: at each decision
-        step, the population moments of each leg's remaining-horizon P&L per contract and the
-        liability's remaining P&L, solved by `_carry_variance_solve` at the replication net on the
-        legs whose remaining P&L still varies (a leg's marks freeze at its expiry). Knots are
-        emitted only where the split MOVES."""
-        knots, last = [], None
-        for t in self.steps:
-            dF, RL = self._outer_move(t, to=self.T_dec)                  # the remaining horizon's
-            R = (self.aspace.contract_size * dF).T.contiguous()                 # (n_h, B) money a contract
-            X = R - R.mean(-1, keepdim=True)
-            # population moments, as the replication hedge's
-            Sig = (X @ X.transpose(0, 1)) / R.shape[-1]
-            c = (X * (RL - RL.mean())[None]).sum(-1) / R.shape[-1]
-            alive = Sig.diagonal() > 1.0e-12 * Sig.diagonal().max()
-            rep = self._replication_hedge(t)
-            Qb = float(rep.sum())
-            if not bool(alive.any()) or self._dust(rep):
-                w = last if last is not None else tuple(
-                    1.0 / self.aspace.n_hedge for _ in range(self.aspace.n_hedge))
-            else:
-                legs = alive.nonzero().flatten().tolist()
-                # the frame scale, which exists at bind; the LogWealth capital line is
-                # measured on the bank this ladder builds, so it cannot be read here
-                sol = self._carry_variance_solve(
-                    R.mean(-1), Sig, c, Qb, float(self.utility_scale) / self.aversion, legs)
-                w = tuple(round(float(x), 9) for x in sol)
-                logging.debug('carry-variance split at step %d on legs %s: %s', t, legs, w)
-            if w != last:
-                knots.append((t, w))
-                last = w
-        return tuple(knots)
-
-    def _check_action_universe(self, ck, src):
-        """Under Allocation_Mode='Carry_Variance' a LOAD restores the checkpoint's own derived
-        table before the universe comparison — re-deriving from the eval world would refuse
-        every load on Monte-Carlo dust. The first member installs; later members must match it
-        (a mixed-universe ensemble stays refused by the parent's check)."""
-        if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
-                and ck.get("allocation_weights")):
-            self.aspace.install_weights(ck["allocation_weights"])
-        return super()._check_action_universe(ck, src)
-
     def _build_bank(self, gen):
         """The operating region IS the constructed policy: the bank rolls the forward pass's
         own positions with `DiffV2_Bank_Noise_Frac` exploration around them. The parent's
@@ -3088,14 +3092,6 @@ class DiffSolverV2(DiffSolver):
         `DiffV2_Bank_Along_Ladder` the exploration is drawn on the net, as `DiffV2_Bank_Noise_Frac`
         of the ladder band's width, clamped into the band, and every bank book is that net's
         `rung`; either way every bank book is held on the legs live at the step (`Bundle.marked`)."""
-        if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
-                and not self.cfg["diffv2_load_value_fn"]):
-            sched = self._carry_variance_weights()
-            self.aspace.install_weights(sched)
-            logging.info(
-                "DiffSolverV2 Carry_Variance allocator: %d knot(s); w(t=0)=%s w(mid)=%s",
-                len(sched), sched[0][1] if sched else None,
-                sched[len(sched) // 2][1] if sched else None)
         live = {t: self.bundle.marked(t, self.aspace.hedges) for t in self.steps}
         # the floored seed keeps every training book above the floor, so a deep-under-water state
         # would never appear and the net would extrapolate there. Half the paths therefore roll the
