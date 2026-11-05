@@ -998,7 +998,8 @@ class Bundle:
             # the mark carries a payment on its own row and drops it after, so the cash paid on
             # earlier rows joins it: the liability's value is continuous across a payment
             value = mtm + torch.cat([torch.zeros_like(paid[:1]), paid.cumsum(0)[:-1]])
-            logging.debug('liability value: cash paid on rows %s', paid.any(-1).nonzero().flatten().tolist())
+            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                logging.debug('liability value: cash paid on rows %s', paid.any(-1).nonzero().flatten().tolist())
             self.liability_value = torch.cat([self._history_prefix(value), value], dim=0)
         self.last_live_mtm_index = T = int(steps - 2)
         # decisions on the rows of market time, the rows the market-clock laws step on, and on the

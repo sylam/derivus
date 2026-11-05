@@ -1047,7 +1047,8 @@ class DiffSolver:
         """The std over `x`'s first axis, per column, 1 where under 1e-6 of its largest |value|."""
         s = x.std(0)
         flat = s <= 1e-6 * x.abs().amax(0)
-        logging.debug('frame: %d of %d columns of no dispersion', int(flat.sum()), flat.numel())
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug('frame: %d of %d columns of no dispersion', int(flat.sum()), flat.numel())
         return torch.where(flat, 1.0, s)
 
     # ---- external argmax (Bellman max outside the fitted value) --------------
@@ -1733,7 +1734,8 @@ class DiffSolver:
                 vdrift_z += float(zstep.mean())
                 vdrift_s2 += float(zstep.pow(2).mean())
                 vdrift_n += 1
-                logging.debug('verdict wealth at step %d: %.17g', t, float(W["greedy"].mean()))
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug('verdict wealth at step %d: %.17g', t, float(W["greedy"].mean()))
                 q_g = self._decide(
                     nets, m1[rows], dF[rows], dL[rows], W["greedy"].float(), t,
                     q_prev=self._first_book(t, live, n) if t == t0 else q_prev["greedy"],
@@ -1743,8 +1745,9 @@ class DiffSolver:
                 z = torch.zeros(n, self.aspace.n_hedge, device=self.device)
                 # each path's charge at its own mark, where the ranking reads the mean
                 kappa_p = self.aspace.kappa(self.tradables_sim, t, rows=rows)
-                logging.debug('verdict charge kappa at step %d: %s to %s over the paths', t,
-                              kappa_p[0].amin(0).tolist(), kappa_p[0].amax(0).tolist())
+                if logging.getLogger().isEnabledFor(logging.DEBUG):
+                    logging.debug('verdict charge kappa at step %d: %s to %s over the paths', t,
+                                  kappa_p[0].amin(0).tolist(), kappa_p[0].amax(0).tolist())
                 step_cost = {}
                 for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
                                  ("passive", q_pa)):
@@ -2093,7 +2096,8 @@ class DiffSolver:
                         if handed:
                             q = self._passive_hedge(t, live, B)
                         else:
-                            logging.debug('stepper wealth at step %d: %.17g', t, float(W.mean()))
+                            if logging.getLogger().isEnabledFor(logging.DEBUG):
+                                logging.debug('stepper wealth at step %d: %.17g', t, float(W.mean()))
                             q = self._decide(nets, m1, dF, dL, W.float(), t, q_prev=q_prev,
                                              live=live, kappa=kappa_t, ahead=ahead)
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
