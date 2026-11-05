@@ -17,6 +17,12 @@ config, the portfolio state, and the burn-in and inner-belief switches the calcu
 process read; the calculation reads the block's deal containers, `Tradable_Instruments` and
 `Liabilities`, to price them, and nothing else of it.
 
+The hedge legs, `Tradable_Instruments` less the cash accounts, are read in the order of their deals'
+`Maturity_Date`, ties as stated: the order of `names['hedges']`, so of every per-leg axis
+(`Active_Hedge_Indices`, a book, a CSV's columns) and of the consecutive maturities a calendar spread
+matches (`turnover_charge`). **Held by**
+`tests/test_action_space_and_artifact.py::test_the_hedge_legs_are_read_in_maturity_order_whatever_the_order_stated`.
+
 Past that boundary the runtime **is** the contract — downstream code indexes it directly rather
 than re-checking it. A malformed schedule, a partial spot history or a `Simulation_Batches` that
 contradicts the mode fails there, naming the field (an `Execution_Mode` outside its two values is

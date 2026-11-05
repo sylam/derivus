@@ -88,13 +88,13 @@ def _flatten_deals(config: Mapping[str, Any]) -> Dict[str, Dict[str, Any]]:
 
 def _instrument_metadata(entry, hedge):
     """Per-tradable metadata the engine reads: the currency cash routes by, the deal's parameters
-    and, on a hedge leg, the `Contract_Size` its deal class declares."""
+    and, on a hedge leg, the `Contract_Size` and `Maturity_Date` its deal class declares."""
     params = entry["params"]
     # _flatten_deals already deep-copied `params` per entry
     meta = {"currency": params.get("Currency"), "params": params}
     if hedge:
-        meta["contract_size"] = float(
-            DealFields(params, getattr(instruments, entry["deal_type"]))["Contract_Size"])
+        fields = DealFields(params, getattr(instruments, entry["deal_type"]))
+        meta["contract_size"], meta["maturity"] = float(fields["Contract_Size"]), fields["Maturity_Date"]
     return meta
 
 
@@ -341,12 +341,15 @@ def construct_hedge_runtime(
         if account_name not in tradables:
             raise ValueError(
                 f"Evaluator cash account '{account_name}' is not in Tradable_Instruments")
-    hedge_names = tuple(n for n in tradables if n not in cash_account_names)
-    if not hedge_names:
+    legs = [n for n in tradables if n not in cash_account_names]
+    if not legs:
         raise ValueError("no hedge instruments: Tradable_Instruments has only cash accounts")
-
-    normalized_tradables = {name: _instrument_metadata(entry, name in hedge_names)
+    normalized_tradables = {name: _instrument_metadata(entry, name in legs)
                             for name, entry in tradables.items()}
+    # the legs in maturity order, ties as stated: every per-leg axis, and the consecutive maturities
+    # a calendar spread is listed between (`turnover_charge`)
+    hedge_names = tuple(sorted(legs, key=lambda n: normalized_tradables[n]["maturity"]))
+    logging.debug("hedge legs in maturity order: %s", hedge_names)
 
     if execution_mode == "solve_hedge":
         if solver_config is None:

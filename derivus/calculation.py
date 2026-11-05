@@ -3218,7 +3218,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'leg\'s [Min, Max] range, or under DiffV2_Bank_Along_Ladder of '
                                   'the ladder band\'s width on the net'),
                     F('Active_Hedge_Indices', 'Container', default=None, convention=True,
-                      description='The hedge legs the solver varies, by index in hedge order, the rest '
+                      description='The hedge legs the solver varies, by index in maturity order, the rest '
                                   'held at zero; every leg when omitted'),
                     F('DiffV2_Book_Floor_Per_Unit', 'Float', default=1.0, convention=True,
                       description='The constructed bank policy\'s wealth floor per unit of the liability\'s '

@@ -1821,6 +1821,28 @@ def test_each_leg_pays_its_share_of_the_turnover_charge_from_its_own_account():
     got = (matched['USD_CASH'] - outright['USD_CASH']).double()
     assert torch.allclose(got, saving, rtol=1e-5, atol=0.0), (got.tolist(), saving.tolist())
 
+
+def test_the_hedge_legs_are_read_in_maturity_order_whatever_the_order_stated():
+    """The hedge legs are read in maturity order whatever order the document states them in, so a
+    calendar spread matches the consecutive maturities it is listed between: on the client document
+    under a 3 bp `Calendar_Spread_Bps`, a roll from April to October at the first row (short 10
+    `PL_APR_2026`, long 10 `PL_OCT_2026`), July between them, books one excess P&L stated April, July,
+    October or April, October, July, to the bit (-90,616.94 on path 0). 5 s.
+
+    Killing mutation: the legs in the order stated (`construct_hedge_runtime` without its sort), April and
+    October then consecutive and matched (-89,756.08 on path 0)."""
+    pnl = []
+    for order in (_HEDGES, (_HEDGES[0], _HEDGES[2], _HEDGES[1])):
+        cfg = _client(evaluator=CALENDAR)
+        deals = cfg['Calc']['Calculation']['Hedging_Problem']['Tradable_Instruments']
+        deals['CommodityFutureDeal'] = {h: deals['CommodityFutureDeal'][h] for h in order}
+        result = _run(cfg)
+        stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
+        while not stepper.done:
+            last = stepper.step({_HEDGES[0]: -10.0, _HEDGES[2]: 10.0} if stepper.time_index == r0 else None)
+        pnl.append(last['transition_pnl_excess'])
+    assert torch.equal(*pnl), [p.tolist() for p in pnl]
+
 @pytest.mark.parametrize('mode', ['futures', 'cash_account'])
 def test_a_document_stating_no_cash_account_books_every_flow_on_one_ledger(mode):
     """A document stating no `Cash_Instruments` books every leg's flows on one unmarked money ledger:
