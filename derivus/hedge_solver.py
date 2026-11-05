@@ -295,7 +295,7 @@ class HedgeActionSpace:
                     f"{(lo, hi)}")
             if hi - lo > self.levels - 1:
                 raise ValueError(
-                    f"Allocation_Weights ladder at step {t} spans {hi - lo} contracts over "
+                    f"Evaluator.Allocation_Mode ladder at step {t} spans {hi - lo} contracts over "
                     f"{self.levels} rungs, a quantum above one contract: raise "
                     f"Training_Action_Grid_Levels_Per_Axis to at least {hi - lo + 1}.")
             net = torch.linspace(lo, hi, self.levels, device=self.device).unsqueeze(-1)  # (L,1)
@@ -304,7 +304,7 @@ class HedgeActionSpace:
 
     def grid_at(self, t, live=None):
         """Action grid at decision step t: the rows of the base `grid()` — or of the factored
-        `allocation_grid(t)` when `Allocation_Weights` is configured — that the step admits on the
+        `allocation_grid(t)` under an `Allocation_Mode` ladder — that the step admits on the
         `live` legs (`admissible`). The single per-t filter site every track shares; empty after
         filtering ⇒ infeasible bounds.
 
@@ -360,8 +360,8 @@ class HedgeActionSpace:
 
     def in_band(self, dq):
         """Whether each move `dq` `(..., n_hedge)` lies inside `Max_Trade_Per_Step`: its net under
-        `Allocation_Weights`, the control being the net cover so a composition jump at a knot is the
-        schedule's mandate, each leg's move without one."""
+        an `Allocation_Mode` ladder, the control being the net cover so a composition jump at a knot
+        is the schedule's mandate, each leg's move on the Cartesian grid."""
         if self.weights is not None:
             return dq.sum(-1).abs() <= self.max_trade
         return (dq.abs() <= self.max_trade).all(-1)
@@ -405,13 +405,13 @@ class HedgeActionSpace:
 
     def universe_size(self):
         """Row count of the action universe a diagnostic should report: the entry step's grid, the
-        Cartesian one inside its bounds or the LADDER under `Allocation_Weights`, never the
+        Cartesian one inside its bounds or the LADDER under Exposure or Carry_Variance, never the
         meshgrid of every leg's levels under a ladder."""
         return int(self.grid_at(0).shape[0])
 
     def static_grid(self):
         """The universe a CONSTANT hold is chosen from (`run_textbook_benchmark`). Cartesian: the
-        entry-step grid. Under `Allocation_Weights`: every knot's ladder, deduped and held to the
+        entry-step grid. Under Exposure or Carry_Variance: every knot's ladder, deduped and held to the
         ENTRY corridor."""
         if self.weights is None:
             return self.grid_at(0)
@@ -1067,7 +1067,7 @@ class DiffSolver:
         it off the one-step draws.
 
         The action universe is `aspace.grid_at(t, live)`: the books of the base grid, or of the
-        FACTORED Q-ladder under `Allocation_Weights`, that the step admits on its live legs
+        FACTORED Q-ladder under Exposure or Carry_Variance, that the step admits on its live legs
         (`HedgeActionSpace.admissible`: each live active leg inside its box, every other leg at
         zero, the net inside the cap and the corridor), so the bounds hold the REALIZED book rather
         than a target the expiry mask then guts.
@@ -1078,7 +1078,7 @@ class DiffSolver:
         `Max_Trade_Per_Step` band (`rate_limit` True, so the label path keeps the band
         execution-only) and the `Decision_Deadband_Sigma` incumbent. The band takes the best action
         INSIDE the reachable set and falls back to the unrestricted best when nothing is reachable.
-        Under `Allocation_Weights` it measures `|ΔΣq|` rather than per-leg `|Δq_i|`, because a
+        Under an `Allocation_Mode` ladder it measures `|ΔΣq|` rather than per-leg `|Δq_i|`, because a
         composition jump at a knot is the schedule's mandate rather than a trade the argmax chose.
         Without the position state these shape SELECTION only and the fitted targets stay
         cost-free; with it, the same charge plus the terminal unwind enters the label's target and
@@ -2299,10 +2299,10 @@ class DiffSolver:
                          "ladder; this run searches its own.")
             return
         raise ValueError(
-            f"DiffV2_Load_Value_Fn Allocation_Weights mismatch: {src} was fitted on the ladder "
+            f"DiffV2_Load_Value_Fn ladder mismatch: {src} was fitted on the ladder "
             f"{saved} but this run searches {want}. The argmax scored a different set of books, "
             f"so the frozen value is queried off the support it learned — retrain, or match the "
-            f"Evaluator.Allocation_Weights.")
+            f"Evaluator's Allocation_Mode and Allocation_Weights.")
 
     def _check_calendar_spread(self, ck, src):
         """`Calendar_Spread_Bps` provenance. Under the position state the charge is a term of

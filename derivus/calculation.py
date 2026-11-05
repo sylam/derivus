@@ -3077,9 +3077,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Positions', 'Container', default={}, convention=True,
                       description='The opening book, whole contracts by hedge leg; flat when omitted'),
                     F('Cash_Balances', 'Container', default={}, convention=True,
-                      description='Each cash account\'s opening balance; zero when omitted'),
+                      description='Each cash account\'s opening balance in the calculation '
+                                  'Currency; zero when omitted'),
                     F('Margin_Balances', 'Container', default={}, convention=True,
-                      description='The margin each cash account has posted at the start; zero when omitted'),
+                      description='The margin each cash account has posted at the start, in the '
+                                  'calculation Currency; zero when omitted'),
                     F('Spot_Price_History', 'Container', default={}, convention=True,
                       description='Realized `{Dates, Prices}` by CommodityPrice factor before the base date, '
                                   'the rolling features\' lookback; none when omitted'),
@@ -3091,7 +3093,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       values=['AsymmetricUtility_Symlog', 'AsymmetricUtility_Huber',
                               'AsymmetricUtility_CARA', 'LogWealth'],
                       description='The utility shape the DP recursion works in; LogWealth is '
-                                  'the per-step growth objective, reward log(W1/W0), scale-free'),
+                                  'the per-step growth objective, reward log(W1/W0), reading the '
+                                  'scale c only in its launch floor'),
                     F('Utility_Scale_Mode', 'Text', default='vol_scaled_notional',
                       values=['vol_scaled_notional', 'conditional_sim'],
                       description='How the utility scale c is derived from the book; '
@@ -3228,8 +3231,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'leg volume'),
                     F('DiffV2_Risk_Aversion', 'Float', default=1.0,
                       description='The backward DP aversion, dividing the capital line in the '
-                                  'LogWealth reward (1.0 neutral; higher = less capital at risk = '
-                                  'more averse)'),
+                                  'LogWealth reward and the frame scale Carry_Variance trades '
+                                  'variance against carry at (1.0 neutral; higher = more averse)'),
                     F('DiffV2_Drift_Threshold_Sigmas', 'Float', default=3.0,
                       description='The drift tripwire tail: how many validation-measured null '
                                   'sigmas the inference CUSUM must exceed to trip'),
@@ -3500,7 +3503,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # per-batch outer scenario buffer is cached for it to fork on demand; the copies below are
         # forked only after outer setup precalc has run
         solve_hedge_mode = execution_mode == 'solve_hedge'
-        tradable_refs = sorted(normalized_runtime['names']['hedges']) if solve_hedge_mode else ()
+        tradable_refs = normalized_runtime['names']['hedges'] if solve_hedge_mode else ()
         if solve_hedge_mode:
             self.stoch_factors_inner = {k: proc.copy() for k, proc in self.stoch_factors.items()}
         streaming_solve = StreamingSolve(normalized_runtime) if solve_hedge_mode else None
