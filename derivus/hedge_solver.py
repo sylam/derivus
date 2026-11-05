@@ -2069,7 +2069,7 @@ class DiffSolver:
                                    float(self._residual_z(t, dF, obs_dF, moving).sum() / B))
                         drift["t"].append(int(t))
                         drift["z_path"].append(round(drift["cum_z"], 4))
-                        n_so_far = max(1, len(drift["t"]) - 1)         # residuals scored so far
+                        n_so_far = len(drift["t"]) - 1                 # residuals scored so far
                         boundary = (self.cfg["diffv2_drift_threshold_sigmas"]
                                     * null * (n_so_far ** 0.5))
                         tripped = abs(drift["cum_z"]) > boundary
