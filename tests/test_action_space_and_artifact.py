@@ -1414,10 +1414,12 @@ def test_a_table_stated_outside_exposure_changes_nothing(mode, stated, read):
     assert trained(stated) == trained(read)
 
 
-@pytest.mark.parametrize('solver, active', [('DiffSolverV2', None), ('DiffSolver', None), ('DiffSolverV2', (0, 2))])
-def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(solver, active):
+@pytest.mark.parametrize('solver, active, roll', [('DiffSolverV2', None, False), ('DiffSolver', None, False),
+                                                  ('DiffSolverV2', (0, 2), False), ('DiffSolverV2', None, True)])
+def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(tmp_path, solver, active, roll):
     """Under `Allocation_Mode` Carry_Variance either solver splits the net cover by weights it derives
-    from the warmup batch's outer paths: per step the long-only minimum of
+    from the warmup batch's outer paths, and a roll of a checkpoint stamping no table (a Cartesian
+    fit's) from its own world's: per step the long-only minimum of
     [Q²·wᵀΣw + 2Q·wᵀc]/(2s) − Q·wᵀμ over the legs' remaining-horizon P&L per contract, Σ, c and μ
     its population covariance, its covariance with the liability's and its mean, Q the replication
     net (shared over the active legs live at the step) and s the frame scale over
@@ -1426,23 +1428,29 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(s
     is that minimum on the warmup world, the same document simulating that batch alone, (0.118,
     0.882, 0) within 1e-4, or with legs 0 and 2 active (0.225, 0, 0.775), and the knot in force at
     the first decision past April's last move, step 19, the minimum on the live legs alone, (0, 1, 0),
-    or (0, 0, 1). 4 s each.
+    or (0, 0, 1); the Cartesian fit's roll books its first decision, step 101, on July alone, the
+    split there (0, 1, 0). 4 s each.
 
     Killing mutations: the sample moments (n - 1 for n in `_carry_variance_weights`), the first knot
     0.038 off on 4 paths a batch; the expired leg kept in the solve under a penalty on its variance,
     the ridge then off its diagonal, the knot at step 19 (2e-9, 0.5, 0.5); the derivation on
     `DiffSolverV2` alone, `DiffSolver` searching the Cartesian grid and stamping no table (None); the
     solve over every leg that varies, the inactive July included, the first knot with legs 0 and 2
-    active (0.118, 0.882, 0)."""
+    active (0.118, 0.882, 0); the load installing nothing where the checkpoint stamps no table, the
+    roll of the Cartesian fit searching its 35 rows and stamping None."""
     legs = list(range(3) if active is None else active)
     cfg = _cfg(seed=7, batch=8, inner=4, active=active)
-    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    calc, hp = cfg['Calc']['Calculation'], cfg['Calc']['Calculation']['Hedging_Problem']
+    if roll:
+        # the roll's one batch is the fit's warmup world
+        ckpt = str(tmp_path / 'cartesian.pt')
+        _run(_cfg(seed=7, batch=8, inner=4, save=ckpt))
+        calc['Simulation_Batches'], hp['Solver']['DiffV2_Load_Value_Fn'] = 1, [ckpt]
     hp['Solver']['Object'] = solver
     hp['Evaluator']['Allocation_Mode'] = 'Carry_Variance'
     hp['Objective']['Utility_Scale_Explicit'], scale = 1.0e5, 1.0e5
     hp['Solver']['Training_Action_Grid_Levels_Per_Axis'] = 51
-    knots = _run(cfg).policy_artifact['allocation_weights']
-    calc = cfg['Calc']['Calculation']
+    result = _run(cfg)
     calc['Execution_Mode'], calc['Simulation_Batches'] = 'simulate_only', 1
     world = _run(cfg).bundle
     F = torch.stack([world.tradables_sim[h].double() for h in _HEDGES], -1)            # (T, B, 3)
@@ -1473,11 +1481,17 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(s
             want[i] = x
         return want
 
-    step, got = knots[0]
+    if roll:
+        # a load stamps no artifact: its first book carries nothing on a leg the split there zeroes
+        v = result.evaluation_summary['diagnostics']['verdict']
+        want, book = minimum(v['greedy_q_t'][0]), v['greedy_q_traj'][0]
+        assert sum(book) < 0.0 and all(q == 0.0 for w, q in zip(want, book) if w == 0.0), (want, book)
+        return
+    step, got = result.policy_artifact['allocation_weights'][0]
     want = minimum(0)
     assert step == 0 and 0.05 < want[0] < 0.95 and max(abs(a - b) for a, b in zip(got, want)) < 1e-4, (got, want)
     dead = next(t for t in world.decision_steps if not bool((F[T, :, 0] != F[t, :, 0]).any()))
-    got, want = next(w for s, w in reversed(knots) if s <= dead), minimum(dead)
+    got, want = next(w for s, w in reversed(result.policy_artifact['allocation_weights']) if s <= dead), minimum(dead)
     assert dead == 19 and max(abs(a - b) for a, b in zip(got, want)) < 1e-4, (dead, got, want)
 
 

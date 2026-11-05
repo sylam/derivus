@@ -388,7 +388,8 @@ class HedgeActionSpace:
     def install_weights(self, weights):
         """One-shot install of a DERIVED `Allocation_Weights` schedule (Allocation_Mode
         'Carry_Variance'): the solver computes the table from the warmup sims — or restores a
-        checkpoint's stamped table — and the ladder reads it from here on."""
+        checkpoint's stamped table, or derives a roll's where none is stamped — and the ladder
+        reads it from here on."""
         self.weights = self.weights_key(weights)
         self._cache.clear()
 
@@ -543,7 +544,8 @@ class DiffSolver:
         'Under `Evaluator.Allocation_Mode: Carry_Variance` either solver derives the per-step leg',
         "weights from the warmup batch's outer paths before its bank (`_carry_variance_weights`), a",
         'long-only minimum of tracking variance less carry at the frame scale over',
-        "`DiffV2_Risk_Aversion`, and a load installs its checkpoint's. **Held by**",
+        "`DiffV2_Risk_Aversion`, and a load installs its checkpoint's, or derives its own world's where the",
+        'checkpoint stamps none (a Cartesian fit). **Held by**',
         '`tests/test_action_space_and_artifact.py::test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths`.',
         '',
         '### Persistence',
@@ -2262,11 +2264,13 @@ class DiffSolver:
         symptom otherwise is a silently worse roll rather than an error.
 
         Under `Allocation_Mode` Carry_Variance a load first installs the checkpoint's own derived
-        table, since re-deriving from the eval world would refuse every load on Monte Carlo dust;
-        later members must match the first's."""
-        if (self.aspace.mode == "carry_variance" and self.aspace.weights is None
-                and ck.get("allocation_weights")):
-            self.aspace.install_weights(ck["allocation_weights"])
+        table, since re-deriving from the eval world would refuse every load on Monte Carlo dust,
+        and where the checkpoint stamps none (a Cartesian fit) the split derived on the roll's
+        world, as a fit derives it; later members must match the first's."""
+        if self.aspace.mode == "carry_variance" and self.aspace.weights is None:
+            self.aspace.install_weights(ck.get("allocation_weights") or self._carry_variance_weights())
+            logging.debug("Carry_Variance load installs %d knot(s), w(t=0)=%s",
+                          len(self.aspace.weights), self.aspace.weights[0][1])
         want = self.aspace.weights_key(self.aspace.weights)
         saved = self.aspace.weights_key(ck["allocation_weights"]) if "allocation_weights" in ck \
             else None
