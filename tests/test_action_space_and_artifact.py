@@ -1701,8 +1701,9 @@ def test_an_opening_book_on_a_leg_dead_before_the_first_decision_is_closed_there
     """An opening book on a leg that expires before the first decision earns its move to the expiry
     and is closed at the first decision at its last mark, in the verdict as in the stepper roll: on
     the Cartesian replay under the position state opening short 5 April, which expires on Wednesday
-    29 April, and short 3 July, swept from step 100, the greedy, passive, textbook and no-hedge
-    tracks close to one terminal wealth in both within 5e-6 relative (at most 2.2e-7). 4 s.
+    29 April, and short 3 July, swept from step 100, the greedy, passive and no-hedge tracks (one
+    path, so no textbook) close to one terminal wealth in both within 5e-6 relative (at most
+    2.2e-7). 4 s.
 
     Killing mutation: the verdict's charge measured from the standing book masked by the step's live
     legs (`q_prev[p] * live` in `_verdict`'s `_charge`), the dead April leg's close at the
@@ -1715,7 +1716,7 @@ def test_an_opening_book_on_a_leg_dead_before_the_first_decision_is_closed_there
         return cfg
     d = _replayed_roll(tmp_path, doc)
     v, sv = d['verdict'], d['stepper_verdict']
-    gaps = {p: sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0 for p in ('greedy', 'passive', 'textbook', 'nohedge')}
+    gaps = {p: sv[p]['wT_mean'] / v[p]['wT_mean'] - 1.0 for p in ('greedy', 'passive', 'nohedge')}
     assert all(abs(g) < 5e-6 for g in gaps.values()), gaps
 
 
@@ -1773,6 +1774,28 @@ def test_the_textbook_book_is_the_min_var_hedge_of_the_outer_moves(tmp_path):
         base[j] += 1.0
     got = d['verdict']['textbook_q_traj'][0]
     assert got == base.tolist(), (got, want)
+
+
+def test_a_one_path_roll_carries_no_textbook_track(tmp_path):
+    """The textbook is undefined on a world of one outer path, whose moments have no cross-section:
+    the training document rolled frozen on one path with the stepper roll carries the greedy,
+    no-hedge and passive tracks in the verdict and the stepper verdict, and no textbook track, book
+    or flag read against it. 6 s.
+
+    Killing mutation: the textbook kept on one path (`DiffSolver._policies` not dropping it), every
+    leg skipped by the replication hedge, so the `textbook` tracks read the no-hedge numbers under
+    their name (the verdict's u_mean 0.36341 and wT_mean 727,398.69, the stepper's 728,926.71)."""
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(_cfg(seed=7, batch=8, inner=4, save=ckpt))
+    roll = _cfg(batch=2, seed=7, load=ckpt)
+    roll['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Stepper_Rollout'] = 'Yes'
+    result = _run(roll)
+    d = result.evaluation_summary['diagnostics']
+    assert result.bundle.batch_size == 1
+    tracks = {'greedy', 'nohedge', 'passive'}
+    assert tracks <= set(d['verdict']) and tracks <= set(d['stepper_verdict'])
+    textbook = [k for k in [*d, *d['verdict'], *d['stepper_verdict']] if 'textbook' in k]
+    assert not textbook, (textbook, d['verdict'].get('textbook'), d['verdict']['nohedge'])
 
 
 @pytest.mark.parametrize('mode', ['futures', 'cash_account'])

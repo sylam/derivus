@@ -1256,6 +1256,15 @@ class DiffSolver:
                 last = w
         return tuple(knots)
 
+    @property
+    def _policies(self):
+        """The tracks a roll compares: the greedy, textbook, no-hedge and passive books, the textbook
+        undefined on a world of one outer path, whose moments have no cross-section."""
+        tracks = tuple(p for p in ("greedy", "textbook", "nohedge", "passive")
+                       if p != "textbook" or self.B_outer > 1)
+        logging.debug('roll tracks on %d outer path(s): %s', self.B_outer, tracks)
+        return tracks
+
     def _textbook_hedge(self, t, live, batch):
         """The textbook book at decision step t `(batch, n_hedge)`: the replication hedge booked as
         the execution books it (`HedgeActionSpace.book`), as the stepper holds it."""
@@ -1713,11 +1722,11 @@ class DiffSolver:
         # the opening book's P&L from the first row to the first decision, every track's, in MONEY
         W0 = wealth_step(L[t0][rows].to(MONEY), q0, self.aspace.contract_size,
                          self._outer_move(0, rows, t0)[0].to(MONEY), 0.0)
-        W = {p: W0.clone() for p in ("greedy", "textbook", "nohedge", "passive")}
+        W = {p: W0.clone() for p in self._policies}
         # the turnover cost, entry measured from the opening book: paid inside the wealth under the
         # position state, a diagnostic beside it otherwise
         cost = {p: torch.zeros(n, dtype=MONEY, device=self.device) for p in W}
-        q_traj = {p: [] for p in ("greedy", "textbook", "passive")}                 # mean q a decision
+        q_traj = {p: [] for p in W if p != "nohedge"}                                # mean q a decision
         q_prev = {p: q0.clone() for p in cost}
         # running-wealth: the rollout's value is the SUM of the per-step rewards, accumulated along
         # the roll, and the net sum charges each step's own turnover into that step's increment
@@ -1740,30 +1749,29 @@ class DiffSolver:
                 vdrift_s2 += float(zstep.pow(2).mean())
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.debug('verdict wealth at step %d: %.17g', t, float(W["greedy"].mean()))
-                q_g = self._decide(
+                q = {"greedy": self._decide(
                     nets, m1[rows], dF[rows], dL[rows], W["greedy"].float(), t,
                     q_prev=self._first_book(t, live, n) if t == t0 else q_prev["greedy"],
-                    kappa=self._ranking_kappa(t), live=live, ahead=_on_rows(ahead, rows))
-                q_tb = self._textbook_hedge(t, live, n)
-                q_pa = self._passive_hedge(t, live, n)
-                z = torch.zeros(n, self.aspace.n_hedge, device=self.device)
+                    kappa=self._ranking_kappa(t), live=live, ahead=_on_rows(ahead, rows)),
+                     "nohedge": torch.zeros(n, self.aspace.n_hedge, device=self.device),
+                     "passive": self._passive_hedge(t, live, n)}
+                if "textbook" in W:
+                    q["textbook"] = self._textbook_hedge(t, live, n)
                 # each path's charge at its own mark, where the ranking reads the mean
                 kappa_p = self.aspace.kappa(self.tradables_sim, t, rows=rows)
                 if logging.getLogger().isEnabledFor(logging.DEBUG):
                     logging.debug('verdict charge kappa at step %d: %s to %s over the paths', t,
                                   kappa_p[0].amin(0).tolist(), kappa_p[0].amax(0).tolist())
                 step_cost = {}
-                for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
-                                 ("passive", q_pa)):
-                    step_cost[p] = (self._charge(t, q_now, q_prev[p], kappa_p, rows)
+                for p in W:
+                    step_cost[p] = (self._charge(t, q[p], q_prev[p], kappa_p, rows)
                                     if self.position_state else
-                                    turnover_charge(q_now - q_prev[p], *kappa_p))
+                                    turnover_charge(q[p] - q_prev[p], *kappa_p))
                     cost[p] = cost[p] + step_cost[p]
-                    q_prev[p] = q_now
+                    q_prev[p] = q[p]
                 W_pre, moved = dict(W), {}
-                for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("nohedge", z),
-                                 ("passive", q_pa)):
-                    step = (q_now, self.aspace.contract_size, dF_o.to(MONEY), dL_o)
+                for p in W:
+                    step = (q[p], self.aspace.contract_size, dF_o.to(MONEY), dL_o)
                     W[p], moved[p] = wealth_step(W[p], *step), wealth_step(0.0, *step)
                     if self.position_state:
                         # the charge inside the step, as the label pays it, so the next decision
@@ -1779,8 +1787,8 @@ class DiffSolver:
                         last_net_inc[p] = moved[p] - step_cost[p]
                         last_W_pre[p] = W_pre[p]
                         u_net[p] = u_net[p] + self._reward(last_net_inc[p], W_pre[p], self.nxt[t])
-                for p, q_now in (("greedy", q_g), ("textbook", q_tb), ("passive", q_pa)):
-                    q_traj[p].append(q_now.mean(0).tolist())
+                for p in q_traj:
+                    q_traj[p].append(q[p].mean(0).tolist())
             if self.force_flat and not self.position_state:
                 # the unwind both benchmark tracks charge, so all three price one execution; under
                 # the position state the last step's charge carried it
@@ -2127,7 +2135,7 @@ class DiffSolver:
                 u_sum = u_sum + self._reward(wT - w_prev, w_prev, self.T_dec)  # tail
             return wT, u_sum, drift
 
-        rolled = {p: roll(p) for p in ("greedy", "textbook", "nohedge", "passive")}
+        rolled = {p: roll(p) for p in self._policies}
         out = {p: _tail_stats(self.runtime, wT, u_sum) for p, (wT, u_sum, _) in rolled.items()}
         # one drift monitor per rollout policy; the greedy one is THE inference guard
         out["drift_monitor"] = rolled["greedy"][2]
@@ -2766,45 +2774,31 @@ class DiffSolver:
         stepper_verdict = None
         if loaded is not None and self.cfg["diffv2_stepper_rollout"]:
             stepper_verdict = self._rollout_on_stepper(nets, inner_cache, sweep_ts)
-            sg, stb, snh, spa = (stepper_verdict[k]
-                                 for k in ("greedy", "textbook", "nohedge", "passive"))
-            logging.info(
-                "DiffSolver STEPPER ROLLOUT (frozen policy, realized path, real accounting):\n"
-                "  greedy   wT=%+.4e p5=%+.4e cvar5=%+.4e\n"
-                "  textbook wT=%+.4e p5=%+.4e cvar5=%+.4e\n"
-                "  nohedge  wT=%+.4e p5=%+.4e cvar5=%+.4e\n"
-                "  passive  wT=%+.4e p5=%+.4e cvar5=%+.4e",
-                sg["wT_mean"], sg["wT_p5"], sg["wT_cvar5"],
-                stb["wT_mean"], stb["wT_p5"], stb["wT_cvar5"],
-                snh["wT_mean"], snh["wT_p5"], snh["wT_cvar5"],
-                spa["wT_mean"], spa["wT_p5"], spa["wT_cvar5"])
+            logging.info("DiffSolver STEPPER ROLLOUT (frozen policy, realized path, real accounting):%s",
+                         "".join("\n  %-8s wT=%+.4e p5=%+.4e cvar5=%+.4e" % (
+                             p, stepper_verdict[p]["wT_mean"], stepper_verdict[p]["wT_p5"],
+                             stepper_verdict[p]["wT_cvar5"]) for p in self._policies))
 
-        g, tb, nh, pa = (verdict[k] for k in ("greedy", "textbook", "nohedge", "passive"))
+        g, nh = verdict["greedy"], verdict["nohedge"]
         # PRIMARY metric = the optimization target E[u(W_T)], which already encodes downside
         # aversion through the concave utility; CVaR5 is a secondary tail diagnostic
-        beats_nh = g["u_mean"] >= nh["u_mean"]
-        beats_tb = g["u_mean"] >= tb["u_mean"]
-        tail_vs_tb = g["wT_cvar5"] >= tb["wT_cvar5"] - abs(tb["wT_cvar5"]) * 0.05
+        flags = {"verdict_beats_nohedge_on_utility": bool(g["u_mean"] >= nh["u_mean"])}
+        if "textbook" in verdict:
+            tb = verdict["textbook"]
+            flags.update(verdict_beats_textbook_on_utility=bool(g["u_mean"] >= tb["u_mean"]),
+                         verdict_tail_competitive_vs_textbook=bool(
+                             g["wT_cvar5"] >= tb["wT_cvar5"] - abs(tb["wT_cvar5"]) * 0.05))
         logging.info(
             "DiffSolver VERDICT (%s rollout t=%d→T over %d outer paths, from the opening book):\n"
-            "  policy    u(W_T)mean    W_T mean       W_T p5         W_T CVaR5\n"
-            "  greedy    %+.5f    %+.4e   %+.4e   %+.4e\n"
-            "  textbook  %+.5f    %+.4e   %+.4e   %+.4e\n"
-            "  nohedge   %+.5f    %+.4e   %+.4e   %+.4e\n"
-            "  passive   %+.5f    %+.4e   %+.4e   %+.4e\n"
-            "  → on the OBJECTIVE E[u(W_T)]: beats no-hedge=%s, beats textbook=%s | "
-            "tail(CVaR5) competitive w/ textbook=%s",
-            "OUT-OF-SAMPLE", self.t_min, self.B_outer,
-            g["u_mean"], g["wT_mean"], g["wT_p5"], g["wT_cvar5"],
-            tb["u_mean"], tb["wT_mean"], tb["wT_p5"], tb["wT_cvar5"],
-            nh["u_mean"], nh["wT_mean"], nh["wT_p5"], nh["wT_cvar5"],
-            pa["u_mean"], pa["wT_mean"], pa["wT_p5"], pa["wT_cvar5"],
-            beats_nh, beats_tb, tail_vs_tb)
+            "  policy    u(W_T)mean    W_T mean       W_T p5         W_T CVaR5%s\n  %s",
+            "OUT-OF-SAMPLE", self.t_min, self.B_outer, "".join(
+                "\n  %-8s  %+.5f    %+.4e   %+.4e   %+.4e" % (
+                    p, verdict[p]["u_mean"], verdict[p]["wT_mean"], verdict[p]["wT_p5"],
+                    verdict[p]["wT_cvar5"]) for p in self._policies), flags)
         logging.info(
-            "DiffSolver greedy positions: mean|q| per instrument=%s | q@t0=%s | q@mid=%s "
-            "(textbook q@t0=%s)", ["%.2f" % v for v in verdict["greedy_mean_abs_q"]],
-            verdict["greedy_q_first"], verdict["greedy_q_mid"],
-            (verdict["textbook_q_traj"] or [None])[0])
+            "DiffSolver greedy positions: mean|q| per instrument=%s | q@t0=%s | q@mid=%s",
+            ["%.2f" % v for v in verdict["greedy_mean_abs_q"]], verdict["greedy_q_first"],
+            verdict["greedy_q_mid"])
 
         return SolverResult(
             solver_name=type(self).__name__,
@@ -2824,9 +2818,7 @@ class DiffSolver:
                 "verdict": verdict,                       # OUT-OF-SAMPLE (held-out paths)
                 "stepper_verdict": stepper_verdict,       # frozen-policy realized-path rollout (real accounting)
                 "verdict_is_oos": True,        # structural: finish only ever sees unfitted paths
-                "verdict_beats_nohedge_on_utility": bool(beats_nh),
-                "verdict_beats_textbook_on_utility": bool(beats_tb),
-                "verdict_tail_competitive_vs_textbook": bool(tail_vs_tb),
+                **flags,
             },
         )
 

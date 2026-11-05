@@ -87,6 +87,10 @@ telescopes to the terminal, where the hindsight bound stops too, held by
 
 The two tracks named `textbook` are different policies: the comparison track's constant hold is
 frictionless and reports no cost, the verdict's is traded and pays it as every verdict policy does.
+On a world of one outer path the verdict's is undefined, its moments having no cross-section, so
+the verdict and the stepper roll carry no `textbook` track and no flag read against it
+(`DiffSolver._policies`). Held by
+`tests/test_action_space_and_artifact.py::test_a_one_path_roll_carries_no_textbook_track`.
 
 The verdict rolls the fitted argmax policy over every path of the held-out batch from `T_Min`,
 every track holding the opening book from the first row to it,
