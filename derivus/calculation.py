@@ -3062,8 +3062,14 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         F('Hedging_Problem', 'Container',
           description='The hedging problem itself - tradables, liabilities, objective, solver',
           sub_fields=[
-              F('History_Lookback_Business_Days', 'Integer', default=30),
-              F('Randomize_Initial_State', 'Text', default='No', values=['Yes', 'No']),
+              F('History_Lookback_Business_Days', 'Integer', default=30,
+                description='The last rows of Portfolio_State.Spot_Price_History prepended before '
+                            'the first simulated row, the realized vol\'s lookback; none where no '
+                            'history is declared'),
+              F('Randomize_Initial_State', 'Text', default='No', values=['Yes', 'No'],
+                description='Yes opens each batch on a burn-in from the calibrated start, the '
+                            'spread of starting states the value label needs; No opens every batch '
+                            'at the calibrated start'),
               F('Inner_Belief_Filter', 'Text', default='Yes', values=['Yes', 'No'],
                 description='Publish a one-step filtered belief into the inner fork instead of '
                             'the privileged true-regime one-hot'),
@@ -3081,10 +3087,12 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   'Currency; zero when omitted'),
                     F('Margin_Balances', 'Container', default={}, convention=True,
                       description='The margin each cash account has posted at the start, in the '
-                                  'calculation Currency; zero when omitted'),
+                                  'calculation Currency, read under futures accounting alone; zero '
+                                  'when omitted'),
                     F('Spot_Price_History', 'Container', default={}, convention=True,
                       description='Realized `{Dates, Prices}` by CommodityPrice factor before the base date, '
-                                  'the rolling features\' lookback; none when omitted'),
+                                  'the rolling features\' lookback, unread at a '
+                                  'History_Lookback_Business_Days of 0; none when omitted'),
                 ]),
               F('Objective', 'Container',
                 description='The utility SHAPE and its parameters, dispatched on Object',
@@ -3112,8 +3120,10 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                                   "omitted) or the day's wealth increment, a per-step reward the "
                                   'DP sums; unread under LogWealth, whose reward is the increment'),
                     F('Reference_Wealth', 'Float', default=0.0,
-                      description='Benchmark wealth in money the utility is measured against; '
-                                  'every shape works in x = (W - this) / c'),
+                      description='The wealth in money a utility shape is measured against, '
+                                  'x = (W - this) / c: the terminal wealth under Reference_Mode '
+                                  'Fixed, each day\'s increment under Running_Wealth; unread under '
+                                  'LogWealth'),
                     F('Huber_Aversion', 'Float', default=2.5,
                       description='Curvature of the quadratic loss arm, in units of c, read under '
                                   'AsymmetricUtility_Huber alone'),
@@ -3141,7 +3151,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     F('Position_Limits', 'Container', default=REQUIRED,
                       description='Each hedge leg\'s `{Min_Position, Max_Position}` box, whole contracts'),
                     F('Transaction_Cost_Per_Unit', 'Float', default=0.0,
-                      description='Flat turnover cost per contract, before the spread charge'),
+                      description='A flat fee in the calculation Currency per contract traded, '
+                                  'beside the spread charge'),
                     F('Bid_Offer_Spread_Bps', 'Float', default=0.0,
                       description='Full quoted spread in bps on notional, half of it charged on each trade, '
                                   'of every leg `Bid_Offer_Spread_Per_Instrument` does not name'),
@@ -3807,7 +3818,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             if not at:
                 continue
             fx = self._fx(currency, [rows[i] for i in at], shared_mem)
-            cash[at] +=torch.stack([by_row[rows[i]].expand(width) for i in at]) * fx
+            cash[at] += torch.stack([by_row[rows[i]].expand(width) for i in at]) * fx
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 logging.debug('liability cash in %s paid on rows %s, FX %s', currency,
                               [rows[i] for i in at if bool(by_row[rows[i]].any())], fx.flatten()[:1].tolist())

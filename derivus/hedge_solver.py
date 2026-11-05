@@ -711,7 +711,6 @@ class DiffSolver:
             W, {"objective": dict(self.runtime["objective"],
                                   utility_scale_schedule=schedule)}, t)
 
-    # ---- action grid (shared, mask-aware; inactive axes pinned to 0) ---------
     # ---- input standardization ----------------------------------------------
     def _in_dim(self, md):
         """Input width of a residual net: the `md` privileged market columns, plus W unless
@@ -888,7 +887,6 @@ class DiffSolver:
         if not self._ensemble or not self.log_ratio:
             return self._u_step(dW, W0, t)
         return sum(self._u_step(dW, W0, t, m.capital) for m in self._ensemble) / len(self._ensemble)
-
 
     def _set_displacement(self, W_bank):
         """The log's bias, MEASURED FROM THE FORWARD PASS: the worst book any simulated bank path
@@ -1511,8 +1509,8 @@ class DiffSolver:
         g_market = g_market * ig["market_t_label_scale"][rows]          # in the net's coordinates
         # indices, taken once: a boolean mask on the device syncs the host every Adam step
         measured = measured.nonzero().squeeze(1)
-        # ∂Y/∂p along the ladder: a move in p lands on the live legs as the step's Allocation_Weights
-        # split it (evenly where none is declared), so a leg the ladder never moves carries no weight
+        # ∂Y/∂p along the ladder: a move in p lands on the live legs as the step's ladder splits it
+        # (`_weights_at`), so a leg the ladder never moves carries no weight
         g_p = ((grads[-1].detach() * self.aspace.ladder(t, live)[0]).sum(-1) * self.aspace.total_abs_limit
                if extra else None)
         Y = Y.detach()
