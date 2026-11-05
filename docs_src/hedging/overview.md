@@ -40,7 +40,8 @@ $$\max_q\ \mathbb{E}\big[u(x)\big],\qquad x=\frac{W_T-R}{c},\qquad
 W_{t+1}=W_t+\sum_i q_i\,cs_i\,(F_{t+1,i}-F_{t,i})+(L_{t+1}-L_t),$$
 
 where $W_t$ is the cumulative hedge P&L plus the marked liability $L_t$, $F_i$ the hedge
-instrument's mark, $cs_i$ its contract size, $R$ = `Reference_Wealth` and $c$
+instrument's mark per unit of its deal's `Units` (`DealStructure.tensor_marks`), $cs_i$ its
+`Contract_Size`, the one spelling of a contract, $R$ = `Reference_Wealth` and $c$
 the utility scale. This frictionless law is what the solver fits; the environment adds financing,
 margin, costs and rounding ([Bundle](bundle.md)). `Reference_Mode: Running_Wealth` applies $u$ to
 each day's wealth increment instead of $W_T$ and sums the step utilities; `LogWealth`, whose

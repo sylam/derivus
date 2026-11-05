@@ -5383,7 +5383,7 @@ class CommodityFutureDeal(Deal):
           description='The number of contracts, one when omitted'),
         F('Contract_Size', 'Float', default=1.0, convention=True,
           description='The units of the commodity one contract is for, which a hedge position '
-                      'scales its mark by; one when omitted')
+                      'scales the mark of one contract by; one when omitted')
     ])]
 
     documentation = ('Energy', [

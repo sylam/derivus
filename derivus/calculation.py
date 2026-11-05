@@ -298,16 +298,19 @@ class DealStructure(object):
         return total_volume, fixings
 
     def tensor_marks(self):
-        """Stored per-deal price series keyed by deal Reference, recursing sub-structures.
-        Only deals whose `Calc_res` holds a kept 'tensor' (set by `pricing.interpolate`
-        under `shared.keep_tensor`) appear."""
+        """Stored per-deal price series keyed by deal Reference, recursing sub-structures, each per
+        unit of its deal's `Units`: the mark of one contract, which a hedge position scales by its
+        `Contract_Size`. Only deals whose `Calc_res` holds a kept 'tensor' (set by
+        `pricing.interpolate` under `shared.keep_tensor`) appear."""
         marks = {}
         for sub in self.sub_structures:
             marks.update(sub.tensor_marks())
         for deal_data in self.dependencies:
             tensor = (deal_data.Calc_res or {}).get('tensor')
             if tensor is not None:
-                marks[deal_data.Instrument.field['Reference']] = tensor
+                field = deal_data.Instrument.field
+                logging.debug('the mark of %s per its %s units', field['Reference'], field['Units'])
+                marks[field['Reference']] = tensor / field['Units']
         return marks
 
     @staticmethod

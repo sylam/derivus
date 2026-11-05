@@ -1935,6 +1935,33 @@ def test_the_hedge_legs_are_read_in_maturity_order_whatever_the_order_stated():
     assert torch.equal(*pnl), [p.tolist() for p in pnl]
 
 
+def test_a_leg_s_mark_is_read_per_unit_of_its_deal_and_its_contract_size_sizes_a_contract(tmp_path):
+    """The hedge reads a leg's mark per unit of its deal's `Units`, so `Contract_Size` alone sizes a
+    contract: on the client document short 10 `PL_OCT_2026` from the first row, the October deal
+    stated with `Units` 1 or 2 at a `Contract_Size` of 50 books one excess P&L on every path, to the
+    bit, and its CSV marks October at 2,028.82 beside either; at a `Contract_Size` of 25 the P&L
+    and the turnover charge are half. 3 s.
+
+    Killing mutation: the marks read with their `Units` (`DealStructure.tensor_marks` undivided), the
+    deal at 2 units booking twice the P&L and its CSV mark 4,057.64."""
+    reads = []
+    for units, size in ((1.0, 50.0), (2.0, 50.0), (2.0, 25.0)):
+        cfg = _client()
+        deal = cfg['Calc']['Calculation']['Hedging_Problem']['Tradable_Instruments']['CommodityFutureDeal']['PL_OCT_2026']
+        deal['Units'], deal['Contract_Size'] = units, size
+        result = _run(cfg)
+        stepper, r0 = result.create_stepper(), result.bundle.initial_time_index
+        while not stepper.done:
+            last = stepper.step({'PL_OCT_2026': -10.0} if stepper.time_index == r0 else None)
+        stepper.write_diagnostic_csvs(str(tmp_path / str(len(reads))), 'client')
+        rows = pd.read_csv(tmp_path / str(len(reads)) / 'client_paths.csv')
+        first = rows[rows['case'] == 'mean'].iloc[0]
+        reads.append((last['transition_pnl_excess'], first['PL_OCT_2026_futures'], first['PL_OCT_2026_trade_cost']))
+    (one, mark_one, cost_one), (two, mark_two, _), (half, _, cost_half) = reads
+    assert torch.equal(one, two) and mark_one == mark_two == 2028.820679, (one, two, mark_one, mark_two)
+    assert torch.equal(2.0 * half, one) and 2.0 * cost_half == cost_one, (half, one, cost_half, cost_one)
+
+
 def test_the_bundle_is_as_wide_as_its_primary_spot_whatever_tradable_is_stated_first():
     """The bundle is as wide as its primary spot's paths, whatever tradable the document states
     first: on the client document beside a ZAR cash account on the static ZAR-SWAP curve, whose mark
