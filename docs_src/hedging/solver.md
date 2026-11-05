@@ -70,7 +70,7 @@ Under `DiffV2_Risk_Horizon` k > 1 the downside semideviation `DiffV2_Risk_Kappa`
 | Track | Policy | Reported in |
 | --- | --- | --- |
 | `HindsightDpSolver` (`Run_Hindsight_Diagnostic`) | the clairvoyant, frictionless upper bound (`HindsightDpSolver` below) | `comparison`, ladder |
-| `textbook` (`Run_Textbook_Benchmark`) | the single best CONSTANT position held to the terminal, the last live liability mark, frictionless, chosen by $E[u]$ on the held-out paths; a lower bound | `comparison`, ladder |
+| `textbook` (`Run_Textbook_Benchmark`) | the single best CONSTANT position held to the terminal, the last live liability mark, frictionless, chosen by the objective on the held-out paths; a lower bound | `comparison`, ladder |
 | `textbook` (verdict) | per step, per active hedge $i$: $q_i=-\mathrm{Cov}(\Delta L,\Delta F_i)\,/\,(cs_i\,\mathrm{Var}(\Delta F_i)\,n_{active})$ over the outer paths, booked as the passive book is | `diagnostics.verdict`, `stepper_verdict` |
 | `nohedge` | no position from the first decision, the opening book closed there at the declared turnover cost | `diagnostics.verdict`, `stepper_verdict` |
 | `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), booked by `HedgeActionSpace.book` and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing, or the nearest whole-contract edge of a corridor that excludes zero | `diagnostics.verdict`, `stepper_verdict` |
@@ -106,9 +106,15 @@ Wealth is money: the verdict's recursion and the stepper's accounting carry it i
 (`hedge_bundle.MONEY`), cast to float32 only where a net reads it, so the two tracks read one wealth
 at every decision, held by
 `tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`.
-The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6; under
-`Reference_Mode = Running_Wealth` the solver's $V_0$ is a sum of step utilities, so the ladder's
-order is not an acceptance statement and the run logs a warning.
+The ladder `hindsight >= solver >= textbook` on $V_0$ holds within 1e-6. The benchmark tracks take
+the primary solver, bound to the held-out batch, and score their books by its objective: $E[u]$ of
+terminal wealth, or under a step-sum objective (`Running_Wealth`, `LogWealth`) the sum of its step
+reward over the decisions from `T_Min`, from the wealth the opening (hindsight) or constant
+(textbook) book leaves at the first (`DiffSolver._step_sum`), the scale of the solver's $V_0$, the
+ladder saying so (`v0_is_step_sum`). Under `LogWealth` the sum telescopes to
+$\log\big((C+W_T)/(C+W_{t_0})\big)$ where no step breaches the floor, so the hindsight's per-step
+argmax of realised P&L still maximises it. Held by
+`tests/test_action_space_and_artifact.py::test_the_benchmarks_score_a_step_sum_objective_by_its_step_reward`.
 
 The stepper decides on the solver's decision rows (`Bundle.decision_steps`), the first row whatever
 its day and no row at or past the terminal, and the stepper roll closes every book where the verdict

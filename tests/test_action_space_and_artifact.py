@@ -1455,6 +1455,28 @@ def test_the_benchmarks_search_the_solver_s_action_universe():
     assert split == (0.0, 1.0, 0.0) and book[0] == book[2] == 0.0 and book[1] < 0.0, (split, book)
 
 
+def test_the_benchmarks_score_a_step_sum_objective_by_its_step_reward():
+    """Under a step-sum objective the benchmark tracks score their books by the solver's step reward
+    (`DiffSolver._step_sum`), from the first decision, the scale of its V_0, and the ladder says so:
+    under `LogWealth` on the training document with the benchmarks, the textbook's value is the path
+    mean of its constant book's growth from the first decision to the terminal at the stamped capital
+    line C, log((C + W_T)/(C + W_t0)), the step sum telescoping (0.2505 nats, within 1e-12), and the
+    hindsight bound is scored (-59.8: the opening book ruins one path before the first decision). 3 s.
+
+    Killing mutations: the benchmarks scoring the terminal utility, which LogWealth defines none of
+    (raised after the solve); the textbook launched without its book's P&L before the first decision
+    (-59.92 against 0.2499)."""
+    r = _run(_logwealth(_cfg(batch=8, inner=4, benchmarks=True)))
+    tracks, world = r.evaluation_summary['comparison'], r.bundle
+    t0, T = r.evaluation_summary['diagnostics']['root_t'], world.last_live_mtm_index
+    F = torch.stack([world.tradables_sim[h].double() for h in _HEDGES], -1)
+    book, C = 50.0 * torch.tensor(tracks['textbook']['n_star'], dtype=F.dtype), r.policy_artifact['displacement']
+    W0, WT = (world.liability_sim[t].double() + (book * (F[t] - F[0])).sum(-1) for t in (t0, T))
+    want = float(torch.log((C + WT) / (C + W0)).mean())
+    assert r.evaluation_summary['ladder']['v0_is_step_sum'] and math.isfinite(tracks['HindsightDpSolver']['v0_mean'])
+    assert abs(tracks['textbook']['v0_mean'] - want) < 1e-12 * abs(want), (tracks['textbook']['v0_mean'], want)
+
+
 def test_a_reference_mode_stated_beside_logwealth_changes_nothing():
     """`LogWealth` is the per-step growth, its reward the day's increment, so it reads no
     `Reference_Mode`: the training document under LogWealth stating Fixed or Running_Wealth trains

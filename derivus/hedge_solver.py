@@ -434,16 +434,26 @@ class HedgeActionSpace:
             (int(step), tuple(round(float(w), 9) for w in ws)) for step, ws in weights)
 
 
-def run_textbook_benchmark(bundle, runtime, aspace):
+def run_textbook_benchmark(solver):
     """The comparison track's `textbook` (Solver page, Benchmarks and the verdict): the best
-    constant book of the run's action space's `static_grid` by E[u], held frictionless from the
-    first row to the terminal."""
+    constant book of the primary `solver`'s action space's `static_grid` by its objective, held
+    frictionless from the first row to the terminal of the world it is bound to: E[u] of terminal
+    wealth, or under a step-sum objective `DiffSolver._step_sum` from the first decision."""
+    bundle, aspace = solver.bundle, solver.aspace
     T = bundle.last_live_mtm_index
     # entry-step corridor only: a constant hold cannot track a per-t one
     grid = aspace.static_grid()                                      # (n_actions, n_hedge)
-    total_move = bundle.move(0, T, aspace.hedges, dim=0)               # (n_h, B) telescoped
-    g_t = torch.einsum("ai,ib->ab", (grid * aspace.contract_size).to(MONEY), total_move.to(MONEY))
-    obj = _utility_wrap_signed(bundle.liability_sim[T].unsqueeze(0) + g_t, runtime).mean(dim=-1)
+    held = (grid * aspace.contract_size).to(MONEY)
+
+    def pnl(a, b):
+        return torch.einsum("ai,ib->ab", held, bundle.move(a, b, aspace.hedges, dim=0).to(MONEY))
+    if solver.running_wealth:
+        t0 = solver.sweep_ts[0]
+        obj = solver._step_sum(bundle.liability_sim[t0] + pnl(0, t0),
+                               lambda t: pnl(t, solver.nxt[t])).mean(dim=-1)
+    else:
+        obj = _utility_wrap_signed(bundle.liability_sim[T].unsqueeze(0) + pnl(0, T),
+                                   solver.runtime).mean(dim=-1)
     best = int(obj.argmax())
     return {"v0_mean": float(obj[best]), "v0_std": 0.0, "n_star": grid[best].detach().cpu().tolist()}
 
@@ -458,37 +468,37 @@ class HindsightDpSolver:
         'maximising its realized P&L to the next decision (`Bundle.successors`): perfect foresight and',
         'free repositioning, with no inner Monte Carlo and no fitted value. Frictionless, its per-step',
         'choices decouple, so the dynamic program is a per-step argmax and its mean value bounds any',
-        'deployable policy.',
+        "deployable policy, scored by the solver's objective, under a step-sum one its step reward.",
         '**Held by**',
         '`tests/test_action_space_and_artifact.py::test_the_hindsight_bound_decides_where_the_solver_does`.',
     ])
 
-    def __init__(self, bundle, runtime, aspace):
-        self.bundle = bundle
-        self.runtime = runtime
-        self.aspace = aspace
+    def __init__(self, solver):
+        self.solver = solver
 
     def solve(self):
-        bundle, runtime, aspace = self.bundle, self.runtime, self.aspace
+        solver = self.solver
+        bundle, runtime, aspace = solver.bundle, solver.runtime, solver.aspace
         cs = aspace.contract_size.to(MONEY)
         # frictionless clairvoyant: independent per-decision argmax over the realized move to the
         # decision's successor, within the per-t action universe
-        steps = bundle.decisions_from(runtime["solver"]["t_min"])
+        steps = solver.sweep_ts
         logging.debug('hindsight bound decides on rows %s', steps)
         # the opening book held to the first decision
         q0 = initial_q_from_runtime(runtime, bundle.batch_size, bundle.device)
         G = torch.einsum("bi,ib->b", q0 * cs, bundle.move(0, steps[0], aspace.hedges, dim=0).to(MONEY))
-        n_star_0 = None
+        W0, best, n_star_0 = bundle.liability_sim[steps[0]] + G, {}, None
         for t in steps:
             live = bundle.marked(t, aspace.hedges)
             grid = aspace.grid_at(t, live)                             # (n_actions_t, n_h) per-t
             dF = bundle.move(t, bundle.successors[t], aspace.hedges, dim=0).to(MONEY)  # (n_h, B)
             step_pnl = torch.einsum("ai,ib->ab", grid * cs, dF)        # (n_actions_t, B)
-            best_pnl, best_idx = step_pnl.max(dim=0)                   # (B,), (B,)
-            G = G + best_pnl
+            best[t], best_idx = step_pnl.max(dim=0)                    # (B,), (B,)
+            G = G + best[t]
             if n_star_0 is None:
                 n_star_0 = grid[best_idx] * live                       # (B, n_h) as booked
-        v0 = _utility_wrap_signed(bundle.liability_sim[bundle.last_live_mtm_index] + G, runtime)
+        v0 = (solver._step_sum(W0, lambda t: best[t]) if solver.running_wealth else
+              _utility_wrap_signed(bundle.liability_sim[bundle.last_live_mtm_index] + G, runtime))
         return SolverResult(
             solver_name="HindsightDpSolver",
             actions=n_star_0.detach().cpu(),
@@ -855,6 +865,18 @@ class DiffSolver:
         # cliff stays a cliff and the labels stay a distribution.
         u = u.clamp_min(-20.0)
         return torch.where((c + W0) > self.w_floor, u, u.clamp_max(0.0))
+
+    def _step_sum(self, W, pnl):
+        """The step-sum objective per path of a track rolled frictionless on the outer paths from the
+        wealth `W` at the first swept decision, `pnl(t)` its hedge P&L in MONEY over decision t's
+        step: `_reward` of each step's move, the liability's included, from the wealth it launched
+        from, summed over the swept decisions, as the verdict sums its tracks' (the benchmark
+        tracks' score)."""
+        u = 0.0
+        for t in self.sweep_ts:
+            dW = pnl(t) + self._outer_move(t, money=True)[1]
+            u, W = u + self._reward(dW, W, self.nxt[t]), W + dW
+        return u
 
     def _reward(self, dW, W0, t):
         """The day's reward of the move `dW` from `W0` in the frame the value it is added to was
@@ -1656,8 +1678,8 @@ class DiffSolver:
 
         Under `Objective.Reference_Mode='Running_Wealth'` `u_mean` is the SUM of the rollout's
         per-step utilities, because that is the objective the DP maximised. It is therefore NOT
-        comparable to a terminal-utility `u_mean`, nor to `run_textbook_benchmark` /
-        `HindsightDpSolver`, which stay terminal-based. `wT_mean` and the tail columns are terminal
+        comparable to a terminal-utility `u_mean`; the benchmark tracks score the same sum
+        (`_step_sum`). `wT_mean` and the tail columns are terminal
         wealth in money under either mode, under the position state net of the repositioning charge,
         its `DiffV2_Churn_Lambda` penalty included; `u_mean_is_step_sum` says which regime produced it.
 
@@ -2856,30 +2878,28 @@ class StreamingSolve:
             "batch(es) — this world was never fitted, so the whole batch is out-of-sample",
             int(held_out.liability_sim.shape[-1]), self.trained_batches)
         runs = [solver.finish(held_out) for solver in self.solvers]
-        return assemble_hedge_result(runs, held_out, self.runtime, self.solvers[0].aspace)
+        return assemble_hedge_result(runs, self.solvers[0])
 
 
-def assemble_hedge_result(primary_runs, bundle, runtime, aspace):
+def assemble_hedge_result(primary_runs, solver):
     """Assemble the primary solver runs (one per seed) plus the benchmark tracks (hindsight upper
     bound / textbook lower bound, enabled by the `Run_*` flags) into the `comparison` table —
     V_0 mean ± std per track — the acceptance ladder, and the result dict
-    `HedgeMonteCarlo.execute` unpacks. `bundle` is the HELD-OUT batch, which is exactly the world
-    the verdict was rolled on, and `aspace` the primary solver's action space, so the benchmark
-    tracks measure the same paths over the same universe.
-
-    The ladder compares V_0 across tracks, and both benchmarks are TERMINAL-utility by
-    construction. Under `Objective.Reference_Mode='Running_Wealth'` the solver's own V_0 is a sum
-    of per-step utilities instead, so the rungs are not on one scale and their ORDER says nothing;
-    the per-track table and the verdict's `wT_mean` stay comparable."""
+    `HedgeMonteCarlo.execute` unpacks. `solver` is the primary solver, bound by `finish` to the
+    HELD-OUT batch, exactly the world the verdict was rolled on, so the benchmark tracks measure
+    the same paths over the same universe by the same objective: its terminal utility, or under a
+    step-sum objective its step reward (`DiffSolver._step_sum`), the ladder then saying so
+    (`v0_is_step_sum`)."""
+    runtime = solver.runtime
     solver_cfg = runtime["solver"]
     primary = primary_runs[0]
     comparison = {primary.solver_name: SolverResult.multiseed_summary(primary_runs)}
     # the benchmark tracks, on the held-out world the solver's verdict was rolled on
     if solver_cfg["run_hindsight_diagnostic"]:
         comparison["HindsightDpSolver"] = SolverResult.multiseed_summary(
-            [HindsightDpSolver(bundle, runtime, aspace).solve()])     # deterministic — one run
+            [HindsightDpSolver(solver).solve()])     # deterministic — one run
     if solver_cfg["run_textbook_benchmark"]:
-        comparison["textbook"] = run_textbook_benchmark(bundle, runtime, aspace)
+        comparison["textbook"] = run_textbook_benchmark(solver)
 
     # acceptance ordering - hindsight >= DiffSolver >= textbook over the tracks present, with a
     # tolerance for Monte-Carlo noise
@@ -2888,15 +2908,11 @@ def assemble_hedge_result(primary_runs, bundle, runtime, aspace):
                                 (primary.solver_name, primary.solver_name),
                                 ("textbook", "textbook")) if key in comparison]
     ladder = {"order": rungs,
-              "holds": all(rungs[i][1] >= rungs[i + 1][1] - 1.0e-6 for i in range(len(rungs) - 1))}
-    if len(rungs) > 1 and runtime["objective"]["reference_mode"] == "running_wealth":
-        logging.warning(
-            "solve_hedge ladder under Objective.Reference_Mode='Running_Wealth': the solver's V_0 "
-            "is a SUM of per-step utilities while the hindsight/textbook tracks are terminal — the "
-            "rungs are not on one scale and their order is not an acceptance statement.")
-    logging.info("solve_hedge tracks: %s | ladder holds=%s",
+              "holds": all(rungs[i][1] >= rungs[i + 1][1] - 1.0e-6 for i in range(len(rungs) - 1)),
+              "v0_is_step_sum": bool(solver.running_wealth)}
+    logging.info("solve_hedge tracks: %s | ladder holds=%s, on step sums %s",
                  {k: round(v["v0_mean"], 4) for k, v in comparison.items()},
-                 ladder["holds"])
+                 ladder["holds"], ladder["v0_is_step_sum"])
     return {
         "evaluation_output": {
             "solver_name": primary.solver_name,
