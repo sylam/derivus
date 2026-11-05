@@ -1167,11 +1167,13 @@ class DiffSolver:
     # ---- operating-region bank ----------------------------------------------
     def _replication_hedge(self, t):
         """Per-instrument diagonal min-var hedge from the OUTER moves to t's successor:
-        q_i = −Cov(dL, dF_i)/(cs_i·Var(dF_i)) / n_active, both moments the outer paths' population,
-        clamped to [lo,hi]. Inactive → 0."""
+        q_i = −Cov(dL, dF_i)/(cs_i·Var(dF_i)) / n_live over the n_live active legs live at t
+        (`Bundle.marked`), both moments the outer paths' population, clamped to [lo,hi]; 0 on
+        every other leg."""
         moves, dL = self._outer_move(t)                                                  # (B_outer, n_h), (B_outer,)
         q = torch.zeros(self.aspace.n_hedge, device=self.device)
-        for i in self.aspace.active:
+        legs = self.aspace.live_legs(self.bundle.marked(t, self.aspace.hedges))
+        for i in legs:
             dF = moves[:, i]
             var = dF.var(unbiased=False)
             # skip a move of no dispersion on its own scale, or a non-finite one: an expired-contract
@@ -1179,8 +1181,8 @@ class DiffSolver:
             if not float(var) > 1e-12 * float(dF.pow(2).mean()) or not torch.isfinite(dF).all():
                 continue
             beta = ((dL - dL.mean()) * (dF - dF.mean())).mean() / var
-            q[i] = (-beta / (self.aspace.contract_size[i] * max(self.aspace.n_active, 1)))
-        logging.debug('replication hedge at step %d: %s contracts', t, q)
+            q[i] = -beta / (self.aspace.contract_size[i] * len(legs))
+        logging.debug('replication hedge at step %d over the live active legs %s: %s contracts', t, legs, q)
         return q.clamp(self.aspace.q_lo, self.aspace.q_hi)
 
     @staticmethod

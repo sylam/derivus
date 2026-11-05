@@ -71,7 +71,7 @@ Under `DiffV2_Risk_Horizon` k > 1 the downside semideviation `DiffV2_Risk_Kappa`
 | --- | --- | --- |
 | `HindsightDpSolver` (`Run_Hindsight_Diagnostic`) | the clairvoyant, frictionless upper bound (`HindsightDpSolver` below) | `comparison`, ladder |
 | `textbook` (`Run_Textbook_Benchmark`) | the single best CONSTANT position held to the terminal, the last live liability mark, frictionless, chosen by the objective on the held-out paths; a lower bound | `comparison`, ladder |
-| `textbook` (verdict) | per step, per active hedge $i$: $q_i=-\mathrm{Cov}(\Delta L,\Delta F_i)\,/\,(cs_i\,\mathrm{Var}(\Delta F_i)\,n_{active})$ over the outer paths, booked as the passive book is | `diagnostics.verdict`, `stepper_verdict` |
+| `textbook` (verdict) | per step, per active hedge $i$ live at the step: $q_i=-\mathrm{Cov}(\Delta L,\Delta F_i)\,/\,(cs_i\,\mathrm{Var}(\Delta F_i)\,n_{live})$ over the outer paths, $n_{live}$ the active legs live at the step (`Bundle.marked`), booked as the passive book is; the training bank is built around it | `diagnostics.verdict`, `stepper_verdict` |
 | `nohedge` | no position from the first decision, the opening book closed there at the declared turnover cost | `diagnostics.verdict`, `stepper_verdict` |
 | `passive` | per step, minus the liability's quantity still to fix after the step, each fixing weighted as the deal weights it, split across the live legs by `Allocation_Weights` (equally where none is declared), booked by `HedgeActionSpace.book` and charged the declared turnover cost as the greedy policy is; against a liability stating no fixings, any type but `CommodityAveragePriceSwapDeal`, it holds nothing, or the nearest whole-contract edge of a corridor that excludes zero | `diagnostics.verdict`, `stepper_verdict` |
 

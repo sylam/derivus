@@ -1390,7 +1390,8 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(s
     from the warmup batch's outer paths: per step the long-only minimum of
     [Q²·wᵀΣw + 2Q·wᵀc]/(2s) − Q·wᵀμ over the legs' remaining-horizon P&L per contract, Σ, c and μ
     its population covariance, its covariance with the liability's and its mean, Q the replication
-    net and s the frame scale over `DiffV2_Risk_Aversion`, on the active legs whose remaining P&L
+    net (shared over the active legs live at the step) and s the frame scale over
+    `DiffV2_Risk_Aversion`, on the active legs whose remaining P&L
     still varies. On the training document at an explicit scale of 1e5 over 51 rungs, its first knot
     is that minimum on the warmup world, the same document simulating that batch alone, (0.118,
     0.882, 0) within 1e-4, or with legs 0 and 2 active (0.225, 0, 0.775), and the knot in force at
@@ -1426,7 +1427,8 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(s
         var = d1.var(0, unbiased=False)
         beta = torch.where(var > 1e-12 * d1.pow(2).mean(0),
                            ((d1 - d1.mean(0)) * (l1 - l1.mean())[:, None]).mean(0) / var, torch.zeros_like(var))
-        Q = float((-beta / (50.0 * len(legs))).clamp(-50.0, 0.0)[legs].sum())
+        on = [i for i in legs if float(world.marked(t, [_HEDGES[i]])[0]) > 0]
+        Q = float((-beta / (50.0 * len(on))).clamp(-50.0, 0.0)[on].sum())
         idx = [i for i in legs if sig[i, i] > 1e-12 * sig.diagonal()[legs].max()]
         while True:
             S = sig[idx][:, idx] + 1e-8 * sig[idx][:, idx].diagonal().mean() * torch.eye(len(idx), dtype=sig.dtype)
@@ -1676,14 +1678,16 @@ def test_the_verdict_and_the_stepper_hold_one_textbook_book(tmp_path):
 
 def test_the_textbook_book_is_the_min_var_hedge_of_the_outer_moves(tmp_path):
     """The textbook book is each live leg's min-var hedge of the liability over the step,
-    -Cov(dL, dF) / (contract size x Var(dF)) shared over the active legs, both moments of the
-    outer paths' population, booked to whole contracts: on the training document's frozen eval
-    on 4 paths, the verdict's textbook book at the first decision is that hedge's, its July and
-    October legs rounded to the whole contracts summing to their net. 4 s.
+    -Cov(dL, dF) / (contract size x Var(dF)) shared over the active legs live at the step, both
+    moments of the outer paths' population, booked to whole contracts: on the training document's
+    frozen eval on 4 paths, the verdict's textbook book at the first decision, where April is dead,
+    is that hedge's, its July and October legs rounded to the whole contracts summing to their net.
+    4 s.
 
-    Killing mutation: the variance taken unbiased beside the population covariance (`dF.var()` in
+    Killing mutations: the variance taken unbiased beside the population covariance (`dF.var()` in
     `DiffSolver._replication_hedge`), the hedge 3/4 of the min-var one on 4 paths: the book
-    (0, -2, -2) for (0, -3, -3)."""
+    (0, -3, -4) for (0, -4, -5); the hedge shared over every active leg, the dead April included,
+    (0, -3, -3)."""
     ckpt = str(tmp_path / 'vf.pt')
     _run(_cfg(seed=7, save=ckpt))
     result = _run(_cfg(batch=8, seed=7, load=ckpt))
@@ -1692,13 +1696,12 @@ def test_the_textbook_book_is_the_min_var_hedge_of_the_outer_moves(tmp_path):
     s = world.successors[t0]
     L = world.liability_sim.double().numpy()
     dL = L[s] - L[t0]
-    want = []
+    want, live = [], [float(world.marked(t0, [name])[0]) > 0 for name in _HEDGES]
     for i, name in enumerate(_HEDGES):
         F = world.tradables_sim[name].double().numpy()
         dF = F[s] - F[t0]
-        live = world.marked(t0, [name])[0] > 0 and dF.var() > 0.0
         want.append(min(0.0, max(-50.0, -((dL - dL.mean()) * (dF - dF.mean())).mean()
-                                 / (50.0 * dF.var()) / 3.0)) if live else 0.0)
+                                 / (50.0 * dF.var()) / sum(live))) if live[i] and dF.var() > 0.0 else 0.0)
     net = round(sum(want))
     base = np.floor(want)
     order = np.argsort(-(np.array(want) - base), kind='stable')
