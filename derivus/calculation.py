@@ -3590,6 +3590,8 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     # each process owns its t=0 seed for the next run; detached now so it survives
                     # the buffer-clearing reset below
                     outer_reseeds.update(proc.outer_reseed())
+                # the burn-in starts at the calibrated t0, whose FX the returns-state notional reads
+                t0_fx = self._fx(spot_currency, [0], shared_mem)
                 # independent innovation stream for the main run
                 shared_mem.reset(
                     self.num_factors, self.time_grid, use_antithetic=params['Antithetic'] == 'Yes')
@@ -3654,14 +3656,14 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             hedge_profile_blocks['cash'].append(self._cash(
                 shared_mem, range(self.time_grid.mtm_time_grid.size), shared_mem.simulation_batch).detach())
             # the primary spot's FX cross into the calculation Currency on the first row, where the
-            # utility scale and the returns-state notional read the spot in the calculation's money
+            # utility scale (and without a burn-in the returns-state notional) reads it
             fx = self._fx(spot_currency, [0], shared_mem).expand(1, shared_mem.simulation_batch).detach()
             hedge_profile_blocks['fx'].append(fx)
             if self._returns_state and not run:
-                normalized_runtime['objective']['state_notional'] = (
-                    self._state_spot0 * float(fx.median()) * total_leg_volume)
+                fx0 = float((t0_fx if randomize_t0 else fx).median())
+                normalized_runtime['objective']['state_notional'] = self._state_spot0 * fx0 * total_leg_volume
                 logging.debug('returns-state notional %.17g at FX %.17g',
-                              normalized_runtime['objective']['state_notional'], float(fx.median()))
+                              normalized_runtime['objective']['state_notional'], fx0)
 
             for key in self.stoch_factors:
                 factor_tensor_blocks[utils.check_tuple_name(key)].append(

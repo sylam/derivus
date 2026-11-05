@@ -765,6 +765,26 @@ def test_the_returns_state_fits_the_wealth_column_it_reads():
     assert 0.05 < v0 < 0.3 and abs(_v0(_run(_doubled(cfg))) - v0) <= 1e-6 * v0, v0
 
 
+def test_the_returns_state_notional_reads_the_fx_at_the_calibrated_start():
+    """The returns state's t0 book notional is the calibrated t0 spot in the calculation `Currency`
+    at the FX cross of that start, not of a burned-in one: the training document in ZAR, the rand
+    simulated at a 15% vol, under the returns state and `Randomize_Initial_State`, stamps one
+    `state_notional` on seeds 7 and 8, 83,051,798 at the calibrated 16.1658 rand a dollar. 10 s.
+
+    Killing mutation: the notional's FX read on the main pass's first row, the burned-in state:
+    87,410,336 and 86,047,481."""
+    notionals = []
+    for seed in (7, 8):
+        cfg = _cfg(seed=seed, batch=8, inner=4)
+        cfg['Calc']['Calculation']['Currency'] = 'ZAR'
+        market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+        market.setdefault('Price Models', {})['GBMAssetPriceModel.ZAR'] = {'Vol': 0.15, 'Drift': 0.0}
+        cfg['Calc']['Calculation']['Hedging_Problem']['Solver'].update(
+            DiffV2_Returns_State='Yes', DiffV2_Book_Floor_Per_Unit=16.0)
+        notionals.append(_run(cfg).policy_artifact['state_notional'])
+    assert notionals[0] == notionals[1], notionals
+
+
 def _logwealth(cfg):
     """`cfg` under the LogWealth objective. The fixture's twelve-path, five-iteration fit ruins its
     held-out batch under the growth reward (V_0 0.07 to 0.17 nats against a held-out greedy utility
