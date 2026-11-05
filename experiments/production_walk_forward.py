@@ -62,6 +62,7 @@ import logging
 import os
 import subprocess
 import sys
+import time
 
 import numpy as np
 import pandas as pd
@@ -331,6 +332,18 @@ def pf_bound(arch, trade_date, mats, pay):
     return float(np.where(np.isfinite(dg), dg, 0.0).sum())
 
 
+def _replace(tmp, path, tries=10):
+    """`os.replace` retried over a few seconds: Windows denies the rename while another process
+    (a scanner, an indexer) holds the target open, and did so on the live month of four boxes."""
+    for i in range(tries):
+        try:
+            return os.replace(tmp, path)
+        except PermissionError:
+            if i == tries - 1:
+                raise
+            time.sleep(0.5 * (i + 1))
+
+
 def _atomic_write_csv(path, rows):
     """Atomic CSV write: temp file in the same dir + os.replace (POSIX-atomic) so a SIGTERM/OOM
     mid-flush can't truncate trades.csv. Fieldnames = the ordered union across rows (a FAILED
@@ -341,7 +354,7 @@ def _atomic_write_csv(path, rows):
         w = csv.DictWriter(f, fieldnames=fieldnames)
         w.writeheader()
         w.writerows(rows)
-    os.replace(tmp, path)
+    _replace(tmp, path)
 
 
 def _atomic_write_json(path, obj):
@@ -350,7 +363,7 @@ def _atomic_write_json(path, obj):
     tmp = path + '.tmp'
     with open(tmp, 'w') as f:
         json.dump(obj, f, default=str)
-    os.replace(tmp, path)
+    _replace(tmp, path)
 
 
 def calibrate(marketdata, cal_config, cal_end, out_md, start=None):
