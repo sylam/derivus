@@ -1209,10 +1209,9 @@ class DiffSolver:
         while True:
             S = Sig[idx][:, idx].double()
             S = S + 1.0e-8 * S.diagonal().mean() * torch.eye(len(idx), dtype=S.dtype, device=S.device)
-            Si = torch.linalg.inv(S)
-            w = (scale / Q ** 2) * (Si @ (Q * mu[idx].double()
-                                          - (Q / scale) * c[idx].double()))
-            k = (scale / Q ** 2) * (Si @ torch.ones(len(idx), dtype=S.dtype, device=S.device))
+            rhs = torch.stack([Q * mu[idx].double() - (Q / scale) * c[idx].double(),
+                               torch.ones(len(idx), dtype=S.dtype, device=S.device)], -1)
+            w, k = ((scale / Q ** 2) * torch.linalg.solve(S, rhs)).unbind(-1)
             w = w - ((w.sum() - 1.0) / k.sum()) * k
             if bool((w >= -1e-9).all()) or len(idx) == 1:
                 out = torch.zeros_like(mu, dtype=S.dtype)
