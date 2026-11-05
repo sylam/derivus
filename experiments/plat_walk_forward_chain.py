@@ -75,6 +75,8 @@ B_CME_PM = 'ObservedBasis.LBMA_AM.PM.CME'       # PM-session CME basis (ChainedB
 CARRY = 'PLATINUM_CARRY'
 FIXING_CALENDAR = 'London'                      # the LBMA fixes on London business days
 WEEK = ('Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday')
+RAMP_ROWS = 21                                  # the regime ratio's trailing window, archive rows
+RAMP_HISTORY = pd.Timestamp('2015-01-01')       # the first archive row its percentile ranks among
 
 
 def spot_key(models):
@@ -117,12 +119,12 @@ def replayed_cols(cfg):
     return cols
 
 
-def fixing_day(template):
-    """The London business day of the calendar file the template names, read as
-    `Config.parse_calendar_file` reads it: `Holidays` a `date|name, ...` list, `Weekends` the days
-    it names."""
+def fixing_day(template, location=FIXING_CALENDAR):
+    """The business day of `location`, the LBMA's London by default, in the calendar file the
+    template names, read as `Config.parse_calendar_file` reads it: `Holidays` a `date|name, ...`
+    list, `Weekends` the days it names."""
     cal = next(e.attrib for e in ElementTree.parse(template['Calc']['CalendDataFile']).getroot().iter()
-               if e.attrib.get('Location') == FIXING_CALENDAR)
+               if e.attrib.get('Location') == location)
     return pd.offsets.CustomBusinessDay(
         holidays=[h.split('|')[0] for h in cal['Holidays'].split(', ')] if cal['Holidays'] else [],
         weekmask=' '.join(d[:3] for d in WEEK if d not in cal['Weekends']))
@@ -218,6 +220,41 @@ def allocation_knots(trade_date, fixings, mats, names):
             knots.extend({'Step': step, 'Instrument': n, 'Weight': float(w)}
                          for n, w in zip(names, share))
             last = key
+    return knots
+
+
+def regime_ramp(arch, trade_date, schedule, legs, futs, fixings, decisions):
+    """`--regime-ramp`'s `Total_Position_Schedule`: at each of the `decisions` (the job's business
+    days from the trade date, keyed by calendar-day offset as `allocation_knots` keys) the
+    `schedule` knot in force, [lo, hi], shrunk linearly toward the passive's net p by the regime r,
+    to [p - r (p - lo), p + r (hi - p)], a knot written where it moves.
+
+    r is the percentile of the basis-swing / spot-risk ratio (the AM.CME basis's `RAMP_ROWS`-row sd
+    over the sd of the fix's daily dollar change on the same rows) through the archive row before
+    the decision, among the ratios of the archive rows from `RAMP_HISTORY` to the one before the
+    trade date: 0 in the bottom tercile, 1 in the top and linear between. p is the liability's
+    quantity still to fix after the decision in whole contracts, signed as the cover, the net
+    `DiffSolver._passive_hedge` books: r = 0 holds the passive and r = 1 is `schedule`."""
+    ratio = (arch[B_CME].astype(float).ffill().rolling(RAMP_ROWS).std()
+             / arch[FIX_COL].astype(float).diff().rolling(RAMP_ROWS).std())
+    seen = np.sort(ratio[(ratio.index >= RAMP_HISTORY) & (ratio.index < trade_date)].dropna().values)
+    # through the archive row before each decision, the last the desk has read when it decides
+    pct = np.searchsorted(seen, ratio.values[ratio.index.searchsorted(decisions) - 1],
+                          side='right') / len(seen)
+    r = np.clip((pct - 1 / 3) * 3, 0.0, 1.0)
+    (size,) = {float(f['Contract_Size']) for f in futs.values()}
+    cover = -sum((1.0 if leg['Buy_Sell'] == 'Buy' else -1.0) * leg['Units']
+                 for leg in legs.values()) / size / len(fixings)       # contracts a fixing
+    knots = []
+    for day, ri in zip(decisions, r):
+        step, p = (day - trade_date).days, round(cover * (fixings > day).sum())
+        rec = [k for k in schedule if k['Step'] <= step][-1]
+        lo, hi = float(p - ri * (p - rec['Min_Total'])), float(p + ri * (rec['Max_Total'] - p))
+        if not knots or (knots[-1]['Min_Total'], knots[-1]['Max_Total']) != (lo, hi):
+            knots.append({'Step': step, 'Min_Total': lo, 'Max_Total': hi})
+    logging.debug('REGIME-RAMP %s: r min %.3f median %.3f max %.3f, %.2f of %d decisions at 0 and '
+                  '%.2f at 1, %d knots', trade_date.date(), r.min(), np.median(r), r.max(),
+                  (r == 0).mean(), len(r), (r == 1).mean(), len(knots))
     return knots
 
 
@@ -356,6 +393,10 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
         if delta_corridor is None and not args.no_schedule:
             hp['Evaluator']['Total_Position_Schedule'] = [
                 {'Step': 0, 'Min_Total': -60.0, 'Max_Total': float(args.long_cap)}]
+    if args.regime_ramp:
+        hp['Evaluator']['Total_Position_Schedule'] = regime_ramp(
+            arch, trade_date, hp['Evaluator']['Total_Position_Schedule'], legs, futs, fixings,
+            pd.date_range(trade_date, pay, freq=fixing_day(template, calc['Calendar'])))
 
     # No Spot_Price_History: its only live consumer is the utility-scale formula, which the
     # template's Utility_Scale_Explicit overrides; the policy's features are process-revealed
@@ -616,7 +657,8 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
     }
 
 
-def main():
+def parse_args(argv=None):
+    """The driver's command line `argv`, `sys.argv[1:]` where None."""
     ap = argparse.ArgumentParser()
     ap.add_argument('--archive', default='data/plat_archive_am.csv',
                     help='Chain archive: AM fix, three bases, z(0.5), z(1.0) - already decomposed.')
@@ -802,6 +844,11 @@ def main():
     ap.add_argument('--delta-corridor', type=float, default=None,
                     help='Causal delta-ramp corridor band on the SIGNED total position, applied '
                          'to BOTH train and roll.')
+    ap.add_argument('--regime-ramp', action='store_true',
+                    help='Shrink the corridor (--long-cap or --delta-corridor) toward the passive '
+                         'net at each decision by the basis regime (see regime_ramp): the corridor '
+                         'at r = 1, the passive at r = 0. Applied to TRAIN and ROLL; a re-roll, '
+                         'since the ramped corridor lies inside the one a checkpoint trained in.')
     ap.add_argument('--solver-set', action='append', metavar='KEY=VALUE',
                     help='Stamp an arbitrary Hedging_Problem.Solver field (repeatable).')
     ap.add_argument('--calc-set', action='append', metavar='KEY=VALUE',
@@ -814,8 +861,11 @@ def main():
                          'probabilities, the fork moments and a second-fork disagreement flag. '
                          'Pure diagnostic: no decision and no reported number moves.')
     ap.add_argument('--run-dir', default=None)
-    args = ap.parse_args()
+    return ap.parse_args(argv)
 
+
+def main():
+    args = parse_args()
     arch = load_archive(args.archive, args.rates)
     template = json.load(open(args.deal_template))
     stamp = datetime.datetime.now().strftime('%Y%m%d_%H%M%S')
