@@ -3447,10 +3447,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
 
         `Observed_Scenario` (walk-forward backtest) replaces the simulated draw with grid-aligned
         realized paths from an .npz keyed by factor name; all preparation lives in the driver.
-
-        The declared underlying(s) are leafed so the base-delta / conditional-feature pass can read
-        d(value)/d(spot) via AAD. The diff-ML solver differentiates the continuation off its own
-        fresh state-at-t leaves (`Bundle.inner_mc_grad`), so it needs no outer leaf.
         """
         # the declaration is the single source of an omitted field's default, at every depth the
         # hedging problem states
@@ -3501,9 +3497,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         )
         # the fork's accounting and legs, and each process's `reseed_inner_state` switches by name
         self._runtime = normalized_runtime
-        # canonical underlying (commodity-spot) factor-name set, derived once by the runtime; the
-        # spot-leaf pass reads it rather than re-deriving it
-        self._underlying_names = set(normalized_runtime['referenced_commodities'])
         # the one underlying: the returns-state anchor and the fork's outer width read it
         self._primary = primary_spot(self.stoch_factors)
 
@@ -3623,9 +3616,6 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                     proc.reseed_from_path(simulated, shared_mem)
                     for k in stated:
                         shared_mem.t_Scenario_Buffer.pop(k)
-                # leaf the declared underlying(s) for the base-delta / conditional-feature pass
-                if utils.check_tuple_name(key) in self._underlying_names:
-                    simulated = simulated.detach().requires_grad_(True)
                 shared_mem.t_Scenario_Buffer[key] = simulated
                 # each process owns its privileged-factor surface; the default returns {}, so a
                 # process opts in by overriding `privileged_factors`
