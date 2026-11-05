@@ -3986,11 +3986,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 inner_liabilities = self._restricted_struct(self.liabilities, cutoff_idx, window_end_idx)
                 inner_netting_sets.resolve_structure(shared_mem, self.time_grid)
                 # TRADABLE half of the fail-loudly guard: live in this fork but no mark => skipped
-                priced = set(inner_netting_sets.tensor_marks())
+                marks = inner_netting_sets.tensor_marks()
                 skipped = sorted(
                     dd.Instrument.field['Reference'] for dd in inner_netting_sets.dependencies
                     if dd.Instrument.field['Reference'] in tradable_refs
-                    and dd.Instrument.field['Reference'] not in priced)
+                    and dd.Instrument.field['Reference'] not in marks)
                 if skipped:
                     raise RuntimeError(
                         f'inner-fork tradable pricing failed for {skipped} at t={t} — the deal is '
@@ -4022,7 +4022,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                 inner_trade_tensors = {
                     ref: _fan(self._settled(ref, t[cutoff_idx:], cutoff_idx, shared_mem) if futures
                               else t[cutoff_idx:])
-                    for ref, t in inner_netting_sets.tensor_marks().items() if ref in tradable_refs}
+                    for ref, t in marks.items() if ref in tradable_refs}
                 # the window stops at the landing, so no terminal row exists to read: `L_T` is None and
                 # the horizon stats are not produced
                 result = {}
