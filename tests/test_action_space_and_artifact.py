@@ -1369,23 +1369,27 @@ def test_a_table_stated_outside_exposure_changes_nothing(mode, stated, read):
     assert trained(stated) == trained(read)
 
 
-@pytest.mark.parametrize('solver', ['DiffSolverV2', 'DiffSolver'])
-def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(solver):
+@pytest.mark.parametrize('solver, active', [('DiffSolverV2', None), ('DiffSolver', None), ('DiffSolverV2', (0, 2))])
+def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(solver, active):
     """Under `Allocation_Mode` Carry_Variance either solver splits the net cover by weights it derives
     from the warmup batch's outer paths: per step the long-only minimum of
     [Q²·wᵀΣw + 2Q·wᵀc]/(2s) − Q·wᵀμ over the legs' remaining-horizon P&L per contract, Σ, c and μ
     its population covariance, its covariance with the liability's and its mean, Q the replication
-    net and s the frame scale over `DiffV2_Risk_Aversion`, on the legs whose remaining P&L still
-    varies. On the training document at an explicit scale of 1e5 over 51 rungs, its first knot is
-    that minimum on the warmup world, the same document simulating that batch alone, (0.118, 0.882,
-    0) within 1e-4, and the knot in force at the first decision past April's last move, step 19, the
-    minimum on July and October alone, (0, 1, 0). 4 s each.
+    net and s the frame scale over `DiffV2_Risk_Aversion`, on the active legs whose remaining P&L
+    still varies. On the training document at an explicit scale of 1e5 over 51 rungs, its first knot
+    is that minimum on the warmup world, the same document simulating that batch alone, (0.118,
+    0.882, 0) within 1e-4, or with legs 0 and 2 active (0.225, 0, 0.775), and the knot in force at
+    the first decision past April's last move, step 19, the minimum on the live legs alone, (0, 1, 0),
+    or (0, 0, 1). 4 s each.
 
     Killing mutations: the sample moments (n - 1 for n in `_carry_variance_weights`), the first knot
     0.038 off on 4 paths a batch; the expired leg kept in the solve under a penalty on its variance,
     the ridge then off its diagonal, the knot at step 19 (2e-9, 0.5, 0.5); the derivation on
-    `DiffSolverV2` alone, `DiffSolver` searching the Cartesian grid and stamping no table (None)."""
-    cfg = _cfg(seed=7, batch=8, inner=4)
+    `DiffSolverV2` alone, `DiffSolver` searching the Cartesian grid and stamping no table (None); the
+    solve over every leg that varies, the inactive July included, the first knot with legs 0 and 2
+    active (0.119, 0.881, 0)."""
+    legs = list(range(3) if active is None else active)
+    cfg = _cfg(seed=7, batch=8, inner=4, active=active)
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Solver']['Object'] = solver
     hp['Evaluator']['Allocation_Mode'] = 'Carry_Variance'
@@ -1407,8 +1411,8 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(s
         var = d1.var(0, unbiased=False)
         beta = torch.where(var > 1e-12 * d1.pow(2).mean(0),
                            ((d1 - d1.mean(0)) * (l1 - l1.mean())[:, None]).mean(0) / var, torch.zeros_like(var))
-        Q = float((-beta / (50.0 * 3)).clamp(-50.0, 0.0).sum())
-        idx = [i for i in range(3) if sig[i, i] > 1e-12 * sig.diagonal().max()]
+        Q = float((-beta / (50.0 * len(legs))).clamp(-50.0, 0.0)[legs].sum())
+        idx = [i for i in legs if sig[i, i] > 1e-12 * sig.diagonal()[legs].max()]
         while True:
             S = sig[idx][:, idx] + 1e-8 * sig[idx][:, idx].diagonal().mean() * torch.eye(len(idx), dtype=sig.dtype)
             w = (scale / Q ** 2) * torch.linalg.solve(S, Q * mu[idx] - (Q / scale) * c[idx])

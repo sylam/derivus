@@ -1201,7 +1201,7 @@ class DiffSolver:
         """Derive the per-step `Allocation_Weights` table from the outer sims: at each decision
         step, the population moments of each leg's remaining-horizon P&L per contract and the
         liability's remaining P&L, solved by `_carry_variance_solve` at the replication net on the
-        legs whose remaining P&L still varies (a leg's marks freeze at its expiry). Knots are
+        active legs whose remaining P&L still varies (a leg's marks freeze at its expiry). Knots are
         emitted only where the split MOVES."""
         knots, last = [], None
         for t in self.steps:
@@ -1211,7 +1211,8 @@ class DiffSolver:
             # population moments, as the replication hedge's
             Sig = (X @ X.transpose(0, 1)) / R.shape[-1]
             c = (X * (RL - RL.mean())[None]).sum(-1) / R.shape[-1]
-            alive = Sig.diagonal() > 1.0e-12 * Sig.diagonal().max()
+            var = Sig.diagonal() * self.aspace.active_mask
+            alive = var > 1.0e-12 * var.max()
             rep = self._replication_hedge(t)
             Qb = float(rep.sum())
             if not bool(alive.any()) or self._dust(rep):
