@@ -23,7 +23,7 @@ from .schema import DealFields
 PRICE_ZSCORE_WINDOW = 20
 
 
-# the shapes that read a scale c; LogWealth reads none, and a solve admits it beside these by name
+# the shapes that read a scale c; LogWealth reads none
 _UTILITY_OBJECTS = (
     "asymmetricutility_symlog", "asymmetricutility_huber", "asymmetricutility_cara")
 
@@ -282,17 +282,14 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
 
 def _objective_config(objective_config):
     """Normalize the `Objective` block, None without one. Its dials are dispatched on downstream by
-    EQUALITY (`== 'running_wealth'`, `== 'conditional_sim'`), so a near-miss spelling would quietly
-    mean the default: `Reference_Mode` is validated here, `Utility_Scale_Mode` refuses its own."""
+    EQUALITY (`== 'running_wealth'`, `== 'conditional_sim'`), a near-miss spelling refused by the
+    schema (`HedgeMonteCarlo.refusals`)."""
     if objective_config is None:
         return None
     # LogWealth's per-step growth is the day's increment, whatever Reference_Mode states
     logwealth = str(objective_config["Object"]).lower() == "logwealth"
     reference_mode = ("running_wealth" if logwealth
                       else str(objective_config["Reference_Mode"] or "Fixed").lower())
-    if reference_mode not in ("fixed", "running_wealth"):
-        raise ValueError(f"Unsupported Objective.Reference_Mode {objective_config['Reference_Mode']!r}: "
-                         f"'Fixed' | 'Running_Wealth'")
     logging.debug("Objective.Reference_Mode %s%s", reference_mode, " (LogWealth's)" if logwealth else "")
     floor_frac = float(objective_config["Utility_Scale_Floor_Frac"])
     if str(objective_config["Utility_Scale_Mode"]).lower() == "conditional_sim":
@@ -352,14 +349,9 @@ def construct_hedge_runtime(
     logging.debug("hedge legs in maturity order: %s", hedge_names)
 
     if execution_mode == "solve_hedge":
-        if solver_config is None:
-            raise ValueError("Execution_Mode 'solve_hedge' requires Hedging_Problem['Solver']")
-        if str(solver_config.get("Object", "")).lower() not in ("diffsolver", "diffsolverv2"):
-            raise ValueError(
-                "Execution_Mode 'solve_hedge' requires Solver.Object='DiffSolver' or "
-                f"'DiffSolverV2' (the forward-backward solver); got "
-                f"{solver_config.get('Object')!r}. HindsightDpSolver remains available as the "
-                "Run_Hindsight_Diagnostic track.")
+        if solver_config is None or objective_config is None:
+            raise ValueError("Execution_Mode 'solve_hedge' requires Hedging_Problem['Solver'] and "
+                             "['Objective']")
         if int(config["Inner_Sub_Batch"]) < 2:
             raise ValueError("Execution_Mode 'solve_hedge' requires Inner_Sub_Batch >= 2")
         n_batches = int(config["Simulation_Batches"])
@@ -376,12 +368,6 @@ def construct_hedge_runtime(
             raise ValueError(
                 "Solver.DiffV2_Save_Value_Fn is set alongside DiffV2_Load_Value_Fn: a loaded "
                 "checkpoint fits nothing to save")
-        # the DP lives in utility space: a scale-consuming shape, or LogWealth's per-step growth
-        if str((objective_config or {}).get("Object", "")).lower() \
-                not in _UTILITY_OBJECTS + ("logwealth",):
-            raise ValueError(
-                "Execution_Mode 'solve_hedge' requires Objective.Object 'AsymmetricUtility_Symlog' | "
-                "'AsymmetricUtility_Huber' | 'AsymmetricUtility_CARA' | 'LogWealth'")
 
     history_lookback = int(hedging_problem["History_Lookback_Business_Days"])
     if history_lookback < 0:
@@ -411,9 +397,6 @@ def construct_hedge_runtime(
             normalized_tradables[account_name]["currency"], account_name)
 
     alloc_mode = str(evaluator_config["Allocation_Mode"]).lower()
-    if alloc_mode not in ("cartesian", "exposure", "carry_variance"):
-        raise ValueError(f"Unsupported Evaluator.Allocation_Mode {evaluator_config['Allocation_Mode']!r}: "
-                         f"'Cartesian' | 'Exposure' | 'Carry_Variance'")
     logging.debug("Evaluator.Allocation_Mode %s: %s", alloc_mode, "the table, the even split when "
                   "omitted" if alloc_mode == "exposure" else "no table read")
     return {
@@ -1060,11 +1043,6 @@ class Bundle:
                 "or under vol_scaled_notional set Objective.Utility_Scale_Explicit to a literal value.")
 
         mode = objective['utility_scale_mode']
-        if mode not in ('vol_scaled_notional', 'conditional_sim'):
-            raise ValueError(
-                f"Unsupported Objective.Utility_Scale_Mode: {mode!r}. "
-                "Supported modes: 'vol_scaled_notional' | 'conditional_sim'. Set "
-                "Utility_Scale_Explicit to override the formula with a literal value in money.")
         explicit = objective['utility_scale_explicit']
         if mode == 'conditional_sim':
             self.utility_scale_schedule = self._conditional_sim_schedule(objective)

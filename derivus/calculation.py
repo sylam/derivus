@@ -3340,6 +3340,14 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         calc = cls(context, device=utils.calculation_device(), prec=prec)
         return calc, calc.execute(cls.parameters(context, overrides))
 
+    @classmethod
+    def refusals(cls, params):
+        """`Calculation.refusals`, and what `Hedging_Problem` states judged at every depth by
+        `schema.stated_messages`: a key no declaration names, a blank or a value outside a menu."""
+        return super().refusals(params) + schema.stated_messages(
+            'Hedging_Problem', schema.declared_fields(cls)['Hedging_Problem'].sub_fields,
+            params.get('Hedging_Problem', {}))
+
     def _init_shared_mem(self, seed, quasi_seed, nomodel, reporting_currency, mcmc_sim, job_id,
                          num_jobs, calc_greeks=None):
         """Build the `CMC_State_Inner` this calculation runs on, so one shared_mem hosts both

@@ -1538,6 +1538,26 @@ def test_the_benchmarks_score_a_step_sum_objective_by_its_step_reward():
     assert abs(tracks['textbook']['v0_mean'] - want) < 1e-12 * abs(want), (tracks['textbook']['v0_mean'], want)
 
 
+@pytest.mark.parametrize('block, key, value, message', [
+    ('Evaluator', 'Accounting_Mode', 'Foo', "Accounting_Mode is 'Foo', not one of futures, cash_account"),
+    ('Objective', 'Reference_Mode', 'Foo', "Reference_Mode is 'Foo', not one of Fixed, Running_Wealth"),
+    ('Solver', 'DiffV2_Position_State', 'Yes', 'Solver declares no DiffV2_Position_State')],
+    ids=['accounting_mode', 'reference_mode', 'undeclared'])
+def test_the_hedging_problem_is_judged_at_every_depth(block, key, value, message):
+    """What `Hedging_Problem` states is judged at every depth by the schema
+    (`HedgeMonteCarlo.refusals`, `schema.stated_messages`), as a calculation override is: on the
+    client document a menu value outside its `F`'s values, or a key no `F` declares, is refused by
+    name before anything is simulated. Under 1 s each.
+
+    Killing mutation: the top level judged alone (`validate_block`), `Accounting_Mode` 'Foo' then
+    running as futures and the undeclared key read as nothing."""
+    cfg = _client()
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp.setdefault(block, {'Object': 'DiffSolverV2'})[key] = value
+    with pytest.raises(ValueError, match=re.escape(message)):
+        _run(cfg)
+
+
 def test_a_reference_mode_stated_beside_logwealth_changes_nothing():
     """`LogWealth` is the per-step growth, its reward the day's increment, so it reads no
     `Reference_Mode`: the training document under LogWealth stating Fixed or Running_Wealth trains
@@ -3129,9 +3149,10 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
 
 
 def test_a_world_stating_the_folded_switches_off_runs_the_folded_law(caplog):
-    """`Trading_Clock`, `Reveal_Band_State` and `DiffV2_State_Gradient_Label` are folded, so a stored
-    world and solver stating each 'No' run the one law: the labelled-column document's state labels
-    and market dimension are the same to the bit with the three keys stated off as without them. 2 s.
+    """`Trading_Clock` and `Reveal_Band_State` are folded, so a stored world stating each 'No' runs the
+    one law: the labelled-column document's state labels and market dimension are the same to the bit
+    with the two keys stated off as without them (a solver stating the folded
+    `DiffV2_State_Gradient_Label` is refused by name, `test_the_hedging_problem_is_judged_at_every_depth`). 2 s.
 
     Killing mutation: an off arm read again (the reveal's, its deviation column dropped where a block
     states `Reveal_Band_State` 'No': market dimension 8 against 9)."""
@@ -3141,7 +3162,6 @@ def test_a_world_stating_the_folded_switches_off_runs_the_folded_law(caplog):
         hp['Solver'].update(T_Min=LAST_STEP - 3, DiffV2_Fit_Iters=20)
         basis = dict(SLOW_BASIS, **OWN_GARCH)
         if off:
-            hp['Solver']['DiffV2_State_Gradient_Label'] = 'No'
             basis.update(Trading_Clock='No', Reveal_Band_State='No')
         cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
             'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis}

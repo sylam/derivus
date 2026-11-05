@@ -25,9 +25,12 @@ matches (`turnover_charge`). **Held by**
 
 Past that boundary the runtime **is** the contract — downstream code indexes it directly rather
 than re-checking it. A malformed schedule, a partial spot history or a `Simulation_Batches` that
-contradicts the mode fails there, naming the field (an `Execution_Mode` outside its two values is
-refused where the block is judged, before it), and a solver refuses at construction, by name, a
-combination of declared values it cannot run.
+contradicts the mode fails there, naming the field, and a solver refuses at construction, by name, a
+combination of declared values it cannot run. Before it the block is judged (`HedgeMonteCarlo.refusals`):
+the top level by its declarations, and what `Hedging_Problem` states at every depth by
+`schema.stated_messages`, so a menu value outside its field's values (`Accounting_Mode: 'Foo'`) or a
+key no field declares is refused by name, as a calculation override is. **Held by**
+`tests/test_action_space_and_artifact.py::test_the_hedging_problem_is_judged_at_every_depth`.
 
 `Simulation_Batches` is the number of batches of `Batch_Size` paths simulated in either mode; its
 field says what each mode does with them.
