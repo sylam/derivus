@@ -600,7 +600,7 @@ def _holiday_tape():
 
 
 def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None, filled=None, basis_filled=None):
-    """The recursions `{'mu', 'sig2', 'regime', 'belief'}` per row on the first path that the simulate-only
+    """The recursions `{'mu', 'sig2', 'regime'}` (and `'belief'` under `Reveal_Regime`) per row on the first path that the simulate-only
     hedging fixture, rolling daily from Friday 2026-04-10, publishes replaying the observed `spot`
     and `basis`, the rows `filled` flagged forward-filled on both columns, the basis's on
     `basis_filled` where given, its basis the `BasisLinkedSpotModel` block `basis_block`; given
@@ -629,7 +629,7 @@ def _replayed(tmp_path, caplog, basis_block, spot, basis, spot_block=None, fille
 @pytest.mark.parametrize('garch', ['No', 'Yes'])
 def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_path, caplog, garch):
     """A calibration document on an archive drawn as the scale-window test's, under
-    `GARCH_Innovation` 'No' and 'Yes'. The simulate-only hedging fixture replays its block on 119
+    `GARCH_Innovation` 'No' and 'Yes', its block stating `Reveal_Regime` 'Yes'. The simulate-only hedging fixture replays its block on 119
     calendar rows, the weekends and London's
     4 May bank holiday flagged forward-filled, the holiday printing a spot and a basis of its own (a
     CME print), and on the same business days with the filled rows removed: on every business row
@@ -650,7 +650,7 @@ def test_a_replay_holds_every_basis_recursion_across_a_forward_filled_row(tmp_pa
     dates = pd.bdate_range('2023-01-02', periods=n)
     history = 1000.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 15.0, n - 1)]))
     archive = _band_basis(history, np.where(rng.random(n) < 0.85, 2.0, 7.0) * rng.standard_normal(n))
-    fitted = _fit_band(tmp_path, dates, history, archive, GARCH_Innovation=garch)
+    fitted = _fit_band(tmp_path, dates, history, archive, GARCH_Innovation=garch, Reveal_Regime='Yes')
 
     row, filled, holiday = _holiday_tape()
     spot = 2055.0 + np.cumsum(np.concatenate([[0.0], rng.normal(0.0, 30.0, 198)]))
@@ -678,7 +678,7 @@ def test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill(tmp_
     column repeats Thursday's on a row the fix prints. Each column flags its own forward fill, and
     the replay of a band fit under `GARCH_Innovation` holds the basis's every recursion on its own
     filled rows, 3 July among them, and steps Monday 6 July one calibration step from Thursday's
-    basis and parent: on every basis market row its mu, sig2, regime and belief equal, to the bit, the
+    basis and parent: on every basis market row its mu, sig2 and regime equal, to the bit, the
     replay of the two columns on the days both calendars print at that row's count (83
     rows), and every row it flags holds the row before. 2 s.
 
@@ -702,7 +702,7 @@ def test_a_tape_of_two_calendars_holds_each_replay_on_its_own_column_s_fill(tmp_
                       basis[row], filled=~calendar.isin(london), basis_filled=~calendar.isin(both))
     compressed = _replayed(tmp_path, caplog, fitted, spot[london.get_indexer(both)], basis)
     market = [t for t in range(len(taped['mu'])) if t == 0 or row[t] != row[t - 1]]
-    assert calendar[len(taped['mu']) - 1] > pd.Timestamp('2026-07-06') and set(taped) == {'mu', 'sig2', 'regime', 'belief'}
+    assert calendar[len(taped['mu']) - 1] > pd.Timestamp('2026-07-06') and set(taped) == {'mu', 'sig2', 'regime'}
     assert {k: [v[t] for t in market] for k, v in taped.items()} == \
         {k: [v[row[t]] for t in market] for k, v in compressed.items()}, len(market)
     assert all(v[t] == v[t - 1] for v in taped.values() for t in range(1, len(v)) if t not in market)

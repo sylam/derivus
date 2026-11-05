@@ -4646,11 +4646,12 @@ class BasisLinkedSpotModel(StochasticProcess):
         '`tests/test_chained_basis.py::test_a_band_basis_on_a_constant_garch_variance_is_the_band_with_its_sds_scaled`',
         'and `::test_the_garch_seed_sets_the_band_basis_dispersion_over_its_first_month`.',
         '',
-        'Under Band_Mixture the stress belief $p_t=P(\\text{stress}\\mid\\eta_1,\\dots,\\eta_t)$ is carried beside',
-        "$\\mu$ and $\\sigma^2$: one filter step, the chain's move then Bayes on the two Gaussian likelihoods of",
-        '$\\eta_t$ ($\\eta_t/\\sigma_t$ under GARCH), updates it on the drawn innovation of a simulated path and',
-        "on the realised one of a replay, from **Mix_P0_Stress** or the belief a fork or a burn-in carries over;",
-        'a replay draws its published stress state from it. Held by',
+        'The stress belief $p_t=P(\\text{stress}\\mid\\eta_1,\\dots,\\eta_t)$ is one filter step, the chain\'s move',
+        'then Bayes on the two Gaussian likelihoods of $\\eta_t$ ($\\eta_t/\\sigma_t$ under GARCH). A replay',
+        'filters it to draw its published stress state. Under **Reveal_Regime** Yes it is carried beside $\\mu$',
+        'and $\\sigma^2$, updated on the drawn innovation of a simulated path and the realised one of a replay,',
+        'from **Mix_P0_Stress** or the belief a fork or a burn-in carries over; under No nothing else computes',
+        "it, and a burn-in's replay starts its filter from the drawn stress state. Held by",
         '`tests/test_basis_regime_state.py::test_the_revealed_belief_rises_on_a_large_innovation_and_decays_over_quiet_rows`',
         'and `::test_a_fork_starts_from_the_outer_path_s_belief_at_the_fork_row`.',
         '',
@@ -4955,21 +4956,23 @@ class BasisLinkedSpotModel(StochasticProcess):
                 s = (seed.unsqueeze(-1).expand(batch) if inner else seed).to(dtype)
             regime_path = torch.empty(Z.shape, device=device, dtype=dtype)
             regime_path[0] = s
+        if self.reveal_regime:
             belief = self._recursion_seed(shared_mem, 'belief0', Z.new_tensor(self.p0_stress), inner)
             belief_path = torch.empty(Z.shape, device=device, dtype=dtype)
             belief_path[0] = belief
 
         def drawn(mean, s2, j):
             """Forward sim: day j's eta is DRAWN - regime-scaled Gaussian under the band
-            mixture, its state moved first and its stress belief updated on it, rescaled by the
-            live sigma^2 under GARCH (the mixture's too), else t-scaled."""
+            mixture, its state moved first and, under `Reveal_Regime`, its stress belief updated on
+            it, rescaled by the live sigma^2 under GARCH (the mixture's too), else t-scaled."""
             nonlocal s, belief
             if self.band:
                 s = torch.where(s > 0.5, (u[j] < self.mix_stay_s).to(dtype), (u[j] < self.mix_enter).to(dtype))
                 eta_t = self.mix_sig2[s.long()].sqrt() * z[j]
                 if self.garch:
                     eta_t = s2.sqrt() * eta_t
-                belief = self._believe(belief, eta_t, s2)
+                if self.reveal_regime:
+                    belief = self._believe(belief, eta_t, s2)
             else:
                 eta_t = s2.sqrt() * z[j] * w[j] if self.garch else sigma[t] * z[j] * w[j]
             return eta_t, mean + eta_t
@@ -4992,12 +4995,14 @@ class BasisLinkedSpotModel(StochasticProcess):
             else:
                 out[t] = out[t - 1]
             if self.band:
-                regime_path[t], belief_path[t] = s, belief
+                regime_path[t] = s
+            if self.reveal_regime:
+                belief_path[t] = belief
             if self.slow_mean:
                 mu_path[t] = mu
             if self.garch:
                 sig2_path[t] = sig2
-        if inner and self.band and logging.getLogger().isEnabledFor(logging.DEBUG):
+        if inner and self.reveal_regime and logging.getLogger().isEnabledFor(logging.DEBUG):
             # the stress belief each outer path's fork starts from
             logging.debug('BASIS_FORK %r', belief_path[0].reshape(batch[0], -1)[:, 0].tolist())
         self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path, belief_path)
@@ -5165,9 +5170,14 @@ class BasisLinkedSpotModel(StochasticProcess):
                     0, 1).contiguous().reshape(T + 1, *batch)
             else:
                 u = shared_mem.quasi_rng(T + 1, batch[0])[1].transpose(0, 1).contiguous()
-            p = self._recursion_seed(shared_mem, 'belief0', obs.new_full(batch, self.p0_stress), inner)
-            regime_path, belief_path = torch.empty_like(obs), torch.empty_like(obs)
-            regime_path[0], belief_path[0] = (u[0] < p).to(obs.dtype), p
+            # a burn-in hands the filter its belief where the law carries one, else its drawn regime
+            p = self._recursion_seed(shared_mem, 'belief0' if self.reveal_regime else 'regime0',
+                                     obs.new_full(batch, self.p0_stress), inner)
+            regime_path = torch.empty_like(obs)
+            regime_path[0] = (u[0] < p).to(obs.dtype)
+            if self.reveal_regime:
+                belief_path = torch.empty_like(obs)
+                belief_path[0] = p
 
         def realised(mean, s2, j):
             """Replay: the level is DATA and eta is its deviation from the conditional mean, the
@@ -5193,7 +5203,9 @@ class BasisLinkedSpotModel(StochasticProcess):
             if self.garch:
                 sig2_path[t] = sig2
             if self.band:
-                regime_path[t], belief_path[t] = (u[k] < p).to(obs.dtype), p
+                regime_path[t] = (u[k] < p).to(obs.dtype)
+                if self.reveal_regime:
+                    belief_path[t] = p
         self._publish_recursions(shared_mem, mu_path, sig2_path, regime_path, belief_path)
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             # the replayed recursions on the first path, which the filled-row gate reads
