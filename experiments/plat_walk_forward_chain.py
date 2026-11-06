@@ -259,6 +259,16 @@ def regime_ramp(arch, trade_date, schedule, legs, futs, fixings, decisions, powe
     return knots
 
 
+def minvar_charge(arch, trade_date, window):
+    """`--minvar-charge`'s `DiffV2_Minvar_Charge` for the trade on `trade_date`: the standard error of a zero
+    daily drift of the fix, the sd (ddof 1) of its daily dollar change over the archive rows of the calibration
+    `window` `(start, end)`, over the root of their count."""
+    move = arch[FIX_COL].astype(float).diff().loc[slice(*window)].dropna()
+    delta = float(move.std(ddof=1) / np.sqrt(len(move)))
+    logging.debug('MINVAR-CHARGE %s delta %.6g on %d rows', trade_date.date(), delta, len(move))
+    return delta
+
+
 def apply_objective_flags(objective, args):
     """The CLI's `Objective` overrides, applied on top of the TEMPLATE's authored block (which
     carries the ruled shape and scale) — the swept axes, and nothing else. Mutates in place.
@@ -311,9 +321,11 @@ def apply_objective_flags(objective, args):
     return objective
 
 
-def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_corridor=None):
+def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_corridor=None, window=None):
     """The trade-date job: the template's liability legs struck at fair - margin, the listed CME strip
-    as tradables, and every market level read off the archive row. Returns `(cfg, info)`.
+    as tradables, and every market level read off the archive row. Returns `(cfg, info)`, `info['solver']`
+    the `Solver` fields the trade decides, which `_apply_overrides` stamps on the train and roll jobs: under
+    `--minvar-charge` the charge off the calibration `window` `(start, end)`.
 
     The row is FORWARD-FILLED: a session whose futures snapshot failed quality leaves that day's
     basis NaN by construction (`build_plat_archive_am`), and the trade date can land on one."""
@@ -398,6 +410,7 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
         hp['Evaluator']['Total_Position_Schedule'] = regime_ramp(
             arch, trade_date, hp['Evaluator']['Total_Position_Schedule'], legs, futs, fixings,
             pd.date_range(trade_date, pay, freq=fixing_day(template, calc['Calendar'])), args.regime_ramp)
+    solver = {'DiffV2_Minvar_Charge': minvar_charge(arch, trade_date, window)} if args.minvar_charge else {}
 
     # No Spot_Price_History: its only live consumer is the utility-scale formula, which the
     # template's Utility_Scale_Explicit overrides; the policy's features are process-revealed
@@ -410,7 +423,7 @@ def build_deal_config(template, arch, trade_date, calibrated_md, args, delta_cor
         row, trade_date, max(max(fixings), max(mats)), arch.columns, chained=B_CME_PM in reached)
     merge['ExplicitMarketData'].setdefault('Price Models', {})
     return cfg, {'k_fair': k_fair, 'mats': mats, 'pay': pay, 'fixings': fixings,
-                 'premia': premia}
+                 'premia': premia, 'solver': solver}
 
 
 def trade_world(arch, trade_date, calibrated_md, out_path, carry_drift):
@@ -438,8 +451,9 @@ def trade_world(arch, trade_date, calibrated_md, out_path, carry_drift):
     return out_path
 
 
-def _apply_overrides(cfg, args):
-    """Generic KEY=VALUE stamps onto the built Solver / Calculation blocks.
+def _apply_overrides(cfg, args, solver):
+    """The trade's `Solver` fields `solver` (`build_deal_config`'s), then generic KEY=VALUE stamps onto
+    the built Solver / Calculation blocks.
 
     `production_solver.apply_config` rebuilds `Solver` from its own defaults, so a dial that
     has no dedicated flag (DiffV2_Risk_Aversion, DiffV2_Hidden, DiffV2_LR, ...) is otherwise
@@ -452,6 +466,7 @@ def _apply_overrides(cfg, args):
                 pass
         return v
     calc = cfg['Calc']['Calculation']
+    calc['Hedging_Problem']['Solver'].update(solver)
     for kv in (args.solver_set or []):
         k, v = kv.split('=', 1)
         calc['Hedging_Problem']['Solver'][k] = coerce(v)
@@ -461,14 +476,14 @@ def _apply_overrides(cfg, args):
     return cfg
 
 
-def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
+def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag, window):
     """Train the day-1 policy per seed in the calibrated chain world, then roll the frozen
     ensemble along the REALIZED archive path. Returns the recorded row."""
     chain_md = calibrated_md     # the month's calibration, before the trade world re-filters it
     calibrated_md = trade_world(arch, trade_date, calibrated_md,
                                 os.path.join(run_dir, f'md_{tag}_trade.json'), args.carry_drift)
     cfg, info = build_deal_config(template, arch, trade_date, calibrated_md, args,
-                                  delta_corridor=args.delta_corridor)
+                                  delta_corridor=args.delta_corridor, window=window)
     if args.drift_overlay is not None:
         # Stamp Mu on the recalibrated spot block (composes with Carry_Drift); rides
         # ExplicitMarketData so train and roll see the same world.
@@ -516,7 +531,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
             v0s.append(None)
             continue
         train = _apply_overrides(
-            apply_config(copy.deepcopy(cfg), batch=args.batch, seed=seed, save=ckpt), args)
+            apply_config(copy.deepcopy(cfg), batch=args.batch, seed=seed, save=ckpt), args, info['solver'])
         tcalc = train['Calc']['Calculation']
         tcalc['Simulation_Batches'] = args.batches
         tcalc['Inner_Sub_Batch'] = args.inner_sub_batch
@@ -559,7 +574,7 @@ def one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag):
 
     roll = _apply_overrides(apply_config(
         copy.deepcopy(cfg), batch=1, seed=args.seeds[0], load=ckpts,
-        stepper_rollout=True, randomize_initial_state=False), args)
+        stepper_rollout=True, randomize_initial_state=False), args, info['solver'])
     roll['Calc']['Calculation']['Inner_Sub_Batch'] = args.roll_inner
     if args.load_horizon_pad:
         roll['Calc']['Calculation']['Hedging_Problem']['Solver'][
@@ -851,6 +866,10 @@ def parse_args(argv=None):
                          'regime_ramp; 1 the linear ramp, 3 the steep one): the corridor at r = 1, '
                          'the passive at r = 0. Applied to TRAIN and ROLL; a re-roll, since the '
                          'ramped corridor lies inside the one a checkpoint trained in.')
+    ap.add_argument('--minvar-charge', action='store_true',
+                    help='Solver DiffV2_Minvar_Charge off the archive: the standard error of a zero daily drift '
+                         'of the AM fix over the calibration window (see minvar_charge). Applied to TRAIN and '
+                         'ROLL.')
     ap.add_argument('--solver-set', action='append', metavar='KEY=VALUE',
                     help='Stamp an arbitrary Hedging_Problem.Solver field (repeatable).')
     ap.add_argument('--calc-set', action='append', metavar='KEY=VALUE',
@@ -927,7 +946,8 @@ def main():
                 logging.info('TRADE %s: SKIP (already completed, resuming)', tag)
                 rec = done[tag]
             else:
-                rec = one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag)
+                rec = one_trade(template, arch, trade_date, calibrated_md, args, run_dir, tag,
+                                (cal_start, cal_end))
                 logging.info('TRADE %s: greedy=%s nohedge=%s $/oz  bound=%s PASS=%s  churn=%s',
                              tag, rec['greedy_usd_oz'], rec['nohedge_usd_oz'], rec['pf_bound'],
                              rec['bound_pass'], rec['churn'])
