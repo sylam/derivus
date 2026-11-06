@@ -3293,6 +3293,11 @@ class HedgeMonteCarlo(CreditMonteCarlo):
                       description="The repositioning charge's quadratic term in money per "
                                   'contract^2, taken wherever DiffV2_Repositioning_Charge takes '
                                   'the turnover charge, so nowhere under No; 0 = off'),
+                    F('DiffV2_Minvar_Charge', 'Float', default=0.0, convention=True,
+                      description='The charge per decision step on the net beyond the minimum-'
+                                  'variance book, in money per unit of the underlying, the book '
+                                  'the diagonal min-var hedge of the outer moves or, on a one-path '
+                                  "batch, of the decision's fork; 0 = none"),
                     F('DiffV2_Repositioning_Charge', 'Text', default='No', convention=True,
                       values=['No', 'Argmax', 'State'],
                       description='What the move from the standing book is charged: No nothing, '

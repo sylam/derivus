@@ -584,6 +584,7 @@ class DiffSolver:
         self.noise_frac = self.cfg["diffv2_bank_noise_frac"]
         self.t_min = self.cfg["t_min"]
         self.risk_kappa = self.cfg["diffv2_risk_kappa"]
+        self.minvar_charge = self.cfg["diffv2_minvar_charge"]
         # with no penalty there is no horizon to hold the book over
         self.risk_horizon = self.cfg["diffv2_risk_horizon"] if self.risk_kappa > 0.0 else 1
         charge = self.cfg["diffv2_repositioning_charge"]
@@ -815,9 +816,11 @@ class DiffSolver:
         (`HedgeActionSpace.kappa`'s pair, which `_ranking_kappa` hands where
         `DiffV2_Repositioning_Charge` charges; None: none) the turnover toll, the move's matched half
         at the calendar rate under `Calendar_Spread_Bps`, and the quadratic churn term
-        (`DiffV2_Churn_Lambda`), then the outright unwind of `acts` `_unwind_kappa` says t owes;
-        with no standing book (`q_prev` None) the unwind alone. `rows` prices each path at its own
-        mark, as `HedgeActionSpace.kappa`.
+        (`DiffV2_Churn_Lambda`), then the outright unwind of `acts` `_unwind_kappa` says t owes,
+        then at the `DiffV2_Minvar_Charge` rate the holding charge on the net of `acts` beyond the
+        min-var book (`_replication_hedge` under `fork`) in units of the underlying; with no
+        standing book (`q_prev` None) the unwind and the holding charge alone. `rows` prices each
+        path at its own mark, as `HedgeActionSpace.kappa`.
 
         ONE assembly, called from every seam: the wealth that RANKS a candidate in `_decide`, the
         wealth the INCUMBENT holds against it, the chosen action's regressed TARGET in `_fit_step`,
@@ -833,6 +836,11 @@ class DiffSolver:
         if kappa_T is not None:
             unwind = turnover_charge(acts, kappa_T)
             charge = unwind if charge is None else charge + unwind
+        if self.minvar_charge > 0.0:
+            # the excess book's P&L on a unit move of every leg: its net in units of the underlying
+            held = self.minvar_charge * wealth_step(
+                0.0, acts - self._replication_hedge(t, fork=True), self.aspace.contract_size, 1.0, 0.0).abs()
+            charge = held if charge is None else charge + held
         return charge
 
     # ---- one-step wealth move ------------------------------------------------
@@ -1164,14 +1172,18 @@ class DiffSolver:
             return best_q
 
     # ---- operating-region bank ----------------------------------------------
-    def _replication_hedge(self, t):
+    def _replication_hedge(self, t, fork=False):
         """Per-instrument diagonal min-var hedge from the OUTER moves to t's successor:
         q_i = −Cov(dL, dF_i)/(cs_i·Var(dF_i)) / n_live over the n_live active legs live at t
-        (`Bundle.marked`), both moments the outer paths' population, clamped to [lo,hi]; 0 on
-        every other leg. Built once a step of a bound bundle."""
-        if t in self._replications:
-            return self._replications[t]
-        moves, dL = self._outer_move(t)                                                  # (B_outer, n_h), (B_outer,)
+        (`Bundle.marked`), both moments the outer paths' population, or where `fork` on a one-path
+        batch, whose outer moves have no cross-section, the population of the draws of t's one-step
+        fork (`inner_cache[t]`, the moves `_decide` ranks on); clamped to [lo,hi], 0 on every
+        other leg. Built once a step and population of a bound bundle."""
+        fork = fork and self.B_outer < 2
+        if (t, fork) in self._replications:
+            return self._replications[(t, fork)]
+        # (N, n_h), (N,) over the N outer paths or the one path's inner draws
+        moves, dL = (self.inner_cache[t][0][0], self.inner_cache[t][1][0]) if fork else self._outer_move(t)
         q = torch.zeros(self.aspace.n_hedge, device=self.device)
         legs = self.aspace.live_legs(self.bundle.marked(t, self.aspace.hedges))
         for i in legs:
@@ -1184,8 +1196,8 @@ class DiffSolver:
             beta = ((dL - dL.mean()) * (dF - dF.mean())).mean() / var
             q[i] = -beta / (self.aspace.contract_size[i] * len(legs))
         logging.debug('replication hedge at step %d over the live active legs %s: %s contracts', t, legs, q)
-        self._replications[t] = q.clamp(self.aspace.q_lo, self.aspace.q_hi)
-        return self._replications[t]
+        self._replications[(t, fork)] = q.clamp(self.aspace.q_lo, self.aspace.q_hi)
+        return self._replications[(t, fork)]
 
     @staticmethod
     def _dust(rep):
@@ -1835,8 +1847,8 @@ class DiffSolver:
         return out
 
     def _decision_record(self, ts, books):
-        """The per-decision record a roll reports: each policy's mean book (`books[p]`, one entry a
-        decision) as `{p}_q_traj`, beside the decisions' rows `greedy_q_t` and dates
+        """The per-decision record a roll reports: each book `books[p]` over the paths, one entry a
+        decision, as `{p}_q_traj`, beside the decisions' rows `greedy_q_t` and dates
         `greedy_q_dates`, which consumers join on."""
         hist = self.bundle.initial_time_index
         out = {f"{p}_q_traj": b for p, b in books.items()}
@@ -2011,9 +2023,11 @@ class DiffSolver:
 
         Returns `{greedy, textbook, nohedge, passive}` terminal-P&L stats in the verdict shape,
         with `u_mean_is_step_sum` stating whether `u_mean` is a terminal utility or the
-        running-wealth sum. `Solver.DiffV2_Decision_Curve_Dump` hangs a per-decision CSV off the
-        greedy roll; no branch below it depends on whether it is on. From the first decision day
-        on or after `Solver.DiffV2_Passive_From` the greedy roll holds the passive book."""
+        running-wealth sum, and beside the greedy book at each decision the min-var book its
+        `DiffV2_Minvar_Charge` reads (`minvar_q_traj`). `Solver.DiffV2_Decision_Curve_Dump` hangs a
+        per-decision CSV off the greedy roll; no branch below it depends on whether it is on. From
+        the first decision day on or after `Solver.DiffV2_Passive_From` the greedy roll holds the
+        passive book."""
         hist = self.bundle.initial_time_index
         sweep_set = set(int(t) for t in sweep_ts)
         if self.curve_dump and self.B_outer != 1:
@@ -2021,7 +2035,7 @@ class DiffSolver:
                 f"Solver.DiffV2_Decision_Curve_Dump is a single-path diagnostic and this roll carries "
                 f"{self.B_outer} outer paths: roll it at Batch_Size 1")
 
-        q_log = {"greedy": [], "t": [], "w": []}
+        q_log = {"greedy": [], "minvar": [], "t": [], "w": []}
         dump_rows = [] if self.curve_dump else None
 
         def roll(policy):
@@ -2116,6 +2130,7 @@ class DiffSolver:
                             q = self._decide(nets, m1, dF, dL, W.float(), t, q_prev=q_prev,
                                              live=live, kappa=kappa_t, ahead=ahead)
                         q_log["greedy"].append(q.mean(0).detach().cpu().tolist())
+                        q_log["minvar"].append(self._replication_hedge(t, fork=True).cpu().tolist())
                         q_log["t"].append(int(t))
                         q_log["w"].append(float(W.mean()))
                         if dump_rows is not None and not handed:
@@ -2147,7 +2162,7 @@ class DiffSolver:
             pd.DataFrame(dump_rows).to_csv(self.curve_dump, index=False, float_format="%.6g")
             logging.info("DiffV2_Decision_Curve_Dump: %d decision rows -> %s",
                          len(dump_rows), self.curve_dump)
-        out.update(self._decision_record(q_log["t"], {"greedy": q_log["greedy"]}))
+        out.update(self._decision_record(q_log["t"], {p: q_log[p] for p in ("greedy", "minvar")}))
         out["greedy_w_traj"] = q_log["w"]
         return out
 

@@ -1854,6 +1854,32 @@ def test_a_one_path_roll_carries_no_textbook_track(tmp_path):
     assert not textbook, (textbook, d['verdict'].get('textbook'), d['verdict']['nohedge'])
 
 
+def test_a_minvar_charge_holds_the_roll_nearer_the_min_var_book(tmp_path):
+    """`DiffV2_Minvar_Charge` charges each decision the net beyond the min-var book: the training
+    document's checkpoint rolled frozen on one path with the stepper roll, whose min-var book is its
+    fork's (`minvar_q_traj`, one entry a decision as `greedy_q_traj`), uncharged and at four daily
+    standard deviations of the spot (2055 $/oz at the surface's 38.5% front vol, 199 $/oz a step):
+    the greedy book's mean net beyond it falls from 1,323.5 oz to 110.3 oz. 5 s.
+
+    Killing mutation: the holding charge deleted from `DiffSolver._charge`, the two rolls one book."""
+    ckpt = str(tmp_path / 'vf.pt')
+    _run(_cfg(seed=7, batch=8, inner=4, save=ckpt))
+    factors = _cfg()['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    rate = (4.0 * factors['CommodityPrice.PLATINUM_LME']['Spot']
+            * factors['CommodityPriceVol.PLATINUM']['Surface']['.Curve']['data'][0][2] / math.sqrt(252.0))
+    sizes = [_cfg()['Calc']['Calculation']['Hedging_Problem']['Tradable_Instruments']['CommodityFutureDeal'][h][
+        'Contract_Size'] for h in _HEDGES]
+    beyond = []
+    for charge in (0.0, rate):
+        roll = _cfg(batch=2, inner=64, seed=7, load=ckpt)
+        roll['Calc']['Calculation']['Hedging_Problem']['Solver'].update(
+            DiffV2_Stepper_Rollout='Yes', DiffV2_Minvar_Charge=charge)
+        sv = _run(roll).evaluation_summary['diagnostics']['stepper_verdict']
+        assert np.shape(sv['minvar_q_traj']) == np.shape(sv['greedy_q_traj']), sv['minvar_q_traj']
+        beyond.append(np.abs((np.array(sv['greedy_q_traj']) - sv['minvar_q_traj']) @ sizes).mean())
+    assert beyond[1] < beyond[0], beyond
+
+
 @pytest.mark.parametrize('mode', ['futures', 'cash_account'])
 @pytest.mark.parametrize('terminal', ['2026-08-05', '2026-08-08'])
 def test_the_stepper_closes_a_book_held_at_every_decision_at_the_terminal(mode, terminal):

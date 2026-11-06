@@ -243,6 +243,7 @@ def _solver_config(solver_config: Optional[Mapping[str, Any]]) -> Optional[Dict[
         "diffv2_risk_kappa": float(solver_config["DiffV2_Risk_Kappa"]),
         "diffv2_risk_horizon": int(solver_config["DiffV2_Risk_Horizon"]),
         "diffv2_churn_lambda": float(solver_config["DiffV2_Churn_Lambda"]),
+        "diffv2_minvar_charge": float(solver_config["DiffV2_Minvar_Charge"]),
         "diffv2_temporal_proximity":
             float(solver_config["DiffV2_Temporal_Proximity"]),
         "diffv2_fit_tol": float(solver_config["DiffV2_Fit_Tol"]),
