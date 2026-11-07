@@ -107,6 +107,12 @@ def _v0(result):
     return result.evaluation_summary['diagnostics']['V_0']
 
 
+def _host(x):
+    """An engine tensor in float64 on the host, where a gate's own arithmetic reads it, on whatever
+    device the engine ran."""
+    return x.detach().cpu().double()
+
+
 @pytest.fixture(scope='module')
 def free(tmp_path_factory):
     """One corridor-free training run, saved: `(checkpoint path, result)`."""
@@ -938,7 +944,7 @@ def _tape(cfg, path, paths=2):
     names = [path.format(k) for k in range(paths)]
     for k, name in enumerate(names):
         np.savez(name, **{f'{n},{FILLED_ROWS}': filled for n in world.factors},
-                 **{n: v[r0:].cpu().double().numpy()[..., k] for n, v in world.factors.items()})
+                 **{n: _host(v[r0:]).numpy()[..., k] for n, v in world.factors.items()})
     return names
 
 #: A calendar of two consecutive weekday holidays (Tue 14, Wed 15 April), a four-day weekend (Fri 24
@@ -983,8 +989,8 @@ def test_consecutive_holidays_hold_every_factor_and_carry_one_market_step(tmp_pa
     world = _run(cfg).bundle
     r0 = world.initial_time_index
     dates = pd.DatetimeIndex(world.scenario_dates[r0:])
-    paths = {'spot': np.log(world.factors['CommodityPrice.PLATINUM_LME'][r0:].double().numpy()),
-             'basis': world.factors['ObservedBasis.PLATINUM_LME.LME_CME'][r0:].double().numpy()}
+    paths = {'spot': np.log(_host(world.factors['CommodityPrice.PLATINUM_LME'][r0:]).numpy()),
+             'basis': _host(world.factors['ObservedBasis.PLATINUM_LME.LME_CME'][r0:]).numpy()}
     row = dates.get_loc
     held = [d for d in dates[dates <= '2026-05-31'] if not world.business_day.is_on_offset(d)]
     spans = {'hol_weekend': ('2026-04-23', '2026-04-28'), 'two_hol': ('2026-04-13', '2026-04-16'),
@@ -1446,7 +1452,8 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(t
     `DiffV2_Risk_Aversion`, a roll's the checkpoint's, on the active legs whose remaining P&L
     still varies. On the training document at an explicit scale of 1e5 over 51 rungs, its first knot
     is that minimum on the warmup world, the same document simulating that batch alone, (0.118,
-    0.882, 0) within 1e-4, or with legs 0 and 2 active (0.225, 0, 0.775), and the knot in force at
+    0.882, 0) within 1e-4 on the CPU's draws (CUDA's put it on July alone, (0, 1, 0)), or with legs 0
+    and 2 active (0.225, 0, 0.775) ((0, 0, 1) on CUDA's), and the knot in force at
     the first decision past April's last move, step 19, the minimum on the live legs alone, (0, 1, 0),
     or (0, 0, 1); the Cartesian fit's roll books its first decision, step 101, on July alone, the
     split there (0, 1, 0). 4 s each.
@@ -1474,8 +1481,8 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(t
     result = _run(cfg)
     calc['Execution_Mode'], calc['Simulation_Batches'] = 'simulate_only', 1
     world = _run(cfg).bundle
-    F = torch.stack([world.tradables_sim[h].double() for h in _HEDGES], -1)            # (T, B, 3)
-    L, T = world.liability_sim.double(), world.last_live_mtm_index
+    F = torch.stack([_host(world.tradables_sim[h]) for h in _HEDGES], -1)              # (T, B, 3)
+    L, T = _host(world.liability_sim), world.last_live_mtm_index
 
     def minimum(t):
         nxt = world.successors[t]
@@ -1510,7 +1517,8 @@ def test_the_carry_variance_split_is_the_population_minimum_of_its_outer_paths(t
         return
     step, got = result.policy_artifact['allocation_weights'][0]
     want = minimum(0)
-    assert step == 0 and 0.05 < want[0] < 0.95 and max(abs(a - b) for a, b in zip(got, want)) < 1e-4, (got, want)
+    # the knot discriminates from the even split on either device's draws (interior on the CPU's, one leg on CUDA's)
+    assert step == 0 and max(abs(x - 1 / 3) for x in want) > 0.05 and max(abs(a - b) for a, b in zip(got, want)) < 1e-4, (got, want)
     dead = next(t for t in world.decision_steps if not bool((F[T, :, 0] != F[t, :, 0]).any()))
     got, want = next(w for s, w in reversed(result.policy_artifact['allocation_weights']) if s <= dead), minimum(dead)
     assert dead == 19 and max(abs(a - b) for a, b in zip(got, want)) < 1e-4, (dead, got, want)
@@ -1574,19 +1582,26 @@ def test_the_benchmarks_score_a_step_sum_objective_by_its_step_reward():
     (`DiffSolver._step_sum`), from the first decision, the scale of its V_0, and the ladder says so:
     under `LogWealth` on the training document with the benchmarks, the textbook's value is the path
     mean of its constant book's growth from the first decision to the terminal at the stamped capital
-    line C, log((C + W_T)/(C + W_t0)), the step sum telescoping (0.2505 nats, within 1e-12), and the
-    hindsight bound is scored (-59.8: the opening book ruins one path before the first decision). 3 s.
+    line C, log((C + W_T)/(C + W_t0)), the step sum telescoping (0.0291 nats on the CPU's draws, within
+    1e-12), and the hindsight bound is scored (0.063). The document states `DiffV2_Risk_Aversion` 0.1,
+    a capital line ten times the displacement, so that no path of either device's draws touches it:
+    at aversion 1 CUDA's draws ruin two of the textbook's eight paths and the step sum stops
+    telescoping, by the floor's design. 3 s.
 
     Killing mutations: the benchmarks scoring the terminal utility, which LogWealth defines none of
     (raised after the solve); the textbook launched without its book's P&L before the first decision
-    (-59.92 against 0.2499)."""
-    r = _run(_logwealth(_cfg(batch=8, inner=4, benchmarks=True)))
+    (W_t0 moves, the identity fails at 1e-12)."""
+    cfg = _logwealth(_cfg(batch=8, inner=4, benchmarks=True))
+    cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Risk_Aversion'] = 0.1   # the capital line, tenfold
+    r = _run(cfg)
     tracks, world = r.evaluation_summary['comparison'], r.bundle
     t0, T = r.evaluation_summary['diagnostics']['root_t'], world.last_live_mtm_index
-    F = torch.stack([world.tradables_sim[h].double() for h in _HEDGES], -1)
-    book, C = 50.0 * torch.tensor(tracks['textbook']['n_star'], dtype=F.dtype), r.policy_artifact['displacement']
-    W0, WT = (world.liability_sim[t].double() + (book * (F[t] - F[0])).sum(-1) for t in (t0, T))
-    want = float(torch.log((C + WT) / (C + W0)).mean())
+    F = torch.stack([_host(world.tradables_sim[h]) for h in _HEDGES], -1)
+    book, C = 50.0 * torch.tensor(tracks['textbook']['n_star'], dtype=F.dtype), r.policy_artifact['displacement'] / r.policy_artifact['risk_aversion']
+    W = _host(world.liability_sim)[t0:T + 1] + (book * (F[t0:T + 1] - F[0])).sum(-1)              # (T - t0 + 1, B)
+    # the identity needs every path above the capital line at every step; the document is chosen so on any draws
+    assert float((C + W).min()) > 0.01 * C, (float((C + W).min()), C)
+    want = float(torch.log((C + W[-1]) / (C + W[0])).mean())
     assert r.evaluation_summary['ladder']['v0_is_step_sum'] and math.isfinite(tracks['HindsightDpSolver']['v0_mean'])
     assert abs(tracks['textbook']['v0_mean'] - want) < 1e-12 * abs(want), (tracks['textbook']['v0_mean'], want)
 
@@ -1729,9 +1744,9 @@ def test_a_corridor_excluding_zero_is_held_on_the_legs_still_live():
     is dead books on that leg alone: on the Cartesian document, its corridor [-40, -30], swept from
     Friday 24 July, the April leg dead throughout and the July leg from its expiry on Wednesday 29,
     the passive and textbook books of a liability stating no fixings sit on the corridor's whole edge
-    nearest zero, (0, -15, -15) to the 29th and (0, 0, -30) after it, and the greedy book's net on
-    the live legs lies in the corridor at every decision, (0, 0, -38) once October alone is live, the one
-    level of its axis inside. 3 s.
+    nearest zero on the live legs, the passive (0, -15, -15) to the 29th and (0, 0, -30) after it, and
+    the greedy book's net on the live legs lies in the corridor at every decision, (0, 0, -38) once
+    October alone is live, the one level of its axis inside. 3 s.
 
     Killing mutations: `HedgeActionSpace.book` reading the ladder with no leg mask (`self.ladder(t)`),
     a third of the edge on each leg, dead ones included (-10, -10, -10); `grid_at` filtering each
@@ -1744,9 +1759,12 @@ def test_a_corridor_excluding_zero_is_held_on_the_legs_still_live():
     v = result.evaluation_summary['diagnostics']['verdict']
     dates = v['greedy_q_dates']
     assert dates[0] == '2026-07-24' and dates[-1] == '2026-08-04', dates
-    for track in ('passive_q_traj', 'textbook_q_traj'):
-        want = [[0.0, -15.0, -15.0] if d <= '2026-07-29' else [0.0, 0.0, -30.0] for d in dates]
-        assert v[track] == want, (track, list(zip(dates, v[track])))
+    want = [[0.0, -15.0, -15.0] if d <= '2026-07-29' else [0.0, 0.0, -30.0] for d in dates]
+    assert v['passive_q_traj'] == want, list(zip(dates, v['passive_q_traj']))
+    # the textbook's split is the min-var hedge of a world the device draws: on the 29th July's is nil
+    # and October's -1.37 on the CPU, waterfilled to (-14.51, -15.49), 0.015 from the whole-contract tie
+    assert all(sum(q) == -30.0 and all(x == 0.0 for x, p in zip(q, w) if p == 0.0)
+               for q, w in zip(v['textbook_q_traj'], want)), list(zip(dates, v['textbook_q_traj']))
     nets = [sum(q) for q in v['greedy_q_traj']]
     assert all(-40.0 - 1e-6 <= x <= -30.0 + 1e-6 for x in nets), list(zip(dates, nets))
     assert all(q == [0.0, 0.0, -38.0] for d, q in zip(dates, v['greedy_q_traj']) if d > '2026-07-29'), \
@@ -1815,11 +1833,11 @@ def test_the_textbook_book_is_the_min_var_hedge_of_the_outer_moves(tmp_path):
     world, d = result.bundle, result.evaluation_summary['diagnostics']
     t0 = d['root_t']
     s = world.successors[t0]
-    L = world.liability_sim.double().numpy()
+    L = _host(world.liability_sim).numpy()
     dL = L[s] - L[t0]
     want, live = [], [float(world.marked(t0, [name])[0]) > 0 for name in _HEDGES]
     for i, name in enumerate(_HEDGES):
-        F = world.tradables_sim[name].double().numpy()
+        F = _host(world.tradables_sim[name]).numpy()
         dF = F[s] - F[t0]
         want.append(min(0.0, max(-50.0, -((dL - dL.mean()) * (dF - dF.mean())).mean()
                                  / (50.0 * dF.var()) / sum(live))) if live[i] and dF.var() > 0.0 else 0.0)
@@ -2030,7 +2048,7 @@ def test_each_leg_pays_its_share_of_the_turnover_charge_from_its_own_account():
     result, matched = roll(CALENDAR)
     _, outright = roll({})
     world = result.bundle
-    marks = {h: world.tradables[h][world.initial_time_index].double() for h in ('PL_JUL_2026', 'PL_OCT_2026')}
+    marks = {h: _host(world.tradables[h][world.initial_time_index]) for h in ('PL_JUL_2026', 'PL_OCT_2026')}
     saving = sum(10.0 * (per_contract_kappa(result.runtime, m, h) - 0.5 * per_contract_kappa(result.runtime, m, h, None, True))
                  for h, m in marks.items())
     assert torch.equal(matched['ZAR_CASH'], outright['ZAR_CASH']), (matched['ZAR_CASH'] - outright['ZAR_CASH']).tolist()
@@ -2256,9 +2274,9 @@ def test_the_vol_scaled_spread_reads_the_spot_s_realized_history():
         'Spot_Price_History'].items()
     world = _run(cfg).bundle
     r0 = world.initial_time_index
-    first = world.factors[name][r0].double().numpy()                                 # (B,)
+    first = _host(world.factors[name][r0]).numpy()                                   # (B,)
     declared = np.array(history['Prices'][-r0:], dtype=np.float32)[:, None]
-    assert (world.factors[name][:r0].numpy() == declared).all(), world.factors[name][:r0, 0]
+    assert (_host(world.factors[name][:r0]).numpy() == declared).all(), world.factors[name][:r0, 0]
     prices = np.repeat(np.array(history['Prices'][-20:], dtype=float)[:, None], first.size, 1)
     returns = np.diff(np.log(np.concatenate([prices, first[None]])), axis=0)
     dates = world.scenario_dates[r0 - 20:r0 + 1]
@@ -2281,7 +2299,7 @@ def test_realised_vol_counts_the_market_days_its_window_holds():
     world = _run(_client(evaluator=VOL_SPREAD)).bundle
     (name, _), = [(n, v) for n, v in world.spot_price_history.items()]
     r = world.initial_time_index + 30
-    spot = world.factors[name][r - 20:r + 1].double().numpy()                        # (21, B)
+    spot = _host(world.factors[name][r - 20:r + 1]).numpy()                          # (21, B)
     rows = world.scenario_dates[r - 19:r + 1]
     days = sum(world.business_day.is_on_offset(d) for d in rows)
     want = np.sqrt(252.0 * (np.diff(np.log(spot), axis=0) ** 2).sum(0) / days).mean()
@@ -3084,15 +3102,17 @@ def _thousandths(cfg, k=1000.0):
 def test_the_drift_monitor_reads_one_world_in_any_unit():
     """The legs the drift monitor reads are the ones its deal dates mark and the step moves, a rule
     without a unit: on the spot-alone GARCH document at a constant variance, priced in its unit and
-    in thousandths of it, the verdict's validation drift z reads -0.3076 and -0.3075, within 1e-3,
-    and its null sigma 1.1299 in both. 8 s.
+    in thousandths of it, the verdict's validation drift z reads -0.3076 and -0.3075 on the CPU's
+    draws, within 1e-3, and its null sigma 1.1299 in both. 8 s.
 
     Killing mutation: the monitor's legs read off the fork's dispersion (`dF.std(1).mean(0) > 0.5`
     in `Bundle.moving`), a threshold in price units every leg falls below in thousandths: z 0.0
     and sigma 0.0 there."""
     zs = [_run(unit(_spot_alone(_cfg(batch=8, inner=8), CONSTANT_VOL))).evaluation_summary[
         'diagnostics']['verdict']['validation_drift_z'] for unit in (lambda c: c, _thousandths)]
-    assert abs(zs[0]) > 0.1 and abs(zs[1] - zs[0]) < 1e-3, zs
+    # z is a statistic of the world the device draws, CUDA's generator not the CPU's (0.072 on the
+    # card); a monitor reading no leg reads 0.0
+    assert zs[0] != 0.0 and abs(zs[1] - zs[0]) < 1e-3, zs
 
 
 def test_a_declared_drift_leaves_an_expired_leg_still(tmp_path):
