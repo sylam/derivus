@@ -34,7 +34,7 @@ A closed chain must lag somewhere; all same-row is a same-instant loop and refus
     For a type-switching `utils.NESTED` entry (`tail_type != head_type`), the **head** period carries the dependant/conditional keys and the tail periods depend positionally on their own prefix. The **virtual full-name head key must be dropped everywhere** — `get_rates` pops it, `get_price_factors` pops its tenor. Code reading `dependent_factors` must not assume the dotted full name is a key; only the head spot and the `ObservedBasis` tail exist. **Held by** `tests/test_declared_defaults.py::test_a_job_document_keeps_its_plan_hash_and_its_factor_universe`, which pins the universe of `commodity_aps_world.json`, a composed commodity name, so a kept full-name key reads as one more missing factor, and `tests/test_chained_basis.py::test_discovery_and_the_resolver_read_one_chain_registry` for each spot head.
 
 !!! warning "Invariant — a conditional lambda returns no `dependant_fields` type, and never raises"
-    The conditional branch registers each factor it returns with `[]` via `update`, not `setdefault`, so a returned type that is a `dependant_fields` key would have its real dependencies silently erased (a lambda *keyed* on such a type is fine — all three are). A lambda never raises either: `discover_factors` runs outside the per-deal guard, so a refusal there takes down the whole job; it answers `[]` and leaves the naming to the resolver, whose `KeyError` skips one deal. And a lambda for a type the engine seeds with a bare `{}` instrument (`FxRate` for the base and report currencies) must `getattr`-guard `instrument.options` / `.field`. **Held by** `tests/test_cross_spot_model.py::test_a_key_that_cannot_resolve_skips_the_deal_and_never_kills_the_job`. Not gated: the returned-type rule.
+    The conditional branch registers each factor it returns with `[]` via `update`, not `setdefault`, so a returned type that is a `dependant_fields` key would have its real dependencies silently erased (a lambda *keyed* on such a type is fine — `ForwardPrice`, `EquityPrice` and `FxRate` are). A lambda never raises either: `discover_factors` runs outside the per-deal guard, so a refusal there takes down the whole job; it answers `[]` and leaves the naming to the resolver, whose `KeyError` skips one deal. And a lambda for a type the engine seeds with a bare `{}` instrument (`FxRate` for the base and report currencies) must `getattr`-guard `instrument.options` / `.field`. **Held by** `tests/test_cross_spot_model.py::test_a_key_that_cannot_resolve_skips_the_deal_and_never_kills_the_job`. Not gated: the returned-type rule.
 
 ## The walk
 
@@ -48,7 +48,7 @@ A closed chain must lag somewhere; all same-row is a same-instant loop and refus
 !!! warning "Invariant — dates before tenors"
     `get_reval_dates` / `finalize_dates` must run (via `walk_groups`) before tenor collection: the per-factor max date and the reset/settlement sets all come from `instrument.reset()` + `finalize_dates`. A deal whose `reset()` leaves `reval_dates` empty contributes no tenor, and its directly-referenced factors default to `max(reset_dates)`. Not gated.
 
-The main body seeds base-currency FX first, walks the book, adds report currency (linked to base), then optional CVA `SurvivalProb` and FVA/deflation curves (`add_interest_rate` pins a curve plus all transitive dependents to `reset_dates`).
+The main body seeds base-currency FX first, walks the book, adds report currency (linked to base), then optional CVA `SurvivalProb` and FVA/deflation curves (`add_interest_rate` pins a curve plus every factor it transitively depends on to `reset_dates`).
 
 !!! warning "Invariant — base currency sorts first, stays static"
     Base-currency FX is appended to every other `FxRate`'s dependency list and excluded from the stochastic set (`find_models`) — the FX alone: a curve named as the base currency simulates once a model is declared for it. Keep base FX a static, dependency-of-all-FX anchor. **Held by** `tests/test_base_currency_json.py::test_the_base_currency_s_fx_rate_stays_static_whatever_model_is_declared` and `::test_the_base_currency_s_curve_simulates_like_any_other`.
@@ -57,10 +57,10 @@ The main body seeds base-currency FX first, walks the book, adds report currency
 
 Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort(..., canonical=True)`): a repeated-pass variant of Kahn's algorithm [@kahn1962] that, **within a pass, visits nodes in sorted `Factor` order** (type, then name) and moves every node whose edges all point outside the still-unsorted set — so an edge naming a node absent from the graph counts as resolved. Dependencies land first, dependents follow, cycles raise `RuntimeError`. A conditional factor's dependencies are the union over every occurrence the walk meets, so the graph does not depend on which deal is walked last.
 
-`traverse_dependents` (`config.py`) fans a factor's tenor out to all transitive dependents — BFS, `seen`-guarded.
+`traverse_dependents` (`config.py`) fans a factor's tenor out to every factor it transitively depends on, its prerequisites whatever the name says — BFS, `seen`-guarded.
 
 !!! warning "Invariant — throwaway graph, cycle behavior"
-    `topological_sort` rejects cycles with `RuntimeError` and **destroys its input dict** — pass a rebuilt/throwaway graph. `traverse_dependents` yields transitive dependents **excluding** the start node; do not rely on the node appearing in its own output.
+    `topological_sort` rejects cycles with `RuntimeError` and **destroys its input dict** — pass a rebuilt/throwaway graph. `traverse_dependents` yields the transitive prerequisites **excluding** the start node; do not rely on the node appearing in its own output.
 
 ## Stochastic vs static split — `find_models`
 

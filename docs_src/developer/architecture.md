@@ -8,7 +8,7 @@ derivus is a **financial virtual machine**. A job is a program; the engine compi
 | loader | `Context.load_json`, onto the config the context keeps for the market data file the job names |
 | compile | `Config.calculate_dependencies` (discover + order factors) + each process's `precalculate` |
 | instructions | `StochasticProcess.generate` (per factor) and `Deal.calculate` / `pricing.*` (per deal) |
-| execute | the per-batch generate loop in `Calculation.execute` |
+| execute | the per-batch generate loop in `CreditMonteCarlo.execute` |
 | registers / heap | `shared_mem.t_Scenario_Buffer` (simulated paths — a tensor, or a `ScenarioSource` sequence of row blocks inside an inner-MC fork), `t_Static_Buffer` (static leaves) |
 | memoized eval cache | `shared_mem.t_Buffer` |
 

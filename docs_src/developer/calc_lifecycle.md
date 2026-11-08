@@ -8,7 +8,7 @@ page follows that walk in code order; entry points and output are on
 | where | what |
 | --- | --- |
 | `__init__.py` | `Context.run_job` and the `run_*` functions, each one line onto a calculation's `run` |
-| `calculation.py` | the five calculations and how each runs, their states, `batch_seed`, `DealStructure` |
+| `calculation.py` | the six calculations and how each runs, the diary, their states, `batch_seed`, `DealStructure` |
 | `utils.py` | `Calculation_State`, `TimeGrid`, `TensorSchedule`, the curve reads, the `BoundarySet` family |
 | `pricing.py` | `interpolate`, `oss_stream`, `InnerMCRecompute`, `LogVar2FJKit`, the boundary and kink terms |
 
@@ -244,8 +244,8 @@ of a set of more than 5,000 trades.
 The calculation's `Currency` is required: no default names the currency a book reports in. Before
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
 judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a
-`ValueError` names every field it refuses at once: `BaseValuation.run` and `CreditMonteCarlo.run`
-judge the merged block, `HedgeMonteCarlo`, `SIMM`, `SACCR` and the diary where they complete it. `Config.validate` reports the
+`ValueError` names every field it refuses at once: `BaseValuation.run`, `ScenarioValuation.run` and
+`CreditMonteCarlo.run` judge the merged block, `HedgeMonteCarlo`, `SIMM`, `SACCR` and the diary where they complete it. `Config.validate` reports the
 same messages under `calculation`, and a refused block is not walked for factors. A service override
 is judged on what it states before it queues (`schema.stated_messages`), an undeclared key refused
 ([Conventions](conventions.md#declared-defaults)).
@@ -303,7 +303,8 @@ every process; nothing scales it.
     mismatch shifts every later `z_offset`, so a process reads another factor's rows or fails on a
     shape. **Not gated.**
 
-Below an eigenvalue of `1e-8` the matrix is repaired with a WARNING, its size unreported:
+Below an eigenvalue of `1e-8` the matrix is repaired with a WARNING, the size of the change
+unreported:
 `Eigenvalue_Raising` (default) floors eigenvalues at `1e-4` and rescales to a unit diagonal;
 `Alternating_Projections` is Higham's method [@higham2002] without Dykstra's correction (100 passes
 at most, to a relative `1e-8`), a nearby matrix, not provably the nearest. The matrix is no AAD leaf
@@ -317,7 +318,7 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 1. Under `deterministic_batches`, `batch_seed(Random_Seed, b)` reseeds and `set_quasi_batch(b)`
    anchors the quasi stream, `b` the global batch.
 2. `reset` correlates one `randn(num_factors, n·T)` into `t_random_numbers` `(num_factors, T, n)`,
-   resets cashflows and clears `t_Buffer` and `boundary_sets`; `Antithetic` appends the negation of
+   resets cashflows and clears `t_Scenario_Buffer`, `t_Buffer` and `boundary_sets`; `Antithetic` appends the negation of
    a `Batch_Size // 2` draw, pairing path `j` with `j + Batch_Size/2` (an odd `Batch_Size` is one
    column short, unrefused).
 3. Each process's `generate` publishes to `t_Scenario_Buffer` in topological order.
@@ -584,8 +585,9 @@ the inner error is common to the outer paths, and only `MCMC_Simulations` reduce
 `tests/test_multi_gpu.py::test_an_inner_monte_carlo_book_is_bit_identical_in_the_worker_count`,
 `tests/test_barrier_bridge.py::test_a_strip_longer_than_a_block_chunk_prices_to_an_independent_simulation`.
 
-**The strip streams.** The four one-step-survival pricers (discrete barrier, accumulator, TARF,
-autocall; [@glasserman2001; @alm2013]) walk their fixings through `pricing.oss_stream`. Under a
+**The strip streams.** Four of the five one-step-survival pricers (discrete barrier, accumulator, TARF, autocall;
+[@glasserman2001; @alm2013]) walk their fixings through `pricing.oss_stream`; the extendable
+forward draws at its decisions alone. Under a
 gradient on the device a strip goes `ceil(sqrt(n))` fixings at a time, each stretch one checkpoint
 holding the state at its edges. A taped run holds those edges to its batch's end, so there a strip
 is one checkpoint where its projected tape, its fixings times what a row-step of its pricer tapes,
@@ -747,8 +749,9 @@ mass and refuses. A book that registered a boundary correction is refused `Hessi
 base valuation is refused `Greeks: 'All'`: a first-order correction differentiated twice loses its
 density-derivative term. The $O(\varepsilon^2)$ bias shows on volga, so it is a gamma-and-vanna term
 ([xVA](../theory/valuation_adjustments.md#sensitivities)). **Held by** `tests/test_cva_gamma_kink.py`,
-`tests/test_base_valuation_gamma.py::test_a_deal_that_registered_a_boundary_correction_is_refused_by_name`.
-**Not gated:** the point-mass refusal.
+`tests/test_base_valuation_gamma.py::test_a_deal_that_registered_a_boundary_correction_is_refused_by_name`,
+and the point-mass refusal, a knocked-out path's atom at the kink, by
+`tests/test_partial_barrier_json.py::test_the_window_touch_decision_registers_only_where_it_is_a_latch_and_by_default`.
 
 ## Open
 
