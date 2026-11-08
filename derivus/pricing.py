@@ -5778,6 +5778,8 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
             reset_cashflows = cashflows[np.flatnonzero(resetting)]
             cash_index, cash_counts = (np.flatnonzero(resetting).searchsorted(cash_index),
                                        np.add.reduceat(resetting, cash_index))
+        # the rows the compile wrote holding several resets, each folded to one below
+        several = reset_cashflows.np[:, utils.CASHFLOW_INDEX_NumResets] > 1
 
         time_ofs = 0
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
@@ -5830,8 +5832,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
 
             time_ofs += size
 
-            needs_aggregation = all_resets.shape[1] != reset_cashflows.np.shape[0]
-            if needs_aggregation:
+            if several.any():
                 method = factor_dep['CompoundingMethod']
                 reference = deal_data.Instrument.field.get('Reference')
                 if factor_dep['AveragingMethod'] == 'Pre_Aggregation' and method not in ('None', 'OIS'):
@@ -5841,8 +5842,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                             reference, method))
                 _, shared_day, sharing = np.unique(reset_cashflows.np[:, utils.CASHFLOW_INDEX_Pay_Day],
                                                    return_inverse=True, return_counts=True)
-                if method == 'Flat' and ((sharing[shared_day] > 1) & (
-                        reset_cashflows.np[:, utils.CASHFLOW_INDEX_NumResets] > 1)).any():
+                if method == 'Flat' and ((sharing[shared_day] > 1) & several).any():
                     raise utils.UnpriceableSchedule(
                         '{}: Compounding_Method Flat on a payment date gathering several cashflows, '
                         'one of several resets, whose pot the fold across them would compound at the '
@@ -5891,7 +5891,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 # an optionlet expires on the day its rate fixes, its first reset's
                 counts = reset_cashflows.np[:, utils.CASHFLOW_INDEX_NumResets].astype(np.int64)
                 expiries = reset_block.np[np.cumsum(counts) - counts, utils.RESET_INDEX_Reset_Day] - time_slice
-                if factor_dep['AveragingMethod'] == 'Pre_Aggregation' and needs_aggregation:
+                if factor_dep['AveragingMethod'] == 'Pre_Aggregation' and several.any():
                     # each reset in the period is its own optionlet - its own dates, accrual and a
                     # strike broadcast from its parent cashflow - rather than one option on the
                     # compounded period

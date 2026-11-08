@@ -66,8 +66,6 @@ features kept ahead of their build, not rows to close.
   a job and links each result table for download, as it does; it then retires. It raises on three
   field names outside its write allowlist and on multi-column Tables outside a four-name allowlist,
   and fourteen output-shaped descriptors have no widget.
-- `pv_float_cashflow_list` decides a coupon's resets need folding by comparing their count with the
-  cashflows', a shape; an explicit mark on the compiled cashflows would replace it.
 
 **The tests.**
 
