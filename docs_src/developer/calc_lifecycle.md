@@ -603,6 +603,22 @@ the autocall's counterfactual) is built under `no_grad`. **Held by**
 `tests/test_recompute_inner_mc.py::test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient`,
 `::test_a_taped_strip_that_fits_is_one_checkpoint` (CUDA only).
 
+**A strip with no gradient is a CUDA graph.** On the device the plain walk of a strip carrying no
+gradient is captured the second time its key is walked and replayed then and after
+(`pricing.StripGraph`), a step being some fifty elementwise kernels on `[batch, 2 x inner]`. The key
+is all the walk launches but its tensors' values: the step's code, the strip's length, and every
+scalar, array, list and function the state and the step's defaults and closure hold, a tensor by
+its layout. A replay so launches the eager walk's kernels on the eager walk's layouts and is
+bit-identical to it, its tensors copied into buffers of their layouts before it and its outputs out
+after, the buffers and one memory pool shared by every graph of the calculation. A step reads
+nothing off the device and uploads nothing, which a capture cannot hold: a fixing's length is
+decided off its strip's numpy source, and the strip is uploaded once a calculation
+(`Calculation_State.upload`). A walk holding a host tensor, a tape or an object (a walking kit, a
+smoothed row's ledger), or run under debug logging, whose lines read the device, stays eager, and
+a key walked once is never captured. **Held by**
+`tests/test_multi_gpu.py::test_a_strip_replayed_on_the_device_is_the_strip_walked` (CUDA only),
+`::test_a_batch_reads_back_and_uploads_only_what_it_simulated`.
+
 **A dense grid is priced in pieces.** A pricer prices the time-grid rows sharing a fixing interval
 together, and a recompute's backward replays a node's rows at once. Under a gradient on the device
 `pricing.oss_rows` measures what a row-step of each pricer tapes and what its replay peaks at, once

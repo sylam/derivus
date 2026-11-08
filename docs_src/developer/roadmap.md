@@ -19,13 +19,6 @@ features kept ahead of their build, not rows to close.
 
 **Speed and memory.**
 
-- **The inner Monte Carlo's step fused** (2026-10-07, re-measured 2026-10-15, M). A one-step-survival
-  step is about fifty elementwise kernels on `[batch, 2 x inner]`, and one batch of a 58-leg credit
-  Monte Carlo keeps the device 38% busy at 1,024 paths and 63% at 4,096, with 343,000 kernel
-  launches, 7,200 host syncs and 6,200 pageable host-to-device copies per batch. A CUDA graph of the
-  pure step replays bit-identically to eager and is worth 7.6x on one row of 32,768 paths, 1.9x at
-  256 rows of 4,096 and 1.1x at 2,048 rows, so the ceiling is 2.6x at 1,024 paths and 1.6x at 4,096,
-  and the syncs and copies go first; `torch.compile` is not bit-identical (5e-6 relative) and is out.
 - **The LogVar2FJ walk's checkpoint memory** (2026-10-07, M). Under a gradient the walk holds 79%
   of peak memory in its checkpoint segments.
 

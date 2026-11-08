@@ -14,6 +14,7 @@
 import logging
 import math
 import time
+import types
 from functools import partial
 
 import numpy as np
@@ -427,7 +428,7 @@ def deal_carry_rate(factor_dep, carry, days, time_grid, shared):
     """`zero_carry_rate` over the year fraction a deal's pricer multiplies a carry by, its discount
     curve's day count of `days`."""
     years = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount](days)
-    return zero_carry_rate(carry, days, shared.one.new(years), time_grid, shared)
+    return zero_carry_rate(carry, days, shared.upload(np.asarray(years)), time_grid, shared)
 
 
 def total_log_forward(carry_rate, times, cumulative=False):
@@ -574,6 +575,182 @@ def device_budget(shared):
                torch.cuda.get_per_process_memory_fraction(device) * total - held) / 2
 
 
+def oss_walk(step, lo, hi, *state):
+    """Fixings ``lo`` to ``hi`` of a strip walked plain from ``state``: the state they leave and
+    every step's outputs in order."""
+    outputs = []
+    for j in range(lo, hi):
+        state, out = step(j, *state)
+        outputs.append(out)
+    return state, outputs
+
+
+class StripGraph(object):
+    """A strip's plain walk on the device captured as one CUDA graph, replayed where a run without
+    a gradient walks a strip of the same key again.
+
+    The key is all a walk launches but its tensors' values: the step's code, the strip's length,
+    and every scalar, array, list and function the state and the step's defaults and closure
+    hold, a tensor by its layout. A replay so launches the eager walk's kernels on its layouts and
+    is bit-identical to it. A key's first walk is eager and keeps its outputs' layouts, its second
+    is captured, its tensors read from and its outputs written to buffers of their layouts, which
+    every graph of the calculation shares, as it shares one memory pool: one stream replays them
+    one at a time, each walk's tensors copied in before and its outputs copied out after. A step
+    therefore reads nothing off the device and uploads nothing, which a capture cannot hold.
+    """
+
+    #: how deep a closure is followed into the functions it holds
+    DEPTH = 4
+
+    class Slot(int):
+        """A tensor's place among a walk's outputs."""
+
+    def __init__(self, shared, step, state, n, tensors, layouts):
+        """`oss_walk(step, 0, n, *state)` captured, `tensors` its inputs and `layouts` its
+        outputs'."""
+        self.device = shared.one.device
+        store = shared.t_PreCalc.get(('strip_graph', self.device))
+        if store is None:
+            store = shared.t_PreCalc['strip_graph', self.device] = {
+                'pool': torch.cuda.graph_pool_handle(), 'held': {},
+                'stream': torch.cuda.Stream(self.device)}
+        self.inputs = self.buffers(store, 'in', [self.layout(x) for x in tensors])
+        self.outputs = self.buffers(store, 'out', layouts)
+        held = {id(x): whole for x, (_, whole) in zip(tensors, self.inputs)}
+        swap = lambda x: held[id(x)] if torch.is_tensor(x) else x
+        self.graph = torch.cuda.CUDAGraph()
+        with torch.cuda.device(self.device), torch.cuda.stream(store['stream']):
+            self.graph.capture_begin(store['pool'], 'thread_local')
+            try:
+                self.template, out = self.pack(oss_walk(
+                    self.mapped(step, swap), 0, n, *self.mapped(state, swap)))
+                for (part, _), x in zip(self.outputs, out):
+                    part.copy_(self.part(x))
+            finally:
+                self.graph.capture_end()
+
+    def __call__(self, tensors):
+        """The walk on `tensors`, replayed."""
+        for (part, _), x in zip(self.inputs, tensors):
+            part.copy_(self.part(x))
+        with torch.cuda.device(self.device):
+            self.graph.replay()
+        values = []
+        for part, whole in self.outputs:
+            mine, value = self.allocate(self.layout(whole))
+            mine.copy_(part)
+            values.append(value)
+        return self.mapped(self.template, lambda x: values[x] if isinstance(x, self.Slot) else x)
+
+    @classmethod
+    def walk(cls, step, state, n, shared):
+        """`oss_walk(step, 0, n, *state)`, by a graph from its key's second walk on the device."""
+        tensors = []
+        try:
+            key = ('strip_graph', n, cls.key((step, state), tensors, {}))
+        except TypeError:
+            return oss_walk(step, 0, n, *state)
+        seen = shared.t_PreCalc.get(key)
+        if isinstance(seen, list):
+            seen = shared.t_PreCalc[key] = cls(shared, step, state, n, tensors, seen)
+        if seen is not None:
+            return seen(tensors)
+        result = oss_walk(step, 0, n, *state)
+        shared.t_PreCalc[key] = [cls.layout(x) for x in cls.pack(result)[1]]
+        return result
+
+    @classmethod
+    def key(cls, obj, tensors, index, depth=0):
+        """`obj` as a hashable key, each tensor appended to `tensors` once and keyed by its place
+        and layout; TypeError where it holds what a replay cannot take."""
+        if torch.is_tensor(obj):
+            if not obj.is_cuda or obj.requires_grad and torch.is_grad_enabled():
+                raise TypeError('a host tensor or a tape')
+            if id(obj) not in index:
+                index[id(obj)] = len(tensors)
+                tensors.append(obj)
+            return index[id(obj)], cls.layout(obj)
+        if isinstance(obj, (float, np.floating)):
+            # by its bits: a zero's sign reaches a kernel's arithmetic
+            return type(obj), float(obj).hex()
+        if obj is None or isinstance(obj, (bool, int, str, np.generic)):
+            return type(obj), obj
+        if isinstance(obj, np.ndarray) and obj.dtype != object:
+            return obj.dtype.str, obj.shape, obj.tobytes()
+        if isinstance(obj, (tuple, list)):
+            return type(obj), tuple(cls.key(x, tensors, index, depth) for x in obj)
+        if isinstance(obj, types.FunctionType) and depth < cls.DEPTH and not obj.__kwdefaults__:
+            try:
+                cells = [c.cell_contents for c in obj.__closure__ or ()]
+            except ValueError:
+                raise TypeError('an unbound name')
+            return obj.__code__, cls.key((obj.__defaults__, cells), tensors, index, depth + 1)
+        if isinstance(obj, (types.ModuleType, types.BuiltinFunctionType)):
+            return obj
+        raise TypeError('a {} is not keyed'.format(type(obj).__name__))
+
+    @classmethod
+    def mapped(cls, obj, leaf, depth=0):
+        """`obj` with `leaf` applied to each leaf, a tuple, list or function rebuilt on its own."""
+        if isinstance(obj, (tuple, list)):
+            items = [cls.mapped(x, leaf, depth) for x in obj]
+            return type(obj)(*items) if hasattr(obj, '_fields') else type(obj)(items)
+        if isinstance(obj, types.FunctionType) and depth < cls.DEPTH:
+            return types.FunctionType(
+                obj.__code__, obj.__globals__, obj.__name__,
+                cls.mapped(obj.__defaults__, leaf, depth + 1),
+                tuple(types.CellType(cls.mapped(c.cell_contents, leaf, depth + 1))
+                      for c in obj.__closure__) if obj.__closure__ else None)
+        return leaf(obj)
+
+    @classmethod
+    def pack(cls, obj):
+        """`obj` with each tensor a `Slot` of its place among them, and the tensors, once each."""
+        out, index = [], {}
+
+        def slot(x):
+            if not torch.is_tensor(x):
+                return x
+            if id(x) not in index:
+                index[id(x)] = len(out)
+                out.append(x)
+            return cls.Slot(index[id(x)])
+        return cls.mapped(obj, slot), out
+
+    @staticmethod
+    def layout(x):
+        """What a kernel reads of `x` but its values."""
+        return x.dtype, x.device, tuple(x.shape), x.stride(), x.storage_offset()
+
+    @staticmethod
+    def part(x):
+        """`x` with each broadcast axis cut to one: what a copy reads and writes."""
+        return x[tuple(slice(0, 1) if step == 0 else slice(None) for step in x.stride())]
+
+    @staticmethod
+    def allocate(layout):
+        """A new tensor of `layout`, as its writable part and its whole."""
+        dtype, device, size, stride, offset = layout
+        cut = [n if step else min(n, 1) for n, step in zip(size, stride)]
+        extent = 1 + sum((n - 1) * step for n, step in zip(cut, stride)) if all(cut) else 0
+        part = torch.empty(offset + extent, dtype=dtype, device=device).as_strided(
+            cut, stride, offset)
+        return part, part.expand(size)
+
+    @classmethod
+    def buffers(cls, store, side, layouts):
+        """A buffer per layout, the graphs sharing each by its layout and its rank among the
+        walk's own of that layout."""
+        rank, out = {}, []
+        for layout in layouts:
+            rank[layout] = rank.get(layout, -1) + 1
+            key = (side, layout, rank[layout])
+            if key not in store['held']:
+                store['held'][key] = cls.allocate(layout)
+            out.append(store['held'][key])
+        return out
+
+
 def oss_stream(step, state, n, shared, stream=True):
     """Walk ``step(j, *state) -> (state, outputs)`` over a strip's ``n`` fixings: the final state
     and every step's outputs in order.
@@ -584,18 +761,15 @@ def oss_stream(step, state, n, shared, stream=True):
     ``n`` times what a row-step of its pricer tapes (`oss_rows`), fits `device_budget`. In a replay
     (`InnerMCRecompute`), whose tape dies with its block's backward, and in the probe measuring the
     row-step, a stretch walks plain, the fastest walk, while the tape laid and the last stretch's
-    for each fixing still to walk fit the budget. Otherwise it is the plain loop. The step must be
-    PURE and bind its row's tensors as defaults - a checkpoint replays it after the loop moved on.
+    for each fixing still to walk fit the budget. Otherwise it is the plain loop, on the device a
+    `StripGraph`. The step must be PURE and bind its row's tensors as defaults - a checkpoint
+    replays it after the loop moved on.
     """
-    def run(lo, hi, *state):
-        outputs = []
-        for j in range(lo, hi):
-            state, out = step(j, *state)
-            outputs.append(out)
-        return state, outputs
-
+    run = partial(oss_walk, step)
     if not (stream and n and shared.one.is_cuda and taped(state + (step.__defaults__ or ()))):
-        return run(0, n, *state)
+        # a debug run's steps read the device for their log lines
+        return StripGraph.walk(step, state, n, shared) if n and shared.one.is_cuda and not (
+            logging.getLogger().isEnabledFor(logging.DEBUG)) else run(0, n, *state)
     name = step.__qualname__.split('.')[0]
     cost = shared.t_PreCalc.get(('oss_rows', name))
     measure = cost is None or shared.recompute_inner_mc
@@ -1875,7 +2049,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     control lands within ~1.4% of Black.
     """
 
-    def sim_spot_oss(offset, num_sims, row_times,
+    def sim_spot_oss(offset, num_sims, row_times, steps,
                      spot_prices, vols, sd_to_expiry, times, carry, discount_rates, *scalars):
         """Run the OSS inner Monte Carlo; returns ``(mtm,)``, the tuple being
         ``InnerMCRecompute``'s contract - plus, under a kit, the in-out-parity vanilla as a
@@ -1906,8 +2080,8 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         dt = times.unsqueeze(axis=2)                        # [N_block, N_fix, 1]
         carry_int = carry * dt                              # [N_block, N_fix, batch]
         # a ZERO-LENGTH step moves nothing: it resolves against the row's own spot below, and the
-        # mask is what makes it the identity. Read on the HOST - the day-count strip is constant
-        zero_step = (times <= 0).detach().cpu().numpy()     # [N_block, N_fix]
+        # mask is what makes it the identity. Read off `steps`, the strip's numpy source
+        zero_step = steps <= 0                              # [N_block, N_fix]
         if kit is None:
             if spread:
                 # the legs' strips sit on an axis of their own, after the block's
@@ -2191,7 +2365,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         fixings = (dual_samples.np[np.newaxis, sample_index_t:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         fixing_block = daycount_fn(fixings)
-        cum_t = spot_block.new(fixing_block)
+        cum_t = shared.upload(fixing_block, spot_block.dtype)
         drifts = zero_carry_rate(
             (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
             fixings, cum_t, t_block, shared)
@@ -2212,8 +2386,9 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
             drifts = drifts + adj['carry_adj']
             spot_block = spot_block * adj['spot_scale']
 
-        sample_ts = drifts.new(
-            np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
+        # the interval strip, and its numpy source a step's length is decided off
+        steps = np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)])
+        sample_ts = shared.upload(steps, drifts.dtype)
         row_times = daycount_fn(t_block[:, utils.TIME_GRID_MTM])
         # the carry over each INTERVAL, which is not the zero carry to each fixing
         # (forward_carry_rate); `fixing_block` is the cumulative strip the difference needs
@@ -2251,18 +2426,18 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         # discount rates per fixing: [N_block, N_fix, batch]
         discount_rates = utils.calc_discount_rate(discount_block, fixings, shared)
 
-        all_hit = row_barrier_hit.all()
-        some_hit = row_barrier_hit.any()
+        # both read in one trip to the host
+        all_hit, some_hit = torch.stack((row_barrier_hit.all(), row_barrier_hit.any())).tolist()
 
         # THE OSS, run even where every row has resolved if a walking kit's hit leg is inside it
         run_oss = not all_hit or (kit is not None and direction == BARRIER_IN)
         if run_oss:
-            build = lambda times, *theta: (partial(
-                sim_spot_oss, sample_index_t, shared.MCMC_sims, times), theta + scalars)
+            build = lambda times, steps, *theta: (partial(
+                sim_spot_oss, sample_index_t, shared.MCMC_sims, times, steps), theta + scalars)
             # the SAME callable either way: under the node it is called twice
             pieces = [InnerMCRecompute.run(shared, simulate, *theta)
                       for _, simulate, theta in oss_rows(
-                          shared, build, discount_rates.shape[1], row_times, spot_block,
+                          shared, build, discount_rates.shape[1], row_times, steps, spot_block,
                           interval_vols, sd_to_expiry, sample_ts, fwd_drifts, discount_rates)]
             oss_result, *parity = (x[0] if len(x) == 1 else torch.cat(x) for x in zip(*pieces))
             oss_result = nominal * oss_result
@@ -3056,7 +3231,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
     def survives(s):
         return (s < barrier) if barrier_up else (s > barrier)
 
-    def sim_spot_accumulator(settlement, fixing_offset, num_sims, row_times,
+    def sim_spot_accumulator(settlement, steps, fixing_offset, num_sims, row_times,
                              spot_prices, times, carry, prev_alive, discount_rates, vols_all,
                              past_fixings, *scalars):
         """OSS inner Monte Carlo over one block of MTM rows; mean PV and alive-branch PV per row.
@@ -3070,8 +3245,8 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         # the declared model as a kit - the pricer names it once, here
         kit = oss_model_kit(factor_dep, scalars)
         mcmc, alive, settled, settle_rows, settle_cols = [], [], [], [], []
-        for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
-                discount_rates, spot_prices, carry, times, settlement)):
+        for i, (D, s, carry_rate, delta_t, host_dt, tau) in enumerate(zip(
+                discount_rates, spot_prices, carry, times, steps, settlement)):
             reduced_samples = len(delta_t)
             if reduced_samples == 0:
                 mcmc.append(shared.one.new_zeros(shared.simulation_batch))
@@ -3097,11 +3272,11 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             ledger = SurvivalLedger(L) if smooth else None
 
             def fixing(j, Sj, P, L, P_alive, L_alive, D=D, carry_rate=carry_rate, delta_t=delta_t,
-                       tau=tau, vols=vols, u=u, law=law, ledger=ledger):
+                       host_dt=host_dt, tau=tau, vols=vols, u=u, law=law, ledger=ledger):
                 """One fixing: the state it leaves and the settlement it returns (`oss_stream`)."""
                 dt = delta_t[j]
                 Dj = D[j].reshape(-1, 1)
-                if dt > 0:
+                if host_dt[j] > 0:
                     fwd_carry = carry_rate[j].reshape(-1, 1)
                     if kit is None:
                         fwd_vol = vols[j].reshape(-1, 1)
@@ -3122,9 +3297,9 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
                     p_alive = 1.0
                 intrinsic = (payoff_spot - strike) * callOrPut
                 cashflow = F.relu(intrinsic) * notional_itm - F.relu(-intrinsic) * notional_otm
-                if second_order and dt > 0:
+                if second_order and host_dt[j] > 0:
                     # ONE kernel serves both legs - `relu(-x)` kinks where `relu(x)` does and the
-                    # term is even - so the net carries (N1 - N2) of it. `dt > 0` keeps OBSERVED
+                    # term is even - so the net carries (N1 - N2) of it. A length keeps OBSERVED
                     # fixings out: their spot is a mass rather than a density
                     kink = accrual_kink_term(intrinsic, j)
                     cashflow = cashflow + kink * (notional_itm - notional_otm)
@@ -3242,14 +3417,15 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         fixings = (fx_samples[np.newaxis, settle_index_local:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis]).clip(min=0)
         fixing_block = daycount_fn(fixings)
-        cum_t = spot_block.new(fixing_block)
+        cum_t = shared.upload(fixing_block, spot_block.dtype)
         drifts = zero_carry_rate(
             (factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1]), fixings, cum_t,
             t_block, shared)
         settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -
                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
-        sample_ts = drifts.new(
-            np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
+        # the interval strip, and its numpy source a step's length is decided off
+        steps = np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)])
+        sample_ts = shared.upload(steps, drifts.dtype)
         discount_rates = utils.calc_discount_rate(discount_block, settlement, shared)
         # the interval carry and vol strips, both theta rather than loop state; both take the ZERO
         # carry `drifts`, a forward to each tenor being the cumulative integral
@@ -3259,16 +3435,17 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not scalars else spot_block.new_empty(0)
 
-        def build(t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
+        def build(t_block, settlement, steps, spot_block, sample_ts, fwd_drifts, discount_rates,
+                  vols):
             """A piece's callable and theta (`oss_rows`)."""
-            return (partial(sim_spot_accumulator, settlement, settle_index_local,
+            return (partial(sim_spot_accumulator, settlement, steps, settle_index_local,
                             shared.MCMC_sims, daycount_fn(t_block[:, utils.TIME_GRID_MTM])),
                     (spot_block, sample_ts, fwd_drifts, alive_seq[settle_index_local],
                      discount_rates, vols, all_samples) + scalars)
 
         # a smoothed row's ledger walks its strip plain, so it streams no fixings
         for (t_block, *_, discount_rates, _), simulate, theta in oss_rows(
-                shared, build, 0 if smooth else sample_ts.shape[1], t_block, settlement,
+                shared, build, 0 if smooth else sample_ts.shape[1], t_block, settlement, steps,
                 spot_block, sample_ts, fwd_drifts, discount_rates, vols):
             # the SAME callable either way: under the node it is called twice
             block_mtm, block_alive, block_settled, settle_rows, settle_cols = InnerMCRecompute.run(
@@ -3899,7 +4076,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         """The running accrual after one more fixing, clamped at the target."""
         return (accumulated + accrued(s, k, C, inverted)).clamp(max=targetValue)
 
-    def sim_spot_tarf(settlement, num_sims, settle_offset, row_times,
+    def sim_spot_tarf(settlement, steps, num_sims, settle_offset, row_times,
                       spot_prices, times, carry, prev_accum, discount_rates, vols_all,
                       past_fixings, *scalars):
         """Inner one-step-survival Monte Carlo over one block of MTM rows; the mean PV per row.
@@ -3934,8 +4111,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         # per row, what each OBSERVED fixing pays on a weight of one. The count varies inside a
         # block - a later row has seen more of the same strip - so the depth is returned with it
         obs_pend = []
-        for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
-                discount_rates, spot_prices, carry, times, settlement)):
+        for i, (D, s, carry_rate, delta_t, host_dt, tau) in enumerate(zip(
+                discount_rates, spot_prices, carry, times, steps, settlement)):
 
             # the fixings still to walk, at least one: a deal's grid stops at its last settlement
             reduced_samples = len(delta_t)
@@ -3968,8 +4145,8 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             row_pend = []
 
             def fixing(j, Sj, P, L, R, P_alive, L_alive, D=D, carry_rate=carry_rate,
-                       delta_t=delta_t, tau=tau, vols=vols, u=u, law=law, ledger=ledger,
-                       remaining_target=remaining_target):
+                       delta_t=delta_t, host_dt=host_dt, tau=tau, vols=vols, u=u, law=law,
+                       ledger=ledger, remaining_target=remaining_target):
                 """One fixing: the state it leaves and the settlement, the pending payment and the
                 knock-in decision it returns (see `oss_stream`)."""
                 settle = pend = knock = None
@@ -3979,7 +4156,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 Dj = D[j].reshape(-1, 1)
                 use_past_fixing = False
 
-                if dt > 0:
+                if host_dt[j] > 0:
                     fwd_carry = carry_rate[j].reshape(-1, 1)  # [batch,1]
                     if kit is None:
                         fwd_vol = vols[j].reshape(-1, 1)      # [batch,1]
@@ -4264,14 +4441,15 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         fixings = (fx_samples[np.newaxis, settle_index_local:, utils.RESET_INDEX_End_Day] -
                    t_block[:, utils.TIME_GRID_MTM, np.newaxis]).clip(min=0)
         fixing_block = daycount_fn(fixings)
-        cum_t = spot_block.new(fixing_block)
+        cum_t = shared.upload(fixing_block, spot_block.dtype)
         drifts = zero_carry_rate(
             (factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1]), fixings, cum_t,
             t_block, shared)
         settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -
                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
-        sample_ts = drifts.new(
-            np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)]))
+        # the interval strip, and its numpy source a step's length is decided off
+        steps = np.hstack([fixing_block[:, 0, np.newaxis], np.diff(fixing_block, axis=1)])
+        sample_ts = shared.upload(steps, drifts.dtype)
         discount_rates = utils.calc_discount_rate(discount_block, settlement, shared)
         # the interval carry and vol strips, both theta rather than loop state. Both take the ZERO
         # carry `drifts`, a forward to each tenor being the cumulative integral. This pricer reads
@@ -4282,16 +4460,17 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
             factor_dep['Invert_Moneyness'], use_forwards=True), cum_t,
             sample_ts) if not scalars else spot_block.new_empty(0)
 
-        def build(t_block, settlement, spot_block, sample_ts, fwd_drifts, discount_rates, vols):
+        def build(t_block, settlement, steps, spot_block, sample_ts, fwd_drifts, discount_rates,
+                  vols):
             """A piece's callable and theta (`oss_rows`)."""
-            return (partial(sim_spot_tarf, settlement, shared.MCMC_sims, settle_index_local,
+            return (partial(sim_spot_tarf, settlement, steps, shared.MCMC_sims, settle_index_local,
                             daycount_fn(t_block[:, utils.TIME_GRID_MTM])),
                     (spot_block, sample_ts, fwd_drifts, accumulation[settle_index_local],
                      discount_rates, vols, all_samples) + scalars)
 
         # a smoothed row's ledger walks its strip plain, so it streams no fixings
         for (t_block, *_), simulate, theta in oss_rows(
-                shared, build, 0 if smooth else sample_ts.shape[1], t_block, settlement,
+                shared, build, 0 if smooth else sample_ts.shape[1], t_block, settlement, steps,
                 spot_block, sample_ts, fwd_drifts, discount_rates, vols):
             # the SAME callable either way: under the node it is called twice
             outputs = InnerMCRecompute.run(shared, simulate, *theta)

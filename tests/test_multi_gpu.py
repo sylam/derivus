@@ -261,17 +261,36 @@ def test_a_sobol_consuming_world_is_bit_identical_in_the_worker_count():
             'from history rather than from the global batch index' % n)
 
 
-def inner_pooled(n, device='cpu'):
-    """A book priced by an inner Monte Carlo - a discretely monitored down-and-out call on the GBM
-    equity, 32 paths a batch and 64 inner - its shards pooled in worker order."""
-    deal = dict(CALL, Object='EquityBarrierOption', Reference='EQDAO', Barrier_Type='Down_And_Out',
-                Barrier_Price=85.0, Cash_Rebate=0.0, Expiry_Date=BASE + pd.DateOffset(years=1),
-                Barrier_Dates=[BASE + pd.DateOffset(months=m) for m in range(1, 13)],
-                Barrier_Monitoring_Frequency=pd.DateOffset(days=0))
+#: a discretely monitored down-and-out call on the GBM equity, monthly over a year
+EQDAO = dict(CALL, Object='EquityBarrierOption', Reference='EQDAO', Barrier_Type='Down_And_Out',
+             Barrier_Price=85.0, Cash_Rebate=0.0, Expiry_Date=BASE + pd.DateOffset(years=1),
+             Barrier_Dates=[BASE + pd.DateOffset(months=m) for m in range(1, 13)],
+             Barrier_Monitoring_Frequency=pd.DateOffset(days=0))
+
+
+def fx_document():
+    """The TARF fixture with the accumulator fixture's deal beside it, on a GBM EUR."""
+    tarf, accumulator = derivus.Context(), derivus.Context()
+    for context, name in ((tarf, 'fx_tarf_job.json'), (accumulator, 'fx_accumulator_job.json')):
+        context.load_json(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
+                                       name))
+    c = tarf.current_cfg
+    c.deals['Deals']['Children'] += accumulator.current_cfg.deals['Deals']['Children']
+    c.params['Price Models']['GBMAssetPriceModel.EUR'] = {'Vol': 0.12, 'Drift': 0.0}
+    c.params['Model Configuration'].append('FxRate', (), 'GBMAssetPriceModel')
+    c.deals['Calculation'] = {'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': 'USD'}
+    return c
+
+
+def inner_pooled(n, device='cpu', deals=(EQDAO,), document=job_document):
+    """A book priced by an inner Monte Carlo, 32 paths a batch and 64 inner, its shards pooled in
+    worker order: `document`'s, or `deals` on it."""
     frames = []
     for job_id in range(n):
-        config = job_document()
-        config.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})}]
+        config = document()
+        if deals:
+            config.deals['Deals']['Children'] = [{'Instrument': construct_instrument(deal, {})}
+                                                 for deal in deals]
         _, out = derivus.run_cmc(config, torch.float32,
                                  dict(overrides(), Batch_Size=32, MCMC_Simulations=64),
                                  job_id, n, None, deterministic_batches=True, device=device)
@@ -290,6 +309,27 @@ def test_an_inner_monte_carlo_book_is_bit_identical_in_the_worker_count():
     for n in (2, 4):
         assert sha(inner_pooled(n)) == reference, (
             'the inner-MC book moved at n=%d - an inner draw reads a position' % n)
+
+
+@needs_cuda
+@pytest.mark.parametrize('book', ['equity', 'fx'])
+def test_a_strip_replayed_on_the_device_is_the_strip_walked(book):
+    """On the device a strip's walk is a CUDA graph from its key's second walk on
+    (`pricing.StripGraph`): one worker walks a book's four batches eagerly, captures and replays,
+    four walk one each eagerly, and the pooled matrix is the same bytes. One book holds two
+    barriers alike but for their level and an autocall on their equity, the other a TARF and an
+    accumulator.
+
+    Killing mutations: a replay reading the buffers without its own tensors copied in; a
+    closure's scalars left out of the key, the two barriers then replaying one graph; the TARF's
+    or the accumulator's step testing its length on the device, which no capture holds."""
+    deals, document = ((EQDAO, dict(EQDAO, Reference='EQDAO80', Barrier_Price=80.0), dict(
+        TRAFFIC_DEALS[1], Reference='EQAC', Equity='EQ', Dividends='EQ', Equity_Volatility='EQ')),
+        job_document) if book == 'equity' else ((), fx_document)
+    reference = sha(inner_pooled(1, 'cuda', deals, document))
+    for n in (2, 4):
+        assert sha(inner_pooled(n, 'cuda', deals, document)) == reference, (
+            'the inner-MC book moved at n=%d on the device - a replay is not its walk' % n)
 
 
 @needs_two_devices
@@ -446,8 +486,8 @@ def test_the_cuda_context_path_shards_end_to_end():
 # ------------------------------------------------------------------ host traffic per batch
 
 #: The per-batch count `HostTraffic` takes on `traffic_document`, CPU and CUDA alike: 801 while
-#: deal-static arrays went up and wing decisions came back every batch, 54 once they do not.
-HOST_TRAFFIC_PER_BATCH = 54
+#: deal-static arrays went up and wing decisions came back every batch, 25 once they do not.
+HOST_TRAFFIC_PER_BATCH = 25
 
 SKEW_TENORS = [0.02, 0.25, 0.5, 0.75, 1.0, 2.0]
 SKEW = {'ATM_Vol': 0.25, 's': -0.15, 'L': 0.30, 'R': 0.20, 'C': -0.35, 'D': 0.35, 'lam': 0.5,
@@ -542,14 +582,15 @@ def host_traffic(batches, device):
 @pytest.mark.parametrize('device', ['cpu', pytest.param('cuda', marks=needs_cuda)])
 def test_a_batch_reads_back_and_uploads_only_what_it_simulated(device):
     """What a batch hands between host and device and recomputes from static data is the count at
-    three batches less the count at one, halved: 801 before, 54 after, on CPU and CUDA alike. A
+    three batches less the count at one, halved: 801 before, 25 after, on CPU and CUDA alike. A
     surface's grid and expiry, its wings' zero test, a curve's scenario rows, a step's length and
     a leg's index arrays are fixed for the run, so they go up or come back once a calculation.
 
     Killed by any one reverted: the Skew read's numpy-indexed gathers and wing bools (+675), the
     curve read's per-batch row upload (+19), the autocall walk's step test on the device (+23),
-    the flat surface's plan and the strip's and float leg's per-batch uploads (+29); and by
-    `Calculation_State.upload` copying on every call."""
+    the flat surface's plan and the strip's and float leg's per-batch uploads (+29), the barrier
+    walk's zero-length test on the device (+8), its strips' per-batch uploads (+8) and its hit
+    flags read one at a time (+12); and by `Calculation_State.upload` copying on every call."""
     once, once_skipped = host_traffic(1, device)
     thrice, thrice_skipped = host_traffic(3, device)
     assert once_skipped == thrice_skipped == 0, 'a deal was skipped, so its reads went uncounted'
