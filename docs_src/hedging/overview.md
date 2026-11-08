@@ -15,7 +15,10 @@ the instrument / cash-account / hedge name sets, per-instrument metadata, the ac
 (position limits, turnover cost, spreads, margin funding, corridor), the objective, the solver
 config, the portfolio state, and the burn-in and inner-belief switches the calculation and a
 process read; the calculation reads the block's deal containers, `Tradable_Instruments` and
-`Liabilities`, to price them, and nothing else of it.
+`Liabilities`, to price them, and nothing else of it. Every knob the block declares is read there,
+a stated value reaching the runtime under the knob's own name, and the runtime holds nothing the
+block, its deals or the world do not name. **Held by**
+`tests/test_action_space_and_artifact.py::test_the_runtime_reads_every_knob_the_hedging_problem_declares_and_none_it_does_not`.
 
 The hedge legs, `Tradable_Instruments` less the cash accounts, are read in the order of their deals'
 `Maturity_Date`, ties as stated: the order of `names['hedges']`, so of every per-leg axis

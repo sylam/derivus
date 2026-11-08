@@ -64,7 +64,6 @@ features kept ahead of their build, not rows to close.
 - **Three checks are ungated** (2026-08-21): the vol term structure reaching the monitoring, the
   payoff's forward against the vol surface's, and rate units
   ([Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open)).
-- **A declared-versus-read gate on the `Hedging_Problem` knobs**, lost with the mock-built suite.
 
 ## Designed, not built
 

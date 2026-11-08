@@ -20,6 +20,7 @@ shallow sweep so the gates run fast. Every run, training and loaded evaluation a
 document through `load_json` + `run_job`.
 """
 import ast
+import itertools
 import json as jsonlib
 import logging
 import math
@@ -1632,6 +1633,86 @@ def test_the_hedging_problem_is_judged_at_every_depth(block, key, value, message
     hp.setdefault(block, {'Object': 'DiffSolverV2'})[key] = value
     with pytest.raises(ValueError, match=re.escape(message)):
         _run(cfg)
+
+
+#: The maps and tables `Hedging_Problem` declares, stated; the fixture's deals, spot history, cash
+#: instruments and boxes stand.
+MAPS = {'Positions': {'PL_APR_2026': -1, 'PL_JUL_2026': -2, 'PL_OCT_2026': -3},
+        'Cash_Balances': {'USD_CASH': 5000.0}, 'Margin_Balances': {'USD_CASH': 70.0},
+        'Bid_Offer_Spread_Per_Instrument': {'PL_JUL_2026': 13.0}, 'Active_Hedge_Indices': [0, 2],
+        'Total_Position_Schedule': [{'Step': 0, 'Min_Total': -40, 'Max_Total': 40}],
+        'Allocation_Weights': [{'Step': 0, 'Instrument': 'PL_JUL_2026', 'Weight': 0.25},
+                               {'Step': 0, 'Instrument': 'PL_OCT_2026', 'Weight': 0.75}]}
+#: A menu stated at the value under which the boundary reads another knob at all.
+MODES = {'Objective.Object': 'AsymmetricUtility_Huber', 'Evaluator.Allocation_Mode': 'Exposure'}
+#: A knob the runtime holds under another name; the liabilities, which the calculation prices, it
+#: does not hold.
+RENAMED = {'Evaluator': 'accounting', 'Cash_Instruments': 'cash_accounts',
+           'Tradable_Instruments': 'tradables', 'Liabilities': None}
+#: What the runtime holds off the deals and the world: the legs, the cash routing, the commodities,
+#: the published state and the utility scale its frame mirrors in.
+DERIVED = {'names', 'hedges', 'instrument_to_cash_account', 'referenced_commodities',
+           'privileged_layout', 'utility_scale', 'utility_scale_schedule'}
+
+
+def _numbers(x):
+    """Every number `x` holds, through its records and sequences."""
+    if isinstance(x, (dict, list, tuple)):
+        return {n for v in (x.values() if isinstance(x, dict) else x) for n in _numbers(v)}
+    return {x} if isinstance(x, (int, float)) and not isinstance(x, bool) else set()
+
+
+def test_the_runtime_reads_every_knob_the_hedging_problem_declares_and_none_it_does_not():
+    """`construct_hedge_runtime` is the one boundary, every consumer indexing the runtime it returns
+    (Hedging Overview): the client document stating every knob `Hedging_Problem` declares away
+    from its default - a menu at its last other value, or at the one `MODES` names where the
+    boundary reads another knob under it alone, a number at a sentinel of its own, a text at its
+    own name, the maps and tables as `MAPS` states them - returns a runtime holding each under the
+    knob's own name lowercased (`RENAMED` aside), a menu lowercased, a Yes a True and a map or a
+    table every number it states, and holding no other name than those and what the deals and the
+    world name (`DERIVED`). Simulate-only, 4 paths, 2 s.
+
+    Killing mutations: a knob read off a spelling nothing declares, with a fallback (`IM_Ref_Vol`
+    read as `IM_Reference_Vol` or 1.0), which leaves the declared knob unread; a runtime entry no
+    knob declares (`im_floor` read off `IM_Floor` or 0.0); `Allocation_Weights` read off its
+    default."""
+    cfg = _client()
+    stated, names, sentinel = {}, {}, itertools.count()
+
+    def state(fields, block, path):
+        for key, f in fields.items():
+            at = path + key
+            names[at] = RENAMED.get(key, key.lower())
+            if f.get('sub_fields'):
+                state(f['sub_fields'], block.setdefault(key, {}), at + '.')
+            elif f['widget'] in ('Container', 'Table'):
+                block[key] = stated[at] = MAPS.get(key, block.get(key))
+            elif f['widget'] == 'Dropdown':
+                block[key] = MODES.get(at, [v for v in f['values'] if v != f['value']][-1])
+                stated[at] = block[key] == 'Yes' if f['values'] == ['Yes', 'No'] else block[key].lower()
+            else:
+                n = next(sentinel)
+                block[key] = stated[at] = {'Integer': 2 + n, 'Float': 0.25 + n / 64}.get(f['widget'], key)
+    state(rf.schema.mapping['Calculation']['types']['HedgeMonteCarlo']['Hedging_Problem']['sub_fields'],
+          cfg['Calc']['Calculation']['Hedging_Problem'], '')
+
+    held = {}
+    shapeless = {names[at] for at, value in stated.items() if isinstance(value, (dict, list))} | {
+        'tradables', 'instrument_to_cash_account', 'privileged_layout'}
+
+    def hold(record):
+        for key, value in record.items():
+            held.setdefault(key, []).append(value)
+            if isinstance(value, dict) and key not in shapeless:
+                hold(value)
+    hold(_run(cfg).runtime)
+
+    def read(at, value):
+        if isinstance(value, (dict, list)):
+            return any(v and _numbers(value) <= _numbers(v) for v in held.get(names[at], []))
+        return any(type(v) is type(value) and v == value for v in held.get(names[at], []))
+    assert [at for at in stated if names[at] and not read(at, stated[at])] == []
+    assert set(held) - set(names.values()) - DERIVED == set()
 
 
 def test_a_reference_mode_stated_beside_logwealth_changes_nothing():
