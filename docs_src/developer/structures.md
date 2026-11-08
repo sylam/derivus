@@ -60,8 +60,8 @@ Most structures are two different bookings depending on the client's side, not t
 trade. A forward extra for an exporter floors the pair (a bought put funded by a sold up-and-in
 call); for an importer it caps the pair with the mirror (a bought call funded by a sold down-and-in
 put). A `Variation(buys, fields, legs)` is one form: `buys` is the side of the pair the client buys
-(`'base'` or `'quote'`), `fields` the parameters only it takes. The straddle, the strangle and the range
-accrual have one form.
+(`'base'` or `'quote'`), `fields` the parameters only it takes. The straddle, the strangle and the
+range accrual have one form.
 
 `reflected(variation, rename, fields)` derives the mirror form so it is never written twice: every
 leg's `Option_Type` and `Barrier_Type` direction flip (`schema.flipped`, read off the leg type's own
@@ -419,8 +419,8 @@ acceptance also checks the plan and the board's age and reports the market's mov
 **Composition.** `compose` puts the legs inside the deal block under `Children`, because a quote is
 filed and hashed whole; `schema.splice_deal`, which a booking goes through, lifts them onto the node
 the engine walks, as `book_node` does for the risk-impact candidate. A node holding its children
-inside the block loads empty and prices at zero, silently. **Held by** `test_a_composed_tarf_carries_an_exposure_profile` (a skipped or empty
-strip has no spread to show).
+inside the block loads empty and prices at zero, silently. **Held by**
+`test_a_composed_tarf_carries_an_exposure_profile` (a skipped or empty strip has no spread to show).
 
 ## Writing a new gate
 

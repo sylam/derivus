@@ -200,11 +200,12 @@ and a moved quote in one job is a reval with no re-bootstrap. **Held by**
     the rest is structure, so a vol tick moves `values_hash` alone and a moved pillar is a new
     plan; a `Timestamp` moves neither hash, a market's identity being its numbers. A table carries
     values when its row declares all four keys: `Points` (`InterestRatePrices`,
-    `SurvivalProbPrices`, `InflationRatePrices`, `FXVolPrices`) and `European_Options` (`LogVar2FJModelPrices`). `HullWhite2FactorModelPrices`,
-    `CSForwardPriceModelPrices` and `GBMAssetPriceTSModelPrices` declare none and stay wholly
-    plan-side. The tick guard, `Context.plan_hash`, `market_patch` and `plan_key` read that one
-    tuple; the projection drops the value keys rather than shadowing them, since a pillar that
-    starts being quoted two-sided is the same node of the same plan. **Held by**
+    `SurvivalProbPrices`, `InflationRatePrices`, `FXVolPrices`) and `European_Options`
+    (`LogVar2FJModelPrices`). `HullWhite2FactorModelPrices`, `CSForwardPriceModelPrices` and
+    `GBMAssetPriceTSModelPrices` declare none and stay wholly plan-side. The tick guard,
+    `Context.plan_hash`, `market_patch` and `plan_key` read that one tuple; the projection drops the
+    value keys rather than shadowing them, since a pillar that starts being quoted two-sided is the
+    same node of the same plan. **Held by**
     `test_market_prices_partition.py::test_every_family_partitions_by_the_one_rule_and_round_trips_exactly`,
     `::test_the_tick_guard_and_the_partition_draw_the_same_line`.
 

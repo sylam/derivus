@@ -1,7 +1,7 @@
 #  Price Factors
 
-Price factors representing a snapshot of a market (and hence taken at the same time) are to be provided
-here. e.g. for the ZAR FxRate with USD as the **Base Currency**
+Price factors representing a snapshot of a market (and hence taken at the same time) are to be
+provided here. e.g. for the ZAR FxRate with USD as the **Base Currency**
 
 ```json
 {

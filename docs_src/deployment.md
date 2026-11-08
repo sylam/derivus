@@ -34,8 +34,8 @@ Python 3.10 or later is required.
 One process serves every client. It runs one web worker with one compute thread: jobs queue, run one
 at a time, and a base valuation waiting overtakes a simulation waiting, while a running job is never
 interrupted. Results, parsed plans, the risk cache and the market's kept refit are held in memory
-and are gone when the process stops; the book and the desk files below are on disk. A running service describes every
-route at `/docs` and `/openapi.json`.
+and are gone when the process stops; the book and the desk files below are on disk. A running
+service describes every route at `/docs` and `/openapi.json`.
 
 | flag | default | effect |
 | --- | --- | --- |
@@ -185,8 +185,9 @@ DV_SPINE_HOME/
 body, and deleting it destroys their content while the chain still verifies; `checkpoint_signing.key`
 signs checkpoints; `blind.key` keys the duplicate tags. `names.json` is mutable and outside the chain.
 `seeds/` and `index.json` are derivable and may be deleted: a reader finding no seed folds from
-genesis, and an open finding no index that verifies reads the whole log, to the same answer. The log and the blobs are append-only, a correction being another fact. The layout and
-every hash are on [The Spine](developer/spine.md#the-truth-layer).
+genesis, and an open finding no index that verifies reads the whole log, to the same answer. The log
+and the blobs are append-only, a correction being another fact. The layout and every hash are on
+[The Spine](developer/spine.md#the-truth-layer).
 
 ## Topology
 
@@ -270,8 +271,8 @@ verifies under the key in force at it. It does not prove the hub did not rewrite
 the hub's signing key is in its home. Publishing the head that `DV_Spine status` prints, or keeping a
 replica, gives an outside reference to check against. History after the last checkpoint is chained
 but unsigned, so a deployment runs `DV_Spine checkpoint` on a schedule of its choosing (an open
-reads the frames since the last one), and `record_time` is the hub's clock with no external timestamp. The full table is
-[Trust limits](developer/spine.md#trust-limits).
+reads the frames since the last one), and `record_time` is the hub's clock with no external
+timestamp. The full table is [Trust limits](developer/spine.md#trust-limits).
 
 ## Backup and restore
 
@@ -279,7 +280,8 @@ The record is files, so a backup is a copy and a restore is a copy back.
 
 - **What to copy.** The spine home's `log/`, `blobs/`, `keys/` and `names.json`; `DV_HOME`'s
   `book.json`, `calculations.json`, `seed.json`, `security_map.json` and `tmp/`; and every file the
-  book names by path. `seeds/`, `index.json`, `xva.json` and the service's in-memory state are rebuilt.
+  book names by path. `seeds/`, `index.json`, `xva.json` and the service's in-memory state are
+  rebuilt.
 - **When.** Copy a home while no writer runs, with the service stopped, or copy a replica, which
   `DV_Spine follow` keeps byte-identical to the hub's log (with the blobs too where it follows with
   `--blobs`). A line cut off mid-write is the one damage a home repairs itself, truncating it when

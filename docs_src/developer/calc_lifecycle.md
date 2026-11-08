@@ -245,11 +245,12 @@ The calculation's `Currency` is required: no default names the currency a book r
 anything runs, the block - overrides merged, completed as `declared_defaults` completes it - is
 judged by its own declarations (`Calculation.judged`, through `schema.validate_block`), and a
 `ValueError` names every field it refuses at once: `BaseValuation.run`, `ScenarioValuation.run` and
-`CreditMonteCarlo.run` judge the merged block, `HedgeMonteCarlo`, `SIMM`, `SACCR` and the diary where they complete it. `Config.validate` reports the
-same messages under `calculation`, and a refused block is not walked for factors. A service override
-is judged on what it states before it queues (`schema.stated_messages`), an undeclared key refused
-([Conventions](conventions.md#declared-defaults)).
-**Held by** `tests/test_loud_refusals.py::test_a_calculation_stating_no_currency_is_refused_by_name`.
+`CreditMonteCarlo.run` judge the merged block, `HedgeMonteCarlo`, `SIMM`, `SACCR` and the diary
+where they complete it. `Config.validate` reports the same messages under `calculation`, and a
+refused block is not walked for factors. A service override is judged on what it states before it
+queues (`schema.stated_messages`), an undeclared key refused
+([Conventions](conventions.md#declared-defaults)). **Held by**
+`tests/test_loud_refusals.py::test_a_calculation_stating_no_currency_is_refused_by_name`.
 
 ## Compile phase 1 — `calculate_dependencies` {#compile-phase-1-calculate_dependencies}
 
@@ -318,9 +319,9 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 1. Under `deterministic_batches`, `batch_seed(Random_Seed, b)` reseeds and `set_quasi_batch(b)`
    anchors the quasi stream, `b` the global batch.
 2. `reset` correlates one `randn(num_factors, n·T)` into `t_random_numbers` `(num_factors, T, n)`,
-   resets cashflows and clears `t_Scenario_Buffer`, `t_Buffer` and `boundary_sets`; `Antithetic` appends the negation of
-   a `Batch_Size // 2` draw, pairing path `j` with `j + Batch_Size/2` (an odd `Batch_Size` is one
-   column short, unrefused).
+   resets cashflows and clears `t_Scenario_Buffer`, `t_Buffer` and `boundary_sets`; `Antithetic`
+   appends the negation of a `Batch_Size // 2` draw, pairing path `j` with `j + Batch_Size/2` (an
+   odd `Batch_Size` is one column short, unrefused).
 3. Each process's `generate` publishes to `t_Scenario_Buffer` in topological order.
 4. `resolve_structure` prices each deal, accumulates and runs `post_process`, negating a
    `FLIP`-prefixed set, dropping a NaN one and stamping each boundary registration with its deal.
@@ -585,21 +586,20 @@ the inner error is common to the outer paths, and only `MCMC_Simulations` reduce
 `tests/test_multi_gpu.py::test_an_inner_monte_carlo_book_is_bit_identical_in_the_worker_count`,
 `tests/test_barrier_bridge.py::test_a_strip_longer_than_a_block_chunk_prices_to_an_independent_simulation`.
 
-**The strip streams.** Four of the five one-step-survival pricers (discrete barrier, accumulator, TARF, autocall;
-[@glasserman2001; @alm2013]) walk their fixings through `pricing.oss_stream`; the extendable
-forward draws at its decisions alone. Under a
-gradient on the device a strip goes `ceil(sqrt(n))` fixings at a time, each stretch one checkpoint
-holding the state at its edges. A taped run holds those edges to its batch's end, so there a strip
-is one checkpoint where its projected tape, its fixings times what a row-step of its pricer tapes,
-fits `pricing.device_budget`, half of what the process may still allocate. In a replay
-(`Recompute_Inner_MC`), whose tape dies with its block's backward, a stretch walks plain, the
-fastest walk, while the tape the strip has laid and its last stretch's for every fixing still to
-walk fit the budget; the projection is re-read at every stretch, a strip's first fixings (an
-observed one, the first step) laying less than the rest. On the host or with no gradient it is the
-plain loop, and so is a smoothed row, its ledger mutated step by step. A step binds its row's
-tensors as defaults, since the checkpoint replays it after the loop moved on, and what consumers
-read detached (the alive branch, the pending payment, the autocall's counterfactual) is built
-under `no_grad`. **Held by**
+**The strip streams.** Four of the five one-step-survival pricers (discrete barrier, accumulator,
+TARF, autocall; [@glasserman2001; @alm2013]) walk their fixings through `pricing.oss_stream`; the
+extendable forward draws at its decisions alone. Under a gradient on the device a strip goes
+`ceil(sqrt(n))` fixings at a time, each stretch one checkpoint holding the state at its edges. A
+taped run holds those edges to its batch's end, so there a strip is one checkpoint where its
+projected tape, its fixings times what a row-step of its pricer tapes, fits `pricing.device_budget`,
+half of what the process may still allocate. In a replay (`Recompute_Inner_MC`), whose tape dies
+with its block's backward, a stretch walks plain, the fastest walk, while the tape the strip has
+laid and its last stretch's for every fixing still to walk fit the budget; the projection is re-read
+at every stretch, a strip's first fixings (an observed one, the first step) laying less than the
+rest. On the host or with no gradient it is the plain loop, and so is a smoothed row, its ledger
+mutated step by step. A step binds its row's tensors as defaults, since the checkpoint replays it
+after the loop moved on, and what consumers read detached (the alive branch, the pending payment,
+the autocall's counterfactual) is built under `no_grad`. **Held by**
 `tests/test_recompute_inner_mc.py::test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient`,
 `::test_a_taped_strip_that_fits_is_one_checkpoint` (CUDA only).
 

@@ -111,7 +111,7 @@ compile's counts.
 ## Over HTTP
 
 The service returns the same tables paged: `GET /results/{id}` answers the run's replay
-coordinates, its `Stats` and each table's shape, and `GET /results/{id}/{table}?offset=&limit=` returns the
-cells — see [the service verbs](api_overview.md#the-same-verbs-over-http). The Jupyter workbench
-writes each table it shows to a CSV with a download link (see
-[Jupyter Workbench](running_calcs.md#results)).
+coordinates, its `Stats` and each table's shape, and `GET /results/{id}/{table}?offset=&limit=`
+returns the cells — see [the service verbs](api_overview.md#the-same-verbs-over-http). The Jupyter
+workbench writes each table it shows to a CSV with a download link (see [Jupyter
+Workbench](running_calcs.md#results)).

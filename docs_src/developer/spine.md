@@ -598,10 +598,10 @@ of the start's job and the end's (`sensed`, `carried`, the maker threaded throug
 `ComputeExecutor.submit` asks before anything runs: `mark` over its book for a standing run,
 `validate` over the book or a node under it otherwise; a refusal files a denial and queues nothing.
 The reads that value on the request thread, `/book/risk` and a P&L read to now or with its
-`explain`, ask a what-if's question before they value. A posted tick and a securities verification queue under the
-seat that asked; the poll paths (a read's diary, the metronome's beat) run under `spine.hub()`,
-`DV_SPINE_ACTOR`, which a ticking desk must grant `validate`. Admission precedes the risk and diary
-caches, so no cached answer depends on who asked first. **Held by**
+`explain`, ask a what-if's question before they value. A posted tick and a securities verification
+queue under the seat that asked; the poll paths (a read's diary, the metronome's beat) run under
+`spine.hub()`, `DV_SPINE_ACTOR`, which a ticking desk must grant `validate`. Admission precedes the
+risk and diary caches, so no cached answer depends on who asked first. **Held by**
 `test_spine_engine.py::test_under_a_document_the_queue_asks_before_the_executor_does`,
 `::test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat`,
 `::test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question`,

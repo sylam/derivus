@@ -242,15 +242,14 @@ cx.patch_market(patch)             # applied in place; anything structural raise
 The values half spans BOTH market sections. A `Market Prices` quote block contributes the
 rows of its own quote table (`Points` for a curve strip or an FX smile, `European_Options` for an
 option ladder) — the mid, the two-way, the timestamp — as `{block_name: {table: [{...} per row]}}`,
-index-aligned with the block's own row order
-(which is structural, so a changed row count refuses naming both lengths). Per row the patch
-is a delta: a named field replaces, an omitted field keeps, a JSON `null` clears a two-way
-side or a timestamp and refuses on the mid — a mid is moved, never cleared. A `null` in the
-DOCUMENT is an absence, so `patch_market(market_patch())` is the identity: neither hash moves.
-A patched quote re-bootstraps nothing — the written factors stand, `values_hash` records the
-board honestly, and the consumer that reads quotes at execute time is `Quote_Propagation`'s
-ride. The live book is deliberately stricter: `/book/market` refuses a quote-values patch and
-names the quote-update path (which bootstraps atomically) as the remedy.
+index-aligned with the block's own row order (which is structural, so a changed row count refuses
+naming both lengths). Per row the patch is a delta: a named field replaces, an omitted field keeps,
+a JSON `null` clears a two-way side or a timestamp and refuses on the mid — a mid is moved, never
+cleared. A `null` in the DOCUMENT is an absence, so `patch_market(market_patch())` is the identity:
+neither hash moves. A patched quote re-bootstraps nothing — the written factors stand, `values_hash`
+records the board honestly, and the consumer that reads quotes at execute time is
+`Quote_Propagation`'s ride. The live book is deliberately stricter: `/book/market` refuses a
+quote-values patch and names the quote-update path (which bootstraps atomically) as the remedy.
 
 `patch_market` takes what `market_patch` emits. Two verbs hash the two halves:
 
@@ -341,13 +340,14 @@ Monte Carlo returns the same three plus a fourth; a `SIMM` or an `SACCR` run ret
 One vocabulary, two bindings. Everything above is the in-process binding; `derivus.service` is the
 same verbs over HTTP. The pass-through reading holds for `/validate` — build a
 `Context` from the posted job, call `validate()`, serialise what comes back — while `/schema` and
-`/schema/job` serve the declarations and the job skeleton as data; it does not hold for the rest: `/describe` adds its own cost estimate, `/execute` its lanes, queue and
-attestation, and the book, projection and queue verbs are a layer of logic and state that exists
-only here (the plan cache, the compute executor's priority queue and result store, the risk cache,
-`DV_HOME/xva.json`, the Bloomberg job, the metronome tick). A browser SPA, an MCP
-binding, a marimo notebook and an Excel add-in are clients of the same endpoints, so nothing
-specific to any one of them belongs on the surface. `fastapi` and `uvicorn` are the `service`
-extra, imported only there, so `import derivus` needs neither:
+`/schema/job` serve the declarations and the job skeleton as data; it does not hold for the rest:
+`/describe` adds its own cost estimate, `/execute` its lanes, queue and attestation, and the book,
+projection and queue verbs are a layer of logic and state that exists only here (the plan cache, the
+compute executor's priority queue and result store, the risk cache, `DV_HOME/xva.json`, the
+Bloomberg job, the metronome tick). A browser SPA, an MCP binding, a marimo notebook and an Excel
+add-in are clients of the same endpoints, so nothing specific to any one of them belongs on the
+surface. `fastapi` and `uvicorn` are the `service` extra, imported only there, so `import derivus`
+needs neither:
 
 ```
 pip install derivus[service]
@@ -409,9 +409,10 @@ the only one that files anything. **`actor` rides every verb that queues work fo
 `/book/price`, `/calculations/run`, `/book/solve`, `/book/model`, `/book/xva`, `/book/setup`,
 `/book/structure`, `/book/marks`, `/book/close`, `/book/settlements`, `/book/bloomberg` and
 `/book/securities/verify`, and as `?actor=` the reads that value, `/book/risk` and `/book/pnl` read
-to now or with `explain=true`, which are admitted as a what-if is — and the poll paths (the diary read, the metronome's tick) name none and run under
-`DV_SPINE_ACTOR`. An `actor?` is optional only on a home declaring no capabilities document, where
-an unnamed request runs under `DV_SPINE_ACTOR`; under one, a request naming no seat is refused 422:
+to now or with `explain=true`, which are admitted as a what-if is — and the poll paths (the diary
+read, the metronome's tick) name none and run under `DV_SPINE_ACTOR`. An `actor?` is optional only
+on a home declaring no capabilities document, where an unnamed request runs under `DV_SPINE_ACTOR`;
+under one, a request naming no seat is refused 422:
 
 ```json
 {"Calc": {"...": "..."}, "Patch": {"FxRate.ZAR": {"Spot": 19.0}}}
@@ -504,9 +505,9 @@ and retry-idempotency are one feature, and two clients patching to the same mark
 
 **Never the whole cube.** A `done` result is a SUMMARY: the five replay coordinates, the run's
 `Stats` under `stats`, and every table the run produced named with its row count and column labels;
-a queued or running one carries its `progress`, `{done, total, note}`, where the job reports one. No cells — a credit Monte Carlo's
-exposure is dates by scenarios and does not fit in an answer anyone wants to hold. A client reads
-the shapes and fetches the one table it is showing:
+a queued or running one carries its `progress`, `{done, total, note}`, where the job reports one. No
+cells — a credit Monte Carlo's exposure is dates by scenarios and does not fit in an answer anyone
+wants to hold. A client reads the shapes and fetches the one table it is showing:
 
 ```
 GET /results/{result_id}

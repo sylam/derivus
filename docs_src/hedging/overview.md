@@ -94,5 +94,5 @@ risk aversion per unit of money it lands on.
 
 What each stochastic process publishes as market state is a naming convention owned here:
 `derive_privileged_layout` asks every live process what it emits, and a run simulating more than
-one factor name prefixes the attribute with the factor name to disambiguate. Adding a process with its own privileged
-surface flows through automatically — no registration step.
+one factor name prefixes the attribute with the factor name to disambiguate. Adding a process with
+its own privileged surface flows through automatically — no registration step.

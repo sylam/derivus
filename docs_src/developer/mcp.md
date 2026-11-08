@@ -154,8 +154,9 @@ records nothing, so it takes no seat. `describe_instrument_type` marks the field
 
 `deal_path` (`"0/2/1"`) is the identity because references are not unique in a book. Another host's
 booking moves every position under a path, so `amend_deal`, `delete_deal` and a take-on through
-`book_deal` take the `reference` read there and refuse when the path no longer holds it, rather than acting on whoever sits there
-now. **Held by** `test_service.py::test_a_tick_that_keeps_losing_to_bookings_lands_on_its_last_pass`.
+`book_deal` take the `reference` read there and refuse when the path no longer holds it, rather than
+acting on whoever sits there now. **Held by**
+`test_service.py::test_a_tick_that_keeps_losing_to_bookings_lands_on_its_last_pass`.
 
 ### Answers are summaries and pointers
 

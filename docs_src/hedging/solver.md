@@ -112,12 +112,12 @@ Wealth is money: the verdict's recursion and the stepper's accounting carry it i
 (`hedge_bundle.MONEY`), cast to float32 only where a net reads it, so the two tracks read one wealth
 at every decision, held by
 `tests/test_action_space_and_artifact.py::test_the_verdict_and_the_stepper_close_one_replayed_book_to_one_wealth`.
-The ladder reports whether `hindsight >= solver >= textbook` holds on $V_0$ within 1e-6 (`holds`). The benchmark tracks take
-the primary solver, bound to the held-out batch, and score their books by its objective: $E[u]$ of
-terminal wealth, or under a step-sum objective (`Running_Wealth`, `LogWealth`) the sum of its step
-reward over the decisions from `T_Min`, from the wealth the opening (hindsight) or constant
-(textbook) book leaves at the first (`DiffSolver._step_sum`), the scale of the solver's $V_0$, the
-ladder saying so (`v0_is_step_sum`). Under `LogWealth` the sum telescopes to
+The ladder reports whether `hindsight >= solver >= textbook` holds on $V_0$ within 1e-6 (`holds`).
+The benchmark tracks take the primary solver, bound to the held-out batch, and score their books by
+its objective: $E[u]$ of terminal wealth, or under a step-sum objective (`Running_Wealth`,
+`LogWealth`) the sum of its step reward over the decisions from `T_Min`, from the wealth the opening
+(hindsight) or constant (textbook) book leaves at the first (`DiffSolver._step_sum`), the scale of
+the solver's $V_0$, the ladder saying so (`v0_is_step_sum`). Under `LogWealth` the sum telescopes to
 $\log\big((C+W_T)/(C+W_{t_0})\big)$ where no step breaches the floor, so the hindsight's per-step
 argmax of realised P&L still maximises it. Held by
 `tests/test_action_space_and_artifact.py::test_the_benchmarks_score_a_step_sum_objective_by_its_step_reward`.

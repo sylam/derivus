@@ -68,9 +68,9 @@ asking, so `all_tenors` is rebuilt per closure.
 `TensorSchedule.carry` attaches a `{column: tensor}` overlay to a schedule's tensor half, spliced into
 the copy `bind` makes ([lifecycle](calc_lifecycle.md#the-schedule-lifecycle)), so
 `BenchmarkInstruments` binds last. `_carry_quotes` measures the columns: it compiles the set again one
-unit of each quote higher (a percent on a rate, a basis point on a spread) and overlays what moved, the difference as slope. Authoring is affine in the quote, so
-that difference is exact, and a type's own `quoted` stays the one place it declares where its quote
-lands. The splice is
+unit of each quote higher (a percent on a rate, a basis point on a spread) and overlays what moved,
+the difference as slope. Authoring is affine in the quote, so that difference is exact, and a type's
+own `quoted` stays the one place it declares where its quote lands. The splice is
 
 $$\text{column} = \text{base} + \big(q - \texttt{detach}(q)\big)\,\partial\,\text{column}/\partial q .$$
 
@@ -122,7 +122,8 @@ the quote-delta buckets are the benchmark maturities.
   `::test_a_term_ois_benchmark_prices_the_fixing_list_it_replaces`.
 - **Several resets per coupon fold by the leg's declaration**: `None` averages, the OIS methods
   compound, undefined combinations refuse; a compiled cashflow marking more than one reset
-  (`utils.CASHFLOW_INDEX_NumResets`) is what folds. **Held by** `::test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them`.
+  (`utils.CASHFLOW_INDEX_NumResets`) is what folds. **Held by**
+  `::test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them`.
 - **A quoted deposit is pinned whatever its schedule**: `DepositDeal.quote` writes the rate on each
   period's unadjusted start, the day it can name with no calendar, and the deposit reads its rows
   there, so a stub or an accrual calendar leaves the benchmark off the curve it solves. **Held by**
