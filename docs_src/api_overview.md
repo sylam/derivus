@@ -387,7 +387,8 @@ and `/prepare` - price it compiled: every position the record holds written at i
 terms' second node under one set ignored as the first one's clip, and every print the declared
 sources order filled in. A deal the file holds that nobody booked prices as written, one unit,
 outside the P&L until `POST /book/deals` `{action: 'fill', deal_path}` takes it on, a fill of one
-under its own reference that moves no number. Every deal type declares which of its fields are
+under its own reference that moves no number; `GET /book/reconcile` names each such deal under
+`in_file_not_in_record`, on a file nothing has pinned as on any other. Every deal type declares which of its fields are
 amounts (`sized` on the descriptor, `magnitude` for an amortisation step, which scales and never
 takes a short's sign),
 which says the side a short flips (`side`), and which dates settle cash it builds no schedule for
