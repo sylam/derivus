@@ -196,9 +196,10 @@ def test_every_red_objective_fails_and_is_readable_in_the_record(adversary):
     nothing leaves exactly that - nothing - which is why the script has to say it was asked.
 
     Killing mutations: an objective whose `answer` is the harness's own `expected` echoed back,
-    which would pass a table of words while the record said something else; and the denials fold
-    read for presence rather than for its whole contents, which would let a second refusal in
-    unnoticed; and an old approval sent again read as a new fact, which is a replay that lands.
+    which would pass a table of words while the record said something else; a denial said twice
+    filed as a second fact rather than coalescing onto the first, which only a read of the denials
+    fold for its whole contents sees, never one for presence; and an old approval sent again read
+    as a new fact, which is a replay that lands.
     """
     script, reports = adversary
     objectives = dict((row['objective'], row) for row in script['objectives'])

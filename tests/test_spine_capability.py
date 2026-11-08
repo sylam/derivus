@@ -924,7 +924,8 @@ def test_the_grant_verb_refuses_a_file_it_cannot_read_and_says_which(tmp_path, c
 
     missing = str(tmp_path / 'nowhere.json')
     assert cli.main(['grant', '--home', str(home), '--file', missing, '--actor', MINT]) == 1
-    assert missing in capsys.readouterr().err
+    # leads with it: the OSError quoted after it repeats the path verbatim on POSIX
+    assert capsys.readouterr().err.startswith(missing)
 
     broken = tmp_path / 'broken.json'
     broken.write_text('{"grants": [', encoding='utf-8')

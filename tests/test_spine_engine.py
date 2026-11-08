@@ -995,7 +995,9 @@ def test_a_booking_through_the_book_verb_writes_the_event_before_the_file(record
     Killing mutation: the counterparty taken from anything but the set the deal is booked under.
     """
     document = json.loads(desk.read_text())
-    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
+    # another client's set ahead of this one, so only the set booked under names CPTY_A
+    document['Calc']['Deals']['Deals']['Children'] += [
+        netting_set('CLIENT_B', 'CPTY_B'), netting_set(CLIENT_SET, 'CPTY_A')]
     desk.write_text(json.dumps(document, indent=2), newline='\n')
     before = desk.read_bytes()
     deal = dict(CASHFLOW, Reference='CF2', Amount=250_000.0)
@@ -1737,11 +1739,12 @@ def test_a_write_racing_the_acceptance_leaves_no_half_act_in_either_order(record
     which is where `mutate` runs an edit, outside the lock - so that write meets a file that moved
     and redoes onto the booked one. After each: one `quote_filed` and one `fill` per acceptance, a
     reconcile with nothing in any of its three lists, and no answer naming a path the file lacks.
-    The order NO lock can order is the gate below.
+    The order NO lock can order is the gate below, and it is what holds the acceptance on `transact`:
+    in both orders here the acceptance's own pass is never raced, so `mutate` lands it alike.
 
-    Killing mutation: the acceptance back on `mutate`, whose second pass meets the plan check the
-    first passed and refuses, leaving the record holding a quote and a fill for a trade the file
-    never took and the pending file saying it booked at a path nothing is at.
+    Killing mutation: the pins checked against the read above the closure (`check_pins` handed
+    `document`, not `book`), which never sees the booking that beat the acceptance and refuses in
+    the file's words rather than naming the book that moved.
     """
     booked_only(quoting)
     first = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
@@ -2020,7 +2023,8 @@ def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quotin
     so a home re-minted where the last one stood is a different record.
 
     Killing mutations: the fold unbounded while the pair is stamped at the position asked for; a
-    pair ahead of that position used as a seed; the key taken off the path rather than the history.
+    pair ahead of that position used as a seed; the genesis check dropped, which answers another
+    history with this one's verdicts. The key taken off the path is the re-minted home's gate.
     """
     projections = spine.package().projections
     decisions = projections.PROJECTORS['decisions']
@@ -2043,11 +2047,15 @@ def test_the_advanced_fold_answers_the_position_it_is_asked_for(recorded, quotin
     assert other not in verdicts_at(signed['lsn'] - 1)
     assert [row['lsn'] for row in verdicts_at()[other]] == [signed['lsn']]
 
-    # another history answers its own, and is not this one's
+    # another history answers its own, and is not this one's - filed to the pair's own position,
+    # so it is the genesis key that drops the pair rather than the pair standing ahead of it
     elsewhere = quoting.parent / 'second-spine'
     init_home(elsewhere, ACTOR)
+    for seconds in (1.0, 2.0):
+        declare(elsewhere, policy.FIRMNESS_POLICY, {'pillar_seconds': seconds})
     log = opened(elsewhere)
     try:
+        assert log.head()[0] == signed['lsn'], 'not the pair\'s position - this proved nothing'
         assert spine.advancing(log, decisions, folds=service.folds())['plans'] == {}
     finally:
         log.close()
@@ -3015,10 +3023,10 @@ def test_reconcile_names_a_divergence_by_its_instrument(recorded, booking):
     INSTRUMENT ADDRESS rather than by a reference - a renamed deal is different terms, so both
     halves of a rename are divergences.
 
-    Killing mutations: comparing references instead of instrument hashes, which reconciles a renamed
-    deal clean and hides the one edit a desk is most likely to make by hand; and skipping the
-    subtree of a node marked `Ignore`, which is a node somebody booked whether or not the engine
-    prices it.
+    Killing mutations: the instrument address taken over the terms less their `Reference`, which
+    reconciles a renamed deal clean and hides the one edit a desk is most likely to make by hand;
+    and skipping the subtree of a node marked `Ignore`, which is a node somebody booked whether or
+    not the engine prices it.
     """
     assert book_one('RECONCILE')['written'] is True
     clean = CLIENT.get('/book/reconcile').json()
@@ -3459,16 +3467,19 @@ def test_the_plan_compiles_from_the_fold_rather_than_from_what_was_typed(recorde
 
 
 def test_a_republished_fixing_moves_the_plan_and_each_lsn_keeps_its_own(recorded, desk):
-    """GATE 11. Two prints of one `(index, date, source)`: the plan compiled at the earlier LSN is
+    """GATE 11. Prints of one `(index, date, source)`: the plan compiled at the earlier LSN is
     the earlier print's and the plan compiled now is the restatement's, so an auditor recompiles AT
-    an LSN and gets that day's answer rather than today's.
+    an LSN and gets that day's answer rather than today's - a third print, backdated behind the
+    restatement and filed last, standing under it.
 
     Killing mutation: `fixings_at` ordering by LSN alone, so a print backdated behind the one in
-    force wins merely by arriving last and every plan ever recompiled moves with it.
+    force wins merely by arriving last (109.0 where 111.25 stands) and every plan ever recompiled
+    moves with it.
     """
     declare(recorded, policy.FIXINGS_POLICY, {'sources': {INDEX: ['EXCHANGE']}})
     first = observe(recorded, 108.5, effective_time='2024-06-27T16:00:00.000000Z')['lsn']
     observe(recorded, 111.25, effective_time='2024-06-27T17:30:00.000000Z')
+    observe(recorded, 109.0, effective_time='2024-06-27T17:00:00.000000Z')
 
     terms = barrier_book()
     earlier, later = spine.compiled_job(terms, lsn=first), spine.compiled_job(terms)
@@ -3634,10 +3645,10 @@ def test_a_market_declared_through_the_service_stands_under_the_name_it_was_give
     declarations of it and the closes on it alike.
 
     Killing mutations: the verb hashing the document rather than the projected values, after which
-    the mark addresses bytes the store does not hold and nothing resolves; a `mark` check written
-    into the endpoint, which passes this gate while disagreeing with the writer about a private
-    name; and the owner rule absent from `declare_close`, which plants an official close in a
-    namespace the same seat was refused one call earlier.
+    the mark names bytes that are not the values the book carries; a `mark` check written into the
+    endpoint in its own words, which refuses the seat with no denial on the record; and the owner
+    rule absent from `declare_close`, which plants an official close in a namespace the same seat
+    was refused one call earlier.
     """
     standing = service.load(service.BOOK.read()[0])
     declared = CLIENT.post('/book/markets', json={'name': 'official'}).json()
@@ -3821,8 +3832,9 @@ def test_the_poll_paths_own_jobs_are_admitted_under_the_deployments_seat(recorde
     stops them BY NAME rather than silently, which is the one failure a ticking desk must be told
     about. Neither is run here: what is asserted is which seat the queue asked about.
 
-    Killing mutation: a job carrying no actor admitted unconditionally, which leaves the whole poll
-    path outside the document a desk declared.
+    Killing mutation: the poll path queueing its jobs under no seat and a job carrying none
+    admitted unconditionally, which leaves the whole poll path outside the document a desk
+    declared.
     """
     service.BOOK_DIARY_CACHE.clear()
     entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'validate')])
@@ -3849,8 +3861,9 @@ def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded
     as it stands on this thread too, so it is asked the same question; one to a marked end is not.
 
     Killing mutations: the admission asked after the cache is read, which serves the stranger the
-    answer the desk's read warmed; the explain's admission dropped, which values the book for a
-    seat holding nothing; and the read to now admitted, which marks the book for one.
+    answer the desk's read warmed; the explain's admission dropped, which lets an explain to a
+    marked end past it for a seat holding nothing; and the read to now admitted, which marks the
+    book for one.
     """
     with_client(desk)
     declare(recorded, policy.TIERS_POLICY, tiers({'name': 'auto'},
@@ -3881,7 +3894,7 @@ def test_the_consolidated_risk_and_the_explain_ask_the_queue_s_question(recorded
 
     warm = risk(actor=ACTOR)
     assert warm.status_code == 200, warm.text
-    for again in (risk(actor=STRANGER), explained(actor=STRANGER),
+    for again in (risk(actor=STRANGER), explained(actor=STRANGER, end='2024-06-28'),
                   CLIENT.get('/book/pnl', params=dict(actor=STRANGER))):
         assert again.status_code == 422 and STRANGER in again.json()['detail'], again.text
     assert facts(recorded, 'capability_denied') == denials, 'a repeated refusal is a second fact'

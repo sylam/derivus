@@ -752,7 +752,7 @@ def test_a_print_fills_the_cell_its_type_declares_and_moves_the_mark_by_hand(key
     crossed into dollars.
 
     Killing mutations: each type's `observes` deleted, which the gate's own lookup of the
-    declaration refuses; the TARF's strip walking on from the print, which moves it 115.10 where
+    declaration refuses; the TARF's strip walking on from the print, which moves it 113.94 where
     the cash moves 29.99; a pair's one print written as it stands, which fills 1.25.
     """
     _, table, row, printed, _, per_unit = FILLS[key]
@@ -1404,10 +1404,11 @@ def test_a_close_is_declared_only_on_a_day_the_check_calls_legal(recorded, tmp_p
     a seat is not scoped for costs the box nothing before it is refused.
 
     Killing mutations: the check called and its verdict not read, which declares a close over an
-    unobserved expiry; the date compared as a string rather than parsed, which calls an empty one
-    legal and closes the book on nothing; the supersession read off the close just filed rather
-    than off the fold, which reports every close as standing over itself; and the verdict's compile
-    queued under the deployment's seat, which charges the box for a close it then refuses.
+    unobserved expiry; the date compared as a string rather than parsed, here and in the writer's
+    own day check, which calls `2024` legal and closes the book on it - either parse alone refuses
+    every garbage day; the supersession read off the close just filed rather than off the fold,
+    which reports every close as standing over itself; and the verdict's compile queued under the
+    deployment's seat, which charges the box for a close it then refuses.
     """
     serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A', [dict(OPTION, Settlement_Style='Cash')])],
             factors=dict(FACTORS, **EQUITY))

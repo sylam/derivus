@@ -497,7 +497,7 @@ def test_the_seeds_directory_stands_beside_the_log_and_the_verifier_never_reads_
     entitled, chain = verify_home(home), verify_home(home, entitled=False)
 
     seed = seed_at(log, positions, CLOSE)
-    assert (home / SEEDS).is_dir()
+    assert {'log', 'blobs', SEEDS} <= set(path.name for path in home.iterdir())
     assert verify_home(home) == entitled and verify_home(home, entitled=False) == chain
 
     filed = json.loads((home / SEEDS / 'positions-{}-{}.json'.format(
@@ -566,7 +566,7 @@ def test_a_position_costs_its_average_and_a_reduction_realises_against_it(tmp_pa
     while what the old terms realised, and could not, stays on their row.
 
     Killing mutations: the average moved by a reduction, which makes the second sale realise
-    against 5.4 instead of 6; the flip's remainder opened at the old average instead of its own
+    against 5 instead of 6; the flip's remainder opened at the old average instead of its own
     price; an unpriced lot read as priced at zero; a reduction nobody priced dropped uncounted.
     """
     home = seeded(tmp_path, 'costs', clips=())

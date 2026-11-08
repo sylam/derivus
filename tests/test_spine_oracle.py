@@ -914,8 +914,9 @@ def test_a_pnl_that_does_not_sum_is_named(tmp_path):
     """THE P&L IS ADDITIVE: two days sum to the window over both and the portfolios of a window to
     the book, figure by figure, within the epsilon the deployment declared for `pnl` - never one
     of the spine's own. A window whose Rates row made a tenth more than its two days did is named
-    at that row, portfolios summing past their book are named, days that do not tile the window
-    are named before any figure is read, and answers that are no answers put no question.
+    at that row, portfolios summing 1e-7 past their book - inside a default of 1e-6, outside the
+    declared 1e-9 - are named, days that do not tile the window are named before any figure is
+    read, and answers that are no answers put no question.
 
     Killing mutations: the days' figures summed per total alone, which misses a row two errors
     cancel in; a default epsilon in place of the declared one; and the portfolios never summed.
@@ -934,7 +935,7 @@ def test_a_pnl_that_does_not_sum_is_named(tmp_path):
     said = answers['the_pnl_is_additive']['evidence']
     assert said[0].startswith('summed over the days, pnl.rows.{} CSA-1'.format(FX)), said
     apart = oracle.report(home, pnl=dict(sums, portfolios=sums['portfolios'][:1] + [
-        answered(marks, 0, 2, (RATES, 0.6))]))['the_pnl_is_additive']
+        answered(marks, 0, 2, (RATES, 0.5 + 1e-7))]))['the_pnl_is_additive']
     assert apart['evidence'][0].startswith('summed over the portfolios, pnl.total.pnl'), apart
     untiled = oracle.report(home, pnl=dict(sums, days=days[1:]))['the_pnl_is_additive']
     assert untiled['held'] is False and 'do not tile' in untiled['evidence'][0], untiled
@@ -972,7 +973,7 @@ def test_money_moved_under_paper_nobody_declared_is_named(tmp_path):
     Killing mutations: the paper not asked of collateral, or of the agreement a payment names; the
     fee's instrument not asked; the payment not held to the diary's amount and currency; a row
     paid under two references counted once, or paid once under each of two agreements counted
-    twice (`paid 3 times`); and a bare `settled` read as unsettled, which names every row closed
+    twice (`paid 4 times`); and a bare `settled` read as unsettled, which names every row closed
     without money.
     """
     key, owed, lost = 'c' * 64, 'd' * 64, 'e' * 64

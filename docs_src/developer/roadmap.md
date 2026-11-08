@@ -42,10 +42,8 @@ features kept ahead of their build, not rows to close.
 
 **The tests.**
 
-- **What is left of the test fold** (2026-10-09). Tests of the record modules outside
-  `test_service.py` and `test_mcp.py` name a mutation nobody has run red (UNMEASURED: the fold
-  counted 146 over all of these modules, those two included, whose 138 are run). `test_notebooks`
-  needs a world file that is not in the repository.
+- **What is left of the test fold** (2026-10-09). `test_notebooks` needs a world file that is not in
+  the repository.
 
 ## Designed, not built
 

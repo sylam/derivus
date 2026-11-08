@@ -787,7 +787,8 @@ LEGS = {'LEG-A': cashflow('LEG-A', 100_000.0, pd.Timestamp('2024-06-30')),
         'LEG-D': cashflow('LEG-D', 30_000.0, END)}
 PAIR = structure('PAIR', [LEGS['LEG-A'], LEGS['LEG-B']])
 DONE = structure('DONE', [LEGS['LEG-C'], LEGS['LEG-D']])
-#: A structure one of whose legs is restruck while the other, left as it was, pays the day after.
+#: A structure bought on the day one of its legs is restruck, so the marks of that day value its old
+#: terms and its new, while the leg left as it was pays the day after.
 RESTRUCK = structure('RESTRUCK', [cashflow('LEG-E', 40_000.0, THIRD),
                                   cashflow('LEG-F', 20_000.0, pd.Timestamp('2026-06-30'))])
 
@@ -803,15 +804,16 @@ def test_a_structure_held_whole_is_paid_through_its_legs_and_ends_with_the_last(
     Killing mutations: the legs' rows left with the legs; a structure's last day taken as its
     first leg's; a structure rolled off once any leg has expired; a marks job's own units not read
     as the structures holding the legs; a restruck structure read in one compile with the one it
-    replaced; a movement against the leg they share weighed by one of them alone.
+    replaced, which pays the restruck one 0.00 for the leg they share where 700,000.00; a movement
+    against that leg weighed by the structure restruck away alone, which names it nobody's.
     """
     designated(recorded, fixings=False)
     booked(PAIR, 1.0, 'EXEC-PAIR', BOOK + '/Rates', 3_000_000.0)
     booked(DONE, 1.0, 'EXEC-DONE', BOOK + '/Rates', 1_800_000.0)
-    booked(RESTRUCK, 1.0, 'EXEC-RE', BOOK + '/FX', 1_100_000.0)
     closed_and_marked()
 
     rolled(desk, END, 18.0)
+    booked(RESTRUCK, 1.0, 'EXEC-RE', BOOK + '/FX', 1_100_000.0)
     for leg, day in (('LEG-A', '2024-06-30'), ('LEG-C', '2024-06-30'), ('LEG-D', '2024-07-01')):
         settle({'subject': due(leg, day)['key'], 'amount': LEGS[leg]['Amount'], 'asset': 'ZAR',
                 'kind': 'payment', 'reference': 'PAY-' + leg, 'value_date': day})
@@ -974,7 +976,8 @@ def test_a_leg_settled_late_is_its_structure_s_and_money_nobody_held_is_named(re
     end is somebody else - not shared as a position netting to nothing.
 
     Killing mutations: the leg the look-back finds left unmapped; a movement nobody held read as a
-    flat net in the day's marks.
+    flat net in the window's payments, which names it a second time as money of positions netting
+    to nothing.
     """
     designated(recorded, indices=(RAND,))
     for day in ('2024-04-01', '2024-07-01'):

@@ -65,7 +65,7 @@ def test_a_position_is_keyed_where_it_sits(tmp_path):
     at zero naming where they went.
 
     Killing mutations: the key dropped back to the instrument alone folds the whole instrument into
-    one row of 1.0; the agreement fallback to the netting set removed files the first clip under
+    one row of 1.5; the agreement fallback to the netting set removed files the first clip under
     `None`; the portfolio fallback to the book removed files it under an empty key.
     """
     home = seeded(tmp_path, clips=())
