@@ -92,6 +92,14 @@ Grouped by where a validator meets them.
   registers no `BoundarySet` for, so a credit Monte Carlo's sensitivities drop its flux on every row
   after a fixing; a base valuation has no simulated fixing and its derivative is exact. UNMEASURED:
   measuring it is a CRN ladder of a CMC delta on a row after a fixing (`tests/crn_ladder.py`).
+- **A composite discrete barrier on a `Skew` surface reads no smile** (2026-11-08). An equity
+  barrier with `Barrier_Dates` and `Payoff_Type` `Compo` on a parametric `Skew` surface prices as at
+  its ATM vol. The composite knock-in of the book in `tests/test_sticky_strike_strip.py` (strike 80,
+  barrier 70 on S·X, four observations to 300 days) marks 0.2655989 with the surface's slope and
+  wings and without them, under either moneyness rule, the same as on an `Explicit` surface flat at
+  25%, and its knock-out twin 8.340692 alike; the Standard knock-in beside it moves from 0.3317665
+  to 0.3475011 with the smile, and on an `Explicit` smile the composite moves too (0.2492 at 25% × m,
+  0.2825 at 25% × (2 − m)). Where the composite's path loses the smile is not yet traced.
 
 ### The engine {#the-engine}
 
