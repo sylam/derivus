@@ -57,10 +57,10 @@ The main body seeds base-currency FX first, walks the book, adds report currency
 
 Edges collected as `dependent_factors` (factor → list-of-prerequisites) are `topological_sort`'d (`utils.topological_sort(..., canonical=True)`): a repeated-pass variant of Kahn's algorithm [@kahn1962] that, **within a pass, visits nodes in sorted `Factor` order** (type, then name) and moves every node whose edges all point outside the still-unsorted set — so an edge naming a node absent from the graph counts as resolved. Dependencies land first, dependents follow, cycles raise `RuntimeError`. A conditional factor's dependencies are the union over every occurrence the walk meets, so the graph does not depend on which deal is walked last.
 
-`traverse_dependents` (`config.py`) fans a factor's tenor out to every factor it transitively depends on, its prerequisites whatever the name says — BFS, `seen`-guarded.
+`traverse_prerequisites` (`config.py`) fans a factor's tenor out to every factor it transitively depends on — BFS, `seen`-guarded.
 
 !!! warning "Invariant — throwaway graph, cycle behavior"
-    `topological_sort` rejects cycles with `RuntimeError` and **destroys its input dict** — pass a rebuilt/throwaway graph. `traverse_dependents` yields the transitive prerequisites **excluding** the start node; do not rely on the node appearing in its own output.
+    `topological_sort` rejects cycles with `RuntimeError` and **destroys its input dict** — pass a rebuilt/throwaway graph. `traverse_prerequisites` yields the transitive prerequisites **excluding** the start node; do not rely on the node appearing in its own output.
 
 ## Stochastic vs static split — `find_models`
 

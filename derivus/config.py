@@ -371,7 +371,7 @@ def compress_deal_data(deals):
     return reduced_deals
 
 
-def traverse_dependents(x, adj):
+def traverse_prerequisites(x, adj):
     seen = set(adj[x])
     queue = deque(adj[x])
     while queue:
@@ -1227,10 +1227,10 @@ class Config(object):
             interest_rate_factor = utils.Factor(
                 'InterestRate', utils.check_rate_name(curve_name))
 
-            # make sure to add the reset dates to this interest rate (and dependents)
+            # make sure to add the reset dates to this interest rate (and what it depends on)
             dependent_factor_tenors[interest_rate_factor] = reset_dates
             dependent_factors.update(get_rates(interest_rate_factor, {}))
-            for sub_factor in traverse_dependents(interest_rate_factor, dependent_factors):
+            for sub_factor in traverse_prerequisites(interest_rate_factor, dependent_factors):
                 dependent_factor_tenors[sub_factor] = reset_dates
 
         # the list of returned factors
@@ -1265,7 +1265,7 @@ class Config(object):
             dependent_factors.update(report_currency_dependencies)
             # make sure the reporting currency is around till the end
             dependent_factor_tenors[report_factor] = reset_dates
-            for reporting_factor in traverse_dependents(report_factor, dependent_factors):
+            for reporting_factor in traverse_prerequisites(report_factor, dependent_factors):
                 dependent_factor_tenors[reporting_factor] = reset_dates
 
             if options.get('Credit_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
@@ -1296,7 +1296,7 @@ class Config(object):
             # update the linked factor max tenors
             missing_tenors = {}
             for k, v in dependent_factor_tenors.items():
-                for linked_factor in traverse_dependents(k, dependent_factors):
+                for linked_factor in traverse_prerequisites(k, dependent_factors):
                     missing_tenors.setdefault(linked_factor, set()).update(v)
 
             # make sure the base currency is always first
