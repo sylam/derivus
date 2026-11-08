@@ -2240,11 +2240,13 @@ def test_an_automatic_tier_is_the_hubs_own_approval_between_the_quote_and_the_fi
     a document scoping NOBODY to approve stops none of it. The order is the whole point: the
     acceptance, the approval, the fill, three facts at consecutive LSNs, so an auditor reading the
     log in order sees a trade authorised before it was booked; the fill carries the ticket that
-    approval signed.
+    approval signed and the tier it fell in.
 
     Killing mutations: the approval appended after the fill, which records every automatic booking
-    as signed off afterwards; and the approval filed under the acceptor, which a document scoping
-    it for nothing but booking refuses, holding back every trade the workflow was declared to pass.
+    as signed off afterwards; the approval filed under the acceptor, which a document scoping it for
+    nothing but booking refuses, holding back every trade the workflow was declared to pass; and the
+    route's tier left off the fill, which leaves the record unable to say which tickets the hub
+    signs.
     """
     declare(recorded, policy.TIERS_POLICY, tiers(
         {'name': 'auto', 'max_notional': {'amount': BIG, 'currency': 'USD'}},
@@ -2264,7 +2266,8 @@ def test_an_automatic_tier_is_the_hubs_own_approval_between_the_quote_and_the_fi
     assert [lsn for lsn, _ in steps] == list(range(steps[0][0], steps[0][0] + 3))
     _, _, signed = facts(recorded, 'approval')[0]
     assert signed == {'plan_hash': booked['accepted']['ticket']}
-    assert facts(recorded, 'fill')[0][2]['ticket'] == booked['accepted']['ticket']
+    _, _, filled = facts(recorded, 'fill')[0]
+    assert (filled['ticket'], filled['tier']) == (booked['accepted']['ticket'], 'auto'), filled
     assert facts(recorded, 'capability_denied') == []
     log = opened(recorded)
     try:
@@ -2285,8 +2288,9 @@ def test_a_four_eyes_acceptance_books_pending_and_reads_the_verdict_that_stands(
     acceptance is told the quote is already booked: ONE `quote_filed`, ONE fill.
 
     Killing mutations: the fill held back under four eyes, which leaves the acceptance booking
-    nothing; and the status read with the booker's own verdicts, which clears a ticket its own
-    booker signed.
+    nothing; the status read with the booker's own verdicts, which clears a ticket its own booker
+    signed; and the route's tier left off the fill, which leaves a forged approval of it standing
+    on the record.
     """
     declare(recorded, policy.TIERS_POLICY, tiers({'name': 'desk', 'four_eyes': True}))
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
@@ -2296,7 +2300,7 @@ def test_a_four_eyes_acceptance_books_pending_and_reads_the_verdict_that_stands(
     assert booked['tier'] == {'name': 'desk', 'four_eyes': True, 'approval_lsn': None}
     assert 'no verdict is filed' in booked['waits_on']
     fill = facts(recorded, 'fill')[0][2]
-    assert fill['ticket'] == ticket
+    assert (fill['ticket'], fill['tier']) == (ticket, 'desk'), fill
 
     def standing():
         row = next(row for row in CLIENT.get('/book/positions').json()['positions']
@@ -2453,12 +2457,13 @@ def with_client(path):
 
 def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
     """EVERY BOOKING IS A TICKET. A direct booking's fill carries a ticket over the plan the book
-    has WITH it and the fill as filed, and where a tiers policy is in force it is routed on the
-    notional it STATES and the tenor its terms name, as an acceptance is: under the cap the hub
-    signs in its own voice and then the fill lands, approved; over it the fill lands PENDING under
-    four eyes, the booker's own approval clearing nothing and another seat's clearing it; a tier
-    covering the node the booking sits at reads it; and a booking no tier admits - a cap it states
-    no notional against, a tenor cap it settles past - books nothing.
+    has WITH it and the fill as filed, the tier its route fell in aside, and where a tiers policy
+    is in force it is routed on the notional it STATES and the tenor its terms name, as an
+    acceptance is: under the cap the hub signs in its own voice and then the fill lands, approved;
+    over it the fill lands PENDING under four eyes, the booker's own approval clearing nothing and
+    another seat's clearing it; a tier covering the node the booking sits at reads it; and a
+    booking no tier admits - a cap it states no notional against, a tenor cap it settles past -
+    books nothing.
 
     Killing mutations: the ticket taken before the splice, which is the book's own plan and every
     booking's; and a tier's scope read at the book rather than where the booking sits, which routes
@@ -2475,7 +2480,7 @@ def test_every_booking_is_a_ticket_the_tiers_route(recorded, desk):
     assert signed['tier'] == {'name': 'auto', 'four_eyes': False, 'approval_lsn': fill[0] - 1}
     assert fill[2]['ticket'] == signed['ticket'] == spine.ticket(
         service.load(json.loads(desk.read_text())).plan_hash(), {
-            field: value for field, value in fill[2].items() if field != 'ticket'}), \
+            field: value for field, value in fill[2].items() if field not in ('ticket', 'tier')}), \
         'the ticket is not the plan the book has with this booking'
     assert facts(recorded, 'approval')[-1][2] == {'plan_hash': signed['ticket']}
 
@@ -2720,7 +2725,8 @@ def test_a_retry_lands_every_event_on_the_lsn_it_already_has(recorded, desk):
     at the restrike that landed, the file taking back the terms it became.
 
     Killing mutations: a trade the file lost answered without putting it back, which leaves the
-    file behind the record for good; and a restrike that landed filed again rather than answered.
+    file behind the record for good; a restrike that landed filed again rather than answered; and
+    the tier the route stamped read as a field the booking sent again restates, which refuses it.
     """
     from derivus_spine import oracle
 

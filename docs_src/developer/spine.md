@@ -496,6 +496,16 @@ A currency the book cannot value is left off the ticket, so its cap fails rather
 `::test_every_refusal_a_booking_meets_comes_before_the_hub_signs`,
 `::test_a_four_eyes_acceptance_books_pending_and_reads_the_verdict_that_stands`.
 
+The trade names the tier it fell in (`tier`, beside its ticket, which is taken over the trade as
+built), so the record itself says which tickets the hub signs: the oracle holds an approval in the
+writer's voice to an automatic tier its trade names, and a copy forging one over a trade that fell
+in a four-eyes tier is named by the record alone. A copy rewriting the trade too has rewritten
+history, which only a checkpoint or an agreeing copy catches ([trust limits](#trust-limits)); a
+trade naming no tier was routed before trades named one. **Held by**
+`test_spine_oracle.py::test_the_hubs_approval_of_a_ticket_its_trade_routed_to_four_eyes_is_forged`,
+`test_spine_engine.py::test_an_automatic_tier_is_the_hubs_own_approval_between_the_quote_and_the_fill`,
+`::test_a_retry_lands_every_event_on_the_lsn_it_already_has`.
+
 The latest verdict stands, none being withdrawn; under four eyes the booker's own are not read.
 `POST /book/approve` and `/reject` file at the deepest node holding the ticket's positions, read off
 the record, so an approver cannot sign another node's ticket. A rejected trade stands: it happened.

@@ -165,18 +165,20 @@ FACT_TYPES = {
     # instrument as written - never a position, and an execution reference so a retry is the same
     # fact by construction while two identical clips are two facts. `agreement` and `portfolio` are
     # where the position sits and `price` what it was done at, with the `currency` it was stated in
-    # and the `rate` the booking crossed it at where that is not the book's own, and `ticket` the
-    # plan an approval of it signs; a body carrying none of them validates as it did before.
+    # and the `rate` the booking crossed it at where that is not the book's own, `ticket` the plan
+    # an approval of it signs and `tier` the tier its route fell in; a body carrying none of them
+    # validates as it did before.
     'fill': _validator('fill', (
         ('instrument', HASH), ('quantity', NUMBER), ('counterparty', TEXT),
         ('netting_set', TEXT), ('execution_reference', TEXT)),
         optional=(('price', NUMBER), ('agreement', TEXT), ('portfolio', PATH),
-                  ('currency', TEXT), ('rate', NUMBER), ('ticket', HASH))),
+                  ('currency', TEXT), ('rate', NUMBER), ('ticket', HASH), ('tier', TEXT))),
     # Economics are never edited: an amendment is a new instrument hash linked to the old one,
-    # judged at the deepest node holding every position in it, and a trade of its own - `ticket`.
+    # judged at the deepest node holding every position in it, and a trade of its own - `ticket`
+    # and `tier`, as a fill's.
     'amendment': _validator('amendment', (
         ('instrument', HASH), ('amended_to', HASH)),
-        optional=(('portfolio', PATH), ('ticket', HASH))),
+        optional=(('portfolio', PATH), ('ticket', HASH), ('tier', TEXT))),
     'election': _validator('election', (
         ('instrument', HASH), ('choice', TEXT))),
     # Keyed by (index, date, source), so an administrator's print and a vendor snap are different

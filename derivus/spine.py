@@ -994,8 +994,9 @@ def book(deal, quantity, counterparty, netting_set, execution_reference,
 def _booked(log, body, folds=None):
     """`{booked: {lsn, instrument}}` for the fill standing under `body`'s key - its instrument
     and execution reference - where it files the fields `body` does, the rate its price was
-    crossed at aside, `instrument` being the terms its position stands in now; None where none
-    stands; and refused by name where one stands with other fields."""
+    crossed at and the tier it was routed in aside, `instrument` being the terms its position
+    stands in now; None where none stands; and refused by name where one stands with other
+    fields."""
     key = (body['instrument'], body['execution_reference'])
     held = next(((instrument, clip['fill']) for instrument, agreements in advancing(
         log, package().projections.PROJECTORS['positions'], folds=folds).items()
@@ -1004,8 +1005,8 @@ def _booked(log, body, folds=None):
     if held is None:
         return None
     filed = log.open_body(log.frame_at(held[1]))
-    moved = sorted(field for field in set(filed) | set(body)
-                   if field not in ('ticket', 'rate') and filed.get(field) != body.get(field))
+    moved = sorted(field for field in set(filed) | set(body) if field not in (
+        'ticket', 'rate', 'tier') and filed.get(field) != body.get(field))
     if moved:
         raise SpineRefused(
             'execution {!r} is booked at LSN {} with other terms - {} - so this is not that '
@@ -1022,16 +1023,17 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
     nothing booked.
 
     THE TICKET IS THE TRADE: where `plan` - the plan the book has once it lands - is handed in, the
-    event carries `ticket` over that plan and its own fields, so a retry of the act lands every
-    event on the LSN it already has. And EVERY REFUSAL IT CAN MEET COMES FIRST: the caller built the
+    event carries `ticket` over that plan and its own fields as the caller built them, so a retry of
+    the act lands every event on the LSN it already has. And EVERY REFUSAL IT CAN MEET COMES FIRST: the caller built the
     body, which asserted its shape, and `SpineLog.admits` asks the vocabulary and the seat's scope
     with nothing written, so the hub signs nothing a refusal then strands. Then, with a tiers policy
     in force (`terms`, what it reads of the trade), the FIRST tier covering where it books whose
-    every check passes applies: an automatic one is the hub's own approval, filed before the event;
-    one under four eyes lets it land PENDING, `waits_on` saying on whom; and one no tier admits
-    answers `refused` with every sentence the route collected. A crash between the approval and the
-    event is the one way an approval stands alone, which the oracle names until the act is
-    retried. A seat the scope refuses is answered by the append itself, which lands the denial.
+    every check passes applies, the event carrying its name as `tier`: an automatic one is the
+    hub's own approval, filed before the event; one under four eyes lets it land PENDING, `waits_on`
+    saying on whom; and one no tier admits answers `refused` with every sentence the route
+    collected. A crash between the approval and the event is the one way an approval stands alone,
+    which the oracle names until the act is retried. A seat the scope refuses is answered by the
+    append itself, which lands the denial.
     """
     admitted = log.admits(event_type, body, subject, book_name, effective_time)
     answer = {}
@@ -1047,6 +1049,7 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
     if route is not None:
         if route['tier'] is None:
             return dict(answer, refused=route['refusals'])
+        body['tier'] = route['tier']
         answer['tier'] = {'name': route['tier'], 'four_eyes': bool(route['four_eyes']),
                           'approval_lsn': route['approval_lsn']}
         if not route['four_eyes']:

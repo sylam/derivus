@@ -19,10 +19,6 @@ features kept ahead of their build, not rows to close.
 
 **The record and the service.**
 
-- **The tier recorded on an approval** (2026-09-29, M). Under a policy with both an automatic and a
-  four-eyes tier, a copy forging an approval of a ticket only the four-eyes tier would admit is
-  caught only by copies agreeing with the hub. Signed history ends at the last checkpoint either
-  way.
 - **The verb map in force declared at an LSN** (2026-09-29). The oracle judges old frames by today's
   verb map, so a frame filed under a verb its act no longer demands - a confirmation or a
   collateral movement under a `settle` grant - reads as outside its seat, while the desk runs

@@ -368,6 +368,47 @@ def test_an_approval_in_the_writers_voice_under_four_eyes_tiers_alone_is_forged(
     assert 'no automatic tier in force' in answers['nothing_outside_its_seat']['evidence'][0]
 
 
+def test_the_hubs_approval_of_a_ticket_its_trade_routed_to_four_eyes_is_forged(tmp_path):
+    """A TRADE NAMES THE TIER IT FELL IN, so under a policy with an automatic tier capped at a
+    notional and a four-eyes tier above it the record itself says which tickets the hub signs: the
+    hub's approval of the small ticket, its trade naming `auto`, and the large ticket's trade booked
+    pending naming `desk`, hold. A copy differing from that record by one frame - the hub's
+    approval forged before the large ticket's trade, filed as the hub filed it - is named.
+
+    Killing mutation: the oracle asking only whether an automatic tier stood, the trade's tier
+    unread, which passes the copy - an automatic tier stands and the trade follows the approval.
+    """
+    large = 'c' * 64
+    mixed = {'tiers': [{'name': 'auto', 'max_notional': {'amount': 1.0e6, 'currency': 'USD'}},
+                       {'name': 'desk', 'four_eyes': True}]}
+    home = seeded(tmp_path, 'mixed', clips=())
+    log = SpineLog(home)
+    try:
+        granted(log, ACTOR)
+        policy.declare(log, ACTOR, policy.TIERS_POLICY, mixed)
+        log.own('approval', {'plan_hash': TICKET}, book=BOOK)
+        log.append('fill', dict(fill('EXEC-SMALL'), ticket=TICKET, tier='auto'), actor=ACTOR,
+                   book=BOOK)
+    finally:
+        log.close()
+    copy = planted(home, tmp_path, 'forged', 'approval', {'plan_hash': large}, actor='writer',
+                   book_name=BOOK)
+    for where in (home, copy):
+        log = SpineLog(where)
+        try:
+            log.append('fill', dict(fill('EXEC-LARGE', 5.0e6), ticket=large, tier='desk'),
+                       actor=ACTOR, book=BOOK)
+        finally:
+            log.close()
+    answers = oracle.report(copy)
+
+    assert oracle.failed(oracle.report(home)) == []
+    assert oracle.failed(answers) == ['nothing_outside_its_seat'], answers
+    said = answers['nothing_outside_its_seat']['evidence'][0]
+    assert said.startswith('LSN 9: an approval of ' + large), said
+    assert "its trade at LSN 10 fell in the 'desk' tier, not an automatic one" in said, said
+
+
 def test_tiers_nobody_can_read_are_judged_and_tiers_a_copy_lacks_are_not(tmp_path):
     """A tiers declaration whose document will not parse is one the hub signs under nothing: a copy
     forging its approval and the fill after it is named, and the home declaring it holds. A copy

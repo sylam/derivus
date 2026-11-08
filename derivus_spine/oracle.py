@@ -139,10 +139,10 @@ def nothing_outside_its_seat(log, entitled, judged=None):
 
     The book half of the writer's decision re-reached (`_judged`); a frame judged at a node below
     a book is `nothing_outside_its_scope`'s. An approval in the writer's own voice is held to the
-    record around it as the hub made it: the hub signs only where the tiers policy in force has an
-    automatic tier, one declaring no `four_eyes`, and books the ticket after it signs - a tiers
-    document nobody can read is one it signs under nothing, and one this copy does not hold leaves
-    that approval alone not assessed.
+    record around it as the hub made it: the hub signs only under an automatic tier in force, one
+    declaring no `four_eyes`, and books the ticket after it signs, the trade naming the tier it fell
+    in - a tiers document nobody can read is one it signs under nothing, and one this copy does not
+    hold leaves that approval alone not assessed.
 
     The ENVELOPE HALF stands without a key: a type no verb declares is a write nobody could be
     scoped for, a type only the writer files under any other name is that voice forged, and the
@@ -174,16 +174,15 @@ def nothing_outside_its_seat(log, entitled, judged=None):
         if own and event_type == 'approval':
             signed.append((frame['lsn'], body.get('plan_hash'), workflow))
         if event_type in TICKETED:
-            booked[body.get('ticket')] = frame['lsn']
+            booked[body.get('ticket')] = (frame['lsn'], body.get('tier'))
         if not row['held'] and not row['node']:
             failures.append(_unscoped(frame, row['scope'], body))
     failures.extend(
         'LSN {}: an approval of {} stands in the writer\'s own voice with {} - the hub signs a '
         'ticket only under an automatic tier in force and books it after, so this is that voice '
-        'forged'.format(lsn, ticket, since if isinstance(since, str)
-                        else 'no fill or restrike after it carrying that ticket')
-        for lsn, ticket, since in signed
-        if isinstance(since, str) or since is not None and booked.get(ticket, 0) < lsn)
+        'forged'.format(lsn, ticket, unsigned) for lsn, ticket, unsigned in (
+            (lsn, ticket, _unsigned(since, booked.get(ticket), lsn))
+            for lsn, ticket, since in signed) if unsigned)
     blind = [str(lsn) for lsn, _, since in signed if since is None]
     why = ('the approval at LSN {} stands under tiers this copy does not hold - follow with '
            '`--blobs` and ask again'.format(', '.join(blind))) if blind else None
@@ -287,8 +286,8 @@ def _judged(log, entitled):
 
 
 def _workflow(log, lsn, blob):
-    """What the tiers declared at `lsn` let the hub sign under: that LSN where a tier declares no
-    `four_eyes`, else why not - a document nobody can read being one nobody signs under - or None
+    """What the tiers declared at `lsn` let the hub sign under: the names of the tiers declaring no
+    `four_eyes`, else why none - a document nobody can read being one nobody signs under - or None
     where this copy does not hold the blob, the one case it cannot judge."""
     if not log.store.has(blob):
         return None
@@ -296,7 +295,22 @@ def _workflow(log, lsn, blob):
         tiers = tiers_in_force(log, lsn)[TIERS_SECTION]
     except SpineRefusal as unreadable:
         return 'the tiers at LSN {} nobody can read ({})'.format(lsn, unreadable)
-    return lsn if any(not tier['four_eyes'] for tier in tiers) else 'no automatic tier in force'
+    return tuple(tier['name'] for tier in tiers if not tier['four_eyes']) or \
+        'no automatic tier in force'
+
+
+def _unsigned(automatic, trade, lsn):
+    """Why the hub could not have signed at `lsn` the ticket `trade` books - `(lsn, tier)` of the
+    fill or restrike carrying it, or None - under the `automatic` tiers `_workflow` answered, else
+    None. A trade naming no tier was routed before a trade named the tier it fell in."""
+    if automatic is None or isinstance(automatic, str):
+        return automatic
+    if trade is None or trade[0] < lsn:
+        return 'no fill or restrike after it carrying that ticket'
+    if trade[1] is not None and trade[1] not in automatic:
+        return 'its trade at LSN {} fell in the {!r} tier, not an automatic one in force'.format(
+            *trade)
+    return None
 
 
 def _unscoped(frame, scope, body):
