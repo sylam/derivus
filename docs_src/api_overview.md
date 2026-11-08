@@ -25,9 +25,7 @@ cx = rf.Context()
 cx.load_json('fxfwd.json')
 ```
 
-(The alias is arbitrary and `rf` is the one this page and the rest of `docs_src` were written
-under — the same pre-rename initials the `RF_SERVICE_URL` wire variable keeps on purpose. The
-README says `dv`; both are `import derivus as`.)
+(The alias is arbitrary: these pages use `rf`, the README `dv`.)
 
 A context can hold *multiple* loaded configurations — `cx.parsed` holds one `Config` per content
 of a `MergeMarketData.MarketDataFile` a job referenced, keyed by the sha256 of the file's bytes and
@@ -88,7 +86,7 @@ post-run) and the output. `out` is a dict for `Base_Valuation` and `Credit_Monte
 
 ### Base Valuation
 
-A single-point theoretical price. Cheapest of the three calculations.
+A single-point theoretical price, the cheapest calculation.
 
 ```python
 calc, out = cx.Base_Valuation(overrides={'Run_Date': '2024-08-01', 'Currency': 'USD'})
@@ -241,9 +239,10 @@ patch['FxRate.ZAR']['Spot'] = 19.0
 cx.patch_market(patch)             # applied in place; anything structural raises, naming it
 ```
 
-The values half spans BOTH market sections. A `Market Prices` quote block contributes its
-`Points` rows' quoted values — the mid, the two-way, the timestamp — as
-`{block_name: {'Points': [{...} per row]}}`, index-aligned with the block's own row order
+The values half spans BOTH market sections. A `Market Prices` quote block contributes the
+rows of its own quote table (`Points` for a curve strip or an FX smile, `European_Options` for an
+option ladder) — the mid, the two-way, the timestamp — as `{block_name: {table: [{...} per row]}}`,
+index-aligned with the block's own row order
 (which is structural, so a changed row count refuses naming both lengths). Per row the patch
 is a delta: a named field replaces, an omitted field keeps, a JSON `null` clears a two-way
 side or a timestamp and refuses on the mid — a mid is moved, never cleared. A `null` in the
@@ -258,7 +257,7 @@ names the quote-update path (which bootstraps atomically) as the remedy.
 | Verb | What it hashes |
 |---|---|
 | `cx.plan_hash()` | the program — `params` and `deals`, less every value-bound field, `Random_Seed` and `Quasi_Seed`, and the calendar's weekend rules and holidays |
-| `cx.values_hash()` | exactly what `cx.market_patch()` emits |
+| `cx.values_hash()` | what `cx.market_patch()` emits less its clocks, so a board re-read at the same prices is one market |
 
 Both are sha256 over a canonical dump and pure functions of the loaded config: they run nothing,
 price nothing and change nothing. The plan covers the `Calculation` block too, so `Batch_Size` and
@@ -267,8 +266,9 @@ price nothing and change nothing. The plan covers the `Calculation` block too, s
 A reported number is replayable from five coordinates:
 
 ```python
+calculation = cx.current_cfg.deals['Calculation']
 (cx.plan_hash(), cx.values_hash(), rf.__version__, calculation.get('Random_Seed'),
- calculation['Quasi_Seed'])
+ out['Stats']['Quasi_Seed'])    # the Quasi_Seed the run read: stated, else its default
 ```
 
 `rf.__version__` is the engine version, and the two seeds are coordinates of their own because
@@ -339,9 +339,9 @@ Monte Carlo returns the same three plus a fourth; a `SIMM` or an `SACCR` run ret
 ## The same verbs over HTTP
 
 One vocabulary, two bindings. Everything above is the in-process binding; `derivus.service` is the
-same verbs over HTTP. The pass-through reading holds for `/schema`, `/schema/job` and `/validate` —
-build a `Context` from the posted job, call one of the methods above, serialise what comes back —
-but not for the rest: `/describe` adds its own cost estimate, `/execute` its lanes, queue and
+same verbs over HTTP. The pass-through reading holds for `/validate` — build a
+`Context` from the posted job, call `validate()`, serialise what comes back — while `/schema` and
+`/schema/job` serve the declarations and the job skeleton as data; it does not hold for the rest: `/describe` adds its own cost estimate, `/execute` its lanes, queue and
 attestation, and the book, projection and queue verbs are a layer of logic and state that exists
 only here (the plan cache, the compute executor's priority queue and result store, the risk cache,
 `DV_HOME/xva.json`, the Bloomberg job, the metronome tick). A browser SPA, an MCP
@@ -364,7 +364,7 @@ everything the run reads, so a client polls it on the same beat it polls `/book`
 quotes the book's factors are built from, refitted once per market and kept by the market's hash, so
 a booking does not refit, and a block that cannot carry a quote derivative is named in
 `quote_note` and read on its factors while the rest stays in quotes. XVA is per
-netting set and a CACHED PROJECTION: a credit Monte Carlo is minutes of device time and must never
+netting set and a CACHED PROJECTION: a credit Monte Carlo simulates the whole set and must never
 ride a tick, so `DV_HOME/xva.json` holds the last run of each set — written atomically, one row at
 a time — and a desk asks for a FULL or PARTIAL recalc when it wants the file to move. The
 projection is a mosaic on purpose: each row carries its own `as_of`, a partial recalc moves only
@@ -406,10 +406,10 @@ reads four top-level keys — `Patch`, `plan_id` (below), `lane` (`telemetry | c
 standing`, default `curiosity`) and `actor`, the seat the QUEUE admits the job under where a spine
 home carries a capabilities document; the lane decides the scope asked for, a standing run being
 the only one that files anything. **`actor` rides every verb that queues work for a caller** —
-`/book/price`, `/book/solve`, `/book/model`, `/book/xva`, `/book/setup`, `/book/structure`,
-`/book/close`, `/book/settlements`, `/book/bloomberg` and `/book/securities/verify`, and as
-`?actor=` the two reads that value, `/book/risk` and `/book/pnl?explain=true`, which are admitted
-as a what-if is — and the poll paths (the diary read, the metronome's tick) name none and run under
+`/book/price`, `/calculations/run`, `/book/solve`, `/book/model`, `/book/xva`, `/book/setup`,
+`/book/structure`, `/book/marks`, `/book/close`, `/book/settlements`, `/book/bloomberg` and
+`/book/securities/verify`, and as `?actor=` the reads that value, `/book/risk` and `/book/pnl` read
+to now or with `explain=true`, which are admitted as a what-if is — and the poll paths (the diary read, the metronome's tick) name none and run under
 `DV_SPINE_ACTOR`. An `actor?` is optional only on a home declaring no capabilities document, where
 an unnamed request runs under `DV_SPINE_ACTOR`; under one, a request naming no seat is refused 422:
 
@@ -431,10 +431,8 @@ a grant at, so a node seat reads neither; one reading unnamed on a box
 checking no token is the deployment's own view, the whole book. A read runs under no requester:
 the diary it compiles is the hub's own cache, admitted under `DV_SPINE_ACTOR`, so no read files
 a denial. This is presentation while one class key opens every body. A deployment naming a key
-set (`DV_SPINE_JWKS`, with `DV_SPINE_ISSUER` and `DV_SPINE_AUDIENCE`) has every request but the
-doorbell carry `Authorization: Bearer <ID token>`, verified locally: the token's subject IS the
-seat, a stated `actor` that differs is refused, and none or a bad token is a 401; a key set
-that does not read refuses the service at startup and a request by name.
+set has every request but the doorbell carry an ID token whose subject is the seat
+([Security](deployment.md#security)).
 
 **The back office and the paper.** `POST /book/transition` files what the back office moved - a
 payment or a fee under `settle`, a confirmation under `confirm`, collateral or margin under
@@ -482,9 +480,7 @@ under that name, so `/execute` takes either the whole document or the plan:
 Content addressing does not care how the job arrived: a plan-id execute with no patch reports the
 same `result_id` as a full-document execute of the same job. The cache is bounded (32) and
 least-recently-used, and every read of it is a deep copy — two executes off one plan cannot
-contaminate each other or the plan they came from. What is cached today is the **parse**; caching
-the compile arrives behind the same verb with the live refill, and a client written against this
-one does not move.
+contaminate each other or the plan they came from. What is cached is the **parse**, not the compile.
 
 **Always a result_id.** There is no sync/async split at the API level. `/execute` answers
 immediately with an id and a status for every calculation, and a base valuation is simply `done` by
@@ -506,15 +502,16 @@ values_hash, engine_version, seed, quasi_seed)`. Submitting the same job twice r
 re-running — while it is still queued, while it is running, and after it has finished — so dedupe
 and retry-idempotency are one feature, and two clients patching to the same market share a result.
 
-**Never the whole cube.** A `done` result is a SUMMARY: the five replay coordinates, and every
-table the run produced named with its row count and column labels. No cells — a credit Monte Carlo's
+**Never the whole cube.** A `done` result is a SUMMARY: the five replay coordinates, the run's
+`Stats` under `stats`, and every table the run produced named with its row count and column labels;
+a queued or running one carries its `progress`, `{done, total, note}`, where the job reports one. No cells — a credit Monte Carlo's
 exposure is dates by scenarios and does not fit in an answer anyone wants to hold. A client reads
 the shapes and fetches the one table it is showing:
 
 ```
 GET /results/{result_id}
 {"status": "done", "plan_hash": …, "values_hash": …, "engine_version": …, "seed": null,
- "quasi_seed": 1234,
+ "quasi_seed": 1234, "stats": {…},
  "tables": {"mtm": {"rows": 240, "columns": ["Reference", "Object", "Value", …]}}}
 
 GET /results/{result_id}/mtm?offset=0&limit=100
@@ -539,7 +536,7 @@ would be a second copy to keep in step.
 **Tokens where named, open CORS.** The service is a **trusted-network** deployment. Unless a key
 set is named (above) nothing authenticates a request, and `Access-Control-Allow-Origin` is `*` so a
 browser client can call it at all; put it behind something that terminates TLS, or narrow the
-origins with `DV_Service --origin https://app.internal` (repeatable). Budget caps are on the
-roadmap, not in the service.
+origins with `DV_Service --origin https://app.internal` (repeatable)
+([Security](deployment.md#security)). Budget caps are on the roadmap, not in the service.
 
 ---

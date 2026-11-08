@@ -52,8 +52,9 @@ calc, out = cx.Credit_Monte_Carlo(overrides={})
 
 ## Hedge Monte Carlo
 
-`Results` carries the solver's outputs: the fitted value-function artifact, the greedy-policy
-verdict and the benchmark comparison (see the [Hedging](hedging/overview.md) section).
+A hedge run carries no `Results`: the fitted value function and the held-out verdict are the
+`policy_artifact` and `evaluation_summary` of its `HedgeRuntimeExecutionResult`
+([API Overview](api_overview.md#hedge-monte-carlo), [Hedging](hedging/overview.md)).
 
 ## ScenarioValuation
 
@@ -110,7 +111,7 @@ compile's counts.
 ## Over HTTP
 
 The service returns the same tables paged: `GET /results/{id}` answers the run's replay
-coordinates plus each table's shape, and `GET /results/{id}/{table}?offset=&limit=` returns the
+coordinates, its `Stats` and each table's shape, and `GET /results/{id}/{table}?offset=&limit=` returns the
 cells — see [the service verbs](api_overview.md#the-same-verbs-over-http). The Jupyter workbench
 writes each table it shows to a CSV with a download link (see
 [Jupyter Workbench](running_calcs.md#results)).

@@ -20,7 +20,7 @@ Working on derivus itself is the clone route instead:
 ```
 git clone https://github.com/sylam/derivus && cd derivus
 pip install -e ".[desk,enterprise]" pytest httpx
-cd web && npm ci && npm run build && cd ..     # a source tree serves the UI it builds
+cd web && npm ci && npm run build && cd ..     # DV_Service --ui web/dist serves the build
 ```
 
 Optional, for a Bloomberg-enabled workstation:
@@ -82,9 +82,8 @@ in, so `DV_Service` alone is a working desk. `--no-book` serves the verbs with n
 
 On a Bloomberg workstation, add `--tick 30` and the book re-marks itself off the terminal every
 30 seconds — the same queued job `POST /book/bloomberg` submits, so a tick serialises with your
-pricings; it never provisions (run the fetch once by hand first), and a failure is one warning
-line with the book untouched, three in a row stretch the interval fivefold until one lands, and a
-beat whose last tick is still in flight is skipped rather than queued.
+pricings. It never provisions, so run the fetch once by hand first
+([what a tick does](deployment.md#dv_service)).
 
 A wheel serves the UI it shipped with at `/ui` by itself; from a clone, add `--ui web/dist` to
 serve the build. (If `DV_Service` is not on your PATH — pip's per-user installs on Windows —
@@ -94,9 +93,8 @@ The path need not exist: a missing file starts as a **blank book** — no deals,
 the skeleton's USD market data aboard so the first booking has something to validate against. An
 existing file is never touched.
 
-Windows note: book writes are atomic (write-then-replace), which fails if another program holds
-the file locked — Excel does, most editors don't. View the book through the UI rather than
-keeping it open in Excel.
+On Windows, keep the book closed in Excel and read it through the UI
+([why](deployment.md#dv_service)).
 
 Open `http://127.0.0.1:8000/ui/`. The portfolio tree, the market data (curves and surfaces
 plotted), the calculation and its results all render from the engine's own schema, and the page
