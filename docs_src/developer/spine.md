@@ -597,8 +597,8 @@ of the start's job and the end's (`sensed`, `carried`, the maker threaded throug
 
 `ComputeExecutor.submit` asks before anything runs: `mark` over its book for a standing run,
 `validate` over the book or a node under it otherwise; a refusal files a denial and queues nothing.
-The two reads that value on the request thread, `/book/risk` and the P&L's `explain`, ask a
-what-if's question before they value. A posted tick and a securities verification queue under the
+The reads that value on the request thread, `/book/risk` and a P&L read to now or with its
+`explain`, ask a what-if's question before they value. A posted tick and a securities verification queue under the
 seat that asked; the poll paths (a read's diary, the metronome's beat) run under `spine.hub()`,
 `DV_SPINE_ACTOR`, which a ticking desk must grant `validate`. Admission precedes the risk and diary
 caches, so no cached answer depends on who asked first. **Held by**
@@ -768,9 +768,8 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 
 Unbuilt parts of the design: the deal tree is the book file with nets written on, not composed
 from the fold; and a print is not yet one fact feeding both a calibration's archive and a deal's
-fixings ([designed, not built](roadmap.md#designed-not-built)). The record's rows on the roadmap's
-close-out list are all landed;
-the rotation and replay limits are [trust limits](#trust-limits) and the replay tuple's reach is on
+fixings ([designed, not built](roadmap.md#designed-not-built)). The rotation and replay limits are
+[trust limits](#trust-limits) and the replay tuple's reach is on
 [Model Limitations](../limitations.md#the-engine); which verbs take a seat and whether a rotation
 is signed by the key it retires are
 [desk decisions](../limitations.md#decisions-waiting-on-the-desk).

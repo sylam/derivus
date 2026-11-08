@@ -44,7 +44,7 @@ route at `/docs` and `/openapi.json`.
 | `-o`, `--origin` | any origin | a browser origin to allow; repeat for several |
 | `-u`, `--ui` | the build the wheel ships | a directory holding a built web UI; refused at start if it holds no `index.html` |
 | `-k`, `--book` | `book.json` in `DV_HOME` | the job file served as the live book; a missing file starts as a blank book |
-| `--no-book` | off | serve the verbs with no book; every `/book` verb answers 404 |
+| `--no-book` | off | serve the verbs with no book: a verb reading or writing the book file answers 404, while under a spine home the record's own reads and declarations still answer |
 | `-t`, `--tick [SECONDS]` | off; 30 when given no value | re-mark the book off this machine's Bloomberg session every interval |
 
 `--tick` refuses to start without `blpapi` or beside `--no-book`. A tick runs the job
@@ -95,6 +95,7 @@ answer as JSON on stdout; a refusal prints the library's sentence on stderr and 
 | `oracle` | check the record's invariants; exit 1 where one fails |
 | `enroll`, `grant`, `rewrap`, `name`, `whoami` | seats, the capabilities document, key wraps, display names, a token check |
 | `declare`, `policy`, `portfolio` | declare a policy, report those in force, declare a node of the desk's tree |
+| `file` | declare a market data file or a calendar a job names, by its bytes |
 
 The verbs' flags are on [The Spine](developer/spine.md#the-cli).
 
@@ -176,14 +177,15 @@ DV_SPINE_HOME/
   keys/                       blind.key, class_firm.key, checkpoint_signing.key, checkpoint_verify.key
   keys/seats/<id>.key         a seat's private key, where the hub minted it
   names.json                  display names, kept outside the log
+  index.json                  the head, offsets and tags at the last checkpoint
   seeds/                      folds cached at a close
 ```
 
 `log/` and `blobs/` are the record. `keys/` holds its secrets: `class_firm.key` opens every sealed
 body, and deleting it destroys their content while the chain still verifies; `checkpoint_signing.key`
 signs checkpoints; `blind.key` keys the duplicate tags. `names.json` is mutable and outside the chain.
-`seeds/` is derivable and may be deleted: a reader finding no seed folds from genesis to the same
-answer. The log and the blobs are append-only, a correction being another fact. The layout and
+`seeds/` and `index.json` are derivable and may be deleted: a reader finding no seed folds from
+genesis, and an open finding no index that verifies reads the whole log, to the same answer. The log and the blobs are append-only, a correction being another fact. The layout and
 every hash are on [The Spine](developer/spine.md#the-truth-layer).
 
 ## Topology
@@ -220,6 +222,7 @@ Bloomberg terminal and a spine home. This is the Getting Started stack.
 | a replica's `log/` and `blobs/` | `DV_Spine follow` alone |
 | `keys/` | `DV_Spine init` (the home's keys) and `enroll` (a seat's key, where the hub mints it) |
 | `names.json`, `seeds/` | `DV_Spine name`, `DV_Spine seed` |
+| `index.json` | the home's writer, at each checkpoint it lands |
 
 ## Security
 
@@ -266,8 +269,8 @@ hash recomputes; on a home holding the keys it also checks every seal and that e
 verifies under the key in force at it. It does not prove the hub did not rewrite its own history:
 the hub's signing key is in its home. Publishing the head that `DV_Spine status` prints, or keeping a
 replica, gives an outside reference to check against. History after the last checkpoint is chained
-but unsigned, so a deployment runs `DV_Spine checkpoint` on a schedule of its choosing, and
-`record_time` is the hub's clock with no external timestamp. The full table is
+but unsigned, so a deployment runs `DV_Spine checkpoint` on a schedule of its choosing (an open
+reads the frames since the last one), and `record_time` is the hub's clock with no external timestamp. The full table is
 [Trust limits](developer/spine.md#trust-limits).
 
 ## Backup and restore
@@ -276,7 +279,7 @@ The record is files, so a backup is a copy and a restore is a copy back.
 
 - **What to copy.** The spine home's `log/`, `blobs/`, `keys/` and `names.json`; `DV_HOME`'s
   `book.json`, `calculations.json`, `seed.json`, `security_map.json` and `tmp/`; and every file the
-  book names by path. `seeds/`, `xva.json` and the service's in-memory state are rebuilt.
+  book names by path. `seeds/`, `index.json`, `xva.json` and the service's in-memory state are rebuilt.
 - **When.** Copy a home while no writer runs, with the service stopped, or copy a replica, which
   `DV_Spine follow` keeps byte-identical to the hub's log (with the blobs too where it follows with
   `--blobs`). A line cut off mid-write is the one damage a home repairs itself, truncating it when
