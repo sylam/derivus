@@ -430,15 +430,16 @@ def deal_carry_rate(factor_dep, carry, days, time_grid, shared):
     return zero_carry_rate(carry, days, shared.one.new(years), time_grid, shared)
 
 
-def total_log_forward(carry_rate, times):
+def total_log_forward(carry_rate, times, cumulative=False):
     """``log F(t,T) / S(t)``: the interval carry strip integrated over a fixing strip - the sum
-    telescopes to ``c_N*T_N``.
+    telescopes to ``c_N*T_N`` - or, ``cumulative``, the log forward to every fixing of it.
 
     Takes ``forward_carry_rate``'s strip, never raw zero rates. Rank-polymorphic (``[N_fix, batch]``
     or ``[N_block, N_fix, batch]``), so a leg valuing one row and a leg valuing the block are the
     same expression - which keeps the two legs of ``pv_discrete_barrier_option`` on one forward.
     """
-    return (carry_rate * times.unsqueeze(-1)).sum(dim=-2)
+    steps = carry_rate * times.unsqueeze(-1)
+    return steps.cumsum(dim=-2) if cumulative else steps.sum(dim=-2)
 
 
 def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
@@ -3465,7 +3466,8 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
                   len(decision_indices), int((decision_codes >= 0).sum()), extension_index)
 
     def market_inputs(row_index, first_index):
-        """Frozen-curve/frozen-surface GBM inputs from one MTM row to schedule[first_index:]."""
+        """Frozen-curve/frozen-surface GBM inputs from one MTM row to schedule[first_index:]: the
+        log forward and the total variance to each fixing, its interval strips integrated."""
         if first_index >= n_fix:
             return None
         t_row = deal_time[row_index:row_index + 1]
@@ -3474,34 +3476,23 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         fix_days = np.maximum(fixing_days[ids] - mtm_day, 0).reshape(1, -1)
         set_days = (settlement_days[ids] - mtm_day).reshape(1, -1)
         discount_row = utils.calc_time_grid_curve_rate(factor_dep['Discount'], t_row, shared)
-        log_fwd = utils.curve_spread(
-            factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1], fix_days, t_row, shared)[0]
-        full_np = daycount_fn(fix_days)[0]
-        full = log_fwd.new(full_np).reshape(-1, 1)
         s = spot[row_index]
-        forward = s.unsqueeze(0) * torch.exp(log_fwd)
-        moneyness = torch.as_tensor(
-            calc_moneyness(k2, s, forward, deal_data, True, factor_dep['Invert_Moneyness']),
-            dtype=forward.dtype, device=forward.device).expand_as(forward)
-        vols = []
-        for mon, tau in zip(moneyness, full_np):
-            if float(tau) <= 0.0:
-                vols.append(torch.zeros_like(s))
-            else:
-                vols.append(utils.VolSurface.rate(
-                    factor_dep['Volatility'], mon.reshape(1, -1), np.array([tau]),
-                    shared).reshape(-1))
-        vols = torch.stack(vols)
-        total_var = (vols * vols * full).clamp(min=0.0)
-        if len(total_var) > 1 and float((total_var[1:] - total_var[:-1]).min()) < -1e-10:
-            # every transition variance is a difference of these rows, so a decreasing total
-            # variance would clamp into a degenerate transition whose survival saturates
+        cum_np = daycount_fn(fix_days)
+        cum_t, times = s.new(cum_np[0]), s.new(np.diff(cum_np[0], prepend=0.0))
+        carry = zero_carry_rate((factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1]),
+                                fix_days, s.new(cum_np), t_row, shared)[0]
+        vols = forward_vol_strip(deal_data, k2, s, carry, cum_np[0], shared,
+                                 factor_dep['Invert_Moneyness'], use_forwards=True)
+        if len(vols) > 1 and float((vols * vols * cum_t.unsqueeze(-1)).diff(dim=0).min()) < -1e-10:
+            # every transition variance is a difference of the total variance to two fixings, so
+            # a decreasing one would floor into a degenerate transition whose survival saturates
             raise ValueError('total variance decreases across extendable-forward fixings')
+        variance = forward_vol_rate(vols, cum_t, times) ** 2 * times.unsqueeze(-1)
         return {
             'first': first_index,
             'spot': s,
-            'log_fwd': log_fwd,
-            'total_var': total_var,
+            'log_fwd': total_log_forward(forward_carry_rate(carry, cum_t, times), times, True),
+            'total_var': variance.cumsum(dim=0),
             'd_fix': utils.calc_discount_rate(discount_row, fix_days, shared)[0],
             'd_settle': utils.calc_discount_rate(discount_row, set_days, shared)[0],
         }

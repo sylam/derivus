@@ -77,9 +77,6 @@ KNOWN = {
         'through the seam, and its strips through `forward_vol_strip`',
     ('pricing.zero_carry_rate', 'utils.calc_fx_forward'):
         'the outright forward, `exp` of the integral the zero carry divides by its year fraction',
-    ('pricing.zero_carry_rate', 'pricing.pv_MC_ExtendableForward'):
-        'spells its log forward off `curve_spread`, its per-fixing vol and its interval carry and '
-        'variance inline beside the seams; the fold onto them is a roadmap row, not yet landed',
     ('pricing.forward_carry_rate', 'pricing.deal_carry_rate'):
         'the zero carry over its deal\'s day count, for a pricer reading one expiry',
     ('pricing.forward_vol_strip', 'pricing.deal_carry_rate'): 'returns a carry and reads no vol',

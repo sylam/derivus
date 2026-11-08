@@ -58,12 +58,6 @@ features kept ahead of their build, not rows to close.
 
 **The code.**
 
-- **The extendable forward spells its forward, vol and carry inline** (2026-10-21, S).
-  `pv_MC_ExtendableForward.market_inputs` keeps its own spelling of the log forward off
-  `curve_spread`, the per-fixing vol and the interval carry and variance beside `total_log_forward`,
-  `forward_vol_strip` and `forward_carry_rate`, the shape a unification's siblings take on
-  [Conventions](conventions.md#unification-siblings); `gates/seam_readers.py` lists it under `KNOWN`
-  until it is folded, proven by bit identity or a gate for the difference.
 - The retired family keys (`config.RETIRED_FAMILY_KEYS`: `InterestRateCurveParameters` and
   `FXVolSurfaceParameters` read as `InterestRate` and `FXVol`) are carried through this release and
   go the release after. A book keyed by them hashes to a new plan once its keys move, so a quote

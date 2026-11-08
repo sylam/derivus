@@ -250,7 +250,7 @@ engine/reference $-1$; an unsigned one is the absolute relative difference.
 | Two-coupon autocall, $S=K=100$, coupon 0.08, put barrier 70%, $r$ 4%, $q$ 1%, $\sigma$ 25% | BaseValuation, smooth, 262,144 | value 0.36%, delta 0.16%, vega 0.15%, gamma 0.15% | region-integral quadrature |
 | Autocall with two-fixing coupon windows, 70% put | BaseValuation, 1,048,576 | smooth $-0.14\%$ (spot reading) / $-0.17\%$ (average reading); crisp $-0.36\%$ / $-0.47\%$ | direct simulation of the terms, $2^{24}$ paths |
 | Two-fixing accumulator | BaseValuation, 65,536 | smooth gamma 0.07% (the crisp pathwise gamma 11.1% short) | quadrature |
-| Extendable forward, strip and one-decision rolling, flat market | BaseValuation, 32,768 | within the gate's 0.5%; the written (counterparty-exercised) side 0.1% | Black on the linear continuation |
+| Extendable forward, strip and one-decision rolling, flat market and sloped curves under a vol term structure | BaseValuation, 32,768 | within the gate's 0.5%; the written (counterparty-exercised) side 0.1% | Black on the linear continuation |
 | LogVar2FJ kit at its GBM limit (levers zero, Gaussian residual, flat $\xi$), autocall | BaseValuation | $1.3\times10^{-16}$ relative | the GBM arm |
 
 Unmeasured: the strip's allocation of forward variance between fixings on a skewed, term-structured

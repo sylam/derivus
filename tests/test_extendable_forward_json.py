@@ -37,6 +37,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
+import pytest
 
 import derivus
 from derivus import utils
@@ -59,6 +60,12 @@ FACTORS = {
     'FXVol.EUR.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                       'Surface': utils.Curve([], [[m, t, SIGMA] for m in (0.8, 1.0, 1.2)
                                                   for t in (0.02, 2.0)])}}
+
+#: `(USD rate, EUR rate, vol)` by day: the flat world, and a sloped one - the USD curve rising, the
+#: EUR falling and the vol rising with expiry - stated on a pillar at every day the deal reads.
+FLAT = (lambda day: R_USD, lambda day: R_EUR, lambda day: SIGMA)
+SLOPED = (lambda day: R_USD + 0.02 * day / 365.0, lambda day: R_EUR - 0.015 * day / 365.0,
+          dict(zip(FIX_DAYS, (0.08, 0.11, 0.13, 0.15))).get)
 
 
 def _deal(style='Strip', extension_index=1, k2=K2, buy_sell='Buy', fix_days=None,
@@ -91,7 +98,22 @@ def _mirror(**kw):
                  exercised_by='Counterparty' if holder == 'Bank' else 'Bank', **kw)
 
 
-def _job(deal, base=BASE, calc=None):
+def _factors(world):
+    """The job's price factors: the module's own on the flat world, and on another its curves and
+    surface on a pillar at every day the deal reads."""
+    if world is FLAT:
+        return dict(FACTORS)
+    days = sorted({0} | {day + lag for day in FIX_DAYS for lag in (0, SETTLE_LAG)})
+    curve = lambda name, rate: dict(FACTORS[name], Curve=utils.Curve(
+        [], [[day / 365.0, rate(day)] for day in days]))
+    return dict(FACTORS, **{
+        'InterestRate.USD': curve('InterestRate.USD', world[0]),
+        'InterestRate.EUR': curve('InterestRate.EUR', world[1]),
+        'FXVol.EUR.USD': dict(FACTORS['FXVol.EUR.USD'], Surface=utils.Curve(
+            [], [[m, day / 365.0, world[2](day)] for m in (0.8, 1.0, 1.2) for day in FIX_DAYS]))})
+
+
+def _job(deal, base=BASE, calc=None, world=FLAT):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
                              'MCMC_Simulations': SIMS}, **(calc or {})),
@@ -102,7 +124,7 @@ def _job(deal, base=BASE, calc=None):
             'Valuation Configuration': {},
             # a COPY: a CRN rung rebinds FxRate.EUR, and sharing the module dict would leave the
             # bumped spot standing for every job built afterwards
-            'Price Factors': dict(FACTORS)}}}}
+            'Price Factors': _factors(world)}}}}
 
 
 def _profile_job(deal):
@@ -144,27 +166,28 @@ def _ndtr(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def _fwd(day):
-    return X0 * math.exp((R_USD - R_EUR) * day / 365.0)
+def _fwd(day, world=FLAT):
+    return X0 * math.exp((world[0](day) - world[1](day)) * day / 365.0)
 
 
-def _disc(day):
-    return math.exp(-R_USD * day / 365.0)
+def _disc(day, world=FLAT):
+    return math.exp(-world[0](day) * day / 365.0)
 
 
-def _leg(i, strike):
-    return _disc(FIX_DAYS[i] + SETTLE_LAG) * NOTIONAL * (_fwd(FIX_DAYS[i]) - strike)
+def _leg(i, strike, world=FLAT):
+    return _disc(FIX_DAYS[i] + SETTLE_LAG, world) * NOTIONAL * (_fwd(FIX_DAYS[i], world) - strike)
 
 
-def _optional_black(decision_index, tail, k2=K2, sign=1.0):
-    """D_fix * A * Black(F_dec, K2 * B / A): the linear-continuation optional value."""
-    t_dec = FIX_DAYS[decision_index] / 365.0
-    d_fix = _disc(FIX_DAYS[decision_index])
-    f_dec = _fwd(FIX_DAYS[decision_index])
-    A = sum(_disc(FIX_DAYS[j] + SETTLE_LAG) * _fwd(FIX_DAYS[j]) / f_dec for j in tail) / d_fix
-    B = sum(_disc(FIX_DAYS[j] + SETTLE_LAG) for j in tail) / d_fix
+def _optional_black(decision_index, tail, k2=K2, sign=1.0, world=FLAT):
+    """D_fix * A * Black(F_dec, K2 * B / A): the linear-continuation optional value, at the vol
+    to the decision."""
+    day = FIX_DAYS[decision_index]
+    d_fix, f_dec = _disc(day, world), _fwd(day, world)
+    A = sum(_disc(FIX_DAYS[j] + SETTLE_LAG, world) * _fwd(FIX_DAYS[j], world) / f_dec
+            for j in tail) / d_fix
+    B = sum(_disc(FIX_DAYS[j] + SETTLE_LAG, world) for j in tail) / d_fix
     strike = k2 * B / A
-    sd = SIGMA * math.sqrt(t_dec)
+    sd = world[2](day) * math.sqrt(day / 365.0)
     d1 = math.log(f_dec / strike) / sd + 0.5 * sd
     call = f_dec * _ndtr(sign * d1) * sign - strike * _ndtr(sign * (d1 - sd)) * sign
     return d_fix * NOTIONAL * A * call
@@ -202,37 +225,44 @@ def test_an_unreachable_extension_strike_is_the_guaranteed_strip():
     assert abs(_mtm(out) - expected) / abs(expected) < 1e-9, (_mtm(out), expected)
 
 
-def test_an_undecided_strip_prices_its_black_optional():
+@pytest.mark.parametrize('world', (FLAT, SLOPED), ids=('flat', 'sloped'))
+def test_an_undecided_strip_prices_its_black_optional(world):
     """The strip's OSS machinery against Black: the continuation at the single decision is linear
     in the decision spot, so the optional part is a scaled Black call and the whole undecided value
     is closed-form up to Monte Carlo error.
 
     The strip boundary mis-set by +10% reads -37%: a materially wrong boundary loses real value
     while SMALL errors are forgiven to second order, which is the envelope argument that lets the
-    pricer detach it from AAD.
+    pricer detach it from AAD. On the sloped world Black reads the forward and the vol to the
+    decision's own day, where on the flat one every fixing's are the same.
 
-    Killing mutation: the exercise direction flipped (`decide_sign` negated).
+    Killing mutation: the exercise direction flipped (`decide_sign` negated); on the sloped world
+    alone, the zero carry stepped as the interval carry (-11.3%) or the implied vols as the
+    interval vols (-7.1%), each of which the flat world reads to the bit.
     """
-    out, log = _run(_job(_deal()), debug=True)
-    expected = _leg(0, K1) + _leg(1, K1) + _optional_black(1, [2, 3])
+    out, log = _run(_job(_deal(), world=world), debug=True)
+    expected = _leg(0, K1, world) + _leg(1, K1, world) + _optional_black(1, [2, 3], world=world)
     v = _mtm(out)
     assert abs(v - expected) / abs(expected) < 5e-3, (v, expected)
-    always = _leg(0, K1) + _leg(1, K1) + _leg(2, K2) + _leg(3, K2)
-    never = _leg(0, K1) + _leg(1, K1)
+    always = sum(_leg(i, K1 if i < 2 else K2, world) for i in range(4))
+    never = _leg(0, K1, world) + _leg(1, K1, world)
     assert v > max(always, never), 'optionality must exceed both forced strategies'
     organs = [ln for ln in log.splitlines() if 'EXTENDABLE' in ln]
     assert organs and 'style=strip' in organs[-1] and 'decisions=1' in organs[-1], organs
 
 
-def test_a_rolling_single_decision_is_the_same_black():
+@pytest.mark.parametrize('world', (FLAT, SLOPED), ids=('flat', 'sloped'))
+def test_a_rolling_single_decision_is_the_same_black(world):
     """One rolling decision (three fixings, extension on the second) is the strip product with a
     one-fixing tail - but priced through the backward quadrature boundary, the grid interpolation
-    and the root-finding. The same Black oracle must come back.
+    and the root-finding. The same Black oracle must come back, on either world.
 
-    Killing mutation: the exercise direction flipped (`decide_sign` negated).
+    Killing mutation: the exercise direction flipped (`decide_sign` negated); on the sloped world
+    alone, the zero carry stepped as the interval carry (-7.5%) or the implied vols as the interval
+    vols (-5.5%).
     """
-    out, _ = _run(_job(_deal(style='Rolling', fix_days=FIX_DAYS[:3])))
-    expected = _leg(0, K1) + _leg(1, K1) + _optional_black(1, [2])
+    out, _ = _run(_job(_deal(style='Rolling', fix_days=FIX_DAYS[:3]), world=world))
+    expected = _leg(0, K1, world) + _leg(1, K1, world) + _optional_black(1, [2], world=world)
     v = _mtm(out)
     assert abs(v - expected) / abs(expected) < 5e-3, (v, expected)
 
