@@ -35,8 +35,8 @@ import pytest
 from derivus_bloomberg import session
 from derivus_bloomberg.errors import BloombergRequestError, BloombergUnavailable
 
-APP = 'Investec_SA:TSSPricingTool'
-BPIPE = ('10.0.88.31', 8194)
+APP = 'ExampleBank:DeskPricer'
+BPIPE = ('192.0.2.10', 8194)
 DESKTOP = ('localhost', 8194)
 #: What a session reads from the environment, which is the test's to say and not the shell's.
 ENVIRONMENT = ('DV_BLOOMBERG_HOST', 'DV_BLOOMBERG_PORT', 'DV_BLOOMBERG_APP_NAME')
