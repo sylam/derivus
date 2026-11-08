@@ -551,7 +551,7 @@ the context reads a declared file off the store and any other off its path, the 
 way, `PnL.marked` carrying each marks run's `files`: the diary of that job
 (`service.diary_rows`), the base currency a window crosses its cash at, the explain's valuations
 of the start's job and the end's (`sensed`, `carried`, the maker threaded through
-`quote_context` and `date_edit`), and the call's `Exclude_Paid_Today`
+`quote_run` and `date_edit`), and the call's `Exclude_Paid_Today`
 (`Collateral.paid_today`), so a file rewritten since moves no struck day. **Held by**
 `test_spine_verbs.py::test_a_file_is_declared_by_its_bytes_and_the_latest_under_a_name_stands`,
 `test_spine_projections.py::test_the_file_standing_under_a_name_is_its_latest_declaration_by_lsn`,

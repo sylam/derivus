@@ -399,6 +399,15 @@ No test flips the switch.
 **Two leaf shapes**, `(descriptors, leaves)` either way: HW2F a tuple of scalar leaves, the others one
 vector. FX descriptors name the pillar (`RR 0.25 1`).
 
+**The risk read keeps its refit by the market.** `service.quote_run` refits the blocks a book stands
+on with the switch on and keeps the refit on the served book under the hash of the market, the files
+it names and the blocks, so a booking values its own deals on it, from a zero gradient, and a tick
+refits. A block whose refit or run refuses the switch - an outright landing in an amount, a fit off
+stationarity - is refitted with it off and named, the rest of the book read in its quotes. **Held
+by** `tests/test_service.py::test_a_booking_is_valued_on_the_markets_kept_refit_to_the_bit_of_a_cold_book`,
+`::test_a_block_that_cannot_carry_a_quote_derivative_is_named_and_the_rest_stays_in_quotes`; no
+test reaches a refusal raised in the run's backward.
+
 !!! danger "Descriptors collide across families; the truth is the sum"
     An `FXVolPrices` ATM quote is also the GBM family's ATM column, so with both blocks on, its
     `dV/dq` splits across two leaves under one descriptor. A reader groups by descriptor and sums, as
@@ -456,8 +465,7 @@ pseudo-inverse it is the projector onto the kept directions. No test holds it.
 
 - `Tenor_Offset` declines an FX surface's attachment though `Factor2D.current_value()` ignores the
   offset, dropping a delta for a surface that did not move.
-- A model-priced leg's charge reads a lognormal vega; a consolidated risk read refits its blocks
-  ([limitations](../limitations.md#the-engine)).
+- A model-priced leg's charge reads a lognormal vega ([limitations](../limitations.md#the-engine)).
 
 ## Non-goals {#non-goals}
 

@@ -360,7 +360,10 @@ service's own declarations; a running service describes each in full at `/docs` 
 
 THE BLOTTER'S TWO DATA VIEWS are `/book/risk` and `/book/xva`, and they are not the same kind of
 thing. Risk is whole-book and counterparty-blind, answered inline and cached on the content of
-everything the run reads, so a client polls it on the same beat it polls `/book`. XVA is per
+everything the run reads, so a client polls it on the same beat it polls `/book`; it is read in the
+quotes the book's factors are built from, refitted once per market and kept by the market's hash, so
+a booking does not refit, and a block that cannot carry a quote derivative is named in
+`quote_note` and read on its factors while the rest stays in quotes. XVA is per
 netting set and a CACHED PROJECTION: a credit Monte Carlo is minutes of device time and must never
 ride a tick, so `DV_HOME/xva.json` holds the last run of each set — written atomically, one row at
 a time — and a desk asks for a FULL or PARTIAL recalc when it wants the file to move. The

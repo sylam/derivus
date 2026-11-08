@@ -529,6 +529,9 @@ class Book:
         # against by `structures.book_risk`'s hash: a standing book pays one greeks run for each
         self.risk_cache = utils.LRUCache(8)
         self.vol_risk_cache = utils.LRUCache(16)
+        # the connected refit of each market the book is valued on, by its hash, beside the lock
+        # one run on it holds at a time (`quote_run`): a booking re-runs, it does not refit
+        self.calibrations = utils.LRUCache(4)
         # the record's folds a booking or a read advances rather than re-walks (`spine.advancing`),
         # kept as long as the book is served
         self.folds = {}
@@ -1583,40 +1586,91 @@ def quote_blocks(prices, universe):
         prices, bootstrappers.bootstrap_writers(prices, set(universe)))
 
 
-def quote_context(run, reading=Context):
-    """`(context, note)`: the risk run with the book's own quotes CONNECTED - the blocks its
-    factors are built from refitted with `Quote_Sensitivity` on wherever the family declares it,
-    so one backward leaves `dV/dq` on every quote beside `dV/dtheta` on every factor - or the run
-    as it stands and the sentence saying why not. The switch is worth zero forward, so the marks
-    are the book's own; a refit that refuses leaves the risk in factor space rather than failing
-    the read. `reading` makes the contexts it loads on (`spine.reading`)."""
-    prices = market_of(run, reading())['Market Prices']
-    universe = set(load(run, reading()).current_cfg.factor_universe()['resolved']) \
-        if prices else set()
-    blocks = quote_blocks(prices, universe)
-    if not blocks:
-        return load(run, reading()), None
+def connected_run(run, blocks, universe, carried, reading=Context):
+    """`(context, output)`: `run` valued with its `blocks` refitted, `carried` saying of each one
+    whose family declares `Quote_Sensitivity` whether it is on, so one backward leaves `dV/dq` on
+    every carried quote beside `dV/dtheta` on every factor. The switch is worth zero forward, so
+    the marks are the book's own whichever blocks carry it."""
     quoted = deepcopy(run)
-    declared = mapping['MarketPrices']['types']
     quoted['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'] = {
-        name: dict(prices[name], instrument=dict(
-            prices[name]['instrument'], Quote_Sensitivity='Yes'))
-        if 'Quote_Sensitivity' in declared.get(utils.check_rate_name(name)[0], {})
-        else prices[name] for name in sorted(blocks)}
+        name: dict(block, instrument=dict(block['instrument'], Quote_Sensitivity=carried[name]))
+        if name in carried else block for name, block in sorted(blocks.items())}
     context = load(quoted, reading())
+    context.current_cfg.bootstrap(wanted=universe)
+    return context, context.run_job()[1]
+
+
+def calibrated(run, blocks, universe, loaded, reading=Context):
+    """`(context, output, note)`: `run` valued with every block that can carry a quote derivative
+    carrying one (`connected_run`), and the sentence naming each block read on its factors instead.
+    WHERE THAT REFUSES, the book is valued on its factors as written (`loaded`), so one that will
+    not price refuses as it would anywhere, and the blocks are switched on one at a time, each that
+    refuses - a forward outright, a fit off stationarity - refitted with the switch off and named."""
+    declared = mapping['MarketPrices']['types']
+    switched = [name for name in blocks
+                if 'Quote_Sensitivity' in declared.get(utils.check_rate_name(name)[0], {})]
+    refused, failed = {}, None
     try:
-        context.current_cfg.bootstrap(wanted=universe)
+        context, output = connected_run(run, blocks, universe, dict.fromkeys(switched, 'Yes'),
+                                        reading)
     except Exception as refusal:
-        return load(run, reading()), ('the quotes this book is built from did not refit, so its '
-                                      'risk is read on the factors alone: {}'.format(refusal))
+        context, output, carried, failed = loaded, loaded.run_job()[1], [], refusal
+        for name in switched:
+            try:
+                context, output = connected_run(run, blocks, universe, {
+                    other: 'Yes' if other in carried or other == name else 'No'
+                    for other in switched}, reading)
+                carried.append(name)
+            except Exception as refusal:
+                refused[name] = refusal
+    said = ['{} is read on its factors: its refit with Quote_Sensitivity on refused - {}'.format(
+        name, refusal) for name, refusal in refused.items()]
+    if failed is not None and not switched:
+        said.append('the quotes this book is built from did not refit, so its risk is read on the '
+                    'factors alone: {}'.format(failed))
     # a family nobody configured fits nothing and says so only in a log, so the answer says it
-    silent = sorted(name for name, block in quoted['Calc']['MergeMarketData'][
-        'ExplicitMarketData']['Market Prices'].items()
-        if block['instrument'].get('Quote_Sensitivity') == 'Yes'
-        and name not in context.current_cfg.quote_leaves)
-    return context, silent and ('{} published no quote derivative - no Bootstrapper Configuration '
-                                'entry fits the family - so what they build is read on its '
-                                'factors'.format(', '.join(silent))) or None
+    silent = [name for name in switched
+              if name not in refused and name not in context.current_cfg.quote_leaves]
+    if silent:
+        said.append('{} published no quote derivative - no Bootstrapper Configuration entry fits '
+                    'the family - so what they build is read on its factors'.format(
+                        ', '.join(silent)))
+    return context, output, '; '.join(said) or None
+
+
+def quote_run(run, reading=Context):
+    """`(output, quotes, quoted, note)`: `run` valued with the book's own quotes CONNECTED - the
+    blocks its factors are built from refitted with `Quote_Sensitivity` on (`calibrated`), its risk
+    read in the quotes as quoted (`quote_rows`) - and `note` naming each block read on its factors
+    instead, and why. `reading` makes the contexts it loads on (`spine.reading`).
+
+    THE REFIT IS THE MARKET'S, NOT THE BOOK'S: kept on the live book (`Book.calibrations`) by the
+    hash of the market, the files it names and the blocks refitted, a later run over that market -
+    a booking, a second reader - values its own deals on it, one at a time from a zero gradient."""
+    loaded = load(run, reading())
+    prices = loaded.current_cfg.params['Market Prices']
+    universe = set(loaded.current_cfg.factor_universe()['resolved']) if prices else set()
+    blocks = sorted(quote_blocks(prices, universe))
+    if not blocks:
+        return loaded.run_job()[1], [], [], None
+    key = content_hash({'market': run['Calc']['MergeMarketData'], 'files': reading().files(run),
+                        'blocks': blocks})
+    kept = BOOK and BOOK.calibrations.get(key)
+    if kept:
+        context, note, lock = kept
+        with lock:
+            context.current_cfg.deals = loaded.current_cfg.deals
+            for _, leaves in context.current_cfg.quote_leaves.values():
+                for leaf in leaves if isinstance(leaves, (list, tuple)) else [leaves]:
+                    leaf.grad = None
+            return (context.run_job()[1],) + quote_rows(context.current_cfg) + (note,)
+    context, output, note = calibrated(
+        run, as_json({name: prices[name] for name in blocks}), universe, loaded, reading)
+    # read before it is kept, as a run on the kept refit resets what this one left on its quotes
+    answer = (output,) + quote_rows(context.current_cfg) + (note,)
+    if BOOK:
+        BOOK.calibrations.put(key, (context, note, threading.Lock()))
+    return answer
 
 
 def quote_rows(config):
@@ -1665,10 +1719,10 @@ def consolidated_risk(document):
     structure's legs and a set's members are inside the row their container reports, and adding
     them again would double the book. A book holding nothing live never reaches a run.
 
-    THE RISK IS IN QUOTE SPACE where the book's factors are built from quotes (`quote_context`):
+    THE RISK IS IN QUOTE SPACE where the book's factors are built from quotes (`quote_run`):
     `quotes` is the derivative per unit of each quote as quoted, `quoted` the factors those rows
-    stand for, and `greeks` every factor's own row beside them; `quote_note` says why a book
-    whose quotes did not refit is read on its factors alone.
+    stand for, and `greeks` every factor's own row beside them; `quote_note` names each block
+    read on its factors instead, and why.
     """
     run = deepcopy(document)
     run['Calc']['Calculation'] = dict(run['Calc']['Calculation'],
@@ -1679,9 +1733,7 @@ def consolidated_risk(document):
     if not live_deals(job_children(run)):
         return answer
 
-    context, answer['quote_note'] = quote_context(run)
-    _, out = context.run_job()
-    answer['quotes'], answer['quoted'] = quote_rows(context.current_cfg)
+    out, answer['quotes'], answer['quoted'], answer['quote_note'] = quote_run(run)
     table = as_json(out['Results']['mtm'])['.DataFrame']
     column = {name: position for position, name in enumerate(table['columns'])}
     paths = top_level_paths(document)
@@ -1711,13 +1763,15 @@ def book_risk(actor: str = None):
     Under a home the seat `actor` is asked the queue's question for a what-if first - `validate`
     over the book or a node under it - and a refusal is a 422 in the record's own words. Computed
     on a MISS and kept on the live `Book` under `etag`, a hash of everything the run reads, so a
-    blotter polls this on the same beat it polls `/book`. An empty book answers zeros without
-    running anything; a book that will not price answers 422 naming the cause and caches nothing.
+    blotter polls this on the same beat it polls `/book`; a miss over a market already read values
+    on the refit kept by its hash (`quote_run`). An empty book answers zeros without running
+    anything; a book that will not price answers 422 naming the cause and caches nothing.
 
     `mtm` is the sum of `per_deal`, one row per top-level trade; `greeks` is `{factor, tenor?,
     value}` flattened off the gradient frame, trimmed at the last non-zero coordinate; `quotes` is
     `{block, quote, value}` per quote the book's factors are built from, per unit of the quote as
-    quoted, `quoted` the factors those rows stand for and `quote_note` why not where they are not.
+    quoted, `quoted` the factors those rows stand for and `quote_note` names each block read on
+    its factors instead, and why.
     """
     live = live_book()
     document = priced(live.read()[0], 'BaseValuation')
@@ -2708,14 +2762,12 @@ def held_job(market, terms, quantities):
 
 def sensed(job, reading=Context):
     """`(valued, note)` - `job` valued with first-order sensitivities, in the quotes its factors
-    are built from where they refit (`quote_context`): its value, `{block, quote, value, level}`
+    are built from where they refit (`quote_run`): its value, `{block, quote, value, level}`
     per quote, the factors those stand for, and `{factor, tenor?, value, level}` per factor.
     `reading` makes the contexts it loads on (`spine.reading`)."""
     run = spine.compiled_job(dict(job, Calc=dict(job['Calc'], Calculation=dict(
         job['Calc']['Calculation'], Greeks='First'))), strict=False, folds=folds())
-    context, note = quote_context(run, reading)
-    _, out = context.run_job()
-    quotes, quoted = quote_rows(context.current_cfg)
+    out, quotes, quoted, note = quote_run(run, reading)
     gradient = out['Results'].get('Greeks_First')
     return {'value': sum(PnL.unit_marks(as_json(out['Results'])).values()), 'quotes': quotes,
             'quoted': quoted, 'greeks': [] if gradient is None else greek_rows(gradient)}, note

@@ -5408,6 +5408,117 @@ def test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from(t
     assert bare['greeks'] and bare['mtm'] == pytest.approx(risk['mtm'], rel=1e-9)
 
 
+def cold_read(path):
+    """`/book/risk` off a newly served book over `path`, which keeps no refit yet, `as_of` aside."""
+    service.BOOK = service.Book(str(path))
+    return {key: value for key, value in CLIENT.get('/book/risk').json().items() if key != 'as_of'}
+
+
+def test_a_booking_is_valued_on_the_markets_kept_refit_to_the_bit_of_a_cold_book(quoting):
+    """`/book/risk` keeps the refit by the MARKET and not the book. The quoting book, an FX option
+    booked, refits its surface connected once; a second option booked moves the deals and leaves
+    the market, so the read after it is valued on that same kept refit - and reads, to the bit,
+    what a newly served book over the same file reads by refitting. A tick moves the market: the
+    read after it refits, and again reads what a cold book reads.
+
+    KILLING MUTATIONS, each red: the refit kept by the deals as well (a second refit after the
+    booking); kept by the blocks alone (the tick valued on the stale surface, its vega rows the
+    old ones); the kept quotes' gradient not reset (every quote row doubled); and the kept refit
+    valuing its own deals rather than the request's (the second option missing from `per_deal`).
+    """
+    def read():
+        return {key: value for key, value in CLIENT.get('/book/risk').json().items()
+                if key != 'as_of'}
+
+    assert CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': FX_OPTION}),
+                       headers=JSON).json()['written'] is True
+    first = read()
+    kept = list(service.BOOK.calibrations.entries.values())
+    assert len(kept) == 1 and first['quotes'], first['quote_note']
+
+    put = dict(FX_OPTION, Reference='OPT2', Option_Type='Put', Strike_Price=SPOT * 0.95)
+    assert CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': put}),
+                       headers=JSON).json()['written'] is True
+    booked = read()
+    assert list(service.BOOK.calibrations.entries.values()) == kept, 'a booking refitted'
+    assert [row['reference'] for row in booked['per_deal']] == ['CF1', 'OPT1', 'OPT2']
+    assert booked['quotes'] != first['quotes'], 'the put moved no vega - the gate is vacuous'
+    assert booked == cold_read(quoting)
+
+    quotes = fx_vol_quotes()
+    quotes['FXVolPrices.USD.ZAR']['instrument']['Points'][3]['Quoted_Market_Value'] += 0.005
+    assert CLIENT.post('/book/market', content=dump({'quotes': quotes}),
+                       headers=JSON).json()['written'] is True
+    ticked = read()
+    assert len(service.BOOK.calibrations.entries) == 2, 'a tick valued on the refit before it'
+    assert ticked['quotes'] != booked['quotes']
+    assert ticked == cold_read(quoting)
+
+
+def forward_book(path, deals):
+    """A ZAR book whose `USD-OIS` curve is solved from par quotes and whose ZAR curve from USDZAR
+    outrights - the block no quote derivative can be carried through, the outright landing in an
+    amount rather than a schedule - both curves standing in `Price Factors` as solved."""
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from rates_world import BASE as CURVE_BASE
+    from test_interest_rate_prices import fx_bootstrapped, fx_world
+
+    document = json.loads(dump(job(
+        deals=deals, factors=fx_bootstrapped(fx_world()),
+        sections={'System Parameters': {'Base_Currency': 'ZAR', 'Base_Date': CURVE_BASE},
+                  'Market Prices': fx_world(),
+                  'Bootstrapper Configuration': {'InterestRate': {'Prices': 'InterestRate'}}},
+        Base_Date=CURVE_BASE, Currency='ZAR')))
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    return document
+
+
+def test_a_block_that_cannot_carry_a_quote_derivative_is_named_and_the_rest_stays_in_quotes(
+        tmp_path):
+    """`/book/risk` RETRIES A REFUSING BLOCK OFF ITS QUOTES. The book holds a USD swap on `USD-OIS`
+    and a ZAR cashflow on the curve solved from USDZAR outrights, whose block refuses
+    `Quote_Sensitivity` by name. That block is refitted with the switch off and named with its own
+    refusal, its curve read on its factor, while every `USD-OIS` quote is a row once, to the bit
+    the row the swap reads alone, and the marks are the ordinary pricing run's.
+
+    KILLING MUTATION: one refusal reading the whole book on its factors, which leaves no quote row
+    at all.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    from rates_world import BASE as CURVE_BASE, par_swap
+    from test_interest_rate_prices import USD_CURVE, ZAR_CURVE
+
+    swap = par_swap('USW_2Y', 'USD', USD_CURVE, USD_CURVE, 2, 4.0)
+    cash = dict(CASHFLOW, Reference='ZCF', Discount_Rate=ZAR_CURVE,
+                Payment_Date=CURVE_BASE + pd.DateOffset(months=9))
+    document = forward_book(tmp_path / 'book.json', (swap, cash))
+    forward_book(tmp_path / 'swap.json', (swap,))
+    try:
+        risk = cold_read(tmp_path / 'book.json')
+        alone = cold_read(tmp_path / 'swap.json')
+        service.BOOK = service.Book(str(tmp_path / 'book.json'))
+        priced = CLIENT.post('/book/price', content=dump({}), headers=JSON).json()
+        service.EXECUTOR.queue.join()
+        values = mtm(priced['result_id'])
+    finally:
+        service.BOOK = None
+
+    refusing, carrying = ('InterestRatePrices.' + name for name in (ZAR_CURVE, USD_CURVE))
+    assert risk['quoted'] == ['InterestRate.' + USD_CURVE], risk['quote_note']
+    assert risk['quote_note'].startswith(refusing + ' is read on its factors')
+    assert 'FXForwardDeal' in risk['quote_note'] and carrying not in risk['quote_note']
+    assert 'InterestRate.' + ZAR_CURVE in {row['factor'] for row in risk['greeks']}
+    points = document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices'][
+        carrying]['instrument']['Points']
+    assert [(row['block'], row['quote']) for row in risk['quotes']] == [
+        (carrying, point['Descriptor']) for point in points]
+    assert max(abs(row['value']) for row in risk['quotes']) > 1.0
+    assert [row['value'] for row in risk['quotes']] == [row['value'] for row in alone['quotes']]
+    for row in risk['per_deal']:
+        assert abs(row['value']) > 1.0
+        assert row['value'] == pytest.approx(values[row['reference']], rel=1e-9)
+
+
 #: A netting set's CSA tables, at zero thresholds - the shape the engine's own CVA fixtures use.
 CSA = {'.CreditSupportList': [[0.0, 0.0]]}
 

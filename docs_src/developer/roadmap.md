@@ -32,12 +32,6 @@ features kept ahead of their build, not rows to close.
   on a strip's first paint; once per submitted job for admission, under a fiftieth of the cheapest
   job). Derived and verified like a seed, so an open scans only the tail and the
   doctored-middle-line refusal moves to `verify_home`.
-- **A consolidated risk read cached by the market's hash** (2026-09-24). `/book/risk` refits, with
-  `Quote_Sensitivity` on, every block the book's factors stand on, cached on the deals and the
-  market, so a spot-model block pays its warm polish on every uncached read; one block that cannot
-  carry a quote derivative (an FX forward outright, a polish above `Stationarity_Tol`) returns the
-  whole book in factor space, named. UNMEASURED on a desk book. The fix is the connected bootstrap
-  cached by the market's hash, and a per-block retry with the refusing block off prices.
 
 **Speed and memory.**
 
