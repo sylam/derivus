@@ -34,7 +34,7 @@ verb on `Context`, not an endpoint that reaches inside.
 | `GET /book` | the live job document the service serves - `DV_HOME/book.json` unless `--book` names another - and the etag naming its state |
 | `GET /book/status` | the desk in ONE read - the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether this workstation has a terminal |
 | `GET /book/market` | the market the book PRICES on - the file it names with its explicit block merged over it |
-| `POST /book/deals` | book or delete one deal - validated BEFORE an atomic write, refusal writes nothing |
+| `POST /book/deals` | book, amend or delete one deal, or take on one the file already holds (`action: 'fill'`) - validated BEFORE an atomic write, refusal writes nothing |
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, validated before it queues, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
 | `POST /book/market` | tick the book's market: quote blocks installed or value-updated, a values patch applied, the block's own entries retired, the bootstrap run - one atomic write |
@@ -671,7 +671,8 @@ class Book:
 
 
 #: The live book: `DV_HOME/book.json` by default, another file where `DV_Service --book` names one,
-#: and None under `--no-book` - which is a 404 on every /book verb.
+#: and None under `--no-book`, where a /book verb reading or writing the file answers 404 and one
+#: reading or declaring on the record alone still answers under a home (`recorded`).
 BOOK = None
 
 
@@ -1224,7 +1225,8 @@ def expected_reference(document, request):
                                  request['deal_path'], found, request['reference']))
 
 
-@app.post('/book/deals', summary='Book, amend or delete one deal - validated, then written atomically')
+@app.post('/book/deals', summary='Book, take on, amend or delete one deal - validated, then '
+                                 'written atomically')
 def book_deals(request: dict):
     """`{action: 'add', deal, parent_reference?}`, `{action: 'fill', deal_path}`, `{action:
     'amend', deal_path, fields}` or `{action: 'delete', deal_path}`. An amendment MERGES `fields`
