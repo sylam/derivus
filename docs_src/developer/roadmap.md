@@ -209,11 +209,12 @@ features kept ahead of their build, not rows to close.
   `'No'` away, reads `-0x1.2c48f36318e38p+5`). The documents, banks and scripts live outside the
   repository, so a clone cannot rerun them; moving them under `gates/` waits on a check that none
   carries desk data.
-- **The LogVar2FJ module, `tests/test_logvar2fj_json.py`** (2026-09-10): 23 tests on a synthetic
-  world (`tests/fixtures/data/logvar2fj_world.json`: one EUR index on a USD book, a five-expiry
-  skewed ladder, a GBM sibling), mostly one shared fit, holding the GBM limit, the flat surface, the
-  fit's contract, refusals by name, the priors-off and quanto twins, the reserve, the four sub-factor
-  rows and 76 floats over six repository documents hex for hex. Every killing mutation goes red
+- **The LogVar2FJ module, `tests/test_logvar2fj_json.py`**, on a synthetic world
+  (`tests/fixtures/data/logvar2fj_world.json`: one EUR index on a USD book, a five-expiry skewed
+  ladder, a GBM sibling), mostly one shared fit, holds the GBM limit (the European, the discrete
+  barrier, the CVA), the flat surface, the fit's contract, refusals by name, the priors-off and
+  quanto twins, the reserve, the four sub-factor rows and the floats six repository documents
+  report, hex for hex. Every killing mutation goes red
   except the wing-RMSE bound's (0.789 against 1.0), whose mutation stalls the fit. The banked floats
   are the GPU's (a CPU-only box re-banks the walk's), and the only autocall fixture fixes once, at
   maturity, so a vol-strip term-structure error is invisible to it.

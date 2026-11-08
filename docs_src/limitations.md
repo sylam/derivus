@@ -252,10 +252,10 @@ listed.
   memory for a second forward pass; the mixer's per-draw checkpoint raised peak memory by about a
   fifth. The residual's granularity is the dial if that headroom is wanted.
 - **21. Who may move the market, the date and the file** (2026-09-30). `POST /book/market`,
-  `/book/date`, `/book/configure`, `/book/curve`, `/book/bloomberg`, `/book/securities`,
-  `/calculations`, `/book/setup` (admitted under `validate`, yet it re-solves the market) and a
-  delete take no `actor`, so under a capabilities document any client can move the board a close is
-  declared over, roll the date or drop a deal. The tick is the deployment's poll path and
+  `/book/date`, `/book/configure`, `/book/curve`, `/book/securities`, `/calculations` and a delete
+  take no `actor`, and `/book/setup` and `/book/bloomberg` are admitted under `validate` yet
+  re-solve and re-mark the market, so under a capabilities document any client can move the board
+  a close is declared over, roll the date or drop a deal. The tick is the deployment's poll path and
   `delete_deal` takes no seat by design, so which verbs take a seat is a desk's call before the
   build (M-L: an `actor` and an admission on each, `mark` for the market and the date, `book` for
   the file).

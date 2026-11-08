@@ -405,8 +405,8 @@ it names and the blocks, so a booking values its own deals on it, from a zero gr
 refits. A block whose refit or run refuses the switch - an outright landing in an amount, a fit off
 stationarity - is refitted with it off and named, the rest of the book read in its quotes. **Held
 by** `tests/test_service.py::test_a_booking_is_valued_on_the_markets_kept_refit_to_the_bit_of_a_cold_book`,
-`::test_a_block_that_cannot_carry_a_quote_derivative_is_named_and_the_rest_stays_in_quotes`; no
-test reaches a refusal raised in the run's backward.
+`::test_a_block_that_cannot_carry_a_quote_derivative_is_named_and_the_rest_stays_in_quotes`. **Not
+gated:** a refusal raised in the run's backward.
 
 !!! danger "Descriptors collide across families; the truth is the sum"
     An `FXVolPrices` ATM quote is also the GBM family's ATM column, so with both blocks on, its
