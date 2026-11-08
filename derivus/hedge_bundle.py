@@ -43,8 +43,8 @@ def primary_spot(stoch_factors):
 
 
 def _privileged_name(factor_name, attr_name, stoch_factors):
-    """How a process's published state coordinate is keyed. Multi-commodity runs (more than one
-    distinct primary factor name) prefix the attribute with `<factor>_` to disambiguate."""
+    """How a process's published state coordinate is keyed: the attribute prefixed with its factor's
+    name, lowercased, `<factor>_<attr>`, wherever the run simulates more than one factor name."""
     multi = len({f.name[0] for f in (stoch_factors or {})}) > 1
     return f'{factor_name.lower()}_{attr_name}' if multi else attr_name
 

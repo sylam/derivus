@@ -4830,10 +4830,10 @@ class BenchmarkInstruments(object):
     def _carry_quotes(self, bumped_nodes, base_date, calendars):
         """Put the quote leaf on every schedule column the quote WRITES.
 
-        Which columns those are is MEASURED: the same set authored one percent higher is compiled,
-        and the columns that moved are the value columns with the difference as their slope. The
-        authoring map is affine in the quote, so one bumped compile IS the derivative - which keeps
-        each type's own `quoted` the only place a quotable instrument is declared.
+        Which columns those are is MEASURED: the same set authored one unit of its quote higher is
+        compiled, and the columns that moved are the value columns with the difference as their
+        slope. The authoring map is affine in the quote, so one bumped compile IS the derivative -
+        which keeps each type's own `quoted` the only place a quotable instrument is declared.
 
         The splice is `base + (q - q.detach()) * slope`, exactly zero forward with derivative one,
         so enabling quote gradients cannot move the solve. It is a derivative carrier and NOT a

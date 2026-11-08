@@ -1559,13 +1559,8 @@ def compose(reference, legs, margin=None):
 
 
 def book_node(deal):
-    """A composed deal as the NODE a job document's deal tree holds.
-
-    A container's children hang off the NODE - beside `Instrument`, not inside the deal block -
-    which is the shape `Context.load_json` walks and `splice_deal` builds. Lifting them out
-    happens exactly once, here: a populated container spliced flat loads with no children and
-    prices at ZERO, silently.
-    """
+    """A composed deal as the NODE a job document's deal tree holds, its `Children` lifted off the
+    deal block onto the node beside `Instrument` as `schema.splice_deal` lifts a booked one's."""
     node = {'Instrument': {'.Deal': {k: v for k, v in deal.items() if k != 'Children'}}}
     if 'Children' in deal:
         node['Children'] = copy.deepcopy(deal['Children'])
