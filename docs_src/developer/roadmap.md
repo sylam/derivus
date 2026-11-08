@@ -27,10 +27,6 @@ features kept ahead of their build, not rows to close.
   verb map, so a frame filed under a verb its act no longer demands - a confirmation or a
   collateral movement under a `settle` grant - reads as outside its seat, while the desk runs
   unchanged. The map read like a policy, one read in `verb_for`.
-- **A late settlement is matched within a business week** (2026-09-28). A settlement filed
-  against a payment the window's own diary no longer announces is looked for `LOOK_BACK` marks
-  back from its value date, a business week; past that, its day and a window reaching back over
-  it stop summing. UNMEASURED.
 - **A checkpointed index beside `log/`** (2026-09-23, M). `SpineLog.__init__` streams every segment
   to build the head, the tag index and the per-LSN offsets, linear in the log, once per read (twice
   on a strip's first paint; once per submitted job for admission, under a fiftieth of the cheapest

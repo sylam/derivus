@@ -966,6 +966,42 @@ def test_a_trade_is_read_on_the_market_it_was_done_on(recorded, desk):
     summed(whole, days, digital, strip)
 
 
+def test_a_settlement_eight_business_days_late_is_matched_to_the_row_it_settles(recorded, desk):
+    """A LATE SETTLEMENT IS MATCHED HOWEVER LATE. A strip's coupon of 100,000 rand on the second
+    marked day is marked settled with nothing moved at its close, the book is marked every business
+    day after, and the money - 99,000, value dated eight business days on - is filed that day,
+    after seven marks' diaries have dropped the row the strip, still live, no longer pays: it is
+    looked for back to the marks of the day it fell due, so the day it lands in and a window
+    reaching back over it read complete, the 1,000 short a break against the row's determined
+    amount.
+
+    Killing mutation: the look-back capped at a business week of marks, which names the settlement
+    on both windows as one no diary announces and breaks nothing.
+    """
+    designated(recorded, fixings=False)
+    booked(BESIDE, 1.0, 'EXEC-W', BOOK + '/FX', 0.0)
+    closed_and_marked()
+    rolled(desk, THIRD, 18.0)
+    key = due('CFL-NEW', '2024-07-02')['key']
+    settle({'subject': key})
+    closed_and_marked()
+    late = pd.bdate_range(FOURTH, periods=8)
+    for day in late:
+        rolled(desk, day, 18.0)
+        if day == late[-1]:
+            settle({'subject': key, 'amount': 99_000.0, 'asset': 'ZAR', 'kind': 'payment',
+                    'reference': 'PAY-W', 'value_date': '2024-07-12'})
+        closed_and_marked()
+
+    short = [{'key': key, 'instrument': instrument_of('CFL-NEW'), 'determined': 100_000.0,
+              'settled': 99_000.0, 'difference': -1_000.0, 'reference': 'PAY-W',
+              'value_date': '2024-07-12'}]
+    for window in (('2024-07-11', '2024-07-12'), ('2024-07-10', '2024-07-12')):
+        answer = between(*window)
+        assert answer['complete'] is True and answer['unknown'] == [], (window, answer['unknown'])
+        assert answer['breaks'] == short, (window, answer['breaks'])
+
+
 PAYING = cashflow('CF-G', 100_000.0, END)
 DUE_MONDAY = cashflow('CF-J', 10_000.0, END)
 

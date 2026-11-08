@@ -632,6 +632,8 @@ unknown, never zero. **Held by**
   settlement of another amount is a break, never an unknown;
 - a filing counts in the window it was filed in, as the record stood that day, converted at that
   day's close, so a struck day never moves and every figure but the new-deal split is additive;
+- a settlement against a payment the window's diary has dropped is matched in the latest earlier
+  marks whose diary still announces it, however late it settled;
 - a position whose last day falls in the window closes there, its basis released;
 - what nobody can know is named under `unknown`, and a total over it is null.
 
@@ -639,7 +641,8 @@ unknown, never zero. **Held by**
 residual. **Held by**
 `test_pnl.py::test_the_book_makes_its_marks_move_plus_its_cash_and_a_month_is_its_days`,
 `::test_a_payment_on_a_marked_day_is_that_day_s_cash_and_out_of_its_marks`,
-`::test_money_nobody_can_place_is_named`.
+`::test_money_nobody_can_place_is_named`,
+`::test_a_settlement_eight_business_days_late_is_matched_to_the_row_it_settles`.
 
 ## Collateral {#collateral}
 

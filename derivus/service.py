@@ -2737,11 +2737,6 @@ def consideration(document, price, currency):
                                  'and {}'.format(currency, reporting, missing))
 
 
-#: How many marks back a settlement filed against a payment the window's own diary no longer
-#: announces is looked for, from its value date: a business week, past which it is named.
-LOOK_BACK = 5
-
-
 def window_payments(first, last, fills, amended, document, marks, movements):
     """`({address: [payment rows]}, {address: day})` - every payment the diary announces from the
     start on for the instruments held at the start, traded in the window or restruck into it by
@@ -2755,8 +2750,9 @@ def window_payments(first, last, fills, amended, document, marks, movements):
 
     A settlement among `movements` against a payment the start's job no longer announces - one
     that fell due before the start - is looked for in the diaries of the marks on or before its
-    value date, `LOOK_BACK` of them, which still did, so a late filing lands in the day it was
-    filed; what it finds is its own holder's, whatever the start's legs are held by."""
+    value date, latest first, back to the first that still does - the marks of the day it fell due
+    or the last before - so a late filing lands in the day it was filed, however late it settled;
+    what it finds is its own holder's, whatever the start's legs are held by."""
     own = {node['Instrument']['.Deal']['Reference']: node
            for node in job_children(first['document'])}
     dealt = {}
@@ -2785,7 +2781,7 @@ def window_payments(first, last, fills, amended, document, marks, movements):
         if movement['kind'] != 'payment' or movement['subject'] in keys:
             continue
         for day in sorted((day for day in marks if day < first['day']
-                           and day <= movement['effective_time'][:10]), reverse=True)[:LOOK_BACK]:
+                           and day <= movement['effective_time'][:10]), reverse=True):
             if day not in earlier:
                 earlier[day] = diary_rows(json.loads(spine.stored(marks[day]['job']).decode(
                     'utf-8')), last['lsn'], marks[day]['files'])
