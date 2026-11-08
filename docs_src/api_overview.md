@@ -496,8 +496,9 @@ where it already is, in the engine. What the queue orders is cost CLASS, read of
 class it is first in first out, and a running job is never preempted. `/schema`, `/schema/job`,
 `/validate`, `/describe` and `/prepare` run nothing, so they answer inline and never reach the
 queue. `/describe` reports that class under `cost`, with a crude size estimate beside it —
-`Batch_Size × Simulation_Batches ×` the segments `Time_Grid` declares, which is a proxy for the
-scenario grid and labelled as an estimate because that is what it is.
+`Batch_Size × Simulation_Batches ×` the segments of `Time_Grid`, each as the job states it or else
+as the calculation declares it, which is a proxy for the scenario grid and labelled as an estimate
+because that is what it is.
 
 **One job, one execution.** `result_id` is the content hash of the replay tuple `(plan_hash,
 values_hash, engine_version, seed, quasi_seed)`. Submitting the same job twice returns the same id without

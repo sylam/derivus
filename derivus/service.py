@@ -113,10 +113,11 @@ from fastapi.responses import FileResponse, JSONResponse, Response, StreamingRes
 
 from . import (Context, bootstrappers, content_hash, instruments, riskfactors, solve_deal_field,
                spine, structures, utils)
-from .schema import (PRICES_KEY, mapping, deal_at, declared_fields, instrument_of, job_children,
-                     quote_plan, quote_stamps, remove_deal, settlement_days, sniff_indent,
-                     splice_deal, stated_messages, tables_of, tenor_fields, update_market_quote,
-                     validate_instrument, value_message, walk_job_deals)
+from .schema import (PRICES_KEY, mapping, deal_at, declared_defaults, declared_fields,
+                     instrument_of, job_children, quote_plan, quote_stamps, remove_deal,
+                     settlement_days, sniff_indent, splice_deal, stated_messages, tables_of,
+                     tenor_fields, update_market_quote, validate_instrument, value_message,
+                     walk_job_deals)
 from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire, family_entries
 from .instruments import construct_instrument
@@ -270,14 +271,18 @@ def attested(envelope):
 def cost(calculation):
     """The queue's cost class for this job, and a crude size estimate beside it.
 
-    The class is what the dispatcher orders by. The estimate is paths times grid points, where the
-    last factor is a PROXY - the real grid needs the horizon the deal walk finds. A field a
-    calculation does not carry counts as one, so a base valuation estimates 1.
+    The class is what the dispatcher orders by. The estimate is paths times grid points off the
+    block completed by its declarations, where the last factor is a PROXY - the real grid needs the
+    horizon the deal walk finds. A field the calculation does not declare counts as one, so a base
+    valuation estimates 1, and a block naming no calculation is read as written, so `/describe`
+    still answers it with the refusal.
     """
-    grid = len(str(calculation.get('Time_Grid', '')).split()) or 1
-    return {'class': COST_CLASS.get(calculation['Object'], HEAVY),
-            'estimate': calculation.get('Batch_Size', 1) * calculation.get(
-                'Simulation_Batches', 1) * grid,
+    name = calculation['Object']
+    block = (declared_defaults(calculation_class(name), calculation)
+             if name in mapping['Calculation']['types'] else calculation)
+    grid = len(str(block.get('Time_Grid', '')).split()) or 1
+    return {'class': COST_CLASS.get(name, HEAVY),
+            'estimate': block.get('Batch_Size', 1) * block.get('Simulation_Batches', 1) * grid,
             'basis': 'Batch_Size x Simulation_Batches x Time_Grid segments - an estimate'}
 
 

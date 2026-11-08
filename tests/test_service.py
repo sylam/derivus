@@ -4387,6 +4387,28 @@ def test_the_cost_estimate_counts_paths_by_grid_points():
         service.cost(heavy), **{'class': 0, 'estimate': 1})
 
 
+def test_a_simulation_stating_no_batch_or_grid_is_estimated_at_its_declared_ones():
+    """`/describe` estimates a job off its calculation completed by the declarations, so a credit
+    Monte Carlo stating no `Batch_Size`, `Simulation_Batches` or `Time_Grid` costs what the same
+    job stating their declared values by hand costs, 1024 paths over five grid segments. A job
+    naming no calculation is still described, the refusal its data and the block read as written.
+
+    Killing mutations: `cost` reading the raw block, which estimates the silent job at 1; `cost`
+    completing a block naming no calculation, which raises out of `/describe`.
+    """
+    stated = {'Batch_Size': 1024, 'Simulation_Batches': 1,
+              'Time_Grid': '0d 2d 1w(1w) 3m(1m) 2y(3m)'}
+    silent, by_hand = (
+        CLIENT.post('/describe', content=dump(job(Object='CreditMonteCarlo', **calculation)),
+                    headers=JSON).json()['cost']
+        for calculation in ({}, stated))
+
+    assert silent == by_hand
+    assert by_hand['estimate'] == 1024 * 5
+    assert CLIENT.post('/describe', content=dump(job(Object='NoSuchCalculation')),
+                       headers=JSON).json()['cost']['estimate'] == 1
+
+
 def test_a_plan_id_execute_is_the_document_execute():
     """Content addressing does not care how the job arrived: `/prepare` names the parse by its plan
     hash, and executing that name unpatched lands on the id the whole document landed on.
