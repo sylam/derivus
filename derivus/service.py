@@ -1218,8 +1218,9 @@ def expected_reference(document, request):
 
 @app.post('/book/deals', summary='Book, amend or delete one deal - validated, then written atomically')
 def book_deals(request: dict):
-    """`{action: 'add', deal, parent_reference?}`, `{action: 'amend', deal_path, fields}` or
-    `{action: 'delete', deal_path}`. An amendment MERGES `fields` into the deal at `deal_path`.
+    """`{action: 'add', deal, parent_reference?}`, `{action: 'fill', deal_path}`, `{action:
+    'amend', deal_path, fields}` or `{action: 'delete', deal_path}`. An amendment MERGES `fields`
+    into the deal at `deal_path`.
 
     `deal` is a deal block, or a whole node - a container with its `Children` - which is how a
     quoted structure books: the legs land with the container, in one write and under one verdict.
@@ -1251,6 +1252,12 @@ def book_deals(request: dict):
     `delete` records nothing: what ends a trade is an election, an expiry observation or a status
     transition, filed through `POST /book/transition`. Without a home this is inert.
 
+    A `fill` books the node the file ALREADY HOLDS at `deal_path` - one nobody booked, written
+    before the record or landed by another system - as an `add` books the node it splices, taking
+    every field but `deal` and `parent_reference`: the record files the fill, the file takes only
+    its pin. A fill of one under its own reference is the node's take-on, which moves no number.
+    404 without a home.
+
     SO UNDER A HOME THIS EDIT APPENDS BEFORE IT WRITES, and takes `Book.transact` - the whole act
     under the book lock, one pass and no redo. A redo whose second pass refuses what the first
     passed - a deal raced in beside this one is newly said about - would leave the record holding a
@@ -1261,10 +1268,13 @@ def book_deals(request: dict):
     sits at it refuses by name instead.
     """
     action = request.get('action', 'add')
-    if action not in ('add', 'amend', 'delete'):
-        raise HTTPException(422, 'action must be add, amend or delete, not {!r}'.format(action))
+    if action not in ('add', 'fill', 'amend', 'delete'):
+        raise HTTPException(422, 'action must be add, fill, amend or delete, not {!r}'.format(
+            action))
     if action == 'add' and not isinstance(request.get('deal'), dict):
         raise HTTPException(422, 'a booking is a deal - post it under `deal`')
+    if action == 'fill':
+        recorded()
 
     def edit(document, etag):
         if action == 'delete':
@@ -1301,16 +1311,21 @@ def book_deals(request: dict):
                                     before != instrument_of(deal_at(document, held)),
                                     'this restrike')
             return True, dict(outcome, _validated=outcome['validate'], **restruck)
-        # taken before the agreement's set is spliced, so what the set itself wants is newly said
-        baseline, parent = live_book().baseline(document, etag), request.get('parent_reference')
-        if request.get('agreement') is not None and materialised(document, request['agreement']):
-            parent = parent or request['agreement']
-        written, outcome = deal_edit(document, request['deal'], parent, baseline)
-        if not written:
-            return False, outcome
-        outcome = dict(outcome, _validated=outcome['validate'])
-        if not spine.configured():
-            return True, outcome
+        if action == 'fill':
+            expected_reference(document, request)
+            outcome = {'written': True, 'deal_path': request['deal_path']}
+        else:
+            # taken before the agreement's set is spliced, so what the set wants is newly said
+            baseline = live_book().baseline(document, etag)
+            parent, agreement = request.get('parent_reference'), request.get('agreement')
+            if agreement is not None and materialised(document, agreement):
+                parent = parent or agreement
+            written, outcome = deal_edit(document, request['deal'], parent, baseline)
+            if not written:
+                return False, outcome
+            outcome = dict(outcome, _validated=outcome['validate'])
+            if not spine.configured():
+                return True, outcome
         # the ticket is over the plan the book has WITH this booking
         context = load(document)
         filled = spine_fill(
@@ -1324,8 +1339,9 @@ def book_deals(request: dict):
             return False, dict(filled, written=False)
         if 'booked' in filled:
             # where the file holds the trade the node just spliced is dropped with the edit
-            carried = [node['deal_path'] for node in file_positions(document, {
-                filled['booked']['instrument']}).get(filled['booked']['instrument'], [])
+            carried = [outcome['deal_path']] if action == 'fill' else [
+                node['deal_path'] for node in file_positions(document, {
+                    filled['booked']['instrument']}).get(filled['booked']['instrument'], [])
                 if node['deal_path'] != outcome['deal_path']]
             return booked_again(dict(outcome, deal_path=(carried or [outcome['deal_path']])[0]),
                                 filled['booked'], not carried, 'execution {!r}'.format(
@@ -1787,15 +1803,18 @@ def file_positions(document, known):
     """`{instrument address: [{deal_path, reference}]}` for what the FILE holds.
 
     A node the record already names is a position and the walk stops there - a structure is ONE
-    instrument and its legs ride inside its own hash. A CONTAINER the record never booked is walked
-    through rather than reported: a netting set is the book's frame rather than a trade nobody
-    booked, and an empty one is still a frame.
+    instrument and its legs ride inside its own hash. A FRAME is walked through rather than
+    reported: a netting set, empty or not, and a container the record never booked that holds a
+    node it did. A container nobody booked anything in is a trade nobody booked, whole.
     """
     containers, found = mapping['Instrument']['containers'], {}
 
     def frame(node):
-        return content_hash(instrument_of(node)) not in known and node['Instrument'][
-            '.Deal'].get('Object') in containers
+        deal = node['Instrument']['.Deal']
+        return content_hash(instrument_of(node)) not in known and (
+            deal.get('Object') == 'NettingCollateralSet' or deal.get('Object') in containers
+            and any(content_hash(instrument_of(inner)) in known
+                    for _, inner in walk_job_deals(node.get('Children', []))))
 
     for path, node in walk_job_deals(document, frame):
         if not frame(node):
@@ -1836,7 +1855,7 @@ def record_positions(lsn=None):
     return heads
 
 
-def reconciled(document, pinned):
+def reconciled(document):
     """Where the book file and the record disagree, the record read AT ITS HEAD.
 
     THE FILE IS THE SUBJECT rather than the output: it keeps its content - the market data is not
@@ -2119,19 +2138,17 @@ def book_reconcile(actor: str = None):
     are the only ones that can move a row here. `actor` is the seat reading, which sees the rows
     of the instruments held at the nodes it acts at (`sighted`) - each row the book's own reading
     of the instrument at its net across every node, presentation rather than a per-node compile.
-    404 where no home is configured, and a file nothing has pinned answers `lsn: null` with
-    nothing to compare.
+    404 where no home is configured. A file nothing has pinned - written before its record, or
+    landed by another system - answers its three counts null and its lists all the same, a deal
+    nobody booked being what a take-on fills (`POST /book/deals`).
     """
     document, _ = recording().read()
     pinned = live_book().pinned()
     see = sighted(document, spine.sight(actor))
-    if pinned is None:
-        return {'lsn': None, 'events_behind': None, 'positions_behind': None,
-                'in_record_not_in_file': [], 'in_file_not_in_record': [], 'quantity_mismatch': [],
-                'terms_mismatch': []}
     return dict({name: [row for row in rows if see(row.get('instrument'))]
-                 for name, rows in reconciled(document, pinned).items()},
-                lsn=pinned['lsn'], **behind(pinned))
+                 for name, rows in reconciled(document).items()},
+                **(dict(lsn=pinned['lsn'], **behind(pinned)) if pinned else dict.fromkeys(
+                    ('lsn', 'events_behind', 'positions_behind'))))
 
 
 def sighted(document, sight, verb=None, rows=None):

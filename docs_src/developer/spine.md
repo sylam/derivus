@@ -607,6 +607,17 @@ nodes, an expired one until it settles. A seat with grants at nodes reads only t
 **Held by** `test_spine_engine.py::test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged`,
 `::test_a_seat_reads_the_rows_under_the_nodes_it_acts_at`.
 
+**The take-on.** A deal the book file holds that nobody booked - a book written before its record,
+or landed by another system - prices as written, one unit, outside the positions, the marks and
+the P&L. `POST /book/deals` `{action: 'fill', deal_path}` books it where it stands, as an `add`
+books the node it splices: the record files the fill, the file takes only its pin. A fill of one
+under the node's own reference is its take-on and moves no number, the compile writing a net of
+one as the node is written; from then on it is a booked trade, and closing it files -1, which nets
+it to nothing where the compile would otherwise write the mirror. `GET /book/reconcile` names what
+waits under `in_file_not_in_record`, on a file nothing pinned too, a container nobody booked
+anything in whole, so a structure is taken on as the one instrument it is. **Held by**
+`test_pnl.py::test_a_book_written_before_its_record_is_taken_on_as_if_it_were_booked`.
+
 ## Cash, cost and P&L {#pnl}
 
 A `settled` transition may carry a signed `amount` (received positive), `asset`, `kind` and the
@@ -725,7 +736,7 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 Unbuilt parts of the design: the deal tree is the book file with nets written on, not composed
 from the fold; and a print is not yet one fact feeding both a calibration's archive and a deal's
 fixings ([designed, not built](roadmap.md#designed-not-built)). The record's other open
-rows - the log open's full scan, the oracle's blind spots, legacy trades - are
+rows - the log open's full scan, the oracle's blind spots - are
 [before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
 the rotation and replay limits are [trust limits](#trust-limits) and the replay tuple's reach is on
 [Model Limitations](../limitations.md#the-engine); which verbs take a seat and whether a rotation

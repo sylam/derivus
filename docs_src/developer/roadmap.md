@@ -32,10 +32,6 @@ features kept ahead of their build, not rows to close.
   on a strip's first paint; once per submitted job for admission, under a fiftieth of the cheapest
   job). Derived and verified like a seed, so an open scans only the tail and the
   doctored-middle-line refusal moves to `verify_home`.
-- **The legacy migration, a fill of one under every legacy node** (2026-09-26). A book-file node no
-  fill booked prices as written, one unit; closing it through the verbs files a fill of -1, and the
-  compile writes the node at that net, the mirror trade. Until the migration such a node sits
-  outside the desk's P&L.
 - **A consolidated risk read cached by the market's hash** (2026-09-24). `/book/risk` refits, with
   `Quote_Sensitivity` on, every block the book's factors stand on, cached on the deals and the
   market, so a spot-model block pays its warm polish on every uncached read; one block that cannot

@@ -382,8 +382,11 @@ UNDER A SPINE HOME THE BOOK PRICES AT ITS NET. The verbs that price the live boo
 `/book/xva`, `/book/price`, `/calculations/run` and a quote's risk-impact step, beside `/execute`
 and `/prepare` - price it compiled: every position the record holds written at its net, the same
 terms' second node under one set ignored as the first one's clip, and every print the declared
-sources order filled in. Every deal type declares which of its fields are amounts (`sized` on the
-descriptor, `magnitude` for an amortisation step, which scales and never takes a short's sign),
+sources order filled in. A deal the file holds that nobody booked prices as written, one unit,
+outside the P&L until `POST /book/deals` `{action: 'fill', deal_path}` takes it on, a fill of one
+under its own reference that moves no number. Every deal type declares which of its fields are
+amounts (`sized` on the descriptor, `magnitude` for an amortisation step, which scales and never
+takes a short's sign),
 which says the side a short flips (`side`), and which dates settle cash it builds no schedule for
 (`settles`, each payment's currency, amount and sign, which the diary announces); a structure's legs carry its size, and a block stating
 none of its type's amounts refuses a position other than one unit by name.

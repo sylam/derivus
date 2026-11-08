@@ -56,7 +56,7 @@ tools and the writers to exactly those without the hint.
 | `describe_structure`, `describe_calculation_type`, `describe_factor_type`, `describe_configuration` | `GET /schema`: a structure, calculation, price factor, or the bootstrap dials |
 | `job_skeleton` | `GET /schema/job`: a minimal job that loads |
 | `read_book`, `read_deal` | `GET /book`: one row per deal with its `deal_path`, and the factors `GET /book/market` says the market carries; one deal verbatim |
-| `book_deal`, `amend_deal`, `delete_deal` | `POST /book/deals`: add, merge fields at a path, remove |
+| `book_deal`, `amend_deal`, `delete_deal` | `POST /book/deals`: add, or take on a deal the file holds; merge fields at a path; remove |
 | `validate_book`, `describe_book` | `POST /validate`, `/describe` over the live book |
 | `describe_portfolios`, `declare_portfolio` | `GET`/`POST /book/portfolios`: the declared tree |
 | `price_candidate`, `execute_book` | `POST /book/price`: the book with a candidate, or alone; nothing written |

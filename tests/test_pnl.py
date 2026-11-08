@@ -5,6 +5,7 @@ live - held to independent valuations and to its own identity, nothing monkeypat
 import json
 import math
 import os
+import shutil
 import sys
 
 import pandas as pd
@@ -21,7 +22,7 @@ from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 import rates_world
 from test_spine_engine import (
     ACTOR, CLIENT, CLIENT_SET, EQUITY, FACTORS, INDEX, JSON, WORKER_SECONDS, agreed, drained, dump,
-    holding, job, netting_set, observe, surviving)
+    head, holding, job, netting_set, observe, surviving)
 
 START, END, THIRD, FOURTH, FIFTH, SIXTH = (pd.Timestamp(day) for day in (
     '2024-06-28', '2024-07-01', '2024-07-02', '2024-07-03', '2024-07-04', '2024-07-05'))
@@ -848,6 +849,114 @@ def test_a_structure_held_whole_is_paid_through_its_legs_and_ends_with_the_last(
     assert keyed(second)[after]['payments'] == pytest.approx(40_000.0 * 17.5)
     assert both['complete'] is True and both['unknown'] == [], both['unknown']
     summed(both, [first, second], (replaced, BOOK + '/FX'), after)
+
+
+#: A book written before its record, under the client's set: a cashflow paying inside the first
+#: window, one paying in two years and a structure of two, with what each was done at.
+LEGACY = (cashflow('CF-L1', 100_000.0, pd.Timestamp('2024-06-30')),
+          cashflow('CF-L2', 400_000.0, START + pd.DateOffset(years=2)),
+          structure('ST-L', [cashflow('LEG-L1', 60_000.0, START + pd.DateOffset(years=1)),
+                             cashflow('LEG-L2', 30_000.0, START + pd.DateOffset(years=2))]))
+DONE_AT = {'CF-L1': 1_850_000.0, 'CF-L2': 6_500_000.0, 'ST-L': 1_400_000.0}
+
+
+def test_a_book_written_before_its_record_is_taken_on_as_if_it_were_booked(recorded, minted, desk,
+                                                                           tmp_path, monkeypatch):
+    """THE TAKE-ON. A book file whose deals nobody booked - written before its record, or landed by
+    another system - prices each as written and stands outside the P&L; reconcile names each, a
+    structure whole, and a fill of one under each node, its own reference the execution and its
+    price what it was done at, takes it on: `Calc` keeps every byte, so the risk's etag does not
+    move, and a take-on sent again files nothing. From then on the book is the one booked natively:
+    every fill the same but its ticket's plan, and the diary, the positions, two marked closes'
+    P&L with its explain, and the risk once a taken-on deal is closed, the same to the byte. The
+    close files -1 and the compile nets the deal to nothing rather than writing its mirror.
+
+    Killing mutations: reconcile answering an unpinned file nothing to compare, which names no
+    node to take on; reconcile walking through a container nobody booked, which names the
+    structure's two legs for the take-on in place of the structure; a take-on sent again answered
+    as an `add` sent again, the file said to take back a node it never lost, which 500s; and the
+    fill writing no pin, which leaves reconcile's counts null.
+    """
+    def risk():
+        answer = CLIENT.get('/book/risk')
+        assert answer.status_code == 200, answer.text
+        return answer.json()
+
+    def carried(path):
+        """What a book makes of the days after its deals stand on the record, and of a close."""
+        closed_and_marked()
+        rolled(path, END, 18.0)
+        settle({'subject': due('CF-L1', '2024-06-30')['key'], 'amount': 100_000.0,
+                'asset': 'ZAR', 'kind': 'payment', 'reference': 'PAY-L1',
+                'value_date': '2024-06-30'})
+        closed_and_marked()
+        answer = {'pnl': between('2024-06-28', '2024-07-01', explain=True),
+                  'diary': CLIENT.get('/book/diary').json()['rows'],
+                  'positions': sorted((row['reference'], row['quantity'], row['agreement'],
+                                       row['portfolio'], row['deal_paths'])
+                                      for row in held().values()),
+                  'fills': [{field: value for field, value in fill.items() if field != 'ticket'}
+                            for fill in fills(home)],
+                  'open': risk()['mtm']}
+        booked(LEGACY[1], -1.0, 'EXEC-CLOSE', BOOK, DONE_AT['CF-L2'])
+        answer['closed'] = {field: value for field, value in risk().items()
+                            if field not in ('as_of', 'etag')}
+        return answer
+
+    home = recorded
+    designated(home, fixings=False)
+    body = json.loads(desk.read_text())
+    body['Calc']['Deals']['Deals']['Children'][0]['Children'] = json.loads(dump([dict(
+        {'Instrument': {'.Deal': {key: value for key, value in deal.items() if key != 'Children'}}},
+        **({'Children': deal['Children']} if 'Children' in deal else {})) for deal in LEGACY]))
+    desk.write_text(json.dumps(body, indent=2), newline='\n')
+    unbooked = risk()
+    named = sorted(CLIENT.get('/book/reconcile').json()['in_file_not_in_record'],
+                   key=lambda row: row['deal_path'])
+    assert [(row['reference'], row['deal_path']) for row in named] == [
+        ('CF-L1', '0/0'), ('CF-L2', '0/1'), ('ST-L', '0/2')], 'a structure is named whole'
+
+    binding.configure(base_url='http://testserver', session=CLIENT)
+    try:
+        for row in named:
+            stated = dict(deal_path=row['deal_path'], reference=row['reference'], quantity=1.0,
+                          execution_reference=row['reference'], portfolio=BOOK,
+                          price=DONE_AT[row['reference']])
+            taken = binding.book_deal(**stated) if row['reference'] == 'ST-L' else CLIENT.post(
+                '/book/deals', content=dump(dict(stated, action='fill')), headers=JSON).json()
+            assert taken['written'] is True and taken['recorded']['lsn'], taken
+    finally:
+        binding.SERVICE = None
+    at = head(home)
+    again = CLIENT.post('/book/deals', content=dump(dict(stated, action='fill')), headers=JSON)
+    assert again.status_code == 200 and again.json()['written'] is False, again.text
+    assert again.json()['booked']['deal_path'] == '0/2' and head(home) == at
+    assert risk() == unbooked, 'the take-on moved a number'
+    clean = CLIENT.get('/book/reconcile').json()
+    assert clean['in_file_not_in_record'] == clean['quantity_mismatch'] == []
+    assert clean['positions_behind'] == 0
+    migrated = carried(desk)
+
+    native = tmp_path / 'native'
+    shutil.copytree(str(minted), str(native / 'spine'))
+    monkeypatch.setenv('DV_SPINE_HOME', str(native / 'spine'))
+    home = native / 'spine'
+    body['Calc']['Deals']['Deals']['Children'][0]['Children'] = []
+    (native / 'book.json').write_text(json.dumps(body, indent=2), newline='\n')
+    service.BOOK = service.Book(str(native / 'book.json'))
+    service.BOOK_DIARY_CACHE.clear()
+    designated(home, fixings=False)
+    for deal in LEGACY:
+        booked(deal, 1.0, deal['Reference'], BOOK, DONE_AT[deal['Reference']])
+    assert risk()['etag'] == unbooked['etag'], 'booked natively, the book prices the same'
+    booked_natively = carried(native / 'book.json')
+
+    assert migrated == booked_natively
+    assert migrated['pnl']['complete'] is True and len(migrated['pnl']['rows']) == 3
+    assert [row[:2] for row in migrated['positions']] == [('CF-L2', 1.0), ('ST-L', 1.0)], \
+        'CF-L1 paid on its day and rolled off'
+    assert migrated['closed']['mtm'] == pytest.approx(
+        migrated['open'] - unit(LEGACY[1], END, 18.0), rel=1e-12), 'closed, not mirrored'
 
 
 #: A structure over a rand swap's floating leg and a cashflow.

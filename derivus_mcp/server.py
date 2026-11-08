@@ -557,11 +557,13 @@ def _stated(**fields):
 
 
 @MCP.tool()
-def book_deal(deal: dict, parent_reference: str | None = None, quantity: float | None = None,
-              execution_reference: str | None = None, actor: str | None = None,
-              agreement: str | None = None, portfolio: str | None = None,
-              price: float | None = None, price_currency: str | None = None,
-              notional: float | None = None, notional_currency: str | None = None) -> dict:
+def book_deal(deal: dict | None = None, parent_reference: str | None = None,
+              quantity: float | None = None, execution_reference: str | None = None,
+              actor: str | None = None, agreement: str | None = None,
+              portfolio: str | None = None, price: float | None = None,
+              price_currency: str | None = None, notional: float | None = None,
+              notional_currency: str | None = None, deal_path: str | None = None,
+              reference: str | None = None) -> dict:
     """Book one deal into the live book. VALIDATED FIRST: the service splices it into a copy,
     validates the whole document, and only writes the file if nothing is said against this deal -
     its own authoring rules, or market data the book does not carry. A refusal comes back as
@@ -597,6 +599,13 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
     the same way. An `agreement` whose netting set the book does not carry yet is brought by its
     first booking, out of the terms legal declared.
 
+    A deal the book ALREADY HOLDS that nobody booked - each `book_reconcile` names under
+    `in_file_not_in_record`, a book written before its record or landed by another system - is
+    booked at its `deal_path` in place of `deal`, `reference` the deal you read there: the record
+    takes the fill and the deal stays as the file holds it. Its take-on is `quantity` 1 with its
+    own reference as the `execution_reference`, which moves no number; closing it later is a
+    booking of -1.
+
     To book AT PAR or at a target margin, solve before you book: a linear payoff's value is affine
     in its amount, so `price_candidate` twice at two trial amounts gives the exact amount that
     lands the value on the target - then book that.
@@ -612,11 +621,12 @@ def book_deal(deal: dict, parent_reference: str | None = None, quantity: float |
     the book arrives as counts under `book_issues`, with `validate_book` for the detail.
     """
     return _booking(service().call('POST', '/book/deals', json=dict(
-        {'action': 'add', 'deal': deal},
+        {'action': 'add', 'deal': deal} if deal_path is None else {
+            'action': 'fill', 'deal_path': deal_path},
         **_stated(parent_reference=parent_reference, quantity=quantity,
                   execution_reference=execution_reference, actor=actor, agreement=agreement,
                   portfolio=portfolio, price=price, price_currency=price_currency,
-                  notional=notional, notional_currency=notional_currency))))
+                  notional=notional, notional_currency=notional_currency, reference=reference))))
 
 
 @MCP.tool()
