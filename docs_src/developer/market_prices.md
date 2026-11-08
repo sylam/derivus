@@ -77,7 +77,7 @@ its dials the declarations less the quote block's Tables and Containers. **Held 
 **Extending.** Name the class for the type it writes, declare the attributes, implement
 `bootstrap(...)` writing `price_factors['<ClassName>.<name>']`, and add the class to `FAMILIES`,
 which `family_class` and the schema read. Read the family's own written factor as its [warm
-start](#warm-starts); declare the four value keys on the quote row (`schema.QUOTE_TWO_WAY`) if a
+start](#warm-starts); declare `schema.QUOTE_TWO_WAY` beside `Quoted_Market_Value` on the quote row if a
 tick should move it without a recompile; for `Quote_Sensitivity`, leave the connected parameters in
 `calibrated` and the leaves in `quote_leaves` for `Config.bootstrap` to harvest. The schema gates
 are parametrised over families
@@ -673,8 +673,7 @@ snapshots survive a save.
 
 ## Open
 
-The surrogate vanilla pricer ([limitations](../limitations.md#the-calibration)); the outright that
-cannot carry a quote derivative ([before 0.5.0](roadmap.md#before-0-5-0)); the tick, which re-prices
+The surrogate vanilla pricer ([limitations](../limitations.md#the-calibration)); the tick, which re-prices
 curve blocks through `service.curve_quotes` and no credit or inflation block; whether a missing
 `Prices` refuses in process, the nominal leverage weight, the correlation as a leaf
 ([desk decisions](../limitations.md#decisions-waiting-on-the-desk)).

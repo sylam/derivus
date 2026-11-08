@@ -199,8 +199,8 @@ and a moved quote in one job is a reval with no re-bootstrap. **Held by**
     On a quote row `Quoted_Market_Value`, `Quoted_Bid`, `Quoted_Ask` and `Timestamp` are values and
     the rest is structure, so a vol tick moves `values_hash` alone and a moved pillar is a new
     plan; a `Timestamp` moves neither hash, a market's identity being its numbers. A table carries
-    values when its row declares all four keys: `Points` (`InterestRatePrices`, `FXVolPrices`)
-    and `European_Options` (`LogVar2FJModelPrices`). `HullWhite2FactorModelPrices`,
+    values when its row declares all four keys: `Points` (`InterestRatePrices`,
+    `SurvivalProbPrices`, `InflationRatePrices`, `FXVolPrices`) and `European_Options` (`LogVar2FJModelPrices`). `HullWhite2FactorModelPrices`,
     `CSForwardPriceModelPrices` and `GBMAssetPriceTSModelPrices` declare none and stay wholly
     plan-side. The tick guard, `Context.plan_hash`, `market_patch` and `plan_key` read that one
     tuple; the projection drops the value keys rather than shadowing them, since a pillar that

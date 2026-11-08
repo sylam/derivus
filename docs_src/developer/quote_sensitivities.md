@@ -68,7 +68,7 @@ asking, so `all_tenors` is rebuilt per closure.
 `TensorSchedule.carry` attaches a `{column: tensor}` overlay to a schedule's tensor half, spliced into
 the copy `bind` makes ([lifecycle](calc_lifecycle.md#the-schedule-lifecycle)), so
 `BenchmarkInstruments` binds last. `_carry_quotes` measures the columns: it compiles the set again one
-percent higher and overlays what moved, the difference as slope. Authoring is affine in the quote, so
+unit of each quote higher (a percent on a rate, a basis point on a spread) and overlays what moved, the difference as slope. Authoring is affine in the quote, so
 that difference is exact, and a type's own `quoted` stays the one place it declares where its quote
 lands. The splice is
 
@@ -92,9 +92,8 @@ twice [@dennis1996]. The seed is each par quote as a zero rate. Damping halves t
 max-norm residual decreases; convergence is tested on the step before the line search, as a step
 inside the linear solve's rounding cannot reduce a residual at noise level. A curve written on the
 solve's knots is tested so before any step and returned as written where it passes, never taken
-as a start ([warm starts](market_prices.md#warm-starts)): a curve quoted off itself is its own
-root in no iteration, where one Newton step there moves it 2.3e-14 on the ZAR world. A coupled set
-takes its members' strictest knobs.
+as a start ([warm starts](market_prices.md#warm-starts)). A coupled set takes its members'
+strictest knobs.
 
 | field | default | why |
 | --- | --- | --- |

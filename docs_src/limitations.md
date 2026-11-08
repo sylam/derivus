@@ -6,7 +6,7 @@ The methods a validator prices against are on the Theory, Valuation and Bootstra
 ([the LogVar2FJ fit](bootstrapping/fx_and_equity.md#logvar2fjmodelparameters) among them), and the
 tests that hold each rule are named on the developer page that states it. A row leaves this page
 when the fix that closes it lands; what was built, and the numbers it was measured to, is in the
-commit messages. What is designed but not built, and what the record, the service and the engine's
+commit messages. What is designed but not built, and what the code, the tests and the engine's
 speed owe before the next release, is on the [roadmap](developer/roadmap.md): this page holds only
 what moves a number a validator reads.
 

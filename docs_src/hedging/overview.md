@@ -16,8 +16,9 @@ the instrument / cash-account / hedge name sets, per-instrument metadata, the ac
 config, the portfolio state, and the burn-in and inner-belief switches the calculation and a
 process read; the calculation reads the block's deal containers, `Tradable_Instruments` and
 `Liabilities`, to price them, and nothing else of it. Every knob the block declares is read there,
-a stated value reaching the runtime under the knob's own name, and the runtime holds nothing the
-block, its deals or the world do not name. **Held by**
+a stated value reaching the runtime under the knob's own name lowercased (the Evaluator's under
+`accounting`, `Cash_Instruments` and `Tradable_Instruments` as `cash_accounts` and `tradables`), and
+the runtime holds nothing the block, its deals or the world do not name. **Held by**
 `tests/test_action_space_and_artifact.py::test_the_runtime_reads_every_knob_the_hedging_problem_declares_and_none_it_does_not`.
 
 The hedge legs, `Tradable_Instruments` less the cash accounts, are read in the order of their deals'
@@ -92,6 +93,6 @@ risk aversion per unit of money it lands on.
 ## Privileged factors
 
 What each stochastic process publishes as market state is a naming convention owned here:
-`derive_privileged_layout` asks every live process what it emits, and multi-commodity runs prefix
-the attribute with the factor name to disambiguate. Adding a process with its own privileged
+`derive_privileged_layout` asks every live process what it emits, and a run simulating more than
+one factor name prefixes the attribute with the factor name to disambiguate. Adding a process with its own privileged
 surface flows through automatically — no registration step.

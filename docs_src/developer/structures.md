@@ -26,7 +26,7 @@ it:
 
 | attribute | what |
 | --- | --- |
-| `vernacular` | the sales names, comma-separated; `describe_structure` matches them as well as the class name, so "cylinder" lands on `ZeroCostCollar` |
+| `vernacular` | the sales names, comma-separated; `describe_structure` publishes them beside each class name, and a name that is no class refuses naming every structure whose name or vernacular contains it ("cylinder" names `Strangle` and `ZeroCostCollar`) |
 | `fields` | the parameters, as `schema.F`. Shared ones come from the base: `Structure.QUOTED` (`pair`, `expiry`, `notional`, `notional_currency`), the two `SELECTORS`, and `Structure.strike(name, description)` for a level in market terms |
 | `legs` | named `Leg(role, deal_type, pinned, slots)`: a declared instrument type, the partial deal block the structure fixes, and `{deal field: parameter}` for the rest. A leg never restates an instrument's fields — the `Instrument` declarations are its schema, as with a [market-price quote](market_prices.md#a-quote), so the two cannot drift. `Leg.vanilla` is a European `FXOptionDeal` |
 | `variations` | in place of `legs`, for a structure dealt [more than one way](#variations) |
@@ -60,8 +60,8 @@ Most structures are two different bookings depending on the client's side, not t
 trade. A forward extra for an exporter floors the pair (a bought put funded by a sold up-and-in
 call); for an importer it caps the pair with the mirror (a bought call funded by a sold down-and-in
 put). A `Variation(buys, fields, legs)` is one form: `buys` is the side of the pair the client buys
-(`'base'` or `'quote'`), `fields` the parameters only it takes. Only the straddle and strangle have
-one form.
+(`'base'` or `'quote'`), `fields` the parameters only it takes. The straddle, the strangle and the range
+accrual have one form.
 
 `reflected(variation, rename, fields)` derives the mirror form so it is never written twice: every
 leg's `Option_Type` and `Barrier_Type` direction flip (`schema.flipped`, read off the leg type's own
@@ -198,7 +198,9 @@ pair; only a cross is canonical.
 holding `LogVar2FJ` alone, so a model added without the measure change refuses by name rather than
 pricing a fit on an axis nobody fitted. The change of numeraire is on the
 [theory page](../theory/stochastic_volatility.md#equity-and-fx). **Held by**
-`test_the_accumulator_solves_one_strike_from_either_axis_under_the_model`.
+`test_the_accumulator_solves_one_strike_from_either_axis_under_the_model` for the measure change;
+**Not gated:** the allow-list's refusal, which no document reaches while every type's `spot_models`
+admits `LogVar2FJ` alone.
 
 **The pin books with the trade.** The quote's copy dies with the answer, so it reports what it
 pinned under `valuation_configuration`, and `/book/quote` merges that into the book in the same edit
@@ -415,9 +417,9 @@ acceptance also checks the plan and the board's age and reports the market's mov
 `test_a_quote_is_firm_only_for_the_window_the_book_declares`.
 
 **Composition.** `compose` puts the legs inside the deal block under `Children`, because a quote is
-filed and hashed whole; `book_node` lifts them onto the node, which is the shape the engine walks
-(`splice_deal`). A container spliced with its children still inside the block loads empty and prices
-at zero, silently. **Held by** `test_a_composed_tarf_carries_an_exposure_profile` (a skipped or empty
+filed and hashed whole; `schema.splice_deal`, which a booking goes through, lifts them onto the node
+the engine walks, as `book_node` does for the risk-impact candidate. A node holding its children
+inside the block loads empty and prices at zero, silently. **Held by** `test_a_composed_tarf_carries_an_exposure_profile` (a skipped or empty
 strip has no spread to show).
 
 ## Writing a new gate
