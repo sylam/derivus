@@ -33,6 +33,7 @@ more than one innovation. The name is the process's (`correlation_name` in
 | `GBMAssetPriceTSModelImplied` | `LognormalDiffusionProcess` | one, no suffix |
 | `GBMPriceIndexModel` | `LognormalDiffusionProcess` | one, no suffix |
 | `LogVar2FJImpliedSpotModel` | `LognormalDiffusionProcess` | four: no suffix (the return's Gaussian given the mixer), `S` (the fast log-variance shock), `L` (the slow log-variance shock), `G` (the mixer, through its normal quantile) |
+| `LogVar2FJSpotModel` | `LognormalDiffusionProcess` | three: no suffix, `S` and `L`, as above |
 | `HullWhite1FactorInterestRateModel` | `HWInterestRate` | one, `F1` |
 | `HullWhite2FactorImpliedInterestRateModel` | `HWImpliedInterestRate` | two, `F1` and `F2` |
 | `PCAInterestRateModel` | `InterestRateOUProcess` | one per eigenvector the model's parameters carry, `PC1` to `PC`$N$ |

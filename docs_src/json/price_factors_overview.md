@@ -1,6 +1,6 @@
 #  Price Factors
 
-Prices factors representing a snapshot of a market (and hence taken at the same time) are to be provided
+Price factors representing a snapshot of a market (and hence taken at the same time) are to be provided
 here. e.g. for the ZAR FxRate with USD as the **Base Currency**
 
 ```json
@@ -23,8 +23,8 @@ here. e.g. for the ZAR FxRate with USD as the **Base Currency**
 Note that the corresponding USD-MASTER and both the ZAR-SWAP and ZAR-USD-BASIS interest rate curves
 need to be defined.
 
-Price Factors like interest rates, volatility surfaces etc., are regarded as being independently 
-defined (as opposed to FxRates or EquityRates which depend on Interest Rates for their cost of carry).
+Interest-rate curves and volatility surfaces stand alone; an `FxRate` or an `EquityPrice` names in
+`Interest_Rate` the curve its carry is read off.
 
 Interest Rate price factors uses the .Curve format. e.g.
 

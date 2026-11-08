@@ -136,16 +136,16 @@ after the curves it discounts on.
 
 ```json
 {
-  "SurvivalProbPrices.GS": {
+  "SurvivalProbPrices.CPTY_A": {
     "instrument": {
       "Currency": "USD",
       "Recovery_Rate": 0.4,
       "Standard_Coupon": 100.0,
       "Points": [
         {"Use": "Yes", "Tenor": "1Y", "DealType": "DealDefaultSwap", "Quote_Type": "Upfront",
-         "Quoted_Market_Value": -0.7, "Descriptor": "GS 1Y", "Deal": {}},
+         "Quoted_Market_Value": -0.7, "Descriptor": "CPTY_A 1Y", "Deal": {}},
         {"Use": "Yes", "Tenor": "7Y", "DealType": "DealDefaultSwap", "Quote_Type": "Par_Spread",
-         "Quoted_Market_Value": 92.0, "Descriptor": "GS 7Y", "Deal": {}}
+         "Quoted_Market_Value": 92.0, "Descriptor": "CPTY_A 7Y", "Deal": {}}
       ]
     },
     "Children": []
