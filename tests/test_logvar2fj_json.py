@@ -39,12 +39,13 @@ import sys
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import mpmath
 import numpy as np
 import pytest
 import torch
 
 import derivus as rf
-from derivus import bootstrappers, schema
+from derivus import bootstrappers, schema, utils
 from derivus.config import CustomJsonEncoder
 
 HERE = os.path.dirname(os.path.abspath(__file__))
@@ -1237,3 +1238,43 @@ def test_a_knock_in_every_scenario_has_crossed_is_the_european_on_its_own_walk()
     assert lv.shape == gbm.shape and gbm.values.std() > 1.0, (lv.shape, gbm.shape)
     worst = np.abs(lv.values - gbm.values).max(axis=1) / np.abs(gbm.values).max(axis=1)
     assert worst.max() <= 1e-12, dict(zip(gbm.index, worst))
+
+
+# ------------------------------------------------------------------------------------------
+# 15  THE MIXER'S ROOT
+# ------------------------------------------------------------------------------------------
+#: shapes lam/m from 1e-7 to 1e6 by half decades, and uniforms out to 1e-300 below a half and to the
+#: last double under one above it; 0 and 1 themselves are read for finiteness alone
+ROOT_SHAPES = 10.0 ** np.arange(-7.0, 6.5, 0.5)
+ROOT_UNIFORMS = [1e-300, 1e-100, 1e-30, 1e-16, 1e-9, 1e-3, 0.25, 0.5, 0.75, 1.0 - 1e-3, 1.0 - 1e-9,
+                 1.0 - 2.0 ** -40, 1.0 - 2.0 ** -53]
+
+
+def test_the_mixers_root_reads_back_its_uniform_in_either_tail():
+    """`utils.LogVar2FJ.ig_root` at unit mean over 27 shapes and 13 uniforms is finite everywhere,
+    and its tail probability read at 40 digits gives back the uniform's own: within 1e-5 relative
+    over the grid (worst 3.0e-6, at lam/m 1e-7 and u = 1 - 1e-9) and within 1e-9 at every shape over
+    1e-3 (worst 3.1e-10, at lam/m 0.01 and u = 0.999). The tail read is the one the uniform lies in,
+    ``F`` up to a half and ``1 - F`` above, so a far tail is judged in its own relative precision.
+    The gate reads the primitive because no document reaches these tails: a pricer's mixer uniform
+    stops at 2^-30 and an outer's at the 8 standard deviations its normal draws.
+
+    Killing mutation: `IG_STEPS` 3 - the root reads 0.20 off over the grid and 1.7e-2 over 1e-3 (at
+    4, 5.2e-3 and 4.6e-5). At 1 it reads 0.998 off here, and every live NIG mark in this module
+    reads NaN through `ig_quantile`'s polish.
+    """
+    shape = torch.tensor(ROOT_SHAPES, dtype=torch.float64).repeat_interleave(len(ROOT_UNIFORMS) + 2)
+    u = torch.tensor(ROOT_UNIFORMS + [0.0, 1.0], dtype=torch.float64).repeat(len(ROOT_SHAPES))
+    x = utils.LogVar2FJ.ig_root(u, torch.ones_like(u), shape)
+    assert torch.isfinite(x).all() and (x > 0.0).all(), x[~torch.isfinite(x) | (x <= 0.0)]
+    misses = []
+    with mpmath.workdps(40):
+        for t, phi, v in zip(x.tolist(), shape.tolist(), u.tolist()):
+            if 0.0 < v < 1.0:
+                t, r = mpmath.mpf(t), mpmath.sqrt(phi / mpmath.mpf(t))
+                F = mpmath.ncdf(r * (t - 1)) + mpmath.exp(2 * phi) * mpmath.ncdf(-r * (t + 1))
+                tail, p = (1 - F, 1 - mpmath.mpf(v)) if v > 0.5 else (F, mpmath.mpf(v))
+                misses.append((float(abs(tail / p - 1)), phi, v))
+    assert max(misses)[0] <= 1e-5, max(misses)
+    assert max(m for m in misses if m[1] >= 1e-3)[0] <= 1e-9, max(m for m in misses if m[1] >= 1e-3)
+
