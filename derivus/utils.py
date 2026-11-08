@@ -3519,13 +3519,10 @@ class LogVar2FJ:
 
     # the law
 
-    #: The inverse-Gaussian quantile's FIXED budget: bracket doublings, then Newton steps, each masked
-    #: to the elements still outside `IG_TOL`. Fixed rather than data-dependent, so a checkpoint's
-    #: recompute walks exactly the iterations its forward walked. Measured over 2e5 uniforms with the
-    #: tails to 1e-300 at clocks 1e-6 to 3 across the whole admissible (Alpha, Beta) box: the bracket
-    #: NEVER doubles, and the GEOMETRIC fallback below converges the worst element in 26 steps where
-    #: the arithmetic one takes 53 - the bracket spans ten decades, which is a ratio, not a width.
-    IG_EXPAND, IG_STEPS, IG_TOL = 3, 34, 1.0e-11
+    #: The inverse-Gaussian root's FIXED budget of Newton steps, so a checkpoint's recompute walks
+    #: exactly the steps its forward walked: five bring the farthest start, 2.8 e-folds out, within
+    #: 4e-6, which `ig_quantile`'s two steps finish, at every shape ``lam/m`` from 1e-7 to 1e6.
+    IG_STEPS = 5
 
     @staticmethod
     def wide(x):
@@ -3574,52 +3571,51 @@ class LogVar2FJ:
 
     @classmethod
     def ig_root(cls, u, m, lam):
-        """The IG quantile as a VALUE, OFF THE TAPE: safeguarded Newton with a bisection fallback from
-        the lognormal moment-matched start, bracketed by expansion. The model's one root.
+        """The IG quantile as a VALUE, OFF THE TAPE: `IG_STEPS` Newton steps on the log of the tail
+        ``u`` lies in, ``F`` below a half and ``S = 1 - F`` above, in ``y = log(x/m)``. The model's one
+        root.
 
-        A FIXED budget - `IG_EXPAND` doublings then `IG_STEPS` steps, each masked to the elements
-        still outside `IG_TOL` - because an exit taken on the data would let a checkpoint's recompute
-        walk a different number of iterations from its forward. The IG at the shape a daily clock
-        produces is extremely skewed, which is what the expansion is for.
+        ``log(X/m)`` has a log-concave density, so the log of either tail is concave in ``y`` and
+        Newton converges to its root monotonically from the far side, where the start lies: the lower
+        tail inverts ``F <= 2 Phi(a)``, the upper the nearer of ``S <= Phi(-a)`` and the survival of
+        the driftless passage time, which the IG is with a drift. With ``a, b = sqrt(lam/x)(x/m -+ 1)``
+        each tail is ``exp(-a^2/2)/2`` times a sum or difference of two `erfcx`, so ``exp(2 lam/m)``
+        never forms and the step's ``P/(x f)`` is that sum times ``sqrt(pi m/2 lam) e^(y/2)``.
 
-        THE FALLBACK BISECTS GEOMETRICALLY. The bracket spans ten decades, so its midpoint is a ratio
-        and not a width: an arithmetic halving spends thirty steps walking down to the small end where
-        the root of a skewed clock lives, and the budget it needs is twice the geometric one's.
-
-        IN DOUBLE, and the answer is double: `IG_TOL` is 1e-11 against float32's own 6e-8, and
-        `ig_cdf`'s second term adds `2 lam/m` - four thousand on a quarterly clock - to a log-tail of
-        the same size, a cancellation float32 cannot hold at all.
+        IN DOUBLE, and the answer is double: the upper tail's difference loses ``log10(x/m)`` digits,
+        and torch's `erfcx` costs the same in either precision.
         """
         with torch.no_grad():
             u, m, lam = cls.wide(u), cls.wide(m), cls.wide(lam)
-            lo, hi = m * 1e-8, m * 200.0 + 200.0 * m * m / lam
-            for _ in range(cls.IG_EXPAND):
-                hi = torch.where(cls.ig_cdf(hi, m, lam) < u, hi * 4.0, hi)
-            sx = torch.sqrt(torch.log1p(m / lam))
-            x = m * torch.exp(sx * norm_icdf(u) - 0.5 * sx * sx)
-            x = torch.minimum(torch.maximum(x, lo * 2.0), hi * 0.5)
+            root, upper = torch.sqrt(lam / m), u > 0.5
+            p = torch.where(upper, 1.0 - u, u).clamp_min(torch.finfo(torch.float64).tiny)
+            z = torch.special.ndtri(torch.where(upper, p, 0.5 * p))
+            y = 2.0 * torch.asinh(torch.where(upper, -z, z) / (2.0 * root))
+            y = torch.where(upper, torch.minimum(y, 2.0 * torch.log(
+                root / (1.4142135623730951 * torch.erfinv(p)))), y)
+            s, target = 1.0 - 2.0 * upper.to(u.dtype), torch.log(p)
             for _ in range(cls.IG_STEPS):
-                F = cls.ig_cdf(x, m, lam)
-                done = (F - u).abs() < cls.IG_TOL
-                lo, hi = torch.where(F < u, x, lo), torch.where(F > u, x, hi)
-                step = x - (F - u) / cls.ig_pdf(x, m, lam)
-                bad = ~torch.isfinite(step) | (step <= lo) | (step >= hi)
-                x = torch.where(done, x, torch.where(bad, torch.sqrt(lo * hi), step))
-        return x
+                w = torch.exp(0.5 * y)
+                a, b = root * (w - 1.0 / w), root * (w + 1.0 / w)
+                tails = (torch.special.erfcx(-0.7071067811865476 * s * a)
+                         + s * torch.special.erfcx(0.7071067811865476 * b))
+                y = y - s * (torch.log(0.5 * tails) - 0.5 * a * a - target) * tails * w * (
+                    1.2533141373155003 / root)
+        return m * torch.exp(y)
 
     @staticmethod
     def ig_quantile(u, m, lam):
         """``F_IG^-1(u; m, lam)`` carrying the implicit-function derivative in ``(m, lam)``.
 
         The root is `ig_root`'s and DETACHED; what comes back is TWO Newton steps taken at it with
-        `ig_cdf` and `ig_pdf` on the tape. The first step's numerator is a residual at the tolerance, so
+        `ig_cdf` and `ig_pdf` on the tape. The first step's numerator is a residual at the root, so
         the VALUE is the root's while ``dG/dtheta = -(dF/dtheta)/f`` is the IFT exactly; the second
         step's input carries the first's graph, which is what makes the SECOND derivative the Newton
         map's own. Spot never enters, so delta and gamma bypass this node.
 
         BOTH STEPS IN DOUBLE, cast once: their backward carries ``1/x^4`` terms that leave float32's
         range at a residual clock under a 4% vol, and the forward's own cancellation in `ig_cdf` is
-        wider than the tolerance the root was found to.
+        wider than the precision the root was found to.
         """
         narrow = torch.result_type(m, lam)
         m, lam, u = LogVar2FJ.wide(m), LogVar2FJ.wide(lam), LogVar2FJ.wide(u)

@@ -27,8 +27,8 @@ Grouped by where a validator meets them.
   residual mixer; where a calendar bucket knot splits an interval, the second piece's mixer comes
   off the process's own stream (logged at INFO). UNMEASURED: no fitted factor on hand has two
   buckets. Separately, past 8.3 standard deviations (one draw in 1e16) the mixer's distribution
-  function rounds to 1 in double and the inverse-Gaussian root returns its bracket's top; named,
-  not guarded.
+  function rounds to 1 in double and the inverse-Gaussian root reads its tail at the smallest
+  double instead, 37.5 standard deviations out; named, not guarded.
 - **The Hull-White 2F quanto drift assumes an FX covariance the paths carry only where it is
   authored.** The `Correlation.FxRate.<pair>/InterestRate.<currency>` price factor is the desk's
   mark of the curve against the currency, from which the bootstrap derives

@@ -282,7 +282,7 @@ def test_the_reserve_is_per_deal_beside_the_portfolio():
     The reserve is a band times a SENSITIVITY, so the portfolio is the deals CONTRACTED and its
     `|sum|` is at most their `sum |.|` - here exactly 0 against 5.29e-2, the four legs one autocall
     on one walk, two bought and two sold. And a deal's number is its own rather than a share of the
-    portfolio's: AC1 reads the same 0x1.b16f5855426f5p-7 in this book as it does alone, where the
+    portfolio's: AC1 reads the same 0x1.b16f585542728p-7 in this book as it does alone, where the
     one-deal book's portfolio row IS that deal's, bit for bit.
 
     Killing mutation: a deal's own reserve left unwritten.

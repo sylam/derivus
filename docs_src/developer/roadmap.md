@@ -26,9 +26,8 @@ features kept ahead of their build, not rows to close.
   pure step replays bit-identically to eager and is worth 7.6x on one row of 32,768 paths, 1.9x at
   256 rows of 4,096 and 1.1x at 2,048 rows, so the ceiling is 2.6x at 1,024 paths and 1.6x at 4,096,
   and the syncs and copies go first; `torch.compile` is not bit-identical (5e-6 relative) and is out.
-- **The LogVar2FJ walk's inverse-Gaussian root** (2026-10-07, M). It runs in double, about 45% of
-  a value batch on a GPU with 1/64-rate double. Under a gradient the walk holds 79% of peak memory
-  in its checkpoint segments.
+- **The LogVar2FJ walk's checkpoint memory** (2026-10-07, M). Under a gradient the walk holds 79%
+  of peak memory in its checkpoint segments.
 
 **The code.**
 
