@@ -16,7 +16,11 @@
 The document is a hashed blob declared through the ordinary writer and is a complete replacement
 rather than a patch, so the state at a position is the last declaration at or before it:
 
-    {"grants": [{"subject": s, "verb": v, "book": b}], "read": [{"subject": s, "class": c}]}
+    {"grants": [{"subject": s, "verb": v, "book": b}], "read": [{"subject": s, "class": c}],
+     "verbs": {act: verb}}
+
+`verbs` is the map in force: the verb each act demands, stored completed with the vocabulary's, so
+a frame is judged by the map of the day it landed whatever a later vocabulary says.
 
 A grant's `book` is a NODE - a book, or a path under it - and reaches every path below it, so a
 grant at `BANK/FX` covers `BANK/FX/Options` and neither `BANK/FXO` nor `BANK`. What an append is
@@ -67,12 +71,20 @@ FIRM_TYPES = ('policy_declared', 'market_declared', 'official_close_declared', '
               'agreement_declared', 'checkpoint', 'retention_declared', 'rehash_declared',
               'seat_enrolled', 'key_wrapped')
 
-#: The document's two sections and the fields of each row, closed exactly as an event body is.
+#: The document's two sections and the fields of each row, closed exactly as an event body is, and
+#: its map of act -> the verb that act demands.
 GRANT_FIELDS = ('book', 'subject', 'verb')
 READ_FIELDS = ('class', 'subject')
 DOCUMENT_SECTIONS = ('grants', 'read')
+MAP_SECTION = 'verbs'
 #: Verbs a document granted before they retired: read past in a stored document, refused in a new.
 RETIRED_VERBS = ('draft',)
+#: act -> the verb the vocabulary has it demand: a type's `EVENT_VERB`, and a transition's narrower
+#: acts, a `confirmed` status `confirm` and money held under paper, by its kind, `collateral`.
+ACT_VERB = dict(EVENT_VERB, **{CONFIRMED: CONFIRM}, **dict.fromkeys(HELD, COLLATERAL))
+#: The acts a document's map moves: each demanding a seat's verb, governance aside, so no map
+#: moves the act that declares the next one.
+MAPPED = tuple(sorted(act for act, verb in ACT_VERB.items() if verb in VERBS and verb != ADMIN))
 
 
 class _Unreadable(object):
@@ -94,21 +106,36 @@ class _Unreadable(object):
 UNREADABLE = _Unreadable()
 
 
-def verb_for(event_type, body):
-    """The verb an append of `event_type` saying `body` demands: a transition's read off its body -
-    a `confirmed` status `confirm`, money held under an agreement `collateral`, anything else the
-    back office files `settle` - and every other type's off `EVENT_VERB`. The writer and the oracle
-    both ask it, so no frame is judged by its type where its body says which act it is.
+def act_of(event_type, body):
+    """The act an append of `event_type` saying `body` performs: its type, or a transition's read
+    off its body - `confirmed` where it confirms, the kind of money it holds under paper where it
+    moves some - which is what `ACT_VERB` and a document's map key."""
+    if event_type in VERB_TYPES and isinstance(body, dict):
+        if body.get('status') == CONFIRMED:
+            return CONFIRMED
+        if body.get('kind') in HELD:
+            return body['kind']
+    return event_type
+
+
+def verb_for(event_type, body, doc=None):
+    """The verb an append of `event_type` saying `body` demands under `doc`, the capabilities
+    document in force where it lands: its act's (`act_of`) in the document's map, else the
+    vocabulary's (`ACT_VERB`). The writer and the oracle both ask it with the document in force at
+    the frame, so a frame is judged by the map of its day, and never by its type where its body says
+    which act it is.
 
     Fails closed: a type absent from `EVENT_VERB` demands `admin`, so a forgotten entry costs a
     write that needs governance rather than one nobody is scoped for.
     """
-    if event_type in VERB_TYPES and isinstance(body, dict):
-        if body.get('status') == CONFIRMED:
-            return CONFIRM
-        if body.get('kind') in HELD:
-            return COLLATERAL
-    return EVENT_VERB.get(event_type, ADMIN)
+    return demanded(act_of(event_type, body), doc)
+
+
+def demanded(act, doc=None):
+    """The verb `act` demands under `doc`'s map, else the vocabulary's - `admin` for an act it
+    does not know."""
+    mapped = doc.get(MAP_SECTION, {}) if isinstance(doc, dict) else {}
+    return mapped.get(act) or ACT_VERB.get(act, ADMIN)
 
 
 def parse_document(raw, where, stored=False):
@@ -149,11 +176,16 @@ def _shape(document, where, stored=False):
     if not isinstance(document, dict):
         refuse('the capabilities document is {}, not a JSON object - it is {{"grants": [...], '
                '"read": [...]}}'.format(type(document).__name__))
-    surplus = sorted(set(document) - set(DOCUMENT_SECTIONS))
+    surplus = sorted(set(document) - set(DOCUMENT_SECTIONS) - {MAP_SECTION})
     if surplus:
-        refuse('the capabilities document carries {} beyond grants, read - the document is closed '
-               'at the field level; drop the key or version the document shape'.format(
+        refuse('the capabilities document carries {} beyond grants, read, verbs - the document is '
+               'closed at the field level; drop the key or version the document shape'.format(
                    ', '.join(surplus)))
+    verbs, mapped = VERBS + (RETIRED_VERBS if stored else ()), document.get(MAP_SECTION, {})
+    if not isinstance(mapped, dict) or any(act not in MAPPED and not stored or verb not in verbs
+                                           for act, verb in mapped.items()):
+        refuse('verbs is {!r}: the map is an object of act -> the verb it demands, each act one of '
+               '{} and each verb one of the scopes'.format(mapped, ', '.join(MAPPED)))
     for section, fields in (('grants', GRANT_FIELDS), ('read', READ_FIELDS)):
         if section not in document:
             refuse('the capabilities document has no {} - a document that grants nothing says so '
@@ -170,7 +202,7 @@ def _shape(document, where, stored=False):
                 if not isinstance(row[name], str) or row[name] == '':
                     refuse('{}[{}].{} is {!r}, and a name that names nothing is not a name'.format(
                         section, position, name, row[name]))
-            if section == 'grants' and row['verb'] not in VERBS + (RETIRED_VERBS if stored else ()):
+            if section == 'grants' and row['verb'] not in verbs:
                 refuse('grants[{}].verb is {!r}, which is not one of the scopes ({}) - the '
                        'verbs are closed, so a document cannot invent authority'.format(
                            position, row['verb'], ', '.join(VERBS)))
@@ -182,12 +214,15 @@ def _shape(document, where, stored=False):
 
 
 def canonical_document(document, where='this capabilities document'):
-    """`document` checked and canonicalised - the bytes a declaration puts in the store.
+    """`document` checked and canonicalised - the bytes a declaration puts in the store - its map
+    completed with the vocabulary's verb for every act it does not move, so the map in force is the
+    one of the day it was declared and a vocabulary moving an act moves a home at its next one.
 
     One function, so what the writer accepts and what the `grant` verb writes cannot part company.
     """
     _shape(document, where)
-    return canonical_bytes(document)
+    return canonical_bytes(dict(document, **{MAP_SECTION: dict(
+        ((act, ACT_VERB[act]) for act in MAPPED), **document.get(MAP_SECTION, {}))}))
 
 
 def initial_state():
@@ -371,9 +406,10 @@ def nodes(doc, subject, verb=None):
 
 def beyond(old, new, subject):
     """What replacing `old` with `new` moves that `subject`'s own `admin` nodes do not reach: the
-    rows as `(subject, verb, node)`, a read row's verb being `read` - none under `admin` over `*`,
-    and None where the subject administers nothing. A read row is a key to every body and a `*`
-    row sits under no node, so a node admin moves neither."""
+    rows as `(subject, verb, node)`, a read row's verb being `read` and a map row `(verbs, act,
+    verb)` - none under `admin` over `*`, and None where the subject administers nothing. A read
+    row is a key to every body, a `*` row sits under no node and the map is the firm's, so a node
+    admin moves none of them."""
     nodes = [grant['book'] for grant in old['grants']
              if grant['subject'] == subject and grant['verb'] == ADMIN]
     if ANY_BOOK in nodes:
@@ -382,7 +418,8 @@ def beyond(old, new, subject):
     def outside(doc):
         return set((row['subject'], 'read', row['class']) for row in doc['read']) | set(
             (row['subject'], row['verb'], row['book']) for row in doc['grants']
-            if not any(under(row['book'], node) for node in nodes))
+            if not any(under(row['book'], node) for node in nodes)) | set(
+            (MAP_SECTION, act, verb) for act, verb in doc.get(MAP_SECTION, {}).items())
 
     return sorted(outside(old) ^ outside(new)) if nodes else None
 

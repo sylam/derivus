@@ -1850,17 +1850,19 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
     against it settling nothing; and a rejected trade that still stands waits on somebody closing
     it. Each row appears once and leaves the moment its fact lands, the close-out's own fill then
     waiting in its place, and a payment row carries what its settlement files. And each list is
-    what one verb acts on, where the seat asking holds it: an approver at a node reads the tickets
-    waiting there, a seat holding `settle` the payments - which it then settles - and one holding
-    `confirm` the confirmations, each withheld from the seat holding the other two back-office
-    verbs, and a seat that only reads acts on nothing.
+    what one act clears, where the seat asking holds the verb the map in force has it demand: an
+    approver at a node reads the tickets waiting there, a seat holding `settle` the payments - which
+    it then settles - and one holding `confirm` the confirmations, each withheld from the seat
+    holding the other two back-office verbs, and a seat that only reads acts on nothing; under a
+    map whose confirmation demands `settle` the confirmations are the settling seat's.
 
     Killing mutations: a fee's movement filed as the status of what it names, which clears a
     payment nobody paid; the last marked day's close left unread against the values its marks
     were taken on, which leaves its restatement unmarked or its marks waiting; the lists narrowed
-    by `validate` alone, which shows an approver nothing to approve; and the back office's lists
+    by `validate` alone, which shows an approver nothing to approve; the back office's lists
     narrowed by `settle` alone, which shows the confirming seat nothing and the paying seat the
-    fills.
+    fills; and the lists narrowed by the vocabulary's verbs, which shows a confirming seat the
+    confirmations the map in force has another seat clear.
     """
     designated(recorded, fixings=False)
     booked(EXPIRING, 1.0, 'EXEC-W', BOOK + '/FX', 1_000.0)
@@ -1907,19 +1909,23 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
     everything = worklist()
     assert everything['counts'] == {name: len(rows) for name, rows in everything.items()
                                     if name not in ('date', 'counts')}
-    log = SpineLog(recorded)
-    try:
-        blob = log.store.put(canonical_document({'grants': [
-            {'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
-            {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'},
-            {'subject': APPROVER, 'verb': 'approve', 'book': BOOK + '/Rates'}] + [
-            {'subject': seat, 'verb': verb, 'book': '*'}
-            for seat, held in ((SETTLER, 'settle'), (CONFIRMER, 'confirm'))
-            for verb in (held, 'collateral')], 'read': []}))
-        log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob}, actor=ACTOR,
-                   blob_refs=(blob,))
-    finally:
-        log.close()
+    grants = [{'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
+        {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'},
+        {'subject': APPROVER, 'verb': 'approve', 'book': BOOK + '/Rates'}] + [
+        {'subject': seat, 'verb': verb, 'book': '*'}
+        for seat, held in ((SETTLER, 'settle'), (CONFIRMER, 'confirm'))
+        for verb in (held, 'collateral')]
+
+    def entitled(verbs):
+        log = SpineLog(recorded)
+        try:
+            blob = log.store.put(canonical_document({'grants': grants, 'read': [], 'verbs': verbs}))
+            log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob},
+                       actor=ACTOR, blob_refs=(blob,))
+        finally:
+            log.close()
+
+    entitled({})
     nothing = {'pending': [], 'payments': [], 'unconfirmed': [], 'unmarked': [], 'rejected': []}
     assert waiting(worklist(actor=FX_READER)) == waiting(worklist(actor=ACTOR)) == nothing
     assert waiting(worklist(actor=APPROVER)) == dict(nothing, pending=[closing['ticket']])
@@ -1931,6 +1937,10 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
         'asset': 'ZAR', 'kind': 'payment', 'reference': 'PAY-W', 'value_date': '2024-06-30'}),
         headers=JSON).status_code == 200
     assert waiting(worklist(actor=SETTLER)) == nothing
+    entitled({'confirmed': 'settle'})
+    assert waiting(worklist(actor=SETTLER)) == dict(
+        nothing, unconfirmed=waiting(everything)['unconfirmed'])
+    assert waiting(worklist(actor=CONFIRMER)) == nothing
 
 
 def test_a_seat_reading_a_node_is_answered_that_node_s_p_and_l_summed_over_it(recorded, desk):

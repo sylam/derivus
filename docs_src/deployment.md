@@ -246,8 +246,9 @@ party:
 
 **The capabilities document.** Who may do what is a document on the record, declared with
 `DV_Spine grant --file`: grants of nine verbs (`validate`, `book`, `approve`, `mark`, `document`,
-`settle`, `confirm`, `collateral`, `admin`) at nodes of the desk's tree, and the seats that may read
-sealed bodies. Until one
+`settle`, `confirm`, `collateral`, `admin`) at nodes of the desk's tree, the seats that may read
+sealed bodies, and the verb each act demands, stored as the vocabulary's of the day unless the
+document moves it. Until one
 is declared, every act is admitted; once one stands, every verb asks it, and an unnamed request is
 refused. The genesis seat keeps a break-glass handle from the first event. Under a document,
 `DV_SPINE_ACTOR` needs `validate` for the jobs it runs. The verbs and their scope are on

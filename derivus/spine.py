@@ -492,6 +492,17 @@ def sight(named=None):
     return folded(read)
 
 
+def demands():
+    """act -> the verb it demands under the capabilities document in force at the head
+    (`capability.demanded`): what a list of the acts a seat clears is narrowed by."""
+    def read(log):
+        capability = package().capability
+        document, _ = log.capabilities()
+        return {act: capability.demanded(act, document) for act in capability.ACT_VERB}
+
+    return folded(read)
+
+
 def visible(rows, sight, key='portfolio', verb=None):
     """The `rows` a seat whose `sight` this is sees: every one where nothing narrows it, else those
     whose `key` sits at or under a node it holds `verb` at - any verb where none is named, a seat
@@ -1024,16 +1035,16 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
 
     THE TICKET IS THE TRADE: where `plan` - the plan the book has once it lands - is handed in, the
     event carries `ticket` over that plan and its own fields as the caller built them, so a retry of
-    the act lands every event on the LSN it already has. And EVERY REFUSAL IT CAN MEET COMES FIRST: the caller built the
-    body, which asserted its shape, and `SpineLog.admits` asks the vocabulary and the seat's scope
-    with nothing written, so the hub signs nothing a refusal then strands. Then, with a tiers policy
-    in force (`terms`, what it reads of the trade), the FIRST tier covering where it books whose
-    every check passes applies, the event carrying its name as `tier`: an automatic one is the
-    hub's own approval, filed before the event; one under four eyes lets it land PENDING, `waits_on`
-    saying on whom; and one no tier admits answers `refused` with every sentence the route
-    collected. A crash between the approval and the event is the one way an approval stands alone,
-    which the oracle names until the act is retried. A seat the scope refuses is answered by the
-    append itself, which lands the denial.
+    the act lands every event on the LSN it already has. And EVERY REFUSAL IT CAN MEET COMES FIRST:
+    the caller built the body, which asserted its shape, and `SpineLog.admits` asks the vocabulary
+    and the seat's scope with nothing written, so the hub signs nothing a refusal then strands.
+    Then, with a tiers policy in force (`terms`, what it reads of the trade), the FIRST tier
+    covering where it books whose every check passes applies, the event carrying its name as `tier`:
+    an automatic one is the hub's own approval, filed before the event; one under four eyes lets it
+    land PENDING, `waits_on` saying on whom; and one no tier admits answers `refused` with every
+    sentence the route collected. A crash between the approval and the event is the one way an
+    approval stands alone, which the oracle names until the act is retried. A seat the scope
+    refuses is answered by the append itself, which lands the denial.
     """
     admitted = log.admits(event_type, body, subject, book_name, effective_time)
     answer = {}

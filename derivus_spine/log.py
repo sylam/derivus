@@ -573,7 +573,8 @@ class SpineLog:
     def _refused(self, event_type, body, actor, book, pending={}):
         """`(verb, scope, doc, genesis, moved)` where this seat's scope refuses the append, else
         None - the writer's own voice, which no submitter speaks, refused outright."""
-        verb = verb_for(event_type, body)
+        doc, genesis = self.capabilities()
+        verb = verb_for(event_type, body, doc)
         if actor == WRITER or verb == WRITER:
             raise CapabilityDenied(
                 '{0} under {1!r} is the writer\'s own voice, which no submitter speaks: {2!r} is '
@@ -582,7 +583,6 @@ class SpineLog:
                 'snapshot is attested by the hub that took it'.format(
                     event_type, actor, WRITER, ', '.join(
                         name for name in WRITER_VOICE if verb_for(name, None) == WRITER)))
-        doc, genesis = self.capabilities()
         scope = scope_of(event_type, body, book)
         # By declaration for the document verbs, from event one for the RECOVERY handle: the
         # handle is not in a document, so "no document yet" cannot mean anybody may pull it.

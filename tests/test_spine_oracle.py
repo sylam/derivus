@@ -226,6 +226,47 @@ def test_a_confirmation_under_a_seat_that_only_settles_is_named(tmp_path):
     assert settler in said and "no confirm scope over '{}'".format(BOOK) in said, said
 
 
+def test_a_confirmation_filed_under_the_map_of_its_day_reads_inside_its_seat(tmp_path):
+    """THE MAP IN FORCE IS DECLARED AT AN LSN. A capabilities document whose map has a
+    confirmation demand `settle` - the map before `confirm` split from it - lets a seat granted
+    `settle` alone confirm; the next document moves nothing and is stored with the vocabulary's map
+    of its day, under which the same seat's confirmation is refused naming `confirm`. Read later
+    the record holds, the first confirmation judged by the map in force when it landed, and the same
+    seat's confirmation put on a copy after the second document is named.
+
+    Killing mutations: the oracle judging every frame by the vocabulary's map, which names the
+    first confirmation outside its seat; the writer reading the vocabulary's map, which refuses the
+    confirmation the map of its day admitted; and the map left out of what a declaration stores,
+    which leaves the second document's map to whatever vocabulary reads it.
+    """
+    settler, keys = 'subject-settlements', ('c' * 64, 'd' * 64)
+    home = seeded(tmp_path, 'mapped', clips=())
+    log = SpineLog(home)
+    try:
+        for verbs in ({'confirmed': 'settle'}, {}):
+            blob = log.store.put(canonical_document({'grants': [
+                {'subject': ACTOR, 'verb': 'admin', 'book': '*'},
+                {'subject': settler, 'verb': 'settle', 'book': BOOK}], 'read': [], 'verbs': verbs}))
+            log.append('policy_declared', {'policy': CAPABILITIES_POLICY, 'blob': blob},
+                       actor=ACTOR, blob_refs=(blob,))
+            if verbs:
+                transition(log, settler, keys[0], 'confirmed', book=BOOK)
+        with pytest.raises(CapabilityDenied) as refused:
+            transition(log, settler, keys[0], 'confirmed', book=BOOK)
+        stored = json.loads(log.store.get(blob))['verbs']
+    finally:
+        log.close()
+    assert "holds no confirm scope over '{}'".format(BOOK) in str(refused.value), refused.value
+    assert (stored['confirmed'], stored['collateral'], stored['fill'], len(stored)) == (
+        'confirm', 'collateral', 'book', 18), stored
+    assert oracle.report(home)['nothing_outside_its_seat']['held'] is True
+
+    answers = oracle.report(planted(home, tmp_path, 'confirmed-after', 'status_transition',
+                                    {'subject': keys[1], 'status': 'confirmed'}, actor=settler,
+                                    book_name=BOOK))
+    assert oracle.failed(answers) == ['nothing_outside_its_seat'], answers
+
+
 def test_a_node_seat_and_a_node_admin_are_judged_where_the_writer_judged_them(tmp_path):
     """NOTHING OUTSIDE ITS SCOPE: A FILL AT A NODE ITS ACTOR HOLDS NO GRANT AT. The writer judges a
     fill at the portfolio its body names and a node admin's capabilities declaration by what it

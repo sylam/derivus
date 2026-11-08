@@ -3195,7 +3195,8 @@ def book_worklist(actor: str = None):
     how many each list holds and each list the newest `WORKLIST_ROWS` of them. Nothing here is
     filed: every list is read off what stands, so a row leaves the moment its fact lands.
 
-    Each list is what one verb acts on, where the seat holds it: `pending` the tickets awaiting a
+    Each list is what one act clears, where the seat holds the verb the map in force has that act
+    demand (`spine.demands`), the vocabulary's named here: `pending` the tickets awaiting a
     second seat's approval - a fill's or a restrike's, one row each (`spine.standing`) - for
     `approve`; `payments` the payments due by the book's own day no settlement was filed against
     (`close_verdict` - a fee settles nothing), for `settle`; `unconfirmed` the clips no `confirmed`
@@ -3214,6 +3215,7 @@ def book_worklist(actor: str = None):
     document, _ = recording().read()
     book, sight = book_name(document), spine.sight(actor)
     vocabulary, confirmed = spine.package().vocabulary, spine.package().verbs.CONFIRMED
+    demands = spine.demands()
     day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
     rows = [row for row in spine.standing(folds=folds()) if row['book'] == book]
     names = {address: deal_at(document, path)['Instrument']['.Deal'].get('Reference')
@@ -3222,7 +3224,7 @@ def book_worklist(actor: str = None):
     market = spine.designation(spine.PNL)
     closes = [] if market is None else spine.closes(market)
     marks = PnL.marked(book, closes, spine.attestations(), spine.stored)
-    see = sighted(document, sight, vocabulary.SETTLE, rows)
+    see = sighted(document, sight, demands['status_transition'], rows)
 
     def row(kind, what, key, lsn, when):
         return {'kind': kind, 'what': what, 'key': key, 'lsn': lsn, 'since': when}
@@ -3257,8 +3259,8 @@ def book_worklist(actor: str = None):
         return list(found.values())
 
     # a seat that posts collateral nowhere pays nothing for calls it cannot see
-    due = [] if day not in marks or sight is not None and sight[vocabulary.COLLATERAL] == [] else (
-        collateral_calls(document, marks, day, market, sight, vocabulary.COLLATERAL, rows,
+    due = [] if day not in marks or sight is not None and sight[demands['collateral']] == [] else (
+        collateral_calls(document, marks, day, market, sight, demands['collateral'], rows,
                          filed=True)['calls'])
 
     def called(call):
@@ -3271,7 +3273,7 @@ def book_worklist(actor: str = None):
             currency=call['currency'], unknown=call['unknown'])
 
     lists = {
-        'pending': ticketed(vocabulary.APPROVE, 'pending', 'awaits a second seat\'s approval',
+        'pending': ticketed(demands['approval'], 'pending', 'awaits a second seat\'s approval',
                             ticket, lambda position, entry, at: entry['status'] == 'pending'),
         'payments': [dict(row('payment', '{} {} pays {} {}'.format(
             entry['reference'], entry['leg'],
@@ -3281,7 +3283,7 @@ def book_worklist(actor: str = None):
             for entry in close_verdict(answered(hub_diary(document)['rows']),
                                        day)['outstanding']
             if entry['kind'] == Diary.PAYMENT and see(entry['instrument'])],
-        'unconfirmed': ticketed(vocabulary.CONFIRM, 'unconfirmed', 'is not confirmed', confirming,
+        'unconfirmed': ticketed(demands[confirmed], 'unconfirmed', 'is not confirmed', confirming,
                                 unconfirmed, lambda position, entry: entry['execution_reference']),
         'calls': [called(call) for call in due if call['direction'] or call['unknown']],
         'unmarked': [row('unmarked', 'the close of {} on {} is not marked'.format(
@@ -3290,7 +3292,7 @@ def book_worklist(actor: str = None):
             if close['date'] >= max(marks, default='')
             and close['values_hash'] != marks.get(close['date'], {}).get('values_hash')
             and spine.visible([{'portfolio': book}], sight, verb=vocabulary.MARK)],
-        'rejected': ticketed(vocabulary.BOOK, 'rejected', 'was rejected and still stands', ticket,
+        'rejected': ticketed(demands['fill'], 'rejected', 'was rejected and still stands', ticket,
                              lambda position, entry, at: entry['status'] == 'rejected'
                              and position['quantity'])}
     return dict({name: sorted(found, key=lambda row: (row['since'] or '', row['lsn'] or 0))[

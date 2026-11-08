@@ -294,14 +294,18 @@ def test_the_cli_declares_a_policy_from_a_file_and_reports_what_is_in_force(tmp_
     assert json.loads(spine('policy', 'tiers', '--home', home).stdout)['tiers']['blob'] \
         == answer['blob'], 'a refused declaration moved what is in force'
 
-    # the capabilities document is `grant`'s own file, and this verb reads it back as stored
+    # the capabilities document is `grant`'s own file, and this verb reads it back as stored, its
+    # map completed with the vocabulary's
+    from derivus_spine.capability import canonical_document
+
     document = {'grants': [{'subject': 'subject-deployment', 'verb': 'admin', 'book': '*'}],
                 'read': []}
     path.write_text(json.dumps(document), encoding='utf-8')
     granted = json.loads(spine('grant', '--file', str(path), '--actor', 'subject-deployment',
                                '--home', home).stdout)
     assert json.loads(spine('policy', 'capabilities', '--home', home).stdout)['capabilities'] == {
-        'blob': granted['blob'], 'document': document, 'lsn': granted['lsn']}
+        'blob': granted['blob'], 'document': json.loads(canonical_document(document)),
+        'lsn': granted['lsn']}
 
     # a copy lacking that document lists every other policy and says which one it cannot read
     os.remove(os.path.join(home, 'blobs', granted['blob'][:2], granted['blob'][2:4],

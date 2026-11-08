@@ -255,7 +255,8 @@ rather than file a name nobody chose. **Held by**
 
 **Capabilities.** A canonical blob under the reserved name `capabilities`, each declaration a
 complete replacement, folded at an LSN so "could X do Y in March" replays: `{"grants": [{subject,
-verb, book}], "read": [{subject, class}]}`. Nine verbs, none implying another:
+verb, book}], "read": [{subject, class}], "verbs": {act: verb}}`. Nine verbs, none implying
+another, each demanded by these acts under the vocabulary's map:
 
 | verb | files |
 | --- | --- |
@@ -270,15 +271,24 @@ verb, book}], "read": [{subject, class}]}`. Nine verbs, none implying another:
 | `admin` | `policy_declared`, `portfolio_declared`, `retention_declared`, `rehash_declared`, `checkpoint`, `seat_enrolled`, `key_wrapped` |
 
 A type missing from the map demands `admin`, so a forgotten entry costs governance, not an open
-write. A transition is one type and three acts, so its verb is read off its body in one place,
-`capability.verb_for(event_type, body)`, which the writer's hook and the oracle's seat invariant
-both ask: a seat granted `settle` alone is refused a confirmation with the denial naming
-`confirm`, and so for each pair. A home's `settle` grants keep paying and stop confirming and
-posting collateral until its admin declares `confirm` and `collateral` grants - the separation of
-duties, which no grant implying another would keep. **Held by**
+write. A transition is one type and three acts, read off its body (`capability.act_of`): a
+`confirmed` status, money held under paper by its kind, `collateral` or `margin`, else a payment.
+So a seat granted `settle` alone is refused a confirmation with the denial naming `confirm`, and
+so for each pair - the separation of duties, which no grant implying another would keep.
+
+`verbs` is the map in force, the verb each act demands. A declaration is stored with the
+vocabulary's verb for every act it does not move, governance staying `admin`, so the map in force
+at an LSN is the one of the day it was declared, and a vocabulary moving an act moves a home at its
+next declaration; a document stored without a map reads the vocabulary's. Its one read is `capability.verb_for(event_type, body, document)`: the writer's
+hook asks it under the document in force at the head, the oracle's seat invariant under the one in
+force at each frame, so an old frame is judged by the map of its day, and the worklist narrows
+each list by the verb its clearing act demands (`spine.demands`). **Held by**
 `test_spine_verbs.py::test_the_back_office_is_three_seats_and_none_of_them_does_anothers_work`,
 `test_spine_capability.py::test_every_verb_bearing_type_refuses_an_unscoped_actor_and_records_the_refusal`,
-`test_spine_oracle.py::test_a_confirmation_under_a_seat_that_only_settles_is_named`.
+`::test_a_capabilities_document_that_cannot_be_evaluated_does_not_land`,
+`test_spine_oracle.py::test_a_confirmation_under_a_seat_that_only_settles_is_named`,
+`::test_a_confirmation_filed_under_the_map_of_its_day_reads_inside_its_seat`,
+`test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`.
 
 A grant's `book` is a node reaching every path below it: `BANK/FX` covers `BANK/FX/Options`, not
 `BANK/FXO` or `BANK`. `capability.scope_of`, shared by writer and oracle, judges the firm's own
@@ -299,7 +309,7 @@ A document whose blob was altered or lost folds to `UNREADABLE` instead of raisi
 inside the writer's hook would take the recovery with it: every verb refuses and break-glass still
 answers, restoring admin until the next declaration by it or an admin over `*`. A node admin
 replaces the document only where every grant it moves sits under its nodes and the `read` rows, each
-a key to every body, are unchanged (`capability.declarable`). **Held by**
+a key to every body, and the map, the firm's, are unchanged (`capability.declarable`). **Held by**
 `test_spine_capability.py::test_a_doctored_policy_blob_folds_to_unreadable_and_break_glass_walks_out_of_it`,
 `::test_a_node_admin_declares_only_what_its_nodes_reach`.
 
@@ -465,7 +475,7 @@ declaration, so one nobody could read never lands; the last declaration stands (
 
 | name | shape | absent means |
 | --- | --- | --- |
-| `capabilities` | `{grants, read}`, [above](#identity) | no enforcement |
+| `capabilities` | `{grants, read, verbs}`, [above](#identity) | no enforcement |
 | `tolerance` | `{"tolerances": {class: epsilon}}`, absolute, per top-level result class; a change of shape departs at any epsilon | nothing is pinned |
 | `firmness` | `{"pillar_seconds": s}`, how old a quote's board may have been | nothing refused on staleness |
 | `fixings` | `{"sources": {index: [source, ...]}}`, ordered | no index resolves |
@@ -714,7 +724,7 @@ question could not be put.
 | invariant | holds where |
 | --- | --- |
 | 1 copies agree | two homes share head hash and rows at the shallower head |
-| 2 nothing outside its seat | every frame's seat held its verb when it landed; the writer's voice said only its own |
+| 2 nothing outside its seat | every frame's seat held the verb its act demanded under the map in force when it landed; the writer's voice said only its own |
 | 3 every refusal is a denial | denials equal the refusals the script says reached the writer |
 | 4 an amended plan is a new approval | each ticket is one trade's; a restrike has its own |
 | 5 closes superseded, never edited | no close the vocabulary would refuse |
@@ -758,9 +768,8 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 
 Unbuilt parts of the design: the deal tree is the book file with nets written on, not composed
 from the fold; and a print is not yet one fact feeding both a calibration's archive and a deal's
-fixings ([designed, not built](roadmap.md#designed-not-built)). The record's other open
-rows - the oracle's blind spots - are
-[before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
+fixings ([designed, not built](roadmap.md#designed-not-built)). The record's rows on the roadmap's
+close-out list are all landed;
 the rotation and replay limits are [trust limits](#trust-limits) and the replay tuple's reach is on
 [Model Limitations](../limitations.md#the-engine); which verbs take a seat and whether a rotation
 is signed by the key it retires are

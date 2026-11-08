@@ -176,7 +176,7 @@ def nothing_outside_its_seat(log, entitled, judged=None):
         if event_type in TICKETED:
             booked[body.get('ticket')] = (frame['lsn'], body.get('tier'))
         if not row['held'] and not row['node']:
-            failures.append(_unscoped(frame, row['scope'], body))
+            failures.append(_unscoped(frame, row['scope'], row['verb']))
     failures.extend(
         'LSN {}: an approval of {} stands in the writer\'s own voice with {} - the hub signs a '
         'ticket only under an automatic tier in force and books it after, so this is that voice '
@@ -217,7 +217,7 @@ def nothing_outside_its_scope(log, judged=None):
         if row['node']:
             read += 1
             if not row['held']:
-                failures.append(_unscoped(frame, row['scope'], body))
+                failures.append(_unscoped(frame, row['scope'], row['verb']))
             failures.extend(_placed(frame, body, positions, declared))
             if event_type in ('approval', 'rejection'):
                 verdicts.append((frame['lsn'], event_type, body.get('plan_hash'), row['scope']))
@@ -238,14 +238,15 @@ def nothing_outside_its_scope(log, judged=None):
 
 
 def _judged(log, entitled):
-    """Every frame with the writer's own question re-asked of it - `{frame, body, scope, held,
-    node}` in LSN order - or the sentence naming the capabilities document this copy lacks.
+    """Every frame with the writer's own question re-asked of it - `{frame, body, scope, verb,
+    held, node}` in LSN order - or the sentence naming the capabilities document this copy lacks.
 
-    `verb_for` names what a type demanded and `evaluate` answers it at `scope_of` against the
-    capability state BEFORE the frame, folded forward by `apply_event`, the writer's own step - the
-    same answer at the length of the record rather than its square. A node admin's declaration the
-    grants refuse is re-run through `declarable`, as the writer ran it; the writer's own voice is
-    never gated, and a home with no document in force answers yes, exactly as the append did.
+    `verb_for` names what an act demanded under the map in force and `evaluate` answers it at
+    `scope_of` against the capability state BEFORE the frame, folded forward by `apply_event`, the
+    writer's own step - the same answer at the length of the record rather than its square. A node
+    admin's declaration the grants refuse is re-run through `declarable`, as the writer ran it; the
+    writer's own voice is never gated, and a home with no document in force answers yes, exactly as
+    the append did.
     `node` is a frame judged at a node below a book - anywhere but its envelope's book or the
     firm - or a node admin's declaration. A copy holding no key answers the envelope alone.
 
@@ -259,13 +260,13 @@ def _judged(log, entitled):
     for frame in log.frames():
         event_type, actor = frame['event_type'], frame['actor']
         if not entitled:
-            judged.append({'frame': frame, 'body': None, 'scope': None, 'held': None,
-                           'node': False})
+            judged.append({'frame': frame, 'body': None, 'scope': None, 'verb': None,
+                           'held': None, 'node': False})
             continue
         body = log.open_body(frame) if event_type in (
             CAPABILITY_EVENTS + SCOPED_TYPES + VERB_TYPES) else None
-        verb = verb_for(event_type, body)
         doc, genesis = state['doc'], state['genesis']
+        verb = verb_for(event_type, body, doc)
         scope = scope_of(event_type, body, frame['book'])
         held = actor == WRITER or (doc is None and verb != RECOVERY) or evaluate(
             doc, genesis, actor, verb, scope)
@@ -281,7 +282,8 @@ def _judged(log, entitled):
             held = held or (declaring and isinstance(doc, dict)
                             and isinstance(state['doc'], dict)
                             and declarable(doc, state['doc'], actor))
-        judged.append({'frame': frame, 'body': body, 'scope': scope, 'held': held, 'node': node})
+        judged.append({'frame': frame, 'body': body, 'scope': scope, 'verb': verb, 'held': held,
+                       'node': node})
     return judged
 
 
@@ -313,13 +315,11 @@ def _unsigned(automatic, trade, lsn):
     return None
 
 
-def _unscoped(frame, scope, body):
-    """The sentence for a frame saying `body` whose actor held no scope where the writer judged
-    it."""
+def _unscoped(frame, scope, verb):
+    """The sentence for a frame whose actor held no `verb` scope where the writer judged it."""
     return ('LSN {}: {!r} held no {} scope over {!r} when the {} landed, so this frame is on the '
             'platter and the writer would have refused it'.format(
-                frame['lsn'], frame['actor'], verb_for(frame['event_type'], body), scope or '*',
-                frame['event_type']))
+                frame['lsn'], frame['actor'], verb, scope or '*', frame['event_type']))
 
 
 def _placed(frame, body, positions, declared):

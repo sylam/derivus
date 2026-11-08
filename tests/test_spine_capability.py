@@ -462,8 +462,9 @@ def test_a_node_admin_declares_only_what_its_nodes_reach(tmp_path):
     judged at its parent, and a book is the firm's to declare.
 
     Killing mutations: the grant rows compared without the read rows, which lets a node admin wrap
-    the firm's class key to a seat of its choosing; `under` without the slash (the `BANK/FXO`
-    row); and the scoped arm dropped, which leaves every node admin a stranger to the document.
+    the firm's class key to a seat of its choosing; the map left out of the comparison, which lets
+    one move the verb an act demands firm-wide; `under` without the slash (the `BANK/FXO` row); and
+    the scoped arm dropped, which leaves every node admin a stranger to the document.
     """
     from derivus_spine.verbs import declare_portfolio
 
@@ -485,14 +486,16 @@ def test_a_node_admin_declares_only_what_its_nodes_reach(tmp_path):
                                                                      (DESK, 'firm'))),
              (DESK, 'read', 'firm')),
             (document(grants=rows + ((DESK, BOOK, OPTIONS), (DESK, BOOK, ANY_BOOK)),
-                      read=((MINT, 'firm'),)), (DESK, BOOK, ANY_BOOK))):
+                      read=((MINT, 'firm'),)), (DESK, BOOK, ANY_BOOK)),
+            (dict(grown, verbs={'confirmed': SETTLE}), ('verbs', 'confirmed', SETTLE))):
         assert not declarable(grown, moved, GOVERNOR), named
         with pytest.raises(CapabilityDenied) as refusal:
             declare(log, GOVERNOR, moved)
         assert repr(named) in str(refusal.value), (named, str(refusal.value))
     assert [body for _, _, body in denials(log)] == [
         {'subject': GOVERNOR, 'verb': ADMIN, 'book': ANY_BOOK, 'attempted_type': 'policy_declared'}]
-    assert state_at(log)[0] == grown, 'a refused declaration moved the document'
+    assert state_at(log)[0] == json.loads(canonical_document(grown)), \
+        'a refused declaration moved the document'
 
     assert declare_portfolio(log, GOVERNOR, OPTIONS)['coalesced'] is False
     for beside, scope in ((RATES + '/Swaps', RATES), (FX, BANK), (BANK, ANY_BOOK)):
@@ -620,7 +623,8 @@ def test_a_declaration_can_strand_the_last_admin_and_break_glass_is_the_way_back
     stranding = declare(log, MINT, document())['lsn']
 
     doc, seats = state_at(log)
-    assert doc == document() and seats['break_glass'] == MINT and seats['recovered'] == ()
+    assert doc == json.loads(canonical_document(document())) and seats['break_glass'] == MINT \
+        and seats['recovered'] == ()
     assert evaluate(doc, seats, MINT, ADMIN, None) is False, 'the last admin is stranded'
 
     for actor in (MINT, DESK, STRANGER):
@@ -686,7 +690,8 @@ def test_a_capabilities_document_that_cannot_be_evaluated_does_not_land(tmp_path
     that would have canonicalised them, which is exactly how a hand-edited policy file arrives. One
     policy must be one blob, or the record holds two histories of one decision.
 
-    Killing mutation: the declared document left unparsed at the append.
+    Killing mutations: the declared document left unparsed at the append; and a map moving
+    governance admitted, which lets a declaration open the door that declares the next.
     """
     home, log = minted(tmp_path)
     head = log.head()
@@ -707,6 +712,8 @@ def test_a_capabilities_document_that_cannot_be_evaluated_does_not_land(tmp_path
         canonical_bytes(document(grants=((DESK, 'launch', ANY_BOOK),))))
     assert 'row' in refused(canonical_bytes({'grants': [{'subject': DESK}], 'read': []}))
     assert 'names nothing' in refused(canonical_bytes(document(grants=((DESK, BOOK, ''),))))
+    assert 'each act one of' in refused(canonical_bytes(
+        dict(document(), verbs={'policy_declared': BOOK})))
     # valid JSON, valid shape, NON-canonical bytes: one policy, two spellings, refused
     assert 'canonical' in refused(
         json.dumps(document(grants=((DESK, BOOK, BOOK_ONE),)), indent=2).encode('utf-8'))

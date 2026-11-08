@@ -19,10 +19,6 @@ features kept ahead of their build, not rows to close.
 
 **The record and the service.**
 
-- **The verb map in force declared at an LSN** (2026-09-29). The oracle judges old frames by today's
-  verb map, so a frame filed under a verb its act no longer demands - a confirmation or a
-  collateral movement under a `settle` grant - reads as outside its seat, while the desk runs
-  unchanged. The map read like a policy, one read in `verb_for`.
 
 **Speed and memory.**
 
