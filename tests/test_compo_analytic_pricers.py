@@ -585,6 +585,50 @@ def test_a_compo_and_a_quanto_price_return_swap_are_their_forwards_at_each_end()
         assert abs(_mtm(out, ref) - value) / abs(value) < 1e-12, (ref, _mtm(out, ref), value)
 
 
+def test_a_quanto_discrete_barrier_is_the_local_barrier_on_the_quanto_carry():
+    """A quanto is the local deal on the carry `-rho sigma_S sigma_X` bends, paid at one: the
+    discretely monitored Up-and-In call at 90 and Down-and-Out put at 110 with a rebate, paid in
+    EUR as Quanto, against the same two paid in USD as Standard off the same EUR curve on a world
+    whose dividend yield absorbs that carry. Each monitored interval steps on the bent carry and
+    reads the skewed local smile at the forward it carries, so the two are one program: measured
+    bit for bit on the CPU, 18,844.02 and 3,190.36, where the unbent carry reads 5.3% and 4.8% off.
+
+    Killing mutation: the quanto carry left off the barrier's strip (`carry_adj` not added).
+    """
+    observed = [[BASE + pd.DateOffset(months=3 * k), ''] for k in range(1, 5)]
+    legs = [('KI', 'Up_And_In', 115.0, 'Call', 90.0, 0.0),
+            ('KO', 'Down_And_Out', 85.0, 'Put', 110.0, 30.0)]
+    quanto = [dict(_barrier(ref, kind, level, option, strike=strike), Payoff_Type='Quanto',
+                   Barrier_Dates=observed, Cash_Rebate=rebate)
+              for ref, kind, level, option, strike, rebate in legs]
+    local = [dict(_barrier(ref, kind, level, option, payoff=None, strike=strike),
+                  Discount_Rate='EUR', Barrier_Dates=observed, Cash_Rebate=rebate)
+             for ref, kind, level, option, strike, rebate in legs]
+    out = _run(_job(quanto, _factors()))
+    bent = _run(_job(local, _factors(q=Q_EQ - QUANTO_CARRY), currency='USD'))
+    for ref, *_ in legs:
+        assert _mtm(out, ref) == _mtm(bent, ref), (ref, _mtm(out, ref), _mtm(bent, ref))
+
+
+def test_a_compo_expired_before_the_base_date_is_refused_by_name():
+    """Between its expiry and its settlement a European pays on what the expiry fixed: the equity's
+    own print for a Standard or a Quanto payoff, which both mark at its intrinsic discounted,
+    11,998.03, and the product S*X for a Compo, which that print does not state - so the compo
+    refuses by name.
+
+    Killing mutation: the refusal dropped - the compo marks the local print's 11,998.03 as its
+    composite's.
+    """
+    expiry = BASE - pd.offsets.BDay(1)
+    deals = [dict(_vanilla(kind, strike=100.0), Payoff_Type=kind, Expiry_Date=expiry,
+                  Settlement_Date=BASE + pd.offsets.BDay(1), Price_Fixing=[[expiry, 112.0]])
+             for kind in ('Standard', 'Quanto', 'Compo')]
+    out = _run(_job(deals[:2], _factors()))
+    assert _mtm(out, 'Standard') == _mtm(out, 'Quanto') > 0.0, out['Results']['mtm']
+    with pytest.raises(utils.UnpriceableSchedule, match='Compo: a compo expired before the base'):
+        _run(_job(deals[2:], _factors()))
+
+
 def test_a_seasoned_asian_whose_fixings_pass_the_strike_is_exercised_for_certain():
     """Two of four equal-weight fixings printed at 100 against a strike of 20: the realised half of
     the average alone passes the strike, so the call is worth its forward average less the strike

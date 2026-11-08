@@ -1492,9 +1492,8 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
                     phi_scale * (vol - x1))) + phi * (spot * (0.5 * torch.erfc(
                     phi_scale * x2) - 1.0) * torch.exp(b * expiry) + 0.5 * strike * torch.erfc(
                     phi_scale * (vol - x2)))) * torch.exp(-expiry_r)
-            elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike <= H) or
-                  (phi == OPTION_CALL and eta == BARRIER_DOWN and strike > H)):
-                # C+ E
+            else:
+                # (Put, Up, K <= H) or (Call, Down, K > H): C+ E
                 return (cash_rebate * ((0.5 * torch.erfc(eta_scale * (-vol + y2)) - 1.0) * torch.exp(
                     2 * log_bar * mu) + 0.5 * torch.erfc(eta_scale * (vol - x2))) - phi * (spot * (
                         0.5 * torch.erfc(eta_scale * y1) - 1.0) * torch.exp(expiry * (b - r) + 2 * log_bar * (
@@ -1538,9 +1537,8 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
                             b * expiry) + 0.5 * strike * torch.erfc(phi_scale * (vol - x2))) * torch.exp(
                             log_bar * (lam - mu))) * torch.exp(
                     -expiry_r - log_bar * (lam - mu))
-            elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike <= H) or
-                  (phi == OPTION_CALL and eta == BARRIER_DOWN and strike > H)):
-                # A-C+F
+            else:
+                # (Put, Up, K <= H) or (Call, Down, K > H): A-C+F
                 return (-cash_rebate * ((0.5 * torch.erfc(eta_scale * z) - 1.0) * torch.exp(2 * lam * log_bar)
                                         - 0.5 * torch.erfc(eta_scale * (2 * lam * vol - z))) * torch.exp(expiry_r) +
                         phi * (spot * (0.5 * torch.erfc(eta_scale * y1) - 1.0) * torch.exp(
@@ -1667,38 +1665,23 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
             g3 = g1 - 2.0 * logSpotOverBarrier / vol
             g4 = g3 - vol
 
-            if eta == 0:  # type B1
+            if eta == 1:
 
                 pv = PartialBarrierCalc(
-                    forward, strike, log1, log2, rho, -rho, d1, e1, f1, -e3, d2, e2, f2, -e4)
-                temp = PartialBarrierCalc(
                     forward, strike, log1, log2, rho, -rho, g1, e1, g3, -e3, g2, e2, g4, -e4)
-                temp += PartialBarrierCalc(
-                    forward, strike, log1, log2, rho, -rho, -g1, -e1, -g3, e3, -g2, -e2, -g4, e4)
-                temp -= PartialBarrierCalc(
-                    forward, strike, log1, log2, rho, -rho, -d1, -e1, -f1, e3, -d2, -e2, -f2, e4)
+                temp = PartialBarrierCalc(
+                    forward, strike, log1, log2, rho, -rho, d1, e1, f1, -e3, d2, e2, f2, -e4)
 
-                # `pv` is the X >= H expression and `temp` the X < H one
                 pv = torch.where(torch.as_tensor(strike < barrier, device=forward.device),
-                                 temp, pv)
-            else:
-                if eta == 1:
+                                 pv, temp)
 
-                    pv = PartialBarrierCalc(
-                        forward, strike, log1, log2, rho, -rho, g1, e1, g3, -e3, g2, e2, g4, -e4)
-                    temp = PartialBarrierCalc(
-                        forward, strike, log1, log2, rho, -rho, d1, e1, f1, -e3, d2, e2, f2, -e4)
+            else:  # eta == -1
 
-                    pv = torch.where(torch.as_tensor(strike < barrier, device=forward.device),
-                                     pv, temp)
-
-                else:  # eta == -1
-
-                    pv = PartialBarrierCalc(
-                        forward, strike, log1, log2, rho, -rho, -g1, -e1, -g3, e3, -g2, -e2, -g4, e4)
-                    pv -= PartialBarrierCalc(
-                        forward, strike, log1, log2, rho, -rho, -d1, -e1, e3, -f1, -d2, -e2, e4, -f2)
-                    pv *= (strike < barrier)
+                pv = PartialBarrierCalc(
+                    forward, strike, log1, log2, rho, -rho, -g1, -e1, -g3, e3, -g2, -e2, -g4, e4)
+                pv -= PartialBarrierCalc(
+                    forward, strike, log1, log2, rho, -rho, -d1, -e1, e3, -f1, -d2, -e2, e4, -f2)
+                pv *= (strike < barrier)
 
         return pv * torch.exp(-r * expiry)
 
@@ -2545,7 +2528,8 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
                 payoff = torch.exp(-r_t * exp) * 0.5 * (
                         torch.erfc(eta_scale * d1) + torch.exp(2.0 * mu * log_vol) * torch.erfc(eta_scale * d2))
 
-            elif timing == 'Touch':
+            else:
+                # paid on the touch, the one other timing a deal is constructed with
                 lamb = torch.sqrt(smooth_relu(mu * mu + 2.0 * r_t))
                 lambroot = lamb * root_tau
                 d1 = lambroot - barrovert
@@ -2620,11 +2604,7 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     barrierType = deal_data.Instrument.field['Barrier_Type']
     isKnockIn = barrierType in ['Up_And_In', 'Down_And_In']
 
-    eta = 0.0
-    if barrierType in ['Down_And_Out', 'Down_And_In']:
-        eta = BARRIER_DOWN
-    elif barrierType in ['Up_And_Out', 'Up_And_In']:
-        eta = BARRIER_UP
+    eta = BARRIER_DOWN if 'Down' in barrierType else BARRIER_UP
 
     phi = OPTION_CALL if deal_data.Instrument.field['Option_Type'] == 'Call' else OPTION_PUT
     buy_or_sell = 1.0 if deal_data.Instrument.field['Buy_Sell'] == 'Buy' else -1.0
@@ -3957,17 +3937,15 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         for i, (D, s, carry_rate, delta_t, tau) in enumerate(zip(
                 discount_rates, spot_prices, carry, times, settlement)):
 
-            # the number of fixings still to simulate in this block
+            # the fixings still to walk, at least one: a deal's grid stops at its last settlement
             reduced_samples = len(delta_t)
             vols = vols_all[i] if kit is None else None
-            u = law = None
-            if reduced_samples:
-                n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
-                u, mix = oss_uniforms(shared, reduced_samples, num_sims, n_mix)
-                if kit is not None:
-                    # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
-                    law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True,
-                                     mix)
+            law = None
+            n_mix = 0 if kit is None else kit.mixers(row_times[i], delta_t)
+            u, mix = oss_uniforms(shared, reduced_samples, num_sims, n_mix)
+            if kit is not None:
+                # one walk per row, AFTER its `u` and mirrored the way `oss_uniforms` mirrors
+                law = kit.blocks(row_times[i], delta_t, carry_rate, shared, num_sims, True, mix)
 
             Sj = torch.unsqueeze(s, 1)  # [batch, 1]
             P = shared.one.new_zeros((shared.simulation_batch, 2*num_sims))
@@ -4372,32 +4350,31 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     if boundary_aad and time_grid.report_index is not None:
         to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
         mark = len(shared.boundary_sets)
-        if b_gaps:
-            # redemption: `triggered` is worth zero once the deal is dead and the strip is behind
-            # it, `pending` is what a row that redeemed INSIDE its own strip still banked, and
-            # `untriggered` is the SAME loop run on a weight no redemption zeroed
-            untriggered = buy_sell * torch.cat(alive, dim=0).detach()
-            latch = utils.LatchedBoundarySet(
-                gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
-                untriggered=untriggered, triggered=torch.zeros_like(untriggered),
-                pending=b_pending if any(entry is not None for entry in b_pending) else None,
-                cash_events=[(t, f - int(b_first), on, off, bk)
-                             for t, f, on, off, bk in b_cash] or None,
-                to_mtm=to_mtm, report_index=time_grid.report_index)
-            shared.boundary_sets.append(latch)
-            if logging.getLogger().isEnabledFor(logging.DEBUG):
-                # the flags come off `accumulation`, the strip's own crossings off `R`: they are
-                # the same decision only where the two index the schedule alike
-                with torch.no_grad():
-                    prefix = [torch.zeros_like(latch.fired[0])]
-                    for flag in latch.fired:
-                        prefix.append(prefix[-1] | flag)
-                    logging.debug(
-                        'TARF %s latch decisions=%d recon_max=%.3g ledger_max=%.3g scale=%.3g',
-                        deal_data.Instrument.field.get('Reference'), len(b_gaps),
-                        float((latch.select(prefix) - mtm.detach()).abs().max()),
-                        declared_ledger_residual(latch.cash_events, prefix),
-                        float(mtm.detach().abs().max()))
+        # redemption, decided at least on the first block's opening pot: `triggered` is worth zero
+        # once the deal is dead and the strip is behind it, `pending` is what a row that redeemed
+        # INSIDE its own strip still banked, and `untriggered` the loop on a weight never zeroed
+        untriggered = buy_sell * torch.cat(alive, dim=0).detach()
+        latch = utils.LatchedBoundarySet(
+            gaps=b_gaps, fired=b_fired, obs_before=np.array(b_obs_before),
+            untriggered=untriggered, triggered=torch.zeros_like(untriggered),
+            pending=b_pending if any(entry is not None for entry in b_pending) else None,
+            cash_events=[(t, f - int(b_first), on, off, bk)
+                         for t, f, on, off, bk in b_cash] or None,
+            to_mtm=to_mtm, report_index=time_grid.report_index)
+        shared.boundary_sets.append(latch)
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            # the flags come off `accumulation`, the strip's own crossings off `R`: they are
+            # the same decision only where the two index the schedule alike
+            with torch.no_grad():
+                prefix = [torch.zeros_like(latch.fired[0])]
+                for flag in latch.fired:
+                    prefix.append(prefix[-1] | flag)
+                logging.debug(
+                    'TARF %s latch decisions=%d recon_max=%.3g ledger_max=%.3g scale=%.3g',
+                    deal_data.Instrument.field.get('Reference'), len(b_gaps),
+                    float((latch.select(prefix) - mtm.detach()).abs().max()),
+                    declared_ledger_residual(latch.cash_events, prefix),
+                    float(mtm.detach().abs().max()))
         if b_inner:
             rows, gaps, jumps = zip(*b_inner)
             shared.boundary_sets.append(utils.InnerBoundarySet(
@@ -5157,29 +5134,29 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     # counterfactual to land on
     if (b_latch or b_puts) and time_grid.report_index is not None:
         to_mtm = deal_to_mtm_grid(time_grid, deal_data, fx_rep)
-        if b_latch:
-            # one counterfactual per decision, its whole reach: latch + own-row fork + every payment
-            # row the flip touches. Branches stay on the pricer's grid
-            gaps, flags, own_rows = zip(*b_latch)
-            untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
-            latch = utils.LatchedBoundarySet(
-                gaps=list(gaps), fired=list(flags), obs_before=np.array(b_obs),
-                untriggered=untriggered, triggered=torch.zeros_like(untriggered),
-                own_row=[[(r, nominal * a, nominal * b) for r, a, b in fork]
-                         for fork in own_rows],
-                cash_events=b_cash, to_mtm=to_mtm, report_index=time_grid.report_index)
-            shared.boundary_sets.append(latch)
-            if logging.getLogger().isEnabledFor(logging.DEBUG):
-                with torch.no_grad():
-                    prefix = [torch.zeros_like(latch.fired[0])]
-                    for flag in latch.fired:
-                        prefix.append(prefix[-1] | flag)
-                    logging.debug(
-                        'AUTOCALL %s latch decisions=%d payments=%d recon_max=%.3g '
-                        'ledger_max=%.3g scale=%.3g',
-                        deal_data.Instrument.field.get('Reference'), len(b_latch), len(b_cash),
-                        float((latch.select(prefix) - mtm.detach()).abs().max()),
-                        declared_ledger_residual(b_cash, prefix), float(mtm.detach().abs().max()))
+        # one counterfactual per decision, its whole reach: latch + own-row fork + every payment
+        # row the flip touches, on the pricer's grid; never empty, a put deciding on a coupon's
+        # fixing (never zero, refused by name) whose own decision registers on the same row
+        gaps, flags, own_rows = zip(*b_latch)
+        untriggered = (nominal * torch.cat(b_alive, dim=0)).detach()
+        latch = utils.LatchedBoundarySet(
+            gaps=list(gaps), fired=list(flags), obs_before=np.array(b_obs),
+            untriggered=untriggered, triggered=torch.zeros_like(untriggered),
+            own_row=[[(r, nominal * a, nominal * b) for r, a, b in fork]
+                     for fork in own_rows],
+            cash_events=b_cash, to_mtm=to_mtm, report_index=time_grid.report_index)
+        shared.boundary_sets.append(latch)
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            with torch.no_grad():
+                prefix = [torch.zeros_like(latch.fired[0])]
+                for flag in latch.fired:
+                    prefix.append(prefix[-1] | flag)
+                logging.debug(
+                    'AUTOCALL %s latch decisions=%d payments=%d recon_max=%.3g '
+                    'ledger_max=%.3g scale=%.3g',
+                    deal_data.Instrument.field.get('Reference'), len(b_latch), len(b_cash),
+                    float((latch.select(prefix) - mtm.detach()).abs().max()),
+                    declared_ledger_residual(b_cash, prefix), float(mtm.detach().abs().max()))
         for gap, flag, forks, cash in b_puts:
             # a breach latches nothing - its reach is the rows observing it and its payment
             shared.boundary_sets.append(utils.LatchedBoundarySet(

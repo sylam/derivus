@@ -27,6 +27,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 import derivus
@@ -512,22 +513,25 @@ BARRIER_DAY = BASE + pd.DateOffset(months=1)
 HIT_LEVEL = 105.0
 
 
-def _hit_spread(spot, at):
-    """The plain binary's spread on one path at `at`, on the hit leg's forward: the European
-    spread from the path's spot to expiry, each leg at the surface's vol at its own moneyness,
-    flat past the outer nodes; on the expiry row each leg's intrinsic."""
+def _hit_spread(spot, at, spread=True):
+    """The plain binary on one path at `at`, on the hit leg's forward: under the spread the
+    European spread from the path's spot to expiry, each leg at the surface's vol at its own
+    moneyness, flat past the outer nodes, and off it the cash-or-nothing at the strike's; on the
+    expiry row the intrinsic."""
     tau = (EXPIRY - at).days / 365.0
     lo, hi = STRIKE * (1.0 - EPS), STRIKE * (1.0 + EPS)
     if tau <= 0.0:
-        return CASH * (max(spot - lo, 0.0) - max(spot - hi, 0.0)) / (2.0 * EPS * STRIKE)
+        return (CASH * (max(spot - lo, 0.0) - max(spot - hi, 0.0)) / (2.0 * EPS * STRIKE)
+                if spread else CASH * (spot > STRIKE))
     fwd = spot * math.exp((R_USD - Q_EQ) * tau)
 
     def leg(k):
         vol = VOL_ATM + SKEW * (min(max(spot / k, 0.8), 1.2) - 1.0)
         sd = vol * math.sqrt(tau)
         d1 = math.log(fwd / k) / sd + 0.5 * sd
-        return fwd * _ndtr(d1) - k * _ndtr(d1 - sd)
-    return CASH * math.exp(-R_USD * tau) * (leg(lo) - leg(hi)) / (2.0 * EPS * STRIKE)
+        return (fwd * _ndtr(d1) - k * _ndtr(d1 - sd)) if spread else _ndtr(d1 - sd)
+    return CASH * math.exp(-R_USD * tau) * (
+        (leg(lo) - leg(hi)) / (2.0 * EPS * STRIKE) if spread else leg(STRIKE))
 
 
 def _cmc_mtm(deals, valuation=None):
@@ -543,25 +547,30 @@ def _cmc_mtm(deals, valuation=None):
     return derivus.run_cmc(cx.current_cfg, prec=torch.float64)[1]['Results']['mtm']
 
 
-def test_an_already_knocked_in_digital_is_the_plain_binarys_spread_on_its_own_path():
+@pytest.mark.parametrize('spread', [True, False], ids=['spread', 'one_vol'])
+def test_an_already_knocked_in_digital_is_the_plain_binarys_spread_on_its_own_path(spread):
     """A credit Monte Carlo on a GBM equity at the surface's ATM vol: an up-and-in call digital
     observed once, a month out, at 105, which some paths cross. On every row from that date, a
-    crossed path is worth the plain binary's spread off its own spot - the already-hit leg after
-    the date, the parity vanilla on it - and an uncrossed one nothing, the expiry row each leg's
-    intrinsic. The spot comes off a share position on the same paths.
+    crossed path is worth the plain binary off its own spot - its spread under the option, its
+    cash-or-nothing at the strike's vol without it; the already-hit leg after the date, the parity
+    vanilla on it - and an uncrossed one nothing, the expiry row the intrinsic. The spot comes off
+    a share position on the same paths.
 
     MEASURED 108 of 512 paths crossed, twelve rows from the date, the crossed paths within 2.8e-14
-    of the payoff and the uncrossed within 2.7e-14.
+    of the payoff and the uncrossed within 2.7e-14; without the spread, on the CPU's draws, 124
+    crossed, within 3.4e-16 and 1.6e-15.
 
     Killing mutations: the already-hit leg left at one vol, a crossed path 0.414 of the payoff
     off; a zero-length terminal step left at the indicator, an uncrossed path above the strike on
-    the expiry row worth the whole payoff.
+    the expiry row worth the whole payoff; without the spread, the already-hit leg priced as the
+    call rather than the cash-or-nothing, a crossed path 84 payoffs off, and the parity vanilla
+    the same, an uncrossed path 113 off.
     """
     deal = dict(BARRIER, Barrier_Type='Up_And_In', Barrier_Price=HIT_LEVEL,
                 Barrier_Dates=[BARRIER_DAY])
     share = {'Object': 'EquityDeal', 'Reference': 'SHR', 'Currency': 'USD', 'Equity': 'EQ',
              'Buy_Sell': 'Buy', 'Units': 1.0, 'Investment_Horizon': EXPIRY}
-    mtm = _cmc_mtm([deal], valuation=BARRIER_ON)
+    mtm = _cmc_mtm([deal], valuation=BARRIER_ON if spread else None)
     spot = _cmc_mtm([share])
     assert (spot.iloc[0].values == SPOT).all() and spot.shape == mtm.shape, spot.shape
     crossed = spot.loc[BARRIER_DAY].values > HIT_LEVEL
@@ -571,7 +580,7 @@ def test_an_already_knocked_in_digital_is_the_plain_binarys_spread_on_its_own_pa
     worst = 0.0
     for at, row in rows.iterrows():
         for value, s, hit in zip(row.values, spot.loc[at].values, crossed):
-            hand = _hit_spread(s, at) if hit else 0.0
+            hand = _hit_spread(s, at, spread) if hit else 0.0
             worst = max(worst, abs(value - hand) / CASH)
     assert worst < 1e-10, worst
 

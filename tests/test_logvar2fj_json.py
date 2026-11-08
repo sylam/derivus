@@ -41,6 +41,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 import numpy as np
 import pytest
+import torch
 
 import derivus as rf
 from derivus import bootstrappers, schema
@@ -119,11 +120,11 @@ LIVE_NIG = {'Residual_Law': 'NIG', 'Sigma_L': 1.0, 'Rho_L': -0.4,
             'Alpha': _curve([[0.0, 8.0]]), 'Beta': _curve([[0.0, -2.0]])}
 
 
-def _priced(spot_model='LogVar2FJ', factor=None, **sections):
-    """The sections a PRICED document carries: the `SpotModel` switch the deal reads and the
+def _priced(spot_model='LogVar2FJ', factor=None, deal='QEDI_CustomAutoCallSwap', **sections):
+    """The sections a PRICED document carries: the `SpotModel` switch the `deal` type reads and the
     LogVar2FJ factor it reads it off, varied."""
     return dict({
-        'Valuation Configuration': {'QEDI_CustomAutoCallSwap': {
+        'Valuation Configuration': {deal: {
             'SpotModel': spot_model, 'Steps_Per_Year': 252.0, 'Internal_Step_Days': 1}},
         'Price Factors': dict({FACTOR: dict(GBM_LIMIT, **(factor or {}))},
                               **sections.pop('Price Factors', {}))}, **sections)
@@ -1155,3 +1156,84 @@ def test_a_warm_start_off_the_other_residual_law_refuses_by_name():
     message = _refused(dict(_ladder(rungs=2), **{'Price Factors': {FACTOR: GBM_LIMIT}}), 'law_warm')
     assert 'Residual_Law Gaussian' in message, message[:400]
     assert 'neither seeds the other' in message, message[:400]
+
+
+# ------------------------------------------------------------------------------------------
+# 14  THE DISCRETE BARRIER ON THE WALK
+#
+# `EquityBarrierOption` with `Barrier_Dates` takes the kit's interval law at every monitored date,
+# its in-out-parity vanilla and its already-hit leg as the kit's European over the row's own walk.
+# At the GBM limit each is the GBM arm's, on the same draws.
+# ------------------------------------------------------------------------------------------
+#: monthly monitoring to a six-month expiry
+MONITORED = ['2024-07-29', '2024-08-28', '2024-09-27', '2024-10-28', '2024-11-27', '2024-12-27']
+
+
+def _barrier(**overrides):
+    """A discretely monitored barrier on INDEX_A, paid in the equity's own EUR."""
+    deal = {'Object': 'EquityBarrierOption', 'Reference': 'BR', 'Currency': 'EUR',
+            'Payoff_Currency': 'EUR', 'Equity': 'INDEX_A', 'Dividends': 'INDEX_A',
+            'Discount_Rate': 'EUR', 'Equity_Volatility': 'INDEX_A.EUR', 'Buy_Sell': 'Buy',
+            'Option_Type': 'Call', 'Strike_Price': 100.0, 'Units': 10.0,
+            'Expiry_Date': {'.Timestamp': MONITORED[-1]}, 'Barrier_Type': 'Up_And_In',
+            'Barrier_Price': 110.0, 'Barrier_Dates': [{'.Timestamp': d} for d in MONITORED]}
+    deal.update(overrides)
+    return deal
+
+
+@pytest.mark.parametrize('overrides', [
+    {}, {'Barrier_Type': 'Down_And_Out', 'Barrier_Price': 90.0, 'Option_Type': 'Put',
+         'Buy_Sell': 'Sell', 'Cash_Rebate': 50.0}], ids=['up_and_in_call', 'down_and_out_put'])
+def test_a_discrete_barrier_at_the_gbm_limit_is_the_gbm_barrier(overrides):
+    """The one-step-survival barrier under `SpotModel: LogVar2FJ` at the GBM limit against the
+    GBM arm on the same document, `SpotModel` the one character apart: every monitored interval
+    steps on the kit's block law, and the knock-in's parity vanilla is the kit's European over
+    the walk. HOLDS 1e-12 relative: on the CPU's draws the bought Up-and-In call reads 58.2203 at
+    8.5e-16, the sold Down-and-Out put with a rebate of 50 reads -27.6101 at 0 ULP.
+
+    Killing mutations: the kit's interval sd read one interval late - 5.2e-4 and 6.5e-4 off; the
+    kit's parity vanilla discounted to the first fixing rather than the expiry - the knock-in
+    1.5e-2 off.
+    """
+    deals = [{'Instrument': {'.Deal': _barrier(**overrides)}}]
+    lv = _mtm(_run(_job(_base(), deals, **_priced(deal='EquityBarrierOption')), 'lv_barrier'), 'BR')
+    gbm = _mtm(_run(_job(_base(), deals, **_priced('None', deal='EquityBarrierOption')),
+                    'gbm_barrier'), 'BR')
+    assert abs(lv - gbm) <= 1e-12 * abs(gbm), (lv, gbm)
+    assert abs(gbm) > 10.0, ('the barrier leg is not in the number', gbm)
+
+
+def _held_profile(spot_model, deal):
+    """The deal's exposure profile in float64 under a credit Monte Carlo whose zero-vol GBM outer
+    holds INDEX_A at its spot of 100 on every row."""
+    calc = {'Object': 'CreditMonteCarlo', 'Base_Date': {'.Timestamp': BASE}, 'Currency': 'USD',
+            'Time_grid': '0d 1m(1m)', 'Batch_Size': 8, 'Simulation_Batches': 1, 'Random_Seed': 1,
+            'MCMC_Simulations': 64, 'Deflation_Interest_Rate': 'USD'}
+    sections = _priced(spot_model, deal='EquityBarrierOption')
+    sections['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+    sections['Price Models'] = {'GBMAssetPriceModel.INDEX_A': {'Vol': 0.0, 'Drift': 0.0}}
+    cx = rf.Context()
+    cx.load_json((_dumps(_job(calc, [{'Instrument': {'.Deal': deal}}], **sections)), 'held.json'))
+    return cx.run_job(prec=torch.float64)[1]['Results']['mtm']
+
+
+def test_a_knock_in_every_scenario_has_crossed_is_the_european_on_its_own_walk():
+    """An Up-and-In at 95 struck at 90 under a spot held at 100: every scenario crosses at the
+    first monitoring date, so on every later row the barrier has resolved on every path and the
+    deal IS its vanilla - under the kit the in-out-parity vanilla the row's own walk prices, run
+    for that leg alone. At the GBM limit each such row is the GBM arm's Black row: HOLDS 1e-12
+    relative on all ten rows, on the CPU's draws worst 2.4e-15, from 134.07 at the base date to
+    the intrinsic on the expiry row, 100 EUR at the 1.1 cross.
+
+    Killing mutation: the already-hit leg read off the knock-in's one-step-survival estimate
+    rather than its vanilla - the two resolved rows between monitoring dates read 7.3e-3 and
+    4.5e-2 off.
+    """
+    deal = _barrier(Barrier_Price=95.0, Strike_Price=90.0)
+    lv, gbm = (_held_profile(model, deal) for model in ('LogVar2FJ', 'None'))
+    resolved = gbm.index > MONITORED[0]
+    assert resolved.sum() > len(MONITORED), 'rows between the monitoring dates are the point'
+    assert lv.shape == gbm.shape and gbm.values.std() > 1.0, (lv.shape, gbm.shape)
+    worst = np.abs(lv.values - gbm.values).max(axis=1) / np.abs(gbm.values).max(axis=1)
+    assert worst.max() <= 1e-12, dict(zip(gbm.index, worst))

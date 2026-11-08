@@ -135,22 +135,28 @@ def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised
 
 # ---------------------------------------------------------------- safety
 
+@pytest.mark.parametrize('spot', [bb.SPOT, 200.0], ids=['live', 'called'])
 @pytest.mark.parametrize('collateralised', [False, True], ids=['uncollateralised', 'collateralised'])
-def test_asking_for_sensitivities_does_not_move_the_autocall_exposure(collateralised):
+def test_asking_for_sensitivities_does_not_move_the_autocall_exposure(collateralised, spot):
     """BIT-identical, not approximately: a boundary correction is worth exactly zero forward, so any
     drift means the registration path perturbed the valuation rather than observing it. The
     autocall records both branches of its coupon trigger from ONE forward pass, the untaken one on a
     second accumulator rather than a second simulation - which is what makes this checkable, a
     re-run having consumed the random stream. Both netting shapes, being different code paths.
 
-    Killing mutation: the counterfactual's accumulator added to in place where it aliases the
-    reported one.
+    At a spot of 200 every scenario calls at the first coupon, so every later block has resolved on
+    every path, skips its simulation and registers its rows as a counterfactual of nothing.
+
+    Killing mutations: the counterfactual's accumulator added to in place where it aliases the
+    reported one; at 200, the resolved blocks' rows left out of the counterfactual - two rows
+    against the profile's seven, refused by shape.
     """
-    mtm_off, cva_off, _ = _run(AUTOCALL, collateralised=collateralised)
-    mtm_on, cva_on, grad = _run(AUTOCALL, gradient=True, collateralised=collateralised)
+    mtm_off, cva_off, _ = _run(AUTOCALL, spot=spot, collateralised=collateralised)
+    mtm_on, cva_on, grad = _run(AUTOCALL, spot=spot, gradient=True, collateralised=collateralised)
     assert np.array_equal(mtm_off, mtm_on), 'exposure moved when sensitivities were requested'
     assert cva_off == cva_on, f'cva moved: {cva_off!r} -> {cva_on!r}'
     assert grad is not None and abs(grad) > 0.0, 'no equity gradient was reported at all'
+    assert spot == bb.SPOT or np.abs(mtm_off[-1]).max() < 1e-12, 'a path did not call'
 
 
 # ---------------------------------------------------------------- the barrier latch

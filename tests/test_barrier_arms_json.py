@@ -31,8 +31,10 @@ import sys
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import numpy as np
 import pandas as pd
 import pytest
+import torch
 
 import derivus
 from derivus import utils
@@ -78,14 +80,14 @@ def _deal(barrier_type, barrier, strike, option_type, rebate):
             'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D)}
 
 
-def _run(deal):
+def _run(deal, base=BASE):
     job = {'Calc': {
-        'Calculation': {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
+        'Calculation': {'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
                         'MCMC_Simulations': 1},
         'Deals': {'Reference': 'arms',
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
-            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
+            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
             'Valuation Configuration': {}, 'Price Factors': FACTORS}}}}
     cx = derivus.Context()
     cx.load_json((json.dumps(job, cls=CustomJsonEncoder), 'arms'))
@@ -157,3 +159,65 @@ def test_every_payoff_arm_is_the_textbook_closed_form(
     got = _run(_deal(barrier_type, barrier, strike, option_type, rebate))
     ref = _reiner_rubinstein(barrier_type, barrier, strike, option_type, rebate)
     assert abs(got - ref) <= 1e-9 + 1e-11 * abs(ref), (arm, barrier_type, got, ref)
+
+
+#: `(barrier type, level, option type, strike)` on the expiry date: the spot of 1.25 has touched
+#: the down barrier at 1.30 and not the up one at 1.40
+ON_EXPIRY = [(f'{ud}_And_{io}', level, option_type, strike)
+             for ud, level in (('Up', 1.40), ('Down', 1.30)) for io in ('In', 'Out')
+             for option_type, strike in (('Call', 1.20), ('Put', 1.30))]
+
+
+@pytest.mark.parametrize('barrier_type,barrier,option_type,strike', ON_EXPIRY,
+                         ids=['%s-%s' % (bt, o) for bt, _, o, _ in ON_EXPIRY])
+def test_on_its_expiry_date_a_barrier_is_its_intrinsic_or_its_rebate(
+        barrier_type, barrier, option_type, strike):
+    """Valued on its expiry date the closed form has no time left to price, so the deal is what
+    the touch made it: a touched knock-in and an untouched knock-out are the intrinsic, 50.0 on a
+    call at 1.20 and a put at 1.30, and an untouched knock-in and a touched knock-out are the
+    rebate, 40.0.
+
+    Killing mutation: the knock-out's expiry intrinsic taken by an untouched knock-in too (the
+    expiry arm's `direction == BARRIER_OUT` dropped) - 90.0 where the rebate is due.
+    """
+    touched = X0 <= barrier if 'Down' in barrier_type else X0 >= barrier
+    expected = (NOTIONAL * abs(X0 - strike) if touched == ('In' in barrier_type) else REBATE)
+    got = _run(_deal(barrier_type, barrier, strike, option_type, REBATE),
+               base=BASE + pd.DateOffset(days=EXPIRY_D))
+    assert got == pytest.approx(expected, rel=1e-12), (got, expected)
+
+
+def test_a_second_batch_reads_the_tenors_the_first_cached():
+    """The closed-form barrier and touch cache their expiry tenors on the deal, so under a credit
+    Monte Carlo every batch after the first reads them back. On an outer walk with no vol the two
+    batches walk the same paths, so the second marks an up-and-out call and a no-touch on every
+    row as the first does, to the bit.
+
+    Killing mutations: a consumer writing the cached tenors in place - the barrier's closed form
+    taking its tenor product as `expiry.mul_(r)`, the second batch 32.59 off; the touch taking its
+    root as `exp.sqrt_()`, 162.47 off.
+    """
+    expiry = BASE + pd.DateOffset(days=EXPIRY_D)
+    no_touch = {'Object': 'FXNoTouchOption', 'Reference': 'NT', 'Currency': 'USD',
+                'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
+                'Buy_Sell': 'Buy', 'Expiry_Date': expiry, 'Cash_Payoff': NOTIONAL,
+                'Barrier_Type': 'Up', 'Barrier_Price': 1.40}
+    job = {'Calc': {
+        'Calculation': {'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': 'USD',
+                        'Time_grid': '0d 3m(3m)', 'Batch_Size': 4, 'Simulation_Batches': 2,
+                        'Random_Seed': 1, 'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD'},
+        'Deals': {'Reference': 'arms', 'Deals': {'Children': [
+            {'Instrument': {'.Deal': deal}}
+            for deal in (_deal('Up_And_Out', 1.40, 1.20, 'Call', REBATE), no_touch)]}},
+        'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
+            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
+            'Valuation Configuration': {}, 'Price Factors': FACTORS,
+            'Price Models': {'GBMAssetPriceModel.EUR': {'Vol': 0.0, 'Drift': B_CARRY}},
+            'Model Configuration': {'.ModelParams': {
+                'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}}}}}
+    cx = derivus.Context()
+    cx.load_json((json.dumps(job, cls=CustomJsonEncoder), 'batches'))
+    profile = cx.run_job(prec=torch.float64)[1]['Results']['mtm'].values
+    first, second = np.split(profile, 2, axis=1)
+    assert np.array_equal(first, second), np.abs(first - second).max()
+    assert first.std() > 0.0 and first[-1].all(), 'every row and the expiry row carry a mark'

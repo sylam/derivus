@@ -573,3 +573,50 @@ def test_the_seasoned_pot_is_one_number_on_every_arm(tmp_path, model, smooth):
                                       spot, **arm), tmp_path, 'arm_sub')[0])
     assert math.isfinite(seasoned) and seasoned == substituted, (model, smooth, seasoned,
                                                                  substituted)
+
+
+# --------------------------------------------------------------------------------------------
+# AN INVERTED TARGET ACCRUES THE RECIPROCAL
+#
+# Under `InvertedTarget` a fixing accrues `cp (1/K - 1/S)` and its leveraged leg is the other side
+# of the same reciprocal, so one live fixing is a closed form on `Y = 1/S`: lognormal at the
+# fx vol, its forward `exp(sigma^2 t) / F`.
+# --------------------------------------------------------------------------------------------
+INVERTED_TARGET = 0.06
+
+
+def _reciprocal_leg(row, remaining, cp):
+    """The one live fixing of an inverted TARF under a remaining target of `remaining`: the ITM
+    leg pays its reciprocal accrual capped there, a spread of two Blacks on `Y`, against the
+    leveraged leg's Black on the other side of `1/K`."""
+    t, ts = (_offset(day['.Timestamp']) / DAYS for day in row[:2])
+    sd = SIGMA * math.sqrt(t)
+    fwd, k, call = math.exp(sd * sd - (_r_usd(t) - Q_EUR) * t) / SPOT, 1.0 / STRIKE, cp < 0
+    return math.exp(-_r_usd(ts) * ts) * (
+        N1 * (_black(fwd, k, sd, call=call) - _black(fwd, k - cp * remaining, sd, call=call)) -
+        N2 * _black(fwd, k, sd, call=not call))
+
+
+@pytest.mark.parametrize('option_type,settled', [('Call', 1.15), ('Put', 1.05)])
+def test_an_inverted_target_accrues_the_reciprocal_and_redeems_on_it(
+        tmp_path, option_type, settled):
+    """A settled fixing opens the pot at its reciprocal accrual, 0.0395 for the call at 1.15 and
+    0.0433 for the put at 1.05, and the one live fixing behind it pays that accrual capped at the
+    0.06 target's remainder against the leveraged other side - the closed form on `1/S`.
+
+    MEASURED on the CPU -14.95166 against -14.95227 and -42.00784 against -42.00837, 4.1e-5 and
+    1.3e-5, the Sobol estimate's own spread over quasi seeds 1 to 3 at these paths reaching
+    4.1e-5; the gate is 2e-4. The cap binds: uncapped, the closed form reads -1.68 and -34.65.
+
+    Killing mutations: the settled accrual's reciprocal unsigned, the pot opening empty - -4.51 and
+    -35.90; the knock-out's cap on `1/S` read on the wrong side of `1/K` - -7.01 and -36.08; the
+    live accrual's reciprocal unsigned - 11.17 and 10.97.
+    """
+    cp = 1.0 if option_type == 'Call' else -1.0
+    rows = [SETTLED_DATES + [settled], LAGGED_SCHEDULE[2]]
+    accrual = max(cp * (1.0 / STRIKE - 1.0 / settled), 0.0)
+    oracle = _reciprocal_leg(rows[-1], INVERTED_TARGET - accrual, cp)
+    value = _mtm(_run(_lagged_job(TARF_ExpiryDates=rows, TargetLevel=INVERTED_TARGET,
+                                  Expiry_Date=rows[-1][1], InvertedTarget='Yes',
+                                  Option_Type=option_type), tmp_path, 'inverted')[0])
+    assert abs(value - oracle) < 2e-4 * abs(oracle), (value, oracle)

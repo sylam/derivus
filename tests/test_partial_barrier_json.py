@@ -327,6 +327,27 @@ def test_an_unreachable_barrier_is_the_vanilla_and_a_certain_one_is_nothing():
         assert abs(ki) < 2e-3 * v_van, (at_start, ki)
 
 
+@pytest.mark.parametrize('barrier_type,at_start,barrier', [
+    ('Up_And_Out', 'No', 1.40), ('Down_And_In', 'Yes', 1.12)], ids=['KO-end', 'KI-start'])
+def test_a_weekly_monitored_window_is_the_continuous_one_at_the_shifted_level(
+        barrier_type, at_start, barrier):
+    """Broadie-Glasserman-Kou: a barrier observed every `dt` prices as the continuous one moved
+    AWAY from the live region by `0.5826 sigma sqrt(dt)`, up for an up barrier and down for a down
+    one. Weekly, with a rebate, against the continuous document stating that level: measured bit
+    for bit, 27.7464 and 40.3960, where the unshifted barrier reads 2.0% and 1.3% away.
+
+    Killing mutation: the shift taken toward the live region - 2.3% and 1.7% off.
+    """
+    weekly = dict(_deal(barrier_type, barrier, at_start=at_start, rebate=REBATE),
+                  Barrier_Monitoring_Frequency=pd.DateOffset(days=7))
+    shift = 0.5826 * SIGMA * math.sqrt(7.0 / 365.0) * (1.0 if 'Up' in barrier_type else -1.0)
+    shifted = _deal(barrier_type, barrier * math.exp(shift), at_start=at_start, rebate=REBATE)
+    got, want = _mtm(_run(_job(weekly))), _mtm(_run(_job(shifted)))
+    assert want > 0.0 and abs(got - want) <= 1e-12 * want, (got, want)
+    assert abs(got - _mtm(_run(_job(_deal(barrier_type, barrier, at_start=at_start,
+                                          rebate=REBATE))))) > 1e-3 * want, 'the shift is inert'
+
+
 @pytest.mark.parametrize('barrier_type,at_start,barrier,rebate', [
     ('Up_And_Out', 'Yes', 1.40, 0.0), ('Up_And_Out', 'No', 1.40, 0.0),
     ('Down_And_In', 'No', 1.20, 0.0), ('Down_And_In', 'Yes', 1.12, REBATE)],

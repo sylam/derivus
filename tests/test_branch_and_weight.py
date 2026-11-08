@@ -216,11 +216,11 @@ def _intervals():
     return dt, disc
 
 
-def _tarf_reference(spot, sigma, target=TARGET, n_out=600, n_in=400):
+def _tarf_reference(spot, sigma, target=TARGET, barrier=KNOCK_IN, n_out=600, n_in=400):
     """The two-fixing TARF as a nested region integral, differentiable end to end.
 
     Written from the DEAL alone. Per fixing the line splits at the knock-in `Bar`, the strike `K`
-    and the moving trigger `K + r` (`r` = target left):
+    and the moving trigger `K + r` (`r` = target left); with no knock-in `Bar` is the strike:
 
         z < zBar         knocked in and OTM        -N2 * (K - S)
         zBar < z < zK    OTM, not knocked in        0
@@ -236,7 +236,7 @@ def _tarf_reference(spot, sigma, target=TARGET, n_out=600, n_in=400):
     m1 = (carry - 0.5 * sigma ** 2) * dt1
     m2 = (carry - 0.5 * sigma ** 2) * dt2
     K = torch.as_tensor(STRIKE_FX, dtype=DT)
-    knock = torch.as_tensor(KNOCK_IN, dtype=DT)
+    knock = torch.as_tensor(barrier or STRIKE_FX, dtype=DT)
 
     def z1_of(level):
         return (torch.log(level / spot) - m1) / v1
@@ -388,7 +388,8 @@ def test_a_tarf_with_no_knock_in_is_bit_identical_under_the_switch(tmp_path):
 # THE TARF
 # ======================================================================================
 
-def test_the_two_fixing_tarf_lands_on_the_quadrature_table(tmp_path):
+@pytest.mark.parametrize('barrier', [KNOCK_IN, 0.0], ids=['knock_in', 'no_knock_in'])
+def test_the_two_fixing_tarf_lands_on_the_quadrature_table(barrier, tmp_path):
     """THE TABLE. A two-fixing knock-in TARF under the switch at `Greeks: 'All'` against the
     quadrature reference (spot 1.1, strike 1.1, target 0.05, knock-in 1.05, notionals 1000/2000,
     r 4% q 2%, vol 10%, fixings at 91 and 182 days, 262144 inner paths):
@@ -405,14 +406,20 @@ def test_the_two_fixing_tarf_lands_on_the_quadrature_table(tmp_path):
     estimator registers the knock-in and refuses `'All'` by name - the pathwise estimator it would
     otherwise report reads delta 0.714x, gamma 0.301x and vanna -0.341x of this table.
 
-    Killing mutation: the TARF's per-fixing `accrual_kink_term` never built.
+    With no knock-in the leveraged leg is SAMPLED, not integrated, and carries its own kink term
+    beside the accrual's: on the CPU's draws value 0.0035%, gamma 0.017% and vanna 0.71% off the
+    quadrature's -62.2744, -24576.06 and -1206.89.
+
+    Killing mutations: the TARF's per-fixing `accrual_kink_term` never built; with no knock-in, the
+    sampled leveraged leg's kink term dropped - gamma 24% and vanna 227% off.
     """
     with pytest.raises(utils.SecondOrderRefused) as refusal:
-        _run_doc(_crisp(_tarf_doc(greeks='All')), tmp_path, 'all_off')
+        _run_doc(_crisp(_tarf_doc(greeks='All', barrier=barrier)), tmp_path, 'all_off')
     assert 'boundary correction' in str(refusal.value)
 
-    ref = _table(_tarf_reference)
-    value, out, _ = _run_doc(_smooth(_tarf_doc(greeks='All', sims=1 << 18)), tmp_path, 'table')
+    ref = _table(_tarf_reference, barrier=barrier)
+    value, out, _ = _run_doc(_smooth(_tarf_doc(greeks='All', sims=1 << 18, barrier=barrier)),
+                             tmp_path, 'table')
     gamma, vanna = _second(out)
     frame = out['Results']['Greeks_First']
     column = [c for c in frame.columns if c != 'Value'][0]

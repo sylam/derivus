@@ -208,15 +208,18 @@ def test_a_zero_dividend_call_is_bit_identically_its_european():
     assert abs(american - oracle) / oracle < 1e-4, (american, oracle)
 
 
-def test_a_call_past_its_exercise_trigger_marks_exactly_its_intrinsic():
+@pytest.mark.parametrize('strike', [80.0, 0.0])
+def test_a_call_past_its_exercise_trigger_marks_exactly_its_intrinsic(strike):
     """The `(S >= I) * (S - K)` arm and the `first_knockout` settlement beside it. A deep call in
     the high-dividend world sits past its own trigger today, so its mark is the intrinsic to the
     last bit - the binomial puts the true value 0.027% above it, which is the approximation's own
-    floor and is what the dominance gate above admits.
+    floor and is what the dominance gate above admits. Struck at zero the trigger is zero too, the
+    call is the share less its dividends held, and both the mark and the binomial are the spot.
 
-    Killing mutation: the approximation returning Black, which prices the trigger's far side.
+    Killing mutations: the approximation returning Black, which prices the trigger's far side; the
+    zero strike's own trigger dropped, `h(tau)` a 0/0 and the mark not a number.
     """
-    american, _ = _both(80.0, 'Call', (0.05, 0.10, 0.20))
-    assert american == UNITS * (SPOT - 80.0), american
-    oracle = _oracle(80.0, 'Call', (0.05, 0.10, 0.20))
-    assert american < oracle and (oracle - american) / oracle < 1e-3, (american, oracle)
+    american, _ = _both(strike, 'Call', (0.05, 0.10, 0.20))
+    assert american == UNITS * (SPOT - strike), american
+    oracle = _oracle(strike, 'Call', (0.05, 0.10, 0.20))
+    assert american <= oracle and (oracle - american) / oracle < 1e-3, (american, oracle)

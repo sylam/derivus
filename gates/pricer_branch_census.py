@@ -84,104 +84,7 @@ FAMILY = (
 #: `{(qualname, source text, direction): what a fixture would need to reach it}`, as measured over
 #: the whole suite. Regenerate with `python gates/pricer_branch_census.py --emit`; every entry is a
 #: work-list item, not an excuse.
-#:
-#: The shape of what is left: no document under SpotModel LogVar2FJ on the discrete barrier or
-#: the TARF; no inverted TARF; no quanto discrete barrier; and no barrier digital with the
-#: spread off on its already-hit or knock-in legs.
-UNREACHED = {
-    # ---- getbarrierpayoff ---------------------------------------------------------------------------
-    ('getbarrierpayoff.barrier_option', 'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike <= H) or', 'else#1'):
-        "a knock-IN barrier matching none of the four cases - unreachable if the enumeration is "
-        "complete, which it is: the four conditions cover all eight (phi, eta, strike vs H).",
-    ('getbarrierpayoff.barrier_option', 'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike <= H) or', 'else#2'):
-        "a knock-OUT barrier matching none of the four cases - as above, dead by construction.",
-    # ---- getpartialbarrierpayoff --------------------------------------------------------------------
-    ('getpartialbarrierpayoff.partial_barrier_option', 'if eta == 0:  # type B1', 'body'):
-        "a window barrier with eta 0 - the Heynen-Kat type-B1 form. No declared Barrier_Type "
-        "produces it (the selector sets eta from Down or Up and nothing else), so no fixture can "
-        "reach this arm.",
-    # ---- pv_MC_AutoCallSwap -------------------------------------------------------------------------
-    ('pv_MC_AutoCallSwap', 'if b_latch:', 'else'):
-        "a boundary-AAD autocall registering an observed put alone, no coupon decision on any "
-        "row of its grid.",
-    ('pv_MC_AutoCallSwap', 'if boundary_aad:', 'body#3'):
-        "the all-resolved block's counterfactual: boundary_aad on, and a block reached after "
-        "EVERY scenario has autocalled, so the rows carry a zero counterfactual.",
-    # ---- pv_MC_Tarf ---------------------------------------------------------------------------------
-    ('pv_MC_Tarf', 'if b_gaps:', 'else'):
-        "a TARF priced with boundary_aad on that records no gap at all - a grid whose rows all "
-        "sit past the last fixing.",
-    ('pv_MC_Tarf.accrued', 'if inverted:', 'body'):
-        "a TARF with Invert_Target set - the reciprocal accrual. Every TARF fixture is "
-        "non-inverted.",
-    ('pv_MC_Tarf.sim_spot_tarf.fixing', 'if not integrated:', 'body'):
-        "a TARF carrying its OTM kink crisply rather than integrated - the non-integrated arm of "
-        "the smoothing dial.",
-    ('pv_MC_Tarf.sim_spot_tarf.fixing', 'if not invertedTarget:', 'else#1'):
-        "the same inverted TARF, on the PnL barrier B_pnl.",
-    ('pv_MC_Tarf.sim_spot_tarf.fixing', 'if not invertedTarget:', 'else#2'):
-        "the same inverted TARF, on the second B_pnl site.",
-    ('pv_MC_Tarf.sim_spot_tarf', 'if reduced_samples:', 'else'):
-        "a TARF MTM row past its last fixing, where the block has no remaining samples to draw.",
-    # ---- pv_american_option -------------------------------------------------------------------------
-    ('pv_american_option', 'if (K > 0.0).all():', 'else'):
-        "an American option struck at ZERO, where the Bjerksund-Stensland trigger degenerates to "
-        "B_0. A completeness guard, not a live path, and the ONLY arc of this pricer that "
-        "test_american_option_json.py does not take.",
-    # ---- pv_barrier_option --------------------------------------------------------------------------
-    ('pv_barrier_option', 'elif direction == BARRIER_OUT and expiry[index] == 0.0:', 'else'):
-        "a knock-IN priced AT expiry with every scenario touched, so both the survival branch and "
-        "the knock-out intrinsic branch are skipped and the payoff falls through to zero.",
-    ('pv_barrier_option', 'if expiry_years_key not in factor_dep:', 'else'):
-        "the same barrier priced twice with an identical expiry tuple, so the cached tenor tensor "
-        "is hit rather than built. Benign - a memoisation, not a payoff.",
-    # ---- pv_discrete_barrier_option -----------------------------------------------------------------
-    ('pv_discrete_barrier_option', 'elif kit is not None:', 'body'):
-        "a discrete barrier under SpotModel LogVar2FJ already knocked in, whose hit value is the "
-        "parity vanilla the kit's walk returns.",
-    ('pv_discrete_barrier_option', "if adj['fx_vol'] is not None:", 'else'):
-        "a QUANTO discrete barrier - a payoff type with no fx vol to compose; every payoff-type "
-        "fixture of the family is a compo.",
-    ('pv_discrete_barrier_option', 'elif kit is None:', 'else'):
-        "a document declaring SpotModel LogVar2FJ on the discrete barrier, whose legs' vols the "
-        "walk's law carries and the strips are not read; no fixture does.",
-    ('pv_discrete_barrier_option', 'elif isdigital:', 'body'):
-        "an already-knocked-in GBM digital barrier with the spread OFF, the cash-or-nothing at one "
-        "vol; the knock-in digital gates run with the spread on, so the spread's arm beside it is "
-        "reached and this one is not.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'elif isdigital:', 'body'):
-        "a GBM knock-IN barrier digital with the spread OFF, whose in-out-parity vanilla is "
-        "cash-or-nothing at one vol; the knock-in digital gates run with the spread on.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#1'):
-        "a document declaring SpotModel LogVar2FJ on the discrete barrier - the kit's interval "
-        "law; no fixture does.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#2'):
-        "the same document at the in-out-parity vanilla, which that model prices by conditional "
-        "Black over the walk and returns as the already-hit leg's by-product.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is None:', 'else#3'):
-        "the same document, where each monitored interval reads its law off that block.",
-    ('pv_discrete_barrier_option.sim_spot_oss.fixing', 'if kit is None:', 'else'):
-        "the same document, on the interval the walk reads its law off.",
-    ('pv_discrete_barrier_option.sim_spot_oss', 'if kit is not None:', 'body'):
-        "a document declaring SpotModel LogVar2FJ - the walking kit's block law; no fixture does.",
-    # ---- pv_european_option -------------------------------------------------------------------------
-    ('pv_european_option', "if tenor_in_days[0] < 0 and 'Compo_Underlying' in factor_dep:", 'body'):
-        "a compo European expired before the base date - the refusal by name; no fixture books "
-        "one.",
-    # ---- pv_one_touch_option ------------------------------------------------------------------------
-    ('pv_one_touch_option', "elif timing == 'Touch':", 'else#1'):
-        "a one-touch whose Payment_Timing is neither 'Expiry' nor 'Touch' - refused at "
-        "construction, dead by the refusal.",
-    ('pv_one_touch_option', 'if expiry_years_key not in factor_dep:', 'else'):
-        "the tenor-cache hit, as in pv_barrier_option.",
-    # ---- pv_partial_barrier_option ------------------------------------------------------------------
-    ('pv_partial_barrier_option', "elif barrierType in ['Up_And_Out', 'Up_And_In']:", 'else'):
-        "a Barrier_Type that is neither Down_* nor Up_*, leaving eta at 0 - the completeness gap "
-        "the type-B1 arm above is the other half of.",
-    ('pv_partial_barrier_option', "if factor_dep['Barrier_Monitoring']:", 'body'):
-        "a partial barrier with a non-zero Barrier_Monitoring_Frequency, so the "
-        "Broadie-Glasserman-Kou shift applies. Every fixture declares 0M continuous monitoring.",
-}
+UNREACHED = {}
 
 #: Arcs a fixture reaches TODAY and that must not stop being reached. Deliberately NOT "everything
 #: currently covered" - that would be a second copy of the census, maintained by hand. These are
@@ -210,7 +113,7 @@ MUST_COVER = {
     ('getbarrierpayoff.barrier_option',
      'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or', 'body#1'),
     ('getbarrierpayoff.barrier_option',
-     'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike <= H) or', 'body#1'),
+     'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or', 'else#1'),
     ('getbarrierpayoff.barrier_option',
      'if ((phi == OPTION_CALL and eta == BARRIER_UP and strike > H) or', 'body#2'),
     ('getbarrierpayoff.barrier_option',
@@ -218,7 +121,7 @@ MUST_COVER = {
     ('getbarrierpayoff.barrier_option',
      'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or', 'body#2'),
     ('getbarrierpayoff.barrier_option',
-     'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike <= H) or', 'body#2'),
+     'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or', 'else#2'),
     ('pv_barrier_option', 'if cash_rebate and expiry[index] > 0.0:', 'body'),
 }
 
