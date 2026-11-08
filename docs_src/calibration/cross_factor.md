@@ -21,7 +21,7 @@ Two patterns share this mechanism:
 | `ObservedBasis.LME_CME,PLATINUM_LME` | `PLATINUM_LME` | `CommodityPrice.PLATINUM_LME` |
 
 The matching rule is: for a non-numeric sub-key, look up any other archive entry whose name, minus
-its leading type period, is **exactly** `<sub_key>` — not merely ends in it, which now diverges as
+its leading type period, is **exactly** `<sub_key>` — not merely ends in it, which diverges once
 multi-period 0D names exist (`ObservedBasis.PLATINUM_CME.LME_CME` ends in `.LME_CME` and does not
 match). (Numeric sub-keys are interpreted as fixed tenors and need no partner — they're the standard
 tenor-grid convention used by IR curves.)
@@ -97,7 +97,7 @@ period 1 is the *head* factor; every longer prefix is a *tail* factor named by t
 chain. For a curve `head == tail == InterestRate` (so `get_interest_factor` is just its identity
 case); for a 0D spot `head` is the spot type and `tail = ObservedBasis`. The resulting multi-element
 code is summed by `calc_time_grid_spot_rate` (composed spot = primary + Σ bases). A plain
-single-period name yields a one-element code — bit-identical to the pre-chain lookup. Repo / carry /
+single-period name yields a one-element code. Repo / carry /
 dividend / currency lookups take the head (`fieldname[:1]`), since those live on the primary; a
 dividend curve the deal states in `Dividends` is read whole.
 
@@ -110,16 +110,13 @@ chain first and then applies the dependant/conditional fields to the head; the t
 full-name key (`Factor('CommodityPrice', ('PLATINUM_CME','LME_CME'))`) is never a real factor, so
 it is dropped from both `rates_to_add` and the tenor map.
 
-**No `Observed_Factor` field, no `Implied_Basis` field.** The link is the name prefix, so
+**No field carries the link.** The link is the name prefix, so
 `BasisLinkedSpotModel.calc_references` derives its linked parent as `factor.name[:-1]` (its type
-resolved from `all_factors`), and both deal types just name the composed spot in `Commodity`. The
-`dependant_fields['ObservedBasis']` entry, the `CommodityFutureDeal` `Implied_Basis` field, the
-`CME_FLAT` identity basis (a composed name needs no `+0` factor) and the linked getters all go
-away with the redundancy.
+resolved from `all_factors`), both deal types name the composed spot in `Commodity`, and a plain
+spot needs no identity basis.
 
-**Collision note.** The positional rule reinterprets any multi-period 0D factor name as
-primary + basis chain, so a genuine multi-part `CommodityPrice`/`EquityPrice`/`FxRate` name would
-now be split. A sweep of the shipped configs found none.
+**Collision note.** The positional rule reads any multi-period 0D factor name as a primary + basis
+chain, so a multi-part `CommodityPrice`/`EquityPrice`/`FxRate` name is always split.
 
 ## Design notes — when calibrations need sibling state
 
@@ -155,6 +152,6 @@ moment to also drop the rolling-vol tercile in
 HMM-Viterbi-partitioned σ.
 
 Until then: **stick with self-contained calibrations**. If you find yourself wanting
-sibling fitted state, add a punchlist entry rather than reaching across — the cumulative
+sibling fitted state, add a roadmap row rather than reaching across — the cumulative
 cost of cross-talking calibrations is much higher than the cost of one well-correlated
 proxy.
