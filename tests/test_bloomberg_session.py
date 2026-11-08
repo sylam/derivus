@@ -12,20 +12,23 @@
 ########################################################################
 
 """`BloombergSession`'s own connection, B-PIPE auth and mktdata snapshot mechanics, against a FAKE
-blpapi - no real SDK or network reachable from a test box, so this is the only place that
-mechanism is exercised.
+blpapi - no real SDK or network reachable from a test box. The service's gates price off the same
+fake as a canned terminal (`canned_terminal`), its reference data declared as data.
 
 The fake scripts `Session.start()`, `openService()` and the `AUTHORIZATION_STATUS` event
 `SessionOptions.setSessionIdentityOptions` schedules, keyed by `(host, port)` - a B-PIPE attempt
 and its Desktop API fallback are two DIFFERENT sessions in one script, exactly as
 `BloombergSession.start` builds them one after the other. `images` scripts what a subscription to
 each topic answers: a dict of mktdata fields, `('fail', category, description)`, or nothing at all.
+`refdata` scripts what a `ReferenceDataRequest` answers for each security: a dict of fields, the
+text of the `securityError` it is refused with, or nothing at all.
 
 The fake enters as the `blpapi` module the package imports - an entry in `sys.modules`, which is
 where `blpapi_module()` finds the SDK - so nothing in the package is rebound.
 """
 import datetime
 import sys
+import types
 
 import pytest
 
@@ -35,12 +38,13 @@ from derivus_bloomberg.errors import BloombergRequestError, BloombergUnavailable
 APP = 'Investec_SA:TSSPricingTool'
 BPIPE = ('10.0.88.31', 8194)
 DESKTOP = ('localhost', 8194)
+#: What a session reads from the environment, which is the test's to say and not the shell's.
+ENVIRONMENT = ('DV_BLOOMBERG_HOST', 'DV_BLOOMBERG_PORT', 'DV_BLOOMBERG_APP_NAME')
 
 
 @pytest.fixture(autouse=True)
 def no_bloomberg_environment(monkeypatch):
-    """What a session reads from the environment is the test's to say, not the shell's."""
-    for name in ('DV_BLOOMBERG_HOST', 'DV_BLOOMBERG_PORT', 'DV_BLOOMBERG_APP_NAME'):
+    for name in ENVIRONMENT:
         monkeypatch.delenv(name, raising=False)
 
 
@@ -89,8 +93,32 @@ class FakeElement:
     def getValue(self):
         return self._value
 
-    def getValueAsString(self):
+    def __str__(self):
         return str(self._value)
+
+    getValueAsString = __str__
+
+
+class FakeData:
+    """A response element: a field by name, a row by index, a scalar as a `FakeElement`."""
+    def __init__(self, value):
+        self._value = value
+
+    def hasElement(self, name):
+        return name in self._value
+
+    def getElement(self, name):
+        value = self._value[name]
+        return FakeData(value) if isinstance(value, (dict, list)) else FakeElement(value)
+
+    def getElementAsString(self, name):
+        return str(self._value[name])
+
+    def numValues(self):
+        return len(self._value)
+
+    def getValueAsElement(self, index):
+        return FakeData(self._value[index])
 
 
 class FakeDataMessage(FakeMessage):
@@ -102,13 +130,7 @@ class FakeDataMessage(FakeMessage):
         return [FakeCorrelation(self._topic)]
 
     def asElement(self):
-        return self
-
-    def hasElement(self, name):
-        return name in self._fields
-
-    def getElement(self, name):
-        return FakeElement(self._fields[name])
+        return FakeData(self._fields)
 
 
 class FakeFailureMessage(FakeMessage):
@@ -182,8 +204,17 @@ class FakeSessionOptions:
         self.correlation_id = correlation_id
 
 
+class FakeRequest:
+    """A `ReferenceDataRequest`: the securities and the fields appended to it."""
+    def __init__(self):
+        self.elements = {'securities': [], 'fields': []}
+
+    def getElement(self, name):
+        return types.SimpleNamespace(appendValue=self.elements[name].append)
+
+
 class FakeSession:
-    def __init__(self, options, script):
+    def __init__(self, options, script, asked):
         self.options = options
         self.stopped = False
         config = script.get((options.host, options.port), {})
@@ -191,6 +222,9 @@ class FakeSession:
         self._open_service_ok = config.get('open_service', True)
         self._events = list(config.get('events', []))
         self._images = config.get('images', {})
+        self._refdata = config.get('refdata', {})
+        self._answering = config.get('answering')
+        self.asked = asked
         self.subscriptions = []
         self.unsubscribed = 0
         self._identity = ('Identity', options.host, options.port)
@@ -202,7 +236,11 @@ class FakeSession:
         return self._open_service_ok
 
     def getService(self, name):
-        return ('Service', name)
+        """The session serves its requests itself."""
+        return self
+
+    def createRequest(self, kind):
+        return FakeRequest()
 
     def nextEvent(self, timeout_ms):
         if not self._events:
@@ -229,15 +267,25 @@ class FakeSession:
         return self._identity
 
     def sendRequest(self, request, identity=None):
-        pass
+        """One `RESPONSE`, a row per security `refdata` declares; `answering()` runs first."""
+        securities = request.elements['securities']
+        self.asked.extend(securities)
+        if self._answering is not None:
+            self._answering()
+        rows = [{'security': name,
+                 'securityError' if isinstance(answer, str) else 'fieldData': answer}
+                for name, answer in ((name, self._refdata.get(name)) for name in securities)
+                if answer is not None]
+        self._events.append(FakeEvent(FakeEvent.RESPONSE, [FakeData({'securityData': rows})]))
 
     def stop(self):
         self.stopped = True
 
 
 def make_fake(script):
-    """A fake `blpapi` module, scripted by `{(host, port): {'start', 'open_service', 'events'}}` -
-    everything `BloombergSession._connect`/`_await_authorization` reads, and nothing else."""
+    """A fake `blpapi` module, scripted by `{(host, port): {'start', 'open_service', 'events',
+    'images', 'refdata', 'answering'}}` - everything a `BloombergSession` reads, and nothing else.
+    `asked` is every security a reference-data request named, in order."""
 
     class _AuthOptions:
         @staticmethod
@@ -250,13 +298,13 @@ def make_fake(script):
         AuthOptions = _AuthOptions
 
         def __init__(self):
-            self.sessions = []
+            self.sessions, self.asked = [], []
 
         def SessionOptions(self):
             return FakeSessionOptions()
 
         def Session(self, options):
-            fake_session = FakeSession(options, script)
+            fake_session = FakeSession(options, script, self.asked)
             self.sessions.append(fake_session)
             return fake_session
 
@@ -267,6 +315,18 @@ def make_fake(script):
             return FakeSubscriptionList()
 
     return Fake()
+
+
+def canned_terminal(monkeypatch, refdata, answering=None):
+    """A Desktop API terminal answering `refdata`, entered as the `blpapi` module the package
+    imports, and the session's endpoint left to its defaults; `answering()`, where given, runs as
+    each request lands. The fake is returned, `refdata` on it as declared."""
+    for name in ENVIRONMENT:
+        monkeypatch.delenv(name, raising=False)
+    fake = make_fake({DESKTOP: {'refdata': refdata, 'answering': answering}})
+    fake.refdata = refdata
+    monkeypatch.setitem(sys.modules, 'blpapi', fake)
+    return fake
 
 
 def test_desktop_api_session_asks_for_no_identity_and_never_waits_on_auth(monkeypatch):
@@ -289,8 +349,6 @@ def test_leaving_the_bpipe_env_vars_unset_is_the_terminal_and_setting_them_is_bp
     """The only switch between the two deployments is whether the env vars are declared.
 
     Killing mutation: `DV_BLOOMBERG_APP_NAME` unread - the declared deployment runs as a Terminal."""
-    for name in ('DV_BLOOMBERG_HOST', 'DV_BLOOMBERG_PORT', 'DV_BLOOMBERG_APP_NAME'):
-        monkeypatch.delenv(name, raising=False)
     terminal = session.BloombergSession()
     assert (terminal.host, terminal.port, terminal.application_name) == ('localhost', 8194, None)
 

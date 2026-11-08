@@ -180,22 +180,17 @@ def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
     desk can fetch a market at all. The tool is one `service().call`; the composition is the
     verb's.
 
-    `DV_HOME` is the gate's own tmp and `blpapi` is made absent, so a workstation that happens to
-    carry a terminal and a provisioned map reads the same as a sandboxed one. No session is opened
-    either way.
+    `DV_HOME` is the gate's own tmp and `blpapi` does not import (`None` in `sys.modules`), so a
+    workstation that happens to carry a terminal and a provisioned map reads the same as a
+    sandboxed one. No session is opened either way.
 
     Killing mutation: the path count read off the declaration rather than the book, which heals
     a thin book behind the desk.
     """
-    from derivus_bloomberg import session
-    from derivus_bloomberg.errors import BloombergUnavailable
     from test_service import CURVE_ROWS
 
-    def absent():
-        raise BloombergUnavailable('no blpapi on this workstation')
-
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
-    monkeypatch.setattr(session, 'blpapi_module', absent)
+    monkeypatch.setitem(sys.modules, 'blpapi', None)
     bare = mcp_server.desk_status()
 
     assert set(bare) == {'etag', 'base_date', 'base_currency', 'calculation', 'deals',
@@ -279,8 +274,8 @@ def test_the_record_reads_are_read_only_and_say_what_they_read(book):
         assert name in mcp_server.INSTRUCTIONS, name
 
 
-def test_the_strip_and_the_markets_reach_a_model_as_the_record_answers_them(book, tmp_path,
-                                                                            monkeypatch):
+def test_the_strip_and_the_markets_reach_a_model_as_the_record_answers_them(book, recorded,
+                                                                            tmp_path, monkeypatch):
     """Each tool is one `service().call`, so what a model reads is the fold's own rows: the strip
     newest last with the head to page from, and the close standing per market with the LSN of the
     one it restated.
@@ -288,11 +283,9 @@ def test_the_strip_and_the_markets_reach_a_model_as_the_record_answers_them(book
     Killing mutation: either tool composing an answer of its own - a `since` it keeps, or the rows
     reversed - which puts a second reading of the record between the model and the log.
     """
-    from derivus_spine import SpineLog, init_home
+    from derivus_spine import SpineLog
 
-    actor, home = 'subject-desk-one', tmp_path / 'spine'
-    init_home(home, actor)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
+    actor, home = 'subject-desk-one', recorded
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     log = SpineLog(home)
     try:
@@ -321,8 +314,8 @@ def test_the_strip_and_the_markets_reach_a_model_as_the_record_answers_them(book
     assert markets['snapshots'] == []
 
 
-def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_verbs(book, tmp_path,
-                                                                                    monkeypatch):
+def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_verbs(
+        book, recorded, tmp_path, monkeypatch):
     """The record's four WRITES a model can reach: the mark, the close behind `close_check`'s own
     verdict, the settlement file struck on the market the desk DESIGNATED for the export, and the
     back office saying a row was PAID. Each tool is one `service().call`, so what a model gets is
@@ -342,12 +335,9 @@ def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_ve
     `file_status` filing under a reference rather than the row's key, which settles nothing the
     export can see; and `file_status` dropping the agreement, which files the payment under none.
     """
-    from derivus_spine import SpineLog, init_home, policy
+    from derivus_spine import SpineLog, policy
 
-    actor, home = 'subject-desk-one', tmp_path / 'spine'
-    init_home(home, actor)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', actor)
+    actor, home = 'subject-desk-one', recorded
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     log = SpineLog(home)
     try:
@@ -405,7 +395,7 @@ def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_ve
     assert mcp_server.book_cash(date='2024-06-27')['movements'] == [], 'settled a day later'
 
 
-def test_a_print_reaches_the_record_through_the_binding(book, tmp_path, monkeypatch):
+def test_a_print_reaches_the_record_through_the_binding(book, recorded, tmp_path, monkeypatch):
     """`file_lifecycle` is one `service().call`: the expiry fixing `close_check` names is printed
     under the seat the tool names, which answers the row, and a consequence comes back as the
     record's own refusal.
@@ -415,12 +405,9 @@ def test_a_print_reaches_the_record_through_the_binding(book, tmp_path, monkeypa
     which files the print under the deployment's own.
     """
     from derivus import spine
-    from derivus_spine import SpineLog, init_home, policy
+    from derivus_spine import SpineLog, policy
 
-    actor, home = 'subject-desk-one', tmp_path / 'spine'
-    init_home(home, actor)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', actor)
+    actor, home = 'subject-desk-one', recorded
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
     log = SpineLog(home)
     try:
@@ -663,8 +650,7 @@ def test_a_model_retires_an_override_and_the_files_entry_stands_again(file_book)
     assert book.read_bytes() == before
 
 
-def test_the_file_the_book_names_is_declared_and_listed_through_the_binding(file_book, tmp_path,
-                                                                            monkeypatch):
+def test_the_file_the_book_names_is_declared_and_listed_through_the_binding(file_book, recorded):
     """`declare_file` and `book_files` are each one `service().call`: the book's market data file,
     named by its path on the service's box, lands under the desk's name as the sha256 of its bytes,
     and the listing is the route's own row beside the book's `MarketDataFile`; a kind that is
@@ -673,12 +659,7 @@ def test_the_file_the_book_names_is_declared_and_listed_through_the_binding(file
     Killing mutations: `declare_file` posting the path under another key, which the route reads as
     none and fails; `book_files` composing an answer of its own rather than the route's rows.
     """
-    from derivus_spine import init_home
-
-    actor, home = 'subject-desk-one', tmp_path / 'spine'
-    init_home(home, actor)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', actor)
+    actor = 'subject-desk-one'
     _, market = file_book
     declared = mcp_server.declare_file('risk-neutral', 'market', str(market))
     assert declared['blob'] == hashlib.sha256(market.read_bytes()).hexdigest()
@@ -863,7 +844,7 @@ def test_the_quoting_day_runs_from_a_structure_name_to_a_booked_collar(tmp_path,
         service.BOOK = None
 
 
-def test_a_recorded_desk_books_and_accepts_through_the_binding(tmp_path, monkeypatch):
+def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_path, monkeypatch):
     """THE WARNING CLOSES: a desk that keeps a record books through these tools. `book_deal` carries
     the signed quantity, the execution reference and the seat the service demands under a home, and
     without them it refuses in the SERVICE's own words rather than in a paraphrase here.
@@ -877,13 +858,10 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(tmp_path, monkeyp
     Killing mutation: `solve_structure` not sending the `portfolio` it takes, which books the trade
     at the book and leaves the node the desk named empty.
     """
-    from derivus_spine import SpineLog, init_home, policy
+    from derivus_spine import SpineLog, policy
 
     from test_service import fx_vol_quotes
-    home = tmp_path / 'spine'
-    init_home(home, 'subject-desk-one')
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', 'subject-desk-one')
+    home = recorded
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
 
     client = {'Object': 'NettingCollateralSet', 'Reference': 'CLIENT_A', 'Netted': 'True',
@@ -1125,15 +1103,10 @@ def test_a_market_is_set_up_from_what_a_trade_needs(book, tmp_path, monkeypatch)
     argument it declares, which names a `deal_path` beside a `pair` and the service refuses; the
     raw envelope handed back, which carries `tables` and no `result_id`.
     """
-    from derivus_bloomberg import session as bloomberg
-    from derivus_bloomberg.errors import BloombergUnavailable
     from test_service import CURVE_ROWS, XCCY
 
-    def absent():
-        raise BloombergUnavailable('no blpapi on this workstation')
-
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
-    monkeypatch.setattr(bloomberg, 'blpapi_module', absent)
+    monkeypatch.setitem(sys.modules, 'blpapi', None)
     tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
     walked = mcp_server.book_dependencies(deal=json.loads(dump(XCCY)))
     rows = {row['factor']: row for row in walked['factors']}

@@ -11,8 +11,10 @@ while the first is still running. Survival: an engine failure is a result like a
 `plan_id`: how a job ARRIVED cannot change what it reports.
 
 The Bloomberg verbs are gated at their seams (`discover.provision`, `security_map.stale`,
-`fetch_fx_vol` monkeypatched; the job's lazy imports are what lets a patch reach it), so no blpapi,
-socket or map file is needed. `--tick`'s metronome rides the same seam.
+`fetch_fx_vol` monkeypatched; the job's lazy imports are what lets a patch reach it), and the
+session itself is a canned terminal, a fake blpapi entered where the package imports it whose
+answers are declared as data, so no SDK, socket or map file is needed. `--tick`'s metronome rides
+the same seam.
 
 `/book/model` is gated on the emitter, the round trip and the refusal; `/book/structure` +
 `/book/quote` on the two halves being one trade - the collar nets to zero and the BOOK marks the
@@ -46,6 +48,7 @@ import derivus
 from derivus import service, structures, utils
 from derivus.config import CustomJsonEncoder
 from derivus.schema import deal_at
+from test_bloomberg_session import canned_terminal
 
 BASE = pd.Timestamp('2024-06-28')
 RATE = 0.02
@@ -1456,21 +1459,15 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
     carry and any benchmark held out, and what this workstation could fetch if asked.
 
     `DV_HOME` is the gate's own tmp, so `provisioned` and the XVA rows are this book's and not
-    the workstation's, and `blpapi` is made ABSENT - no session is opened either way, the import
-    being the whole question.
+    the workstation's, and `blpapi` does not import (`None` in `sys.modules`) - no session is opened
+    either way, the import being the whole question.
 
     Killing mutations: `held_out` partitioning on the rows in USE, which the read-back block
     carries either way so only the split says which; `terminal.present` reading anything but this
     workstation's own import, which the absent module then does not move.
     """
-    from derivus_bloomberg import session
-    from derivus_bloomberg.errors import BloombergUnavailable
-
-    def absent():
-        raise BloombergUnavailable('no blpapi on this workstation')
-
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
-    monkeypatch.setattr(session, 'blpapi_module', absent)
+    monkeypatch.setitem(sys.modules, 'blpapi', None)
     bare = CLIENT.get('/book/status').json()
 
     assert set(bare) == {'etag', 'base_date', 'base_currency', 'calculation', 'deals',
@@ -1505,8 +1502,8 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
 def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypatch):
     """THREE REFUSALS, each naming the thing to fix, each writing nothing.
 
-    An unquoted row and no terminal to price it off - `BloombergSession` is the seam and a
-    workstation without one is what `BloombergUnavailable` says. A tenor the emitter's grammar
+    An unquoted row and no terminal to price it off - a workstation whose blpapi does not import,
+    which the session's start says with `BloombergUnavailable`. A tenor the emitter's grammar
     cannot read, which is the one thing a desk can spell wrong that no convention would catch. And
     a bootstrap that complains, which refuses the WHOLE write the way a tick's does: the
     `HullWhite2FactorModelParameters` entry configured beside the curve has a block it cannot fit.
@@ -1514,13 +1511,7 @@ def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypa
     Killing mutation: a bootstrap's ERROR left uncaptured, which writes a market the bootstrap
     complained about.
     """
-    from derivus_bloomberg import session
-    from derivus_bloomberg.errors import BloombergUnavailable
-
-    def absent(**options):
-        raise BloombergUnavailable('no blpapi module on this workstation')
-
-    monkeypatch.setattr(session, 'BloombergSession', absent)
+    monkeypatch.setitem(sys.modules, 'blpapi', None)
     before = book.read_bytes()
 
     unquoted = set_up_curve(rows=[dict(CURVE_ROWS[0], quote=None)] + CURVE_ROWS[1:])
@@ -2253,39 +2244,26 @@ def canned_map():
                                              'quotes': quotes}}}}
 
 
-class FakeTerminal:
-    """`BloombergSession` as the verb uses it - a context manager and nothing else, since the
-    provision, freshness check and fetch are all seams the gates drive. blpapi is never reached."""
-
-    def __init__(self, **options):
-        pass
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *error):
-        return False
-
-
-def bloomberg_seams(monkeypatch, provision=None, stale=None, terminal=None):
-    """Every seam between the verb and the terminal, replaced. The lazy imports inside
-    `BloombergJob.run_job` are what lets a patch reach the job: each name is bound off the package
-    when the WORKER runs. Returns the definitions the fetch was handed."""
+def bloomberg_seams(monkeypatch, provision=None, stale=None, refdata={}):
+    """Every seam between the verb and the terminal replaced, the session by a canned terminal
+    answering `refdata`. The lazy imports inside `BloombergJob.run_job` are what lets a patch reach
+    the job: each name is bound off the package when the WORKER runs. Returns the terminal,
+    `fetched` on it the definitions the fetch was handed."""
     import derivus_bloomberg
-    from derivus_bloomberg import discover, security_map, session
+    from derivus_bloomberg import discover, security_map
 
-    asked = []
+    terminal = canned_terminal(monkeypatch, refdata)
+    terminal.fetched = []
 
     def fetch_fx_vol(source, definition):
-        asked.append(definition)
+        terminal.fetched.append(definition)
         return fx_vol_snapshot()
 
-    monkeypatch.setattr(session, 'BloombergSession', terminal or FakeTerminal)
     monkeypatch.setattr(derivus_bloomberg, 'fetch_fx_vol', fetch_fx_vol)
     monkeypatch.setattr(security_map, 'stale', stale or (lambda source, securities: {}))
     monkeypatch.setattr(discover, 'provision', provision or (
         lambda source, as_of, on_batch=None: (canned_map(), False)))
-    return asked
+    return terminal
 
 
 def ticked(request={}):
@@ -2302,7 +2280,7 @@ def test_the_bloomberg_verb_provisions_fetches_and_ticks_the_book(desk, monkeypa
     fx_vol pair at the expiries it verified, at the default pillar) is what the fetch is asked for,
     and what comes back is installed and bootstrapped in one atomic write - so the file carries the
     `FXVol` surface a pricer reads, not just the quotes."""
-    asked = bloomberg_seams(monkeypatch)
+    fetched = bloomberg_seams(monkeypatch).fetched
     result, outcome = ticked()
     on_disk = json.loads(desk.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
 
@@ -2313,8 +2291,8 @@ def test_the_bloomberg_verb_provisions_fetches_and_ticks_the_book(desk, monkeypa
     assert on_disk['Price Factors']['FXVol.USD.ZAR']['Surface_Type'] == 'Malz'
     assert 'FXVolPrices.USD.ZAR' in on_disk['Market Prices']
     # the scope came off the map, which is what "defaults to the desk's own" has to mean
-    assert [definition.pair for definition in asked] == ['USDZAR']
-    assert sorted(asked[0].expiries) == ['1Y', '3M'] and asked[0].pillars == (0.25,)
+    assert [definition.pair for definition in fetched] == ['USDZAR']
+    assert sorted(fetched[0].expiries) == ['1Y', '3M'] and fetched[0].pillars == (0.25,)
 
 
 def test_a_stale_quote_refuses_the_tick_by_name(desk, monkeypatch):
@@ -2322,15 +2300,15 @@ def test_a_stale_quote_refuses_the_tick_by_name(desk, monkeypatch):
     that says so: one late quote refuses the WHOLE tick by name, before anything is fetched, and
     the book's bytes stand still."""
     before = desk.read_bytes()
-    asked = bloomberg_seams(monkeypatch, stale=lambda source, securities: {
-        'USDZARV3M BGN Curncy': '2015-01-02'})
+    fetched = bloomberg_seams(monkeypatch, stale=lambda source, securities: {
+        'USDZARV3M BGN Curncy': '2015-01-02'}).fetched
     result, outcome = ticked()
 
     assert result['status'] == 'done'
     assert outcome['written'] is False
     assert any('USDZARV3M BGN Curncy' in message and '2015-01-02' in message
                for message in outcome['refused'])
-    assert asked == [], 'a late quote must refuse BEFORE anything is fetched'
+    assert fetched == [], 'a late quote must refuse BEFORE anything is fetched'
     assert desk.read_bytes() == before
 
 
@@ -2482,35 +2460,20 @@ def test_a_routine_tick_refuses_an_unprovisioned_home_and_leaves_the_book_alone(
     assert desk.read_bytes() == before
 
 
-class CannedTerminal:
-    """A terminal answering `reference_data_report` in the shape a discovery run records - one row
-    per security carrying `ok`, `error` and `fields`, the mid with both sides and the print's own
-    date. It is the SESSION as well, so the job's `BloombergSession(...)` lands on it and blpapi is
-    never reached; `asked` is every security it was handed, batch by batch, and `stamp` is the day
-    every print claims - which is the SNAP a curve is dated by, and what a freshness check reads.
-    `stamps` dates ONE security differently, which is how a dead series is put among live ones."""
+#: What a terminal answers for a security it refuses: the `securityError`, in Bloomberg's words.
+REFUSED = 'BAD_SEC: Unknown/Invalid security'
 
-    def __init__(self, prints, dead=(), stamp='2024-06-27', stamps={}):
-        self.prints, self.dead, self.asked, self.stamp = prints, set(dead), [], stamp
-        self.stamps = dict(stamps)
 
-    def __call__(self, **options):
-        return self
-
-    def __enter__(self):
-        return self
-
-    def __exit__(self, *error):
-        return False
-
-    def reference_data_report(self, securities, fields):
-        self.asked += list(securities)
-        return {name: {'ok': name not in self.dead, 'error': None,
-                       'fields': {} if name in self.dead else {
-                           'PX_LAST': self.prints[name], 'PX_BID': self.prints[name] - 0.01,
-                           'PX_ASK': self.prints[name] + 0.01,
-                           'LAST_UPDATE_DT': self.stamps.get(name, self.stamp)}}
-                for name in securities}
+def canned(prints, dead=(), stamp='2024-06-27', stamps={}, names={}):
+    """A canned terminal's `refdata`: every security in `prints` answering its NAME (`names`
+    renaming one, the drift a recorded entry cannot see for itself), the mid with both sides and
+    the print's own date - `stamp`, the SNAP a curve is dated by and what a freshness check reads,
+    `stamps` dating one differently, which is how a dead series is put among live ones - and every
+    name in `dead` refused."""
+    quoted = {name: {'NAME': names.get(name, name), 'PX_LAST': value, 'PX_BID': value - 0.01,
+                     'PX_ASK': value + 0.01, 'LAST_UPDATE_DT': stamps.get(name, stamp)}
+              for name, value in prints.items()}
+    return dict(quoted, **dict.fromkeys(dead, REFUSED))
 
 
 def curve_map():
@@ -2519,10 +2482,12 @@ def curve_map():
     return dict(canned_map(), blocks={'fx_vol': {}})
 
 
-def curve_tick(monkeypatch, terminal):
-    bloomberg_seams(monkeypatch, terminal=terminal,
-                    provision=lambda source, as_of, on_batch=None: (curve_map(), False))
-    return ticked()
+def curve_tick(monkeypatch, refdata):
+    """A tick against a terminal answering `refdata`: the result, its outcome and every security
+    the terminal was asked about."""
+    terminal = bloomberg_seams(monkeypatch, refdata=refdata, provision=lambda source, as_of,
+                               on_batch=None: (curve_map(), False))
+    return ticked() + (terminal.asked,)
 
 
 @pytest.fixture
@@ -2545,24 +2510,22 @@ def test_the_tick_values_the_books_curve_rows_and_holds_a_dead_one_out(curve_des
     one knot fewer where a refused strip would be no curve at all.
     """
     prints = {row['security']: row['quote'] + 0.1 for row in CURVE_ROWS}
-    terminal = CannedTerminal(prints)
     before = service.quote_plan(json.loads(curve_desk.read_text())['Calc']['MergeMarketData'][
         'ExplicitMarketData']['Market Prices'][CURVE_BLOCK])
 
-    result, outcome = curve_tick(monkeypatch, terminal)
+    result, outcome, asked = curve_tick(monkeypatch, canned(prints))
     block = curve_block(curve_desk)
 
     assert result['status'] == 'done' and outcome['written'] is True
     assert outcome['updated'] == [CURVE_BLOCK] and outcome['reauthored'] == []
     assert outcome['held_out'] == [] and outcome['rewrote'] == ['InterestRate.ZAR']
-    assert sorted(terminal.asked) == sorted(prints), 'the rows name what the tick asks about'
+    assert sorted(asked) == sorted(prints), 'the rows name what the tick asks about'
     assert [row['Quoted_Market_Value'] for row in block['Points']] == list(prints.values())
     assert all(row['Timestamp'] == {'.Timestamp': '2024-06-27'} for row in block['Points'])
     assert service.quote_plan({'instrument': block}) == before, 'a value tick moved the plan'
     assert abs(par_residuals(curve_desk)).max() < 1e-6
 
-    dead = CannedTerminal(prints, dead=['SASW5 BGN Curncy'])
-    result, outcome = curve_tick(monkeypatch, dead)
+    result, outcome, _ = curve_tick(monkeypatch, canned(prints, dead=['SASW5 BGN Curncy']))
     block = curve_block(curve_desk)
 
     assert result['status'] == 'done' and outcome['written'] is True
@@ -2581,12 +2544,12 @@ def test_the_tick_values_the_books_curve_rows_and_holds_a_dead_one_out(curve_des
         CURVE_BLOCK]['instrument']['Spot_Days']
     curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
 
-    moved = CannedTerminal({security: value + 1.0 for security, value in prints.items()})
-    result, outcome = curve_tick(monkeypatch, moved)
+    result, outcome, asked = curve_tick(monkeypatch, canned(
+        {security: value + 1.0 for security, value in prints.items()}))
 
     assert result['status'] == 'done' and 'error' not in result, result
     assert outcome['held_out'] == ["{} left as it stands - 'Spot_Days'".format(CURVE_BLOCK)]
-    assert moved.asked == [], 'a block with no conventions to re-roll under was still asked about'
+    assert asked == [], 'a block with no conventions to re-roll under was still asked about'
     assert [row['Quoted_Market_Value'] for row in curve_block(curve_desk)['Points']] == values
 
 
@@ -2605,7 +2568,7 @@ def test_a_rolled_base_date_re_authors_the_curve_rather_than_refusing(curve_desk
     document['Calc']['Calculation']['Base_Date'] = {'.Timestamp': '2024-07-01'}
     curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
 
-    result, outcome = curve_tick(monkeypatch, CannedTerminal(
+    result, outcome, _ = curve_tick(monkeypatch, canned(
         {row['security']: row['quote'] for row in CURVE_ROWS}))
     block = curve_block(curve_desk)
 
@@ -2707,7 +2670,7 @@ def test_a_later_print_rolls_the_books_date_through_the_tick_and_an_older_one_do
     prints = {row['security']: row['quote'] for row in CURVE_ROWS}
     before = [row['Deal']['Maturity_Date'] for row in curve_block(curve_desk)['Points']]
 
-    result, outcome = curve_tick(monkeypatch, CannedTerminal(prints, stamp='2024-07-05'))
+    result, outcome, _ = curve_tick(monkeypatch, canned(prints, stamp='2024-07-05'))
     document = json.loads(curve_desk.read_text())
     block = curve_block(curve_desk)
 
@@ -2721,7 +2684,7 @@ def test_a_later_print_rolls_the_books_date_through_the_tick_and_an_older_one_do
     assert abs(par_residuals(curve_desk)).max() < 1e-6
 
     moved = {security: value + 0.1 for security, value in prints.items()}
-    result, outcome = curve_tick(monkeypatch, CannedTerminal(moved, stamp='2024-07-02'))
+    result, outcome, _ = curve_tick(monkeypatch, canned(moved, stamp='2024-07-02'))
 
     assert result['status'] == 'done' and outcome['written'] is True
     assert outcome['base_date'] == '2024-07-05' and outcome['reauthored'] == []
@@ -2744,11 +2707,9 @@ def test_a_curve_set_up_off_a_later_print_rolls_the_book_and_every_other_curve(
     its June maturities under a July book; taking the snap off the book's date rather than off the
     prints, so nothing rolls and the ZAR block is authored in June.
     """
-    from derivus_bloomberg import session
-
     assert set_up_curve(rows=USD_ROWS, curve='USD', currency='USD').status_code == 200
     dollars = [row['Deal']['Maturity_Date'] for row in curve_block(curve_desk, 'USD')['Points']]
-    monkeypatch.setattr(session, 'BloombergSession', CannedTerminal(
+    canned_terminal(monkeypatch, canned(
         {row['security']: row['quote'] for row in CURVE_ROWS}, stamp='2024-07-05'))
 
     answer = set_up_curve(rows=[{'tenor': row['tenor'], 'security': row['security']}
@@ -2782,26 +2743,22 @@ def test_a_tick_landing_while_the_terminal_priced_the_rows_refuses_rather_than_r
     with both days in it and touches nothing - a curve dated behind its own book has a front
     whose accrual already started, which is no benchmark at all.
 
-    The seam is the terminal itself: this one rolls the book forward while it is being asked about,
-    which is a tick landing mid-trip with nothing threaded.
+    The seam is the terminal itself: this one rolls the book forward as the request lands, which
+    is a tick landing mid-trip with nothing threaded.
 
     Killing mutation: stamp the day the rows were authored on, and both of the book's dates go
     back to 2024-07-05 with every other block re-rolled onto it.
     """
-    from derivus_bloomberg import session
+    def tick():
+        document = json.loads(curve_desk.read_text())
+        stamp = {'.Timestamp': '2024-08-01'}
+        document['Calc']['MergeMarketData']['ExplicitMarketData'][
+            'System Parameters']['Base_Date'] = stamp
+        document['Calc']['Calculation']['Base_Date'] = stamp
+        curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
 
-    class TickingTerminal(CannedTerminal):
-        def reference_data_report(self, securities, fields):
-            document = json.loads(curve_desk.read_text())
-            stamp = {'.Timestamp': '2024-08-01'}
-            document['Calc']['MergeMarketData']['ExplicitMarketData'][
-                'System Parameters']['Base_Date'] = stamp
-            document['Calc']['Calculation']['Base_Date'] = stamp
-            curve_desk.write_text(json.dumps(document, indent=2), newline='\n')
-            return super().reference_data_report(securities, fields)
-
-    monkeypatch.setattr(session, 'BloombergSession', TickingTerminal(
-        {row['security']: row['quote'] for row in CURVE_ROWS}, stamp='2024-07-05'))
+    canned_terminal(monkeypatch, canned(
+        {row['security']: row['quote'] for row in CURVE_ROWS}, stamp='2024-07-05'), tick)
     points = curve_block(curve_desk)['Points']
     answer = set_up_curve(rows=[{'tenor': row['tenor'], 'security': row['security']}
                                 for row in CURVE_ROWS])
@@ -2945,20 +2902,6 @@ def test_a_vocabulary_entry_is_merged_kept_and_refused_by_name(vocabulary):
     assert not [name for name in removed['candidates'] if name.startswith('GATE')]
 
 
-class NamingTerminal(CannedTerminal):
-    """The canned terminal answering `NAME` beside the price - what a VERIFICATION reads a drift
-    off, where a tick reads the number alone. `names` renames one security, which is the drift a
-    recorded entry cannot see for itself."""
-
-    def __init__(self, prints, names={}, **rest):
-        super().__init__(prints, **rest)
-        self.names = names
-
-    def reference_data_report(self, securities, fields):
-        return {name: dict(row, fields=dict(row['fields'], NAME=self.names.get(name, name)))
-                for name, row in super().reference_data_report(securities, fields).items()}
-
-
 def verified(request={}):
     """POST the verify verb, drain the worker, read the outcome off the result the way a poller
     does - the map write rides the run's own Stats, as a tick's book write does."""
@@ -2982,29 +2925,19 @@ def test_a_verification_needs_a_terminal_and_re_verifies_the_scope_it_is_given(
     `asked` measures; the recheck reading the entry's own recorded name rather than the terminal's,
     which then never drifts.
     """
-    import datetime
-
-    from derivus_bloomberg import session
-    from derivus_bloomberg.errors import BloombergUnavailable
-
-    def absent():
-        raise BloombergUnavailable('no blpapi on this workstation')
-
-    monkeypatch.setattr(session, 'blpapi_module', absent)
+    monkeypatch.setitem(sys.modules, 'blpapi', None)
     refused = CLIENT.post('/book/securities/verify', json={'block': 'rates'})
 
     assert refused.status_code == 422 and 'blpapi' in refused.json()['detail']
     assert 'GET /book/securities' in refused.json()['detail']
     assert not (vocabulary / 'security_map.json').exists()
 
-    monkeypatch.setattr(session, 'blpapi_module', lambda: True)
+    terminal = canned_terminal(monkeypatch, canned(
+        {'GATE1 BGN Curncy': 7.6, 'GATE2 BGN Curncy': 7.9, 'GATEON Index': 7.3},
+        names={'GATE1 BGN Curncy': 'GATE 1Y RENAMED'}, stamp=datetime.date.today().isoformat()))
     assert CLIENT.post('/book/securities', json={'block': 'rates', 'key': 'GATE',
                                                  'entry': GATE_CURVE}).status_code == 200
     author_map(vocabulary, {'rates/GATE/strip/1Y': 'GATE1 BGN Curncy'})
-    terminal = NamingTerminal({'GATE1 BGN Curncy': 7.6, 'GATE2 BGN Curncy': 7.9,
-                               'GATEON Index': 7.3}, names={'GATE1 BGN Curncy': 'GATE 1Y RENAMED'},
-                              stamp=datetime.date.today().isoformat())
-    monkeypatch.setattr(session, 'BloombergSession', terminal)
     result, outcome = verified({'block': 'rates', 'key': 'GATE'})
     document = json.loads((vocabulary / 'security_map.json').read_text())
     strip = document['blocks']['rates']['GATE']
@@ -3041,21 +2974,15 @@ def test_a_rejected_ticker_is_asked_again_and_a_revived_one_lands_in_the_map(
     empty and the ticker on the ledger; the ledger asked UNSCOPED, which the ZAR row outside the
     scope measures.
     """
-    import datetime
-
-    from derivus_bloomberg import session
-
     today = datetime.date.today().isoformat()
     stale = {'verdict': 'invalid', 'name': None, 'last_update': None, 'error': 'nothing that day'}
-    monkeypatch.setattr(session, 'blpapi_module', lambda: True)
+    terminal = canned_terminal(monkeypatch, canned(
+        {'GATE1 BGN Curncy': 7.6, 'GATE2 BGN Curncy': 7.9}, dead=['GATEON Index'], stamp=today))
     assert CLIENT.post('/book/securities', json={'block': 'rates', 'key': 'GATE',
                                                  'entry': GATE_CURVE}).status_code == 200
     author_map(vocabulary, {'rates/GATE/strip/1Y': 'GATE1 BGN Curncy'},
                rejected={'GATE2 BGN Curncy': dict(stale), 'GATEON Index': dict(stale),
                          'SASW30 BGN Curncy': dict(stale)})
-    terminal = NamingTerminal({'GATE1 BGN Curncy': 7.6, 'GATE2 BGN Curncy': 7.9},
-                              dead=['GATEON Index'], stamp=today)
-    monkeypatch.setattr(session, 'BloombergSession', terminal)
     result, outcome = verified({'block': 'rates', 'key': 'GATE'})
     document = json.loads((vocabulary / 'security_map.json').read_text())
 
@@ -3066,8 +2993,8 @@ def test_a_rejected_ticker_is_asked_again_and_a_revived_one_lands_in_the_map(
         'last_update': today, 'verified': today}
     assert 'GATE2 BGN Curncy' not in document['rejected'], 'revived and still rejected'
     assert document['rejected']['GATEON Index'] == {
-        'verdict': 'invalid', 'name': 'GATEON Index', 'last_update': None,
-        'error': None}, 'a stale ledger row survived its own probe'
+        'verdict': 'invalid', 'name': None, 'last_update': None,
+        'error': REFUSED}, 'a stale ledger row survived its own probe'
     assert document['rejected']['SASW30 BGN Curncy'] == stale
     assert 'SASW30 BGN Curncy' not in terminal.asked, 'the ledger was asked outside the scope'
     # the entry half is quiet while the ledger moves, and a revived name is not then grown again
@@ -3246,27 +3173,24 @@ def seeded_rows_of(curve):
     return ir_curve.seeded_rows(service.desk_seed(), curve)
 
 
-def setup_terminal(monkeypatch, *scopes, stamps={}, **prints):
+def setup_terminal(monkeypatch, *scopes, stamps={}, dead=(), answering=None, **prints):
     """The seams a set-up meets, canned: a terminal answering every security the seed spells in
     `scopes` - at the NAME each candidate expects, so a probe verifies rather than mismatching, and
-    at today's clock unless `stamps` dates one of them back - with `prints` naming the spots, and
-    the surface fetch handed back the gate's own snapshot for the pair it was asked about.
+    at today's clock unless `stamps` dates one of them back - with `prints` naming the spots, `dead`
+    refused and `answering()` run as each request lands, and the surface fetch handed back the
+    gate's own snapshot for the pair it was asked about.
 
     THE FRESHNESS CHECK IS NOT STUBBED: `security_map.stale` runs against this terminal's own
-    `LAST_UPDATE_DT`, so a set-up gate pays for the check a late print has to trip. blpapi is never
-    reached; `asked` is every security the job handed over and `fetched` every surface it took.
+    `LAST_UPDATE_DT`, so a set-up gate pays for the check a late print has to trip. `asked` is
+    every security the job handed over and `fetched` every surface it took.
     """
-    import datetime
-
     import derivus_bloomberg
-    from derivus_bloomberg import session
 
     named = seeded_candidates(*scopes)
-    terminal = NamingTerminal(dict({security: 3.0 for security in named}, **prints), names=named,
-                              stamp=datetime.date.today().isoformat(), stamps=stamps)
+    terminal = canned_terminal(monkeypatch, canned(
+        dict({security: 3.0 for security in named}, **prints), dead=dead,
+        stamp=datetime.date.today().isoformat(), stamps=stamps, names=named), answering)
     terminal.fetched = []
-    monkeypatch.setattr(session, 'blpapi_module', lambda: True)
-    monkeypatch.setattr(session, 'BloombergSession', terminal)
     monkeypatch.setattr(derivus_bloomberg, 'fetch_fx_vol', lambda source, definition: (
         terminal.fetched.append(definition.pair) or fx_vol_snapshot(definition.pair)))
     return terminal
@@ -3445,8 +3369,9 @@ def test_a_late_print_refuses_the_whole_set_up(desk_setup, tmp_path, monkeypatch
     home = tmp_path / 'home'
     scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
     seeded_map(home, *scopes)
+    spot = {'EURUSD BGN Curncy': 1.0855}
     terminal = setup_terminal(monkeypatch, *scopes, stamps={'EURZAR25R1Y BGN Curncy': '2019-01-01'},
-                              **{'EURUSD BGN Curncy': 1.0855})
+                              **spot)
     before = desk_setup.read_bytes()
 
     result, outcome = set_up({'pair': 'EURZAR'})
@@ -3457,7 +3382,8 @@ def test_a_late_print_refuses_the_whole_set_up(desk_setup, tmp_path, monkeypatch
     assert terminal.fetched == [], 'a surface was fetched off a book that was never written'
     assert desk_setup.read_bytes() == before
 
-    terminal.stamps = {'EURUSD BGN Curncy': '2019-01-01'}
+    terminal = setup_terminal(monkeypatch, *scopes, stamps={'EURUSD BGN Curncy': '2019-01-01'},
+                              **spot)
     result, outcome = set_up({'pair': 'EURZAR'})
 
     assert result['status'] == 'done' and outcome['written'] is False
@@ -3519,8 +3445,8 @@ def test_a_set_up_holds_out_the_benchmark_the_screen_refuses(desk_setup, tmp_pat
     """
     scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
     seeded_map(tmp_path / 'home', *scopes)
-    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
-    terminal.dead = {'EESWE10 BGN Curncy'}
+    setup_terminal(monkeypatch, *scopes, dead=['EESWE10 BGN Curncy'],
+                   **{'EURUSD BGN Curncy': 1.0855})
 
     result, outcome = set_up({'pair': 'EURZAR'})
     block = curve_block(desk_setup, 'EUR')
@@ -3547,16 +3473,14 @@ def test_the_snap_sets_the_date_for_a_set_up(desk_setup, tmp_path, monkeypatch):
     Killing mutations: the snap never advancing the date, so the block is authored on the day the
     book stood at; the roll-back guard removed, which stamps 2024-06-28 onto a book at 2030.
     """
-    from derivus_bloomberg import session
-
     scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
     wider = scopes + (('fx_vol', 'USDZAR'), ('fx_vol', 'USDJPY'), ('fx_spot', 'USDJPY'),
                       ('rates', 'JPY'), ('rates', 'ZAR'))
+    spots = {'EURUSD BGN Curncy': 1.0855, 'USDJPY BGN Curncy': 157.25}
     seeded_map(tmp_path / 'home', *scopes, ('fx_vol', 'USDZAR'))
-    terminal = setup_terminal(monkeypatch, *wider, **{'EURUSD BGN Curncy': 1.0855,
-                                                      'USDJPY BGN Curncy': 157.25})
+    setup_terminal(monkeypatch, *wider, **spots)
     assert set_up_curve().status_code == 200, 'a standing curve for the roll to re-author'
-    snapped = terminal.stamp
+    snapped = datetime.date.today().isoformat()
 
     result, outcome = set_up({'pair': 'EURZAR'})
     document = json.loads(desk_setup.read_text())
@@ -3570,14 +3494,9 @@ def test_the_snap_sets_the_date_for_a_set_up(desk_setup, tmp_path, monkeypatch):
 
     # a book that rolls FORWARD while the terminal is pricing: the write refuses by name with both
     # days in it rather than stamping the day it read
-    class Rolling(NamingTerminal):
-        def reference_data_report(self, securities, fields):
-            CLIENT.post('/book/date', json={'base_date': '2030-01-02'})
-            return super().reference_data_report(securities, fields)
-
     seeded_map(tmp_path / 'home', *wider)
-    monkeypatch.setattr(session, 'BloombergSession', Rolling(
-        terminal.prints, names=terminal.names, stamp=terminal.stamp))
+    setup_terminal(monkeypatch, *wider, answering=lambda: CLIENT.post(
+        '/book/date', json={'base_date': '2030-01-02'}), **spots)
     result, outcome = set_up({'pair': 'USDJPY'})
 
     assert result['status'] == 'done' and outcome['written'] is False, outcome
@@ -3585,7 +3504,7 @@ def test_the_snap_sets_the_date_for_a_set_up(desk_setup, tmp_path, monkeypatch):
                for message in outcome['refused']), outcome['refused']
 
     # and a book standing AHEAD of the prints keeps its own day
-    monkeypatch.setattr(session, 'BloombergSession', terminal)
+    setup_terminal(monkeypatch, *wider, **spots)
     result, outcome = set_up({'pair': 'USDZAR'})
 
     assert result['status'] == 'done' and outcome['written'] is True, outcome
@@ -3617,7 +3536,7 @@ def test_a_set_up_reads_the_curve_its_own_seed_verified(desk_setup, tmp_path, mo
     rows = curve_block(desk_setup, 'EUR')['Points']
 
     assert result['status'] == 'done' and outcome['written'] is True, outcome
-    assert {row['Security'] for row in rows} <= set(terminal.prints), 'a ticker never verified'
+    assert {row['Security'] for row in rows} <= set(terminal.refdata), 'a ticker never verified'
     assert [row['Security'] for row in rows if row['Tenor'] == '10Y'] == ['EUSA10 BGN Curncy']
     assert not [row for row in rows if row['Security'].startswith('EESWE')]
     # the conventions are the packaged ones the desk did not restate, which is what makes the
@@ -3745,22 +3664,16 @@ def test_a_set_up_refuses_at_submission_and_a_routine_tick_never_discovers(
     map already carries; a currency it verified none for is named under `unrouted` and keeps the
     spot it had, and the map file does not move.
     """
-    from derivus_bloomberg import session
-    from derivus_bloomberg.errors import BloombergUnavailable
-
-    def absent():
-        raise BloombergUnavailable('no blpapi on this workstation')
-
     home = tmp_path / 'home'
     seeded_map(home, ('fx_vol', 'EURZAR'))
     before, stamped = desk_setup.read_bytes(), (home / 'security_map.json').stat().st_mtime_ns
-    monkeypatch.setattr(session, 'blpapi_module', absent)
+    monkeypatch.setitem(sys.modules, 'blpapi', None)
     refused = CLIENT.post('/book/setup', json={'pair': 'EURZAR'})
 
     assert refused.status_code == 422 and 'blpapi' in refused.json()['detail']
     assert desk_setup.read_bytes() == before
 
-    monkeypatch.setattr(session, 'blpapi_module', lambda: True)
+    canned_terminal(monkeypatch, {})
     unseeded = CLIENT.post('/book/setup', json={'pair': 'EURNOK'})
     backwards = CLIENT.post('/book/setup', json={'pair': 'ZAREUR'})
     ambiguous = CLIENT.post('/book/setup', json={'pair': 'EURZAR', 'deal_path': '0'})
@@ -3774,9 +3687,8 @@ def test_a_set_up_refuses_at_submission_and_a_routine_tick_never_discovers(
     assert ambiguous.status_code == 422 and 'deal_path' in ambiguous.json()['detail']
     assert nameless.status_code == 422 and 'CrossCurrencySwap' in nameless.json()['detail']
 
-    bloomberg_seams(monkeypatch, terminal=CannedTerminal({}),
-                    provision=lambda source, as_of, on_batch=None: (
-                        json.loads((home / 'security_map.json').read_text()), False))
+    bloomberg_seams(monkeypatch, provision=lambda source, as_of, on_batch=None: (
+        json.loads((home / 'security_map.json').read_text()), False))
     metronome = service.Metronome(60.0, {'pairs': []})
     metronome.beat()
     service.EXECUTOR.queue.join()
@@ -3816,9 +3728,10 @@ def test_nothing_lands_that_would_depend_on_a_block_the_write_will_not_carry(
     """
     scopes = (('fx_vol', 'EURZAR'), ('fx_spot', 'EURUSD'), ('rates', 'EUR'))
     seeded_map(tmp_path / 'home', *scopes)
-    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
     # every EUR benchmark but one is dead: one believed point against a floor of two
-    terminal.dead = {row['security'] for row in seeded_rows_of('EUR')[1:]}
+    setup_terminal(monkeypatch, *scopes,
+                   dead=[row['security'] for row in seeded_rows_of('EUR')[1:]],
+                   **{'EURUSD BGN Curncy': 1.0855})
     before = desk_setup.read_bytes()
 
     result, outcome = set_up({'pair': 'EURZAR'})
@@ -3847,9 +3760,9 @@ def test_what_the_write_can_complete_still_lands(desk_setup, tmp_path, monkeypat
     """
     scopes = (('fx_spot', 'EURUSD'), ('rates', 'EUR'), ('fx_spot', 'USDJPY'), ('rates', 'JPY'))
     seeded_map(tmp_path / 'home', *scopes)
-    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855,
-                                                       'USDJPY BGN Curncy': 157.25})
-    terminal.dead = {row['security'] for row in seeded_rows_of('EUR')[1:]}
+    setup_terminal(monkeypatch, *scopes,
+                   dead=[row['security'] for row in seeded_rows_of('EUR')[1:]],
+                   **{'EURUSD BGN Curncy': 1.0855, 'USDJPY BGN Curncy': 157.25})
     deals = [dict(json.loads(dump(CASHFLOW)), Reference='CF' + currency, Currency=currency,
                   Discount_Rate=currency) for currency in ('EUR', 'JPY')]
 
@@ -3890,7 +3803,7 @@ def test_a_surface_is_held_with_the_leg_it_cannot_stand_on(desk_setup, tmp_path,
     seeded_map(tmp_path / 'home', *scopes)
     # the terminal answers for EURUSD under a name no candidate expects, so the probe rejects it
     # and the map verifies no spot for the pair - the shape a desk meets before any verification
-    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
+    setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
     before = desk_setup.read_bytes()
 
     result, outcome = set_up({'pair': 'EURZAR'})
@@ -3930,8 +3843,9 @@ def test_a_surface_is_held_with_the_leg_it_cannot_stand_on(desk_setup, tmp_path,
     desk_setup.write_text(json.dumps(document, indent=2), newline='\n')
     scopes = (('fx_vol', 'USDJPY'), ('rates', 'JPY'), ('fx_vol', 'EURZAR'))
     seeded_map(tmp_path / 'home', *scopes)
-    terminal = setup_terminal(monkeypatch, *scopes, **{'EURUSD BGN Curncy': 1.0855})
-    terminal.dead = {row['security'] for row in seeded_rows_of('JPY')[1:]}
+    setup_terminal(monkeypatch, *scopes,
+                   dead=[row['security'] for row in seeded_rows_of('JPY')[1:]],
+                   **{'EURUSD BGN Curncy': 1.0855})
     standing = desk_setup.read_bytes()
 
     result, outcome = set_up({'pair': 'USDJPY'})
@@ -4142,17 +4056,15 @@ def test_a_roll_re_prices_the_market_the_book_already_carried(desk_setup, tmp_pa
     seeded_map(tmp_path / 'home', *scopes)
     # the rand strip prints three days back, so the day the ROLL snapped is the later one
     rand = (datetime.date.today() - datetime.timedelta(3)).isoformat()
-    terminal = setup_terminal(
-        monkeypatch, *scopes,
-        stamps={row['security']: rand for row in seeded_rows_of('ZAR-ZARONIA')},
-        **{'EURUSD BGN Curncy': 1.0855, 'USDZAR BGN Curncy': 18.5, 'USDCHF BGN Curncy': 0.79})
+    stamps = {row['security']: rand for row in seeded_rows_of('ZAR-ZARONIA')}
+    spots = {'EURUSD BGN Curncy': 1.0855, 'USDZAR BGN Curncy': 18.5, 'USDCHF BGN Curncy': 0.79}
+    setup_terminal(monkeypatch, *scopes, stamps=stamps, **spots)
     assert set_up({'pair': 'EURZAR'})[1]['written'] is True
     behind = (datetime.date.today() - datetime.timedelta(10)).isoformat()
     assert CLIENT.post('/book/date', json={'base_date': behind}).status_code == 200
     euro = [row['security'] for row in seeded_rows_of('EUR')]
-    terminal.prints.update(dict.fromkeys(euro, 3.25))
-    terminal.dead = {euro[-1]}
-    terminal.asked.clear()
+    terminal = setup_terminal(monkeypatch, *scopes, stamps=stamps, dead=euro[-1:],
+                              **dict(spots, **dict.fromkeys(euro, 3.25)))
 
     result, outcome = set_up({'deal': dict(json.loads(dump(CASHFLOW)),
                                            Discount_Rate='ZAR-ZARONIA')})
@@ -4213,9 +4125,8 @@ def test_the_tick_moves_the_books_spots(desk, monkeypatch):
     market['Price Factors']['FxRate.CHF'] = {'Domestic_Currency': None, 'Interest_Rate': 'USD',
                                              'Spot': 1.1}
     desk.write_text(json.dumps(document, indent=2), newline='\n')
-    terminal = CannedTerminal({'USDZAR BGN Curncy': 19.0})
-    bloomberg_seams(monkeypatch, terminal=terminal,
-                    provision=lambda source, as_of, on_batch=None: (routed_map(), False))
+    terminal = bloomberg_seams(monkeypatch, refdata=canned({'USDZAR BGN Curncy': 19.0}),
+                               provision=lambda source, as_of, on_batch=None: (routed_map(), False))
 
     result, outcome = ticked()
     factors = json.loads(desk.read_text())['Calc']['MergeMarketData']['ExplicitMarketData'][
@@ -4253,8 +4164,7 @@ def test_a_spot_print_the_terminal_will_not_stand_behind_refuses_the_tick(desk, 
     before = desk.read_bytes()
     stale = bloomberg_seams(
         monkeypatch, stale=security_map.stale,
-        terminal=CannedTerminal(routed_prints(), stamp=today(),
-                                stamps={'USDZAR BGN Curncy': '2019-01-01'}),
+        refdata=canned(routed_prints(), stamp=today(), stamps={'USDZAR BGN Curncy': '2019-01-01'}),
         provision=lambda source, as_of, on_batch=None: (routed_map(), False)) is not None
 
     result, outcome = ticked()
@@ -4269,7 +4179,7 @@ def test_a_spot_print_the_terminal_will_not_stand_behind_refuses_the_tick(desk, 
     assert desk.read_bytes() == before
 
     bloomberg_seams(monkeypatch, provision=lambda source, as_of, on_batch=None: (
-        routed_map(), False), terminal=CannedTerminal(
+        routed_map(), False), refdata=canned(
             routed_prints(), dead=['USDZAR BGN Curncy'], stamp=today()))
     result, outcome = ticked()
 
@@ -4920,8 +4830,7 @@ def test_a_two_way_quote_books_the_mirror_at_the_margin_and_the_spread(quoting_t
         'the book does not hold the margin and the spread the desk charged')
 
 
-def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting_two_way, tmp_path,
-                                                                        monkeypatch):
+def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting_two_way, recorded):
     """The one path where the PIN is load-bearing for the mark, walked end to end.
 
     A strip quoted on a fitted book prices under the fitted law, and its two-way charge comes off
@@ -4937,8 +4846,9 @@ def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting
     law is held: the `quote_filed` the acceptance files carries a `ticket`, and that hash is the
     plan hash of the book the booking left - the mirror spliced in AND the pin merged. A ticket
     taken without the pin is a plan no booking reaches, and a decision filed over it would sign
-    nothing. The home is this gate's own, minted under tmp: the rest of this file runs with none,
-    and `derivus_spine` is imported HERE for the reason the service imports it inside the function.
+    nothing. The home is this gate's own, a copy of the session's under tmp: the rest of this file
+    runs with none, and `derivus_spine` is imported HERE for the reason the service imports it
+    inside the function.
 
     THE BOOK STATES THE DECLARED PATH COUNT, because the mark is an ordinary base valuation of the
     book and a strip walking a fitted law solves a strike 2.8e-2 per path wide: the identity below
@@ -4949,13 +4859,9 @@ def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting
     Killing mutation: the approval booking the quote as client paper rather than its mirror, which
     books the bank's side the wrong way round.
     """
-    from derivus_spine import SpineLog, init_home
+    from derivus_spine import SpineLog
 
-    home = tmp_path / 'spine'
-    init_home(home, 'subject-desk-one')
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', 'subject-desk-one')
-
+    home = recorded
     document = json.loads(quoting_two_way.read_text())
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Factors']['LogVar2FJModelParameters.ZAR'] = json.loads(dump(CALIBRATED))
@@ -5769,7 +5675,7 @@ def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_th
         service.BOOK = None
 
 
-def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(tmp_path, monkeypatch):
+def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_path):
     """`POST /book/survival` writes `SurvivalProb.<counterparty>` from the spread and the recovery
     the CVA desk states, each spread a hazard s/(1-R), the last one's line run on to fifty years.
     Read back through the engine's own factor, 150bp flat at a 40% recovery survives
@@ -5787,13 +5693,10 @@ def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(tmp_path, monkey
     no `mark`, which writes the curve an unscoped seat asked for.
     """
     from derivus import riskfactors
-    from derivus_spine import SpineLog, init_home
+    from derivus_spine import SpineLog
     from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
-    seat, home = 'subject-desk-one', tmp_path / 'spine'
-    init_home(home, seat)
-    for name, value in (('DV_SPINE_HOME', home), ('DV_SPINE_ACTOR', seat), ('DV_HOME', tmp_path)):
-        monkeypatch.setenv(name, str(value))
+    seat, home = 'subject-desk-one', recorded
     ghost = netting_set('NS_GHOST', 'GHOST', [dict(VANILLA, Reference='OPT_G',
                                                    Expiry_Date=BASE + pd.DateOffset(years=5))])
     book = xva_book(tmp_path, [ghost])
@@ -7117,14 +7020,10 @@ RECORDED_INSTRUMENTS = tuple(hashlib.sha256(terms).hexdigest() for terms in RECO
 STRANGER = 'subject-nobody'
 
 
-def recorded_home(tmp_path, monkeypatch, clips=('EXEC-1',)):
-    """A minted spine home with one fill per clip, configured for the service and its actor."""
-    from derivus_spine import SpineLog, init_home
+def recorded_home(home, clips=('EXEC-1',)):
+    """The `recorded` home, configured for the service and its actor, with one fill per clip."""
+    from derivus_spine import SpineLog
 
-    home = tmp_path / 'spine'
-    init_home(home, RECORDED_SEAT)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', RECORDED_SEAT)
     log = SpineLog(home)
     try:
         for terms in RECORDED_TERMS:
@@ -7166,7 +7065,7 @@ async def rung_by(home, booking):
     return sent, rang, landed, idle
 
 
-def test_the_doorbell_carries_a_position_and_never_a_fact(tmp_path, monkeypatch):
+def test_the_doorbell_carries_a_position_and_never_a_fact(recorded):
     """The stream, driven as a stream - the generator the endpoint hands starlette, stepped by this
     gate rather than read off a socket, because a `TestClient` collects a response before it
     answers and a doorbell never completes.
@@ -7190,7 +7089,7 @@ def test_the_doorbell_carries_a_position_and_never_a_fact(tmp_path, monkeypatch)
         finally:
             log.close()
 
-    home = recorded_home(tmp_path, monkeypatch, clips=())
+    home = recorded_home(recorded, clips=())
     sent, rang, landed, idle = asyncio.run(rung_by(home, booking))
 
     assert sent[0].startswith(':'), 'the opening comment is what registers the listener'
@@ -7203,7 +7102,7 @@ def test_the_doorbell_carries_a_position_and_never_a_fact(tmp_path, monkeypatch)
     assert not service.spine.package().log.WATCHERS, 'a closed stream left its listener behind'
 
 
-def test_the_frames_read_is_the_twelve_fields_and_the_strip_is_six(tmp_path, monkeypatch):
+def test_the_frames_read_is_the_twelve_fields_and_the_strip_is_six(recorded):
     """Why a replica needs a read of its own. `/spine/frames` answers what `SpineLog.frames`
     yields, in canonical bytes; `/book/activity` answers six of those fields plus a declared
     sentence, and every one of the six it drops is something `accept` asks for - the sealed body,
@@ -7213,7 +7112,7 @@ def test_the_frames_read_is_the_twelve_fields_and_the_strip_is_six(tmp_path, mon
     from derivus_spine import SpineLog, canonical_bytes
     from derivus_spine.log import FRAME_FIELDS
 
-    home = recorded_home(tmp_path, monkeypatch)
+    home = recorded_home(recorded)
     log = SpineLog(home)
     try:
         held = list(log.frames())
@@ -7243,7 +7142,7 @@ def test_the_frames_read_is_the_twelve_fields_and_the_strip_is_six(tmp_path, mon
     assert canonical_bytes(CLIENT.get('/spine/frames').json()['frames']) == canonical_bytes(held)
 
 
-def test_a_blob_is_served_by_address_to_a_seat_the_record_admits_to_read_it(tmp_path, monkeypatch):
+def test_a_blob_is_served_by_address_to_a_seat_the_record_admits_to_read_it(recorded, monkeypatch):
     """The second read a replica needs, and the one that is gated. A blob is self-verifying by
     hash, so the serving side needs no trust; what it does need is the asking seat's READ row,
     since the bytes behind a citation are the fact itself. A home declaring no document serves
@@ -7255,7 +7154,7 @@ def test_a_blob_is_served_by_address_to_a_seat_the_record_admits_to_read_it(tmp_
     from derivus_spine import SpineLog
     from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
-    home = recorded_home(tmp_path, monkeypatch, clips=())
+    home = recorded_home(recorded, clips=())
     log = SpineLog(home)
     try:
         digest = log.store.put(b'{"USDZAR":18.5}')

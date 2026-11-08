@@ -37,10 +37,8 @@ from derivus import spine, utils
 from derivus.instruments import NettingCollateralSet
 from derivus.schema import declared_fields
 from derivus.spine import Collateral
-from derivus_spine import init_home
 from derivus_spine.projections import CSA
 
-ACTOR = 'subject-collateral'
 BASE, NEXT = '2024-06-28', '2024-06-29'
 #: Units of the dollar - the book's base and reporting currency - per unit of each currency.
 FX = {'USD': 1.0, 'ZAR': 0.0625, 'EUR': 1.25}
@@ -312,7 +310,7 @@ def balance_of(job):
 
 
 def test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_transfer(
-        tmp_path, monkeypatch):
+        recorded):
     """ONE FORMULA, THE ENGINE'S. The record holds collateral under a declared agreement - euros,
     rand and dollars posted, a margin beside it and a movement dated the day after - and the
     compiled job writes the collateral held by its base date as the set's `Opening_Balance`, in
@@ -333,11 +331,6 @@ def test_the_record_s_balance_opens_the_engine_s_recursion_and_the_call_is_its_t
     cannot cross let through a read, or through a base valuation; a diary refused over it; an
     asset returned in full still wanting a spot.
     """
-    home = tmp_path / 'spine'
-    init_home(home, ACTOR)
-    monkeypatch.setenv('DV_SPINE_HOME', str(home))
-    monkeypatch.setenv('DV_SPINE_ACTOR', ACTOR)
-    monkeypatch.setenv('DV_HOME', str(tmp_path))
     job = engine_job(TERMS)
     assert spine.compiled_job(job) is job, 'nothing held, and the file is the plan'
     spine.declare_entity('LEI-1', 'Client One')

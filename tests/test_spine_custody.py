@@ -560,9 +560,7 @@ def test_a_grant_names_the_wrap_drift_it_creates_rather_than_leaving_it_to_a_run
 
     Killing mutation: the grant reporting no rewrap owed.
     """
-    home = tmp_path / 'hub'
-    init_home(home, MINT)
-    log = SpineLog(home)
+    home, log = minted(tmp_path)
     enroll(log, DESK, actor=MINT)
     log.close()
 
@@ -816,8 +814,8 @@ def test_the_cli_enrolls_and_rewraps_and_reports_what_it_did(tmp_path, capsys):
 
     Killing mutation: the enrollment reporting no seat key file.
     """
-    home = tmp_path / 'hub'
-    init_home(home, MINT)
+    home, log = minted(tmp_path)
+    log.close()
     named = ['--home', str(home)]
 
     assert cli.main(['enroll'] + named + ['--subject', DESK, '--actor', MINT]) == 0
@@ -849,8 +847,8 @@ def test_the_cli_turns_a_custody_refusal_into_the_librarys_own_sentence(tmp_path
 
     Killing mutation: the CLI catching nothing, which reaches the terminal as a traceback.
     """
-    home = tmp_path / 'hub'
-    init_home(home, MINT)
+    home, log = minted(tmp_path)
+    log.close()
     os.unlink(str(home / 'keys' / FIRM))
 
     assert cli.main(['rewrap', '--home', str(home), '--actor', MINT]) == 1
