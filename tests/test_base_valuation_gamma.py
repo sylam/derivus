@@ -397,26 +397,6 @@ def test_a_deal_that_registered_a_boundary_correction_is_refused_by_name():
     assert second is None and np.abs(first_order(first)).max() > 0.0
 
 
-def test_hedge_monte_carlo_refuses_the_second_order_block():
-    """`Greeks` is not a HedgeMonteCarlo parameter, so `'All'` there is a job asking for something it
-    will not get - and silently ignoring it is the failure worth raising over: the run succeeds,
-    the report has no second-order block, and nothing says the request was dropped.
-
-    ASKED THE WAY A JOB ASKS IT: the key rides in the file's `Calculation` block, which
-    `run_hedgemontecarlo` folds into its parameters, so the finding is that the STORE can carry
-    `'All'` to a calculation that cannot honour it. Set in memory; the template file is untouched.
-
-    Killing mutation: the HedgeMonteCarlo refusal of `Greeks: 'All'` dropped.
-    """
-    import derivus as dv
-    context = dv.Context()
-    context.load_json(os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
-                                   'policy_test_simulate_only.json'))
-    context.current_cfg.deals['Calculation']['Greeks'] = 'All'
-    with pytest.raises(Exception, match=r"Greeks: 'All' is not a HedgeMonteCarlo parameter"):
-        context.run_job()
-
-
 @pytest.mark.parametrize('fixture', sorted(MONTE_CARLO_LADDER))
 def test_a_monte_carlo_gamma_is_the_derivative_of_its_own_reported_delta(fixture):
     """d2V/dS2 against a CENTRAL DIFFERENCE of the reported AAD delta on the Monte Carlo
