@@ -20,10 +20,11 @@ SAME-DAY observation:
     ForwardRate.PLATINUM_CARRY,0.5      z(0.5) = c + 0.5a   (z(tau)*tau = c*tau + a*tau^2,
     ForwardRate.PLATINUM_CARRY,1.0      z(1.0) = c + a       total carry incl. financing)
 
-The carry columns are the per-day AVERAGE of the two sessions' solves — each session's
-three-futures snapshot is an independent read of the same slow curve, so the mean halves the
-snapshot noise (the 1/2(AM+PM) convention the slow basis level already uses) — falling back to
-whichever session solved when the other's snapshot failed quality.
+The carry columns are the AM session's solve alone: a decision at the AM fix may read only what
+has printed by then, and the PM snapshot prints about four hours later (until 2026-11-08 the
+columns averaged the two sessions, which leaked half the PM read into every AM decision: 2% of
+the record's lead). Where the AM snapshot failed quality the row's carry is NaN, as a row with
+no solve always was.
 
 Rows where a snapshot fails quality (crossed, wide, missing contract, tau <= 2d) leave that
 session's solved column NaN; the fixes are always carried. Tenors use days/365.25 (the framework's
@@ -116,13 +117,11 @@ def build_archive(df, expiry):
         z_am, z_pm = c_am + a_am * tau, c_pm + a_pm * tau
         both = ~np.isnan(z_am) & ~np.isnan(z_pm)
         m = both & (np.abs(z_am - z_pm) < 1.0)
-        logging.info('carry z(%.1f): both sessions %d, corr %.3f, AM-PM read spread sd %.2f%%, '
-                     'step sd AM-only %.3f%% -> averaged %.3f%%', tau, both.sum(),
+        logging.info('carry z(%.1f): AM solved %d, both sessions %d, corr %.3f, PM-AM read spread sd %.2f%%, '
+                     'AM step sd %.3f%%, rows the PM alone solved %d', tau, (~np.isnan(z_am)).sum(), both.sum(),
                      np.corrcoef(z_am[m], z_pm[m])[0, 1], 100 * (z_am - z_pm)[m].std(),
-                     100 * np.nanstd(np.diff(z_am)), 100 * np.nanstd(np.diff(np.where(
-                         both, 0.5 * (z_am + z_pm), np.where(np.isnan(z_am), z_pm, z_am)))))
-        out[f'{CARRY_COL},{tau}'] = np.where(
-            both, 0.5 * (z_am + z_pm), np.where(np.isnan(z_am), z_pm, z_am))
+                     100 * np.nanstd(np.diff(z_am)), int((np.isnan(z_am) & ~np.isnan(z_pm)).sum()))
+        out[f'{CARRY_COL},{tau}'] = z_am                         # the AM session's read, known at the AM fix
     return out
 
 
