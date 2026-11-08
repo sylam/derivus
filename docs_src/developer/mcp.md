@@ -98,11 +98,13 @@ answer a model would read as agreement. **Held by**
 A host offers prompts as commands and resources as documents, so both are contract. Three prompts,
 each a numbered walk: `quote_a_structure`, `import_a_legacy_book` (a counterparty's deals the file
 holds, each taken on at one) and `morning_desk_check`. Four resources: `derivus://book` (the job
-document), `derivus://schema/{store}` (one of the seven `/schema` stores),
+document), `derivus://schema/{store}` (`Instrument`, `Structure`, `Calculation`, `Factor`, `Process`,
+`MarketPrices` or `Configuration`, as `/schema` serves it),
 `derivus://quote/{quote_id}` (the pending trade) and `derivus://quote/{quote_id}/sheet` (the
 `.xlsx`, so the client's workbook travels as a file rather than a path on the service's disk); a
 quote answers with those two URIs under `resources`. **Held by**
-`test_the_host_is_offered_three_walks_and_four_documents`.
+`test_the_host_is_offered_three_walks_and_four_documents`. **Not gated:** what each walk says, the
+gate reading the prompts' arguments.
 
 ## The contracts
 
@@ -118,7 +120,11 @@ before they queue. **Held by**
 `test_a_rejected_booking_is_an_answer_that_wrote_nothing`,
 `test_what_a_model_actually_mistypes_comes_back_as_data`,
 `test_the_store_names_what_must_be_stated_and_a_missing_term_refuses_by_name`,
-`test_service.py::test_a_candidate_naming_market_data_the_book_lacks_is_refused`.
+`test_a_parent_that_takes_no_children_is_refused`,
+`test_the_service_being_down_names_dv_service`,
+`test_service.py::test_a_candidate_naming_market_data_the_book_lacks_is_refused`,
+`::test_a_solve_on_a_candidate_naming_market_data_the_book_lacks_is_refused`,
+`::test_an_unknown_quote_id_names_the_tmp_it_looked_in`.
 
 ### A refusal names the thing and the remedy
 
@@ -131,7 +137,8 @@ netting set the book never opened; a credit Monte Carlo with no model or no live
 `test_service.py::test_a_solve_refuses_a_field_and_a_bounds_the_deal_cannot_carry`,
 `::test_a_calculation_override_is_judged_against_its_own_declarations`,
 `::test_a_credit_monte_carlo_this_book_cannot_frame_refuses_before_it_draws`,
-`::test_a_book_carrying_an_unnamed_deal_names_it_rather_than_dying`.
+`::test_a_book_carrying_an_unnamed_deal_names_it_rather_than_dying`,
+`::test_a_quote_for_a_client_the_book_never_opened_refuses_at_the_ask`.
 
 ### A recorded desk books through these tools
 
@@ -141,13 +148,13 @@ every write files under the seat in `actor`. They are optional in the schema bec
 serves a desk with a record and one without; the service's refusal names a missing one. A delete
 records nothing, so it takes no seat. `describe_instrument_type` marks the fields a position scales
 (`sized`), flips (`side`) and settles cash on (`settles`). **Held by**
-`test_a_recorded_desk_books_and_accepts_through_the_binding`.
+`test_a_recorded_desk_books_and_accepts_through_the_binding`; **Not gated:** those three marks.
 
 ### Deals are addressed by position {#positional-addressing}
 
 `deal_path` (`"0/2/1"`) is the identity because references are not unique in a book. Another host's
-booking moves every position under a path, so `amend_deal` and `delete_deal` take the `reference`
-read there and refuse when the path no longer holds it, rather than acting on whoever sits there
+booking moves every position under a path, so `amend_deal`, `delete_deal` and a take-on through
+`book_deal` take the `reference` read there and refuse when the path no longer holds it, rather than acting on whoever sits there
 now. **Held by** `test_service.py::test_a_tick_that_keeps_losing_to_bookings_lands_on_its_last_pass`.
 
 ### Answers are summaries and pointers
