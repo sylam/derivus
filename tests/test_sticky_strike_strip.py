@@ -22,6 +22,19 @@ ATM 25 vol with a -0.15 slope). Declared `Sticky_Strike` against a flat `ATM_Ref
 barrier marks 10.088311, and against `Sticky_Moneyness` 10.178774 - **-0.89%**, which is the whole
 of the difference between reading a 25.00 vol at every fixing and reading 25.02 through 25.31 vol
 down the smile's slope, the strike sitting under the forward by the 2% carry.
+
+THE SAME STRIP ON A SLOPED WORLD, its repo curve rising against a falling dividend one, reads the
+surface's TERM STRUCTURE and the curves' FORWARD, each against a reference written here off the
+stated curves and surface alone: a down-and-out against a quadrature of its monitoring, its
+knock-in and knock-out against Black at the curves' forward, and the two conventions above against
+each other where `ATM_Ref` is that forward, over a book of every pricer reading the surface. An
+implied vol and a zero rate are both cumulative, so a wrong allocation over the fixings telescopes
+to the right total: a European, a flat surface and a flat curve are blind to it, and only the
+monitoring sees it.
+
+RATE UNITS last, by dimension: the book with its dates twice as far, in a world of half the rates
+and half the variance, prices and walks as it does at home, so a rate, a carry or a variance read
+without the year fraction it accrues over shows at any tenor, a year included.
 """
 import json
 import os
@@ -33,6 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import numpy as np
 import pandas as pd
 import pytest
+from scipy.special import ndtr
 
 import derivus
 from derivus import utils
@@ -40,6 +54,7 @@ from derivus.config import CustomJsonEncoder, ModelParams
 
 BASE = pd.Timestamp('2024-06-28')
 SPOT, R_USD, Q_EQ = 100.0, 0.04, 0.02
+X0, R_EUR, FX_VOL, RHO = 1.25, 0.02, 0.15, 0.35
 STRIKE, UNITS, BARRIER, EXPIRY_D = 100.0, 1.0, 85.0, 365
 MONITOR_D = list(range(30, 361, 30))
 
@@ -47,28 +62,46 @@ MONITOR_D = list(range(30, 361, 30))
 TENORS = [0.02] + [d / 365.0 for d in MONITOR_D] + [1.0, 2.0]
 SKEW = {'ATM_Vol': 0.25, 's': -0.15, 'L': 0.30, 'R': 0.20,
         'C': -0.35, 'D': 0.35, 'lam': 0.5, 'rho': 0.5}
+#: Each world's repo and dividend zero rates by tenor: flat, and sloped against each other.
+WORLDS = {'flat': (lambda t: R_USD, lambda t: Q_EQ),
+          'sloped': (lambda t: 0.01 + 0.03 * t, lambda t: 0.04 - 0.02 * t)}
 
 
 def curve(value):
     return utils.Curve([], [[t, value] for t in TENORS])
 
 
-FORWARD_REF = utils.Curve([], [[t, SPOT * float(np.exp((R_USD - Q_EQ) * t))] for t in TENORS])
+def forward_ref(world):
+    """The forward to each tenor knot of `world`'s curves, `S exp((r(t) - q(t)) t)`."""
+    repo, dividend = WORLDS[world]
+    return utils.Curve([], [[t, SPOT * float(np.exp((repo(t) - dividend(t)) * t))] for t in TENORS])
 
 
-def factors(rule, atm_ref, smile=True):
+def factors(rule, atm_ref, smile=True, world='flat'):
+    repo, dividend = WORLDS[world]
     vol = {'Surface_Type': 'Skew', 'Moneyness_Rule': rule, 'Currency': 'USD', 'ATM_Ref': atm_ref}
     vol.update({k: curve(v if smile or k not in ('s', 'L', 'R') else 0.0)
                 for k, v in SKEW.items()})
     return {
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
         'InterestRate.USD': {'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
-                             'Curve': utils.Curve([], [[0.0, R_USD], [5.0, R_USD]])},
+                             'Curve': utils.Curve([], [[t, repo(t)] for t in TENORS])},
         'EquityPrice.EQ': {'Spot': SPOT, 'Currency': 'USD', 'Interest_Rate': 'USD',
                            'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0},
         'DividendRate.EQ': {'Currency': 'USD', 'Floor': None,
-                            'Curve': utils.Curve([], [[0.0, Q_EQ], [5.0, Q_EQ]])},
-        'EquityPriceVol.EQ': vol}
+                            'Curve': utils.Curve([], [[t, dividend(t)] for t in TENORS])},
+        'EquityPriceVol.EQ': vol,
+        'FxRate.EUR': {'Domestic_Currency': None, 'Interest_Rate': 'EUR', 'Spot': X0},
+        'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                             'Curve': curve(R_EUR)},
+        'FXVol.EUR.USD': fx_grid(FX_VOL),
+        'Correlation.EquityPrice.EQ/FxRate.EUR.USD': {'Value': RHO}}
+
+
+def explicit(sigma):
+    """An `Explicit` surface reading `sigma(m, t)` at its moneyness and tenor knots."""
+    return {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': utils.Curve(
+        [], [[m, t, float(sigma(m, t))] for m in (0.6, 1.0, 1.4) for t in TENORS])}
 
 
 def day(offset):
@@ -86,24 +119,30 @@ DEAL = {'Object': 'EquityBarrierOption', 'Reference': 'BR', 'Currency': 'USD',
 BV = {'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
       'MCMC_Simulations': 8192, 'Quasi_Seed': 1}
 
-#: the equity alone is simulated, so a CreditMonteCarlo reports a profile with many rows
+#: the equity and the fx rate are simulated, so a CreditMonteCarlo reports a profile with many rows
 CMC = {'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': 'USD',
        'Time_grid': '0d 12m(1m)', 'Batch_Size': 64, 'Simulation_Batches': 1,
        'Random_Seed': 1, 'MCMC_Simulations': 2048, 'Deflation_Interest_Rate': 'USD',
        'Generate_Cashflows': 'No'}
-MODELS = {'Model Configuration': ModelParams(({'EquityPrice': 'GBMAssetPriceModel'}, {})),
-          'Price Models': {'GBMAssetPriceModel.EQ': {'Drift': 0.0, 'Vol': 0.25}}}
 
 
-def run(price_factors, calc=BV):
+def models(stretch=1):
+    """GBM for the equity and the fx rate, each variance divided by `stretch`."""
+    return {'Model Configuration': ModelParams((
+                {'EquityPrice': 'GBMAssetPriceModel', 'FxRate': 'GBMAssetPriceModel'}, {})),
+            'Price Models': {'GBMAssetPriceModel.EQ': {'Drift': 0.0, 'Vol': 0.25 / np.sqrt(stretch)},
+                             'GBMAssetPriceModel.EUR': {'Drift': 0.0, 'Vol': FX_VOL / np.sqrt(stretch)}}}
+
+
+def run(price_factors, calc=BV, deals=(DEAL,), stretch=1):
     market = {'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
               'Valuation Configuration': {}, 'Price Factors': price_factors}
-    if calc is CMC:
-        market.update(MODELS)
+    if calc is not BV:
+        market.update(models(stretch))
     job = {'Calc': {
         'Calculation': dict(calc),
         'Deals': {'Reference': 'sticky',
-                  'Deals': {'Children': [{'Instrument': {'.Deal': DEAL}}]}},
+                  'Deals': {'Children': [{'Instrument': {'.Deal': deal}} for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
     cx = derivus.Context()
     cx.load_json((json.dumps(job, cls=CustomJsonEncoder), 'sticky'))
@@ -111,12 +150,44 @@ def run(price_factors, calc=BV):
     return out['Results']['mtm']
 
 
-def mtm(price_factors):
-    """The deal's own row. A deal that left no row was skipped, and says so."""
-    rows = run(price_factors)
-    own = rows[rows['Reference'] == 'BR']['Value']
-    assert len(own) == 1, 'the deal left no row in Results: it was skipped, not priced'
-    return float(own.iloc[0])
+def marks(price_factors, deals=(DEAL,)):
+    """`{reference: mark}` of `deals` priced in one document. A deal that left no row was
+    skipped, and says so."""
+    rows = run(price_factors, deals=deals)
+    own = {deal['Reference']: rows[rows['Reference'] == deal['Reference']]['Value'] for deal in deals}
+    assert all(len(v) == 1 for v in own.values()), 'a deal left no row in Results: it was skipped'
+    return {reference: float(v.iloc[0]) for reference, v in own.items()}
+
+
+def book(stretch=1):
+    """The monthly knock-out and, to 300 days, a tenor other than a year, every other pricer of the
+    strip and the closed forms that reads a surface: the knock-in, the continuous knock-out, the
+    one-touch, the Asian, a composite knock-in and an fx partial-time knock-in, each date `stretch`
+    times as far from the base date."""
+    at = lambda d: day(stretch * d)
+    short = dict(DEAL, Expiry_Date=at(300))
+    equity = {k: DEAL[k] for k in ('Currency', 'Payoff_Currency', 'Equity', 'Dividends',
+                                   'Discount_Rate', 'Equity_Volatility', 'Buy_Sell')}
+    return (
+        dict(DEAL, Expiry_Date=at(EXPIRY_D), Barrier_Dates=[[at(d), ''] for d in MONITOR_D]),
+        dict(short, Reference='KI', Barrier_Type='Down_And_In',
+             Barrier_Dates=[[at(d), ''] for d in MONITOR_D[:10]]),
+        dict(short, Reference='CONT', Barrier_Dates=[]),
+        dict(equity, Object='EquityOneTouchOption', Reference='TOUCH', Cash_Payoff=100.0,
+             Barrier_Type='Down', Barrier_Price=BARRIER, Payment_Timing='Expiry', Expiry_Date=at(300),
+             Barrier_Dates=[], Barrier_Monitoring_Frequency=pd.DateOffset(days=0)),
+        dict(equity, Object='EquityDiscreteExplicitAsianOption', Reference='ASIAN', Option_Type='Call',
+             Strike_Price=STRIKE, Units=UNITS, Expiry_Date=at(300), Is_Digital='No',
+             Sampling_Data=[[at(d), 0.0, 1.0] for d in (90, 180, 270, 300)]),
+        dict(short, Reference='COMPO', Payoff_Currency='EUR', Discount_Rate='EUR', Payoff_Type='Compo',
+             Strike_Price=80.0, Barrier_Price=70.0, Barrier_Type='Down_And_In',
+             Barrier_Dates=[[at(d), ''] for d in (90, 180, 270, 300)]),
+        {'Object': 'FXPartialTimeBarrierOption', 'Reference': 'PARTIAL', 'Currency': 'USD',
+         'Underlying_Currency': 'EUR', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD',
+         'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': X0,
+         'Barrier_Price': 1.12, 'Barrier_Type': 'Down_And_In', 'Barrier_At_Start': 'Yes',
+         'Barrier_Limit_Date': at(150), 'Expiry_Date': at(300), 'Underlying_Amount': 1000.0,
+         'Barrier_Monitoring_Frequency': pd.DateOffset(days=0)})
 
 
 def test_a_skew_surface_under_sticky_strike_prices_a_monitoring_strip():
@@ -126,27 +197,162 @@ def test_a_skew_surface_under_sticky_strike_prices_a_monitoring_strip():
 
     Killing mutation: the strip's moneyness left unbroadcast onto its fixing axis.
     """
-    assert mtm(factors('Sticky_Strike', curve(SPOT))) == pytest.approx(10.093277, rel=1e-6)
+    assert marks(factors('Sticky_Strike', curve(SPOT)))['BR'] == pytest.approx(10.093277, rel=1e-6)
 
 
-def test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forward():
+@pytest.mark.parametrize('world', ['flat', 'sloped'])
+def test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forward(world):
     """`log(K / ATM_Ref)` and `log(K / F)` are the same number when `ATM_Ref` is `F`, so the two
-    documents read the same vol at every fixing and mark to the BIT. This is what places the
-    broadcast coordinate on the surface: a strip read at the wrong tenor, or at the spot where it
-    wants the forward, breaks this identity while still producing a number.
+    documents read the same vol at every fixing and every expiry and mark the book to the BIT.
+    This is what places the coordinate on the surface: a read at the wrong tenor, or at a forward
+    other than the curves' (the spot, the interval carry's, one missing its year fraction), breaks
+    this identity while still producing a number - on the sloped world the knock-out marks
+    10.071417 where the reference at the spot reads 9.986571, -0.84%.
 
     THE CONTROL: with no slope and no wings every coordinate reads `ATM_Vol`, so the reference
     cannot matter and all three spellings agree - the difference between that and the identity
-    above is what sizes the convention.
+    above is what sizes the convention, for every deal reading the equity surface as its own.
 
-    Killing mutation: `Sticky_Moneyness` read against the spot where it wants the forward.
+    Killing mutations: `Sticky_Moneyness` read against the spot where it wants the forward; the
+    barrier's strip forwarded on the interval carry (`forward_carry_rate`'s) where it wants the zero
+    carry, red on the sloped world alone; `forward_vol_strip`'s forward without its year fractions;
+    the discrete barrier's expiry read, the continuous barrier's and the one-touch's each forwarded
+    without the year fraction to the expiry.
     """
-    assert mtm(factors('Sticky_Strike', FORWARD_REF)) == mtm(
-        factors('Sticky_Moneyness', curve(SPOT)))
-    flat = mtm(factors('Sticky_Strike', curve(SPOT), smile=False))
-    assert flat == mtm(factors('Sticky_Moneyness', curve(SPOT), smile=False))
-    assert flat == mtm(factors('Sticky_Strike', FORWARD_REF, smile=False))
-    assert flat != mtm(factors('Sticky_Moneyness', curve(SPOT))), 'the smile must be worth something'
+    def priced(rule, atm_ref, smile=True):
+        return marks(factors(rule, atm_ref, smile, world), book())
+    ref = forward_ref(world)
+    assert priced('Sticky_Strike', ref) == priced('Sticky_Moneyness', curve(SPOT))
+    flat = priced('Sticky_Strike', curve(SPOT), smile=False)
+    assert flat == priced('Sticky_Moneyness', curve(SPOT), smile=False) == priced(
+        'Sticky_Strike', ref, smile=False)
+    smiled = priced('Sticky_Moneyness', curve(SPOT))
+    assert all(flat[r] != smiled[r] for r in ('BR', 'KI', 'CONT', 'TOUCH', 'ASIAN')), (
+        'the smile must be worth something')
+
+
+def stretched(k):
+    """The flat world `k` times as slow: every rate and variance divided by `k`, each surface a
+    smile proportional to its moneyness and constant in tenor."""
+    price_factors = factors('Sticky_Moneyness', curve(SPOT))
+    for name, rate in (('InterestRate.USD', R_USD), ('DividendRate.EQ', Q_EQ),
+                       ('InterestRate.EUR', R_EUR)):
+        price_factors[name]['Curve'] = curve(rate / k)
+    for name, vol in (('EquityPriceVol.EQ', SKEW['ATM_Vol']), ('FXVol.EUR.USD', FX_VOL)):
+        price_factors[name] = explicit(lambda m, t, vol=vol: vol * m / np.sqrt(k))
+    return price_factors
+
+
+def test_the_book_twice_as_far_in_a_world_half_as_fast_prices_the_same():
+    """RATE UNITS. A price reads a rate, a carry or a variance only times the year fraction it
+    accrues over, so the book with every date twice as far from the base date, in the world whose
+    rates and variances are halved, prices the same, to 1e-13: 10.093277 the knock-out, 54.756450
+    the one-touch, 3.523722 the partial-time knock-in. A quantity reaching `exp` or a closed form
+    without its year fraction reads the slow world's half. The European is not in the book: it
+    forwards to two business days past its expiry, a lag that does not stretch.
+
+    Killing mutations, each a year fraction dropped where a carry meets it: in the Reiner-Rubinstein
+    barrier (the continuous knock-out -5.9%), the one-touch's drift (+0.01%), the partial-time
+    closed form's forward (+540%), the Asian's sample forwards (-7.4%), the composite strip's fx
+    forwards (-22.7%), `zero_carry_rate`'s division (every deal, -2.9% to +35%).
+    """
+    assert marks(stretched(2), book(2)) == pytest.approx(marks(stretched(1), book(1)), rel=1e-13)
+
+
+def test_the_book_twice_as_far_in_a_world_half_as_fast_walks_the_same_profile():
+    """The same statement of a credit Monte Carlo's profile, its grid and its models stretched with
+    the book (GBM equity and fx rate, each variance halved), which reaches the branches only a row
+    after the base date reads: 14 rows of 64 paths agree to 2.7e-6, the float32 the simulation runs
+    in, where 1e-5 is asked.
+
+    Killing mutation: the partial-time knock-in's knocked-in vanilla forwarded without the year
+    fraction to its expiry (10.6% on its worst entry).
+    """
+    def walked(k):
+        return run(stretched(k), dict(CMC, Time_grid='0d {0}d({0}d)'.format(30 * k)), book(k), k)
+    np.testing.assert_allclose(walked(2).values, walked(1).values, rtol=1e-5)
+
+
+#: Two surfaces flat in moneyness that agree at the one-year expiry: flat, and rising to it from 10%.
+SURFACES = {'flat': lambda t: 0.25 + 0.0 * t, 'rising': lambda t: 0.10 + 0.15 * np.minimum(t, 1.0)}
+#: The down-and-out at 95, which the term structure moves, its knock-in and the European.
+KNOCK_OUT = dict(DEAL, Reference='KO', Barrier_Price=95.0)
+KNOCK_IN = dict(KNOCK_OUT, Reference='KI', Barrier_Type='Down_And_In')
+EUROPEAN = {k: v for k, v in DEAL.items() if not k.startswith(('Barrier', 'Cash'))} | {
+    'Object': 'EquityOptionDeal', 'Reference': 'EU'}
+
+
+def call(forward, sd):
+    """Black's undiscounted call at `STRIKE`."""
+    d1 = np.log(forward / STRIKE) / sd + 0.5 * sd
+    return forward * ndtr(d1) - STRIKE * ndtr(d1 - sd)
+
+
+def quadrature(sigma, n=1 << 14):
+    """The knock-out off the sloped world's curves and `sigma` alone: the log-spot law stepped from
+    fixing to fixing in Fourier space, each interval's carry and variance the difference of the
+    cumulative ones the curves and the surface state, the mass below the barrier dropped at each
+    fixing and the last interval's call in closed form, discounted on the repo curve."""
+    repo, dividend = WORLDS['sloped']
+    t = np.array(MONITOR_D + [EXPIRY_D]) / 365.0
+    carry = np.diff((repo(t) - dividend(t)) * t, prepend=0.0)
+    var = np.diff(sigma(t) ** 2 * t, prepend=0.0)
+    h = 20.0 * np.sqrt(var.sum()) / n
+    x = np.log(SPOT) + h * (np.arange(n) - n // 2)
+    omega = 2.0 * np.pi * np.fft.rfftfreq(n, h)
+    mass = (x == np.log(SPOT)).astype(float)
+    for c, v in zip(carry[:-1], var[:-1]):
+        law = np.exp(-1j * omega * (c - 0.5 * v) - 0.5 * omega ** 2 * v)
+        mass = np.fft.irfft(np.fft.rfft(mass) * law, n) * (x >= np.log(KNOCK_OUT['Barrier_Price']))
+    return np.exp(-repo(1.0)) * np.sum(mass * call(np.exp(x + carry[-1]), np.sqrt(var[-1])))
+
+
+@pytest.fixture(scope='module')
+def monitored():
+    """`{surface: {reference: mark}}`: the knock-out, the knock-in and the European on each surface
+    of the sloped world, one document a surface."""
+    return {name: marks(dict(factors('Sticky_Moneyness', curve(SPOT), world='sloped'),
+                             **{'EquityPriceVol.EQ': explicit(lambda m, t, sigma=sigma: sigma(t))}),
+                        (KNOCK_OUT, KNOCK_IN, EUROPEAN))
+            for name, sigma in SURFACES.items()}
+
+
+def test_two_surfaces_agreeing_at_expiry_monitor_apart_each_on_its_quadrature(monitored):
+    """The vol term structure reaches the monitoring. The flat surface and the rising one agree at
+    expiry, so the European reads them to the bit, while the monthly down-and-out steps each
+    interval's own forward variance and carry, the cumulative ones differenced (`forward_vol_rate`,
+    `forward_carry_rate`), and lands on the quadrature of the curves and surface it reads: 6.972348
+    against 6.977709 (-0.08%) on the flat surface and 6.465116 against 6.459058 (+0.09%) on the
+    rising one, the two quadratures 7.4% apart. 3e-3 is the inner Sobol block's slack. 2 s.
+
+    Killing mutations: every interval read at the expiry vol (the shipped defect: the rising surface
+    then prices as the flat, +7.9%); the interval carry undifferenced (the zero rate to each fixing
+    times the interval, -10.9%); the step's carry without its year fraction (`carry * dt`, +98%);
+    the zero carry without its year fraction (`zero_carry_rate`'s division, +1.3%).
+    """
+    assert monitored['flat']['EU'] == monitored['rising']['EU']
+    for name, sigma in SURFACES.items():
+        assert monitored[name]['KO'] == pytest.approx(quadrature(sigma), rel=3e-3), name
+    assert quadrature(SURFACES['rising']) < 0.95 * quadrature(SURFACES['flat']), (
+        'the surfaces must monitor apart')
+
+
+def test_the_knock_in_and_out_sum_to_the_vanilla_at_the_curves_forward(monitored):
+    """The knock-in is priced by parity, the vanilla less the knock-out, so the two sum to the
+    vanilla the barrier's payoff is valued at: Black at the forward `total_log_forward` integrates
+    off the interval strip, at the surface's expiry vol, discounted. On the sloped world it is
+    Black at `S exp((r(T) - q(T)) T)` off the stated curves on either surface, 10.655307, to the
+    bit where 1e-12 is asked.
+
+    Killing mutations: `total_log_forward` summing the interval carry without its year fractions
+    (35.300588); the interval carry undifferenced, whose strip telescopes to the curves' total only
+    on a flat curve (9.401694).
+    """
+    repo, dividend = WORLDS['sloped']
+    for name, sigma in SURFACES.items():
+        vanilla = np.exp(-repo(1.0)) * call(SPOT * np.exp(repo(1.0) - dividend(1.0)), sigma(1.0))
+        assert monitored[name]['KO'] + monitored[name]['KI'] == pytest.approx(
+            vanilla, rel=1e-12), name
 
 
 #: A `Skew` FX surface, `Sticky_Strike` about 1.25 with a 15% ATM and a 0.5 slope, no wings.

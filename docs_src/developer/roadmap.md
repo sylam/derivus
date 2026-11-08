@@ -61,9 +61,6 @@ features kept ahead of their build, not rows to close.
   patch `session.BloombergSession` or the `blpapi` module where a declared canned-terminal entry
   would do (S); `test_bloomberg_session.py` already drives a scripted fake of the SDK as data.
   `test_notebooks` needs a world file that is not in the repository.
-- **Three checks are ungated** (2026-08-21): the vol term structure reaching the monitoring, the
-  payoff's forward against the vol surface's, and rate units
-  ([Conventions](conventions.md#what-holds-today-and-what-the-purge-left-open)).
 
 ## Designed, not built
 
