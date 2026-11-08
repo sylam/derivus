@@ -39,7 +39,6 @@ import sys
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-import mpmath
 import numpy as np
 import pytest
 import torch
@@ -1263,6 +1262,7 @@ def test_the_mixers_root_reads_back_its_uniform_in_either_tail():
     4, 5.2e-3 and 4.6e-5). At 1 it reads 0.998 off here, and every live NIG mark in this module
     reads NaN through `ig_quantile`'s polish.
     """
+    mpmath = pytest.importorskip('mpmath')   # the reference's digits; the module runs without it
     shape = torch.tensor(ROOT_SHAPES, dtype=torch.float64).repeat_interleave(len(ROOT_UNIFORMS) + 2)
     u = torch.tensor(ROOT_UNIFORMS + [0.0, 1.0], dtype=torch.float64).repeat(len(ROOT_SHAPES))
     x = utils.LogVar2FJ.ig_root(u, torch.ones_like(u), shape)
