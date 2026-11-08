@@ -294,10 +294,11 @@ BOOKED = dict(CASHFLOW, Reference='CF2', Amount=250_000.0)
 
 @pytest.fixture
 def book(tmp_path):
-    """A live book over a temp copy of the one-cashflow job. Written at indent 2, which is what the
-    formatting gate holds the rewrite to."""
+    """A live book over a temp copy of the one-cashflow job. Written at indent 4, not the 2 a
+    rewrite falls back on, so a write at a fixed indent rather than the file's own is a reformat
+    the byte gates see."""
     path = tmp_path / 'book.json'
-    path.write_text(json.dumps(json.loads(dump(job())), indent=2), newline='\n')
+    path.write_text(json.dumps(json.loads(dump(job())), indent=4), newline='\n')
     service.BOOK = service.Book(str(path))
     yield path
     service.BOOK = None
@@ -1425,6 +1426,9 @@ def test_a_curve_states_its_own_interpolation_and_the_read_verb_resolves_it(book
     from derivus.config import ModelParams
 
     assert set_up_curve(interpolation='HermiteRT').status_code == 200
+    # read before the USD set-up, whose whole-market solve re-fits ZAR under the rule standing
+    assert abs(par_residuals(book)).max() < 1e-6, 'the rule was not what the curve was solved under'
+    assert abs(par_residuals(book, interp=ModelParams())).max() > 1e-4
     assert set_up_curve(rows=USD_ROWS, curve='USD', currency='USD').status_code == 200
     market = json.loads(book.read_text())['Calc']['MergeMarketData']['ExplicitMarketData']
     answer = CLIENT.get('/book/curve').json()['curves']
@@ -1436,9 +1440,6 @@ def test_a_curve_states_its_own_interpolation_and_the_read_verb_resolves_it(book
     assert answer[CURVE_BLOCK]['conventions']['interpolation'] == 'HermiteRT'
     assert (answer['InterestRatePrices.USD']['interpolation'],
             answer['InterestRatePrices.USD']['interpolation_source']) == ('Linear', 'default')
-
-    assert abs(par_residuals(book)).max() < 1e-6, 'the rule was not what the curve was solved under'
-    assert abs(par_residuals(book, interp=ModelParams())).max() > 1e-4
 
     # the rows re-stated with nothing said about the scheme: the rule stands (killing mutation: an
     # absent field read as a blank one, which clears the rule under every re-statement)
@@ -1693,10 +1694,17 @@ def test_a_tick_that_keeps_losing_to_bookings_lands_on_its_last_pass(desk_curves
             if deal_path is None:
                 return None
 
+    def landed():
+        market = CLIENT.get('/book').json()['document']['Calc']['MergeMarketData']
+        return [row['Quoted_Market_Value'] for row in market['ExplicitMarketData'][
+            'Market Prices']['InterestRatePrices.ZAR-ZARONIA']['instrument']['Points']] == target
+
     def hammer(host, tally):
-        deadline = time.perf_counter() + 6.0
+        # until the tick lands, however many passes it loses: a fixed spell ends before a slow
+        # box's third pass, which then lands unopposed outside the lock
+        deadline = time.perf_counter() + 30.0
         try:
-            while time.perf_counter() < deadline:
+            while not landed() and time.perf_counter() < deadline:
                 reference = 'H{}_{}'.format(host, tally[host])
                 booked = CLIENT.post('/book/deals', content=dump({'action': 'add', 'deal': dict(
                     BOOKED, Reference=reference)}), headers=JSON).json()
@@ -1716,6 +1724,8 @@ def test_a_tick_that_keeps_losing_to_bookings_lands_on_its_last_pass(desk_curves
         return tally
 
     moved = moved_quotes(desk_curves, 'ZAR-ZARONIA')
+    target = [row['Quoted_Market_Value']
+              for row in moved['InterestRatePrices.ZAR-ZARONIA']['instrument']['Points']]
     window, ticked, tally = under_a_tick(moved, three_hosts)
 
     assert ticked['written'] is True, ticked
@@ -1723,8 +1733,7 @@ def test_a_tick_that_keeps_losing_to_bookings_lands_on_its_last_pass(desk_curves
     assert tally[0] + tally[1] + tally[2] > 10 and tally['wrong'] == 0, tally
     assert tally['errors'] == [], tally['errors']
     assert [row['Quoted_Market_Value'] for row in curve_block(desk_curves, 'ZAR-ZARONIA')[
-        'Points']] == [row['Quoted_Market_Value'] for row in
-                       moved['InterestRatePrices.ZAR-ZARONIA']['instrument']['Points']]
+        'Points']] == target
     assert [node['Instrument']['.Deal']['Reference'] for node in json.loads(
         desk_curves.read_text())['Calc']['Deals']['Deals']['Children']] == ['CF1']
 
@@ -3032,14 +3041,11 @@ def test_the_walk_names_what_a_trade_needs(book, vocabulary):
     and how many a terminal has verified. Nothing is priced and nothing is written.
 
     A factor type this desk's vocabulary spells nothing for is reported as honestly: `supply` null
-    and a note, never a guess at an equity's ticker. And a candidate the BOOKING would refuse is
-    refused here in its own words rather than walked - a misspelt type reaches nothing, so a walk
-    that answered it would tell a model the market is fine.
+    and a note, never a guess at an equity's ticker.
 
     Killing mutations: the walk reading the whole book instead of the candidate - `InterestRate.ZAR`
     and `FxRate.ZAR` are the book's own cashflow's; the pair looked up in one spelling only, which
-    leaves `FxRate.JPY` unsuppliable because the seed spells `USDJPY` and not `JPYUSD`; the
-    authoring verdict skipped, which walks a `CrossCurrencySwap` clean.
+    leaves `FxRate.JPY` unsuppliable because the seed spells `USDJPY` and not `JPYUSD`.
     """
     before = book.read_bytes()
     answer = dependencies(deal=XCCY)
@@ -3077,11 +3083,13 @@ def test_the_walk_names_what_a_trade_needs(book, vocabulary):
 def test_the_walk_refuses_by_name_what_it_cannot_walk(book, vocabulary):
     """A REFUSAL NAMES THE THING AND THE REMEDY, and a 500 is neither. The candidate body is the
     whole surface: no `deal`, a null one, a `deal_path` beside it, and a deal whose `Object` names
-    no type - which `POST /book/deals` refuses in words this verb hands back verbatim.
+    no type - which `POST /book/deals` refuses in words this verb hands back verbatim, since a
+    misspelt type reaches nothing and a walk that answered it would tell a model the market is fine.
 
     Killing mutations: `request['deal']` unguarded, which is a `TypeError` out of the walk and a
     bare `'deal'` for an empty body; the `deal_path` in a POST body ignored, which makes two verbs
-    a model uses back to back disagree about one request.
+    a model uses back to back disagree about one request; the authoring verdict skipped, which
+    walks a `CrossCurrencySwap` clean.
     """
     before = book.read_bytes()
     malformed = {'Object': 'CrossCurrencySwap', 'Reference': 'T', 'Pay_Currency': 'EUR'}
@@ -5680,17 +5688,18 @@ def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_pa
     the CVA desk states, each spread a hazard s/(1-R), the last one's line run on to fifty years.
     Read back through the engine's own factor, 150bp flat at a 40% recovery survives
     exp(-0.015 t/0.6) at one year and at five, and 100bp at a year and 200bp at five survive
-    exp(-0.01 T/0.6) and exp(-0.02 T/0.6) at their own tenors. The agreement's set whose CVA failed
-    for want of the curve, a five-year option, prices after it to the CVA of the same hazard
-    written by hand to ten years. A counterparty the record never declared, a spread that is not a
-    positive number, `true` among them, a recovery of one or `false`, and tenors that do not rise
-    refuse by name with the file untouched, and a seat holding no `mark` over the book is refused,
-    the denial landed.
+    exp(-0.01 T/0.6) and exp(-0.02 T/0.6) at their own tenors, and at ten years on the five-year
+    hazard still. The agreement's set whose CVA failed for want of the curve, a five-year option,
+    prices after it to the CVA of the same hazard written by hand to ten years. A counterparty the
+    record never declared, a spread that is not a positive number, `true` among them, a recovery
+    of one or `false`, and tenors that do not rise refuse by name with the file untouched, and a
+    seat holding no `mark` over the book is refused, the denial landed.
 
     Killing mutations: the hazard written as the spread itself, without 1 - R, which survives
-    exp(-0.015 t) instead; the curve ending at its last row, which the credit Monte Carlo reads as
-    no default after a year; the tenors unchecked; a boolean read as a number; and the verb asking
-    no `mark`, which writes the curve an unscoped seat asked for.
+    exp(-0.015 t) instead; the curve ending at its last row, which the factor runs on along its
+    last segment, survival at ten years read off the slope between one and five years; the tenors
+    unchecked; a boolean read as a number; and the verb asking no `mark`, which writes the curve an
+    unscoped seat asked for.
     """
     from derivus import riskfactors
     from derivus_spine import SpineLog
@@ -5751,9 +5760,9 @@ def test_a_survival_curve_is_written_from_the_cva_desk_s_spread(recorded, tmp_pa
         assert survival(counterparty='GHOST', spread=[{'tenor': '1Y', 'spread': 100.0},
                                                       {'tenor': '5Y', 'spread': 200.0}]).json()[
             'written']
-        tenors = np.array([365.0, 1826.0]) / 365.0
+        tenors = np.array([365.0, 1826.0, 3652.0]) / 365.0
         assert survives(tenors) == pytest.approx(
-            np.exp(-np.array([0.01, 0.02]) * tenors / 0.6), rel=1e-12)
+            np.exp(-np.array([0.01, 0.02, 0.02]) * tenors / 0.6), rel=1e-12)
 
         raw = canonical_document({'grants': [{'subject': seat, 'verb': verb, 'book': '*'}
                                              for verb in ('admin', 'mark')], 'read': []})

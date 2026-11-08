@@ -215,13 +215,16 @@ def test_desk_status_orients_a_model_in_one_call(book, tmp_path, monkeypatch):
 def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeypatch):
     """The tool is one `service().call` over the book the service already serves, so what a model
     reads is the verb's own rows - the leg, the day, the amount where the compile determines one,
-    and `null` where it does not.
+    and `null` where it does not. A cashflow of 250,000.125 rides beside the book's own, whose
+    whole amount a rounding leaves standing.
 
     Killing mutation: the tool composing or rounding the rows, which puts a second reading of the
     schedule between the model and the engine's own.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    assert mcp_server.book_deal(json.loads(dump(dict(BOOKED, Amount=250_000.125))))['written']
     answer = mcp_server.book_diary()
+    assert answer == CLIENT.get('/book/diary').json(), 'the tool composed a reading of its own'
 
     assert set(answer) >= {'as_of', 'etag', 'result_id', 'rows'}
     assert answer['rows'], 'the one-cashflow book announces nothing'
@@ -330,8 +333,8 @@ def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_ve
     or refuses by name.
 
     Killing mutations: `declare_close` sending a market or a date the caller did not name, which
-    closes a board nobody asked about or on a day nobody chose; `export_settlements` passing a
-    market through, which would let a model strike a settlement file on any board it can name;
+    closes a board nobody asked about or on a day nobody chose; `export_settlements` posting no
+    `due_before`, which the verb refuses - a market passed through is one the verb never reads;
     `file_status` filing under a reference rather than the row's key, which settles nothing the
     export can see; and `file_status` dropping the agreement, which files the payment under none.
     """
