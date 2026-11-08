@@ -596,7 +596,9 @@ class StripGraph(object):
     is captured, its tensors read from and its outputs written to buffers of their layouts, which
     every graph of the calculation shares, as it shares one memory pool: one stream replays them
     one at a time, each walk's tensors copied in before and its outputs copied out after. A step
-    therefore reads nothing off the device and uploads nothing, which a capture cannot hold.
+    therefore reads nothing off the device and uploads nothing, which a capture cannot hold. A
+    capture costs about a batch's eager walk, so `oss_stream` walks through a graph only where a
+    run has three batches or more, the third repaying it.
     """
 
     #: how deep a closure is followed into the functions it holds
@@ -644,7 +646,8 @@ class StripGraph(object):
 
     @classmethod
     def walk(cls, step, state, n, shared):
-        """`oss_walk(step, 0, n, *state)`, by a graph from its key's second walk on the device."""
+        """`oss_walk(step, 0, n, *state)`, by a graph from its key's second walk on the device, each
+        capture counted under the run's `Strip_Graphs`."""
         tensors = []
         try:
             key = ('strip_graph', n, cls.key((step, state), tensors, {}))
@@ -653,6 +656,7 @@ class StripGraph(object):
         seen = shared.t_PreCalc.get(key)
         if isinstance(seen, list):
             seen = shared.t_PreCalc[key] = cls(shared, step, state, n, tensors, seen)
+            shared.calc_stats['Strip_Graphs'] = shared.calc_stats.get('Strip_Graphs', 0) + 1
         if seen is not None:
             return seen(tensors)
         result = oss_walk(step, 0, n, *state)
@@ -767,9 +771,11 @@ def oss_stream(step, state, n, shared, stream=True):
     """
     run = partial(oss_walk, step)
     if not (stream and n and shared.one.is_cuda and taped(state + (step.__defaults__ or ()))):
-        # a debug run's steps read the device for their log lines
-        return StripGraph.walk(step, state, n, shared) if n and shared.one.is_cuda and not (
-            logging.getLogger().isEnabledFor(logging.DEBUG)) else run(0, n, *state)
+        # a capture costs about a batch's eager walk, which a third batch on repays; a debug
+        # run's steps read the device for their log lines
+        return StripGraph.walk(step, state, n, shared) if (
+            n and shared.one.is_cuda and shared.simulation_batches >= 3
+            and not logging.getLogger().isEnabledFor(logging.DEBUG)) else run(0, n, *state)
     name = step.__qualname__.split('.')[0]
     cost = shared.t_PreCalc.get(('oss_rows', name))
     measure = cost is None or shared.recompute_inner_mc

@@ -332,6 +332,29 @@ def test_a_strip_replayed_on_the_device_is_the_strip_walked(book):
             'the inner-MC book moved at n=%d on the device - a replay is not its walk' % n)
 
 
+@needs_cuda
+def test_a_strip_is_captured_only_where_a_third_batch_repays_it():
+    """A capture costs about a batch's eager walk and a third batch repays it, so a run of two
+    batches walks eagerly and reports no `Strip_Graphs`, its matrix the same bytes as the first two
+    batches of a run of three, which captures every walk of the barrier book in its second.
+
+    Killing mutation: a capture whatever the run's batch count - the run of two reports graphs."""
+    deals = (EQDAO, dict(EQDAO, Reference='EQDAO80', Barrier_Price=80.0))
+
+    def run(batches):
+        config = job_document()
+        config.deals['Deals']['Children'] = [
+            {'Instrument': construct_instrument(deal, {})} for deal in deals]
+        _, out = derivus.run_cmc(config, torch.float32, dict(
+            overrides(), Batch_Size=32, MCMC_Simulations=64, Simulation_Batches=batches), 0, 1,
+            None, deterministic_batches=True, device='cuda')
+        return out['Results']['mtm'].values, out['Stats'].get('Strip_Graphs', 0)
+
+    (two, captured_two), (three, captured_three) = run(2), run(3)
+    assert captured_two == 0 and captured_three > 0, (captured_two, captured_three)
+    assert sha(two) == sha(three[:, :two.shape[1]]), 'a capture moved the second batch'
+
+
 @needs_two_devices
 def test_a_sobol_consuming_world_is_bit_identical_across_devices():
     """The same, across the two real devices, where worker j also changes silicon."""

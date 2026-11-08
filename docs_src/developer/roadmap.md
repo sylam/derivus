@@ -19,6 +19,12 @@ features kept ahead of their build, not rows to close.
 
 **Speed and memory.**
 
+- **A strip's vol surface read once over its fixings** (2026-11-08, M). With the walks replayed as
+  CUDA graphs, what a credit Monte Carlo batch launches is mostly the strips' set-up: on a
+  synthetic book of 58 one-step-survival deals over 25 monthly rows, 362,000 torch calls a batch
+  outside the walks against 654,000 inside them, led by `pricing.forward_vol_strip`, which reads
+  `VolSurface.rate` once per fixing. One read over a strip's fixings is the lever; what it buys is
+  UNMEASURED.
 - **The LogVar2FJ walk's checkpoint memory** (2026-10-07, M). Under a gradient the walk holds 79%
   of peak memory in its checkpoint segments.
 

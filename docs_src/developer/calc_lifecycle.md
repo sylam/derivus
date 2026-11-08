@@ -615,8 +615,11 @@ nothing off the device and uploads nothing, which a capture cannot hold: a fixin
 decided off its strip's numpy source, and the strip is uploaded once a calculation
 (`Calculation_State.upload`). A walk holding a host tensor, a tape or an object (a walking kit, a
 smoothed row's ledger), or run under debug logging, whose lines read the device, stays eager, and
-a key walked once is never captured. **Held by**
-`tests/test_multi_gpu.py::test_a_strip_replayed_on_the_device_is_the_strip_walked` (CUDA only),
+a key walked once is never captured. A capture costs about a batch's eager walk and a third batch
+repays it, so a run of fewer than three batches walks eagerly, and a run reports the walks it
+captured under `Stats['Strip_Graphs']`. **Held by**
+`tests/test_multi_gpu.py::test_a_strip_replayed_on_the_device_is_the_strip_walked`,
+`::test_a_strip_is_captured_only_where_a_third_batch_repays_it` (both CUDA only),
 `::test_a_batch_reads_back_and_uploads_only_what_it_simulated`.
 
 **A dense grid is priced in pieces.** A pricer prices the time-grid rows sharing a fixing interval
