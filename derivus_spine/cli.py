@@ -391,8 +391,9 @@ ARGUMENTS = {
                 'help': 'the subject reference this append is attributed to; it needs the verb '
                         'the event demands once a capabilities document is in force'},
     '--file': {'required': True,
-               'help': 'the capabilities document to declare: {"grants": [...], "read": [...]}, '
-                       'canonicalised on the way into the store'},
+               'help': 'the capabilities document to declare: {"grants": [...], "read": [...], '
+                       '"verbs": {act: verb}}, the map completed with the verb the vocabulary '
+                       'gives every act it does not move, canonicalised on the way into the store'},
     'policy': {'help': 'the reserved policy this document is declared under: one of {}'.format(
         ', '.join(sorted(policies.PARSERS)))},
     'file': {'help': 'the JSON policy document, parsed and canonicalised into the store'},

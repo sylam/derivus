@@ -175,7 +175,7 @@ def _shape(document, where, stored=False):
 
     if not isinstance(document, dict):
         refuse('the capabilities document is {}, not a JSON object - it is {{"grants": [...], '
-               '"read": [...]}}'.format(type(document).__name__))
+               '"read": [...], "verbs": {{act: verb}}}}'.format(type(document).__name__))
     surplus = sorted(set(document) - set(DOCUMENT_SECTIONS) - {MAP_SECTION})
     if surplus:
         refuse('the capabilities document carries {} beyond grants, read, verbs - the document is '
