@@ -1065,6 +1065,125 @@ def test_a_terminated_line_that_will_not_parse_is_a_broken_chain_not_a_torn_tail
         'a verification that deletes the evidence it was asked to look at is not a verification'
 
 
+def read_back(log):
+    """What an open answers about positions: the head, the frame at every LSN, and the LSNs a walk
+    from each one reaches."""
+    lsns = range(1, log.head()[0] + 1)
+    return (log.head(), [log.frame_at(lsn) for lsn in lsns],
+            [[frame['lsn'] for frame in log.frames(start_lsn=lsn)] for lsn in lsns])
+
+
+def streamed(home):
+    """`read_back` of a copy of `home` holding no index, so its open streams every line."""
+    copy = home.parent / (home.name + '-streamed')
+    shutil.copytree(str(home), str(copy))
+    (copy / 'index.json').unlink()
+    return read_back(SpineLog(copy))
+
+
+def checkpointed(home):
+    """`home` with a checkpoint at its head, the act that writes the index."""
+    log = SpineLog(home)
+    write_checkpoint(log)
+    log.close()
+    return home
+
+
+def test_a_line_altered_behind_the_index_is_refused_by_verification_not_by_the_open(tmp_path):
+    """An open restores the index the last checkpoint wrote and scans only the lines past it, so a
+    durable line altered behind it is not read there: `verify_home`, re-deriving every line off the
+    platter, refuses it in both modes, naming its segment. The edit keeps the line's length, so
+    every offset the index holds still lands on its frame; without the index, the open refuses it.
+
+    Killing mutations: the open streaming every line whatever the index says (it refuses LSN 6);
+    the verification walking from the index's head rather than from genesis (it reports green).
+    """
+    home = checkpointed(seeded(tmp_path, 'behind'))
+    head = SpineLog(home).head()
+    segment = segments(home)[-1]
+    lines = segment.read_bytes().split(b'\n')
+    lines[5] = b'X' * len(lines[5])
+    segment.write_bytes(b'\n'.join(lines))
+
+    assert SpineLog(home).head() == head and head[0] == 8, 'the open read the index, not LSN 6'
+    for entitled in (True, False):
+        with pytest.raises(ChainBroken) as refusal:
+            verify_home(home, entitled=entitled)
+        assert segment.name in str(refusal.value) and 'will not parse' in str(refusal.value)
+
+    (home / 'index.json').unlink()
+    with pytest.raises(ChainBroken) as refusal:
+        SpineLog(home)
+    assert 'LSN 6' in str(refusal.value), refusal.value
+
+
+def test_an_index_of_another_history_behind_its_log_or_edited_is_rebuilt_never_trusted(tmp_path):
+    """The index is derived and verified like a seed: its state must hash to the stamp on its first
+    line, and its head must be the frame this log holds at the offset it names. One copied in from
+    another home of the same shape, one left ahead of a log restored behind it, and one edited under
+    its own stamp each cost the open its full scan, and the open answers what streaming every line
+    answers.
+
+    Killing mutations: the head taken off the index without the frame at its offset (the other
+    home's head, and the restored log's lost LSN 8, are answered); the stamp unchecked (the edited
+    offset reads LSN 6 at LSN 5).
+    """
+    home = seeded(tmp_path, 'home')
+    behind = segments(home)[-1].read_bytes()
+    checkpointed(home)
+    other = checkpointed(seeded(tmp_path, 'other', clips=('EXEC-A', 'EXEC-B', 'EXEC-C')))
+    assert SpineLog(other).head() != SpineLog(home).head()
+
+    foreign, restored, edited = (tmp_path / name for name in ('foreign', 'restored', 'edited'))
+    for copy in (foreign, restored, edited):
+        shutil.copytree(str(home), str(copy))
+    shutil.copyfile(str(other / 'index.json'), str(foreign / 'index.json'))
+    segments(restored)[-1].write_bytes(behind)
+    stamp, _, state = (edited / 'index.json').read_bytes().partition(b'\n')
+    state = json.loads(state.decode('utf-8'))
+    state['at'][4] = state['at'][5]
+    (edited / 'index.json').write_bytes(
+        stamp + b'\n' + json.dumps(state, separators=(',', ':')).encode('utf-8'))
+
+    for copy in (foreign, restored, edited):
+        assert read_back(SpineLog(copy)) == streamed(copy), copy.name
+    assert SpineLog(restored).head()[0] == 7 and SpineLog(edited).frame_at(5)['lsn'] == 5
+
+
+def test_an_open_from_the_index_answers_what_streaming_every_line_answers(tmp_path):
+    """The index is derived, so on every fixture log - one segment, an index across a seam, and a
+    tail rolled into a segment the index never saw - an open restoring it and scanning the tail past
+    a checkpoint, a torn line at its end, answers the head, the frame at every LSN and every walk
+    exactly as an open streaming every line does, and its tags coalesce a retry onto the LSN holding
+    the fact.
+
+    Killing mutations: the tail resumed at the head line's own offset rather than past it (LSN
+    continuity refuses the open); the tags left out of the index (the retry lands a second LSN).
+    """
+    def split(home, at):
+        lines = [raw for raw in segments(home)[0].read_bytes().split(b'\n') if raw.strip()]
+        segments(home)[0].write_bytes(b'\n'.join(lines[:at]) + b'\n')
+        (home / 'log' / 'segment-00000002.jsonl').write_bytes(b'\n'.join(lines[at:]) + b'\n')
+
+    one, seam, rolled = (seeded(tmp_path, name) for name in ('one', 'seam', 'rolled'))
+    split(seam, 4)
+    for home in (one, seam, rolled):
+        log = SpineLog(checkpointed(home))
+        log.append('fill', fill('EXEC-TAIL'), actor=ACTOR, book=BOOK, effective_time=WHEN)
+        log.close()
+        if home is rolled:
+            split(rolled, 8)
+        with segments(home)[-1].open('ab') as handle:
+            handle.write(b'{"lsn":99,"actor":"subject-desk-one","body":"AAAA')
+        reference = streamed(home)
+        log = SpineLog(home)
+        assert read_back(log) == reference, home.name
+        retry = log.append('fill', log.open_body(log.frame_at(5)), actor=ACTOR, book=BOOK,
+                           effective_time=WHEN)
+        assert retry['coalesced'] and retry['lsn'] == 5, home.name
+        log.close()
+
+
 def test_a_surplus_frame_field_is_refused_in_both_modes(tmp_path):
     """The envelope is closed the way a body is: the nine-field AAD, the event hash and the interior
     binding cover exactly the twelve fields a frame has, so a thirteenth rides in covered by no
@@ -1146,8 +1265,8 @@ class CountingLog(SpineLog):
     """A log that counts the bytes of every line its reader takes off the platter - the gate's own
     instrument, a subclass rather than a patch.
 
-    `_parse` is called once per line a walk consumes and never by the scan, which reads the whole
-    file by other means, so what this adds up is exactly what a READ of frames cost.
+    `_parse` is called once per line a walk consumes and never by the scan, which reads its lines
+    by other means, so what this adds up is exactly what a READ of frames cost.
     """
 
     def __init__(self, home):

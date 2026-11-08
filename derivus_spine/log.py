@@ -62,6 +62,11 @@ SEGMENT_GLOB = 'segment-*.jsonl'
 #: The writer's claim, at the home's root rather than inside `log/` - the log directory is what a
 #: replica file-copies, and a lock is about this machine's processes, never about the history.
 WRITER_LOCK = '.writer.lock'
+#: The head, offsets and tags as the last checkpoint left them, beside `log/` and outside what a
+#: replica copies: derived, so an open verifies it against the platter and rebuilds what does not.
+INDEX = 'index.json'
+#: The shape of `INDEX`'s state; an index of another version is rebuilt.
+INDEX_VERSION = 1
 
 #: Called `(home, lsn, event_hash)` after every frame this process lands, which is the one place a
 #: head moves under a writer. The record announcing a POSITION and never a fact, so a listener that
@@ -221,11 +226,12 @@ def parse_number(text):
 class SpineLog:
     """One home's log, opened.
 
-    Opening streams every segment, checks what the stored fields claim about themselves - LSN
-    continuity and the prev-hash linkage - and builds the three indexes the writer needs: the head,
-    the tag index idempotency is enforced on, and a byte offset per LSN. It does not recompute
-    hashes; that is `verify_home`'s job, so verification stays something a replica does to a log
-    rather than something a log says about itself.
+    Opening restores the three indexes the writer needs - the head, the tag index idempotency is
+    enforced on, and a byte offset per LSN - from `INDEX` where it verifies, then streams the
+    segments past it, checking what the stored fields claim about themselves: LSN continuity and the
+    prev-hash linkage. It does not recompute hashes or read a line behind the index; that is
+    `verify_home`'s job, so verification stays something a replica does to a log rather than
+    something a log says about itself.
     """
 
     def __init__(self, home):
@@ -483,6 +489,8 @@ class SpineLog:
         index, offset = self._write(
             json.dumps(frame, sort_keys=True, separators=(',', ':')).encode('utf-8') + b'\n')
         self._index(frame, index, offset)
+        if frame['event_type'] == 'checkpoint':
+            self._write_index()
         for watching in tuple(WATCHERS):
             try:
                 watching(self.home, frame['lsn'], frame['event_hash'])
@@ -738,26 +746,26 @@ class SpineLog:
             self._capability = kept
 
     def _scan(self):
-        """Open the log: stream the segments, check what the stored fields claim, index them.
+        """Open the log: restore the indexes `INDEX` holds where it verifies, then stream the
+        segments past it, check what the stored fields claim, index them.
 
         The torn tail is the one repair in the package. An unterminated final line of the last
         segment was interrupted mid-write - the newline is the last byte a write puts down - and was
         never fsynced, so it is truncated. Garbage inside a terminated line is a durable line that
-        was altered, so that raises `ChainBroken` rather than being healed away.
+        was altered, so that raises `ChainBroken` rather than being healed away; behind a verified
+        index it is not read here, and `verify_home` meets it.
         """
         self._segments = sorted(self.log.glob(SEGMENT_GLOB))
-        self._segment_first = [None] * len(self._segments)
-        self._at = {}
-        self._tags = {}
         # The capability fold is dropped rather than carried across a scan that replaced its
         # inputs; the next append that needs it rebuilds it from the platter.
         self._capability = None
-        self._head_lsn = 0
-        self._head_hash = GENESIS_PREV
-        self._genesis_actor = None
-        for index, path in enumerate(self._segments):
+        first, start = self._restore()
+        for index in range(first, len(self._segments)):
+            path = self._segments[index]
             last_segment = index == len(self._segments) - 1
-            data = path.read_bytes()
+            with path.open('rb') as handle:
+                handle.seek(start)
+                data = handle.read()
             position = 0
             truncate_at = None
             while position < len(data):
@@ -768,21 +776,82 @@ class SpineLog:
                     frame = self._loads(chunk)
                     if frame is None:
                         if last_segment and newline == -1:
-                            truncate_at = position
+                            truncate_at = start + position
                             break
                         raise ChainBroken(
                             '{} at byte {} is not JSON, where LSN {} should be: a line inside the '
                             'log was altered or lost - restore the segment from a verified '
-                            'replica'.format(path.name, position, self._head_lsn + 1))
-                    self._stored(frame, index, position, path)
+                            'replica'.format(path.name, start + position, self._head_lsn + 1))
+                    self._stored(frame, index, start + position, path)
                 position = end
             if truncate_at is not None:
                 LOG.warning('%s: truncating %d torn byte(s) at %d - a line interrupted mid-write, '
                             'never fsynced, never chained onto', path.name,
-                            len(data) - truncate_at, truncate_at)
+                            start + len(data) - truncate_at, truncate_at)
                 os.truncate(str(path), truncate_at)
             if self._segment_first[index] is None:
                 self._segment_first[index] = self._head_lsn + 1
+            start = 0
+
+    def _restore(self):
+        """Set the head, the offsets and the tags as `INDEX` holds them where it verifies against
+        this log, and answer the `(segment index, byte offset)` the scan resumes at; else set them
+        empty and answer `(0, 0)`, the scan from genesis that rebuilds them.
+
+        Verified like a seed, never trusted: the second line must hash to the first, the version and
+        the segments must be this log's, and the head must be the frame on the platter at its own
+        offset, so an index of another history, of a log restored behind it, or edited, is not read.
+        """
+        self._segment_first = [None] * len(self._segments)
+        self._at, self._tags = {}, {}
+        self._head_lsn, self._head_hash, self._genesis_actor = 0, GENESIS_PREV, None
+        try:
+            digest, _, body = (self.home / INDEX).read_bytes().partition(b'\n')
+        except OSError:
+            return (0, 0)
+        if hashlib.sha256(body).hexdigest().encode('ascii') != digest:
+            return (0, 0)
+        state = json.loads(body)
+        names = state['segments']
+        if state['version'] != INDEX_VERSION \
+                or names != [path.name for path in self._segments[:len(names)]]:
+            return (0, 0)
+        index, offset = state['at'][-1]
+        with self._segments[index].open('rb') as handle:
+            handle.seek(offset)
+            line = handle.readline()
+        head = self._loads(line)
+        if head is None or head.get('lsn') != len(state['at']) \
+                or head.get('event_hash') != state['head']:
+            return (0, 0)
+        self._segment_first[:len(names)] = state['first']
+        self._at = dict(enumerate(map(tuple, state['at']), 1))
+        self._tags = state['tags']
+        self._head_lsn, self._head_hash = len(state['at']), state['head']
+        self._genesis_actor = state['actor']
+        return (index, offset + len(line))
+
+    def _write_index(self):
+        """Write `INDEX` at this handle's head: the SHA-256 of the state, a newline, and the state -
+        the head, the offset of every LSN, each segment's name and first LSN, the tags and the
+        genesis actor.
+
+        Called where a checkpoint lands, so by the one writer. Derived and deletable, it is renamed
+        into place unsynced, and a write that fails costs the opens their scan until the next
+        checkpoint rather than failing an append already on the platter.
+        """
+        state = json.dumps({
+            'actor': self._genesis_actor, 'first': self._segment_first, 'head': self._head_hash,
+            'at': [self._at[lsn] for lsn in range(1, self._head_lsn + 1)],
+            'segments': [path.name for path in self._segments], 'tags': self._tags,
+            'version': INDEX_VERSION}, separators=(',', ':')).encode('utf-8')
+        scratch = self.home / (INDEX + '.new')
+        try:
+            scratch.write_bytes(hashlib.sha256(state).hexdigest().encode('ascii') + b'\n' + state)
+            os.replace(str(scratch), str(self.home / INDEX))
+        except OSError:
+            LOG.warning('%s: the index at LSN %d was not written', self.home, self._head_lsn,
+                        exc_info=True)
 
     def _stored(self, frame, index, offset, path):
         """Check one STORED frame's fields against the position the log has reached, then index it
@@ -804,11 +873,12 @@ class SpineLog:
 
     def _parse(self, raw, path):
         """One line read back as a frame, or `ChainBroken` naming the segment. Reading is where a
-        doctored file is met, so this refuses rather than skipping."""
+        doctored file is met, a line behind the index first of all, so this refuses rather than
+        skipping."""
         frame = self._loads(raw)
         if frame is None:
             raise ChainBroken(
-                '{}: a line will not parse as JSON - the segment was altered after it was opened; '
+                '{}: a line will not parse as JSON - the segment was altered after it was written; '
                 'restore it from a verified replica'.format(path.name))
         return frame
 

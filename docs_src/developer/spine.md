@@ -89,6 +89,7 @@ DV_SPINE_HOME/
   keys/                                   blind.key, class_firm.key, checkpoint_signing.key, checkpoint_verify.key
   keys/seats/<sha256(subject)[:16]>.key   a seat's private key where the hub minted it
   names.json                              display names, outside the log
+  index.json                              the head, offsets and tags at the last checkpoint: derivable, deletable
   seeds/<projector>-<version>-<lsn>.json  a fold cached at a close: derivable, deletable
 ```
 
@@ -174,11 +175,23 @@ snapshots and an automatic tier's approval; no seat files the first three or tak
 
 The torn tail is the one repair, made on every open: the newline is a write's last byte, so an
 unparseable unterminated last line of the last segment was interrupted and is truncated, while an
-unparseable line anywhere else was altered and raises `ChainBroken`, so the repair cannot roll a
-log back past its checkpoints. Opens scan without the claim, so a reader opening mid-append could
-truncate that append's bytes; no gate covers that interleaving. **Held by**
+unparseable line anywhere else the open reads was altered and raises `ChainBroken`, so the repair
+cannot roll a log back past its checkpoints. Opens scan without the claim, so a reader opening
+mid-append could truncate that append's bytes; no gate covers that interleaving. **Held by**
 `test_spine.py::test_a_torn_final_line_is_truncated_and_the_next_append_chains_onto_the_head`,
 `::test_a_terminated_line_that_will_not_parse_is_a_broken_chain_not_a_torn_tail`.
+
+Where a checkpoint lands, the writer puts the head, the byte offset of every LSN, each segment's
+first LSN and the tag index in `index.json` beside `log/` (`INDEX`), and an open restores them and
+reads only the lines past them, paying for the frames since the last checkpoint, whose cadence is
+the deployment's. The index is derived and verified like a [seed](#folds): its state must hash to
+the stamp on its first line and its head must be the frame this log holds at the offset it names,
+so one from another history, one left ahead of a log restored behind it, or one edited costs the
+open its full scan and is never read. A line altered behind it is met not by an open but by
+`verify_home`, which re-derives every line off the platter. **Held by**
+`test_spine.py::test_a_line_altered_behind_the_index_is_refused_by_verification_not_by_the_open`,
+`::test_an_index_of_another_history_behind_its_log_or_edited_is_rebuilt_never_trusted`,
+`::test_an_open_from_the_index_answers_what_streaming_every_line_answers`.
 
 ## Checkpoints and verification {#verification}
 
@@ -736,7 +749,7 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 Unbuilt parts of the design: the deal tree is the book file with nets written on, not composed
 from the fold; and a print is not yet one fact feeding both a calibration's archive and a deal's
 fixings ([designed, not built](roadmap.md#designed-not-built)). The record's other open
-rows - the log open's full scan, the oracle's blind spots - are
+rows - the oracle's blind spots - are
 [before 0.5.0](roadmap.md#before-0-5-0) on the roadmap;
 the rotation and replay limits are [trust limits](#trust-limits) and the replay tuple's reach is on
 [Model Limitations](../limitations.md#the-engine); which verbs take a seat and whether a rotation
