@@ -103,8 +103,10 @@ and post again. The SAME two keys WITH `accepted` beside them is a different ans
 client's price is already on the record and the desk's own policy will not book it, so say
 which bound it broke and do not re-quote. Deals are addressed by deal_path, which is
 positional, so pass the reference you read at a path whenever you amend or delete. A legacy
-book imports as one NettingCollateralSet carrying its deals as Children, through book_deal;
-one bad deal refuses the whole batch and names it.
+book - trades the book file holds and nobody booked - is taken on as the import_a_legacy_book
+prompt walks: book_reconcile lists each under in_file_not_in_record, and book_deal(deal_path,
+reference, quantity=1, execution_reference=its reference) books it where it sits, moving no
+number.
 
 THE MARKET: update_market_quotes and patch_market_values move values; configure_curve,
 configure_book and set_base_date change structure and re-solve; tick_market_from_bloomberg
@@ -426,8 +428,8 @@ def describe_structure(name: str = None) -> dict:
 
 @MCP.tool(annotations=READ_ONLY)
 def describe_calculation_type(calc_type: str) -> dict:
-    """Every field one calculation type takes (`BaseValuation`, `CreditMonteCarlo`,
-    `HedgeMonteCarlo`) - what `calculation_overrides` in `execute_book` / `price_candidate` may
+    """Every field one calculation type takes, any type the schema declares and a name it does not
+    refused with the list - what `calculation_overrides` in `execute_book` / `price_candidate` may
     override."""
     types = service().call('GET', '/schema')['Calculation']['types']
     if calc_type not in types:
@@ -695,11 +697,10 @@ async def price_candidate(deal: dict | None = None, parent_reference: str | None
 @MCP.tool(annotations=READ_ONLY)
 def describe_calculations() -> dict:
     """The desk's own NAMED CALCULATIONS - `{calculations: {name: block}}`, each block a
-    `Calculation` as the book states one: `Object` names the type (`BaseValuation`,
-    `CreditMonteCarlo`, `HedgeMonteCarlo`) and every other key is one of that type's declared
-    fields, `describe_calculation_type` listing them. A field a block does not state is the book's
-    own when it runs - the date and the currency among them. Kept on this workstation, never in
-    the book and never on the record."""
+    `Calculation` as the book states one: `Object` names a type the schema declares and every other
+    key is one of that type's declared fields, `describe_calculation_type` listing them. A field a
+    block does not state is the book's own when it runs - the date and the currency among them.
+    Kept on this workstation, never in the book and never on the record."""
     return service().call('GET', '/calculations')
 
 
