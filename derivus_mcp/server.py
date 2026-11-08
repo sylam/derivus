@@ -1967,15 +1967,21 @@ def quote_a_structure(structure: str, pair: str, notional: str, notional_currenc
 
 @MCP.prompt()
 def import_a_legacy_book(counterparty: str) -> str:
-    """Load a counterparty's existing trades into the book as one netting set, and mark them."""
+    """Take a counterparty's trades the book file holds and nobody booked onto the record, and
+    mark them."""
     return (
-        '1. Take the deals the user supplies in derivus form and wrap them as ONE node: '
-        '{{"Object": "NettingCollateralSet", "Reference": "{0}", "Netted": "True", '
-        '"Collateralized": "False", "Children": [{{"Instrument": {{".Deal": deal}}}}, ...]}}.\n'
-        '2. book_deal(that node) - one call. One bad deal refuses the WHOLE batch and names it: '
-        'fix that child and post the batch again.\n'
-        '3. execute_book, then book_risk_summary for the mark and the gradient.\n'
-        '4. recalc_xva(["{0}"]) only if the user asks for it - it is minutes.'.format(
+        '1. book_reconcile - every deal the book file holds that nobody booked is listed under '
+        'in_file_not_in_record with its deal_path and reference; take those under the netting '
+        'set "{0}" (read_book says which set a path sits in).\n'
+        '2. For each: book_deal(deal_path=its deal_path, reference=its reference, quantity=1, '
+        'execution_reference=its reference, price=what it was done at where the user says). The '
+        'record takes the fill and the file only its pin, so no number moves; a tier with '
+        'waits_on books it PENDING for another seat.\n'
+        '3. book_reconcile again: none of them is left under in_file_not_in_record.\n'
+        '4. execute_book, then book_risk_summary for the mark and the gradient. Closing one later '
+        'is a booking of -1: book_deal(its terms, parent_reference="{0}", quantity=-1, a new '
+        'execution_reference).\n'
+        '5. recalc_xva(["{0}"]) only if the user asks for it - it is minutes.'.format(
             counterparty))
 
 

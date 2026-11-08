@@ -96,9 +96,9 @@ answer a model would read as agreement. **Held by**
 ## Prompts and resources
 
 A host offers prompts as commands and resources as documents, so both are contract. Three prompts,
-each a numbered walk: `quote_a_structure`, `import_a_legacy_book` (the deals as one
-`NettingCollateralSet` in one booking) and `morning_desk_check`. Four resources: `derivus://book`
-(the job document), `derivus://schema/{store}` (one of the seven `/schema` stores),
+each a numbered walk: `quote_a_structure`, `import_a_legacy_book` (a counterparty's deals the file
+holds, each taken on at one) and `morning_desk_check`. Four resources: `derivus://book` (the job
+document), `derivus://schema/{store}` (one of the seven `/schema` stores),
 `derivus://quote/{quote_id}` (the pending trade) and `derivus://quote/{quote_id}/sheet` (the
 `.xlsx`, so the client's workbook travels as a file rather than a path on the service's disk); a
 quote answers with those two URIs under `resources`. **Held by**
