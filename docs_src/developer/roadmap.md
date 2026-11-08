@@ -17,9 +17,6 @@ found later is added here or, where it moves a validator's number, on Model Limi
 **The model rows**, on [Model Limitations](../limitations.md): the declared fields not yet read are
 features kept ahead of their build, not rows to close.
 
-**The record and the service.**
-
-
 **Speed and memory.**
 
 - **The inner Monte Carlo's step fused** (2026-10-07, re-measured 2026-10-15, M). A one-step-survival
