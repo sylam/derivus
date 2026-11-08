@@ -19,7 +19,7 @@ coordinate reads `ATM_Vol`, so the two rules agree whatever the reference is.
 
 MEASURED on the document below (notional 1, strike 100, barrier 85, monthly monitoring, one year,
 ATM 25 vol with a -0.15 slope). Declared `Sticky_Strike` against a flat `ATM_Ref` of 100 the
-barrier marks 10.088311, and against `Sticky_Moneyness` 10.178774 - **-0.89%**, which is the whole
+barrier marks 10.093277, and against `Sticky_Moneyness` 10.184523 - **-0.90%**, which is the whole
 of the difference between reading a 25.00 vol at every fixing and reading 25.02 through 25.31 vol
 down the smile's slope, the strike sitting under the forward by the 2% carry.
 
