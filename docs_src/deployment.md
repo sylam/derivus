@@ -33,8 +33,8 @@ Python 3.10 or later is required.
 
 One process serves every client. It runs one web worker with one compute thread: jobs queue, run one
 at a time, and a base valuation waiting overtakes a simulation waiting, while a running job is never
-interrupted. Results, parsed plans and the risk cache are held in memory and are gone when the
-process stops; the book and the desk files below are on disk. A running service describes every
+interrupted. Results, parsed plans, the risk cache and the market's kept refit are held in memory
+and are gone when the process stops; the book and the desk files below are on disk. A running service describes every
 route at `/docs` and `/openapi.json`.
 
 | flag | default | effect |

@@ -57,7 +57,7 @@ features kept ahead of their build, not rows to close.
 - **Barrier state as a fold over fixings, what remains.** `Barrier_Dates` and `Price_Fixing` fill
   from the record at compile, but continuous monitoring (one-touch, partial-time) still prices from
   terms: it needs daily `(low, high)` bars, which nothing files yet; `utils.bars_touched` is the
-  predicate, with no caller and, since the test fold, no test. The rule: a window runs from the
+  predicate, with no caller and no test. The rule: a window runs from the
   booking's effective time to the expiry cut; a bar inside it decides, touch being weak; a bar that
   does not touch decides "no" even across an edge; a touching bar across an edge refuses by name
   unless finer bars or a filed `determination` decide it. The same rule serves partial-time windows
