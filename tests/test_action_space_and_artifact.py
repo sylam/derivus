@@ -1582,17 +1582,22 @@ def test_the_benchmarks_score_a_step_sum_objective_by_its_step_reward():
     (`DiffSolver._step_sum`), from the first decision, the scale of its V_0, and the ladder says so:
     under `LogWealth` on the training document with the benchmarks, the textbook's value is the path
     mean of its constant book's growth from the first decision to the terminal at the stamped capital
-    line C, log((C + W_T)/(C + W_t0)), the step sum telescoping (0.0291 nats on the CPU's draws, within
-    1e-12), and the hindsight bound is scored (0.063). The document states `DiffV2_Risk_Aversion` 0.1,
-    a capital line ten times the displacement, so that no path of either device's draws touches it:
-    at aversion 1 CUDA's draws ruin two of the textbook's eight paths and the step sum stops
-    telescoping, by the floor's design. 3 s.
+    line C, log((C + W_T)/(C + W_t0)), the step sum telescoping (0.00312 nats on the CPU's draws, within
+    1e-12), and the hindsight bound is scored (0.0084). C is measured off the warmup bank's worst wealth
+    (`DiffSolver._set_displacement`), so the document makes that worst large on any device's draws: the
+    liability struck 2,000 above the market opens every path about 4.4 million under water, the bank's
+    worst sits below that, and at `DiffV2_Risk_Aversion` 0.1 the line is eleven times it, far above any
+    loss the textbook's book can take. On the fixture's strike CUDA's eight paths leave the bank's worst
+    above zero, the line at zero and the textbook's losing paths below it, where the floor stops the sum
+    telescoping by design. 3 s.
 
     Killing mutations: the benchmarks scoring the terminal utility, which LogWealth defines none of
     (raised after the solve); the textbook launched without its book's P&L before the first decision
     (W_t0 moves, the identity fails at 1e-12)."""
     cfg = _logwealth(_cfg(batch=8, inner=4, benchmarks=True))
-    cfg['Calc']['Calculation']['Hedging_Problem']['Solver']['DiffV2_Risk_Aversion'] = 0.1   # the capital line, tenfold
+    hp = cfg['Calc']['Calculation']['Hedging_Problem']
+    hp['Solver']['DiffV2_Risk_Aversion'] = 0.1                                       # the line, eleven times the worst
+    hp['Liabilities']['FloatingEnergyDeal']['PLAT_JUL29']['Payments']['Items'][0]['Fixed_Basis'] = -4045.0   # every path opens under water
     r = _run(cfg)
     tracks, world = r.evaluation_summary['comparison'], r.bundle
     t0, T = r.evaluation_summary['diagnostics']['root_t'], world.last_live_mtm_index
