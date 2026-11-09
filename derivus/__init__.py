@@ -146,13 +146,13 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
 
     try:
         if bounds is not None:
-            solved = float(optimize.brentq(lambda x: value(x) - target, bounds[0], bounds[1],
-                                           maxiter=max_iterations))
+            solved = float(
+                optimize.brentq(lambda x: value(x) - target, bounds[0], bounds[1], maxiter=max_iterations))
         else:
             seed = block.get(field)
             x0 = float(seed) if isinstance(seed, numbers.Real) and seed else 1.0
-            solved = float(optimize.newton(lambda x: value(x) - target, x0, x1=x0 * 1.0001 + 1.0,
-                                           maxiter=max_iterations))
+            solved = float(optimize.newton(
+                lambda x: value(x) - target, x0, x1=x0 * 1.0001 + 1.0, maxiter=max_iterations))
     except RuntimeError:
         # the search stopped moving; scipy states iterations, a desk needs the coordinate it was
         # moving and how far it got

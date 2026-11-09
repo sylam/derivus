@@ -122,6 +122,8 @@ def quote_curves(config, base_date):
 class JOB(object):
     #: whether a netting set's deals are compressed on load
     compress = True
+    #: the processes a run's paths are sharded over, set by the Parent
+    shards = 1
 
     def __init__(self, cx, rundate, input_path, outputdir, netting_set, stats, log):
         self.cx = cx
@@ -149,16 +151,7 @@ class JOB(object):
         # create the calculation    
         if self.valid():
             try:
-                if self.splits:
-                    orig_netting_set = self.netting_set
-                    for group, indices in enumerate(self.splits):
-                        self.netting_set = orig_netting_set.replace('.json', '_{}.json'.format(group))
-                        netting = os.path.splitext(self.netting_set)[0]
-                        self.cx.deals['Attributes']['Reference'] = netting
-                        self.cx.deals['Deals']['Children'][0]['Children'] = list(indices)
-                        self.run_calc()
-                else:
-                    self.run_calc()
+                self.run_calc()
             except Exception as e:
                 self.logger(self.netting_set, "!! CRITICAL ERROR In Calc !! - {} - Skipping".format(e.args))
 
@@ -166,12 +159,30 @@ class JOB(object):
         return False
 
     def run_calc(self):
-        pass
+        calc, out = self.calculate(self.params)
+        self.stats.setdefault('Stats', {})[self.netting_set] = out['Stats']
+
+    def calculate(self, params):
+        """`cx.run_job`, its answer pooled to the one `out` of an unsharded run under `shards`."""
+        if self.shards == 1:
+            return self.cx.run_job(params)
+        return None, pooled(self.cx.run_job(params, runparallel=self.shards))
 
     @classmethod
     def collate(cls, outputdir, rundate, stats):
         """What the parent writes off every netting set's stats beyond their total: nothing."""
 
+
+class FVA_GRAD(JOB):
+    '''Bare CRB job'''
+    def valid(self):
+        return True
+
+    def run_calc(self):
+        self.params.update({'Funding_Valuation_Adjustment': {'Gradient': 'Yes'}})
+        calc, out = self.calculate(self.params)
+        self.stats.setdefault('Stats', {})[self.netting_set] = out['Stats']
+    
 
 class PFE(JOB):
     def __init__(self, cx, rundate, input_path, outputdir, netting_set, stats, log):
@@ -199,17 +210,20 @@ class PFE(JOB):
             self.logger(self.netting_set, 'is collateralized')
             # turn on dynamic scenarios (more accurate)
             self.params['Dynamic_Scenario_Dates'] = 'Yes'
+            # do 20000 sims in batches of 1024
+            self.params['Simulation_Batches'] = 10
+            self.params['Batch_Size'] = 2048
         else:
             self.logger(self.netting_set, 'is uncollateralized')
+            # do 20000 sims in batches of 1024
+            self.params['Simulation_Batches'] = 5
+            self.params['Batch_Size'] = 4096
             self.params['Dynamic_Scenario_Dates'] = 'No'
 
-        # do 20000 sims in batches of 1024
-        self.params['Simulation_Batches'] = 20
-        self.params['Batch_Size'] = 1024
         # set the percentiles to 95 and 99
         self.params['Percentile'] = '95, 99'
         # do more MCMC simulations
-        self.params['MCMC_Simulations'] = 8192
+        self.params['MCMC_Simulations'] = 4096
 
         calc, out = self.cx.run_job(overrides=self.params)
         profile = out['Results']['exposure_profile']
@@ -225,6 +239,19 @@ class PFE(JOB):
         with open(os.path.join(self.outputdir, self.rundate, legacy_filename), 'w') as f:
             f.write(legacy_exposure_profile)
         self.stats.setdefault('Stats', {})[self.netting_set] = out['Stats']
+        
+        
+class PFEGross(PFE):
+
+    def valid(self):
+        if not self.cx.current_cfg.deals['Deals']['Children'][0]['Children']:
+            return False
+        else:
+            if self.cx.current_cfg.deals['Deals']['Children'][0]['Instrument'].field.get('Collateralized') == 'True':
+                self.cx.current_cfg.deals['Deals']['Children'][0]['Instrument'].field['Collateralized'] = 'False'
+                return True
+            else:
+                return False
 
 
 class CollateralBaseVal(JOB):
@@ -331,11 +358,11 @@ class CVA_GRAD(JOB):
         if self.combinations:
             # use smaller batches if there are comination deals present
             self.logger(self.netting_set, 'Combination deals present - dropping batch size to 256')
-            self.params['Simulation_Batches'] = 4 * num_1ksims
-            self.params['Batch_Size'] = 256
+            self.params['Simulation_Batches'] = 2 * num_1ksims
+            self.params['Batch_Size'] = 512
         else:
-            self.params['Simulation_Batches'] = num_1ksims
-            self.params['Batch_Size'] = 1024
+            self.params['Simulation_Batches'] = num_1ksims//2
+            self.params['Batch_Size'] = 1024*2
             
         # load up CVA calc params
         if self.cx.current_cfg.deals['Deals']['Children'][0]['Instrument'].field.get('Collateralized') == 'True':
@@ -357,7 +384,7 @@ class CVA_GRAD(JOB):
 
         while not calc_complete:
             try:
-                calc, out = self.cx.run_job(self.params)
+                calc, out = self.calculate(self.params)
             except RuntimeError as e:  # Out of memory
                 exc_type, exc_value, exc_traceback = sys.exc_info()
                 traceback.print_exception(exc_type, exc_value, exc_traceback,
@@ -484,7 +511,7 @@ class COLLVA(JOB):
         CSA = {k: v.value() if hasattr(v, 'value') else v for k, v in self.ns.field['Credit_Support_Amounts'].items()}
         while not calc_complete:
             try:
-                calc, out = self.cx.run_job(self.params)
+                calc, out = self.calculate(self.params)
             except RuntimeError as e:  # Out of memory
                 exc_type, exc_value, exc_traceback = sys.exc_info()
                 traceback.print_exception(exc_type, exc_value, exc_traceback,
@@ -530,165 +557,6 @@ class COLLVA(JOB):
                         'Agreement_Currency': self.agreement_currency,
                         'Currency': self.params['Currency']})
                     self.logger(self.netting_set, 'CollVA calc complete - (gradients already present)')
-
-                calc_complete = True
-
-        self.stats.setdefault('Stats', {})[self.netting_set] = out['Stats']
-
-
-class Legacy_FVA(JOB):
-    def __init__(self, cx, rundate, input_path, outputdir, netting_set, stats, log):
-        super(Legacy_FVA, self).__init__(cx, rundate, input_path, outputdir, netting_set, stats, log)
-
-        # DERIVUS_FVA_EXCLUSIONS points at a csv of Netting,Reference pairs to drop from the run
-        exclusions = pd.read_csv(os.environ['DERIVUS_FVA_EXCLUSIONS']).groupby('Netting')
-        if os.path.splitext(netting_set)[0] in exclusions.groups:
-            to_exclude = exclusions.get_group(os.path.splitext(netting_set)[0])['Reference']
-            for i in cx.current_cfg.deals['Deals']['Children'][0]['Children']:
-                if i['Instrument'].field['Reference'] in to_exclude.values:
-                    self.logger(self.netting_set, 'Excluding deal {}'.format(i['Instrument'].field['Reference']))
-                    i['Ignore'] = 'True'
-                else:
-                    i['Ignore'] = 'False'
-
-        # get the calculation currency        
-        self.calculation_currency = self.ns.field.get('Balance_Currency', 'ZAR')
-        # get the collateral assets
-        try:
-            self.assets = list(self.ns.field['Collateral_Assets'].keys()).pop()
-            if self.assets is None and self.ns.field['Collateralized'] == 'True':
-                self.assets = 'Cash_Collateral'
-        except:
-            self.assets = 'Cash_Collateral' if self.ns.field['Collateralized'] == 'True' else 'None'
-
-        self.logger(self.netting_set, 'asset is {}'.format(self.assets))
-
-        # load up a calendar (for theta)
-        self.business_day = cx.current_cfg.holidays['Johannesburg']['businessday']
-        # set the OIS cashflow flag to speed up prime linked swaps
-        self.cx.current_cfg.params['Valuation Configuration']['CFFloatingInterestListDeal']['OIS_Cashflow_Group_Size'] = 1
-        self.params['Currency'] = self.balance_currency
-        # does this netting set have any combination deals?
-        self.cominations = 0
-
-        if self.ns.field.get('Collateral_Assets') is None:
-            self.logger(self.netting_set, 'Check balance currency {}'.format(self.balance_currency))
-
-        num_children = len(self.cx.current_cfg.deals['Deals']['Children'][0]['Children'])
-        if num_children > 1000:
-            # need to split this into smaller groups
-            self.splits = np.array_split(self.cx.current_cfg.deals['Deals']['Children'][0]['Children'].copy(), num_children//500)
-     
-    def valid(self):
-        if not self.cx.current_cfg.deals['Deals']['Children'][0]['Children'] or self.ns.field.get('Collateralized', 'False') == 'False' or self.assets!='Cash_Collateral':
-            return False
-        else:
-            combo_deals = [x for x in self.cx.current_cfg.deals['Deals']['Children'][0]['Children'] if 'Combination' in x['Instrument'].field.get('Tags',[''])[0]]
-            self.combinations = len(combo_deals)
-            return True
-
-    def run_calc(self):
-        import derivus as rf
-        netting = os.path.splitext(self.netting_set)[0]
-        filename = 'Legacy_FVA_' + self.rundate + '_' + self.cx.current_cfg.deals['Attributes'].get('Reference', netting) + '.csv'
-        num_deals = len(self.cx.current_cfg.deals['Deals']['Children'][0]['Children'])
-        self.logger(self.netting_set, 'Netting set has {} deals'.format(num_deals))
-        
-        spreads = {
-            'USD': {'collateral': 0, 'funding': 65},
-            'EUR': {'collateral': 0, 'funding': 65},
-            'GBP': {'collateral': 0, 'funding': 65},
-            'ZAR': {'collateral': -10, 'funding': 15}
-            }
-        
-        curves = {'USD': {'collateral': 'USD-OIS-STATIC-OLD', 'funding': 'USD-SOFR.USD-SOFR3M_CAS'},
-                  'EUR': {'collateral': 'EUR-EONIA', 'funding': 'EUR-EURIBOR-3M'},
-                  'GBP': {'collateral': 'GBP-SONIA', 'funding': 'GBP-SONIA'},
-                  'ZAR': {'collateral': 'ZAR-SWAP', 'funding': 'ZAR-SWAP'}}
-        
-        #calculation parameters
-        overrides = {
-            'Run_Date':self.rundate,
-            'Batch_Size': 1024,
-            'Simulation_Batches': 5,
-            'Random_Seed':4126, 
-            'MCMC_Simulations': 8192,
-            'Calc_Scenarios':'No',
-            'Currency': self.balance_currency,
-            'Dynamic_Scenario_Dates': 'No',
-            'LegacyFVA': {
-                    'Funding_Curve': curves[self.balance_currency]['funding'],
-                    'Funding_Spread': spreads[self.balance_currency]['funding'],
-                    'Collateral_Curve': curves[self.balance_currency]['collateral'],
-                    'Collateral_Spread': spreads[self.balance_currency]['collateral'],
-                    'Gradient': 'No'
-                },
-            }
-
-        # make sure other xva is switched off
-        if 'Credit_Valuation_Adjustment' in self.cx.current_cfg.deals['Calculation']:
-            del self.cx.current_cfg.deals['Calculation']['Credit_Valuation_Adjustment']
-        if 'Funding_Valuation_Adjustment' in self.cx.current_cfg.deals['Calculation']:
-            del self.cx.current_cfg.deals['Calculation']['Funding_Valuation_Adjustment']
-
-        calc_complete = False
-        num_tries = 0
-        try:
-            CSA = {k:v.value() if hasattr(v,'value') else v for k,v in self.ns.field['Credit_Support_Amounts'].items()}
-        except:
-            CSA = {}
-
-        # switch off collateral
-        self.ns.field['Collateralized']='False'
-                    
-        while not calc_complete:
-            try:
-                calc, out = self.cx.run_job(self.params)
-                # calc, out = rf.run_cmc(self.cx, overrides=overrides)
-            except RuntimeError as e:  # Out of memory
-                exc_type, exc_value, exc_traceback = sys.exc_info()
-                traceback.print_exception(exc_type, exc_value, exc_traceback, limit=2, file=sys.stdout)
-                overrides['Simulation_Batches'] *= 2
-                overrides['Batch_Size'] //= 2
-                self.logger(self.netting_set,
-                            'Exception: Runtime Error - Halving to {} Batchsize'.format(overrides['Batch_Size']))
-                num_tries += 1
-                if num_tries>2:
-                    self.logger(self.netting_set,
-                            'Tried twice with last batchsize of {} Skipping'.format(overrides['Batch_Size']))
-                    out = {'Stats': CSA}
-                    out['Stats'].update({'legacy_fva': np.nan, 'Currency': self.params['Currency']})
-                    calc_complete = True
-            except KeyError as key:
-                self.logger(self.netting_set, 'Exception: Key Error {} - skipping'.format(key.args))
-                calc_complete = True
-                out = {'Stats': CSA}
-                out['Stats'].update({'legacy_fva': np.nan, 'Currency': self.params['Currency']})
-            else:
-                if 'grad_legacy_fva' in out['Results']:
-                    grad_legacy_fva = out['Results']['grad_legacy_fva'].rename(
-                        columns={'Gradient': self.cx.current_cfg.deals['Attributes'].get('Reference', netting)})
-                    grad_legacy_fva.to_csv(os.path.join(self.outputdir, 'Greeks', filename))
-                    out['Stats'].update(CSA)
-                    # store the CollVA as part of the stats
-                    out['Stats'].update({
-                        'legacy_fva': out['Results']['legacy_fva'],
-                        'Opening_CSA_Balance': self.ns.field['Opening_Balance'],
-                        'MtM_t0': out['Results']['mtm'].values[0].mean(),
-                        'CSA': self.assets,
-                        'Agreement_Currency': self.agreement_currency,
-                        'Currency': self.params['Currency']})
-                    # log the netting set
-                    self.logger(self.netting_set, 'Legacy FVA calc complete')
-                else:
-                    out['Stats'].update({
-                        'legacy_fva': out['Results']['legacy_fva'] if 'legacy_fva' in out['Results'] else np.nan,
-                        'Opening_CSA_Balance': self.ns.field['Opening_Balance'],
-                        'MtM_t0': out['Results']['mtm'].values[0].mean() if 'mtm' in out['Results'] else np.nan,
-                        'CSA': self.assets,
-                        'Agreement_Currency': self.agreement_currency,
-                        'Currency': self.params['Currency']})
-                    self.logger(self.netting_set, 'Legacy FVA calc complete - (gradients already present)')
 
                 calc_complete = True
 
@@ -759,7 +627,7 @@ class FVA(JOB):
 
         while not calc_complete:
             try:
-                calc, out = self.cx.run_job(self.params)
+                calc, out = self.calculate(self.params)
             except RuntimeError as e:  # Out of memory
                 exc_type, exc_value, exc_traceback = sys.exc_info()
                 traceback.print_exception(exc_type, exc_value, exc_traceback,
@@ -1026,21 +894,40 @@ class SIMM(JOB):
                 stem + '_Merged.tsv', sep='\t', index=False)
 
 
-def work(id, lock, queue, results, job, rundate, input_path, outputdir):
+def pooled(answer):
+    """One run's `out` from a sharded run's per-worker lists: the xva and its gradient averaged, as
+    every shard ran as many batches, and the shards' paths side by side. Whatever else a shard
+    reports does not pool and is left out."""
+    results, out = answer['Results'], {}
+    for key, part in results[0].items():
+        parts = [shard[key] for shard in results]
+        if key.startswith('grad_'):
+            out[key] = pd.concat(parts).groupby(
+                level=list(range(part.index.nlevels)), sort=False).mean()
+        elif key in ('mtm', 'collateral'):
+            out[key] = pd.concat(parts, axis=1, ignore_index=True)
+        elif isinstance(part, (float, np.floating)):
+            out[key] = np.mean(parts)
+    stats = dict(answer['Stats'][0], Simulation_Batches=sum(
+        stats['Simulation_Batches'] for stats in answer['Stats']))
+    return {'Results': out, 'Stats': stats}
+
+
+def logger(id, lock):
     def log(netting_set, msg):
-        lock.acquire()
-        print('JOB %s:' % id, '{0}: {1}'.format(netting_set, msg))
-        lock.release()
+        with lock:
+            print('JOB %s:' % id, '{0}: {1}'.format(netting_set, msg))
+    return log
 
-    # set the visible GPU
-    os.environ['CUDA_VISIBLE_DEVICES'] = str(id)
 
-    # now load the library 
+def context(job):
+    """The context a job's netting sets load on."""
     import derivus as rf
     # A deal file can carry the absolute paths of whatever machine wrote it; path_transform
     # rewrites those roots onto local mounts. Set DERIVUS_PATH_TRANSFORM to a JSON object of
     # {written_root: local_root} when that applies - it is empty when the paths already resolve.
-    path_transform = json.loads(os.environ.get('DERIVUS_PATH_TRANSFORM', '{}'))
+    dpt = os.environ.get('DERIVUS_PATH_TRANSFORM')
+    path_transform = json.load(open(dpt,'rt')) if dpt is not None else {}
     # a context object loads (and caches) one or more configs
     # remap any paths as necessary
     if job == 'PFE':
@@ -1053,16 +940,13 @@ def work(id, lock, queue, results, job, rundate, input_path, outputdir):
         cx = rf.StressedContext(path_transform=path_transform)
     else:
         cx = rf.Context(path_transform=path_transform)
+    return cx
 
-    # log results
-    logs = {}
 
-    while True:
-        # get the task
-        task = queue.get()
-        if task is None:
-            break
-
+def perform(job, tasks, rundate, input_path, outputdir, id, log):
+    """`job` over each netting set of `tasks` on one context: `[('Stats', file)]` or `[]`."""
+    cx, logs = context(job), {}
+    for task in tasks:
         try:
             obj = globals().get(job)(cx, rundate, input_path, outputdir, task, logs, log)
         except Exception as e:
@@ -1070,17 +954,20 @@ def work(id, lock, queue, results, job, rundate, input_path, outputdir):
         else:
             obj.perform_calc()
 
-    # empty the queue
-    queue.put(None)
-    # get ready to send the results
-    result = []
-
     # write out the logs
-    if 'Stats' in logs:
-        stats_file = os.path.join(outputdir, 'Stats', '{0}_Stats_{1}_JOB_{2}.csv'.format(job, rundate, id))
-        pd.DataFrame(data=logs['Stats']).T.to_csv(stats_file)
-        result.append(('Stats', stats_file))
+    if 'Stats' not in logs:
+        return []
+    stats_file = os.path.join(outputdir, 'Stats', '{0}_Stats_{1}_JOB_{2}.csv'.format(job, rundate, id))
+    pd.DataFrame(data=logs['Stats']).T.to_csv(stats_file)
+    return [('Stats', stats_file)]
 
+
+def work(id, lock, queue, results, job, rundate, input_path, outputdir):
+    # set the visible GPU
+    os.environ['CUDA_VISIBLE_DEVICES'] = str(id)
+    result = perform(job, iter(queue.get, None), rundate, input_path, outputdir, id, logger(id, lock))
+    # hand the sentinel on so the next worker ends too
+    queue.put(None)
     results.put(result)
 
 
@@ -1091,40 +978,48 @@ class Parent:
         self.lock = Lock()
         self.NUMBER_OF_PROCESSES = num_jobs
 
-    def start(self, job, rundate, input_path, outputdir, wildcard='CrB*.json'):
-        print("starting {0} workers in {1}".format(self.NUMBER_OF_PROCESSES, input_path))
+    def start(self, job, rundate, input_path, outputdir, wildcard='CrB*.json', shard=False):
+        crbs = [os.path.split(x)[-1] for x in sorted(
+            glob.glob(os.path.join(input_path, rundate, wildcard)), key=os.path.getsize)[::-1]]
 
-        self.workers = [Process(target=work, args=(
-            i, self.lock, self.queue, self.results, job, rundate, input_path, outputdir))
-                        for i in range(self.NUMBER_OF_PROCESSES)]
+        if shard:
+            # one process runs the netting sets in turn, the engine sharding each over NUMBER_OF_PROCESSES
+            print("sharding each of {0} netting sets in {1} over {2} workers".format(
+                len(crbs), input_path, self.NUMBER_OF_PROCESSES))
+            globals()[job].shards = self.NUMBER_OF_PROCESSES
+            post_processing = [perform(
+                job, crbs, rundate, input_path, outputdir, 0, logger(0, self.lock))]
+        else:
+            print("starting {0} workers in {1}".format(self.NUMBER_OF_PROCESSES, input_path))
 
-        # start all children
-        for w in self.workers:
-            w.start()
+            self.workers = [Process(target=work, args=(
+                i, self.lock, self.queue, self.results, job, rundate, input_path, outputdir))
+                            for i in range(self.NUMBER_OF_PROCESSES)]
 
-        crbs = map(lambda x: os.path.split(x)[-1],
-                   sorted(glob.glob(os.path.join(input_path, rundate, wildcard)), key=os.path.getsize)[::-1])
+            # start all children
+            for w in self.workers:
+                w.start()
 
-        # load the crbs on the queue
-        for netting_set in crbs:
-            self.queue.put(netting_set)
+            # load the crbs on the queue
+            for netting_set in crbs:
+                self.queue.put(netting_set)
 
-        self.queue.put(None)
+            self.queue.put(None)
 
-        # now collate the results
-        post_processing = []
-        for i in range(self.NUMBER_OF_PROCESSES):
-            post_processing.append(self.results.get())
+            # now collate the results
+            post_processing = []
+            for i in range(self.NUMBER_OF_PROCESSES):
+                post_processing.append(self.results.get())
 
-        # close the queue
-        self.queue.close()
-        self.results.close()
+            # close the queue
+            self.queue.close()
+            self.results.close()
 
-        # terminate all worker processes
-        for w in self.workers:
-            w.join()
-            if w.is_alive():
-                w.close()
+            # terminate all worker processes
+            for w in self.workers:
+                w.join(timeout=300)
+                if w.is_alive():
+                    w.close()
 
         post_results = {}
         for output in post_processing:
@@ -1154,12 +1049,16 @@ def main():
                                                      'assumed to be a directory within)')
     parser.add_argument('output_path', type=str, help='output directory')
     parser.add_argument('filename', type=str, help='filename(s) in input_path to run - wildcards allowed')
+    parser.add_argument('--shard', action='store_true', help=(
+        'read num_jobs as the shards each netting set\'s paths are split over, the netting sets run in '
+        'turn, rather than the workers that take netting sets between them; for a very large netting '
+        'set\'s xva sensitivities (CVA_GRAD, FVA, COLLVA)'))
 
     # get the arguments
     args = parser.parse_args()
 
     Parent(args.num_jobs).start(
-        args.job, args.rundate, args.input_path, args.output_path, args.filename)
+        args.job, args.rundate, args.input_path, args.output_path, args.filename, args.shard)
     return 0
 
 
