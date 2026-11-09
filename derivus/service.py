@@ -6068,13 +6068,6 @@ def book_model(request: dict):
             'status': EXECUTOR.submit(submitted, HEAVY)}
 
 
-@app.post('/book/hn', summary='Alias of /book/model - kept for one release')
-def book_hn(request: dict):
-    """`/book/model` under the spelling it shipped as, kept for one release. The family it named
-    is retired, so an unqualified call means the pin, as `/book/model`'s own does."""
-    return book_model(request)
-
-
 class Metronome:
     """`DV_Service --tick SECONDS` - the background market ticker, as a thread that SUBMITS.
 

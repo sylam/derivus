@@ -1511,7 +1511,7 @@ mapping = {
     # hand-written: its one "type" is a UI panel, and `System Parameters` is consumed by `Config`
     'System': {
         'fields': {
-            'Base_Currency': {'widget': 'Text', 'description': 'Base Currency', 'value': ''},
+            'Base_Currency': {'widget': 'Text', 'description': 'Base Currency', 'value': 'USD'},
             'Base_Date': {'widget': 'DatePicker', 'description': 'Base Date',
                           'value': default['DatePicker']},
             'Exclude_Deals_With_Missing_Market_Data': {
