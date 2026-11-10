@@ -1844,7 +1844,7 @@ class NettingCollateralSet(Deal):
                     from its row of forced opening balances - which is the whole of a transfer
                     counterfactual."""
                     return scan_collateral_balance(
-                        openings, req, recv, post, mask, start=np.reshape(starts, (-1, 1, 1)))[0]
+                        openings, req, recv, post, mask, start=np.reshape(starts, (-1, 1)))[0]
 
                 shared.boundary_sets.append(utils.MTABoundarySet(
                     events=mta_events, replay=replay_net_mtm,

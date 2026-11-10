@@ -208,8 +208,8 @@ class MTABoundarySet:
     rescan: object  # callable: (openings, starts) -> a balance path a row, from the first start on
 
     #: Margin calls one rescan restarts: the walk's launches fall by this, and it holds this many
-    #: pairs of balance paths
-    RESTARTS = 16
+    #: balance paths
+    RESTARTS = 32
 
     # Who registered it - `BoundarySet.deal`'s slot, carried here too because this is not one of
     # those (it shares only `objective_jumps`) and `boundary_sets` holds both. A netting SET stamps
@@ -219,15 +219,16 @@ class MTABoundarySet:
     def objective_jumps(self, score):
         """Per margin call, the gap and the change in the OBJECTIVE its transfer decision produces.
 
-        The counterfactual is the SAME collateral recursion restarted from a forced opening balance
-        - transfer, then hold - so nothing is re-simulated, re-priced or bumped: only the cheap
-        balance scan is replayed. A replay yields this SET's net while `score` consumes a change to
-        the PORTFOLIO, so the realised balance's own replay is the baseline - one extra scan per
-        set, not per event.
+        The counterfactual is the SAME collateral recursion restarted from a forced opening balance,
+        the decision the scenario did not take, so nothing is re-simulated, re-priced or bumped:
+        only the cheap balance scan is replayed. A replay yields this SET's net while `score`
+        consumes a change to the PORTFOLIO, so the realised balance's own replay is the baseline -
+        one extra scan per set, not per event.
 
         The receive and post sides of one call share a jump: D = 1 means "a transfer happened" for
-        both, so only the gap differs. Computing it once halves the replays. One rescan walks
-        `RESTARTS` calls, both openings of each.
+        both, so only the gap differs. Computing it once halves the replays; the decision a scenario
+        did take is the realised objective, `score` being per scenario, which halves them again.
+        One rescan walks `RESTARTS` calls.
 
         The jump is masked by the event's `live`: a run of calls over which the balance is HELD
         publishes ONE transfer decision, and the coefficient carries it once. Masking the jump
@@ -244,15 +245,17 @@ class MTABoundarySet:
         jumps = {}
         with torch.no_grad():
             reported = self.replay(self.balance)
+            realised = score(torch.zeros_like(reported))
             for chunk in (calls[at:at + self.RESTARTS] for at in range(0, len(calls), self.RESTARTS)):
                 starts = [call.call_index for call in chunk]
-                paths = self.rescan(torch.stack([torch.stack(
-                    [call.required_balance, call.previous_balance]) for call in chunk]), starts)
+                previous = torch.stack([call.previous_balance for call in chunk])
+                held = self.balance[starts] == previous
+                paths = self.rescan(torch.where(held, torch.stack(
+                    [call.required_balance for call in chunk]), previous), starts)
                 for row, start in enumerate(starts):
-                    transferred, held = [
-                        score(self.replay(torch.cat([self.balance[:start], side], dim=0)) - reported)
-                        for side in paths[start - starts[0]:, row].unbind(1)]
-                    jumps[start] = transferred - held
+                    other = score(self.replay(torch.cat(
+                        [self.balance[:start], paths[start - starts[0]:, row]], dim=0)) - reported)
+                    jumps[start] = torch.where(held[row], other - realised, realised - other)
         # outside the block: `no_grad` is thread-local, and a generator suspended inside one
         # leaves it set in whoever resumes it - handing the caller a gap that carries no graph
         for event in self.events:
