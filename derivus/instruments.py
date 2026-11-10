@@ -985,7 +985,8 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
     Returns `(balance_path, gaps)`; `gaps` is empty unless `collect_gaps`, when it carries
     `(call_index, receive_gap, post_gap, previous, required)` per call date with the autograd graph
     intact. `start` and `opening` restart the same recursion at a margin date from a forced balance,
-    which is the whole of a counterfactual replay.
+    which is the whole of a counterfactual replay; an array of starts restarts each leading row of
+    `opening` at its own date, the row holding its opening until then.
 
     The transfer test must stay `previous < recv | previous > post` rather than be re-derived from
     the gaps: the two agree in exact arithmetic and not in floating point, and the forward valuation
@@ -993,13 +994,16 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
     """
     path = [opening]
     gaps = []
-    for index in range(start + 1, required.shape[0]):
+    late = opening.new_tensor(start, dtype=torch.int64) if np.ndim(start) else None
+    for index in range(int(np.min(start)) + 1, required.shape[0]):
         previous = path[-1]
         if not call_mask[index]:
             path.append(previous)
             continue
         recv, post = recv_band[index], post_band[index]
         transfer = (previous < recv) | (previous > post)
+        if late is not None:
+            transfer &= index > late
         if collect_gaps:
             gaps.append((index, recv - previous, previous - post, previous, required[index]))
         path.append(required[index] * transfer + previous * (~transfer))
@@ -1834,11 +1838,13 @@ class NettingCollateralSet(Deal):
                         out = out * b_surv
                     return reported(out)
 
-                def rescan(opening, start, req=Bt_new.detach(), recv=Mr.detach(),
+                def rescan(openings, starts, req=Bt_new.detach(), recv=Mr.detach(),
                            post=Mp.detach(), mask=factor_dep['call_mask'].astype(bool)):
-                    """The forward walk's own recursion, restarted at a margin date from a forced
-                    opening balance - which is the whole of a transfer counterfactual."""
-                    return scan_collateral_balance(opening, req, recv, post, mask, start=start)[0]
+                    """The forward walk's own recursion restarted at each margin date of `starts`
+                    from its row of forced opening balances - which is the whole of a transfer
+                    counterfactual."""
+                    return scan_collateral_balance(
+                        openings, req, recv, post, mask, start=np.reshape(starts, (-1, 1, 1)))[0]
 
                 shared.boundary_sets.append(utils.MTABoundarySet(
                     events=mta_events, replay=replay_net_mtm,

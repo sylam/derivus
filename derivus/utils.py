@@ -199,13 +199,17 @@ class MTABoundarySet:
     """One netting set's transfer decisions, plus what is needed to price their counterfactuals.
 
     `replay` maps an alternative balance path to the netting-set MTM exactly as reported; `rescan`
-    restarts the forward walk's own recursion at a margin date from a forced opening balance. Both
+    restarts the forward walk's own recursion at margin dates from forced opening balances. Both
     are built inside post_process, so they capture only what does not depend on the balance.
     """
     events: list
     replay: object  # callable: balance path -> netting-set MTM
     balance: object  # the realised path, detached; the prefix a replay keeps
-    rescan: object  # callable: (opening, start) -> the balance path from there on
+    rescan: object  # callable: (openings, starts) -> a balance path a row, from the first start on
+
+    #: Margin calls one rescan restarts: the walk's launches fall by this, and it holds this many
+    #: pairs of balance paths
+    RESTARTS = 16
 
     # Who registered it - `BoundarySet.deal`'s slot, carried here too because this is not one of
     # those (it shares only `objective_jumps`) and `boundary_sets` holds both. A netting SET stamps
@@ -222,7 +226,8 @@ class MTABoundarySet:
         set, not per event.
 
         The receive and post sides of one call share a jump: D = 1 means "a transfer happened" for
-        both, so only the gap differs. Computing it once halves the replays.
+        both, so only the gap differs. Computing it once halves the replays. One rescan walks
+        `RESTARTS` calls, both openings of each.
 
         The jump is masked by the event's `live`: a run of calls over which the balance is HELD
         publishes ONE transfer decision, and the coefficient carries it once. Masking the jump
@@ -235,20 +240,22 @@ class MTABoundarySet:
                 '{} of {} margin-call events reached the correction with no `live` mask: '
                 '`mark_binding_calls` decides it over the whole series, so every site that builds '
                 'events owes it one call'.format(unstamped, len(self.events)))
+        calls = list({event.call_index: event for event in self.events}.values())
+        jumps = {}
         with torch.no_grad():
             reported = self.replay(self.balance)
-        jumps = {}
-        for event in self.events:
-            if event.call_index not in jumps:
-                with torch.no_grad():
-                    prefix = self.balance[:event.call_index]
+            for chunk in (calls[at:at + self.RESTARTS] for at in range(0, len(calls), self.RESTARTS)):
+                starts = [call.call_index for call in chunk]
+                paths = self.rescan(torch.stack([torch.stack(
+                    [call.required_balance, call.previous_balance]) for call in chunk]), starts)
+                for row, start in enumerate(starts):
                     transferred, held = [
-                        score(self.replay(torch.cat(
-                            [prefix, self.rescan(opening, event.call_index)], dim=0)) - reported)
-                        for opening in (event.required_balance, event.previous_balance)]
-                    jumps[event.call_index] = transferred - held
-            # outside the block: `no_grad` is thread-local, and a generator suspended inside one
-            # leaves it set in whoever resumes it - handing the caller a gap that carries no graph
+                        score(self.replay(torch.cat([self.balance[:start], side], dim=0)) - reported)
+                        for side in paths[start - starts[0]:, row].unbind(1)]
+                    jumps[start] = transferred - held
+        # outside the block: `no_grad` is thread-local, and a generator suspended inside one
+        # leaves it set in whoever resumes it - handing the caller a gap that carries no graph
+        for event in self.events:
             yield event.gap, jumps[event.call_index] * event.live
 
 
