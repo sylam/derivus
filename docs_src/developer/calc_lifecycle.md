@@ -728,6 +728,10 @@ The classes differ in reach, so no mode flag: `LatchedBoundarySet` reaches every
 latching pricers, the swaption); `InnerBoundarySet` lives inside an inner Monte Carlo (the TARF's
 knock-in) and carries the objective's derivative, an inner path moving a row by `1/n`;
 `MTABoundarySet` is a collateral transfer and every later balance.
+A set yields one decision at a time, solved over its whole gap; `MTABoundarySet` says `stacked` and
+yields its margin calls a stack at a time, a call's side a row solved on its own: one walk restarts
+as many calls as `RESTART_ELEMENTS` holds of balance, and one replay and one objective score them
+(**Not gated:** no test reads a margin call's term against a bump).
 A decision registers one counterfactual with its whole reach, ledger included, since at a kink two
 partial ones score differently from their sum; only booked cash may be declared (`cash_events`), the
 collateral chain replaying the ledger.

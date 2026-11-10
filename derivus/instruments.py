@@ -995,7 +995,9 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
     path = [opening]
     gaps = []
     late = opening.new_tensor(start, dtype=torch.int64) if np.ndim(start) else None
-    for index in range(int(np.min(start)) + 1, required.shape[0]):
+    # unbound once: a row read a step is a backward node a step, each filling a whole grid of zeros
+    required, recv_band, post_band = required.unbind(0), recv_band.unbind(0), post_band.unbind(0)
+    for index in range(int(np.min(start)) + 1, len(required)):
         previous = path[-1]
         if not call_mask[index]:
             path.append(previous)
@@ -1812,7 +1814,9 @@ class NettingCollateralSet(Deal):
                 np.searchsorted(time_grid.report_index, factor_dep['Report_Rows']), torch.int64)
 
             def reported(rows):
-                return rows.new_zeros(time_grid.report_index.size, rows.shape[1]).index_put_((on_report,), rows)
+                out = rows.new_zeros(*rows.shape[:-2], time_grid.report_index.size, rows.shape[-1])
+                out[..., on_report, :] = rows
+                return out
 
             if boundary_aad:
                 # Balance-independent, detached captures for the MTA replay (see docstring).
@@ -1824,12 +1828,13 @@ class NettingCollateralSet(Deal):
                     """Balance path, and optionally a different Vte or settled-cash delta, to the
                     net mtm as reported. `vte` defaults to what was reported - the margin-call case
                     where only the balance varies; a pricer counterfactual moves the gross through
-                    that one term, and one that flips a payment moves cash through `c_delta`."""
-                    running = balance_path[base_i]
+                    that one term, and one that flips a payment moves cash through `c_delta`.
+                    Leading dimensions of the balance path are counterfactuals replayed at once."""
+                    running = balance_path[..., base_i, :]
                     step = np.zeros_like(delta_T)
                     for i in range(delta_T.max() if delta_T.size else 0):
                         step[delta_T > i] = i + 1
-                        running = torch.min(running, balance_path[base_i + step])
+                        running = torch.min(running, balance_path[..., base_i + step, :])
                     running = Fn.pad(running, [0, 0, 0, 1])
                     out = ((b_Vte if vte is None else vte) +
                            (b_C if c_delta is None else b_C + c_delta) -

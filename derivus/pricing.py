@@ -1021,7 +1021,7 @@ class SurvivalLedger(object):
                           float(self.conservation().abs().max()), float(self.alive.mean()))
 
 
-def boundary_weights(gap, bandwidth):
+def boundary_weights(gap, bandwidth, stacked=False):
     """Density at the boundary and local-linear regression weights, estimated SEPARATELY.
 
     The term to recover is ``f_G(0) * E[jump * dG/dtheta | G = 0]``. Folding both halves into one
@@ -1036,7 +1036,13 @@ def boundary_weights(gap, bandwidth):
     One sample has no spread for a kernel width - ``std()`` would be NaN and reach ``backward()``
     silently - so zero width is returned and the correction is exactly zero. Base valuation reaches
     this path.
+
+    `stacked` reads the leading dimension as one decision a row: each row is solved on its own, and
+    the densities come back a column beside the weights.
     """
+    if stacked:
+        density, weights = torch.vmap(boundary_weights, in_dims=(0, None))(gap, bandwidth)
+        return density.unsqueeze(1), weights
     g = gap.detach()
     spread = g.std() if g.numel() > 1 else torch.zeros_like(g.reshape(-1)[:1].squeeze())
     width = bandwidth * spread.clamp_min(torch.finfo(g.dtype).eps)
@@ -1053,7 +1059,7 @@ def boundary_weights(gap, bandwidth):
     return density, weights
 
 
-def stochastic_boundary_correction(gap, objective_jump, bandwidth):
+def stochastic_boundary_correction(gap, objective_jump, bandwidth, stacked=False):
     """A term worth EXACTLY ZERO in the forward pass that carries the missing boundary derivative
     into the backward one.
 
@@ -1064,9 +1070,9 @@ def stochastic_boundary_correction(gap, objective_jump, bandwidth):
 
     ``objective_jump`` is a coefficient and stays detached: its pathwise derivatives are already in
     the ordinary AAD value. Summed, not averaged - the local-linear weights carry the 1/N through
-    the density.
+    the density. `stacked` is a stack of decisions, one a row of the gap and of the jump.
     """
-    density, weights = boundary_weights(gap, bandwidth)
+    density, weights = boundary_weights(gap, bandwidth, stacked)
     return ((gap - gap.detach()) * (density * weights * objective_jump).detach()).sum()
 
 
@@ -1074,7 +1080,8 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth, by_deal=None
     """Total boundary correction for every recorded decision - a margin call's transfer, a barrier
     crossing, an autocall trigger, any observed event whose value jump is real.
 
-    How each counterfactual is produced belongs to the set that recorded it. This half is `score`:
+    How each counterfactual is produced belongs to the set that recorded it, and so does what it
+    yields: one decision, or a stack of them where it says `stacked`. This half is `score`:
     the reported PORTFOLIO plus a change to it, never a set's own level - the objective is applied
     to `resolve_structure`'s root sum, and a collateralised set's post-collateral net sits at the
     relu kink by construction. `gap > 0` means the trigger fired, matching a jump of
@@ -1089,13 +1096,13 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth, by_deal=None
     corrections = []
     for bset in shared.boundary_sets:
         for k, (gap, jump) in enumerate(bset.objective_jumps(score)):
-            corrections.append(stochastic_boundary_correction(gap, jump, bandwidth))
+            corrections.append(stochastic_boundary_correction(gap, jump, bandwidth, bset.stacked))
             if by_deal is not None:
                 by_deal.setdefault(bset.deal, []).append(corrections[-1])
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 # the forward value is zero by construction; the COEFFICIENT it multiplies into
                 # the gap's graph is the reading
-                density, weights = boundary_weights(gap, bandwidth)
+                density, weights = boundary_weights(gap, bandwidth, bset.stacked)
                 logging.debug('BOUNDARY %s decision=%d coeff=%.6g',
                               type(bset).__name__, k,
                               float((density * weights * jump).sum()))

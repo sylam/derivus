@@ -207,9 +207,12 @@ class MTABoundarySet:
     balance: object  # the realised path, detached; the prefix a replay keeps
     rescan: object  # callable: (openings, starts) -> a balance path a row, from the first start on
 
-    #: Margin calls one rescan restarts: the walk's launches fall by this, and it holds this many
-    #: balance paths
-    RESTARTS = 32
+    #: Elements of balance one rescan may hold, which sets the margin calls it restarts: the walk's
+    #: launches are a small batch's whole cost, and there it restarts a set's every call at once
+    RESTART_ELEMENTS = 1 << 24
+
+    # Each yield is a stack of decisions, a margin call's side a row, each solved on its own
+    stacked = True
 
     # Who registered it - `BoundarySet.deal`'s slot, carried here too because this is not one of
     # those (it shares only `objective_jumps`) and `boundary_sets` holds both. A netting SET stamps
@@ -228,7 +231,8 @@ class MTABoundarySet:
         The receive and post sides of one call share a jump: D = 1 means "a transfer happened" for
         both, so only the gap differs. Computing it once halves the replays; the decision a scenario
         did take is the realised objective, `score` being per scenario, which halves them again.
-        One rescan walks `RESTARTS` calls.
+        One rescan restarts as many calls as `RESTART_ELEMENTS` holds of balance; their replays and
+        objectives are one stack, and so is what it yields: the gaps and masked jumps of its calls.
 
         The jump is masked by the event's `live`: a run of calls over which the balance is HELD
         publishes ONE transfer decision, and the coefficient carries it once. Masking the jump
@@ -241,25 +245,34 @@ class MTABoundarySet:
                 '{} of {} margin-call events reached the correction with no `live` mask: '
                 '`mark_binding_calls` decides it over the whole series, so every site that builds '
                 'events owes it one call'.format(unstamped, len(self.events)))
-        calls = list({event.call_index: event for event in self.events}.values())
-        jumps = {}
+        calls = {}
+        for event in self.events:
+            calls.setdefault(event.call_index, []).append(event)
+        index = list(calls)
+        restarts = max(1, self.RESTART_ELEMENTS // self.balance.numel())
         with torch.no_grad():
             reported = self.replay(self.balance)
             realised = score(torch.zeros_like(reported))
-            for chunk in (calls[at:at + self.RESTARTS] for at in range(0, len(calls), self.RESTARTS)):
-                starts = [call.call_index for call in chunk]
-                previous = torch.stack([call.previous_balance for call in chunk])
+        for starts in (index[at:at + restarts] for at in range(0, len(index), restarts)):
+            sides = [(row, event) for row, start in enumerate(starts) for event in calls[start]]
+            with torch.no_grad():
+                previous = torch.stack([calls[start][0].previous_balance for start in starts])
                 held = self.balance[starts] == previous
                 paths = self.rescan(torch.where(held, torch.stack(
-                    [call.required_balance for call in chunk]), previous), starts)
-                for row, start in enumerate(starts):
-                    other = score(self.replay(torch.cat(
-                        [self.balance[:start], paths[start - starts[0]:, row]], dim=0)) - reported)
-                    jumps[start] = torch.where(held[row], other - realised, realised - other)
-        # outside the block: `no_grad` is thread-local, and a generator suspended inside one
-        # leaves it set in whoever resumes it - handing the caller a gap that carries no graph
-        for event in self.events:
-            yield event.gap, jumps[event.call_index] * event.live
+                    [calls[start][0].required_balance for start in starts]), previous), starts)
+                # a restart keeps the realised balance until its own call
+                late = held.new_tensor(starts, dtype=torch.int64).unsqueeze(1)
+                own = torch.arange(starts[0], len(self.balance), device=held.device).reshape(-1, 1, 1) >= late
+                paths = torch.cat([
+                    self.balance[:starts[0], None].expand(-1, len(starts), -1),
+                    torch.where(own, paths, self.balance[starts[0]:, None])]).transpose(0, 1)
+                other = torch.vmap(score)(self.replay(paths) - reported)
+                jump = torch.where(held, other - realised, realised - other)
+            # outside the block: `no_grad` is thread-local, and a generator suspended inside one
+            # leaves it set in whoever resumes it - handing the caller a gap that carries no graph
+            yield (
+                torch.stack([event.gap for _, event in sides]),
+                jump[[row for row, _ in sides]] * torch.stack([event.live for _, event in sides]))
 
 
 @dataclass
@@ -299,6 +312,8 @@ class BoundarySet:
     # a field because the subclasses declare non-default fields of their own, which cannot follow a
     # defaulted one. Read by the second-derivative refusal, which names the deals it refuses over.
     deal = None
+    # A yield is one decision, solved over every element of its gap; `MTABoundarySet` stacks its own
+    stacked = False
 
     @staticmethod
     def claim(shared, mark):
@@ -615,22 +630,15 @@ def _mark_side(events):
     new_run = torch.ones_like(previous, dtype=torch.bool)
     new_run[1:] = previous[1:] != previous[:-1]
 
-    # the run's largest gap at every one of its events: a forward running maximum, then swept back
-    run_max = torch.empty_like(gaps)
-    running = torch.full_like(gaps[0], float('-inf'))
-    for k in range(gaps.shape[0]):
-        running = torch.where(new_run[k], gaps[k], torch.maximum(running, gaps[k]))
-        run_max[k] = running
-    for k in range(gaps.shape[0] - 2, -1, -1):
-        run_max[k] = torch.where(new_run[k + 1], run_max[k], run_max[k + 1])
-
-    keep = gaps == run_max
-    taken = torch.zeros_like(keep[0])
-    for k, event in enumerate(events):
-        taken = torch.where(new_run[k], torch.zeros_like(taken), taken)
-        keep[k] = keep[k] & ~taken
-        taken = taken | keep[k]
-        event.live = keep[k]
+    # a scenario's runs numbered down its column: each run's largest gap, then the first call at it
+    run = new_run.cumsum(dim=0) - 1
+    at = torch.arange(len(events), device=run.device).unsqueeze(1).expand_as(run)
+    largest = torch.full_like(gaps, float('-inf')).scatter_reduce_(0, run, gaps, 'amax')
+    first = torch.full_like(run, len(events)).scatter_reduce_(
+        0, run, torch.where(gaps == largest.gather(0, run), at, len(events)), 'amin')
+    keep = at == first.gather(0, run)
+    for event, live in zip(events, keep):
+        event.live = live
     if logging.getLogger().isEnabledFor(logging.DEBUG):
         logging.debug('MTA BINDING side=%s events=%d runs=%.4g live=%.4g', events[0].side,
                       len(events), float(new_run.to(gaps.dtype).sum(dim=0).max()),
