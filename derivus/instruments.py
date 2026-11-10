@@ -1808,7 +1808,7 @@ class NettingCollateralSet(Deal):
                 np.searchsorted(time_grid.report_index, factor_dep['Report_Rows']), torch.int64)
 
             def reported(rows):
-                return rows.new_zeros(time_grid.report_index.size, rows.shape[1]).index_copy(0, on_report, rows)
+                return rows.new_zeros(time_grid.report_index.size, rows.shape[1]).index_put_((on_report,), rows)
 
             if boundary_aad:
                 # Balance-independent, detached captures for the MTA replay (see docstring).
@@ -1924,8 +1924,8 @@ class NettingCollateralSet(Deal):
                     'Value': reported(net_accum)
                 })
             # the root sums every set row by row on the global grid and reports its own dates off it
-            return net_accum.new_zeros(time_grid.mtm_time_grid.size, net_accum.shape[1]).index_copy(
-                0, shared.upload(factor_dep['Report_Rows'], torch.int64), net_accum)
+            return net_accum.new_zeros(time_grid.mtm_time_grid.size, net_accum.shape[1]).index_put_(
+                (shared.upload(factor_dep['Report_Rows'], torch.int64),), net_accum)
         else:
             St_T = torch.squeeze(torch.exp(-surv.gather_weighted_curve(
                 shared, time_grid.time_grid[:, utils.TIME_GRID_MTM].reshape(1, -1), multiply_by_time=False)), dim=0
