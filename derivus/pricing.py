@@ -1021,7 +1021,7 @@ class SurvivalLedger(object):
                           float(self.conservation().abs().max()), float(self.alive.mean()))
 
 
-def boundary_weights(gap, bandwidth, stacked=False):
+def boundary_weights(gap, bandwidth, one_sided=False):
     """Density at the boundary and local-linear regression weights, estimated SEPARATELY.
 
     The term to recover is ``f_G(0) * E[jump * dG/dtheta | G = 0]``. Folding both halves into one
@@ -1037,13 +1037,17 @@ def boundary_weights(gap, bandwidth, stacked=False):
     silently - so zero width is returned and the correction is exactly zero. Base valuation reaches
     this path.
 
-    `stacked` reads the leading dimension as one decision a row: each row is solved on its own, and
-    the densities come back a column beside the weights.
+    `one_sided` reads the leading dimension as one decision a row, each met from the side that
+    held with no sample past it: the kernel there times the line that zeroes its first moment,
+    its scale a column beside it. Nothing is solved, so batches of any size add.
     """
-    if stacked:
-        density, weights = torch.vmap(boundary_weights, in_dims=(0, None))(gap, bandwidth)
-        return density.unsqueeze(1), weights
     g = gap.detach()
+    if one_sided:
+        width = bandwidth * torch.nan_to_num(g.std(dim=1, keepdim=True)).clamp_min(
+            torch.finfo(g.dtype).eps)
+        u = g / width
+        kernel = (np.sqrt(2 * np.pi) + 2 * u) * torch.exp(-0.5 * u ** 2) * (g < 0)
+        return 1 / ((np.pi - 2) * width * g.shape[1]), kernel
     spread = g.std() if g.numel() > 1 else torch.zeros_like(g.reshape(-1)[:1].squeeze())
     width = bandwidth * spread.clamp_min(torch.finfo(g.dtype).eps)
     k = torch.exp(-0.5 * (g / width) ** 2)
@@ -1059,7 +1063,7 @@ def boundary_weights(gap, bandwidth, stacked=False):
     return density, weights
 
 
-def stochastic_boundary_correction(gap, objective_jump, bandwidth, stacked=False):
+def stochastic_boundary_correction(gap, objective_jump, bandwidth, one_sided=False):
     """A term worth EXACTLY ZERO in the forward pass that carries the missing boundary derivative
     into the backward one.
 
@@ -1070,9 +1074,9 @@ def stochastic_boundary_correction(gap, objective_jump, bandwidth, stacked=False
 
     ``objective_jump`` is a coefficient and stays detached: its pathwise derivatives are already in
     the ordinary AAD value. Summed, not averaged - the local-linear weights carry the 1/N through
-    the density. `stacked` is a stack of decisions, one a row of the gap and of the jump.
+    the density. `one_sided` is a stack of decisions, one a row of the gap and of the jump.
     """
-    density, weights = boundary_weights(gap, bandwidth, stacked)
+    density, weights = boundary_weights(gap, bandwidth, one_sided)
     return ((gap - gap.detach()) * (density * weights * objective_jump).detach()).sum()
 
 
@@ -1081,7 +1085,7 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth, by_deal=None
     crossing, an autocall trigger, any observed event whose value jump is real.
 
     How each counterfactual is produced belongs to the set that recorded it, and so does what it
-    yields: one decision, or a stack of them where it says `stacked`. This half is `score`:
+    yields: one decision, or a stack of them where it says `one_sided`. This half is `score`:
     the reported PORTFOLIO plus a change to it, never a set's own level - the objective is applied
     to `resolve_structure`'s root sum, and a collateralised set's post-collateral net sits at the
     relu kink by construction. `gap > 0` means the trigger fired, matching a jump of
@@ -1096,13 +1100,13 @@ def boundary_correction(shared, objective, reported_mtm, bandwidth, by_deal=None
     corrections = []
     for bset in shared.boundary_sets:
         for k, (gap, jump) in enumerate(bset.objective_jumps(score)):
-            corrections.append(stochastic_boundary_correction(gap, jump, bandwidth, bset.stacked))
+            corrections.append(stochastic_boundary_correction(gap, jump, bandwidth, bset.one_sided))
             if by_deal is not None:
                 by_deal.setdefault(bset.deal, []).append(corrections[-1])
             if logging.getLogger().isEnabledFor(logging.DEBUG):
                 # the forward value is zero by construction; the COEFFICIENT it multiplies into
                 # the gap's graph is the reading
-                density, weights = boundary_weights(gap, bandwidth, bset.stacked)
+                density, weights = boundary_weights(gap, bandwidth, bset.one_sided)
                 logging.debug('BOUNDARY %s decision=%d coeff=%.6g',
                               type(bset).__name__, k,
                               float((density * weights * jump).sum()))

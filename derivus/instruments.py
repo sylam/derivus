@@ -978,7 +978,7 @@ class Deal(object):
 
 
 def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
-                            start=0, collect_gaps=False):
+                            start=0, collect_gaps=False, standing=None):
     """Walk the collateral balance through the margin calls: hold it until it leaves the band
     [recv_band, post_band], then reset it to the required amount.
 
@@ -986,7 +986,8 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
     `(call_index, receive_gap, post_gap, previous, required)` per call date with the autograd graph
     intact. `start` and `opening` restart the same recursion at a margin date from a forced balance,
     which is the whole of a counterfactual replay; an array of starts restarts each leading row of
-    `opening` at its own date, the row holding its opening until then.
+    `opening` at its own date, the row holding its opening until then and testing its transfers
+    from its `standing` balance until it next transfers.
 
     The transfer test must stay `previous < recv | previous > post` rather than be re-derived from
     the gaps: the two agree in exact arithmetic and not in floating point, and the forward valuation
@@ -1003,9 +1004,11 @@ def scan_collateral_balance(opening, required, recv_band, post_band, call_mask,
             path.append(previous)
             continue
         recv, post = recv_band[index], post_band[index]
-        transfer = (previous < recv) | (previous > post)
+        tested = previous if late is None else standing
+        transfer = (tested < recv) | (tested > post)
         if late is not None:
             transfer &= index > late
+            standing = torch.where(transfer, required[index], standing)
         if collect_gaps:
             gaps.append((index, recv - previous, previous - post, previous, required[index]))
         path.append(required[index] * transfer + previous * (~transfer))
@@ -1736,8 +1739,6 @@ class NettingCollateralSet(Deal):
                                                previous.detach(), required.detach()),
                         utils.MTABoundaryEvent(index, 'post', post_gap,
                                                previous.detach(), required.detach())])
-                # one registration per run of held balance - the whole series decides it
-                utils.mark_binding_calls(mta_events)
                 boundary_balance = Bt.detach()
 
             report_time = local_time_grid[factor_dep['Te']]
@@ -1846,13 +1847,14 @@ class NettingCollateralSet(Deal):
                     return reported(out)
 
                 if margin_calls:
-                    def rescan(openings, starts, req=Bt_new.detach(), recv=Mr.detach(),
+                    def rescan(openings, starts, standing, req=Bt_new.detach(), recv=Mr.detach(),
                                post=Mp.detach(), mask=factor_dep['call_mask'].astype(bool)):
                         """The forward walk's own recursion restarted at each margin date of
                         `starts` from its row of forced opening balances - which is the whole of a
                         transfer counterfactual."""
                         return scan_collateral_balance(
-                            openings, req, recv, post, mask, start=np.reshape(starts, (-1, 1)))[0]
+                            openings, req, recv, post, mask, start=np.reshape(starts, (-1, 1)),
+                            standing=standing)[0]
 
                     shared.boundary_sets.append(utils.MTABoundarySet(
                         events=mta_events, replay=replay_net_mtm,

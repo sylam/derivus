@@ -185,7 +185,7 @@ A correlation is not a leaf; its delta is a bump ([decision 12](../limitations.m
 | collateral is called only on simulation dates | unmeasured; a finer grid reduces it ([Container](../valuation/container.md#nettingcollateralset)) |
 | the collateralised autocall's CVA delta reads short of its ladder below 16,384 paths | 8.0% short at 1,024 paths to within 1.4% at 16,384, four seeds ([Model Limitations](../limitations.md#the-autocall-tarf-and-barrier-pricers)) |
 | the boundary correction holds still over its bandwidth only at the declared path count | no dependence resolved over bandwidths 0.00125 to 0.08 at 16,384 paths; a 24% fall at 2,048 ([Model Limitations](../limitations.md#the-autocall-tarf-and-barrier-pricers)) |
-| a margin call's transfer decision carries no boundary term unless `Boundary_AAD_Margin_Calls` asks | the value is unmoved; where a minimum transfer binds, the FVA's spot delta reads 12% to 16% and the CVA's 28% to 29% under their ladders on one synthetic document ([Model Limitations](../limitations.md#the-xva-outer-and-the-correlation)) |
+| a margin call's transfer decision carries no boundary term unless `Boundary_AAD_Margin_Calls` asks | the value is unmoved; under a minimum transfer large against the exposure, the CVA's spot delta reads 78% and the funding benefit's 47% short of their bumps on one synthetic document ([Model Limitations](../limitations.md#the-xva-outer-and-the-correlation)) |
 | no test holds the CVA or FVA value to an independent closed form | the gates hold derivatives to bump ladders and switches to bit-identity |
 
 The trapezoid's error in the report-grid spacing is unmeasured on the library's grids.

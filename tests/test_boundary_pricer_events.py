@@ -12,10 +12,10 @@ tail mis-maps a row another deal inserts; a branch left in the payment currency 
 cross); that the map holds neither `shared` (a reference cycle that kept 19.6 GB resident) nor the
 fx cross's graph; that a set's gross-to-net chain reproduces its own net at a zero delta and at the
 ledger as booked (`Vte` re-derived under `Exclude_Paid_Today` rebased every correction 46x), and
-reads a declared ledger row in its declared currency (0.80 per unit in EUR); that a run of held
-balance registers its MTA transfer once; that each latched pricer declares every settlement in its
-reach; and that the correction is per batch, `report()` averaging it once. The collateralised
-ladder below runs with `Exclude_Paid_Today` off, where the zero-delta identity holds trivially.
+reads a declared ledger row in its declared currency (0.80 per unit in EUR); that each latched
+pricer declares every settlement in its reach; and that the correction is per batch, `report()`
+averaging it once. The collateralised ladder below runs with `Exclude_Paid_Today` off, where the
+zero-delta identity holds trivially.
 
 THE GAP'S SIGN IS GATED ELSEWHERE: on an up-and-in call the correction is 1.6% of the gradient, so
 the sign mutant reads 2.86% against a 1% gate at 16384 paths; `test_boundary_scoping_dominance.py`
@@ -275,15 +275,15 @@ DOMINATING_SHORT = {
     'Forward_Price': 1.0, 'Maturity_Date': bb.BASE + pd.Timedelta(days=395)}
 
 
-def _binding_set(c, deal=DISCRETE_BARRIER):
+def _binding_set(c, deal=DISCRETE_BARRIER, mta=MTA_LIVE):
     """`deal`, the barrier unless said, inside a collateralised set whose MTA BINDS - so the balance
     holds instead of resetting, and the transfer decision is a discontinuity of its own alongside
     the barrier's."""
     return [{'Instrument': construct_instrument(dict(
         NETTING, Reference='NS_COL', Collateralized='True', Credit_Support_Amounts=dict(
             NETTING['Credit_Support_Amounts'],
-            Minimum_Received=utils.CreditSupportList([[0.0, MTA_LIVE]]),
-            Minimum_Posted=utils.CreditSupportList([[0.0, MTA_LIVE]]))), {}),
+            Minimum_Received=utils.CreditSupportList([[0.0, mta]]),
+            Minimum_Posted=utils.CreditSupportList([[0.0, mta]]))), {}),
         'Children': [{'Instrument': construct_instrument(deal, {})}]}]
 
 
@@ -330,7 +330,7 @@ def test_a_margin_call_registers_only_where_the_document_asks():
     registers no margin call and reports the frozen-decision gradient. A forward takes no decision
     of its own, so under an MTA that binds the transfers are the only registrations there could be:
     the document as written reports, bit for bit, the gradient of the registered run with its
-    kernel emptied through the bandwidth, `Yes` moves it (11.7% lower here), and the CVA is one
+    kernel emptied through the bandwidth, `Yes` moves it (25.3% lower here), and the CVA is one
     number all three ways, the term being worth zero forward.
 
     Killing mutations: `Boundary_AAD_Margin_Calls` declared with default 'Yes'; the set registering
@@ -344,3 +344,31 @@ def test_a_margin_call_registers_only_where_the_document_asks():
     assert cva == cva_asked == cva_emptied > 0.0, (cva, cva_asked, cva_emptied)
     assert unasked == emptied, (unasked, emptied)
     assert abs(asked / unasked - 1.0) > 0.05, (asked, unasked)
+
+
+def test_a_registered_margin_call_gradient_matches_its_bump_on_a_set_that_outlives_its_deal():
+    """A margined forward matures at six months inside a set a zero-unit forward keeps calling to
+    thirteen. Past the maturity the set is worth nothing, every later call publishes one gap and
+    the balance sits on its requirement: the registered CVA delta still meets its CRN ladder, a
+    held call being a decision once a run of held balance and met from the side that held.
+
+    16.0% apart here, at 16 batches of 16,384 paths and a bandwidth of 0.04: six seeds read 0.00062
+    to 0.00080, a standard error of 9%, against ladders of 0.00072 to 0.00076.
+
+    Killing mutations: the margin calls never registered (-0.00011, the frozen gradient); every
+    held call carrying a jump of its own, a run of equal gaps a call each (14 times the term); the
+    kernel at twice its mass (47%) or half (180%).
+    """
+    forward = dict(MARGINED_FORWARD, Maturity_Date=bb.BASE + pd.Timedelta(days=182))
+
+    def children(c):
+        sets = _binding_set(c, forward, mta=5.0)
+        sets[0]['Children'].append({'Instrument': construct_instrument(
+            dict(MARGINED_FORWARD, Reference='KEEP', Units=0.0), {})})
+        return sets
+
+    kw = dict(batch=16384, batches=16, children=children, Time_grid='0d 2w(2w)')
+    aad = _run(forward, gradient=True, bandwidth=0.04, Boundary_AAD_Margin_Calls='Yes', **kw)[2]
+    r = ladder(
+        price=lambda s: _run(forward, spot=s, **kw)[1], aad=aad, base=bb.SPOT, rungs=(5e-3, 1e-2))
+    assert r.agrees(tol=0.3), f'{r}'

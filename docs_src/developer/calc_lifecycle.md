@@ -734,10 +734,24 @@ latching pricers, the swaption); `InnerBoundarySet` lives inside an inner Monte 
 knock-in) and carries the objective's derivative, an inner path moving a row by `1/n`;
 `MTABoundarySet` is a collateral transfer and every later balance, registered where the document
 asks.
-A set yields one decision at a time, solved over its whole gap; `MTABoundarySet` says `stacked` and
-yields its margin calls a stack at a time, a call's side a row solved on its own: one walk restarts
-as many calls as `RESTART_ELEMENTS` holds of balance, and one replay and one objective score them
-(**Not gated:** no test reads a margin call's term against a bump).
+A set yields one decision at a time, solved over its whole gap; `MTABoundarySet` yields its margin
+calls a stack at a time, a call's side a row: one walk restarts as many calls as `RESTART_ELEMENTS`
+holds of balance, and one replay and one objective score them. A scenario past the band has
+transferred, so a call is met from the side that held alone: the set says `one_sided` and a row is
+weighted, with $u_k=g_k/h$ and nothing solved,
+
+$$\frac{(\sqrt{2\pi}+2u_k)\,e^{-u_k^2/2}\,\mathbb 1\{g_k<0\}}{(\pi-2)\,n\,h},$$
+
+the half kernel times the line that zeroes its first moment. The term adds over batches of any
+size at an $O(h^2)$ bias, and at 2.5 times the standard error of the whole kernel at one $h$. A
+held call is a decision where no earlier call of its run of held balance asked for as much, its
+jump the transfer forced there less the transfer forced at the run's next such call
+(`MTABoundarySet.held_jumps`), so a run of equal gaps counts once; a forced transfer tests its
+later calls from its gap mirrored past the band, where the scenario that crossed would stand,
+until it next transfers (**Held by**
+`tests/test_boundary_pricer_events.py::test_a_registered_margin_call_gradient_matches_its_bump_on_a_set_that_outlives_its_deal`;
+**Not gated:** the mirror, a sixth of the term where a set outlives its deals and inside that
+gate's noise).
 A decision registers one counterfactual with its whole reach, ledger included, since at a kink two
 partial ones score differently from their sum; only booked cash may be declared (`cash_events`), the
 collateral chain replaying the ledger.

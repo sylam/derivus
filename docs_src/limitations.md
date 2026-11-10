@@ -45,10 +45,13 @@ Grouped by where a validator meets them.
   minimum transfer amount makes the balance jump, a decision ordinary AAD differentiates as
   frozen. `Boundary_AAD_Margin_Calls` (default `No`, credit Monte Carlo only) registers each call
   for the boundary correction, at the cost of a counterfactual balance path a call; the value is
-  the same either way. On one synthetic document of twelve sets whose minimum transfer binds
-  (16,384 paths, two seeds) the unregistered spot delta reads 12% to 16% under its CRN ladder on
-  the FVA and 28% to 29% on the CVA; registered, the FVA's reads within 5% of its ladder and the
-  CVA's 7% to 10% under. No test reads the registered term against a bump.
+  the same either way. On one synthetic document of twelve sets under a minimum transfer large
+  against their exposure (16,384 paths a seed) the unregistered spot delta reads 78% short of its
+  bump on the CVA and 47% on the funding benefit. Registered at a bandwidth of 0.04 the CVA's
+  reads within 1% of its bump and the funding benefit's 2.7% under, over 256 seeds; at 0.08,
+  within 2% and 8% under. A call is met from the side that held alone, so the registered
+  estimate is the noisier: at 0.04 a seed's standard error is 8% and 15% of the two deltas
+  against a bump's 3% and 7%, and on a one-set document 2.3 times that at the declared 0.01.
 
 ### The calibration {#the-calibration}
 

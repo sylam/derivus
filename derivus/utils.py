@@ -205,14 +205,14 @@ class MTABoundarySet:
     events: list
     replay: object  # callable: balance path -> netting-set MTM
     balance: object  # the realised path, detached; the prefix a replay keeps
-    rescan: object  # callable: (openings, starts) -> a balance path a row, from the first start on
+    rescan: object  # callable: (openings, starts, standing) -> a balance path a row, from the first start on
 
     #: Elements of balance one rescan may hold, which sets the margin calls it restarts: the walk's
     #: launches are a small batch's whole cost, and there it restarts a set's every call at once
     RESTART_ELEMENTS = 1 << 24
 
-    # Each yield is a stack of decisions, a margin call's side a row, each solved on its own
-    stacked = True
+    # Each yield is a stack of decisions, a margin call's side a row, met from the side that held
+    one_sided = True
 
     # Who registered it - `BoundarySet.deal`'s slot, carried here too because this is not one of
     # those (it shares only `objective_jumps`) and `boundary_sets` holds both. A netting SET stamps
@@ -220,59 +220,78 @@ class MTABoundarySet:
     deal = None
 
     def objective_jumps(self, score):
-        """Per margin call, the gap and the change in the OBJECTIVE its transfer decision produces.
+        """Per margin call and side, the gap and the change in the OBJECTIVE its transfer decision
+        produces.
 
-        The counterfactual is the SAME collateral recursion restarted from a forced opening balance,
-        the decision the scenario did not take, so nothing is re-simulated, re-priced or bumped:
-        only the cheap balance scan is replayed. A replay yields this SET's net while `score`
-        consumes a change to the PORTFOLIO, so the realised balance's own replay is the baseline -
-        one extra scan per set, not per event.
+        The counterfactual is the SAME collateral recursion restarted at a call from the balance a
+        transfer there leaves, so nothing is re-simulated, re-priced or bumped: only the cheap
+        balance scan is replayed. A replay yields this SET's net while `score` consumes a change to
+        the PORTFOLIO, so the realised balance's own replay is the baseline - one extra scan per
+        set, not per event.
 
-        The receive and post sides of one call share a jump: D = 1 means "a transfer happened" for
-        both, so only the gap differs. Computing it once halves the replays; the decision a scenario
-        did take is the realised objective, `score` being per scenario, which halves them again.
-        One rescan restarts as many calls as `RESTART_ELEMENTS` holds of balance; their replays and
-        objectives are one stack, and so is what it yields: the gaps and masked jumps of its calls.
-
-        The jump is masked by the event's `live`: a run of calls over which the balance is HELD
-        publishes ONE transfer decision, and the coefficient carries it once. Masking the jump
-        masks the kernel weight it multiplies, the product being the same three factors - and the
-        amplification refusal, which reads the weights the SOLVE produced, sees the gaps either way.
+        One rescan restarts as many calls as `RESTART_ELEMENTS` holds of balance, their replays and
+        objectives one stack. The receive and post sides of a call share its forced transfer, so
+        only the gap and the call it is read against differ: each yield is the gaps and jumps of a
+        rescan's calls, the receive rows then the post rows.
         """
-        unstamped = sum(event.live is None for event in self.events)
-        if unstamped:
-            raise ValueError(
-                '{} of {} margin-call events reached the correction with no `live` mask: '
-                '`mark_binding_calls` decides it over the whole series, so every site that builds '
-                'events owes it one call'.format(unstamped, len(self.events)))
-        calls = {}
-        for event in self.events:
-            calls.setdefault(event.call_index, []).append(event)
-        index = list(calls)
+        if not self.events:
+            return
+        sides = [[event for event in self.events if event.side == side] for side in ('receive', 'post')]
+        index = [event.call_index for event in sides[0]]
         restarts = max(1, self.RESTART_ELEMENTS // self.balance.numel())
         with torch.no_grad():
             reported = self.replay(self.balance)
             realised = score(torch.zeros_like(reported))
-        for starts in (index[at:at + restarts] for at in range(0, len(index), restarts)):
-            sides = [(row, event) for row, start in enumerate(starts) for event in calls[start]]
-            with torch.no_grad():
-                previous = torch.stack([calls[start][0].previous_balance for start in starts])
-                held = self.balance[starts] == previous
-                paths = self.rescan(torch.where(held, torch.stack(
-                    [calls[start][0].required_balance for start in starts]), previous), starts)
+            held = self.balance[index] == torch.stack([event.previous_balance for event in sides[0]])
+            gaps = [torch.stack([event.gap.detach() for event in side]) for side in sides]
+            required = torch.stack([event.required_balance for event in sides[0]])
+            # a forced transfer stands in for the scenario as far past the nearer band as this one
+            # is short of it, and tests its later calls from where that one landed
+            mirror = required + 2 * torch.where(gaps[0] > gaps[1], -gaps[0], gaps[1])
+            forced = []
+            for at in range(0, len(index), restarts):
+                starts = index[at:at + restarts]
+                paths = self.rescan(required[at:at + restarts], starts, mirror[at:at + restarts])
                 # a restart keeps the realised balance until its own call
                 late = held.new_tensor(starts, dtype=torch.int64).unsqueeze(1)
                 own = torch.arange(starts[0], len(self.balance), device=held.device).reshape(-1, 1, 1) >= late
                 paths = torch.cat([
                     self.balance[:starts[0], None].expand(-1, len(starts), -1),
                     torch.where(own, paths, self.balance[starts[0]:, None])]).transpose(0, 1)
-                other = torch.vmap(score)(self.replay(paths) - reported)
-                jump = torch.where(held, other - realised, realised - other)
-            # outside the block: `no_grad` is thread-local, and a generator suspended inside one
-            # leaves it set in whoever resumes it - handing the caller a gap that carries no graph
+                forced.append(torch.vmap(score)(self.replay(paths) - reported))
+            # a call that transferred is its own forced transfer; the last row is a run's end
+            forced = torch.cat([torch.where(held, torch.cat(forced), realised), realised.unsqueeze(0)])
+            jumps = [self.held_jumps(side, held, forced) for side in gaps]
+        # outside the block: `no_grad` is thread-local, and a generator suspended inside one
+        # leaves it set in whoever resumes it - handing the caller a gap that carries no graph
+        for at in range(0, len(index), restarts):
             yield (
-                torch.stack([event.gap for _, event in sides]),
-                jump[[row for row, _ in sides]] * torch.stack([event.live for _, event in sides]))
+                torch.stack([event.gap for side in sides for event in side[at:at + restarts]]),
+                torch.cat([jump[at:at + restarts] for jump in jumps]))
+
+    @staticmethod
+    def held_jumps(gaps, held, forced):
+        """One side's jump a call and scenario, carried where the scenario held.
+
+        A held call is a decision of its own only where no earlier call of its run of held balance
+        asked for as much, and holding there is transferring at the next call of the run to ask
+        for more: its jump is the transfer forced at it less the transfer forced at that call, a
+        scenario that transferred carrying none. `forced` is the objective of a transfer forced
+        at each call, the realised one where the call transferred, then a row of the realised
+        for a run with no such call.
+        """
+        calls = len(gaps)
+        run = (~held).cumsum(dim=0) + held  # a call that transfers ends its run
+        # a scenario near the boundary stands in for one on it, every gap of its run moved alike:
+        # so the order of a run's gaps decides, read as a running maximum of (run, rank of gap)
+        ordered = gaps.T.contiguous()
+        key = run * calls + torch.searchsorted(ordered.sort(dim=1).values, ordered).T
+        record = torch.ones_like(held)
+        record[1:] = key[1:] > key.cummax(dim=0).values[:-1]
+        at = torch.arange(calls, device=held.device).unsqueeze(1)
+        later = torch.where(record | ~held, at, calls).flip(0).cummin(dim=0).values.flip(0)
+        after = torch.cat([later[1:], torch.full_like(later[:1], calls)])
+        return (record & held) * (forced[:-1] - forced.gather(0, after))
 
 
 @dataclass
@@ -313,7 +332,7 @@ class BoundarySet:
     # defaulted one. Read by the second-derivative refusal, which names the deals it refuses over.
     deal = None
     # A yield is one decision, solved over every element of its gap; `MTABoundarySet` stacks its own
-    stacked = False
+    one_sided = False
 
     @staticmethod
     def claim(shared, mark):
@@ -604,45 +623,6 @@ class MTABoundaryEvent:
     gap: object  # tensor, graph retained
     previous_balance: object  # tensor, detached
     required_balance: object  # tensor, detached
-    # Per scenario, whether THIS call is the one its run of held balance registers - stamped by
-    # `mark_binding_calls` over the whole series, no call being able to decide it alone.
-    live: object = None
-
-
-def mark_binding_calls(events):
-    """Stamp each event's `live` mask: one registration per run of calls the balance is HELD across,
-    receive and post separately.
-
-    A constant `previous_balance` means every call in the run publishes the same transfer decision,
-    and the balance can make that transfer once. The binding call is the one whose gap is largest;
-    ties keep the first. Where every call transfers, each run is one call and the mask is all True.
-    """
-    for side in sorted({event.side for event in events}):
-        _mark_side([event for event in events if event.side == side])
-
-
-def _mark_side(events):
-    """One side's binding calls: the largest gap in each run of held balance, ties to the first."""
-    if not events:
-        return
-    previous = torch.stack([event.previous_balance for event in events])
-    gaps = torch.stack([event.gap.detach() for event in events])
-    new_run = torch.ones_like(previous, dtype=torch.bool)
-    new_run[1:] = previous[1:] != previous[:-1]
-
-    # a scenario's runs numbered down its column: each run's largest gap, then the first call at it
-    run = new_run.cumsum(dim=0) - 1
-    at = torch.arange(len(events), device=run.device).unsqueeze(1).expand_as(run)
-    largest = torch.full_like(gaps, float('-inf')).scatter_reduce_(0, run, gaps, 'amax')
-    first = torch.full_like(run, len(events)).scatter_reduce_(
-        0, run, torch.where(gaps == largest.gather(0, run), at, len(events)), 'amin')
-    keep = at == first.gather(0, run)
-    for event, live in zip(events, keep):
-        event.live = live
-    if logging.getLogger().isEnabledFor(logging.DEBUG):
-        logging.debug('MTA BINDING side=%s events=%d runs=%.4g live=%.4g', events[0].side,
-                      len(events), float(new_run.to(gaps.dtype).sum(dim=0).max()),
-                      float(keep.to(gaps.dtype).sum(dim=0).max()))
 
 
 class DayCount:
