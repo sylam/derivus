@@ -404,7 +404,7 @@ def test_a_window_booked_on_either_side_of_its_pair_reads_the_same_crossings():
 # live. Report off a THIRD currency and USD is simulated too, the rate is absent, every interval
 # variance is zero, and `barrier_touched` collapses to a 0/1 endpoint test - the latch form.
 def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
-             batch=8192, batches=4, bandwidth=0.01, window_touch=None):
+             batch=8192, batches=4):
     factors = {k: dict(v) for k, v in FACTORS.items()}
     factors['FxRate.EUR'] = dict(factors['FxRate.EUR'], Spot=spot)
     factors['SurvivalProb.CPTY'] = {
@@ -425,8 +425,7 @@ def _cva_job(deal, spot=X0, gradient=False, bridge=True, hessian=False,
             'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': base,
             'Time_grid': '0d 12m(1m)', 'Batch_Size': batch, 'Simulation_Batches': batches,
             'MCMC_Simulations': 1, 'Random_Seed': 1, 'Deflation_Interest_Rate': base,
-            'Gradient_Variables': 'Factors', 'Boundary_AAD_Bandwidth': bandwidth,
-            **({'Boundary_AAD_Window_Touch': window_touch} if window_touch else {}),
+            'Gradient_Variables': 'Factors', 'Boundary_AAD_Bandwidth': 0.01,
             'Credit_Valuation_Adjustment': {
                 'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
                 'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No',
@@ -457,7 +456,7 @@ def _cva(**kwargs):
 LATCH_DEAL = _deal('Up_And_Out', 1.32, at_start='Yes', limit_days=182)
 
 
-def test_the_window_touch_decision_registers_only_where_it_is_a_latch_and_by_default():
+def test_the_window_touch_decision_registers_only_where_it_is_a_latch():
     """ONE DECISION, ONE ESTIMATOR, and which estimator depends on whether the bridge is there.
     With an interval variance `barrier_touched` returns a Brownian-bridge PROBABILITY continuous in
     the spot, so ordinary AAD already carries the flux (dCVA/dspot 0.44% off a CRN ladder flat to
@@ -470,28 +469,14 @@ def test_the_window_touch_decision_registers_only_where_it_is_a_latch_and_by_def
     way - but for different reasons, which makes the MESSAGE the reading: the bridge's `ATOM of
     exposure`, the endpoints' `registered a boundary correction`.
 
-    `Boundary_AAD_Window_Touch` defaults to Yes, on the measured SIGN - on a grid carrying six live
-    decisions every CRN reading over five seeds and both path counts is negative where the
-    unregistered delta is positive - and `'No'` is the unregistered estimator one value away: the
-    endpoint branch then reads the bridge's message, and its gradient is BIT-IDENTICAL to the same
-    run with the correction suppressed through the bandwidth.
-
-    Killing mutation: `Boundary_AAD_Window_Touch` declared with default 'No'.
+    Killing mutations: the endpoint branch registering nothing, which then reads the bridge's
+    message; the bridge branch registering.
     """
     for bridge, says in ((True, 'ATOM of exposure'), (False, 'registered a boundary correction')):
         with pytest.raises(utils.SecondOrderRefused) as refusal:
             _run(_cva_job(LATCH_DEAL, gradient=True, bridge=bridge, hessian=True, batch=512,
                           batches=1))
         assert says in str(refusal.value), (bridge, str(refusal.value))
-    with pytest.raises(utils.SecondOrderRefused) as refusal:
-        _run(_cva_job(LATCH_DEAL, gradient=True, bridge=False, hessian=True, batch=512, batches=1,
-                      window_touch='No'))
-    assert 'ATOM of exposure' in str(refusal.value), str(refusal.value)
-
-    kw = dict(deal=LATCH_DEAL, gradient=True, bridge=False, batch=1024, batches=1)
-    off = _cva(window_touch='No', **kw)[1]
-    suppressed = _cva(bandwidth=1e-12, **kw)[1]
-    assert off == suppressed, (off, suppressed)
 
 
 REBATED_LATCH_DEAL = _deal('Up_And_Out', 1.32, at_start='Yes', limit_days=182, rebate=REBATE)

@@ -78,12 +78,11 @@ Grouped by where a validator meets them.
   to 7e-6 of its value on three two-decision documents, the CVA by up to 0.02% and its delta by
   -0.02% to +0.09%. A single rolling decision has no kink.
 - **The window-touch registration fixes the delta's sign, not its size.**
-  `Boundary_AAD_Window_Touch` (default `Yes`, credit Monte Carlo only) registers a partial-time
-  barrier's window touch for the boundary correction. On a monthly grid with six live decisions,
+  The credit Monte Carlo registers a partial-time barrier's window touch for the boundary
+  correction. On a monthly grid with six live decisions,
   five seeds read −1.915 registered at 32,768 paths against +1.318 unregistered; all 70 CRN readings
   are negative and the pooled oracle sits 0.5% from the registered delta. The ladder still moves
-  13% to 35% over h ≥ 5e-4, so the magnitude is known to about a third. `No` is the unregistered
-  estimator.
+  13% to 35% over h ≥ 5e-4, so the magnitude is known to about a third.
 - **The boundary correction is stable over its bandwidth only at the declared path count.** At
   16,384 and 32,768 paths six seeds resolve no dependence on `Boundary_AAD_Bandwidth` from 0.00125
   to 0.08 (within ±2% of the correction and ±0.5% of the CVA delta); at 2,048 paths the correction

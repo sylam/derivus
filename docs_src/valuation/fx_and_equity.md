@@ -132,8 +132,8 @@ $$\mathcal P(p_1,\dots,p_8;\rho_1,\rho_2)=F\Big[M(p_1,p_2;\rho_1)-\big(\tfrac{H}
   closed form; a knock-out $(1-P_i)$ times the closed form plus its rebate increments as cash.
 - **Payoff_Currency** names the settlement currency only; a payoff currency other than **Currency** is
   not quanto-adjusted and not refused.
-- Sensitivities through an endpoint-tested touch (no bridge variance) register the decision under
-  `Boundary_AAD_Window_Touch` (on by default). On one test deal with six live decisions (five seeds,
+- Sensitivities through an endpoint-tested touch (no bridge variance) register the decision for the
+  boundary correction. On one test deal with six live decisions (five seeds,
   32,768 paths) this gives the CVA delta the sign a common-random-number finite-difference ladder
   confirms; the ladder itself moved 13% to 35% over bumps $h=5\times10^{-4}$ to $10^{-2}$, so the magnitude
   is known to about a third.

@@ -2778,8 +2778,7 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     one entry per decision on the date the hit pays - zero at row 0, which books nothing, and zero
     at the terminal row, whose rebate is inside the expiry settle.
 
-    IT IS THE DEFAULT (``Boundary_AAD_Window_Touch``, No being the unregistered estimator one
-    value away). On the endpoint branch the registration decides the SIGN, and on a grid carrying
+    On the endpoint branch the registration decides the SIGN, and on a grid carrying
     six live decisions the MAGNITUDE too: over five seeds the registered delta reads -1.915 at
     32,768 paths against an unregistered +1.318, the CRN oracle is negative on all 70 readings and
     its pooled median sits 0.5% away. Its ladder is not FLAT, 13% to 35% over h = 5e-4..1e-2, so
@@ -2847,7 +2846,6 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
         # the endpoint test is a crisp LATCH only where the bridge has no variance; with it live
         # the touch probability is continuous in the spot and ordinary AAD carries the flux
         latched = (getattr(shared, 'boundary_aad', False) and
-                   getattr(shared, 'boundary_window_touch', False) and
                    not interval_variance.any() and
                    fx_rep is not None and time_grid.report_index is not None)
         b_gaps, b_fired, b_obs_before, b_rows, b_cash = [], [], [], [], []

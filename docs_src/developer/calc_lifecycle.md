@@ -705,8 +705,7 @@ of $h$ where a local-constant fit carries an $O(h)$ bias. The term is
 $\sum_k (g_k-\bar g_k)\,\hat f_G(0)\,w_kJ_k$, $\bar g$ and the coefficient detached; one gap (a base
 valuation's scenario) gives zero width and no correction.
 
-`Boundary_AAD_Bandwidth` is 0.01. `Boundary_AAD_Window_Touch` (`Yes`, credit Monte Carlo) registers
-the partial-time barrier's window touch. `Boundary_AAD_Margin_Calls` (`No`, credit Monte Carlo)
+`Boundary_AAD_Bandwidth` is 0.01. `Boundary_AAD_Margin_Calls` (`No`, credit Monte Carlo)
 registers a collateralised set's margin calls: unasked, a transfer decision carries no term, the set
 launches no counterfactual walk, and its sensitivities are the frozen-decision gradient (**Held by**
 `tests/test_boundary_pricer_events.py::test_a_margin_call_registers_only_where_the_document_asks`).
@@ -781,7 +780,7 @@ density-derivative term. The $O(\varepsilon^2)$ bias shows on volga, so it is a 
 ([xVA](../theory/valuation_adjustments.md#sensitivities)). **Held by** `tests/test_cva_gamma_kink.py`,
 `tests/test_base_valuation_gamma.py::test_a_deal_that_registered_a_boundary_correction_is_refused_by_name`,
 and the point-mass refusal, a knocked-out path's atom at the kink, by
-`tests/test_partial_barrier_json.py::test_the_window_touch_decision_registers_only_where_it_is_a_latch_and_by_default`.
+`tests/test_partial_barrier_json.py::test_the_window_touch_decision_registers_only_where_it_is_a_latch`.
 
 ## Open
 

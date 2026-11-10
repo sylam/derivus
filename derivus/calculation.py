@@ -1046,9 +1046,6 @@ class CreditMonteCarlo(Calculation):
           description='Which leaves the sensitivity engine differentiates'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
-        F('Boundary_AAD_Window_Touch', 'Text', default='Yes', values=['Yes', 'No'],
-          description='Register the partial-time barrier\'s window-touch decision as a boundary '
-                      'latch on the endpoint branch; `No` is the unregistered estimator'),
         F('Boundary_AAD_Margin_Calls', 'Text', default='No', values=['Yes', 'No'],
           description='Register the margin-call transfer decisions of a collateralised netting '
                       'set for the boundary correction; `No` is the unregistered estimator'),
@@ -1513,9 +1510,8 @@ class CreditMonteCarlo(Calculation):
         shared_mem.simulation_batches = self.params['Simulation_Batches']
         shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
         shared_mem.checkpoint_outer_walk = self.params.get('Checkpoint_Outer_Walk', 'Yes') == 'Yes'
-        # the two registrations a document names; `execute` completed the block. A Hessian
-        # registers the margin calls unasked: that is what refuses it a collateralised set
-        shared_mem.boundary_window_touch = self.params['Boundary_AAD_Window_Touch'] == 'Yes'
+        # `execute` completed the block. A Hessian registers the margin calls unasked: that is
+        # what refuses it a collateralised set
         shared_mem.boundary_margin_calls = 'Yes' in (
             self.params['Boundary_AAD_Margin_Calls'],
             self.params['Credit_Valuation_Adjustment'].get('Hessian', 'No'))

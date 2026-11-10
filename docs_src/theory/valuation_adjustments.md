@@ -125,7 +125,7 @@ reads `No`.
 | | `MCMC_Simulations` | 2048 | inner paths of a Monte Carlo pricer |
 | | `Deflation_Interest_Rate`, `Currency`, `Percentile` | `ZAR-SWAP`, `ZAR`, `95` | the deflator, the reporting currency, the PFE |
 | | `NoModel`, `Gradient_Variables` | `Constant`, `All` | unmodelled factors; which leaves are differentiated |
-| | `Boundary_AAD_Bandwidth`, `Boundary_AAD_Window_Touch`, `Boundary_AAD_Margin_Calls` | 0.01, `Yes`, `No` | the boundary correction, and which decisions register for it |
+| | `Boundary_AAD_Bandwidth`, `Boundary_AAD_Margin_Calls` | 0.01, `No` | the boundary correction's kernel width, and whether margin calls register for it |
 
 The closeout conventions of a collateralised set are the set's own fields (`Liquidation_Period`,
 `Settlement_Period`, integers in calendar days, default 0, so the default margin period of risk is
