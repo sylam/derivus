@@ -15,6 +15,27 @@ way — the schema publishes which columns those are (`MarketPrices.values`) and
 the whole block, so structure stays where the engine refuses it. Everything else stays read-only;
 booking new deals goes through the `/book` verbs (the MCP tools, or Excel).
 
+**A job file opened is served as the book.** "open a job file" posts the document to
+`POST /book/open`, which files a copy and serves it in the book's place, so every screen, edit and
+run works on it exactly as on the desk's own; the chip names the file, and "back to book" serves
+the desk's own again, a refusal shown verbatim with the opened document standing. Where the service
+will not serve it (a desk that keeps a record refuses), the file opens as a view in this browser
+that nothing amends, the service's sentence above it, until the desk steps back to the book. The
+poll tells the two moves apart: an etag moved under the same path is the book edited, the place
+kept; a moved path is another document, opened by any client, and loads as one.
+
+**Where a named file lives is this workstation's fact, never the job's.** A job names its market
+data file and its calendar by path, as the system that wrote it saw them; the service reads each
+through two maps it keeps on this box (`GET`/`POST /paths`) — a folder as written to a folder here,
+a file name to a file name — and writes neither into the job. Settings closes on that card,
+whatever the market answered: the files the served book names, where this box reads each and its
+digest or the operating system's refusal, then the two maps, every entry and every named key still
+unmapped one row, edited in place and posted with both maps whole, an emptied entry removed and
+the book re-read so every screen follows the new reading. A file that does not read fails the job
+whole — the market, the description and the record's status answer an error — so the job bar names
+it and points at the card. The rows and the edit are `src/files.ts`, checked by
+`scripts/files_check.mjs`.
+
 **The market screens navigate by a tree.** Market Prices, Curves, Bootstrapper, Securities and
 Market Data file their blocks in a sidebar by what they are — a quote block under its family, a
 curve under its currency, an entry under its section, a vocabulary entry or a map block under its
@@ -28,7 +49,10 @@ grouping, the filter and which folders stand open are `src/tree.ts`, checked by
 base date read `GET /book/market` — the file the book names with its explicit block merged over it
 — and `src/components/Whose.tsx` marks each entry `block` where the document's own block states it
 and `file` where the file does; an edit lands on the block, and a `block` entry over a file
-retires, deleted there so the file's stands again and the market re-bootstrapped.
+retires, deleted there so the file's stands again and the market re-bootstrapped. The market is
+named by a stamp and asked for with the one held: an answer naming the same stamp carries no
+market and the one on screen stands, so a large market data file crosses the wire only when it
+moved.
 
 A `Surface`-shaped price factor renders as four views over one pure module (`src/vols.ts`): the
 **smiles**, one line per expiry over the x coordinate; the **term structure** at one x; the

@@ -1,7 +1,7 @@
 import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   DOORBELL, failure, getBook, getBookActivity, getBookAgreements, getBookEntities, getBookMarket,
-  getBookPortfolios, getBookPositions, getBookRisk, getBookStatus, getBookXva, getSchema,
+  getBookPortfolios, getBookPositions, getBookRisk, getBookStatus, getBookXva, getPaths, getSchema,
   postDescribe,
 } from './api';
 import { DocumentLoader } from './components/DocumentLoader';
@@ -9,7 +9,7 @@ import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
 import { WORKSPACES } from './registry';
 import { pinnedAt, ringsAhead } from './spine';
-import { AppContext, INITIAL, reducer } from './state';
+import { AppContext, INITIAL, bookLoaded, reducer } from './state';
 
 const BOOK_POLL_MS = 2000;
 
@@ -30,10 +30,7 @@ export function App() {
   // the live book, if the service serves one - silence (a 404) just means "open a file instead"
   useEffect(() => {
     getBook()
-      .then((live) => dispatch({
-        type: 'DOC_LOADED', doc: live.document,
-        source: { kind: 'book', etag: live.etag, path: live.path },
-      }))
+      .then((live) => dispatch(bookLoaded(live)))
       .catch(() => undefined);
   }, []);
 
@@ -62,18 +59,16 @@ export function App() {
   }).current;
 
   // the etag poll: a deal booked by ANY client (MCP, Excel, an editor on the file) appears here
-  // within a tick, the user's place preserved
+  // within a tick, the user's place preserved; a moved path is another document served, opened
+  // by any client, and loads as one
   useEffect(() => {
     if (state.source?.kind !== 'book') return;
-    const etag = state.source.etag;
+    const { etag, path } = state.source;
     const timer = setInterval(async () => {
       try {
         const live = await getBook();
-        if (live.etag !== etag) {
-          dispatch({
-            type: 'DOC_LOADED', doc: live.document, refresh: true,
-            source: { kind: 'book', etag: live.etag, path: live.path },
-          });
+        if (live.etag !== etag || live.path !== path) {
+          dispatch(bookLoaded(live, live.path === path));
         }
         await readRecord();
       } catch { /* the poll outlives a service restart */ }
@@ -128,14 +123,20 @@ export function App() {
     return () => { live = false; };
   }, [state.source, onXva]);
 
-  // The market the book prices on, read on the same etag: the market screens show it and mark what
-  // the document's own block states, so a write anywhere repaints both.
+  // The market the book prices on and where this box reads the files it names, read on the same
+  // etag so a write anywhere repaints them. The market is asked with the stamp held, through a ref
+  // so the read stays keyed on the source alone: it crosses the wire only where it moved.
+  const stamp = useRef<string>();
+  stamp.current = state.market.data?.stamp;
   useEffect(() => {
     if (state.source?.kind !== 'book') return;
     let live = true;
-    getBookMarket()
+    getBookMarket(stamp.current)
       .then((market) => { if (live) dispatch({ type: 'MARKET_LOADED', market }); })
       .catch((error) => { if (live) dispatch({ type: 'MARKET_FAILED', ...failure(error) }); });
+    getPaths()
+      .then((paths) => { if (live) dispatch({ type: 'PATHS_LOADED', paths }); })
+      .catch((error) => { if (live) dispatch({ type: 'PATHS_FAILED', ...failure(error) }); });
     return () => { live = false; };
   }, [state.source]);
 

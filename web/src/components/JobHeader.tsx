@@ -4,7 +4,9 @@ import { useApp } from '../state';
 /** The one-line read on the loaded document: the book by type, both halves of the factor
  * universe, the calculation, the queue's cost class - `/describe`'s answer, which App refreshes
  * whenever the document moves. Validate on demand, messages verbatim: they are the engine's own
- * words and reformatting them would put a second author between the engine and the reader. */
+ * words and reformatting them would put a second author between the engine and the reader. A file
+ * the book names that does not read on this box fails the job whole, so it is named first, with
+ * the way to the card that maps it. */
 export function JobHeader() {
   const { state, dispatch } = useApp();
   const { doc, describe, validate } = state;
@@ -12,9 +14,18 @@ export function JobHeader() {
 
   const dealCount = describe
     ? Object.values(describe.deals).reduce((a, b) => a + b, 0) : null;
+  const unread = state.paths.data?.named.filter((named) => named.unread) ?? [];
 
   return (
     <div className="jobbar">
+      {unread.length > 0 && (
+        <span className="bad">
+          not read on this box: {unread.map((named) => named.name).join(', ')}{' '}
+          <button className="ghost" onClick={() => dispatch({ type: 'TAB', tab: 'settings' })}>
+            map in Settings
+          </button>
+        </span>
+      )}
       {describe && (
         <>
           <span><b>{dealCount}</b> deal{dealCount === 1 ? '' : 's'}{' '}

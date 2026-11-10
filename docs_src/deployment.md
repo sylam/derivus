@@ -156,6 +156,8 @@ DV_HOME/                      ~/.derivus unless DV_HOME names another
   seed.json                   the desk's Bloomberg ticker vocabulary
   seed.json.bak_<stamp>       the seed a vocabulary edit replaced
   security_map.json           the securities the terminal verified, with its evidence
+  paths.json                  where this workstation keeps the files a job names
+  inbox/<name>.json           a document another system wrote, opened as the book
 ```
 
 | file | what it holds | if it is lost |
@@ -166,6 +168,8 @@ DV_HOME/                      ~/.derivus unless DV_HOME names another
 | `security_map.json` | terminal evidence for each security | rebuilt by `DV_Bloomberg discover` on a terminal |
 | `xva.json` | the last XVA run of each netting set | recomputed by `POST /book/xva`, at the cost of the runs |
 | `tmp/` | the quotes given | unaccepted quotes are gone; an accepted one is also in the record where a spine home is configured |
+| `paths.json` | the folder and file-name maps every context reads a named file through | restate them through `POST /paths`; without the file a job's paths are read as written |
+| `inbox/` | the documents opened as the book, with the edits made to them | open them again from the system that wrote them |
 
 ### The spine home
 
@@ -217,7 +221,7 @@ Bloomberg terminal and a spine home. This is the Getting Started stack.
 | what | writer |
 | --- | --- |
 | the book file | `DV_Service`, by atomic replace. Nothing stops another program writing it; under a spine home, `GET /book/reconcile` names what such a write leaves behind |
-| `calculations.json`, `xva.json`, `tmp/` | `DV_Service` |
+| `calculations.json`, `xva.json`, `tmp/`, `paths.json`, `inbox/` | `DV_Service` |
 | `seed.json`, `security_map.json` | `DV_Service` (provisioning, `POST /book/securities`, `POST /book/securities/verify`); `DV_Bloomberg discover` writes the map |
 | the hub's `log/` and `blobs/` | the hub's `DV_Service` and the `DV_Spine` verbs run against that home, one append at a time under `.writer.lock`; an act that finds another process writing is refused with `WriterBusy`, to be run again |
 | a replica's `log/` and `blobs/` | `DV_Spine follow` alone |
@@ -279,9 +283,9 @@ timestamp. The full table is [Trust limits](developer/spine.md#trust-limits).
 The record is files, so a backup is a copy and a restore is a copy back.
 
 - **What to copy.** The spine home's `log/`, `blobs/`, `keys/` and `names.json`; `DV_HOME`'s
-  `book.json`, `calculations.json`, `seed.json`, `security_map.json` and `tmp/`; and every file the
-  book names by path. `seeds/`, `index.json`, `xva.json` and the service's in-memory state are
-  rebuilt.
+  `book.json`, `calculations.json`, `seed.json`, `security_map.json`, `paths.json`, `inbox/` and
+  `tmp/`; and every file the book names by path. `seeds/`, `index.json`, `xva.json` and the
+  service's in-memory state are rebuilt.
 - **When.** Copy a home while no writer runs, with the service stopped, or copy a replica, which
   `DV_Spine follow` keeps byte-identical to the hub's log (with the blobs too where it follows with
   `--blobs`). A line cut off mid-write is the one damage a home repairs itself, truncating it when

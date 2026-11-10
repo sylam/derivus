@@ -1,11 +1,11 @@
-import { amendDeal, getBook } from '../api';
+import { amendDeal } from '../api';
 import { DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Tree, type TreeNode } from '../components/Tree';
 import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, portfolioTree, type Paper,
   type Position,
 } from '../positions';
-import { useApp } from '../state';
+import { useApp, written } from '../state';
 import type { DealNode, Descriptor } from '../types';
 
 /** A tree node's id is its POSITIONAL path ('0/2/1') - the same identity the service's
@@ -66,16 +66,8 @@ export function PortfolioView() {
   // A successful amendment refreshes the book at once rather than waiting a poll tick.
   const onAmend: AmendField | undefined =
     state.source?.kind === 'book' && dealPath !== undefined
-      ? async (key, wireValue) => {
-          const outcome = await amendDeal(dealPath, { [key]: wireValue });
-          if (!outcome.written) return outcome.refused ?? ['refused'];
-          const live = await getBook();
-          dispatch({
-            type: 'DOC_LOADED', doc: live.document, refresh: true,
-            source: { kind: 'book', etag: live.etag, path: live.path },
-          });
-          return null;
-        }
+      ? async (key, wireValue) =>
+          written(dispatch, await amendDeal(dealPath, { [key]: wireValue }))
       : undefined;
 
   return (

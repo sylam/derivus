@@ -8,12 +8,13 @@ import type { Grouping, Paper } from './positions';
 import { readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
 import type {
-  ActivityPage, BookMarket, BookRisk, BookXva, DescribeResult, JobDoc, Market, Reconcile,
-  ResultSummary, Schema, SpineBlock, TablePage, ValidateResult,
+  ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc, Market,
+  PathsAnswer, Reconcile, ResultSummary, Schema, SpineBlock, TablePage, ValidateResult,
 } from './types';
 
+/** `opened` names the job file the served book was opened from, where it was opened from one. */
 export type Source =
-  | { kind: 'book'; etag: string; path: string }
+  | { kind: 'book'; etag: string; path: string; opened?: string }
   | { kind: 'local'; name: string };
 
 export type RunState = {
@@ -66,6 +67,8 @@ export type AppState = {
   xva: Fetched<BookXva>;
   /** The market the live book prices on, read again whenever the book moves. */
   market: Fetched<BookMarket>;
+  /** Where this workstation reads the files the served book names, read with the market. */
+  paths: Fetched<PathsAnswer>;
   record: RecordState;
   /** The positions standing and the paper they sit under, for the screens that group by them. */
   paper: Fetched<Paper>;
@@ -83,6 +86,7 @@ const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false 
 export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, bookEtag: null };
 export const IDLE_XVA: Fetched<BookXva> = NOTHING_FETCHED;
 export const IDLE_MARKET: Fetched<BookMarket> = NOTHING_FETCHED;
+export const IDLE_PATHS: Fetched<PathsAnswer> = NOTHING_FETCHED;
 export const IDLE_PAPER: Fetched<Paper> = NOTHING_FETCHED;
 export const NO_RECORD: RecordState = {
   spine: null, rows: [], reconcile: null, reconciledAt: null,
@@ -92,7 +96,7 @@ export const INITIAL: AppState = {
   schema: null, schemaError: null, doc: null, source: null, docError: null,
   tab: 'portfolio', selection: { deal: null, picks: {} },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
-  market: IDLE_MARKET, record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
+  market: IDLE_MARKET, paths: IDLE_PATHS, record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
 };
 
 export type Action =
@@ -121,6 +125,8 @@ export type Action =
   | { type: 'XVA_FAILED'; error: string; status: number | null }
   | { type: 'MARKET_LOADED'; market: BookMarket }
   | { type: 'MARKET_FAILED'; error: string; status: number | null }
+  | { type: 'PATHS_LOADED'; paths: PathsAnswer }
+  | { type: 'PATHS_FAILED'; error: string; status: number | null }
   | { type: 'PAPER_FETCHING' }
   | { type: 'PAPER_LOADED'; paper: Paper }
   | { type: 'PAPER_FAILED'; error: string; status: number | null }
@@ -145,7 +151,8 @@ export function reducer(state: AppState, action: Action): AppState {
         : {
             ...state, doc: action.doc, source: action.source, docError: null,
             selection: { deal: null, picks: {} }, describe: null, validate: null, run: IDLE_RUN,
-            risk: IDLE_RISK, xva: IDLE_XVA, market: IDLE_MARKET, paper: IDLE_PAPER,
+            risk: IDLE_RISK, xva: IDLE_XVA, market: IDLE_MARKET, paths: IDLE_PATHS,
+            paper: IDLE_PAPER,
           };
     case 'DOC_FAILED':
       return { ...state, docError: action.error };
@@ -208,14 +215,25 @@ export function reducer(state: AppState, action: Action): AppState {
         ...state,
         xva: { data: null, error: action.error, status: action.status, loading: false },
       };
-    case 'MARKET_LOADED':
+    // no market is the service saying the one held is still current: its etag and stamp move
+    case 'MARKET_LOADED': {
+      const market = action.market.market ?? state.market.data?.market ?? null;
       return {
-        ...state, market: { data: action.market, error: null, status: null, loading: false },
+        ...state,
+        market: { data: { ...action.market, market }, error: null, status: null, loading: false },
       };
+    }
     case 'MARKET_FAILED':
       return {
         ...state,
         market: { data: null, error: action.error, status: action.status, loading: false },
+      };
+    case 'PATHS_LOADED':
+      return { ...state, paths: { data: action.paths, error: null, status: null, loading: false } };
+    case 'PATHS_FAILED':
+      return {
+        ...state,
+        paths: { data: null, error: action.error, status: action.status, loading: false },
       };
     case 'PAPER_FETCHING':
       return { ...state, paper: { ...state.paper, loading: true } };
@@ -241,16 +259,21 @@ export function reducer(state: AppState, action: Action): AppState {
   }
 }
 
+/** A `GET /book` answer as the document it loads - `refresh` where it is the one on screen moved,
+ * which keeps the user's place. */
+export function bookLoaded(live: BookResponse, refresh = false): Action {
+  return {
+    type: 'DOC_LOADED', doc: live.document, refresh,
+    source: { kind: 'book', etag: live.etag, path: live.path, opened: live.opened },
+  };
+}
+
 /** One book WRITE as the answer an editing panel reads: the service's refusal verbatim, or null
  * once the re-read document has been dispatched. There is no client-side edit state anywhere -
  * the file is the truth, so a write is answered by reading it back. */
 export async function written(dispatch: Dispatch<Action>, outcome: BookDealOutcome) {
   if (!outcome.written) return outcome.refused ?? ['refused'];
-  const live = await getBook();
-  dispatch({
-    type: 'DOC_LOADED', doc: live.document, refresh: true,
-    source: { kind: 'book', etag: live.etag, path: live.path },
-  });
+  dispatch(bookLoaded(await getBook(), true));
   return null;
 }
 

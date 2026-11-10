@@ -6841,6 +6841,175 @@ def test_a_retire_the_market_cannot_stand_on_writes_nothing(file_book):
 
 
 # --------------------------------------------------------------------------------------------
+# where a named file lives, and a document from another system served as the book
+# --------------------------------------------------------------------------------------------
+#: Where another system's job names the market data file: a folder no box here has, split into the
+#: same folder and file name on Windows and on posix.
+FOREIGN = '//elsewhere/drop/MarketData/market.json'
+
+
+def test_a_named_file_is_read_where_the_workstation_maps_it(file_book):
+    """A job naming its market data file in a folder this box does not have is read where the
+    workstation's own map in the home puts it, and the job is never rewritten. The book naming
+    `//elsewhere/drop/MarketData/market.json`, its row in `GET /paths` carries the OS's refusal and
+    no digest, and the market read raises `FileNotFoundError`. The row's folder mapped through
+    `POST /paths` to the folder holding the file, the row reads the file there and carries the
+    sha256 of its bytes, the digest an in-process `Context()` reports; the market is the one first
+    served off the file named directly; an in-process `Context()` loads the job while one handed
+    empty maps raises `FileNotFoundError`; and the book on disk still names the foreign path. The
+    file name then mapped to a second file beside the first, its ZAR spot moved from 18.5 to 18.6,
+    the market reads 18.6.
+
+    KILLING MUTATIONS: `Context` defaulting to empty maps, which reads the mapped row off the job's
+    own path; `parse_path` mapping the folder alone, which reads 18.5 after the name is mapped;
+    `POST /paths` rewriting the book's `MarketDataFile` to where the map reads it, which leaves the
+    book naming the local path; the row's digest read off the job's own path, unread once mapped.
+    """
+    book, market = file_book
+    first = CLIENT.get('/book/market').json()['market']
+    document = json.loads(book.read_text())
+    document['Calc']['MergeMarketData']['MarketDataFile'] = FOREIGN
+    book.write_text(json.dumps(document, indent=2), newline='\n')
+
+    [row] = CLIENT.get('/paths').json()['named']
+    assert (row['key'], row['name'], row['digest']) == ('MarketDataFile', FOREIGN, None)
+    assert isinstance(row['unread'], str)
+    with pytest.raises(FileNotFoundError):
+        CLIENT.get('/book/market')
+
+    mapped = CLIENT.post('/paths', json={'path_transform': {row['folder']: str(market.parent)},
+                                         'file_transform': {}}).json()
+    [row] = mapped['named']
+    assert (row['path'], row['unread']) == (str(market), None)
+    digest = derivus.Context().files(document)['MarketDataFile']
+    assert row['digest'] == digest == hashlib.sha256(market.read_bytes()).hexdigest()
+    assert CLIENT.get('/book/market').json()['market'] == first
+    loaded = derivus.Context().load_json((dump(document), 'posted'))
+    assert loaded.current_cfg.files['MarketDataFile'] == digest
+    with pytest.raises(FileNotFoundError):
+        derivus.Context(path_transform={}, file_transform={}).load_json((dump(document), 'posted'))
+    assert json.loads(book.read_text())['Calc']['MergeMarketData']['MarketDataFile'] == FOREIGN
+
+    moved = market.with_name('moved.json')
+    moved.write_text(market.read_text().replace('"Spot": 18.5', '"Spot": 18.6'))
+    assert CLIENT.post('/paths', json={'path_transform': mapped['path_transform'],
+                                       'file_transform': {row['file']: moved.name}}).status_code == 200
+    assert CLIENT.get('/book/market').json()['market']['Price Factors']['FxRate.ZAR']['Spot'] == 18.6
+
+
+def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, tmp_path,
+                                                                           monkeypatch):
+    """A document another system sends is filed in the home's inbox and served as the book: `GET
+    /book` answers it, `opened` its name, from a path in `DV_HOME/inbox`; an amendment lands on the
+    copy and the desk's own file stands byte for byte; `{}` serves the desk's own book again,
+    unopened and at its etag; the name alone serves the amended copy again; and the document posted
+    again under its name replaces the copy with what was posted. A name nothing is filed under
+    answers 404, and a document that is no job fails with the book served standing.
+
+    KILLING MUTATIONS: the copy filed in the home itself, which answers no `opened`; `{}` serving
+    the book already served, which answers the copy; `opened` answered for every book, which the
+    desk's own carries; a document posted under a filed name leaving the copy, which serves the
+    amendment; the document served before it is read, which leaves the service serving no job.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    service.DESK, copy = str(book), tmp_path / 'inbox' / 'NS_FOREIGN.json'
+    desk = CLIENT.get('/book').json()
+    foreign = wire(job(factors=dict(FACTORS, **{'FxRate.ZAR': dict(FACTORS['FxRate.ZAR'], Spot=19.5)})))
+
+    def amount(document):
+        return deal_at(document, '0')['Instrument']['.Deal']['Amount']
+
+    try:
+        assert CLIENT.post('/book/open', json={'name': copy.name}).status_code == 404
+        with pytest.raises(KeyError):
+            CLIENT.post('/book/open', json={'name': 'NO_JOB.json', 'document': {}})
+        assert CLIENT.get('/book').json()['etag'] == desk['etag']
+        opened = CLIENT.post('/book/open', json={'name': copy.name, 'document': foreign}).json()
+        live = CLIENT.get('/book').json()
+        assert (live['document'], live['opened'], live['path'], live['etag']) == (
+            foreign, copy.name, str(copy), opened['etag'])
+        before = book.read_bytes()
+        assert CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
+                                                'fields': {'Amount': 2e6}}).json()['written'] is True
+        assert amount(json.loads(copy.read_text())) == 2e6 and book.read_bytes() == before
+
+        own = CLIENT.post('/book/open', json={}).json()
+        live = CLIENT.get('/book').json()
+        assert 'opened' not in live
+        assert (live['document'], live['path'], live['etag'], own['etag']) == (
+            desk['document'], str(book), desk['etag'], desk['etag'])
+
+        assert CLIENT.post('/book/open', json={'name': copy.name}).json()['path'] == str(copy)
+        live = CLIENT.get('/book').json()
+        assert (live['opened'], amount(live['document'])) == (copy.name, 2e6)
+
+        assert CLIENT.post('/book/open', json={'name': copy.name, 'document': foreign}).status_code == 200
+        assert json.loads(copy.read_text()) == CLIENT.get('/book').json()['document'] == foreign
+    finally:
+        service.DESK = None
+
+
+def test_a_desk_that_records_refuses_to_open_a_document(recorded, book, tmp_path):
+    """Under a spine home `POST /book/open` refuses a document from another system with a 422
+    saying why - a recording desk's book is the record's fold, and an amendment to the document
+    would append facts about it - and the served book and its bytes stand as they were, nothing
+    filed in the inbox.
+
+    KILLING MUTATIONS: no refusal, which serves the document; the refusal after the copy is filed,
+    which leaves it in the inbox.
+    """
+    before, live = book.read_bytes(), CLIENT.get('/book').json()
+    refused = CLIENT.post('/book/open', json={'name': 'NS_FOREIGN.json', 'document': wire(job())})
+    assert refused.status_code == 422 and "the record's fold" in refused.json()['detail']
+    after = CLIENT.get('/book').json()
+    assert (after['path'], after['etag'], book.read_bytes()) == (live['path'], live['etag'], before)
+    assert not (tmp_path / 'inbox').exists()
+
+
+def test_the_market_read_is_kept_by_what_it_is_read_from(file_book):
+    """The market a book prices on is built once per what it is read from - the document's `Calc`
+    less its deals, the bytes of the file it names and the day - and kept on the book: three rounds
+    of the status and the market leave ONE market in `Book.markets`, and a client naming the stamp
+    it holds is answered no market under the same stamp and etag. A deal amended moves the book's
+    etag and not the stamp; the file rewritten with its size and modified time held, its ZAR spot
+    moved from 18.5 to 18.6, moves the stamp and the market reads 18.6; the spot patched to 19.0 in
+    the book's block moves it again and the market reads 19.0.
+
+    KILLING MUTATIONS: the market built on every read, which keeps none in `Book.markets`; `stamp`
+    not read, which answers the market whole; the stamp over the deals too, which the amendment
+    moves; the stamp without the files' digests, which the rewrite leaves standing; the stamp of
+    the files alone, which answers a block a verb moved with the market before it, refusing the
+    world's own configure.
+    """
+    _, market = file_book
+    for _ in range(3):
+        assert CLIENT.get('/book/status').status_code == 200
+        answer = CLIENT.get('/book/market').json()
+    assert len(service.BOOK.markets.entries) == 1
+    stamp = answer['stamp']
+    held = CLIENT.get('/book/market', params={'stamp': stamp}).json()
+    assert held == {'etag': answer['etag'], 'stamp': stamp, 'market': None}
+
+    amended = CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
+                                               'fields': {'Amount': 2e6}}).json()
+    assert amended['written'] is True and amended['etag'] != answer['etag']
+    assert CLIENT.get('/book/market', params={'stamp': stamp}).json()['market'] is None
+
+    held, text = os.stat(market), market.read_text()
+    market.write_text(text.replace('"Spot": 18.5', '"Spot": 18.6'))
+    os.utime(market, ns=(held.st_atime_ns, held.st_mtime_ns))
+    rewritten = CLIENT.get('/book/market', params={'stamp': stamp}).json()
+    assert rewritten['stamp'] != stamp
+    assert rewritten['market']['Price Factors']['FxRate.ZAR']['Spot'] == 18.6
+
+    assert CLIENT.post('/book/market', json={'patch': {'FxRate.ZAR': {'Spot': 19.0}}}).json()[
+        'written'] is True
+    patched = CLIENT.get('/book/market', params={'stamp': rewritten['stamp']}).json()
+    assert patched['stamp'] != rewritten['stamp']
+    assert patched['market']['Price Factors']['FxRate.ZAR']['Spot'] == 19.0
+
+
+# --------------------------------------------------------------------------------------------
 # a quote is FOR someone, and it is firm for a WINDOW
 # --------------------------------------------------------------------------------------------
 #: The client the quoting book has opened, as a Reference. A desk's client is a

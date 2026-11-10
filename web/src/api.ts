@@ -6,9 +6,9 @@ import type { Agreement, Entity, Position } from './positions';
 import type {
   ActivityPage, BookMarket, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva,
   CalculationOutcome,
-  CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc,
-  Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome, TablePage,
-  ValidateResult, Worklist,
+  CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc, PathMaps,
+  PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome,
+  TablePage, ValidateResult, Worklist,
 } from './types';
 
 /** Where this browser keeps who it acts as: the ID token a deployment's sign-in stored, else the
@@ -80,11 +80,17 @@ export type BookDealOutcome = {
 
 export const getSchema = () => call<Schema>('GET', '/schema');
 export const getBook = () => call<BookResponse>('GET', '/book');
+// a job file filed and served as the book, or with neither argument the desk's own served again:
+// an undefined key stays off the wire, so that body is `{}`
+export const openBook = (name?: string, document?: JobDoc) =>
+  call<{ path: string; etag: string }>('POST', '/book/open', { name, document });
 export const amendDeal = (dealPath: string, fields: Record<string, unknown>) =>
   call<BookDealOutcome>('POST', '/book/deals',
     signed({ action: 'amend', deal_path: dealPath, fields }));
-// the market the book prices on: the file it names with its explicit block merged over it
-export const getBookMarket = () => call<BookMarket>('GET', '/book/market');
+// the market the book prices on: the file it names with its explicit block merged over it, named
+// by a stamp - asked with the one held, it answers no market while that one is current
+export const getBookMarket = (stamp = '') =>
+  call<BookMarket>('GET', `/book/market?stamp=${stamp}`);
 // the market tick, one endpoint and three vocabularies: a price factor's values, whole quote
 // blocks - which the verb value-updates and bootstraps in the same atomic write - or the block's
 // own entries retired, each by its path from the section down, so the file's stands again
@@ -165,6 +171,10 @@ export const saveCalculation = (name: string, calculation: Record<string, unknow
 export const runCalculation = (name: string, dealPath?: string) =>
   call<{ result_id: string; status: string }>('POST', '/calculations/run',
     signed(dealPath === undefined ? { name } : { name, deal_path: dealPath }));
+// where this workstation reads the files a job names: the two maps the service keeps on this box,
+// never in a job, beside a row per file the served book names; a save replaces both maps whole
+export const getPaths = () => call<PathsAnswer>('GET', '/paths');
+export const savePaths = (maps: PathMaps) => call<PathsAnswer>('POST', '/paths', maps);
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>

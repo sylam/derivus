@@ -104,7 +104,7 @@ Where the market data comes from. Three attributes:
 
 | Attribute | What it does |
 |---|---|
-| `MarketDataFile` | a market-data JSON file (a `MarketData` object of sections, below), parsed once per content of its bytes - per `Context`, or per live book serving it |
+| `MarketDataFile` | a market-data JSON file (a `MarketData` object of sections, below), parsed once per content of its bytes - per `Context`, or per live book serving it - and read where the workstation's map in `DV_HOME/paths.json` puts its folder and name |
 | `ExplicitMarketData` | sections merged over that file's - or over an empty configuration where no file is named |
 | `StressedMarketDataFile` | recorded, not loaded: a `StressedContext` reads it when asked to stress, replacing the `Price Models` entries and implied parameter factors of the factor types it is given, and restores them after |
 
@@ -171,7 +171,8 @@ changes, and a replay of a recorded run reads the bytes the record holds.
 ## CalendDataFile
 
 An XML file of business-day calendars, parsed once per `Context` and kept by the sha256 of its
-bytes; each location's weekend rule and holidays are part of the job's plan:
+bytes, its path read through the workstation's map as the market data file's is; each location's
+weekend rule and holidays are part of the job's plan:
 
 ```xml
 <Calendars>

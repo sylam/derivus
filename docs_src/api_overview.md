@@ -452,7 +452,13 @@ files the bytes at `path` on the service's box under `name`, `kind` `market` or 
 act `mark`, the latest declaration under a name standing; `GET /book/files` lists what stands,
 each row's `matches` naming the file the live book names - `MarketDataFile` or `CalendDataFile` -
 that holds its content now. A standing run's attestation carries the sha256 of each file it read
-beside its replay tuple, and a replay of it reads a declared file's bytes off the record.
+beside its replay tuple, and a replay of it reads a declared file's bytes off the record. Where a
+named file lives is the workstation's own: `DV_HOME/paths.json` maps the folder a job writes and
+the file name it writes to where this box keeps them, and every `Context` built with no maps of its
+own reads it, the job's path never rewritten. `GET /paths` answers the two maps and, per file the
+live book names, the `folder` and `file` they are looked up by, the `path` this box reads, and the
+sha256 of what it holds as `digest` or the refusal to read it as `unread`; `POST /paths`
+`{path_transform, file_transform}` replaces both maps and answers the same.
 
 **The envelope, from the service.** `/schema` describes what goes *in* a `Calculation` block, a
 `Price Factors` block and a deal; it cannot describe where those blocks go, and that is not
@@ -469,7 +475,17 @@ the file's that stood still. `GET /book/market` answers that market itself, whic
 market screens show, an entry the document's own block states marked as the block's.
 `POST /book/market` with `retire: [[section, key, ...]]` deletes such an entry by its path, so the
 file's stands again, and re-bootstraps the market; the system date retired moves the calculation's
-date back with it, as `POST /book/date` does.
+date back with it, as `POST /book/date` does. The answer carries the `stamp` of what the market is
+read from - the document less its deals, the files it names by content, the day - and
+`GET /book/market?stamp=` naming the current one answers `market: null`, so a client polling it
+re-reads the market only where the stamp moved.
+
+**A document from another system.** `POST /book/open` `{name, document}` files a job document
+another system wrote in `DV_HOME/inbox/` under the base name of `name` and serves that copy as the
+live book: every book verb works on it, an edit lands on the copy, and `GET /book` names it under
+`opened`. `{name}` serves the copy already filed, `{}` the desk's own book again; each answers
+`{path, etag}`. Under a spine home it is refused 422 before anything is filed, the desk's book being
+the record's fold.
 
 **Plan then patch.** `POST /prepare` parses a job, names it by its `plan_hash` and keeps the parse
 under that name, so `/execute` takes either the whole document or the plan:

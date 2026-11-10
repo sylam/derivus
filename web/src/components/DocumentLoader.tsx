@@ -1,40 +1,64 @@
-import { getBook } from '../api';
-import { useApp } from '../state';
+import { failure, getBook, openBook } from '../api';
+import { bookLoaded, useApp } from '../state';
 import type { JobDoc } from '../types';
 
-/** Where the document comes from: the service's live book (the default, kept fresh by the etag
- * poll in App), or a local file dropped in for ad-hoc viewing - which stops the poll until the
- * user steps back to the book. */
+/** Where the document comes from: the book the service serves, kept fresh by the etag poll in App
+ * - its own, or a job file opened here, which the service files and serves in its place until the
+ * user steps back - or, where the service will not serve that file, a read-only view of it, which
+ * stops the poll until the user steps back to the book. */
 export function DocumentLoader() {
   const { state, dispatch } = useApp();
 
-  async function openLocal(file: File) {
+  async function openFile(file: File) {
+    let doc: JobDoc;
     try {
-      const doc = JSON.parse(await file.text()) as JobDoc;
-      dispatch({ type: 'DOC_LOADED', doc, source: { kind: 'local', name: file.name } });
+      doc = JSON.parse(await file.text()) as JobDoc;
     } catch (error) {
       dispatch({ type: 'DOC_FAILED', error: `${file.name} is not valid JSON: ${error}` });
+      return;
     }
+    try {
+      await openBook(file.name, doc);
+    } catch (error) {
+      // the service will not serve it: the file as a read-only view, under the service's reason
+      dispatch({ type: 'DOC_LOADED', doc, source: { kind: 'local', name: file.name } });
+      dispatch({ type: 'DOC_FAILED', error: failure(error).error });
+      return;
+    }
+    await backToBook();
   }
 
   async function backToBook() {
     try {
-      const live = await getBook();
-      dispatch({
-        type: 'DOC_LOADED', doc: live.document,
-        source: { kind: 'book', etag: live.etag, path: live.path },
-      });
+      dispatch(bookLoaded(await getBook()));
     } catch {
       dispatch({ type: 'DOC_FAILED', error: 'The service is not serving a book' });
     }
   }
 
+  // the desk's own book served again; a refusal leaves the opened document standing
+  async function closeOpened() {
+    try {
+      await openBook();
+    } catch (error) {
+      dispatch({ type: 'DOC_FAILED', error: failure(error).error });
+      return;
+    }
+    await backToBook();
+  }
+
   return (
     <>
       {state.source?.kind === 'book' && (
-        <span className="source-chip" title={state.source.path}>
-          ● live book · {state.source.path.split('/').pop()}
-        </span>
+        <>
+          <span className="source-chip" title={state.source.path}>
+            ● {state.source.opened ? `opened · ${state.source.opened}`
+              : `live book · ${state.source.path.split('/').pop()}`}
+          </span>
+          {state.source.opened && (
+            <button className="ghost" onClick={closeOpened}>back to book</button>
+          )}
+        </>
       )}
       {state.source?.kind === 'local' && (
         <>
@@ -47,7 +71,7 @@ export function DocumentLoader() {
         <input
           type="file"
           accept=".json,application/json"
-          onChange={(e) => e.target.files?.[0] && openLocal(e.target.files[0])}
+          onChange={(e) => e.target.files?.[0] && openFile(e.target.files[0])}
         />
       </label>
     </>

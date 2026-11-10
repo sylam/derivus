@@ -77,8 +77,9 @@ export type JobDoc = {
 };
 
 /** `GET /book/market`: the market the book prices on - the file it names with its explicit block
- * merged over it - and the etag of the document it was read off. */
-export type BookMarket = { etag: string; market: Market };
+ * merged over it - the etag of the document it was read off, and the stamp the market is named by.
+ * `market` is null where the stamp asked with is that one: the market held is still current. */
+export type BookMarket = { etag: string; stamp: string; market: Market | null };
 
 export type TableShape = { rows: number; columns: unknown[] };
 
@@ -116,7 +117,34 @@ export type ValidateResult = {
   deals: Record<string, string[]>; factors: string[]; calculation: string[];
 };
 
-export type BookResponse = { document: JobDoc; etag: string; path: string };
+/** `opened` is the file name a document opened through `POST /book/open` was posted under, and
+ * present only while that document is the one served. */
+export type BookResponse = { document: JobDoc; etag: string; path: string; opened?: string };
+
+// ---- where this workstation reads the files a job names: /paths ---------------------------------
+// The service's own fact, kept on this box and never written into a job: a job names its files as
+// the system that wrote it saw them, and the two maps say what this box reads in their place.
+
+/** One file the served book names: the path as the job writes it, the keys the two maps are looked
+ * up by, where this box reads it, and its digest - or the operating system's refusal. */
+export type NamedFile = {
+  key: 'MarketDataFile' | 'CalendDataFile';
+  name: string;
+  folder: string;
+  file: string;
+  path: string;
+  digest: string | null;
+  unread: string | null;
+};
+
+/** A folder as a job writes it to a folder on this box, and a file name to a file name. */
+export type PathMaps = {
+  path_transform: Record<string, string>;
+  file_transform: Record<string, string>;
+};
+
+/** `GET /paths`: both maps, and one row per file the served book names. */
+export type PathsAnswer = PathMaps & { named: NamedFile[] };
 
 // ---- the desk's two data views: /book/risk and /book/xva ----------------------------------------
 // Both are READS of the live book. The risk answer is computed on a cache miss and served from the

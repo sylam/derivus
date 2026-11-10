@@ -31,9 +31,10 @@ verb on `Context`, not an endpoint that reaches inside.
 | `GET /results/{result_id}` | status, the replay tuple, the run's stats, and the SHAPE of each table |
 | `GET /results/{result_id}/{table}` | one table, paged |
 | `GET /ui` | a built web UI, when `DV_Service --ui` mounted one - a client, not a verb |
-| `GET /book` | the live job document the service serves - `DV_HOME/book.json` unless `--book` names another - and the etag naming its state |
+| `GET /book` | the live job document the service serves - `DV_HOME/book.json` unless `--book` names another - and the etag naming its state, `opened` its name where `POST /book/open` filed it |
+| `POST /book/open` | serve a document from another system as the book - filed in `DV_HOME/inbox` and served from there - or the desk's own again; refused under a spine home |
 | `GET /book/status` | the desk in ONE read - the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether this workstation has a terminal |
-| `GET /book/market` | the market the book PRICES on - the file it names with its explicit block merged over it |
+| `GET /book/market` | the market the book PRICES on - the file it names with its explicit block merged over it - and the `stamp` of what it is read from, no market where `?stamp=` names the current one |
 | `POST /book/deals` | book, amend or delete one deal, or take on one the file already holds (`action: 'fill'`) - validated BEFORE an atomic write, refusal writes nothing |
 | `POST /book/price` | price the book, optionally with a candidate deal spliced in - a what-if, validated before it queues, writes nothing |
 | `POST /book/solve` | solve one field of a candidate deal to a target value - a root find over base valuations, writes nothing |
@@ -56,6 +57,8 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /book/portfolios` | declare a node of it, judged at its parent |
 | `GET /book/files` | the files the record declares, each beside the file the book names that holds its content |
 | `POST /book/files` | declare a market data file or a calendar a job names, by the bytes it holds |
+| `GET /paths` | where this workstation reads each file the served book names - the two maps `DV_HOME/paths.json` states, and per file its folder, name, path and digest, or the refusal to read it |
+| `POST /paths` | replace the workstation's two maps whole, the served book opened anew |
 | `GET /book/quote/{quote_id}` | the pending trade filed under a quote id - what was quoted, the deal that books it, and when |
 | `GET /book/quote/{quote_id}/sheet` | the quote sheet itself, streamed as the `.xlsx` a client is handed |
 | `GET /book/risk` | the book's CONSOLIDATED risk - one greeks run over every counterparty at once, in the quotes its factors are built from and in the factors themselves, cached on what it reads |
@@ -96,6 +99,7 @@ import json
 import logging
 import math
 import os
+import pickle
 import queue
 import shutil
 import threading
@@ -111,8 +115,8 @@ from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
 
-from . import (Context, bootstrappers, content_hash, instruments, riskfactors, solve_deal_field,
-               spine, structures, utils)
+from . import (PATHS_FILE, Context, bootstrappers, content_hash, dv_home, instruments, riskfactors,
+               solve_deal_field, spine, structures, utils)
 from .schema import (PRICES_KEY, mapping, deal_at, declared_defaults, declared_fields,
                      instrument_of, job_children, quote_plan, quote_stamps, remove_deal,
                      settlement_days, sniff_indent, splice_deal, stated_messages, tables_of,
@@ -202,10 +206,27 @@ def load(job, context=None):
                                             parses=BOOK and BOOK.parses)
 
 
-def market_of(document, context=None):
+def market_stamp(document):
+    """The hash of what the market `document` prices on is read from: its `Calc` less its deals,
+    the sha256 of each file it names, and today, the day a base date no file states reads as
+    (`Context.load_config`)."""
+    calc = {key: value for key, value in document['Calc'].items() if key != 'Deals'}
+    return content_hash({'calc': calc, 'files': Context().files(document),
+                         'today': time.strftime('%Y-%m-%d')})
+
+
+def market_of(document, context=None, stamp=None):
     """`structures.market_of` the document, each file it names taken from the live book's parses
-    where a book is served, loaded on `context` where one is handed (`spine.reading`)."""
-    return structures.market_of(document, BOOK and BOOK.parses, context)
+    where a book is served, loaded on `context` where one is handed (`spine.reading`). With none
+    handed and a book served it is the book's, kept pickled by its `market_stamp` (`stamp`, where
+    the caller holds it) and unpickled into a copy of the reader's own."""
+    if context is not None or BOOK is None:
+        return structures.market_of(document, BOOK and BOOK.parses, context)
+    stamp = stamp or market_stamp(document)
+    kept = BOOK.markets.get(stamp)
+    if kept is None:
+        kept = BOOK.markets.put(stamp, pickle.dumps(structures.market_of(document, BOOK.parses)))
+    return pickle.loads(kept)
 
 
 #: What `/execute` does with a lane it was never given. A run is recorded IFF its output will be
@@ -543,6 +564,8 @@ class Book:
         # each file the book names parsed once per content, for every context a request builds
         # over it (`load`): the newest of the market data and the calendar and the ones before
         self.parses = utils.LRUCache(4)
+        # the market a document prices on by its `market_stamp`, pickled as the parses are
+        self.markets = utils.LRUCache(4)
 
     def _current(self, strict=False):
         """The etag of the file as it stands. Its text is read where the stamp or the size moved,
@@ -674,6 +697,13 @@ class Book:
 #: and None under `--no-book`, where a /book verb reading or writing the file answers 404 and one
 #: reading or declaring on the record alone still answers under a home (`recorded`).
 BOOK = None
+
+#: The path of the desk's own book as `main` opened it, served again by `POST /book/open` naming
+#: nothing; None under `--no-book`.
+DESK = None
+
+#: The folder under the home a document `POST /book/open` is handed is filed in and served from.
+INBOX = 'inbox'
 
 
 #: The one path no token is asked on: it carries a position and nothing else, and a browser's
@@ -910,8 +940,45 @@ def book():
     booked by any other client appears within a poll tick."""
     document, etag = live_book().read()
     answer = {'document': document, 'etag': etag, 'path': live_book().path}
+    folder, name = os.path.split(os.path.abspath(live_book().path))
+    if folder == os.path.abspath(os.path.join(dv_home(), INBOX)):
+        answer['opened'] = name
     pinned = live_book().pinned()
     return answer if pinned is None else dict(answer, lsn=pinned['lsn'])
+
+
+@app.post('/book/open', summary="Serve a document from another system as the book, or the desk's "
+                                'own again')
+def book_open(request: dict):
+    """`{name, document}` files `document` in the home's inbox under the base name of `name` and
+    serves that copy as the book, so every book verb works on it and an edit lands on the copy;
+    `{name}` serves the copy already filed under that name, and `{}` the desk's own book again.
+    Each open is a new `Book`. Answers the served file and its etag.
+
+    A desk that records refuses before anything is written or served: its book is the record's
+    fold, and an amendment to a document from another system would append facts about it."""
+    global BOOK
+    if spine.configured():
+        raise HTTPException(422, "this desk records, and its book is the record's fold - an "
+                                 'amendment to a document from another system would append facts '
+                                 'about it, so it is opened on a desk that records nothing')
+    if 'name' not in request:
+        if DESK is None:
+            raise HTTPException(404, 'this service serves no book of its own - it was started '
+                                     'with --no-book')
+        path = DESK
+    else:
+        name = os.path.join(INBOX, os.path.basename(request['name']))
+        path = (write_desk_file(name, request['document']) if 'document' in request
+                else os.path.join(dv_home(), name))
+        if not os.path.isfile(path):
+            raise HTTPException(404, 'nothing is filed under {} in {}'.format(
+                os.path.basename(path), os.path.dirname(path)))
+    # read before it is served, so a document that is no job leaves the book served standing
+    served = Book(path)
+    answer = {'path': path, 'etag': served.read()[1]}
+    BOOK = served
+    return answer
 
 
 def booked_node(deal):
@@ -2411,6 +2478,44 @@ def book_file_declared(request: dict):
     filed = spine.declare_file(request.get('name'), request.get('kind'), data,
                                actor_name=request.get('actor'))
     return {'recorded': {'lsn': filed['lsn']}, 'name': filed['name'], 'blob': filed['blob']}
+
+
+@app.get('/paths', summary='Where this workstation reads each file the served book names')
+def file_paths():
+    """`{path_transform, file_transform, named}` - the workstation's two maps (`home_paths`), and a
+    row per file the served book names (`Context.named`): the `name` the job writes, the `folder`
+    and the `file` the maps are looked up by (`Context.split_path`), the `path` this box reads it
+    at and the sha256 of what it holds (`Context.digest`), or, where it will not read, the OS's
+    refusal as `unread`. `named` is empty where no book is served."""
+    context = Context()
+    answer = {'path_transform': context.path_map, 'file_transform': context.file_map, 'named': []}
+    for key, name in (Context.named(BOOK.read()[0]) if BOOK is not None else {}).items():
+        if name is None:
+            continue
+        folder, file = Context.split_path(name)
+        row = {'key': key, 'name': name, 'folder': folder, 'file': file,
+               'path': context.parse_path(name), 'digest': None, 'unread': None}
+        # the one read answered as data rather than raised: saying it fails is this verb's job
+        try:
+            row['digest'] = context.digest(name)[1]
+        except OSError as unread:
+            row['unread'] = str(unread)
+        answer['named'].append(row)
+    return answer
+
+
+@app.post('/paths', summary='Replace where this workstation reads the files a job names')
+def file_paths_mapped(request: dict):
+    """`{path_transform, file_transform}` - both of the workstation's maps replaced whole in the
+    home's `paths.json`, which every context built after reads, and the served book opened anew,
+    every cache of a book being a reading of the files it names. A job's own paths are never
+    rewritten. Answers what `GET /paths` then answers."""
+    global BOOK
+    write_desk_file(PATHS_FILE, {'path_transform': request['path_transform'],
+                                 'file_transform': request['file_transform']})
+    if BOOK is not None:
+        BOOK = Book(BOOK.path)
+    return file_paths()
 
 
 @app.post('/book/transition', summary='Move the state a party put a subject in')
@@ -4652,12 +4757,16 @@ def book_status():
 
 
 @app.get('/book/market', summary='The market the book prices on - its file, its block over it')
-def book_market_view():
+def book_market_view(stamp: str = None):
     """The market data the live book PRICES on, in wire form: the sections of the market data file
     it names with its explicit block merged over them (`market_of`), `Correlations` aside - what
-    every reader here answers a market question off, where `GET /book` serves the document."""
+    every reader here answers a market question off, where `GET /book` serves the document. `stamp`
+    is the `market_stamp` of what it is read from; a client naming the current one is answered no
+    market, and none is built."""
     document, etag = live_book().read()
-    return {'etag': etag, 'market': market_of(document)}
+    current = market_stamp(document)
+    return JSONResponse({'etag': etag, 'stamp': current,
+                         'market': None if stamp == current else market_of(document, stamp=current)})
 
 
 def date_edit(document, base_date, reading=Context):
@@ -5060,11 +5169,10 @@ def keep_seed():
 
 def write_desk_file(name, document):
     """One of the desk's own JSON files written atomically - write-temp-then-replace, the `Book`
-    discipline, in `DV_HOME` and created on first use. Answers where it landed."""
-    from derivus_bloomberg import security_map
-
-    os.makedirs(security_map.home(), exist_ok=True)
-    path = os.path.join(security_map.home(), name)
+    discipline - at `name` under `DV_HOME`, its folder created on first use. Answers where it
+    landed."""
+    path = os.path.join(dv_home(), name)
+    os.makedirs(os.path.dirname(path), exist_ok=True)
     temporary = path + '.tmp'
     with open(temporary, 'w', encoding='utf-8', newline='\n') as handle:
         json.dump(document, handle, indent=1)
@@ -6253,15 +6361,6 @@ def book_solve(request: dict):
             'status': EXECUTOR.submit(submitted, COST_CLASS['BaseValuation'])}
 
 
-def dv_home():
-    """The desk's own user-data directory: `DV_HOME`, or `~/.derivus` when it is unset.
-
-    Read on every call rather than captured at import, so a client that moves the setting moves
-    both the book `main` opens and the quotes a running service files.
-    """
-    return os.path.expanduser(os.environ.get('DV_HOME', os.path.join('~', '.derivus')))
-
-
 def quote_dir():
     """Where a pending trade waits for its approval: `DV_HOME/tmp`, created on first use.
 
@@ -7047,8 +7146,8 @@ def main():
         # the user-data home names where a desk's own files live; a missing book starts blank
         path = args.book if args.book else os.path.join(dv_home(), 'book.json')
         os.makedirs(os.path.dirname(os.path.abspath(path)), exist_ok=True)
-        global BOOK
-        BOOK = open_book(path)
+        global BOOK, DESK
+        BOOK, DESK = open_book(path), path
 
     if args.tick is not None:
         if args.no_book:

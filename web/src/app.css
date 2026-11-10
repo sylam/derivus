@@ -89,7 +89,7 @@ body {
 
 .jobbar b { color: var(--text); font-weight: 600; }
 
-.jobbar .bad { color: var(--bad); }
+.bad { color: var(--bad); }
 
 /* ---- the record: the drift banner under the job bar, the activity strip at the foot ---- */
 
@@ -587,3 +587,6 @@ select {
 td .editcell input { width: 88px; padding: 2px 6px; }
 
 td .editcell .refusal { max-width: 320px; white-space: normal; }
+
+/* a folder on this box: a path, not a quote */
+.files td .editcell input { width: 28em; }

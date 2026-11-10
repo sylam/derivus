@@ -233,12 +233,37 @@ def quote_delta(name, container, points, values):
     return rows
 
 
+def dv_home():
+    """The desk's own user-data directory: `DV_HOME`, or `~/.derivus` when it is unset.
+
+    Read on every call rather than captured at import, so a client that moves the setting moves
+    both the book `main` opens and the quotes a running service files.
+    """
+    return os.path.expanduser(os.environ.get('DV_HOME', os.path.join('~', '.derivus')))
+
+
+#: The workstation's own file in the home saying where a file a job names lives on this box: a
+#: folder by the folder the job writes, a file name by the name it writes.
+PATHS_FILE = 'paths.json'
+
+
+def home_paths():
+    """`{path_transform, file_transform}` as `dv_home()/paths.json` states them, both empty where
+    the file does not exist."""
+    path = os.path.join(dv_home(), PATHS_FILE)
+    if not os.path.isfile(path):
+        return {'path_transform': {}, 'file_transform': {}}
+    with open(path, encoding='utf-8') as handle:
+        return json.load(handle)
+
+
 class Context:
-    def __init__(self, path_transform={}, file_transform={}):
-        # needed if the json file contains paths to window's files but linux is needed
-        self.path_map = path_transform
-        # needed if the name of the file referenced needs to be changed (e.g. from .dat to .json)
-        self.file_map = file_transform
+    def __init__(self, path_transform=None, file_transform=None):
+        # a map not handed is the workstation's own, so every bare Context reads a named file
+        # where this box keeps it, and the job's path is never rewritten
+        home = home_paths() if path_transform is None or file_transform is None else {}
+        self.path_map = home['path_transform'] if path_transform is None else path_transform
+        self.file_map = home['file_transform'] if file_transform is None else file_transform
         # a named file's parse by the sha256 of its bytes, and the digest each name last read
         self.parsed, self.digests = {}, {}
         # the bytes a named file is read as in place of its path's: what a run read, where held
@@ -259,13 +284,18 @@ class Context:
 
         return new_cfg
 
-    def parse_path(self, file_path):
-        # file_path is assumed to be a window's path - so we need to check if we're in a posix world
+    @staticmethod
+    def split_path(file_path):
+        """`(folder, file name)` of a path a job names, the keys `path_map` and `file_map` are
+        looked up by: a Windows path is read in its posix form on a posix box."""
         if os.name == 'posix':
             file_path = pathlib.PureWindowsPath(file_path).as_posix()
+        return os.path.split(file_path)
 
-        path, filename = os.path.split(file_path)
-        return os.path.join(self.path_map.get(path, path), self.file_map.get(filename, filename))
+    def parse_path(self, file_path):
+        """Where this box reads the file `file_path` names: its folder and its name, each mapped."""
+        folder, name = self.split_path(file_path)
+        return os.path.join(self.path_map.get(folder, folder), self.file_map.get(name, name))
 
     def digest(self, name):
         """The bytes of the file `name` names - the ones `held` holds for it, else its path's - and
@@ -667,7 +697,7 @@ class Context:
 
 class StressedContext(Context):
 
-    def __init__(self, path_transform={}, file_transform={}):
+    def __init__(self, path_transform=None, file_transform=None):
         super(StressedContext, self).__init__(path_transform, file_transform)
         self.stressed_cfg = None
         self.current_models = None
