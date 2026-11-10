@@ -89,12 +89,13 @@ NETTING = {
 
 
 def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised=False,
-         batches=1, children=None, bandwidth=None, seed=1):
+         batches=1, children=None, bandwidth=None, seed=1, **declared):
     """One CMC run returning (netting mtm, cva, equity-spot gradient or None).
 
     `bandwidth` overrides the declared `Boundary_AAD_Bandwidth`; None leaves the document alone
     and every reading in this file is taken at the declared 0.01. `seed` is the document's, so a
-    second draw is a second document rather than a second code path."""
+    second draw is a second document rather than a second code path. `declared` are further
+    calculation fields the document writes."""
     c = bb._cfg()
     c.params['Price Factors']['EquityPrice.EQ']['Spot'] = spot
     c.params['Price Factors']['SurvivalProb.CPTY'] = {
@@ -120,7 +121,7 @@ def _run(deal, spot=bb.SPOT, gradient=False, batch=512, mcmc=128, collateralised
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No'}}
     if bandwidth is not None:
         overrides['Boundary_AAD_Bandwidth'] = bandwidth
-    _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides=overrides)
+    _, out = derivus.run_cmc(c, prec=bb.DTYPE, overrides=dict(overrides, **declared))
     if torch.cuda.is_available():
         torch.cuda.empty_cache()   # the OSS forks an inner MC per path; runs here are sequential
     grad = None
@@ -274,20 +275,21 @@ DOMINATING_SHORT = {
     'Forward_Price': 1.0, 'Maturity_Date': bb.BASE + pd.Timedelta(days=395)}
 
 
-def _collateralised_barrier(c):
-    """The barrier inside a collateralised set whose MTA BINDS - so the balance holds instead of
-    resetting, and the transfer decision is a discontinuity of its own alongside the barrier's."""
+def _binding_set(c, deal=DISCRETE_BARRIER):
+    """`deal`, the barrier unless said, inside a collateralised set whose MTA BINDS - so the balance
+    holds instead of resetting, and the transfer decision is a discontinuity of its own alongside
+    the barrier's."""
     return [{'Instrument': construct_instrument(dict(
         NETTING, Reference='NS_COL', Collateralized='True', Credit_Support_Amounts=dict(
             NETTING['Credit_Support_Amounts'],
             Minimum_Received=utils.CreditSupportList([[0.0, MTA_LIVE]]),
             Minimum_Posted=utils.CreditSupportList([[0.0, MTA_LIVE]]))), {}),
-        'Children': [{'Instrument': construct_instrument(DISCRETE_BARRIER, {})}]}]
+        'Children': [{'Instrument': construct_instrument(deal, {})}]}]
 
 
 def _beside(deal):
     """The collateralised barrier and a SECOND, uncollateralised set holding `deal`."""
-    return lambda c: _collateralised_barrier(c) + [
+    return lambda c: _binding_set(c) + [
         {'Instrument': construct_instrument(
             dict(NETTING, Reference='NS_' + deal['Reference'], Collateralized='False'), {}),
          'Children': [{'Instrument': construct_instrument(deal, {})}]}]
@@ -303,17 +305,42 @@ def test_a_netting_set_is_scored_on_the_portfolio_not_on_itself():
     EXACTLY zero; scored on the collateralised set alone both decisions land on a positive exposure
     and report a delta to a CVA that does not exist (+3.83e-04 by the MTA route, +2.42e-04 by the
     pricer route). The same set ALONE, same registrations and draws, has a CVA and a gradient - so
-    the zero is the scoping and not a dead fixture.
+    the zero is the scoping and not a dead fixture. Both documents ask for the margin calls'
+    registration, which is off unasked.
 
     Killing mutation: the counterfactual scored on the set's own net (the objective applied to the
     set's level).
     """
-    _, cva, grad = _run(DISCRETE_BARRIER, gradient=True, batch=256, mcmc=64,
-                        children=_beside(DOMINATING_SHORT))
+    kw = dict(gradient=True, batch=256, mcmc=64, Boundary_AAD_Margin_Calls='Yes')
+    _, cva, grad = _run(DISCRETE_BARRIER, children=_beside(DOMINATING_SHORT), **kw)
     assert cva == 0.0, f'a portfolio worth nothing to the counterparty has cva {cva!r}'
     assert grad == 0.0, (
         f'dCVA/dSpot is {grad!r} on a portfolio whose CVA is identically zero: a boundary '
         f'counterfactual is being scored on one netting set instead of on the portfolio')
-    _, solo_cva, solo_grad = _run(DISCRETE_BARRIER, gradient=True, batch=256, mcmc=64,
-                                  children=_collateralised_barrier)
+    _, solo_cva, solo_grad = _run(DISCRETE_BARRIER, children=_binding_set, **kw)
     assert solo_cva > 0.0 and abs(solo_grad) > 0.0, (solo_cva, solo_grad)
+
+
+MARGINED_FORWARD = dict(
+    DOMINATING_SHORT, Reference='FWD1', Buy_Sell='Buy', Units=1.0, Forward_Price=bb.SPOT)
+
+
+def test_a_margin_call_registers_only_where_the_document_asks():
+    """`Boundary_AAD_Margin_Calls` is the document's and `No` unasked: a collateralised set then
+    registers no margin call and reports the frozen-decision gradient. A forward takes no decision
+    of its own, so under an MTA that binds the transfers are the only registrations there could be:
+    the document as written reports, bit for bit, the gradient of the registered run with its
+    kernel emptied through the bandwidth, `Yes` moves it (11.7% lower here), and the CVA is one
+    number all three ways, the term being worth zero forward.
+
+    Killing mutations: `Boundary_AAD_Margin_Calls` declared with default 'Yes'; the set registering
+    its margin calls whatever the document says, or never.
+    """
+    kw = dict(gradient=True, children=lambda c: _binding_set(c, MARGINED_FORWARD))
+    _, cva, unasked = _run(MARGINED_FORWARD, **kw)
+    _, cva_asked, asked = _run(MARGINED_FORWARD, Boundary_AAD_Margin_Calls='Yes', **kw)
+    _, cva_emptied, emptied = _run(
+        MARGINED_FORWARD, Boundary_AAD_Margin_Calls='Yes', bandwidth=1e-12, **kw)
+    assert cva == cva_asked == cva_emptied > 0.0, (cva, cva_asked, cva_emptied)
+    assert unasked == emptied, (unasked, emptied)
+    assert abs(asked / unasked - 1.0) > 0.05, (asked, unasked)

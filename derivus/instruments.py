@@ -1620,9 +1620,10 @@ class NettingCollateralSet(Deal):
         sensitivity engine, both built from detached captures so a replay produces a COEFFICIENT
         (the objective jump) rather than a differentiated quantity:
 
-        - MTA boundary set - the balance reaches the exposure only through min_Bt, so nothing needs
-          re-pricing: `replay_net_mtm` replays the captured balance-independent arithmetic on a
-          different balance path, and `rescan` restarts the forward walk at a margin date.
+        - MTA boundary set, where the document asks (`Boundary_AAD_Margin_Calls`) - the balance
+          reaches the exposure only through min_Bt, so nothing needs re-pricing: `replay_net_mtm`
+          replays the captured balance-independent arithmetic on a different balance path, and
+          `rescan` restarts the forward walk at a margin date.
         - `gross_to_net` - a PRICER event moves the gross, which reaches the net both through Vte
           and through the balance the scan derives from it, so the counterfactual redoes that whole
           chain (At, required balance, bands, scan). The delta arrives on the MTM grid."""
@@ -1719,11 +1720,12 @@ class NettingCollateralSet(Deal):
 
             # one recursion for both cases: an all-True call mask IS the daily schedule
             boundary_aad = getattr(shared, 'boundary_aad', False)
+            margin_calls = boundary_aad and getattr(shared, 'boundary_margin_calls', False)
             Bt, mta_gaps = scan_collateral_balance(
                 Bt[0], Bt_new, Mr, Mp, factor_dep['call_mask'].astype(bool),
-                collect_gaps=boundary_aad)
+                collect_gaps=margin_calls)
 
-            if boundary_aad:
+            if margin_calls:
                 # a minimum transfer amount makes the balance jump, so the decision carries a
                 # derivative ordinary AAD drops. Record both sides; the correction is assembled
                 # against the CVA objective, which does not exist until later.
@@ -1843,17 +1845,18 @@ class NettingCollateralSet(Deal):
                         out = out * b_surv
                     return reported(out)
 
-                def rescan(openings, starts, req=Bt_new.detach(), recv=Mr.detach(),
-                           post=Mp.detach(), mask=factor_dep['call_mask'].astype(bool)):
-                    """The forward walk's own recursion restarted at each margin date of `starts`
-                    from its row of forced opening balances - which is the whole of a transfer
-                    counterfactual."""
-                    return scan_collateral_balance(
-                        openings, req, recv, post, mask, start=np.reshape(starts, (-1, 1)))[0]
+                if margin_calls:
+                    def rescan(openings, starts, req=Bt_new.detach(), recv=Mr.detach(),
+                               post=Mp.detach(), mask=factor_dep['call_mask'].astype(bool)):
+                        """The forward walk's own recursion restarted at each margin date of
+                        `starts` from its row of forced opening balances - which is the whole of a
+                        transfer counterfactual."""
+                        return scan_collateral_balance(
+                            openings, req, recv, post, mask, start=np.reshape(starts, (-1, 1)))[0]
 
-                shared.boundary_sets.append(utils.MTABoundarySet(
-                    events=mta_events, replay=replay_net_mtm,
-                    balance=boundary_balance, rescan=rescan))
+                    shared.boundary_sets.append(utils.MTABoundarySet(
+                        events=mta_events, replay=replay_net_mtm,
+                        balance=boundary_balance, rescan=rescan))
 
                 # Gross-independent, detached captures for the whole gross->net chain
                 # (At, required balance, bands, scan) - see docstring.

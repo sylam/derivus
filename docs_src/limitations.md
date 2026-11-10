@@ -41,6 +41,14 @@ Grouped by where a validator meets them.
   positive exposure at expiry reads 12.2% and 16.6% of the analytic price above its reading with
   them, 10 and 12 standard errors, while the payoff-free numeraire identity moves within its
   noise; near linear in the mark times the FX vol, 1.2% and 1.5% at a 0.3 mark and a 15% vol.
+- **A margin call's transfer decision carries no boundary term unless the document asks.** A
+  minimum transfer amount makes the balance jump, a decision ordinary AAD differentiates as
+  frozen. `Boundary_AAD_Margin_Calls` (default `No`, credit Monte Carlo only) registers each call
+  for the boundary correction, at the cost of a counterfactual balance path a call; the value is
+  the same either way. On one synthetic document of twelve sets whose minimum transfer binds
+  (16,384 paths, two seeds) the unregistered spot delta reads 12% to 16% under its CRN ladder on
+  the FVA and 28% to 29% on the CVA; registered, the FVA's reads within 5% of its ladder and the
+  CVA's 7% to 10% under. No test reads the registered term against a bump.
 
 ### The calibration {#the-calibration}
 

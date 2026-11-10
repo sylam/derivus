@@ -706,7 +706,13 @@ $\sum_k (g_k-\bar g_k)\,\hat f_G(0)\,w_kJ_k$, $\bar g$ and the coefficient detac
 valuation's scenario) gives zero width and no correction.
 
 `Boundary_AAD_Bandwidth` is 0.01. `Boundary_AAD_Window_Touch` (`Yes`, credit Monte Carlo) registers
-the partial-time barrier's window touch. `Branch_And_Weight` (`Yes`, base valuation) prices the four
+the partial-time barrier's window touch. `Boundary_AAD_Margin_Calls` (`No`, credit Monte Carlo)
+registers a collateralised set's margin calls: unasked, a transfer decision carries no term, the set
+launches no counterfactual walk, and its sensitivities are the frozen-decision gradient (**Held by**
+`tests/test_boundary_pricer_events.py::test_a_margin_call_registers_only_where_the_document_asks`).
+A CVA Hessian registers them unasked, which is what refuses it a collateralised set (**Held by**
+`tests/test_cva_gamma_kink.py::test_a_decision_product_refuses_the_hessian_and_keeps_its_gradient`).
+`Branch_And_Weight` (`Yes`, base valuation) prices the four
 fixing-observed knockouts with a smooth estimator that registers nothing (**Held by**
 `tests/test_branch_and_weight.py::test_a_registration_the_switch_supersedes_is_not_lost`). The
 switch is `boundary_aad = calc_greeks is not None`: no greeks, no cost.
@@ -727,7 +733,8 @@ objective (CVA, FVA, the base value).
 The classes differ in reach, so no mode flag: `LatchedBoundarySet` reaches every later row (the
 latching pricers, the swaption); `InnerBoundarySet` lives inside an inner Monte Carlo (the TARF's
 knock-in) and carries the objective's derivative, an inner path moving a row by `1/n`;
-`MTABoundarySet` is a collateral transfer and every later balance.
+`MTABoundarySet` is a collateral transfer and every later balance, registered where the document
+asks.
 A set yields one decision at a time, solved over its whole gap; `MTABoundarySet` says `stacked` and
 yields its margin calls a stack at a time, a call's side a row solved on its own: one walk restarts
 as many calls as `RESTART_ELEMENTS` holds of balance, and one replay and one objective score them

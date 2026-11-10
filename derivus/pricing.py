@@ -1247,7 +1247,7 @@ def exposure_kink_term(shared, V, n_paths_axis=1):
     rung stands ``KINK_ATOM_LADDER_DIVERGENCE`` times its widest is refused by name with its
     readings - the gamma there is singular rather than noisy.
 
-    The collateralised case this refusal was written for cannot reach here: a
+    The collateralised case this refusal was written for cannot reach here: under a Hessian a
     ``NettingCollateralSet`` with ``Collateralized: 'True'`` registers an ``MTABoundarySet``, so
     ``Hessian: 'Yes'`` is refused in ``CreditMonteCarlo.execute``. Estimating through a margin
     period, which would smear such an atom into a density, is future work.

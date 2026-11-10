@@ -363,12 +363,14 @@ def test_a_decision_product_refuses_the_hessian_and_keeps_its_gradient(tmp_path)
     the smooth part with the density-derivative flux block silently absent. Refused by name, naming
     the deal; first order is UNCHANGED, so the refusal is a fall-back rather than a loss.
 
-    A collateralised set registers an `MTABoundarySet` whatever it holds, so the linear forward
-    alone under a zero-threshold CSA is refused by the same refusal naming NS1 - upstream of the
-    kink term, which is why the atom refusal's remedy cannot name a margin period. First order
-    there: `cva` 0.0631180 at 1024 paths.
+    Under a Hessian a collateralised set registers an `MTABoundarySet` whatever it holds and
+    whatever `Boundary_AAD_Margin_Calls` says, so the linear forward alone under a zero-threshold
+    CSA is refused by the same refusal naming NS1 - upstream of the kink term, which is why the
+    atom refusal's remedy cannot name a margin period. First order there: `cva` 0.0631180 at 1024
+    paths.
 
-    Killing mutation: the CVA Hessian's refusal over registered boundary corrections dropped.
+    Killing mutations: the CVA Hessian's refusal over registered boundary corrections dropped; a
+    Hessian leaving the margin calls to `Boundary_AAD_Margin_Calls`.
     """
     book = [_forward('FWD1', FORWARD_PRICE), _autocall()]
     with pytest.raises(utils.SecondOrderRefused) as refusal:
