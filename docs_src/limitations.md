@@ -49,9 +49,11 @@ Grouped by where a validator meets them.
   against their exposure (16,384 paths a seed) the unregistered spot delta reads 78% short of its
   bump on the CVA and 47% on the funding benefit. Registered at a bandwidth of 0.04 the CVA's
   reads within 1% of its bump and the funding benefit's 2.7% under, over 256 seeds; at 0.08,
-  within 2% and 8% under. A call is met from the side that held alone, so the registered
-  estimate is the noisier: at 0.04 a seed's standard error is 8% and 15% of the two deltas
-  against a bump's 3% and 7%, and on a one-set document 2.3 times that at the declared 0.01.
+  within 2% and 8% under. On four one-set documents at 0.04 the CVA's reads 1% to 5% under over
+  48 seeds, the most where a set outlives its deal, at three standard errors. A call is met from
+  the side that held alone, so the registered estimate is the noisier: at 0.04 a seed's standard
+  error is 8% and 15% of the two deltas against a bump's 3% and 7%, and on a one-set document 2.3
+  times that at the declared 0.01.
 
 ### The calibration {#the-calibration}
 
@@ -89,7 +91,9 @@ Grouped by where a validator meets them.
 - **The boundary correction is stable over its bandwidth only at the declared path count.** At
   16,384 and 32,768 paths six seeds resolve no dependence on `Boundary_AAD_Bandwidth` from 0.00125
   to 0.08 (within ±2% of the correction and ±0.5% of the CVA delta); at 2,048 paths the correction
-  falls 24% across that range. Its scoping has no public seam a mutation gate could reach.
+  falls 24% across that range. That is a decision solved over its whole gap: a registered margin
+  call, met from one side, reads lower as its bandwidth widens, the row above. The correction's
+  scoping has no public seam a mutation gate could reach.
 - **The American equity option's approximation is to be retired, not patched** (2026-09-16).
   `pv_american_option` (Bjerksund-Stensland) never calls `calc_vol_adjustment`, so a composite or
   quanto American prices as the local asset. UNMEASURED, as is its error against a lattice. The fix
