@@ -30,6 +30,9 @@ export function DataTable({ columns, index, data, cell }: {
     columns.every((c) => Array.isArray(c) && c.length >= 2);
   const hasIndex = index.length > 0;
   const rows = data.map((row) => (Array.isArray(row) ? row : [row]));
+  // a heading sits over its numbers, which are set right; a replaced cell sets its own
+  const side = (c: number) =>
+    (typeof rows[0]?.[c] === 'number' && cell?.(0, c) === undefined ? 'n' : undefined);
 
   return (
     <div className="tablewrap">
@@ -46,14 +49,14 @@ export function DataTable({ columns, index, data, cell }: {
               <tr>
                 {hasIndex && <th />}
                 {columns.map((c, i) => (
-                  <th key={i}>{label((c as unknown[]).slice(1))}</th>
+                  <th key={i} className={side(i)}>{label((c as unknown[]).slice(1))}</th>
                 ))}
               </tr>
             </>
           ) : (
             <tr>
               {hasIndex && <th />}
-              {columns.map((c, i) => <th key={i}>{label(c)}</th>)}
+              {columns.map((c, i) => <th key={i} className={side(i)}>{label(c)}</th>)}
             </tr>
           )}
         </thead>

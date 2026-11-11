@@ -8,7 +8,7 @@ import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
 import { WORKSPACES } from './registry';
-import { pinnedAt, ringsAhead } from './spine';
+import { pinnedAt, polled, ringsAhead } from './spine';
 import { AppContext, INITIAL, bookLoaded, reducer } from './state';
 
 const BOOK_POLL_MS = 2000;
@@ -58,11 +58,11 @@ export function App() {
     dispatch({ type: 'RECORD_READ', spine: status.spine, page });
   }).current;
 
-  // the etag poll: a deal booked by ANY client (MCP, Excel, an editor on the file) appears here
-  // within a tick, the user's place preserved; a moved path is another document served, opened
-  // by any client, and loads as one
+  // the etag poll, over the desk's own book and never a document opened from a file (`polled`):
+  // a deal booked by ANY client (MCP, Excel, an editor on the file) appears within a tick, the
+  // user's place preserved, and a moved path is another document served and loads as one
   useEffect(() => {
-    if (state.source?.kind !== 'book') return;
+    if (!polled(state.source)) return;
     const { etag, path } = state.source;
     const timer = setInterval(async () => {
       try {

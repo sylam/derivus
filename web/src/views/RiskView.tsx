@@ -171,7 +171,9 @@ export function RiskView() {
                       descending={descending} onSort={sortBy}
                       title="sorted by name, each factor's coordinates in curve order beneath it"
                     />
-                    <th>{quotes ? 'Quote · Tenor' : 'Tenor'}</th>
+                    <th className={quotes ? undefined : 'n'}>
+                      {quotes ? 'Quote · Tenor' : 'Tenor'}
+                    </th>
                     <SortTh
                       label={currency ? `Value (${currency})` : 'Value'} mine="magnitude"
                       key_={key} descending={descending} onSort={sortBy} numeric

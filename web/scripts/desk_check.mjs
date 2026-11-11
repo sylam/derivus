@@ -5,7 +5,8 @@
 //   node web/scripts/desk_check.mjs          # exits 1 on a miss
 //
 // The answer is `GET /book/risk`'s shape on a book reading one USD curve its quotes build, an FX
-// surface they build too, and a spot nothing quotes.
+// surface they build too, and a spot nothing quotes. The last check is what a named calculation
+// shows for a dial it does not state.
 
 import { fileURLToPath } from 'node:url';
 import { build } from 'esbuild';
@@ -65,7 +66,19 @@ check('a curve read by name keeps its ladder order under the factor sort',
         .filter((row) => row.quote).map((row) => row.quote),
       ['ATM 0.1671', 'USD 1M', 'USD 2M']);
 
-console.log(`\n${ran} checks over 2 functions, ${missed.length} missed`);
+// --- ownDials
+check("a named calculation's unstated dial stands at the book's own, where its type declares it",
+      'nothing inherited, which shows a declared default the run never reads, one batch over a '
+      + "book's twenty; the block's own dials inherited too, which marks a saved dial the "
+      + "book's; or the declaration dropped, which lays the book's type and its undeclared keys "
+      + 'on the panel',
+      desk.ownDials({ Object: 'CreditMonteCarlo', Simulation_Batches: 20, Batch_Size: 1024,
+                      Output_Detail: 'Quantiles' },
+                    { Object: 'CreditMonteCarlo', Batch_Size: 4096 },
+                    { Simulation_Batches: {}, Batch_Size: {}, Antithetic: {} }),
+      { Simulation_Batches: 20 });
+
+console.log(`\n${ran} checks over 3 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

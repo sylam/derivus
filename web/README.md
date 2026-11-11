@@ -22,12 +22,14 @@ the desk's own again, a refusal shown verbatim with the opened document standing
 will not serve it (a desk that keeps a record refuses), the file opens as a view in this browser
 that nothing amends, the service's sentence above it, until the desk steps back to the book. The
 poll tells the two moves apart: an etag moved under the same path is the book edited, the place
-kept; a moved path is another document, opened by any client, and loads as one.
+kept; a moved path is another document, opened by any client, and loads as one. The poll is over
+the desk's own book. A document opened from a file is read once, and again after each write this
+screen makes, so a write to that copy by another client shows with the next of them.
 
 **Where a named file lives is this workstation's fact, never the job's.** A job names its market
 data file and its calendar by path, as the system that wrote it saw them; the service reads each
 through two maps it keeps on this box (`GET`/`POST /paths`) — a folder as written to a folder here,
-a file name to a file name — and writes neither into the job. Settings closes on that card,
+a file name to a file name — and writes neither into the job. Settings opens on that card,
 whatever the market answered: the files the served book names, where this box reads each and its
 digest or the operating system's refusal, then the two maps, every entry and every named key still
 unmapped one row, edited in place and posted with both maps whole, an emptied entry removed and
@@ -109,13 +111,14 @@ screen: a credit Monte Carlo is minutes of device time, and a surface that could
 click would start one by accident.
 
 *Calculation* is the book's own calculation, read-only, beside the desk's NAMED calculations
-(`/calculations`, kept in `DV_HOME`): filed by type, each its dials over the book's own with every
+(`/calculations`, kept in `DV_HOME`): filed by type, each its dials over the book's own, a dial it
+does not state shown at the book's and marked `book` because that is what it runs at, with every
 edit saved whole — a container's scalars through the container — a Run over the whole book or one
 top-level node, and the run's results under the page that asked for it.
 
 The arithmetic behind both — ages, sorts, totals, staleness, the quote reading — is `src/desk.ts`,
-pure and free of React, the way `src/blotter.ts` is for the blotter; the quote reading is checked
-by `scripts/desk_check.mjs`.
+pure and free of React, the way `src/blotter.ts` is for the blotter; the quote reading and the
+dials a named calculation takes from the book are checked by `scripts/desk_check.mjs`.
 
 The UI is optional to the core library. Nothing here enters the `derivus` package: it is a client
 of the same endpoints every other client uses, built separately and handed to the service as a

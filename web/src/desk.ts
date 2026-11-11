@@ -166,6 +166,16 @@ export function currencyOf(doc: JobDoc | null): string {
   return typeof currency === 'string' ? currency : '';
 }
 
+// ---- a named calculation ------------------------------------------------------------------------
+
+/** The dials a named calculation's type declares and its block does not state, at the book's
+ * own: `POST /calculations/run` merges the block over the book's, so that is what they run at. */
+export function ownDials(own: Record<string, unknown>, block: Record<string, unknown>,
+                         declared: Record<string, unknown>): Record<string, unknown> {
+  return Object.fromEntries(
+    Object.entries(own).filter(([key]) => key in declared && !(key in block)));
+}
+
 // ---- the XVA projection -------------------------------------------------------------------------
 
 /** A row whose set has left the book. It keeps its last numbers - a number that was on the

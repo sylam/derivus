@@ -272,6 +272,7 @@ body {
 .fields > .k:nth-last-of-type(2), .fields > .v:last-of-type { border-bottom: none; }
 
 .fields .hint { color: var(--text-muted); font-size: 12px; margin-left: 8px; }
+.fields > .k > :is(.chip, .editcell) { margin-left: 8px; }
 
 /* a field named for its prose: the description is the hover */
 .fields > .k[title] {
@@ -308,6 +309,7 @@ table.data td {
 }
 
 table.data td.n { text-align: right; font-family: var(--mono); font-size: 12px; }
+table.data th.n { text-align: right; }
 
 table.data tr:hover td { background: var(--surface-2); }
 
@@ -330,8 +332,6 @@ button.chip {
 }
 
 table.blotter { background: var(--surface); }
-
-table.blotter th.n { text-align: right; }
 
 table.blotter tbody tr { cursor: pointer; }
 
@@ -409,8 +409,6 @@ table.blotter tr.detail:hover td { background: var(--bg); }
 }
 
 table.desk { background: var(--surface); }
-
-table.desk th.n { text-align: right; }
 
 table.desk th.sort { cursor: pointer; user-select: none; }
 
@@ -588,5 +586,12 @@ td .editcell input { width: 88px; padding: 2px 6px; }
 
 td .editcell .refusal { max-width: 320px; white-space: normal; }
 
-/* a folder on this box: a path, not a quote */
-.files td .editcell input { width: 28em; }
+/* this workstation's three tables on one grid, the box's side starting mid-card in each (the
+   named files' two leading columns are the first half): a path wraps where it is long, and its
+   input is the cell's width */
+.files table.data { table-layout: fixed; }
+.files th:nth-last-child(4) { width: 10%; }
+.files th:nth-last-child(3) { width: 40%; }
+.files table.data :is(th, td) { white-space: normal; overflow-wrap: anywhere; }
+.files td .editcell { display: flex; }
+.files td .editcell input { flex: 1; min-width: 0; }

@@ -206,7 +206,8 @@ export function EditableScalar({ name, descriptor, value, onAmend }: {
   useEffect(() => { setRaw(incoming); setRefused(null); }, [incoming]);
 
   async function save(nextRaw: string | boolean) {
-    if (typeof nextRaw === 'string' && nextRaw === incoming) return;
+    // an input disabled while it saves is blurred by the browser, which would save it again
+    if (saving || (typeof nextRaw === 'string' && nextRaw === incoming)) return;
     setSaving(true);
     try {
       setRefused(await onAmend(name, encodeScalar(descriptor, nextRaw)));

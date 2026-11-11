@@ -1,8 +1,8 @@
 // Drives `src/spine.ts` where the eye cannot: the page a poll merges onto the strip it holds, the
 // strip under a doorbell stream whose beats are dropped, duplicated and reordered, the verdict the
 // banner reads off the reconcile lists, what a fold at the head is asked for, the two transitions
-// the store holds it by, the shape the markets panel renders, and when the worklist is asked for
-// and what its banner says. Every check names the MUTATION
+// the store holds it by, the shape the markets panel renders, when the worklist is asked for and
+// what its banner says, and which served book the poll asks at all. Every check names the MUTATION
 // it kills - the change to the module that would still typecheck, still render, and still be
 // wrong.
 //
@@ -337,7 +337,17 @@ check('the shaping leaves the answer it was handed standing',
       [MARKETS.closes.map((close) => close.lsn), MARKETS.names.map((name) => name.lsn),
        MARKETS.snapshots.map((shot) => shot.lsn)], [[14, 17], [12, 13], [19, 20]]);
 
-console.log(`\n${ran} checks over 12 functions, ${missed.length} missed`);
+// --- polled
+check("the desk's own book is asked every beat whether it moved, a document opened from a file never",
+      "the opened copy polled, which sends the whole document and reads the desk's status every "
+      + 'two seconds for a file read once; or the test on `opened` inverted, after which a deal '
+      + "another client books never reaches the desk's own screen",
+      [spine.polled({ kind: 'book', etag: 'e', path: 'book.json' }),
+       spine.polled({ kind: 'book', etag: 'e', path: 'inbox/job.json', opened: 'job.json' }),
+       spine.polled({ kind: 'local', name: 'job.json' }), spine.polled(null)],
+      [true, false, false, false]);
+
+console.log(`\n${ran} checks over 13 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

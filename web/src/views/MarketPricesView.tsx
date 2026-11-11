@@ -97,6 +97,7 @@ function MarketPriceBlock({ schema, name, block, live }: {
 /** The terminal round trip as one button: a queued job, polled the way an execute is, its outcome
  * read off the run's own stats. Nothing here names a pair - the scope defaults to the desk's. */
 function BloombergTick() {
+  const { dispatch } = useApp();
   const [run, setRun] = useState<{ id: string; status: string } | null>(null);
   const [note, setNote] = useState<string | null>(null);
   const [outcome, setOutcome] = useState<Record<string, unknown> | null>(null);
@@ -110,6 +111,7 @@ function BloombergTick() {
         setRun({ id: run.id, status: summary.status });
         if (summary.status === 'done') {
           setOutcome((summary.stats?.Bloomberg ?? {}) as Record<string, unknown>);
+          await written(dispatch, { written: true });
         } else if (summary.status === 'error') setOutcome({ refused: [summary.error] });
       } catch (error) {
         setRun({ id: run.id, status: 'error' });

@@ -6,6 +6,7 @@ import { DescriptorPanel } from '../components/FieldView';
 import { DataTable } from '../components/DataTable';
 import { Navigator, type Page } from '../components/Navigator';
 import { TimeSeriesChart } from '../components/TimeSeriesChart';
+import { ownDials } from '../desk';
 import { useApp } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
 import type { Schema, TableShape } from '../types';
@@ -118,8 +119,8 @@ export function CalculationView() {
     ) },
     ...Object.entries(saved).map(([name, block]) => ({
       id: name, folder: String(block.Object), label: name, content: (
-        <NamedCalculation schema={schema} name={name} block={block} scopes={scopes}
-                          save={save} submit={submit} />
+        <NamedCalculation schema={schema} name={name} block={block} own={calculation}
+                          scopes={scopes} save={save} submit={submit} />
       ),
     })),
     ...(live ? [{ id: '+', label: 'a new calculation', accent: true, content: (
@@ -138,18 +139,24 @@ export function CalculationView() {
   );
 }
 
-/** One named calculation: its declared dials over what it states, every edit saved whole, a Run
- * over the whole book or one top-level node, and the run it asked for beneath. */
-function NamedCalculation({ schema, name, block, scopes, save, submit }: {
-  schema: Schema; name: string; block: Record<string, unknown>;
+/** One named calculation: its declared dials over what it states, a dial it does not state at
+ * the book's own and marked so, which is what it runs at; every edit saved whole, a Run over the
+ * whole book or one top-level node, and the run it asked for beneath. */
+function NamedCalculation({ schema, name, block, own, scopes, save, submit }: {
+  schema: Schema; name: string; block: Record<string, unknown>; own: Record<string, unknown>;
   scopes: (readonly [string, string])[]; save: Save; submit: Submit;
 }) {
   const [scope, setScope] = useState('');
   const type = String(block.Object);
+  const fields = schema.Calculation.types[type];
+  const books = ownDials(own, block, fields);
   return (
     <>
       <DescriptorPanel
-        title={`${name} — ${type}`} fields={schema.Calculation.types[type]} values={dials(block)}
+        title={`${name} — ${type}`} fields={fields} values={{ ...books, ...dials(block) }}
+        aside={(key) => key in books && (
+          <span className="chip" title="not stated here: it runs at the book's own">book</span>
+        )}
         onAmend={(key, wire) => save(name, { ...block, [key]: wire })} />
       <RunStrip
         origin={name}

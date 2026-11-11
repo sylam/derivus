@@ -8,6 +8,7 @@
 // `spine` comes back null, the verdict is `none`, and the two screens render nothing at all.
 
 import { plural } from './desk';
+import type { Source } from './state';
 import type {
   ActivityPage, ActivityRow, BookMarkets, Doorbell, MarketClose, Reconcile, SpineBlock, Worklist,
 } from './types';
@@ -15,6 +16,13 @@ import type {
 /** How many strip rows a client holds. The service caps a page at 200 and this caps what has been
  * MERGED, so a poll running all day cannot grow the array without bound. */
 export const STRIP_ROWS = 200;
+
+/** Whether the served book is asked every beat if it moved: the desk's own is, which any client
+ * books into, and a document opened from a file is read once and again after each write this
+ * screen makes. */
+export function polled(source: Source | null): source is Source & { kind: 'book' } {
+  return source?.kind === 'book' && !source.opened;
+}
 
 /** Where the file stands, as one comparable value - so a beat of the poll that moved nothing is
  * the same state and repaints nothing. Null throughout is a desk that records nothing. */

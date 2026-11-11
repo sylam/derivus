@@ -18,7 +18,8 @@ export function TimeSeriesChart({ page }: { page: TablePage }) {
     const dates = page.index.map((entry) => label(entry));
     return {
       animation: false,
-      grid: { left: 70, right: 20, top: 30, bottom: 60 },
+      // the grid holds its own labels: a nine-figure exposure is wider than any fixed margin
+      grid: { left: 12, right: 20, top: 30, bottom: 36, containLabel: true },
       legend: { top: 0, textStyle: { color: palette.text } },
       tooltip: { trigger: 'axis' as const },
       dataZoom: [{ type: 'inside' as const }, { type: 'slider' as const, height: 18, bottom: 8 }],

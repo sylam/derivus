@@ -15,14 +15,14 @@ const WHICH: Record<NamedFile['key'], string> = {
 /** A map's right side, the folder or file name this box reads as the box spells it. */
 const HERE: Descriptor = { widget: 'Text', description: 'on this box', value: null };
 
-/** The document's settings, then at the foot this workstation's: where it reads the files a job
- * names, which is no part of the document and stands whether or not its market read. */
+/** This workstation's first, where it reads the files a job names, which is no part of the
+ * document and stands whether or not its market read; then the document's settings. */
 export function SettingsView() {
   return (
     <div className="main">
       <div className="panel">
-        <Stated />
         <Files />
+        <Stated />
       </div>
     </div>
   );
