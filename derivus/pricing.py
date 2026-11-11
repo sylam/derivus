@@ -1388,10 +1388,11 @@ def fva_per_scenario(pv, cost_spread, benefit_spread):
 class SensitivitiesEstimator(object):
     """AAD sensitivities of one value against a list of model parameters, first and second order."""
 
-    def __init__(self, value, params, create_graph=False):
+    def __init__(self, value, params, create_graph=False, retain_graph=True):
         """Run the backward pass over `value` and keep the gradient of every parameter that has
-        one. `create_graph` retains the graph the second-order block differentiates through."""
-        value.backward(retain_graph=True, create_graph=create_graph)
+        one. `create_graph` retains the graph the second-order block differentiates through;
+        `retain_graph` off frees it as the pass walks it, for a value differentiated once."""
+        value.backward(retain_graph=retain_graph, create_graph=create_graph)
         self.params = {key: tensor for key, tensor in params if tensor.grad is not None}
         self.grad = {key: tensor.grad for key, tensor in self.params.items()}
         self.flat_grad = self.flatten(list(self.grad.values()))

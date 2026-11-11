@@ -1368,6 +1368,13 @@ class CreditMonteCarlo(Calculation):
 
         return shared_mem
 
+    def precalculate_factors(self, shared_mem):
+        """Precalculate every stochastic process again from its calibrated state."""
+        for key, (scenario_grid, implied_tensor) in self._factor_precalc_args.items():
+            self.stoch_factors[key].precalculate(
+                self.base_date, scenario_grid, self.stoch_var[key], shared_mem,
+                self.process_ofs[key], implied_tensor=implied_tensor)
+
     def update_time_grid(self, base_date, reset_dates, settlement_currencies, dynamic_scenario_dates=False):
         dynamic_dates = set([x for x in reset_dates if x > base_date])
         if not dynamic_dates:
@@ -1692,8 +1699,19 @@ class CreditMonteCarlo(Calculation):
             utils.check_rate_name(self.config.params['System Parameters']['Base_Currency']),
             self.static_factors, self.stoch_factors)
         time_index = self.time_grid.report_index
+        # one objective differentiated once a batch: its backward pass releases the batch's graph
+        release = credit.get('Hessian', 'No') != 'Yes' and 1 == sum(
+            v.get('Calculate', 'No') == 'Yes' and v.get('Gradient', 'No') == 'Yes'
+            for v in params.values() if isinstance(v, dict))
 
         for run in range(self.params['Simulation_Batches']):
+
+            if release and run:
+                # a released graph took the precalculation with it: the memos carrying it go and
+                # every process precalculates again
+                for key in [k for k, v in shared_mem.t_PreCalc.items() if pricing.taped((v,))]:
+                    del shared_mem.t_PreCalc[key]
+                self.precalculate_factors(shared_mem)
 
             if deterministic_batches:
                 # batch b owns its streams, keyed by its GLOBAL index. BOTH streams: the torch
@@ -1721,7 +1739,7 @@ class CreditMonteCarlo(Calculation):
                     tensors['collva_t'] = torch.mean(shared_mem.t_Credit['Funding'], dim=1)
                     tensors['collva'] = torch.sum(tensors['collva_t'])
 
-                    sensitivity = SensitivitiesEstimator(tensors['collva'], self.all_var)
+                    sensitivity = SensitivitiesEstimator(tensors['collva'], self.all_var, retain_graph=not release)
 
                     if final_run:
                         output['grad_collva'] = sensitivity.report_grad()
@@ -1907,7 +1925,7 @@ class CreditMonteCarlo(Calculation):
                             float(params.get('Boundary_AAD_Bandwidth', 0.01)))
                         if correction is not None:
                             fva_for_aad = fva_for_aad + correction
-                    sensitivity = SensitivitiesEstimator(fva_for_aad, self.all_var)
+                    sensitivity = SensitivitiesEstimator(fva_for_aad, self.all_var, retain_graph=not release)
 
                     if final_run:
                         output['grad_fva'] = sensitivity.report_grad()
@@ -2017,7 +2035,7 @@ class CreditMonteCarlo(Calculation):
                         cva_for_aad = cva_for_aad + (1.0 - recovery) * (
                                 0.5 * (kink[1:] + kink[:-1]) * prob).mean(axis=1).sum()
                     sensitivity = SensitivitiesEstimator(
-                        cva_for_aad, self.all_var, create_graph=hessian)
+                        cva_for_aad, self.all_var, create_graph=hessian, retain_graph=not release)
 
                     if final_run:
                         output['grad_cva'] = sensitivity.report_grad()
@@ -3585,11 +3603,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             if randomize_t0:
                 # REWIND to the calibrated t=0 first, or the batch sequence random-walks away from it
                 if run:
-                    for key, proc in self.stoch_factors.items():
-                        scenario_grid, implied_tensor = self._factor_precalc_args[key]
-                        proc.precalculate(
-                            self.base_date, scenario_grid, self.stoch_var[key], shared_mem,
-                            self.process_ofs[key], implied_tensor=implied_tensor)
+                    self.precalculate_factors(shared_mem)
                 # burn-in for every factor; `simulated[-1]` is the per-path shape precalculate
                 # accepts - the same contract `_run_inner_mc_at_t` forks on
                 initial_t0 = {}

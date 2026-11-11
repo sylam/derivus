@@ -244,6 +244,21 @@ def test_asking_for_the_hessian_moves_nothing_the_run_already_reported(tmp_path)
 
 # ---------------------------------------------------------------- the ladders
 
+def test_a_gradient_released_a_batch_is_the_one_the_kept_graph_reports(tmp_path):
+    """One gradient asked and no Hessian frees each batch's graph in its backward pass and
+    precalculates every process again; asking for the Hessian keeps every batch's. Over three
+    batches the two runs report one CVA and one `grad_cva`, bit for bit.
+
+    Killing mutation: the processes not precalculated again, the second batch refusing to walk
+    a graph already freed.
+    """
+    off = _run(_job(paths=4096, batches=3), tmp_path, 'release_off')
+    on = _run(_job(hessian='Yes', paths=4096, batches=3), tmp_path, 'release_on')
+
+    assert off['cva'] == on['cva'], (off['cva'], on['cva'])
+    assert np.array_equal(off['grad_cva'].values, on['grad_cva'].values), 'grad_cva moved'
+
+
 def test_the_gamma_and_vanna_entries_land_on_crn_ladders_of_the_reported_delta(tmp_path):
     """THE STRUCTURAL KILL. A linear payoff has `∂²V/∂S₀² = 0` on every path, so an engine
     differentiating the frozen-decision graph twice reports EXACTLY 0.0 for gamma. The CRN ladder

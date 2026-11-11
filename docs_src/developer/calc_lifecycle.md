@@ -329,6 +329,14 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
    ([xVA](../theory/valuation_adjustments.md)), do-not-touch
    ([Change Scope](conventions.md#change-scope)).
 
+A job in which one adjustment asks for a gradient and none for the Hessian frees each batch's
+graph in its backward pass, and holds one batch's graph where it held every batch's: a later
+batch drops the `t_PreCalc` entries carrying a graph and precalculates each process again
+(`precalculate_factors`). Two gradients or the Hessian keep every batch's. **Held by**
+`tests/test_cva_gamma_kink.py::test_a_gradient_released_a_batch_is_the_one_the_kept_graph_reports`;
+**Not gated:** the entries dropped, keyed on a tenor's identity so that no document makes a later
+batch find one, and the memory held, `Device_Memory` reporting the process's reserve.
+
 !!! note "Run controls"
     `Stats` counts deals and structures loaded, `Ignored`, and `Deals Skipped` / `Structs Skipped`
     once each: a deal that fails to compile is dropped (kept at zero under
@@ -340,8 +348,8 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 
 !!! warning "Invariant — `t_Buffer` per batch, `t_PreCalc` per calculation"
     `t_Buffer` is cleared by `reset` and by every fork. `t_PreCalc` holds what every batch reads
-    unchanged (integral precalcs, gathered indices, arrays through `Calculation_State.upload`) and
-    nothing carrying a graph.
+    unchanged (integral precalcs, gathered indices, arrays through `Calculation_State.upload`); an
+    entry carrying a graph goes with the graph a run releases.
 
 !!! warning "Invariant — publish as you go, under `(factor_key, kind)`"
     A process publishes its path as `generate` returns and any sufficient statistic under

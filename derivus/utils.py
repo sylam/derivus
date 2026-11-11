@@ -1523,7 +1523,7 @@ class Calculation_State(object):
         # these are tensors
         self.t_Buffer = {}
         # the per-CALCULATION memo `t_Buffer`'s per-batch clear leaves alone: what a run reads
-        # unchanged every batch, never a tensor carrying a graph
+        # unchanged every batch; a run that releases each batch's graph drops an entry carrying one
         self.t_PreCalc = {}
         self.t_Static_Buffer = static_buffer
         # storing a unit tensor allows the dtype and device to be encoded in the calculation state
