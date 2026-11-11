@@ -180,6 +180,12 @@ export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/vali
 export const postExecute = (doc: JobDoc) =>
   call<{ result_id: string; status: string }>('POST', '/execute', signed(doc));
 export const getResult = (id: string) => call<ResultSummary>('GET', `/results/${id}`);
-export const getTable = (id: string, table: string, offset = 0, limit?: number) =>
+export const getTable = (id: string, table: string, offset = 0, limit?: number,
+                         width?: number) =>
   call<TablePage>('GET', `/results/${id}/${table}?offset=${offset}${
-    limit === undefined ? '' : `&limit=${limit}`}`);
+    limit === undefined ? '' : `&limit=${limit}`}${
+    width === undefined ? '' : `&width=${width}`}`);
+// two paths a link opens rather than a call: the service answers each as the file a browser
+// saves, a table whole at full precision and the served book byte for byte
+export const tableCsv = (id: string, table: string) => `/results/${id}/${table}?format=csv`;
+export const BOOK_DOCUMENT = '/book/document';

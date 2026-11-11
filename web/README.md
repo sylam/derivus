@@ -18,7 +18,9 @@ booking new deals goes through the `/book` verbs (the MCP tools, or Excel).
 **A job file opened is served as the book.** "open a job file" posts the document to
 `POST /book/open`, which files a copy and serves it in the book's place, so every screen, edit and
 run works on it exactly as on the desk's own; the chip names the file, and "back to book" serves
-the desk's own again, a refusal shown verbatim with the opened document standing. Where the service
+the desk's own again, a refusal shown verbatim with the opened document standing. "download
+job" beside it saves the served document as the file it is (`GET /book/document`), every edit
+made on these screens in it. Where the service
 will not serve it (a desk that keeps a record refuses), the file opens as a view in this browser
 that nothing amends, the service's sentence above it, until the desk steps back to the book. The
 poll tells the two moves apart: an etag moved under the same path is the book edited, the place
@@ -114,7 +116,9 @@ click would start one by accident.
 (`/calculations`, kept in `DV_HOME`): filed by type, each its dials over the book's own, a dial it
 does not state shown at the book's and marked `book` because that is what it runs at, with every
 edit saved whole — a container's scalars through the container — a Run over the whole book or one
-top-level node, and the run's results under the page that asked for it.
+top-level node, and the run's results under the page that asked for it. A table shows its first
+200 rows and 50 columns and says so, and "download CSV" beside its name is the whole of it at
+full precision, the file the service answers (`?format=csv`).
 
 The arithmetic behind both — ages, sorts, totals, staleness, the quote reading — is `src/desk.ts`,
 pure and free of React, the way `src/blotter.ts` is for the blotter; the quote reading and the

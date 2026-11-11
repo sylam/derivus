@@ -485,7 +485,8 @@ another system wrote in `DV_HOME/inbox/` under the base name of `name` and serve
 live book: every book verb works on it, an edit lands on the copy, and `GET /book` names it under
 `opened`. `{name}` serves the copy already filed, `{}` the desk's own book again; each answers
 `{path, etag}`. Under a spine home it is refused 422 before anything is filed, the desk's book being
-the record's fold.
+the record's fold. `GET /book/document` answers the served book as the file it is, byte for byte
+and under its own name: the desk's own, or an opened copy with every edit made to it.
 
 **Plan then patch.** `POST /prepare` parses a job, names it by its `plan_hash` and keeps the parse
 under that name, so `/execute` takes either the whole document or the plan:
@@ -537,8 +538,11 @@ GET /results/{result_id}/mtm?offset=0&limit=100
 {"name": "mtm", "rows": 240, "columns": [...], "offset": 0, "index": [...], "data": [[...], …]}
 ```
 
-`rows` and `columns` are the whole table's; `data` is the page. `limit` defaults to the rest of the
-table and an offset past the end is an empty page. A group of tables — `cashflows`, `scenarios` —
+`rows` is the whole table's count; `data` is the page. `limit` defaults to the rest of the
+table and an offset past the end is an empty page. `width` caps the leading columns a page
+carries, and `columns` then names those: a simulation's `mtm` has a column a path. `format=csv`
+answers the same page as the file `DataFrame.to_csv` writes, every number at full precision, an
+attachment named by the table and the run (`mtm.<result_id, 12 characters>.csv`). A group of tables — `cashflows`, `scenarios` —
 is flattened to the path that names each one (`cashflows/ZAR`), because a group has no page. An
 unknown table, like an unknown result, is a `404`. An `error` result carries the message the run
 failed with, and nothing else.

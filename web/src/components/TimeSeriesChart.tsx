@@ -8,7 +8,7 @@ const MAX_SERIES = 12;
 
 /** A date-indexed frame - an exposure profile, an mtm path - as one line per column with a zoom
  * on the date axis. Wide frames (a scenario cube) show the first MAX_SERIES columns and say so;
- * the table below the chart always carries the full page. */
+ * the table below the chart carries the page. */
 export function TimeSeriesChart({ page }: { page: TablePage }) {
   const clipped = page.columns.length > MAX_SERIES;
 
@@ -42,8 +42,7 @@ export function TimeSeriesChart({ page }: { page: TablePage }) {
   return (
     <div>
       {clipped && (
-        <div className="pager">showing the first {MAX_SERIES} of {page.columns.length} columns —
-          the table below carries them all</div>
+        <div className="pager">the chart draws the first {MAX_SERIES} columns</div>
       )}
       <div className="chart" ref={useChart(option)} />
     </div>

@@ -29,9 +29,10 @@ verb on `Context`, not an endpoint that reaches inside.
 | `POST /prepare` | `{plan_id}` — the parsed job, named by its plan hash and cached under it |
 | `POST /execute` | `{result_id, status}` — always, for every calculation |
 | `GET /results/{result_id}` | status, the replay tuple, the run's stats, and the SHAPE of each table |
-| `GET /results/{result_id}/{table}` | one table, paged |
+| `GET /results/{result_id}/{table}` | one table, paged by rows and capped by leading columns, or with `format=csv` the same page as a file |
 | `GET /ui` | a built web UI, when `DV_Service --ui` mounted one - a client, not a verb |
 | `GET /book` | the live job document the service serves - `DV_HOME/book.json` unless `--book` names another - and the etag naming its state, `opened` its name where `POST /book/open` filed it |
+| `GET /book/document` | the served book as the file it is, byte for byte - what a client saves |
 | `POST /book/open` | serve a document from another system as the book - filed in `DV_HOME/inbox` and served from there - or the desk's own again; refused under a spine home |
 | `GET /book/status` | the desk in ONE read - the book's date and currency, its curves and surfaces with when each was snapped, the calibrated models, the netting sets and the last XVA per set, and whether this workstation has a terminal |
 | `GET /book/market` | the market the book PRICES on - the file it names with its explicit block merged over it - and the `stamp` of what it is read from, no market where `?stamp=` names the current one |
@@ -114,6 +115,7 @@ from operator import getitem
 from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse, JSONResponse, Response, StreamingResponse
+import pandas as pd
 
 from . import (PATHS_FILE, Context, bootstrappers, content_hash, dv_home, instruments, riskfactors,
                solve_deal_field, spine, structures, utils)
@@ -323,6 +325,15 @@ def rows_of(table):
     if frame is not None:
         return frame['data'], frame['index']
     return (table if isinstance(table, list) else [table]), []
+
+
+def plain(label):
+    """A stored label or cell as `pandas` reads it: a wire tag the value it carries and a list a
+    tuple, the entry of a MultiIndex it was."""
+    if isinstance(label, list):
+        return tuple(plain(part) for part in label)
+    tagged = isinstance(label, dict) and len(label) == 1 and next(iter(label)).startswith('.')
+    return next(iter(label.values())) if tagged else label
 
 
 class PlanCache:
@@ -903,9 +914,13 @@ def results(result_id: str):
 
 
 @app.get('/results/{result_id}/{table:path}', summary='One table of a finished run, paged')
-def table(result_id: str, table: str, offset: int = 0, limit: int = None):
-    """One table, a page at a time: `rows` and `columns` are the whole table's, `data` is the rows
-    from `offset` on, and `limit` caps how many of them travel. The default is the whole table.
+def table(result_id: str, table: str, offset: int = 0, limit: int = None, width: int = None,
+          format: str = None):
+    """One table, a page at a time: `rows` is the whole table's count, `data` is the rows from
+    `offset` on, `limit` caps how many of them travel and `width` how many leading columns, which
+    `columns` then names. The default is the whole table. `format=csv` answers the same page as
+    the file `DataFrame.to_csv` writes, every number at full precision, an attachment named by
+    the table and the run.
 
     The name is the path `/results/{result_id}` published, so a table inside a group is fetched as
     `cashflows/ZAR`. An offset past the end is an empty page, not an error.
@@ -916,8 +931,18 @@ def table(result_id: str, table: str, offset: int = 0, limit: int = None):
     found = result['tables'][table]
     rows, index = rows_of(found)
     end = len(rows) if limit is None else offset + limit
-    return dict(shape(found), name=table, offset=offset,
+    page = dict(shape(found), name=table, offset=offset,
                 index=index[offset:end], data=rows[offset:end])
+    if width is not None:
+        page.update(columns=page['columns'][:width], data=[
+            row[:width] if isinstance(row, list) else row for row in page['data']])
+    if format != 'csv':
+        return page
+    frame = pd.DataFrame(list(plain(page['data'])), index=list(plain(page['index'])) or None,
+                         columns=list(plain(page['columns'])) or None)
+    return Response(frame.to_csv(), media_type='text/csv', headers={
+        'Content-Disposition': 'attachment; filename="{}.{}.csv"'.format(
+            table.replace('/', '_'), result_id[:12])})
 
 
 def live_book():
@@ -945,6 +970,15 @@ def book():
         answer['opened'] = name
     pinned = live_book().pinned()
     return answer if pinned is None else dict(answer, lsn=pinned['lsn'])
+
+
+@app.get('/book/document', summary='The served book as the file it is')
+def book_document():
+    """The served book's file byte for byte, an attachment under its own name: the desk's own, or
+    the copy a document was opened as with every edit made to it. `GET /book`'s etag is the hash
+    of this text."""
+    path = live_book().path
+    return FileResponse(path, media_type='application/json', filename=os.path.basename(path))
 
 
 @app.post('/book/open', summary="Serve a document from another system as the book, or the desk's "

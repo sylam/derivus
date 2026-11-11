@@ -32,6 +32,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 import asyncio
 import datetime
 import hashlib
+import io
 import json
 import logging
 import re
@@ -259,6 +260,10 @@ def test_the_ui_is_mounted_only_when_it_is_built(tmp_path):
 #: template holes left in. `call<T>` itself is not a call site, so the lookbehind drops it.
 API_CALL = re.compile(r"(?<!function )call<[^(]*\(\s*'(GET|POST|PUT|DELETE)',\s*['`]([^'`?]*)")
 
+#: A path the client opens as a link or a stream and does not call: an exported constant or
+#: builder in `api.ts` whose value is a path, which a browser asks for with a GET.
+API_LINK = re.compile(r"export const \w+ = (?:\([^)]*\) => )?['`](/[^'`?]*)")
+
 #: A path PARAMETER on either side - `${id}` as the client writes it, `{table:path}` as the route
 #: declares it - so the two spellings of the same hole compare equal.
 PATH_HOLE = re.compile(r'\$\{[^}]*\}|\{[^}]*\}')
@@ -268,7 +273,8 @@ def test_every_path_the_web_client_names_is_a_route_this_service_declares():
     """The client renders from `/schema`, so the ONE thing it cannot read off a declaration is the
     endpoint list - which makes a renamed route the one drift nothing catches until a desk clicks.
     Here it is a gate: every `call(method, path)` in `api.ts` against `app.routes`, path parameters
-    normalised so the client's `/results/${id}` is the declared `/results/{result_id}`.
+    normalised so the client's `/results/${id}` is the declared `/results/{result_id}`, and every
+    path it exports for a link or a stream to open (`API_LINK`) as a GET.
 
     The web tree is optional to the library - a wheel carries the BUILD, not the source - so this
     skips where it is absent rather than failing a package that never had it.
@@ -283,6 +289,9 @@ def test_every_path_the_web_client_names_is_a_route_this_service_declares():
     called = {(method, PATH_HOLE.sub('{}', path)) for method, path in API_CALL.findall(text)}
     # a regex that stopped matching would pass an empty set against anything
     assert len(called) == len(re.findall(r'(?<!function )call<', text))
+    links = API_LINK.findall(text)
+    assert {'/spine/doorbell', '/book/document'} <= set(links)
+    called |= {('GET', PATH_HOLE.sub('{}', path)) for path in links}
     declared = {(method, PATH_HOLE.sub('{}', route.path)) for route in service.app.routes
                 for method in getattr(route, 'methods', None) or ()}
     assert sorted(called - declared) == []
@@ -4519,6 +4528,46 @@ def test_a_result_publishes_the_shape_of_every_table_and_pages_each_one():
     assert fetch('shapes', 'mtm', offset=99)['data'] == []
 
 
+def test_a_table_is_answered_as_a_csv_file_at_full_precision_and_a_page_caps_its_columns():
+    """`format=csv` answers a table as the file `DataFrame.to_csv` writes - each date its own text
+    down the leading column, every number the digits that read back the same float, a missing
+    cell empty - as an attachment named by the table and the run, a group's slash an underscore.
+    `width` caps the leading columns a page carries and `columns` names those, as JSON and as
+    the file, under the same `offset` and `limit`.
+
+    Killing mutations: the file written at a display precision, which reads `0.1 + 0.2` back as
+    another number; the index left off the file, which loses the dates; `width` cutting the
+    cells and not their labels; `width` or the paging read by the JSON page alone, which sends
+    a cube whole as a file.
+    """
+    dates = [BASE + pd.DateOffset(days=day) for day in range(3)]
+    frame = pd.DataFrame(
+        {0: [0.1 + 0.2, 1 / 3, None], 1: [1e-17, -2.5e9, 7.0], 2: [1.0, 2.0, 3.0]}, index=dates)
+    results = {'mtm': frame, 'cashflows': {'ZAR': frame}}
+    service.EXECUTOR.submit(service.Job('csvpage', Held('csvpage', [], results=results), {}),
+                            service.HEAVY)
+    service.EXECUTOR.queue.join()
+
+    def saved(table, **page):
+        answer = CLIENT.get('/results/csvpage/{}'.format(table), params=dict(page, format='csv'))
+        assert answer.headers['content-type'].startswith('text/csv')
+        return (answer.headers['content-disposition'], pd.read_csv(
+            io.StringIO(answer.text), index_col=0, parse_dates=True, float_precision='round_trip'))
+
+    name, whole = saved('mtm')
+    assert name == 'attachment; filename="mtm.csvpage.csv"'
+    assert list(whole.index) == dates and list(whole.columns) == ['0', '1', '2']
+    assert np.array_equal(whole.to_numpy(), frame.to_numpy(dtype=float), equal_nan=True)
+    assert saved('cashflows/ZAR')[0] == 'attachment; filename="cashflows_ZAR.csvpage.csv"'
+
+    assert fetch('csvpage', 'mtm', width=2, offset=1) == {
+        'name': 'mtm', 'rows': 3, 'columns': [0, 1], 'offset': 1,
+        'index': [{'.Timestamp': date.strftime('%Y-%m-%d')} for date in dates[1:]],
+        'data': [[1 / 3, -2.5e9], [None, 7.0]]}
+    cut = saved('mtm', width=1, offset=1, limit=1)[1]
+    assert (list(cut.index), cut.to_numpy().tolist()) == ([dates[1]], [[1 / 3]])
+
+
 def test_a_patch_reaches_the_number_and_moves_the_result_id():
     """A patch is applied before the hashes are taken, so it reaches the price AND the identity. A
     spot is market VALUES, so the values hash moves and the plan hash does not; an id taken before
@@ -6904,12 +6953,16 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
     copy and the desk's own file stands byte for byte; `{}` serves the desk's own book again,
     unopened and at its etag; the name alone serves the amended copy again; and the document posted
     again under its name replaces the copy with what was posted. A name nothing is filed under
-    answers 404, and a document that is no job fails with the book served standing.
+    answers 404, and a document that is no job fails with the book served standing. `GET
+    /book/document` answers the served file byte for byte under its own name, the amended copy
+    and then the desk's own.
 
     KILLING MUTATIONS: the copy filed in the home itself, which answers no `opened`; `{}` serving
     the book already served, which answers the copy; `opened` answered for every book, which the
     desk's own carries; a document posted under a filed name leaving the copy, which serves the
-    amendment; the document served before it is read, which leaves the service serving no job.
+    amendment; the document served before it is read, which leaves the service serving no job;
+    the download written from the parsed document, which is another text under another etag,
+    or read off the desk's own path while a copy is served.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     service.DESK, copy = str(book), tmp_path / 'inbox' / 'NS_FOREIGN.json'
@@ -6932,12 +6985,17 @@ def test_a_document_opened_is_served_as_the_book_and_the_desks_own_stands(book, 
         assert CLIENT.post('/book/deals', json={'action': 'amend', 'deal_path': '0',
                                                 'fields': {'Amount': 2e6}}).json()['written'] is True
         assert amount(json.loads(copy.read_text())) == 2e6 and book.read_bytes() == before
+        saved = CLIENT.get('/book/document')
+        assert saved.content == copy.read_bytes()
+        assert saved.headers['content-disposition'] == 'attachment; filename="{}"'.format(
+            copy.name)
 
         own = CLIENT.post('/book/open', json={}).json()
         live = CLIENT.get('/book').json()
         assert 'opened' not in live
         assert (live['document'], live['path'], live['etag'], own['etag']) == (
             desk['document'], str(book), desk['etag'], desk['etag'])
+        assert CLIENT.get('/book/document').content == before
 
         assert CLIENT.post('/book/open', json={'name': copy.name}).json()['path'] == str(copy)
         live = CLIENT.get('/book').json()

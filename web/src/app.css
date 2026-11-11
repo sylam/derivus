@@ -489,8 +489,8 @@ button.primary {
 
 button.primary:disabled { opacity: 0.5; cursor: default; }
 
-button.ghost {
-  appearance: none; cursor: pointer;
+:is(button, a).ghost {
+  appearance: none; cursor: pointer; text-decoration: none;
   background: none; color: var(--accent);
   border: 1px solid var(--border); border-radius: 6px;
   padding: 6px 12px; font: 550 12.5px var(--sans);

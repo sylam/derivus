@@ -1,6 +1,7 @@
 import { Fragment, useEffect, useState, type ReactNode } from 'react';
 import {
   failure, getCalculations, getResult, getTable, postExecute, runCalculation, saveCalculation,
+  tableCsv,
 } from '../api';
 import { DescriptorPanel } from '../components/FieldView';
 import { DataTable } from '../components/DataTable';
@@ -11,7 +12,9 @@ import { useApp } from '../state';
 import { formatNumber, isObject, token } from '../tokens';
 import type { Schema, TableShape } from '../types';
 
+// a page of a table: its leading rows and columns, the whole of it a download away
 const PAGE = 200;
+const WIDE = 50;
 const POLL_MS = 500;
 
 const isScalar = (shape: TableShape) => shape.rows <= 1 && shape.columns.length === 0;
@@ -83,7 +86,7 @@ export function CalculationView() {
   // fetch the selected table's page
   useEffect(() => {
     if (!run.table || !run.resultId || run.status !== 'done') return;
-    getTable(run.resultId, run.table, 0, PAGE)
+    getTable(run.resultId, run.table, 0, PAGE, WIDE)
       .then((page) => dispatch({ type: 'PAGE_LOADED', page }))
       .catch((error) => dispatch({ type: 'RUN_FAILED', error: failure(error).error }));
   }, [run.table, run.resultId, run.status, dispatch]);
@@ -302,6 +305,7 @@ function Results() {
   const { run } = state;
   const tables = run.summary?.tables ?? {};
   const listed = Object.keys(tables).filter((name) => !isScalar(tables[name])).sort();
+  const whole = run.table ? tables[run.table] : undefined;
   // every key the service publishes appears: a number is a tile, a dict a card, anything else a
   // line. Four verbs answer ENTIRELY under a dict key, and Results empty beside it
   const stats = Object.entries(run.summary?.stats ?? {});
@@ -346,10 +350,16 @@ function Results() {
               </option>
             ))}
           </select>
-          {run.table && run.page && tables[run.table] &&
-            tables[run.table].rows > run.page.data.length && (
-              <span>first {run.page.data.length} of {tables[run.table].rows} rows</span>
-            )}
+          {whole && run.page && whole.rows > run.page.data.length && (
+            <span>first {run.page.data.length} of {whole.rows} rows</span>
+          )}
+          {whole && run.page && whole.columns.length > run.page.columns.length && (
+            <span>first {run.page.columns.length} of {whole.columns.length} columns</span>
+          )}
+          {whole && run.resultId && (
+            <a className="ghost" href={tableCsv(run.resultId, run.table!)} download
+               title="the whole table, every number at full precision">download CSV</a>
+          )}
         </div>
       )}
       {run.page && isDateIndexed(run.page.index) && <TimeSeriesChart page={run.page} />}

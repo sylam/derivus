@@ -1,4 +1,4 @@
-import { failure, getBook, openBook } from '../api';
+import { BOOK_DOCUMENT, failure, getBook, openBook } from '../api';
 import { bookLoaded, useApp } from '../state';
 import type { JobDoc } from '../types';
 
@@ -58,6 +58,9 @@ export function DocumentLoader() {
           {state.source.opened && (
             <button className="ghost" onClick={closeOpened}>back to book</button>
           )}
+          <a className="ghost" href={BOOK_DOCUMENT} download
+             title="the served document as the file it is, every edit made to it included">
+            download job</a>
         </>
       )}
       {state.source?.kind === 'local' && (
