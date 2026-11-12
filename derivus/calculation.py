@@ -1699,11 +1699,13 @@ class CreditMonteCarlo(Calculation):
             utils.check_rate_name(self.config.params['System Parameters']['Base_Currency']),
             self.static_factors, self.stoch_factors)
         time_index = self.time_grid.report_index
-        # one objective differentiated once a batch: its backward pass releases the batch's graph,
-        # unless a variable is still connected to its calibration, whose graph would go with it
-        release = credit.get('Hessian', 'No') != 'Yes' and 1 == sum(
-            v.get('Calculate', 'No') == 'Yes' and v.get('Gradient', 'No') == 'Yes'
-            for v in params.values() if isinstance(v, dict)) and all(
+        # each gradient asked is a backward pass a batch into its own sum. The batch's last pass
+        # releases its graph, unless a variable is still connected to its calibration, whose
+        # graph would go with it
+        grad_sum = {
+            k: {} for k, v in params.items() if isinstance(v, dict)
+            and v.get('Calculate', 'No') == 'Yes' and v.get('Gradient', 'No') == 'Yes'}
+        release = bool(grad_sum) and credit.get('Hessian', 'No') != 'Yes' and all(
             v.is_leaf for _, v in self.all_var)
 
         for run in range(self.params['Simulation_Batches']):
@@ -1741,7 +1743,9 @@ class CreditMonteCarlo(Calculation):
                     tensors['collva_t'] = torch.mean(shared_mem.t_Credit['Funding'], dim=1)
                     tensors['collva'] = torch.sum(tensors['collva_t'])
 
-                    sensitivity = SensitivitiesEstimator(tensors['collva'], self.all_var, retain_graph=not release)
+                    sensitivity = SensitivitiesEstimator(
+                        tensors['collva'], self.all_var, retain_graph=not release or len(grad_sum) > 1,
+                        total=grad_sum['Collateral_Valuation_Adjustment'])
 
                     if final_run:
                         output['grad_collva'] = sensitivity.report_grad()
@@ -1927,7 +1931,10 @@ class CreditMonteCarlo(Calculation):
                             float(params.get('Boundary_AAD_Bandwidth', 0.01)))
                         if correction is not None:
                             fva_for_aad = fva_for_aad + correction
-                    sensitivity = SensitivitiesEstimator(fva_for_aad, self.all_var, retain_graph=not release)
+                    # the CVA's pass, where asked, walks this batch's graph after this one
+                    sensitivity = SensitivitiesEstimator(
+                        fva_for_aad, self.all_var, total=grad_sum['Funding_Valuation_Adjustment'],
+                        retain_graph=not release or 'Credit_Valuation_Adjustment' in grad_sum)
 
                     if final_run:
                         output['grad_fva'] = sensitivity.report_grad()
@@ -2037,7 +2044,8 @@ class CreditMonteCarlo(Calculation):
                         cva_for_aad = cva_for_aad + (1.0 - recovery) * (
                                 0.5 * (kink[1:] + kink[:-1]) * prob).mean(axis=1).sum()
                     sensitivity = SensitivitiesEstimator(
-                        cva_for_aad, self.all_var, create_graph=hessian, retain_graph=not release)
+                        cva_for_aad, self.all_var, create_graph=hessian, retain_graph=not release,
+                        total=grad_sum['Credit_Valuation_Adjustment'])
 
                     if final_run:
                         output['grad_cva'] = sensitivity.report_grad()

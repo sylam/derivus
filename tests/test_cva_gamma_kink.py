@@ -286,6 +286,30 @@ def test_a_variable_connected_to_its_calibration_keeps_every_batchs_graph(tmp_pa
     assert np.array_equal(on['grad_cva'].values, off['grad_cva'].values), 'grad_cva moved'
 
 
+def test_two_gradients_asked_are_each_the_one_asked_alone(tmp_path):
+    """A job asking for the CVA's gradient and the FVA's takes a backward pass a batch for each
+    into its own sum, the last freeing the batch's graph: over two batches its `grad_cva` and
+    its `grad_fva` are the ones a job asking for either alone reports, bit for bit.
+
+    Killing mutations: the two passes summed on the parameters, `grad_cva` carrying the FVA's;
+    and the FVA's pass freeing the graph the CVA's then walks, the run refusing.
+    """
+    def asked(cva, fva):
+        job = _job(gradient=cva, paths=4096, batches=2)
+        factors = job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+        factors['InterestRate.FUND'] = dict(factors['InterestRate.USD'], Curve={
+            '.Curve': {'meta': [], 'data': [[0.0, R_USD + 0.02], [5.0, R_USD + 0.02]]}})
+        job['Calc']['Calculation']['Funding_Valuation_Adjustment'] = {
+            'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Risk_Free_Curve': 'USD',
+            'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD',
+            'Gradient': fva}
+        return _run(job, tmp_path, 'asked_{}_{}'.format(cva, fva))
+
+    both, cva, fva = asked('Yes', 'Yes'), asked('Yes', 'No'), asked('No', 'Yes')
+    assert both['grad_cva'].equals(cva['grad_cva']), 'grad_cva moved'
+    assert both['grad_fva'].equals(fva['grad_fva']), 'grad_fva moved'
+
+
 def test_the_gamma_and_vanna_entries_land_on_crn_ladders_of_the_reported_delta(tmp_path):
     """THE STRUCTURAL KILL. A linear payoff has `∂²V/∂S₀² = 0` on every path, so an engine
     differentiating the frozen-decision graph twice reports EXACTLY 0.0 for gamma. The CRN ladder

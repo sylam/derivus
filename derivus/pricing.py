@@ -1388,13 +1388,22 @@ def fva_per_scenario(pv, cost_spread, benefit_spread):
 class SensitivitiesEstimator(object):
     """AAD sensitivities of one value against a list of model parameters, first and second order."""
 
-    def __init__(self, value, params, create_graph=False, retain_graph=True):
-        """Run the backward pass over `value` and keep the gradient of every parameter that has
-        one. `create_graph` retains the graph the second-order block differentiates through;
-        `retain_graph` off frees it as the pass walks it, for a value differentiated once."""
+    def __init__(self, value, params, create_graph=False, retain_graph=True, total=None):
+        """Run the backward pass over `value` and move the gradient it leaves on each parameter
+        into `total`, the sum of the passes before this one. `create_graph` retains the graph the
+        second-order block differentiates through; `retain_graph` off frees it as the pass walks
+        it, for the last pass over it."""
         value.backward(retain_graph=retain_graph, create_graph=create_graph)
-        self.params = {key: tensor for key, tensor in params if tensor.grad is not None}
-        self.grad = {key: tensor.grad for key, tensor in self.params.items()}
+        total = {} if total is None else total
+        for key, tensor in params:
+            if tensor.grad is not None:
+                # moved, not left: a standing `.grad` takes the next objective's pass too, and
+                # under `create_graph` holds its graph in a cycle with its leaf (a leaf upstream
+                # of `params` keeps its own until gc)
+                total[key] = total[key] + tensor.grad if key in total else tensor.grad
+                tensor.grad = None
+        self.params = {key: tensor for key, tensor in params if key in total}
+        self.grad = {key: total[key] for key in self.params}
         self.flat_grad = self.flatten(list(self.grad.values()))
         self.device = self.flat_grad.device
         self.dtype = self.flat_grad.dtype
@@ -1402,9 +1411,7 @@ class SensitivitiesEstimator(object):
         self.P = len(self.flat_grad)
 
     def report_grad(self):
-        """Per-factor gradients as numpy arrays, COPIED off the live ``.grad`` buffers: ``.numpy()``
-        returns a view of the buffer torch keeps accumulating into, so a later ``backward()``
-        through the same leaves would rewrite a report already handed out."""
+        """The per-factor gradient sums as numpy arrays."""
         return {utils.check_scope_name(factor): np.array(tensor.cpu().detach())
                 for factor, tensor in self.grad.items()}
 
@@ -1540,11 +1547,6 @@ def greeks(shared, deal_data, mtm):
     # use this only when all the vols and curves are sparsely represented (check greeks_calc.P)
     if shared.gamma:
         deal_data.Calc_res['Greeks_Second'] = greeks_calc.report_hessian(allow_unused=True)
-        # `create_graph` leaves every leaf holding a `.grad` whose graph reaches back to it, a cycle
-        # refcounting cannot break; both reports are numpy copies by now. PARTIAL: leaves upstream
-        # of what the estimator was offered keep their own cycle until gc gets there
-        for tensor in greeks_calc.params.values():
-            tensor.grad = None
 
 
 def interp_to_mtm_grid(mtm, time_grid, deal_data, interpolate_grid=True):
