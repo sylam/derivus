@@ -47,6 +47,8 @@ calc, out = cx.Credit_Monte_Carlo(overrides={})
 - `cva` / `grad_cva` — the credit valuation adjustment and its sensitivities; `grad_cva_hessian`
   under `Hessian: Yes`, and `CS01` when `CDS_Tenors` are given (both need `Gradient: Yes`)
 - `fva` / `grad_fva` — the funding valuation adjustment and its sensitivities
+- `grad_xva` — under `Gradient_Total: Yes`, the sensitivities of the adjustments asking for a
+  gradient, summed, in place of `grad_cva` and `grad_fva`
 - `collva`, `collva_t` / `grad_collva` and `LCH_Margin` — the experimental collateral valuation
   adjustment and initial margin, not yet specified
 

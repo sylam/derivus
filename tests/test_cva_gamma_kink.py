@@ -286,6 +286,19 @@ def test_a_variable_connected_to_its_calibration_keeps_every_batchs_graph(tmp_pa
     assert np.array_equal(on['grad_cva'].values, off['grad_cva'].values), 'grad_cva moved'
 
 
+def _asked(tmp_path, cva, fva, total='No'):
+    """The results of the kink job with an FVA block over two batches, each block's gradient as asked."""
+    job = _job(gradient=cva, paths=4096, batches=2)
+    factors = job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    factors['InterestRate.FUND'] = dict(factors['InterestRate.USD'], Curve={
+        '.Curve': {'meta': [], 'data': [[0.0, R_USD + 0.02], [5.0, R_USD + 0.02]]}})
+    job['Calc']['Calculation'].update(Gradient_Total=total, Funding_Valuation_Adjustment={
+        'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Risk_Free_Curve': 'USD',
+        'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD',
+        'Gradient': fva})
+    return _run(job, tmp_path, 'asked_{}_{}_{}'.format(cva, fva, total))
+
+
 def test_two_gradients_asked_are_each_the_one_asked_alone(tmp_path):
     """A job asking for the CVA's gradient and the FVA's takes a backward pass a batch for each
     into its own sum, the last freeing the batch's graph: over two batches its `grad_cva` and
@@ -294,20 +307,24 @@ def test_two_gradients_asked_are_each_the_one_asked_alone(tmp_path):
     Killing mutations: the two passes summed on the parameters, `grad_cva` carrying the FVA's;
     and the FVA's pass freeing the graph the CVA's then walks, the run refusing.
     """
-    def asked(cva, fva):
-        job = _job(gradient=cva, paths=4096, batches=2)
-        factors = job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
-        factors['InterestRate.FUND'] = dict(factors['InterestRate.USD'], Curve={
-            '.Curve': {'meta': [], 'data': [[0.0, R_USD + 0.02], [5.0, R_USD + 0.02]]}})
-        job['Calc']['Calculation']['Funding_Valuation_Adjustment'] = {
-            'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Risk_Free_Curve': 'USD',
-            'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD',
-            'Gradient': fva}
-        return _run(job, tmp_path, 'asked_{}_{}'.format(cva, fva))
-
-    both, cva, fva = asked('Yes', 'Yes'), asked('Yes', 'No'), asked('No', 'Yes')
+    both, cva, fva = (_asked(tmp_path, *asks) for asks in (('Yes', 'Yes'), ('Yes', 'No'), ('No', 'Yes')))
     assert both['grad_cva'].equals(cva['grad_cva']), 'grad_cva moved'
     assert both['grad_fva'].equals(fva['grad_fva']), 'grad_fva moved'
+
+
+def test_a_total_gradient_is_the_gradients_asked_apart_summed(tmp_path):
+    """Under `Gradient_Total` the objectives asking for a gradient are differentiated as one sum
+    in one backward pass a batch: over two batches `grad_xva` is the `grad_cva` and the
+    `grad_fva` of the job asking for them apart, summed, and the job reports neither beside it.
+
+    Killing mutation: the FVA's objective left out of the CVA's pass, `grad_xva` the CVA's own.
+    """
+    apart, total = _asked(tmp_path, 'Yes', 'Yes'), _asked(tmp_path, 'Yes', 'Yes', 'Yes')
+    assert not {'grad_cva', 'grad_fva'} & set(total)
+    summed = apart['grad_cva'].Gradient.add(apart['grad_fva'].Gradient, fill_value=0.0)
+    np.testing.assert_allclose(
+        total['grad_xva'].Gradient.reindex(summed.index), summed, rtol=0.0,
+        atol=1e-6 * summed.abs().max())
 
 
 def test_the_gamma_and_vanna_entries_land_on_crn_ladders_of_the_reported_delta(tmp_path):

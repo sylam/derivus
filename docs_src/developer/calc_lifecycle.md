@@ -331,14 +331,17 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 
 Each adjustment asking for a gradient takes its own backward pass a batch into its own sum
 (`SensitivitiesEstimator`'s `total`), so one job's `grad_cva` and `grad_fva` are each the
-adjustment's own. The batch's last pass frees its graph, the run holding one batch's graph where
+adjustment's own. `Gradient_Total: Yes` sums the objectives asking and takes one pass over the
+sum, reported as `grad_xva` in their place, the Hessian not read. The batch's last pass frees its
+graph, the run holding one batch's graph where
 it held every batch's: a later batch drops the `t_PreCalc` entries carrying a graph and
 precalculates each process again (`precalculate_factors`). The Hessian, or a variable still
 connected to its calibration (`Calculation.factor_leaf`), whose graph the pass would free with the
 batch's, keeps every batch's. **Held by**
 `tests/test_cva_gamma_kink.py::test_a_gradient_released_a_batch_is_the_one_the_kept_graph_reports`,
-`tests/test_cva_gamma_kink.py::test_a_variable_connected_to_its_calibration_keeps_every_batchs_graph`
-and `tests/test_cva_gamma_kink.py::test_two_gradients_asked_are_each_the_one_asked_alone`;
+`tests/test_cva_gamma_kink.py::test_a_variable_connected_to_its_calibration_keeps_every_batchs_graph`,
+`tests/test_cva_gamma_kink.py::test_two_gradients_asked_are_each_the_one_asked_alone` and
+`tests/test_cva_gamma_kink.py::test_a_total_gradient_is_the_gradients_asked_apart_summed`;
 **Not gated:** the entries dropped, keyed on a tenor's identity so that no document makes a later
 batch find one, and the memory held, `Device_Memory` reporting the process's reserve.
 

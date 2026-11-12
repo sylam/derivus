@@ -1044,6 +1044,9 @@ class CreditMonteCarlo(Calculation):
                       'a spot or a price index with no model is constant under either'),
         F('Gradient_Variables', 'Text', default='All', values=['All', 'Factors', 'Implied'],
           description='Which leaves the sensitivity engine differentiates'),
+        F('Gradient_Total', 'Text', default='No', values=['Yes', 'No'],
+          description='The adjustments asking for a gradient are differentiated as one sum, '
+                      'reported as grad_xva'),
         F('Boundary_AAD_Bandwidth', 'Float', default=0.01,
           description='Kernel bandwidth of the boundary correction assembled into backward()'),
         F('Boundary_AAD_Margin_Calls', 'Text', default='No', values=['Yes', 'No'],
@@ -1066,7 +1069,7 @@ class CreditMonteCarlo(Calculation):
               F('Gradient', 'Text', default='No', values=['Yes', 'No']),
               F('Hessian', 'Text', default='No', values=['Yes', 'No'],
                 description='Second derivatives of the CVA as well as the first, read only beside '
-                            'Gradient: Yes'),
+                            'Gradient: Yes and without Gradient_Total'),
               F('CDS_Tenors', 'Container', default=[],
                 description='Tenors in years to add to the survival curve so CDS rates can be '
                             'interpolated off it')]),
@@ -1573,7 +1576,7 @@ class CreditMonteCarlo(Calculation):
                 self.output.setdefault(result, np.array(data, dtype=np.float64).mean())
             elif result == 'collva_t':
                 self.output.setdefault(result, np.array(data, dtype=np.float64).mean(axis=0))
-            elif result in ['grad_cva', 'grad_collva', 'grad_fva', 'grad_legacy_fva']:
+            elif result in ['grad_cva', 'grad_collva', 'grad_fva', 'grad_xva', 'grad_legacy_fva']:
                 grad = {}
                 for k, v in data.items():
                     grad[k] = v.astype(np.float64) / self.params['Simulation_Batches']
@@ -1699,14 +1702,15 @@ class CreditMonteCarlo(Calculation):
             utils.check_rate_name(self.config.params['System Parameters']['Base_Currency']),
             self.static_factors, self.stoch_factors)
         time_index = self.time_grid.report_index
-        # each gradient asked is a backward pass a batch into its own sum. The batch's last pass
-        # releases its graph, unless a variable is still connected to its calibration, whose
-        # graph would go with it
+        # each gradient asked is a backward pass a batch into its own sum, `Gradient_Total` making
+        # them one pass over the objectives summed. The batch's last pass releases its graph,
+        # unless a variable is still connected to its calibration, whose graph would go with it
         grad_sum = {
             k: {} for k, v in params.items() if isinstance(v, dict)
             and v.get('Calculate', 'No') == 'Yes' and v.get('Gradient', 'No') == 'Yes'}
-        release = bool(grad_sum) and credit.get('Hessian', 'No') != 'Yes' and all(
-            v.is_leaf for _, v in self.all_var)
+        together = params['Gradient_Total'] == 'Yes'
+        hessian = not together and credit.get('Hessian', 'No') == 'Yes'
+        release = bool(grad_sum) and not hessian and all(v.is_leaf for _, v in self.all_var)
 
         for run in range(self.params['Simulation_Batches']):
 
@@ -1931,14 +1935,17 @@ class CreditMonteCarlo(Calculation):
                             float(params.get('Boundary_AAD_Bandwidth', 0.01)))
                         if correction is not None:
                             fva_for_aad = fva_for_aad + correction
-                    # the CVA's pass, where asked, walks this batch's graph after this one
-                    sensitivity = SensitivitiesEstimator(
-                        fva_for_aad, self.all_var, total=grad_sum['Funding_Valuation_Adjustment'],
-                        retain_graph=not release or 'Credit_Valuation_Adjustment' in grad_sum)
+                    # the CVA's pass, where asked, walks this batch's graph after this one, and
+                    # under `Gradient_Total` takes this objective with its own
+                    later = 'Credit_Valuation_Adjustment' in grad_sum
+                    if not (together and later):
+                        sensitivity = SensitivitiesEstimator(
+                            fva_for_aad, self.all_var, retain_graph=not release or later,
+                            total=grad_sum['Funding_Valuation_Adjustment'])
 
-                    if final_run:
-                        output['grad_fva'] = sensitivity.report_grad()
-                        self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
+                        if final_run:
+                            output['grad_xva' if together else 'grad_fva'] = sensitivity.report_grad()
+                            self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
             if params['Credit_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes':
                 discount = get_interest_factor(
@@ -2011,7 +2018,6 @@ class CreditMonteCarlo(Calculation):
                         except KeyError:
                             pass
 
-                    hessian = params['Credit_Valuation_Adjustment'].get('Hessian', 'No') == 'Yes'
                     if hessian and shared_mem.boundary_sets:
                         raise utils.SecondOrderRefused(
                             "Credit_Valuation_Adjustment Hessian: 'Yes' is refused - this book "
@@ -2043,12 +2049,14 @@ class CreditMonteCarlo(Calculation):
                         # so the (exact-zero) term rides the objective's own weights
                         cva_for_aad = cva_for_aad + (1.0 - recovery) * (
                                 0.5 * (kink[1:] + kink[:-1]) * prob).mean(axis=1).sum()
+                    if together and 'Funding_Valuation_Adjustment' in grad_sum:
+                        cva_for_aad = cva_for_aad + fva_for_aad
                     sensitivity = SensitivitiesEstimator(
                         cva_for_aad, self.all_var, create_graph=hessian, retain_graph=not release,
                         total=grad_sum['Credit_Valuation_Adjustment'])
 
                     if final_run:
-                        output['grad_cva'] = sensitivity.report_grad()
+                        output['grad_xva' if together else 'grad_cva'] = sensitivity.report_grad()
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
                         CDS_tenors = params['Credit_Valuation_Adjustment'].get('CDS_Tenors')

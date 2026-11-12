@@ -125,6 +125,7 @@ reads `No`.
 | | `MCMC_Simulations` | 2048 | inner paths of a Monte Carlo pricer |
 | | `Deflation_Interest_Rate`, `Currency`, `Percentile` | `ZAR-SWAP`, `ZAR`, `95` | the deflator, the reporting currency, the PFE |
 | | `NoModel`, `Gradient_Variables` | `Constant`, `All` | unmodelled factors; which leaves are differentiated |
+| | `Gradient_Total` | `No` | the gradients asked for, reported as one sum |
 | | `Boundary_AAD_Bandwidth`, `Boundary_AAD_Margin_Calls` | 0.01, `No` | the boundary correction's kernel width, and whether margin calls register for it |
 
 The closeout conventions of a collateralised set are the set's own fields (`Liquidation_Period`,
@@ -141,8 +142,11 @@ period of risk itself see Andersen, Pykhtin and Sokol [@andersen2017].
 differentiation [@capriotti2011; @griewank2008]: one backward pass per batch against
 every leaf `Gradient_Variables` selects (today's curve knots, vols, spots and calibrated model
 parameters; `Implied` or `Factors` narrows it), averaged over batches and reported as `grad_cva`
-or `grad_fva`. A leaf the library calibrated carries the graph of the quotes it was
-solved from, so the same sweep yields quote-space risk ([Quote Sensitivities](../developer/quote_sensitivities.md)).
+or `grad_fva`. `Gradient_Total: Yes` differentiates the CVA and the FVA asking as one sum, one
+pass a batch where two blocks apart take two, and reports `grad_xva` in their place: the
+sensitivities of the whole adjustment a desk hedges. A leaf the library calibrated carries the
+graph of the quotes it was solved from, so the same sweep yields quote-space risk
+([Quote Sensitivities](../developer/quote_sensitivities.md)).
 A correlation is not a leaf; its delta is a bump ([decision 12](../limitations.md#decisions-waiting-on-the-desk)).
 
 - **Decisions on simulated state.** A barrier crossing, an autocall trigger, an exercise or a

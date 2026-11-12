@@ -295,7 +295,8 @@ just before execution. Common overrides:
   such a batch over the bus rather than refusing it
 - `Greeks` — Base Valuation sensitivities (`'No'` / `'First'` / `'All'`); a Monte Carlo turns
   gradients on per sub-block (`Gradient`) and picks its variables with `Gradient_Variables`
-  (`'All'` / `'Factors'` / `'Implied'`)
+  (`'All'` / `'Factors'` / `'Implied'`); `Gradient_Total: 'Yes'` reports the blocks' gradients
+  as one sum, `grad_xva`
 - `Time_grid` — re-shape the simulation time grid (Credit Monte Carlo reads it as `Time_grid`,
   Hedge Monte Carlo as `Time_Grid`)
 
