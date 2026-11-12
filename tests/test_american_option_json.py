@@ -10,9 +10,10 @@ averaged over `n` and `n+1` steps (CRR's leading error oscillates with the strik
 Nothing of the engine's is reused, and it is converged: n=3000 against n=8000 agrees to better than
 1e-4 relative on the furthest fixture and on the deepest premium.
 
-`b` IS THE DOCUMENT'S OWN and is not `r - q`: `EquityOptionDeal` reads its carry off the equity
-forward at `Forward_Settlement`, two business days past expiry, so `b = (r - q) * T_fwd / T`. The
-European control reproduces Black at that carry to 6e-5 and at `r - q` only to 1e-3.
+`b` IS THE DOCUMENT'S OWN and is not `r - q`: `EquityOptionDeal` carries its equity forward between
+spot dates, three business days on from the base date and from the expiry, so
+`b = (r - q) * T_fwd / T`. The European control reproduces Black at that carry to 6e-5 and at
+`r - q` only to 1e-3.
 
 MEASURED, eighteen fixtures over three worlds, both option types, strikes 80/100/120 on a spot of
 100 at two years:
@@ -48,12 +49,13 @@ import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder
 
-BASE = pd.Timestamp('2024-06-28')
-EXPIRY = BASE + pd.DateOffset(years=2)
+BASE = pd.Timestamp('2024-07-01')                    # a Monday, its spot date three days on
+EXPIRY = BASE + pd.DateOffset(years=2)               # a Wednesday, its spot date five days on
 T = (EXPIRY - BASE).days / 365.0
-# the equity forward carries to expiry + 2 BUSINESS days (`option_date_info`'s Forward_Settlement);
-# vol tenor and discounting stay at expiry, so the implied carry is stretched by T_FWD / T
-T_FWD = ((EXPIRY + pd.tseries.offsets.BDay(2)) - BASE).days / 365.0
+# the equity forward carries between the two spot dates, 3 BUSINESS days on from each; vol tenor
+# and discounting stay at expiry, so the implied carry is stretched by T_FWD / T
+SPOT_LAG = pd.tseries.offsets.BDay(3)
+T_FWD = ((EXPIRY + SPOT_LAG) - (BASE + SPOT_LAG)).days / 365.0
 SPOT, UNITS = 100.0, 10.0
 
 #: (rate, dividend yield, vol). The first is American on the CALL leg, the second on the PUT leg,
@@ -178,7 +180,7 @@ def test_the_early_exercise_premium_is_material_and_the_approximation_captures_i
 def test_the_carry_is_read_off_the_forward_settlement_not_the_expiry():
     """The convention the oracle has to share, measured rather than assumed: the European control
     reproduces the binomial at `b = (r - q) * T_fwd / T` an order and a half better than at the
-    naive `r - q`, on the deal shape whose two-business-day forward settlement causes it.
+    naive `r - q`, on the deal shape whose spot dates cause it.
 
     Killing mutation: `EquityOptionDeal` carrying its forward to expiry.
     """
@@ -196,8 +198,8 @@ def test_the_carry_is_read_off_the_forward_settlement_not_the_expiry():
 def test_a_zero_dividend_call_is_bit_identically_its_european():
     """The `b >= r` arm. With no dividend the carry IS the rate, early exercise is never optimal
     on a call, and the pricer must take Black unchanged - the same float, not a close one. (The
-    forward's settlement lag puts the carry a hair ABOVE the rate here, so the arm is not decided
-    at equality.)
+    expiry's spot date lies two days further on than the base date's, which puts the carry a hair
+    ABOVE the rate here, so the arm is not decided at equality.)
 
     Killing mutation: the `b >= r` Black arm dropped, the approximation taken everywhere.
     """

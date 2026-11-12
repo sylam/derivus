@@ -249,7 +249,7 @@ def test_the_book_twice_as_far_in_a_world_half_as_fast_prices_the_same():
     rates and variances are halved, prices the same, to 1e-13: 10.093277 the knock-out, 54.756450
     the one-touch, 3.523722 the partial-time knock-in. A quantity reaching `exp` or a closed form
     without its year fraction reads the slow world's half. The European is not in the book: it
-    forwards to two business days past its expiry, a lag that does not stretch.
+    forwards between spot dates, business days on, a lag that does not stretch.
 
     Killing mutations, each a year fraction dropped where a carry meets it: in the Reiner-Rubinstein
     barrier (the continuous knock-out -5.9%), the one-touch's drift (+0.01%), the partial-time

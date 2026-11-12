@@ -13,15 +13,15 @@ one-touch reads the textbook `erfc` pair written out here; the Asian reads the t
 recomputed in python on the composite forward, vol and carry. The limit is the engine against
 itself: an fx leg identically one with no vol and no correlation must reprice the Standard deal.
 
-WHY THE PARITY IS SPLIT IN TWO. `EquityOptionDeal` carries its equity forward to expiry plus the
-two-business-day settlement lag (`option_date_info`) while the three analytic pricers carry theirs
-to expiry, so the two forwards differ by the carry over that lag whenever the local carry is live -
-a convention difference that predates the composite and is nothing to do with it. The exact reading
-is therefore taken where the local carry is flat and the lag is the identity; the live-carry
-conjunction is read at the lag it explains.
+WHY THE PARITY IS SPLIT IN TWO. `EquityOptionDeal` carries its equity forward between spot dates,
+three business days on from the base date and from the expiry (`option_date_info`), while the three
+analytic pricers carry theirs to expiry, so the two forwards differ by the carry over the two lags'
+difference whenever the local carry is live - a convention difference that predates the composite
+and is nothing to do with it. The exact reading is therefore taken where the local carry is flat
+and the lag is the identity; the live-carry conjunction is read at the lag it explains.
 
 MEASURED. In-out parity against the composite European, flat local carry: worst 2.0e-15 relative
-over the eight arms, against 221% on main. The whole conjunction: worst 1.4e-3, the settlement lag,
+over the eight arms, against 221% on main. The whole conjunction: worst 4.7e-4, the spot dates,
 against 145%. The one-touch already beyond the composite spot: exact, against a 47.6% miss. A live
 one-touch against the textbook: worst 1.6e-15, against 126%. The Asian against its own moment
 match: equal to the bit, against 333%. The unit-fx limit: bit-equal on all four arms, on both
@@ -280,8 +280,8 @@ def test_a_composite_knock_in_plus_its_knock_out_is_the_composite_european(
     neither shares a line with the other; on main the barrier keeps the LOCAL spot and forward and
     the sum misses by the whole fx translation.
 
-    The local carry is flat here so the vanilla's two-business-day forward settlement is the
-    identity and the reading is float64 round-off; measured worst 2.0e-15 relative.
+    The local carry is flat here so the vanilla's spot dates are the identity and the reading is
+    float64 round-off; measured worst 2.0e-15 relative.
 
     Killing mutation: the barrier's composite carry without the fx forward's own.
     """
@@ -372,9 +372,10 @@ def test_a_one_coupon_composite_autocall_is_the_composite_europeans_that_make_it
 def test_the_whole_conjunction_parities_at_the_vanilla_s_settlement_lag():
     """One run holding every live quantity at once: a non-zero local carry against two non-zero and
     different rates, the skewed surface, a live fx vol and a live correlation, both barrier
-    directions and both option types. The only residual is the vanilla's own forward settlement
-    lag: four calendar days at a 3% carry move the forward by 3.3e-4, and the vanilla's forward
-    elasticity of about 4.6 carries that to the price. Measured worst 1.4e-3 relative.
+    directions and both option types. The only residual is the vanilla's own spot dates, the
+    Friday base's five calendar days on and the Saturday expiry's four: a day at a 3% carry moves
+    the forward by 8.2e-5, and the vanilla's forward elasticity of about 5.8 carries that to the
+    price. Measured worst 4.7e-4 relative.
 
     Killing mutation: the composite process left on the local spot.
     """

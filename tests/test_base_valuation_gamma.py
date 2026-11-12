@@ -9,8 +9,8 @@ asked twice:
 
   GAMMA      Black-Scholes d2V/dS2 on a vanilla European call. At r = q = 0 the engine's forward IS
              the spot and every discount factor is one, so the reading is asserted in ULPS. Carry
-             is then switched on and the difference is a CONVENTION: the equity forward runs to
-             expiry plus a two-business-day settlement lag while the discounting runs to expiry.
+             is then switched on and the difference is a CONVENTION: the equity forward runs
+             between spot dates, business days on, while the discounting runs to expiry.
   VANNA      the cross-column identity, which the diagonal cannot see. The surface is interpolated
              in MONEYNESS, so a spot move moves the interpolation WEIGHTS: the 1.0 nodes carry
              vanna less what the weight shift takes and the 1.2 nodes carry exactly that shift.
@@ -270,14 +270,15 @@ def test_black_scholes_gamma_is_exact_in_the_zero_carry_world():
 def test_black_scholes_gamma_survives_carry_at_a_measured_tolerance():
     """The same reading at r = 3%, q = 1%, where what separates engine and formula is a CONVENTION
     and not a numerical error. Not curve interpolation - the curve is FLAT:
-    `instruments.option_date_info` runs the equity forward to `Forward_Settlement`, expiry plus a
-    two-business-day settlement lag, while the option discounts to expiry. Put-call parity puts the
-    discount factor at exp(-rT) to the last bit and the carry over T + 3/365; the offset is a DATE,
-    so it moves with the expiry and no day count fits it.
+    `instruments.option_date_info` runs the equity forward between spot dates, three business days
+    on from the valuation date and from the expiry, while the option discounts to expiry. Put-call
+    parity puts the discount factor at exp(-rT) to the last bit and the carry over T - 1/365, the
+    Friday base's spot date five days on and the Saturday expiry's four; the offset is a DATE, so
+    it moves with the expiry and no day count fits it.
 
     So the difference scales with the CARRY and the bound is chosen against that rather than this
-    one point: gamma reads 2.9e-5 here against 1.2e-4 at (5%, 0%) and 1.4e-4 at (0%, 2%), so 3e-4
-    clears its neighbours where the 1e-4 it replaces fitted this point with no headroom.
+    one point: gamma reads 9.9e-6 here against 4.1e-5 at (5%, 0%) and 4.5e-5 at (0%, 2%), so 1e-4
+    clears its neighbours.
 
     Killing mutation: the mirror adding the diagonal a second time (`triu(k=1)` -> `triu(k=0)`).
     """
@@ -286,8 +287,8 @@ def test_black_scholes_gamma_survives_carry_at_a_measured_tolerance():
 
     assert abs(value / price - 1.0) < 1e-3, 'the price moved off the closed form'
     assert abs(float(first.loc[EQUITY].iloc[-1]) / delta - 1.0) < 1e-3, 'the delta moved'
-    assert abs(entry(second, EQUITY) / gamma - 1.0) < 3e-4, (
-        'gamma {} is further from the closed form {} than the measured 2.9e-5'.format(
+    assert abs(entry(second, EQUITY) / gamma - 1.0) < 1e-4, (
+        'gamma {} is further from the closed form {} than the measured 9.9e-6'.format(
             entry(second, EQUITY), gamma))
 
 

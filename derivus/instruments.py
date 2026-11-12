@@ -29,7 +29,7 @@ import torch
 import torch.nn.functional as Fn
 
 
-def get_business_day_offsets(calendar_names, calendars, business_days=2):
+def get_business_day_offsets(calendar_names, calendars, business_days):
     def calendar_business_day(calendar_name, calendars):
         """The business-day offset for a named calendar, Monday-Friday when it is unknown."""
         return calendars.get(
@@ -57,34 +57,37 @@ def get_business_day_offsets(calendar_names, calendars, business_days=2):
     return [pd.offsets.BDay(business_days)]
 
 
-def forward_settlement_date(date_to_roll, calendar_names, calendars, business_days=2):
-    """Return expiry plus settlement lag, rolled using the configured calendars."""
-    bus_day_offsets = get_business_day_offsets(calendar_names, calendars, business_days=business_days)
+def forward_settlement_date(date_to_roll, calendar_names, calendars, business_days):
+    """Return the date plus the settlement lag, rolled using the configured calendars."""
+    bus_day_offsets = get_business_day_offsets(calendar_names, calendars, business_days)
     if len(bus_day_offsets) > 1:
         return utils.adjust_date(bus_day_offsets[0], 'Following', date_to_roll + bus_day_offsets[1])
     else:
         return date_to_roll + bus_day_offsets[0]
 
 
-def option_date_info(deal, base_date, calendars, business_days=2):
-    """The expiry, settlement and forward-settlement day offsets of an option-style deal.
+def option_date_info(deal, base_date, calendars, time_grid):
+    """The expiry, settlement and forward-settlement day offsets of an option-style deal, and each
+    grid date's days to its spot date.
 
-    Forward_Settlement is expiry plus the settlement lag rolled on the configured calendars, used as
-    T in forward calculations; Settlement is the day the deal's own declaration settles on.
+    A spot date is the deal's Settlement_Days on, rolled on the configured calendars, the date
+    itself where its type declares none. Forward_Settlement is the expiry's, the forward carrying to
+    it from the valuation date's own; Settlement is the day the deal's own declaration settles on.
     """
     expiry_date = deal.field['Expiry_Date']
-    calendar_names = deal.field.get('Calendars')
+    days = deal.field.get('Settlement_Days', deal.field.declared.get('Settlement_Days', 0))
 
-    adjusted_forward_settlement_date = forward_settlement_date(
-        expiry_date, calendar_names, calendars, business_days=business_days)
+    def spot(date):
+        return forward_settlement_date(date, deal.field.get('Calendars'), calendars, days) if days else date
 
     # the day the deal pays: the last its reset registered, an option's declaration settling once
     settlement_date = max(max(dates) for dates in deal.settlement_currencies.values())
     expiry = (expiry_date - base_date).days
     settlement = (settlement_date - base_date).days
-    forward_settlement = (adjusted_forward_settlement_date - base_date).days
+    forward_settlement = (spot(expiry_date) - base_date).days
+    spot_settlement = np.array([[(spot(x) - x).days] for x in sorted(time_grid.mtm_dates)])
 
-    return expiry, settlement, forward_settlement
+    return expiry, settlement, forward_settlement, spot_settlement
 
 
 def expiry_fixing(field, base_date, time_grid, deal_type):
@@ -4154,13 +4157,15 @@ class EquityOptionDeal(Deal):
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Settlement_Date', 'Date', default='', convention=True,
           settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
+        F('Settlement_Days', 'Integer', default=3, convention=True),
         EXPIRY_PRINT
     ])]
 
     documentation = ('Fx And Equity', [
         'A vanilla option on **Units** shares, priced as described [here](./definitions.md#european-options)',
-        'with the conventions listed there: Black on the forward to expiry plus two business days,',
-        'the vol at the deal\'s moneyness and expiry, discounted from the settlement date.',
+        'with the conventions listed there: Black on the forward between spot dates, **Settlement_Days**',
+        'business days on from the valuation date and from the expiry, the vol at the deal\'s moneyness',
+        'and expiry, discounted from the settlement date.',
         '',
         'The payoff is paid on **Settlement_Date**, the expiry where blank. Past the expiry the',
         'underlying is what the expiry fixed: the path\'s own level on the expiry row or, where the',
@@ -4210,7 +4215,8 @@ class EquityOptionDeal(Deal):
                  'Payoff_Currency': utils.check_rate_name(self.payoff_ccy),
                  'Equity_Volatility': utils.check_rate_name(self.field['Equity_Volatility'])}
 
-        expiry, settlement, forward_settlement = option_date_info(self, base_date, calendars)
+        expiry, settlement, forward_settlement, spot_settlement = option_date_info(
+            self, base_date, calendars, time_grid)
         if self.path_dependent and self.field['Settlement_Date']:
             raise utils.UnpriceableSchedule(
                 '{}: an American option settles on the day it is exercised, so Settlement_Date is not '
@@ -4239,6 +4245,7 @@ class EquityOptionDeal(Deal):
             'Expiry': expiry,
             'Settlement': settlement,
             'Forward_Settlement': forward_settlement,
+            'Spot_Settlement': spot_settlement,
             'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'EquityOptionDeal')
             }
 
@@ -4256,8 +4263,8 @@ class EquityOptionDeal(Deal):
         strike = pricing.compo_strike(factor, deal_time, shared, factor['Strike_Price'] * shared.one)
         spot = utils.calc_time_grid_spot_rate(factor['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
-            factor['Equity'], factor['Equity_Zero'],
-            factor['Dividend_Yield'], factor['Forward_Settlement'], deal_time, shared)
+            factor['Equity'], factor['Equity_Zero'], factor['Dividend_Yield'], factor['Forward_Settlement'],
+            deal_time, shared, settle=factor['Spot_Settlement'][deal_data.Time_dep.deal_time_grid])
         moneyness = pricing.calc_moneyness(strike, spot, forward, deal_data)
 
         if factor['Option_Style'] == 'European':
@@ -4278,6 +4285,7 @@ class EquityBinaryOption(EquityOptionDeal):
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Date', 'Date', default='', convention=True,
           settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
+        F('Settlement_Days', 'Integer', default=3, convention=True),
         EXPIRY_PRINT
     ])]
 
@@ -4309,6 +4317,7 @@ class EquityBinaryOption(EquityOptionDeal):
             base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid, calendars)
 
     def generate(self, shared, time_grid, deal_data):
+        factor = deal_data.Factor_dep
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
@@ -4317,8 +4326,8 @@ class EquityBinaryOption(EquityOptionDeal):
                                       deal_data.Factor_dep['Strike_Price'] * shared.one)
         spot = utils.calc_time_grid_spot_rate(deal_data.Factor_dep['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
-            deal_data.Factor_dep['Equity'], deal_data.Factor_dep['Equity_Zero'],
-            deal_data.Factor_dep['Dividend_Yield'], deal_data.Factor_dep['Forward_Settlement'], deal_time, shared)
+            factor['Equity'], factor['Equity_Zero'], factor['Dividend_Yield'], factor['Forward_Settlement'],
+            deal_time, shared, settle=factor['Spot_Settlement'][deal_data.Time_dep.deal_time_grid])
         moneyness = pricing.calc_moneyness(strike, spot, forward, deal_data)
 
         # the spread legs' moneyness is authored HERE, where the deal's convention arguments
@@ -5160,7 +5169,7 @@ class CommodityDigitalOption(Deal):
             }
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Payoff_Currency'])
 
-        expiry, settlement, _ = option_date_info(self, base_date, calendars)
+        expiry, settlement, _, _ = option_date_info(self, base_date, calendars, time_grid)
         field_index = {
             'Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
             'SettleCurrency': self.field['Currency'],
@@ -6770,6 +6779,7 @@ class FXOptionDeal(Deal):
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Expiry_Date', 'Date', default=''),
         F('Forward_Price_Date', 'Date', default='', convention=True),
+        F('Settlement_Days', 'Integer', default=2, convention=True),
         EXPIRY_PRINT
     ])]
 
@@ -6777,9 +6787,10 @@ class FXOptionDeal(Deal):
         'Fx And Equity', ['A path independent vanilla FX Option on **Underlying_Amount** units of',
                           '**Underlying_Currency**, priced in **Currency** by Black on the FX forward',
                           '(Garman-Kohlhagen [@garman1983]), with the conventions of',
-                          '[European Options](./definitions.md#european-options): the forward to expiry plus',
-                          'two business days, the vol at the forward\'s moneyness and the expiry, discounted',
-                          'on **Discount_Rate**.',
+                          '[European Options](./definitions.md#european-options): the forward between spot',
+                          'dates, **Settlement_Days** business days on from the valuation date and from the',
+                          'expiry, the vol at the forward\'s moneyness and the expiry, discounted on',
+                          '**Discount_Rate**.',
                           '',
                           'The payoff is paid on **Delivery_Date**, the expiry where blank. Past the expiry the',
                           'forward is held at what the expiry fixed: the path\'s own level on the expiry row or,',
@@ -6803,7 +6814,8 @@ class FXOptionDeal(Deal):
 
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
 
-        expiry, settlement, forward_settlement = option_date_info(self, base_date, calendars)
+        expiry, settlement, forward_settlement, spot_settlement = option_date_info(
+            self, base_date, calendars, time_grid)
 
         field_index = {
             'Currency': get_fx_and_zero_rate_factor(
@@ -6818,6 +6830,7 @@ class FXOptionDeal(Deal):
             'Expiry': expiry,
             'Settlement': settlement,
             'Forward_Settlement': forward_settlement,
+            'Spot_Settlement': spot_settlement,
             'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'FXOptionDeal'),
             'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
             'Strike_Price': self.field['Strike_Price'],
@@ -6835,8 +6848,8 @@ class FXOptionDeal(Deal):
         fx_rep = utils.calc_fx_cross(
             factor['Currency'][0], shared.Report_Currency, deal_time, shared)
         forward = utils.calc_fx_forward(
-            factor['Underlying_Currency'], deal_data.Factor_dep['Currency'],
-            factor['Forward_Settlement'], deal_time, shared)
+            factor['Underlying_Currency'], factor['Currency'], factor['Forward_Settlement'],
+            deal_time, shared, settle=factor['Spot_Settlement'][deal_data.Time_dep.deal_time_grid])
         moneyness = pricing.calc_moneyness(
             factor['Strike_Price'], forward, forward,
             deal_data, use_forward=True, invert_moneyness=deal_data.Factor_dep['Invert_Moneyness'])
@@ -6861,6 +6874,7 @@ class FXBinaryOption(FXOptionDeal):
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
         F('Expiry_Date', 'Date', default=''),
+        F('Settlement_Days', 'Integer', default=2, convention=True),
         EXPIRY_PRINT
     ])]
 
@@ -6869,8 +6883,7 @@ class FXBinaryOption(FXOptionDeal):
                           ' [here](./definitions.md#european-options). In the money at expiry it'
                           ' pays **Payoff**: that amount in **Currency** under **Payoff_Style**'
                           ' `Cash` (cash-or-nothing), that many units of **Underlying_Currency**'
-                          ' under `Asset` (asset-or-nothing). Unlike `FXOptionDeal`, its forward runs to',
-                          'the expiry date itself, with no spot lag.',
+                          ' under `Asset` (asset-or-nothing).',
                           '',
                           'If the **Relative_Digital_Spread** Valuation Configuration option is set',
                           '(> 0), the digital is priced as a call/put spread of width',
@@ -6881,12 +6894,13 @@ class FXBinaryOption(FXOptionDeal):
     option_defaults = {'Relative_Digital_Spread': 0.0}
 
     def generate(self, shared, time_grid, deal_data):
+        factor = deal_data.Factor_dep
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
         forward = utils.calc_fx_forward(
-            deal_data.Factor_dep['Underlying_Currency'], deal_data.Factor_dep['Currency'],
-            deal_data.Factor_dep['Expiry'], deal_time, shared)
+            factor['Underlying_Currency'], factor['Currency'], factor['Forward_Settlement'],
+            deal_time, shared, settle=factor['Spot_Settlement'][deal_data.Time_dep.deal_time_grid])
         invert_moneyness = deal_data.Factor_dep['Invert_Moneyness']
         strike = deal_data.Factor_dep['Strike_Price']
         moneyness = pricing.calc_moneyness(

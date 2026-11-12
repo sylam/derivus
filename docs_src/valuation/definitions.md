@@ -12,7 +12,7 @@ forwards and European options have the closed forms below.
 | Quantity | Convention (vanilla equity and FX options) |
 |---|---|
 | $\tau$ (vol and Black time) | the **Discount_Rate** curve's day count from $t$ to **Expiry_Date** |
-| Forward $F(t,T)$ | to expiry plus 2 business days (Monday-Friday; these deals declare no calendar) |
+| Forward $F(t,T)$ | carried between spot dates, **Settlement_Days** business days on from $t$ and from the expiry: 3 on an equity option and 2 on an FX one where blank (Monday-Friday; these deals declare no calendar) |
 | Discounting | from the settlement date: **Settlement_Date** (equity) or **Delivery_Date** (FX), the expiry where blank |
 | Past the expiry | the underlying is the expiry's print: the scenario's own level, or **Price_Fixing** where the expiry is before the base date |
 

@@ -105,6 +105,11 @@ def ndtr(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def lag(date, days):
+    """The calendar days from `date` to its spot date, `days` business days on."""
+    return ((date + pd.offsets.BDay(days)) - date).days
+
+
 def test_past_the_expiry_every_row_is_the_settlement_payoff_discounted_and_the_ledger_books_it_there():
     """Under a credit Monte Carlo on a simulated spot the grid runs to the settlement, with the
     monthly date between it and the expiry. On every row from the expiry on the mark is the
@@ -190,20 +195,23 @@ def test_an_fx_option_expired_before_the_base_date_marks_on_its_print_and_a_miss
 
 
 def test_on_the_expiry_the_engine_fixes_the_level_and_before_it_the_lag_only_moves_the_discount():
-    """A base date ON the expiry prices off the engine's own spot - the forward to the expiry's
-    settlement at zero tenor, intrinsic - and reads no print, as a fixing dated today follows the
-    factor; before the expiry the lagged option is Black discounted to the settlement with the vol
-    tenor at the expiry, exact, which the lag leaves exactly where it was.
+    """A base date ON the expiry prices off the engine's own spot - the forward between spot dates
+    is the spot itself at zero tenor, intrinsic - and reads no print, as a fixing dated today
+    follows the factor; before the expiry the lagged option is Black on the forward between the
+    spot dates, as far apart here as the two Fridays, discounted to the settlement with the vol
+    tenor at the expiry, exact.
+
+    Killing mutation: the forward carried from the valuation date, 100.041 on its own expiry.
     """
     carry = (SETTLE - EXPIRY).days
     marked = marks([dict(VANILLA, Strike_Price=90.0),
                     dict(VANILLA, Reference='PRINTED', Strike_Price=90.0, Price_Fixing=[[EXPIRY, PRINT]])],
                    EXPIRY)
-    intrinsic = UNITS * (SPOT * math.exp((R_USD - Q_EQ) * carry / 365.0) - 90.0) * df(carry)
+    intrinsic = UNITS * (SPOT - 90.0) * df(carry)
     assert marked['EQO'] == pytest.approx(intrinsic, rel=1e-9)
     assert marked['PRINTED'] == marked['EQO']
     t, t_settle = (EXPIRY - BASE).days / 365.0, (SETTLE - BASE).days / 365.0
-    forward, sd = SPOT * math.exp((R_USD - Q_EQ) * t_settle), SIGMA * math.sqrt(t)
+    forward, sd = SPOT * math.exp((R_USD - Q_EQ) * t), SIGMA * math.sqrt(t)
     d1 = math.log(forward / STRIKE) / sd + 0.5 * sd
     black = forward * ndtr(d1) - STRIKE * ndtr(d1 - sd)
     assert marks([VANILLA])['EQO'] == pytest.approx(UNITS * black * math.exp(-R_USD * t_settle), rel=1e-9)
@@ -211,21 +219,62 @@ def test_on_the_expiry_the_engine_fixes_the_level_and_before_it_the_lag_only_mov
 
 def test_an_fx_option_pays_on_the_delivery_date_its_family_declares():
     """The FX option settles on `Delivery_Date`, the field its family declares it settles on, the
-    expiry where blank: Black on the forward to the expiry's own settlement, discounted to the
-    delivery, exact. A `Settlement_Date` written on it declares nothing and is not read.
+    expiry where blank: Black on the forward between spot dates, as far apart here as the two
+    Fridays, discounted to the delivery, exact. A `Settlement_Date` written on it declares nothing
+    and is not read.
 
     Killing mutation: the settlement read off a `Settlement_Date` the type does not declare.
     """
     delivery = EXPIRY + pd.DateOffset(days=10)
     marked = marks([FX, dict(FX, Reference='UNDECLARED', Settlement_Date=delivery),
                     dict(FX, Reference='DELIVERED', Delivery_Date=delivery)])
-    t, t_fwd = (EXPIRY - BASE).days / 365.0, (SETTLE - BASE).days / 365.0
-    forward, sd = FX_SPOT * math.exp((R_USD - R_EUR) * t_fwd), FX_SIGMA * math.sqrt(t)
+    t = (EXPIRY - BASE).days / 365.0
+    forward, sd = FX_SPOT * math.exp((R_USD - R_EUR) * t), FX_SIGMA * math.sqrt(t)
     d1 = math.log(forward / FX_SPOT) / sd + 0.5 * sd
     black = UNITS * (forward * ndtr(d1) - FX_SPOT * ndtr(d1 - sd))
     assert marked['FXO'] == pytest.approx(black * df((EXPIRY - BASE).days), rel=1e-9)
     assert marked['UNDECLARED'] == marked['FXO']
     assert marked['DELIVERED'] == pytest.approx(black * df((delivery - BASE).days), rel=1e-9)
+
+
+def test_a_forward_carries_between_spot_dates():
+    """An equity or FX option's forward is the spot carried from the valuation date's spot date to
+    the expiry's, each `Settlement_Days` business days on: three where an equity option states
+    none, two where an FX one does, and the number a deal states. Read off deals deep in the
+    money, whose mark is the forward less the strike, discounted: from a Friday to a Wednesday
+    three days on are five calendar days from each and two are four and two, so three carry the
+    tenor and two carry two days fewer. Under a credit Monte Carlo each row starts at its own spot
+    date, three, four or five calendar days on over two daily weeks: against the deal stating no
+    lag, path by path at float32.
+
+    Killing mutations: the carry started at the valuation date, the equity forward 4.1e-4 high; a
+    default of two on the equity option, 1.6e-4 low; every row given the base date's lag, the
+    Monday's row 1.6e-4 low.
+    """
+    midweek = EXPIRY - pd.DateOffset(days=2)
+    tenor, terms = (midweek - BASE).days, {'Expiry_Date': midweek, 'Strike_Price': 0.01}
+    equity, pair = (SPOT, R_USD - Q_EQ, 3), (FX_SPOT, R_USD - R_EUR, 2)
+    deep = dict(VANILLA, Settlement_Date=midweek, **terms)
+    book = [
+        (deep, UNITS, 0.01) + equity,
+        (dict(BINARY, Settlement_Date=midweek, Payoff_Style='Asset', **terms), CASH, 0.0) + equity,
+        (dict(FX, **terms), UNITS, 0.01) + pair,
+        (dict({k: v for k, v in FX.items() if k != 'Underlying_Amount'}, Object='FXBinaryOption',
+              Reference='FXB', Payoff=CASH, Payoff_Style='Asset', **terms), CASH, 0.0) + pair]
+    for deal, scale, strike, spot, carry, declared in book:
+        marked = marks([deal, dict(deal, Reference='STATED', Settlement_Days=5 - declared)])
+        for ref, days in ((deal['Reference'], declared), ('STATED', 5 - declared)):
+            between = tenor + lag(midweek, days) - lag(BASE, days)
+            assert marked[ref] / (scale * df(tenor)) + strike == pytest.approx(
+                spot * math.exp(carry * between / 365.0), rel=1e-12), (ref, days)
+    lagged, flat = (run([dict(deep, **days)], calc=dict(CMC, Time_grid='0d 1d(1d) 2w'))['mtm']
+                    for days in ({}, {'Settlement_Days': 0}))
+    assert {lag(day, 3) for day in lagged.index} == {3, 4, 5}
+    for day in lagged.index:
+        # the strike is a ten-thousandth of the spot, so the marks' ratio is the forwards'
+        ratio = np.asarray(lagged.loc[day].values, dtype=float) / np.asarray(flat.loc[day].values, dtype=float)
+        stretch = math.exp((R_USD - Q_EQ) * (lag(midweek, 3) - lag(day, 3)) / 365.0)
+        assert np.allclose(ratio, stretch, rtol=2e-6, atol=0.0), day
 
 
 #: The declared-defaults swaption, settled physically on its legs, and its cash twin paid 40 days
@@ -436,8 +485,8 @@ def test_a_blank_payoff_currency_is_the_deal_s_own_currency():
 
     Killing mutations, each a reader taking the raw field again: the barrier binary registering its
     dates under it, the ledger's thirteen rows down to two; the Asian booking under it, the expiry
-    471.89; the autocall naming its factor off it, skipped, the book's t0 mark 756.032 against
-    756.415; the American keying its grid dates under it, a '' ledger beside USD - and, held under
+    471.89; the autocall naming its factor off it, skipped, the book's t0 mark 756.153 against
+    756.536; the American keying its grid dates under it, a '' ledger beside USD - and, held under
     the CSA, the whole set refused ('Cannot find FxRate.').
     """
     stated = [dict(deal, Payoff_Currency='USD') for deal in BLANK_PAYOFF]

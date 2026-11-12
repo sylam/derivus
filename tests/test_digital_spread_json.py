@@ -37,9 +37,11 @@ from derivus.config import CustomJsonEncoder
 BASE = pd.Timestamp('2024-06-28')
 EXPIRY = BASE + pd.DateOffset(years=1)
 T = (EXPIRY - BASE).days / 365.0
-# the equity forward carries to expiry + 2 BUSINESS days (`option_date_info`'s
-# Forward_Settlement); vol tenor and discounting stay at expiry
-T_FWD = ((EXPIRY + pd.tseries.offsets.BDay(2)) - BASE).days / 365.0
+# a forward carries between spot dates, `Settlement_Days` BUSINESS days on from the base date and
+# from the expiry, three on an equity option and two on an FX one; vol tenor and discounting stay
+# at expiry
+BDAY = pd.tseries.offsets.BDay
+T_FWD, T_FWD_FX = (((EXPIRY + BDAY(n)) - (BASE + BDAY(n))).days / 365.0 for n in (3, 2))
 SPOT, STRIKE, CASH = 100.0, 100.0, 1000.0
 R_USD, R_EUR, Q_EQ = 0.04, 0.02, 0.01
 VOL_ATM, SKEW = 0.25, 0.5           # sigma(m) = VOL_ATM + SKEW * (m - 1), m = spot / strike
@@ -193,8 +195,8 @@ def test_the_spread_reads_each_leg_at_its_own_vol():
     picks up. The DEBUG organ pins what the pricer read - one line per leg, low strike at the
     HIGHER vol.
 
-    MEASURED 670.395 against the closed form's 478.856; both legs read at the CENTER moneyness
-    price 478.882, -28.6% against the oracle.
+    MEASURED 669.890 against the closed form's 478.352; both legs read at the CENTER moneyness
+    price 478.378, -28.6% against the oracle.
 
     Killing mutation: both legs read at the deal's own moneyness.
     """
@@ -247,7 +249,7 @@ def test_an_fx_binary_spread_reads_the_fx_smile():
             'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': FX_SPOT,
             'Payoff': CASH, 'Expiry_Date': EXPIRY}
     factors = dict(RATES, **{'FXVol.EUR.USD': _surface(FX_ATM, FX_SKEW)})
-    fwd = FX_SPOT * math.exp((R_USD - R_EUR) * T)
+    fwd = FX_SPOT * math.exp((R_USD - R_EUR) * T_FWD_FX)
     sigma_of = lambda k: FX_ATM + FX_SKEW * (fwd / k - 1.0)
     out, _ = _run(_job([deal], factors,
                        valuation={'FXBinaryOption': {'Relative_Digital_Spread': EPS}}))
@@ -356,7 +358,7 @@ def test_a_compo_binary_spread_composes_each_leg():
         'Correlation.EquityPrice.EQ/FxRate.EUR.USD': {'Value': CORR}})
     rho = -CORR                     # authored on the sorted pair, the deal runs USD -> EUR
     sigma_c = math.sqrt(VOL_ATM ** 2 + 2.0 * rho * VOL_ATM * FX_SIGMA + FX_SIGMA ** 2)
-    # equity leg to T_FWD, the fx forward to expiry - the engine's two tenors
+    # equity leg between its spot dates, the fx forward to expiry - the engine's two tenors
     fwd_c = (SPOT * math.exp((R_USD - Q_EQ) * T_FWD) / FX_SPOT) * math.exp((R_EUR - R_USD) * T)
     out, _ = _run(_job([deal], factors, valuation=SPREAD_ON))
     expected = _spread_closed(fwd_c, strike_eur, lambda k: sigma_c, R_EUR) * FX_SPOT
@@ -376,8 +378,8 @@ BARRIER = {'Object': 'EquityBarrierBinaryOption', 'Reference': 'BB', 'Currency':
            'Settlement_Date': EXPIRY, 'Barrier_Type': 'Up_And_Out', 'Barrier_Price': 10.0 * SPOT,
            'Barrier_Dates': [EXPIRY]}
 BARRIER_ON = {'EquityBarrierBinaryOption': {'Relative_Digital_Spread': EPS}}
-# the barrier's strip carries to the expiry, where the plain binary's forward carries two business
-# days past it
+# the barrier's strip carries to the expiry, where the plain binary's forward carries between spot
+# dates
 FWD_T = SPOT * math.exp((R_USD - Q_EQ) * T)
 CASH_T = CASH * math.exp(-R_USD * T)
 
@@ -387,11 +389,11 @@ def test_a_barrier_binary_no_path_reaches_is_the_spread_the_plain_binary_takes()
     leg's one step is integrated from the row's own spot and nothing is sampled, so under the
     spread it is the European spread the plain binary prices, each leg at its own strike's vol -
     the call and a sold put, against the oracle the plain binary is held to, each on its own
-    forward: the barrier's strip carries to the expiry, the plain binary's two business days past
-    it, 0.057% apart. Off, it is the single-vol closed form.
+    forward: the barrier's strip carries to the expiry, the plain binary's between spot dates, a
+    day shorter here, 0.019% apart. Off, it is the single-vol closed form.
 
     MEASURED 670.0161877023206 against the oracle's ...274 and -290.7732514499992 against ...958,
-    1.2e-14; the plain binaries 670.395 and -290.394 within 2.3e-14; off, 2.4e-16.
+    1.2e-14; the plain binaries 669.890 and -290.900 to the last bit; off, 2.4e-16.
 
     Killing mutations: the legs read at the centre moneyness, 478.50 (-28.6%); the spread left
     undivided by the strike, 67,001.6; the legs walking the strike's one strip, the European legs
@@ -591,8 +593,8 @@ def test_a_compo_barrier_binary_composes_each_leg_as_the_plain_one_does():
     translated strike, `K'/F_X(T)`, composed with the pair's vol - the oracle the compo plain
     binary beside it meets on its own forward.
 
-    MEASURED 767.315311875994 against the oracle's ...0102 and the plain binary 767.843 on its
-    own, each 2.1e-14.
+    MEASURED 767.315311875994 against the oracle's ...0102 and the plain binary 767.139 on its
+    own, 7.3e-15.
 
     Killing mutation: the legs' vols left uncomposed, 813.02 (+6.0%).
     """

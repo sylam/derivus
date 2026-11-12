@@ -52,11 +52,12 @@ RA = {'Object': 'FXRangeAccrualDeal', 'Reference': 'RA', 'Currency': 'USD',
 
 def _binaries(dates):
     """The strip as the portfolio it is: per date a bought cash call at the lower bound and a sold
-    one at the upper, delivered on the range's settlement so both discount to the same day."""
+    one at the upper, delivered on the range's settlement so both discount to the same day, its
+    forward carried to its date with no spot lag, as the range's are."""
     return [{'Object': 'FXBinaryOption', 'Reference': '{}{}'.format(side, j), 'Currency': 'USD',
              'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
              'Buy_Sell': buy_sell, 'Option_Type': 'Call', 'Strike_Price': strike,
-             'Payoff': PAYOFF, 'Expiry_Date': date, 'Delivery_Date': SETTLE}
+             'Payoff': PAYOFF, 'Expiry_Date': date, 'Delivery_Date': SETTLE, 'Settlement_Days': 0}
             for j, date in enumerate(dates)
             for side, buy_sell, strike in (('L', 'Buy', LOWER), ('U', 'Sell', UPPER))]
 

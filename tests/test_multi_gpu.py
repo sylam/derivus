@@ -183,7 +183,7 @@ def test_cpu_sharding_is_bit_identical_in_the_worker_count():
     one = pooled(1, device='cpu')
     assert one['devices'] == ['cpu']
     reference = sha(one['mtm'])
-    assert reference == '268a30bfa45063ec', 'the sharded CPU stream moved: %s' % reference
+    assert reference == 'ed6791686cb9d70b', 'the sharded CPU stream moved: %s' % reference
 
     for n in (2, 4):
         many = pooled(n, device='cpu')
