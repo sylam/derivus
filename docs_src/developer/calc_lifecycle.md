@@ -332,8 +332,11 @@ compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 
 A job in which one adjustment asks for a gradient and none for the Hessian frees each batch's
 graph in its backward pass, and holds one batch's graph where it held every batch's: a later
 batch drops the `t_PreCalc` entries carrying a graph and precalculates each process again
-(`precalculate_factors`). Two gradients or the Hessian keep every batch's. **Held by**
-`tests/test_cva_gamma_kink.py::test_a_gradient_released_a_batch_is_the_one_the_kept_graph_reports`;
+(`precalculate_factors`). Two gradients, the Hessian, or a variable still connected to its
+calibration (`Calculation.factor_leaf`), whose graph the pass would free with the batch's, keep
+every batch's. **Held by**
+`tests/test_cva_gamma_kink.py::test_a_gradient_released_a_batch_is_the_one_the_kept_graph_reports`
+and `tests/test_cva_gamma_kink.py::test_a_variable_connected_to_its_calibration_keeps_every_batchs_graph`;
 **Not gated:** the entries dropped, keyed on a tenor's identity so that no document makes a later
 batch find one, and the memory held, `Device_Memory` reporting the process's reserve.
 

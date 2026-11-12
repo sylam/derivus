@@ -1699,10 +1699,12 @@ class CreditMonteCarlo(Calculation):
             utils.check_rate_name(self.config.params['System Parameters']['Base_Currency']),
             self.static_factors, self.stoch_factors)
         time_index = self.time_grid.report_index
-        # one objective differentiated once a batch: its backward pass releases the batch's graph
+        # one objective differentiated once a batch: its backward pass releases the batch's graph,
+        # unless a variable is still connected to its calibration, whose graph would go with it
         release = credit.get('Hessian', 'No') != 'Yes' and 1 == sum(
             v.get('Calculate', 'No') == 'Yes' and v.get('Gradient', 'No') == 'Yes'
-            for v in params.values() if isinstance(v, dict))
+            for v in params.values() if isinstance(v, dict)) and all(
+            v.is_leaf for _, v in self.all_var)
 
         for run in range(self.params['Simulation_Batches']):
 

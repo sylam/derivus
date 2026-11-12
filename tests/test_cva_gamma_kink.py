@@ -163,15 +163,18 @@ def _job(children=None, hessian='No', gradient='Yes', paths=PATHS, seed=1, batch
     return job
 
 
-def _run(job, tmp_path, name, patch=None):
+def _run(job, tmp_path, name, patch=None, bootstrap=False):
     """JSON in, results out. A bump is a `patch_market` VALUES patch applied to the loaded
     document, so every rung runs the identical program under the identical seed - common random
-    numbers arrive through the contract, with nothing reached into."""
+    numbers arrive through the contract, with nothing reached into. `bootstrap` runs the
+    document's bootstrappers first."""
     path = os.path.join(str(tmp_path), '{}.json'.format(name))
     with open(path, 'w') as f:
         json.dump(job, f, default=str)
     cx = rf.Context()
     cx.load_json(path)
+    if bootstrap:
+        cx.bootstrap()
     if patch:
         cx.patch_market(patch)
     _, out = cx.run_job()
@@ -257,6 +260,30 @@ def test_a_gradient_released_a_batch_is_the_one_the_kept_graph_reports(tmp_path)
 
     assert off['cva'] == on['cva'], (off['cva'], on['cva'])
     assert np.array_equal(off['grad_cva'].values, on['grad_cva'].values), 'grad_cva moved'
+
+
+def test_a_variable_connected_to_its_calibration_keeps_every_batchs_graph(tmp_path):
+    """The vol curve bootstrapped off the surface under `Quote_Sensitivity` reaches the run
+    connected to its quotes, a graph that outlives a batch: the one gradient asked is taken with
+    every batch's graph kept, and over two batches reads the CVA and the `grad_cva` of the curve
+    bootstrapped unconnected, bit for bit.
+
+    Killing mutation: the batch's graph released whatever its variables carry, the second batch
+    refusing to walk the calibration's graph already freed.
+    """
+    def calibrated(sensitivity):
+        job = _job(paths=4096, batches=2)
+        market = job['Calc']['MergeMarketData']['ExplicitMarketData']
+        del market['Price Factors']['GBMAssetPriceTSModelParameters.EQ']
+        market['Market Prices'] = {'GBMAssetPriceTSModelPrices.EQ': {'instrument': {
+            'Asset_Price_Volatility': 'EQ', 'Quote_Sensitivity': sensitivity}}}
+        market['Bootstrapper Configuration'] = {
+            'GBMAssetPriceTSModelParameters': {'Prices': 'GBMAssetPriceTSModel'}}
+        return _run(job, tmp_path, 'connected_' + sensitivity, bootstrap=True)
+
+    on, off = calibrated('Yes'), calibrated('No')
+    assert on['cva'] == off['cva'], (on['cva'], off['cva'])
+    assert np.array_equal(on['grad_cva'].values, off['grad_cva'].values), 'grad_cva moved'
 
 
 def test_the_gamma_and_vanna_entries_land_on_crn_ladders_of_the_reported_delta(tmp_path):
