@@ -5327,6 +5327,22 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
     return mtm
 
 
+def asian_samples(factor_dep, samples, deal_time, past_factor_list, shared):
+    """The fixings of `samples` a row may have seen: the declared ones, then those the simulation
+    fixed up to the last row, each the spot factors' ratio read at its date, a static spot's one row
+    and column held flat across them and the paths, and a compo's taking the cross at its own date."""
+    known = samples.known_resets(shared.simulation_batch)
+    dated = samples.schedule[
+        (samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
+        (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())
+    ][:, :utils.RESET_INDEX_Scenario + 1]
+    read = [utils.calc_time_grid_spot_rate(factor, dated, shared) for factor in past_factor_list]
+    ratio = read[0] if len(read) == 1 else read[0] / read[1]
+    simulated = ratio.expand(dated.shape[0], shared.simulation_batch) * calc_compo_geometry(
+        factor_dep, dated, shared)['spot_scale']
+    return torch.cat([torch.cat(known, dim=0), simulated], dim=0) if known else simulated
+
+
 def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forward, carry,
                              past_factor_list, invert_moneyness=False, use_forwards=False):
     """Discretely sampled Asian option by two-moment matching: the average of the remaining samples
@@ -5345,27 +5361,9 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
     daycount_fn = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount]
     eps = torch.finfo(shared.one.dtype).eps
     samples = factor_dep['Samples']
-    known_resets = samples.known_resets(shared.simulation_batch)
     start_idx = samples.get_start_index(deal_time)
-    sim_samples = samples.schedule[
-        (samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
-        (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
-
-    past_sample_factor = [utils.calc_time_grid_spot_rate(
-        past_factor, sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
-        for past_factor in past_factor_list]
-    # a static spot answers one row and one column, so it is held flat across the samples and the
-    # paths the known samples carry
-    past_samples = (past_sample_factor[0] if len(past_sample_factor) == 1 else
-                    past_sample_factor[0] / past_sample_factor[1]).expand(
-        sim_samples.shape[0], shared.simulation_batch)
     spot = spot.expand(forward.shape[0], shared.simulation_batch)
-
-    # a simulated past sample is a LOCAL price, so a compo's takes the cross at its own date
-    past_samples = past_samples * calc_compo_geometry(
-        factor_dep, sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)['spot_scale']
-    all_samples = torch.cat(
-        [torch.cat(known_resets, dim=0), past_samples], dim=0) if known_resets else past_samples
+    all_samples = asian_samples(factor_dep, samples, deal_time, past_factor_list, shared)
     dual_samples = samples.dual()
 
     start_index, counts = np.unique(start_idx, return_counts=True)
@@ -5474,31 +5472,13 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
     all_samples = []
     dual_samples = []
     start_samples = []
+    # an unsimulated spot answers one row and one column, held flat across the rows and paths
+    spot = spot.expand(*forward.shape)
 
     for i in ['Samples_1', 'Samples_2']:
         samples = factor_dep[i]
         sample_idx = samples.get_start_index(deal_time, offset=1)
-        known_resets = samples.known_resets(shared.simulation_batch)
-        sim_samples = samples.schedule[(samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
-                                       (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <=
-                                        deal_time[:, utils.TIME_GRID_MTM].max())]
-
-        # an unsimulated spot is held flat across the samples
-        if spot.shape != forward.shape:
-            past_samples = spot.expand(sim_samples.shape[0], shared.simulation_batch)
-            spot = spot.expand(*forward.shape)
-        else:
-            past_sample_factor = [utils.calc_time_grid_spot_rate(
-                past_factor, sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
-                for past_factor in past_factor_list]
-            # a static spot answers one row and one column however many samples and paths ask, so
-            # it is held flat across them
-            past_samples = (past_sample_factor[0] if len(
-                past_sample_factor) == 1 else past_sample_factor[0] / past_sample_factor[1]).expand(
-                sim_samples.shape[0], -1)
-
-        full_sample = utils.concat_resets(
-            [torch.cat(known_resets, dim=0), past_samples], 0) if known_resets else past_samples
+        full_sample = asian_samples(factor_dep, samples, deal_time, past_factor_list, shared)
         dual_sample = samples.dual()
         dual_samples.append(dual_sample)
         # the samples carry their weights already applied, each fixing its own row's
