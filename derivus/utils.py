@@ -650,7 +650,9 @@ class DayCount:
 
     @staticmethod
     def accrual(reference_date, time_in_days, code):
-        """Need to complete this implementation. time_in_days is incremental"""
+        """The year fraction `code` accrues over `time_in_days` days from `reference_date`; for an
+        array, one per consecutive period of those lengths, the first starting on `reference_date`
+        and each accruing from its own start."""
 
         if code == DayCount.ACT360:
             return time_in_days / 360.0
@@ -659,40 +661,20 @@ class DayCount:
         elif code in (DayCount.ACT365IDSA, DayCount.ACTACTICMA):
             # TODO
             return time_in_days / 365.0
-        elif code == DayCount.ACT30_360:
-            e1 = min(reference_date.day, 30)
-            new_date = end_date = reference_date
+        elif code in (DayCount.ACT30_360, DayCount.ACT30_E360):
+            def fraction(start, end):
+                e2 = min(end.day, 30) if code == DayCount.ACT30_E360 or start.day >= 30 else end.day
+                return ((e2 - min(start.day, 30)) + 30 * (end.month - start.month) +
+                        360 * (end.year - start.year)) / 360.0
+
             if isinstance(time_in_days, np.ndarray):
-                ret = []
-                for ed in time_in_days.tolist():
-                    end_date += pd.DateOffset(days=ed)
-                    e2 = 30 if end_date.day >= 30 and new_date.day >= 30 else end_date.day
-                    ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
-                                360 * (end_date.year - new_date.year)) / 360.0)
-                    new_date = end_date
+                ret, start = [], reference_date
+                for days in time_in_days.tolist():
+                    end = start + pd.DateOffset(days=days)
+                    ret.append(fraction(start, end))
+                    start = end
                 return ret
-            else:
-                end_date = reference_date + pd.DateOffset(days=time_in_days)
-                e2 = 30 if end_date.day >= 30 and reference_date.day >= 30 else end_date.day
-                return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
-                        360 * (end_date.year - reference_date.year)) / 360.0
-        elif code == DayCount.ACT30_E360:
-            e1 = min(reference_date.day, 30)
-            new_date = end_date = reference_date
-            if isinstance(time_in_days, np.ndarray):
-                ret = []
-                for ed in time_in_days.tolist():
-                    end_date += pd.DateOffset(days=ed)
-                    e2 = min(end_date.day, 30)
-                    ret.append(((e2 - e1) + 30 * (end_date.month - new_date.month) +
-                                360 * (end_date.year - new_date.year)) / 360.0)
-                    new_date = end_date
-                return ret
-            else:
-                end_date = reference_date + pd.DateOffset(days=time_in_days)
-                e2 = min(end_date.day, 30)
-                return ((e2 - e1) + 30 * (end_date.month - reference_date.month) +
-                        360 * (end_date.year - reference_date.year)) / 360.0
+            return fraction(reference_date, reference_date + pd.DateOffset(days=time_in_days))
         elif code == DayCount.NONE:
             return time_in_days
 

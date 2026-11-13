@@ -59,6 +59,3 @@ convention they are named after:
 | `ACT_ACT_ICMA` | days / 365, with no coupon-period denominator | Actual/Actual (ICMA) |
 | `_30_360` | $(360(Y_2-Y_1) + 30(M_2-M_1) + D_2 - D_1)/360$, $D_1 = \min(d_1, 30)$, $D_2 = 30$ if $d_2 \ge 30$ and $d_1 \ge 30$, else $d_2$ | 30/360 (Bond Basis) |
 | `_30E_360` | the same with $D_2 = \min(d_2, 30)$ | 30E/360 (Eurobond Basis) |
-
-For the two 30/360 conventions, a schedule accrued several periods at once takes every period's
-$d_1$ from the first period's start date.

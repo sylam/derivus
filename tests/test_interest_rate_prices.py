@@ -1371,3 +1371,45 @@ def test_a_quoted_deposit_is_pinned_on_the_schedule_its_stub_and_calendar_spell(
     marks, stats = book.marks([dict(block)])
     assert 'Deals Skipped' not in stats, stats
     assert float.fromhex(marks['STUB']) == pytest.approx(hand, rel=1e-12)
+
+
+def test_a_30_360_period_accrues_from_its_own_start_day():
+    """Deposits of a million paying 5% on `_30_360` and `_30E_360` whose periods start on other days
+    of the month than the first: a front stub, quarterly from 17 August 2026 to 16 August 2027; a
+    month-end roll through February, monthly from 31 August 2026; and a 15th rolled on Johannesburg,
+    monthly from 15 September 2026, the 15th of November, May and August falling on a weekend. By hand
+
+        -1,000,000 D(T_0) + sum_k 1,000,000 0.05 a_k D(T_k) + 1,000,000 D(T_n),
+
+    a_k = (360 (Y_2 - Y_1) + 30 (M_2 - M_1) + D_2 - D_1) / 360 off period k's own start and end.
+
+    KILLING MUTATION: every period's D_1 read off the first period's start, the stub reading 4.2e-2
+    of the hand low under both codes, the month-end roll 2.8e-2 low and the rolled 15th 5.6e-2 high.
+    """
+    def thirty(start, end, euro):
+        d2 = min(end.day, 30) if euro or start.day >= 30 else end.day
+        return (360 * (end.year - start.year) + 30 * (end.month - start.month) + d2 - min(start.day, 30)) / 360.0
+
+    schedules = {
+        'STUB': (3, None, ['2026-08-17', '2026-11-16', '2027-02-16', '2027-05-16', '2027-08-16']),
+        'MONTH_END': (1, None, pd.date_range('2026-08-31', '2027-08-31', freq='ME')),
+        'ROLLED': (1, book.CALENDAR, ['2026-09-15', '2026-10-15', '2026-11-16', '2026-12-15', '2027-01-15',
+                                      '2027-02-15', '2027-03-15', '2027-04-15', '2027-05-17', '2027-06-15',
+                                      '2027-07-15', '2027-08-16', '2027-09-15'])}
+    blocks, hands = [], {}
+    for name, (months, calendar, days) in schedules.items():
+        dates = [pd.Timestamp(day) for day in days]
+        for code in ('_30_360', '_30E_360'):
+            block = completed(dict(deposit(name + code, 'USD', 'USD', 12, 0.0), Interest_Rate='USD-PROJ',
+                                   Effective_Date=dates[0], Maturity_Date=dates[-1],
+                                   Payment_Frequency=pd.DateOffset(months=months),
+                                   Interest_Frequency=pd.DateOffset(months=months),
+                                   Accrual_Day_Count=code, Accrual_Calendars=calendar))
+            author_quote(block, 5.0, 'USD', 'Par_Rate')
+            blocks.append(dict(block))
+            hands[name + code] = 1e6 * (discount(dates[-1]) - discount(dates[0])) + sum(
+                1e6 * 0.05 * thirty(s, e, code == '_30E_360') * discount(e) for s, e in zip(dates[:-1], dates[1:]))
+    marks, stats = book.marks(blocks)
+    assert 'Deals Skipped' not in stats, stats
+    for reference, hand in hands.items():
+        assert float.fromhex(marks[reference]) == pytest.approx(hand, rel=1e-12), reference
