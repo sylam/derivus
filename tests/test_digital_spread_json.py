@@ -47,6 +47,8 @@ R_USD, R_EUR, Q_EQ = 0.04, 0.02, 0.01
 VOL_ATM, SKEW = 0.25, 0.5           # sigma(m) = VOL_ATM + SKEW * (m - 1), m = spot / strike
 FX_SPOT, FX_ATM, FX_SKEW = 1.25, 0.10, 0.3
 FX_SIGMA, CORR = 0.15, 0.35         # the compo document's flat fx vol and EUR.USD correlation
+# a EUR value reports in USD at EUR's price today, its quote carried back from its spot date
+FX_TODAY = FX_SPOT * math.exp(-(R_USD - R_EUR) * lag(BASE, 2) / 365.0)
 EPS = 0.01
 
 RATES = {
@@ -299,9 +301,9 @@ def test_a_commodity_digital_paid_in_another_currency_is_a_compo_or_a_quanto():
     forward's with the ATM vol in its carry, and under the spread each leg composed at its own.
 
     Killing mutations: the correlation read with the equity's sorted-pair sign - the compo reads
-    514.30 against 504.08; the strike untranslated under the compo, the local smile read at a EUR
-    level's moneyness - 486.92 against 504.08; the correlation dropped from the forward's
-    conditional row, the compo priced uncorrelated - 509.67 against 504.08; a second type declared
+    514.19 against 503.97; the strike untranslated under the compo, the local smile read at a EUR
+    level's moneyness - 486.81 against 503.97; the correlation dropped from the forward's
+    conditional row, the compo priced uncorrelated - 509.56 against 503.97; a second type declared
     on `Reference_Volatility` beside the surface, a block no document authors, named missing.
     """
     oil = 90.0
@@ -325,10 +327,10 @@ def test_a_commodity_digital_paid_in_another_currency_is_a_compo_or_a_quanto():
         sigma = local_vol(oil * fx_fwd / strike)
         return math.sqrt(sigma ** 2 + 2.0 * CORR * sigma * FX_SIGMA + FX_SIGMA ** 2)
 
-    compo = _digital_closed(oil * fx_fwd, strike_eur, composed(strike_eur), R_EUR) * FX_SPOT
+    compo = _digital_closed(oil * fx_fwd, strike_eur, composed(strike_eur), R_EUR) * FX_TODAY
     quanto = _digital_closed(oil * math.exp(-CORR * VOL_ATM * FX_SIGMA * T), strike_usd,
-                             local_vol(oil / strike_usd), R_EUR) * FX_SPOT
-    spread = _spread_closed(oil * fx_fwd, strike_eur, composed, R_EUR) * FX_SPOT
+                             local_vol(oil / strike_usd), R_EUR) * FX_TODAY
+    spread = _spread_closed(oil * fx_fwd, strike_eur, composed, R_EUR) * FX_TODAY
     for terms, valuation, expected in (
             ({'Strike_Price': strike_eur, 'Payoff_Type': 'Compo'}, None, compo),
             ({'Strike_Price': strike_usd, 'Payoff_Type': 'Quanto'}, None, quanto),
@@ -361,10 +363,10 @@ def test_a_compo_binary_spread_composes_each_leg():
     # the equity leg and the fx conversion between the deal's one pair of spot dates
     fwd_c = (SPOT * math.exp((R_USD - Q_EQ) * T_FWD) / FX_SPOT) * math.exp((R_EUR - R_USD) * T_FWD)
     out, _ = _run(_job([deal], factors, valuation=SPREAD_ON))
-    expected = _spread_closed(fwd_c, strike_eur, lambda k: sigma_c, R_EUR) * FX_SPOT
+    expected = _spread_closed(fwd_c, strike_eur, lambda k: sigma_c, R_EUR) * FX_TODAY
     assert abs(_mtm(out, 'BIN') - expected) / expected < 1e-9, (_mtm(out, 'BIN'), expected)
     closed, _ = _run(_job([deal], factors))
-    anchor = _digital_closed(fwd_c, strike_eur, sigma_c, R_EUR) * FX_SPOT
+    anchor = _digital_closed(fwd_c, strike_eur, sigma_c, R_EUR) * FX_TODAY
     assert abs(_mtm(closed, 'BIN') - anchor) / anchor < 1e-9, (_mtm(closed, 'BIN'), anchor)
 
 
@@ -608,7 +610,7 @@ def test_a_compo_barrier_binary_composes_each_leg_as_the_plain_one_does():
     out, _ = _run(_job([dict(BARRIER, Barrier_Price=10.0 * strike_eur, **terms),
                         dict(BINARY, **terms)], factors, valuation=dict(SPREAD_ON, **BARRIER_ON)))
     for ref, fwd, tol in (('BB', EQ_FWD * fx_fwd, 1e-12), ('BIN', EQ_FWD * fx_fwd, 1e-9)):
-        expected = _spread_closed(fwd, strike_eur, composed, R_EUR) * FX_SPOT
+        expected = _spread_closed(fwd, strike_eur, composed, R_EUR) * FX_TODAY
         assert abs(_mtm(out, ref) - expected) / expected < tol, (ref, _mtm(out, ref), expected)
 
 

@@ -1927,7 +1927,7 @@ def calc_compo_geometry(factor_dep, deal_time, shared, fixings=None):
     fx_carry = deal_carry_rate(factor_dep, (factor_dep['Other'][1], factor_dep['Local'][1]),
                                tenor if fixings is None else fixings, deal_time, shared)
     return {'spot_scale': utils.calc_fx_cross(
-                factor_dep['Local'][0], factor_dep['Other'][0], deal_time, shared),
+                factor_dep['Local'][0], factor_dep['Other'][0], deal_time, shared, quoted=True),
             's_adj': utils.calc_fx_forward(
                 factor_dep['Local'], factor_dep['Other'],
                 int(factor_dep['Expiry']), deal_time, shared, lag=factor_dep.get('Spot_Lag')),
@@ -5588,7 +5588,7 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
         (samples.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
         (samples.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
     fx_spot = utils.calc_fx_cross(
-        factor_dep['ForwardFX'][0], factor_dep['CashFX'][0], sim_samples, shared)
+        factor_dep['ForwardFX'][0], factor_dep['CashFX'][0], sim_samples, shared, quoted=True)
     fx_rep = utils.calc_fx_cross(
         factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
     all_samples = utils.calc_time_grid_curve_rate(factor_dep['ForwardPrice'], sim_samples, shared)
@@ -5640,7 +5640,7 @@ def pv_energy_option(shared, time_grid, deal_data, nominal):
             else:
                 forwardfx = utils.calc_fx_forward(
                     factor_dep['ForwardFX'], factor_dep['CashFX'],
-                    sample_t.np[:, utils.RESET_INDEX_Reset_Day], t_block, shared)
+                    sample_t.np[:, utils.RESET_INDEX_Reset_Day], t_block, shared, lag=factor_dep['Spot_Lag'])
 
             sample_ft = weight_t * future_resets * forwardfx
 
@@ -5798,7 +5798,7 @@ def paid_up(mtm_list, deal_time, deal_data, shared):
 
 
 def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.TimeGrid, deal_data: utils.DealDataType,
-                           cashflow_pricer, mtm_currency=None, settle_cash=cash_settle):
+                           cashflow_pricer, mtm_currency=None, settle_cash=cash_settle, lag=None):
     """The floating leg. Its one invariant is CANONICAL FORM: by the time the fold below runs,
     every cashflow row carries exactly ONE effective reset, so a row is a rate and an accrual.
 
@@ -5832,6 +5832,9 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     under `Exclude_Margin` each period's margin is SIMPLE on the nominal and only the rate part
     compounds. So Exclude cannot be a single-accumulator fold - a margin lump inside `total` would
     earn `(1+J)` in every later step, which is exactly `Flat`.
+
+    A leg whose principal resets on the fixing of `mtm_currency` reads that fixing's forward
+    between spot dates under `lag`.
     """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -5852,7 +5855,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     if mtm_currency:
         sim_fx_forward = utils.calc_fx_forward(
             mtm_currency, factor_dep['Currency'], factor_dep['Cashflows'].FXResets[:, utils.RESET_INDEX_Reset_Day],
-            factor_dep['Cashflows'].FXResets[:, :utils.RESET_INDEX_Scenario + 1], shared, only_diag=True)
+            factor_dep['Cashflows'].FXResets[:, :utils.RESET_INDEX_Scenario + 1], shared, only_diag=True, lag=lag)
 
         known_fx = factor_dep['Cashflows'].known_resets(
             shared.simulation_batch, utils.CASHFLOW_INDEX_FXResetValue, utils.CASHFLOW_INDEX_FXResetDate)
@@ -5937,7 +5940,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 future_fx_resets = utils.calc_fx_forward(
                     mtm_currency, factor_dep['Currency'],
                     cashflows.np[past_fx_resets.shape[1]:, utils.CASHFLOW_INDEX_FXResetDate],
-                    discount_block.time_grid[time_ofs:time_ofs + size], shared)
+                    discount_block.time_grid[time_ofs:time_ofs + size], shared, lag=lag)
 
                 all_fx_resets = utils.join_resets(
                     [past_fx_resets, future_fx_resets], 1, deal_data, fx_codes)
@@ -6170,7 +6173,7 @@ def pv_fixed_cashflows(shared, time_grid, deal_data, ignore_fixed_rate=False, se
         if 'SettleFX' in factor_dep:
             discountfx = utils.calc_fx_forward(
                 factor_dep['SettleFX'], factor_dep['Currency'],
-                cash_pmts, discount_block.time_grid, shared)
+                cash_pmts, discount_block.time_grid, shared, delivery=True)
         else:
             discountfx = shared.one
 
@@ -6381,7 +6384,7 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
         (resets.schedule[:, utils.RESET_INDEX_Scenario] > -1) &
         (resets.schedule[:, utils.RESET_INDEX_Reset_Day] <= deal_time[:, utils.TIME_GRID_MTM].max())]
     all_fx_spot = utils.calc_fx_cross(
-        factor_dep['ForwardFX'][0], factor_dep['CashFX'][0], sim_resets, shared)
+        factor_dep['ForwardFX'][0], factor_dep['CashFX'][0], sim_resets, shared, quoted=True)
 
     # the curve a still-unfixed reset is forecast off, named where a frozen one is refused
     forecast_codes = factor_dep['ForwardPrice'] or factor_dep['Commodity']
@@ -6437,7 +6440,7 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
         # the fx adjustment where the payoff currency differs from the deal currency
         discountfx = utils.calc_fx_forward(
             factor_dep['CashFX'], factor_dep['Currency'],
-            cash_pmts, discount_block.time_grid, shared)
+            cash_pmts, discount_block.time_grid, shared, delivery=True)
 
         # the forward block splits again where rows within it own different reset counts
         forward_blocks = forward_block.split_counts(
@@ -6458,7 +6461,7 @@ def pv_energy_cashflows(shared, time_grid, deal_data):
                 forwardfx = utils.calc_fx_forward(
                     factor_dep['ForwardFX'], factor_dep['CashFX'],
                     reset_block.np[offset:, utils.RESET_INDEX_Reset_Day],
-                    discount_block.time_grid[time_ofs:time_ofs + size], shared)
+                    discount_block.time_grid[time_ofs:time_ofs + size], shared, lag=factor_dep['Spot_Lag'])
 
                 all_resets = utils.join_resets(
                     [past_resets, future_resets * forwardfx], 1, deal_data, forecast_codes)
@@ -6916,7 +6919,7 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
             known_sample = [level * fx for level, fx in zip(known_sample, known_fx)]
             past_samples = past_samples * utils.calc_fx_cross(
                 factor_dep['Local'][0], factor_dep['Other'][0],
-                sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared)
+                sim_samples[:, :utils.RESET_INDEX_Scenario + 1], shared, quoted=True)
 
         all_samples.append(torch.cat(
             [torch.cat(known_sample, dim=0), past_samples], dim=0) if known_sample else past_samples)

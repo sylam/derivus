@@ -485,6 +485,31 @@ class Calculation(object):
         return [(utils.Factor(factor.type, factor.name + (k,)), v) for k, v in value.items()] if (
             isinstance(value, dict)) else [(factor, value)]
 
+    def carry_fx_quotes(self, shared, base_date):
+        """Onto `shared` the calendars a process counts spot dates on and `fx_carry`, what carries
+        each FX quote back from its spot date (`utils.calc_time_grid_today_price`): for an `FxRate`
+        stating days and priced in another currency, that currency's curve, its own and its
+        `spot_lag`, each curve the one an FX forward reads, where the job holds both."""
+        def curve(currency):
+            """`currency`'s curve code as `instruments.get_fx_zero_rate_factor` reads it, None where
+            the job holds no rate of that name or not every part of its curve."""
+            rate = instruments.get_fxrate_component(currency, self.all_factors)
+            name = rate and rate.get_repo_curve_name(currency)
+            held = name and all(utils.Factor('InterestRate', name[:x]) in self.all_factors
+                                for x in range(1, len(name) + 1))
+            return instruments.get_interest_factor(
+                name, self.static_factors, self.stoch_factors, self.all_tenors) if held else None
+
+        base = self.config.params['System Parameters']['Base_Currency']
+        shared.calendars, shared.fx_carry = self.config.holidays, {}
+        for key in self.all_factors:
+            factor = instruments.get_factor_component(key, self.all_factors) if key.type == 'FxRate' else None
+            lag = factor and factor.spot_lag(base_date, self.config.holidays)
+            domestic = factor and factor.get_domestic_currency(base)
+            codes = (curve(domestic), curve(key.name)) if lag and domestic != key.name else (None,)
+            if all(codes):
+                shared.fx_carry[key] = codes + (lag,)
+
     def make_factor_index(self, tensors):
         tenors = utils.get_tenors(self.all_factors)
         self.gradient_index = {}
@@ -1342,6 +1367,7 @@ class CreditMonteCarlo(Calculation):
         shared_mem.calc_stats, shared_mem.unpriced = self.calc_stats, self.unpriced
 
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
+        self.carry_fx_quotes(shared_mem, base_date)
 
         self._factor_precalc_args = {}
         for key, value in self.stoch_factors.items():
@@ -2258,6 +2284,7 @@ class BaseValuation(Calculation):
         shared_mem.calc_stats, shared_mem.unpriced = self.calc_stats, self.unpriced
 
         self.all_tenors = utils.update_tenors(self.base_date, self.all_factors)
+        self.carry_fx_quotes(shared_mem, base_date)
 
         return shared_mem
 
@@ -2934,9 +2961,9 @@ class ScenarioValuation(BaseValuation):
     def update_factors(self, params, base_date):
         """The book's price factors compiled as a base valuation compiles them, then, where there
         are scenarios, each whose type carries a scenario axis handed to a process publishing them,
-        its compiled leaves the values it stands at, and the report currency read as the factors
-        then stand. Where the leaves are differentiated each result block keeps its taped value
-        (`tensor`)."""
+        its compiled leaves the values it stands at, and the report currency and the FX quotes'
+        carry read as the factors then stand. Where the leaves are differentiated each result block
+        keeps its taped value (`tensor`)."""
         shared = super(ScenarioValuation, self).update_factors(params, base_date)
         # the base currency's price is identically one, as no model simulates it either
         one = utils.Factor('FxRate', (self.config.params['System Parameters']['Base_Currency'],))
@@ -2948,6 +2975,7 @@ class ScenarioValuation(BaseValuation):
         self.all_factors = {**self.stoch_factors, **self.static_factors}
         shared.Report_Currency = get_fxrate_factor(
             utils.check_rate_name(params['Currency']), self.static_factors, self.stoch_factors)
+        self.carry_fx_quotes(shared, base_date)
         shared.keep_tensor = shared.calc_greeks is not None
         return shared
 
@@ -5505,7 +5533,9 @@ class SACCR(NettingSetCalculation):
             calc.all_tenors, calc.all_factors) for key in (terms.currency, terms.underlying)]
         return utils.calc_fx_forward(
             *codes, (deal.field[terms.expiry] - self.valuation['Base_Date']).days,
-            calc.time_grid.time_grid[:1], self.shared).item()
+            calc.time_grid.time_grid[:1], self.shared, lag=deal.spot_lag(
+                'FxRate', utils.check_rate_name(deal.field[terms.currency]), calc.all_factors,
+                self.valuation['Base_Date'], calc.config.holidays)).item()
 
     #: How an option's P is read off the compiled factors, by its asset class.
     FORWARDS = {'IR': swap_rate, 'FX': fx_forward}

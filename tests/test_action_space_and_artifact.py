@@ -804,10 +804,12 @@ def _logwealth(cfg):
 
 
 def _in_zar(cfg):
-    """`cfg` stated in ZAR at exactly 1/16 USD a rand, so every money of it is sixteen times the USD
-    document's: its calculation `Currency` and its cash and margin balances restated."""
+    """`cfg` stated in ZAR at exactly 1/16 USD a rand today (`Settlement_Days` 0, the quote the
+    price a value converts at), so every money of it is sixteen times the USD document's: its
+    calculation `Currency` and its cash and margin balances restated."""
     cfg = jsonlib.loads(jsonlib.dumps(cfg))
-    cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.ZAR']['Spot'] = 0.0625
+    cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['FxRate.ZAR'].update(
+        Spot=0.0625, Settlement_Days=0)
     cfg['Calc']['Calculation']['Currency'] = 'ZAR'
     ps = cfg['Calc']['Calculation']['Hedging_Problem']['Portfolio_State']
     for key in ('Cash_Balances', 'Margin_Balances'):
@@ -2195,7 +2197,8 @@ def test_a_leg_s_mark_is_read_per_unit_of_its_deal_and_its_contract_size_sizes_a
 def test_a_foreign_future_settles_its_own_currency_s_move_at_the_cross_where_it_settles(tmp_path, account):
     """A future's variation margin on a row is its move in the contract's currency times the FX
     cross at the row it settles on: the client document in a ZAR calculation, the rand simulated at
-    a 15% vol, short 10 USD `PL_OCT_2026` from the first row to the terminal at no spread, books on
+    a 15% vol and quoted for today (`Settlement_Days` 0), so its factor is the cross a value
+    converts at, short 10 USD `PL_OCT_2026` from the first row to the terminal at no spread, books on
     every path each row's VM so converted, credited to its margin account and compounded there to
     the last row, within 1e-6 of the largest path (at most 2.3e-7): the daily-converted VM where the margin is
     a rand account at zero rates, as the CSV writes it to its six decimals, each day's revalued by
@@ -2211,6 +2214,7 @@ def test_a_foreign_future_settles_its_own_currency_s_move_at_the_cross_where_it_
     cfg['Calc']['Calculation']['Currency'] = 'ZAR'
     market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
     market.setdefault('Price Models', {})['GBMAssetPriceModel.ZAR'] = {'Vol': 0.15, 'Drift': 0.0}
+    market['Price Factors']['FxRate.ZAR']['Settlement_Days'] = 0
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     if account == 'ZAR':
         curve = market['Price Factors']['InterestRate.ZAR-SWAP']['Curve']['.Curve']

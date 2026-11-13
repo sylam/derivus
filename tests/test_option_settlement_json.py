@@ -74,15 +74,15 @@ def node(deal):
     return dict(out, Children=[node(child) for child in deal['Children']]) if 'Children' in deal else out
 
 
-def run(deals, base=BASE, calc=None, factors=None):
-    """The results of one job over `deals`: a base valuation at `base`, or `calc` on a GBM spot,
-    `factors` beside the world's."""
+def run(deals, base=BASE, calc=None, factors=None, models=None):
+    """The results of one job over `deals`: a base valuation at `base`, or `calc` on a GBM spot and
+    the factor types `models` names simulated as it says, `factors` beside the world's."""
     market = {'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
               'Valuation Configuration': {}, 'Price Factors': dict(FACTORS, **(factors or {}))}
     if calc:
         market['Price Models'] = {'GBMAssetPriceModel.EQ': {'Vol': SIGMA, 'Drift': 0.0}}
         market['Model Configuration'] = {'.ModelParams': {
-            'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
+            'modeldefaults': dict({'EquityPrice': 'GBMAssetPriceModel'}, **(models or {})), 'modelfilters': {}}}
     job = {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
                              'MCMC_Simulations': 1}, **(calc or {})),
@@ -274,8 +274,8 @@ def test_a_forward_carries_between_spot_dates():
     the vanilla, read the same forward. Paid at a Saturday expiry a year on, an FX one-touch and
     no-touch and an equity no-touch meet the textbook one-touch at the carry between spot dates; a
     compo swaplet list paid on a Monday its composite forward, its fx conversion on the share's
-    lag; and a swap autocall with one coupon on that Monday and a floating leg paying nothing the
-    cash digital.
+    lag, reported at EUR's price today; and a swap autocall with one coupon on that Monday and a
+    floating leg paying nothing the cash digital.
 
     Killing mutations: the factor's stated lag unread, its class's read in its place, the share
     stating two 1.6e-4 high; the carry started at the valuation date, the equity forward 4.1e-4
@@ -358,7 +358,8 @@ def test_a_forward_carries_between_spot_dates():
                 Payoff_Type='Compo', Equity_Volatility='EQ')])
     up = _one_touch_closed(1.35, True, FX_SPOT, (R_USD - R_EUR) * years(year, 2), FX_SIGMA, R_USD)
     down = _one_touch_closed(80.0, False, SPOT, (R_USD - Q_EQ) * years(year, 3), SIGMA, R_USD)
-    composite = UNITS * SPOT * math.exp((R_EUR - Q_EQ) * years(monday, 3) - R_EUR * (monday - BASE).days / 365.0)
+    composite = UNITS * SPOT * math.exp((R_EUR - Q_EQ) * years(monday, 3) - R_EUR * (monday - BASE).days / 365.0) * (
+        today() / FX_SPOT)
     for ref, expected in (('FXOT', up), ('FXNT', CASH * df(365) - up), ('EQNT', CASH * df(365) - down),
                           ('CMP', composite)):
         assert marked[ref] == pytest.approx(expected, rel=1e-12), (ref, marked[ref], expected)
@@ -372,6 +373,112 @@ def test_a_forward_carries_between_spot_dates():
     swap = run([autocall], calc={'MCMC_Simulations': 1})['mtm']
     assert float(swap[swap['Reference'] == 'V2']['Value'].iloc[0]) == pytest.approx(
         UNITS * 0.05 * df((monday - BASE).days) * ndtr(d2), rel=1e-12)
+
+
+#: The forwards' delivery, a Friday half a year on, and the EUR they buy
+DELIVERY, NOTIONAL = pd.Timestamp('2024-12-27'), 1e6
+
+
+def today():
+    """EUR's price in USD on the base date: its quote, the price for delivery on its spot date,
+    carried back on the world's curves."""
+    return FX_SPOT * math.exp(-(R_USD - R_EUR) * lag(BASE, 2) / 365.0)
+
+
+def fx_forward(reference, strike, **terms):
+    """`NOTIONAL` EUR bought for `strike` USD each, delivered on `DELIVERY`."""
+    return dict({'Object': 'FXForwardDeal', 'Reference': reference, 'Buy_Currency': 'EUR', 'Buy_Amount': NOTIONAL,
+                 'Buy_Discount_Rate': 'EUR', 'Sell_Currency': 'USD', 'Sell_Amount': NOTIONAL * strike,
+                 'Sell_Discount_Rate': 'USD', 'Settlement_Date': DELIVERY}, **terms)
+
+
+def test_an_fx_forward_struck_at_the_outright_from_its_spot_date_is_worth_nothing():
+    """A deliverable EUR forward against USD values each currency at its price today, its quote
+    carried back from its spot date on the USD curve less the EUR one: struck at the outright its
+    curves carry from the base date's spot date, two business days on, to the delivery, it is worth
+    nothing to the rounding of its notional; struck at the outright carried from the base date
+    itself it loses the carry over the four calendar days from a Friday to its Tuesday spot date,
+    exact. Stating `Settlement_Days` 0 the quote is today's price, and that outright is worth
+    nothing. Naming a `Holiday_Calendar` whose Tuesday is a holiday, a Friday's spot date is the
+    Wednesday, and the outright from it is worth nothing.
+
+    Killing mutations: the cross converting at the quotes (`calc_fx_cross` defaulting to `quoted`),
+    the spot-dated forward 271.22 where it is worth nothing; the factor's `Holiday_Calendar` unread,
+    the holiday's 68.11.
+    """
+    tau = (DELIVERY - BASE).days / 365.0
+    spot_dated = FX_SPOT * math.exp((R_USD - R_EUR) * (tau - lag(BASE, 2) / 365.0))
+    rowed = FX_SPOT * math.exp((R_USD - R_EUR) * tau)
+    marked = marks([fx_forward('SPOT', spot_dated), fx_forward('ROW', rowed)])
+    assert lag(BASE, 2) == 4 and abs(marked['SPOT']) < 1e-12 * NOTIONAL * FX_SPOT, marked
+    assert marked['ROW'] == pytest.approx(NOTIONAL * (spot_dated - rowed) * df((DELIVERY - BASE).days), rel=1e-9)
+    assert abs(marks([fx_forward('ROW', rowed)], factors=lagged(EUR=0))['ROW']) < 1e-12 * NOTIONAL * FX_SPOT
+    friday, tuesday = pd.Timestamp('2024-09-20'), pd.Timestamp('2024-09-24')
+    later = FX_SPOT * math.exp((R_USD - R_EUR) * ((DELIVERY - friday).days - lag(friday, 2, [tuesday])) / 365.0)
+    named = {'FxRate.EUR': dict(FACTORS['FxRate.EUR'], Holiday_Calendar=book.CALENDAR)}
+    assert lag(friday, 2, [tuesday]) == lag(friday, 2) + 1 == 5
+    assert abs(marks([fx_forward('LATER', later)], friday, named)['LATER']) < 1e-12 * NOTIONAL * FX_SPOT
+
+
+def test_a_non_deliverable_forward_is_worth_its_deliverable_twin():
+    """Settled in USD on the delivery date, a EUR non-deliverable forward pays the outright agreed
+    for delivery that day, EUR's price today carried on the curves from the base date, less its
+    strike: struck at the spot, its value is the deliverable forward's on the same terms, to 1e-12.
+
+    Killing mutation: the forward read as a fixing (no `delivery`), the quote carried from the base
+    date rather than its price today, 12,280.72 where it is worth 12,009.49.
+    """
+    twin = fx_forward('NDF', FX_SPOT, Object='FXNonDeliverableForward', Settlement_Currency='USD',
+                      Discount_Rate='USD')
+    marked = marks([fx_forward('FWD', FX_SPOT), {k: v for k, v in twin.items() if not k.endswith('_Discount_Rate')}])
+    assert marked['FWD'] > 1e4 and marked['NDF'] == pytest.approx(marked['FWD'], rel=1e-12), marked
+
+
+def test_a_value_reported_in_a_foreign_currency_is_its_value_over_that_currency_s_price_today():
+    """Reported in EUR, a USD cashflow's value is its USD one over EUR's price today, the quote
+    carried back from its spot date four calendar days on; reported in USD, a EUR cashflow's is its
+    EUR one times that price, exact against the curves both ways.
+
+    Killing mutation: the report conversion reading the quote, the USD cashflow in EUR 2.2e-4 low.
+    """
+    cashflows = [{'Object': 'FixedCashflowDeal', 'Reference': currency, 'Currency': currency, 'Discount_Rate': currency,
+                  'Amount': NOTIONAL, 'Payment_Date': DELIVERY} for currency in ('USD', 'EUR')]
+    usd, eur = ({reference: float(value) for reference, value in zip(frame['Reference'], frame['Value'])}
+                for frame in (run(cashflows, calc={'Currency': currency})['mtm'] for currency in ('USD', 'EUR')))
+    local = {currency: NOTIONAL * math.exp(-rate * (DELIVERY - BASE).days / 365.0)
+             for currency, rate in (('USD', R_USD), ('EUR', R_EUR))}
+    assert usd['USD'] == pytest.approx(local['USD'], rel=1e-12) and eur['EUR'] == pytest.approx(local['EUR'], rel=1e-12)
+    assert eur['USD'] == pytest.approx(local['USD'] / today(), rel=1e-12), (eur['USD'], local['USD'] / FX_SPOT)
+    assert usd['EUR'] == pytest.approx(local['EUR'] * today(), rel=1e-12), (usd['EUR'], local['EUR'] * FX_SPOT)
+
+
+@pytest.mark.parametrize('model', ['GBMAssetPriceTSModelImplied', 'LogVar2FJImpliedSpotModel'])
+def test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_every_row(model):
+    """Under a credit Monte Carlo on flat curves, EUR simulated at a variance of 1e-12 - the implied
+    GBM, and the LogVar2FJ outer at its GBM limit - a EUR cashflow's USD value deflated on the USD
+    curve is its value on the base date on every row of a daily grid over a weekend, path by path
+    at float32: the quote drifts from each row's spot date to the next's, two, three or four
+    calendar days on, and converts at its price today.
+
+    Killing mutation, in either model: the drift read row to row, the Saturday three calendar days
+    from its spot date 5.5e-5 high against the base date's four, a Monday's two 1.1e-4.
+    """
+    # the GBM limit factor is that module's own, and only this gate reads it
+    from test_logvar2fj_json import GBM_LIMIT, _curve
+    implied = {
+        'GBMAssetPriceTSModelImplied': {'GBMAssetPriceTSModelParameters.EUR': {
+            'Quanto_FX_Volatility': None, 'Quanto_FX_Correlation': 0.0, 'Vol': _curve([[0.0, 1e-6], [5.0, 1e-6]])}},
+        'LogVar2FJImpliedSpotModel': {'LogVar2FJModelParameters.EUR': dict(
+            GBM_LIMIT, Xi_Curve=_curve([[0.0, 1e-12], [5.0, 1e-12]]))}}
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'EUR', 'Currency': 'EUR', 'Discount_Rate': 'EUR',
+                'Amount': NOTIONAL, 'Payment_Date': BASE + pd.DateOffset(months=1)}
+    mtm = run([cashflow], calc=dict(CMC, Time_grid='0d 1d(1d) 2w'), models={'FxRate': model}, factors=dict(
+        implied[model], **{'FxRate.EUR': dict(FACTORS['FxRate.EUR'], Domestic_Currency='USD')}))['mtm']
+    assert {lag(day, 2) for day in mtm.index} == {2, 3, 4}
+    worth = NOTIONAL * math.exp(-R_EUR * (cashflow['Payment_Date'] - BASE).days / 365.0) * today()
+    for day in mtm.index:
+        deflated = np.asarray(mtm.loc[day].values, dtype=float) * df((day - BASE).days)
+        assert np.allclose(deflated, worth, rtol=2e-6, atol=0.0), (day, deflated.mean() / worth - 1.0)
 
 
 #: The declared-defaults swaption, settled physically on its legs, and its cash twin paid 40 days

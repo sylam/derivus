@@ -77,6 +77,8 @@ KNOWN = {
         'through the seam, and its strips through `forward_vol_strip`',
     ('pricing.zero_carry_rate', 'utils.carried_forward'):
         'the outright forward, `exp` of the integral the zero carry divides by its year fraction',
+    ('pricing.zero_carry_rate', 'utils.calc_time_grid_today_price'):
+        'a quote carried back over its own spot lag, `exp` of the integral over the lag, no tenor',
     ('pricing.forward_carry_rate', 'pricing.deal_carry_rate'):
         'the zero carry over its deal\'s day count, for a pricer reading one expiry',
     ('pricing.forward_vol_strip', 'pricing.deal_carry_rate'): 'returns a carry and reads no vol',

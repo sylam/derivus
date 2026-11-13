@@ -21,6 +21,7 @@ import test_declared_defaults as book
 import trial_commodity
 from derivus import utils
 from derivus.config import CustomJsonEncoder
+from test_option_settlement_json import lag
 from test_position_scaling import document, marks
 
 BASE = pd.Timestamp('2026-01-15')
@@ -121,6 +122,14 @@ def discount(rate, day):
     return math.exp(-rate * (day - trial_commodity.B).days / 365.0)
 
 
+def fixings(samples):
+    """`samples`' years from the trial base date as their fx fixings carry, between spot dates, and
+    EUR's price in USD today, its quote carried back from its spot date."""
+    lags = np.array([lag(day, 2) for day in samples]) - lag(trial_commodity.B, 2)
+    return ((samples - trial_commodity.B).days.to_numpy() + lags) / 365.0, book.X0 * math.exp(
+        -(book.DISCOUNT[0] - book.R_EUR) * lag(trial_commodity.B, 2) / 365.0)
+
+
 def average_black(g, t, variance, strike):
     """Black on the two moments of the average of `g`, each sample's variance accrued over its own
     `t` from the base date: `M1 = mean G`, `M2 = sum_ij G_i G_j exp(s2 min(t_i, t_j)) / n^2`."""
@@ -141,7 +150,8 @@ def test_an_energy_option_accrues_each_sample_s_variance_from_the_base_date():
     Reference, by hand: `G_i = F_i X_i`, `F_i` the forward at sample i's serial, `X_i` one in USD
     and `exp((r_EUR - r_USD) t_i) / 1.25` EUR per USD, `t_i = days_i / 365`; `M1 = mean G`,
     `M2 = sum_ij G_i G_j exp(s2 min(t_i, t_j)) / n^2`, `s2` the fuel variance plus the fx one;
-    `Volume DF(settle) Black(M1, K, sqrt(log M2 / M1^2))`, crossed to USD at 1.25.
+    `Volume DF(settle) Black(M1, K, sqrt(log M2 / M1^2))`, crossed to USD at EUR's price today; each
+    fx forward carried between its fixing's spot dates.
 
     Killing mutations: a sample's variance time read off `Start_Day`, its Excel serial - 72,799.24
     against 5,532.62 - and the compo's fx forward dated there, 127 years out.
@@ -155,8 +165,9 @@ def test_an_energy_option_accrues_each_sample_s_variance_from_the_base_date():
 
     usd = deal['Volume'] * discount(r_usd, deal['Settlement_Date']) * average_black(
         forwards, t, fuel_vol ** 2, deal['Strike'])
-    eur = deal['Volume'] * book.X0 * discount(book.R_EUR, deal['Settlement_Date']) * average_black(
-        forwards * np.exp((book.R_EUR - r_usd) * t) / book.X0, t, fuel_vol ** 2 + book.SIGMA ** 2,
+    fixed, today = fixings(samples)
+    eur = deal['Volume'] * today * discount(book.R_EUR, deal['Settlement_Date']) * average_black(
+        forwards * np.exp((book.R_EUR - r_usd) * fixed) / book.X0, t, fuel_vol ** 2 + book.SIGMA ** 2,
         65.0)
     for job, reference in ((trial('FUEL_OPT'), usd),
                            (trial('FUEL_OPT', Currency='EUR', Discount_Rate='EUR', Strike=65.0), eur)):
@@ -175,16 +186,17 @@ def test_an_energy_option_paid_in_another_currency_is_a_compo_or_a_quanto():
     each forward one carried by `-rho sigma sigma_fx` over its own days, and pays the EUR at one.
 
     Killing mutations: the correlation read with the equity's sorted-pair sign - the compo reads
-    5,454.29 against 7,009.53; the quanto's carry dropped - 6,975.91 against 6,711.86.
+    5,451.60 against 7,006.62; the quanto's carry dropped - 6,975.15 against 6,711.12.
     """
     deal = next(d for d in trial_commodity.DEALS if d['Reference'] == 'FUEL_OPT')
     samples = pd.bdate_range(deal['Period_Start'], deal['Period_End'])
     t = (samples - trial_commodity.B).days.to_numpy() / 365.0
     forwards, r_usd = fuel_forward(samples), book.DISCOUNT[0]
     fuel_vol = trial_commodity.FACTORS['CommodityPriceVol.FUEL']['Surface'].array[0, 2]
-    paid = deal['Volume'] * book.X0 * discount(book.R_EUR, deal['Settlement_Date'])
+    fixed, today = fixings(samples)
+    paid = deal['Volume'] * today * discount(book.R_EUR, deal['Settlement_Date'])
     compo = paid * average_black(
-        forwards * np.exp((book.R_EUR - r_usd) * t) / book.X0, t,
+        forwards * np.exp((book.R_EUR - r_usd) * fixed) / book.X0, t,
         fuel_vol ** 2 + book.SIGMA ** 2 + 2.0 * 0.3 * fuel_vol * book.SIGMA, 65.0)
     quanto = paid * average_black(
         forwards * np.exp(-0.3 * fuel_vol * book.SIGMA * t), t, fuel_vol ** 2, deal['Strike'])

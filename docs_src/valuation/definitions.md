@@ -12,7 +12,7 @@ forwards and European options have the closed forms below.
 | Quantity | Convention (vanilla equity and FX options) |
 |---|---|
 | $\tau$ (vol and Black time) | the **Discount_Rate** curve's day count from $t$ to **Expiry_Date** |
-| Forward $F(t,T)$ | carried between spot dates, the underlying's **Settlement_Days** business days on from $t$ and from the expiry: 3 on an **EquityPrice** and 2 on an **FxRate** where omitted, a pair reading its underlying currency's (Monday-Friday; these deals declare no calendar) |
+| Forward $F(t,T)$ | carried between spot dates, the underlying's **Settlement_Days** business days on from $t$ and from the expiry: 3 on an **EquityPrice** and 2 on an **FxRate** where omitted, a pair reading its underlying currency's, on the factor's **Holiday_Calendar**, else the deal's **Accrual_Calendars**, else Monday to Friday |
 | Discounting | from the settlement date: **Settlement_Date** (equity) or **Delivery_Date** (FX), the expiry where blank |
 | Past the expiry | the underlying is the expiry's print: the scenario's own level, or **Price_Fixing** where the expiry is before the base date |
 
@@ -20,7 +20,14 @@ Every equity and FX deal reading a forward carries it between spot dates the sam
 from each fixing it reads: the options, barriers, touches, Asians, autocalls, TARFs, accumulators,
 extendable forwards, range accruals, the equity forward and the equity swaps, each at its underlying
 factor's **Settlement_Days**. A deal has one lag for every spot fixing it reads, a `Compo`'s $F_X$
-included. FX forwards and commodity deals carry with none.
+included. Commodity deals carry with none.
+
+An **FxRate**'s **Spot** is the price for delivery on its spot date, so a value converts into
+another currency at each currency's price today: the quote carried back from its spot date on its
+domestic curve less its own, as an FX forward reads them, the base currency's being one. A payoff,
+a barrier and a fixing read the quote. An FX forward, deliverable or not, is agreed for delivery on
+its settlement date: its outright is the price today carried from $t$ to that date, which is the
+quote carried from its spot date.
 
 ## Forwards
 

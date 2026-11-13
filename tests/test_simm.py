@@ -1294,25 +1294,26 @@ def test_a_monte_carlo_set_s_crif_is_its_trades_own_to_the_bit():
 
 #: The module's world's CRIF as the row-at-a-time bump wrote it at ee4492f, each move priced alone
 #: and differenced against the base priced alone, `{coordinates: Amount}` in hex - the option's
-#: rows as the batch writes them, its forward carried between spot dates.
+#: rows as the batch writes them, its forward carried between spot dates and its value converted
+#: at the rand's price today.
 ROW_AT_A_TIME = {
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '1y', 'OIS'): '-0x1.8629280000000p-13',
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '2y', 'OIS'): '-0x1.887356a6ed101p-11',
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '3y', 'OIS'): '-0x1.a12e854dda204p-9',
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '5y', 'OIS'): '0x1.bb68826f11006p+8',
     ('SWAP', 'Risk_IRCurve', 'USD', '1', '10y', 'OIS'): '0x1.f1dd1352dba3cp-3',
-    ('FXO', 'Risk_FX', 'ZAR', '', '', ''): '-0x1.279fb4f56bfd0p+12',
-    ('FXO', 'Risk_FXVol', 'USDZAR', '', '1y', ''): '0x1.d3fb7f318b0e0p+11',
-    ('FXO', 'Risk_IRCurve', 'USD', '1', '1m', 'OIS'): '0x1.311ead6233d05p-2',
-    ('FXO', 'Risk_IRCurve', 'USD', '1', '3m', 'OIS'): '0x1.7a210f8617d4ap-9',
-    ('FXO', 'Risk_IRCurve', 'USD', '1', '1y', 'OIS'): '-0x1.a632c0145c800p+5',
-    ('FXO', 'Risk_IRCurve', 'USD', '1', '2y', 'OIS'): '-0x1.2eb10007de559p-2',
-    ('FXO', 'Risk_IRCurve', 'USD', '1', '3y', 'OIS'): '-0x1.a9c3844354eebp-11',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3m', 'Libor3m'): '0x1.73a79bc9a075dp+3',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '6m', 'Libor3m'): '0x1.1dbc149bc6810p+4',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '1y', 'Libor3m'): '0x1.1daf456cfd441p+4',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '2y', 'Libor3m'): '0x1.3d5e918f20435p-2',
-    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3y', 'Libor3m'): '0x1.be68e33f79682p-11'}
+    ('FXO', 'Risk_FX', 'ZAR', '', '', ''): '-0x1.27aa285934560p+12',
+    ('FXO', 'Risk_FXVol', 'USDZAR', '', '1y', ''): '0x1.d40c0a6cb6840p+11',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '1m', 'OIS'): '0x1.0c8b7926fcd81p-2',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '3m', 'OIS'): '0x1.4ccd6c0193f99p-9',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '1y', 'OIS'): '-0x1.a641acf704000p+5',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '2y', 'OIS'): '-0x1.2ebbb3618adf0p-2',
+    ('FXO', 'Risk_IRCurve', 'USD', '1', '3y', 'OIS'): '-0x1.a9d2916a41fedp-11',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3m', 'Libor3m'): '0x1.74d61ba2ebd31p+3',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '6m', 'Libor3m'): '0x1.1dc76172a8022p+4',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '1y', 'Libor3m'): '0x1.1db95eddaf146p+4',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '2y', 'Libor3m'): '0x1.3d69c9bf20435p-2',
+    ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3y', 'Libor3m'): '0x1.be78ab3f79682p-11'}
 
 
 @pytest.mark.card
@@ -1327,7 +1328,8 @@ def test_the_scenario_batch_writes_the_crif_the_row_at_a_time_bump_wrote(serial)
     off themselves, so its bootstrap returns them as written where a solve from the par rates
     landed within 2.0e-14 of them. The option's rows are banked as the batch writes them, its
     forward carried between spot dates: the carry's start, two business days on, writes the two
-    dollar rows at 1m and 3m, and its FX delta is 4,729.98.
+    dollar rows at 1m and 3m, and its value converted at the rand's price today: its FX delta is
+    4,730.63.
 
     Killing mutations: a pass's columns read in reverse - rows written on coordinates the bump
     never wrote, each read off another move; the scenarios' values never supplied, every column of
@@ -2737,13 +2739,13 @@ def notebook(crif, currency, parameters=PARAMETERS):
 
 #: Each document's margin, `{(direction, counterparty): SIMM}` in USD, banked in hex.
 BANKED = {
-    'rand': {('Posted', 'RATES'): '0x1.dec289e9f4df7p+18',
-             ('Posted', 'BOOK'): '0x1.d3996b2acdec0p+19',
-             ('Collected', 'RATES'): '0x1.039ffae2297a7p+19',
-             ('Collected', 'BOOK'): '0x1.d4cb158c41ec6p+19'},
-    'dollar': {('Posted', 'RATES'): '0x1.876c3961585f0p+17',
+    'rand': {('Posted', 'RATES'): '0x1.deb1c5d8771f9p+18',
+             ('Posted', 'BOOK'): '0x1.d383822abd126p+19',
+             ('Collected', 'RATES'): '0x1.039733bb79f7dp+19',
+             ('Collected', 'BOOK'): '0x1.d4b5209e2202ep+19'},
+    'dollar': {('Posted', 'RATES'): '0x1.877aa5d80934bp+17',
                ('Posted', 'CREDIT'): '0x1.d96813ab3bc3dp+17',
-               ('Collected', 'RATES'): '0x1.b6dd67a6256d1p+17',
+               ('Collected', 'RATES'): '0x1.b6ed979c5bdc9p+17',
                ('Collected', 'CREDIT'): '0x1.d96813ab3bc3dp+17'}}
 
 
@@ -2753,8 +2755,8 @@ def test_the_margin_is_the_notebooks_on_the_synthetic_parameters(document, tmp_p
     `notebook` with the three departures it names, read off each document's CRIF on the synthetic
     parameters, writes every margin the engine writes - per set, direction, regime, product class,
     risk class and margin type, with the totals - to 1e-12, measured within 2.9e-16, and each set's
-    margin is its banked figure to 1e-12: in rand 490,250.15 posted and 531,711.84 collected on the
-    rates, 957,643.35 and 960,088.67 on the rest; in dollars 200,408.45 and 224,698.81 on the rates
+    margin is its banked figure to 1e-12: in rand 490,183.09 posted and 531,641.62 collected on the
+    rates, 957,468.07 and 959,913.02 on the rest; in dollars 200,437.30 and 224,731.18 on the rates
     and 242,384.15 either way on the default swap, re-banked 2.7e-12 under its figure on curves
     solved from the par rates: its survival curve, quoted off itself, now stands as written while
     each spread move still re-solves cold, so its rows carry the cold solve's rounding against the
@@ -2768,12 +2770,12 @@ def test_the_margin_is_the_notebooks_on_the_synthetic_parameters(document, tmp_p
     together past their threshold (CR 1.46); the notebook netting them first reads that credit
     margin 1.9% over, 246,623.70 against 242,017.24.
 
-    Killing mutations: the sub-curve correlation read as one - the dollar rates delta 55,039.88
-    against 54,397.65; the rate g_bc dropped - 55,775.30 there and 330,964.92 against 330,483.02 in
+    Killing mutations: the sub-curve correlation read as one - the dollar rates delta 55,025.73
+    against 54,383.22; the rate g_bc dropped - 55,746.71 there and 330,894.41 against 330,429.49 in
     rand; the FX vol group read off the row's currency, a pair's weight its qualifier's against the
-    calculation currency's - the dollar FX vega 11,832.69 against 54,608.67; the class correlations
-    halved - the rand rates set's posted margin 470,763.60 against 490,250.15; the concentration
-    ratio f read as one - the rand commodity delta 699,961.58 against 699,973.48.
+    calculation currency's - the dollar FX vega 11,834.50 against 54,621.15; the class correlations
+    halved - the rand rates set's posted margin 470,698.19 against 490,183.09; the concentration
+    ratio f read as one - the rand commodity delta 699,816.61 against 699,828.51.
     """
     calc, output = MARGINED[document](tmp_path)
     found, reference = margins(output['Results']), notebook(output['Results']['CRIF'],

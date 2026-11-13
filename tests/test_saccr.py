@@ -34,6 +34,7 @@ from scipy import optimize, stats
 import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder
+from test_option_settlement_json import lag
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
 PARAMETERS = os.path.join(FIXTURES, 'saccr_parameters.json')
@@ -630,23 +631,28 @@ def black_delta(forward, strike, vol, expiry, call):
 def test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_hand(world):
     """CRE52.35, CRE52.36, CRE52.37(2), CRE52.59 AND CRE52.66. One unmargined set: a bought euro
     call in dollars, its notional the million euros crossed, its delta Black on the pair's forward
-    a year out, 1.25 e^0.04 / 1.06, at the 15% vol; a sold dollar call in euros, its foreign leg
-    the 750 thousand euros its strike pays, its forward 0.8 e^((ln 1.06 - 0.04) 181/365) six months
-    out, and the pair ordered euro first, so long dollars is short its risk factor and the sold
-    call's delta is +0.772; the two summed in the one pair at 4%. A forward on an index, Risk_Equity
-    bucket 11, at 20% and a correlation of 80%, and a sold one on a share at 32% and 50%, aggregated
-    as CRE52.66(4) states; a payer amortising two million a year, its notional averaged over its
-    life, six million; and a future short 40,000 units of silver at 25, its delta -1 by the sign of
-    its units. Each class's add-on, the aggregate, the multiplier on V and the EAD by hand.
+    a year out between its spot dates, 1.25 e^((0.04 - ln 1.06) 367/365), at the 15% vol; a sold
+    dollar call in euros, its foreign leg the 750 thousand euros its strike pays, its forward
+    0.8 e^((ln 1.06 - 0.04) 181/365) six months out, and the pair ordered euro first, so long
+    dollars is short its risk factor and the sold call's delta is +0.772; the two summed in the one
+    pair at 4%. A forward on an index, Risk_Equity bucket 11, at 20% and a correlation of 80%, and a
+    sold one on a share at 32% and 50%, aggregated as CRE52.66(4) states; a payer amortising two
+    million a year, its notional averaged over its life, six million; and a future short 40,000
+    units of silver at 25, its delta -1 by the sign of its units. Each class's add-on, the
+    aggregate, the multiplier on V and the EAD by hand.
 
-    Killing mutations: the pair's ordering ignored - the FX add-on 1,535.5 against 39,429.6; the index
+    Killing mutations: the pair's ordering ignored - the FX add-on 1,548.2 against 39,416.9; the index
     bucket rule dropped, the index a single name - the equity add-on 3,116,056 against 1,862,742; the
     amortising principal read whole - its adjusted notional 44,239,843 against 26,543,906.
     """
     _, output = world
     found, rows = netting_sets(output).loc['MIXED'], trades(output, 'MIXED')
-    euro = black_delta(1.25 * math.exp(0.04) / 1.06, 1.3, 0.15, 1.0, True)
-    dollar = black_delta(0.8 * math.exp((math.log(1.06) - 0.04) * 181 / 365), 0.75, 0.15, 0.5,
+    def between(expiry):
+        """The years from the base date's spot date to `expiry`'s, two business days on each."""
+        return ((expiry - BASE).days + lag(expiry, 2) - lag(BASE, 2)) / 365
+
+    euro = black_delta(1.25 * math.exp((0.04 - math.log(1.06)) * between(years(1))), 1.3, 0.15, 1.0, True)
+    dollar = black_delta(0.8 * math.exp((math.log(1.06) - 0.04) * between(SIX_MONTHS)), 0.75, 0.15, 0.5,
                          True)
     assert rows.loc['EUR_CALL', 'AdjustedNotional'] == 1.25e6, rows.loc['EUR_CALL']
     assert rows.loc['USD_CALL', 'AdjustedNotional'] == 0.75e6 * 1.25, rows.loc['USD_CALL']

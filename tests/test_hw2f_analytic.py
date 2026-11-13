@@ -68,7 +68,8 @@ def test_a_tenor_0_knot_reads_the_stated_curve_and_every_deal_on_it_prices(model
 
     - row 0 of the simulated curve is the stated curve at every knot on every path, the 0 knot to
       its ulp and the rest bit for bit - the 0.001y knot spanning its own tenor; the cashflow's
-      row 0 is its base valuation bit for bit, and the six closed-form deals' to 1e-13;
+      row 0 is its base valuation to its ulp, converted at EUR's price today off the 0 knot, and
+      the six closed-form deals' to 1e-13;
     - under the Hull-White at 1% and 5% reversion each row's tenor-0 mean is the short rate's,
       f(0, t) + s^2/(2a^2)(1 - e^{-at})^2 with f(0, t) = r(t) + t r'(t) off the stated knots, to
       3e-7 - the model terms read across their day, 2.4e-7 at two years.
@@ -97,7 +98,7 @@ def test_a_tenor_0_knot_reads_the_stated_curve_and_every_deal_on_it_prices(model
             for deal in calc.netting_sets.deals()}
     assert len(rows) == len(deals) and all(np.isfinite(v).all() for v in rows.values())
     marks, _ = book.marks(deals, factors)
-    assert rows['CF30D'][0].mean() == float.fromhex(marks['CF30D'])
+    assert abs(rows['CF30D'][0].mean() - float.fromhex(marks['CF30D'])) <= np.spacing(float.fromhex(marks['CF30D']))
     for ref in ('FXASN', 'FXDASN', 'FXOT', 'FXNT', 'FXPKO', 'FXKOR'):
         assert rows[ref][0].mean() == pytest.approx(float.fromhex(marks[ref]), rel=1e-13), ref
     if block:

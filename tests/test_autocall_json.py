@@ -356,7 +356,10 @@ def _compo_digital(threshold, corr):
         C0 = SPOT / FX_EUR                 (the USD->EUR cross is 1/FX_EUR)
         b  = R_EUR - Q_EQ                  ((r_usd - q) + (r_eur - r_usd)), between spot dates
         sigma_c^2 = SIGMA^2 + 2*rho*SIGMA*FX_SIGMA + FX_SIGMA^2,  rho = -corr
-        PV = Units * coupon * exp(-R_EUR*T) * N(d2) * FX_EUR      (EUR mark, USD report)
+        PV = Units * coupon * exp(-R_EUR*T) * N(d2) * P_EUR       (EUR mark, USD report)
+
+    `P_EUR` is EUR's price today, `FX_EUR` carried back from its spot date on the USD curve less the
+    EUR one.
 
     `rho = -corr` is the sorted-pair convention: the correlation is authored on EUR.USD and this
     deal's cross runs USD->EUR, so `check_fx_name` flips the sign - the oracle carrying the flip
@@ -369,7 +372,8 @@ def _compo_digital(threshold, corr):
     sigma_c = math.sqrt(SIGMA ** 2 + 2.0 * rho * SIGMA * FX_SIGMA + FX_SIGMA ** 2)
     b = R_EUR - Q_EQ
     d2 = (math.log(c0 / k) + b * _spot_years(0, HORIZON) - 0.5 * sigma_c ** 2 * t) / (sigma_c * math.sqrt(t))
-    return UNITS * COUPON * math.exp(-R_EUR * t) * _ndtr(d2) * FX_EUR
+    return UNITS * COUPON * math.exp(-R_EUR * t) * _ndtr(d2) * FX_EUR * math.exp(
+        -(R_USD - R_EUR) * lag(pd.Timestamp(BASE), 2) / DAYS)
 
 
 def test_a_compo_autocall_is_a_digital_on_the_converted_spot(tmp_path):
@@ -378,8 +382,8 @@ def test_a_compo_autocall_is_a_digital_on_the_converted_spot(tmp_path):
     deals had never priced before this (`calc_vol_adjustment` returned a python-float b_adj that
     `torch.unsqueeze` refused, skipping the deal).
 
-    MEASURED: 0.45883048 against the closed form's 0.45883048, 4.4e-16 relative; the flipped
-    correlation lands on ITS closed form (0.43674331) exactly, so the sorted-pair sign flip is
+    MEASURED: 0.45872992 against the closed form's 0.45872992, 4.4e-16 relative; the flipped
+    correlation lands on ITS closed form (0.43664760) exactly, so the sorted-pair sign flip is
     measured rather than assumed.
 
     Killing mutation: the composite variance's cross term taken with the wrong sign.

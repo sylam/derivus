@@ -423,7 +423,7 @@ def test_an_fx_resetting_nominal_off_a_frozen_pair_is_refused_by_name(tmp_path):
 
     base = priced(tmp_path, 'frozen_pair_base.json', frozen_world(
         mtm_cross_currency_swap(), XCCY_FACTORS, base_valuation=True))
-    assert row_value(base, 'XCCY_MTM') == pytest.approx(17310252.8668, rel=1e-8), (
+    assert row_value(base, 'XCCY_MTM') == pytest.approx(17317712.5860, rel=1e-8), (
         'one column on both sides is untouched - a base valuation prices the frozen pair')
 
 

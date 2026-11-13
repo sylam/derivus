@@ -1516,6 +1516,9 @@ class Calculation_State(object):
         # here, at 1, so a calculation that does not batch is read without a fallback.
         self.simulation_batches = 1
         self.Report_Currency = report_currency
+        # what carries each FX quote back from its spot date (`calc_time_grid_today_price`), filled
+        # by `Calculation.carry_fx_quotes`: a state nobody filled converts at the quotes
+        self.fx_carry = {}
         self.t_Cashflows = None
         # these are shared parameter states
         self.riskneutral = nomodel == 'RiskNeutral'
@@ -4714,14 +4717,16 @@ def split_counts(rates, counts, shared):
     return zip(*splits)
 
 
-def calc_fx_cross(rate1, rate2, time_grid, shared):
-    key_code = ('fxcross', tuple(tuple(x[:2] for x in code) for code in (rate1, rate2)),
+def calc_fx_cross(rate1, rate2, time_grid, shared, quoted=False):
+    """One unit of `rate1`'s currency in `rate2`'s on each row of `time_grid`: the ratio of their
+    today prices (`calc_time_grid_today_price`), which converts a value, or of their quotes where
+    `quoted`, which a fixing, a payoff, a barrier and a forward between spot dates read."""
+    key_code = ('fxcross', tuple(tuple(x[:2] for x in code) for code in (rate1, rate2)), quoted,
                 time_grid[:, TIME_GRID_MTM].tobytes())
     if rate1 != rate2:
         if key_code not in shared.t_Buffer:
-            shared.t_Buffer[key_code] = calc_time_grid_spot_rate(
-                rate1, time_grid, shared) / calc_time_grid_spot_rate(
-                rate2, time_grid, shared)
+            price = calc_time_grid_spot_rate if quoted else calc_time_grid_today_price
+            shared.t_Buffer[key_code] = price(rate1, time_grid, shared) / price(rate2, time_grid, shared)
     else:
         shared.t_Buffer[key_code] = shared.one
     return shared.t_Buffer[key_code]
@@ -4731,7 +4736,7 @@ def fx_fixings(factor_dep, schedule, shared):
     """The deal's FX cross at each row of a fixing `schedule` - one row per fixing, a static spot's
     single row broadcast to them all."""
     samples = calc_fx_cross(factor_dep['Underlying_Currency'][0], factor_dep['Currency'][0],
-                            schedule[:, :RESET_INDEX_Scenario + 1], shared)
+                            schedule[:, :RESET_INDEX_Scenario + 1], shared, quoted=True)
     return samples.expand(len(schedule), *samples.shape[1:])
 
 
@@ -4834,13 +4839,16 @@ def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=Fal
     return shared.t_Buffer[key_code]
 
 
-def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False, lag=None):
-    key_code = ('fxforward', tuple(tuple(x[:2] for x in code) for code in (*local, *other)), only_diag,
+def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False, lag=None, delivery=False):
+    """One unit of `local`'s currency in `other`'s at `T`, each an `(fx code, curve code)`: the quote
+    expected to fix on `T`, the quoted cross carried between spot dates under `lag`, or where
+    `delivery` the price agreed on a row for delivery on `T`, the today cross carried from the row."""
+    key_code = ('fxforward', tuple(tuple(x[:2] for x in code) for code in (*local, *other)), only_diag, delivery,
                 T if isinstance(T, int) else tuple(T), lag and lag.args, time_grid[:, TIME_GRID_MTM].tobytes())
     if key_code not in shared.t_Buffer:
         shared.t_Buffer[key_code] = carried_forward(
-            calc_fx_cross(local[0], other[0], time_grid, shared), other[1], local[1], T, time_grid, shared,
-            only_diag, lag) if local[0] != other[0] else shared.one
+            calc_fx_cross(local[0], other[0], time_grid, shared, quoted=not delivery), other[1], local[1], T,
+            time_grid, shared, only_diag, lag) if local[0] != other[0] else shared.one
     return shared.t_Buffer[key_code]
 
 
@@ -4942,6 +4950,23 @@ def calc_time_grid_spot_rate(rate, time_grid, shared):
 
         shared.t_Buffer[key_code] = value
 
+    return shared.t_Buffer[key_code]
+
+
+def calc_time_grid_today_price(rate, time_grid, shared):
+    """An FX code's price today on each row of `time_grid`: its quote, the price for delivery on its
+    spot date, carried back to the row on the domestic curve less its own under its lag, as
+    `shared.fx_carry` holds them for its head factor; the quote where it holds none."""
+    spot = calc_time_grid_spot_rate(rate, time_grid, shared)
+    carry = shared.fx_carry.get(rate[0][FACTOR_INDEX_Offset])
+    if carry is None:
+        return spot
+    key_code = ('today', tuple(tuple(r[:2]) for r in rate), time_grid[:, :TIME_GRID_ScenarioPriorIndex + 1].tobytes())
+    if key_code not in shared.t_Buffer:
+        domestic, own, lag = carry
+        rows = time_grid[:, TIME_GRID_MTM].reshape(-1, 1)
+        shared.t_Buffer[key_code] = spot * torch.exp(
+            -torch.squeeze(curve_spread(domestic, own, lag(rows), time_grid, shared), dim=1))
     return shared.t_Buffer[key_code]
 
 

@@ -232,6 +232,26 @@ Grouped by where a validator meets them.
   2028, the annual ISDA period accrues 1.36e-3 of itself high and the semi-annual one after the
   year end 2.7e-3 high; the two semi-annual ICMA periods accrue 8.2e-3 high and 2.7e-3 low. The fix
   is the two conventions in `DayCount.accrual`, the ICMA one reading the period's frequency.
+- **A USD pair's spot date counts one calendar for both days** (2026-11-13). The market lets the day
+  before a USD pair's spot date be a New York holiday, so long as it is a business day of the other
+  currency; an `FxRate` counts its `Settlement_Days` on the one `Holiday_Calendar` it names
+  ([Conventions](developer/conventions.md#unification-siblings)). Naming New York on EUR, the
+  Wednesday before 4 July 2024 counts its spot date to the Monday where the market's is the
+  Friday: EUR's price today, and a six-month forward struck at the market's outright, read 1.6e-4
+  of the converted value off at a 2% rate differential, three days of carry. The fix is the factor
+  naming the calendar its first day counts on beside the one its spot date must fall on.
+- **A cross forward takes one lag, its first currency's** (2026-11-13). An FX option, barrier or
+  fixing on a cross reads its spot dates at the first currency's `FxRate` days and calendar, and
+  never the second's, where the market counts the pair's joint calendar: a holiday of the second
+  currency inside a spot window carries the forward one day short, a day of the cross's carry,
+  8.2e-5 of the forward at a 3% rate differential. UNMEASURED on a book. The fix is the cross's
+  lag read off both factors.
+- **An `FxRate` whose curve the job does not hold converts at its quote** (2026-11-13). A value
+  converts at a currency's price today only where the job holds both the curve its own `FxRate`
+  names in `Interest_Rate` (or the curve named as the currency) and its domestic currency's; one
+  stating no `Interest_Rate` whose curve no deal reaches converts at the quote, 2.2e-4 of the
+  converted value at a 2% rate differential over a Friday's four days. The fix is discovery adding
+  both curves of every `FxRate` a conversion reads.
 
 ## Decisions waiting on the desk {#decisions-waiting-on-the-desk}
 

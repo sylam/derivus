@@ -712,7 +712,8 @@ FILLS = {
             1000.0 * discounted(2)),
     'ACC USD/EUR': ('core', 'Accumulator_ExpiryDates', [wire(PAST), wire(SETTLES), 0.79], 1.25,
                     {'Underlying_Currency': 'USD', 'Currency': 'EUR', 'Discount_Rate': 'EUR'},
-                    2000.0 * 1.25 * math.exp(-0.02 * 2 / 365.0)),
+                    # crossed into dollars at the euro's price today, 1.25 carried back two spot days
+                    2000.0 * 1.25 * math.exp(-0.02 * 2 / 365.0) * math.exp(-(0.04 - 0.02) * 2 / 365.0)),
     'TARF': ('core', 'TARF_ExpiryDates', [wire(PAST), wire(SETTLES), 1.27], 1.30, {},
              1000.0 * discounted(2))}
 
@@ -749,7 +750,7 @@ def test_a_print_fills_the_cell_its_type_declares_and_moves_the_mark_by_hand(key
     fixing - each a pair against the book's dollars, so one print - its whole move at its
     settlement, the TARF's strip walking on from the row's spot; and an accumulator on dollars
     settled in euros fixes one over the euro's print, 0.8 for 1.25, its leveraged leg's move
-    crossed into dollars.
+    crossed into dollars at the euro's price today.
 
     Killing mutations: each type's `observes` deleted, which the gate's own lookup of the
     declaration refuses; the TARF's strip walking on from the print, which moves it 113.94 where

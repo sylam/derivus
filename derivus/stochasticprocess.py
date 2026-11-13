@@ -810,23 +810,25 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         '',
         'Each step between scenario dates $t$ and $t+\\delta$ is exact:',
         '',
-        '$$ S(t+\\delta) = S(t)\\exp\\Big(\\int_t^{t+\\delta}\\big(r(s)-q(s)\\big)ds-\\rho\\big(C(t+\\delta)-C(t)\\big)',
+        '$$ S(t+\\delta) = S(t)\\exp\\Big(\\int_{s(t)}^{s(t+\\delta)}\\big(r(u)-q(u)\\big)du-\\rho\\big(C(t+\\delta)-C(t)\\big)',
         '-\\tfrac12\\big(V(t+\\delta)-V(t)\\big)+\\sqrt{V(t+\\delta)-V(t)}\\,Z\\Big)$$',
         '',
         'Where:',
         '',
         '- $\\sigma(t)$ is the **Vol** curve of the `GBMAssetPriceTSModelParameters` factor, piecewise LINEAR',
-        '  in time between its knots and flat beyond the last; $V(t)=\\int_0^t\\sigma(s)^2ds$ and',
-        '  $C(t)=\\int_0^tv(s)\\sigma(s)ds$ are integrated exactly on that shape',
+        '  in time between its knots and flat beyond the last; $V(t)=\\int_0^t\\sigma(u)^2du$ and',
+        '  $C(t)=\\int_0^tv(u)\\sigma(u)du$ are integrated exactly on that shape',
         "- $r$ and $q$ are, for an **EquityPrice**, the zero curve of the equity's currency and its dividend",
         '  curve, and for an **FxRate**, the domestic and foreign zero curves [@garman1983]; each step reads',
         "  them as they stand at the step's start, so a simulated curve moves the drift",
+        "- $s(t)$ is the spot date of $t$, the factor's **Settlement_Days** business days on: the price is",
+        "  the one for delivery then, so its carry runs between spot dates, as a deal's forward does",
         "- $v$ and $\\rho$ are the quanto term, applied only to an **EquityPrice** whose currency's FX rate",
         "  is itself simulated with implied parameters: $v$ is that FX rate's **Vol** curve and $\\rho$ the",
         "  **Quanto_FX_Correlation** of the equity's parameter factor. Otherwise, and always for an",
         '  **FxRate**, $\\rho=0$:',
         '',
-        '$$ S(t) = S(0)\\exp\\Big(\\int_0^t\\big(r(s)-q(s)\\big)ds-\\tfrac12V(t)+\\int_0^t\\sigma(s)\\,dW(s)\\Big)$$',
+        '$$ S(t) = S(0)\\exp\\Big(\\int_{s(0)}^{s(t)}\\big(r(u)-q(u)\\big)du-\\tfrac12V(t)+\\int_0^t\\sigma(u)\\,dW(u)\\Big)$$',
         '',
         '- $Z$ is a standard normal',
         '',
@@ -872,6 +874,9 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         today = time_grid.scenario_grid[:1].copy()
         today[:, utils.TIME_GRID_MTM] = 0.0
         self.scen_grid = np.vstack([today, time_grid.scenario_grid[:-1]])
+        # the quote is the price for delivery on its spot date: a step carries between its ends' spot dates
+        self.carry_days = utils.spot_carry(self.factor.spot_lag(ref_date, shared.calendars), self.delta_scen_t,
+                                           self.scen_grid[:, utils.TIME_GRID_MTM].reshape(-1, 1))
         if self.factor_type == 'EquityPrice' and self.quanto_fx_tenor is not None:
             self.C = torch.unsqueeze(integrate_piecewise_linear(
                 cal_quanto_fx_vol, shared, time_grid.time_grid_years,
@@ -927,8 +932,8 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         if Z.ndim == 2:
             rt = utils.calc_time_grid_curve_rate(self.r_t, self.scen_grid, shared_mem)
             qt = utils.calc_time_grid_curve_rate(self.q_t, self.scen_grid, shared_mem)
-            rt_rates = rt.gather_weighted_curve(shared_mem, self.delta_scen_t)
-            qt_rates = qt.gather_weighted_curve(shared_mem, self.delta_scen_t)
+            rt_rates = rt.gather_weighted_curve(shared_mem, *self.carry_days)
+            qt_rates = qt.gather_weighted_curve(shared_mem, *self.carry_days)
             drift = torch.cumsum(torch.squeeze(rt_rates - qt_rates, dim=1), dim=0)
             f1 = torch.cumsum(self.delta_vol * Z, dim=0)
             return self.spot * torch.exp(drift - self.rho * self.C - 0.5 * self.V + f1)
@@ -936,8 +941,8 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         B, B2 = Z.shape[1], Z.shape[2]
         rt = utils.calc_time_grid_curve_rate(self.r_t, self.scen_grid, shared_mem, n_batch_dims=2)
         qt = utils.calc_time_grid_curve_rate(self.q_t, self.scen_grid, shared_mem, n_batch_dims=2)
-        rt_rates = rt.gather_weighted_curve(shared_mem, self.delta_scen_t)
-        qt_rates = qt.gather_weighted_curve(shared_mem, self.delta_scen_t)
+        rt_rates = rt.gather_weighted_curve(shared_mem, *self.carry_days)
+        qt_rates = qt.gather_weighted_curve(shared_mem, *self.carry_days)
         drift = torch.cumsum(torch.squeeze(rt_rates - qt_rates, dim=1), dim=0).reshape(-1, B, B2)
         f1 = torch.cumsum(self.delta_vol.unsqueeze(-1) * Z, dim=0)
         C = self.C.unsqueeze(-1) if torch.is_tensor(self.C) else self.C
@@ -6500,7 +6505,8 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         '$$ \\log\\frac{S_{t_{j+1}}}{S_{t_j}} = b_j + M^{lev}_j + \\mu_{A_j} + \\beta_j G_j'
         ' + \\sqrt{G_j}\\,Z_j $$',
         '',
-        'where $b_j$ is the carry read off the underlying\'s own zero and dividend curves,',
+        'where $b_j$ is the carry read off the underlying\'s own zero and dividend curves between',
+        'the spot dates of $t_j$ and $t_{j+1}$, the factor\'s **Settlement_Days** business days on,',
         '$M^{lev}_j$ the compensated leverage sum over the interval\'s trading days and $Z_j$ the',
         'framework\'s correlated Gaussian for this factor. The parameters are the calibrated',
         '`LogVar2FJModelParameters` factor the pricing kit reads, so the scenario generator and',
@@ -6588,12 +6594,14 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
                            **{x: utils.LogVar2FJ.declared(structural.get(x))
                               for x in utils.LogVar2FJ.STRUCTURAL_NAMES})
         self.spot0 = tensor
-        # the carry read: step starts on the scenario grid and each step's own length, verbatim
-        # from `GBMAssetPriceTSModelImplied`
+        # the carry read: step starts on the scenario grid and each step between its two ends' spot
+        # dates, verbatim from `GBMAssetPriceTSModelImplied`
         self.delta_scen_t = np.diff(np.insert(time_grid.scen_time_grid, 0, 0)).reshape(-1, 1)
         today = time_grid.scenario_grid[:1].copy()
         today[:, utils.TIME_GRID_MTM] = 0.0
         self.scen_grid = np.vstack([today, time_grid.scenario_grid[:-1]])
+        self.carry_days = utils.spot_carry(self.factor.spot_lag(ref_date, shared.calendars), self.delta_scen_t,
+                                           self.scen_grid[:, utils.TIME_GRID_MTM].reshape(-1, 1))
         # the scenario grid a PRICER row matches itself against, in DOUBLE whatever the calculation
         # runs in: the match is a day count applied to both sides, and float32 rounding at a year
         # fraction is already wider than the tolerance it is matched within
@@ -6701,11 +6709,12 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
         return torch.cat([u, 1.0 - u], dim=-1) if mirror else u
 
     def carry(self, shared_mem, ndim):
-        """`(r - q)` integrated over each scenario step, off the underlying's own curves and per
-        path where they are simulated; the inner fork's `n_batch_dims=2` gather comes back flat."""
+        """`(r - q)` integrated over each scenario step between the spot dates of its two ends, off
+        the underlying's own curves and per path where they are simulated; the inner fork's
+        `n_batch_dims=2` gather comes back flat."""
         rates = [utils.calc_time_grid_curve_rate(
             x, self.scen_grid, shared_mem, n_batch_dims=ndim - 1).gather_weighted_curve(
-            shared_mem, self.delta_scen_t) for x in (self.r_t, self.q_t)]
+            shared_mem, *self.carry_days) for x in (self.r_t, self.q_t)]
         return torch.squeeze(rates[0] - rates[1], dim=1)
 
     def generate(self, shared_mem):

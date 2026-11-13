@@ -729,13 +729,10 @@ class Deal(object):
             calendar('Index_Publication_Calendars'), frequency)
 
     def spot_lag(self, kind, name, all_factors, base_date, calendars):
-        """The calendar days from a day, counted from `base_date`, to its spot date, as a function
-        of the day: the underlying factor's (`kind` named `name`, `get_factor_component`)
-        `spot_days` business days of the deal's `Accrual_Calendars` on, of Monday to Friday where
-        it names none. None at no days."""
-        days = get_factor_component(utils.Factor(kind, name), all_factors).spot_days()
-        bus_day = calendars.get(self.field.get('Accrual_Calendars'), {}).get('businessday')
-        return partial(utils.spot_lag, base_date, days, bus_day) if days else None
+        """The underlying factor's (`kind` named `name`, `get_factor_component`) `spot_lag`, on the
+        deal's `Accrual_Calendars` where the factor names no calendar."""
+        return get_factor_component(utils.Factor(kind, name), all_factors).spot_lag(
+            base_date, calendars, self.field.get('Accrual_Calendars'))
 
     def barrier_monitoring(self, base_date):
         """The Broadie-Glasserman-Kou shift's spacing term: `Barrier_Dates`' mean gap where they are
@@ -2007,10 +2004,10 @@ class MtMCrossCurrencySwapDeal(Deal):
                     self.child_map.setdefault('Static', child)
                 cashflows.bind(shared.one)
 
-        FX_rep = utils.calc_time_grid_spot_rate(shared.Report_Currency, deal_time, shared)
-        FX_static = utils.calc_time_grid_spot_rate(
+        FX_rep = utils.calc_time_grid_today_price(shared.Report_Currency, deal_time, shared)
+        FX_static = utils.calc_time_grid_today_price(
             self.child_map['Static'].Factor_dep['Currency'][0], deal_time, shared)
-        FX_mtm = utils.calc_time_grid_spot_rate(
+        FX_mtm = utils.calc_time_grid_today_price(
             self.child_map['MTM'].Factor_dep['Currency'][0], deal_time, shared)
 
         if self.child_map['Static'].Factor_dep.get('Forward'):
@@ -2021,7 +2018,7 @@ class MtMCrossCurrencySwapDeal(Deal):
 
         mtm_leg = pricing.pv_float_cashflow_list(
             shared, time_grid, self.child_map['MTM'], pricing.pricer_float_cashflows,
-            mtm_currency=self.child_map['Static'].Factor_dep['Currency'])
+            mtm_currency=self.child_map['Static'].Factor_dep['Currency'], lag=factor_dep['Spot_Lag'])
 
         mtm = (static_leg * FX_static + mtm_leg * FX_mtm) / FX_rep
 
@@ -2063,6 +2060,9 @@ class MtMCrossCurrencySwapDeal(Deal):
 
         field_index['MTM'] = self.field['MtM_Side']
         field_index['Other'] = {'Pay': 'Receive', 'Receive': 'Pay'}[self.field['MtM_Side']]
+        # a principal resets on the fixing of the other leg's currency in the resetting one's
+        field_index['Spot_Lag'] = self.spot_lag(
+            'FxRate', field[field_index['Other'] + '_Currency'], all_factors, base_date, calendars)
         field_index['base_date'] = base_date
 
         return field_index
@@ -2138,9 +2138,9 @@ class FXNonDeliverableForward(Deal):
         discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
 
         buy_forward = utils.calc_fx_forward(
-            factor_dep['BuyFX'], factor_dep['SettleFX'], factor_dep['Maturity'], deal_time, shared)
+            factor_dep['BuyFX'], factor_dep['SettleFX'], factor_dep['Maturity'], deal_time, shared, delivery=True)
         sell_forward = utils.calc_fx_forward(
-            factor_dep['SellFX'], factor_dep['SettleFX'], factor_dep['Maturity'], deal_time, shared)
+            factor_dep['SellFX'], factor_dep['SettleFX'], factor_dep['Maturity'], deal_time, shared, delivery=True)
         FX_rep = utils.calc_fx_cross(
             factor_dep['SettleFX'][0], shared.Report_Currency, deal_time, shared)
 
@@ -3849,7 +3849,7 @@ class FXDiscreteExplicitAsianOption(Deal):
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
         spot = utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared)
+            deal_data.Factor_dep['Currency'][0], deal_time, shared, quoted=True)
         forward = utils.calc_fx_forward(
             deal_data.Factor_dep['Underlying_Currency'], deal_data.Factor_dep['Currency'],
             deal_data.Factor_dep['Expiry'], deal_time, shared, lag=deal_data.Factor_dep['Spot_Lag'])
@@ -5908,7 +5908,7 @@ class FXOneTouchOption(TouchLifecycle, Deal):
 
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
-            deal_time, shared), deal_time, shared)
+            deal_time, shared, quoted=True), deal_time, shared)
 
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
 
@@ -6018,7 +6018,7 @@ class FXBarrierOption(Deal):
 
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
-            deal_time, shared), deal_time, shared)
+            deal_time, shared, quoted=True), deal_time, shared)
 
         tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
         b = torch.squeeze(pricing.deal_carry_rate(
@@ -6111,7 +6111,7 @@ class FXPartialTimeBarrierOption(Deal):
 
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
-            deal_time, shared), deal_time, shared)
+            deal_time, shared, quoted=True), deal_time, shared)
 
         # need to adjust if there's just 1 timepoint - i.e. base reval
         if time_grid.mtm_time_grid.size > 1:
@@ -6317,7 +6317,7 @@ class FXTARFOptionDeal(Deal):
 
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared), deal_time, shared)
+            deal_data.Factor_dep['Currency'][0], deal_time, shared, quoted=True), deal_time, shared)
 
         mtm = pricing.pv_MC_Tarf(
             shared, time_grid, deal_data, spot, FX_rep) * FX_rep
@@ -6491,7 +6491,7 @@ class FXAccumulatorOptionDeal(Deal):
 
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared), deal_time, shared)
+            deal_data.Factor_dep['Currency'][0], deal_time, shared, quoted=True), deal_time, shared)
 
         return pricing.pv_MC_Accumulator(
             shared, time_grid, deal_data, spot, FX_rep) * FX_rep
@@ -6699,7 +6699,7 @@ class FXExtendableForwardDeal(Deal):
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared), deal_time, shared)
+            deal_data.Factor_dep['Currency'][0], deal_time, shared, quoted=True), deal_time, shared)
         return pricing.pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep) * fx_rep
 
 
@@ -6944,7 +6944,7 @@ class FXRangeAccrualDeal(Deal):
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
         spot = utils.spot_on_deal_grid(utils.calc_fx_cross(
             deal_data.Factor_dep['Underlying_Currency'][0],
-            deal_data.Factor_dep['Currency'][0], deal_time, shared), deal_time, shared)
+            deal_data.Factor_dep['Currency'][0], deal_time, shared, quoted=True), deal_time, shared)
         return pricing.pv_fx_range_accrual(shared, time_grid, deal_data, spot) * fx_rep
 
 
@@ -7355,7 +7355,7 @@ class FloatingEnergyDeal(Deal):
             # forwardcurve from the already-simulated components; Commodity may be composed - see docstring
             field["Commodity"] = utils.check_rate_name(self.field["Commodity"])
             reference_factor = get_reference_factor(field["Reference_Type"], all_factors)
-            commodity_factor = get_commodity_component(field["Commodity"], all_factors)
+            forward_factor = commodity_factor = get_commodity_component(field["Commodity"], all_factors)
             field_index['Commodity'] = get_commodity_rate_factor(
                 field['Commodity'], static_offsets, stochastic_offsets)
             field_index["ForwardPrice"], field_index["ForwardFX"], field_index["CashFX"] = get_forwardprice_factor(
@@ -7384,6 +7384,9 @@ class FloatingEnergyDeal(Deal):
         field_index['Currency'] = get_fx_and_zero_rate_factor(
             field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors)
         field_index['SettleCurrency'] = self.payoff_ccy
+        # a reset's forward converts at the fixing of its own currency in the payoff one
+        field_index['Spot_Lag'] = self.spot_lag(
+            'FxRate', forward_factor.get_currency(), all_factors, base_date, calendars)
 
         return field_index
 
@@ -7535,6 +7538,8 @@ class EnergySingleOption(Deal):
         field_index['Option_Type'] = 1.0 if self.field['Option_Type'] == 'Call' else -1.0
         field_index['Expiry'] = (self.field['Settlement_Date'] - base_date).days
         field_index['Strike'] = self.field['Strike']
+        field_index['Spot_Lag'] = self.spot_lag(
+            'FxRate', forward_factor.get_currency(), all_factors, base_date, calendars)
 
         # the option seam's roles: `Currency` the forward curve's own, `Payoff_Currency` the deal's
         pair = {
