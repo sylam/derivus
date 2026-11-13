@@ -515,25 +515,6 @@ class Config(object):
 
         # make sure that there are no default calibration mappings
         self.calibration_process_map = {}
-        self.gridparser, self.periodparser = utils.get_grid_grammar()
-
-    def __getstate__(self):
-        """A Config crosses a process boundary by leaving its parsers behind.
-
-        A pyparsing grammar's parse actions are `_trim_arity.<locals>.wrapper` closures with no
-        importable qualified name, so pickle refuses the WHOLE Config over two members of pure
-        derived state. Dropped here and rebuilt in `__setstate__`, which is what lets
-        `Credit_Monte_Carlo(runparallel=True)` spawn workers where the arguments are pickled
-        (Windows always, macOS by default); under `fork` neither hook runs.
-        """
-        state = self.__dict__.copy()
-        state.pop('gridparser', None)
-        state.pop('periodparser', None)
-        return state
-
-    def __setstate__(self, state):
-        self.__dict__.update(state)
-        self.gridparser, self.periodparser = utils.get_grid_grammar()
 
     def deals_from_object_map(self, object_map):
         """A `{Object: {Reference: field}}` map (a Hedging_Problem's Tradable_Instruments or
@@ -556,10 +537,8 @@ class Config(object):
         the first date past it when `past_max_date`).
         """
 
-        parsed_grid = self.gridparser.parseString(grid)[0]
-        offsets = parsed_grid.data if isinstance(parsed_grid, utils.Offsets) else [[parsed_grid]]
-        fixed_dates = [(run_date + code[0], code[1] if len(code) > 1 else None) for code in offsets] + \
-                      [(Timestamp.max, None)]
+        fixed_dates = [(run_date + code[0], code[1] if len(code) > 1 else None)
+                       for code in utils.grid_items(grid)] + [(Timestamp.max, None)]
         dates = set()
         finish = False
 

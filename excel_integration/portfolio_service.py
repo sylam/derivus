@@ -15,14 +15,12 @@ from __future__ import annotations
 
 import json
 import logging
-import operator
 from datetime import datetime
-from functools import reduce
 from typing import Any
 
 import pandas as pd
 import derivus as rf
-from derivus.config import Config, CustomJsonEncoder
+from derivus.config import CustomJsonEncoder
 from derivus.instruments import construct_instrument
 
 # ---------------------------------------------------------------------------
@@ -51,25 +49,11 @@ _COMPLEX_WIDGETS: frozenset[str] = frozenset(
 )
 
 # ---------------------------------------------------------------------------
-# Lazily-created singleton Config instance (needed for periodparser).
-# ---------------------------------------------------------------------------
-_CFG: Config | None = None
-
-
-def _get_cfg() -> Config:
-    global _CFG
-    if _CFG is None:
-        _CFG = Config()
-    return _CFG
-
-
-# ---------------------------------------------------------------------------
 # JSON encode / decode helpers
 # ---------------------------------------------------------------------------
 
 def _make_as_internal():
     """Return an object_hook that decodes derivus JSON special types."""
-    cfg = _get_cfg()
 
     def as_internal(dct: dict) -> Any:
         if ".Curve" in dct:
@@ -95,11 +79,11 @@ def _make_as_internal():
             return rf.utils.CreditSupportList(dct[".CreditSupportList"])
         if ".DateOffset" in dct and ".Offset" in dct:
             return [
-                cfg.periodparser.parseString(dct[".DateOffset"])[0],
-                cfg.periodparser.parseString(dct[".Offset"])[0],
+                rf.utils.parse_period(dct[".DateOffset"]),
+                rf.utils.parse_period(dct[".Offset"]),
             ]
         if ".DateOffset" in dct:
-            return cfg.periodparser.parseString(dct[".DateOffset"])[0]
+            return rf.utils.parse_period(dct[".DateOffset"])
         if ".Grid" in dct:
             return rf.utils.Offsets(
                 [(x if isinstance(x, list) else [x]) for x in dct[".Grid"]]

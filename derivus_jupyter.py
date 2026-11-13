@@ -447,7 +447,7 @@ class PortfolioPage(TreePanel):
             elif obj_type == 'Basis':
                 return rf.utils.Basis(10000.0 * obj)
             elif obj_type == 'Period':
-                return self.config.periodparser.parseString(obj)[0]
+                return rf.utils.parse_period(obj)
             elif obj_type == 'DateList':
                 new_obj = checkArray(json.loads(obj))
                 return rf.utils.DateList(

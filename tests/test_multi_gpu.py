@@ -485,7 +485,7 @@ def test_the_cpu_context_path_shards_end_to_end():
     """`Credit_Monte_Carlo(runparallel=2, device='cpu')` - the real spawned dispatch, pooled
     bit-identically against the in-process n=1 CPU reference, past a device count of none. The gate
     that needed all of it: the arity, or the child raises TypeError and the parent blocks forever;
-    `Config.__getstate__`, or `start()` raises before a child exists; per-batch seeding, or two
+    a `Config` that pickles, or `start()` raises before a child exists; per-batch seeding, or two
     workers do not reproduce one; the `Job` key, or the merge is a race.
 
     Killing mutations: the dispatch spawning its workers without `deterministic_batches`; a

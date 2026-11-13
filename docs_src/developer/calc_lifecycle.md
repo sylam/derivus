@@ -439,6 +439,11 @@ reopens a leg and binds it again. `Diary` reads schedules by the binding's own w
 | scenario | the MTM grid under `Dynamic_Scenario_Dates: Yes` (default; forced by `At_Percentile`), else the parsed grid plus one date past the book; between scenario dates a factor is interpolated linearly |
 | deal | each deal's revaluation dates, interpolated onto the MTM grid |
 
+The grammar has two readers, `utils.grid_items` and `utils.parse_period`, and each refuses a string
+it does not read to its end; a one-item grid keeps its step. **Held by**
+`tests/test_loud_refusals.py::test_a_grid_or_a_period_not_read_to_its_end_is_refused` and
+`tests/test_loud_refusals.py::test_a_one_item_grid_keeps_its_step`.
+
 The report rows (`report_index`), on which the xVA reductions run, are each top-level structure's
 MTM dates to its last revaluation, a collateralised set's only where its settlement and liquidation
 dates are on the grid ([xVA](../theory/valuation_adjustments.md#notation-and-the-grid)).

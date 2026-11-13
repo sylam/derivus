@@ -282,6 +282,39 @@ def test_a_two_unit_period_is_written_in_one_order(tmp_path, period):
     assert dict(config.parse_period(spelling).kwds) == {'months': 6, 'days': 2}
 
 
+def test_a_grid_or_a_period_not_read_to_its_end_is_refused(tmp_path):
+    """Row: `0d 2d 1w(1w)6m`, a space short, ran as `0d 2d 1w(1w)` cut at one week, and `3MX`
+    was three months.
+
+    Killing mutation: `StringEnd()` dropped from either parser `utils.get_grid_grammar` returns."""
+    document = fixture('commodity_aps_world.json')
+    document['Calc']['Calculation']['Time_Grid'] = '0d 2d 1w(1w)6m'
+    context = derivus.Context()
+    context.load_json(authored(tmp_path, 'grid.json', document))
+    with pytest.raises(ValueError, match='is not a time grid, read to character 12'):
+        context.run_job()
+
+    document = fixture('commodity_aps_world.json')
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Factors']['InterestRate.USD-SOFR']['Reset_Frequency'] = {'.DateOffset': '3MX'}
+    with pytest.raises(ValueError, match="'3MX' is not a period"):
+        derivus.Context().load_json(authored(tmp_path, 'period.json', document))
+
+
+def test_a_one_item_grid_keeps_its_step(tmp_path):
+    """Row: `2w(2w)` was read as `2w`, its step dropped, where a longer grid kept every step.
+
+    Killing mutation: `utils.grid_items` unwrapping a one-item grid to its period."""
+    def rows(grid):
+        document = fixture('commodity_aps_world.json')
+        document['Calc']['Calculation'].update({'Time_Grid': grid, 'Batch_Size': 64})
+        context = derivus.Context()
+        context.load_json(authored(tmp_path, 'grid.json', document))
+        return list(context.run_job()[1]['Results']['mtm'].index)
+
+    assert rows('2w(2w)') == rows('0d 2w(2w)')[1:]
+
+
 BASE = pd.Timestamp('2026-01-15')
 XCCY_DATES = [pd.Timestamp(x) for x in ('2025-10-15', '2026-01-15', '2026-04-15', '2026-07-15')]
 

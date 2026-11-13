@@ -26,7 +26,7 @@ import scipy.stats
 import pandas as pd
 import numpy as np
 from pyparsing import (Literal, Word, nums, OneOrMore, delimitedList, oneOf, Optional, Group,
-                       ParseBaseException)
+                       ParseBaseException, StringEnd)
 
 import torch
 
@@ -942,7 +942,8 @@ reverse_offset = {'years': 'Y', 'months': 'M', 'weeks': 'W', 'days': 'D'}
 
 
 def get_grid_grammar():
-    """`(grid, period)` parsers for the date-grid grammar."""
+    """`(grid, period)` parsers for the date-grid grammar, each failing a string it does not read
+    to its end; a grid parses to its items, `[period]` or `[period, step]`."""
 
     def push_int(strg, loc, toks):
         return int(toks[0])
@@ -954,9 +955,6 @@ def get_grid_grammar():
         ofs = dict(toks.asList())
         return pd.DateOffset(**ofs)
 
-    def push_date_grid(strg, loc, toks):
-        return toks[0][0] if len(toks) == 1 else Offsets(toks.asList())
-
     lpar = Literal("(").suppress()
     rpar = Literal(")").suppress()
     decimal = Literal(".")
@@ -965,14 +963,13 @@ def get_grid_grammar():
     single_period = (integer + oneOf(['D', 'M', 'Y', 'W'], caseless=True)).setName('single_period').setParseAction(
         push_single_period)
     period = OneOrMore(single_period).setName('period').setParseAction(push_period)
-    grid = delimitedList(Group(period + Optional(lpar + period + rpar)),
-                         delim=' ').leaveWhitespace().setParseAction(push_date_grid)
+    grid = delimitedList(Group(period + Optional(lpar + period + rpar)), delim=' ').leaveWhitespace()
 
-    return grid, period
+    return grid + StringEnd(), period + StringEnd()
 
 
-#: the period parser, built once - a pyparsing grammar carries nothing across a parse
-_period_parser = get_grid_grammar()[1]
+#: the two parsers, built once - a pyparsing grammar carries nothing across a parse
+_grid_parser, _period_parser = get_grid_grammar()
 
 
 def parse_period(period):
@@ -983,6 +980,15 @@ def parse_period(period):
     except ParseBaseException:
         raise ValueError('{!r} is not a period - a count and one of D, W, M or Y, largest unit '
                          'first (3M, 1Y6M)'.format(period))
+
+
+def grid_items(grid):
+    """A text grid's items in order, each `[period]` or `[period, step]`."""
+    try:
+        return _grid_parser.parseString(grid).asList()
+    except ParseBaseException as error:
+        raise ValueError('{!r} is not a time grid, read to character {} - items `period` or '
+                         '`period(step)`, one space apart (0d 1w(1w) 6m)'.format(grid, error.loc))
 
 
 def offset_string(offset):

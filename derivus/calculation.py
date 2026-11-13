@@ -1414,14 +1414,14 @@ class CreditMonteCarlo(Calculation):
                 'grown from the dates the deals reach, and there are none to grow it from'.format(
                     base_date.strftime('%Y-%m-%d')))
 
+        last = utils.grid_items(self.input_time_grid)[-1]
         # we are repeating a period till the last reset date
-        if self.input_time_grid.strip().endswith(')'):
+        if len(last) > 1:
             base_mtm_dates = self.config.parse_grid(base_date, max(dynamic_dates), self.input_time_grid)
             mtm_dates = base_mtm_dates.union(dynamic_dates)
         else:
             # we are only running the calc till the last period specified (and clipping everything else)
-            max_date = min(max(dynamic_dates), base_date + self.config.periodparser.parseString(
-                self.input_time_grid.strip().split(' ')[-1].upper())[0])
+            max_date = min(max(dynamic_dates), base_date + last[0])
             base_mtm_dates = self.config.parse_grid(base_date, max_date, self.input_time_grid)
             reset_dates = [x for x in dynamic_dates if x <= max_date]
             mtm_dates = base_mtm_dates.union(reset_dates)

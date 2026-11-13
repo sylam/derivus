@@ -25,6 +25,7 @@ converts the value it holds into the engine object the tag names.
 A period is one or more `<integer><unit>` terms, the unit one of `D` (days), `W` (weeks), `M`
 (months) or `Y` (years), any case: `3M2D` is three months and two days. Periods are calendar
 offsets, with no business-day adjustment. Time in years (curve tenors, `Expiry`) is a plain number.
+A period or a time grid that is not read to its end is refused.
 
 ## Time grids {#time-grids}
 

@@ -766,7 +766,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
         'Valuation Configuration': {'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}})
     job['Calc']['Calculation'] = {
         'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': 'USD',
-        'Time_grid': '0d 2d 1w(1w)6m', 'Batch_Size': 512, 'Simulation_Batches': 1,
+        'Time_grid': '0d 2d 1w', 'Batch_Size': 512, 'Simulation_Batches': 1,
         'Random_Seed': 1, 'MCMC_Simulations': 512, 'Deflation_Interest_Rate': 'USD-SOFR',
         'Calc_Scenarios': 'No'}
     context = derivus.Context().load_json((dump(job), 'outer'))
