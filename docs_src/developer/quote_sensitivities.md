@@ -389,7 +389,10 @@ attaches per named parameter, split by `utils.Residual.split`, the one place the
 apart, so a leaf cannot take the wrong slice. A non-zero `Tenor_Offset` declines, a shifted curve
 being another curve. A credit Monte Carlo needs `Gradient_Variables` `Implied` or `All` for a model's
 parameters, and reuses `implied_leaves` in its static branch so a gradient cannot split ([the
-invariant](calc_lifecycle.md#compile-phase-2-_build_factor_state)).
+invariant](calc_lifecycle.md#compile-phase-2-_build_factor_state)). It divides the attachment by
+`Simulation_Batches`, each batch's pass leaving its share on the quote leaves, so they hold the mean
+of the batches as the reported gradients do. **Held by**
+`tests/test_credit_prices.py::test_a_quote_delta_over_batches_is_the_reported_gradient_chained`.
 
 **The harvest removes as well as adds.** `Config.bootstrap` copies each family's tensors onto the
 config, not into JSON `Price Factors`. A whole run first drops the family's keys, or a block flipped

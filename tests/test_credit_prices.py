@@ -219,17 +219,17 @@ def test_a_curve_quoted_off_itself_solves_to_itself_in_no_iteration(caplog):
     assert rates_world.newton_steps(caplog.text) == [0], caplog.text
 
 
-def standard_model(factor):
-    """`{tenor in years: par spread}` the ISDA standard model reads off `factor` - the credit Monte
-    Carlo's `CDS_Tenors`, its counterparty the name, a CVA gradient asked for beside a cashflow."""
-    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD',
-                'Discount_Rate': 'USD', 'Amount': 1e6, 'Payment_Date': B + pd.DateOffset(years=1)}
-    job = document([], {CURVE: factor}, calculation={
+def exposed(years, factors=None, market_prices=None, batches=1, **credit):
+    """A credit Monte Carlo job over a million the name pays in `years` years, uncollateralised,
+    a CVA gradient asked for, `credit` over the adjustment's block."""
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD', 'Discount_Rate': 'USD',
+                'Amount': 1e6, 'Payment_Date': B + pd.DateOffset(years=years)}
+    job = document([], factors, market_prices, calculation={
         'Object': 'CreditMonteCarlo', 'Time_Grid': '0d 3m(3m)', 'Batch_Size': 16,
-        'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD', 'Credit_Valuation_Adjustment': {
+        'Simulation_Batches': batches, 'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD',
+        'Credit_Valuation_Adjustment': dict({
             'Calculate': 'Yes', 'Counterparty': NAME, 'Gradient': 'Yes',
-            'Deflate_Stochastically': 'No', 'Stochastic_Hazard_Rates': 'No',
-            'CDS_Tenors': [float(tenor[:-1]) for tenor in TENORS]}})
+            'Deflate_Stochastically': 'No', 'Stochastic_Hazard_Rates': 'No'}, **credit)})
     job['Calc']['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
         'Collateralized': 'False'}}, 'Children': [{'Instrument': {'.Deal': cashflow}}]}]
@@ -240,6 +240,13 @@ def standard_model(factor):
         'Alpha': 0.05, 'Lambda': 0.0, 'Quanto_FX_Correlation': 0.0,
         'Quanto_FX_Volatility': utils.Curve([], [[0.0, 0.0], [10.0, 0.0]]),
         'Sigma': utils.Curve([], [[0.0, 0.01], [10.0, 0.01]])}}
+    return job
+
+
+def standard_model(factor):
+    """`{tenor in years: par spread}` the ISDA standard model reads off `factor` - the credit Monte
+    Carlo's `CDS_Tenors`, its counterparty the name, a CVA gradient asked for beside a cashflow."""
+    job = exposed(1, {CURVE: factor}, CDS_Tenors=[float(tenor[:-1]) for tenor in TENORS])
     frame = loaded(job).run_job()[1]['Results']['CS01']
     return dict(zip(frame.columns.get_level_values('Tenor'),
                     frame.columns.get_level_values('Par CDS')))
@@ -424,6 +431,32 @@ def test_a_default_swap_on_the_name_reports_its_quote_delta_beside_its_factor_gr
         revalued.append(marks([SOLD], factors)[0]['SOLD'])
     difference = (revalued[0] - revalued[1]) / (2 * step)
     assert abs(quote_delta[index] / difference - 1.0) < 1e-8, (quote_delta[index], difference)
+
+
+def test_a_quote_delta_over_batches_is_the_reported_gradient_chained():
+    """UNDER A CREDIT MONTE CARLO OF THREE BATCHES the block's quote leaf holds what `grad_cva`
+    reports, the mean of the batches' gradients, carried through `dtheta/dq`: a million the
+    bootstrapped name pays in four years, each par spread's CVA delta the survival curve's
+    gradient times the curve re-bootstrapped a thousandth of a basis point either side, within
+    1e-6 of the largest (measured within 1e-7).
+
+    KILLING MUTATION: the attachment left undivided by the batches, every quote delta three times
+    the chain.
+    """
+    context = loaded(exposed(4, None, {BLOCK: block('Par_Spread', Quote_Sensitivity='Yes')}, 3))
+    context.bootstrap()
+    _, out = context.run_job()
+    gradient = out['Results']['grad_cva'].xs(CURVE, level='Rate')['Gradient']
+    factor_gradient = gradient.droplevel(['Tenor2', 'Tenor3']).reindex(
+        np.concatenate([[0.0], KNOTS]), fill_value=0.0).to_numpy()
+    quote_delta = context.current_cfg.quote_leaves[BLOCK][1].grad.cpu().numpy()
+
+    step = 1e-3
+    dtheta = np.array([(moved('Par_Spread', j, step) - moved('Par_Spread', j, -step)) / (2 * step)
+                       for j in range(len(TENORS))]).T
+    chained = factor_gradient @ dtheta
+    error = np.abs(quote_delta - chained).max() / np.abs(chained).max()
+    assert error < 1e-6, (quote_delta, chained)
 
 
 def test_a_default_swaps_delta_to_a_swap_quote_carries_the_survival_curves_re_solve():

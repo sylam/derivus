@@ -437,6 +437,8 @@ class Calculation(object):
         `leaf + (theta - theta.detach())` instead: worth zero forward, derivative one, so the factor
         greek is the number it always was and dV/dq arrives in the same reverse sweep. A non-zero
         `offset` (Tenor_Offset) declines the attachment - a shifted curve is a different curve.
+        The attachment is divided by `Simulation_Batches`, so the quote leaves hold the mean of
+        the batches' passes, as the reported factor gradients do.
 
         Under `Quote_Propagation` the same seam changes the VALUE: the leaf is minted from the last
         artifact ridden to the quotes standing now, `theta* + dtheta/dq (q_now - q0)`, so a tick
@@ -462,7 +464,7 @@ class Calculation(object):
         if theta is None or not requires_grad or offset:
             return leaf
         theta = theta.to(device=self.device, dtype=self.dtype)
-        connected = leaf + (theta - theta.detach())
+        connected = leaf + (theta - theta.detach()) / self.params.get('Simulation_Batches', 1)
         connected.retain_grad()
         return connected
 
