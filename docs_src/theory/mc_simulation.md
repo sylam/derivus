@@ -94,12 +94,14 @@ With $z_j=(\ln(H_j/S_{j-1})-\mu_j)/\sqrt{v_j}$ and a uniform $u_j$:
 | Survival region | $p_j$ | Continuing draw $Z_j$ |
 |---|---|---|
 | below the trigger ($S_j\le H_j$) | $\Phi(z_j)$ | $\Phi^{-1}(u_j\,p_j)$ |
-| above the trigger ($S_j\ge H_j$) | $1-\Phi(z_j)$ | $\Phi^{-1}\big((1-p_j)+u_j\,p_j\big)$ |
+| above the trigger ($S_j\ge H_j$) | $\Phi(-z_j)$ | $-\Phi^{-1}\big((1-u_j)\,p_j\big)$ |
 
 $$S_j=S_{j-1}e^{\mu_j+\sqrt{v_j}Z_j},\qquad L_j=p_j\,L_{j-1},\ L_0=1,\qquad
 \text{fired mass}_j=(1-p_j)\,L_{j-1}.$$
 
-The argument of $\Phi^{-1}$ is clamped to $[\epsilon,1-\epsilon]$. The fired mass is spelled
+The upper side is the lower side's mirror, so a survival far in the tail keeps its digits where
+$1-\Phi(z_j)$ would lose them (all of them from $z_j\approx 5.4$ in float32 and $8.3$ in float64);
+both draws increase in $u_j$ (`pricing.oss_truncated_draw`). The argument of $\Phi^{-1}$ is clamped to $[\epsilon,1-\epsilon]$. The fired mass is spelled
 $1-p_j$ off the same $p_j$ the draw was truncated with, so per path
 $\sum_j(1-p_j)L_{j-1}+L_N=L_0$ to roundoff (`SurvivalLedger` logs the residual at DEBUG under the
 smooth estimator). A fired payoff measurable at $t_{j-1}$ (a rebate, the TARF's remaining target,

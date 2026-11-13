@@ -539,5 +539,5 @@ def test_a_row_that_is_not_an_observation_date_is_untouched():
     profile = _profile('0d 1y(1m)', deal=dict(BARRIER_DEAL, Barrier_Price=90.0,
                                               Barrier_Dates=monthly), batch=1024, mcmc=128)
     rows = np.asarray(profile, dtype=float)
-    assert float(rows[0].mean()) == 8.444798793160231, float(rows[0].mean())
+    assert float(rows[0].mean()) == 8.44479879316023, float(rows[0].mean())
     assert not np.array_equal(rows[1], rows[0]), 'the profile is flat - nothing is being compared'

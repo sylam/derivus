@@ -469,3 +469,19 @@ def test_an_unaffected_document_is_bit_identical_under_a_credit_monte_carlo(barr
     assert same_profile(bare, with_column), (bare.shape, with_column.shape)
     assert same_profile(bare, with_history), (bare.shape, with_history.shape)
     assert bare.values.std() > 0, 'the fixture must have something to lose'
+
+
+def test_a_knock_in_s_rebate_far_beyond_its_level_is_its_survival_s_upper_tail():
+    """A down-and-in call monitored once, at expiry, its level 7.5 standard deviations above the
+    spot-date forward and its strike 12 above, so no draw reaches the strike: the base valuation is
+    the rebate discounted from expiry times the survival `Phi(-7.5)`, within 1e-12 relative.
+
+    Killing mutation: `oss_truncated_draw`'s upper survival read as `1 - norm_cdf(z)`, 1.4e-3 low.
+    """
+    sd = SIGMA * math.sqrt(EXPIRY_D / 365.0)
+    forward = SPOT * math.exp((R_USD - Q_EQ) * (EXPIRY_D + lag(day(EXPIRY_D), 3) - lag(BASE, 3)) / 365.0)
+    level = lambda z: forward * math.exp(z * sd - 0.5 * sd * sd)
+    mark = mtm(dict(barrier('Down_And_In', [[day(EXPIRY_D), '']]), Barrier_Price=level(7.5),
+                    Strike_Price=level(12.0)))
+    survival = REBATE * math.exp(-R_USD * EXPIRY_D / 365.0) * stats.norm.sf(7.5)
+    assert abs(mark / survival - 1.0) <= 1e-12, (mark, survival)

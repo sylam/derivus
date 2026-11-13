@@ -297,8 +297,7 @@ class LogVar2FJKit(object):
         M, sd = law[0].sum(-1), utils.sqrt_or_zero((law[1] * law[1]).sum(-1))
         z = (torch.log(K / S) - M) / sd.clamp_min(torch.finfo(sd.dtype).tiny)
         if digital:
-            Phi = utils.norm_cdf(z)
-            return ((1.0 - Phi) if is_call else Phi).mean(-1)
+            return utils.norm_cdf(-z if is_call else z).mean(-1)
         return ((1.0 if is_call else -1.0) * lognormal_fired_gain(
             S, M, sd, z, K, is_call)).mean(-1)
 
@@ -858,27 +857,16 @@ def oss_rows(shared, build, fixings, *rowed):
 
 
 def oss_truncated_draw(u, z_bound, survive_below):
-    """Survival probability and the survival-truncated standard normal draw - one spelling.
-
-    Given the standardised bound of this step's barrier: ``survive_below=True`` means survival is
-    ``{Z <= z_bound}`` and the draw maps into the lower tail, ``icdf(u * p)``; ``False`` means
-    ``{Z >= z_bound}`` and the upper tail, ``icdf(Phi + u * p)``. Returns ``(p, Z)``.
-
-    THREE call sites still spell it inline and a defect fixed here must be checked against all
-    three: ``sim_spot_oss`` twice (its down-side base ``(1-p) + u*p`` differs from ``Phi + u*p`` in
-    the last bit below a half, so absorbing it would re-baseline the barrier's pinned fixtures) and
-    ``pv_MC_AutoCallSwap`` up-side only; the quadrature tables in ``tests/test_branch_and_weight.py``
-    read every spelling.
+    """``(p, Z)``: the survival probability past the standardised bound ``z_bound`` and the standard
+    normal draw truncated to it, increasing in ``u``. Survival is ``{Z <= z_bound}`` where
+    ``survive_below``, else ``{Z >= z_bound}``, read as the lower tail's mirror so it keeps its digits.
     """
     eps = torch.finfo(u.dtype).eps
-    Phi = utils.norm_cdf(z_bound)
     if survive_below:
-        p = Phi
-        Z = utils.norm_icdf(torch.clamp(u * p, eps, 1.0 - eps))
-    else:
-        p = 1.0 - Phi
-        Z = utils.norm_icdf(torch.clamp(Phi + u * p, eps, 1.0 - eps))
-    return p, Z
+        p = utils.norm_cdf(z_bound)
+        return p, utils.norm_icdf(torch.clamp(u * p, eps, 1.0 - eps))
+    p = utils.norm_cdf(-z_bound)
+    return p, -utils.norm_icdf(torch.clamp((1.0 - u) * p, eps, 1.0 - eps))
 
 
 def lognormal_partial_moment(spot, drift, vol, z_bound, fired_above, power=1.0):
@@ -2196,7 +2184,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                                 p = utils.norm_cdf(z_max)
                                 hi = z_max if hi is None else torch.minimum(hi, z_max)
                             else:
-                                p = 1.0 - utils.norm_cdf(z_max)
+                                p = utils.norm_cdf(-z_max)
                                 lo = z_max if lo is None else torch.maximum(lo, z_max)
                         # joint P(pays AND survives this fixing), a spread's legs their calls over
                         # the band each one's own law leaves
@@ -2225,15 +2213,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
                         # z_max: the standard-normal threshold at which spot = H, under
                         # log(S_j/S_{j-1}) = r_j + sig_j * Z (r_j already carries -0.5*var)
                         z_max = (torch.log(barrier / Sj) - r_j) / sig_j  # [batch, 2*num_sims]
-
-                        if eta == BARRIER_UP:
-                            # survive = spot ends below H => Z < z_max
-                            p = utils.norm_cdf(z_max)
-                            Z = utils.norm_icdf(torch.clamp(u[j] * p, eps, 1.0 - eps))
-                        else:
-                            # survive = spot ends above H => Z > z_max
-                            p = 1.0 - utils.norm_cdf(z_max)
-                            Z = utils.norm_icdf(torch.clamp((1.0 - p) + u[j] * p, eps, 1.0 - eps))
+                        p, Z = oss_truncated_draw(u[j], z_max, eta == BARRIER_UP)
 
                     if direction == BARRIER_OUT:
                         # paths hitting the barrier pay the cash rebate at this fixing
@@ -4832,12 +4812,12 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 else (law[0][..., win], law[1][..., win])), z, n_win)
                         scale = Sj * G
                         k_ratio = (K - c) / scale
-                        p = utils.norm_cdf(
-                            (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s)
+                        p, z_draw = oss_truncated_draw(
+                            u[coupon_index], (torch.log(torch.clamp_min(k_ratio, eps)) - m) / s, True)
                         # THE PUT LEG'S OWN INTERVAL - this interval's forward, its own
                         # strike's variance and the trigger's survival under that law; a kit's
                         # ONE law carries the smile, so each is then the path's own bits
-                        put_m, put_s, put_scale, put_k, put_p = m, s, scale, k_ratio, p
+                        put_m, put_s, put_scale, put_k, put_p, put_z = m, s, scale, k_ratio, p, z_draw
                         put_end, put_G = win_end, G
                         if own_put:
                             put_vol = put_vols[i][coupon_index].reshape(-1, 1)
@@ -4850,8 +4830,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                     *gbm_blocks(put_vols[i], carry_rate, delta_t, win), z, n_win)
                             put_scale = put_S * put_G
                             put_k = (K - c) / put_scale
-                            put_p = utils.norm_cdf(
-                                (torch.log(torch.clamp_min(put_k, eps)) - put_m) / put_s)
+                            put_p, put_z = oss_truncated_draw(u[coupon_index], (torch.log(
+                                torch.clamp_min(put_k, eps)) - put_m) / put_s, True)
                         if barrier > 0 and putBarrier > 0.0:
                             # held below: the average's pre-advance factor, the prefix's law,
                             # the weight before `p` enters `L`, the breach's half-line
@@ -4916,10 +4896,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                                 i, j, float(coup), float(settle.mean()), float(P.mean()))
 
                     if ahead:
-                        # prevent underflow or overflow
-                        safe_pu = torch.clamp(p * u[coupon_index], min=eps, max=1.0-eps)
-
-                        Sj = Sj * torch.exp(m + s * utils.norm_icdf(safe_pu))
+                        Sj = Sj * torch.exp(m + s * z_draw)
                         # the average this coupon decided on, then the window's LAST fixing,
                         # which is where the next coupon's prefix opens
                         decided = c + Sj * G
@@ -4927,8 +4904,7 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
                         if own_put:
                             # THE PUT'S OWN STEP off the SAME uniform, so the leg walks its
                             # strike's world without asking the stream for a number
-                            put_S = put_S * torch.exp(put_m + put_s * utils.norm_icdf(
-                                torch.clamp(put_p * u[coupon_index], min=eps, max=1.0-eps)))
+                            put_S = put_S * torch.exp(put_m + put_s * put_z)
                             put_read = (put_S * put_end, c + put_S * put_G)
                             put_S = put_S * put_end
                         else:
