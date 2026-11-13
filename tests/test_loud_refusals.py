@@ -151,6 +151,50 @@ def test_a_quote_carrying_no_timestamp_still_builds_its_surface(tmp_path):
     assert surface['Quote_Timestamp'] == '' and len(surface['Surface'].array) > 3
 
 
+@pytest.mark.parametrize('energies', [['WTI'], ['BRENT', 'WTI']], ids=['only', 'later'])
+def test_an_energy_block_naming_an_absent_surface_is_refused_by_name(tmp_path, energies):
+    """Row: the energy fit bound each factor only where `Price Factors` carried it and logged a
+    construction that failed as a skip, so a block naming an absent surface wrote nothing as the
+    only block and, after another block, fitted its quotes off that block's surface.
+
+    Killing mutations: each factor bound only where the price factors carry it (the later block
+    writes `CSForwardPriceModelParameters.WTI`, the only block raises `UnboundLocalError`); the
+    construction wrapped in `except Exception: continue` (either block skipped, nothing raised)."""
+    document = fixture('cs_energy_job.json')
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    brent = market['Market Prices'].pop('CSForwardPriceModelPrices.BRENT')['instrument']
+    market['Price Factors']['ForwardPrice.WTI'] = market['Price Factors']['ForwardPrice.BRENT']
+    for energy in energies:
+        market['Market Prices']['CSForwardPriceModelPrices.' + energy] = {'instrument': dict(
+            brent, Energy=energy, Forward_Volatility=energy)}
+    context = derivus.Context()
+    context.load_json(authored(tmp_path, 'energy.json', document))
+    with pytest.raises(KeyError, match='ForwardPriceVol.WTI'):
+        context.current_cfg.bootstrap()
+
+
+def test_a_term_structure_block_whose_surface_will_not_construct_fails_the_bootstrap(tmp_path):
+    """Row: a surface that would not construct was logged as a skip, and no vol curve was written
+    for the first pricer reading one to trip on.
+
+    Killing mutation: the construction wrapped in `except Exception: continue`."""
+    base = pd.Timestamp('2026-01-15')
+    context = derivus.Context()
+    context.load_json(authored(tmp_path, 'term_structure.json', {'Calc': {
+        'Calculation': {'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD'},
+        'Deals': {'Reference': 'gbm', 'Deals': {'Children': []}},
+        'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
+            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
+            'Price Factors': {'EquityPriceVol.EQ': {
+                'Surface_Type': 'Explicit', 'Surface': utils.Curve([], [[1.0, 0.5]])}},
+            'Market Prices': {'GBMAssetPriceTSModelPrices.EQ': {
+                'instrument': {'Asset_Price_Volatility': 'EQ'}}},
+            'Bootstrapper Configuration': {
+                'GBMAssetPriceTSModelParameters': {'Prices': 'GBMAssetPriceTSModel'}}}}}}))
+    with pytest.raises(IndexError):
+        context.current_cfg.bootstrap()
+
+
 def correlated_job(tmp_path, name, stale=False):
     document = fixture('commodity_aps_world.json')
     document['Calc']['Calculation'].update({'Batch_Size': 128, 'Simulation_Batches': 1})

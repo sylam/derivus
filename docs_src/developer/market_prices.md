@@ -154,9 +154,12 @@ its `Discount_Rate` or its benchmark deals name. **Held by**
 `test_interest_rate_prices.py::test_a_forward_block_authored_before_the_curve_its_other_leg_needs_still_solves`.
 
 **Each family is handed only its own blocks** (`market_prices_for`), and a block no family reads
-refuses the bootstrap. A block missing a named factor is logged and skipped by the
-Clewlow-Strickland, GBM and Hull-White families and refused by the others; on the service an ERROR
-refuses the write ([below](#verbs)).
+refuses the bootstrap. A block naming a factor that is absent or will not construct fails the
+bootstrap, the Clewlow-Strickland family's on the `KeyError` naming the factor; the Hull-White
+family alone logs and skips it. On the service an ERROR refuses the write ([below](#verbs)).
+**Held by**
+`test_loud_refusals.py::test_an_energy_block_naming_an_absent_surface_is_refused_by_name`,
+`test_loud_refusals.py::test_a_term_structure_block_whose_surface_will_not_construct_fails_the_bootstrap`.
 
 **A run narrows to what moved.** `Config.bootstrap(only=…)` covers the blocks whose numbers moved
 plus every block reading one of them (`bootstrap_dependents`): a family's `reads`, and for curves the

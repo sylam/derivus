@@ -219,10 +219,8 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
          '  whole bootstrap.',
          '- The optimiser\'s convergence status is not checked: whatever `minimize` returns is written, and',
          '  each quote\'s target and fitted vol and premium are logged at INFO.',
-         '- On the first block of a run, a named surface, forward curve or discount curve absent from',
-         '  `Price Factors` is logged as "Unable to bootstrap ... skipping", and any factor written before',
-         '  stands. On a LATER block an absent factor is not detected: the block reads the factor the',
-         '  previous block resolved.',
+         '- A named surface, forward curve or discount curve absent from `Price Factors` fails the',
+         '  bootstrap on the `KeyError` naming it, on any block of the run.',
          ]
     )
 
@@ -298,26 +296,13 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
                 # the quote's own instrument wins on conflict
                 implied_params = dict(implied_params, instrument=dict(
                     self.param, **implied_params['instrument']))
-                # get the vol surface
-                if 'ForwardPriceVol.' + implied_params['instrument']['Forward_Volatility'] in price_factors:
-                    vol_factor = utils.Factor('ForwardPriceVol', utils.check_rate_name(
-                        implied_params['instrument']['Forward_Volatility']))
-                if 'ForwardPrice.' + implied_params['instrument']['Energy'] in price_factors:
-                    energy_factor = utils.Factor('ForwardPrice', utils.check_rate_name(
-                        implied_params['instrument']['Energy']))
-                if 'InterestRate.' + implied_params['instrument']['Discount_Rate'] in price_factors:
-                    discount_factor = utils.Factor('InterestRate', utils.check_rate_name(
-                        implied_params['instrument']['Discount_Rate']))
-
-                # this shouldn't fail - if it does, need to log it and move on
-                try:
-                    vol_surface = riskfactors.construct_factor(vol_factor, price_factors, factor_interp)
-                    vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
-                    forward = riskfactors.construct_factor(energy_factor, price_factors, factor_interp)
-                    discount = riskfactors.construct_factor(discount_factor, price_factors, factor_interp)
-                except Exception:
-                    logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
-                    continue
+                # the three factors this block names; an absent one is a KeyError naming it
+                block = implied_params['instrument']
+                vol_surface, forward, discount = [riskfactors.construct_factor(
+                    utils.Factor(kind, utils.check_rate_name(block[field])), price_factors, factor_interp)
+                    for kind, field in (('ForwardPriceVol', 'Forward_Volatility'), ('ForwardPrice', 'Energy'),
+                                        ('InterestRate', 'Discount_Rate'))]
+                vol_surface.delta = sys_params.get('Volatility_Delta', 0.0)
 
                 # need to loop over this and create some market prices.
                 quote_type = implied_params['instrument']['Quote_Type']
@@ -349,7 +334,6 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
                         option['Forward'], option['Strike'], r, sigma, t,
                         option['Units'], 1.0 if option['Option_Type'] == 'Call' else -1.0)
 
-                block = implied_params['instrument']
                 seed, sigma_box, alpha_box = self.typed(block)
                 price_param = utils.check_tuple_name(
                     utils.Factor(self.__class__.__name__, market_factor.name))
@@ -3738,13 +3722,7 @@ class GBMAssetPriceTSModelParameters(Construction):
                 # whether the thing being MODELLED is an fx rate - the model is named after the
                 # underlying, while the surface's tag names its own asset class
                 is_fx = utils.check_tuple_name(utils.Factor('FxRate', rate[1:])) in price_factors
-
-                # this shouldn't fail - if it does, need to log it and move on
-                try:
-                    vol_surface = riskfactors.construct_factor(vol_factor, price_factors, factor_interp)
-                except Exception:
-                    logging.error('Unable to bootstrap {0} - skipping'.format(market_price), exc_info=True)
-                    continue
+                vol_surface = riskfactors.construct_factor(vol_factor, price_factors, factor_interp)
 
                 connect = implied_params['instrument']['Quote_Sensitivity'] == 'Yes'
                 expiry, atm_vol, source = self.atm_column(
