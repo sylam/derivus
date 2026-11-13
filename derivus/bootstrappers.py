@@ -277,16 +277,15 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
         def V(sigma, alpha, T, S):
             return sigma * sigma * np.exp(-2.0 * alpha * S) * B(-2.0 * alpha, T)
 
-        def calc_error(x, options):
-            sigma, alpha = x
-            error = 0.0
+        def premium(x, option):
+            """The model's discounted premium of one quote at `x`, the pair (sigma, alpha)."""
+            discount = np.exp(-option['r'] * option['T'])
+            return utils.black_european_option_price(
+                option['Forward'], option['Strike'], 0.0, np.sqrt(V(*x, option['T'], option['S'])),
+                1.0, option['Units'], 1.0 if option['Option_Type'] == 'Call' else -1.0) * discount
 
-            for option in options:
-                discount = np.exp(-option['r'] * option['T'])
-                error += option['Weight'] * (option['Premium'] - utils.black_european_option_price(
-                    option['Forward'], option['Strike'], 0.0, np.sqrt(V(sigma, alpha, option['T'], option['S'])),
-                    1.0, option['Units'], 1.0 if option['Option_Type'] == 'Call' else -1.0) * discount) ** 2
-            return error
+        def calc_error(x, options):
+            return sum(option['Weight'] * (option['Premium'] - premium(x, option)) ** 2 for option in options)
 
         for market_price, implied_params in market_prices.items():
             rate = utils.check_rate_name(market_price)
@@ -350,12 +349,8 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
 
                 # log the results
                 for option in implied_params['instrument']['Energy_Futures_Options']:
-                    vol = np.sqrt(V(result.x[0], result.x[1], option['T'], option['S']) / option['T'])
-                    discount = np.exp(-option['r'] * option['T'])
-                    fitted_premium = utils.black_european_option_price(
-                        option['Forward'], option['Strike'], 0.0,
-                        np.sqrt(V(result.x[0], result.x[1], option['T'], option['S'])),
-                        1.0, option['Units'], 1.0 if option['Option_Type'] == 'Call' else -1.0) * discount
+                    vol = np.sqrt(V(*result.x, option['T'], option['S']) / option['T'])
+                    fitted_premium = premium(result.x, option)
                     err = (fitted_premium - option['Premium']) ** 2
                     logging.info(
                         'Commodity {} strike {}, expiry {}, vol {}, c_vol {}, premium {}, c_premium {}, err {}'.format(
@@ -612,13 +607,6 @@ class OptionQuoteFamily(ImpliedCalibration):
                         market_price, field, instrument[field],
                         utils.check_tuple_name(factor), failure))
         return resolved
-
-    def tensor(self, x):
-        """A scalar leaf on the fit's device and precision; a None - no cap - stays None."""
-        return None if x is None else torch.tensor(float(x), device=self.device, dtype=self.prec)
-
-    def vector(self, xs):
-        return torch.tensor([float(x) for x in xs], device=self.device, dtype=self.prec)
 
     @classmethod
     def moneyness(cls, strike, spot, forward, vol_surface, use_forward, invert_moneyness):
@@ -1126,10 +1114,9 @@ class OptionQuoteFamily(ImpliedCalibration):
             else:
                 premium = option['Units'] * option['Quoted_Market_Value']
                 # the quote's Black vol (seeds the fit, the diagnostics): zero at zero time, so dropped
-                call = option['Quoted_Market_Value'] + (0.0 if sign > 0 else
-                                                        forward - strike) * np.exp(-r * t)
-                sigma = np.sqrt(utils.bs_implied_total_var(
-                    call, spot * np.exp(-q * t), strike, r * t, 1) / t) if t else 0.0
+                sigma = utils.implied_vol(
+                    option['Quoted_Market_Value'], spot * np.exp(-q * t), strike, r * t, t, 1.0,
+                    (0.0 if sign > 0 else forward - strike) * np.exp(-r * t)) if t else 0.0
             yield option, t, r, q, forward, sign, strike, sigma, premium
 
     @staticmethod
@@ -1628,11 +1615,9 @@ class LVFit(utils.Residual):
     def implied(self, price, forward, strike, T):
         """A conditional-Black price as a Black vol: `utils.implied_vol` off the tape, then one
         Newton splice at its own vega, so `dsigma/dtheta` is `dP/dtheta` over that vega."""
-        sigma = utils.implied_vol(price.detach(), forward, strike, 0.0, 1, T, 1.0, 0.0)
-        sd = sigma * np.sqrt(T)
-        d1 = (np.log(forward / strike) + 0.5 * sd * sd) / sd
-        vega = max(forward * np.exp(-0.5 * d1 * d1) / np.sqrt(2.0 * np.pi), 1.0e-12)
-        return sigma + (price - price.detach()) / (vega * np.sqrt(T))
+        sigma = utils.implied_vol(price.detach(), forward, strike, 0.0, T, 1.0, 0.0)
+        vega = max(self.family.fx_black_vega(forward, strike, 0.0, sigma, T), 1.0e-12 * np.sqrt(T))
+        return sigma + (price - price.detach()) / vega
 
     def smile(self, cum, j, carry, T, strikes):
         """The model's own smile at block `j`, as vols at `strikes` given as fractions of that
@@ -1728,7 +1713,7 @@ class LVFit(utils.Residual):
         tape from the same forward, as a decimal."""
         both = [utils.implied_vol(
             premium, quote.spot * np.exp(quote.carry - quote.rate * quote.T), quote.strike,
-                     quote.rate * quote.T, 1, quote.T, quote.units,
+                     quote.rate * quote.T, quote.T, quote.units,
             0.0 if quote.is_call else (quote.forward - quote.strike) * np.exp(
                 -quote.rate * quote.T))
             for premium in (float(self.value(cum, quote).detach()), quote.premium)]

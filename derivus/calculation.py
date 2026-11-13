@@ -497,7 +497,7 @@ class Calculation(object):
 
     def gradients_as_df(self, grad, header='Gradient', display_val=False):
         if isinstance(grad, dict):
-            factor_values = {utils.check_scope_name(k): v.factor if hasattr(v, 'factor') else v
+            factor_values = {utils.check_scope_name(k): getattr(v, 'factor', v)
                              for k, v in self.all_factors.items()} if display_val else {}
             hessian_index = ([], [])
             factor, rate, tenor, values = [], [], [], []

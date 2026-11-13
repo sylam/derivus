@@ -425,6 +425,14 @@ class LatchedBoundarySet(BoundarySet):
     # not in what was paid, and the two differ by the whole of the deal's future.
     settles: list = None
 
+    def booked(self):
+        """The latch state as booked, the `select` argument: after each decision, the OR of every
+        `fired` flag through it."""
+        prefix = [torch.zeros_like(self.fired[0])]
+        for flag in self.fired:
+            prefix.append(prefix[-1] | flag)
+        return prefix
+
     def branch_deltas(self):
         """Per decision, the deal-mtm delta with that decision forced ON and forced OFF.
 
@@ -439,11 +447,7 @@ class LatchedBoundarySet(BoundarySet):
         row, and selecting first reproduces that row's blend exactly because the map is linear.
         """
         with torch.no_grad():
-            # latched state after each decision, and the value that state reports
-            prefix = [torch.zeros_like(self.fired[0])]
-            for flag in self.fired:
-                prefix.append(prefix[-1] | flag)
-            reported = self.to_mtm(self.select(prefix))
+            reported = self.to_mtm(self.select(self.booked()))
         for k, gap in enumerate(self.gaps):
             with torch.no_grad():
                 on, off = [], []
@@ -2994,8 +2998,7 @@ def calc_cds_rates(R, survival, discount, base_date, CDS_tenors, all_factors, bu
 
     S_proc = all_factors[survival[FACTOR_INDEX_Offset]]
     D_proc = all_factors[discount[FACTOR_INDEX_Offset]]
-    S_factor = S_proc.factor if hasattr(S_proc, 'factor') else S_proc
-    D_factor = D_proc.factor if hasattr(D_proc, 'factor') else D_proc
+    S_factor, D_factor = getattr(S_proc, 'factor', S_proc), getattr(D_proc, 'factor', D_proc)
 
     # calculate the piecewise hazard rate, forward rate and survival and discount curves
     S_ti = np.union1d(S_factor.get_tenor(), time_to_add)
@@ -3011,55 +3014,6 @@ def calc_cds_rates(R, survival, discount, base_date, CDS_tenors, all_factors, bu
     S_j = [S_vals_0] + [bootstrapped({k: v + bump * (k == tenor) for k, v in par.items()})
                         for tenor in CDS_rates]
     return par, S_ti, S_j
-
-
-def index_cds_par_spread(
-        H0_names, tau, D, R, f, S_ti, hazard_scale, eps=1e-14
-):
-    H = hazard_scale * H0_names  # (N,M)
-    N, M = H.shape
-
-    dt = S_ti[1:] - S_ti[:-1]  # (M-1,)
-    h = (H[:, 1:] - H[:, :-1]) / dt  # (N,M-1)
-
-    S = np.exp(-H)  # (N,M)
-    F = S * D[None, :]  # (N,M)
-
-    hp = h + f[None, :]
-    hp = np.where(np.abs(hp) < eps, np.sign(hp) * eps + eps, hp)
-
-    V_prot = ((F[:, :-1] - F[:, 1:]) * h) / hp  # (N,M-1)
-
-    alpha = tau[1:] - tau[:-1]
-    n = S_ti.searchsorted(tau[1:])  # match calc_par_cds
-    # Optional: assert tau points are on-grid (safer)
-    # (need to check indices bounds first)
-    if np.any(n >= len(S_ti)):
-        raise ValueError("tau contains points beyond S_ti range")
-    if not np.all(S_ti[n] == tau[1:]):
-        raise ValueError("tau[1:] must be exact grid points in S_ti")
-
-    v_fee = -tau[0] * N
-    prev_n = 0
-
-    for alpha_j, prev_tau, n_j in zip(alpha, tau[:-1], n):
-        sub_i = slice(prev_n, n_j)
-        sub_i_p1 = slice(prev_n + 1, n_j + 1)
-
-        hp_seg = h[:, sub_i] + f[sub_i][None, :]
-        hp_seg = np.where(np.abs(hp_seg) < eps, np.sign(hp_seg) * eps + eps, hp_seg)
-
-        term0 = (1.0 + hp_seg * (S_ti[sub_i][None, :] - prev_tau)) * F[:, sub_i]
-        term1 = (1.0 + hp_seg * (S_ti[sub_i_p1][None, :] - prev_tau)) * F[:, sub_i_p1]
-        A_j = (term0 - term1) * h[:, sub_i] / (hp_seg ** 2)
-
-        v_fee += alpha_j * np.sum(D[n_j] * S[:, n_j]) + np.sum(A_j)
-        prev_n = n_j
-
-    n_last = n[-1]
-    v_prot_total = (1.0 - R) * np.sum(V_prot[:, :n_last])
-
-    return v_prot_total / v_fee
 
 
 def bars_touched(bars, level, barrier_up):
@@ -4166,7 +4120,7 @@ def garch_correlated_substeps(h, z_fw, n, omega, alpha, beta, nu):
     return h, var_sum, r_sum
 
 
-# Black-Scholes reference + HN implied vol (the HN smile/skew diagnostic and the bootstrapper seed).
+# Black-Scholes reference and its inversion (the option-quote fit's seed and diagnostics).
 
 def bs_call_np(S, K, r, n, total_var):
     """BS call from TOTAL variance (r, n in per-step units) -- a thin adapter over
@@ -4332,14 +4286,12 @@ def black_european_option(F, X, vol, tenor, buyorsell, callorput, shared,
     return buyorsell * torch.where(guard, prem, value)
 
 
-def implied_vol(premium, forward, strike, rate, steps, T, units, parity):
-    """One quoted premium as a Black vol: the units and the yield rescale stripped, the put put
-    back on parity, and `bs_implied_total_var` off the same forward. `rate` is per step over
-    `steps` of them, which is the clock a GARCH family counts in; `T` is the year fraction the
-    total variance is annualised by."""
+def implied_vol(premium, forward, strike, rate, T, units, parity):
+    """One quoted premium as a Black vol over `T` years: the premium per unit, a put made its call
+    by adding `parity`, inverted by `bs_implied_total_var` at the spot less its dividends `forward`
+    and the rate's total over `T`, `rate`."""
     call = float(premium) / float(units) + parity
-    return np.sqrt(max(bs_implied_total_var(
-        call, float(forward), float(strike), float(rate), int(steps)), 0.0) / T)
+    return np.sqrt(bs_implied_total_var(call, float(forward), float(strike), float(rate), 1) / T)
 
 
 class swaption_schedule_class(namedtuple('swaption_schedule', 'expiry pay_times accruals')):
@@ -4649,7 +4601,7 @@ def create_market_swaps(base_date, time_grid, curve_index, vol_surface, curve_fa
 def get_tenors(factor_dict):
     all_tenor = {}
     for factor_name, data in factor_dict.items():
-        factor = data.factor if hasattr(data, 'factor') else data
+        factor = getattr(data, 'factor', data)
         if hasattr(factor, 'get_tenor_indices'):
             indices = factor.get_tenor_indices()
             if isinstance(indices, dict):
@@ -4670,7 +4622,7 @@ def update_tenors(base_date, all_factors):
 
     all_tenors = {}
     for factor, factor_obj in all_factors.items():
-        risk_factor = factor_obj.factor if hasattr(factor_obj, 'factor') else factor_obj
+        risk_factor = getattr(factor_obj, 'factor', factor_obj)
 
         if factor.type in OneDimensionalFactors or (
                 factor.type in TwoDimensionalFactors and risk_factor.get_subtype()[0] in ['SVI', 'Skew']):
@@ -4861,51 +4813,34 @@ def curve_spread(plus, minus, weights, time_grid, shared, multiply_by_time=True,
         shared, weights, start, multiply_by_time)
 
 
+def carried_forward(spot, plus, minus, T, time_grid, shared, only_diag, lag):
+    """`spot` on each row grown on `plus` less `minus` to `T`, a day or an array of them (each row's
+    own where `only_diag`), between spot dates under a deal's `lag`."""
+    T_t = T - time_grid[:, TIME_GRID_MTM].reshape(-1, 1)
+    if T_t.any():
+        drift = torch.exp(curve_spread(
+            plus, minus, np.diag(T_t).reshape(-1, 1) if only_diag else T_t, time_grid, shared, lag=lag))
+    else:
+        drift = spot.new_ones([time_grid.shape[0], 1 if only_diag else T_t.size, 1])
+    return spot * torch.squeeze(drift, dim=1) if isinstance(T, int) else torch.unsqueeze(spot, dim=1) * drift
+
+
 def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=False, lag=None):
-    T_scalar = isinstance(T, int)
     key_code = ('eqforward', tuple(tuple(x[:2] for x in code) for code in (equity, repo, div_yield)), only_diag,
-                T if T_scalar else tuple(T), lag and lag.args,
-                time_grid[:, TIME_GRID_MTM].tobytes())
-
+                T if isinstance(T, int) else tuple(T), lag and lag.args, time_grid[:, TIME_GRID_MTM].tobytes())
     if key_code not in shared.t_Buffer:
-        T_t = T - time_grid[:, TIME_GRID_MTM].reshape(-1, 1)
         spot = calc_time_grid_spot_rate(equity, time_grid, shared)
-
-        if T_t.any():
-            drift = torch.exp(
-                calc_spot_forward(repo, T, time_grid, shared, only_diag, lag) -
-                calc_spot_forward(div_yield, T, time_grid, shared, only_diag, lag))
-        else:
-            drift = shared.one.new_ones(
-                [time_grid.shape[0], 1 if only_diag else T_t.size, 1])
-
-        shared.t_Buffer[key_code] = spot * torch.squeeze(drift, dim=1) \
-            if T_scalar else torch.unsqueeze(spot, dim=1) * drift
-
+        shared.t_Buffer[key_code] = carried_forward(spot, repo, div_yield, T, time_grid, shared, only_diag, lag)
     return shared.t_Buffer[key_code]
 
 
 def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False, lag=None):
-    T_scalar = isinstance(T, int)
     key_code = ('fxforward', tuple(tuple(x[:2] for x in code) for code in (*local, *other)), only_diag,
-                T if T_scalar else tuple(T), lag and lag.args,
-                time_grid[:, TIME_GRID_MTM].tobytes())
+                T if isinstance(T, int) else tuple(T), lag and lag.args, time_grid[:, TIME_GRID_MTM].tobytes())
     if key_code not in shared.t_Buffer:
-        if local[0] != other[0]:
-            T_t = T - time_grid[:, TIME_GRID_MTM].reshape(-1, 1)
-            fx_spot = calc_fx_cross(local[0], other[0], time_grid, shared)
-
-            if T_t.any():
-                weights = np.diag(T_t).reshape(-1, 1) if only_diag else T_t
-                drift = torch.exp(curve_spread(other[1], local[1], weights, time_grid, shared, lag=lag))
-            else:
-                drift = fx_spot.new_ones([time_grid.shape[0], 1 if only_diag else T_t.size, 1])
-
-            shared.t_Buffer[key_code] = fx_spot * torch.squeeze(drift, dim=1) \
-                if T_scalar else torch.unsqueeze(fx_spot, dim=1) * drift
-        else:
-            shared.t_Buffer[key_code] = shared.one
-
+        shared.t_Buffer[key_code] = carried_forward(
+            calc_fx_cross(local[0], other[0], time_grid, shared), other[1], local[1], T, time_grid, shared,
+            only_diag, lag) if local[0] != other[0] else shared.one
     return shared.t_Buffer[key_code]
 
 

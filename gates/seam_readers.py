@@ -75,7 +75,7 @@ KNOWN = {
     ('pricing.calc_moneyness', 'pricing.pv_MC_AutoCallSwap'):
         'reads its expiry vol at the moneyness `QEDI_CustomAutoCallSwap.generate` computes '
         'through the seam, and its strips through `forward_vol_strip`',
-    ('pricing.zero_carry_rate', 'utils.calc_fx_forward'):
+    ('pricing.zero_carry_rate', 'utils.carried_forward'):
         'the outright forward, `exp` of the integral the zero carry divides by its year fraction',
     ('pricing.forward_carry_rate', 'pricing.deal_carry_rate'):
         'the zero carry over its deal\'s day count, for a pricer reading one expiry',
@@ -86,9 +86,8 @@ KNOWN = {
     ('pricing.forward_vol_rate', 'pricing.pv_discrete_double_asian_option'): _AVERAGE,
     ('pricing.forward_carry_rate', 'pricing.pv_fx_range_accrual'): _DIGITALS,
     ('pricing.forward_vol_rate', 'pricing.pv_fx_range_accrual'): _DIGITALS,
-    ('pricing.total_log_forward', 'pricing.pv_MC_Accumulator'): _WALK,
     ('pricing.total_log_forward', 'pricing.pv_MC_AutoCallSwap'): _WALK,
-    ('pricing.total_log_forward', 'pricing.pv_MC_Tarf'): _WALK,
+    ('pricing.total_log_forward', 'pricing.settled_fixing_strip'): _WALK,
 }
 
 
