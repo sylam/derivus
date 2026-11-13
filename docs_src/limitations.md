@@ -225,6 +225,13 @@ Grouped by where a validator meets them.
   under `Yes`: on one device a base valuation's first-order greeks table moved run to run at 1e-14
   relative while every value was bit-identical (2026-10-15). UNMEASURED across devices beyond the
   host-curve row.
+- **`ACT_365_ISDA` and `ACT_ACT_ICMA` accrue as `ACT_365`** (2026-11-13). `DayCount.accrual` takes
+  days over 365 for both, where Actual/Actual (ISDA) splits a period at each year end over that
+  year's length and Actual/Actual (ICMA) takes a regular period as one over its frequency
+  ([Day counts](json/general_types.md#day-counts)). On deposits over a year spanning 29 February
+  2028, the annual ISDA period accrues 1.36e-3 of itself high and the semi-annual one after the
+  year end 2.7e-3 high; the two semi-annual ICMA periods accrue 8.2e-3 high and 2.7e-3 low. The fix
+  is the two conventions in `DayCount.accrual`, the ICMA one reading the period's frequency.
 
 ## Decisions waiting on the desk {#decisions-waiting-on-the-desk}
 
