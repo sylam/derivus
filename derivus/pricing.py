@@ -448,8 +448,8 @@ def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
                       invert_moneyness=False, use_forwards=False):
     """The implied vol read at EVERY fixing's own tenor, at the moneyness the deal declares.
 
-    A surface is quoted against an option's expiry, so a simulation stepping a fixing strip reads it
-    once per fixing. ``carry_rate`` is the ZERO carry (a forward wants the cumulative integral
+    A surface is quoted against an option's expiry, so a fixing strip reads it at every fixing's
+    tenor, in one read. ``carry_rate`` is the ZERO carry (a forward wants the cumulative integral
     ``F_j = S * exp(c_j * T_j)``), and ``cum_t`` arrives as numpy, being also the surface's hashable
     expiry key. ``use_forwards`` is the deal's declaration; the per-fixing smile convention is an
     open modelling question (limitations.md, decision 1).
@@ -465,10 +465,10 @@ def forward_vol_strip(deal_data, strike, spot, carry_rate, cum_t, shared,
         calc_moneyness(strike, spot.unsqueeze(-2).expand_as(forward), forward, deal_data,
                        use_forward=use_forwards, invert_moneyness=invert_moneyness),
         dtype=forward.dtype, device=forward.device).expand_as(forward)
-    return torch.stack([utils.VolSurface.rate(
-        deal_data.Factor_dep['Volatility'], moneyness[..., j, :],
-        np.atleast_1d(cum_t[..., j]), shared).reshape(moneyness[..., j, :].shape)
-        for j in range(cum_t.shape[-1])], dim=-2)
+    # one read over the strip: each row of the flattened moneyness at its own fixing's tenor
+    return utils.VolSurface.rate(
+        deal_data.Factor_dep['Volatility'], moneyness.reshape(-1, moneyness.shape[-1]),
+        np.broadcast_to(cum_t, moneyness.shape[:-1]).ravel(), shared).reshape(moneyness.shape)
 
 
 def forward_vol_rate(vols, cum_t, dt):

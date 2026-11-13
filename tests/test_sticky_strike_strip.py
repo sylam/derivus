@@ -3,10 +3,10 @@
 `calc_moneyness` answers a `Skew`/`SVI` surface under `Sticky_Strike` with the BARE STRIKE - the
 division by `ATM_Ref` happens inside the surface, per expiry - so that answer carries neither a
 fixing axis nor a batch, while every other rule's answer carries both. `forward_vol_strip` reads
-its moneyness once per fixing and is the site that knows the strip's shape, so it is where the
-coordinate is broadcast onto that shape. Unbroadcast, a discrete barrier on such a surface could
-not be priced at all: at one reporting row the per-fixing index ran off the end, and at more than
-one the read came back with a row per reporting date and was reshaped to a single number.
+its moneyness at every fixing's tenor in one read and is the site that knows the strip's shape, so
+it is where the coordinate is broadcast onto that shape. Unbroadcast, a discrete barrier on such a
+surface is not priced at all: the bare strike carries no fixing axis to read a tenor against, and
+the deal is skipped.
 
 THE ORACLE IS THE SAME SMILE IN THE OTHER CONVENTION. `Sticky_Strike` reads the surface at
 `log(K / ATM_Ref(T))` and `Sticky_Moneyness` at `log(K / F(T))`, so a surface whose `ATM_Ref` IS
