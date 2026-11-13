@@ -305,7 +305,7 @@ def test_an_inner_monte_carlo_book_is_bit_identical_in_the_worker_count():
     Killing mutation: the block's anchor advancing with the global batch it was first built in -
     a position reintroduced - moves the pooled matrix at n = 2 and 4."""
     reference = sha(inner_pooled(1))
-    assert reference == 'fb1ba147026afcca', 'the sharded inner-MC CPU stream moved: %s' % reference
+    assert reference == '160e13446e7aa181', 'the sharded inner-MC CPU stream moved: %s' % reference
     for n in (2, 4):
         assert sha(inner_pooled(n)) == reference, (
             'the inner-MC book moved at n=%d - an inner draw reads a position' % n)

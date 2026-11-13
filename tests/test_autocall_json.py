@@ -7,9 +7,10 @@ emits about what it decided.
 THE CLOSED FORM. An autocall with a SINGLE coupon date is a cash-or-nothing DIGITAL: it pays the
 coupon exactly when the spot finishes at or above the autocall threshold, so
 
-    PV = Units * coupon * D(T) * N(d2),   d2 = (ln(S/K) + (r - q - sigma^2/2) T) / (sigma sqrt T)
+    PV = Units * coupon * D(T) * N(d2),   d2 = (ln(S/K) + (r - q) T' - sigma^2 T / 2) / (sigma sqrt T)
 
-with `K = threshold * strike`. That is exact under the GBM the document declares, so the gate is a
+with `K = threshold * strike` and `T'` the years between the base date's spot date and the
+fixing's, three business days on from each. That is exact under the GBM the document declares, so the gate is a
 value assertion rather than a sanity check - the same reason the OSS pricer gates use a
 one-coupon autocall to pin the spot-model read.
 
@@ -38,6 +39,7 @@ import pytest
 import derivus as rf
 from derivus import utils
 from derivus.config import CustomJsonEncoder
+from test_option_settlement_json import lag
 
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'fixtures', 'autocall_job.json')
@@ -79,12 +81,19 @@ def _ndtr(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
+def _spot_years(row, fixing):
+    """The years a forward carries from day `row` to a fixing on day `fixing`: between their spot
+    dates, the autocall's three business days on from each."""
+    day = lambda offset: pd.Timestamp(BASE) + pd.Timedelta(days=offset)
+    return (fixing + lag(day(fixing), 3) - row - lag(day(row), 3)) / DAYS
+
+
 def _digital(threshold):
     """PV of the one-coupon autocall: a cash-or-nothing digital struck at threshold * strike."""
     t = HORIZON / DAYS
     k = threshold * STRIKE
     sd = SIGMA * math.sqrt(t)
-    d2 = (math.log(SPOT / k) + (R_USD - Q_EQ - 0.5 * SIGMA ** 2) * t) / sd
+    d2 = (math.log(SPOT / k) + (R_USD - Q_EQ) * _spot_years(0, HORIZON) - 0.5 * SIGMA ** 2 * t) / sd
     return UNITS * COUPON * math.exp(-R_USD * t) * _ndtr(d2)
 
 
@@ -345,7 +354,7 @@ def _compo_digital(threshold, corr):
     C = S*X, reported in USD.
 
         C0 = SPOT / FX_EUR                 (the USD->EUR cross is 1/FX_EUR)
-        b  = R_EUR - Q_EQ                  ((r_usd - q) + (r_eur - r_usd))
+        b  = R_EUR - Q_EQ                  ((r_usd - q) + (r_eur - r_usd)), between spot dates
         sigma_c^2 = SIGMA^2 + 2*rho*SIGMA*FX_SIGMA + FX_SIGMA^2,  rho = -corr
         PV = Units * coupon * exp(-R_EUR*T) * N(d2) * FX_EUR      (EUR mark, USD report)
 
@@ -359,7 +368,7 @@ def _compo_digital(threshold, corr):
     rho = -corr
     sigma_c = math.sqrt(SIGMA ** 2 + 2.0 * rho * SIGMA * FX_SIGMA + FX_SIGMA ** 2)
     b = R_EUR - Q_EQ
-    d2 = (math.log(c0 / k) + (b - 0.5 * sigma_c ** 2) * t) / (sigma_c * math.sqrt(t))
+    d2 = (math.log(c0 / k) + b * _spot_years(0, HORIZON) - 0.5 * sigma_c ** 2 * t) / (sigma_c * math.sqrt(t))
     return UNITS * COUPON * math.exp(-R_EUR * t) * _ndtr(d2) * FX_EUR
 
 
@@ -369,8 +378,8 @@ def test_a_compo_autocall_is_a_digital_on_the_converted_spot(tmp_path):
     deals had never priced before this (`calc_vol_adjustment` returned a python-float b_adj that
     `torch.unsqueeze` refused, skipping the deal).
 
-    MEASURED: 0.45887454 against the closed form's 0.45887454, 4.8e-16 relative; the flipped
-    correlation lands on ITS closed form (0.43677514) exactly, so the sorted-pair sign flip is
+    MEASURED: 0.45883048 against the closed form's 0.45883048, 4.4e-16 relative; the flipped
+    correlation lands on ITS closed form (0.43674331) exactly, so the sorted-pair sign flip is
     measured rather than assumed.
 
     Killing mutation: the composite variance's cross term taken with the wrong sign.
@@ -511,7 +520,8 @@ def test_a_row_reads_only_what_has_printed_by_its_own_date(tmp_path):
     def second(day):
         s = np.asarray(spot[pd.Timestamp(_stamp(day))].values, dtype=float)
         t = (172 - day) / DAYS
-        d2 = (np.log(s / STRIKE) + (R_USD - Q_EQ - 0.5 * SIGMA ** 2) * t) / (SIGMA * math.sqrt(t))
+        d2 = (np.log(s / STRIKE) + (R_USD - Q_EQ) * _spot_years(day, 172) - 0.5 * SIGMA ** 2 * t) / (
+            SIGMA * math.sqrt(t))
         return UNITS * COUPON * math.exp(-R_USD * (182 - day) / DAYS) * np.vectorize(_ndtr)(d2)
 
     for day, called in ((61, UNITS * COUPON * math.exp(-R_USD * 30 / DAYS)), (122, 0.0)):

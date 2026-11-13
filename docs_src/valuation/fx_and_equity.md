@@ -262,7 +262,7 @@ drawn first and the survival truncates the return to the window's first fixing, 
 those draws. A fixing already observed is an exact indicator.
 
 - `SpotModel: None` (default): lognormal over each fixing interval. Carry is the interval strip of the
-  equity's repo curve less its dividend curve; the vol is the interval forward-variance strip read at each
+  equity's repo curve less its dividend curve, each fixing's forward carried between spot dates; the vol is the interval forward-variance strip read at each
   coupon's own trigger level $h_jK$, and the put leg walks a second strip read at its own strike, $B$ where
   $R_p=0$ and $K(1-R_p)$ otherwise, off the same uniforms. `Quanto` bends the carry by $-\rho\sigma_S\sigma_X$
   at the expiry's at-the-money vols; `Compo` simulates $S\cdot X$ with each interval vol composed with the

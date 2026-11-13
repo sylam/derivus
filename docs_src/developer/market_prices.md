@@ -459,6 +459,16 @@ the ratio of forward to strike, a Relative_Forward one at the strike's distance 
 so a ratio surface is read on its own nodes. **Held by**
 `test_cross_spot_model.py::test_the_emitter_reads_a_surface_on_its_own_axis`.
 
+**The fit's forward is the pricer's.** `OptionQuoteFamily.expiry_forward` grows the spot at
+`effective_yield`'s `r − q` between spot dates, the block's `Settlement_Days` business days of
+Monday to Friday on from the base date and from each expiry, through `utils.spot_lag` as a deal's
+lag is. Blank is the underlying class's (`OptionQuoteFamily.spot_days`: 3 on an `EquityPrice`, 2
+on an `FxRate`, none elsewhere) and zero is no lag and no roll. The lag rides in on `q` as the
+funding basis does, so the walk's carry and the premium's parity read the same forward, while the
+premium discounts and the vol runs to the expiry itself. **Held by**
+`test_equity_chain.py::test_the_calibrated_forward_is_the_priced_forward_at_every_pillar`,
+`test_market_prices_partition.py::test_the_surface_blocks_forward_is_the_priced_forward_at_every_pillar`.
+
 **ξ is stored and the level derived.** The factor stores `ξ(t) = E₀[h_t]` and derives
 `L*(t) = log ξ(t) − ½Var(ℓ_t + s_t)`, so `E₀[h_t] = ξ(t)` whatever the vol-of-vol; a stored level
 would drag the ATM level with every vol-of-vol move. ξ is flat forward variance between ATM expiries,

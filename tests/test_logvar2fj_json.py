@@ -854,9 +854,7 @@ def test_a_banked_document_is_unmoved(name, document, overrides):
 
     BANKED ON AN RTX 3090, which is where a base valuation runs whenever CUDA is visible. The hex
     is the DEVICE's as much as the tree's; a CPU-only box re-banks rather than reading a defect.
-    Re-banked when a base valuation's inner paths became the canonical block's: the TARF and the
-    accumulator, one strip, 62.42891 to 62.49790 against the closed-form strip's 62.4979, their
-    eleven greeks by 3.3e-5 to 2.3e-2 of themselves; the autocall's one fixing draws nothing.
+    The TARF and the accumulator are one strip, 68.67158 against the closed-form strip's 68.6715.
 
     Killing mutation: the first fixing interval's carry read a part in ten thousand high.
     """

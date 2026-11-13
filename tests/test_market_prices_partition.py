@@ -60,7 +60,8 @@ from test_interest_rate_prices import authored_world
 from test_credit_prices import block as credit_block
 from test_inflation_prices import block as inflation_block
 from test_quote_propagation import BLOCK as ZAR_BLOCK, bootstrapped, market, run, with_deals
-from test_service import CLIENT, JSON, desk, desk_smile, dump, fx_vol_quotes, job  # noqa: F401
+from test_service import (CLIENT, FACTORS, FX_OPTION, JSON, desk, desk_smile, dump,  # noqa: F401
+                          fx_vol_quotes, job)
 
 FX_BLOCK = 'FXVolPrices.USD.ZAR'
 LV_BLOCK = 'LogVar2FJModelPrices.ZAR'
@@ -183,6 +184,50 @@ def test_the_ladder_is_the_entrys_and_the_contract_floor_is_a_declared_lever():
     rows = author(dict(thin, Minimum_Contracts=6))[1]['instrument']['European_Options']
     assert len(rows) == 14, 'the entry\'s one pillar, not the declared two'
     assert len({(row['Expiry_Date'], row['Strike']) for row in rows}) == 6
+
+
+def test_the_surface_blocks_forward_is_the_priced_forward_at_every_pillar():
+    """The forward a block authored off the surface is fitted at is the forward an `FXOptionDeal`
+    on the pair is priced at in the same job: the rand at 7% against the dollar's 2%, carried
+    between spot dates two business days on from the Friday base date and from each pillar, so
+    the Wednesday two-month pillar carries two days short of its tenor. Read off deals deep in the
+    money on a curve at zero, whose mark is the forward less the strike, to 1e-12.
+
+    Killing mutation: the class default read at the wrong class, three days for two, 2.7e-4 low
+    at the two-month pillar.
+    """
+    from derivus import run_baseval, utils
+
+    flat = lambda rate: utils.Curve([], [[0.0, rate], [5.0, rate]])
+    factors = dict(FACTORS, **{
+        'InterestRate.ZAR': dict(FACTORS['InterestRate.ZAR'], Curve=flat(0.07)),
+        'InterestRate.ZERO': dict(FACTORS['InterestRate.USD'], Curve=flat(0.0))})
+    world = lambda deals: derivus.Context().load_json((dump(job(deals, factors, sections={
+        'Bootstrapper Configuration': {'FXVol': {}}, 'Market Prices': desk_smile()})),
+        'surface-forward')).current_cfg
+
+    surface = world(())
+    surface.bootstrap()
+    name, block = LogVar2FJModelParameters.fx_surface_block(
+        'USD.ZAR', surface.params['Price Factors'], surface.params['System Parameters'],
+        surface.params['Price Factor Interpolation'])
+    instrument = block['instrument']
+    expiries = sorted({row['Expiry_Date'] for row in instrument['European_Options']})
+    config = world([dict(FX_OPTION, Reference=str(expiry.date()), Strike_Price=0.01,
+                         Underlying_Amount=1.0, Discount_Rate='ZERO', Expiry_Date=expiry)
+                    for expiry in expiries])
+    config.bootstrap()
+    params = config.params
+    family = bootstrappers.construct_bootstrapper('LogVar2FJModelParameters', {})
+    resolved, spot = LogVar2FJModelParameters.resolve_block(
+        name, instrument, params['Price Factors'], params['Price Factor Interpolation'],
+        params['System Parameters'])
+    fitted = {option['Expiry_Date']: forward for option, _, _, _, forward, _, _, _, _
+              in family.prepare_quotes(params['System Parameters'], instrument, resolved, spot)}
+    frame = run_baseval(config)[1]['Results']['mtm']
+    for expiry in expiries:
+        implied = float(frame[frame['Reference'] == str(expiry.date())]['Value'].iloc[0]) + 0.01
+        assert fitted[expiry] == pytest.approx(implied, rel=1e-12), (expiry, fitted[expiry], implied)
 
 
 # ---------------------------------------------------------------------------------------------

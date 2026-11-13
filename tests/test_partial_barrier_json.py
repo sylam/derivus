@@ -379,6 +379,8 @@ def test_a_window_booked_on_either_side_of_its_pair_reads_the_same_crossings():
     put on USD/EUR at the inverted strike and barrier on the dollars the call delivers. Reported in
     EUR off one simulated EUR the two read the same number on every row and scenario - 52.827 on
     the limit date, 48.232 at expiry - the window's crossings bridged off the cross's one live leg.
+    Both state `Settlement_Days` 0: the two bookings are one only where the forward is the ratio of
+    the two discount curves to the expiry, which a forward between spot dates is not.
 
     Killing mutation: the bridge off where the quote leg is live, the rule before
     `get_cross_barrier_underlying`: the USD/EUR booking reads 61.510 on the limit date and 55.660
@@ -388,11 +390,11 @@ def test_a_window_booked_on_either_side_of_its_pair_reads_the_same_crossings():
         return np.asarray(_run(_cmc_job(deal, Currency='EUR', Time_grid='0d 12m(3m)', Batch_Size=4096,
                                         Simulation_Batches=1))['Results']['mtm'], float)
 
-    call = profile(_deal('Down_And_Out', 1.15, at_start='Yes'))
+    call = profile(dict(_deal('Down_And_Out', 1.15, at_start='Yes'), Settlement_Days=0))
     put = profile(dict(
         _deal('Up_And_Out', 1 / 1.15, strike=1 / 1.25, at_start='Yes', option_type='Put'),
         Currency='EUR', Underlying_Currency='USD', Payoff_Currency='EUR', Discount_Rate='EUR',
-        Underlying_Amount=NOTIONAL * 1.25))
+        Underlying_Amount=NOTIONAL * 1.25, Settlement_Days=0))
     assert call.shape == (3, 4096) and call[1].mean() < call[0].mean(), call.mean(axis=1)
     assert np.abs(call - put).max() < 1e-5 * NOTIONAL, (call.mean(axis=1), put.mean(axis=1))
 

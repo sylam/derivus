@@ -388,9 +388,10 @@ def test_a_counterparty_curve_ending_at_a_year_hazards_on_past_it(tmp_path):
     counterparty written at a 1% hazard to six months and 4% to a year is the same counterparty
     written on at 4% to fifty years, and a five-year forward's CVA reads one number off both - as
     declared, under a 91-day `Tenor_Offset`, which reads the factor past its last knot, and with
-    `CDS_Tenors` adding knots to five years - where the one-year curve froze survival after it.
+    `CDS_Tenors` adding knots to five years - where the one-year curve froze survival after it. The
+    two spellings agree to the float32 the run takes, a unit in the last place, so 1e-6 is asked.
 
-    Killing mutation: the survival factor read flat past its last knot.
+    Killing mutation: the survival factor read flat past its last knot, 0.2706 against 2.5563.
     """
     def cva(curve, offset=0, cds_tenors=None):
         forward = dict(_forward('FWD5', FORWARD_PRICE), Maturity_Date={'.Timestamp': _stamp(5 * 365)})
@@ -405,7 +406,7 @@ def test_a_counterparty_curve_ending_at_a_year_hazards_on_past_it(tmp_path):
     for case in ({}, {'offset': 91}, {'cds_tenors': [1, 3, 5]}):
         year = cva([[0.0, 0.0], [0.5, 0.005], [1.0, 0.025]], **case)
         fifty = cva([[0.0, 0.0], [0.5, 0.005], [50.0, 1.985]], **case)
-        assert year == pytest.approx(fifty, rel=1e-12) and fifty > 0.0, (case, year, fifty)
+        assert year == pytest.approx(fifty, rel=1e-6) and fifty > 0.0, (case, year, fifty)
 
 
 # ---------------------------------------------------------------- the two-sided atom logic

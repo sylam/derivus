@@ -2339,7 +2339,7 @@ def test_the_graph_run_sharded_equals_the_serial_run_to_the_bit():
     serial, sharded = (world(dict(calculation, **workers), extra=INDICES, deals=AUTOCALLS,
                              book={'NS': ('AC1', 'AC2')}).run_job()[1]['Results']
                        for workers in ({}, {'Workers': 2}))
-    assert len(serial['CRIF']) == 14
+    assert len(serial['CRIF']) == 20
     identical(sharded, serial)
 
 
@@ -2732,9 +2732,9 @@ def notebook(crif, currency, parameters=PARAMETERS):
 #: Each document's margin, `{(direction, counterparty): SIMM}` in USD, banked in hex.
 BANKED = {
     'rand': {('Posted', 'RATES'): '0x1.dec289e9f4df7p+18',
-             ('Posted', 'BOOK'): '0x1.d3996b29a27aep+19',
+             ('Posted', 'BOOK'): '0x1.d3996b2acdec0p+19',
              ('Collected', 'RATES'): '0x1.039ffae2297a7p+19',
-             ('Collected', 'BOOK'): '0x1.d4cb158bcb06ep+19'},
+             ('Collected', 'BOOK'): '0x1.d4cb158c41ec6p+19'},
     'dollar': {('Posted', 'RATES'): '0x1.876c3961585f0p+17',
                ('Posted', 'CREDIT'): '0x1.d96813ab3bc3dp+17',
                ('Collected', 'RATES'): '0x1.b6dd67a6256d1p+17',

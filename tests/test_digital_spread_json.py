@@ -33,15 +33,15 @@ import torch
 import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder
+from test_option_settlement_json import lag
 
 BASE = pd.Timestamp('2024-06-28')
 EXPIRY = BASE + pd.DateOffset(years=1)
 T = (EXPIRY - BASE).days / 365.0
 # a forward carries between spot dates, `Settlement_Days` BUSINESS days on from the base date and
-# from the expiry, three on an equity option and two on an FX one; vol tenor and discounting stay
-# at expiry
-BDAY = pd.tseries.offsets.BDay
-T_FWD, T_FWD_FX = (((EXPIRY + BDAY(n)) - (BASE + BDAY(n))).days / 365.0 for n in (3, 2))
+# from the expiry, three on an equity deal and two on an FX one, its fx conversion included; vol
+# tenor and discounting stay at expiry
+T_FWD, T_FWD_FX = (((EXPIRY - BASE).days + lag(EXPIRY, n) - lag(BASE, n)) / 365.0 for n in (3, 2))
 SPOT, STRIKE, CASH = 100.0, 100.0, 1000.0
 R_USD, R_EUR, Q_EQ = 0.04, 0.02, 0.01
 VOL_ATM, SKEW = 0.25, 0.5           # sigma(m) = VOL_ATM + SKEW * (m - 1), m = spot / strike
@@ -358,8 +358,8 @@ def test_a_compo_binary_spread_composes_each_leg():
         'Correlation.EquityPrice.EQ/FxRate.EUR.USD': {'Value': CORR}})
     rho = -CORR                     # authored on the sorted pair, the deal runs USD -> EUR
     sigma_c = math.sqrt(VOL_ATM ** 2 + 2.0 * rho * VOL_ATM * FX_SIGMA + FX_SIGMA ** 2)
-    # equity leg between its spot dates, the fx forward to expiry - the engine's two tenors
-    fwd_c = (SPOT * math.exp((R_USD - Q_EQ) * T_FWD) / FX_SPOT) * math.exp((R_EUR - R_USD) * T)
+    # the equity leg and the fx conversion between the deal's one pair of spot dates
+    fwd_c = (SPOT * math.exp((R_USD - Q_EQ) * T_FWD) / FX_SPOT) * math.exp((R_EUR - R_USD) * T_FWD)
     out, _ = _run(_job([deal], factors, valuation=SPREAD_ON))
     expected = _spread_closed(fwd_c, strike_eur, lambda k: sigma_c, R_EUR) * FX_SPOT
     assert abs(_mtm(out, 'BIN') - expected) / expected < 1e-9, (_mtm(out, 'BIN'), expected)
@@ -378,9 +378,6 @@ BARRIER = {'Object': 'EquityBarrierBinaryOption', 'Reference': 'BB', 'Currency':
            'Settlement_Date': EXPIRY, 'Barrier_Type': 'Up_And_Out', 'Barrier_Price': 10.0 * SPOT,
            'Barrier_Dates': [EXPIRY]}
 BARRIER_ON = {'EquityBarrierBinaryOption': {'Relative_Digital_Spread': EPS}}
-# the barrier's strip carries to the expiry, where the plain binary's forward carries between spot
-# dates
-FWD_T = SPOT * math.exp((R_USD - Q_EQ) * T)
 CASH_T = CASH * math.exp(-R_USD * T)
 
 
@@ -388,12 +385,11 @@ def test_a_barrier_binary_no_path_reaches_is_the_spread_the_plain_binary_takes()
     """An up-and-out barrier binary observed once, on its expiry, at ten times the spot: each
     leg's one step is integrated from the row's own spot and nothing is sampled, so under the
     spread it is the European spread the plain binary prices, each leg at its own strike's vol -
-    the call and a sold put, against the oracle the plain binary is held to, each on its own
-    forward: the barrier's strip carries to the expiry, the plain binary's between spot dates, a
-    day shorter here, 0.019% apart. Off, it is the single-vol closed form.
+    the call and a sold put, against the oracle the plain binary is held to, both on the forward
+    between the deal's spot dates. Off, it is the single-vol closed form.
 
-    MEASURED 670.0161877023206 against the oracle's ...274 and -290.7732514499992 against ...958,
-    1.2e-14; the plain binaries 669.890 and -290.900 to the last bit; off, 2.4e-16.
+    MEASURED 669.8898456926406 and -290.8995934596826, the barrier binary, the plain binary and
+    the oracle to the last bit; off, 2.2e-16.
 
     Killing mutations: the legs read at the centre moneyness, 478.50 (-28.6%); the spread left
     undivided by the strike, 67,001.6; the legs walking the strike's one strip, the European legs
@@ -403,13 +399,12 @@ def test_a_barrier_binary_no_path_reaches_is_the_spread_the_plain_binary_takes()
     plain_put = dict(BINARY, Reference='BINP', Option_Type='Put', Buy_Sell='Sell')
     out, _ = _run(_job([BARRIER, put, BINARY, plain_put], _equity_factors(),
                        valuation=dict(SPREAD_ON, **BARRIER_ON)))
-    call = _spread_closed(FWD_T, STRIKE, _eq_sigma, R_USD)
-    plain = _spread_closed(EQ_FWD, STRIKE, _eq_sigma, R_USD)
+    call = _spread_closed(EQ_FWD, STRIKE, _eq_sigma, R_USD)
     for ref, expected, tol in (('BB', call, 1e-12), ('BBP', call - CASH_T, 1e-12),
-                               ('BIN', plain, 1e-9), ('BINP', plain - CASH_T, 1e-9)):
+                               ('BIN', call, 1e-9), ('BINP', call - CASH_T, 1e-9)):
         assert abs(_mtm(out, ref) - expected) / abs(expected) < tol, (ref, _mtm(out, ref), expected)
     off, _ = _run(_job([BARRIER, put], _equity_factors()))
-    closed = _digital_closed(FWD_T, STRIKE, _eq_sigma(STRIKE), R_USD)
+    closed = _digital_closed(EQ_FWD, STRIKE, _eq_sigma(STRIKE), R_USD)
     for ref, expected in (('BB', closed), ('BBP', closed - CASH_T)):
         assert abs(_mtm(off, ref) - expected) / abs(expected) < 1e-12, (
             ref, _mtm(off, ref), expected)
@@ -440,9 +435,9 @@ def test_a_monthly_barrier_binary_no_path_reaches_is_the_european_spread_within_
     error - a smile read on the last interval alone would leave the walk at the centre's vol and
     the knock-in worth the skew term.
 
-    MEASURED the knock-out call 669.642 and put 291.070 against 670.016 and 290.773, the knock-in
-    call 0.374 and put nothing, 3.7e-4 of the payoff at most; at quasi seeds 2 and 3 the knock-out
-    call reads 669.926 and 670.146, the knock-ins 0.117 at most. Held to 2e-3 of the payoff.
+    MEASURED the knock-out call 669.515 and put 291.197 against 669.890 and 290.900, the knock-in
+    call 0.375 and put nothing, 3.8e-4 of the payoff at most; at quasi seeds 2 and 3 the knock-out
+    call reads 669.799 and 670.020, the knock-ins 0.117 at most. Held to 2e-3 of the payoff.
 
     Killing mutation: the legs read on the last interval alone, the walk on the strike's own strip -
     the knock-out call 494.85 and the knock-in call 175.16.
@@ -452,7 +447,7 @@ def test_a_monthly_barrier_binary_no_path_reaches_is_the_european_spread_within_
                   Barrier_Type=barrier_type, Barrier_Dates=monthly)
              for kind in ('Call', 'Put') for barrier_type in ('Up_And_Out', 'Up_And_In')]
     out, _ = _run(_job(deals, _equity_factors(), valuation=BARRIER_ON, MCMC_Simulations=1 << 14))
-    call = _spread_closed(FWD_T, STRIKE, _eq_sigma, R_USD)
+    call = _spread_closed(EQ_FWD, STRIKE, _eq_sigma, R_USD)
     for ref, expected in (('CallUp_And_Out', call), ('PutUp_And_Out', CASH_T - call),
                           ('CallUp_And_In', 0.0), ('PutUp_And_In', 0.0)):
         assert abs(_mtm(out, ref) - expected) < 2e-3 * CASH, (ref, _mtm(out, ref), expected)
@@ -463,15 +458,15 @@ def test_a_reachable_barrier_truncates_each_leg_under_its_own_vol():
     its call over `(K', H]`, the step's lognormal law at that leg's own vol, and the digital their
     spread - the oracle below, a difference of two truncated Blacks.
 
-    MEASURED 176.11229177810569 against the oracle's ...1424, 4.9e-14.
+    MEASURED 176.101773200558 against the oracle's ...5597, 9.7e-15.
 
-    Killing mutations: the survival dropped from the legs, 670.016, the unreachable barrier's
+    Killing mutations: the survival dropped from the legs, 669.890, the unreachable barrier's
     number; both legs truncated at the barrier's standard score under their mean law, 206.87
     (+17.5%).
     """
     cap = 1.15 * SPOT
     out, _ = _run(_job([dict(BARRIER, Barrier_Price=cap)], _equity_factors(), valuation=BARRIER_ON))
-    expected = _spread_closed(FWD_T, STRIKE, _eq_sigma, R_USD, cap=cap)
+    expected = _spread_closed(EQ_FWD, STRIKE, _eq_sigma, R_USD, cap=cap)
     assert abs(_mtm(out, 'BB') - expected) / expected < 1e-10, (_mtm(out, 'BB'), expected)
 
 
@@ -525,7 +520,7 @@ def _hit_spread(spot, at, spread=True):
     if tau <= 0.0:
         return (CASH * (max(spot - lo, 0.0) - max(spot - hi, 0.0)) / (2.0 * EPS * STRIKE)
                 if spread else CASH * (spot > STRIKE))
-    fwd = spot * math.exp((R_USD - Q_EQ) * tau)
+    fwd = spot * math.exp((R_USD - Q_EQ) * (tau + (lag(EXPIRY, 3) - lag(at, 3)) / 365.0))
 
     def leg(k):
         vol = VOL_ATM + SKEW * (min(max(spot / k, 0.8), 1.2) - 1.0)
@@ -591,10 +586,9 @@ def test_a_compo_barrier_binary_composes_each_leg_as_the_plain_one_does():
     """The compo twin on the barrier binary, no path reaching its barrier: the underlying is S*X,
     strike and barrier payoff-currency levels on it, and each leg reads the local smile at its own
     translated strike, `K'/F_X(T)`, composed with the pair's vol - the oracle the compo plain
-    binary beside it meets on its own forward.
+    binary beside it meets on the same forward between spot dates.
 
-    MEASURED 767.315311875994 against the oracle's ...0102 and the plain binary 767.139 on its
-    own, 7.3e-15.
+    MEASURED 767.2696578580376, the barrier binary, the plain binary and the oracle to the bit.
 
     Killing mutation: the legs' vols left uncomposed, 813.02 (+6.0%).
     """
@@ -605,7 +599,7 @@ def test_a_compo_barrier_binary_composes_each_leg_as_the_plain_one_does():
         'FXVol.EUR.USD': _surface(FX_SIGMA, 0.0),
         'Correlation.EquityPrice.EQ/FxRate.EUR.USD': {'Value': CORR}})
     rho = -CORR                     # authored on the sorted pair, the deal runs USD -> EUR
-    fx_fwd = math.exp((R_EUR - R_USD) * T) / FX_SPOT
+    fx_fwd = math.exp((R_EUR - R_USD) * T_FWD) / FX_SPOT
 
     def composed(k):
         sigma = VOL_ATM + SKEW * (SPOT * fx_fwd / k - 1.0)
@@ -613,8 +607,7 @@ def test_a_compo_barrier_binary_composes_each_leg_as_the_plain_one_does():
 
     out, _ = _run(_job([dict(BARRIER, Barrier_Price=10.0 * strike_eur, **terms),
                         dict(BINARY, **terms)], factors, valuation=dict(SPREAD_ON, **BARRIER_ON)))
-    for ref, fwd, tol in (('BB', FWD_T * fx_fwd, 1e-12),
-                          ('BIN', SPOT * math.exp((R_USD - Q_EQ) * T_FWD) * fx_fwd, 1e-9)):
+    for ref, fwd, tol in (('BB', EQ_FWD * fx_fwd, 1e-12), ('BIN', EQ_FWD * fx_fwd, 1e-9)):
         expected = _spread_closed(fwd, strike_eur, composed, R_EUR) * FX_SPOT
         assert abs(_mtm(out, ref) - expected) / expected < tol, (ref, _mtm(out, ref), expected)
 

@@ -3788,7 +3788,8 @@ class FXDiscreteExplicitAsianOption(Deal):
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Sampling_Data', 'Table', default='null', description='Sampling_Data',
-          row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')]))
+          row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
+        F('Settlement_Days', 'Integer', default=2, convention=True)
     ])]
 
     documentation = ('Fx And Equity', [
@@ -3822,7 +3823,8 @@ class FXDiscreteExplicitAsianOption(Deal):
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
-            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency']),
+            'Spot_Lag': self.spot_lag(base_date, calendars)
         }
         field_index.update(self.samples(base_date, time_grid))
         return field_index
@@ -3847,7 +3849,7 @@ class FXDiscreteExplicitAsianOption(Deal):
             deal_data.Factor_dep['Currency'][0], deal_time, shared)
         forward = utils.calc_fx_forward(
             deal_data.Factor_dep['Underlying_Currency'], deal_data.Factor_dep['Currency'],
-            deal_data.Factor_dep['Expiry'], deal_time, shared)
+            deal_data.Factor_dep['Expiry'], deal_time, shared, lag=deal_data.Factor_dep['Spot_Lag'])
 
         mtm = self.pricer(
             shared, time_grid, deal_data, self.field['Underlying_Amount'], spot, forward,
@@ -3869,7 +3871,8 @@ class FXDiscreteExplicitDoubleAsianOption(FXDiscreteExplicitAsianOption):
         F('Sampling_Multiplier_1', 'Float', default=1.0, convention=True),
         F('Sampling_Data_2', 'Table', default='null', description='Sampling_Data_2',
           row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
-        F('Sampling_Multiplier_2', 'Float', default=1.0, convention=True)
+        F('Sampling_Multiplier_2', 'Float', default=1.0, convention=True),
+        F('Settlement_Days', 'Integer', default=2, convention=True)
     ])]
 
     observes = None
@@ -3901,7 +3904,8 @@ class EquityDiscreteExplicitAsianOption(Deal):
         F('Units', 'Float', default=0.0, sized=True),
         F('Sampling_Data', 'Table', default='null', description='Sampling_Data',
           row=Row([F('Date', 'Date'), F('Price', 'Float'), F('Weight', 'Float')])),
-        F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo'])
+        F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
+        F('Settlement_Days', 'Integer', default=3, convention=True)
     ])]
 
     documentation = ('Fx And Equity', [
@@ -3945,7 +3949,8 @@ class EquityDiscreteExplicitAsianOption(Deal):
                 base_date, time_grid, self.field['Sampling_Data'], weighted=True),
             'Strike': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
-            'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0
+            'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
+            'Spot_Lag': self.spot_lag(base_date, calendars)
         }
 
         missing_fixings = [x for x in self.field['Sampling_Data'] if x[0] < base_date and not x[1]]
@@ -3965,7 +3970,8 @@ class EquityDiscreteExplicitAsianOption(Deal):
         spot = utils.calc_time_grid_spot_rate(deal_data.Factor_dep['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
             deal_data.Factor_dep['Equity'], deal_data.Factor_dep['Equity_Zero'],
-            deal_data.Factor_dep['Dividend_Yield'], deal_data.Factor_dep['Expiry'], deal_time, shared)
+            deal_data.Factor_dep['Dividend_Yield'], deal_data.Factor_dep['Expiry'], deal_time, shared,
+            lag=deal_data.Factor_dep['Spot_Lag'])
 
         mtm = pricing.pv_discrete_asian_option(
             shared, time_grid, deal_data, self.field['Units'], spot, forward,
@@ -3987,7 +3993,8 @@ class EquityBarrierBinaryOption(Deal):
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0.0),
         F('Settlement_Date', 'Date', default='',
-          settles=Cash('Payoff_Currency', otherwise='Expiry_Date'))
+          settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
+        F('Settlement_Days', 'Integer', default=3, convention=True)
     ])]
 
     spot_models = ('None', 'LogVar2FJ')
@@ -4061,7 +4068,8 @@ class EquityBarrierBinaryOption(Deal):
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
-            'Expiry': (self.field['Expiry_Date'] - base_date).days
+            'Expiry': (self.field['Expiry_Date'] - base_date).days,
+            'Spot_Lag': self.spot_lag(base_date, calendars)
         }
 
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
@@ -4528,7 +4536,8 @@ class QEDI_CustomAutoCallSwap(Deal):
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Barrier': self.field.get('Barrier', 0.0) * self.field['Strike_Price'],
             'Barrier_Observation': self.field['Barrier_Observation'],
-            'Expiry': (self.field['Expiry_Date'] - base_date).days
+            'Expiry': (self.field['Expiry_Date'] - base_date).days,
+            'Spot_Lag': self.spot_lag(base_date, calendars)
         }
 
         # A ZERO-COUPON ROW IS REFUSED, not priced. This arm advances both the spot and the
@@ -4610,7 +4619,8 @@ class QEDI_CustomAutoCallSwap(Deal):
         spot = utils.calc_time_grid_spot_rate(deal_data.Factor_dep['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
             deal_data.Factor_dep['Equity'], deal_data.Factor_dep['Equity_Zero'],
-            deal_data.Factor_dep['Dividend_Yield'], deal_data.Factor_dep['Expiry'], deal_time, shared)
+            deal_data.Factor_dep['Dividend_Yield'], deal_data.Factor_dep['Expiry'], deal_time, shared,
+            lag=deal_data.Factor_dep['Spot_Lag'])
         moneyness = pricing.calc_moneyness(strike * shared.one, spot, forward, deal_data)
 
         if spot.shape[0] != deal_time.shape[0]:
@@ -4774,7 +4784,8 @@ class EquityOneTouchOption(TouchLifecycle, Deal):
             'Volatility': get_vol_factor(
                 'EquityPriceVol', field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Barrier_Underlying': get_equity_barrier_underlying(field['Equity']),
-            'Expiry': (self.field['Expiry_Date'] - base_date).days}
+            'Expiry': (self.field['Expiry_Date'] - base_date).days,
+            'Spot_Lag': self.spot_lag(base_date, calendars)}
 
         field_index['Barrier_Monitoring'] = self.barrier_monitoring(base_date)
 
@@ -4834,7 +4845,8 @@ class EquityBarrierOption(Deal):
         F('Barrier_Type', 'Text', default='Down_And_In',
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Price', 'Float', default=0.0),
-        F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo'])
+        F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
+        F('Settlement_Days', 'Integer', default=3, convention=True)
     ])]
 
     spot_models = ('None', 'LogVar2FJ')
@@ -4991,7 +5003,8 @@ class EquityBarrierOption(Deal):
                        'Expiry': (self.field['Expiry_Date'] - base_date).days,
                        'Strike_Price': self.field['Strike_Price'],
                        'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
-                       'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0
+                       'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
+                       'Spot_Lag': self.spot_lag(base_date, calendars)
                        }
 
         if self.field.get('Barrier_Dates', []):
@@ -5555,7 +5568,8 @@ class EquityForwardDeal(Deal):
         F('Maturity_Date', 'Date', default='', settles=Cash('Currency')),
         F('Equity', 'Text', default='', factors=['EquityPrice', 'DividendRate']),
         F('Units', 'Float', default=0.0, sized=True),
-        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate'])
+        F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
+        F('Settlement_Days', 'Integer', default=3, convention=True)
     ])]
 
     documentation = ('Fx And Equity', [
@@ -5592,7 +5606,8 @@ class EquityForwardDeal(Deal):
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
             'Dividend_Yield': get_dividend_rate_factor(
                 field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
-            'Expiry': (self.field['Maturity_Date'] - base_date).days
+            'Expiry': (self.field['Maturity_Date'] - base_date).days,
+            'Spot_Lag': self.spot_lag(base_date, calendars)
             }
 
         self.check_option_data(
@@ -5607,7 +5622,7 @@ class EquityForwardDeal(Deal):
         discount = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
         forward = utils.calc_eq_forward(
             factor_dep['Equity'], factor_dep['Equity_Zero'],
-            factor_dep['Dividend_Yield'], factor_dep['Expiry'], deal_time, shared)
+            factor_dep['Dividend_Yield'], factor_dep['Expiry'], deal_time, shared, lag=factor_dep['Spot_Lag'])
 
         if factor_dep['Check_Payoff_Type']:
             # the compo's forward at the outright fx forward, the quanto's carried
@@ -5914,7 +5929,8 @@ class FXOneTouchOption(TouchLifecycle, Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
             'Barrier_Monitoring': self.barrier_monitoring(base_date),
-            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])}
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency']),
+            'Spot_Lag': self.spot_lag(base_date, calendars)}
 
         return field_index
 
@@ -5970,7 +5986,8 @@ class FXBarrierOption(Deal):
         F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True),
         F('Barrier_Type', 'Text', default='Down_And_In',
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
-        F('Expiry_Date', 'Date', default='')
+        F('Expiry_Date', 'Date', default=''),
+        F('Settlement_Days', 'Integer', default=2, convention=True)
     ])]
 
     documentation = ('Fx And Equity', [
@@ -6020,7 +6037,8 @@ class FXBarrierOption(Deal):
                 (base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days / 365.0),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
-            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])}
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency']),
+            'Spot_Lag': self.spot_lag(base_date, calendars)}
 
         if field['Payoff_Currency'] != field['Currency']:
             logging.warning("Quanto deal. TODO!!!!!!!")
@@ -6070,7 +6088,8 @@ class FXPartialTimeBarrierOption(Deal):
         F('Barrier_At_Start', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Barrier_Limit_Date', 'Date', default=''),
         F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
-        F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True)
+        F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True),
+        F('Settlement_Days', 'Integer', default=2, convention=True)
     ])]
 
     documentation = ('Fx And Equity', [
@@ -6116,7 +6135,8 @@ class FXPartialTimeBarrierOption(Deal):
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Limit_Date': (self.field['Barrier_Limit_Date'] - base_date).days,
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
-            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])}
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency']),
+            'Spot_Lag': self.spot_lag(base_date, calendars)}
 
         # discrete barrier monitoring requires adjusting the barrier by 0.58
         # ( -(scipy.special.zetac(0.5)+1)/np.sqrt(2.0*np.pi) ) * sqrt (monitoring freq)
@@ -6173,7 +6193,8 @@ class FXTARFOptionDeal(Deal):
         # which is not iterable.
         F('TARF_ExpiryDates', 'Table', default='null', row=Row([
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')])),
-        F('Barrier', 'Float', default=0.0)
+        F('Barrier', 'Float', default=0.0),
+        F('Settlement_Days', 'Integer', default=2, convention=True)
     ])]
 
     spot_models = ('None', 'LogVar2FJ')
@@ -6307,7 +6328,8 @@ class FXTARFOptionDeal(Deal):
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0,
             'Notional1': self.field['Underlying_Amount'],
             'Notional2': self.field['LeverageNotional'],
-            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency']),
+            'Spot_Lag': self.spot_lag(base_date, calendars)
         }
 
         # opt-in spot model, by naming convention off the pair's key. It resolves only under the
@@ -6355,7 +6377,8 @@ class FXAccumulatorOptionDeal(Deal):
         # NO `tag`: a tag names the utils container the wire form uses, and a tagged table
         # arrives as that object. This schedule is read by iterating rows.
         F('Accumulator_ExpiryDates', 'Table', default='null', row=Row([
-            F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')]))
+            F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float')])),
+        F('Settlement_Days', 'Integer', default=2, convention=True)
     ])]
 
     spot_models = ('None', 'LogVar2FJ')
@@ -6480,7 +6503,8 @@ class FXAccumulatorOptionDeal(Deal):
             'Barrier_Price': barrier,
             'Barrier_Up': barrier_up,
             'Prefix_Breached': settled_breach,
-            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency']),
+            'Spot_Lag': self.spot_lag(base_date, calendars)
         }
 
         # opt-in spot model, by naming convention off the pair's key. It resolves only under the
@@ -6531,7 +6555,8 @@ class FXExtendableForwardDeal(Deal):
         # never a model output.
         F('Extendable_ExpiryDates', 'Table', default='null', row=Row([
             F('Fixing Date', 'Date'), F('Settlement Date', 'Date', settles=Cash('Currency')), F('Value', 'Float'),
-            F('Extended', 'Text')]))
+            F('Extended', 'Text')])),
+        F('Settlement_Days', 'Integer', default=2, convention=True)
     ])]
 
     documentation = (
@@ -6705,7 +6730,8 @@ class FXExtendableForwardDeal(Deal):
             'Boundary_Quadrature': int(self.options['Boundary_Quadrature']),
             'Boundary_Batch_Chunk': int(self.options['Boundary_Batch_Chunk']),
             'Boundary_Std_Width': float(self.options['Boundary_Std_Width']),
-            'Boundary_Min_Log_Width': float(self.options['Boundary_Min_Log_Width'])
+            'Boundary_Min_Log_Width': float(self.options['Boundary_Min_Log_Width']),
+            'Spot_Lag': self.spot_lag(base_date, calendars)
         }
         return field_index
 
@@ -6887,7 +6913,8 @@ class FXRangeAccrualDeal(Deal):
         F('Settlement_Date', 'Date', default='', settles=Cash('Currency')),
         F('Observation_Dates', 'Table', default='null',
           row=Row([F('Date', 'Date'), F('Value', 'Float')]),
-          description='One row per observation: its date and, once known, the fixing')
+          description='One row per observation: its date and, once known, the fixing'),
+        F('Settlement_Days', 'Integer', default=2, convention=True)
     ])]
 
     documentation = ('Fx And Equity', [
@@ -6899,7 +6926,8 @@ class FXRangeAccrualDeal(Deal):
         '',
         'BS being +1/-1 for Buy/Sell. It is a strip of cash-or-nothing digitals, a bought call at',
         '$L$ and a sold call at $U$ per observation. A future observation is Black on the FX forward',
-        'to its own date, each digital at the vol read at its own strike and that tenor, the whole',
+        'to its own date, carried between spot dates **Settlement_Days** business days on, each digital',
+        'at the vol read at its own strike and that tenor, the whole',
         'discounted on **Discount_Rate** to **Settlement_Date**; under deterministic rates the',
         'fixing\'s forward measure and the payment\'s agree, so no convexity enters. An observation',
         'dated before the base date is read off the `Value` its row states, which it must; one dated',
@@ -6967,7 +6995,8 @@ class FXRangeAccrualDeal(Deal):
             'Payoff': float(self.field['Payoff']),
             'Invert_Moneyness': 1 if field['Currency'][0] == field['FX_Volatility'][0] else 0,
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
-            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency'])
+            'Local_Currency': '{0}.{1}'.format(self.field['Underlying_Currency'], self.field['Currency']),
+            'Spot_Lag': self.spot_lag(base_date, calendars)
         }
 
     def generate(self, shared, time_grid, deal_data):

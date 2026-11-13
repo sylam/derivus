@@ -412,23 +412,25 @@ def forward_carry_rate(carry_rate, cum_t, dt):
                       torch.where(step > 0, step, torch.ones_like(step))], dim=-2)
 
 
-def zero_carry_rate(carry, days, times, time_grid, shared):
+def zero_carry_rate(carry, days, times, time_grid, shared, lag=None):
     """The annualised carry to each date ``days`` ahead of its row: the log forward the two curves of
     ``carry`` read to it, as ``utils.calc_fx_forward`` and ``utils.calc_eq_forward`` read an
-    expiry's, over ``times``, its year fraction. A date on its row's own day carries nothing.
+    expiry's, between spot dates under a deal's ``lag``, over ``times``, its year fraction. A date
+    on its row's own day carries nothing.
 
     It is the ZERO carry ``forward_vol_strip`` takes, ``F_j = S * exp(c_j * T_j)``.
     """
     # the integral over the year fraction its consumer multiplies it by: a rate read off the curve
     # unscaled is no carry under NoModel RiskNeutral, where a static curve answers the forward
-    return utils.curve_spread(*carry, days, time_grid, shared) / times.clamp(min=1e-5).unsqueeze(-1)
+    return utils.curve_spread(*carry, days, time_grid, shared, lag=lag) / times.clamp(min=1e-5).unsqueeze(-1)
 
 
 def deal_carry_rate(factor_dep, carry, days, time_grid, shared):
     """`zero_carry_rate` over the year fraction a deal's pricer multiplies a carry by, its discount
-    curve's day count of `days`."""
+    curve's day count of `days`, under the deal's `Spot_Lag`."""
     years = factor_dep['Discount'][0][utils.FACTOR_INDEX_Daycount](days)
-    return zero_carry_rate(carry, days, shared.upload(np.asarray(years)), time_grid, shared)
+    return zero_carry_rate(carry, days, shared.upload(np.asarray(years)), time_grid, shared,
+                           lag=factor_dep.get('Spot_Lag'))
 
 
 def total_log_forward(carry_rate, times, cumulative=False):
@@ -1940,7 +1942,7 @@ def calc_compo_geometry(factor_dep, deal_time, shared, fixings=None):
                 factor_dep['Local'][0], factor_dep['Other'][0], deal_time, shared),
             's_adj': utils.calc_fx_forward(
                 factor_dep['Local'], factor_dep['Other'],
-                int(factor_dep['Expiry']), deal_time, shared),
+                int(factor_dep['Expiry']), deal_time, shared, lag=factor_dep.get('Spot_Lag')),
             'fx_carry': fx_carry if fixings is not None else torch.squeeze(fx_carry, dim=1)}
 
 
@@ -2388,7 +2390,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
         cum_t = shared.upload(fixing_block, spot_block.dtype)
         drifts = zero_carry_rate(
             (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
-            fixings, cum_t, t_block, shared)
+            fixings, cum_t, t_block, shared, lag=factor_dep.get('Spot_Lag'))
         expiry = daycount_fn(tenor_block)
         # the EUROPEAN read: the surface's vol at (K, remaining expiry). Under a non-GBM spot model
         # the implied surface has no consumer, so neither vol quantity is built
@@ -3179,7 +3181,8 @@ def pv_fx_range_accrual(shared, time_grid, deal_data, spot):
         if sample_days.shape[1]:
             sample_tau = daycount_fn(sample_days)
             sample_ts = spot_block.new(sample_tau)
-            carry_block = zero_carry_rate(carry, sample_days, sample_ts, t_block, shared)
+            carry_block = zero_carry_rate(
+                carry, sample_days, sample_ts, t_block, shared, lag=factor_dep.get('Spot_Lag'))
             forward = spot_block.unsqueeze(-2) * torch.exp(carry_block * sample_ts.unsqueeze(-1))
             accrued = accrued + (
                 digital(forward, lower, spot_block, carry_block, sample_tau) -
@@ -3438,7 +3441,7 @@ def pv_MC_Accumulator(shared, time_grid, deal_data, spot, fx_rep):
         cum_t = shared.upload(fixing_block, spot_block.dtype)
         drifts = zero_carry_rate(
             (factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1]), fixings, cum_t,
-            t_block, shared)
+            t_block, shared, lag=factor_dep.get('Spot_Lag'))
         settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -
                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         # the interval strip, and its numpy source a step's length is decided off
@@ -3655,7 +3658,7 @@ def pv_MC_ExtendableForward(shared, time_grid, deal_data, spot, fx_rep):
         cum_np = daycount_fn(fix_days)
         cum_t, times = s.new(cum_np[0]), s.new(np.diff(cum_np[0], prepend=0.0))
         carry = zero_carry_rate((factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1]),
-                                fix_days, s.new(cum_np), t_row, shared)[0]
+                                fix_days, s.new(cum_np), t_row, shared, lag=factor_dep.get('Spot_Lag'))[0]
         vols = forward_vol_strip(deal_data, k2, s, carry, cum_np[0], shared,
                                  factor_dep['Invert_Moneyness'], use_forwards=True)
         if len(vols) > 1 and float((vols * vols * cum_t.unsqueeze(-1)).diff(dim=0).min()) < -1e-10:
@@ -4462,7 +4465,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
         cum_t = shared.upload(fixing_block, spot_block.dtype)
         drifts = zero_carry_rate(
             (factor_dep['Currency'][1], factor_dep['Underlying_Currency'][1]), fixings, cum_t,
-            t_block, shared)
+            t_block, shared, lag=factor_dep.get('Spot_Lag'))
         settlement = (factor_dep['Settlement'][np.newaxis, settle_index_local:] -
                       t_block[:, utils.TIME_GRID_MTM, np.newaxis])
         # the interval strip, and its numpy source a step's length is decided off
@@ -5141,7 +5144,8 @@ def pv_MC_AutoCallSwap(shared, time_grid, deal_data, spot, moneyness, fx_rep):
         fixing_block = daycount_fn(fixings)
         drifts = zero_carry_rate(
             (deal_data.Factor_dep['Equity_Zero'], deal_data.Factor_dep['Dividend_Yield']),
-            fixings, shared.upload(fixing_block, spot_block.dtype), t_block, shared)
+            fixings, shared.upload(fixing_block, spot_block.dtype), t_block, shared,
+            lag=factor_dep.get('Spot_Lag'))
 
         # the EXPIRY read - a deal-level quantity, all the quanto/compo adjustment wants. NOT what
         # the simulation steps on: that is the interval strip below
@@ -5430,7 +5434,8 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             # the strike net of the realised average, negative once that passes the strike: the
             # surface and Black read it clamped, and below zero it is exercised for certain
             strike_bar = factor_dep['Strike'] - average.reshape(1, -1).expand(counts[index], -1)
-            carry_block = zero_carry_rate(carry, sample_days, sample_ts, t_block, shared)
+            carry_block = zero_carry_rate(
+                carry, sample_days, sample_ts, t_block, shared, lag=factor_dep.get('Spot_Lag'))
             vols = forward_vol_strip(
                 deal_data, (compo_strike(factor_dep, t_block, shared, strike_bar.clamp(min=1e-5)) /
                             normalize.clamp(min=eps)).unsqueeze(1),
@@ -5566,7 +5571,8 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
                                t_block[:, utils.TIME_GRID_MTM, np.newaxis])
                 sample_tau = daycount_fn(sample_days)
                 sample_ts = spot_block.new(sample_tau)
-                carry_block = zero_carry_rate(carry, sample_days, sample_ts, t_block, shared)
+                carry_block = zero_carry_rate(
+                    carry, sample_days, sample_ts, t_block, shared, lag=factor_dep.get('Spot_Lag'))
                 # the at-the-money vol: the smile read at the spot, in the surface's own coordinate
                 vols = forward_vol_strip(deal_data, spot_block.unsqueeze(1), spot_block, carry_block,
                                          sample_tau, shared, invert_moneyness, use_forwards)
@@ -7043,11 +7049,11 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
         # the start fixed and the end still ahead: the observed sample against a forward
         if end_idx < start_idx:
-            cf_end, cf_settle = utils.spot_carry(
-                lag, cashflows.np[end_idx, utils.CASHFLOW_INDEX_End_Day] - rows, rows)
+            end_days = cashflows.np[end_idx, utils.CASHFLOW_INDEX_End_Day] - rows
+            cf_end, cf_settle = utils.spot_carry(lag, end_days, rows)
             repo_carry = repo_block.gather_weighted_curve(shared, cf_end, cf_settle)
             divi_carry = divi_block.gather_weighted_curve(shared, cf_end, cf_settle)
-            carry_end, scale = carried(cf_end) if adjusted else (0.0, 1.0)
+            carry_end, scale = carried(end_days) if adjusted else (0.0, 1.0)
             forward_end = (eq_block * scale).unsqueeze(1) * torch.exp(repo_carry - divi_carry + carry_end)
 
             St0 = torch.unsqueeze(all_samples[0][end_idx:start_idx], dim=0)
@@ -7072,16 +7078,17 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
         # both ends still ahead: forwards at each
         if cashflow_start.any():
-            cf_start, cf_settle = utils.spot_carry(
-                lag, cashflows.np[start_idx:, utils.CASHFLOW_INDEX_Start_Day] - rows, rows)
-            cf_end, _ = utils.spot_carry(lag, cashflows.np[start_idx:, utils.CASHFLOW_INDEX_End_Day] - rows, rows)
+            start_days, end_days = (cashflows.np[start_idx:, index] - rows for index in (
+                utils.CASHFLOW_INDEX_Start_Day, utils.CASHFLOW_INDEX_End_Day))
+            cf_start, cf_settle = utils.spot_carry(lag, start_days, rows)
+            cf_end, _ = utils.spot_carry(lag, end_days, rows)
             repo_start = repo_block.gather_weighted_curve(shared, cf_start, cf_settle)
             repo_end = repo_block.gather_weighted_curve(shared, cf_end, cf_settle)
             divi_start = divi_block.gather_weighted_curve(shared, cf_start, cf_settle)
             divi_end = divi_block.gather_weighted_curve(shared, cf_end, cf_settle)
 
             if adjusted:
-                carry, scale = carried(np.concatenate([cf_start, cf_end], axis=1))
+                carry, scale = carried(np.concatenate([start_days, end_days], axis=1))
                 carry_start, carry_end = carry[:, :cf_start.shape[1]], carry[:, cf_start.shape[1]:]
             else:
                 carry_start, carry_end, scale = 0.0, 0.0, 1.0

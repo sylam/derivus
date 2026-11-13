@@ -42,6 +42,7 @@ import pytest
 import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder
+from test_option_settlement_json import lag
 
 BASE = pd.Timestamp('2024-06-28')
 X0, R_USD, R_EUR, SIGMA = 1.25, 0.04, 0.02, 0.10
@@ -103,7 +104,8 @@ def _factors(world):
     surface on a pillar at every day the deal reads."""
     if world is FLAT:
         return dict(FACTORS)
-    days = sorted({0} | {day + lag for day in FIX_DAYS for lag in (0, SETTLE_LAG)})
+    days = sorted({0} | {day + offset for day in FIX_DAYS for offset in (0, SETTLE_LAG)} |
+                  {day + lag(BASE + pd.Timedelta(days=day), 2) for day in [0] + FIX_DAYS})
     curve = lambda name, rate: dict(FACTORS[name], Curve=utils.Curve(
         [], [[day / 365.0, rate(day)] for day in days]))
     return dict(FACTORS, **{
@@ -166,8 +168,12 @@ def _ndtr(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def _fwd(day, world=FLAT):
-    return X0 * math.exp((world[0](day) - world[1](day)) * day / 365.0)
+def _fwd(day, world=FLAT, base=BASE):
+    """The pair's forward to a fixing `day` days on from `base`, carried between the spot dates two
+    business days on from each."""
+    start, end = lag(base, 2), day + lag(base + pd.Timedelta(days=day), 2)
+    carry = lambda d: (world[0](d) - world[1](d)) * d / 365.0
+    return X0 * math.exp(carry(end) - carry(start))
 
 
 def _disc(day, world=FLAT):
@@ -207,8 +213,7 @@ def test_a_resolved_extension_is_a_strip_of_forwards():
         out, _ = _run(_job(deal, base=base))
         expected = sum(
             math.exp(-R_USD * (FIX_DAYS[j] + SETTLE_LAG - 200) / 365.0) * NOTIONAL *
-            (X0 * math.exp((R_USD - R_EUR) * (FIX_DAYS[j] - 200) / 365.0) - K2)
-            for j in tail_ids)
+            (_fwd(FIX_DAYS[j] - 200, base=base) - K2) for j in tail_ids)
         v = _mtm(out)
         assert abs(v - expected) <= max(1e-9 * NOTIONAL, abs(expected) * 1e-9), (
             decision, v, expected)

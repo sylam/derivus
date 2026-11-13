@@ -2,7 +2,8 @@
 
 A range accrual pays `Payoff` once, on its settlement, for every observation the pair fixes inside
 `[Lower_Barrier, Upper_Barrier]`, so it IS a strip of cash digitals: per observation a bought cash
-call at the lower bound and a sold one at the upper, each on the forward to its own date at the vol
+call at the lower bound and a sold one at the upper, each on the forward to its own date, carried
+between spot dates on the FX default lag of two business days, at the vol
 its own strike reads, all discounted to the one settlement. Each test holds the engine to that
 identity twice - against the portfolio of `FXBinaryOption`s the same document prices, delivered on
 the settlement, and against the hand oracle below - and pins the parts the identity cannot see: a
@@ -36,6 +37,7 @@ from derivus import utils
 from derivus.config import CustomJsonEncoder
 from test_digital_spread_json import (
     BASE, EPS, FX_ATM, FX_SKEW, FX_SPOT, R_EUR, R_USD, RATES, _job, _mtm, _ndtr, _run, _surface)
+from test_option_settlement_json import lag
 
 LOWER, UPPER, PAYOFF = 1.20, 1.30, 1000.0
 MONTHLY = [BASE + pd.DateOffset(months=k) for k in range(1, 13)]
@@ -53,11 +55,11 @@ RA = {'Object': 'FXRangeAccrualDeal', 'Reference': 'RA', 'Currency': 'USD',
 def _binaries(dates):
     """The strip as the portfolio it is: per date a bought cash call at the lower bound and a sold
     one at the upper, delivered on the range's settlement so both discount to the same day, its
-    forward carried to its date with no spot lag, as the range's are."""
+    forward carried between spot dates on the FX default lag, as the range's are."""
     return [{'Object': 'FXBinaryOption', 'Reference': '{}{}'.format(side, j), 'Currency': 'USD',
              'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
              'Buy_Sell': buy_sell, 'Option_Type': 'Call', 'Strike_Price': strike,
-             'Payoff': PAYOFF, 'Expiry_Date': date, 'Delivery_Date': SETTLE, 'Settlement_Days': 0}
+             'Payoff': PAYOFF, 'Expiry_Date': date, 'Delivery_Date': SETTLE}
             for j, date in enumerate(dates)
             for side, buy_sell, strike in (('L', 'Buy', LOWER), ('U', 'Sell', UPPER))]
 
@@ -76,9 +78,10 @@ def _call(fwd, strike, t):
 def _in_range(date, base=BASE, spread=False):
     """The probability the fixing on `date` lands inside the range, seen from `base`: the cash
     digital at the lower bound less the one at the upper, each at its own strike's vol on the
-    forward to the date itself, or under `spread` each the call spread at its strike."""
+    forward to the date between spot dates two business days on from `base` and from the date, or
+    under `spread` each the call spread at its strike."""
     t = (date - base).days / 365.0
-    fwd = FX_SPOT * math.exp((R_USD - R_EUR) * t)
+    fwd = FX_SPOT * math.exp((R_USD - R_EUR) * (t + (lag(date, 2) - lag(base, 2)) / 365.0))
 
     def digital(k):
         if spread:
@@ -106,7 +109,7 @@ def test_a_range_accrual_is_its_two_digitals_per_observation_settled_together():
     `Payoff * sum_j (N(d2_j(L)) - N(d2_j(U))) * DF(settle)` agree within 1e-9, each `d2` at the
     line's vol at its own strike on the forward to the observation date.
 
-    MEASURED 5102.684836043783, the range and the binaries each 1.8e-16 off the oracle.
+    MEASURED 5104.362122769093, the range 2.2e-16 off the oracle and the binaries on it.
 
     Killing mutations: each observation discounted to its fixing rather than the settlement,
     5221.71 (+2.3%); the upper leg read at the lower's vol, 4743.00 (-7.0%); the upper leg added
@@ -126,8 +129,8 @@ def test_the_digital_spread_reads_each_strike_s_own_smile():
     strike, each leg at its own strike's vol: the range against the 24 binaries under the same
     option and the hand oracle, within 1e-9, and moved off the single-vol closed form by the skew.
 
-    MEASURED 5110.308073590088, 6.8e-15 off the oracle and the binaries 6.9e-15, the closed form
-    5102.68 (+0.15%).
+    MEASURED 5112.787739528605, 5.8e-15 off the oracle and the binaries 5.6e-15, the closed form
+    5104.36 (+0.17%).
 
     Killing mutation: both legs of each spread read at the centre strike's vol, 5078.68 (-0.62%).
     """
@@ -156,7 +159,7 @@ def test_known_fixings_count_exactly_and_a_blank_one_refuses_by_name():
     payoff discounted, exactly; with the settlement behind it too the compile skips the deal by
     name as expired and it writes no row.
 
-    MEASURED 7250.700315011354, 1.3e-16 off the oracle; the fully fixed strip 3996.932683504693,
+    MEASURED 7251.647721677664, 1.1e-16 off the oracle; the fully fixed strip 3996.932683504693,
     the oracle to the bit.
 
     Killing mutations: the bounds read exclusive, 5291.91, the two fixings on the bounds out; the

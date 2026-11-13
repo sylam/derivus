@@ -11,13 +11,13 @@ THE ORACLE IS THE TEXTBOOK, longhand: `_reiner_rubinstein` builds the six terms 
 with the engine, whose arms are a sympy-flattened `erfc` algebra in which a sign slip is invisible
 by inspection.
 
-MEASURED. Against the textbook, all sixteen at both rebates: worst 1.4e-14 relative. The textbook
+MEASURED. Against the textbook, all sixteen at both rebates: worst 1.2e-14 relative. The textbook
 itself was held against a model-free bridge-corrected daily Monte Carlo (worst 1.3e-2 at rebate 0,
 the Down-and-In Call, the smallest mark in the table) and IN + OUT = the vanilla to 7.2e-15, arm by
 arm. Each fixture priced through the three arms it must NOT take reads 0.209 at the nearest and
 181.0 at the farthest on a notional of 1000, eleven of the forty-eight NEGATIVE, so the gate's 1e-11
 is many orders inside any mis-selection. An Up-and-Out Call struck ABOVE its barrier is worthless on
-survival - 0.000000 with no rebate, 18.470170 with one - the only fixture reaching the knock-out's
+survival - 0.000000 with no rebate, 18.465243 with one - the only fixture reaching the knock-out's
 `cash_settle` of the rebate.
 
 DEGENERACY CHECKLIST: r = 4% against q = 2%, so the carry is 2% and neither rate is zero; both
@@ -39,12 +39,16 @@ import torch
 import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder
+from test_option_settlement_json import lag
 
 BASE = pd.Timestamp('2024-06-28')
 X0, R_USD, R_EUR, SIGMA = 1.25, 0.04, 0.02, 0.15
 NOTIONAL, REBATE, EXPIRY_D = 1000.0, 40.0, 365
 T = EXPIRY_D / 365.0
 B_CARRY = R_USD - R_EUR
+#: the carry rate the closed form reads: the pair's carry between the two spot dates, two business
+#: days on from the base date and from the expiry, over the year to the expiry
+B_SPOT = B_CARRY * (EXPIRY_D + lag(BASE + pd.DateOffset(days=EXPIRY_D), 2) - lag(BASE, 2)) / EXPIRY_D
 
 FACTORS = {
     'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
@@ -110,14 +114,14 @@ def _reiner_rubinstein(barrier_type, barrier, strike, option_type, rebate):
     phi = 1.0 if option_type == 'Call' else -1.0
     reb = rebate / NOTIONAL
     v = SIGMA * math.sqrt(T)
-    mu = (B_CARRY - 0.5 * SIGMA ** 2) / SIGMA ** 2
+    mu = (B_SPOT - 0.5 * SIGMA ** 2) / SIGMA ** 2
     lam = math.sqrt(mu * mu + 2.0 * R_USD / SIGMA ** 2)
     x1 = math.log(X0 / strike) / v + (1.0 + mu) * v
     x2 = math.log(X0 / barrier) / v + (1.0 + mu) * v
     y1 = math.log(barrier * barrier / (X0 * strike)) / v + (1.0 + mu) * v
     y2 = math.log(barrier / X0) / v + (1.0 + mu) * v
     z = math.log(barrier / X0) / v + lam * v
-    hs, carry, disc = barrier / X0, math.exp((B_CARRY - R_USD) * T), math.exp(-R_USD * T)
+    hs, carry, disc = barrier / X0, math.exp((B_SPOT - R_USD) * T), math.exp(-R_USD * T)
 
     def term(d, eps):
         return phi * X0 * carry * _n(eps * d) - phi * strike * disc * _n(eps * (d - v))
@@ -151,7 +155,7 @@ def test_every_payoff_arm_is_the_textbook_closed_form(
         arm, barrier_type, barrier, strike, option_type, rebate):
     """Sixteen spellings at two rebates against the longhand terms. The tolerance is float64
     round-off, not a modelling allowance: the two algebras are the same function or they are not,
-    and the worst reading over the whole table is 1.4e-14.
+    and the worst reading over the whole table is 1.2e-14.
 
     Killing mutation: the knock-out selector's down-put spelling of arm 1 inverted
     (`strike <= H` -> `strike > H`).

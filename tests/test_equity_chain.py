@@ -1414,11 +1414,14 @@ def test_the_calibrated_forward_is_the_priced_forward_at_every_pillar():
 
     The block declares `Funding_Rate` now, and both forwards are read out of the ENGINE: the fit's
     off `prepare_quotes`, the arithmetic the objective priced on, the pricer's off an
-    `EquityForwardDeal`'s MtM in the same job. They agree to 1e-13. Non-vacuous by construction:
-    with no `Funding_Rate` the same probe is the old arithmetic, off by exactly the spread's own
-    carry (over 0.3%) at every pillar.
+    `EquityForwardDeal`'s MtM in the same job. Both carry between spot dates three business days
+    on from the base date and from the expiry, two days past the tenor at the Wednesday and the
+    Thursday pillars. They agree to 1e-13. Non-vacuous by construction: with no `Funding_Rate`
+    the same probe is the old arithmetic, off by exactly the spread's own carry between the spot
+    dates (over 0.3%) at every pillar.
 
-    Killing mutation: the funding basis left out of the calibrated forward.
+    Killing mutations: the funding basis left out of the calibrated forward; the lag left out of
+    it, 2.1e-4 low at the Wednesday and the Thursday.
     """
     expiries, block = probe_block()
     deals = probe_deals(expiries)
@@ -1432,13 +1435,17 @@ def test_the_calibrated_forward_is_the_priced_forward_at_every_pillar():
         'the calibrated forward is not the priced one: {} against {} (worst {:.3e})'.format(
             calibrated, priced, worst))
 
+    import pandas as pd
+    from test_option_settlement_json import lag
+
     # the world is one where it MATTERS: with no funding curve the fit falls back to the discount
     # curve, which is the old arithmetic
     _, unfunded = probe_block(funding=None)
     fallback = fitted_forwards(unfunded)[0]
     assert fallback != calibrated
-    for fit, price, day in zip(fallback, priced, FORWARD_DAYS):
-        assert fit == pytest.approx(price * math.exp(-REPO_SPREAD * day / 365.0), rel=1e-13), (
+    for fit, price, expiry, day in zip(fallback, priced, expiries, FORWARD_DAYS):
+        between = day + lag(pd.Timestamp(expiry), 3) - lag(pd.Timestamp(AS_OF), 3)
+        assert fit == pytest.approx(price * math.exp(-REPO_SPREAD * between / 365.0), rel=1e-13), (
             'the fallback is not spot exp((r-q)t) on the discount curve')
     assert max(abs(fit / price - 1.0) for fit, price in zip(fallback, priced)) > 0.003, (
         'the repo spread moves nothing on this world - the gate above is vacuous')

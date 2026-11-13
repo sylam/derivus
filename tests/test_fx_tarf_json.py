@@ -12,8 +12,11 @@ its FX delta are Black.
 Pre-registered from `tests/fixtures/fx_tarf_job.json` and nothing else - re-derived by
 `_expected()` at import off the loaded document, so they follow the template:
 
-    value  +62.4979   $
-    dV/dS  +2522.61   $ per unit of EUR.USD
+    value  +68.6715   $
+    dV/dS  +2506.07   $ per unit of EUR.USD
+
+each forward carried between the spot dates two business days on from the base date and from its
+fixing.
 
 Positive because the curve is steep: by six months USD reaches ~15% against a flat 2% EUR, so the
 forward is well above the strike and the ITM leg dominates the leveraged OTM one. A FLAT curve is
@@ -34,9 +37,11 @@ import sys
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pandas as pd
 import pytest
 
 import derivus as rf
+from test_option_settlement_json import lag
 
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'fixtures', 'fx_tarf_job.json')
@@ -84,6 +89,14 @@ def _r_usd(t):
     return float(_np.interp(t, ts, vs))
 
 
+def _log_carry(day):
+    """The log forward to a fixing `day` days on: the USD curve less the EUR rate between the spot
+    dates two business days on from the base date and from the fixing."""
+    start, end = (d + lag(pd.Timestamp(BASE) + pd.Timedelta(days=d), 2) for d in (0, day))
+    zero = lambda d: (_r_usd(d / DAYS) - Q_EUR) * d / DAYS
+    return zero(end) - zero(start)
+
+
 def _ndtr(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
@@ -93,8 +106,8 @@ def _expected(cp=1.0):
     deal's own side `cp`: the ITM leg on `Underlying_Amount` against the leveraged OTM one."""
     value = delta = 0.0
     for fix, settle in FIXINGS:
-        t, ts = fix / DAYS, settle / DAYS
-        fwd = math.exp((_r_usd(t) - Q_EUR) * t)
+        ts = settle / DAYS
+        fwd = math.exp(_log_carry(fix))
         F, sd, D = SPOT * fwd, SIGMA * math.sqrt(fix / DAYS), math.exp(-_r_usd(ts) * ts)
         d1 = (math.log(F / STRIKE) + 0.5 * sd * sd) / sd
         d2 = d1 - sd
@@ -186,9 +199,9 @@ def test_a_reachable_target_is_worth_less_than_an_unreachable_one(tmp_path):
 
 
 #: What the fixture as it stands marks - the control that the cap's mask is inert wherever the cap
-#: is live, the CALL side being the one where it never goes negative. Re-banked when a base
-#: valuation's inner paths became the canonical block's: 62.42891 to 62.49790, the strip 62.4979.
-BANKED_CALL = float.fromhex('0x1.f3fbb14015e0bp+5')
+#: is live, the CALL side being the one where it never goes negative. Banked on the card: 68.67158,
+#: the strip 68.6715.
+BANKED_CALL = float.fromhex('0x1.12afb2a49ceaep+6')
 
 
 def test_a_put_target_above_its_strike_is_the_uncapped_strip(tmp_path):
@@ -277,7 +290,7 @@ def _live_leg(row, level, remaining):
     inside the surviving set, so it is the plain leveraged put.
     """
     t, ts = (_offset(row[0]['.Timestamp']) / DAYS, _offset(row[1]['.Timestamp']) / DAYS)
-    fwd, sd = level * math.exp((_r_usd(t) - Q_EUR) * t), SIGMA * math.sqrt(t)
+    fwd, sd = level * math.exp(_log_carry(_offset(row[0]['.Timestamp']))), SIGMA * math.sqrt(t)
     return math.exp(-_r_usd(ts) * ts) * (
         N1 * (_black(fwd, STRIKE, sd) - _black(fwd, STRIKE + remaining, sd)) -
         N2 * _black(fwd, STRIKE, sd, call=False))
@@ -296,7 +309,7 @@ def test_two_observed_fixings_in_one_settlement_lag_bank_their_own_accruals(tmp_
     a leveraged put, no target arithmetic left in it - walked from TODAY'S SPOT, 1.1: an observed
     fixing pays its own print and the strip goes on from the row's spot.
 
-    MEASURED: 399.9131 against an oracle of 399.7397, 4.3e-4. The live leg sits at the money, so
+    MEASURED: 401.8968 against an oracle of 401.8950, 4.3e-6. The live leg sits at the money, so
     the inner draw's standard deviation is 2.7e-4 of the mark at these paths (21 seeds, at most
     5.8e-4), and the gate is 1e-3.
 
@@ -336,7 +349,7 @@ def test_an_observed_fixing_pays_its_print_and_the_strip_walks_on_from_the_spot(
     settlements plus a European on the live fixing walked from TODAY'S spot, 1.1: the call at 1.0
     banks 0.3 a print, the put at 1.2 pays its leveraged 0.1 a print, 1.3 knocking it in at 1.25.
 
-    MEASURED: 713.7591 against 713.7690 and -317.8139 against -317.8374. Over 21 seeds at these
+    MEASURED: 715.4647 against 715.4641 and -319.5151 against -319.5126. Over 21 seeds at these
     paths the inner draw's standard deviation is 1.4e-5 of the call and 1.4e-4 of the put (at most
     2.5e-4), and the gate is 1e-3.
 
@@ -347,7 +360,8 @@ def test_an_observed_fixing_pays_its_print_and_the_strip_walks_on_from_the_spot(
     terms, accrual, live = ONE_SIDED[case]
     t, ts = (_offset(day['.Timestamp']) / DAYS for day in LAGGED_SCHEDULE[2][:2])
     oracle = sum(_leg(row, accrual) for row in LAGGED_SCHEDULE[:2]) + math.exp(
-        -_r_usd(ts) * ts) * live(SPOT * math.exp((_r_usd(t) - Q_EUR) * t), SIGMA * math.sqrt(t))
+        -_r_usd(ts) * ts) * live(SPOT * math.exp(_log_carry(_offset(LAGGED_SCHEDULE[2][0]['.Timestamp']))),
+                                 SIGMA * math.sqrt(t))
     value = _mtm(_run(_lagged_job(TargetLevel=UNREACHABLE, **terms), tmp_path, case)[0])
     assert abs(value - oracle) < 1e-3 * abs(oracle), (value, oracle)
 
@@ -591,7 +605,7 @@ def _reciprocal_leg(row, remaining, cp):
     leveraged leg's Black on the other side of `1/K`."""
     t, ts = (_offset(day['.Timestamp']) / DAYS for day in row[:2])
     sd = SIGMA * math.sqrt(t)
-    fwd, k, call = math.exp(sd * sd - (_r_usd(t) - Q_EUR) * t) / SPOT, 1.0 / STRIKE, cp < 0
+    fwd, k, call = math.exp(sd * sd - _log_carry(_offset(row[0]['.Timestamp']))) / SPOT, 1.0 / STRIKE, cp < 0
     return math.exp(-_r_usd(ts) * ts) * (
         N1 * (_black(fwd, k, sd, call=call) - _black(fwd, k - cp * remaining, sd, call=call)) -
         N2 * _black(fwd, k, sd, call=not call))
@@ -604,8 +618,8 @@ def test_an_inverted_target_accrues_the_reciprocal_and_redeems_on_it(
     0.0433 for the put at 1.05, and the one live fixing behind it pays that accrual capped at the
     0.06 target's remainder against the leveraged other side - the closed form on `1/S`.
 
-    MEASURED on the CPU -14.95166 against -14.95227 and -42.00784 against -42.00837, 4.1e-5 and
-    1.3e-5, the Sobol estimate's own spread over quasi seeds 1 to 3 at these paths reaching
+    MEASURED on the CPU -13.61854 against -13.61914 and -43.78466 against -43.78520, 4.4e-5 and
+    1.2e-5, the Sobol estimate's own spread over quasi seeds 1 to 3 at these paths reaching
     4.1e-5; the gate is 2e-4. The cap binds: uncapped, the closed form reads -1.68 and -34.65.
 
     Killing mutations: the settled accrual's reciprocal unsigned, the pot opening empty - -4.51 and

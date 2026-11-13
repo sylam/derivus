@@ -13,17 +13,14 @@ one-touch reads the textbook `erfc` pair written out here; the Asian reads the t
 recomputed in python on the composite forward, vol and carry. The limit is the engine against
 itself: an fx leg identically one with no vol and no correlation must reprice the Standard deal.
 
-WHY THE PARITY IS SPLIT IN TWO. `EquityOptionDeal` carries its equity forward between spot dates,
-three business days on from the base date and from the expiry (`Deal.spot_lag`), while the three
-analytic pricers carry theirs to expiry, so the two forwards differ by the carry over the two lags'
-difference whenever the local carry is live - a convention difference that predates the composite
-and is nothing to do with it. The exact reading is therefore taken where the local carry is flat
-and the lag is the identity; the live-carry conjunction is read at the lag it explains.
+THE SPOT DATES. Every deal here carries its forward between spot dates, three business days on from
+the base date and from each fixing (`Deal.spot_lag`), its fx conversion included, and the oracles
+carry theirs the same way (`_spot_years`).
 
 MEASURED. In-out parity against the composite European, flat local carry: worst 2.0e-15 relative
-over the eight arms, against 221% on main. The whole conjunction: worst 4.7e-4, the spot dates,
-against 145%. The one-touch already beyond the composite spot: exact, against a 47.6% miss. A live
-one-touch against the textbook: worst 1.6e-15, against 126%. The Asian against its own moment
+over the eight arms, against 221% on main. The whole conjunction: worst 8.9e-16, against 145%. The
+one-touch already beyond the composite spot: exact, against a 47.6% miss. A live one-touch against
+the textbook: worst 1.3e-15, against 126%. The Asian against its own moment
 match: equal to the bit, against 333%. The unit-fx limit: bit-equal on all four arms, on both
 trees. The monitored path: 0.5435 mean touch probability against 0.0000.
 
@@ -47,10 +44,20 @@ import pytest
 import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder
+from test_option_settlement_json import lag
 
 BASE = pd.Timestamp('2024-06-28')
 EXPIRY = BASE + pd.DateOffset(years=1)
 T = (EXPIRY - BASE).days / 365.0
+
+
+def _spot_years(date, days=3):
+    """The years a forward to `date` carries: from the base date's spot date to `date`'s, `days`
+    business days on from each, an equity deal's three unless stated."""
+    return ((date - BASE).days + lag(date, days) - lag(BASE, days)) / 365.0
+
+
+T_SPOT = _spot_years(EXPIRY)
 SPOT, R_USD, R_EUR, Q_EQ = 100.0, 0.04, 0.02, 0.01
 VOL_ATM, SKEW = 0.25, 0.5           # sigma(m) = VOL_ATM + SKEW * (m - 1), m = spot / strike
 FX_SPOT, FX_SIGMA, CORR = 1.25, 0.15, 0.35
@@ -58,8 +65,8 @@ RHO = -CORR                         # authored on the sorted pair, the deals run
 UNITS, CASH = 1000.0, 1000.0
 STRIKE, UP, DOWN = 80.0, 92.0, 70.0                 # payoff-currency levels on S*X
 
-#: the outright fx forward to expiry, EUR per USD, and the composite spot it scales
-FX_FWD = math.exp((R_EUR - R_USD) * T) / FX_SPOT
+#: the outright fx forward to expiry between spot dates, EUR per USD, and the composite spot it scales
+FX_FWD = math.exp((R_EUR - R_USD) * T_SPOT) / FX_SPOT
 CMP_SPOT = SPOT / FX_SPOT
 
 RATES = {
@@ -354,7 +361,7 @@ def test_a_one_coupon_composite_autocall_is_the_composite_europeans_that_make_it
     out = _run(_job([dict(autocall, Reference='COUPON', Barrier=0.0, Barrier_Dates=[]),
                      dict(autocall, Reference='PUT', Barrier=0.9, Barrier_Dates=[EXPIRY])],
                     _factors(skew=skew, q=R_USD)))
-    forward, discount = CMP_SPOT * math.exp((R_EUR - R_USD) * T), math.exp(-R_EUR * T)
+    forward, discount = CMP_SPOT * math.exp((R_EUR - R_USD) * T_SPOT), math.exp(-R_EUR * T)
 
     def black(level, call):
         """Black's undiscounted price at `level`, and its exercise probability."""
@@ -369,13 +376,13 @@ def test_a_one_coupon_composite_autocall_is_the_composite_europeans_that_make_it
         coupon - discount * UNITS * (put / STRIKE + 0.1 * below), rel=1e-12)
 
 
-def test_the_whole_conjunction_parities_at_the_vanilla_s_settlement_lag():
+def test_the_whole_conjunction_parities_against_the_composite_european():
     """One run holding every live quantity at once: a non-zero local carry against two non-zero and
     different rates, the skewed surface, a live fx vol and a live correlation, both barrier
-    directions and both option types. The only residual is the vanilla's own spot dates, the
-    Friday base's five calendar days on and the Saturday expiry's four: a day at a 3% carry moves
-    the forward by 8.2e-5, and the vanilla's forward elasticity of about 5.8 carries that to the
-    price. Measured worst 4.7e-4 relative.
+    directions and both option types. The barrier and the vanilla carry between the same spot
+    dates, the Friday base's five calendar days on and the Saturday expiry's four, so the parity is
+    float64 round-off: measured worst 8.9e-16 relative, where the barrier carried to the expiry
+    misses by 4.7e-4.
 
     Killing mutation: the composite process left on the local spot.
     """
@@ -394,7 +401,7 @@ def test_the_whole_conjunction_parities_at_the_vanilla_s_settlement_lag():
             tag = '%s%s' % (ud[0], option_type[0])
             got = _mtm(out, 'KI' + tag) + _mtm(out, 'KO' + tag)
             ref = _mtm(out, 'V' + option_type[0])
-            assert abs(got - ref) / abs(ref) < 2e-3, (tag, got, ref)
+            assert abs(got - ref) / abs(ref) < 1e-12, (tag, got, ref)
 
 
 # --------------------------------------------------------------------------------------------
@@ -429,7 +436,7 @@ def test_a_live_one_touch_is_the_textbook_closed_form_on_the_composite(direction
     Killing mutation: the composite variance's cross term taken with the wrong sign.
     """
     out = _run(_job([_one_touch('OT', direction, barrier)], _factors()))
-    ref = _one_touch_closed(barrier, up, CMP_SPOT, R_EUR - Q_EQ, _compo_sigma(barrier), R_EUR)
+    ref = _one_touch_closed(barrier, up, CMP_SPOT, (R_EUR - Q_EQ) * T_SPOT / T, _compo_sigma(barrier), R_EUR)
     assert abs(_mtm(out, 'OT') - ref) / ref < 1e-9, (_mtm(out, 'OT'), ref)
 
 
@@ -481,8 +488,9 @@ def test_the_composite_asian_moment_matches_on_the_composite(option_type, fx_ske
     """
     factors = _factors(fx_skew=fx_skew)
     out = _run(_job([_asian('AS', option_type)], factors))
-    taus = [(d - BASE).days / 365.0 for d in SAMPLES]
-    forward, sd = _moment_matched([0.25] * 4, taus, R_EUR - Q_EQ, _compo_sigma(STRIKE), CMP_SPOT)
+    taus = np.array([(d - BASE).days / 365.0 for d in SAMPLES])
+    carry = (R_EUR - Q_EQ) * np.array([_spot_years(d) for d in SAMPLES]) / taus
+    forward, sd = _moment_matched([0.25] * 4, taus, carry, _compo_sigma(STRIKE), CMP_SPOT)
     ref = UNITS * _black(forward, STRIKE, sd, option_type == 'Call') * math.exp(-R_EUR * T)
     assert abs(_mtm(out, 'AS') - ref) / abs(ref) < 1e-9, (_mtm(out, 'AS'), ref)
 
@@ -517,9 +525,14 @@ def test_on_a_sloped_curve_every_asian_sample_is_forwarded_to_its_own_date():
                     [dict(fx, Reference='FX' + k, Option_Type=k) for k in kinds],
                     factors, currency='USD'))
     taus = np.array([(d - BASE).days / 365.0 for d in SAMPLES])
-    rate, sigma = np.interp(taus, SLOPE_T, SLOPE_R), np.interp(taus, SLOPE_T, SLOPE_V)
+    sigma = np.interp(taus, SLOPE_T, SLOPE_V)
     discount = math.exp(-np.interp(T, SLOPE_T, SLOPE_R) * T)
-    for name, spot, carry in (('EQ', SPOT, rate - Q_EQ), ('FX', FX_SPOT, rate - R_EUR)):
+    for name, spot, other, days in (('EQ', SPOT, Q_EQ, 3), ('FX', FX_SPOT, R_EUR, 2)):
+        # each sample's log forward runs between its spot dates, read as a zero carry over its tenor
+        start = lag(BASE, days) / 365.0
+        end = start + np.array([_spot_years(d, days) for d in SAMPLES])
+        carry = (np.interp(end, SLOPE_T, SLOPE_R) * end - np.interp(start, SLOPE_T, SLOPE_R) * start -
+                 other * (end - start)) / taus
         forward, sd = _moment_matched([0.25] * 4, taus, carry, sigma, spot)
         for kind in kinds:
             expected = UNITS * _black(forward, spot, sd, kind == 'Call') * discount
@@ -553,8 +566,8 @@ def test_a_compo_and_a_quanto_forward_are_the_carried_forward_less_the_strike():
     """
     deals = [_forward('CMP'), dict(_forward('QTO', strike=100.0), Payoff_Type='Quanto')]
     out = _run(_job(deals, _factors(skew=0.0)))
-    compo = UNITS * (_eq_fwd(T) * _fx_fwd(T) - STRIKE) * math.exp(-R_EUR * T)
-    quanto = UNITS * (_eq_fwd(T) * math.exp(QUANTO_CARRY * T) - 100.0) * math.exp(-R_EUR * T)
+    compo = UNITS * (_eq_fwd(T_SPOT) * _fx_fwd(T_SPOT) - STRIKE) * math.exp(-R_EUR * T)
+    quanto = UNITS * (_eq_fwd(T_SPOT) * math.exp(QUANTO_CARRY * T) - 100.0) * math.exp(-R_EUR * T)
     assert abs(_mtm(out, 'CMP') - compo) / abs(compo) < 1e-12, (_mtm(out, 'CMP'), compo)
     assert abs(_mtm(out, 'QTO') - quanto) / abs(quanto) < 1e-12, (_mtm(out, 'QTO'), quanto)
 
@@ -593,6 +606,8 @@ def test_a_quanto_discrete_barrier_is_the_local_barrier_on_the_quanto_carry():
     whose dividend yield absorbs that carry. Each monitored interval steps on the bent carry and
     reads the skewed local smile at the forward it carries, so the two are one program: measured
     bit for bit on the CPU, 18,844.02 and 3,190.36, where the unbent carry reads 5.3% and 4.8% off.
+    Both books state `Settlement_Days` 0: the bent dividend carries between spot dates where the
+    quanto's drift runs over the fixing's own time, so the two are one program only with no lag.
 
     Killing mutation: the quanto carry left off the barrier's strip (`carry_adj` not added).
     """
@@ -600,10 +615,10 @@ def test_a_quanto_discrete_barrier_is_the_local_barrier_on_the_quanto_carry():
     legs = [('KI', 'Up_And_In', 115.0, 'Call', 90.0, 0.0),
             ('KO', 'Down_And_Out', 85.0, 'Put', 110.0, 30.0)]
     quanto = [dict(_barrier(ref, kind, level, option, strike=strike), Payoff_Type='Quanto',
-                   Barrier_Dates=observed, Cash_Rebate=rebate)
+                   Barrier_Dates=observed, Cash_Rebate=rebate, Settlement_Days=0)
               for ref, kind, level, option, strike, rebate in legs]
     local = [dict(_barrier(ref, kind, level, option, payoff=None, strike=strike),
-                  Discount_Rate='EUR', Barrier_Dates=observed, Cash_Rebate=rebate)
+                  Discount_Rate='EUR', Barrier_Dates=observed, Cash_Rebate=rebate, Settlement_Days=0)
              for ref, kind, level, option, strike, rebate in legs]
     out = _run(_job(quanto, _factors()))
     bent = _run(_job(local, _factors(q=Q_EQ - QUANTO_CARRY), currency='USD'))
@@ -645,7 +660,7 @@ def test_a_seasoned_asian_whose_fixings_pass_the_strike_is_exercised_for_certain
     deals = [dict(_asian(ref, kind, payoff=None, strike=20.0), Sampling_Data=samples,
                   Expiry_Date=month(6)) for ref, kind in (('CALL', 'Call'), ('PUT', 'Put'))]
     out = _run(_job(deals, _factors(), currency='USD'))
-    forwards = sum(SPOT * math.exp((R_USD - Q_EQ) * (month(m) - BASE).days / 365.0) for m in (3, 6))
+    forwards = sum(SPOT * math.exp((R_USD - Q_EQ) * _spot_years(month(m))) for m in (3, 6))
     ref = UNITS * math.exp(-R_USD * (month(6) - BASE).days / 365.0) * (
         0.25 * forwards + 0.25 * 200.0 - 20.0)
     assert _mtm(out, 'CALL') == pytest.approx(ref, rel=1e-12) and _mtm(out, 'PUT') == 0.0

@@ -12,7 +12,8 @@ greek is checked as its own statement rather than for being finite.
 The USD curve is STEEP with a knot at every tenor the deal reads, because a flat curve is a
 degeneracy: the interval carry strip and the raw zero-rate gather agree wherever the curve is flat,
 so a pricer differencing neither would pass. The reference reads the same curve with `numpy.interp`,
-which the knots make exact. Every constant is re-derived at import off the loaded document, so the
+linear between knots as the engine's is, so it is exact at the spot dates the forwards carry
+between too. Every constant is re-derived at import off the loaded document, so the
 assertions follow `tests/fixtures/fx_accumulator_job.json` rather than a transcription of it.
 
 TOLERANCES ARE MEASURED. The seed-to-seed spread of the reported value across five seeds is 0.210
@@ -28,7 +29,10 @@ import sys
 # reference-derivus shadow-import guard (MEMORY): pin the package under test to THIS repo.
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
+import pandas as pd
+
 import derivus as rf
+from test_option_settlement_json import lag
 
 TEMPLATE = os.path.join(os.path.dirname(os.path.abspath(__file__)),
                         'fixtures', 'fx_accumulator_job.json')
@@ -77,6 +81,14 @@ def _r_usd(t):
     return float(_np.interp(t, ts, vs))
 
 
+def _log_carry(day):
+    """The log forward to a fixing `day` days on: the USD curve less the EUR rate between the spot
+    dates two business days on from the base date and from the fixing."""
+    start, end = (d + lag(pd.Timestamp(BASE) + pd.Timedelta(days=d), 2) for d in (0, day))
+    zero = lambda d: (_r_usd(d / DAYS) - Q_EUR) * d / DAYS
+    return zero(end) - zero(start)
+
+
 # --------------------------------------------------------------------------------------------
 # the expectation, decided before the run - textbook Black, no engine code
 # --------------------------------------------------------------------------------------------
@@ -89,7 +101,7 @@ def _expected(spot=SPOT):
     value = delta = 0.0
     for fix, settle in FIXINGS:
         t, ts = fix / DAYS, settle / DAYS
-        fwd_factor = math.exp((_r_usd(t) - Q_EUR) * t)
+        fwd_factor = math.exp(_log_carry(fix))
         F = spot * fwd_factor
         sd = SIGMA * math.sqrt(t)
         D = math.exp(-_r_usd(ts) * ts)
@@ -175,7 +187,7 @@ def test_the_declared_switches_flip_the_sign_they_should(tmp_path):
     value = 0.0
     for fix, settle in FIXINGS:
         t, ts = fix / DAYS, settle / DAYS
-        F = SPOT * math.exp((_r_usd(t) - Q_EUR) * t)
+        F = SPOT * math.exp(_log_carry(fix))
         sd = SIGMA * math.sqrt(t)
         d1 = (math.log(F / STRIKE) + 0.5 * sd * sd) / sd
         d2 = d1 - sd
@@ -218,7 +230,7 @@ def _brute_force_ko(barrier, barrier_up, n_paths=400_000, seed=7):
     z = np.concatenate([z, -z], axis=0)
     # the carry over each INTERVAL is a difference of cumulative integrals and not one tenor's rate
     # times the interval - on this steep curve the two differ by whole percent
-    cum = np.array([(_r_usd(t) - Q_EUR) * t for t in times])
+    cum = np.array([_log_carry(f) for f, _ in FIXINGS])
     drift = np.diff(np.concatenate([[0.0], cum])) - 0.5 * SIGMA ** 2 * dt
     s = np.exp(np.log(SPOT) + np.cumsum(drift + SIGMA * np.sqrt(dt) * z, axis=1))
     survive = (s < barrier) if barrier_up else (s > barrier)

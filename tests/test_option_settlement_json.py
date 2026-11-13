@@ -261,12 +261,20 @@ def test_a_forward_carries_between_spot_dates():
     the tenor where it states no `Settlement_Days`, two days fewer at three and one fewer where the
     Tuesday is its calendar's holiday; no lag is no roll, a fixing on the holiday carrying to it; and
     on a principal with both ends ahead it pays the ratio of two forwards, each to its own spot date.
+    The equity forward deal and an FX start-window knock-out no path reaches, the vanilla, read the
+    same forward. Paid at a Saturday expiry a year on, an FX one-touch and no-touch and an equity
+    no-touch meet the textbook one-touch at the carry between spot dates; a compo swaplet list paid
+    on a Monday its composite forward, its fx conversion on the list's own lag; and a swap autocall
+    with one coupon on that Monday and a floating leg paying nothing the cash digital.
 
     Killing mutations: the carry started at the valuation date, the equity forward 4.1e-4 high; a
     default of two on the equity option, 1.6e-4 low; every row given the base date's lag, the
     Monday's row 1.6e-4 low; the list's lag unread, its forward 1.6e-4 high; its calendar unread,
     8.2e-5 low; no lag rolling the holiday on to a business day, 8.2e-5 high; a period's start
-    carried to its day, the ratio 4.1e-4 high.
+    carried to its day, the ratio 4.1e-4 high. A `Spot_Lag` unread: the forward deal's, its stated
+    forward 1.6e-4 high; the partial barrier's, 1.1e-4 high; the FX touch's, the one-touch 1.8e-4
+    high and the no-touch 3.0e-4 low; the equity touch's, the no-touch 1.8e-4 high; the autocall's,
+    the swap 5.3e-4 high. The compo list's fx carry handed days already shifted, 2.7e-4 low.
     """
     midweek = EXPIRY - pd.DateOffset(days=2)
     tenor, terms = (midweek - BASE).days, {'Expiry_Date': midweek, 'Strike_Price': 0.01}
@@ -277,7 +285,14 @@ def test_a_forward_carries_between_spot_dates():
         (dict(BINARY, Settlement_Date=midweek, Payoff_Style='Asset', **terms), CASH, 0.0) + equity,
         (dict(FX, **terms), UNITS, 0.01) + pair,
         (dict({k: v for k, v in FX.items() if k != 'Underlying_Amount'}, Object='FXBinaryOption',
-              Reference='FXB', Payoff=CASH, Payoff_Style='Asset', **terms), CASH, 0.0) + pair]
+              Reference='FXB', Payoff=CASH, Payoff_Style='Asset', **terms), CASH, 0.0) + pair,
+        ({'Object': 'EquityForwardDeal', 'Reference': 'EQF', 'Currency': 'USD', 'Equity': 'EQ',
+          'Discount_Rate': 'USD', 'Buy_Sell': 'Buy', 'Forward_Price': 0.01, 'Units': UNITS,
+          'Maturity_Date': midweek}, UNITS, 0.01) + equity,
+        # a start-window knock-out at a barrier no path reaches is the vanilla
+        (dict(FX, Object='FXPartialTimeBarrierOption', Reference='FXP', Payoff_Currency='USD',
+              Barrier_Type='Down_And_Out', Barrier_Price=0.001, Barrier_At_Start='Yes',
+              Barrier_Limit_Date=BASE + pd.DateOffset(days=90), **terms), UNITS, 0.01) + pair]
     for deal, scale, strike, spot, carry, declared in options:
         marked = marks([deal, dict(deal, Reference='STATED', Settlement_Days=5 - declared)])
         for ref, days in ((deal['Reference'], declared), ('STATED', 5 - declared)):
@@ -308,6 +323,36 @@ def test_a_forward_carries_between_spot_dates():
                 ('RATIO', 1.0, tenor - 7 + lag(monday, 3) - lag(ahead, 3))):
             assert marked[ref] / (UNITS * df((paid - BASE).days)) == pytest.approx(
                 level * math.exp((R_USD - Q_EQ) * between / 365.0), rel=1e-12), (ref, start)
+    # imported here, as that module imports this one
+    from test_compo_analytic_pricers import _one_touch_closed
+    year, monday = BASE + pd.DateOffset(years=1), EXPIRY - pd.DateOffset(days=4)
+    years = lambda date, days: ((date - BASE).days + lag(date, days) - lag(BASE, days)) / 365.0
+    touch = {'Currency': 'USD', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD', 'Buy_Sell': 'Buy',
+             'Cash_Payoff': CASH, 'Expiry_Date': year, 'Barrier_Monitoring_Frequency': pd.DateOffset(days=0)}
+    fx_touch = dict(touch, Underlying_Currency='EUR', FX_Volatility='EUR.USD', Barrier_Type='Up', Barrier_Price=1.35)
+    marked = marks([
+        dict(fx_touch, Object='FXOneTouchOption', Reference='FXOT'),
+        dict(fx_touch, Object='FXNoTouchOption', Reference='FXNT'),
+        dict(touch, Object='EquityNoTouchOption', Reference='EQNT', Equity='EQ', Equity_Volatility='EQ',
+             Barrier_Type='Down', Barrier_Price=80.0, Barrier_Dates=[]),
+        swaplet('CMP', BASE + pd.DateOffset(days=7), monday, monday, Currency='EUR', Discount_Rate='EUR',
+                Payoff_Type='Compo', Equity_Volatility='EQ', Settlement_Days=3)])
+    up = _one_touch_closed(1.35, True, FX_SPOT, (R_USD - R_EUR) * years(year, 2), FX_SIGMA, R_USD)
+    down = _one_touch_closed(80.0, False, SPOT, (R_USD - Q_EQ) * years(year, 3), SIGMA, R_USD)
+    composite = UNITS * SPOT * math.exp((R_EUR - Q_EQ) * years(monday, 3) - R_EUR * (monday - BASE).days / 365.0)
+    for ref, expected in (('FXOT', up), ('FXNT', CASH * df(365) - up), ('EQNT', CASH * df(365) - down),
+                          ('CMP', composite)):
+        assert marked[ref] == pytest.approx(expected, rel=1e-12), (ref, marked[ref], expected)
+    autocall = dict({k: v for k, v in VANILLA.items() if k != 'Settlement_Date'}, Reference='V2',
+                    Object='QEDI_CustomAutoCallSwap_V2', Expiry_Date=monday, Barrier=0.0, Barrier_Dates=[],
+                    Price_Fixing=[[monday, 0.0]], Autocall_Coupons=[[monday, 0.05]],
+                    Autocall_Thresholds=[[monday, 1.0]], Forecast_Rate='USD',
+                    Reset_Frequency=pd.DateOffset(years=1), Autocall_Floating=[[monday, 0.0]])
+    t = (monday - BASE).days / 365.0
+    d2 = (math.log(SPOT / STRIKE) + (R_USD - Q_EQ) * years(monday, 3) - 0.5 * SIGMA ** 2 * t) / (SIGMA * math.sqrt(t))
+    swap = run([autocall], calc={'MCMC_Simulations': 1})['mtm']
+    assert float(swap[swap['Reference'] == 'V2']['Value'].iloc[0]) == pytest.approx(
+        UNITS * 0.05 * df((monday - BASE).days) * ndtr(d2), rel=1e-12)
 
 
 #: The declared-defaults swaption, settled physically on its legs, and its cash twin paid 40 days

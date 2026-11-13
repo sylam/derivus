@@ -16,6 +16,12 @@ forwards and European options have the closed forms below.
 | Discounting | from the settlement date: **Settlement_Date** (equity) or **Delivery_Date** (FX), the expiry where blank |
 | Past the expiry | the underlying is the expiry's print: the scenario's own level, or **Price_Fixing** where the expiry is before the base date |
 
+Every equity and FX deal reading a forward carries it between spot dates the same way, from $t$ and
+from each fixing it reads: the options, barriers, touches, Asians, autocalls, TARFs, accumulators,
+extendable forwards, range accruals and the equity forward, each declaring **Settlement_Days** 3 on an
+equity and 2 on an FX pair. A deal has one lag for every spot fixing it reads, a `Compo`'s $F_X$
+included. FX forwards, the equity swap leg and commodity deals carry with none.
+
 ## Forwards
 
 A forward pays $S(T)-K$ at maturity $T$, $K$ the forward price. Its value at $t$ is

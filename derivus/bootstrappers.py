@@ -412,7 +412,9 @@ class OptionQuoteFamily(ImpliedCalibration):
          '(**EquityPrice.Interest_Rate**), not the curve its deals discount on. Left blank the two are',
          'one curve, which is the one-curve world and what an FX pair always was; named, an index',
          'carrying a repo/borrow spread calibrates at the forward it is priced at rather than one a',
-         'spread away from it.',
+         'spread away from it. It grows between spot dates, *Settlement_Days* business days on from',
+         'the base date and from the expiry, blank being 3 on an **EquityPrice** and 2 on an',
+         '**FxRate**, as the options priced on it carry.',
          '',
          'Target premia are the Black prices at the vol surface read at each quote\'s own strike (see',
          'MONEYNESS CONVENTION below) unless *Quote_Type* is **Premium**, in which case the quoted values are',
@@ -485,6 +487,10 @@ class OptionQuoteFamily(ImpliedCalibration):
     # silently wrong.
     tabular_surfaces = ('Explicit', 'Relative_Forward', 'Malz')
 
+    #: The business days to a spot date by the `Underlying`'s class where a block states no
+    #: `Settlement_Days`: those the options priced on it declare. A class not named is zero.
+    spot_days = {'EquityPrice': 3, 'FxRate': 2}
+
     # the five factor references, each with the optional `_Type` `resolve` reads; what is REQUIRED
     # is derived from `quote_type_references` - see `reference_fields`
     fields = reference_fields(factor_types, quote_type_references, reference_notes) + [
@@ -495,6 +501,10 @@ class OptionQuoteFamily(ImpliedCalibration):
           description='Moneyness against the forward rather than the spot'),
         F('Invert_Moneyness', 'Text', default='No', values=['Yes', 'No'],
           description='Moneyness as K/S rather than S/K'),
+        F('Settlement_Days', 'Integer', default='',
+          description='Business days, Monday to Friday, from a day to its spot date, the forward '
+                      'growing from the base date\'s to each expiry\'s; blank is the underlying '
+                      'class\'s, 3 on an EquityPrice and 2 on an FxRate'),
         F('Steps_Per_Year', 'Float', default=252.0,
           description='GARCH steps an expiry is spread over'),
         F('Quote_Timestamp', 'Date', default='',
@@ -895,9 +905,8 @@ class OptionQuoteFamily(ImpliedCalibration):
             if T is None:
                 return None
             days = int(round(T * ladder.days))
-            t = discount.get_day_count_accrual(base_date, days)
-            rate = float(discount.current_value(t))
-            forward = spot * np.exp((rate - float(carry.current_value(t))) * t)
+            t, rate, _, forward = cls.expiry_forward(
+                spot, base_date, days, cls.spot_days['FxRate'], discount, None, carry)
             # the surface unshifted - the fit applies `Volatility_Delta` to every vol it reads -
             # at the coordinate the pricer reads its type at, off the strike `x` names
             return T, moved, days, t, forward, rate, (
@@ -1027,6 +1036,25 @@ class OptionQuoteFamily(ImpliedCalibration):
         return q if funding is None else q + (discount_rate - float(funding.current_value(t)))
 
     @classmethod
+    def expiry_forward(cls, spot, base_date, day, business_days, discount, funding, carry):
+        """`(t, r, q, forward)` at an expiry `day` days from `base_date`. `t` is the
+        `Discount_Rate` curve's accrual to the expiry and `r` its rate there. `forward` is the spot
+        grown at `effective_yield`'s `r - q` between the two spot dates, `business_days` of Monday
+        to Friday on from the base date and from the expiry; zero is no lag and no roll. `q` is the
+        yield that growth runs at over `t`."""
+        def growth(x):
+            t = discount.get_day_count_accrual(base_date, x)
+            r = float(discount.current_value(t))
+            q = cls.effective_yield(r, funding, carry, t)
+            return t, r, q, (r - q) * t
+        t, r, q, to_expiry = growth(day)
+        lag = utils.spot_lag(base_date, business_days, None, (0, day)) if business_days else 0
+        start, end = np.add((0, day), lag)
+        spot_to_spot = growth(end)[3] - growth(start)[3]
+        # the lag rides in on `q` as the funding basis does, a shift of exactly 0.0 at no lag
+        return t, r, q - (spot_to_spot - to_expiry) / t, spot * np.exp(spot_to_spot)
+
+    @classmethod
     def spot_priced_in(cls, spot, priced_in):
         """`spot` re-priced in the `Priced_In` FACTOR, which is the ratio of the two base-priced
         rates.
@@ -1094,23 +1122,24 @@ class OptionQuoteFamily(ImpliedCalibration):
         """Each `European_Options` row as `(option, t, r, q, forward, sign, strike, sigma,
         premium)` - the numbers every family in this hierarchy builds its objective from.
 
-        `t` is the `Discount_Rate` curve's own day count accrual, the forward grows at
-        `effective_yield`'s `r - q`, and a blank `Strike` is the forward. Under
+        `t` is the `Discount_Rate` curve's own day count accrual, the forward is `expiry_forward`'s
+        between the spot dates `Settlement_Days` on, and a blank `Strike` is the forward. Under
         `Implied_Volatility` the premium is Black at the surface's vol AT THE STRIKE; under
         `Premium` the quote IS the premium and `sigma` is inverted back out of it, which is what
         seeds a fit and what its diagnostics are read in.
         """
         discount, surface = factors['Discount_Rate'], factors.get('Volatility')
         carry, funding = factors.get('Yield'), factors.get('Funding_Rate')
+        base_date, stated = sys_params['Base_Date'], instrument.get('Settlement_Days', '')
+        business_days = self.spot_days.get(
+            type(factors['Underlying']).__name__, 0) if stated == '' else stated
         quote_type = instrument['Quote_Type']
         use_forward = instrument.get('Use_Forward') == 'Yes'
         invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
         for option in quote_table(instrument, market_price, 'European_Options'):
-            t = discount.get_day_count_accrual(
-                sys_params['Base_Date'], (option['Expiry_Date'] - sys_params['Base_Date']).days)
-            r = float(discount.current_value(t))
-            q = self.effective_yield(r, funding, carry, t)
-            forward = spot * np.exp((r - q) * t)
+            t, r, q, forward = self.expiry_forward(
+                spot, base_date, (option['Expiry_Date'] - base_date).days, business_days,
+                discount, funding, carry)
             sign = 1.0 if option['Option_Type'] == 'Call' else -1.0
             strike = forward if not option['Strike'] else option['Strike']
             if quote_type == 'Implied_Volatility':

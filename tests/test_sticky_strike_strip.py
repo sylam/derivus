@@ -11,17 +11,18 @@ one the read came back with a row per reporting date and was reshaped to a singl
 THE ORACLE IS THE SAME SMILE IN THE OTHER CONVENTION. `Sticky_Strike` reads the surface at
 `log(K / ATM_Ref(T))` and `Sticky_Moneyness` at `log(K / F(T))`, so a surface whose `ATM_Ref` IS
 its forward curve is the same coordinate written twice - and the two documents must then price to
-the LAST BIT, not to a tolerance. Below the knots are the fixing tenors themselves, so the
-forward-valued `ATM_Ref` is read at its own knot and no interpolation stands between them.
+the LAST BIT, not to a tolerance. Below the knots are the fixing tenors themselves and the spot
+dates their forwards carry between, so the forward-valued `ATM_Ref` and every carry are read at
+their own knots and no interpolation stands between them.
 
 A SECOND ORACLE removes the smile instead of the difference: with no slope and no wings every
 coordinate reads `ATM_Vol`, so the two rules agree whatever the reference is.
 
 MEASURED on the document below (notional 1, strike 100, barrier 85, monthly monitoring, one year,
 ATM 25 vol with a -0.15 slope). Declared `Sticky_Strike` against a flat `ATM_Ref` of 100 the
-barrier marks 10.093277, and against `Sticky_Moneyness` 10.184523 - **-0.90%**, which is the whole
-of the difference between reading a 25.00 vol at every fixing and reading 25.02 through 25.31 vol
-down the smile's slope, the strike sitting under the forward by the 2% carry.
+barrier marks 10.089815, and against `Sticky_Moneyness` 10.180800 - **-0.89%**, which is the whole
+of the difference between reading a 25.00 vol at every fixing and reading the vol down the smile's
+slope, the strike sitting under the forward by the 2% carry between spot dates.
 
 THE SAME STRIP ON A SLOPED WORLD, its repo curve rising against a falling dividend one, reads the
 surface's TERM STRUCTURE and the curves' FORWARD, each against a reference written here off the
@@ -51,6 +52,7 @@ from scipy.special import ndtr
 import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder, ModelParams
+from test_option_settlement_json import lag
 
 BASE = pd.Timestamp('2024-06-28')
 SPOT, R_USD, Q_EQ = 100.0, 0.04, 0.02
@@ -58,8 +60,10 @@ X0, R_EUR, FX_VOL, RHO = 1.25, 0.02, 0.15, 0.35
 STRIKE, UNITS, BARRIER, EXPIRY_D = 100.0, 1.0, 85.0, 365
 MONITOR_D = list(range(30, 361, 30))
 
-#: the knots ARE the fixing tenors, so a forward-valued ATM_Ref is read at its own knot
-TENORS = [0.02] + [d / 365.0 for d in MONITOR_D] + [1.0, 2.0]
+#: the knots ARE the fixing tenors and the spot dates their forwards carry between, so a
+#: forward-valued ATM_Ref and every carry are read at their own knots
+TENORS = sorted({0.02, 1.0, 2.0} | {d / 365.0 for d in MONITOR_D} | {
+    (d + lag(BASE + pd.Timedelta(days=d), 3)) / 365.0 for d in [0] + MONITOR_D + [EXPIRY_D]})
 SKEW = {'ATM_Vol': 0.25, 's': -0.15, 'L': 0.30, 'R': 0.20,
         'C': -0.35, 'D': 0.35, 'lam': 0.5, 'rho': 0.5}
 #: Each world's repo and dividend zero rates by tenor: flat, and sloped against each other.
@@ -71,10 +75,17 @@ def curve(value):
     return utils.Curve([], [[t, value] for t in TENORS])
 
 
-def forward_ref(world):
-    """The forward to each tenor knot of `world`'s curves, `S exp((r(t) - q(t)) t)`."""
+def log_forward(world, days):
+    """`log(F / S)` of `world`'s curves to a fixing `days` on: the carry `(r(t) - q(t)) t` between
+    the spot dates three business days on from the base date and from the fixing."""
     repo, dividend = WORLDS[world]
-    return utils.Curve([], [[t, SPOT * float(np.exp((repo(t) - dividend(t)) * t))] for t in TENORS])
+    zero = lambda d: (repo(d / 365.0) - dividend(d / 365.0)) * d / 365.0
+    return zero(days + lag(day(round(days)), 3)) - zero(lag(BASE, 3))
+
+
+def forward_ref(world):
+    """The forward to each tenor knot of `world`'s curves, `S exp(log_forward)`."""
+    return utils.Curve([], [[t, SPOT * float(np.exp(log_forward(world, t * 365.0)))] for t in TENORS])
 
 
 def factors(rule, atm_ref, smile=True, world='flat'):
@@ -192,22 +203,23 @@ def book(stretch=1):
 
 def test_a_skew_surface_under_sticky_strike_prices_a_monitoring_strip():
     """The row this file exists for: the barrier prices, and prices to its measured mark,
-    re-measured when a base valuation's inner paths became the canonical block's: 10.088311 to
-    10.093277.
+    re-measured when a base valuation's inner paths became the canonical block's, 10.088311 to
+    10.093277, and when the strip's forward carried between spot dates, 10.089815.
 
     Killing mutation: the strip's moneyness left unbroadcast onto its fixing axis.
     """
-    assert marks(factors('Sticky_Strike', curve(SPOT)))['BR'] == pytest.approx(10.093277, rel=1e-6)
+    assert marks(factors('Sticky_Strike', curve(SPOT)))['BR'] == pytest.approx(10.089815, rel=1e-6)
 
 
 @pytest.mark.parametrize('world', ['flat', 'sloped'])
 def test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forward(world):
     """`log(K / ATM_Ref)` and `log(K / F)` are the same number when `ATM_Ref` is `F`, so the two
-    documents read the same vol at every fixing and every expiry and mark the book to the BIT.
+    documents read the same vol at every fixing and every expiry and mark the book alike within
+    1e-12, the reference being built here and the forward on the device.
     This is what places the coordinate on the surface: a read at the wrong tenor, or at a forward
     other than the curves' (the spot, the interval carry's, one missing its year fraction), breaks
     this identity while still producing a number - on the sloped world the knock-out marks
-    10.071417 where the reference at the spot reads 9.986571, -0.84%.
+    10.141810 where the reference at the spot reads 10.051586, -0.89%.
 
     THE CONTROL: with no slope and no wings every coordinate reads `ATM_Vol`, so the reference
     cannot matter and all three spellings agree - the difference between that and the identity
@@ -222,7 +234,8 @@ def test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forwa
     def priced(rule, atm_ref, smile=True):
         return marks(factors(rule, atm_ref, smile, world), book())
     ref = forward_ref(world)
-    assert priced('Sticky_Strike', ref) == priced('Sticky_Moneyness', curve(SPOT))
+    assert priced('Sticky_Strike', ref) == pytest.approx(
+        priced('Sticky_Moneyness', curve(SPOT)), rel=1e-12)
     flat = priced('Sticky_Strike', curve(SPOT), smile=False)
     assert flat == priced('Sticky_Moneyness', curve(SPOT), smile=False) == priced(
         'Sticky_Strike', ref, smile=False)
@@ -243,33 +256,39 @@ def stretched(k):
     return price_factors
 
 
+def unlagged(stretch):
+    """`book(stretch)`, every deal stating `Settlement_Days` 0: a spot date is business days on, a
+    lag that does not stretch."""
+    return tuple(dict(deal, Settlement_Days=0) for deal in book(stretch))
+
+
 def test_the_book_twice_as_far_in_a_world_half_as_fast_prices_the_same():
     """RATE UNITS. A price reads a rate, a carry or a variance only times the year fraction it
     accrues over, so the book with every date twice as far from the base date, in the world whose
     rates and variances are halved, prices the same, to 1e-13: 10.093277 the knock-out, 54.756450
     the one-touch, 3.523722 the partial-time knock-in. A quantity reaching `exp` or a closed form
-    without its year fraction reads the slow world's half. The European is not in the book: it
-    forwards between spot dates, business days on, a lag that does not stretch.
+    without its year fraction reads the slow world's half. The book carries no spot lag, which is
+    business days on and does not stretch.
 
     Killing mutations, each a year fraction dropped where a carry meets it: in the Reiner-Rubinstein
     barrier (the continuous knock-out -5.9%), the one-touch's drift (+0.01%), the partial-time
     closed form's forward (+540%), the Asian's sample forwards (-7.4%), the composite strip's fx
     forwards (-22.7%), `zero_carry_rate`'s division (every deal, -2.9% to +35%).
     """
-    assert marks(stretched(2), book(2)) == pytest.approx(marks(stretched(1), book(1)), rel=1e-13)
+    assert marks(stretched(2), unlagged(2)) == pytest.approx(marks(stretched(1), unlagged(1)), rel=1e-13)
 
 
 def test_the_book_twice_as_far_in_a_world_half_as_fast_walks_the_same_profile():
     """The same statement of a credit Monte Carlo's profile, its grid and its models stretched with
     the book (GBM equity and fx rate, each variance halved), which reaches the branches only a row
     after the base date reads: 14 rows of 64 paths agree to 2.7e-6, the float32 the simulation runs
-    in, where 1e-5 is asked.
+    in, where 1e-5 is asked. The book carries no spot lag here either.
 
     Killing mutation: the partial-time knock-in's knocked-in vanilla forwarded without the year
     fraction to its expiry (10.6% on its worst entry).
     """
     def walked(k):
-        return run(stretched(k), dict(CMC, Time_grid='0d {0}d({0}d)'.format(30 * k)), book(k), k)
+        return run(stretched(k), dict(CMC, Time_grid='0d {0}d({0}d)'.format(30 * k)), unlagged(k), k)
     np.testing.assert_allclose(walked(2).values, walked(1).values, rtol=1e-5)
 
 
@@ -291,11 +310,12 @@ def call(forward, sd):
 def quadrature(sigma, n=1 << 14):
     """The knock-out off the sloped world's curves and `sigma` alone: the log-spot law stepped from
     fixing to fixing in Fourier space, each interval's carry and variance the difference of the
-    cumulative ones the curves and the surface state, the mass below the barrier dropped at each
-    fixing and the last interval's call in closed form, discounted on the repo curve."""
-    repo, dividend = WORLDS['sloped']
+    cumulative ones the curves and the surface state, each carry between spot dates, the mass below
+    the barrier dropped at each fixing and the last interval's call in closed form, discounted on the
+    repo curve."""
+    repo = WORLDS['sloped'][0]
     t = np.array(MONITOR_D + [EXPIRY_D]) / 365.0
-    carry = np.diff((repo(t) - dividend(t)) * t, prepend=0.0)
+    carry = np.diff([log_forward('sloped', d) for d in MONITOR_D + [EXPIRY_D]], prepend=0.0)
     var = np.diff(sigma(t) ** 2 * t, prepend=0.0)
     h = 20.0 * np.sqrt(var.sum()) / n
     x = np.log(SPOT) + h * (np.arange(n) - n // 2)
@@ -321,9 +341,9 @@ def test_two_surfaces_agreeing_at_expiry_monitor_apart_each_on_its_quadrature(mo
     """The vol term structure reaches the monitoring. The flat surface and the rising one agree at
     expiry, so the European reads them to the bit, while the monthly down-and-out steps each
     interval's own forward variance and carry, the cumulative ones differenced (`forward_vol_rate`,
-    `forward_carry_rate`), and lands on the quadrature of the curves and surface it reads: 6.972348
-    against 6.977709 (-0.08%) on the flat surface and 6.465116 against 6.459058 (+0.09%) on the
-    rising one, the two quadratures 7.4% apart. 3e-3 is the inner Sobol block's slack. 2 s.
+    `forward_carry_rate`), and lands on the quadrature of the curves and surface it reads: 7.024910
+    against 7.030409 (-0.08%) on the flat surface and 6.526941 against 6.520982 (+0.09%) on the
+    rising one, the two quadratures 7.2% apart. 3e-3 is the inner Sobol block's slack. 2 s.
 
     Killing mutations: every interval read at the expiry vol (the shipped defect: the rising surface
     then prices as the flat, +7.9%); the interval carry undifferenced (the zero rate to each fixing
@@ -341,16 +361,16 @@ def test_the_knock_in_and_out_sum_to_the_vanilla_at_the_curves_forward(monitored
     """The knock-in is priced by parity, the vanilla less the knock-out, so the two sum to the
     vanilla the barrier's payoff is valued at: Black at the forward `total_log_forward` integrates
     off the interval strip, at the surface's expiry vol, discounted. On the sloped world it is
-    Black at `S exp((r(T) - q(T)) T)` off the stated curves on either surface, 10.655307, to the
-    bit where 1e-12 is asked.
+    Black at `S exp((r - q) t)` between the spot dates off the stated curves on either surface,
+    10.722376, to the bit where 1e-12 is asked.
 
     Killing mutations: `total_log_forward` summing the interval carry without its year fractions
     (35.300588); the interval carry undifferenced, whose strip telescopes to the curves' total only
     on a flat curve (9.401694).
     """
-    repo, dividend = WORLDS['sloped']
+    repo = WORLDS['sloped'][0]
     for name, sigma in SURFACES.items():
-        vanilla = np.exp(-repo(1.0)) * call(SPOT * np.exp(repo(1.0) - dividend(1.0)), sigma(1.0))
+        vanilla = np.exp(-repo(1.0)) * call(SPOT * np.exp(log_forward('sloped', EXPIRY_D)), sigma(1.0))
         assert monitored[name]['KO'] + monitored[name]['KI'] == pytest.approx(
             vanilla, rel=1e-12), name
 
@@ -361,10 +381,10 @@ FX_SKEW = {'Surface_Type': 'Skew', 'Moneyness_Rule': 'Sticky_Strike', 'ATM_Ref':
            'C': curve(-1.0), 'D': curve(1.0), 'lam': curve(0.0), 'rho': curve(0.0)}
 
 
-def fx_grid(vol, slope=0.0):
-    """`FXVol.EUR.USD` as an explicit grid flat in moneyness at `vol + slope * t`, `t` the tenor."""
+def fx_grid(vol):
+    """`FXVol.EUR.USD` as an explicit grid flat in moneyness and tenor at `vol`."""
     return {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': utils.Curve(
-        [], [[m, t, vol + slope * t] for m in (0.6, 1.0, 1.4) for t in (0.02, 2.0)])}
+        [], [[m, t, vol] for m in (0.6, 1.0, 1.4) for t in (0.02, 2.0)])}
 
 
 def test_a_skew_fx_surface_mints_its_parameters_and_prices_at_its_own_read():
@@ -390,8 +410,8 @@ def test_the_fx_averages_and_the_extendable_forward_read_the_smile_where_the_fx_
     transition vol at its extension strike, both through `calc_moneyness`. On the Skew above the
     double Asian reads 15% at the 1.25 spot and the forward `0.15 + 0.5 log(1.28 / 1.25)` at every
     fixing; on a Malz smile, 10% at the money and 30% from |x| = 0.5, the double Asian reads
-    `0.1 + 0.4 log(F(t) / S)` at each sample's own tenor `t`, the 2% carry over it - each within an
-    ulp of the deal on a grid flat in moneyness at that vol, tenor by tenor.
+    `0.1 + 0.4 log(F(t) / S)` at each sample's own tenor `t`, its forward the 2% carry between spot
+    dates - each within an ulp of the deal on a grid flat in moneyness at that vol, tenor by tenor.
 
     Killing mutation: the double Asian's read back to its own ratio, which lands on the Malz
     wing's 30%.
@@ -401,15 +421,20 @@ def test_the_fx_averages_and_the_extendable_forward_read_the_smile_where_the_fx_
     deals = [deal for deal in trial_fx.DEALS if deal['Reference'] in ('FXDASN', 'FXEXT')]
     malz = {'Surface_Type': 'Malz', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': utils.Curve(
         [], [[x, t, vol] for x, vol in ((-0.5, 0.3), (0.0, 0.1), (0.5, 0.3)) for t in (0.02, 2.0)])}
+    base = book.WORLD_BASE
+    samples = [row[0] for deal in deals if deal['Reference'] == 'FXDASN'
+               for key in ('Sampling_Data_1', 'Sampling_Data_2') for row in deal[key]]
+    on_samples = {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': utils.Curve(
+        [], [[m, (d - base).days / 365.0, 0.1 + 0.4 * (book.R_USD - book.R_EUR) * (
+            (d - base).days + lag(d, 2) - lag(base, 2)) / 365.0] for m in (0.6, 1.0, 1.4) for d in samples])}
 
     def mark(surface, reference):
         return float.fromhex(book.marks(deals, {'FXVol.EUR.USD': surface})[0][reference])
 
-    for surface, reference, vol, slope in ((FX_SKEW, 'FXDASN', 0.15, 0.0),
-                                           (FX_SKEW, 'FXEXT', 0.15 + 0.5 * np.log(1.28 / 1.25), 0.0),
-                                           (malz, 'FXDASN', 0.1, 0.4 * (book.R_USD - book.R_EUR))):
-        assert mark(surface, reference) == pytest.approx(
-            mark(fx_grid(vol, slope), reference), rel=1e-15), (reference, vol, slope)
+    for surface, reference, grid in ((FX_SKEW, 'FXDASN', fx_grid(0.15)),
+                                     (FX_SKEW, 'FXEXT', fx_grid(0.15 + 0.5 * np.log(1.28 / 1.25))),
+                                     (malz, 'FXDASN', on_samples)):
+        assert mark(surface, reference) == pytest.approx(mark(grid, reference), rel=1e-15), reference
 
 
 def test_the_strip_is_read_the_same_way_at_every_reporting_row():
