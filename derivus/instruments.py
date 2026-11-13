@@ -4114,7 +4114,6 @@ class EquityOptionDeal(Deal):
                         expires='Expiry_Date')
     fields = [ADMIN, PRICING, EQUITYOPTIONBASE, OPTION_STYLE, own('EquityOptionDeal', [
         F('Units', 'Float', default=0.0, sized=True),
-        F('Forward_Price_Date', 'Date', default='', convention=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),
         F('Settlement_Date', 'Date', default='', convention=True,
           settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
@@ -6754,7 +6753,6 @@ class FXOptionDeal(Deal):
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, FX_OPTION_STYLE, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Expiry_Date', 'Date', default=''),
-        F('Forward_Price_Date', 'Date', default='', convention=True),
         F('Settlement_Days', 'Integer', default=2, convention=True),
         EXPIRY_PRINT
     ])]
@@ -6774,8 +6772,7 @@ class FXOptionDeal(Deal):
                           'which it must.',
                           '',
                           '**Option_Style** offers `European` alone, the one style this prices;',
-                          '**Settlement_Style**, **Forward_Price_Date** and **Option_On_Forward** do not enter',
-                          'the price.'])
+                          '**Settlement_Style** and **Option_On_Forward** do not enter the price.'])
 
     def reset(self, calendars):
         super(FXOptionDeal, self).reset()

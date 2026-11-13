@@ -155,11 +155,11 @@ FX_OPTION = {'Object': 'FXOptionDeal', 'Reference': 'FXO', 'Currency': 'ZAR',
              'Underlying_Currency': 'USD', 'Underlying_Amount': 1_000_000.0, 'Buy_Sell': 'Buy',
              'Option_Type': 'Call', 'Strike_Price': 1.0 / 18.5, 'Option_Style': 'European',
              'Settlement_Style': 'Physical', 'Discount_Rate': 'ZAR', 'FX_Volatility': 'USD.ZAR',
-             'Expiry_Date': BASE + pd.DateOffset(days=60), 'Forward_Price_Date': None,
+             'Expiry_Date': BASE + pd.DateOffset(days=60),
              'Trade_Date': None, 'Delivery_Date': None, 'Structure_Reference': ''}
 OPTION = {'Object': 'EquityOptionDeal', 'Reference': 'EQO', 'Currency': 'ZAR', 'Equity': 'EQ',
           'Dividends': 'EQ', 'Discount_Rate': 'ZAR', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
-          'Option_Style': 'European', 'Option_On_Forward': 'No', 'Forward_Price_Date': None,
+          'Option_Style': 'European', 'Option_On_Forward': 'No',
           'Option_Type': 'Call', 'Strike_Price': 100.0, 'Units': 1.0, 'Payoff_Type': 'Standard',
           'Settlement_Style': 'Physical', 'Payoff_Currency': 'ZAR',
           'Expiry_Date': BASE + pd.DateOffset(days=60)}
