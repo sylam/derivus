@@ -14,7 +14,7 @@ recomputed in python on the composite forward, vol and carry. The limit is the e
 itself: an fx leg identically one with no vol and no correlation must reprice the Standard deal.
 
 WHY THE PARITY IS SPLIT IN TWO. `EquityOptionDeal` carries its equity forward between spot dates,
-three business days on from the base date and from the expiry (`option_date_info`), while the three
+three business days on from the base date and from the expiry (`Deal.spot_lag`), while the three
 analytic pricers carry theirs to expiry, so the two forwards differ by the carry over the two lags'
 difference whenever the local carry is live - a convention difference that predates the composite
 and is nothing to do with it. The exact reading is therefore taken where the local carry is flat

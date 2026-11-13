@@ -6927,9 +6927,8 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
-    forward_settle_days = factor_dep['Bus_Ofs'][deal_data.Time_dep.deal_time_grid]
     eq_spot = utils.calc_time_grid_spot_rate(factor_dep['Equity'], deal_time, shared)
-    cash = factor_dep['Flows']
+    cash, lag = factor_dep['Flows'], factor_dep['Spot_Lag']
     # a compo's levels are S*X, each forward carrying the fx forward's own; a quanto's forwards
     # carry -rho sigma_S sigma_X and pay at one - the forward calculation on the price return
     adjusted = factor_dep.get('Check_Payoff_Type', False)
@@ -6988,7 +6987,6 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
     all_index, all_counts = np.unique(list(
         zip(cash_start_idx, cash_end_idx, cash_pay_idx)), axis=0, return_counts=True)
-    time_block_index = 0
 
     for index, (discount_block, repo_block, divi_block, eq_block) in enumerate(
             utils.split_counts([discounts, repo_discounts, eq_div_curve, eq_spot], all_counts, shared)):
@@ -7000,7 +6998,8 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
         payoffs = []
         time_block = discount_block.time_grid[:, utils.TIME_GRID_MTM]
-        future_pmts = cashflow_pay - time_block.reshape(-1, 1)
+        rows = time_block.reshape(-1, 1)
+        future_pmts = cashflow_pay - rows
         discount_rates = utils.calc_discount_rate(discount_block, future_pmts, shared)
 
         def carried(days):
@@ -7044,8 +7043,8 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
         # the start fixed and the end still ahead: the observed sample against a forward
         if end_idx < start_idx:
-            cf_end = cashflows.np[end_idx, utils.CASHFLOW_INDEX_End_Adj] - time_block.reshape(-1, 1)
-            cf_settle = forward_settle_days[time_block_index:time_block_index+all_counts[index]].reshape(-1,1)
+            cf_end, cf_settle = utils.spot_carry(
+                lag, cashflows.np[end_idx, utils.CASHFLOW_INDEX_End_Day] - rows, rows)
             repo_carry = repo_block.gather_weighted_curve(shared, cf_end, cf_settle)
             divi_carry = divi_block.gather_weighted_curve(shared, cf_end, cf_settle)
             carry_end, scale = carried(cf_end) if adjusted else (0.0, 1.0)
@@ -7073,9 +7072,9 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
         # both ends still ahead: forwards at each
         if cashflow_start.any():
-            cf_start = cashflows.np[start_idx:, utils.CASHFLOW_INDEX_Start_Adj] - time_block.reshape(-1, 1)
-            cf_end  = cashflows.np[start_idx:, utils.CASHFLOW_INDEX_End_Adj] - time_block.reshape(-1, 1)
-            cf_settle = forward_settle_days[time_block_index:time_block_index+all_counts[index]].reshape(-1,1)
+            cf_start, cf_settle = utils.spot_carry(
+                lag, cashflows.np[start_idx:, utils.CASHFLOW_INDEX_Start_Day] - rows, rows)
+            cf_end, _ = utils.spot_carry(lag, cashflows.np[start_idx:, utils.CASHFLOW_INDEX_End_Day] - rows, rows)
             repo_start = repo_block.gather_weighted_curve(shared, cf_start, cf_settle)
             repo_end = repo_block.gather_weighted_curve(shared, cf_end, cf_settle)
             divi_start = divi_block.gather_weighted_curve(shared, cf_start, cf_settle)
@@ -7106,7 +7105,6 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
 
             payoffs.append(payoff * units)
 
-        time_block_index += all_counts[index]
         payments = torch.cat(payoffs, dim=1) if len(payoffs) > 1 else payoffs[0]
         mtm_list.append(torch.sum(payments * discount_rates, dim=1))
 

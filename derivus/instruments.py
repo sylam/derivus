@@ -29,65 +29,12 @@ import torch
 import torch.nn.functional as Fn
 
 
-def get_business_day_offsets(calendar_names, calendars, business_days):
-    def calendar_business_day(calendar_name, calendars):
-        """The business-day offset for a named calendar, Monday-Friday when it is unknown."""
-        return calendars.get(
-            calendar_name,
-            {'businessday': pd.offsets.BDay(1)}
-        )['businessday']
-
-    """Return the two business-day offsets used for settlement adjustment.
-
-    The adjustment assumes two offsets applied as:
-        bus_day_offsets[0].rollforward(date + bus_day_offsets[1])
-
-    If one calendar is supplied, use it for both sides.
-    If none is supplied, use a standard Monday-Friday calendar.
-    """
-    if calendar_names:
-        names = [x.strip() for x in calendar_names.split(',') if x.strip()]
-        offsets = [business_days * calendar_business_day(name, calendars) for name in names]
-
-        if len(offsets) == 1:
-            offsets = [offsets[0]]
-
-        return offsets[:2]
-
-    return [pd.offsets.BDay(business_days)]
-
-
-def forward_settlement_date(date_to_roll, calendar_names, calendars, business_days):
-    """Return the date plus the settlement lag, rolled using the configured calendars."""
-    bus_day_offsets = get_business_day_offsets(calendar_names, calendars, business_days)
-    if len(bus_day_offsets) > 1:
-        return utils.adjust_date(bus_day_offsets[0], 'Following', date_to_roll + bus_day_offsets[1])
-    else:
-        return date_to_roll + bus_day_offsets[0]
-
-
-def option_date_info(deal, base_date, calendars, time_grid):
-    """The expiry, settlement and forward-settlement day offsets of an option-style deal, and each
-    grid date's days to its spot date.
-
-    A spot date is the deal's Settlement_Days on, rolled on the configured calendars, the date
-    itself where its type declares none. Forward_Settlement is the expiry's, the forward carrying to
-    it from the valuation date's own; Settlement is the day the deal's own declaration settles on.
-    """
-    expiry_date = deal.field['Expiry_Date']
-    days = deal.field.get('Settlement_Days', deal.field.declared.get('Settlement_Days', 0))
-
-    def spot(date):
-        return forward_settlement_date(date, deal.field.get('Calendars'), calendars, days) if days else date
-
+def option_date_info(deal, base_date):
+    """The expiry and settlement day offsets of an option-style deal: Settlement is the day the
+    deal's own declaration settles on."""
     # the day the deal pays: the last its reset registered, an option's declaration settling once
     settlement_date = max(max(dates) for dates in deal.settlement_currencies.values())
-    expiry = (expiry_date - base_date).days
-    settlement = (settlement_date - base_date).days
-    forward_settlement = (spot(expiry_date) - base_date).days
-    spot_settlement = np.array([[(spot(x) - x).days] for x in sorted(time_grid.mtm_dates)])
-
-    return expiry, settlement, forward_settlement, spot_settlement
+    return (deal.field['Expiry_Date'] - base_date).days, (settlement_date - base_date).days
 
 
 def expiry_fixing(field, base_date, time_grid, deal_type):
@@ -788,17 +735,23 @@ class Deal(object):
             int(self.field.read('Index_Offset', 0)), calendar('Index_Calendars'),
             calendar('Index_Publication_Calendars'), frequency)
 
-    def equity_swaplets(self, field, paid, items, principal, settlement_days, base_date, static_offsets,
-                        stochastic_offsets, all_factors, all_tenors, time_grid, calendars):
+    def spot_lag(self, base_date, calendars):
+        """The calendar days from a day, counted from `base_date`, to its spot date, as a function
+        of the day: the deal's `Settlement_Days` business days of its `Accrual_Calendars` on, of
+        Monday to Friday where it names none. None where the deal states or declares no lag."""
+        days = self.field.get('Settlement_Days', self.field.declared.get('Settlement_Days', 0))
+        bus_day = calendars.get(self.field.get('Accrual_Calendars'), {}).get('businessday')
+        return partial(utils.spot_lag, base_date, days, bus_day) if days else None
+
+    def equity_swaplets(self, field, paid, items, principal, base_date, static_offsets, stochastic_offsets,
+                        all_factors, all_tenors, time_grid, calendars):
         """The factor index `pricing.pv_equity_leg` prices the swaplet rows `items` off, paid in
         `paid` on `field`'s `Currency` and `Payoff_Currency` pair (a compo or quanto through
         `check_option_data`) and discounted on its `Discount_Rate`: on a principal where `principal`,
-        else on shares, each forward read `settlement_days` business days of the accrual calendar
-        after its day. A compo or quanto reinvesting its dividends is not built and refuses by name."""
+        else on shares, each forward carried between spot dates under the deal's `spot_lag`. A compo
+        or quanto reinvesting its dividends is not built and refuses by name."""
         field.update(Equity=utils.check_rate_name(self.field['Equity']),
                      Equity_Volatility=self.check_factor_name('Equity_Volatility'))
-        bus_day = calendars.get(
-            self.field.get('Accrual_Calendars'), {'businessday': pd.offsets.Day(0)})['businessday']
         field_index = {
             'PrincipleNotShares': int(principal),
             'SettleCurrency': paid,
@@ -809,10 +762,10 @@ class Deal(object):
                 field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
             'Equity_Zero': get_equity_zero_rate_factor(
                 field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
-            'Expiry': max((x['Payment_Date'] - base_date).days for x in items)}
-        field_index['Flows'], field_index['Bus_Ofs'] = utils.TensorCashFlows.equity_swaplet(
-            base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1, {'Items': items},
-            settlement_days * bus_day)
+            'Expiry': max((x['Payment_Date'] - base_date).days for x in items),
+            'Spot_Lag': self.spot_lag(base_date, calendars),
+            'Flows': utils.TensorCashFlows.equity_swaplet(
+                base_date, time_grid, 1 if self.field['Buy_Sell'] == 'Buy' else -1, {'Items': items})}
         self.check_option_data(field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors,
                                equity_fx_correlation, vol_field='Equity_Volatility')
         if field_index['Check_Payoff_Type'] and any(x.get('Dividend_Multiplier', 1.0) for x in items):
@@ -4215,8 +4168,7 @@ class EquityOptionDeal(Deal):
                  'Payoff_Currency': utils.check_rate_name(self.payoff_ccy),
                  'Equity_Volatility': utils.check_rate_name(self.field['Equity_Volatility'])}
 
-        expiry, settlement, forward_settlement, spot_settlement = option_date_info(
-            self, base_date, calendars, time_grid)
+        expiry, settlement = option_date_info(self, base_date)
         if self.path_dependent and self.field['Settlement_Date']:
             raise utils.UnpriceableSchedule(
                 '{}: an American option settles on the day it is exercised, so Settlement_Date is not '
@@ -4244,8 +4196,7 @@ class EquityOptionDeal(Deal):
             'Option_Style': self.field.get('Option_Style', 'European'),
             'Expiry': expiry,
             'Settlement': settlement,
-            'Forward_Settlement': forward_settlement,
-            'Spot_Settlement': spot_settlement,
+            'Spot_Lag': self.spot_lag(base_date, calendars),
             'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'EquityOptionDeal')
             }
 
@@ -4263,8 +4214,8 @@ class EquityOptionDeal(Deal):
         strike = pricing.compo_strike(factor, deal_time, shared, factor['Strike_Price'] * shared.one)
         spot = utils.calc_time_grid_spot_rate(factor['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
-            factor['Equity'], factor['Equity_Zero'], factor['Dividend_Yield'], factor['Forward_Settlement'],
-            deal_time, shared, settle=factor['Spot_Settlement'][deal_data.Time_dep.deal_time_grid])
+            factor['Equity'], factor['Equity_Zero'], factor['Dividend_Yield'], factor['Expiry'], deal_time,
+            shared, lag=factor['Spot_Lag'])
         moneyness = pricing.calc_moneyness(strike, spot, forward, deal_data)
 
         if factor['Option_Style'] == 'European':
@@ -4326,8 +4277,8 @@ class EquityBinaryOption(EquityOptionDeal):
                                       deal_data.Factor_dep['Strike_Price'] * shared.one)
         spot = utils.calc_time_grid_spot_rate(deal_data.Factor_dep['Equity'], deal_time, shared)
         forward = utils.calc_eq_forward(
-            factor['Equity'], factor['Equity_Zero'], factor['Dividend_Yield'], factor['Forward_Settlement'],
-            deal_time, shared, settle=factor['Spot_Settlement'][deal_data.Time_dep.deal_time_grid])
+            factor['Equity'], factor['Equity_Zero'], factor['Dividend_Yield'], factor['Expiry'], deal_time,
+            shared, lag=factor['Spot_Lag'])
         moneyness = pricing.calc_moneyness(strike, spot, forward, deal_data)
 
         # the spread legs' moneyness is authored HERE, where the deal's convention arguments
@@ -5169,7 +5120,7 @@ class CommodityDigitalOption(Deal):
             }
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Payoff_Currency'])
 
-        expiry, settlement, _, _ = option_date_info(self, base_date, calendars, time_grid)
+        expiry, settlement = option_date_info(self, base_date)
         field_index = {
             'Currency': get_fxrate_factor(field['Payoff_Currency'], static_offsets, stochastic_offsets),
             'SettleCurrency': self.field['Currency'],
@@ -5820,8 +5771,7 @@ class EquitySwapletListDeal(Deal):
                  'Discount_Rate': self.check_factor_name('Discount_Rate', paid)}
         return self.equity_swaplets(
             field, self.field['Currency'], self.field['Cashflows']['Items'], self.field['Amount_Type'] == 'Principal',
-            self.field['Settlement_Days'], base_date, static_offsets, stochastic_offsets, all_factors, all_tenors,
-            time_grid, calendars)
+            base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid, calendars)
 
     def generate(self, shared, time_grid, deal_data):
         return pricing.pv_equity_leg(shared, time_grid, deal_data)
@@ -5927,7 +5877,7 @@ class EquitySwapLeg(Deal):
                 'Amount': self.field['Units'] if self.field['Principal_Fixed_Variable'] == 'Variable'
                 else self.field['Principal']})
         return self.equity_swaplets(
-            field, self.payoff_ccy, items, self.field['Principal_Fixed_Variable'] == 'Principal', 0, base_date,
+            field, self.payoff_ccy, items, self.field['Principal_Fixed_Variable'] == 'Principal', base_date,
             static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid, calendars)
 
     def generate(self, shared, time_grid, deal_data):
@@ -6814,8 +6764,7 @@ class FXOptionDeal(Deal):
 
         field['Discount_Rate'] = self.check_factor_name('Discount_Rate', field['Currency'])
 
-        expiry, settlement, forward_settlement, spot_settlement = option_date_info(
-            self, base_date, calendars, time_grid)
+        expiry, settlement = option_date_info(self, base_date)
 
         field_index = {
             'Currency': get_fx_and_zero_rate_factor(
@@ -6829,8 +6778,7 @@ class FXOptionDeal(Deal):
                                          field['FX_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Expiry': expiry,
             'Settlement': settlement,
-            'Forward_Settlement': forward_settlement,
-            'Spot_Settlement': spot_settlement,
+            'Spot_Lag': self.spot_lag(base_date, calendars),
             'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'FXOptionDeal'),
             'Invert_Moneyness': field['Currency'][0] == field['FX_Volatility'][0],
             'Strike_Price': self.field['Strike_Price'],
@@ -6848,8 +6796,8 @@ class FXOptionDeal(Deal):
         fx_rep = utils.calc_fx_cross(
             factor['Currency'][0], shared.Report_Currency, deal_time, shared)
         forward = utils.calc_fx_forward(
-            factor['Underlying_Currency'], factor['Currency'], factor['Forward_Settlement'],
-            deal_time, shared, settle=factor['Spot_Settlement'][deal_data.Time_dep.deal_time_grid])
+            factor['Underlying_Currency'], factor['Currency'], factor['Expiry'], deal_time, shared,
+            lag=factor['Spot_Lag'])
         moneyness = pricing.calc_moneyness(
             factor['Strike_Price'], forward, forward,
             deal_data, use_forward=True, invert_moneyness=deal_data.Factor_dep['Invert_Moneyness'])
@@ -6899,8 +6847,8 @@ class FXBinaryOption(FXOptionDeal):
         fx_rep = utils.calc_fx_cross(
             deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
         forward = utils.calc_fx_forward(
-            factor['Underlying_Currency'], factor['Currency'], factor['Forward_Settlement'],
-            deal_time, shared, settle=factor['Spot_Settlement'][deal_data.Time_dep.deal_time_grid])
+            factor['Underlying_Currency'], factor['Currency'], factor['Expiry'], deal_time, shared,
+            lag=factor['Spot_Lag'])
         invert_moneyness = deal_data.Factor_dep['Invert_Moneyness']
         strike = deal_data.Factor_dep['Strike_Price']
         moneyness = pricing.calc_moneyness(

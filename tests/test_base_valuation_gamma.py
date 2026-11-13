@@ -270,7 +270,7 @@ def test_black_scholes_gamma_is_exact_in_the_zero_carry_world():
 def test_black_scholes_gamma_survives_carry_at_a_measured_tolerance():
     """The same reading at r = 3%, q = 1%, where what separates engine and formula is a CONVENTION
     and not a numerical error. Not curve interpolation - the curve is FLAT:
-    `instruments.option_date_info` runs the equity forward between spot dates, three business days
+    `Deal.spot_lag` runs the equity forward between spot dates, three business days
     on from the valuation date and from the expiry, while the option discounts to expiry. Put-call
     parity puts the discount factor at exp(-rT) to the last bit and the carry over T - 1/365, the
     Friday base's spot date five days on and the Saturday expiry's four; the offset is a DATE, so

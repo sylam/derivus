@@ -85,6 +85,7 @@ def run(deals, base=BASE, calc=None):
     job = {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
                              'MCMC_Simulations': 1}, **(calc or {})),
+        'CalendDataFile': book.CALENDARS,
         'Deals': {'Reference': 'settle', 'Deals': {'Children': [node(d) for d in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
     cx = derivus.Context()
@@ -105,9 +106,19 @@ def ndtr(x):
     return 0.5 * (1.0 + math.erf(x / math.sqrt(2.0)))
 
 
-def lag(date, days):
-    """The calendar days from `date` to its spot date, `days` business days on."""
-    return ((date + pd.offsets.BDay(days)) - date).days
+def lag(date, days, holidays=()):
+    """The calendar days from `date` to its spot date, `days` business days on past `holidays`."""
+    return ((date + pd.offsets.CustomBusinessDay(days, holidays=list(holidays))) - date).days
+
+
+def swaplet(reference, start, end, paid, **stated):
+    """A one-period equity swaplet list on shares, paying the level its end fixes and no other."""
+    return dict({
+        'Object': 'EquitySwapletListDeal', 'Reference': reference, 'Currency': 'USD', 'Discount_Rate': 'USD',
+        'Equity': 'EQ', 'Equity_Currency': 'USD', 'Buy_Sell': 'Buy', 'Amount_Type': 'Shares',
+        'Cashflows': {'Items': [{
+            'Start_Date': start, 'End_Date': end, 'Payment_Date': paid, 'Amount': UNITS, 'Start_Multiplier': 0.0,
+            'End_Multiplier': 1.0, 'Dividend_Multiplier': 0.0, 'Known_Start_Price': SPOT}]}}, **stated)
 
 
 def test_past_the_expiry_every_row_is_the_settlement_payoff_discounted_and_the_ledger_books_it_there():
@@ -245,23 +256,29 @@ def test_a_forward_carries_between_spot_dates():
     three days on are five calendar days from each and two are four and two, so three carry the
     tenor and two carry two days fewer. Under a credit Monte Carlo each row starts at its own spot
     date, three, four or five calendar days on over two daily weeks: against the deal stating no
-    lag, path by path at float32.
+    lag, path by path at float32. An equity swaplet list reads the same lag on the business days of
+    its `Accrual_Calendars`: paying the level a Monday fixes, its start fixed or ahead, it carries
+    the tenor where it states no `Settlement_Days`, two days fewer at three and one fewer where the
+    Tuesday is its calendar's holiday; no lag is no roll, a fixing on the holiday carrying to it; and
+    on a principal with both ends ahead it pays the ratio of two forwards, each to its own spot date.
 
     Killing mutations: the carry started at the valuation date, the equity forward 4.1e-4 high; a
     default of two on the equity option, 1.6e-4 low; every row given the base date's lag, the
-    Monday's row 1.6e-4 low.
+    Monday's row 1.6e-4 low; the list's lag unread, its forward 1.6e-4 high; its calendar unread,
+    8.2e-5 low; no lag rolling the holiday on to a business day, 8.2e-5 high; a period's start
+    carried to its day, the ratio 4.1e-4 high.
     """
     midweek = EXPIRY - pd.DateOffset(days=2)
     tenor, terms = (midweek - BASE).days, {'Expiry_Date': midweek, 'Strike_Price': 0.01}
     equity, pair = (SPOT, R_USD - Q_EQ, 3), (FX_SPOT, R_USD - R_EUR, 2)
     deep = dict(VANILLA, Settlement_Date=midweek, **terms)
-    book = [
+    options = [
         (deep, UNITS, 0.01) + equity,
         (dict(BINARY, Settlement_Date=midweek, Payoff_Style='Asset', **terms), CASH, 0.0) + equity,
         (dict(FX, **terms), UNITS, 0.01) + pair,
         (dict({k: v for k, v in FX.items() if k != 'Underlying_Amount'}, Object='FXBinaryOption',
               Reference='FXB', Payoff=CASH, Payoff_Style='Asset', **terms), CASH, 0.0) + pair]
-    for deal, scale, strike, spot, carry, declared in book:
+    for deal, scale, strike, spot, carry, declared in options:
         marked = marks([deal, dict(deal, Reference='STATED', Settlement_Days=5 - declared)])
         for ref, days in ((deal['Reference'], declared), ('STATED', 5 - declared)):
             between = tenor + lag(midweek, days) - lag(BASE, days)
@@ -275,6 +292,22 @@ def test_a_forward_carries_between_spot_dates():
         ratio = np.asarray(lagged.loc[day].values, dtype=float) / np.asarray(flat.loc[day].values, dtype=float)
         stretch = math.exp((R_USD - Q_EQ) * (lag(midweek, 3) - lag(day, 3)) / 365.0)
         assert np.allclose(ratio, stretch, rtol=2e-6, atol=0.0), day
+    holiday = pd.Timestamp('2024-09-24')                 # a Tuesday
+    monday, paid, named = holiday - pd.DateOffset(days=1), holiday + pd.DateOffset(days=3), {
+        'Accrual_Calendars': book.CALENDAR}
+    tenor, ahead = (monday - BASE).days, BASE + pd.DateOffset(days=7)
+    for start in (BASE - pd.DateOffset(days=30), ahead):
+        marked = marks([
+            swaplet('NONE', start, monday, paid), swaplet('WEEK', start, monday, paid, Settlement_Days=3),
+            swaplet('NAMED', start, monday, paid, Settlement_Days=3, **named),
+            swaplet('HELD', start, holiday, paid, **named),
+            swaplet('RATIO', ahead, monday, paid, Settlement_Days=3, Amount_Type='Principal')])
+        for ref, level, between in (
+                ('NONE', SPOT, tenor), ('WEEK', SPOT, tenor + lag(monday, 3) - lag(BASE, 3)),
+                ('NAMED', SPOT, tenor + lag(monday, 3, [holiday]) - lag(BASE, 3)), ('HELD', SPOT, tenor + 1),
+                ('RATIO', 1.0, tenor - 7 + lag(monday, 3) - lag(ahead, 3))):
+            assert marked[ref] / (UNITS * df((paid - BASE).days)) == pytest.approx(
+                level * math.exp((R_USD - Q_EQ) * between / 365.0), rel=1e-12), (ref, start)
 
 
 #: The declared-defaults swaption, settled physically on its legs, and its cash twin paid 40 days

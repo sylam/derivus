@@ -70,10 +70,7 @@ CASHFLOW_INDEX_Strike = 6
 CASHFLOW_INDEX_Dividend_Mult = 6
 # Cashflow code for possible FX resets
 CASHFLOW_INDEX_FXResetDate = 7
-# for equity swaps, we need to adjust days based on settlement
-CASHFLOW_INDEX_Start_Adj = 7
 CASHFLOW_INDEX_FXResetValue = 8
-CASHFLOW_INDEX_End_Adj = 8
 
 # used by inflation cashflows: each reference's stated level, and 1 where one is stated
 CASHFLOW_INDEX_BaseReference = 9
@@ -2257,7 +2254,7 @@ class TensorCashFlows(TensorSchedule):
         return cls(cash, np.zeros((len(cash), 3)))
 
     @classmethod
-    def equity_swaplet(cls, base_date, time_grid, position, cashflows, busday):
+    def equity_swaplet(cls, base_date, time_grid, position, cashflows):
         """Equity cashflows from a data source: a reset by the base date at the price and fx rate
         it states, and one stating none from the base date on read off the spot by the pricer."""
 
@@ -2267,9 +2264,7 @@ class TensorCashFlows(TensorSchedule):
             return [(cashflow['Start_Date'] - base_date).days, (cashflow['End_Date'] - base_date).days,
                     (cashflow['Payment_Date'] - base_date).days, cashflow.get('Start_Multiplier', 1.0),
                     cashflow.get('End_Multiplier', 1.0), position * cashflow['Amount'],
-                    cashflow.get('Dividend_Multiplier', 1.0),
-                    (cashflow['Start_Date'] + busday - base_date).days,
-                    (cashflow['End_Date'] + busday - base_date).days]
+                    cashflow.get('Dividend_Multiplier', 1.0), 0.0, 0.0]
 
         def resets(cashflow):
             r = []
@@ -2288,12 +2283,9 @@ class TensorCashFlows(TensorSchedule):
                           Scenario))
             return r
 
-        swaplets = cls.from_items(
+        return cls.from_items(
             cashflows['Items'],
             lambda x: (x['Payment_Date'], x['End_Date'], x['Start_Date']), row, resets=resets)
-        # calculate the business day ajustment on the mtm time grid
-        bus_offset = np.array([((x + busday) - x).days for x in sorted(time_grid.mtm_dates)])
-        return swaplets, bus_offset
 
     @staticmethod
     def index_reference_samples(pricing_date, months_lag, interpolated):
@@ -4822,16 +4814,31 @@ def calc_discount_rate(block, tenors_in_days, shared, multiply_by_time=True):
     return shared.t_Buffer[key_code]
 
 
-def calc_spot_forward(curve, T, time_grid, shared, only_diag, settle=None):
+def spot_lag(base_date, business_days, bus_day, days):
+    """The calendar days from each of `days`, counted from `base_date`, to its spot date:
+    `business_days` business days of `bus_day` on, of Monday to Friday where it is None."""
+    dates = np.datetime64(base_date, 'D') + np.asarray(days).astype('timedelta64[D]')
+    calendar = np.busdaycalendar() if bus_day is None else bus_day.calendar
+    return (np.busday_offset(dates, business_days, 'backward', busdaycal=calendar) - dates).astype(np.int64)
+
+
+def spot_carry(lag, days, rows):
+    """`days` ahead of each of `rows` as a carry between spot dates reads them: the days to each
+    date's spot date, and each row's to its own, where the carry starts. No `lag` leaves both."""
+    return (days, None) if lag is None else (days + lag(rows + days), lag(rows))
+
+
+def calc_spot_forward(curve, T, time_grid, shared, only_diag, lag=None):
     """
     Function for calculating the forward price of FX or EQ rates taking
-    into account risk neutrality for static curves, the carry starting `settle` days on
-    from each row: its days to its spot date
+    into account risk neutrality for static curves, the carry running between
+    spot dates under a deal's `lag`
     """
     curve_grid = calc_time_grid_curve_rate(curve, time_grid, shared)
-    T_t = T - time_grid[:, TIME_GRID_MTM].reshape(-1, 1)
-    weights = np.diag(T_t).reshape(-1, 1) if only_diag else T_t
-    return curve_grid.gather_weighted_curve(shared, weights, settle)
+    rows = time_grid[:, TIME_GRID_MTM].reshape(-1, 1)
+    T_t = T - rows
+    return curve_grid.gather_weighted_curve(
+        shared, *spot_carry(lag, np.diag(T_t).reshape(-1, 1) if only_diag else T_t, rows))
 
 
 def calc_dividend_samples(start_day, samples, time_grid):
@@ -4860,20 +4867,22 @@ def calc_realized_dividends(s_t0, repo, div_yield, div_reset_stack, shared):
     return s_t0 * sr_minus_sq
 
 
-def curve_spread(plus, minus, weights, time_grid, shared, multiply_by_time=True, settle=None):
+def curve_spread(plus, minus, weights, time_grid, shared, multiply_by_time=True, lag=None):
     """The weighted difference of two curves over the time grid: an equity drift takes the repo
-    curve less the dividend one, an FX carry the other leg's curve less the local one."""
+    curve less the dividend one, an FX carry the other leg's curve less the local one, between
+    spot dates under a deal's `lag`."""
     plus_grid = calc_time_grid_curve_rate(plus, time_grid, shared)
     minus_grid = calc_time_grid_curve_rate(minus, time_grid, shared)
+    weights, start = spot_carry(lag, weights, time_grid[:, TIME_GRID_MTM].reshape(-1, 1))
     return plus_grid.gather_weighted_curve(
-        shared, weights, settle, multiply_by_time) - minus_grid.gather_weighted_curve(
-        shared, weights, settle, multiply_by_time)
+        shared, weights, start, multiply_by_time) - minus_grid.gather_weighted_curve(
+        shared, weights, start, multiply_by_time)
 
 
-def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=False, settle=None):
+def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=False, lag=None):
     T_scalar = isinstance(T, int)
     key_code = ('eqforward', tuple(tuple(x[:2] for x in code) for code in (equity, repo, div_yield)), only_diag,
-                T if T_scalar else tuple(T), settle is not None and settle.tobytes(),
+                T if T_scalar else tuple(T), lag and lag.args,
                 time_grid[:, TIME_GRID_MTM].tobytes())
 
     if key_code not in shared.t_Buffer:
@@ -4882,8 +4891,8 @@ def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=Fal
 
         if T_t.any():
             drift = torch.exp(
-                calc_spot_forward(repo, T, time_grid, shared, only_diag, settle) -
-                calc_spot_forward(div_yield, T, time_grid, shared, only_diag, settle))
+                calc_spot_forward(repo, T, time_grid, shared, only_diag, lag) -
+                calc_spot_forward(div_yield, T, time_grid, shared, only_diag, lag))
         else:
             drift = shared.one.new_ones(
                 [time_grid.shape[0], 1 if only_diag else T_t.size, 1])
@@ -4894,10 +4903,10 @@ def calc_eq_forward(equity, repo, div_yield, T, time_grid, shared, only_diag=Fal
     return shared.t_Buffer[key_code]
 
 
-def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False, settle=None):
+def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False, lag=None):
     T_scalar = isinstance(T, int)
     key_code = ('fxforward', tuple(tuple(x[:2] for x in code) for code in (*local, *other)), only_diag,
-                T if T_scalar else tuple(T), settle is not None and settle.tobytes(),
+                T if T_scalar else tuple(T), lag and lag.args,
                 time_grid[:, TIME_GRID_MTM].tobytes())
     if key_code not in shared.t_Buffer:
         if local[0] != other[0]:
@@ -4906,7 +4915,7 @@ def calc_fx_forward(local, other, T, time_grid, shared, only_diag=False, settle=
 
             if T_t.any():
                 weights = np.diag(T_t).reshape(-1, 1) if only_diag else T_t
-                drift = torch.exp(curve_spread(other[1], local[1], weights, time_grid, shared, settle=settle))
+                drift = torch.exp(curve_spread(other[1], local[1], weights, time_grid, shared, lag=lag))
             else:
                 drift = fx_spot.new_ones([time_grid.shape[0], 1 if only_diag else T_t.size, 1])
 
