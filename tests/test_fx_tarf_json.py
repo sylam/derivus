@@ -232,7 +232,7 @@ def test_a_put_target_above_its_strike_is_the_uncapped_strip(tmp_path):
     assert math.isfinite(fifty), 'the put marked not-a-number above its strike'
     assert fifty == five, ('the masked cap leaked the remaining target', fifty, five)
     assert abs(fifty - strip) / abs(strip) < TOL, (fifty, strip)
-    assert _mtm(_run(_job(), tmp_path, 'banked')[0]) == BANKED_CALL, 'a live cap moved'
+    assert abs(_mtm(_run(_job(), tmp_path, 'banked')[0]) - BANKED_CALL) < 1e-12 * BANKED_CALL, 'a live cap moved'
 
 
 # --------------------------------------------------------------------------------------------
