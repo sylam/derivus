@@ -1141,11 +1141,11 @@ class OptionQuoteFamily(ImpliedCalibration):
                     forward, strike, r, sigma, t, option['Units'], sign)
             else:
                 premium = option['Units'] * option['Quoted_Market_Value']
-                # back out the Black vol of the quote (seeds the fit and the diagnostics)
+                # the quote's Black vol (seeds the fit, the diagnostics): zero at zero time, so dropped
                 call = option['Quoted_Market_Value'] + (0.0 if sign > 0 else
                                                         forward - strike) * np.exp(-r * t)
                 sigma = np.sqrt(utils.bs_implied_total_var(
-                    call, spot * np.exp(-q * t), strike, r * t, 1) / t)
+                    call, spot * np.exp(-q * t), strike, r * t, 1) / t) if t else 0.0
             yield option, t, r, q, forward, sign, strike, sigma, premium
 
     @staticmethod

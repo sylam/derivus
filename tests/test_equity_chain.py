@@ -1494,6 +1494,27 @@ def test_no_funding_curve_is_the_arithmetic_this_family_always_had():
         'declaring the discount curve as the funding curve moved the fitted parameters')
 
 
+def test_a_premium_quote_expiring_on_the_base_date_is_dropped():
+    """A quote expiring on the base date has no vol to imply. Under `Premium` its vol reads zero,
+    so its Black vega is zero and the fit drops it, as it drops one quoted in vol there: the ladder
+    carrying one writes the block of the ladder without it.
+
+    Killing mutation: the vol backed out over zero time - the fit raises `ZeroDivisionError`.
+    """
+    def written(block):
+        config, refusal = bootstrapped(block, surface=False)
+        assert refusal is None, refusal
+        return {key: value.array.tolist() if hasattr(value, 'array') else value for key, value in
+                config.params['Price Factors']['LogVar2FJModelParameters.SPX'].items()}
+
+    _, block = probe_block(funding=None)
+    quotes = block['instrument']['European_Options']
+    today = dict(quotes[0], Expiry_Date={'.Timestamp': AS_OF.isoformat()}, Quoted_Market_Value=0.0)
+    without = written(block)
+    assert len(without['Xi_Curve']) > 1, without
+    assert written({'instrument': dict(block['instrument'], European_Options=[today] + quotes)}) == without
+
+
 def test_the_chain_emitter_declares_the_funding_curve_it_placed_its_strikes_with():
     """The emitter's half: `EquityForward` names the funding curve, the block carries it in the
     field the family resolves, and `Quote_Source` says which curve did which job. Blank, the block

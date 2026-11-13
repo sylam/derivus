@@ -469,6 +469,11 @@ the same forward, while the premium discounts and the vol runs to the expiry its
 `test_equity_chain.py::test_the_calibrated_forward_is_the_priced_forward_at_every_pillar`,
 `test_market_prices_partition.py::test_the_surface_blocks_forward_is_the_priced_forward_at_every_pillar`.
 
+**A quote nothing prices is dropped.** The residual is a premium miss over the quote's Black vega at
+its own vol, so the fit drops, with a warning naming its strike, a quote whose vega is not positive.
+A quote expiring on the base date is one under either quote type, a premium's vol reading zero over
+zero time. **Held by** `test_equity_chain.py::test_a_premium_quote_expiring_on_the_base_date_is_dropped`.
+
 **ξ is stored and the level derived.** The factor stores `ξ(t) = E₀[h_t]` and derives
 `L*(t) = log ξ(t) − ½Var(ℓ_t + s_t)`, so `E₀[h_t] = ξ(t)` whatever the vol-of-vol; a stored level
 would drag the ATM level with every vol-of-vol move. ξ is flat forward variance between ATM expiries,
