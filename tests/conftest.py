@@ -12,6 +12,9 @@ AFTER this fixture.
 A recorded gate's home is a COPY of one home minted for the session: minting is a run of fsyncs,
 and a copy is the same record standing in another directory, its own history from the first fact
 it files. Whoever serves a record keeps its folds (`spine.advancing`), so copies never share them.
+
+A test marked `card` reads the device, or holds a number read on it (a banked float, a bound sized
+on its draw), and is skipped where no CUDA device is visible, so a red on the CPU is a defect.
 """
 import shutil
 
@@ -20,6 +23,21 @@ import torch
 
 #: The seat a recorded gate appends as.
 ACTOR = 'subject-desk-one'
+
+
+def pytest_configure(config):
+    config.addinivalue_line('markers', 'card: reads the card or a number read on it')
+
+
+def pytest_collection_modifyitems(items):
+    """Skips every `card` test where `utils.visible_device_count` counts no device."""
+    from derivus import utils
+
+    if not utils.visible_device_count():
+        skip = pytest.mark.skip(reason='reads the card or a number read on it, and none is visible')
+        for item in items:
+            if item.get_closest_marker('card'):
+                item.add_marker(skip)
 
 
 @pytest.fixture(autouse=True)

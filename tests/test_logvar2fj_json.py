@@ -643,8 +643,7 @@ def test_a_priors_off_fit_is_bit_identical_to_its_banked_reading():
     factor at `Paths` 2048 under `Pseudo`, hex for hex. A landing that moves this without moving
     the switch has changed the vanilla objective, whatever else it says it changed.
 
-    BANKED ON AN RTX 3090: the DRAW is the seed's and not the silicon's, but the reductions are the
-    device's, so a CPU-only box re-banks rather than reading a defect.
+    BANKED ON AN RTX 3090, and the CPU reads the same twenty floats.
 
     Killing mutation: the stages' declared `Step_Tolerance` default moved off 1e-12.
     """
@@ -842,6 +841,7 @@ def _document_hex(name, overrides=None):
             and not isinstance(value, bool) and np.isfinite(value)}
 
 
+@pytest.mark.card
 @pytest.mark.parametrize('name,document,overrides', HEX_DOCUMENTS)
 def test_a_banked_document_is_unmoved(name, document, overrides):
     """The repo's own GBM Monte Carlo documents, float for float against `logvar2fj_hex.json`.
@@ -853,7 +853,7 @@ def test_a_banked_document_is_unmoved(name, document, overrides):
     sensitivity frame is where it does not.
 
     BANKED ON AN RTX 3090, which is where a base valuation runs whenever CUDA is visible. The hex
-    is the DEVICE's as much as the tree's; a CPU-only box re-banks rather than reading a defect.
+    is the DEVICE's as much as the tree's.
     The TARF and the accumulator are one strip, 68.67158 against the closed-form strip's 68.6715.
 
     Killing mutation: the first fixing interval's carry read a part in ten thousand high.

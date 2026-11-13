@@ -6046,7 +6046,7 @@ def named_book(tmp_path):
                    implied(0.35)})
     sets = [netting_set('NS_{}'.format(k), 'CPTY_{}'.format(k), [
         dict(VANILLA, Reference='OPT_{}_{}'.format(k, name), Equity=name, Dividends=name,
-             Equity_Volatility=name, Calendars='Synth')
+             Equity_Volatility=name, Accrual_Calendars='Synth')
         for name in (NAMED[k % 6], NAMED[(k + 1) % 6])], funding_rate='USD' if k % 2 else 'FUND')
         for k in range(10)]
     document = job(deals=(), factors=stated, sections={

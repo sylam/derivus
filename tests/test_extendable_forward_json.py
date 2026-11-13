@@ -435,6 +435,7 @@ def test_the_cva_delta_carries_the_extension_flux():
     assert ledger < 1e-5 * scale, (ledger, scale)
 
 
+@pytest.mark.card
 def test_a_mirror_cva_delta_carries_its_own_extension_flux():
     """The registration on the mirror, where the GAP is the only thing that could still point the
     wrong way: the reconstruction is built from `fired` and never reads it, so a gap oriented off

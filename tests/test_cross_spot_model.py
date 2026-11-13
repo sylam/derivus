@@ -718,6 +718,7 @@ def test_the_history_a_cross_reads_is_its_own_axis():
     bootstrapped('LogVar2FJImpliedSpotModel.ZAR')
 
 
+@pytest.mark.card
 def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     """GATE 11 - the carried-state key is the PARAMETER factor's, which for a cross is two tokens.
 

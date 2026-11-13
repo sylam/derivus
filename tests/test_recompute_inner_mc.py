@@ -96,7 +96,7 @@ def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128,
 
 # ------------------------------------------------- the sibling switch, same calculation block
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='the atomics are the GPU backward')
+@pytest.mark.card
 def test_deterministic_kernels_is_read_every_run_and_set_both_ways():
     """`Deterministic_Kernels` is PROCESS-GLOBAL state the calculation sets from the document: a
     `Yes` run leaves the flag on, and a `No` run LEAVES IT OFF, or the next job in the process
@@ -211,7 +211,7 @@ def streamed(cap=None, batch=16, inner=4096):
     return float(results['cva']), results['grad_cva']['Gradient'].values.astype(np.float64), peak
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
+@pytest.mark.card
 def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient(caplog):
     """Uncapped, every strip of the replay walks plain; under a per-process memory fraction leaving
     `STREAM_CAP_MIB` above the floor, which those strips do not fit, a strip is checkpointed from
@@ -273,7 +273,7 @@ def dense(grid, cap=None, recompute='Yes'):
     return results['mtm'], peak
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
+@pytest.mark.card
 def test_a_daily_grid_marks_the_weekly_dates_within_its_cap(caplog):
     """A pricer prices the rows sharing a fixing interval as one block: a weekly grid puts four or
     five of `dense`'s rows in an interval, a daily one thirty. Under a per-process memory fraction
@@ -309,7 +309,7 @@ def test_a_daily_grid_marks_the_weekly_dates_within_its_cap(caplog):
 TAPED_PEAK_MIB = 550.0
 
 
-@pytest.mark.skipif(not torch.cuda.is_available(), reason='reads the device allocator')
+@pytest.mark.card
 def test_a_taped_strip_that_fits_is_one_checkpoint(caplog):
     """A taped run holds its checkpoints' edges to its batch's end, so a strip whose projected
     tape, its fixings times the row-step the probe measured, fits half of what is free is one

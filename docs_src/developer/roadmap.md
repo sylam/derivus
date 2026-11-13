@@ -211,8 +211,8 @@ features kept ahead of their build, not rows to close.
   barrier, the CVA), the flat surface, the fit's contract, refusals by name, the priors-off and
   quanto twins, the reserve, the four sub-factor rows and the floats six repository documents
   report, hex for hex. Every killing mutation goes red
-  except the wing-RMSE bound's (0.789 against 1.0), whose mutation stalls the fit. The banked floats
-  are the GPU's (a CPU-only box re-banks the walk's), and the only autocall fixture fixes once, at
+  except the wing-RMSE bound's (0.789 against 1.0), whose mutation stalls the fit. The six documents'
+  floats are the GPU's, their test marked `card`, and the only autocall fixture fixes once, at
   maturity, so a vol-strip term-structure error is invisible to it.
 - **A fixture must not zero the quantity its gate tests** (the checklist and plugin are on
   [Conventions](conventions.md#fixture-degeneracy)): a surviving mutant means the fixture is wrong,

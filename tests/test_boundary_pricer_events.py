@@ -182,6 +182,7 @@ def test_discrete_barrier_latch_gradient_matches_bump_and_reprice():
 COLLATERALISED_RUNGS = (2e-3, 5e-3, 1e-2)
 
 
+@pytest.mark.card
 def test_collateralised_barrier_latch_gradient_matches_bump_and_reprice():
     """The same defect with collateral in the way, which is the harder half: a gross-mtm delta
     reaches the net through Vte AND through the balance the collateral scan produces, so a fix

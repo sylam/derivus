@@ -520,6 +520,7 @@ def test_a_rebate_read_at_an_observation_date_row_is_exact():
         'the fixture knocked out every scenario or none - it gates nothing')
 
 
+@pytest.mark.card
 def test_a_row_that_is_not_an_observation_date_is_untouched():
     """The other half of the same statement: nothing moves where there is no zero-length step.
 

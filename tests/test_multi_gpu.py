@@ -77,12 +77,6 @@ needs_two_devices = pytest.mark.skipif(
            'box reports {}. The determinism itself is device-agnostic and is gated on CPU '
            'without a marker.'.format(DEVICE_COUNT))
 
-needs_cuda = pytest.mark.skipif(
-    not DEVICE_COUNT,
-    reason='pins the unsharded CUDA stream by hash, which needs a visible CUDA device to produce - '
-           'this box has none, and the CPU pin gates the same property on the same code. Keyed on '
-           'the device COUNT rather than `is_available()`, which reports True with nothing visible')
-
 BASE = pd.Timestamp('2024-06-28')
 SPOT, VOL, RATE = 100.0, 0.20, 0.02
 #: 4 batches divides exactly by the 1, 2 and 4 worker counts the equality arms compare.
@@ -311,7 +305,7 @@ def test_an_inner_monte_carlo_book_is_bit_identical_in_the_worker_count():
             'the inner-MC book moved at n=%d - an inner draw reads a position' % n)
 
 
-@needs_cuda
+@pytest.mark.card
 @pytest.mark.parametrize('book', ['equity', 'fx'])
 def test_a_strip_replayed_on_the_device_is_the_strip_walked(book):
     """On the device a strip's walk is a CUDA graph from its key's second walk on
@@ -332,7 +326,7 @@ def test_a_strip_replayed_on_the_device_is_the_strip_walked(book):
             'the inner-MC book moved at n=%d on the device - a replay is not its walk' % n)
 
 
-@needs_cuda
+@pytest.mark.card
 def test_a_strip_is_captured_only_where_a_third_batch_repays_it():
     """A capture costs about a batch's eager walk and a third batch repays it, so a run of two
     batches walks eagerly and reports no `Strip_Graphs`, its matrix the same bytes as the first two
@@ -366,7 +360,7 @@ def test_a_sobol_consuming_world_is_bit_identical_across_devices():
 
 
 @pytest.mark.parametrize('device,pin', [('cpu', 'cd34f5838cab3d1d'),
-                                        pytest.param(None, 'fbf7c38c5c63fc60', marks=needs_cuda)])
+                                        pytest.param(None, 'fbf7c38c5c63fc60', marks=pytest.mark.card)])
 def test_the_unsharded_hmm_path_is_untouched(device, pin):
     """The quasi anchoring is reachable ONLY through `set_quasi_batch`, so an ordinary caller keeps
     the free-running engine: pinned by hash on CPU and on the device, a different generator backend
@@ -602,7 +596,7 @@ def host_traffic(batches, device):
     return mode.sites, calc.calc_stats.get('Deals Skipped', 0)
 
 
-@pytest.mark.parametrize('device', ['cpu', pytest.param('cuda', marks=needs_cuda)])
+@pytest.mark.parametrize('device', ['cpu', pytest.param('cuda', marks=pytest.mark.card)])
 def test_a_batch_reads_back_and_uploads_only_what_it_simulated(device):
     """What a batch hands between host and device and recomputes from static data is the count at
     three batches less the count at one, halved: 801 before, 25 after, on CPU and CUDA alike. A

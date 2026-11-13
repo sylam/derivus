@@ -555,6 +555,7 @@ CSA = {'Object': 'NettingCollateralSet', 'Reference': 'CSA', 'Netted': 'True', '
             'Minimum_Posted'), {'.CreditSupportList': [[0.0, 0.0]]})}
 
 
+@pytest.mark.card
 def test_a_blank_payoff_currency_is_the_deal_s_own_currency():
     """`Payoff_Currency` declares its blank the deal's own `Currency`, so a document omitting it is
     the one stating USD: under a credit Monte Carlo the American put, the Asian, the barrier binary

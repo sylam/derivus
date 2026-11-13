@@ -124,6 +124,8 @@ Before calling a gate done, say for each "varied" or "degenerate **because** …
 
 **A test** drives a JSON contract, has a defined outcome, covers a named area, runs or fails quickly, and names its killing mutation; it goes only where every mutation it names is shown red under the tests that remain, never on coverage alone.
 
+**A test that reads the card, or holds a number read on it** (a banked float, a bound sized on its draw), is marked `card`, and `tests/conftest.py` skips it where `utils.visible_device_count` counts no device, so a red on the CPU is a defect. **Not gated.**
+
 **A change that renames, moves or deletes code runs `python gates/doc_symbols.py`**, which checks that every function, class, constant, test and file these pages cite in backticks still exists, so a **Held by** line cannot point at a test that is gone. It cannot tell whether a page describes the code correctly: a change to behaviour updates the page that states the rule.
 
 ## No overengineering

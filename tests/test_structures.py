@@ -1952,6 +1952,7 @@ def test_a_book_that_declares_no_base_currency_quotes_on_the_one_the_engine_pric
     assert terms[1][1] == {'FXAccumulatorOptionDeal': {'SpotModel': 'LogVar2FJ'}}
 
 
+@pytest.mark.card
 def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
     """THE JOINING GATE, reading the defect's own signature.
 
@@ -1988,6 +1989,7 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
         17.389901413377814, rel=1e-9), 'the orientation that already joined moved'
 
 
+@pytest.mark.card
 def test_the_accumulator_solves_one_strike_from_either_axis_under_the_model(accrual_book):
     """RECIPROCAL CONSISTENCY under the fitted law - the axis gate's shape, one model on.
 

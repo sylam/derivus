@@ -341,13 +341,14 @@ def mc_polished(**stated):
     return {name: [float(x).hex() for x in values] for name, values in read.items()}
 
 
+@pytest.mark.card
 def test_the_monte_carlo_objective_polishes_the_written_factor_to_its_bank(caplog):
     """The block's own estimator, the one the analytic solve is audited against: the four-quote
     document under `Objective: Monte_Carlo`, its `HullWhite2FactorModelParameters` factor already
     standing at the analytic theta*, so the fit is a WARM START - the least squares alone from
     that factor, no basin search - and lands on `MC_WARM_THETA` bit for bit. The Monte Carlo
     residual is conditional on its draw, so the block's `Quasi_Seed` and `Simulations` are part of
-    the contract and the bank is the card's (a CPU-only box re-banks rather than reading a defect).
+    the contract and the bank is the card's.
     3 s, where the cold chain on the same block paid 73.
 
     Killing mutations: the relative premium error inverted (model over market); the premium
@@ -360,6 +361,7 @@ def test_the_monte_carlo_objective_polishes_the_written_factor_to_its_bank(caplo
     assert theta == MC_WARM_THETA, theta
 
 
+@pytest.mark.card
 def test_the_monte_carlo_objective_prices_on_paths_its_quasi_seed_scrambles():
     """The block's `Quasi_Seed` scrambles the Sobol paths its benchmarks are priced on, and its
     convention is the number those paths always ran on: the warm polish stating it at the

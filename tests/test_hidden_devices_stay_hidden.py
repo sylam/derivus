@@ -50,9 +50,7 @@ def test_importing_the_harness_with_the_devices_hidden_initialises_no_cuda():
     assert _hidden(PROBE, os.path.join(ROOT, 'experiments')) == ['0', '0']
 
 
-@pytest.mark.skipif(os.environ.get('CUDA_VISIBLE_DEVICES', '0')[:1] in ('', '-'),
-                    reason='opens CUDA on the cards when the runtime ignores an empty list, so only on a '
-                           'runner allowed a card')
+@pytest.mark.card
 def test_a_job_after_a_training_step_stays_on_the_cpu(tmp_path):
     """The policy fixture trained by DiffSolverV2 over its last decision step, one fit iteration,
     twice in one process with the devices hidden: both jobs run on the CPU. On Windows with two

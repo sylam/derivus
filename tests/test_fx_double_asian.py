@@ -5,7 +5,8 @@ are all fixed a constant, its realised average.
 The reference is a Monte Carlo off the deal's own terms: EURUSD a GBM at the surface's 15% with USD
 at 4% and EUR at 2%, or on a sloped USD curve each month-end at its own forward and the surface's
 variance to it, sampled at the twelve month-ends to the expiry on 1,000,000 antithetic paths, a
-print held where the deal states one. The moment match is an approximation of that law: against
+print held where the deal states one, every forward carried between spot dates, two business days
+on. The moment match is an approximation of that law: against
 16,000,000 paths it sits inside 0.04% of every flat case below and 0.06% of the sloped ones.
 """
 
@@ -32,8 +33,14 @@ def month(n):
     return B + pd.DateOffset(months=n)
 
 
-#: the twelve month-ends' year fractions from the base date
+def spot_years(date):
+    """The years from the base date to `date`'s spot date, two business days on."""
+    return (date + pd.offsets.BDay(2) - B).days / 365.0
+
+
+#: the twelve month-ends' year fractions from the base date, their spot dates' and the base date's
 MONTH_ENDS = np.array([(month(m) - B).days for m in range(1, 13)]) / 365.0
+SPOT_ENDS, SPOT_BASE = np.array([spot_years(month(m)) for m in range(1, 13)]), spot_years(B)
 
 
 def option(first, second, factors=None, **terms):
@@ -50,14 +57,14 @@ def option(first, second, factors=None, **terms):
 
 def monte_carlo(carry=book.DISCOUNT[0] - book.R_EUR, vol=book.SIGMA, rate=book.DISCOUNT[0]):
     """EURUSD at the twelve month-ends on 1,000,000 antithetic paths, seed 11, each forwarded at
-    its `carry` with its cumulative variance at its `vol` (one number for every month-end or one
-    each), and the discount from expiry at `rate`: `(spot, df)`."""
+    its `carry` between spot dates with its cumulative variance at its `vol` (one number for every
+    month-end or one each), and the discount from expiry at `rate`: `(spot, df)`."""
     rng = np.random.default_rng(11)
     variance = np.square(vol) * MONTH_ENDS
     z = rng.standard_normal((500_000, 12))
     z = np.concatenate([z, -z])
     walk = np.cumsum(np.sqrt(np.diff(variance, prepend=0.0)) * z, axis=1)
-    spot = book.X0 * np.exp(np.multiply(carry, MONTH_ENDS) - 0.5 * variance + walk)
+    spot = book.X0 * np.exp(np.multiply(carry, SPOT_ENDS - SPOT_BASE) - 0.5 * variance + walk)
     return spot, math.exp(-rate * (E - B).days / 365.0)
 
 
@@ -95,13 +102,15 @@ def test_a_double_asian_is_its_monte_carlo_seasoned_and_with_either_leg_fixed():
 def test_on_a_sloped_curve_every_sample_reads_its_own_forward_and_vol():
     """The trialled call and its put on a USD curve rising from 1% at three months to 8% at two
     years against EUR at 2%, and on an EURUSD surface rising from 5% to 10% over the same tenors:
-    each month-end forwarded at its own carry `r(t_m) - 2%` with its own at-the-money vol, both sit
-    within three standard errors of the Monte Carlo of their payoffs on that law, discounted at
-    `r(T)`. Measured at +0.2 and +0.1 standard errors.
+    each month-end forwarded at its own carry, the curve's forward rate between the two spot dates
+    less 2%, with its own at-the-money vol, both sit within three standard errors of the Monte
+    Carlo of their payoffs on that law, discounted at `r(T)`. Measured at +0.2 and +0.1 standard
+    errors.
 
     Killing mutations: every month-end forwarded at the one carry to the expiry,
     `log(F(t,T)/S)/T`, -37 and +44 standard errors; both strips at the one at-the-money vol read at
-    the expiry, -14 and -16.
+    the expiry, -14 and -16; the samples carried from the base date to their own days, -9.1 and
+    +8.3.
     """
     tenors, rates = [0.25, 2.0], [0.01, 0.08]
     factors = {
@@ -111,7 +120,8 @@ def test_on_a_sloped_curve_every_sample_reads_its_own_forward_and_vol():
         'FXVol.EUR.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                           'Surface': utils.Curve([], [[m, t, v] for m in (0.6, 1.0, 1.4)
                                                       for t, v in zip(tenors, (0.05, 0.10))])}}
-    spot, df = monte_carlo(np.interp(MONTH_ENDS, tenors, rates) - book.R_EUR,
+    usd = lambda years: np.interp(years, tenors, rates) * years
+    spot, df = monte_carlo((usd(SPOT_ENDS) - usd(SPOT_BASE)) / (SPOT_ENDS - SPOT_BASE) - book.R_EUR,
                            np.interp(MONTH_ENDS, tenors, (0.05, 0.10)),
                            np.interp((E - B).days / 365.0, tenors, rates))
     spread = spot[:, 8:12].mean(axis=1) - spot[:, 0:4].mean(axis=1) - 0.01
@@ -131,13 +141,13 @@ def test_a_fixed_leg_leaving_a_strike_at_or_below_zero_is_worth_its_forward():
     discounted forward of the spread.
 
     Reference, by hand: `1000 DF(expiry) (0.25 (2 + 2 + F_11 + F_12) - 0.5 - 0.01)`, `F_m` the
-    EURUSD forward at month-end m.
+    EURUSD forward at month-end m, carried between spot dates.
 
-    Killing mutation: the exercised-for-certain arm taken at the strike clamped to 1e-5, which
-    drops the 0.49.
+    Killing mutations: the exercised-for-certain arm taken at the strike clamped to 1e-5, which
+    drops the 0.49; the samples carried from the base date to their own days, 1.5e-5 low.
     """
-    forward = [book.X0 * math.exp((book.DISCOUNT[0] - book.R_EUR) * (month(m) - B).days / 365.0)
-               for m in (11, 12)]
+    carry = book.DISCOUNT[0] - book.R_EUR
+    forward = [book.X0 * math.exp(carry * (spot_years(month(m)) - SPOT_BASE)) for m in (11, 12)]
     reference = 1000.0 * math.exp(-book.DISCOUNT[0] * (E - B).days / 365.0) * (
         0.25 * (2.0 + 2.0 + sum(forward)) - 0.5 - 0.01)
     job = option([(-2, 2.0), (-1, 2.0), (11, None), (12, None)], [(m, 0.5) for m, _ in PRINTS])

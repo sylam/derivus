@@ -650,6 +650,7 @@ def test_a_rate_vega_row_is_the_vol_weighted_vega(convention):
                    for label, amount in weighted.items()), (trade, found, weighted)
 
 
+@pytest.mark.card
 def test_a_rate_vol_space_given_its_vertex_slices_prices_as_it_stood(tmp_path):
     """The space the set is compiled on, given a slice at each vertex expiry it lacks off its own
     grid, linear in expiry and flat past either end, prices the swaption and the cap as the space
@@ -808,6 +809,7 @@ def test_a_commodity_row_is_every_price_of_the_commodity_a_percent_up():
 FUEL_SLICES = (0.25, 0.5, 1.0, 2.0)
 
 
+@pytest.mark.card
 def test_a_commodity_vega_row_is_a_point_on_its_vertex_pillar():
     """RISK_COMMODITYVOL IS THE OPTION'S EXPIRY. The fuel option averages the fuel's forward daily
     over its fourth month, reading the smile at each sample's tenor, 0.33 to 0.42 years, between
@@ -1197,6 +1199,7 @@ def test_a_survival_curve_reads_the_curve_its_default_swaps_discount_on_and_no_o
               default_swap(credit.block('Par_Spread'))[1]['Results'])
 
 
+@pytest.mark.card
 @pytest.mark.parametrize('book', [{'NS': ('SWAP', 'FXO')}, {'NS': ('SWAP',), 'NT': ('FXO',)}])
 def test_a_netting_set_s_crif_is_its_trades_own_to_the_bit(book):
     """A SET IS PRICED WHOLE. The swap and the option, under one netting set or each under its own,
@@ -1312,6 +1315,7 @@ ROW_AT_A_TIME = {
     ('FXO', 'Risk_IRCurve', 'ZAR', '3', '3y', 'Libor3m'): '0x1.be68e33f79682p-11'}
 
 
+@pytest.mark.card
 def test_the_scenario_batch_writes_the_crif_the_row_at_a_time_bump_wrote(serial):
     """THE BATCH IS THE BUMP. The module's world, its 18 delta and 12 vega moves priced as
     scenarios beside the standing market in one pass, writes the CRIF banked here in hex:
@@ -1554,6 +1558,7 @@ def test_the_chunked_batch_writes_the_same_crif():
         assert ((crif[column] - chunked[column]).abs() <= 1e-14 * largest).all(), column
 
 
+@pytest.mark.card
 def test_the_batched_run_sharded_equals_the_serial_run_to_the_bit():
     """The commodity book's moves dealt over two workers, each compiling the set once over its own
     moves and pricing them a move a pass, against the serial run pricing all 26, its 12 vega moves
@@ -2022,6 +2027,7 @@ PAIR = {'Instrument': {'.Deal': {'Object': 'StructuredDeal', 'Reference': 'PAIR'
             'Expiry_Date': BASE + pd.DateOffset(years=1)}}} for index in ('EQ', 'EQ2')]}
 
 
+@pytest.mark.card
 def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tmp_path):
     """THE MAPPING OFF THE SOURCE'S ROWS. The module's world and the pair as a source system exports
     them, handed a mapping that states the FX vol pair alone, as the module's mapping does, and a
