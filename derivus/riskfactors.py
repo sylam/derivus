@@ -64,6 +64,11 @@ class Factor0D(object):
     def get_delta(self):
         return self.delta
 
+    def spot_days(self):
+        """The business days from a day to its spot date: the `Settlement_Days` this factor states,
+        else its class declares, zero on a class declaring none."""
+        return declared_defaults(type(self), self.param).get('Settlement_Days', 0)
+
     def get_tenor_indices(self):
         '''
         Returns this factor's indices - always 0.0 for a spot rate. Whatever this returns is
@@ -702,7 +707,9 @@ class FxRate(Factor0D):
         F('Domestic_Currency', 'Text', default=''),
         F('Interest_Rate', 'Text', default='',
           description='Associated interest rate curve name'),
-        F('Spot', 'Float', default=0.0, bind='value', description='Spot rate in base currency')
+        F('Spot', 'Float', default=0.0, bind='value', description='Spot rate in base currency'),
+        F('Settlement_Days', 'Integer', default=2, convention=True,
+          description='Business days from a day to its spot date on a pair with this underlying currency')
     ]
 
     def __init__(self, param):
@@ -783,7 +790,9 @@ class EquityPrice(Factor0D):
         F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Interest_Rate', 'Text', default='', description='The equity repo curve'),
         F('Spot', 'Float', default=0.0, bind='value',
-          description='Spot price in the specified Currency')
+          description='Spot price in the specified Currency'),
+        F('Settlement_Days', 'Integer', default=3, convention=True,
+          description='Business days from a day to its spot date on a deal on this share')
     ]
 
     def __init__(self, param):

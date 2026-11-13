@@ -74,10 +74,11 @@ def node(deal):
     return dict(out, Children=[node(child) for child in deal['Children']]) if 'Children' in deal else out
 
 
-def run(deals, base=BASE, calc=None):
-    """The results of one job over `deals`: a base valuation at `base`, or `calc` on a GBM spot."""
+def run(deals, base=BASE, calc=None, factors=None):
+    """The results of one job over `deals`: a base valuation at `base`, or `calc` on a GBM spot,
+    `factors` beside the world's."""
     market = {'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
-              'Valuation Configuration': {}, 'Price Factors': FACTORS}
+              'Valuation Configuration': {}, 'Price Factors': dict(FACTORS, **(factors or {}))}
     if calc:
         market['Price Models'] = {'GBMAssetPriceModel.EQ': {'Vol': SIGMA, 'Drift': 0.0}}
         market['Model Configuration'] = {'.ModelParams': {
@@ -93,9 +94,15 @@ def run(deals, base=BASE, calc=None):
     return cx.run_job()[1]['Results']
 
 
-def marks(deals, base=BASE):
-    frame = run(deals, base)['mtm']
+def marks(deals, base=BASE, factors=None):
+    frame = run(deals, base, factors=factors)['mtm']
     return dict(zip(frame['Reference'], frame['Value'].astype(float)))
+
+
+def lagged(**days):
+    """The world's share `EQ` or rate `EUR` stating `Settlement_Days`, keyed by its name."""
+    names = {'EQ': 'EquityPrice.EQ', 'EUR': 'FxRate.EUR'}
+    return {names[key]: dict(FACTORS[names[key]], Settlement_Days=value) for key, value in days.items()}
 
 
 def df(days):
@@ -250,61 +257,73 @@ def test_an_fx_option_pays_on_the_delivery_date_its_family_declares():
 
 def test_a_forward_carries_between_spot_dates():
     """An equity or FX option's forward is the spot carried from the valuation date's spot date to
-    the expiry's, each `Settlement_Days` business days on: three where an equity option states
-    none, two where an FX one does, and the number a deal states. Read off deals deep in the
-    money, whose mark is the forward less the strike, discounted: from a Friday to a Wednesday
-    three days on are five calendar days from each and two are four and two, so three carry the
-    tenor and two carry two days fewer. Under a credit Monte Carlo each row starts at its own spot
-    date, three, four or five calendar days on over two daily weeks: against the deal stating no
-    lag, path by path at float32. An equity swaplet list reads the same lag on the business days of
-    its `Accrual_Calendars`: paying the level a Monday fixes, its start fixed or ahead, it carries
-    the tenor where it states no `Settlement_Days`, two days fewer at three and one fewer where the
-    Tuesday is its calendar's holiday; no lag is no roll, a fixing on the holiday carrying to it; and
-    on a principal with both ends ahead it pays the ratio of two forwards, each to its own spot date.
-    The equity forward deal and an FX start-window knock-out no path reaches, the vanilla, read the
-    same forward. Paid at a Saturday expiry a year on, an FX one-touch and no-touch and an equity
-    no-touch meet the textbook one-touch at the carry between spot dates; a compo swaplet list paid
-    on a Monday its composite forward, its fx conversion on the list's own lag; and a swap autocall
-    with one coupon on that Monday and a floating leg paying nothing the cash digital.
+    the expiry's, each the underlying factor's `Settlement_Days` business days on: three where the
+    share states none, two where the pair's underlying rate states none, and the number the factor
+    states, a T+1 pair's rate stating one. Read off deals deep in the money, whose mark is the
+    forward less the strike, discounted: from a Friday to a Wednesday three days on are five
+    calendar days from each and two are four and two, so three carry the tenor and two carry two
+    days fewer; to a Thursday one day on is three and one, two days fewer, where two carry the
+    tenor. Under a credit Monte Carlo each row starts at its own spot date, three, four or five
+    calendar days on over two daily weeks: against the share stating no lag, path by path at
+    float32. An equity swaplet list reads the share's lag on the business days of its
+    `Accrual_Calendars`: paying the level a Monday fixes, its start fixed or ahead, it carries two
+    days fewer than the tenor at the share's three, one fewer where the Tuesday is its calendar's
+    holiday, and the tenor where the share states none; no lag is no roll, a fixing on the holiday
+    carrying to it; and on a principal with both ends ahead it pays the ratio of two forwards, each
+    to its own spot date. The equity forward deal and an FX start-window knock-out no path reaches,
+    the vanilla, read the same forward. Paid at a Saturday expiry a year on, an FX one-touch and
+    no-touch and an equity no-touch meet the textbook one-touch at the carry between spot dates; a
+    compo swaplet list paid on a Monday its composite forward, its fx conversion on the share's
+    lag; and a swap autocall with one coupon on that Monday and a floating leg paying nothing the
+    cash digital.
 
-    Killing mutations: the carry started at the valuation date, the equity forward 4.1e-4 high; a
-    default of two on the equity option, 1.6e-4 low; every row given the base date's lag, the
+    Killing mutations: the factor's stated lag unread, its class's read in its place, the share
+    stating two 1.6e-4 high; the carry started at the valuation date, the equity forward 4.1e-4
+    high; a default of two on the share, 1.6e-4 low; every row given the base date's lag, the
     Monday's row 1.6e-4 low; the list's lag unread, its forward 1.6e-4 high; its calendar unread,
-    8.2e-5 low; no lag rolling the holiday on to a business day, 8.2e-5 high; a period's start
-    carried to its day, the ratio 4.1e-4 high. A `Spot_Lag` unread: the forward deal's, its stated
-    forward 1.6e-4 high; the partial barrier's, 1.1e-4 high; the FX touch's, the one-touch 1.8e-4
-    high and the no-touch 3.0e-4 low; the equity touch's, the no-touch 1.8e-4 high; the autocall's,
-    the swap 5.3e-4 high. The compo list's fx carry handed days already shifted, 2.7e-4 low.
+    8.2e-5 low; a lag of zero days rolled where `Deal.spot_lag` returns None, the daily grid's
+    Saturday row red; a period's start carried to its day, the ratio 4.1e-4 high. A `Spot_Lag`
+    unread: the forward deal's, at the share's two 1.6e-4 high; the partial barrier's, 1.1e-4 high;
+    the FX touch's, the one-touch 1.8e-4 high and the no-touch 3.0e-4 low; the equity touch's, the
+    no-touch 1.8e-4 high; the autocall's, the swap 5.3e-4 high. The compo list's fx carry handed
+    days already shifted, 2.7e-4 low.
     """
     midweek = EXPIRY - pd.DateOffset(days=2)
-    tenor, terms = (midweek - BASE).days, {'Expiry_Date': midweek, 'Strike_Price': 0.01}
-    equity, pair = (SPOT, R_USD - Q_EQ, 3), (FX_SPOT, R_USD - R_EUR, 2)
-    deep = dict(VANILLA, Settlement_Date=midweek, **terms)
-    options = [
-        (deep, UNITS, 0.01) + equity,
-        (dict(BINARY, Settlement_Date=midweek, Payoff_Style='Asset', **terms), CASH, 0.0) + equity,
-        (dict(FX, **terms), UNITS, 0.01) + pair,
-        (dict({k: v for k, v in FX.items() if k != 'Underlying_Amount'}, Object='FXBinaryOption',
-              Reference='FXB', Payoff=CASH, Payoff_Style='Asset', **terms), CASH, 0.0) + pair,
-        ({'Object': 'EquityForwardDeal', 'Reference': 'EQF', 'Currency': 'USD', 'Equity': 'EQ',
-          'Discount_Rate': 'USD', 'Buy_Sell': 'Buy', 'Forward_Price': 0.01, 'Units': UNITS,
-          'Maturity_Date': midweek}, UNITS, 0.01) + equity,
-        # a start-window knock-out at a barrier no path reaches is the vanilla
-        (dict(FX, Object='FXPartialTimeBarrierOption', Reference='FXP', Payoff_Currency='USD',
-              Barrier_Type='Down_And_Out', Barrier_Price=0.001, Barrier_At_Start='Yes',
-              Barrier_Limit_Date=BASE + pd.DateOffset(days=90), **terms), UNITS, 0.01) + pair]
-    for deal, scale, strike, spot, carry, declared in options:
-        marked = marks([deal, dict(deal, Reference='STATED', Settlement_Days=5 - declared)])
-        for ref, days in ((deal['Reference'], declared), ('STATED', 5 - declared)):
-            between = tenor + lag(midweek, days) - lag(BASE, days)
-            assert marked[ref] / (scale * df(tenor)) + strike == pytest.approx(
-                spot * math.exp(carry * between / 365.0), rel=1e-12), (ref, days)
-    lagged, flat = (run([dict(deep, **days)], calc=dict(CMC, Time_grid='0d 1d(1d) 2w'))['mtm']
-                    for days in ({}, {'Settlement_Days': 0}))
-    assert {lag(day, 3) for day in lagged.index} == {3, 4, 5}
-    for day in lagged.index:
+    equity, pair = (SPOT, R_USD - Q_EQ, 3, 'EQ'), (FX_SPOT, R_USD - R_EUR, 2, 'EUR')
+
+    def options(expiry):
+        terms = {'Expiry_Date': expiry, 'Strike_Price': 0.01}
+        return [
+            (dict(VANILLA, Settlement_Date=expiry, **terms), UNITS, 0.01) + equity,
+            (dict(BINARY, Settlement_Date=expiry, Payoff_Style='Asset', **terms), CASH, 0.0) + equity,
+            (dict(FX, **terms), UNITS, 0.01) + pair,
+            (dict({k: v for k, v in FX.items() if k != 'Underlying_Amount'}, Object='FXBinaryOption',
+                  Reference='FXB', Payoff=CASH, Payoff_Style='Asset', **terms), CASH, 0.0) + pair,
+            ({'Object': 'EquityForwardDeal', 'Reference': 'EQF', 'Currency': 'USD', 'Equity': 'EQ',
+              'Discount_Rate': 'USD', 'Buy_Sell': 'Buy', 'Forward_Price': 0.01, 'Units': UNITS,
+              'Maturity_Date': expiry}, UNITS, 0.01) + equity,
+            # a start-window knock-out at a barrier no path reaches is the vanilla
+            (dict(FX, Object='FXPartialTimeBarrierOption', Reference='FXP', Payoff_Currency='USD',
+                  Barrier_Type='Down_And_Out', Barrier_Price=0.001, Barrier_At_Start='Yes',
+                  Barrier_Limit_Date=BASE + pd.DateOffset(days=90), **terms), UNITS, 0.01) + pair]
+
+    # a Thursday parts one day from two, which from a Friday to a Wednesday carry alike
+    for expiry, stated in ((midweek, {}), (midweek, {'EQ': 2, 'EUR': 3}),
+                           (midweek + pd.DateOffset(days=1), {'EQ': 1, 'EUR': 1})):
+        tenor, booked = (expiry - BASE).days, options(expiry)
+        marked = marks([deal for deal, *_ in booked], factors=lagged(**stated))
+        for deal, scale, strike, spot, carry, declared, name in booked:
+            days = stated.get(name, declared)
+            between = tenor + lag(expiry, days) - lag(BASE, days)
+            assert marked[deal['Reference']] / (scale * df(tenor)) + strike == pytest.approx(
+                spot * math.exp(carry * between / 365.0), rel=1e-12), (deal['Reference'], days)
+    deep = options(midweek)[0][0]
+    spot_dated, flat = (run([deep], calc=dict(CMC, Time_grid='0d 1d(1d) 2w'), factors=factors)['mtm']
+                        for factors in ({}, lagged(EQ=0)))
+    assert {lag(day, 3) for day in spot_dated.index} == {3, 4, 5}
+    for day in spot_dated.index:
         # the strike is a ten-thousandth of the spot, so the marks' ratio is the forwards'
-        ratio = np.asarray(lagged.loc[day].values, dtype=float) / np.asarray(flat.loc[day].values, dtype=float)
+        ratio = np.asarray(spot_dated.loc[day].values, dtype=float) / np.asarray(flat.loc[day].values, dtype=float)
         stretch = math.exp((R_USD - Q_EQ) * (lag(midweek, 3) - lag(day, 3)) / 365.0)
         assert np.allclose(ratio, stretch, rtol=2e-6, atol=0.0), day
     holiday = pd.Timestamp('2024-09-24')                 # a Tuesday
@@ -313,10 +332,10 @@ def test_a_forward_carries_between_spot_dates():
     tenor, ahead = (monday - BASE).days, BASE + pd.DateOffset(days=7)
     for start in (BASE - pd.DateOffset(days=30), ahead):
         marked = marks([
-            swaplet('NONE', start, monday, paid), swaplet('WEEK', start, monday, paid, Settlement_Days=3),
-            swaplet('NAMED', start, monday, paid, Settlement_Days=3, **named),
-            swaplet('HELD', start, holiday, paid, **named),
-            swaplet('RATIO', ahead, monday, paid, Settlement_Days=3, Amount_Type='Principal')])
+            swaplet('WEEK', start, monday, paid), swaplet('NAMED', start, monday, paid, **named),
+            swaplet('RATIO', ahead, monday, paid, Amount_Type='Principal')])
+        marked.update(marks([swaplet('NONE', start, monday, paid), swaplet('HELD', start, holiday, paid, **named)],
+                            factors=lagged(EQ=0)))
         for ref, level, between in (
                 ('NONE', SPOT, tenor), ('WEEK', SPOT, tenor + lag(monday, 3) - lag(BASE, 3)),
                 ('NAMED', SPOT, tenor + lag(monday, 3, [holiday]) - lag(BASE, 3)), ('HELD', SPOT, tenor + 1),
@@ -336,7 +355,7 @@ def test_a_forward_carries_between_spot_dates():
         dict(touch, Object='EquityNoTouchOption', Reference='EQNT', Equity='EQ', Equity_Volatility='EQ',
              Barrier_Type='Down', Barrier_Price=80.0, Barrier_Dates=[]),
         swaplet('CMP', BASE + pd.DateOffset(days=7), monday, monday, Currency='EUR', Discount_Rate='EUR',
-                Payoff_Type='Compo', Equity_Volatility='EQ', Settlement_Days=3)])
+                Payoff_Type='Compo', Equity_Volatility='EQ')])
     up = _one_touch_closed(1.35, True, FX_SPOT, (R_USD - R_EUR) * years(year, 2), FX_SIGMA, R_USD)
     down = _one_touch_closed(80.0, False, SPOT, (R_USD - Q_EQ) * years(year, 3), SIGMA, R_USD)
     composite = UNITS * SPOT * math.exp((R_EUR - Q_EQ) * years(monday, 3) - R_EUR * (monday - BASE).days / 365.0)

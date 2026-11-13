@@ -328,8 +328,8 @@ F(t,t_0)^{1-a}\Big)D(t,T)$$
 
 where:
 
-- $F$ is the forward equity price, carried between spot dates where the list states **Settlement_Days**: that many
-business days of its **Accrual_Calendars** on from $t$ and from the fixing, Monday to Friday where it names none
+- $F$ is the forward equity price, carried between spot dates: the share's **Settlement_Days** business days of
+the list's **Accrual_Calendars** on from $t$ and from the fixing, Monday to Friday where it names none
 - $D$ is the usual discount factor
 - $D_r$ is the discount factor from the equity's repo rate
 

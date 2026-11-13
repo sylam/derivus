@@ -246,20 +246,17 @@ def test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forwa
 
 def stretched(k):
     """The flat world `k` times as slow: every rate and variance divided by `k`, each surface a
-    smile proportional to its moneyness and constant in tenor."""
+    smile proportional to its moneyness and constant in tenor, the share and the rate stating
+    `Settlement_Days` 0: a spot date is business days on, a lag that does not stretch."""
     price_factors = factors('Sticky_Moneyness', curve(SPOT))
+    for name in ('EquityPrice.EQ', 'FxRate.EUR'):
+        price_factors[name]['Settlement_Days'] = 0
     for name, rate in (('InterestRate.USD', R_USD), ('DividendRate.EQ', Q_EQ),
                        ('InterestRate.EUR', R_EUR)):
         price_factors[name]['Curve'] = curve(rate / k)
     for name, vol in (('EquityPriceVol.EQ', SKEW['ATM_Vol']), ('FXVol.EUR.USD', FX_VOL)):
         price_factors[name] = explicit(lambda m, t, vol=vol: vol * m / np.sqrt(k))
     return price_factors
-
-
-def unlagged(stretch):
-    """`book(stretch)`, every deal stating `Settlement_Days` 0: a spot date is business days on, a
-    lag that does not stretch."""
-    return tuple(dict(deal, Settlement_Days=0) for deal in book(stretch))
 
 
 def test_the_book_twice_as_far_in_a_world_half_as_fast_prices_the_same():
@@ -275,7 +272,7 @@ def test_the_book_twice_as_far_in_a_world_half_as_fast_prices_the_same():
     closed form's forward (+540%), the Asian's sample forwards (-7.4%), the composite strip's fx
     forwards (-22.7%), `zero_carry_rate`'s division (every deal, -2.9% to +35%).
     """
-    assert marks(stretched(2), unlagged(2)) == pytest.approx(marks(stretched(1), unlagged(1)), rel=1e-13)
+    assert marks(stretched(2), book(2)) == pytest.approx(marks(stretched(1), book(1)), rel=1e-13)
 
 
 def test_the_book_twice_as_far_in_a_world_half_as_fast_walks_the_same_profile():
@@ -288,7 +285,7 @@ def test_the_book_twice_as_far_in_a_world_half_as_fast_walks_the_same_profile():
     fraction to its expiry (10.6% on its worst entry).
     """
     def walked(k):
-        return run(stretched(k), dict(CMC, Time_grid='0d {0}d({0}d)'.format(30 * k)), unlagged(k), k)
+        return run(stretched(k), dict(CMC, Time_grid='0d {0}d({0}d)'.format(30 * k)), book(k), k)
     np.testing.assert_allclose(walked(2).values, walked(1).values, rtol=1e-5)
 
 

@@ -1082,8 +1082,7 @@ EQUITY_TOUCH = own('EquityOneTouchOption', [
     F('Barrier_Dates', 'Table', default='null', convention=True, row=Row([F('Date', 'Date')])),
     F('Barrier_Price', 'Float', default=0.0),
     F('Expiry_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
-    F('Equity_Volatility', 'Text', default='', factors=['EquityPriceVol']),
-    F('Settlement_Days', 'Integer', default=3, convention=True)
+    F('Equity_Volatility', 'Text', default='', factors=['EquityPriceVol'])
 ])
 
 #: What a touch on a commodity reference price watches: the equity touch's barrier on the
@@ -1104,8 +1103,7 @@ FX_TOUCH = own('FXOneTouchOption', [
     F('Barrier_Price', 'Float', default=0.0,
       description=FX_AXIS.format('Barrier price')),
     F('Expiry_Date', 'Date', default=''),
-    F('FX_Volatility', 'Text', default='', factors=['FXVol']),
-    F('Settlement_Days', 'Integer', default=2, convention=True)
+    F('FX_Volatility', 'Text', default='', factors=['FXVol'])
 ])
 
 QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall terms', [
@@ -1132,8 +1130,7 @@ QEDI_CUSTOMAUTOCALLSWAP = Group('QEDI_CustomAutoCallSwap.Fields', 'Autocall term
                   "the underlying's currency, read under a Quanto Payoff_Type alone"),
     F('Barrier_Observation', 'Text', default='Spot', convention=True, values=['Spot', 'Average'],
       description="Where the put barrier is observed - the barrier date's own spot, or the "
-                  "arithmetic average of the coupon window it falls in"),
-    F('Settlement_Days', 'Integer', default=3, convention=True)
+                  "arithmetic average of the coupon window it falls in")
 ])
 
 QEDI_CUSTOMSWAP = Group('QEDI_CustomSwap.Fields', 'Swap leg', [

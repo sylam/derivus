@@ -412,9 +412,8 @@ class OptionQuoteFamily(ImpliedCalibration):
          '(**EquityPrice.Interest_Rate**), not the curve its deals discount on. Left blank the two are',
          'one curve, which is the one-curve world and what an FX pair always was; named, an index',
          'carrying a repo/borrow spread calibrates at the forward it is priced at rather than one a',
-         'spread away from it. It grows between spot dates, *Settlement_Days* business days on from',
-         'the base date and from the expiry, blank being 3 on an **EquityPrice** and 2 on an',
-         '**FxRate**, as the options priced on it carry.',
+         'spread away from it. It grows between spot dates, the *Underlying*\'s **Settlement_Days**',
+         'business days on from the base date and from the expiry, as the options priced on it carry.',
          '',
          'Target premia are the Black prices at the vol surface read at each quote\'s own strike (see',
          'MONEYNESS CONVENTION below) unless *Quote_Type* is **Premium**, in which case the quoted values are',
@@ -487,10 +486,6 @@ class OptionQuoteFamily(ImpliedCalibration):
     # silently wrong.
     tabular_surfaces = ('Explicit', 'Relative_Forward', 'Malz')
 
-    #: The business days to a spot date by the `Underlying`'s class where a block states no
-    #: `Settlement_Days`: those the options priced on it declare. A class not named is zero.
-    spot_days = {'EquityPrice': 3, 'FxRate': 2}
-
     # the five factor references, each with the optional `_Type` `resolve` reads; what is REQUIRED
     # is derived from `quote_type_references` - see `reference_fields`
     fields = reference_fields(factor_types, quote_type_references, reference_notes) + [
@@ -501,10 +496,6 @@ class OptionQuoteFamily(ImpliedCalibration):
           description='Moneyness against the forward rather than the spot'),
         F('Invert_Moneyness', 'Text', default='No', values=['Yes', 'No'],
           description='Moneyness as K/S rather than S/K'),
-        F('Settlement_Days', 'Integer', default='',
-          description='Business days, Monday to Friday, from a day to its spot date, the forward '
-                      'growing from the base date\'s to each expiry\'s; blank is the underlying '
-                      'class\'s, 3 on an EquityPrice and 2 on an FxRate'),
         F('Steps_Per_Year', 'Float', default=252.0,
           description='GARCH steps an expiry is spread over'),
         F('Quote_Timestamp', 'Date', default='',
@@ -906,7 +897,7 @@ class OptionQuoteFamily(ImpliedCalibration):
                 return None
             days = int(round(T * ladder.days))
             t, rate, _, forward = cls.expiry_forward(
-                spot, base_date, days, cls.spot_days['FxRate'], discount, None, carry)
+                spot, base_date, days, rates[underlying].spot_days(), discount, None, carry)
             # the surface unshifted - the fit applies `Volatility_Delta` to every vol it reads -
             # at the coordinate the pricer reads its type at, off the strike `x` names
             return T, moved, days, t, forward, rate, (
@@ -1123,16 +1114,14 @@ class OptionQuoteFamily(ImpliedCalibration):
         premium)` - the numbers every family in this hierarchy builds its objective from.
 
         `t` is the `Discount_Rate` curve's own day count accrual, the forward is `expiry_forward`'s
-        between the spot dates `Settlement_Days` on, and a blank `Strike` is the forward. Under
-        `Implied_Volatility` the premium is Black at the surface's vol AT THE STRIKE; under
+        between the `Underlying`'s spot dates (`spot_days`), and a blank `Strike` is the forward.
+        Under `Implied_Volatility` the premium is Black at the surface's vol AT THE STRIKE; under
         `Premium` the quote IS the premium and `sigma` is inverted back out of it, which is what
         seeds a fit and what its diagnostics are read in.
         """
         discount, surface = factors['Discount_Rate'], factors.get('Volatility')
         carry, funding = factors.get('Yield'), factors.get('Funding_Rate')
-        base_date, stated = sys_params['Base_Date'], instrument.get('Settlement_Days', '')
-        business_days = self.spot_days.get(
-            type(factors['Underlying']).__name__, 0) if stated == '' else stated
+        base_date, business_days = sys_params['Base_Date'], factors['Underlying'].spot_days()
         quote_type = instrument['Quote_Type']
         use_forward = instrument.get('Use_Forward') == 'Yes'
         invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'

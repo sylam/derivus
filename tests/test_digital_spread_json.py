@@ -38,9 +38,9 @@ from test_option_settlement_json import lag
 BASE = pd.Timestamp('2024-06-28')
 EXPIRY = BASE + pd.DateOffset(years=1)
 T = (EXPIRY - BASE).days / 365.0
-# a forward carries between spot dates, `Settlement_Days` BUSINESS days on from the base date and
-# from the expiry, three on an equity deal and two on an FX one, its fx conversion included; vol
-# tenor and discounting stay at expiry
+# a forward carries between spot dates, the underlying's `Settlement_Days` BUSINESS days on from the
+# base date and from the expiry, three on a share and two on a rate, its fx conversion included;
+# vol tenor and discounting stay at expiry
 T_FWD, T_FWD_FX = (((EXPIRY - BASE).days + lag(EXPIRY, n) - lag(BASE, n)) / 365.0 for n in (3, 2))
 SPOT, STRIKE, CASH = 100.0, 100.0, 1000.0
 R_USD, R_EUR, Q_EQ = 0.04, 0.02, 0.01

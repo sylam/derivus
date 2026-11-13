@@ -575,9 +575,10 @@ def test_a_compo_and_a_quanto_forward_are_the_carried_forward_less_the_strike():
 def test_a_compo_and_a_quanto_price_return_swap_are_their_forwards_at_each_end():
     """The swaplet list and the swap leg through the same seam, on `UNITS` shares: a swaplet with
     both ends ahead pays the difference of its two ends' forwards - each at its own fx forward
-    under Compo, each carried over its own tenor under Quanto - a seasoned one its end's forward
-    less the start's observed level at the fx rate stated beside it, and the leg paid in one
-    period is that seasoned swaplet to the expiry. On the EUR curve, flat surfaces, exact.
+    under Compo, the quanto's drift over its own tenor under Quanto, every forward carried between
+    the share's spot dates - a seasoned one its end's forward less the start's observed level at
+    the fx rate stated beside it, and the leg paid in one period is that seasoned swaplet to the
+    expiry. On the EUR curve, flat surfaces, exact.
 
     Killing mutations: the cross left off the spot the forwards grow from (`spot_scale`) - 247.76
     against 198.21 on the both-ahead swaplet; the observed start's fx rate dropped - -16,432.29
@@ -585,16 +586,17 @@ def test_a_compo_and_a_quanto_price_return_swap_are_their_forwards_at_each_end()
     under Compo and the quanto's under Quanto - 599.12 against 198.21 on the both-ahead one.
     """
     t1, t2 = [(d - BASE).days / 365.0 for d in SAMPLES[:2]]
+    s1, s2 = [_spot_years(d) for d in SAMPLES[:2]]
     ahead, seasoned = _swaplet(SAMPLES[0], SAMPLES[1]), _swaplet(SEASONED, SAMPLES[1], 97.0, KNOWN_FX)
     out = _run(_job([_swap('AHEAD', [ahead]), _swap('SEASONED', [seasoned]),
                      dict(_swap('QTO', [ahead]), Payoff_Type='Quanto'), _leg('LEG')], _factors(skew=0.0)))
     df2 = math.exp(-R_EUR * t2)
     expected = {
-        'AHEAD': UNITS * (_eq_fwd(t2) * _fx_fwd(t2) - _eq_fwd(t1) * _fx_fwd(t1)) * df2,
-        'SEASONED': UNITS * (_eq_fwd(t2) * _fx_fwd(t2) - 97.0 * KNOWN_FX) * df2,
-        'QTO': UNITS * (_eq_fwd(t2) * math.exp(QUANTO_CARRY * t2)
-                        - _eq_fwd(t1) * math.exp(QUANTO_CARRY * t1)) * df2,
-        'LEG': UNITS * (_eq_fwd(T) * _fx_fwd(T) - 97.0 * KNOWN_FX) * math.exp(-R_EUR * T)}
+        'AHEAD': UNITS * (_eq_fwd(s2) * _fx_fwd(s2) - _eq_fwd(s1) * _fx_fwd(s1)) * df2,
+        'SEASONED': UNITS * (_eq_fwd(s2) * _fx_fwd(s2) - 97.0 * KNOWN_FX) * df2,
+        'QTO': UNITS * (_eq_fwd(s2) * math.exp(QUANTO_CARRY * t2)
+                        - _eq_fwd(s1) * math.exp(QUANTO_CARRY * t1)) * df2,
+        'LEG': UNITS * (_eq_fwd(T_SPOT) * _fx_fwd(T_SPOT) - 97.0 * KNOWN_FX) * math.exp(-R_EUR * T)}
     for ref, value in expected.items():
         assert abs(_mtm(out, ref) - value) / abs(value) < 1e-12, (ref, _mtm(out, ref), value)
 
@@ -606,8 +608,9 @@ def test_a_quanto_discrete_barrier_is_the_local_barrier_on_the_quanto_carry():
     whose dividend yield absorbs that carry. Each monitored interval steps on the bent carry and
     reads the skewed local smile at the forward it carries, so the two are one program: measured
     bit for bit on the CPU, 18,844.02 and 3,190.36, where the unbent carry reads 5.3% and 4.8% off.
-    Both books state `Settlement_Days` 0: the bent dividend carries between spot dates where the
-    quanto's drift runs over the fixing's own time, so the two are one program only with no lag.
+    Both worlds' share states `Settlement_Days` 0: the bent dividend carries between spot dates
+    where the quanto's drift runs over the fixing's own time, so the two are one program only with
+    no lag.
 
     Killing mutation: the quanto carry left off the barrier's strip (`carry_adj` not added).
     """
@@ -615,13 +618,17 @@ def test_a_quanto_discrete_barrier_is_the_local_barrier_on_the_quanto_carry():
     legs = [('KI', 'Up_And_In', 115.0, 'Call', 90.0, 0.0),
             ('KO', 'Down_And_Out', 85.0, 'Put', 110.0, 30.0)]
     quanto = [dict(_barrier(ref, kind, level, option, strike=strike), Payoff_Type='Quanto',
-                   Barrier_Dates=observed, Cash_Rebate=rebate, Settlement_Days=0)
+                   Barrier_Dates=observed, Cash_Rebate=rebate)
               for ref, kind, level, option, strike, rebate in legs]
     local = [dict(_barrier(ref, kind, level, option, payoff=None, strike=strike),
-                  Discount_Rate='EUR', Barrier_Dates=observed, Cash_Rebate=rebate, Settlement_Days=0)
+                  Discount_Rate='EUR', Barrier_Dates=observed, Cash_Rebate=rebate)
              for ref, kind, level, option, strike, rebate in legs]
-    out = _run(_job(quanto, _factors()))
-    bent = _run(_job(local, _factors(q=Q_EQ - QUANTO_CARRY), currency='USD'))
+
+    def unlagged(factors):
+        return dict(factors, **{'EquityPrice.EQ': dict(factors['EquityPrice.EQ'], Settlement_Days=0)})
+
+    out = _run(_job(quanto, unlagged(_factors())))
+    bent = _run(_job(local, unlagged(_factors(q=Q_EQ - QUANTO_CARRY)), currency='USD'))
     for ref, *_ in legs:
         assert _mtm(out, ref) == _mtm(bent, ref), (ref, _mtm(out, ref), _mtm(bent, ref))
 
