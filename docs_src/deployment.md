@@ -212,6 +212,10 @@ Bloomberg terminal and a spine home. This is the Getting Started stack.
   read), the class key is put into the replica from the seat's wrap with
   `derivus_spine.custody.materialize`, a library call with no `DV_Spine` verb. Nothing is written to
   a replica but what it pulls, and there is no failover: promoting a copy is a restore.
+- **A seat's own compute.** A workstation with the engine installed prices any job document
+  itself, in process or through its own `DV_Service` with no spine home, where `POST /book/open`
+  serves a document as the book. Nothing priced there reaches the record: a booking is a verb sent
+  to the hub.
 - **Market data.** A Desktop API tick reads the terminal on the machine running `DV_Service`, so a
   hub that ticks from a terminal runs on that workstation; a hub on a server uses B-PIPE with a map
   built on a terminal.
@@ -319,6 +323,9 @@ Derivus runs on CPU. An NVIDIA GPU, with drivers matching a CUDA build of PyTorc
 recommended for Monte Carlo work; `torch.cuda.is_available()` says whether the build sees one. A
 CPU-only machine installs PyTorch's CPU wheel to avoid the much larger CUDA one
 ([Requirements](require.md#gpu-notes)).
+
+A hub appends each fact with an `fsync` before it counts as written, so an NVMe drive is recommended
+for its spine home, as a GPU is for compute.
 
 How a run picks its device:
 

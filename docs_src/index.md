@@ -20,30 +20,22 @@ job format and one record for all of them, so a desk's mark and the xVA desk's e
 the same model of the same trade on the same market. The source is open to read, so a validator reads the code that produced a
 number beside the theory that specifies it.
 
-```mermaid
-flowchart LR
-    subgraph clients["Clients"]
-        UI["Web UI"]
-        XL["Excel add-in"]
-        LLM["Language model<br/>through DV_MCP"]
-        PY["Python scripts<br/>and notebooks"]
-    end
-    BBG["Bloomberg<br/>terminal or B-PIPE"]
-    subgraph host["Service host"]
-        SVC["DV_Service<br/>HTTP verbs, job queue,<br/>live book"]
-        ENG["derivus engine<br/>CPU or GPU"]
-        HUB[("Spine home<br/>book of record")]
-    end
-    REP[("Replicas")]
-    UI & XL & LLM & PY -->|HTTP| SVC
-    BBG -->|blpapi| SVC
-    SVC --> ENG
-    SVC -->|single writer| HUB
-    REP -.->|DV_Spine follow| SVC
-```
+<div style="overflow-x: auto">
+--8<-- "docs_src/animations/home_architecture.svg"
+</div>
+
+1. **One log, never edited.** Bookings, amendments, elections, fixings, market declarations,
+   approvals and official closes are appended to the spine home by one writer. Positions, P&L, cash,
+   collateral calls and the settlement diary are folded from the log and never stored as truth.
+2. **Compute lives at the seat.** A job document is the whole program, so a seat prices a quote, a
+   what-if or any other job on its own engine and GPU. The hub's engine judges each write before it
+   lands and runs the official marks and xVA.
+3. **The back office closes the loop on the same log.** It reads the diary, the settlement file and
+   the collateral calls, and files its confirmations and settlements back as facts.
 
 The engine is also a Python library: a script can load a job document and run it in process with
-no service at all. [Deployment and Operations](deployment.md) describes each box in the diagram.
+no service at all. [Deployment and Operations](deployment.md) describes each component and how it
+runs, and [The Spine](developer/spine.md) the record.
 
 ## What it covers
 
