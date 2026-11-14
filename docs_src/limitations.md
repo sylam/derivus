@@ -98,9 +98,10 @@ Grouped by where a validator meets them.
   `pv_american_option` (Bjerksund-Stensland) never calls `calc_vol_adjustment`, so a composite or
   quanto American prices as the local asset. UNMEASURED, as is its error against a lattice. The fix
   is a different pricer.
-- **The closed-form barrier floors its vol at 5%** (2026-10-11). `pv_barrier_option` (the FX barrier,
-  and an equity barrier without `Barrier_Dates`) lifts any lower vol to 5% before pricing and before
-  the monitoring shift. UNMEASURED on low-vol pairs.
+- **The partial-time barrier is not a number at a vol under 1%** (2026-11-14).
+  `getpartialbarrierpayoff` multiplies each power of $H/S$ onto its bivariate tail, where the single
+  barrier and the touch add the two in logs. An up barrier 12% from the spot reads NaN at a 0.5% vol
+  in single precision and at 0.2% in double; every reading at 1% is finite.
 - **The FX range accrual's simulated fixings carry no boundary correction.** A fixing after the
   base date is the path's own inclusive indicator, a step on outer state that `pv_fx_range_accrual`
   registers no `BoundarySet` for, so a credit Monte Carlo's sensitivities drop its flux on every row

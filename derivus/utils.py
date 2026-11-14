@@ -3124,6 +3124,12 @@ def norm_cdf(x):
     return 0.5 * (torch.erfc(x * -0.7071067811865475))
 
 
+def scaled_norm_cdf(log_scale, x):
+    """``exp(log_scale) * norm_cdf(x)``, added in logs and exponentiated once: a scale that
+    overflows against a tail that underflows is their finite product."""
+    return torch.exp(log_scale + torch.special.log_ndtr(x))
+
+
 def norm_pdf(x):
     return 0.3989422804014327 * torch.exp(-0.5 * x * x)
 
@@ -3488,15 +3494,14 @@ class LogVar2FJ:
 
     @staticmethod
     def ig_cdf(x, m, lam):
-        """Inverse-Gaussian CDF in mean/shape form, its second term through ``log_ndtr``.
+        """Inverse-Gaussian CDF in mean/shape form.
 
         ``exp(2 lam/m)`` overflows at the clocks a daily grid produces - ``lam/m`` is ``delta*gamma``
-        and reaches the hundreds - while its product with the tail probability does not, so the two are
-        added in logs and exponentiated once.
+        and reaches the hundreds - while its product with the tail probability does not, so the
+        second term is a `scaled_norm_cdf`.
         """
         r = torch.sqrt(lam / x)
-        return (norm_cdf(r * (x / m - 1.0))
-                + torch.exp(2.0 * lam / m + torch.special.log_ndtr(-r * (x / m + 1.0))))
+        return norm_cdf(r * (x / m - 1.0)) + scaled_norm_cdf(2.0 * lam / m, -r * (x / m + 1.0))
 
     @staticmethod
     def ig_pdf(x, m, lam):

@@ -32,6 +32,15 @@ BARRIER_OUT = 1.0
 OPTION_PUT = -1.0
 OPTION_CALL = 1.0
 
+#: A knock-in's option part as weights on Reiner and Rubinstein's (A, B, C, D), keyed by (the payoff
+#: grows away from the barrier, the barrier level is out of the money). A knock-out is A less it.
+KNOCK_IN = {
+    (True, True): (0, 0, 1, 0),
+    (True, False): (1, -1, 0, 1),
+    (False, True): (1, 0, 0, 0),
+    (False, False): (0, 1, -1, 1)
+    }
+
 BOUNDARY_MAX_AMPLIFICATION = 25.0
 """Largest ``||weights||_1`` a local-linear boundary solve may return before it is refused.
 
@@ -1604,137 +1613,49 @@ def interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=True):
 
 
 def getbarrierpayoff(direction, eta, phi, strike, H):
-    '''
-    The single-barrier payoff for one (direction, eta, phi, strike, H) combination, by Merton,
-    Reiner and Rubinstein. Each branch below is a sum of these six terms, which its label names:
+    """The single-barrier closed form of Merton, Reiner and Rubinstein for one deal, as a function
+    of a scenario's `(sigma, expiry, cash_rebate, b, r, spot, barrier)`.
 
-    A = phi * ( spot * sympy.exp ( (b-r)*expiry ) * normcdf ( phi * x1 ) -
-            strike * sympy.exp( -r*expiry ) * normcdf ( phi * ( x1 - vol ) ) )
-    B = phi * ( spot * sympy.exp ( (b-r)*expiry ) * normcdf ( phi * x2 ) -
-            strike * sympy.exp( -r*expiry ) * normcdf ( phi * ( x2 - vol ) ) )
-    C = phi * ( spot * sympy.exp ( (b-r)*expiry + log_bar*2*(mu+1) ) * normcdf (eta*y1) -
-            strike * sympy.exp ( -r*expiry + log_bar*2*mu ) * normcdf ( eta * ( y1 - vol ) ) )
-    D = phi * ( spot * sympy.exp ( (b-r)*expiry + log_bar*2*(mu+1) ) * normcdf (eta*y2) -
-            strike * sympy.exp ( -r*expiry + log_bar*2*mu ) * normcdf ( eta * ( y2 - vol ) ) )
-            
-    E = cash_rebate * sympy.exp ( -r*expiry ) * ( normcdf ( eta * ( x2 - vol ) ) -
-        sympy.exp(log_bar*2*mu) * normcdf ( eta * ( y2 - vol ) ) )
-    F = cash_rebate * ( sympy.exp ( log_bar*(mu+lam) ) * normcdf (eta*z) +
-        sympy.exp (log_bar*(mu-lam)) * normcdf ( eta * ( z - 2*lam*vol) ) )
-    '''
+    With ``w = barrier / spot`` and ``leg(x, s, p)`` the vanilla
+    ``phi * (spot * exp((b - r) * expiry) * w**(p * (mu + 1)) * N(s * x)
+    - strike * exp(-r * expiry) * w**(p * mu) * N(s * (x - vol)))``::
+
+        A = leg(x1, phi, 0)    B = leg(x2, phi, 0)    C = leg(y1, eta, 2)    D = leg(y2, eta, 2)
+        E = exp(-r * expiry) * (N(eta * (x2 - vol)) - w**(2 * mu) * N(eta * (y2 - vol)))
+        F = w**(mu + lam) * N(eta * z) + w**(mu - lam) * N(eta * (z - 2 * lam * vol))
+
+    A knock-in is its `KNOCK_IN` row plus the rebate times E, a knock-out the vanilla A less that
+    row plus the rebate times F. A power of `w` overflows at a low vol where the tail it multiplies
+    underflows, so every term is a `utils.scaled_norm_cdf`.
+    """
+    weights = KNOCK_IN[phi * eta > 0, (strike > H) == (phi == OPTION_CALL)]
+    if direction == BARRIER_OUT:
+        weights = tuple(vanilla - knock_in for vanilla, knock_in in zip((1, 0, 0, 0), weights))
 
     def barrier_option(sigma, expiry, cash_rebate, b, r, spot, barrier):
-
         sigma2 = sigma * sigma
         vol = sigma * torch.sqrt(expiry)
         mu = (b - 0.5 * sigma2) / sigma2
         log_bar = torch.log(barrier / spot)
-        x1 = torch.log(spot / strike) / vol + (1.0 + mu) * vol
-        x2 = torch.log(spot / barrier) / vol + (1.0 + mu) * vol
+        drift, d = (1.0 + mu) * vol, log_bar / vol
+        x1, x2, y2 = torch.log(spot / strike) / vol + drift, drift - d, drift + d
 
-        y1 = torch.log((barrier * barrier) / (spot * strike)) / vol + (1.0 + mu) * vol
-        y2 = log_bar / vol + (1.0 + mu) * vol
-        lam = torch.sqrt(mu * mu + 2.0 * r / sigma2)
-        z = log_bar / vol + lam * vol
-        eta_scale = 0.7071067811865476 * eta
-        phi_scale = 0.7071067811865476 * phi
-        expiry_r = expiry * r
+        def leg(x, sign, power):
+            return phi * (
+                spot * utils.scaled_norm_cdf((b - r) * expiry + power * (mu + 1.0) * log_bar, sign * x) -
+                strike * utils.scaled_norm_cdf(-r * expiry + power * mu * log_bar, sign * (x - vol)))
 
+        legs = ((x1, phi, 0.0), (x2, phi, 0.0), (x1 + 2.0 * d, eta, 2.0), (y2, eta, 2.0))
+        option = sum(weight * leg(*terms) for weight, terms in zip(weights, legs) if weight)
         if direction == BARRIER_IN:
-            if ((phi == OPTION_CALL and eta == BARRIER_UP and strike > H) or
-                    (phi == OPTION_PUT and eta == BARRIER_DOWN and strike <= H)):
-                # A+E
-                return (cash_rebate * (
-                        (0.5 * torch.erfc(eta_scale * (-vol + y2)) - 1.0) * torch.exp(2 * log_bar * mu) +
-                        0.5 * torch.erfc(eta_scale * (vol - x2))) - phi * (
-                                spot * (0.5 * torch.erfc(phi_scale * x1) - 1.0) * torch.exp(b * expiry) +
-                                0.5 * strike * torch.erfc(phi_scale * (vol - x1)))) * torch.exp(-expiry_r)
-            elif ((phi == OPTION_CALL and eta == BARRIER_UP and strike <= H) or
-                  (phi == OPTION_PUT and eta == BARRIER_DOWN and strike > H)):
-                # B-C+D+E
-                return (cash_rebate * (
-                        (0.5 * torch.erfc(eta_scale * (-vol + y2)) - 1.0) * torch.exp(2 * log_bar * mu) +
-                        0.5 * torch.erfc(eta_scale * (vol - x2))) - phi * (
-                                spot * (0.5 * torch.erfc(phi_scale * x2) - 1.0) * torch.exp(b * expiry) +
-                                0.5 * strike * torch.erfc(phi_scale * (vol - x2))) + phi * (
-                                spot * (0.5 * torch.erfc(eta_scale * y1) - 1.0) * torch.exp(
-                            expiry * (b - r) + 2 * log_bar * (mu + 1)) - spot * (
-                                        0.5 * torch.erfc(eta_scale * y2) - 1.0) *
-                                torch.exp(expiry * (b - r) + 2 * log_bar * (mu + 1)) + 0.5 * strike * torch.exp(
-                            -expiry_r + 2 * log_bar * mu) * torch.erfc(eta_scale * (vol - y1)) -
-                                0.5 * strike * torch.exp(-expiry_r + 2 * log_bar * mu) * torch.erfc(
-                            eta_scale * (vol - y2))) * torch.exp(expiry_r)) * torch.exp(-expiry_r)
-            elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or
-                  (phi == OPTION_CALL and eta == BARRIER_DOWN and strike <= H)):
-                # A-B+D+E
-                return (cash_rebate * ((0.5 * torch.erfc(eta_scale * (-vol + y2)) - 1.0) * torch.exp(
-                    2 * log_bar * mu) + 0.5 * torch.erfc(eta_scale * (vol - x2))) - phi * (
-                                spot * (0.5 * torch.erfc(eta_scale * y2) - 1.0) * torch.exp(expiry * (
-                                b - r) + 2 * log_bar * (mu + 1)) + 0.5 * strike * torch.exp(
-                            -expiry_r + 2 * log_bar * mu) * torch.erfc(
-                            eta_scale * (vol - y2))) * torch.exp(expiry_r) - phi * (spot * (0.5 * torch.erfc(
-                    phi_scale * x1) - 1.0) * torch.exp(b * expiry) + 0.5 * strike * torch.erfc(
-                    phi_scale * (vol - x1))) + phi * (spot * (0.5 * torch.erfc(
-                    phi_scale * x2) - 1.0) * torch.exp(b * expiry) + 0.5 * strike * torch.erfc(
-                    phi_scale * (vol - x2)))) * torch.exp(-expiry_r)
-            else:
-                # (Put, Up, K <= H) or (Call, Down, K > H): C+ E
-                return (cash_rebate * ((0.5 * torch.erfc(eta_scale * (-vol + y2)) - 1.0) * torch.exp(
-                    2 * log_bar * mu) + 0.5 * torch.erfc(eta_scale * (vol - x2))) - phi * (spot * (
-                        0.5 * torch.erfc(eta_scale * y1) - 1.0) * torch.exp(expiry * (b - r) + 2 * log_bar * (
-                        mu + 1)) + 0.5 * strike * torch.exp(-expiry_r + 2 * log_bar * mu) * torch.erfc(eta_scale * (
-                        vol - y1))) * torch.exp(expiry_r)) * torch.exp(-expiry_r)
+            rebate = (utils.scaled_norm_cdf(-r * expiry, eta * (x2 - vol)) -
+                      utils.scaled_norm_cdf(-r * expiry + 2.0 * mu * log_bar, eta * (y2 - vol)))
         else:
-            if ((phi == OPTION_CALL and eta == BARRIER_UP and strike > H) or
-                    (phi == OPTION_PUT and eta == BARRIER_DOWN and strike <= H)):
-                # F
-                return -cash_rebate * ((0.5 * torch.erfc(eta_scale * z) - 1.0) * torch.exp(2 * lam * log_bar) -
-                                       0.5 * torch.erfc(eta_scale * (2 * lam * vol - z))) * torch.exp(
-                    -log_bar * (lam - mu))
-            elif ((phi == OPTION_CALL and eta == BARRIER_UP and strike <= H) or
-                  (phi == OPTION_PUT and eta == BARRIER_DOWN and strike > H)):
-                # A - B + C - D + F
-                return (-cash_rebate * ((0.5 * torch.erfc(eta_scale * z) - 1.0) * torch.exp(2 * lam * log_bar)
-                                        - 0.5 * torch.erfc(eta_scale * (2 * lam * vol - z))) * torch.exp(expiry_r)
-                        + phi * (-spot * (0.5 * torch.erfc(eta_scale * y1) - 1.0) * torch.exp(
-                            expiry * (b - r) + 2 * log_bar * (mu + 1)) + spot * (
-                                         0.5 * torch.erfc(eta_scale * y2) - 1.0) *
-                                 torch.exp(expiry * (b - r) + 2 * log_bar * (mu + 1)) - 0.5 * strike * torch.exp(
-                                    -expiry_r + 2 * log_bar * mu) *
-                                 torch.erfc(eta_scale * (vol - y1)) + 0.5 * strike * torch.exp(
-                                    -expiry_r + 2 * log_bar * mu) *
-                                 torch.erfc(eta_scale * (vol - y2))) * torch.exp(expiry_r + log_bar * (lam - mu)) +
-                        phi * (-spot * (0.5 * torch.erfc(phi_scale * x1) - 1.0) * torch.exp(b * expiry) + spot * (
-                                0.5 * torch.erfc(phi_scale * x2) - 1.0) * torch.exp(b * expiry) - 0.5 * strike *
-                               torch.erfc(phi_scale * (vol - x1)) + 0.5 * strike * torch.erfc(phi_scale * (vol - x2)))
-                        * torch.exp(log_bar * (lam - mu))) * torch.exp(-expiry_r - log_bar * (lam - mu))
-            elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or
-                  (phi == OPTION_CALL and eta == BARRIER_DOWN and strike <= H)):
-                # B - D + F
-                return (-cash_rebate * ((0.5 * torch.erfc(eta_scale * z) - 1.0) * torch.exp(2 * lam * log_bar)
-                                        - 0.5 * torch.erfc(eta_scale * (2 * lam * vol - z))) * torch.exp(expiry_r) +
-                        phi * (spot * (0.5 * torch.erfc(eta_scale * y2) - 1.0) * torch.exp(
-                            expiry * (b - r) + 2 * log_bar * (mu + 1))
-                               + 0.5 * strike * torch.exp(-expiry_r + 2 * log_bar * mu) * torch.erfc(
-                                    eta_scale * (vol - y2))) * torch.exp(
-                            expiry_r + log_bar * (lam - mu)) - phi * (
-                                spot * (0.5 * torch.erfc(phi_scale * x2) - 1.0) * torch.exp(
-                            b * expiry) + 0.5 * strike * torch.erfc(phi_scale * (vol - x2))) * torch.exp(
-                            log_bar * (lam - mu))) * torch.exp(
-                    -expiry_r - log_bar * (lam - mu))
-            else:
-                # (Put, Up, K <= H) or (Call, Down, K > H): A-C+F
-                return (-cash_rebate * ((0.5 * torch.erfc(eta_scale * z) - 1.0) * torch.exp(2 * lam * log_bar)
-                                        - 0.5 * torch.erfc(eta_scale * (2 * lam * vol - z))) * torch.exp(expiry_r) +
-                        phi * (spot * (0.5 * torch.erfc(eta_scale * y1) - 1.0) * torch.exp(
-                            expiry * (b - r) + 2 * log_bar * (mu + 1))
-                               + 0.5 * strike * torch.exp(-expiry_r + 2 * log_bar * mu) * torch.erfc(
-                                    eta_scale * (vol - y1))) * torch.exp(
-                            expiry_r + log_bar * (lam - mu)) - phi * (
-                                spot * (0.5 * torch.erfc(phi_scale * x1) - 1.0) * torch.exp(
-                            b * expiry) + 0.5 * strike * torch.erfc(phi_scale * (vol - x1))) * torch.exp(
-                            log_bar * (lam - mu))) * torch.exp(
-                    -expiry_r - log_bar * (lam - mu))
+            lam = torch.sqrt(mu * mu + 2.0 * r / sigma2)
+            z = d + lam * vol
+            rebate = (utils.scaled_norm_cdf((mu + lam) * log_bar, eta * z) +
+                      utils.scaled_norm_cdf((mu - lam) * log_bar, eta * (z - 2.0 * lam * vol)))
+        return option + cash_rebate * rebate
 
     return barrier_option
 
@@ -2570,11 +2491,8 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
     interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time, rho)
     prev_spot = None
 
-    for index, (raw_sig, exp, b_t, r_t, s_t, f_t, cash_index) in enumerate(zip(
+    for index, (sig, exp, b_t, r_t, s_t, f_t, cash_index) in enumerate(zip(
             sigma, expiry_years, b, r, spot, forward, deal_data.Time_dep.deal_time_grid)):
-
-        # barrier options are very sensitive to vols - so we clamp them to 5%
-        sig = raw_sig.clamp(min=0.05)
 
         # Broadie-Glasserman-Kou shift, AWAY from the live region by the monitoring interval's vol
         barrier_t = barrier * torch.exp(
@@ -2674,18 +2592,17 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
 
     mtm_list = []
     prev_touched = 0.0
-    eta_scale = 0.7071067811865476 * eta
     # the same continuous-vs-observed mismatch as pv_barrier_option, but this payoff pays ON touch,
     # so missing a crossing UNDERSTATES it rather than overstating survival
     interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time, rho)
     prev_spot = None
 
-    for index, (raw_sig, exp, b_t, r_t, s_t, cash_index) in enumerate(zip(
+    for index, (sig, exp, b_t, r_t, s_t, cash_index) in enumerate(zip(
             sigma, expiry_years, b, r, spot, deal_data.Time_dep.deal_time_grid)):
 
         # the same monitoring-adjusted barrier the closed form below prices against
         barrier_t = barrier * torch.exp(
-            (1.0 if eta == BARRIER_UP else -1.0) * raw_sig * factor_dep['Barrier_Monitoring']
+            (1.0 if eta == BARRIER_UP else -1.0) * sig * factor_dep['Barrier_Monitoring']
         ) if factor_dep['Barrier_Monitoring'] else barrier
 
         touched = utils.barrier_touched(prev_touched, prev_spot, s_t, barrier_t,
@@ -2695,25 +2612,16 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
         if (1 - touched).any() and expiry[index] > 0:
 
             root_tau = torch.sqrt(exp)
-            mu = b_t / raw_sig - 0.5 * raw_sig
-            log_vol = torch.log(barrier_t / s_t) / raw_sig
-            barrovert = log_vol / root_tau
-
-            if timing == 'Expiry':
-                muroot = mu * root_tau
-                d1 = muroot - barrovert
-                d2 = -muroot - barrovert
-                payoff = torch.exp(-r_t * exp) * 0.5 * (
-                        torch.erfc(eta_scale * d1) + torch.exp(2.0 * mu * log_vol) * torch.erfc(eta_scale * d2))
-
-            else:
-                # paid on the touch, the one other timing a deal is constructed with
-                lamb = torch.sqrt(smooth_relu(mu * mu + 2.0 * r_t))
-                lambroot = lamb * root_tau
-                d1 = lambroot - barrovert
-                d2 = -lambroot - barrovert
-                payoff = 0.5 * (torch.exp((mu - lamb) * log_vol) * torch.erfc(eta_scale * d1) +
-                                torch.exp((mu + lamb) * log_vol) * torch.erfc(eta_scale * d2))
+            mu = b_t / sig - 0.5 * sig
+            log_vol = torch.log(barrier_t / s_t) / sig
+            d = log_vol / root_tau
+            # paid at expiry is the form paid on the touch with nothing discounted to the touch
+            # (`lam` is `mu`), under the expiry's discount
+            lam, discount = (mu, -r_t * exp) if timing == 'Expiry' else (
+                torch.sqrt(smooth_relu(mu * mu + 2.0 * r_t)), 0.0)
+            payoff = (
+                utils.scaled_norm_cdf(discount + (mu - lam) * log_vol, eta * (d - lam * root_tau)) +
+                utils.scaled_norm_cdf(discount + (mu + lam) * log_vol, eta * (d + lam * root_tau)))
         else:
             payoff = 0.0
 

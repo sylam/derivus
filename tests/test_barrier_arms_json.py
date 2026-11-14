@@ -1,17 +1,16 @@
 """All eight closed-form payoff arms of `getbarrierpayoff`, through the JSON contract and nothing
 else.
 
-The selector inside `getbarrierpayoff.barrier_option` is `(direction, eta, phi, strike vs H)` -
-four arms under knock-IN, four under knock-OUT, each reached by TWO spellings of the same geometry
-(a Call with an Up barrier, a Put with a Down one). This file prices all sixteen spellings at rebate
-0 and at a live rebate, and pins them as MUST_COVER in the census.
+`getbarrierpayoff` selects on `(direction, eta, phi, strike vs H)` - four arms under knock-IN, four
+under knock-OUT, each reached by TWO spellings of the same geometry (a Call with an Up barrier, a
+Put with a Down one). This file prices all sixteen spellings at rebate 0 and at a live rebate.
 
 THE ORACLE IS THE TEXTBOOK, longhand: `_reiner_rubinstein` builds the six terms A-F from
-`math.erfc` and selects the arm from the same enumeration the pricer states. It shares nothing
-with the engine, whose arms are a sympy-flattened `erfc` algebra in which a sign slip is invisible
-by inspection.
+`math.erfc` and selects the arm by the textbook's eight-way enumeration. It shares nothing with
+the engine, which reads an arm off the four rows of `KNOCK_IN`, takes a knock-out by parity and
+adds every term in logs.
 
-MEASURED. Against the textbook, all sixteen at both rebates: worst 1.2e-14 relative. The textbook
+MEASURED. Against the textbook, all sixteen at both rebates: worst 1.3e-14 relative. The textbook
 itself was held against a model-free bridge-corrected daily Monte Carlo (worst 1.3e-2 at rebate 0,
 the Down-and-In Call, the smallest mark in the table) and IN + OUT = the vanilla to 7.2e-15, arm by
 arm. Each fixture priced through the three arms it must NOT take reads 0.209 at the nearest and
@@ -50,6 +49,12 @@ B_CARRY = R_USD - R_EUR
 #: days on from the base date and from the expiry, over the year to the expiry
 B_SPOT = B_CARRY * (EXPIRY_D + lag(BASE + pd.DateOffset(days=EXPIRY_D), 2) - lag(BASE, 2)) / EXPIRY_D
 
+
+
+def _surface(sigma):
+    return utils.Curve([], [[m, t, sigma] for m in (0.6, 1.0, 1.4) for t in (0.02, 2.0)])
+
+
 FACTORS = {
     'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
     'FxRate.EUR': {'Domestic_Currency': None, 'Interest_Rate': 'EUR', 'Spot': X0},
@@ -58,8 +63,7 @@ FACTORS = {
     'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                          'Curve': utils.Curve([], [[0.0, R_EUR], [5.0, R_EUR]])},
     'FXVol.EUR.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
-                      'Surface': utils.Curve([], [[m, t, SIGMA] for m in (0.6, 1.0, 1.4)
-                                                  for t in (0.02, 2.0)])}}
+                      'Surface': _surface(SIGMA)}}
 
 #: `(arm, Up|Down, barrier, strike, option type)`. Two rows per arm, the two spellings the
 #: selector treats as one case, chosen so every arm carries a Call AND a Put and an Up AND a Down.
@@ -84,7 +88,16 @@ def _deal(barrier_type, barrier, strike, option_type, rebate):
             'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D)}
 
 
-def _run(deal, base=BASE):
+def _touch(kind, **terms):
+    return dict({'Object': kind, 'Reference': 'BR', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
+                 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy',
+                 'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D), 'Cash_Payoff': NOTIONAL,
+                 'Barrier_Type': 'Up', 'Barrier_Price': 1.40}, **terms)
+
+
+def _run(deal, base=BASE, sigma=SIGMA):
+    factors = dict(FACTORS, **{
+        'FXVol.EUR.USD': dict(FACTORS['FXVol.EUR.USD'], Surface=_surface(sigma))})
     job = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
                         'MCMC_Simulations': 1},
@@ -92,7 +105,7 @@ def _run(deal, base=BASE):
                   'Deals': {'Children': [{'Instrument': {'.Deal': deal}}]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
-            'Valuation Configuration': {}, 'Price Factors': FACTORS}}}}
+            'Valuation Configuration': {}, 'Price Factors': factors}}}}
     cx = derivus.Context()
     cx.load_json((json.dumps(job, cls=CustomJsonEncoder), 'arms'))
     _, out = cx.run_job()
@@ -155,10 +168,10 @@ def test_every_payoff_arm_is_the_textbook_closed_form(
         arm, barrier_type, barrier, strike, option_type, rebate):
     """Sixteen spellings at two rebates against the longhand terms. The tolerance is float64
     round-off, not a modelling allowance: the two algebras are the same function or they are not,
-    and the worst reading over the whole table is 1.2e-14.
+    and the worst reading over the whole table is 1.3e-14.
 
-    Killing mutation: the knock-out selector's down-put spelling of arm 1 inverted
-    (`strike <= H` -> `strike > H`).
+    Killing mutations: two rows of `KNOCK_IN` exchanged; a knock-out read off its knock-in's row
+    (the parity with the vanilla dropped).
     """
     got = _run(_deal(barrier_type, barrier, strike, option_type, rebate))
     ref = _reiner_rubinstein(barrier_type, barrier, strike, option_type, rebate)
@@ -191,6 +204,33 @@ def test_on_its_expiry_date_a_barrier_is_its_intrinsic_or_its_rebate(
     assert got == pytest.approx(expected, rel=1e-12), (got, expected)
 
 
+#: `(deal, its value where the barrier is out of reach)`: at a vol of 0.1% the 1.40 barrier is over
+#: a hundred standard deviations from the spot and the 1.20 strike sixty in the money
+OUT_OF_REACH = {
+    'up-and-out-call': (_deal('Up_And_Out', 1.40, 1.20, 'Call', REBATE), NOTIONAL * (
+        X0 * math.exp((B_SPOT - R_USD) * T) - 1.20 * math.exp(-R_USD * T))),
+    'up-and-in-put': (_deal('Up_And_In', 1.40, 1.30, 'Put', REBATE), REBATE * math.exp(-R_USD * T)),
+    'no-touch': (_touch('FXNoTouchOption'), NOTIONAL * math.exp(-R_USD * T)),
+    'one-touch': (_touch('FXOneTouchOption', Payment_Timing='Touch'), 0.0),
+    }
+
+
+@pytest.mark.parametrize('name', OUT_OF_REACH)
+def test_a_barrier_out_of_reach_at_a_low_vol_is_its_certain_value(name):
+    """At a vol of 0.1% the spot cannot reach a barrier 12% away, so a knock-out is its forward
+    intrinsic, a knock-in its discounted rebate, a no-touch its discounted payout and a one-touch
+    nothing. The reflection weight `(H/S)**(2 mu)` is `exp(4500)` there against a normal tail of
+    `exp(-9000)`, and their product is zero.
+
+    Killing mutations: a weight multiplied onto its tail outside the logs
+    (`utils.scaled_norm_cdf` as `torch.exp(log_scale) * norm_cdf(x)`), every row not a number; the
+    barrier's vol floored at 5% (`sig.clamp(min=0.05)`), the knock-out 5.01 low and the knock-in
+    1.99 low.
+    """
+    deal, certain = OUT_OF_REACH[name]
+    assert _run(deal, sigma=0.001) == pytest.approx(certain, rel=1e-12, abs=1e-12)
+
+
 def test_a_second_batch_reads_the_tenors_the_first_cached():
     """The closed-form barrier and touch cache their expiry tenors on the deal, so under a credit
     Monte Carlo every batch after the first reads them back. On an outer walk with no vol the two
@@ -198,21 +238,17 @@ def test_a_second_batch_reads_the_tenors_the_first_cached():
     row as the first does, to the bit.
 
     Killing mutations: a consumer writing the cached tenors in place - the barrier's closed form
-    taking its tenor product as `expiry.mul_(r)`, the second batch 32.59 off; the touch taking its
-    root as `exp.sqrt_()`, 162.47 off.
+    taking its root as `expiry.sqrt_()`, the second batch 13.90 off; the touch taking its
+    root as `exp.sqrt_()`, 162.31 off.
     """
-    expiry = BASE + pd.DateOffset(days=EXPIRY_D)
-    no_touch = {'Object': 'FXNoTouchOption', 'Reference': 'NT', 'Currency': 'USD',
-                'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
-                'Buy_Sell': 'Buy', 'Expiry_Date': expiry, 'Cash_Payoff': NOTIONAL,
-                'Barrier_Type': 'Up', 'Barrier_Price': 1.40}
     job = {'Calc': {
         'Calculation': {'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': 'USD',
                         'Time_grid': '0d 3m(3m)', 'Batch_Size': 4, 'Simulation_Batches': 2,
                         'Random_Seed': 1, 'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD'},
         'Deals': {'Reference': 'arms', 'Deals': {'Children': [
             {'Instrument': {'.Deal': deal}}
-            for deal in (_deal('Up_And_Out', 1.40, 1.20, 'Call', REBATE), no_touch)]}},
+            for deal in (_deal('Up_And_Out', 1.40, 1.20, 'Call', REBATE),
+                         _touch('FXNoTouchOption', Reference='NT'))]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
             'Valuation Configuration': {}, 'Price Factors': FACTORS,

@@ -90,9 +90,8 @@ UNREACHED = {}
 #: currently covered" - that would be a second copy of the census, maintained by hand. These are
 #: the arcs whose being unexecuted is precisely the state the barrier defect survived in: the
 #: already-hit leg, the two selectors that gate it, the row shape it was measured wrong on, the
-#: in-out-parity vanilla inside the OSS that it has to agree with, and the eight closed-form
-#: payoff arms of `getbarrierpayoff` (four IN, four OUT), each of which is one wrong formula away
-#: from a silently mispriced direction.
+#: in-out-parity vanilla inside the OSS that it has to agree with, and the knock-out parity and
+#: the two rebate forms of `getbarrierpayoff`, whose eight arms are rows of a table no arc shows.
 MUST_COVER = {
     ('pv_discrete_barrier_option', 'if some_hit or boundary_aad:', 'body'),
     ('pv_discrete_barrier_option', 'if direction != BARRIER_IN:', 'body'),
@@ -105,23 +104,9 @@ MUST_COVER = {
     ('pv_partial_barrier_option', 'def pv_partial_barrier_option', 'never-called'),
     ('getpartialbarrierpayoff', 'def getpartialbarrierpayoff', 'never-called'),
     ('pv_american_option', 'def pv_american_option', 'never-called'),
+    ('getbarrierpayoff', 'if direction == BARRIER_OUT:', 'body'),
     ('getbarrierpayoff.barrier_option', 'if direction == BARRIER_IN:', 'body'),
-    ('getbarrierpayoff.barrier_option',
-     'if ((phi == OPTION_CALL and eta == BARRIER_UP and strike > H) or', 'body#1'),
-    ('getbarrierpayoff.barrier_option',
-     'elif ((phi == OPTION_CALL and eta == BARRIER_UP and strike <= H) or', 'body#1'),
-    ('getbarrierpayoff.barrier_option',
-     'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or', 'body#1'),
-    ('getbarrierpayoff.barrier_option',
-     'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or', 'else#1'),
-    ('getbarrierpayoff.barrier_option',
-     'if ((phi == OPTION_CALL and eta == BARRIER_UP and strike > H) or', 'body#2'),
-    ('getbarrierpayoff.barrier_option',
-     'elif ((phi == OPTION_CALL and eta == BARRIER_UP and strike <= H) or', 'body#2'),
-    ('getbarrierpayoff.barrier_option',
-     'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or', 'body#2'),
-    ('getbarrierpayoff.barrier_option',
-     'elif ((phi == OPTION_PUT and eta == BARRIER_UP and strike > H) or', 'else#2'),
+    ('getbarrierpayoff.barrier_option', 'if direction == BARRIER_IN:', 'else'),
     ('pv_barrier_option', 'if cash_rebate and expiry[index] > 0.0:', 'body'),
 }
 
