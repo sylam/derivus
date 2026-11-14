@@ -24,7 +24,8 @@ Note that the corresponding USD-MASTER and both the ZAR-SWAP and ZAR-USD-BASIS i
 need to be defined.
 
 Interest-rate curves and volatility surfaces stand alone; an `FxRate` or an `EquityPrice` names in
-`Interest_Rate` the curve its carry is read off, and states in `Settlement_Days` the business days
+`Interest_Rate` the curve its carry is read off (blank, the curve named as its currency), and states
+in `Settlement_Days` the business days
 from a day to its spot date, between which a forward on it carries: 3 on an `EquityPrice` and 2 on
 an `FxRate` where omitted, a currency pair reading its underlying currency's. `Holiday_Calendar`
 names the calendar those days count on, a pair's joint one on an `FxRate`; blank, a deal's

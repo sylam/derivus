@@ -1088,10 +1088,15 @@ class Config(object):
             factor_name = utils.check_tuple_name(factor)
 
             if factor.type in dependant_fields:
-                linked_factors = [utils.Factor(dep_field[1], utils.check_rate_name(
-                    self.params['Price Factors'][factor_name][dep_field[0]])) for dep_field in
-                                  dependant_fields[factor.type] if
-                                  self.params['Price Factors'][factor_name].get(dep_field[0])]
+                block = self.params['Price Factors'][factor_name]
+                linked_factors = [utils.Factor(kind, utils.check_rate_name(block[field]))
+                                  for field, kind in dependant_fields[factor.type] if block.get(field)]
+                # an `FxRate` stating no curve reads the one named as its currency
+                # (`FxRate.get_repo_curve_name`), where the market data holds it
+                own = utils.Factor('InterestRate', factor.name)
+                held = utils.check_tuple_name(own) in self.params['Price Factors']
+                if factor.type == 'FxRate' and held and not linked_factors:
+                    linked_factors.append(own)
                 for linked_factor in linked_factors:
                     if linked_factor.type in dependant_fields and linked_factor.type in \
                             utils.NESTED and len(linked_factor.name) > 1:

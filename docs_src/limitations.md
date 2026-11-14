@@ -246,12 +246,6 @@ Grouped by where a validator meets them.
   currency inside a spot window carries the forward one day short, a day of the cross's carry,
   8.2e-5 of the forward at a 3% rate differential. UNMEASURED on a book. The fix is the cross's
   lag read off both factors.
-- **An `FxRate` whose curve the job does not hold converts at its quote** (2026-11-13). A value
-  converts at a currency's price today only where the job holds both the curve its own `FxRate`
-  names in `Interest_Rate` (or the curve named as the currency) and its domestic currency's; one
-  stating no `Interest_Rate` whose curve no deal reaches converts at the quote, 2.2e-4 of the
-  converted value at a 2% rate differential over a Friday's four days. The fix is discovery adding
-  both curves of every `FxRate` a conversion reads.
 
 ## Decisions waiting on the desk {#decisions-waiting-on-the-desk}
 

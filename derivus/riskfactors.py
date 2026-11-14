@@ -728,10 +728,10 @@ class FxRate(Factor0D):
         super(FxRate, self).__init__(param)
 
     def get_repo_curve_name(self, default):
-        return utils.check_rate_name(self.param['Interest_Rate'] if self.param['Interest_Rate'] else default)
+        return utils.check_rate_name(self.param.get('Interest_Rate') or default)
 
     def get_domestic_currency(self, default):
-        return utils.check_rate_name(self.param['Domestic_Currency'] if self.param['Domestic_Currency'] else default)
+        return utils.check_rate_name(self.param.get('Domestic_Currency') or default)
 
 
 class FuturesPrice(Factor0D):

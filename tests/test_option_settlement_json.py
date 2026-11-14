@@ -452,6 +452,24 @@ def test_a_value_reported_in_a_foreign_currency_is_its_value_over_that_currency_
     assert usd['EUR'] == pytest.approx(local['EUR'] * today(), rel=1e-12), (usd['EUR'], local['EUR'] * FX_SPOT)
 
 
+@pytest.mark.parametrize('currency, reported', [('EUR', 'USD'), ('USD', 'EUR')])
+def test_a_rate_stating_no_curve_converts_on_the_curve_named_as_its_currency(currency, reported):
+    """Alone in its job, a cashflow reported in a currency whose `FxRate` states no `Interest_Rate`
+    converts at EUR's price today: no deal reaches the reporting currency's curve, and the job
+    holds it as the curve named as the currency.
+
+    Killing mutation: discovery linking only a stated `Interest_Rate`, the value converted at the
+    quote 2.2e-4 off.
+    """
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': currency, 'Discount_Rate': currency,
+                'Amount': NOTIONAL, 'Payment_Date': DELIVERY}
+    rate = {'FxRate.' + reported: {'Spot': FACTORS['FxRate.' + reported]['Spot']}}
+    frame = run([cashflow], calc={'Currency': reported}, factors=rate)['mtm']
+    local = NOTIONAL * math.exp(-{'USD': R_USD, 'EUR': R_EUR}[currency] * (DELIVERY - BASE).days / 365.0)
+    worth = local * today() if reported == 'USD' else local / today()
+    assert dict(zip(frame['Reference'], frame['Value']))['CF'] == pytest.approx(worth, rel=1e-12)
+
+
 @pytest.mark.parametrize('model', ['GBMAssetPriceTSModelImplied', 'LogVar2FJImpliedSpotModel'])
 def test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_every_row(model):
     """Under a credit Monte Carlo on flat curves, EUR simulated at a variance of 1e-12 - the implied
