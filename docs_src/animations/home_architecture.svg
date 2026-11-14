@@ -1,5 +1,5 @@
 <svg class="dv-arch" viewBox="0 0 960 536" role="img" xmlns="http://www.w3.org/2000/svg"
-     aria-label="Seats price on their own engine and GPU and send bookings and approvals to one hub. Its service has the hub engine judge each write and appends it to one log. The views, the back office's diary and the replicas are read from that log.">
+     aria-label="Seats price on their own engine and GPU and send bookings and approvals to one hub. Its service has the hub's own compute judge each write and appends it to one log. The hub's compute, the views, the back office's diary and the replicas read that log.">
 <style>
   /* Colours follow the Material scheme; the fallbacks serve the file opened on its own. */
   .dv-arch { --fg: var(--md-default-fg-color, #182230); --mut: var(--md-default-fg-color--light, #5d6b7a);
@@ -22,12 +22,16 @@
   .dv-arch .c { fill: var(--panel); stroke: var(--k); stroke-width: 1.5; filter: drop-shadow(0 1px 2px rgba(0, 0, 0, .18)); }
   .dv-arch .c.log { stroke-width: 2.5; }
   .dv-arch .copy { stroke-dasharray: 5 4; }
-  .dv-arch .chip { fill: var(--seat); }
+  .dv-arch .chip { fill: var(--k); }
   .dv-arch .ct { fill: var(--panel); font-size: 11.5px; font-weight: 700; letter-spacing: .02em; }
   .dv-arch .busy { fill: var(--panel); animation: dv-busy 1.6s ease-in-out infinite; }
   .dv-arch .blk { fill: var(--log); fill-opacity: .4; }
   .dv-arch .link { stroke: var(--log); stroke-opacity: .5; stroke-width: 2; }
-  .dv-arch .new { fill-opacity: 1; transform-box: fill-box; transform-origin: center; animation: dv-append 2.4s ease-in-out infinite; }
+  .dv-arch .chain { animation: dv-shift 3s ease-in-out infinite; }
+  .dv-arch .old { animation: dv-drop 3s ease-in-out infinite; }
+  .dv-arch .nl { animation: dv-link 3s ease-in-out infinite; }
+  .dv-arch .prev { animation: dv-age 3s ease-in-out infinite; }
+  .dv-arch .new { fill-opacity: 1; transform-box: fill-box; transform-origin: center; animation: dv-append 3s ease-in-out infinite; }
   .dv-arch marker path { fill: var(--rail); }
   .dv-arch .rail { fill: none; stroke: var(--rail); stroke-width: 1.5; marker-end: url(#dv-tip); }
   .dv-arch .flow use { fill: none; stroke-width: 5; stroke-linecap: round; stroke-dasharray: .01 18; animation: dv-flow .9s linear infinite; }
@@ -35,35 +39,43 @@
   .dv-arch .read { stroke: var(--read); fill: var(--read); }
   @keyframes dv-flow { to { stroke-dashoffset: -18; } }
   @keyframes dv-busy { 50% { opacity: .25; } }
-  @keyframes dv-append { 0%, 10% { opacity: 0; transform: scale(.3); } 35%, 85% { opacity: 1; transform: scale(1); } 100% { opacity: 0; transform: scale(1); } }
-  @media (prefers-reduced-motion: reduce) { .dv-arch .flow use, .dv-arch .new, .dv-arch .busy { animation: none; } }
+  /* One cycle: a block appends on the right and the one before it pales, then the chain moves one place left and its oldest block leaves. */
+  @keyframes dv-append { 0%, 10% { opacity: 0; transform: scale(.3); } 25%, 100% { opacity: 1; transform: scale(1); } }
+  @keyframes dv-age { 0%, 10% { fill-opacity: 1; } 25%, 100% { fill-opacity: .4; } }
+  @keyframes dv-link { 0%, 10% { opacity: 0; } 25%, 100% { opacity: 1; } }
+  @keyframes dv-shift { 0%, 55% { transform: translateX(0); } 90%, 100% { transform: translateX(-34px); } }
+  @keyframes dv-drop { 0%, 55% { opacity: 1; } 85%, 100% { opacity: 0; } }
+  @media (prefers-reduced-motion: reduce) { .dv-arch .flow use, .dv-arch .chain, .dv-arch .old, .dv-arch .nl, .dv-arch .prev, .dv-arch .new, .dv-arch .busy { animation: none; } }
 </style>
 <defs>
   <marker id="dv-tip" viewBox="0 0 8 8" refX="7" refY="4" markerWidth="6" markerHeight="6" orient="auto"><path d="M0,0 8,4 0,8z"/></marker>
   <path id="dv-mkt" d="M210,56 C300,56 410,96 410,207"/>
   <path id="dv-book" d="M224,238 H375"/>
   <path id="dv-view" d="M380,264 H225"/>
-  <path id="dv-judge" d="M500,213 V133"/>
+  <path id="dv-judge" d="M475,213 V157"/>
+  <path id="dv-fold" d="M610,372 V157"/>
   <path id="dv-app" d="M475,289 V367"/>
   <path id="dv-conf" d="M780,236 H575"/>
   <path id="dv-diary" d="M634,405 C760,405 850,392 850,295"/>
   <path id="dv-bell" d="M634,470 H775"/>
+  <clipPath id="dv-win"><rect x="368" y="420" width="264" height="38"/></clipPath>
 </defs>
 <rect class="z seat" x="10" y="110" width="210" height="262" rx="14"/>
 <rect class="z hub" x="350" y="10" width="300" height="516" rx="14"/>
 <text class="zl seat" x="24" y="132">Seats: compute is local</text>
 <text class="zl hub" x="364" y="34">Hub: the single writer</text>
 <g class="rail">
-  <use href="#dv-mkt"/><use href="#dv-book"/><use href="#dv-view"/><use href="#dv-judge"/><use href="#dv-app"/>
+  <use href="#dv-mkt"/><use href="#dv-book"/><use href="#dv-view"/><use href="#dv-judge"/><use href="#dv-app"/><use href="#dv-fold"/>
   <use href="#dv-conf"/><use href="#dv-diary"/><use href="#dv-bell" class="copy"/>
 </g>
 <g class="flow write"><use href="#dv-mkt"/><use href="#dv-book"/><use href="#dv-judge"/><use href="#dv-app"/><use href="#dv-conf"/></g>
-<g class="flow read"><use href="#dv-view"/><use href="#dv-diary"/><use href="#dv-bell"/></g>
+<g class="flow read"><use href="#dv-fold"/><use href="#dv-view"/><use href="#dv-diary"/><use href="#dv-bell"/></g>
 <text class="el s" x="228" y="46">quotes, fixings</text>
 <text class="el" x="292" y="229">bookings, approvals</text>
 <text class="el" x="292" y="282">views</text>
-<text class="el s" x="510" y="178">validate before write</text>
+<text class="el s" x="485" y="189">validate before write</text>
 <text class="el s" x="485" y="332">append</text>
+<text class="el e" x="602" y="332">facts</text>
 <text class="el" x="715" y="227">confirmed, settled</text>
 <text class="el e" x="826" y="345">diary, settlement file, calls</text>
 <text class="el" x="707" y="461">doorbell, then pull</text>
@@ -73,33 +85,40 @@
 <rect class="c seat" x="24" y="144" width="182" height="100" rx="8"/>
 <text class="h" x="115" y="169">Trading and structuring</text>
 <text class="m" x="115" y="188">Web UI &#183; Excel &#183; DV_MCP</text>
-<rect class="chip" x="41" y="204" width="148" height="24" rx="12"/>
+<rect class="chip seat" x="41" y="204" width="148" height="24" rx="12"/>
 <circle class="busy" cx="56" cy="216" r="3.5"/>
 <text class="ct" x="122" y="220">own engine and GPU</text>
 <rect class="c seat" x="24" y="258" width="182" height="100" rx="8"/>
 <text class="h" x="115" y="283">Risk and control</text>
 <text class="m" x="115" y="302">Web UI &#183; Python</text>
-<rect class="chip" x="41" y="318" width="148" height="24" rx="12"/>
+<rect class="chip seat" x="41" y="318" width="148" height="24" rx="12"/>
 <circle class="busy" cx="56" cy="330" r="3.5" style="animation-delay: -.8s"/>
 <text class="ct" x="122" y="334">own engine and GPU</text>
-<rect class="c hub" x="440" y="52" width="196" height="76" rx="8"/>
-<text class="h" x="538" y="78">Hub engine</text>
-<text class="m" x="538" y="97">judges each write,</text>
-<text class="m" x="538" y="113">official marks and xVA</text>
+<rect class="c hub" x="440" y="44" width="196" height="108" rx="8"/>
+<text class="h" x="538" y="66">Hub compute</text>
+<text class="m" x="538" y="84">end-of-day marks and xVA,</text>
+<text class="m" x="538" y="100">folds and caches</text>
+<rect class="chip hub" x="464" y="114" width="148" height="24" rx="12"/>
+<circle class="busy" cx="479" cy="126" r="3.5" style="animation-delay: -.4s"/>
+<text class="ct" x="545" y="130">own engine and GPU</text>
 <rect class="c hub" x="380" y="213" width="190" height="76" rx="8"/>
 <text class="h" x="475" y="247">DV_Service</text>
 <text class="m" x="475" y="266">verbs and grants</text>
 <rect class="c log" x="366" y="372" width="268" height="140" rx="8"/>
 <text class="h" x="500" y="396">Spine home</text>
 <text class="m" x="500" y="414">one log, never edited</text>
-<path class="link" d="M409,439h8m26,0h8m26,0h8m26,0h8m26,0h8m26,0h8"/>
-<rect class="blk" x="383" y="426" width="26" height="26" rx="5"/>
+<g clip-path="url(#dv-win)"><g class="chain">
+<path class="link old" d="M409,439h8"/>
+<path class="link" d="M443,439h8m26,0h8m26,0h8m26,0h8"/>
+<path class="link nl" d="M579,439h8"/>
+<rect class="blk old" x="383" y="426" width="26" height="26" rx="5"/>
 <rect class="blk" x="417" y="426" width="26" height="26" rx="5"/>
 <rect class="blk" x="451" y="426" width="26" height="26" rx="5"/>
 <rect class="blk" x="485" y="426" width="26" height="26" rx="5"/>
 <rect class="blk" x="519" y="426" width="26" height="26" rx="5"/>
-<rect class="blk" x="553" y="426" width="26" height="26" rx="5"/>
+<rect class="blk prev" x="553" y="426" width="26" height="26" rx="5"/>
 <rect class="blk new" x="587" y="426" width="26" height="26" rx="5"/>
+</g></g>
 <text class="m" x="500" y="476">every view is a fold of it:</text>
 <text class="m" x="500" y="494">positions, P&amp;L, cash, calls, diary</text>
 <rect class="c ext" x="780" y="213" width="170" height="76" rx="8"/>

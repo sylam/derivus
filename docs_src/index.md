@@ -27,9 +27,10 @@ number beside the theory that specifies it.
 1. **One log, never edited.** Bookings, amendments, elections, fixings, market declarations,
    approvals and official closes are appended to the spine home by one writer. Positions, P&L, cash,
    collateral calls and the settlement diary are folded from the log and never stored as truth.
-2. **Compute lives at the seat.** A job document is the whole program, so a seat prices a quote, a
-   what-if or any other job on its own engine and GPU. The hub's engine judges each write before it
-   lands and runs the official marks and xVA.
+2. **Compute lives at the seat and at the hub.** A job document is the whole program, so a seat
+   prices a quote, a what-if or any other job on its own engine and GPU. The hub has its own, which
+   judges each write before it lands, folds the log into the views and runs the official marks and
+   xVA at the end of day.
 3. **The back office closes the loop on the same log.** It reads the diary, the settlement file and
    the collateral calls, and files its confirmations and settlements back as facts.
 
