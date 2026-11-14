@@ -287,6 +287,19 @@ def test_the_skew_reserve_is_the_minimum_norm_contraction():
     assert 'Skew_Reserve' not in blank['Results']['mtm'].columns
 
 
+#: the four-leg reserve book: one autocall on one walk, two bought and two sold
+LEGS = [('AC1', 'Buy'), ('AC2', 'Sell'), ('AC3', 'Buy'), ('AC4', 'Sell')]
+
+
+def _legs(rows, line=True):
+    """A `Greeks: First` valuation of the autocall `rows`, (reference, side) each, under the live
+    NIG factor, its reserve line written or left blank."""
+    factor = dict(LIVE_NIG, Skew_Gradient=SKEW_GRADIENT, Stickiness_Band=STICKINESS_BAND)
+    return _job(_base(greeks='First'), [
+        {'Instrument': {'.Deal': _autocall(Reference=reference, Buy_Sell=side)}}
+        for reference, side in rows], **_priced(factor=factor if line else LIVE_NIG))
+
+
 def test_the_reserve_is_per_deal_beside_the_portfolio():
     """Every deal's OWN `Skew_Reserve` on the mtm frame beside the portfolio's, on a four-deal
     book quoting two sides.
@@ -299,23 +312,41 @@ def test_the_reserve_is_per_deal_beside_the_portfolio():
 
     Killing mutation: a deal's own reserve left unwritten.
     """
-    legs = [('AC1', 'Buy'), ('AC2', 'Sell'), ('AC3', 'Buy'), ('AC4', 'Sell')]
-    factor = _priced(factor=dict(LIVE_NIG, Skew_Gradient=SKEW_GRADIENT,
-                                 Stickiness_Band=STICKINESS_BAND))
-
     def reserves(rows, name):
-        frame = _run(_job(_base(greeks='First'), [
-            {'Instrument': {'.Deal': _autocall(Reference=reference, Buy_Sell=side)}}
-            for reference, side in rows], **factor), name)['Results']['mtm']
+        frame = _run(_legs(rows), name)['Results']['mtm']
         return dict(zip(frame['Reference'], frame['Skew_Reserve']))
 
-    book, alone = reserves(legs, 'four_deal'), reserves(legs[:1], 'one_deal')
-    per = [book[reference] for reference, _ in legs]
+    book, alone = reserves(LEGS, 'four_deal'), reserves(LEGS[:1], 'one_deal')
+    per = [book[reference] for reference, _ in LEGS]
     assert all(x > 0.0 for x in per), per
     assert abs(book['root']) <= sum(abs(x) for x in per), (book['root'], per)
     assert abs(book['root']) < 0.5 * sum(abs(x) for x in per), (book['root'], per)
     assert alone['root'].hex() == alone['AC1'].hex(), alone
     assert book['AC1'].hex() == alone['AC1'].hex(), (book['AC1'], alone['AC1'])
+
+
+#: The bound on the four-leg book's peak with its line written over its peak with the line blank.
+RESERVE_PEAK_RATIO = 3.0
+
+
+@pytest.mark.card
+def test_the_per_deal_sweep_runs_only_on_a_written_line_and_holds_no_tape():
+    """A deal's own reserve is one reverse sweep per deal against every leaf, run only where a
+    factor wrote a reserve line: the four-leg book with its line blank runs no sweep, and with it
+    written peaks on the device within `RESERVE_PEAK_RATIO` of the blank book.
+
+    Readings at 8,192 paths, float64: blank and written 87 MiB each, the blank book 151 as a
+    process's first run; with the sweep pruned to the two leaves the written book peaks at 1,246.
+
+    Killing mutations: the sweep pruned to the two leaves each line names - the peak ratio; the
+    reserve line read off a factor that declares one - the blank book reports a sweep.
+    """
+    blank, blank_peak = _peak(_legs(LEGS, line=False), 'blank_book')
+    written, peak = _peak(_legs(LEGS), 'written_book')
+    assert 'Deal_Reserve_Time' not in blank['Stats'], 'the blank line ran the per-deal sweep'
+    assert 'Deal_Reserve_Time' in written['Stats'], 'the written line ran no per-deal sweep'
+    assert peak < RESERVE_PEAK_RATIO * blank_peak, 'written {:.1f} MiB, blank {:.1f}'.format(
+        peak, blank_peak)
 
 
 def test_a_logvar2fj_autocall_is_valued_on_its_own_walk_in_any_book():

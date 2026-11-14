@@ -2369,7 +2369,7 @@ class BaseValuation(Calculation):
         shared_mem.reserve_line = {
             key: {name: factor.declared[name] for name in utils.LogVar2FJ.RESERVE_LINE}
             for key, factor in self.static_factors.items()
-            if all(name in getattr(factor, 'declared', {}) for name in utils.LogVar2FJ.RESERVE_LINE)}
+            if getattr(factor, 'declared', {}).get('Skew_Gradient')}
         # a PER-DEAL reserve needs each deal's own value still on the tape, and nothing else here
         # does - so a document carrying no reserve line pays nothing for it
         shared_mem.keep_tensor = bool(shared_mem.reserve_line) and calc_greeks is not None

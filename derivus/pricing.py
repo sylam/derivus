@@ -1497,8 +1497,9 @@ def deal_reserves(shared, deals, corrections=None):
     """Each deal's OWN forward-skew reserve, written on its result block beside the portfolio's:
     the same reserve line composed with that deal's own LAST-BUCKET `(dPV/dBeta, dPV/dRho_S)`.
 
-    ONE REVERSE SWEEP PER DEAL, against the two leaves each line names and nothing else, so what
-    it costs is the walk's backward and not the whole gradient's. The batched form
+    ONE REVERSE SWEEP PER DEAL, against every leaf, of which it reads the two each line names: a
+    sweep pruned to those two never reads most of a checkpointed segment's recomputed tape, which
+    then stays held with the graph, a deal's on top of the last's. The batched form
     (`utils.vmapped_jacobian`) is closed here: the checkpointed walk RE-DRAWS its normals in the
     backward and vmap refuses a random operation inside it. `corrections` is each deal's own
     boundary term, added before the sweep so a deal whose trigger is decided on simulated state
@@ -1508,18 +1509,18 @@ def deal_reserves(shared, deals, corrections=None):
     kept = [deal for deal in deals if 'tensor' in (deal.Calc_res or {})]
     names = [utils.check_scope_name(utils.Factor(key.type, key.name + (name,)))
              for key in getattr(shared, 'reserve_line', {}) for name in ('Beta', 'Rho_S')]
-    leaves = [(name, tensor) for key, tensor in shared.calc_greeks
+    leaves = [(name, i) for i, (key, _) in enumerate(shared.calc_greeks)
               for name in [utils.check_scope_name(key)] if name in names]
     if not (kept and leaves):
         return
+    tensors = [tensor for _, tensor in shared.calc_greeks]
     parts = corrections or {}
     for deal in kept:
         value = sum(parts.get(deal.Instrument.field.get('Reference'), ()),
                     deal.Calc_res.pop('tensor').sum())
-        rows = torch.autograd.grad([value], [tensor for _, tensor in leaves],
-                                   allow_unused=True, retain_graph=True)
-        one = skew_reserve(shared, {name: np.array([float(row.reshape(-1)[-1])])
-                                    for (name, _), row in zip(leaves, rows) if row is not None})
+        rows = torch.autograd.grad([value], tensors, allow_unused=True, retain_graph=True)
+        one = skew_reserve(shared, {name: np.array([float(rows[i].reshape(-1)[-1])])
+                                    for name, i in leaves if rows[i] is not None})
         if one is not None:
             deal.Calc_res['Skew_Reserve'] = one
 

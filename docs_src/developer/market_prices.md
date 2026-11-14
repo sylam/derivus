@@ -591,10 +591,13 @@ reads nothing else.
 **Where the forward smile is not quoted, the factor carries a reserve line**, `Skew_Gradient` and
 `Stickiness_Band`, from which a deal reporting `Greeks: First` composes `Skew_Reserve`, the parameter
 move being the minimum-norm one, per deal and for the set, the set's being its deals contracted
-rather than summed. The fit's own reported rows sit on grid block ends, since a window end off one
-splits a mixer and moves θ\*; the factor's line is read again at the declared window off θ\*.
+rather than summed. A deal's reserve is one reverse sweep per deal against every leaf, run only
+where a line is written. The fit's own reported rows sit on grid block ends, since a window end off
+one splits a mixer and moves θ\*; the factor's line is read again at the declared window off θ\*.
 **Held by** `test_logvar2fj_json.py::test_the_skew_reserve_is_the_minimum_norm_contraction`,
-`test_logvar2fj_json.py::test_the_reserve_is_per_deal_beside_the_portfolio`.
+`test_logvar2fj_json.py::test_the_reserve_is_per_deal_beside_the_portfolio`,
+`test_logvar2fj_json.py::test_the_per_deal_sweep_runs_only_on_a_written_line_and_holds_no_tape`
+(CUDA only).
 
 ### Quote-space risk {#logvar2fj-quote-risk}
 
