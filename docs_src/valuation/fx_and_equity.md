@@ -25,7 +25,9 @@ $$F=R\Big(\big(\tfrac{H}{S}\big)^{\mu+\lambda}\Phi(\eta z)+\big(\tfrac{H}{S}\big
 $$x_1=\frac{\log(S/K)}{v}+(1+\mu)v,\quad x_2=\frac{\log(S/H)}{v}+(1+\mu)v,\quad y_1=\frac{\log(H^2/(SK))}{v}+(1+\mu)v,\quad y_2=\frac{\log(H/S)}{v}+(1+\mu)v,\quad z=\frac{\log(H/S)}{v}+\lambda v$$
 
 $E$ is the knock-in's rebate paid at expiry if never touched and $F$ the knock-out's rebate paid at the
-touch.
+touch. The argument $\mu^2\sigma^2+2r$ of $\lambda$'s root is floored smoothly at zero (a quadratic blend
+over $\pm0.005$), so a rate negative enough to turn the root complex prices at $\lambda=0$. The touches
+and the partial-time rebate below read the same $\lambda$.
 
 | Barrier type | $K>H$ | $K\le H$ |
 |---|---|---|
@@ -65,16 +67,8 @@ endpoints are tested.
 
 A one-touch pays **Cash_Payoff** if the barrier is touched before expiry, at the touch
 (**Payment_Timing** `Touch`) or at expiry (`Expiry`); a no-touch pays it at expiry if the barrier is never
-touched. The no-touch value is
-
-$$e^{-r\tau}\Big[\Phi(\eta x_2-\eta\sigma\sqrt\tau)-\Big(\frac{H}{S(t)}\Big)^{2\mu}\Phi(\eta y_2-\eta\sigma\sqrt\tau)\Big]$$
-
-and a one-touch paid at expiry is $e^{-r\tau}$ less it. A one-touch paid at the touch is
-
-$$\Big(\frac{H}{S(t)}\Big)^{\mu+\lambda}\Phi(\eta z)+\Big(\frac{H}{S(t)}\Big)^{\mu-\lambda}\Phi(\eta z-2\eta\lambda\sigma\sqrt\tau)$$
-
-with $z$ and $\lambda$ as above; the argument $\mu^2\sigma^2+2r$ of $\lambda$'s root is floored smoothly at
-zero (a quadratic blend over $\pm0.005$). The vol is read at the barrier's moneyness.
+touched. Per unit of payoff the no-touch is $E/R$ of Single Barrier Options, a one-touch paid at expiry
+$e^{-r\tau}$ less it and a one-touch paid at the touch $F/R$. The vol is read at the barrier's moneyness.
 On the scenario grid the touch probability $P_i$ is the bridge probability above: before a touch the value
 is $(1-P_i)$ times the closed form; a touched one-touch paid at expiry carries $P_i\,e^{-r\tau}$, one paid at
 the touch settles $P_i-P_{i-1}$ on $t_i$. A no-touch reports $(1-P_i)(e^{-r\tau}-\text{one-touch})$.
@@ -122,8 +116,8 @@ $$\mathcal P(p_1,\dots,p_8;\rho_1,\rho_2)=F\Big[M(p_1,p_2;\rho_1)-\big(\tfrac{H}
 - **Cash_Rebate** is an absolute amount, paid at the touch by a knock-out and at expiry by a knock-in never
   touched. Its legs are first-passage values over the window: for a start window the no-touch
   probability of $E$ (still discounted from expiry) and the touch value of $F$, both with $\tau_\ell$ in
-  place of $\tau$; for an end window their bivariate analogues with correlation $\rho$, a path already
-  beyond the barrier at $t_\ell$ touching there.
+  place of $\tau$; for an end window their bivariate analogues with correlation $\rho$ and the same
+  $\lambda$, a path already beyond the barrier at $t_\ell$ touching there.
 - $\sigma$ is one surface vol at the strike's moneyness and the expiry, used for both the window and the
   remaining life; using one vol for the two periods is an approximation, unmeasured.
 - On the scenario grid the bridge touch probability of Single Barrier Options accumulates on the rows

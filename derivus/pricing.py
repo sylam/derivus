@@ -1612,6 +1612,27 @@ def interpolate(mtm, shared, time_grid, deal_data, interpolate_grid=True):
     return interp_to_mtm_grid(mtm, time_grid, deal_data, interpolate_grid=False)
 
 
+def touch_root(mu, r):
+    """`lam` of a unit discounted at `r` from its first touch, per unit of vol: the root of
+    ``mu**2 + 2 * r``, floored smoothly at zero where a negative rate turns it complex."""
+    return torch.sqrt(smooth_relu(mu * mu + 2.0 * r))
+
+
+def first_passage(log_bar, sigma, b, tenor, eta, r=None):
+    """One unit paid when the spot first touches a barrier `log_bar` away in logs within `tenor`,
+    discounted at `r` from the touch; with no `r`, the probability of a touch.
+
+    With ``x = log_bar / sigma`` and ``mu = b / sigma - sigma / 2`` it is the sum over ``s = 1, -1``
+    of ``exp((mu + s * lam) * x) * N(eta * (x / sqrt(tenor) + s * lam * sqrt(tenor)))``, `lam` being
+    `touch_root` under a rate and `mu` without one.
+    """
+    mu = b / sigma - 0.5 * sigma
+    lam = mu if r is None else touch_root(mu, r)
+    x, root = log_bar / sigma, torch.sqrt(tenor)
+    return (utils.scaled_norm_cdf((mu + lam) * x, eta * (x / root + lam * root)) +
+            utils.scaled_norm_cdf((mu - lam) * x, eta * (x / root - lam * root)))
+
+
 def getbarrierpayoff(direction, eta, phi, strike, H):
     """The single-barrier closed form of Merton, Reiner and Rubinstein for one deal, as a function
     of a scenario's `(sigma, expiry, cash_rebate, b, r, spot, barrier)`.
@@ -1621,11 +1642,10 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
     - strike * exp(-r * expiry) * w**(p * mu) * N(s * (x - vol)))``::
 
         A = leg(x1, phi, 0)    B = leg(x2, phi, 0)    C = leg(y1, eta, 2)    D = leg(y2, eta, 2)
-        E = exp(-r * expiry) * (N(eta * (x2 - vol)) - w**(2 * mu) * N(eta * (y2 - vol)))
-        F = w**(mu + lam) * N(eta * z) + w**(mu - lam) * N(eta * (z - 2 * lam * vol))
 
-    A knock-in is its `KNOCK_IN` row plus the rebate times E, a knock-out the vanilla A less that
-    row plus the rebate times F. A power of `w` overflows at a low vol where the tail it multiplies
+    A knock-in is its `KNOCK_IN` row plus the rebate paid at expiry where the barrier is never
+    touched, a knock-out the vanilla A less that row plus the rebate paid at the touch, both read
+    off `first_passage`. A power of `w` overflows at a low vol where the tail it multiplies
     underflows, so every term is a `utils.scaled_norm_cdf`.
     """
     weights = KNOCK_IN[phi * eta > 0, (strike > H) == (phi == OPTION_CALL)]
@@ -1647,14 +1667,12 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
 
         legs = ((x1, phi, 0.0), (x2, phi, 0.0), (x1 + 2.0 * d, eta, 2.0), (y2, eta, 2.0))
         option = sum(weight * leg(*terms) for weight, terms in zip(weights, legs) if weight)
+        if not cash_rebate:
+            return option
         if direction == BARRIER_IN:
-            rebate = (utils.scaled_norm_cdf(-r * expiry, eta * (x2 - vol)) -
-                      utils.scaled_norm_cdf(-r * expiry + 2.0 * mu * log_bar, eta * (y2 - vol)))
+            rebate = torch.exp(-r * expiry) * (1.0 - first_passage(log_bar, sigma, b, expiry, eta))
         else:
-            lam = torch.sqrt(mu * mu + 2.0 * r / sigma2)
-            z = d + lam * vol
-            rebate = (utils.scaled_norm_cdf((mu + lam) * log_bar, eta * z) +
-                      utils.scaled_norm_cdf((mu - lam) * log_bar, eta * (z - 2.0 * lam * vol)))
+            rebate = first_passage(log_bar, sigma, b, expiry, eta, r)
         return option + cash_rebate * rebate
 
     return barrier_option
@@ -1673,8 +1691,8 @@ def partial_window_rebate(spot, barrier, r, b, sigma, eta, startBarrier, limit, 
     '''Per unit of rebate, a partial-time window's two rebate legs: (paid at EXPIRY if the window
     never touched, paid AT the hit). The window is [0, limit] or [limit, expiry].
 
-    The knock-IN convention is `getbarrierpayoff`'s E and the knock-OUT's its F, read over the
-    window instead of the whole life.
+    A start window reads both legs off `first_passage` over the window; an end window is their
+    bivariate analogue on the same `touch_root`.
 
     `limit` is SIGNED and the start window reads its sign: a window whose limit has passed is closed
     (the legs are the certain discounted rebate and nothing), and a spot already beyond a live
@@ -1682,21 +1700,10 @@ def partial_window_rebate(spot, barrier, r, b, sigma, eta, startBarrier, limit, 
     window only, and go out of [0, 1] on either other branch.
     '''
     h = torch.log(barrier / spot)
-    var = sigma * sigma
-    nu = b - 0.5 * var
-    mu = nu / var
-    lam = torch.sqrt(mu * mu + 2.0 * r / var)
     window = limit.clamp(min=1e-6)
-    v_lim, v_exp = sigma * torch.sqrt(window), sigma * torch.sqrt(expiry)
-    e2, e4 = (-h + nu * window) / v_lim, (h + nu * window) / v_lim
-    z_lim, z_exp = h / v_lim + lam * v_lim, h / v_exp + lam * v_exp
-    reflect = torch.exp(2.0 * mu * h)
-    plus, minus = torch.exp(h * (mu + lam)), torch.exp(h * (mu - lam))
-    z_lim2, z_exp2 = z_lim - 2.0 * lam * v_lim, z_exp - 2.0 * lam * v_exp
-
     if startBarrier:
-        no_touch = utils.norm_cdf(eta * e2) - reflect * utils.norm_cdf(eta * e4)
-        touch = plus * utils.norm_cdf(eta * z_lim) + minus * utils.norm_cdf(eta * z_lim2)
+        no_touch = 1.0 - first_passage(h, sigma, b, window, eta)
+        touch = first_passage(h, sigma, b, window, eta, r)
         one, zero = torch.ones_like(no_touch), torch.zeros_like(no_touch)
         beyond, closed = start_window_state(spot, barrier, eta, limit)
         no_touch, touch = torch.where(beyond, zero, no_touch), torch.where(beyond, one, touch)
@@ -1704,14 +1711,21 @@ def partial_window_rebate(spot, barrier, r, b, sigma, eta, startBarrier, limit, 
     else:
         # the window OPENS at `limit`, so each leg integrates the spot's law there against the
         # remaining life: one bivariate per reflected term, correlation sqrt(limit/expiry)
+        var = sigma * sigma
+        nu = b - 0.5 * var
+        mu, lam = nu / var, touch_root(nu / sigma, r) / sigma
+        v_lim, v_exp = sigma * torch.sqrt(window), sigma * torch.sqrt(expiry)
         rho = torch.sqrt(window / expiry)
+        e2, e4 = (-h + nu * window) / v_lim, (h + nu * window) / v_lim
         g2, g4 = (-h + nu * expiry) / v_exp, (h + nu * expiry) / v_exp
+        z_lim, z_exp = h / v_lim + lam * v_lim, h / v_exp + lam * v_exp
+        z_lim2, z_exp2 = z_lim - 2.0 * lam * v_lim, z_exp - 2.0 * lam * v_exp
         no_touch = (utils.BivN(eta * e2, eta * g2, rho) -
-                    reflect * utils.BivN(-eta * e4, eta * g4, -rho))
+                    torch.exp(2.0 * mu * h) * utils.BivN(-eta * e4, eta * g4, -rho))
         # the last term is the path already BEYOND the barrier at `limit`: it touches there, and
         # is paid discounted to `limit` rather than to a first passage after it
-        touch = (plus * utils.BivN(-eta * z_lim, eta * z_exp, -rho) +
-                 minus * utils.BivN(-eta * z_lim2, eta * z_exp2, -rho) +
+        touch = (torch.exp(h * (mu + lam)) * utils.BivN(-eta * z_lim, eta * z_exp, -rho) +
+                 torch.exp(h * (mu - lam)) * utils.BivN(-eta * z_lim2, eta * z_exp2, -rho) +
                  torch.exp(-r * window) * utils.norm_cdf(-eta * e2))
     return no_touch * torch.exp(-r * expiry), touch
 
@@ -2611,17 +2625,10 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
 
         if (1 - touched).any() and expiry[index] > 0:
 
-            root_tau = torch.sqrt(exp)
-            mu = b_t / sig - 0.5 * sig
-            log_vol = torch.log(barrier_t / s_t) / sig
-            d = log_vol / root_tau
-            # paid at expiry is the form paid on the touch with nothing discounted to the touch
-            # (`lam` is `mu`), under the expiry's discount
-            lam, discount = (mu, -r_t * exp) if timing == 'Expiry' else (
-                torch.sqrt(smooth_relu(mu * mu + 2.0 * r_t)), 0.0)
-            payoff = (
-                utils.scaled_norm_cdf(discount + (mu - lam) * log_vol, eta * (d - lam * root_tau)) +
-                utils.scaled_norm_cdf(discount + (mu + lam) * log_vol, eta * (d + lam * root_tau)))
+            # paid at expiry is the probability of a touch under the expiry's discount
+            log_bar = torch.log(barrier_t / s_t)
+            payoff = first_passage(log_bar, sig, b_t, exp, eta, r_t) if timing == 'Touch' else (
+                torch.exp(-r_t * exp) * first_passage(log_bar, sig, b_t, exp, eta))
         else:
             payoff = 0.0
 

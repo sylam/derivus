@@ -39,6 +39,7 @@ import derivus
 from derivus import utils
 from derivus.config import CustomJsonEncoder
 from test_option_settlement_json import lag
+from test_partial_barrier_json import _deal as _partial
 
 BASE = pd.Timestamp('2024-06-28')
 X0, R_USD, R_EUR, SIGMA = 1.25, 0.04, 0.02, 0.15
@@ -48,7 +49,6 @@ B_CARRY = R_USD - R_EUR
 #: the carry rate the closed form reads: the pair's carry between the two spot dates, two business
 #: days on from the base date and from the expiry, over the year to the expiry
 B_SPOT = B_CARRY * (EXPIRY_D + lag(BASE + pd.DateOffset(days=EXPIRY_D), 2) - lag(BASE, 2)) / EXPIRY_D
-
 
 
 def _surface(sigma):
@@ -95,9 +95,12 @@ def _touch(kind, **terms):
                  'Barrier_Type': 'Up', 'Barrier_Price': 1.40}, **terms)
 
 
-def _run(deal, base=BASE, sigma=SIGMA):
+def _run(deal, base=BASE, sigma=SIGMA, rate=R_USD):
+    """`deal`'s mark, the surface flat at `sigma` and the USD curve at `rate` with the carry held."""
     factors = dict(FACTORS, **{
         'FXVol.EUR.USD': dict(FACTORS['FXVol.EUR.USD'], Surface=_surface(sigma))})
+    for name, level in (('InterestRate.USD', rate), ('InterestRate.EUR', rate - B_CARRY)):
+        factors[name] = dict(factors[name], Curve=utils.Curve([], [[0.0, level], [5.0, level]]))
     job = {'Calc': {
         'Calculation': {'Object': 'BaseValuation', 'Base_Date': base, 'Currency': 'USD',
                         'MCMC_Simulations': 1},
@@ -229,6 +232,37 @@ def test_a_barrier_out_of_reach_at_a_low_vol_is_its_certain_value(name):
     """
     deal, certain = OUT_OF_REACH[name]
     assert _run(deal, sigma=0.001) == pytest.approx(certain, rel=1e-12, abs=1e-12)
+
+
+#: `(Up|Down, barrier, USD rate)`. `mu**2 + 2 * r` is 0.0034 at a zero rate, so it is negative at
+#: -1% and inside the floor's blend at -0.1%
+FLOORED = [('Up', 1.40, -0.01), ('Down', 1.12, -0.001)]
+
+
+@pytest.mark.parametrize('side,barrier,rate', FLOORED)
+def test_every_rebate_is_the_touch_where_its_root_is_floored(side, barrier, rate):
+    """Per unit, a knock-out's rebate is the one-touch paid at the touch and a knock-in's the
+    no-touch: on the single barrier, on a partial start window over the whole life and on an end
+    window opened at the base date. Where `touch_root` floors the root of `mu**2 + 2 * r` the four
+    agree only while each reads that one root.
+
+    Killing mutations: the floor dropped (`touch_root` as `torch.sqrt(mu * mu + 2.0 * r)`), every
+    row at -1% not a number; a reader taking its own root (the end window's `lam` as
+    `torch.sqrt(mu * mu + 2.0 * r / var)`), not a number at -1% and its rebate 0.014% high at -0.1%.
+    """
+    def rebate_leg(deal):
+        return (_run(dict(deal, Cash_Rebate=REBATE), rate=rate) - _run(deal, rate=rate)) / REBATE
+
+    for knock, kind, terms in (('Out', 'FXOneTouchOption', {'Payment_Timing': 'Touch'}),
+                               ('In', 'FXNoTouchOption', {})):
+        touch = _run(_touch(kind, Barrier_Type=side, Barrier_Price=barrier, **terms), rate=rate)
+        barrier_type = '%s_And_%s' % (side, knock)
+        deals = [_deal(barrier_type, barrier, 1.25, 'Call', 0.0)] + [
+            dict(_partial(barrier_type, barrier, at_start=at, limit_days=limit), Reference='BR')
+            for at, limit in (('Yes', EXPIRY_D), ('No', 0))]
+        for deal in deals:
+            assert rebate_leg(deal) == pytest.approx(touch / NOTIONAL, rel=1e-11), (
+                knock, deal['Object'], deal.get('Barrier_At_Start'))
 
 
 def test_a_second_batch_reads_the_tenors_the_first_cached():

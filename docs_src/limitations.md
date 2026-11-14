@@ -102,6 +102,12 @@ Grouped by where a validator meets them.
   `getpartialbarrierpayoff` multiplies each power of $H/S$ onto its bivariate tail, where the single
   barrier and the touch add the two in logs. An up barrier 12% from the spot reads NaN at a 0.5% vol
   in single precision and at 0.2% in double; every reading at 1% is finite.
+- **A unit paid at the touch reads $\lambda$ floored at zero under a negative rate** (2026-11-14).
+  `touch_root` floors the argument $\mu^2\sigma^2+2r$ of $\lambda$'s root smoothly at zero, binding
+  below 0.005, where the exact value has no real root. It reaches a knock-out's rebate, the one-touch
+  paid at the touch and the partial-time knock-out's rebate. Against the first-passage integral on a
+  one-year touch 12% from the spot at a 15% vol and a 2% carry: exact at a rate of 0.1% and above,
+  0.003% low at zero, 0.014% at -0.1%, 0.15% at -0.5%, 0.36% at -1% and 0.8% at -2%.
 - **The FX range accrual's simulated fixings carry no boundary correction.** A fixing after the
   base date is the path's own inclusive indicator, a step on outer state that `pv_fx_range_accrual`
   registers no `BoundarySet` for, so a credit Monte Carlo's sensitivities drop its flux on every row
