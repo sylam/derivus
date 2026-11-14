@@ -678,7 +678,8 @@ the trade's. `run` uses `cls.apply`, so a subclassing gate gets its mutation. An
 
 **Nothing drawn is stored.** The node saves its inputs, not its draws: the inner rows are the
 canonical block's and a LogVar2FJ walk's shocks are keyed by `Quasi_Seed` and the segment, so the
-replay draws again what the forward drew. **Held by** the `…_bit_identical_with_the_node_on` tests in `tests/test_recompute_inner_mc.py` and
+replay draws again what the forward drew, and under `Deterministic_Kernels` its gradient is the
+taped one to the bit. **Held by** the `…_bit_identical_with_the_node_on` tests in `tests/test_recompute_inner_mc.py` and
 `tests/test_recompute_equity_pricers.py`, by `array_equal`, since a desynchronised stream prices
 right and differentiates wrong.
 

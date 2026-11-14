@@ -13,9 +13,12 @@ second `Quasi_Seed` moves it by its Monte Carlo error.
 
 THE GRADIENT GATE IS `array_equal` AND NOT A TOLERANCE. The replay is the same kernels on the same
 inputs in the same order, and a tolerance would let a desynchronised stream through as "close
-enough". Measured bit-identical on both paths, base valuation (7 factors) and CVA (14), while the
-smallest stream mutation moves the gradient by 1.2e-04 relative. Also GRID-INVARIANT: re-taken on
-`0d 1m(1m)`, `0d 2m(2m)` and `0d 3m(3m)`, with `Dynamic_Scenario_Dates` off and on.
+enough". Every gradient compared is taken under `Deterministic_Kernels`: free, the device adds a
+vol node's gradient over a strip's fixings in an order that varies from run to run, and one path
+read twice differs in the last bits. Measured bit-identical on both paths, base valuation (7
+factors) and CVA (14), while the smallest stream mutation moves the gradient by 1.2e-04 relative.
+Also GRID-INVARIANT: re-taken on `0d 1m(1m)`, `0d 2m(2m)` and `0d 3m(3m)`, with
+`Dynamic_Scenario_Dates` off and on.
 
 WHERE THE REPLAY RUNS IS WHERE ITS DEFECTS ARE VISIBLE. `backward()` runs once per pricing block and
 only when a gradient is asked for - 1 forward under base valuation, 6 under exposure - so the
@@ -59,7 +62,7 @@ def baseval(deal, greeks=False, sims=1 << 12, recompute='No'):
     """(price, the WHOLE first-order gradient vector). One scenario, so the pricer's inner Monte
     Carlo, the canonical block's rows, is the entire simulation."""
     overrides = {'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Recompute_Inner_MC': recompute,
-                 'Greeks': 'First' if greeks else 'No'}
+                 'Greeks': 'First' if greeks else 'No', 'Deterministic_Kernels': 'Yes'}
     _, out = run_baseval(tarf._cfg(deal, tarf.SPOT), overrides=overrides)
     rows = out['Results']['mtm']
     price = float(rows[rows['Reference'] == 'TARF1']['Value'].iloc[0])
@@ -72,7 +75,7 @@ def baseval(deal, greeks=False, sims=1 << 12, recompute='No'):
 
 
 def cmc(deal, gradient=False, recompute='No', batches=1, batch=512, mcmc=128,
-        deterministic='No'):
+        deterministic='Yes'):
     """(cva, mtm profile, the WHOLE CVA gradient vector, cashflows). 512 scenarios, so the
     boundary correction has a population to fit a kernel to."""
     overrides = {
@@ -176,6 +179,7 @@ def replayed(config, grid, batch, inner, cap=None, recompute='Yes'):
         'Time_grid': grid, 'Batch_Size': batch, 'Simulation_Batches': 1, 'Random_Seed': 1,
         'Tenor_Offset': 0.0, 'MCMC_Simulations': inner, 'Deflation_Interest_Rate': 'USD',
         'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': recompute,
+        'Deterministic_Kernels': 'Yes',
         'Credit_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes'}}
@@ -218,9 +222,9 @@ def test_the_streamed_strip_holds_its_peak_and_the_unstreamed_gradient(caplog):
     the stretch its projected tape passes half of what is free, and the run peaks under
     `STREAM_PEAK_MIB` and reproduces the uncapped run's cva and gradient bit for bit.
 
-    Readings: uncapped 922 MiB as a process's first run (cuBLAS's 32 MiB workspace among it), all
+    Readings: uncapped 909 MiB as a process's first run (cuBLAS's 32 MiB workspace among it), all
     48 strips plain and each two-row block one piece, a row-step's replay measured at 19.4 MB, 466
-    over the probed row's 24 fixings; capped 224 MiB, 33 strips checkpointed and every block cut to
+    over the probed row's 24 fixings; capped 211 MiB, 33 strips checkpointed and every block cut to
     one row, the row-step 18.3 MB, its tape's, the probe's own replay having checkpointed.
 
     Killing mutations: the projection ignored, every strip walked plain - out of memory under the
@@ -282,10 +286,10 @@ def test_a_daily_grid_marks_the_weekly_dates_within_its_cap(caplog):
     replays. A row's strip reads only its own row and draws what it would in the whole block, so
     the daily grid marks every weekly date to the bit, peaking under the cap.
 
-    Readings: weekly uncapped 1,855 MiB, 1,887 as a process's first run, every block whole and
-    every strip plain; daily under the cap 251 MiB, a row-step measured at 24.1 MB, 12 to a row,
+    Readings: weekly uncapped 1,851 MiB, 1,883 as a process's first run, every block whole and
+    every strip plain; daily under the cap 243 MiB, a row-step measured at 24.1 MB, 12 to a row,
     and every block of 30 or 31 rows cut to one, 182 of its 362 strips checkpointed. Uncapped, the
-    daily grid replays its blocks whole and its strips plain at 9,544 MiB.
+    daily grid replays its blocks whole and its strips plain at 9,530 MiB.
 
     Killing mutations: the measured row ignored, every block replayed whole - out of memory under
     the cap; the vol strip handed to every piece whole - a weekly date moves by 7.3e-05 on marks
@@ -316,10 +320,9 @@ def test_a_taped_strip_that_fits_is_one_checkpoint(caplog):
     checkpoint: `dense`'s weekly run with its CVA gradient taped peaks under `TAPED_PEAK_MIB`, every
     strip but the probe's walked as one checkpoint.
 
-    Readings: 458 MiB, 490 as a process's first run, the row-step 27.6 MB taped; the chunk of four
-    fixings it replaces 610.
+    Readings: 362 MiB, 394 as a process's first run, the row-step 27.6 MB taped.
 
-    Killing mutation: the strip in `ceil(sqrt(n))` stretches whatever it projects - 718 MiB, 750 as
+    Killing mutation: the strip in `ceil(sqrt(n))` stretches whatever it projects - 640 MiB, 672 as
     a first run, a strip of twelve fixings in stretches of four.
     """
     with caplog.at_level(logging.DEBUG):

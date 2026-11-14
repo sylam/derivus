@@ -3,7 +3,7 @@
 `tests/test_recompute_inner_mc.py` states the contract on the TARF; this file makes the same
 statements about `pv_MC_AutoCallSwap` and `pv_discrete_barrier_option`, which reach the node through
 `pricing.InnerMCRecompute.run`. One file because the two share a world, a market and every
-bit-identity statement.
+bit-identity statement, each gradient taken under `Deterministic_Kernels` as that file states.
 
 THE GAP IS A NODE OUTPUT WHEN THE SIMULATION IS WHAT DECIDED IT. The autocall's coupon trigger is
 read off `Sj` inside the fixing loop, so its gap is an OUTPUT and the correction's coefficient
@@ -60,9 +60,7 @@ def _ulps(a, b):
     """Distance in representable float64 steps - the only non-arbitrary way to say "the last bit".
 
     A tolerance would be a number somebody chose; this is a count of the floats between two
-    readings, so a gate written on it cannot be widened until it passes. Used for exactly one
-    statement below, where the node legitimately sums two cotangent paths in a different order from
-    the taped engine, and it is quoted beside the defect it has to separate (1 step against 8.7%).
+    readings, so a gate written on it cannot be widened until it passes.
     """
     def ordinal(x):
         bits = x.view(np.int64)
@@ -79,6 +77,7 @@ def cmc(pricer, gradient=False, recompute='No', batch=256, mcmc=64, collateralis
         'Simulation_Batches': 1, 'Random_Seed': 1, 'Currency': 'USD', 'Tenor_Offset': 0.0,
         'MCMC_Simulations': mcmc, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes',
         'Gradient_Variables': 'Factors', 'Recompute_Inner_MC': recompute,
+        'Deterministic_Kernels': 'Yes',
         'Credit_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
             'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes' if gradient else 'No'}}
@@ -96,7 +95,7 @@ def baseval(pricer, greeks=False, sims=1 << 12, recompute='No'):
     canonical block's."""
     _, out = run_baseval(_cfg(pricer), overrides={
         'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Recompute_Inner_MC': recompute,
-        'Greeks': 'First' if greeks else 'No'})
+        'Greeks': 'First' if greeks else 'No', 'Deterministic_Kernels': 'Yes'})
     rows = out['Results']['mtm']
     price = float(rows[rows['Reference'] == DEALS[pricer]['Reference']]['Value'].iloc[0])
     if not greeks:
@@ -130,15 +129,8 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
     collateralised the exposure reads it through `C_ts_te` and the CVA gradient moves - max |delta|
     7.585440e-05 on a gradient of 8.678265e-04, 8.7%.
 
-    TWO STEPS, NOT ZERO, and only for the autocall - 12 paired repeats per pricer at a fixed seed:
-
-      autocall  off vs off  0 steps on 11 of 11 - the TAPED path reproduces itself exactly.
-                on  vs on   2 steps on 10 of 11, on entries 7 and 8 (`EquityPriceVol.EQ` 1.2).
-                off vs on   0 on 7 readings, 2 on 5. Never 1, never above 2.
-      barrier   0 steps on every one of the 35 readings, all three comparisons.
-
-    So the step IS the node's replayed backward disagreeing with itself. A defect at 8.7% and a
-    reduction at 2 ulps are not confusable.
+    The replayed gradient is the taped one to the bit, each path reproducing itself and the other
+    over 8 repeats a pricer.
 
     Killing mutation: the replay fed theta a basis point off (`spot * 1.0001`).
     """
@@ -149,14 +141,11 @@ def test_a_collateralised_gradient_is_what_the_settle_outside_rule_is_gated_on(p
         f'{pricer}: the collateralised exposure moved with the node on')
     assert all(np.array_equal(a, b) for a, b in zip(cash_off, cash_on))
     assert np.abs(grad_off).max() > 0.0, f'{pricer}: no gradient was reported'
-    steps = _ulps(grad_off, grad_on)
-    # <= 2 is the measured quantum, not a tolerance: the autocall's two states are exactly two
-    # steps apart and nothing reads between them
-    assert steps.max() <= 2, (
-        '{}: the collateralised gradient moved by {} float64 steps (max |d| {:.6g} on {:.6g}) - '
-        'that is not summation order, it is a channel the node lost:\n{}\n{}'.format(
-            pricer, int(steps.max()), float(np.abs(grad_off - grad_on).max()),
-            float(np.abs(grad_off).max()), grad_off, grad_on))
+    assert np.array_equal(grad_off, grad_on), (
+        '{}: the collateralised gradient moved by {:.6g} on {:.6g}, a channel the node lost:'
+        '\n{}\n{}'.format(
+            pricer, float(np.abs(grad_off - grad_on).max()), float(np.abs(grad_off).max()),
+            grad_off, grad_on))
 
 
 # ---------------------------------------------------------------- the value and gradient must not move
