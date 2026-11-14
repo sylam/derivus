@@ -486,10 +486,11 @@ class Calculation(object):
             isinstance(value, dict)) else [(factor, value)]
 
     def carry_fx_quotes(self, shared, base_date):
-        """Onto `shared` the calendars a process counts spot dates on and `fx_carry`, what carries
-        each FX quote back from its spot date (`utils.calc_time_grid_today_price`): for an `FxRate`
-        stating days and priced in another currency, that currency's curve, its own and its
-        `spot_lag`, each curve the one an FX forward reads, where the job holds both."""
+        """Onto `shared` the `spot_conventions` of every share and of every `FxRate` priced in another
+        currency, the pair of the two, and `fx_carry`, what carries each FX quote back from its spot
+        date (`utils.calc_time_grid_today_price`): for a rate counting days, the curve of the
+        currency it is priced in, its own and its `spot_lag`, each curve the one an FX forward
+        reads, where the job holds both."""
         def curve(currency):
             """`currency`'s curve code as `instruments.get_fx_zero_rate_factor` reads it, None where
             the job holds no rate of that name or not every part of its curve."""
@@ -501,12 +502,16 @@ class Calculation(object):
                 name, self.static_factors, self.stoch_factors, self.all_tenors) if held else None
 
         base = self.config.params['System Parameters']['Base_Currency']
-        shared.calendars, shared.fx_carry = self.config.holidays, {}
-        for key in self.all_factors:
-            factor = instruments.get_factor_component(key, self.all_factors) if key.type == 'FxRate' else None
-            lag = factor and factor.spot_lag(base_date, self.config.holidays)
-            domestic = factor and factor.get_domestic_currency(base)
-            codes = (curve(domestic), curve(key.name)) if lag and domestic != key.name else (None,)
+        shared.spot_conventions, shared.fx_carry = {}, {}
+        for key in [key for key in self.all_factors if key.type in ('EquityPrice', 'FxRate')]:
+            domestic = instruments.get_factor_component(key, self.all_factors).get_domestic_currency(
+                base) if key.type == 'FxRate' else None
+            if domestic != key.name:
+                shared.spot_conventions[key] = instruments.spot_convention(
+                    [key] + [utils.Factor('FxRate', domestic)] * bool(domestic), self.all_factors,
+                    self.config.holidays)
+            lag = shared.spot_lag(key, base_date)
+            codes = (curve(domestic), curve(key.name)) if lag and domestic else (None,)
             if all(codes):
                 shared.fx_carry[key] = codes + (lag,)
 
@@ -5528,14 +5533,13 @@ class SACCR(NettingSetCalculation):
         """An FX option's outright to its expiry, a unit of its amount's currency in the other one,
         as the engine carries a pair (`utils.calc_fx_forward`)."""
         calc = self.compiled
+        pair = [utils.check_rate_name(deal.field[key]) for key in (terms.currency, terms.underlying)]
         codes = [instruments.get_fx_and_zero_rate_factor(
-            utils.check_rate_name(deal.field[key]), calc.static_factors, calc.stoch_factors,
-            calc.all_tenors, calc.all_factors) for key in (terms.currency, terms.underlying)]
+            name, calc.static_factors, calc.stoch_factors, calc.all_tenors, calc.all_factors) for name in pair]
         return utils.calc_fx_forward(
             *codes, (deal.field[terms.expiry] - self.valuation['Base_Date']).days,
             calc.time_grid.time_grid[:1], self.shared, lag=deal.spot_lag(
-                'FxRate', utils.check_rate_name(deal.field[terms.currency]), calc.all_factors,
-                self.valuation['Base_Date'], calc.config.holidays)).item()
+                'FxRate', pair[0], calc.all_factors, self.valuation['Base_Date'], calc.config.holidays, pair[1])).item()
 
     #: How an option's P is read off the compiled factors, by its asset class.
     FORWARDS = {'IR': swap_rate, 'FX': fx_forward}

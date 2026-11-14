@@ -1522,9 +1522,10 @@ class Calculation_State(object):
         # here, at 1, so a calculation that does not batch is read without a fallback.
         self.simulation_batches = 1
         self.Report_Currency = report_currency
-        # what carries each FX quote back from its spot date (`calc_time_grid_today_price`), filled
-        # by `Calculation.carry_fx_quotes`: a state nobody filled converts at the quotes
-        self.fx_carry = {}
+        # what each quote's spot date counts (`instruments.spot_convention`) and what carries each FX
+        # quote back from it (`calc_time_grid_today_price`), filled by `Calculation.carry_fx_quotes`:
+        # a state nobody filled steps and converts at the quotes
+        self.spot_conventions, self.fx_carry = {}, {}
         self.t_Cashflows = None
         # these are shared parameter states
         self.riskneutral = nomodel == 'RiskNeutral'
@@ -1548,6 +1549,12 @@ class Calculation_State(object):
             self.quasi_seed = quasi_seed
         # the canonical inner block per inner path count - see `inner_block`
         self.t_inner_block = {}
+
+    def spot_lag(self, key, base_date):
+        """The lag (`spot_lag`) from a day, counted from `base_date`, to the spot date of the factor
+        `key`, None where `spot_conventions` holds none."""
+        convention = self.spot_conventions.get(key)
+        return convention and partial(spot_lag, base_date, convention)
 
     def resize(self, simulation_batch):
         """The paths a pricing runs on, `simulation_batch`, and the empty batch-sized block a
@@ -4766,12 +4773,20 @@ def calc_discount_rate(block, tenors_in_days, shared, multiply_by_time=True):
     return shared.t_Buffer[key_code]
 
 
-def spot_lag(base_date, business_days, bus_day, days):
-    """The calendar days from each of `days`, counted from `base_date`, to its spot date:
-    `business_days` business days of `bus_day` on, of Monday to Friday where it is None."""
+def joint_calendar(calendars):
+    """The `numpy.busdaycalendar` whose business days are business days of each of `calendars`."""
+    return np.busdaycalendar(weekmask=np.logical_and.reduce([x.weekmask for x in calendars]),
+                             holidays=np.concatenate([x.holidays for x in calendars]))
+
+
+def spot_lag(base_date, convention, days):
+    """The calendar days from each of `days`, counted from `base_date`, to its spot date under a
+    `convention` `(business_days, count, settle)`: that many business days of the
+    `numpy.busdaycalendar` `count` on, rolled forward onto a business day of `settle`."""
+    business_days, count, settle = convention
     dates = np.datetime64(base_date, 'D') + np.asarray(days).astype('timedelta64[D]')
-    calendar = np.busdaycalendar() if bus_day is None else bus_day.calendar
-    return (np.busday_offset(dates, business_days, 'backward', busdaycal=calendar) - dates).astype(np.int64)
+    spot = np.busday_offset(dates, business_days, 'backward', busdaycal=count)
+    return (np.busday_offset(spot, 0, 'forward', busdaycal=settle) - dates).astype(np.int64)
 
 
 def spot_carry(lag, days, rows):

@@ -529,6 +529,17 @@ class StochasticProcess(object):
         intentional - they are read-only after setup."""
         return copy.copy(self)
 
+    def step_carry(self, ref_date, time_grid, shared):
+        """The steps from today over the scenario dates (`delta_scen_t`), the grid each step's curves
+        are read on, today then every step's start (`scen_grid`), and `carry_days`, each step carried
+        between its two ends' spot dates: the quote is the price for delivery on its spot date."""
+        self.delta_scen_t = np.diff(np.insert(time_grid.scen_time_grid, 0, 0)).reshape(-1, 1)
+        today = time_grid.scenario_grid[:1].copy()
+        today[:, utils.TIME_GRID_MTM] = 0.0
+        self.scen_grid = np.vstack([today, time_grid.scenario_grid[:-1]])
+        self.carry_days = utils.spot_carry(shared.spot_lag(self.factor_key, ref_date), self.delta_scen_t,
+                                           self.scen_grid[:, utils.TIME_GRID_MTM].reshape(-1, 1))
+
     def link_references(self, implied_tensor, implied_var, implied_factors):
         """link market variables across different risk factors"""
         pass
@@ -866,17 +877,8 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
             calc_vol, shared, time_grid.time_grid_years, vol_tenor, implied_tensor['Vol']), dim=1)
         # per-step incremental vol, anchored at V(0)=0 so the first step evolves from today (t=0)
         self.delta_vol = torch.sqrt(self.V - nnf.pad(self.V[:-1], (0, 0, 1, 0)))
-        # we always evolve from today: prepend 0 to the sample times so the step sizes are the
-        # diffs and each step's drift is read from the curve as-of its start node
-        self.delta_scen_t = np.diff(np.insert(time_grid.scen_time_grid, 0, 0)).reshape(-1, 1)
         self.spot = tensor
-        # the curve-read grid is the step starts: today (t=0) followed by all but the final sample
-        today = time_grid.scenario_grid[:1].copy()
-        today[:, utils.TIME_GRID_MTM] = 0.0
-        self.scen_grid = np.vstack([today, time_grid.scenario_grid[:-1]])
-        # the quote is the price for delivery on its spot date: a step carries between its ends' spot dates
-        self.carry_days = utils.spot_carry(self.factor.spot_lag(ref_date, shared.calendars), self.delta_scen_t,
-                                           self.scen_grid[:, utils.TIME_GRID_MTM].reshape(-1, 1))
+        self.step_carry(ref_date, time_grid, shared)
         if self.factor_type == 'EquityPrice' and self.quanto_fx_tenor is not None:
             self.C = torch.unsqueeze(integrate_piecewise_linear(
                 cal_quanto_fx_vol, shared, time_grid.time_grid_years,
@@ -6594,14 +6596,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
                            **{x: utils.LogVar2FJ.declared(structural.get(x))
                               for x in utils.LogVar2FJ.STRUCTURAL_NAMES})
         self.spot0 = tensor
-        # the carry read: step starts on the scenario grid and each step between its two ends' spot
-        # dates, verbatim from `GBMAssetPriceTSModelImplied`
-        self.delta_scen_t = np.diff(np.insert(time_grid.scen_time_grid, 0, 0)).reshape(-1, 1)
-        today = time_grid.scenario_grid[:1].copy()
-        today[:, utils.TIME_GRID_MTM] = 0.0
-        self.scen_grid = np.vstack([today, time_grid.scenario_grid[:-1]])
-        self.carry_days = utils.spot_carry(self.factor.spot_lag(ref_date, shared.calendars), self.delta_scen_t,
-                                           self.scen_grid[:, utils.TIME_GRID_MTM].reshape(-1, 1))
+        self.step_carry(ref_date, time_grid, shared)
         # the scenario grid a PRICER row matches itself against, in DOUBLE whatever the calculation
         # runs in: the match is a day count applied to both sides, and float32 rounding at a year
         # fraction is already wider than the tolerance it is matched within

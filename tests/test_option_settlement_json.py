@@ -375,6 +375,63 @@ def test_a_forward_carries_between_spot_dates():
         UNITS * 0.05 * df((monday - BASE).days) * ndtr(d2), rel=1e-12)
 
 
+#: The pound beside the world's two rates, for a cross on the euro
+GBP_SPOT, R_GBP = 1.27, 0.03
+GBP = {'FxRate.GBP': {'Domestic_Currency': None, 'Interest_Rate': 'GBP', 'Spot': GBP_SPOT},
+       'InterestRate.GBP': {'Currency': 'GBP', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                            'Curve': utils.Curve([], [[0.0, R_GBP], [5.0, R_GBP]])},
+       'FXVol.EUR.GBP': FACTORS['FXVol.EUR.USD']}
+
+
+def test_a_pair_counts_its_spot_date_as_the_market_does():
+    """A pair's spot date is read off both its rates, each naming the calendar its own currency
+    settles on: the most `Settlement_Days` its currencies but USD state, counted on the business
+    days of each, rolled forward onto a business day of both and of USD. Read off FX options deep
+    in the money, the forward carried from the base date's spot date to that of the expiry, a
+    quiet Wednesday: EUR on TARGET against USD on New York counts past Independence Day 2024, a
+    Thursday, so a Wednesday's spot date is the Friday, two days on, and a Tuesday's two TARGET
+    days end on the holiday and roll to the Friday; EUR in GBP on London counts past London's 26
+    August, a Friday's spot date five days on, and rolls off New York's 2 September, a Thursday's
+    five days on; EUR stating one day and GBP two, the cross counts two. USD's own days are never
+    read: an option on USD priced in EUR marks the same, to the bit, whatever USD states.
+
+    Killing mutations: USD's calendar counted before the spot date, the Wednesday's forward 1.6e-4
+    low; no roll onto the calendars the pair settles on, the Tuesday's 5.5e-5 high, as a pair
+    settling off New York's; a cross counted on its underlying's calendar alone, the cross over
+    26 August 2.7e-5 high; its underlying's days in place of the most, the cross 5.5e-5 high;
+    USD's days read, the inverse option's forward 1.1e-4 low.
+    """
+    expiry, inverse = pd.Timestamp('2024-12-11'), pd.Timestamp('2024-10-17')
+    calendars = {'FxRate.EUR': 'TARGET (Euro)', 'FxRate.USD': 'New York', 'FxRate.GBP': 'London'}
+    named = {name: dict(dict(FACTORS, **GBP)[name], Holiday_Calendar=calendar) for name, calendar in calendars.items()}
+    deep = dict(FX, Strike_Price=0.01, Expiry_Date=expiry)
+    cross = dict(deep, Reference='CROSS', Currency='GBP', Discount_Rate='GBP', FX_Volatility='EUR.GBP')
+    unit = {'Object': 'FixedCashflowDeal', 'Reference': 'UNIT', 'Currency': 'GBP', 'Discount_Rate': 'GBP',
+            'Amount': 1.0, 'Payment_Date': expiry}
+
+    def factors(stated):
+        return dict(GBP, **{name: dict(block, **stated.get(name, {})) for name, block in named.items()})
+
+    # the base date, the days stated and each pair's lag from the base date and from the expiry
+    for base, stated, usd, gbp in (
+            ('2024-07-03', {}, (2, 2), (2, 2)), ('2024-07-02', {}, (3, 2), (3, 2)),
+            ('2024-08-23', {}, (4, 2), (5, 2)), ('2024-08-29', {}, (5, 2), (5, 2)),
+            ('2024-10-17', {'FxRate.EUR': {'Settlement_Days': 1}}, (1, 1), (4, 2))):
+        base = pd.Timestamp(base)
+        tenor, marked = (expiry - base).days, marks([deep, cross, unit], base, factors(stated))
+        # the cross's mark is in GBP times GBP's price today, which the unit paid in GBP divides out
+        for forward, spot, carry, (start, end) in (
+                (marked['FXO'] / (UNITS * df(tenor)), FX_SPOT, R_USD - R_EUR, usd),
+                (marked['CROSS'] / (UNITS * marked['UNIT']), FX_SPOT / GBP_SPOT, R_GBP - R_EUR, gbp)):
+            assert forward + 0.01 == pytest.approx(spot * math.exp(carry * (tenor + end - start) / 365.0),
+                                                   rel=1e-12), (base, spot)
+    on_usd = dict(deep, Reference='USD', Underlying_Currency='USD', Currency='EUR', Discount_Rate='EUR')
+    readings = {(eur, usd): marks([on_usd], inverse, factors({'FxRate.EUR': {'Settlement_Days': eur},
+                                                              'FxRate.USD': {'Settlement_Days': usd}}))['USD']
+                for eur, usd in ((1, 1), (1, 3), (2, 1))}
+    assert readings[1, 1] == readings[1, 3] != readings[2, 1], readings
+
+
 #: The forwards' delivery, a Friday half a year on, and the EUR they buy
 DELIVERY, NOTIONAL = pd.Timestamp('2024-12-27'), 1e6
 

@@ -17,7 +17,6 @@ import itertools
 import numpy as np
 import pandas as pd
 
-from functools import partial
 from . import utils
 from .schema import F, declared_defaults, offered
 from scipy.interpolate import RectBivariateSpline
@@ -70,13 +69,11 @@ class Factor0D(object):
         else its class declares, zero on a class declaring none."""
         return declared_defaults(type(self), self.param).get('Settlement_Days', 0)
 
-    def spot_lag(self, base_date, calendars, default=None):
-        """The calendar days from a day, counted from `base_date`, to its spot date, as a function
-        of the day: `spot_days` business days of the calendar this factor names in
-        `Holiday_Calendar`, else of the one named `default`, else of Monday to Friday. None at no days."""
-        days = self.spot_days()
+    def spot_calendar(self, calendars, default=None):
+        """The business days of the calendar this factor names in `Holiday_Calendar`, else of the
+        one named `default`, else Monday to Friday, as a `numpy.busdaycalendar`."""
         bus_day = calendars.get(self.param.get('Holiday_Calendar') or default, {}).get('businessday')
-        return partial(utils.spot_lag, base_date, days, bus_day) if days else None
+        return np.busdaycalendar() if bus_day is None else bus_day.calendar
 
     def get_tenor_indices(self):
         '''
@@ -718,10 +715,9 @@ class FxRate(Factor0D):
           description='Associated interest rate curve name'),
         F('Spot', 'Float', default=0.0, bind='value', description='Spot rate in base currency'),
         F('Settlement_Days', 'Integer', default=2, convention=True,
-          description='Business days from a day to its spot date on a pair with this underlying currency'),
+          description='Business days from a day to its spot date on a pair of this currency against USD'),
         F('Holiday_Calendar', 'Text', default='', convention=True,
-          description='Name of the calendar in the calendar file its spot date counts business days on, '
-                      'the pair\'s joint one')
+          description='Name of the calendar in the calendar file this currency settles on')
     ]
 
     def __init__(self, param):

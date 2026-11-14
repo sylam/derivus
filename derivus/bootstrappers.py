@@ -1011,7 +1011,7 @@ class OptionQuoteFamily(ImpliedCalibration):
             q = cls.effective_yield(r, funding, carry, t)
             return t, r, q, (r - q) * t
         t, r, q, to_expiry = growth(day)
-        lag = utils.spot_lag(base_date, business_days, None, (0, day)) if business_days else 0
+        lag = utils.spot_lag(base_date, (business_days,) + 2 * (np.busdaycalendar(),), (0, day)) if business_days else 0
         start, end = np.add((0, day), lag)
         spot_to_spot = growth(end)[3] - growth(start)[3]
         # the lag rides in on `q` as the funding basis does, a shift of exactly 0.0 at no lag

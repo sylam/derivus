@@ -25,13 +25,15 @@ need to be defined.
 
 Interest-rate curves and volatility surfaces stand alone; an `FxRate` or an `EquityPrice` names in
 `Interest_Rate` the curve its carry is read off (blank, the curve named as its currency), and states
-in `Settlement_Days` the business days
-from a day to its spot date, between which a forward on it carries: 3 on an `EquityPrice` and 2 on
-an `FxRate` where omitted, a currency pair reading its underlying currency's. `Holiday_Calendar`
-names the calendar those days count on, a pair's joint one on an `FxRate`; blank, a deal's
-`Accrual_Calendars`, else Monday to Friday. An `FxRate`'s `Spot` is the price for delivery on its
-spot date: a value converts between currencies at that price carried back to the day on the
-domestic currency's curve less its own.
+in `Settlement_Days` the business days from a day to its spot date, between which a forward on it
+carries: 3 on an `EquityPrice` and 2 on an `FxRate` where omitted, an `FxRate`'s against USD.
+`Holiday_Calendar` names the calendar those days count on, on an `FxRate` the one its currency
+settles on; blank, a deal's `Accrual_Calendars`, else Monday to Friday. A currency pair counts the
+most days of its currencies other than USD on the calendars of each and settles on a business day
+of both and of USD, as the market does, so a pair against USD may pass a New York holiday before
+its spot date. An `FxRate`'s `Spot` is the price for delivery on its spot date: a value converts
+between currencies at that price carried back to the day on the domestic currency's curve less its
+own.
 
 Interest Rate price factors uses the .Curve format. e.g.
 
