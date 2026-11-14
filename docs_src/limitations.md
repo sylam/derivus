@@ -290,8 +290,8 @@ listed.
   spread, so a collar is charged as two tickets. Netting per pillar cuts the gate collar's edge by
   85% (the ATM row 95%, the butterfly 88%, the risk reversal not at all).
 - **20. The recompute segment length.** The LogVar2FJ walk checkpoints every 21 steps, trading
-  memory for a second forward pass; the mixer's per-draw checkpoint raised peak memory by about a
-  fifth. The residual's granularity is the dial if that headroom is wanted.
+  memory for a second forward pass; the mixer's own checkpoint holds one clock per fixing interval.
+  The residual's granularity is the dial if that headroom is wanted.
 - **21. Who may move the market, the date and the file** (2026-09-30). `POST /book/market`,
   `/book/date`, `/book/configure`, `/book/curve`, `/book/securities`, `/calculations` and a delete
   take no `actor`, and `/book/setup` and `/book/bloomberg` are admitted under `validate` yet

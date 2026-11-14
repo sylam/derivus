@@ -3686,7 +3686,9 @@ class LogVar2FJ:
             path_s = LogVar2FJ.ou_path(params['Kappa_S'], w_s, eta_s, s, deltas)
             path_l = LogVar2FJ.ou_path(params['Kappa_L'], w_l, eta_l, l - curve_at_grid[0], deltas)
             x = path_s[..., :-1] + path_l[..., :-1] + curve_at_grid[:-1]
-            l, s = path_l[..., -1] + curve_at_grid[-1], path_s[..., -1]
+            # the end state is a checkpoint segment's saved boundary, held to the backward, and a
+            # view would hold the segment's whole path with it
+            l, s = path_l[..., -1] + curve_at_grid[-1], path_s[..., -1].clone()
         V = deltas * torch.exp(LogVar2FJ.cap(x, a))
         sq = sqrt_or_zero(V)
         e_l, e_s = (eta_l + rl * sq, eta_s + rs * sq) if invert else (eta_l, eta_s)

@@ -17,11 +17,6 @@ found later is added here or, where it moves a validator's number, on Model Limi
 **The model rows**, on [Model Limitations](../limitations.md): the declared fields not yet read are
 features kept ahead of their build, not rows to close.
 
-**Speed and memory.**
-
-- **The LogVar2FJ walk's checkpoint memory** (2026-10-07, M). Under a gradient the walk holds 79%
-  of peak memory in its checkpoint segments.
-
 **The code.**
 
 - The retired family keys (`config.RETIRED_FAMILY_KEYS`: `InterestRateCurveParameters` and

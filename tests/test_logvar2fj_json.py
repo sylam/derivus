@@ -29,6 +29,7 @@ THE FIXTURE-DEGENERACY CHECKLIST for the world, per axis:
                 correlation AND a scenario report, which is one run.
 """
 import copy
+import gc
 import io
 import json
 import logging
@@ -145,6 +146,17 @@ def _run(job, name='lv'):
 def _mtm(out, reference='AC1'):
     rows = out['Results']['mtm']
     return float(rows[rows['Reference'] == reference]['Value'].iloc[0])
+
+
+def _peak(job, name):
+    """(`_run`'s output, its device peak in MiB above what was allocated before it)."""
+    # a run's graph can outlive refcounting in a reference cycle, so collect before the floor
+    gc.collect()
+    torch.cuda.empty_cache()
+    floor = torch.cuda.memory_allocated()
+    torch.cuda.reset_peak_memory_stats()
+    out = _run(job, name)
+    return out, (torch.cuda.max_memory_allocated() - floor) / 2.0 ** 20
 
 
 # ------------------------------------------------------------------------------------------
@@ -1275,4 +1287,33 @@ def test_the_mixers_root_reads_back_its_uniform_in_either_tail():
                 misses.append((float(abs(tail / p - 1)), phi, v))
     assert max(misses)[0] <= 1e-5, max(misses)
     assert max(m for m in misses if m[1] >= 1e-3)[0] <= 1e-9, max(m for m in misses if m[1] >= 1e-3)
+
+
+# ------------------------------------------------------------------------------------------
+# 16  THE WALK'S DEVICE MEMORY
+# ------------------------------------------------------------------------------------------
+#: The bound on a year's monthly barrier's CVA gradient peak at 32 x 512, float32.
+WALK_PEAK_MIB = 400.0
+
+
+@pytest.mark.card
+def test_a_checkpointed_walk_segment_holds_its_boundary_states_not_its_path():
+    """A checkpointed segment of the walk keeps its two boundary states to the backward and not
+    its path: the CVA gradient of a barrier monitored monthly for a year, priced on the walk under
+    the GBM outer at 32 x 512, peaks on the device under `WALK_PEAK_MIB`.
+
+    Readings: 224 MiB, 288 as a process's first run; with the end state a view, 547 and 611.
+
+    Killing mutation: the walk's end state returned as a view of its path.
+    """
+    year = MONITORED + ['2025-01-27', '2025-02-27', '2025-03-27', '2025-04-28', '2025-05-27',
+                        '2025-06-27']
+    calc = dict(_credit(paths=32), MCMC_Simulations=512)
+    calc['Credit_Valuation_Adjustment']['Gradient'] = 'Yes'
+    deal = _barrier(Expiry_Date={'.Timestamp': year[-1]},
+                    Barrier_Dates=[{'.Timestamp': d} for d in year])
+    out, peak = _peak(_job(calc, _netted(deal), **_outer(
+        OUTER_GBM, deal='EquityBarrierOption', factor=LIVE_NIG)), 'walk_peak')
+    assert np.abs(out['Results']['grad_cva']['Gradient'].values).max() > 0.0, 'no gradient'
+    assert peak < WALK_PEAK_MIB, 'peak {:.1f} MiB, bound {}'.format(peak, WALK_PEAK_MIB)
 
