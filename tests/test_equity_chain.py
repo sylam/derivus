@@ -1384,11 +1384,11 @@ def fitted_forwards(block, deals=()):
     params = config.params
     family = construct_bootstrapper('LogVar2FJModelParameters', {})
     instrument = dict(family.param, **params['Market Prices'][name]['instrument'])
-    factors, spot = type(family).resolve_block(
+    factors, spot, convention = type(family).resolve_block(
         name, instrument, params['Price Factors'], params['Price Factor Interpolation'],
-        params['System Parameters'])
+        params['System Parameters'], config.holidays)
     forwards = [forward for _, _, _, _, forward, _, _, _, _ in family.prepare_quotes(
-        params['System Parameters'], instrument, factors, spot)]
+        params['System Parameters'], instrument, factors, spot, convention)]
     written = params['Price Factors']['LogVar2FJModelParameters.SPX']
     out = run_baseval(config)[1] if deals else None
     return (forwards, [float(written[key]) for key in utils.LogVar2FJ.PARAM_NAMES], out)

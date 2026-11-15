@@ -391,8 +391,8 @@ class OptionQuoteFamily(ImpliedCalibration):
          '(**EquityPrice.Interest_Rate**), not the curve its deals discount on. Left blank the two are',
          'one curve, which is the one-curve world and what an FX pair always was; named, an index',
          'carrying a repo/borrow spread calibrates at the forward it is priced at rather than one a',
-         'spread away from it. It grows between spot dates, the *Underlying*\'s **Settlement_Days**',
-         'business days on from the base date and from the expiry, as the options priced on it carry.',
+         'spread away from it. It grows between the spot dates of the base date and of the expiry,',
+         'counted as the options priced on it count them, a pair\'s on both its **FxRate** factors.',
          '',
          'Target premia are the Black prices at the vol surface read at each quote\'s own strike (see',
          'MONEYNESS CONVENTION below) unless *Quote_Type* is **Premium**, in which case the quoted values are',
@@ -709,7 +709,7 @@ class OptionQuoteFamily(ImpliedCalibration):
         return float(np.exp(-rate * T) * forward * scipy.stats.norm.pdf(d1) * np.sqrt(T))
 
     @classmethod
-    def fx_surface_block(cls, pair, price_factors, sys_params, factor_interp,
+    def fx_surface_block(cls, pair, price_factors, sys_params, factor_interp, calendars,
                          leverage_prior=None, section=None):
         """`(Market Prices name, block)` - this family's quote block, authored off a pair's built
         `FXVol` surface.
@@ -854,6 +854,8 @@ class OptionQuoteFamily(ImpliedCalibration):
             utils.Factor('InterestRate', utils.check_rate_name(carry_name)),
             price_factors, factor_interp)
         cap = max(ladder.atm)
+        convention = cls.spot_convention([utils.Factor('FxRate', (currency,)) for currency in (underlying, domestic)],
+                                         price_factors, factor_interp, calendars)
 
         def strike_of(forward, x):
             """The strike log-moneyness `x` names in the underlying's own units, inverting
@@ -868,8 +870,7 @@ class OptionQuoteFamily(ImpliedCalibration):
             if T is None:
                 return None
             days = int(round(T * ladder.days))
-            t, rate, _, forward = cls.expiry_forward(
-                spot, base_date, days, rates[underlying].spot_days(), discount, None, carry)
+            t, rate, _, forward = cls.expiry_forward(spot, base_date, days, convention, discount, None, carry)
             # the surface unshifted - the fit applies `Volatility_Delta` to every vol it reads -
             # at the coordinate the pricer reads its type at, off the strike `x` names
             return T, moved, days, t, forward, rate, (
@@ -999,23 +1000,31 @@ class OptionQuoteFamily(ImpliedCalibration):
         return q if funding is None else q + (discount_rate - float(funding.current_value(t)))
 
     @classmethod
-    def expiry_forward(cls, spot, base_date, day, business_days, discount, funding, carry):
+    def expiry_forward(cls, spot, base_date, day, convention, discount, funding, carry):
         """`(t, r, q, forward)` at an expiry `day` days from `base_date`. `t` is the
         `Discount_Rate` curve's accrual to the expiry and `r` its rate there. `forward` is the spot
-        grown at `effective_yield`'s `r - q` between the two spot dates, `business_days` of Monday
-        to Friday on from the base date and from the expiry; zero is no lag and no roll. `q` is the
-        yield that growth runs at over `t`."""
+        grown at `effective_yield`'s `r - q` between the spot dates of the base date and of the
+        expiry under `convention` (`spot_convention`); None is no lag and no roll. `q` is the yield
+        that growth runs at over `t`."""
         def growth(x):
             t = discount.get_day_count_accrual(base_date, x)
             r = float(discount.current_value(t))
             q = cls.effective_yield(r, funding, carry, t)
             return t, r, q, (r - q) * t
         t, r, q, to_expiry = growth(day)
-        lag = utils.spot_lag(base_date, (business_days,) + 2 * (np.busdaycalendar(),), (0, day)) if business_days else 0
+        lag = utils.spot_lag(base_date, convention, (0, day)) if convention else 0
         start, end = np.add((0, day), lag)
         spot_to_spot = growth(end)[3] - growth(start)[3]
         # the lag rides in on `q` as the funding basis does, a shift of exactly 0.0 at no lag
         return t, r, q - (spot_to_spot - to_expiry) / t, spot * np.exp(spot_to_spot)
+
+    @classmethod
+    def spot_convention(cls, keys, price_factors, factor_interp, calendars):
+        """The `instruments.spot_convention` of the factors `keys` name, read off `price_factors`
+        beside USD's rate where the book holds one, so a fit counts its spot dates as a deal does."""
+        held = [key for key in keys + [instruments.USD] if utils.check_tuple_name(key) in price_factors]
+        return instruments.spot_convention(keys, {
+            key: riskfactors.construct_factor(key, price_factors, factor_interp) for key in held}, calendars)
 
     @classmethod
     def spot_priced_in(cls, spot, priced_in):
@@ -1029,12 +1038,13 @@ class OptionQuoteFamily(ImpliedCalibration):
         return spot / (1.0 if priced_in is None else float(priced_in.current_value()[0]))
 
     @classmethod
-    def resolve_block(cls, market_price, instrument, price_factors, factor_interp, sys_params):
-        """`({field: constructed factor}, spot)` - everything a block names, resolved before an
-        option is looked at, so a book carrying two ladders fails on the one that is wrong.
+    def resolve_block(cls, market_price, instrument, price_factors, factor_interp, sys_params, calendars):
+        """`({field: constructed factor}, spot, convention)` - everything a block names, resolved
+        before an option is looked at, so a book carrying two ladders fails on the one that is wrong.
 
         The spot is the `Underlying`'s rate priced in the block's `Priced_In` - one read, a
-        denominator of exactly one where the block names none.
+        denominator of exactly one where the block names none. The convention is its spot date's
+        (`spot_convention`), a pair's priced in the base where the block names no `Priced_In`.
 
         THE BLOCK'S NAME AND ITS `Priced_In` ARE ONE FACT and must agree, because the factor is
         named off the NAME and the axis is fitted off the FIELD: a cross-keyed block declaring none
@@ -1078,28 +1088,32 @@ class OptionQuoteFamily(ImpliedCalibration):
                     '(Quote_Type Premium) instead'.format(
                         market_price, instrument['Volatility'], subtype[0], subtype[1],
                         '/'.join(cls.tabular_surfaces)))
+        domestic = declared or utils.check_rate_name(sys_params.get('Base_Currency', 'USD'))
+        convention = cls.spot_convention(
+            [underlying] + [utils.Factor('FxRate', domestic)] * (underlying.type == 'FxRate'),
+            price_factors, factor_interp, calendars)
         return factors, cls.spot_priced_in(
-            float(factors['Underlying'].current_value()[0]), factors.get('Priced_In'))
+            float(factors['Underlying'].current_value()[0]), factors.get('Priced_In')), convention
 
-    def prepare_quotes(self, sys_params, instrument, factors, spot, market_price=None):
+    def prepare_quotes(self, sys_params, instrument, factors, spot, convention, market_price=None):
         """Each `European_Options` row as `(option, t, r, q, forward, sign, strike, sigma,
         premium)` - the numbers every family in this hierarchy builds its objective from.
 
         `t` is the `Discount_Rate` curve's own day count accrual, the forward is `expiry_forward`'s
-        between the `Underlying`'s spot dates (`spot_days`), and a blank `Strike` is the forward.
+        between the spot dates `convention` counts, and a blank `Strike` is the forward.
         Under `Implied_Volatility` the premium is Black at the surface's vol AT THE STRIKE; under
         `Premium` the quote IS the premium and `sigma` is inverted back out of it, which is what
         seeds a fit and what its diagnostics are read in.
         """
         discount, surface = factors['Discount_Rate'], factors.get('Volatility')
         carry, funding = factors.get('Yield'), factors.get('Funding_Rate')
-        base_date, business_days = sys_params['Base_Date'], factors['Underlying'].spot_days()
+        base_date = sys_params['Base_Date']
         quote_type = instrument['Quote_Type']
         use_forward = instrument.get('Use_Forward') == 'Yes'
         invert_moneyness = instrument.get('Invert_Moneyness') == 'Yes'
         for option in quote_table(instrument, market_price, 'European_Options'):
             t, r, q, forward = self.expiry_forward(
-                spot, base_date, (option['Expiry_Date'] - base_date).days, business_days,
+                spot, base_date, (option['Expiry_Date'] - base_date).days, convention,
                 discount, funding, carry)
             sign = 1.0 if option['Option_Type'] == 'Call' else -1.0
             strike = forward if not option['Strike'] else option['Strike']
@@ -3013,7 +3027,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         """
         for market_price, implied_params in market_prices.items():
             fit = self.fit_for(market_price, implied_params, sys_params, price_models,
-                               price_factors, factor_interp)
+                               price_factors, factor_interp, calendars)
             if fit is None:
                 continue
             param_name = self.factor_name(market_price)
@@ -3049,7 +3063,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             price_factors[param_name] = fit.written()
             declared = self.declared_skew_rows(
                 market_price, implied_params, sys_params, price_models, price_factors,
-                factor_interp)
+                factor_interp, calendars)
             fit.skew_rows, fit.skew_declared = declared or fit.skew_rows, bool(declared)
             price_factors[param_name]['Skew_Gradient'] = fit.skew_line()
             LVReport(fit).log()
@@ -3068,7 +3082,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:]))
 
     def fit_for(self, market_price, implied_params, sys_params, price_models, price_factors,
-                factor_interp, declared=None):
+                factor_interp, calendars, declared=None):
         """One block's prepared `LVFit`, warm started off the factor already written for it - the
         quotes, the grid and the seed, with no stage run. None where the block belongs to another
         family or carries nothing to fit.
@@ -3080,15 +3094,15 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         if utils.check_rate_name(market_price)[0] != self.market_factor_type:
             return None
         instrument = {**self.param, **implied_params['instrument'], **(declared or {})}
-        factors, spot = self.resolve_block(
-            market_price, instrument, price_factors, factor_interp, sys_params)
+        factors, spot, convention = self.resolve_block(
+            market_price, instrument, price_factors, factor_interp, sys_params, calendars)
         fit = LVFit(self, market_price, instrument, factors,
                     price_factors.get(self.factor_name(market_price)))
         fit.history = self.slow_history(market_price, instrument, price_models)
-        return fit if self.prepare(fit, sys_params, factors, spot) else None
+        return fit if self.prepare(fit, sys_params, factors, spot, convention) else None
 
     def declared_skew_rows(self, market_price, implied_params, sys_params, price_models,
-                           price_factors, factor_interp):
+                           price_factors, factor_interp, calendars):
         """The reserve line's model half at the windows `Forward_Tenors` DECLARES, read off the
         factor just written on a grid built to carry them exactly - one forward pass, no stage run,
         the same route `forward_smiles` takes. Empty where this ladder reaches no declared window,
@@ -3096,7 +3110,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         instrument = dict(self.param, **implied_params['instrument'])
         strikes = utils.LogVar2FJ.parse_floats(instrument['Psi_Strikes'], 'Psi_Strikes', 3)
         fit = self.fit_for(
-            market_price, implied_params, sys_params, price_models, price_factors, factor_interp,
+            market_price, implied_params, sys_params, price_models, price_factors, factor_interp, calendars,
             {'Forward_Smile_Source': 'Reference', 'Forward_Smiles': [
                 {'T1': T1, 'Delta': delta, 'Strike': k, 'Target_Vol': 0.0}
                 for T1, delta in ([utils.LogVar2FJ.tenor(x) for x in pair.split(':')]
@@ -3105,7 +3119,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
         return {} if fit is None or not fit.targets else fit.skew_gradient()
 
     def forward_smiles(self, sys_params, price_models, price_factors, factor_interp, market_prices,
-                       rows=None):
+                       calendars, rows=None):
         """`{market price: {(T1, Delta): {strike: vol}}}` - the forward-start implied vols the
         factor `Price Factors` already carries gives, priced by the fit's own forward-start
         machinery at that factor's parameters and no stage run.
@@ -3128,7 +3142,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             source = instrument['Forward_Smile_Source']
             fit = self.fit_for(
                 market_price, implied_params, sys_params, price_models, price_factors,
-                factor_interp, {'Forward_Smiles': table, 'Forward_Smile_Source':
+                factor_interp, calendars, {'Forward_Smiles': table, 'Forward_Smile_Source':
                     'Reference' if source == 'None' else source})
             if fit is not None:
                 smiles[market_price] = {
@@ -3136,7 +3150,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
                     for window, smile in fit.forward_smile(fit.evaluate()[2]).items()}
         return smiles
 
-    def prepare(self, fit, sys_params, factors, spot):
+    def prepare(self, fit, sys_params, factors, spot, convention):
         """The quotes, the buckets and the grid the whole fit is priced on - everything `LVFit`
         needs before a stage runs. False where the block carries nothing to fit.
 
@@ -3152,7 +3166,7 @@ class LogVar2FJModelParameters(OptionQuoteFamily):
             quoted=sigma if fit.is_vol else option['Quoted_Market_Value'],
             vega=option['Units'] * self.fx_black_vega(forward, strike, r, sigma, t))
             for option, t, r, q, forward, sign, strike, sigma, premium
-            in self.prepare_quotes(sys_params, fit.instrument, factors, spot, fit.market_price)]
+            in self.prepare_quotes(sys_params, fit.instrument, factors, spot, convention, fit.market_price)]
         dead = [quote for quote in quotes if not quote.vega > 0.0]
         if dead:
             logging.warning(

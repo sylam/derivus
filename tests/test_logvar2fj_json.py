@@ -969,7 +969,7 @@ def _forward_rows(source):
         params['System Parameters'], params['Price Models'], params['Price Factors'],
         params['Price Factor Interpolation'],
         bootstrappers.market_prices_for(
-            'LogVar2FJModelParameters', params['Market Prices']))[BLOCK]
+            'LogVar2FJModelParameters', params['Market Prices']), cx.current_cfg.holidays)[BLOCK]
     return [{'T1': T1, 'Delta': tenor, 'Strike': k, 'Target_Vol': smile[(T1, tenor)][k]}
             for T1, tenor in sorted(smile) for k in sorted(smile[(T1, tenor)])]
 

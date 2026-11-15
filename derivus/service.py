@@ -6090,7 +6090,8 @@ def spot_model_edit(document, pair, family):
     if not configured:
         raise ValueError(NO_BOOTSTRAPPER)
     calibrator = spot_model_family(family)
-    params = load(document).current_cfg.params
+    config = load(document).current_cfg
+    params = config.params
     # the section is keyed by what a family writes, and its entry names the stem it routes on
     entry = calibrator.__name__
     # the seed turns its own number onto the axis the fit will describe, which is the pair's rule
@@ -6098,7 +6099,7 @@ def spot_model_edit(document, pair, family):
         *structures.split_pair(pair), params['System Parameters'].get('Base_Currency', 'USD'))[0]
     name, block = calibrator.fx_surface_block(
         pair, params['Price Factors'], params['System Parameters'],
-        params['Price Factor Interpolation'], desk_leverage_prior(pair, fitted),
+        params['Price Factor Interpolation'], config.holidays, desk_leverage_prior(pair, fitted),
         configured.get(entry))
     market.get('Market Prices', {}).pop(name, None)
     borrowed = entry not in configured
@@ -6193,11 +6194,12 @@ def book_model(request: dict):
         pair = '{}.{}'.format(*structures.split_pair(pair))
         # the pre-flight IS the emitter, run on the read copy and thrown away: every refusal it
         # names is a fact about the book a desk must hear now rather than poll for
-        params = load(document).current_cfg.params
+        config = load(document).current_cfg
+        params = config.params
         calibrator = spot_model_family(family)
         block_name, _ = calibrator.fx_surface_block(
             pair, params['Price Factors'], params['System Parameters'],
-            params['Price Factor Interpolation'], None,
+            params['Price Factor Interpolation'], config.holidays, None,
             params['Bootstrapper Configuration'].get(calibrator.__name__))
     except (ValueError, KeyError) as error:
         raise HTTPException(422, str(error))

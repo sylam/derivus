@@ -62,6 +62,7 @@ from test_inflation_prices import block as inflation_block
 from test_quote_propagation import BLOCK as ZAR_BLOCK, bootstrapped, market, run, with_deals
 from test_service import (CLIENT, FACTORS, FX_OPTION, JSON, desk, desk_smile, dump,  # noqa: F401
                           fx_vol_quotes, job)
+from test_declared_defaults import CALENDARS
 
 FX_BLOCK = 'FXVolPrices.USD.ZAR'
 LV_BLOCK = 'LogVar2FJModelPrices.ZAR'
@@ -137,7 +138,7 @@ def family_blocks():
         for family in SURFACE_FAMILIES:
             _BLOCKS[family.market_factor_type] = family.fx_surface_block(
                 'USD.ZAR', surface.params['Price Factors'], surface.params['System Parameters'],
-                surface.params['Price Factor Interpolation'])[1]
+                surface.params['Price Factor Interpolation'], surface.holidays)[1]
 
         # everything standing here came from a fixture; the three completed from declarations
         # carry an empty table by construction
@@ -171,7 +172,7 @@ def test_the_ladder_is_the_entrys_and_the_contract_floor_is_a_declared_lever():
     surface.bootstrap()
     author = lambda section: LogVar2FJModelParameters.fx_surface_block(
         'USD.ZAR', surface.params['Price Factors'], surface.params['System Parameters'],
-        surface.params['Price Factor Interpolation'], None, section)
+        surface.params['Price Factor Interpolation'], surface.holidays, None, section)
 
     full = author(None)[1]['instrument']['European_Options']
     assert len(full) == 22, 'no entry is the declared ladder: 6 ATM plus 4 wings at 2 pillars'
@@ -189,28 +190,37 @@ def test_the_ladder_is_the_entrys_and_the_contract_floor_is_a_declared_lever():
 def test_the_surface_blocks_forward_is_the_priced_forward_at_every_pillar():
     """The forward a block authored off the surface is fitted at is the forward an `FXOptionDeal`
     on the pair is priced at in the same job: the rand at 7% against the dollar's 2%, carried
-    between spot dates two business days on from the Friday base date and from each pillar, so
-    the Wednesday two-month pillar carries two days short of its tenor. Read off deals deep in the
-    money on a curve at zero, whose mark is the forward less the strike, to 1e-12.
+    between spot dates two Johannesburg days on from the base date and from each pillar, rolled
+    onto a New York business day, so the Tuesday before Independence Day settles on the Friday.
+    Read off deals deep in the money on a curve at zero, whose mark is the forward less the
+    strike, to 1e-12. Each strike the block is authored at sits off that forward as it sits off
+    the weekdays' one.
 
-    Killing mutation: the class default read at the wrong class, three days for two, 2.7e-4 low
-    at the two-month pillar.
+    Killing mutations: the fit counting Monday to Friday, the one-month pillar 1.4e-4 low; the
+    block's strikes placed off the weekdays' forward, 1.4e-4 off it.
     """
     from derivus import run_baseval, utils
 
     flat = lambda rate: utils.Curve([], [[0.0, rate], [5.0, rate]])
     factors = dict(FACTORS, **{
         'InterestRate.ZAR': dict(FACTORS['InterestRate.ZAR'], Curve=flat(0.07)),
-        'InterestRate.ZERO': dict(FACTORS['InterestRate.USD'], Curve=flat(0.0))})
-    world = lambda deals: derivus.Context().load_json((dump(job(deals, factors, sections={
-        'Bootstrapper Configuration': {'FXVol': {}}, 'Market Prices': desk_smile()})),
-        'surface-forward')).current_cfg
+        'InterestRate.ZERO': dict(FACTORS['InterestRate.USD'], Curve=flat(0.0)),
+        'FxRate.ZAR': dict(FACTORS['FxRate.ZAR'], Holiday_Calendar='Johannesburg'),
+        'FxRate.USD': dict(FACTORS['FxRate.USD'], Holiday_Calendar='New York')})
+    base = pd.Timestamp('2024-07-02')
+
+    def world(deals):
+        document = job(deals, factors, sections={
+            'Bootstrapper Configuration': {'FXVol': {}}, 'Market Prices': desk_smile()}, Base_Date=base)
+        document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']['Base_Date'] = base
+        document['Calc']['CalendDataFile'] = CALENDARS
+        return derivus.Context().load_json((dump(document), 'surface-forward')).current_cfg
 
     surface = world(())
     surface.bootstrap()
-    name, block = LogVar2FJModelParameters.fx_surface_block(
+    (name, block), (_, weekdays) = (LogVar2FJModelParameters.fx_surface_block(
         'USD.ZAR', surface.params['Price Factors'], surface.params['System Parameters'],
-        surface.params['Price Factor Interpolation'])
+        surface.params['Price Factor Interpolation'], calendars) for calendars in (surface.holidays, {}))
     instrument = block['instrument']
     expiries = sorted({row['Expiry_Date'] for row in instrument['European_Options']})
     config = world([dict(FX_OPTION, Reference=str(expiry.date()), Strike_Price=0.01,
@@ -219,15 +229,23 @@ def test_the_surface_blocks_forward_is_the_priced_forward_at_every_pillar():
     config.bootstrap()
     params = config.params
     family = bootstrappers.construct_bootstrapper('LogVar2FJModelParameters', {})
-    resolved, spot = LogVar2FJModelParameters.resolve_block(
-        name, instrument, params['Price Factors'], params['Price Factor Interpolation'],
-        params['System Parameters'])
-    fitted = {option['Expiry_Date']: forward for option, _, _, _, forward, _, _, _, _
-              in family.prepare_quotes(params['System Parameters'], instrument, resolved, spot)}
+
+    def forwards(calendars):
+        resolved, spot, convention = LogVar2FJModelParameters.resolve_block(
+            name, instrument, params['Price Factors'], params['Price Factor Interpolation'],
+            params['System Parameters'], calendars)
+        return {option['Expiry_Date']: forward for option, _, _, _, forward, _, _, _, _
+                in family.prepare_quotes(params['System Parameters'], instrument, resolved, spot, convention)}
+
+    fitted, plain = forwards(config.holidays), forwards({})
+    assert fitted != plain, 'the holiday moved no forward'
     frame = run_baseval(config)[1]['Results']['mtm']
     for expiry in expiries:
         implied = float(frame[frame['Reference'] == str(expiry.date())]['Value'].iloc[0]) + 0.01
         assert fitted[expiry] == pytest.approx(implied, rel=1e-12), (expiry, fitted[expiry], implied)
+    for row, other in zip(instrument['European_Options'], weekdays['instrument']['European_Options']):
+        expiry = row['Expiry_Date']
+        assert row['Strike'] / fitted[expiry] == pytest.approx(other['Strike'] / plain[expiry], rel=1e-14), row
 
 
 # ---------------------------------------------------------------------------------------------

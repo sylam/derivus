@@ -28,7 +28,7 @@ import torch
 import derivus
 import test_declared_defaults as book
 import trial_rates
-from derivus import utils
+from derivus import bootstrappers, utils
 from derivus.config import CustomJsonEncoder
 
 BASE = pd.Timestamp('2024-06-28')
@@ -74,8 +74,8 @@ def node(deal):
     return dict(out, Children=[node(child) for child in deal['Children']]) if 'Children' in deal else out
 
 
-def run(deals, base=BASE, calc=None, factors=None, models=None):
-    """The results of one job over `deals`: a base valuation at `base`, or `calc` on a GBM spot and
+def world(deals, base=BASE, calc=None, factors=None, models=None):
+    """A context over one job on `deals`: a base valuation at `base`, or `calc` on a GBM spot and
     the factor types `models` names simulated as it says, `factors` beside the world's."""
     market = {'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
               'Valuation Configuration': {}, 'Price Factors': dict(FACTORS, **(factors or {}))}
@@ -89,14 +89,33 @@ def run(deals, base=BASE, calc=None, factors=None, models=None):
         'CalendDataFile': book.CALENDARS,
         'Deals': {'Reference': 'settle', 'Deals': {'Children': [node(d) for d in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': market}}}
-    cx = derivus.Context()
-    cx.load_json((json.dumps(job, cls=CustomJsonEncoder), 'settle'))
-    return cx.run_job()[1]['Results']
+    return derivus.Context().load_json((json.dumps(job, cls=CustomJsonEncoder), 'settle'))
+
+
+def run(deals, base=BASE, calc=None, factors=None, models=None):
+    """The results of the job `world` holds."""
+    return world(deals, base, calc, factors, models).run_job()[1]['Results']
 
 
 def marks(deals, base=BASE, factors=None):
     frame = run(deals, base, factors=factors)['mtm']
     return dict(zip(frame['Reference'], frame['Value'].astype(float)))
+
+
+def fitted(base, factors, expiry, underlying, priced_in=''):
+    """The forward the option-quote fit grows a quote to `expiry` at, on `underlying` priced in
+    `priced_in` or the base, in the world `run` prices in."""
+    config = world([], base, factors=factors).current_cfg
+    params, family = config.params, bootstrappers.construct_bootstrapper('LogVar2FJModelParameters', {})
+    instrument = dict(family.param, Underlying=underlying, Priced_In=priced_in, Discount_Rate=priced_in or 'USD',
+                      Yield=underlying, Volatility='{}.{}'.format(underlying, priced_in or 'USD'),
+                      Quote_Type='Implied_Volatility', European_Options=[{
+                          'Expiry_Date': expiry, 'Strike': 0.0, 'Option_Type': 'Call', 'Units': 1.0, 'Weight': 1.0,
+                          'Quoted_Market_Value': FX_SIGMA}])
+    resolved, spot, convention = family.resolve_block(
+        '.'.join(['LogVar2FJModelPrices', underlying] + [priced_in] * bool(priced_in)), instrument,
+        params['Price Factors'], params['Price Factor Interpolation'], params['System Parameters'], config.holidays)
+    return next(family.prepare_quotes(params['System Parameters'], instrument, resolved, spot, convention))[4]
 
 
 def lagged(**days):
@@ -265,11 +284,11 @@ def test_a_forward_carries_between_spot_dates():
     days fewer; to a Thursday one day on is three and one, two days fewer, where two carry the
     tenor. Under a credit Monte Carlo each row starts at its own spot date, three, four or five
     calendar days on over two daily weeks: against the share stating no lag, path by path at
-    float32. An equity swaplet list reads the share's lag on the business days of its
+    float32. An equity swaplet list reads the share's lag on the share's calendar, never on its own
     `Accrual_Calendars`: paying the level a Monday fixes, its start fixed or ahead, it carries two
-    days fewer than the tenor at the share's three, one fewer where the Tuesday is its calendar's
-    holiday, and the tenor where the share states none; no lag is no roll, a fixing on the holiday
-    carrying to it; and on a principal with both ends ahead it pays the ratio of two forwards, each
+    days fewer than the tenor at the share's three, one fewer where the Tuesday is a holiday of the
+    share's calendar, and the tenor where the share states none; no lag is no roll, a fixing on the
+    holiday carrying to it; and on a principal with both ends ahead it pays the ratio of two forwards, each
     to its own spot date. The equity forward deal and an FX start-window knock-out no path reaches,
     the vanilla, read the same forward. Paid at a Saturday expiry a year on, an FX one-touch and
     no-touch and an equity no-touch meet the textbook one-touch at the carry between spot dates; a
@@ -280,8 +299,8 @@ def test_a_forward_carries_between_spot_dates():
     Killing mutations: the factor's stated lag unread, its class's read in its place, the share
     stating two 1.6e-4 high; the carry started at the valuation date, the equity forward 4.1e-4
     high; a default of two on the share, 1.6e-4 low; every row given the base date's lag, the
-    Monday's row 1.6e-4 low; the list's lag unread, its forward 1.6e-4 high; its calendar unread,
-    8.2e-5 low; a lag of zero days rolled where `Deal.spot_lag` returns None, the daily grid's
+    Monday's row 1.6e-4 low; the list's lag unread, its forward 1.6e-4 high; the share's calendar
+    unread, 8.2e-5 low; the list's `Accrual_Calendars` counted in its place, 8.2e-5 high; a lag of zero days rolled where `Deal.spot_lag` returns None, the daily grid's
     Saturday row red; a period's start carried to its day, the ratio 4.1e-4 high. A `Spot_Lag`
     unread: the forward deal's, at the share's two 1.6e-4 high; the partial barrier's, 1.1e-4 high;
     the FX touch's, the one-touch 1.8e-4 high and the no-touch 3.0e-4 low; the equity touch's, the
@@ -327,15 +346,16 @@ def test_a_forward_carries_between_spot_dates():
         stretch = math.exp((R_USD - Q_EQ) * (lag(midweek, 3) - lag(day, 3)) / 365.0)
         assert np.allclose(ratio, stretch, rtol=2e-6, atol=0.0), day
     holiday = pd.Timestamp('2024-09-24')                 # a Tuesday
-    monday, paid, named = holiday - pd.DateOffset(days=1), holiday + pd.DateOffset(days=3), {
-        'Accrual_Calendars': book.CALENDAR}
+    monday, paid = holiday - pd.DateOffset(days=1), holiday + pd.DateOffset(days=3)
+    named = dict(FACTORS['EquityPrice.EQ'], Holiday_Calendar=book.CALENDAR)
     tenor, ahead = (monday - BASE).days, BASE + pd.DateOffset(days=7)
     for start in (BASE - pd.DateOffset(days=30), ahead):
         marked = marks([
-            swaplet('WEEK', start, monday, paid), swaplet('NAMED', start, monday, paid, **named),
+            swaplet('WEEK', start, monday, paid, Accrual_Calendars=book.CALENDAR),
             swaplet('RATIO', ahead, monday, paid, Amount_Type='Principal')])
-        marked.update(marks([swaplet('NONE', start, monday, paid), swaplet('HELD', start, holiday, paid, **named)],
-                            factors=lagged(EQ=0)))
+        marked.update(marks([swaplet('NAMED', start, monday, paid)], factors={'EquityPrice.EQ': named}))
+        marked.update(marks([swaplet('NONE', start, monday, paid), swaplet('HELD', start, holiday, paid)],
+                            factors={'EquityPrice.EQ': dict(named, Settlement_Days=0)}))
         for ref, level, between in (
                 ('NONE', SPOT, tenor), ('WEEK', SPOT, tenor + lag(monday, 3) - lag(BASE, 3)),
                 ('NAMED', SPOT, tenor + lag(monday, 3, [holiday]) - lag(BASE, 3)), ('HELD', SPOT, tenor + 1),
@@ -392,14 +412,17 @@ def test_a_pair_counts_its_spot_date_as_the_market_does():
     Thursday, so a Wednesday's spot date is the Friday, two days on, and a Tuesday's two TARGET
     days end on the holiday and roll to the Friday; EUR in GBP on London counts past London's 26
     August, a Friday's spot date five days on, and rolls off New York's 2 September, a Thursday's
-    five days on; EUR stating one day and GBP two, the cross counts two. USD's own days are never
-    read: an option on USD priced in EUR marks the same, to the bit, whatever USD states.
+    five days on; EUR stating one day and GBP two, the cross counts two. The option-quote fit grows
+    its forward between the same spot dates, on the pair priced in the base and on the cross. USD's
+    own days are never read: an option on USD priced in EUR marks the same, to the bit, whatever USD
+    states.
 
     Killing mutations: USD's calendar counted before the spot date, the Wednesday's forward 1.6e-4
     low; no roll onto the calendars the pair settles on, the Tuesday's 5.5e-5 high, as a pair
     settling off New York's; a cross counted on its underlying's calendar alone, the cross over
     26 August 2.7e-5 high; its underlying's days in place of the most, the cross 5.5e-5 high;
-    USD's days read, the inverse option's forward 1.1e-4 low.
+    USD's days read, the inverse option's forward 1.1e-4 low. The fit counting Monday to Friday,
+    the Tuesday's 5.5e-5 high; USD's rate left out of the fit's, the cross's Tuesday 2.7e-5 high.
     """
     expiry, inverse = pd.Timestamp('2024-12-11'), pd.Timestamp('2024-10-17')
     calendars = {'FxRate.EUR': 'TARGET (Euro)', 'FxRate.USD': 'New York', 'FxRate.GBP': 'London'}
@@ -421,10 +444,12 @@ def test_a_pair_counts_its_spot_date_as_the_market_does():
         tenor, marked = (expiry - base).days, marks([deep, cross, unit], base, factors(stated))
         # the cross's mark is in GBP times GBP's price today, which the unit paid in GBP divides out
         for forward, spot, carry, (start, end) in (
-                (marked['FXO'] / (UNITS * df(tenor)), FX_SPOT, R_USD - R_EUR, usd),
-                (marked['CROSS'] / (UNITS * marked['UNIT']), FX_SPOT / GBP_SPOT, R_GBP - R_EUR, gbp)):
-            assert forward + 0.01 == pytest.approx(spot * math.exp(carry * (tenor + end - start) / 365.0),
-                                                   rel=1e-12), (base, spot)
+                (marked['FXO'] / (UNITS * df(tenor)) + 0.01, FX_SPOT, R_USD - R_EUR, usd),
+                (fitted(base, factors(stated), expiry, 'EUR'), FX_SPOT, R_USD - R_EUR, usd),
+                (marked['CROSS'] / (UNITS * marked['UNIT']) + 0.01, FX_SPOT / GBP_SPOT, R_GBP - R_EUR, gbp),
+                (fitted(base, factors(stated), expiry, 'EUR', 'GBP'), FX_SPOT / GBP_SPOT, R_GBP - R_EUR, gbp)):
+            assert forward == pytest.approx(spot * math.exp(carry * (tenor + end - start) / 365.0), rel=1e-12), (
+                base, spot)
     on_usd = dict(deep, Reference='USD', Underlying_Currency='USD', Currency='EUR', Discount_Rate='EUR')
     readings = {(eur, usd): marks([on_usd], inverse, factors({'FxRate.EUR': {'Settlement_Days': eur},
                                                               'FxRate.USD': {'Settlement_Days': usd}}))['USD']

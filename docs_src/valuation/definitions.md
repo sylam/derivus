@@ -12,14 +12,14 @@ forwards and European options have the closed forms below.
 | Quantity | Convention (vanilla equity and FX options) |
 |---|---|
 | $\tau$ (vol and Black time) | the **Discount_Rate** curve's day count from $t$ to **Expiry_Date** |
-| Forward $F(t,T)$ | carried between spot dates, the underlying's **Settlement_Days** business days on from $t$ and from the expiry: 3 on an **EquityPrice** and 2 on an **FxRate** where omitted, a pair reading its underlying currency's, on the factor's **Holiday_Calendar**, else the deal's **Accrual_Calendars**, else Monday to Friday |
+| Forward $F(t,T)$ | carried between spot dates, from $t$'s and from the expiry's: a share's **Settlement_Days** business days on, 3 where omitted, on its **Holiday_Calendar**, else Monday to Friday; a pair's the most **Settlement_Days** of its currencies other than USD, 2 where omitted, on each one's **Holiday_Calendar**, rolled onto a business day of both and of USD |
 | Discounting | from the settlement date: **Settlement_Date** (equity) or **Delivery_Date** (FX), the expiry where blank |
 | Past the expiry | the underlying is the expiry's print: the scenario's own level, or **Price_Fixing** where the expiry is before the base date |
 
 Every equity and FX deal reading a forward carries it between spot dates the same way, from $t$ and
 from each fixing it reads: the options, barriers, touches, Asians, autocalls, TARFs, accumulators,
-extendable forwards, range accruals, the equity forward and the equity swaps, each at its underlying
-factor's **Settlement_Days**. A deal has one lag for every spot fixing it reads, a `Compo`'s $F_X$
+extendable forwards, range accruals, the equity forward and the equity swaps, each between its
+underlying's spot dates. A deal has one lag for every spot fixing it reads, a `Compo`'s $F_X$
 included. Commodity deals carry with none.
 
 An **FxRate**'s **Spot** is the price for delivery on its spot date, so a value converts into

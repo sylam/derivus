@@ -302,18 +302,18 @@ def get_fxrate_component(fieldname, all_factors):
 USD = utils.Factor('FxRate', ('USD',))
 
 
-def spot_convention(keys, all_factors, calendars, default=None):
+def spot_convention(keys, all_factors, calendars):
     """`(days, count, settle)`, the spot date `utils.spot_lag` counts, of a share (one `EquityPrice`
     key) or a currency pair (two `FxRate` keys), None at no days. Of the factors `keys` name, and of
     `USD` on a pair, the days are the most `Settlement_Days` those but `USD` state, counted on the
     business days of each of them, and the spot date rolls forward onto a business day of all of
-    them. A factor naming no `Holiday_Calendar` counts on the calendar named `default`."""
+    them."""
     factors = {key: get_factor_component(key, all_factors) for key in keys + [USD] * (keys[0].type == 'FxRate')}
     counted = [factor for key, factor in factors.items() if key != USD]
     days = max((factor.spot_days() for factor in counted), default=0)
     if days:
         return (days,) + tuple(utils.joint_calendar(
-            [factor.spot_calendar(calendars, default) for factor in group if factor is not None])
+            [factor.spot_calendar(calendars) for factor in group if factor is not None])
             for group in (counted, factors.values()))
 
 
@@ -750,11 +750,9 @@ class Deal(object):
 
     def spot_lag(self, kind, name, all_factors, base_date, calendars, other=None):
         """The lag (`utils.spot_lag`) from a day, counted from `base_date`, to its spot date, None at
-        no days: the `spot_convention` of the factor `kind` named `name`, of the pair with the rate of
-        the `other` currency where one is named, on the deal's `Accrual_Calendars` where a factor
-        names no calendar."""
-        convention = spot_convention([utils.Factor(kind, x) for x in (name, other) if x], all_factors, calendars,
-                                     self.field.get('Accrual_Calendars'))
+        no days: the `spot_convention` of the factor `kind` named `name`, or of the pair with the rate
+        of the `other` currency where one is named."""
+        convention = spot_convention([utils.Factor(kind, x) for x in (name, other) if x], all_factors, calendars)
         return convention and partial(utils.spot_lag, base_date, convention)
 
     def fx_pair(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, calendars):

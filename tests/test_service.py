@@ -1944,10 +1944,11 @@ def spot_model_block(path):
     """The emitter, run the way the verb runs it: off a Context over the book file on disk."""
     from derivus.bootstrappers import LogVar2FJModelParameters
 
-    params = in_process(json.loads(path.read_text())).current_cfg.params
+    config = in_process(json.loads(path.read_text())).current_cfg
+    params = config.params
     return LogVar2FJModelParameters.fx_surface_block(
         'USD.ZAR', params['Price Factors'], params['System Parameters'],
-        params['Price Factor Interpolation'])
+        params['Price Factor Interpolation'], config.holidays)
 
 
 def test_the_fx_ladder_is_vega_weighted_points_on_the_surfaces_own_strikes(tmp_path):
@@ -6012,8 +6013,9 @@ def named_calendar(path, holidays=('2030-01-01',)):
 
 def named_book(tmp_path):
     """`(book, market, calendar)`: a market data FILE holding every equity, curve, model and
-    correlation, survival curves for CPTY_0 to CPTY_4 and a factor no set reads; a calendar; and a
-    book of ten netting sets naming both - NS_k against CPTY_k on two of the six equities, the even
+    correlation, survival curves for CPTY_0 to CPTY_4 and a factor no set reads; a calendar the
+    equities count their spot dates on; and a book of ten netting sets naming both - NS_k against
+    CPTY_k on two of the six equities, the even
     sets funding at FUND - whose explicit block states CPTY_3's curve over the file's and CPTY_5 to
     CPTY_9's outright, EQ_0's spot, EQ_1's only surface, EQ_2's implied parameters and EQ_4's model.
     """
@@ -6023,7 +6025,7 @@ def named_book(tmp_path):
         'EquityPrice.UNREAD': dict(EQUITY['EquityPrice.EQ'], Spot=1.0),
         'GBMAssetPriceTSModelParameters.EQ_2': implied(0.3)})
     for k, name in enumerate(NAMED):
-        factors['EquityPrice.' + name] = dict(EQUITY['EquityPrice.EQ'], Spot=EQ_SPOT + 5.0 * k)
+        factors['EquityPrice.' + name] = dict(EQUITY['EquityPrice.EQ'], Spot=EQ_SPOT + 5.0 * k, Holiday_Calendar='Synth')
         factors['DividendRate.' + name] = EQUITY['DividendRate.EQ']
         if name != 'EQ_1':
             factors['EquityPriceVol.' + name] = surface(VOL + 0.01 * k)
@@ -6041,12 +6043,12 @@ def named_book(tmp_path):
 
     stated = {'SurvivalProb.CPTY_{}'.format(k): hazard(0.04 + 0.005 * k)
               for k in (3, 5, 6, 7, 8, 9)}
-    stated.update({'EquityPrice.EQ_0': dict(EQUITY['EquityPrice.EQ'], Spot=110.0),
+    stated.update({'EquityPrice.EQ_0': dict(EQUITY['EquityPrice.EQ'], Spot=110.0, Holiday_Calendar='Synth'),
                    'EquityPriceVol.EQ_1': surface(0.3), 'GBMAssetPriceTSModelParameters.EQ_2':
                    implied(0.35)})
     sets = [netting_set('NS_{}'.format(k), 'CPTY_{}'.format(k), [
         dict(VANILLA, Reference='OPT_{}_{}'.format(k, name), Equity=name, Dividends=name,
-             Equity_Volatility=name, Accrual_Calendars='Synth')
+             Equity_Volatility=name)
         for name in (NAMED[k % 6], NAMED[(k + 1) % 6])], funding_rate='USD' if k % 2 else 'FUND')
         for k in range(10)]
     document = job(deals=(), factors=stated, sections={
@@ -6228,7 +6230,7 @@ def test_an_edit_to_either_named_file_is_a_new_run_and_the_request_parses_neithe
     KILLING MUTATIONS: either digest dropped from the stamp, which serves the first run's numbers
     under the first id; the worker reading the files off their paths rather than the bytes its
     stamp hashed (`session.held` unset), which prices EQ_3 at 140.25 under the id stamped at 130,
-    a CVA of 2,251.12 where the stamped file's is 1,956.78; a load on the request thread, which
+    a CVA of 2,198.56 where the stamped file's is 1,907.27; a load on the request thread, which
     raises on the broken file; the `Stats` check removed, which lands the set done without its
     deal.
     """

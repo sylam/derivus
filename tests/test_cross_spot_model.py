@@ -188,10 +188,11 @@ def surfaced(base, order=('EUR', 'ZAR'), **sections):
 def author(document, pair='EUR.ZAR', prior=LEVERAGE_PRIOR):
     """`(Market Prices name, block)` off that book's own built surface - the emitter as the verb
     runs it, and the one seam that has to learn a cross."""
-    params = derivus.Context().load_json((dump(document), 'cross')).current_cfg.params
+    config = derivus.Context().load_json((dump(document), 'cross')).current_cfg
+    params = config.params
     return LogVar2FJModelParameters.fx_surface_block(
         pair, params['Price Factors'], params['System Parameters'],
-        params['Price Factor Interpolation'], prior, LADDER)
+        params['Price Factor Interpolation'], config.holidays, prior, LADDER)
 
 
 def fitted(base, order=('EUR', 'ZAR')):
