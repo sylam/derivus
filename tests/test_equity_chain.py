@@ -34,13 +34,11 @@ monkeypatching - the canned terminal is a `BloombergSession` subclass whose even
   the forward      the fit's forward off the `Strike` column it fills in, against
                    `calc_eq_forward`'s through an `EquityForwardDeal` in the same job
 """
-import ast
 import datetime
 import hashlib
 import json
 import math
 import os
-import subprocess
 import sys
 
 import pytest
@@ -54,8 +52,6 @@ from derivus_bloomberg.equity_chain import (ChainContract, EquityForward, Equity
 from derivus_bloomberg.errors import (BloombergConfigurationError, IncompleteChain, InvalidQuote,
                                       UnsupportedExerciseStyle)
 from derivus_bloomberg.session import BloombergSession
-
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 
 AS_OF = datetime.date(2026, 8, 31)
 UNDERLYING = 'SPX Index'
@@ -246,35 +242,6 @@ def canned_chain(**kwargs):
 FORWARD = EquityForward(
     underlying_factor='SPX', volatility_factor='SPX', discount_rate='USD',
     dividend_reference='SPX', rate=RATE, dividend_yield=DIVIDEND)
-
-
-# =============================================================================================
-# 1  the dependency budget
-# =============================================================================================
-
-def imported_names(source):
-    """The top-level names a file imports, however deep the import sits. Relative imports are
-    skipped: they resolve inside the package and carry no module name to judge."""
-    names = set()
-    with open(source, encoding='utf-8') as handle:
-        tree = ast.parse(handle.read(), filename=source)
-    for node in ast.walk(tree):
-        if isinstance(node, ast.Import):
-            names.update(alias.name.split('.')[0] for alias in node.names)
-        elif isinstance(node, ast.ImportFrom) and not node.level:
-            names.add((node.module or '').split('.')[0])
-    return names
-
-
-def in_a_fresh_interpreter(statements):
-    """What `sys.modules` holds after a fresh interpreter runs `statements`."""
-    code = ('import json, sys; {}; '
-            'print(json.dumps(sorted({{name.split(".")[0] for name in sys.modules}})))'.format(
-                statements))
-    done = subprocess.run([sys.executable, '-c', code], cwd=ROOT, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, universal_newlines=True)
-    assert done.returncode == 0, done.stderr
-    return set(json.loads(done.stdout))
 
 
 # =============================================================================================

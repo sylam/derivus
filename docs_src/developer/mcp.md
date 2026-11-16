@@ -118,11 +118,11 @@ names; a tool error means the call cannot proceed (the service down, a parent th
 children, a quote id with nothing filed). `price_candidate` and `solve_deal` run the same check
 before they queue. **Held by**
 `test_a_rejected_booking_is_an_answer_that_wrote_nothing`,
-`test_what_a_model_actually_mistypes_comes_back_as_data`,
-`test_the_store_names_what_must_be_stated_and_a_missing_term_refuses_by_name`,
 `test_a_parent_that_takes_no_children_is_refused`,
 `test_the_service_being_down_names_dv_service`,
-`test_service.py::test_a_candidate_naming_market_data_the_book_lacks_is_refused`,
+`test_service.py::test_a_malformed_booking_is_refused_by_name_and_writes_nothing`,
+`::test_a_deal_missing_a_term_is_refused_by_name_and_a_convention_is_not`,
+`::test_a_candidate_naming_market_data_the_book_lacks_is_refused`,
 `::test_a_solve_on_a_candidate_naming_market_data_the_book_lacks_is_refused`,
 `::test_an_unknown_quote_id_names_the_tmp_it_looked_in`.
 

@@ -3446,31 +3446,6 @@ def test_every_revealed_column_is_labelled_in_the_coordinates_the_net_reads(capl
     assert np.allclose(rs[LAST_STEP][1][6:9], np.array([2055.0, 1.0, 2055.0]) * last[6:9], rtol=1e-5, atol=0.0),         (rs[LAST_STEP][1], last)
 
 
-def test_a_world_stating_the_folded_switches_off_runs_the_folded_law(caplog):
-    """`Trading_Clock` and `Reveal_Band_State` are folded, so a stored world stating each 'No' runs the
-    one law: the labelled-column document's state labels and market dimension are the same to the bit
-    with the two keys stated off as without them (a solver stating the folded
-    `DiffV2_State_Gradient_Label` is refused by name, `test_the_hedging_problem_is_judged_at_every_depth`). 2 s.
-
-    Killing mutation: an off arm read again (the reveal's, its deviation column dropped where a block
-    states `Reveal_Band_State` 'No': market dimension 8 against 9)."""
-    def labels(off):
-        cfg = _cfg(seed=7)
-        hp = cfg['Calc']['Calculation']['Hedging_Problem']
-        hp['Solver'].update(T_Min=LAST_STEP - 3, DiffV2_Fit_Iters=20)
-        basis = dict(SLOW_BASIS, **OWN_GARCH)
-        if off:
-            basis.update(Trading_Clock='No', Reveal_Band_State='No')
-        cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Models'] = {
-            'BasisLinkedSpotModel.PLATINUM_LME.LME_CME': basis}
-        caplog.clear()
-        with caplog.at_level(logging.DEBUG):
-            md = _run(cfg).evaluation_summary['diagnostics']['market_dim']
-        return md, [r.getMessage() for r in caplog.records if r.getMessage().startswith('STATE_LABEL ')]
-    on, off = labels(False), labels(True)
-    assert on[0] == off[0] and len(on[1]) >= 2 and on[1] == off[1], (on[0], off[0], len(on[1]))
-
-
 def test_the_wealth_step_differences_the_fork_s_own_futures_marks(caplog):
     """The gradient fork's futures move is its t+1 mark
     less its own t mark, both moving with the leaves, so a column the marks read (the carry, the

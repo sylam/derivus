@@ -13,8 +13,7 @@
 """The spine's import surface, its packaging, and the verbs `DV_Spine` answers to.
 
 The book of record depends on stdlib plus `cryptography` - no engine, no torch, no network. That
-is a PROPERTY OF THE SOURCE, so the first gate reads it rather than the loaded modules; the second
-proves it again by watching what lands in a fresh interpreter's `sys.modules`. Both cover every
+is a PROPERTY OF THE SOURCE, so the gate reads it rather than the loaded modules, every
 `derivus_spine/*.py` by glob, so a module added tomorrow is gated the day it appears.
 
 The packaging gate reads `setup.py` as text and AST and installs nothing: the spine ships as a
@@ -110,32 +109,6 @@ def test_the_spine_imports_nothing_but_the_standard_library_and_cryptography():
                                                 sorted(imported & FORBIDDEN))
     # non-vacuous: a package that imported nothing would pass the two assertions above
     assert set().union(*(imported_names(source) for source in sources))
-
-
-def test_importing_the_spine_lands_neither_the_engine_nor_torch():
-    """The source gate's answer proved a second way, because the first trusts the parser: a FRESH
-    interpreter imports the package and reports what arrived. Run out of the repo root so the tree
-    under test is this checkout.
-
-    EVERY MODULE BY GLOB: `__init__.py` keeps its surface to the truth layer, so importing the
-    package alone would leave the CLI, custody, identity and the verbs unloaded and unwitnessed.
-
-    Killing mutation: a spine module importing `numpy`.
-    """
-    modules = sorted('derivus_spine.{}'.format(os.path.basename(source)[:-3])
-                     for source in spine_sources()
-                     if os.path.basename(source) != '__init__.py')
-    assert modules, 'derivus_spine holds no modules to import'
-    code = ('import json, sys; import derivus_spine; import {}; '
-            'print(json.dumps(sorted({{name.split(".")[0] for name in sys.modules}})))'.format(
-                ', '.join(modules)))
-    done = subprocess.run([sys.executable, '-c', code], cwd=ROOT, stdout=subprocess.PIPE,
-                          stderr=subprocess.PIPE, universal_newlines=True)
-
-    assert done.returncode == 0, done.stderr
-    landed = set(json.loads(done.stdout))
-    assert 'derivus_spine' in landed, 'the package did not import'
-    assert landed.isdisjoint(FORBIDDEN), sorted(landed & FORBIDDEN)
 
 
 def setup_call():

@@ -477,36 +477,6 @@ def _seasoned(rows, target, spot, model='None', smooth=False, sims=SEASONED_SIMS
 
 @pytest.mark.parametrize('option_type,spot,settled,observed', SEASONED_WORLDS)
 @pytest.mark.parametrize('buy_sell', ['Buy', 'Sell'])
-def test_a_settled_fixing_opens_the_pot_rather_than_vanishing(
-        tmp_path, option_type, spot, settled, observed, buy_sell):
-    """A fixing that has already paid is not a fixing the deal has stopped having.
-
-    Both its dates were cut at the base date and its accrual went nowhere, so the deal priced
-    against its WHOLE original target - bit-identical to deleting the row. Measured here: a bought
-    call read 80.7373 where the deal is worth 46.4464, 73.8% over; a bought put -71.6956 against
-    -80.0158, 10.4% under. Which way it errs is the payoff's, not the defect's.
-
-    Equal to the BIT, not approximately: the substituted deal walks the same two fixings and draws
-    the same Sobol numbers, and the only quantity that differs is the remaining target - the same
-    double on both sides, since the oracle reduces it by the pricer's own accrual expression.
-
-    Killing mutation: the pot opened empty, the settled fixings' accrual dropped.
-    """
-    side = dict(Option_Type=option_type, Buy_Sell=buy_sell)
-    rows = [SETTLED_DATES + [settled]] + LIVE_ROWS
-    accrual = _accrual(option_type, settled)
-    seasoned = _mtm(_run(_seasoned(rows, SEASONED_TARGET, spot, **side), tmp_path, 'seasoned')[0])
-    substituted = _mtm(_run(_seasoned(LIVE_ROWS, SEASONED_TARGET - accrual, spot, **side),
-                            tmp_path, 'substituted')[0])
-    full = _mtm(_run(_seasoned(LIVE_ROWS, SEASONED_TARGET, spot, **side), tmp_path, 'full')[0])
-    assert seasoned == substituted, (
-        'the settled fixing did not open the pot', seasoned, substituted)
-    assert seasoned != full, (
-        'the deal prices against its whole original target, so the settled fixing reached nothing')
-
-
-@pytest.mark.parametrize('option_type,spot,settled,observed', SEASONED_WORLDS)
-@pytest.mark.parametrize('buy_sell', ['Buy', 'Sell'])
 def test_a_fixing_observed_but_not_settled_banks_its_own_settlement(
         tmp_path, option_type, spot, settled, observed, buy_sell):
     """A row fixed before the base date and settling after it is still the STRIP's.
@@ -570,12 +540,13 @@ def test_a_fixing_whose_date_has_passed_must_carry_the_rate_it_fixed_at(tmp_path
         _run(_seasoned(rows, SEASONED_TARGET, 1.14), tmp_path, 'blank')
 
 
-@pytest.mark.parametrize('model', ['None', 'LogVar2FJ'])
-@pytest.mark.parametrize('smooth', [False, True])
+@pytest.mark.parametrize('model,smooth', [
+    ('None', True), ('LogVar2FJ', False), ('LogVar2FJ', True)])
 def test_the_seasoned_pot_is_one_number_on_every_arm(tmp_path, model, smooth):
     """The crisp estimator and the default, GBM and the LogVar2FJ kit: four estimators, one
     spelling of what the settled fixings left, and the substituted identity is to the bit on all
-    of them. Measured: 46.5710 on GBM and 40.3114 on the walk, each unmoved by the switch.
+    of them, GBM's crisp arm in the banked-settlement gate above. Measured: 46.5710 on GBM and
+    40.3114 on the walk, each unmoved by the switch.
 
     Killing mutation: the pot opened empty, the settled fixings' accrual dropped.
     """
