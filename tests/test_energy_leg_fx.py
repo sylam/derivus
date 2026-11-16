@@ -208,6 +208,20 @@ def test_an_energy_option_paid_in_another_currency_is_a_compo_or_a_quanto():
         assert abs(mark - reference) <= 1e-12 * reference, (terms, mark, reference)
 
 
+def test_an_energy_option_its_realised_part_already_past_the_strike_is_its_forward_less_the_strike():
+    """FUEL_OPT half-way through its sampling at a realised 81, struck at 30, is `Volume DF (E[A] - K)`
+    to 1e-12; red with the intrinsic read off the clamped net strike, the realised excess dropped."""
+    start, end = trial_commodity.B - pd.DateOffset(days=14), trial_commodity.B + pd.DateOffset(days=14)
+    settle = trial_commodity.B + pd.DateOffset(days=20)
+    samples = pd.bdate_range(start, end)
+    average = np.where(samples < trial_commodity.B, 81.0, fuel_forward(samples)).mean()
+    hand = 1000.0 * discount(book.DISCOUNT[0], settle) * (average - 30.0)
+    job = trial('FUEL_OPT', Period_Start=start, Period_End=end, FX_Period_Start=start, FX_Period_End=end,
+                Settlement_Date=settle, Strike=30.0, Realized_Average=81.0)
+    mark = float.fromhex(marks(job)['FUEL_OPT'])
+    assert abs(mark - hand) <= 1e-12 * hand, (mark, hand)
+
+
 def test_a_commodity_digital_is_black_s_digital_on_the_reference_s_forward():
     """`trial_commodity`'s FUEL_DIG - 25,000 USD if the fuel reference price fixes above 82 a year
     out, 30% flat - marks under a base valuation as `Payoff DF N(w d2)` on the fuel forward at the

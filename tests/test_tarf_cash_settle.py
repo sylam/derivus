@@ -234,3 +234,15 @@ def test_a_tarf_its_settled_fixings_redeemed_exposes_and_pays_nothing(tmp_path):
     assert float(np.abs(np.asarray(out['Results']['mtm'], dtype=float)).max()) == 0.0
     assert float(np.abs(np.asarray(
         out['Results']['cashflows']['USD'].values, dtype=float)).max()) == 0.0
+
+
+def test_two_fixings_settling_on_one_day_book_both(tmp_path):
+    """Fixings observed at 1.15 and 1.14 settling on one day book both payments there, 90.00; red
+    with the day booking its strip's first fixing alone, 50.00."""
+    day = {'.Timestamp': _day(3)}
+    job = _job('Buy')
+    job['Calc']['Deals']['Deals']['Children'][0]['Instrument']['.Deal']['TARF_ExpiryDates'] = [
+        [{'.Timestamp': _day(-5)}, day, 1.15], [{'.Timestamp': _day(-1)}, day, 1.14]] + SEASONED_LIVE
+    ledger = _run(job, tmp_path, 'one_day')['Results']['cashflows']['USD']
+    assert str(ledger.index[0])[:10] == _day(3), ledger.index[0]
+    assert abs(float(ledger.values[0].mean()) - N1 * (1.15 + 1.14 - 2.0 * STRIKE)) < 1e-3, ledger.values[0]

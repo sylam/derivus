@@ -4305,7 +4305,8 @@ def black_european_option(F, X, vol, tenor, buyorsell, callorput, shared,
             value = payoff * itm * shared.one
         else:
             prem = callorput * (forward * norm_cdf(callorput * d1) - strike * norm_cdf(callorput * d2))
-            value = torch.relu(callorput * (forward - strike))
+            # the intrinsic at the strike as stated: the clamp only keeps the log defined
+            value = torch.relu(callorput * (forward - shift - X))
     return buyorsell * torch.where(guard, prem, value)
 
 

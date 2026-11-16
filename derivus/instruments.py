@@ -2742,7 +2742,7 @@ class SwapInterestDeal(Deal):
         dates, pays = self.legs[floating]
         field_index['FloatCashflows'] = utils.TensorCashFlows.generate_float(
             base_date, time_grid, dates, -sign * self.field['Principal'], self.field['Amortisation'],
-            self.field['Known_Rates'], self.field[floating + 'Interest_Frequency'], self.field['Index_Tenor'],
+            self.field['Known_Rates'], self.field['Index_Tenor'], self.field['Index_Tenor'],
             utils.DayCount.code(self.field[floating + 'Day_Count']), self.field['Floating_Margin'] / 10000.0,
             self.field.get('Reference'), pays, self.float_index(
                 calendars, self.field[floating + 'Day_Count'], self.field[floating + 'Frequency']))
@@ -3141,7 +3141,7 @@ class YieldInflationCashflowListDeal(Deal):
         super(YieldInflationCashflowListDeal, self).reset()
 
         paydates = set([x['Payment_Date'] for x in self.field['Cashflows']['Items']])
-        if self.field['Is_Forward_Deal'] == 'Yes':
+        if self.field.get('Settlement_Date'):
             resetdates = {x for x in paydates if x < self.field['Settlement_Date']}
             resetdates.add(self.field['Settlement_Date'])
         else:
@@ -3529,7 +3529,7 @@ class SwaptionDeal(Deal):
             dates, pays = legs[floating]
             return utils.TensorCashFlows.generate_float(
                 base_date, time_grid, dates, -sign * self.field['Principal'],
-                self.field[floating + 'Amortisation'], None, self.field[floating + 'Frequency'],
+                self.field[floating + 'Amortisation'], None, self.field['Index_Tenor'],
                 self.field['Index_Tenor'], utils.DayCount.code(self.field[floating + 'Day_Count']),
                 self.field['Floating_Margin'] / 10000.0, self.field.get('Reference'), pays, index)
 
@@ -6219,7 +6219,7 @@ class FXTARFOptionDeal(Deal):
 
         A row whose SETTLEMENT is behind the base date is history: it leaves the grid and its
         observed value goes to `Settled_Fixings`, which the pricer folds into the pot the strip
-        opens on. What is left is one fixing per settlement, which is what the strip walks.
+        opens on. What is left is each fixing with its settlement, which is what the strip walks.
 
         The switch swaps the (moneyness, vol-surface) lookup for the model's own walk in the
         pricer, leaving the GBM `field_index['Volatility']` path untouched when off or absent. No

@@ -4228,7 +4228,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                     with torch.no_grad():
                         L_alive = p * L_alive
                 # a settlement at tau == 0 is RETURNED, because a recompute would settle twice
-                if j == 0 and tau[0] == 0:
+                if tau[j] == 0:
                     settle = cf_step.mean(axis=1)
                 return (Sj, P, L, R, P_alive, L_alive), (settle, pend, knock)
 
@@ -4416,12 +4416,14 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
                 # at weight one (tau == 0, undiscounted), CLAMPED to the realised R of `untriggered`;
                 # a post-cross row's nonzero if_not is inert only because fired stays fired
                 if block_pend.dim() == 3:
-                    for row, value in zip(settle_rows, block_settled):
+                    for k, (row, value) in enumerate(zip(settle_rows, block_settled)):
+                        # the row's j-th settlement, a row settling its strip's head fixings in order
+                        j = k - settle_rows.index(row)
                         fxr = report_fx(fx_rep, row_ofs + row)
-                        amount = (fxr * buy_sell * block_pend[row][0]).detach()
+                        amount = (fxr * buy_sell * block_pend[row][j]).detach()
                         b_cash.append((int(np.searchsorted(
                             time_grid.mtm_time_grid, t_block[row, utils.TIME_GRID_MTM])),
-                            int(settle_index_local), torch.zeros_like(amount), amount,
+                            int(settle_index_local) + j, torch.zeros_like(amount), amount,
                             (fxr * buy_sell * value).detach()))
             row_ofs += theo_price.shape[0]
             mtm_list.append(theo_price)

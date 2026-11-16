@@ -360,3 +360,26 @@ def test_a_daily_index_fixes_on_the_days_its_calendar_publishes():
             assert abs(values[method + calendar] / hand - 1.0) < 1e-12, (method, calendar, hand)
     assert abs(values['OIS'] / values['OIS' + book.CALENDAR] - 1.0) < 1e-12
     assert round(bp(values['None'] - values['None' + book.CALENDAR]), 3) == -0.015, values
+
+
+def test_a_floating_period_forecasts_its_index_tenor_whatever_its_interest_frequency():
+    """A swap on a six-month index paid six-monthly, its interest frequency the three-month default,
+    is `fixed_leg + sum N F tau D(e)` over six-month windows to 1e-12; red with a three-month window."""
+    half = pd.DateOffset(months=6)
+    dates = [END - half * k for k in range(5)][::-1]
+    value = marks([dict(SWAP, Receive_Frequency=half, Index_Tenor=half, Receive_Interest_Frequency=QUARTER)])
+    hand = fixed_leg() + sum(N * growth(s, e) * D(e) for s, e in zip(dates[:-1], dates[1:]))
+    assert abs(value['SWAP'] / hand - 1.0) < 1e-12, (value, hand)
+
+
+def test_a_linker_stating_a_settlement_date_is_a_forward_whatever_its_flag_says():
+    """The list module's linker settling in three months books and marks as its twin stating
+    `Is_Forward_Deal: Yes`, bit for bit; red with its revaluation dates keyed on the flag."""
+    linker = dict(next(d for d in trial_rates.DEALS if d['Reference'] == 'LINKER'), Settlement_Date=BASE + QUARTER)
+    omitted, stated = (book.simulated(
+        [dict(linker, **flag)], ['USD'], factors=trial_rates.FACTORS, sigma=0.0, prec=torch.float64,
+        NoModel='RiskNeutral', Generate_Cashflows='Yes')[1]['Results']
+        for flag in ({}, {'Is_Forward_Deal': 'Yes'}))
+    cash = stated['cashflows']['USD']
+    assert list(cash.index) == [BASE + QUARTER] and (cash.values != 0.0).all(), cash
+    assert omitted['cashflows']['USD'].equals(cash) and omitted['mtm'].equals(stated['mtm'])
