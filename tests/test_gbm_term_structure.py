@@ -103,3 +103,78 @@ def test_a_surface_is_read_at_the_atm_coordinate_of_its_type(vol):
     expiries, atm = [0.25, 1.0, 2.0, 5.0], [0.10, 0.20, 0.25, 0.30]
     np.testing.assert_allclose(built(expiries, atm, vol), built(expiries, atm), rtol=0.0,
                                atol=1e-12)
+
+
+#: Each currency's flat rate on the quanto book.
+RATES = {'USD': 0.04, 'EUR': 0.02, 'ZAR': 0.08}
+
+
+def quanto(vol, currency):
+    """A USD CVA on a year's forward on an equity in `currency`, the equity and `FxRate.<currency>`
+    both bootstrapped onto GBMAssetPriceTSModelImplied, their correlation 0.5 named as a quanto deal
+    names it: `Correlation.EquityPrice.<vol>/FxRate.<sorted pair>`."""
+    base, pair = {'.Timestamp': '2026-01-15'}, '.'.join(sorted([currency, 'USD']))
+    flat = lambda rate: utils.Curve([], [[0.0, rate], [10.0, rate]])
+    expiries = [0.25, 1.0, 2.0, 5.0]
+    factors = dict({'FxRate.' + ccy: {'Domestic_Currency': 'USD', 'Interest_Rate': ccy,
+                                      'Spot': 1.0 if ccy == 'USD' else 0.5} for ccy in RATES}, **{
+        'InterestRate.' + ccy: {'Currency': ccy, 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                                'Curve': flat(rate)} for ccy, rate in RATES.items()}, **{
+        'EquityPrice.EQ': {'Spot': 100.0, 'Currency': currency, 'Interest_Rate': currency,
+                           'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0},
+        'DividendRate.EQ': {'Currency': currency, 'Floor': None, 'Curve': flat(0.0)},
+        'EquityPriceVol.' + vol: surface(expiries, [0.30] * 4),
+        'FXVol.' + pair: surface(expiries, [0.20] * 4),
+        'Correlation.EquityPrice.{}/FxRate.{}'.format(vol, pair): {'Value': 0.5},
+        'SurvivalProb.CPTY': {'Recovery_Rate': 0.4,
+                              'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}})
+    forward = {'Object': 'EquityForwardDeal', 'Reference': 'FWD', 'Equity': 'EQ',
+               'Currency': currency, 'Discount_Rate': currency, 'Payoff_Currency': currency,
+               'Buy_Sell': 'Buy', 'Units': 1000.0, 'Forward_Price': 90.0,
+               'Maturity_Date': {'.Timestamp': '2027-01-15'}}
+    return json.dumps({'Calc': {
+        'Calculation': {
+            'Object': 'CreditMonteCarlo', 'Base_Date': base, 'Currency': 'USD',
+            'Time_grid': '1d 3m(3m) 12m', 'Batch_Size': 4096, 'Simulation_Batches': 1,
+            'Random_Seed': 1, 'MCMC_Simulations': 1, 'Deflation_Interest_Rate': 'USD',
+            'Credit_Valuation_Adjustment': {
+                'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
+                'Stochastic_Hazard_Rates': 'No', 'Gradient': 'No'}},
+        'Deals': {'Reference': 'quanto', 'Deals': {'Children': [{
+            'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': 'NS1',
+                                     'Netted': 'True', 'Collateralized': 'False'}},
+            'Children': [{'Instrument': {'.Deal': forward}}]}]}},
+        'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
+            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': base},
+            'Price Factors': factors,
+            'Market Prices': {
+                'GBMAssetPriceTSModelPrices.EQ': {'instrument': {'Asset_Price_Volatility': vol}},
+                'GBMAssetPriceTSModelPrices.' + currency: {
+                    'instrument': {'Asset_Price_Volatility': pair}}},
+            'Bootstrapper Configuration': {
+                'GBMAssetPriceTSModelParameters': {'Prices': 'GBMAssetPriceTSModel'}},
+            'Model Configuration': {'.ModelParams': {'modeldefaults': {
+                'EquityPrice': 'GBMAssetPriceTSModelImplied',
+                'FxRate': 'GBMAssetPriceTSModelImplied'}, 'modelfilters': {}}}}}}},
+        cls=CustomJsonEncoder), 'quanto'
+
+
+def test_the_quanto_correlation_is_read_as_a_quanto_deal_reads_it():
+    """A surface named `EQ` or `EQ.EUR` is one market, one CVA to the bit; a rand equity reads its
+    pair's correlation with the sign a quanto deal reads it with, -0.5.
+
+    Killing mutations: the currency taken off the surface name's last token (`EQ` misses its
+    correlation and the run refuses); the sorted pair read unsigned (+0.5)."""
+    cva = []
+    for vol in ('EQ', 'EQ.EUR'):
+        context = derivus.Context().load_json(quanto(vol, 'EUR'))
+        context.bootstrap()
+        assert context.current_cfg.params['Price Factors'][
+            'GBMAssetPriceTSModelParameters.EQ']['Quanto_FX_Correlation'] == 0.5
+        cva.append(context.run_job()[1]['Results']['cva'])
+    assert cva[0] == cva[1]
+
+    rand = derivus.Context().load_json(quanto('EQ', 'ZAR'))
+    rand.bootstrap()
+    assert rand.current_cfg.params['Price Factors'][
+        'GBMAssetPriceTSModelParameters.EQ']['Quanto_FX_Correlation'] == -0.5

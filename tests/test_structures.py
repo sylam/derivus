@@ -1868,6 +1868,21 @@ def test_coupons_alone_solve_the_widest_tiers_centred_on_the_forward(carry_book)
     assert mirror + CAKE_PREMIUM / SPOT == pytest.approx(margin, rel=1e-6)
 
 
+def test_a_cake_on_fx_rates_naming_no_curve_centres_on_their_currencies_curves(carry_book):
+    """An `FxRate` stating its spot alone discounts on its currency's own curve, so the width solve
+    quotes the cake bit-identically to the book naming those curves.
+
+    Killing mutation: `forward_rate` reading `Interest_Rate` off the block, a KeyError."""
+    bare = copy.deepcopy(carry_book)
+    factors = bare['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    for name in ('FxRate.USD', 'FxRate.ZAR'):
+        factors[name] = {'Spot': factors[name]['Spot']}
+    coupons = [[None, None, 8.0], [None, None, 5.0], [None, None, 2.0]]
+    stated, unnamed = (structures.quote(document, 'RangeAccrual', cake_params(
+        coupons, premium=CAKE_PREMIUM))['params'] for document in (carry_book, bare))
+    assert unnamed == stated
+
+
 def test_a_cake_quote_writes_its_sheet(book, tmp_path):
     """The `.xlsx` ticket for a cake: written whole, the tiers on the Quote sheet and each leg's
     range on the Legs sheet. A range leg has no strike, so its row's strike cell is blank.

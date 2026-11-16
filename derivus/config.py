@@ -657,9 +657,9 @@ class Config(object):
         entries = self.params['Bootstrapper Configuration']
         # every entry names a class before any of them runs, and the order is what it reads
         section = [(name, entries[name]) for name in bootstrap_order(entries)]
-        selected = None if only is None else bootstrap_dependents(prices, only)
+        selected = None if only is None else bootstrap_dependents(prices, only, entries)
         if wanted is not None:
-            standing = bootstrap_precedents(prices, bootstrap_writers(prices, wanted))
+            standing = bootstrap_precedents(prices, bootstrap_writers(prices, wanted), entries)
             selected = standing if selected is None else selected & standing
         claimed = {family_class(name).market_factor_type for name, _ in section}
         unclaimed = sorted({utils.check_rate_name(x)[0] for x in prices} - claimed)

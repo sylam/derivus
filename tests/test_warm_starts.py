@@ -274,3 +274,32 @@ def test_the_written_energy_factor_seeds_the_minimisation(energy, caplog):
     assert warm_evaluations * 2 < cold_evaluations, (
         'warm {} evaluations against cold {}'.format(warm_evaluations, cold_evaluations))
     assert abs(warm['Sigma'] - cold['Sigma']) < 1e-8 and abs(warm['Alpha'] - cold['Alpha']) < 1e-8
+
+
+def test_an_atm_energy_row_reads_each_jobs_own_forward_on_one_context(tmp_path):
+    """Two jobs on one context naming one market file: the second's ATM row (`Strike` 0) is struck
+    at its own forward, so its fit is the fresh context's to the bit.
+
+    Killing mutation: the fit writing the first job's forward onto the market's own row."""
+    cfg = jsonlib.load(open(CS_JOB))
+    market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+    # off the law the other quotes were made under, so the strike the row is read at moves the fit
+    market['Market Prices'][CS_BLOCK]['instrument']['Energy_Futures_Options'][0].update(
+        Strike=0.0, Quoted_Market_Value=0.36)
+    path = tmp_path / 'market.json'
+    path.write_text(jsonlib.dumps({'MarketData': market}))
+    forward = market['Price Factors']['ForwardPrice.BRENT']
+    higher = dict(forward, Curve={'.Curve': dict(forward['Curve']['.Curve'], data=[
+        [t, 1.1 * f] for t, f in forward['Curve']['.Curve']['data']])})
+
+    def job(**factors):
+        return jsonlib.dumps({'Calc': dict(cfg['Calc'], MergeMarketData={
+            'MarketDataFile': str(path), 'ExplicitMarketData': {'Price Factors': factors}})}), 'job'
+
+    second = job(**{'ForwardPrice.BRENT': higher,
+                    CS_FACTOR: {'Property_Aliases': None, 'Sigma': CS_TRUE[0], 'Alpha': CS_TRUE[1]}})
+    shared, fresh = derivus.Context(), derivus.Context()
+    for context, text in ((shared, job()), (shared, second), (fresh, second)):
+        context.load_json(text).bootstrap()
+    assert shared.current_cfg.params['Price Factors'][CS_FACTOR] == \
+        fresh.current_cfg.params['Price Factors'][CS_FACTOR]

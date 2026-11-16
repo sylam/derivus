@@ -292,11 +292,14 @@ class CSForwardPriceModelParameters(ImpliedCalibration):
             market_factor = utils.Factor(rate[0], rate[1:])
 
             if market_factor.type == self.market_factor_type:
-                # the quote's own instrument wins on conflict
+                # the quote's own instrument wins on conflict; the fit writes its working onto
+                # COPIES of the rows, so a Strike 0 reads this run's forward on every run
                 implied_params = dict(implied_params, instrument=dict(
                     self.param, **implied_params['instrument']))
                 # the three factors this block names; an absent one is a KeyError naming it
                 block = implied_params['instrument']
+                block['Energy_Futures_Options'] = [
+                    dict(option) for option in block['Energy_Futures_Options']]
                 vol_surface, forward, discount = [riskfactors.construct_factor(
                     utils.Factor(kind, utils.check_rate_name(block[field])), price_factors, factor_interp)
                     for kind, field in (('ForwardPriceVol', 'Forward_Volatility'), ('ForwardPrice', 'Energy'),
@@ -3582,8 +3585,9 @@ class GBMAssetPriceTSModelParameters(Construction):
          '- `Quote_Sensitivity` Yes keeps the curve connected to the ATM vols. The repair is a KINK:',
          '  $df_i/dq_i$ is 0 once floored ([Quote Sensitivities](../developer/quote_sensitivities.md#the-repair-kink)).',
          '- `Quanto_FX_Correlation` is 0 for an FX rate. For an equity it is the',
-         '  `Correlation.EquityPrice.<name>/FxRate.<pair>` price factor between the equity and its',
-         '  currency against the base, 0 when absent; `Quanto_FX_Volatility` is written blank.'
+         '  `Correlation.EquityPrice.<surface>/FxRate.<pair>` price factor between the equity and its',
+         '  currency against the base, named and signed as a quanto deal reads it, 0 when absent;',
+         '  `Quanto_FX_Volatility` is written blank.'
          ]
     )
 
@@ -3737,10 +3741,14 @@ class GBMAssetPriceTSModelParameters(Construction):
                 if is_fx:
                     quanto_fx_corr = 0.0
                 else:
-                    quanto_fx_corr = price_factors.get(
-                        'Correlation.EquityPrice.{}.{}/FxRate.{}.{}'.format(
-                            rate[-1], implied_param[-1], *sorted([sys_params['Base_Currency'], implied_param[-1]])),
-                        {'Value': 0.0})['Value']
+                    # the name and sign a quanto deal reads it with (`equity_fx_correlation`): the
+                    # surface against the equity's own currency priced in the base
+                    currency = price_factors.get(utils.check_tuple_name(utils.Factor(
+                        'EquityPrice', rate[1:])), {}).get('Currency', sys_params['Base_Currency'])
+                    sign, pair = utils.check_fx_name([currency, sys_params['Base_Currency']])
+                    held = price_factors.get('Correlation.EquityPrice.{}/FxRate.{}'.format(
+                        '.'.join(implied_param), '.'.join(pair)))
+                    quanto_fx_corr = sign * held['Value'] if held else 0.0
 
                 price_factors[utils.check_tuple_name(price_param)] = {
                     'Property_Aliases': None,
@@ -6654,8 +6662,9 @@ def bootstrap_order(section):
                           for name, edges in sorted(unresolved.items()))))
 
 
-def block_readers(market_prices):
-    """`{block: [every block reading what it writes]}` over one `Market Prices` section.
+def block_readers(market_prices, entries):
+    """`{block: [every block reading what it writes]}` over one `Market Prices` section, each block
+    completed by its family's `entries` entry as the family reads it (`dict(entry, **block)`).
 
     A block is read two ways and both are the families' own declarations. `reads` names the price
     factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
@@ -6672,7 +6681,9 @@ def block_readers(market_prices):
     named = {name: {block.get('Discount_Rate')} | curves.benchmark_curves(block, name)
              if cls is curves else {block.get('Discount_Rate') or block.get('Currency')}
              for name, cls in blocks.items() if cls in (curves, SurvivalProb, InflationRate)
-             for block in [market_prices[name].get('instrument', {})]}
+             for entry in [entries.get(cls.__name__)]
+             for block in [dict(entry if isinstance(entry, dict) else {},
+                                **market_prices[name].get('instrument', {}))]}
     readers = {}
     for reader, cls in blocks.items():
         for written, wrote in blocks.items():
@@ -6683,18 +6694,18 @@ def block_readers(market_prices):
     return readers
 
 
-def bootstrap_dependents(market_prices, moved):
+def bootstrap_dependents(market_prices, moved, entries):
     """The `Market Prices` blocks a run must COVER once the blocks named by `moved` carry new
     numbers: those blocks, plus every block that reads what one of them writes, closed over."""
-    return utils.closed_over(block_readers(market_prices), moved)
+    return utils.closed_over(block_readers(market_prices, entries), moved)
 
 
-def bootstrap_precedents(market_prices, wanted):
+def bootstrap_precedents(market_prices, wanted, entries):
     """The blocks a fit of `wanted` stands on: those blocks, plus every block one of them reads,
     closed over - the walk `bootstrap_dependents` takes, backwards. A curve discounting on another
     is one system with it, so its quotes move whatever the first is read by."""
     reads = {}
-    for written, readers in block_readers(market_prices).items():
+    for written, readers in block_readers(market_prices, entries).items():
         for reader in readers:
             reads.setdefault(reader, []).append(written)
     return utils.closed_over(reads, wanted)

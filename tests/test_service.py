@@ -1783,6 +1783,30 @@ def test_a_moved_curve_re_solves_what_reads_it_and_nothing_else(desk_curves):
     assert after == standing, 'a tick of one curve rewrote another'
 
 
+def test_a_discount_curve_stated_on_the_entry_re_solves_what_discounts_on_it(desk_curves):
+    """`Discount_Rate` stated on the curve family's entry rather than the blocks: the OIS tick
+    re-solves the curve discounting on it, which then stands as a whole bootstrap solves it.
+
+    Killing mutation: the tick's coupling read off the bare block, the entry unread."""
+    document = json.loads(desk_curves.read_text())
+    prices = document['Calc']['MergeMarketData']['ExplicitMarketData']['Market Prices']
+    for curve in ('ZAR', 'ZAR-ZARONIA'):
+        del prices['InterestRatePrices.' + curve]['instrument']['Discount_Rate']
+    desk_curves.write_text(json.dumps(document, indent=4), newline='\n')
+    assert CLIENT.post('/book/configure', json={
+        'section': 'Bootstrapper Configuration', 'entry': 'InterestRate',
+        'fields': {'Discount_Rate': 'ZAR-ZARONIA'}}).status_code == 200
+
+    ticked = CLIENT.post('/book/market', content=dump(
+        {'quotes': moved_quotes(desk_curves, 'ZAR-ZARONIA')}), headers=JSON).json()
+    whole = derivus.Context().load_json(str(desk_curves))
+    whole.bootstrap()
+
+    assert ticked['bootstrapped'] == ['InterestRatePrices.ZAR', 'InterestRatePrices.ZAR-ZARONIA']
+    assert written_factors(desk_curves)['InterestRate.ZAR'] == json.dumps(json.loads(dump(
+        whole.current_cfg.params['Price Factors']['InterestRate.ZAR'])), sort_keys=True)
+
+
 #: A `NettingCollateralSet` authored as a DEAL compiles like any other and has no `Deal.generate`,
 #: so `Deal.calculate` logs CRITICAL and marks it at nothing - a real book whose PRICING talks on
 #: the channel `CapturedErrors` listens to.

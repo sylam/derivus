@@ -1477,11 +1477,11 @@ def forward_rate(document, params):
     base, quote_ccy = split_pair(params['pair'])
     factors = market_data(market_of(document))
     settles = expiry_date(timestamp(document['Calc']['Calculation']['Base_Date']), params['expiry'])
+    # a currency's own curve where its `FxRate` names none, as `FxRate.get_repo_curve_name` reads it
+    curve = lambda currency: factors['FxRate.{}'.format(currency)].get('Interest_Rate') or currency
     units = [{'Object': 'FXForwardDeal', 'Reference': 'forward-{}'.format(bought),
-              'Buy_Currency': bought, 'Buy_Amount': 1.0,
-              'Buy_Discount_Rate': factors['FxRate.{}'.format(bought)]['Interest_Rate'],
-              'Sell_Currency': sold, 'Sell_Amount': 0.0,
-              'Sell_Discount_Rate': factors['FxRate.{}'.format(sold)]['Interest_Rate'],
+              'Buy_Currency': bought, 'Buy_Amount': 1.0, 'Buy_Discount_Rate': curve(bought),
+              'Sell_Currency': sold, 'Sell_Amount': 0.0, 'Sell_Discount_Rate': curve(sold),
               'Settlement_Date': settles}
              for bought, sold in ((base, quote_ccy), (quote_ccy, base))]
     in_base, in_quote = run_prices(document, units)

@@ -269,13 +269,14 @@ band not strictly inside the next wider, a coupon not above the next wider's). T
 | --- | --- | --- |
 | every cell, no `premium` | none: the legs are priced and `net_mid` is the premium, `charged_on` `'premium'` | — |
 | a `premium` and one blank cell | that cell | a coupon between its neighbours' coupons (else 0 and 100); a floor between the next wider floor (else `0.25 ×` spot) and the next narrower (else its own cap); a cap the mirror — each opened by `OPEN` (1e-9 of the span), an end being a tier the engine refuses |
-| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the expiry (`forward_rate`: one valuation of a unit of each currency received that day, priced only when asked for) | `(1e-4, log 4)` |
+| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the expiry (`forward_rate`: one valuation of a unit of each currency received that day, each discounted on the curve its `FxRate` names, else its own, priced only when asked for) | `(1e-4, log 4)` |
 
 Two blanks, a blank beside a blank premium, a tier stating no bound beside one that does, and a
 ticket stating every cell and a premium each refuse by name; no root refuses with the economics
 said, as `run_solve` does. The value is monotone in each parameter, so a root is unique where it
 exists. **Held by** `test_the_one_blank_tier_parameter_solves_to_the_stated_premium`,
-`test_coupons_alone_solve_the_widest_tiers_centred_on_the_forward`.
+`test_coupons_alone_solve_the_widest_tiers_centred_on_the_forward`,
+`test_a_cake_on_fx_rates_naming_no_curve_centres_on_their_currencies_curves`.
 
 ## The two-way charge {#two-sided}
 
