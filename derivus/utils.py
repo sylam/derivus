@@ -2155,7 +2155,9 @@ class TensorCashFlows(TensorSchedule):
                 reset_days = [accruals[accruals.index(start) + shift]]
                 reset_tenor = pd.offsets.Day(cashflow[CASHFLOW_INDEX_End_Day] - cashflow[CASHFLOW_INDEX_Start_Day])
             else:
-                reset_days = pd.date_range(start, end, freq=reset_frequency, inclusive='left')
+                # one reset per whole tenor the period spans, a calendar roll adding none
+                count = max(1, round((end - start).days / ((start + reset_frequency) - start).days))
+                reset_days = pd.date_range(start, periods=count, freq=reset_frequency)
                 if shift:
                     reset_days = pd.DatetimeIndex([day + shift * reset_frequency for day in reset_days])
                 reset_tenor = reset_frequency if next(iter(reset_tenor.kwds.values())) == 0.0 else reset_tenor

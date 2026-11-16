@@ -376,6 +376,29 @@ def test_a_floating_period_forecasts_its_index_tenor_whatever_its_interest_frequ
     assert all(abs(value[name] / hand[name] - 1.0) < 1e-12 for name in hand), (value, hand)
 
 
+#: A year's monthly periods from 15 September 2026 on Johannesburg, three rolled past a month.
+ROLLED = [pd.Timestamp(day) for day in (
+    '2026-09-15', '2026-10-15', '2026-11-16', '2026-12-15', '2027-01-15', '2027-02-15', '2027-03-15',
+    '2027-04-15', '2027-05-17', '2027-06-15', '2027-07-15', '2027-08-16', '2027-09-15')]
+
+
+def test_a_period_rolled_past_its_index_tenor_resets_once():
+    """A swap's floating leg on a one-month index and a deposit forecast monthly, both on `ROLLED`:
+    each period resets once at its start over a month, `sum N tau F(s, s + 1M) D(e)` to 1e-12, the
+    deposit with its principal. Killing mutation: resets laid a month apart to each period's end,
+    the rolled periods reading a second, the swap +174.28 and the deposit skipped."""
+    month = pd.DateOffset(months=1)
+    terms = dict(Effective_Date=ROLLED[0], Maturity_Date=ROLLED[-1])
+    value = marks([dict(SWAP, Receive_Frequency=month, Index_Tenor=month, Receive_Accrual_Calendars=book.CALENDAR,
+                        Swap_Rate=0.0, **terms),
+                   dict(DEPOSIT, Payment_Frequency=month, Interest_Frequency=month, Accrual_Calendars=book.CALENDAR,
+                        Amortisation=None, Interest_Rate='USD-PROJ', Interest_Rate_Schedule=None, **terms)])
+    forecast = sum(N * tau(s, e) * growth(s, s + month) / tau(s, s + month) * D(e)
+                   for s, e in zip(ROLLED[:-1], ROLLED[1:]))
+    hand = {'SWAP': forecast, 'DEPOSIT': N * (D(ROLLED[-1]) - D(ROLLED[0])) + forecast}
+    assert all(abs(value[name] / hand[name] - 1.0) < 1e-12 for name in hand), (value, hand)
+
+
 def test_a_linker_stating_a_settlement_date_is_a_forward_whatever_its_flag_says():
     """The list module's linker settling in three months books and marks as its twin stating
     `Is_Forward_Deal: Yes`, bit for bit; red with its revaluation dates keyed on the flag."""

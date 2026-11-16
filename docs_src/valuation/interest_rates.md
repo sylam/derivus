@@ -108,7 +108,8 @@ periods' starts has in its last, is worth nothing. A swap's and a swaption's leg
 `Receive_`, the timing being `Pay_Timing` and a swaption's accrual calendar `Pay_Calendars`.
 
 A floating period resets at its start over the index tenor from there, or over the period itself
-where the tenor is zero; **Reset_Type** `Arrears` takes each reset one reset period later, the
+where the tenor is zero. A period spanning several whole tenors resets once each tenor, a calendar
+rolling its end past one adding none; **Reset_Type** `Arrears` takes each reset one reset period later, the
 period's end where it holds one reset, and `Advance` one earlier, the previous period's start where
 it holds one reset and the first period's a leg period before its own. A reset fixes
 **Index_Offset** business days of **Index_Calendars** before its window (weekdays where blank), a
