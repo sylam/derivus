@@ -1375,6 +1375,7 @@ class CreditMonteCarlo(Calculation):
         self.carry_fx_quotes(shared_mem, base_date)
 
         self._factor_precalc_args = {}
+        base = self.config.params['System Parameters']['Base_Currency']
         for key, value in self.stoch_factors.items():
             if key.type not in utils.DimensionLessFactors:
                 if key in self.implied_var:
@@ -1383,8 +1384,9 @@ class CreditMonteCarlo(Calculation):
                 else:
                     implied_tensor = None
                 # its own factor key, so it can publish auxiliaries to t_Scenario_Buffer under the
-                # documented (factor_key, kind) convention
-                value.factor_key = key
+                # documented (factor_key, kind) convention, and the base an FxRate stating no
+                # Domestic_Currency is priced in
+                value.factor_key, value.base_currency = key, base
                 scenario_grid = ScenarioTimeGrid(dependent_factors[key], self.time_grid, base_date)
                 self._factor_precalc_args[key] = (scenario_grid, implied_tensor)
                 value.precalculate(

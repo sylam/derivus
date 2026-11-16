@@ -364,7 +364,8 @@ def compress_deal_data(deals):
 
         for k, v in eq_compressed.items():
             all_other.extend(v)
-            all_other.extend(ir_compressed[k])
+            # a swaplet list booked without a funding leg has none to add
+            all_other.extend(ir_compressed.get(k, ()))
 
         reduced_deals = all_other
 

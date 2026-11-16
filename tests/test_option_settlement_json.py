@@ -562,6 +562,9 @@ def test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_ever
 
     Killing mutation, in either model: the drift read row to row, the Saturday three calendar days
     from its spot date 5.5e-5 high against the base date's four, a Monday's two 1.1e-4.
+
+    EUR states no Domestic_Currency, so it is priced in the base: its exposure is the one stating USD
+    to the bit. Killing mutation: the domestic currency read with no default, an AttributeError.
     """
     # the GBM limit factor is that module's own, and only this gate reads it
     from test_logvar2fj_json import GBM_LIMIT, _curve
@@ -572,8 +575,13 @@ def test_under_simulation_a_foreign_cashflow_deflates_to_its_value_today_on_ever
             GBM_LIMIT, Xi_Curve=_curve([[0.0, 1e-12], [5.0, 1e-12]]))}}
     cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'EUR', 'Currency': 'EUR', 'Discount_Rate': 'EUR',
                 'Amount': NOTIONAL, 'Payment_Date': BASE + pd.DateOffset(months=1)}
-    mtm = run([cashflow], calc=dict(CMC, Time_grid='0d 1d(1d) 2w'), models={'FxRate': model}, factors=dict(
-        implied[model], **{'FxRate.EUR': dict(FACTORS['FxRate.EUR'], Domestic_Currency='USD')}))['mtm']
+
+    def exposure(domestic):
+        return run([cashflow], calc=dict(CMC, Time_grid='0d 1d(1d) 2w'), models={'FxRate': model}, factors=dict(
+            implied[model], **{'FxRate.EUR': dict(FACTORS['FxRate.EUR'], Domestic_Currency=domestic)}))['mtm']
+
+    mtm = exposure(None)
+    assert mtm.equals(exposure('USD'))
     assert {lag(day, 2) for day in mtm.index} == {2, 3, 4}
     worth = NOTIONAL * math.exp(-R_EUR * (cashflow['Payment_Date'] - BASE).days / 365.0) * today()
     for day in mtm.index:

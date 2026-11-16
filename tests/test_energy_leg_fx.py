@@ -68,7 +68,7 @@ def leg(reference, *months):
              'FX_Realized_Average': 0.0} for start, end, paid in months]}}}}
 
 
-def results(*legs):
+def results(*legs, market=MARKET):
     """The results of a daily credit Monte Carlo over `legs`, held under one netting set."""
     job = {'Calc': {
         'Calculation': {'Object': 'CreditMonteCarlo', 'Base_Date': BASE, 'Currency': 'USD',
@@ -78,7 +78,7 @@ def results(*legs):
             'Instrument': {'.Deal': {'Object': 'NettingCollateralSet', 'Reference': 'NS',
                                      'Netted': 'True', 'Collateralized': 'False'}},
             'Children': list(legs)}]}},
-        'MergeMarketData': {'ExplicitMarketData': MARKET}}}
+        'MergeMarketData': {'ExplicitMarketData': market}}}
     context = derivus.Context()
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'energy_leg_fx'))
     return context.run_job()[1]['Results']
@@ -102,6 +102,23 @@ def test_a_two_cashflow_leg_on_a_foreign_curve_prices_as_its_two_legs():
     joined = results(leg('FEB_MAR', FEB, MAR))['mtm']
     split = results(leg('FEB', FEB), leg('MAR', MAR))['mtm']
     assert relative_gap(joined, split) <= 1e-6, relative_gap(joined, split)
+
+
+def test_a_forward_curve_simulated_at_zero_reversion_reads_its_limit():
+    """The leg's exposure with Alpha stated 0, on the model's block or the implied factor, is the one
+    at 1e-8 to float32; killing mutation: the OU variance read as (1 - exp(-2at)) / 2a, 0/0 and NaN."""
+    for model in ('CSForwardPriceModel', 'CSImpliedForwardPriceModel'):
+        exposure = {}
+        for alpha in (0.0, 1e-8):
+            implied = model == 'CSImpliedForwardPriceModel'
+            market = dict(MARKET, **{
+                'Model Configuration': {'.ModelParams': {
+                    'modeldefaults': {'ForwardPrice': model}, 'modelfilters': {}}},
+                'Price Models': {model + '.FUEL': {} if implied else {'Alpha': alpha, 'Drift': 0.0, 'Sigma': 0.2}},
+                'Price Factors': dict(MARKET['Price Factors'], **{
+                    'CSForwardPriceModelParameters.FUEL': {'Alpha': alpha, 'Sigma': 0.2}} if implied else {})})
+            exposure[alpha] = np.asarray(results(leg('FEB_MAR', FEB, MAR), market=market)['mtm'].values, dtype=float)
+        np.testing.assert_allclose(exposure[0.0], exposure[1e-8], rtol=1e-6, atol=0.0, err_msg=model)
 
 
 def fuel_forward(day):

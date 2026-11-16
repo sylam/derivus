@@ -369,3 +369,30 @@ def test_the_cash_account_accrues_each_interval_at_the_rate_its_start_reads():
         accrued = 1e6 * np.exp((0.01 + 0.02 * years) * years)[:, None]
         assert years[-1] == 1.0, (grid, years)
         assert np.allclose(profiles['CASH'], accrued, rtol=1e-10, atol=0.0), (grid, profiles['CASH'][-1, 0])
+
+
+def test_a_hazard_simulated_at_zero_reversion_reads_its_limit():
+    """ISSUER_A's CVA on a hazard simulated at a stated Alpha of 0 is the one at 1e-8 to float32;
+    killing mutation: the loadings read as (1 - exp(-a t)) / a, 0/0 there and the CVA NaN."""
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD',
+                'Discount_Rate': 'USD', 'Amount': 1e6, 'Payment_Date': B + pd.DateOffset(years=1)}
+    cva = {}
+    for alpha in (0.0, 1e-8):
+        job = basket([cashflow])
+        calc = job['Calc']
+        calc['Calculation'] = {
+            'Object': 'CreditMonteCarlo', 'Base_Date': calc['Calculation']['Base_Date'], 'Currency': 'USD',
+            'Time_Grid': '0d 3m(3m)', 'Batch_Size': 64, 'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD',
+            'Credit_Valuation_Adjustment': {'Calculate': 'Yes', 'Counterparty': 'ISSUER_A',
+                                            'Deflate_Stochastically': 'No', 'Stochastic_Hazard_Rates': 'Yes'}}
+        calc['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
+            'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+            'Collateralized': 'False'}}, 'Children': calc['Deals']['Deals']['Children']}]
+        market = calc['MergeMarketData']['ExplicitMarketData']
+        market['Model Configuration'] = {'.ModelParams': {
+            'modeldefaults': {'SurvivalProb': 'HWHazardRateModel'}, 'modelfilters': {}}}
+        market['Price Models'] = {'HWHazardRateModel.ISSUER_A': {'Alpha': alpha, 'Lambda': 0.0, 'Sigma': 0.01}}
+        context = derivus.Context()
+        context.load_json((json.dumps(job), 'hazard'))
+        cva[alpha] = float(context.run_job()[1]['Results']['cva'])
+    assert cva[0.0] == pytest.approx(cva[1e-8], rel=1e-6) and cva[1e-8] > 0.0, cva

@@ -551,6 +551,11 @@ the fork's seeds are excluded by the same rule. The landing is **Held by**
 `tests/test_action_space_and_artifact.py::test_the_last_decision_s_fork_lands_on_a_terminal_of_no_market_time`.
 **Not gated:** no test forks a process series.
 
+The copies are made once a run and precalculated again at every `t`, each on its own grid, so what a
+process derives from a grid it keeps under that grid
+(`HullWhite2FactorImpliedInterestRateModel.read_cache`) (**Held by**
+`tests/test_model_interchangeability.py::test_a_solve_forks_a_two_factor_curve_on_each_inner_grid`).
+
 The LogVar2FJ outer publishes its detached state (`lv_ell`, `lv_s`), grid days (`lv_days`)
 and a fork's seed (`ell0_inner`, `s0_inner`); `pricing.LogVar2FJKit.carried` reads the seed, else
 the state at the row's node, else re-seeds at `(L*(t_row), 0)`, leaving other documents unaffected.

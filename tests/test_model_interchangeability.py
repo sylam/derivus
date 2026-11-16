@@ -109,3 +109,25 @@ def test_solve_reveal_width_resizes_with_model():
         assert diag['bounded'] is True, f'{name}: solve not bounded'
         dims[name] = diag['market_dim']
     assert dims == {'HMM': 7, 'GARCH': 5}, dims
+
+
+def test_a_solve_forks_a_two_factor_curve_on_each_inner_grid():
+    """The HMM world with USD-SOFR walked by the implied two-factor Hull-White solves bounded, its V̂
+    width the HMM's 7 and every tenor of the curve; killing mutation: the curve's grid cached once per
+    process, so a fork reads its outer's grid and the solve dies on a shape mismatch."""
+    def flat(level):
+        return {'.Curve': {'meta': [], 'data': [[0.0, level], [10.0, level]]}}
+
+    cfg = _cfg(HMM_MKT, 'solve_hedge')
+    market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+    tenors = len(market['Price Factors']['InterestRate.USD-SOFR']['Curve']['.Curve']['data'])
+    market['Model Configuration'] = {'.ModelParams': {
+        'modeldefaults': {'InterestRate': 'HullWhite2FactorImpliedInterestRateModel'}, 'modelfilters': {}}}
+    market['Price Models'] = {'HullWhite2FactorImpliedInterestRateModel.USD-SOFR': {'Lambda_1': 0.0, 'Lambda_2': 0.0}}
+    market['Price Factors']['HullWhite2FactorModelParameters.USD-SOFR'] = {
+        'Alpha_1': 0.05, 'Alpha_2': 0.5, 'Correlation': -0.5, 'Sigma_1': flat(0.01), 'Sigma_2': flat(0.005),
+        'Quanto_FX_Correlation_1': 0.0, 'Quanto_FX_Correlation_2': 0.0, 'Quanto_FX_Volatility': flat(0.0)}
+    cx = rf.Context()
+    cx.load_json((json.dumps(cfg, default=str), 'hw2f_curve.json'))
+    diag = cx.run_job()[1].evaluation_summary['diagnostics']
+    assert (diag['bounded'], diag['market_dim']) == (True, 7 + tenors), diag

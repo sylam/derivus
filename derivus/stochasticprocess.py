@@ -281,11 +281,11 @@ def hw_calc_IJK(a, exp):
 
 
 def hw_calc_B(a, tenor):
-    """$B(T)=\\frac{1-e^{-aT}}{a}=Tg_0(-aT)$, the Hull-White tenor loading, spelled once for both
-    models, by `hw_series_branch`: the closed form's value is exact, its derivatives in `a` are a
-    quotient's and cancel as `hw_calc_IJK` does.
+    """$B(T)=\\frac{1-e^{-aT}}{a}=Tg_0(-aT)$, the Hull-White tenor loading and, at $2a$, the OU
+    variance, spelled once, by `hw_series_branch`: the closed form's value is exact, its derivatives
+    in `a` are a quotient's and cancel as `hw_calc_IJK` does.
 
-    A finite $B$ is not a finite $A$: both models divide this by the reversion speed again when
+    A finite $B$ is not a finite $A$: both rate models divide this by the reversion speed again when
     they assemble `AtT`, which is `hw_alpha_floor`'s business rather than this series'.
     """
     x = -a * tenor
@@ -913,7 +913,8 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
                 factor.name, static_ofs, stoch_ofs, all_tenors)
         elif self.factor_type == 'FxRate':
             self.r_t = get_fx_zero_rate_factor(
-                self.factor.get_domestic_currency(None), static_ofs, stoch_ofs, all_tenors, all_factors)
+                self.factor.get_domestic_currency(self.base_currency), static_ofs, stoch_ofs, all_tenors,
+                all_factors)
             self.q_t = get_fx_zero_rate_factor(factor.name, static_ofs, stoch_ofs, all_tenors, all_factors)
         else:
             raise Exception('Unknown factor type {}'.format(self.factor_type))
@@ -1164,7 +1165,9 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
                 implied_tensor['Quanto_FX_Volatility'] = implied_tensor['Sigma_1'].new_tensor(quantofx)
 
     def read_cache(self, ref_date, time_grid, tensor, process_ofs):
-        if not self.cache:
+        """The grid half of `cache`, built once per grid: a fork precalculated on another grid
+        rebinds a cache of its own rather than reading, or writing, its outer's."""
+        if self.cache.get('grid') is not time_grid:
             self.z_offset = process_ofs
             self.scenario_horizon = time_grid.scen_time_grid.size
             time_grid_years = np.array([self.factor.get_day_count_accrual(
@@ -1176,8 +1179,8 @@ class HullWhite2FactorImpliedInterestRateModel(StochasticProcess):
             self.quantofx = tensor.new_tensor(
                 self.implied.param['Quanto_FX_Volatility'].array[:, 1], dtype=torch.float64)
 
-            self.cache['time_grid_years'] = time_grid_years
-            self.cache['t'] = tensor.new(time_grid_years.reshape(-1, 1))
+            self.cache = {'grid': time_grid, 'time_grid_years': time_grid_years,
+                          't': tensor.new(time_grid_years.reshape(-1, 1))}
         return self.cache['time_grid_years'], self.cache['t']
 
     def forward_cache(self, tensor, shared):
@@ -1758,10 +1761,10 @@ class HWHazardRateModel(StochasticProcess):
             ref_date, t) for t in time_grid.scen_time_grid])
 
         self.fwd_curve = self.forward_curve(tensor, time_grid_years, shared, mul_time=False)
-        Bt = (-np.expm1(-alpha * time_grid_years) / alpha).reshape(-1, 1)
-        B2t = (-np.expm1(-2.0 * alpha * time_grid_years) / alpha).reshape(-1, 1)
+        Bt = hw_calc_B(alpha, time_grid_years).reshape(-1, 1)
+        B2t = 2.0 * hw_calc_B(2.0 * alpha, time_grid_years).reshape(-1, 1)
         sigma2 = self.param['Sigma'] ** 2
-        BtT = (-np.expm1(-alpha * factor_tenor) / alpha).reshape(1, -1)
+        BtT = hw_calc_B(alpha, factor_tenor).reshape(1, -1)
         AtT = sigma2 * BtT * (0.5 * BtT * B2t + Bt ** 2)
 
         # OU variance: (1 - exp(-2αt)) / (2α) == 0.5 · B2t (reuse, don't recompute the exp)
@@ -1916,15 +1919,14 @@ class CSForwardPriceModel(StochasticProcess):
 
         if implied_tensor is None:
             # need to scale the vol (as the variance is modelled using an OU Process)
-            var_adj = -np.expm1(-2.0 * self.param['Alpha'] * dt.cumsum(axis=0)) / (2.0 * self.param['Alpha'])
+            var_adj = hw_calc_B(2.0 * self.param['Alpha'], dt.cumsum(axis=0))
             var = np.square(self.param['Sigma']) * np.exp(-2.0 * self.param['Alpha'] * tenors) * var_adj
             vol = np.sqrt(np.diff(np.insert(var, 0, 0, axis=0), axis=0))
             self.vol = tensor.new(np.expand_dims(vol, axis=2))
             self.drift = tensor.new(np.expand_dims(self.param['Drift'] * dt.cumsum(axis=0) - 0.5 * var, axis=2))
         else:
             # need to scale the vol (as the variance is modelled using an OU Process)
-            var_adj = -torch.expm1(-2.0 * implied_tensor['Alpha'] * tensor.new(dt.cumsum(axis=0))) / (
-                    2.0 * implied_tensor['Alpha'])
+            var_adj = hw_calc_B(2.0 * implied_tensor['Alpha'], tensor.new(dt.cumsum(axis=0)))
             var = torch.square(implied_tensor['Sigma']) * torch.exp(
                 -2.0 * implied_tensor['Alpha'] * tensor.new(tenors)) * var_adj
             delta_var = torch.diff(nnf.pad(var, [0, 0, 1, 0]), dim=0)
@@ -2150,13 +2152,13 @@ class PCAInterestRateModel(StochasticProcess):
         dt_steps   = np.diff(np.append([time_grid_years[0]], time_grid_years))  # [T]
         elapsed    = dt_steps.cumsum()                                        # [T] — time since sim start
         ou_decay   = np.exp(-alpha * dt_steps)                               # [T]
-        ou_std     = np.sqrt(-np.expm1(-2.0 * alpha * dt_steps) / (2.0 * alpha))  # [T]
+        ou_std     = np.sqrt(hw_calc_B(2.0 * alpha, dt_steps))                  # [T]
         self.ou_decay    = shared.one.new_tensor(ou_decay.reshape(-1, 1))    # [T, 1]
         self.ou_noise    = shared.one.new_tensor(ou_std.reshape(-1, 1))      # [T, 1]
         self.vols_tensor = shared.one.new_tensor(self.vols.reshape(-1, 1))   # [n_tenors, 1]
 
         # Ito drift: -½ σ_τ² Var(Y(t_k)) = -½ σ_τ² (1-exp(-2α t_k))/(2α)  (full value at each t_k)
-        ou_var_cumul = -np.expm1(-2.0 * alpha * elapsed) / (2.0 * alpha)  # [T]
+        ou_var_cumul = hw_calc_B(2.0 * alpha, elapsed)  # [T]
         self.drift = shared.one.new_tensor(np.expand_dims(
             -0.5 * (self.vols * self.vols).reshape(1, -1) * ou_var_cumul.reshape(-1, 1), axis=2))
 
@@ -6569,7 +6571,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
             self.q_t = get_dividend_rate_factor(factor.name, static_ofs, stoch_ofs, all_tenors)
         elif self.factor_type == 'FxRate':
             self.r_t = get_fx_zero_rate_factor(
-                self.factor.get_domestic_currency(None), static_ofs, stoch_ofs, all_tenors,
+                self.factor.get_domestic_currency(self.base_currency), static_ofs, stoch_ofs, all_tenors,
                 all_factors)
             self.q_t = get_fx_zero_rate_factor(
                 factor.name, static_ofs, stoch_ofs, all_tenors, all_factors)

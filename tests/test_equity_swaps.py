@@ -1,12 +1,17 @@
 """An equity swap leg is the swaplet list its schedule spells: one swaplet per period of its
 coupon schedule, priced through the list's own seam (`Deal.equity_swaplets`), so each leg below is
 held to the bit against the list a hand authors from its conventions."""
+import json
+
 import numpy as np
 import pandas as pd
+import pytest
 
+import derivus
 import test_declared_defaults as book
 import test_interest_rate_prices as rates
 from derivus import utils
+from derivus.config import CustomJsonEncoder
 
 B, QUARTER = book.WORLD_BASE, pd.DateOffset(months=3)
 #: the rate legs' sloped curves, the equity's repo read off USD-PROJ 25bp over its USD discount, a
@@ -131,3 +136,23 @@ def test_each_convention_moves_the_leg_to_the_list_it_spells():
     moved = {reference: float.fromhex(marks[reference]) - float.fromhex(marks['HAND_' + reference])
              for reference in cases if marks[reference] != marks['HAND_' + reference]}
     assert not moved, moved
+
+
+def test_swaplet_lists_booked_without_funding_legs_compress_to_their_own_mark():
+    """401 lists booked alone, one past the 400 a load compresses at, mark as they do uncompressed;
+    killing mutation: the compression reading every list's funding leg, a KeyError at load."""
+    start = B + pd.DateOffset(months=1)
+    lists = [dict(listed('EQSL{:03d}'.format(k), 'Variable', [start, start + QUARTER], [start + QUARTER]),
+                  Buy_Sell='Sell' if k % 2 else 'Buy') for k in range(401)]
+    document = book.book([{'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+                           'Collateralized': 'False', 'Children': lists}])
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(WORLD)
+    read = {}
+    for compress in (True, False):
+        context = derivus.Context()
+        context.load_json((json.dumps(document, cls=CustomJsonEncoder), 'lists'), compress=compress)
+        _, out = context.run_job()
+        frame = out['Results']['mtm']
+        read[compress] = out['Stats']['Deals loaded'], float(frame[frame['Reference'] == 'NS']['Value'].iloc[0])
+    assert (read[True][0], read[False][0]) == (2, 401)
+    assert read[True][1] == pytest.approx(read[False][1], rel=1e-12) and read[False][1] != 0.0

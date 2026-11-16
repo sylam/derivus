@@ -170,6 +170,19 @@ def test_a_reversion_speed_through_zero_is_the_closed_form_short_rate(model, spe
         assert abs(mean - short - convexity) <= 1e-7, (date, mean - short - convexity)
 
 
+def test_a_pca_curve_at_zero_reversion_reads_its_limit():
+    """A EUR cashflow's exposure on a PCA curve with Reversion_Speed stated 0 is the one at 1e-8 to
+    float32; killing mutation: the OU variance read as (1 - exp(-2at)) / 2a, 0/0 and NaN."""
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF1Y', 'Currency': 'EUR', 'Discount_Rate': 'EUR',
+                'Amount': 1e6, 'Payment_Date': book.WORLD_BASE + pd.DateOffset(years=1)}
+    exposure = {}
+    for speed in (0.0, 1e-8):
+        block = dict(ZERO_KNOT_MODELS['PCAInterestRateModel'][0], Reversion_Speed=speed)
+        _, out = book.simulated([cashflow], (), models={'InterestRate.EUR': ('PCAInterestRateModel', block)})
+        exposure[speed] = np.asarray(out['Results']['mtm'].values, dtype=float)
+    np.testing.assert_allclose(exposure[0.0], exposure[1e-8], rtol=1e-6, atol=0.0)
+
+
 #: Two worlds whose increments are not positive definite, each `(repaired, twin, steps repaired of
 #: 20)`, a world being its `(Correlation, Sigma_1)` and its twin a hair away and positive definite.
 SINGULAR = {
