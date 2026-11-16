@@ -563,8 +563,8 @@ def read_of(block, tenor):
 
 
 def test_an_ois_row_is_a_term_swap_carrying_the_compounding_rule():
-    """AN OIS BENCHMARK IS ONE `SwapInterestDeal`, `Compounding_Method` OIS, with `Index_Tenor` and
-    `Receive_Interest_Frequency` at zero months - ONE RESET SPANNING EACH COUPON.
+    """AN OIS BENCHMARK IS ONE `SwapInterestDeal`, `Compounding_Method` OIS, with `Index_Tenor` at
+    zero months - ONE RESET SPANNING EACH COUPON.
 
     It used to be a `StructuredDeal` over a floating cashflow LIST carrying one item per
     business-day fixing, because `pv_float_cashflow_list` compounds geometrically only where the
@@ -583,7 +583,6 @@ def test_an_ois_row_is_a_term_swap_carrying_the_compounding_rule():
     assert 'Children' not in deal
     assert deal['Compounding_Method'] == 'OIS'
     assert deal['Index_Tenor'] == {'.DateOffset': '0M'}
-    assert deal['Receive_Interest_Frequency'] == {'.DateOffset': '0M'}
     assert deal['Interest_Rate'] == 'USD'
     assert deal['Pay_Frequency'] == deal['Receive_Frequency'] == {'.DateOffset': '1Y'}
     assert deal['Pay_Day_Count'] == deal['Receive_Day_Count'] == 'ACT_360'
@@ -1044,8 +1043,8 @@ def test_a_standing_block_stating_every_convention_is_reauthored_once():
         declared = declared_deal_fields(row['DealType'])
         row['Deal'] = dict({key: value for key, value in ir_curve.DECLARED.items()
                             if key in declared}, **row['Deal'])
-    assert sum(len(row['Deal']) for row in standing['instrument']['Points']) == 133
-    assert sum(len(row['Deal']) for row in block['instrument']['Points']) == 45
+    assert sum(len(row['Deal']) for row in standing['instrument']['Points']) == 128
+    assert sum(len(row['Deal']) for row in block['instrument']['Points']) == 43
 
     document = job_document()
     assert update_market_quote(document, name, standing) == 'installed'

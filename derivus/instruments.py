@@ -2524,7 +2524,6 @@ class DepositDeal(Deal):
         F('Effective_Date', 'Date', default=''),
         F('Maturity_Date', 'Date', default=''),
         F('Payment_Frequency', 'Period', default='3M', convention=True),
-        F('Interest_Frequency', 'Period', default='3M', convention=True),
         F('Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Compounding_Method', 'Text', default='None', convention=True,
           values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
@@ -2546,9 +2545,10 @@ class DepositDeal(Deal):
         'where $N_i$ is the balance accruing over period $i$, $N_{n+1}=0$, $r_i$ is the accrual',
         'rate for period $i$ - read from **Interest_Rate_Schedule** when that pins every period, a row',
         'dated on the unadjusted start of the period it pins, otherwise forecast from **Interest_Rate**',
-        '- and $D(t,T)$ is the discount factor from **Discount_Rate**. The periods are the deposit\'s',
-        '[coupon schedule](#coupon-schedules): period $i$ ends on $T_i$ and its interest is paid on',
-        '$P_i$ as its **Payment_Timing** says, its principal at its end whatever the timing.',
+        'over the period itself - and $D(t,T)$ is the discount factor from **Discount_Rate**. The',
+        'periods are the deposit\'s [coupon schedule](#coupon-schedules): period $i$ ends on $T_i$ and',
+        'its interest is paid on $P_i$ as its **Payment_Timing** says, its principal at its end',
+        'whatever the timing.',
     ])
 
     @classmethod
@@ -2603,10 +2603,11 @@ class DepositDeal(Deal):
             field['Interest_Rate'] = self.check_factor_name('Interest_Rate', field['Discount_Rate'])
             field_index['Forward'] = get_interest_factor(
                 field['Interest_Rate'], static_offsets, stochastic_offsets, all_tenors)
+            # a deposit names no index: each period resets once, over the period itself
+            zero = pd.DateOffset(months=0)
             cashflows = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.paydates, self.field['Amount'], self.field['Amortisation'],
-                schedule, self.field['Payment_Frequency'], self.field['Payment_Frequency'], daycount, 0.0,
-                self.field.get('Reference'), self.pays)
+                schedule, zero, zero, daycount, 0.0, self.field.get('Reference'), self.pays)
             field_index['Model'] = pricing.pricer_float_cashflows
 
         # the amount lent on the effective date, and each period's end repaying the step its
@@ -2664,7 +2665,6 @@ class SwapInterestDeal(Deal):
         F('Pay_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted'],
           description=TIMING),
         F('Pay_Payment_Offset', 'Integer', default=0, convention=True),
-        F('Pay_Interest_Frequency', 'Period', default='3M', convention=True),
         F('Pay_Penultimate_Coupon_Date', 'Date', default='', convention=True),
         F('Pay_Accrual_Calendars', 'Text', default='', convention=True),
         F('Pay_Frequency', 'Period', default='3M', convention=True),
@@ -2676,7 +2676,6 @@ class SwapInterestDeal(Deal):
         F('Receive_Accrual_Calendars', 'Text', default='', convention=True),
         F('Receive_First_Coupon_Date', 'Date', default='', convention=True),
         F('Receive_Penultimate_Coupon_Date', 'Date', default='', convention=True),
-        F('Receive_Interest_Frequency', 'Period', default='3M', convention=True),
         F('Receive_Timing', 'Text', default='End', convention=True, values=['End', 'Begin', 'Discounted'],
           description=TIMING),
         F('Receive_Frequency', 'Period', default='3M', convention=True),
@@ -3111,8 +3110,7 @@ class YieldInflationCashflowListDeal(Deal):
                   F('Accrual_Day_Count', 'Text', values=DAY_COUNTS), F('Accrual_Year_Fraction', 'Float'),
                   F('Yield', 'Percent'), F('Margin', 'Basis'), F('Rate_Multiplier', 'Float'),
                   F('Is_Coupon', 'Text', values=['Yes', 'No'])]))]),
-        F('Calendars', 'Text', default='', convention=True),
-        F('Is_Forward_Deal', 'Text', default='No', convention=True, values=['Yes', 'No'])
+        F('Calendars', 'Text', default='', convention=True)
     ])]
 
     documentation = ('Inflation', ['This pays a fixed coupon on an inflation indexed principal. Define the following: ',

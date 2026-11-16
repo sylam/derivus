@@ -77,7 +77,7 @@ CONFIGURATION = {}
 
 COUPONS = [B + months(6 * count) for count in range(5)]
 DEPOSIT = dict(rates_world.deposit('DEPO_AMORT', 'USD', 'USD', 24, 4.2),
-               Payment_Frequency=months(6), Interest_Frequency=months(6),
+               Payment_Frequency=months(6),
                Interest_Rate_Schedule=utils.DateList({start: 4.2 for start in COUPONS[:-1]}),
                Amortisation=utils.DateList({STEP: 250_000.0}))
 SWAPTION = next(deal for deal in book.BOOK if deal['Reference'] == 'SWPT')

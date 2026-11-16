@@ -1356,12 +1356,11 @@ def test_a_quoted_deposit_is_pinned_on_the_schedule_its_stub_and_calendar_spell(
 
     KILLING MUTATIONS, by the mark against the hand's 2,230.43: the quote's starts written without
     either stub, or the pinned rows looked up on the rolled starts, each leaving a start unpinned so
-    the deposit forecasts off USD-PROJ, +2,784.09; the first coupon date unread, -9.25; the
-    penultimate, +2,680.93; the accrual calendar, -1.07.
+    the deposit forecasts off USD-PROJ, +2,657.61; the first coupon date unread, -9.25; the
+    penultimate, +2,670.52; the accrual calendar, -1.07.
     """
     block = completed(dict(deposit('STUB', 'USD', 'USD', 12, 0.0), Interest_Rate='USD-PROJ',
                            Payment_Frequency=pd.DateOffset(months=6),
-                           Interest_Frequency=pd.DateOffset(months=6),
                            First_Coupon_Date=pd.Timestamp('2026-08-10'),
                            Penultimate_Coupon_Date=pd.Timestamp('2027-05-10'), Accrual_Calendars=book.CALENDAR))
     author_quote(block, 4.2, 'USD', 'Par_Rate')
@@ -1403,7 +1402,6 @@ def test_a_30_360_period_accrues_from_its_own_start_day():
             block = completed(dict(deposit(name + code, 'USD', 'USD', 12, 0.0), Interest_Rate='USD-PROJ',
                                    Effective_Date=dates[0], Maturity_Date=dates[-1],
                                    Payment_Frequency=pd.DateOffset(months=months),
-                                   Interest_Frequency=pd.DateOffset(months=months),
                                    Accrual_Day_Count=code, Accrual_Calendars=calendar))
             author_quote(block, 5.0, 'USD', 'Par_Rate')
             blocks.append(dict(block))

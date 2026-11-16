@@ -349,7 +349,7 @@ def test_a_forward_on_a_linker_prices_on_an_index_simulated_to_its_settlement():
     """
     items = copy.deepcopy(LINKER['Cashflows']['Items'])
     items[0]['Final_Reference_Date'] = pd.Timestamp('2026-12-03')
-    job, _ = linker(items, Is_Forward_Deal='Yes', Settlement_Date=pd.Timestamp('2026-11-03'))
+    job, _ = linker(items, Settlement_Date=pd.Timestamp('2026-11-03'))
     base = float.fromhex(marks(job)['LINKER'])
     out = still(job, 0.025, vol=0.10, paths=256, nomodel='RiskNeutral', scenarios='All')
     index = out['Results']['scenarios']['PriceIndex.INFL']

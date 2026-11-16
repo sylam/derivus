@@ -213,7 +213,7 @@ def test_a_discounted_period_whose_rate_fixes_after_its_start_is_refused_by_name
 #: A year's deposit of a million from 16 December 2026 in quarters, accruing ACT/360 at the
 #: forecast or pinned at 4.2%, 250,000 of it amortised in its third quarter: balances `BALANCES`.
 DEPOSIT = dict(deposit('DEPOSIT', 'USD', 'USD', 12, 4.2), Effective_Date=START, Maturity_Date=DATES[4],
-               Payment_Frequency=QUARTER, Interest_Frequency=QUARTER,
+               Payment_Frequency=QUARTER,
                Amortisation=utils.DateList({pd.Timestamp('2027-08-01'): 250_000.0}))
 BALANCES, PINNED = [N, N, N, 0.75 * N], 0.042
 
@@ -362,20 +362,6 @@ def test_a_daily_index_fixes_on_the_days_its_calendar_publishes():
     assert round(bp(values['None'] - values['None' + book.CALENDAR]), 3) == -0.015, values
 
 
-def test_a_floating_period_forecasts_its_index_tenor_whatever_its_interest_frequency():
-    """A swap on a six-month index paid six-monthly, its interest frequency the three-month default,
-    is `fixed_leg + sum N F tau D(e)` over six-month windows to 1e-12, and a deposit forecast
-    six-monthly at that default `N (D(e_n) - D(s_0)) + sum N F tau D(e)`; red with three-month windows."""
-    half = pd.DateOffset(months=6)
-    dates = [END - half * k for k in range(5)][::-1]
-    value = marks([dict(SWAP, Receive_Frequency=half, Index_Tenor=half, Receive_Interest_Frequency=QUARTER),
-                   dict(DEPOSIT, Maturity_Date=END, Payment_Frequency=half, Interest_Frequency=QUARTER,
-                        Amortisation=None, Interest_Rate='USD-PROJ', Interest_Rate_Schedule=None)])
-    forecast = sum(N * growth(s, e) * D(e) for s, e in zip(dates[:-1], dates[1:]))
-    hand = {'SWAP': fixed_leg() + forecast, 'DEPOSIT': N * (D(END) - D(START)) + forecast}
-    assert all(abs(value[name] / hand[name] - 1.0) < 1e-12 for name in hand), (value, hand)
-
-
 #: A year's monthly periods from 15 September 2026 on Johannesburg, three rolled past a month.
 ROLLED = [pd.Timestamp(day) for day in (
     '2026-09-15', '2026-10-15', '2026-11-16', '2026-12-15', '2027-01-15', '2027-02-15', '2027-03-15',
@@ -383,30 +369,39 @@ ROLLED = [pd.Timestamp(day) for day in (
 
 
 def test_a_period_rolled_past_its_index_tenor_resets_once():
-    """A swap's floating leg on a one-month index and a deposit forecast monthly, both on `ROLLED`:
-    each period resets once at its start over a month, `sum N tau F(s, s + 1M) D(e)` to 1e-12, the
-    deposit with its principal. Killing mutation: resets laid a month apart to each period's end,
-    the rolled periods reading a second, the swap +174.28 and the deposit skipped."""
+    """A swap's floating leg on a one-month index, its periods `ROLLED`: each resets once at its
+    start over a month, `sum N tau F(s, s + 1M) D(e)` to 1e-12. Killing mutation: resets laid a month
+    apart to each period's end, the rolled periods reading a second, +174.28."""
     month = pd.DateOffset(months=1)
-    terms = dict(Effective_Date=ROLLED[0], Maturity_Date=ROLLED[-1])
-    value = marks([dict(SWAP, Receive_Frequency=month, Index_Tenor=month, Receive_Accrual_Calendars=book.CALENDAR,
-                        Swap_Rate=0.0, **terms),
-                   dict(DEPOSIT, Payment_Frequency=month, Interest_Frequency=month, Accrual_Calendars=book.CALENDAR,
-                        Amortisation=None, Interest_Rate='USD-PROJ', Interest_Rate_Schedule=None, **terms)])
-    forecast = sum(N * tau(s, e) * growth(s, s + month) / tau(s, s + month) * D(e)
-                   for s, e in zip(ROLLED[:-1], ROLLED[1:]))
-    hand = {'SWAP': forecast, 'DEPOSIT': N * (D(ROLLED[-1]) - D(ROLLED[0])) + forecast}
-    assert all(abs(value[name] / hand[name] - 1.0) < 1e-12 for name in hand), (value, hand)
+    value = marks([dict(SWAP, Effective_Date=ROLLED[0], Maturity_Date=ROLLED[-1], Receive_Frequency=month,
+                        Index_Tenor=month, Receive_Accrual_Calendars=book.CALENDAR, Swap_Rate=0.0)])
+    hand = sum(N * tau(s, e) * growth(s, s + month) / tau(s, s + month) * D(e)
+               for s, e in zip(ROLLED[:-1], ROLLED[1:]))
+    assert abs(value['SWAP'] / hand - 1.0) < 1e-12, (value, hand)
 
 
-def test_a_linker_stating_a_settlement_date_is_a_forward_whatever_its_flag_says():
-    """The list module's linker settling in three months books and marks as its twin stating
-    `Is_Forward_Deal: Yes`, bit for bit; red with its revaluation dates keyed on the flag."""
+def test_a_forecast_deposit_reads_each_period_its_own_rate():
+    """A deposit forecast monthly on `ROLLED` and one of four months at the quarterly default, a
+    month's stub then a quarter: each is `N (D(e_n) - D(s_0)) + sum N F tau D(e)`, every rate over
+    its own period, to 1e-12 of the million. Killing mutation: each period forecast over its payment
+    frequency from its start, the rolled deposit -0.67 and the stub +114.34."""
+    stub = [START, START + pd.DateOffset(months=1), START + pd.DateOffset(months=4)]
+    forecast = dict(Amortisation=None, Interest_Rate='USD-PROJ', Interest_Rate_Schedule=None)
+    value = marks([
+        dict(DEPOSIT, Reference='ROLLED', Effective_Date=ROLLED[0], Maturity_Date=ROLLED[-1],
+             Payment_Frequency=pd.DateOffset(months=1), Accrual_Calendars=book.CALENDAR, **forecast),
+        dict(DEPOSIT, Reference='STUB', Maturity_Date=stub[-1], **forecast)])
+    for name, dates in (('ROLLED', ROLLED), ('STUB', stub)):
+        hand = N * (D(dates[-1]) - D(dates[0])) + sum(
+            N * growth(s, e) * D(e) for s, e in zip(dates[:-1], dates[1:]))
+        assert abs(value[name] - hand) < 1e-12 * N, (name, value[name], hand)
+
+
+def test_a_linker_stating_a_settlement_date_books_its_cash_on_that_date():
+    """The list module's linker settling in three months books its cash on that date alone, on every
+    path; red with the settlement left off its revaluation dates, no cash booked."""
     linker = dict(next(d for d in trial_rates.DEALS if d['Reference'] == 'LINKER'), Settlement_Date=BASE + QUARTER)
-    omitted, stated = (book.simulated(
-        [dict(linker, **flag)], ['USD'], factors=trial_rates.FACTORS, sigma=0.0, prec=torch.float64,
-        NoModel='RiskNeutral', Generate_Cashflows='Yes')[1]['Results']
-        for flag in ({}, {'Is_Forward_Deal': 'Yes'}))
-    cash = stated['cashflows']['USD']
+    cash = book.simulated(
+        [linker], ['USD'], factors=trial_rates.FACTORS, sigma=0.0, prec=torch.float64, NoModel='RiskNeutral',
+        Generate_Cashflows='Yes')[1]['Results']['cashflows']['USD']
     assert list(cash.index) == [BASE + QUARTER] and (cash.values != 0.0).all(), cash
-    assert omitted['cashflows']['USD'].equals(cash) and omitted['mtm'].equals(stated['mtm'])

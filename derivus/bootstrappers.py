@@ -5048,7 +5048,7 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
         front = end <= base_date + floating or start <= base_date
         if front and not foreign:
             kind, deal = 'DepositDeal', dict(
-                terms, Effective_Date=base_date, Payment_Frequency=span, Interest_Frequency=span,
+                terms, Effective_Date=base_date, Payment_Frequency=span,
                 Accrual_Day_Count=block['Front_Day_Count'], Amount=1e6,
                 Interest_Rate_Schedule=utils.DateList({}))
         elif front or (fras_to is not None and start < base_date + fras_to):
@@ -5059,8 +5059,7 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
         else:
             kind, deal = 'SwapInterestDeal', dict(
                 terms, Effective_Date=base_date, Pay_Rate_Type='Fixed', Pay_Frequency=fixed,
-                Pay_Interest_Frequency=fixed, Pay_Day_Count=block['Fixed_Day_Count'],
-                Receive_Frequency=floating, Receive_Interest_Frequency=zero,
+                Pay_Day_Count=block['Fixed_Day_Count'], Receive_Frequency=floating,
                 Receive_Day_Count=block['Float_Day_Count'], Index_Tenor=zero, Index_Frequency=zero,
                 Index_Day_Count=block['Float_Day_Count'], Compounding_Method=block['Compounding'],
                 Principal=1e6, Swap_Rate=0.0)

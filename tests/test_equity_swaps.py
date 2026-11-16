@@ -10,6 +10,7 @@ import pytest
 import derivus
 import test_declared_defaults as book
 import test_interest_rate_prices as rates
+import trial_rates
 from derivus import utils
 from derivus.config import CustomJsonEncoder
 
@@ -138,26 +139,17 @@ def test_each_convention_moves_the_leg_to_the_list_it_spells():
     assert not moved, moved
 
 
-def funding(reference, buy_sell, start, end):
-    """The floating leg a TRS books under its equity list's Reference, its `Properties` a table."""
-    return {'Object': 'CFFloatingInterestListDeal', 'Reference': reference, 'Currency': 'USD',
-            'Discount_Rate': 'USD', 'Forecast_Rate': 'USD-PROJ', 'Buy_Sell': buy_sell, 'Cashflows': {
-                'Compounding_Method': 'None', 'Averaging_Method': 'Average_Rate', 'Properties': [], 'Items': [{
-                    'Payment_Date': end, 'Accrual_Start_Date': start, 'Accrual_End_Date': end,
-                    'Accrual_Year_Fraction': 0.25, 'Notional': 1e6, 'Margin': utils.Basis(0.0), 'Fixed_Amount': 0.0,
-                    'Resets': [[start, start, end, 0.25, 'ACT_365', 0.0, utils.Percent(0.0)]]}]}}
-
-
 @pytest.mark.parametrize('funded', [False, True], ids=['alone', 'funded'])
 def test_swaplet_lists_compress_to_their_own_mark(funded):
     """401 lists, one past the 400 a load compresses at, mark as they do uncompressed, booked alone
-    or each with its funding leg; killing mutations: the compression reading every list's funding
-    leg, a KeyError at load; the legs grouped on their terms as a tuple, the table unhashable."""
+    or each with a floating funding leg under its Reference, its `Properties` a table; killing
+    mutations: the compression reading every list's funding leg, a KeyError at load; the legs
+    grouped on their terms as a tuple, the table unhashable."""
     start = B + pd.DateOffset(months=1)
     end = start + QUARTER
     lists = [dict(listed('EQSL{:03d}'.format(k), 'Variable', [start, end], [end]),
                   Buy_Sell='Sell' if k % 2 else 'Buy') for k in range(401)]
-    legs = [funding(deal['Reference'], 'Buy' if k % 2 else 'Sell', start, end)
+    legs = [trial_rates.float_list(deal['Reference'], 'Buy' if k % 2 else 'Sell', book.float_items()[:1])
             for k, deal in enumerate(lists)] if funded else []
     document = book.book([{'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
                            'Collateralized': 'False', 'Children': lists + legs}])

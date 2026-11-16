@@ -30,8 +30,7 @@ the field read wherever a store declares it, in a run simulating the factor type
 where it names one - the conjunction one run must hold, as `fixture_degeneracy.JOINT` spells it. A
 `MUST` whose reader nothing in the selection runs is skipped, and one whose reader runs is held, so
 a selection reaching the reader carries the module meeting it (`tests/test_cross_spot_model.py`
-the emitter's, `tests/test_inflation_list.py` the linker's). `--values-strict` fails a hole too;
-the table is otherwise a report.
+the emitter's). `--values-strict` fails a hole too; the table is otherwise a report.
 
 WHAT IT CANNOT DO. A test is one placement: two documents seen in one test reaching one function
 are both credited with what either states, which a `MUST` naming `simulated` narrows to the
@@ -84,8 +83,6 @@ MUST = (
     Must('bootstrappers.OptionQuoteFamily.fx_surface_block', 'Surface_Type', 'Relative_Forward',
          None, 'the emitter reads a Relative_Forward surface at the strike\'s distance from the '
                 'forward over it'),
-    Must('pricing.pv_index_cashflows', 'Is_Forward_Deal', 'Yes', 'PriceIndex',
-         'the reset filter of a forward linker reads the index path to its settlement'),
 )
 
 #: `{store: the section its entries are stated in}`; a store missing here no seam states.
