@@ -373,8 +373,6 @@ class Calculation(object):
         self.all_tenors = {}
 
         self.base_date = None
-        self.tenor_size = None
-        self.tenor_offset = None
 
         self.netting_sets = None
 
@@ -1599,11 +1597,11 @@ class CreditMonteCarlo(Calculation):
                 self.output.setdefault('scenarios', scen)
             elif result == 'cashflows':
                 self.output.setdefault('cashflows', {k: pd.concat(v, axis=1) for k, v in data.items()})
-            elif result in ['cva', 'collva', 'fva', 'legacy_fva']:
+            elif result in ['cva', 'collva', 'fva']:
                 self.output.setdefault(result, np.array(data, dtype=np.float64).mean())
             elif result == 'collva_t':
                 self.output.setdefault(result, np.array(data, dtype=np.float64).mean(axis=0))
-            elif result in ['grad_cva', 'grad_collva', 'grad_fva', 'grad_xva', 'grad_legacy_fva']:
+            elif result in ['grad_cva', 'grad_collva', 'grad_fva', 'grad_xva']:
                 grad = {}
                 for k, v in data.items():
                     grad[k] = v.astype(np.float64) / self.params['Simulation_Batches']
@@ -1618,10 +1616,6 @@ class CreditMonteCarlo(Calculation):
                     data.astype(np.float64) / self.params['Simulation_Batches']))
             elif result in ['mtm', 'collateral']:
                 dates = np.array(sorted(self.time_grid.mtm_dates))[self.time_grid.report_index]
-                self.output.setdefault(result, pd.DataFrame(
-                    np.concatenate(data, axis=-1).astype(np.float64), index=dates))
-            elif result == 'gross_mtm':
-                dates = np.array(sorted(self.time_grid.mtm_dates))
                 self.output.setdefault(result, pd.DataFrame(
                     np.concatenate(data, axis=-1).astype(np.float64), index=dates))
             else:
@@ -2233,10 +2227,6 @@ class BaseValuation(Calculation):
         super(BaseValuation, self).__init__(config, **kwargs)
         self.base_date = None
         self.correlation_deltas = {}
-
-        self.shared_memClass = namedtuple('shared_mem',
-                                          't_Buffer t_Static_Buffer t_Feed_dict t_Cashflows calc_greeks \
-                                          gpus riskneutral precision simulation_batch Report_Currency')
 
         self.static_var = {}
 

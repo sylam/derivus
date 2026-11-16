@@ -254,10 +254,8 @@ def get_forwardprice_sampling(fieldname, all_factors):
 
 
 def get_forwardprice_factor(cashflow_currency, static_offsets, stochastic_offsets,
-                            all_tenors, all_factors, reference_factor, forward_factor,
-                            base_date):
-    """Read the Forward price factor of a reference Factor - adjusts the all_tenors lookup to
-    include the excel_date version of the base_date"""
+                            all_tenors, all_factors, reference_factor, forward_factor):
+    """Read the Forward price factor of a reference Factor"""
     if reference_factor is not None:
         forward_price = reference_factor.get_forwardprice()
         # note that in future we could stack forward prices together
@@ -5150,7 +5148,7 @@ class CommodityDigitalOption(Deal):
             }
         field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
             field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
-            all_factors, reference_factor, forward_factor, base_date)
+            all_factors, reference_factor, forward_factor)
         self.check_option_data(
             field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, reference_fx_correlation)
 
@@ -5232,7 +5230,7 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
             'Delivery': float(reference_factor.get_fixings(expiry))}
         field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
             field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
-            all_factors, reference_factor, forward_factor, base_date)
+            all_factors, reference_factor, forward_factor)
         self.check_option_data(
             field, field_index, static_offsets, stochastic_offsets, all_tenors, all_factors, reference_fx_correlation)
 
@@ -5324,7 +5322,7 @@ class CommodityForwardDeal(Deal):
         field_index['base_index'] = (base_date - utils.excel_offset).days
         field_index['ForwardPrice'], field_index['ForwardFX'], field_index['CashFX'] = get_forwardprice_factor(
             field['Currency'], static_offsets, stochastic_offsets, all_tenors,
-            all_factors, reference_factor, forward_factor, base_date)
+            all_factors, reference_factor, forward_factor)
 
         # check if this leg is a forward (else spot)
         field_index['Forward_Date'] = (
@@ -7221,7 +7219,7 @@ class FloatingEnergyDeal(Deal):
                 field['Commodity'], static_offsets, stochastic_offsets)
             field_index["ForwardPrice"], field_index["ForwardFX"], field_index["CashFX"] = get_forwardprice_factor(
                 field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
-                all_factors, None, commodity_factor, base_date)
+                all_factors, None, commodity_factor)
             field_index["Repo_Rate"] = get_interest_factor(
                 commodity_factor.get_repo_curve_name(), static_offsets, stochastic_offsets, all_tenors)
             field_index["Carry_Rate"] = get_forward_rate_factor(
@@ -7232,7 +7230,7 @@ class FloatingEnergyDeal(Deal):
             reference_factor, forward_factor = get_reference_factor_objects(field['Reference_Type'], all_factors)
             field_index['ForwardPrice'], field_index['ForwardFX'], field_index['CashFX'] = get_forwardprice_factor(
                 field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
-                all_factors, reference_factor, forward_factor, base_date)
+                all_factors, reference_factor, forward_factor)
 
         fx_sample = get_forwardprice_sampling(
             field["FX_Sampling_Type"], all_factors) if field["FX_Sampling_Type"] else None
@@ -7386,7 +7384,7 @@ class EnergySingleOption(Deal):
 
         field_index['ForwardPrice'], field_index['ForwardFX'], field_index['CashFX'] = get_forwardprice_factor(
             field['Currency'], static_offsets, stochastic_offsets, all_tenors,
-            all_factors, reference_factor, forward_factor, base_date)
+            all_factors, reference_factor, forward_factor)
 
         field_index['Payoff_Currency'] = get_fxrate_factor(
             field['Payoff_Currency'], static_offsets, stochastic_offsets)

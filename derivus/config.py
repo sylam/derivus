@@ -460,11 +460,10 @@ def spot_model_factors(instrument, params):
         return []
 
 
-def filter_data_frame(df, from_date, to_date, rate=None):
+def filter_data_frame(df, from_date, to_date):
     index1 = (pd.Timestamp(from_date) - utils.excel_offset).days
     index2 = (pd.Timestamp(to_date) - utils.excel_offset).days
-    return df.loc[index1:index2] if rate is None else df.loc[index1:index2][
-        [col for col in df.columns if col.startswith(rate)]]
+    return df.loc[index1:index2]
 
 
 class Config(object):
@@ -1273,10 +1272,6 @@ class Config(object):
                         utils.Factor('SurvivalProb', utils.check_rate_name(
                             options['Funding_Valuation_Adjustment']['Counterparty'])), {})
                     )
-            # legacy FVA calculation (need to remove once done)
-            if options.get('LegacyFVA'):
-                add_interest_rate('{}.FUNDING'.format(options['LegacyFVA']['Funding_Curve']))
-                add_interest_rate('{}.COLLATERAL'.format(options['LegacyFVA']['Collateral_Curve']))
 
             if options.get('Deflation_Interest_Rate'):
                 add_interest_rate(options['Deflation_Interest_Rate'])

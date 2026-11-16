@@ -39,7 +39,6 @@ FACTOR_INDEX_SubType = 2  # index to get the factor subtype (if any)
 # these are indices to get the tenors relevant to interpolate the risk factor in question
 FACTOR_INDEX_Tenor_Index = 3
 FACTOR_INDEX_Daycount = 4  # daycount code
-FACTOR_INDEX_ExcelCalcDate = 4
 FACTOR_INDEX_Moneyness_Index = 3
 FACTOR_INDEX_Expiry_Index = 4
 FACTOR_INDEX_VolTenor_Index = 5
@@ -83,22 +82,6 @@ CASHFLOW_OFFSET_Settle = 2
 CASHFLOW_INDEX_NumResets = 9
 # offset in the reset/fixings array for this cashflow
 CASHFLOW_INDEX_ResetOffset = 10
-# Boolean (0 or 1) value that determines if this cashflow is settled (1) or accumulated (0)
-CASHFLOW_INDEX_Settle = 11
-
-# Cashflow calculation methods 
-
-CASHFLOW_METHOD_Equity_Shares = 0
-CASHFLOW_METHOD_Equity_Principal = 1
-CASHFLOW_METHOD_Average_Interest = 0
-
-CASHFLOW_METHOD_Compounding_Include_Margin = 2
-CASHFLOW_METHOD_Compounding_Flat = 3
-CASHFLOW_METHOD_Compounding_Exclude_Margin = 4
-CASHFLOW_METHOD_Compounding_None = 5
-
-CASHFLOW_METHOD_Fixed_Compounding_No = 0
-CASHFLOW_METHOD_Fixed_Compounding_Yes = 1
 
 # reset codes - note that the first 3 fields correspond with the TIME_GRID
 # (so that a reset can be treated as a timepoint)
@@ -113,14 +96,6 @@ RESET_INDEX_Value = 6
 RESET_INDEX_Accrual = 7
 # used to store any fx averaging (can't be used with accrual periods)
 RESET_INDEX_FXValue = 7
-
-# modifiers for dealing with a sequence of cashflows
-SCENARIO_CASHFLOWS_FloatLeg = 0
-SCENARIO_CASHFLOWS_Cap = 1
-SCENARIO_CASHFLOWS_Floor = 2
-SCENARIO_CASHFLOWS_Energy = 3
-SCENARIO_CASHFLOWS_Index = 4
-SCENARIO_CASHFLOWS_Equity = 5
 
 # Constants for the time grid
 TIME_GRID_PriorScenarioDelta = 0
@@ -141,7 +116,6 @@ CalibrationInfo = namedtuple('CalibrationInfo', 'param correlation delta')
 # `sigma[-1]**2` is the NEXT observation's variance. `resid` is standardised by `sigma`.
 ARX1Fit = namedtuple('ARX1Fit', 'phi mu sigma gamma resid garch')
 DealDataType = namedtuple('DealDataType', 'Instrument Factor_dep Time_dep Calc_res')
-Partition = namedtuple('Partition', 'DealMTMs Collateral_Cash Funding_Cost Cashflows')
 Collateral = namedtuple('Collateral', 'Haircut_Posted Haircut_Received Amount Currency Funding_Rate '
                                       'Collateral_Rate Collateral')
 #: How a floating index fixes: the day-count code its rate accrues on, its `Reset_Type`, how many

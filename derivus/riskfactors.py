@@ -55,14 +55,8 @@ class Factor0D(object):
         self.param = param
         self.delta = 0.0
 
-    def bump(self, amount, relative=True):
-        self.delta = self.param['Spot'] * amount if relative else amount
-
     def get_subtype(self):
         return None
-
-    def get_delta(self):
-        return self.delta
 
     def spot_days(self):
         """The business days from a day to its spot date: the `Settlement_Days` this factor states,
@@ -146,12 +140,6 @@ class Factor1D(object):
         returns is what the tenors parameter of current_value accepts.
         '''
         return self.tenors.reshape(-1, 1)
-
-    def bump(self, amount, relative=True):
-        self.delta = self.param['Curve'].array[:, 1] * amount if relative else np.ones_like(self.tenors) * amount
-
-    def get_delta(self):
-        return self.delta.mean()
 
     def get_subtype(self):
         return self.param.get('Sub_Type')
@@ -522,9 +510,6 @@ class Factor2D(object):
             [np.interp(self.moneyness, surface[surface[:, 1] == x][:, 0], surface[surface[:, 1] == x][:, 2])
              for x in self.expiry])
 
-    def get_all_tenors(self):
-        return np.hstack((self.moneyness, self.expiry))
-
     def get_tenor_indices(self):
         '''
         Returns the sorted (moneyness, expiry) surface indices for an Explicit vol surface, else
@@ -672,9 +657,6 @@ class Factor3D(object):
 
         return np.array(vols)
 
-    def get_all_tenors(self):
-        return np.hstack((self.moneyness, self.expiry, self.tenor))
-
     def get_tenor_indices(self):
         return np.array(list(itertools.product(self.tenor, self.expiry, self.moneyness)))
 
@@ -720,9 +702,6 @@ class FxRate(Factor0D):
           description='Name of the calendar in the calendar file this currency settles on')
     ]
 
-    def __init__(self, param):
-        super(FxRate, self).__init__(param)
-
     def get_repo_curve_name(self, default):
         return utils.check_rate_name(self.param.get('Interest_Rate') or default)
 
@@ -739,9 +718,6 @@ class FuturesPrice(Factor0D):
         F('Price', 'Float', default=0.0, bind='value',
           description='The current settlement price of the futures contract in its quote currency')
     ]
-
-    def __init__(self, param):
-        super(FuturesPrice, self).__init__(param)
 
     def current_value(self, tenors=None, offset=0.0):
         return np.array([self.param['Price']])
@@ -805,9 +781,6 @@ class EquityPrice(Factor0D):
           description='Name of the calendar in the calendar file its spot date counts business days on')
     ]
 
-    def __init__(self, param):
-        super(EquityPrice, self).__init__(param)
-
     def get_repo_curve_name(self):
         return utils.check_rate_name(
             self.param['Interest_Rate'] if self.param.get('Interest_Rate') else self.param['Currency'])
@@ -834,9 +807,6 @@ class CommodityPrice(EquityPrice):
           description='The carry curve; falls back to Currency when blank')
     ]
 
-    def __init__(self, param):
-        super(CommodityPrice, self).__init__(param)
-
     def get_carry_curve_name(self):
         return utils.check_rate_name(
             self.param['Forward_Rate'] if self.param.get('Forward_Rate') else self.param['Currency'])
@@ -860,9 +830,6 @@ class ObservedBasis(Factor0D):
                             'link: 0 (same row) simulates the link first, 1 steps off the link\'s '
                             'PREVIOUS row and orders nothing')]
 
-    def __init__(self, param):
-        super(ObservedBasis, self).__init__(param)
-
 
 class ForwardPriceSample(Factor0D):
     """
@@ -875,9 +842,6 @@ class ForwardPriceSample(Factor0D):
         F('Sampling_Convention', 'Text', default='ForwardPriceSampleDaily',
           values=['ForwardPriceSampleDaily', 'ForwardPriceSampleBullet'])
     ]
-
-    def __init__(self, param):
-        super(ForwardPriceSample, self).__init__(param)
 
     def current_value(self, tenors=None, offset=0.0):
         return np.array([self.param['Offset']])
@@ -928,9 +892,6 @@ class Correlation(Factor0D):
     `Correlation.FxRate.USD.ZAR/ReferencePrice.BRENT_OIL-IPE.USD`."""
     fields = [F('Value', 'Float', default=0.0, bind='value',
                 description='Market implied correlation between the two rates the name pairs')]
-
-    def __init__(self, param):
-        super(Correlation, self).__init__(param)
 
     def current_value(self, tenors=None, offset=0.0):
         return np.array([self.param.get('Value', 0.0) + self.delta])
@@ -991,9 +952,6 @@ class SurvivalProb(Factor1D):
         F('Curve', 'Curve', bind='value', description='Negative log survival probability')
     ]
 
-    def __init__(self, param):
-        super(SurvivalProb, self).__init__(param)
-
     def get_day_count(self):
         """hardcode the daycount for Survival Probability rates to act/365"""
         return utils.DayCount.ACT365
@@ -1042,9 +1000,6 @@ class InterestRate(Factor1D):
         F('Near_Date', 'Date', default='')
     ]
 
-    def __init__(self, param):
-        super(InterestRate, self).__init__(param)
-
     def get_currency(self):
         return utils.check_rate_name(self.param['Currency'])
 
@@ -1074,9 +1029,6 @@ class InflationRate(Factor1D):
         F('Curve', 'Curve', bind='value', description='Continuously compounded inflation growth rate')
     ]
 
-    def __init__(self, param):
-        super(InflationRate, self).__init__(param)
-
     def get_day_count(self):
         return utils.DayCount.code(self.param['Day_Count'])
 
@@ -1094,9 +1046,6 @@ class ForwardPrice(Factor1D):
           description='(excel date, price) pairs giving the forward price at each contract expiry'),
         F('Fixings', 'Text', default='')
     ]
-
-    def __init__(self, param):
-        super(ForwardPrice, self).__init__(param)
 
     def get_currency(self):
         return utils.check_rate_name(self.param['Currency'])
@@ -1169,9 +1118,6 @@ class CSForwardPriceModelParameters(Factor0D):
         F('Alpha', 'Float', default=0.0, bind='value',
           description='Bootstrapped mean reversion speed')
     ]
-
-    def __init__(self, param):
-        super(CSForwardPriceModelParameters, self).__init__(param)
 
     def get_tenor_indices(self):
         zero = np.array([[0.0]])
@@ -1406,9 +1352,6 @@ class GBMAssetPriceTSModelParameters(Factor1D):
           description='Correlation between the asset and the payoff-currency FX rate')
     ]
 
-    def __init__(self, param):
-        super(GBMAssetPriceTSModelParameters, self).__init__(param)
-
     def get_tenor(self):
         """Gets the tenor points stored in the Curve attribute"""
         return self.param['Vol'].array[:, 0]
@@ -1452,9 +1395,6 @@ class HullWhite2FactorModelParameters(Factor1D):
         F('Correlation', 'Float', default=0.0, bind='value',
           description='Correlation between the two factors')
     ]
-
-    def __init__(self, param):
-        super(HullWhite2FactorModelParameters, self).__init__(param)
 
     def get_instantaneous_correlation(self):
         return self.param.get('short_rate_fx_correlation')
@@ -1629,7 +1569,6 @@ class InterestYieldVol(Factor3D):
     def __init__(self, param):
         super(InterestYieldVol, self).__init__(param)
         self.delta = 0.0
-        self.atm_surface = None
         self.premiums = None
 
     def set_premiums(self, df, currency):
@@ -1692,16 +1631,6 @@ class InterestYieldVol(Factor3D):
                     'Shift' if declared else "Property_Aliases' BlackScholesDisplacedShiftValue"))
         return declared or legacy
 
-    @property
-    def ATM(self):
-        if self.atm_surface is None:
-            mn_ix = np.searchsorted(self.moneyness, 0.0)
-            atm_vol = np.array([np.interp(1.0, self.moneyness[mn_ix - 1:mn_ix + 1], y)
-                                for y in self.get_vols()[:, mn_ix - 1:mn_ix + 1]])
-            self.atm_surface = RectBivariateSpline(
-                self.tenor, self.expiry, atm_vol.reshape(self.tenor.size, self.expiry.size))
-        return self.atm_surface
-
 
 class InterestRateVol(Factor3D):
     """A caplet volatility space, read at (moneyness, expiry, underlying tenor)."""
@@ -1710,9 +1639,6 @@ class InterestRateVol(Factor3D):
           description='(moneyness, expiry, tenor, volatility) quads, flat extrapolated and '
                       'linearly interpolated')
     ]
-
-    def __init__(self, param):
-        super(InterestRateVol, self).__init__(param)
 
 
 class ForwardPriceVol(Factor3D):
