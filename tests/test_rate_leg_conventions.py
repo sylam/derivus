@@ -364,12 +364,16 @@ def test_a_daily_index_fixes_on_the_days_its_calendar_publishes():
 
 def test_a_floating_period_forecasts_its_index_tenor_whatever_its_interest_frequency():
     """A swap on a six-month index paid six-monthly, its interest frequency the three-month default,
-    is `fixed_leg + sum N F tau D(e)` over six-month windows to 1e-12; red with a three-month window."""
+    is `fixed_leg + sum N F tau D(e)` over six-month windows to 1e-12, and a deposit forecast
+    six-monthly at that default `N (D(e_n) - D(s_0)) + sum N F tau D(e)`; red with three-month windows."""
     half = pd.DateOffset(months=6)
     dates = [END - half * k for k in range(5)][::-1]
-    value = marks([dict(SWAP, Receive_Frequency=half, Index_Tenor=half, Receive_Interest_Frequency=QUARTER)])
-    hand = fixed_leg() + sum(N * growth(s, e) * D(e) for s, e in zip(dates[:-1], dates[1:]))
-    assert abs(value['SWAP'] / hand - 1.0) < 1e-12, (value, hand)
+    value = marks([dict(SWAP, Receive_Frequency=half, Index_Tenor=half, Receive_Interest_Frequency=QUARTER),
+                   dict(DEPOSIT, Maturity_Date=END, Payment_Frequency=half, Interest_Frequency=QUARTER,
+                        Amortisation=None, Interest_Rate='USD-PROJ', Interest_Rate_Schedule=None)])
+    forecast = sum(N * growth(s, e) * D(e) for s, e in zip(dates[:-1], dates[1:]))
+    hand = {'SWAP': fixed_leg() + forecast, 'DEPOSIT': N * (D(END) - D(START)) + forecast}
+    assert all(abs(value[name] / hand[name] - 1.0) < 1e-12 for name in hand), (value, hand)
 
 
 def test_a_linker_stating_a_settlement_date_is_a_forward_whatever_its_flag_says():

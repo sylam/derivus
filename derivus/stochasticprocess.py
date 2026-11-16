@@ -879,7 +879,10 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         self.delta_vol = torch.sqrt(self.V - nnf.pad(self.V[:-1], (0, 0, 1, 0)))
         self.spot = tensor
         self.step_carry(ref_date, time_grid, shared)
-        if self.factor_type == 'EquityPrice' and self.quanto_fx_tenor is not None:
+        # a zero correlation publishes no leaf (`GBMAssetPriceTSModelParameters.current_value`)
+        # and carries no quanto term
+        if self.factor_type == 'EquityPrice' and self.quanto_fx_tenor is not None \
+                and 'Quanto_FX_Correlation' in implied_tensor:
             self.C = torch.unsqueeze(integrate_piecewise_linear(
                 cal_quanto_fx_vol, shared, time_grid.time_grid_years,
                 vol_tenor, implied_tensor['Vol'], self.quanto_fx_tenor, implied_tensor['Quanto_FX_Volatility']),

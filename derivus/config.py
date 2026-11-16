@@ -253,10 +253,13 @@ def compress_deal_data(deals):
         compressed = []
         all_margin = {}
         all_notional = {}
+        terms = {}
         for deal in unders:
             buy_sell = 1.0 if deal['Instrument'].field['Buy_Sell'] == 'Buy' else -1.0
-            prop_key = tuple(sorted(
-                [(k, v) for k, v in deal['Instrument'].field['Cashflows'].items() if k != 'Items']))
+            # the block's terms hold tables (`Properties`): grouped on their JSON spelling
+            stated = {k: v for k, v in deal['Instrument'].field['Cashflows'].items() if k != 'Items'}
+            prop_key = json.dumps(stated, sort_keys=True, cls=CustomJsonEncoder)
+            terms[prop_key] = stated
             margin_list = all_margin.setdefault(prop_key, {})
             notional_list = all_notional.setdefault(prop_key, {})
             for cf in deal['Instrument'].field['Cashflows']['Items']:
@@ -303,7 +306,7 @@ def compress_deal_data(deals):
                 for i, (deal, m, n) in enumerate(zip(existing_deals, [0] + splits, splits + [None])):
                     legnum = '_Leg{}'.format(i) if splits else ''
                     deal['Instrument'].field['Buy_Sell'] = 'Buy'
-                    deal['Instrument'].field['Cashflows'] = dict(cf_prop)
+                    deal['Instrument'].field['Cashflows'] = dict(terms[cf_prop])
                     deal['Instrument'].field['Cashflows']['Items'] = final[m:n]
                     deal['Instrument'].field['Reference'] = 'Compressed_CFFloat_{}_{}{}'.format('Buy', ref, legnum)
                     compressed.append(deal)

@@ -4522,9 +4522,9 @@ class SIMM(NettingSetCalculation):
 
     @contextlib.contextmanager
     def prepared(self):
-        """The config as the run's compile reads it - the valuation calculation, its date, the
-        curves its market prices solve (`calibrate`), each trade's moves, classes and agreements -
-        put back as it stood on the way out."""
+        """The config as the run's compile reads it - the valuation calculation and its date, and
+        the market prices as `calibrate` declares them - put back on the way out, with each trade's
+        moves, classes and agreements. The curves the calibration solves stay, as a bootstrap leaves them."""
         authored = dict(self.config.params['Market Prices'])
         with super(SIMM, self).prepared():
             try:

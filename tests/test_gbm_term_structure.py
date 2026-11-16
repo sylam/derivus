@@ -109,9 +109,9 @@ def test_a_surface_is_read_at_the_atm_coordinate_of_its_type(vol):
 RATES = {'USD': 0.04, 'EUR': 0.02, 'ZAR': 0.08}
 
 
-def quanto(vol, currency):
+def quanto(vol, currency, rho=0.5):
     """A USD CVA on a year's forward on an equity in `currency`, the equity and `FxRate.<currency>`
-    both bootstrapped onto GBMAssetPriceTSModelImplied, their correlation 0.5 named as a quanto deal
+    both bootstrapped onto GBMAssetPriceTSModelImplied, their correlation `rho` named as a quanto deal
     names it: `Correlation.EquityPrice.<vol>/FxRate.<sorted pair>`."""
     base, pair = {'.Timestamp': '2026-01-15'}, '.'.join(sorted([currency, 'USD']))
     flat = lambda rate: utils.Curve([], [[0.0, rate], [10.0, rate]])
@@ -125,7 +125,7 @@ def quanto(vol, currency):
         'DividendRate.EQ': {'Currency': currency, 'Floor': None, 'Curve': flat(0.0)},
         'EquityPriceVol.' + vol: surface(expiries, [0.30] * 4),
         'FXVol.' + pair: surface(expiries, [0.20] * 4),
-        'Correlation.EquityPrice.{}/FxRate.{}'.format(vol, pair): {'Value': 0.5},
+        'Correlation.EquityPrice.{}/FxRate.{}'.format(vol, pair): {'Value': rho},
         'SurvivalProb.CPTY': {'Recovery_Rate': 0.4,
                               'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}})
     forward = {'Object': 'EquityForwardDeal', 'Reference': 'FWD', 'Equity': 'EQ',
@@ -178,3 +178,15 @@ def test_the_quanto_correlation_is_read_as_a_quanto_deal_reads_it():
     rand.bootstrap()
     assert rand.current_cfg.params['Price Factors'][
         'GBMAssetPriceTSModelParameters.EQ']['Quanto_FX_Correlation'] == -0.5
+
+
+def test_a_zero_quanto_correlation_is_the_vanishing_one():
+    """A correlation of 0, which publishes no parameter, is one CVA to the bit with 1e-300, which
+    does; killing mutation: the process reading the correlation whenever the FX rate is simulated, a
+    KeyError at the run."""
+    cva = []
+    for rho in (0.0, 1e-300):
+        context = derivus.Context().load_json(quanto('EQ', 'EUR', rho))
+        context.bootstrap()
+        cva.append(context.run_job()[1]['Results']['cva'])
+    assert cva[0] == cva[1]

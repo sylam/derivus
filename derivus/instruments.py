@@ -2605,7 +2605,7 @@ class DepositDeal(Deal):
                 field['Interest_Rate'], static_offsets, stochastic_offsets, all_tenors)
             cashflows = utils.TensorCashFlows.generate_float(
                 base_date, time_grid, self.paydates, self.field['Amount'], self.field['Amortisation'],
-                schedule, self.field['Interest_Frequency'], self.field['Payment_Frequency'], daycount, 0.0,
+                schedule, self.field['Payment_Frequency'], self.field['Payment_Frequency'], daycount, 0.0,
                 self.field.get('Reference'), self.pays)
             field_index['Model'] = pricing.pricer_float_cashflows
 

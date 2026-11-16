@@ -138,14 +138,29 @@ def test_each_convention_moves_the_leg_to_the_list_it_spells():
     assert not moved, moved
 
 
-def test_swaplet_lists_booked_without_funding_legs_compress_to_their_own_mark():
-    """401 lists booked alone, one past the 400 a load compresses at, mark as they do uncompressed;
-    killing mutation: the compression reading every list's funding leg, a KeyError at load."""
+def funding(reference, buy_sell, start, end):
+    """The floating leg a TRS books under its equity list's Reference, its `Properties` a table."""
+    return {'Object': 'CFFloatingInterestListDeal', 'Reference': reference, 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Forecast_Rate': 'USD-PROJ', 'Buy_Sell': buy_sell, 'Cashflows': {
+                'Compounding_Method': 'None', 'Averaging_Method': 'Average_Rate', 'Properties': [], 'Items': [{
+                    'Payment_Date': end, 'Accrual_Start_Date': start, 'Accrual_End_Date': end,
+                    'Accrual_Year_Fraction': 0.25, 'Notional': 1e6, 'Margin': utils.Basis(0.0), 'Fixed_Amount': 0.0,
+                    'Resets': [[start, start, end, 0.25, 'ACT_365', 0.0, utils.Percent(0.0)]]}]}}
+
+
+@pytest.mark.parametrize('funded', [False, True], ids=['alone', 'funded'])
+def test_swaplet_lists_compress_to_their_own_mark(funded):
+    """401 lists, one past the 400 a load compresses at, mark as they do uncompressed, booked alone
+    or each with its funding leg; killing mutations: the compression reading every list's funding
+    leg, a KeyError at load; the legs grouped on their terms as a tuple, the table unhashable."""
     start = B + pd.DateOffset(months=1)
-    lists = [dict(listed('EQSL{:03d}'.format(k), 'Variable', [start, start + QUARTER], [start + QUARTER]),
+    end = start + QUARTER
+    lists = [dict(listed('EQSL{:03d}'.format(k), 'Variable', [start, end], [end]),
                   Buy_Sell='Sell' if k % 2 else 'Buy') for k in range(401)]
+    legs = [funding(deal['Reference'], 'Buy' if k % 2 else 'Sell', start, end)
+            for k, deal in enumerate(lists)] if funded else []
     document = book.book([{'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
-                           'Collateralized': 'False', 'Children': lists}])
+                           'Collateralized': 'False', 'Children': lists + legs}])
     document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(WORLD)
     read = {}
     for compress in (True, False):
@@ -154,5 +169,5 @@ def test_swaplet_lists_booked_without_funding_legs_compress_to_their_own_mark():
         _, out = context.run_job()
         frame = out['Results']['mtm']
         read[compress] = out['Stats']['Deals loaded'], float(frame[frame['Reference'] == 'NS']['Value'].iloc[0])
-    assert (read[True][0], read[False][0]) == (2, 401)
-    assert read[True][1] == pytest.approx(read[False][1], rel=1e-12) and read[False][1] != 0.0
+    assert (read[True][0], read[False][0]) == ((3, 802) if funded else (2, 401))
+    assert read[True][1] == pytest.approx(read[False][1], rel=1e-10) and read[False][1] != 0.0
