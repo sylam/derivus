@@ -540,6 +540,17 @@ class StochasticProcess(object):
         self.carry_days = utils.spot_carry(shared.spot_lag(self.factor_key, ref_date), self.delta_scen_t,
                                            self.scen_grid[:, utils.TIME_GRID_MTM].reshape(-1, 1))
 
+    def carry(self, shared_mem, batch):
+        """`(r - q)` integrated over each scenario step between the spot dates of its two ends, off
+        the underlying's own curves: per path of `batch` where one is simulated, one row over all of
+        it where both are static."""
+        rates = [utils.calc_time_grid_curve_rate(
+            x, self.scen_grid, shared_mem, n_batch_dims=len(batch)).gather_weighted_curve(
+            shared_mem, *self.carry_days) for x in (self.r_t, self.q_t)]
+        carry = torch.squeeze(rates[0] - rates[1], dim=1)
+        # a fork's gather comes back flat over its two batch axes
+        return carry.reshape([-1] + (list(batch) if carry.shape[-1] > 1 else [1] * len(batch)))
+
     def link_references(self, implied_tensor, implied_var, implied_factors):
         """link market variables across different risk factors"""
         pass
@@ -930,26 +941,14 @@ class GBMAssetPriceTSModelImplied(StochasticProcess):
         """Simulate the asset price path; drift comes from the foreign/domestic (or
         dividend/repo) zero curves.
 
-        Dual-mode on Z.ndim - outer (T, B) or inner MC (T, B, B2). Under inner MC the curves are
-        gathered with n_batch_dims=2, which collapses (B, B2) into B*B2, so the drift comes back
-        (T, B*B2) and is reshaped; the per-step arrays and spot broadcast across the fan-out.
+        Dual-mode on Z.ndim - outer (T, B) or inner MC (T, B, B2), where the per-step arrays and
+        the spot broadcast across the fan-out.
         """
         Z = shared_mem.t_random_numbers[self.z_offset, :self.scenario_horizon]
+        drift = torch.cumsum(self.carry(shared_mem, Z.shape[1:]), dim=0)
         if Z.ndim == 2:
-            rt = utils.calc_time_grid_curve_rate(self.r_t, self.scen_grid, shared_mem)
-            qt = utils.calc_time_grid_curve_rate(self.q_t, self.scen_grid, shared_mem)
-            rt_rates = rt.gather_weighted_curve(shared_mem, *self.carry_days)
-            qt_rates = qt.gather_weighted_curve(shared_mem, *self.carry_days)
-            drift = torch.cumsum(torch.squeeze(rt_rates - qt_rates, dim=1), dim=0)
             f1 = torch.cumsum(self.delta_vol * Z, dim=0)
             return self.spot * torch.exp(drift - self.rho * self.C - 0.5 * self.V + f1)
-        # Inner MC (T, B, B2): the n_batch_dims=2 gather returns drift (T, B*B2) — reshape it.
-        B, B2 = Z.shape[1], Z.shape[2]
-        rt = utils.calc_time_grid_curve_rate(self.r_t, self.scen_grid, shared_mem, n_batch_dims=2)
-        qt = utils.calc_time_grid_curve_rate(self.q_t, self.scen_grid, shared_mem, n_batch_dims=2)
-        rt_rates = rt.gather_weighted_curve(shared_mem, *self.carry_days)
-        qt_rates = qt.gather_weighted_curve(shared_mem, *self.carry_days)
-        drift = torch.cumsum(torch.squeeze(rt_rates - qt_rates, dim=1), dim=0).reshape(-1, B, B2)
         f1 = torch.cumsum(self.delta_vol.unsqueeze(-1) * Z, dim=0)
         C = self.C.unsqueeze(-1) if torch.is_tensor(self.C) else self.C
         return self.align_rank(self.spot.unsqueeze(0), Z.ndim) * torch.exp(
@@ -6708,15 +6707,6 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
             [self.n_extra] + shape)
         return torch.cat([u, 1.0 - u], dim=-1) if mirror else u
 
-    def carry(self, shared_mem, ndim):
-        """`(r - q)` integrated over each scenario step between the spot dates of its two ends, off
-        the underlying's own curves and per path where they are simulated; the inner fork's
-        `n_batch_dims=2` gather comes back flat."""
-        rates = [utils.calc_time_grid_curve_rate(
-            x, self.scen_grid, shared_mem, n_batch_dims=ndim - 1).gather_weighted_curve(
-            shared_mem, *self.carry_days) for x in (self.r_t, self.q_t)]
-        return torch.squeeze(rates[0] - rates[1], dim=1)
-
     def generate(self, shared_mem):
         """Walk the daily clock between scenario nodes and return the spot path.
 
@@ -6780,9 +6770,7 @@ class LogVar2FJImpliedSpotModel(StochasticProcess):
             ell.append(l)
             fast.append(s)
 
-        carry = self.carry(shared_mem, Z.ndim)
-        if Z.ndim > 2 and carry.shape[-1] > 1:
-            carry = carry.reshape([-1] + batch)
+        carry = self.carry(shared_mem, batch)
         spot = self.spot0 if Z.ndim == 2 else self.spot0.reshape(-1, 1)
         path = spot * torch.exp(torch.cumsum(
             carry + torch.stack(M) + utils.sqrt_or_zero(torch.stack(var)) * Z, dim=0))
@@ -6974,8 +6962,8 @@ class LogVar2FJSpotModel(LogVar2FJImpliedSpotModel):
     def calc_references(self, factor, static_ofs, stoch_ofs, all_tenors, all_factors):
         """No curve: the price drifts at the block's `Mu`."""
 
-    def carry(self, shared_mem, ndim):
-        return self.spot0.new_tensor(float(self.param['Mu']) * self.years).reshape([-1] + [1] * (ndim - 1))
+    def carry(self, shared_mem, batch):
+        return self.spot0.new_tensor(float(self.param['Mu']) * self.years).reshape([-1] + [1] * len(batch))
 
     def generate(self, shared_mem):
         """The parent's walk, then the bar measurement simulated beside it and filtered: the filter

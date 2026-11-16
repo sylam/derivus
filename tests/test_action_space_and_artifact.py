@@ -792,6 +792,24 @@ def test_the_returns_state_notional_reads_the_fx_at_the_calibrated_start():
     assert notionals[0] == notionals[1], notionals
 
 
+def test_an_implied_fx_rate_forks_on_curves_no_model_moves():
+    """The training document in ZAR, the rand on the implied term-structure GBM and neither of its
+    two curves simulated: a fork carries every inner path at the one static rate difference and the
+    sweep reads a finite `V_0`. 10 s.
+
+    Killing mutation: the fork's carry reshaped onto its two batch axes whatever it gathered, which
+    a static pair's one row a step refuses."""
+    cfg = _cfg(seed=7, batch=8, inner=4)
+    cfg['Calc']['Calculation']['Currency'] = 'ZAR'
+    market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Model Configuration'] = {'.ModelParams': {'modelfilters': {}, 'modeldefaults': {
+        'FxRate': 'GBMAssetPriceTSModelImplied', 'InterestRate': ''}}}
+    market['Price Factors']['GBMAssetPriceTSModelParameters.ZAR'] = {
+        'Quanto_FX_Volatility': None, 'Quanto_FX_Correlation': 0.0,
+        'Vol': {'.Curve': {'meta': [], 'data': [[0.0027397, 0.15], [5.0, 0.15]]}}}
+    assert math.isfinite(_v0(_run(cfg)))
+
+
 def _logwealth(cfg):
     """`cfg` under the LogWealth objective. The fixture's twelve-path, five-iteration fit ruins its
     held-out batch under the growth reward (V_0 0.07 to 0.17 nats against a held-out greedy utility
