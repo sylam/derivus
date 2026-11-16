@@ -322,12 +322,12 @@ def hmm_forward_backward(log_pi, log_P, log_emit):
 def stress_belief(p, e, stay, enter, var):
     """P(stress) after the innovation `e` from `p` before it, in a two-state chain that stays in stress
     with probability `stay` and enters it with `enter`, `e` Gaussian of variance `var` = (quiet, stress)
-    by state: the chain's step, then Bayes on the two likelihoods. Arrays or tensors alike."""
+    by state: the chain's step, then Bayes on the likelihood ratio. Arrays or tensors alike."""
     exp = torch.exp if isinstance(e, torch.Tensor) else np.exp
     prior = p * stay + (1.0 - p) * enter
-    e2 = e * e
-    lq, ls = (exp(-0.5 * e2 / v) / v ** 0.5 for v in var)
-    return prior * ls / (prior * ls + (1.0 - prior) * lq)
+    # quiet over stress as one ratio: far in the tail the two likelihoods both underflow
+    ratio = (var[1] / var[0]) ** 0.5 * exp(-0.5 * e * e * (1.0 / var[0] - 1.0 / var[1]))
+    return prior / (prior + (1.0 - prior) * ratio)
 
 
 def garch11_t_mle(x):

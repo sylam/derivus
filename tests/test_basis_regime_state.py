@@ -13,6 +13,7 @@ import logging
 
 import numpy as np
 import pandas as pd
+import pytest
 import torch
 
 from test_action_space_and_artifact import BAND_BASIS, LAST_STEP, _cfg, _run
@@ -30,13 +31,13 @@ def _chain(n, stay_quiet, stay_stress, sds, rng):
     return np.asarray(sds)[state] * rng.standard_normal(n)
 
 
-def _observed(tmp_path):
+def _observed(tmp_path, jump=12.0):
     """An observed scenario of 160 daily rows: a random-walk spot and a `BAND_BASIS` basis drawn by its
-    own law from its `Mu_0` on innovations of sd 0.4, but for one of 12 at `JUMP`: its path and the basis."""
+    own law from its `Mu_0` on innovations of sd 0.4, but for one of `jump` at `JUMP`: its path and the basis."""
     rng = np.random.default_rng(3)
     spot = 2055.0 + np.cumsum(rng.normal(0.0, 25.0, 160))
     eta = rng.normal(0.0, 0.4, 160)
-    eta[JUMP] = 12.0
+    eta[JUMP] = jump
     lam, mu, basis = BAND_BASIS['Slow_Mean_Lambda'], BAND_BASIS['Mu_0'], np.full(160, BAND_BASIS['Mu_0'])
     for t in range(1, 160):
         d = basis[t - 1] - mu
@@ -91,17 +92,19 @@ def test_the_fit_recovers_a_persistent_stress_chain(tmp_path):
     assert fitted['Reveal_Regime'] == 'No', fitted
 
 
-def test_the_revealed_belief_rises_on_a_large_innovation_and_decays_over_quiet_rows(tmp_path, caplog):
+@pytest.mark.parametrize('jump', [12.0, 80.0])
+def test_the_revealed_belief_rises_on_a_large_innovation_and_decays_over_quiet_rows(tmp_path, caplog, jump):
     """The fixture replaying a band basis whose innovations are quiet but for one large one, swept at its
     last decision step: under `Reveal_Regime` 'Yes' the value net reads one market column more than under
     'No' (9 against 8), the frame the 'No' one with the replay's published belief at the step inserted
     before the level, to the bit; and the replayed belief is 1.0 in float32 on the row of the large
     innovation against 0.0071 the row before, then falls on each of the four quiet rows after it
-    (0.531, 0.162, 0.042, 0.015). 4 s.
+    (0.531, 0.162, 0.042, 0.015). An innovation of 80, twenty stress sds out, reads the same. 4 s each.
 
     Killing mutations: the belief held at its seed (one value on every row); the belief left out of the
-    reveal (8 against 8)."""
-    path, basis = _observed(tmp_path)
+    reveal (8 against 8); Bayes on the two likelihoods apart, which both underflow in float32 at 80 and
+    leave the belief not a number from that row on."""
+    path, basis = _observed(tmp_path, jump)
     shown, hidden = str(tmp_path / 'value_fn_shown.pt'), str(tmp_path / 'value_fn_hidden.pt')
     yes, replay, _ = _replayed(caplog, path, 'Yes', save=shown)
     no, _, _ = _replayed(caplog, path, 'No', save=hidden)

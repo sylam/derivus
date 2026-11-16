@@ -489,7 +489,7 @@ BAND_FIT_WITHOUT_GARCH = {
     'Reversion_Model': 'Band_Mixture', 'Band_Kappa': 4.093865983658383,
     'Band_Beta': 0.32257990121444935, 'Mix_Q_Stress': 0.32590083494760685,
     'Mix_Sigma_Quiet': 2.10231416098639, 'Mix_Sigma_Stress': 5.981123715010372,
-    'Mix_Stay_Stress': 0.942772143227749, 'Mix_P0_Stress': 0.0770064355342423, 'Reveal_Regime': 'No',
+    'Mix_Stay_Stress': 0.942772143227749, 'Mix_P0_Stress': 0.07700643553424232, 'Reveal_Regime': 'No',
     'Slow_Mean_Lambda': 0.96875, 'Mu_0': 10.822116754114283}
 
 
