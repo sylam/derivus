@@ -2636,7 +2636,6 @@ class SwapInterestDeal(Deal):
                         amortisation='Amortisation')
     quoted = 'Swap_Rate'
     fields = [ADMIN, PRICING, FLOATING_INDEX, own('SwapInterestDeal', [
-        F('Index_Frequency', 'Period', default='0M', convention=True),
         F('Rate_Multiplier', 'Float', default=1.0, convention=True),
         F('Known_Rates', 'DateList', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float')])),

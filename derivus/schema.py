@@ -1207,7 +1207,6 @@ COUPON_SCHEDULE = Group('CouponSchedule', 'Coupon schedule', [
 #: What a cap and a floor both are - every term but the strike, which each names (`optionlet`).
 CAP_FLOOR = Group('CapFloor', 'Cap/floor terms', [
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
-    F('Index_Frequency', 'Period', default='0M', convention=True),
     F('Forecast_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
     F('Known_Rates', 'DateList', default='null', convention=True,
       row=Row([F('Date', 'Date'), F('Amount', 'Float')])),

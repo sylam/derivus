@@ -787,7 +787,7 @@ def test_one_dateoffset_wire_spelling_and_both_decoders_read_it(tmp_path):
     `Config.parse_period`, the expression `read_json` already used, so the two cannot drift again.
     The kwargs dict is still accepted; reading a spelling nobody writes is free.
 
-    The block is the real ZAR strip, carrying 25 `.DateOffset` sites. Whole-block equality goes
+    The block is the real ZAR strip, carrying 19 `.DateOffset` sites. Whole-block equality goes
     through `canonical` rather than `==` because `utils.DateList` defines no `__eq__`, so `==` over
     the structure compares decoded schedules by IDENTITY; the offsets themselves use `==`.
 
@@ -810,7 +810,7 @@ def test_one_dateoffset_wire_spelling_and_both_decoders_read_it(tmp_path):
 
     through_parse = offsets_in(parsed.params['Market Prices'])
     through_read = offsets_in(read['Market Prices'])
-    assert len(through_parse) == text.count('.DateOffset') == 25, through_parse
+    assert len(through_parse) == text.count('.DateOffset') == 19, through_parse
     assert [where for where, _ in through_parse] == [where for where, _ in through_read]
     assert all(isinstance(value, pd.DateOffset) for _, value in through_parse), (
         'parse_json left a .DateOffset undecoded: {}'.format(
