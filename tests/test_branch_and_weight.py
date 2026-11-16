@@ -570,7 +570,9 @@ def _barrier_config(barrier_price=90.0, digital=False, spot=None, **over):
 def _barrier_run(barrier_price=90.0, greeks='No', on=None, sims=1 << 15, **cfg_kwargs):
     """(value, results) off one base valuation. `on=None` leaves the switch ABSENT - a third state
     the byte-identity gate needs, not a spelling of 'No'."""
-    overrides = {'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Greeks': greeks}
+    # pinned: free, the device adds a gradient's addends in an order that varies run to run
+    overrides = {'MCMC_Simulations': sims, 'Quasi_Seed': 1, 'Greeks': greeks,
+                 'Deterministic_Kernels': 'Yes'}
     if on is not None:
         overrides['Branch_And_Weight'] = 'Yes' if on else 'No'
     _, out = rf.run_baseval(_barrier_config(barrier_price, **cfg_kwargs), overrides=overrides)

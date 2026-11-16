@@ -493,7 +493,8 @@ def test_a_monitored_barrier_binary_takes_the_skew_and_recomputes_to_the_bit():
     """
     deal = dict(BARRIER, Barrier_Type='Down_And_Out', Barrier_Price=85.0,
                 Barrier_Dates=[BASE + pd.DateOffset(months=m) for m in range(1, 13)])
-    calc = {'MCMC_Simulations': 1 << 14, 'Greeks': 'First'}
+    # pinned: free, the device adds a gradient's addends in an order that varies run to run
+    calc = {'MCMC_Simulations': 1 << 14, 'Greeks': 'First', 'Deterministic_Kernels': 'Yes'}
     off, _ = _run(_job([deal], _equity_factors(), **calc))
     on, _ = _run(_job([deal], _equity_factors(), valuation=BARRIER_ON, **calc))
     node, _ = _run(_job([deal], _equity_factors(), valuation=BARRIER_ON, Recompute_Inner_MC='Yes',
