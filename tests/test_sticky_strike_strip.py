@@ -174,7 +174,8 @@ def book(stretch=1):
     """The monthly knock-out and, to 300 days, a tenor other than a year, every other pricer of the
     strip and the closed forms that reads a surface: the knock-in, the continuous knock-out, the
     one-touch, the Asian, a composite knock-in and an fx partial-time knock-in, each date `stretch`
-    times as far from the base date."""
+    times as far from the base date. The composite is struck under S*X's forward, 80 at every fixing
+    on the flat world: at its forward a smile's slope and wings read nothing."""
     at = lambda d: day(stretch * d)
     short = dict(DEAL, Expiry_Date=at(300))
     equity = {k: DEAL[k] for k in ('Currency', 'Payoff_Currency', 'Equity', 'Dividends',
@@ -191,7 +192,7 @@ def book(stretch=1):
              Strike_Price=STRIKE, Units=UNITS, Expiry_Date=at(300), Is_Digital='No',
              Sampling_Data=[[at(d), 0.0, 1.0] for d in (90, 180, 270, 300)]),
         dict(short, Reference='COMPO', Payoff_Currency='EUR', Discount_Rate='EUR', Payoff_Type='Compo',
-             Strike_Price=80.0, Barrier_Price=70.0, Barrier_Type='Down_And_In',
+             Strike_Price=72.0, Barrier_Price=70.0, Barrier_Type='Down_And_In',
              Barrier_Dates=[[at(d), ''] for d in (90, 180, 270, 300)]),
         {'Object': 'FXPartialTimeBarrierOption', 'Reference': 'PARTIAL', 'Currency': 'USD',
          'Underlying_Currency': 'EUR', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD',
@@ -240,7 +241,7 @@ def test_the_two_conventions_are_one_coordinate_where_the_reference_is_the_forwa
     assert flat == priced('Sticky_Moneyness', curve(SPOT), smile=False) == priced(
         'Sticky_Strike', ref, smile=False)
     smiled = priced('Sticky_Moneyness', curve(SPOT))
-    assert all(flat[r] != smiled[r] for r in ('BR', 'KI', 'CONT', 'TOUCH', 'ASIAN')), (
+    assert all(flat[r] != smiled[r] for r in ('BR', 'KI', 'CONT', 'TOUCH', 'ASIAN', 'COMPO')), (
         'the smile must be worth something')
 
 
@@ -263,14 +264,15 @@ def test_the_book_twice_as_far_in_a_world_half_as_fast_prices_the_same():
     """RATE UNITS. A price reads a rate, a carry or a variance only times the year fraction it
     accrues over, so the book with every date twice as far from the base date, in the world whose
     rates and variances are halved, prices the same, to 1e-13: 10.093277 the knock-out, 54.756450
-    the one-touch, 3.523722 the partial-time knock-in. A quantity reaching `exp` or a closed form
+    the one-touch, 3.817272 the partial-time knock-in. A quantity reaching `exp` or a closed form
     without its year fraction reads the slow world's half. The book carries no spot lag, which is
     business days on and does not stretch.
 
     Killing mutations, each a year fraction dropped where a carry meets it: in the Reiner-Rubinstein
     barrier (the continuous knock-out -5.9%), the one-touch's drift (+0.01%), the partial-time
-    closed form's forward (+540%), the Asian's sample forwards (-7.4%), the composite strip's fx
-    forwards (-22.7%), `zero_carry_rate`'s division (every deal, -2.9% to +35%).
+    closed form's forward (+428%) and its smile read's (-4.7%), the Asian's sample forwards (-7.4%),
+    the composite strip's fx forwards (-5.3%), `zero_carry_rate`'s division (every deal, -2.9% to
+    +15%).
     """
     assert marks(stretched(2), book(2)) == pytest.approx(marks(stretched(1), book(1)), rel=1e-13)
 
