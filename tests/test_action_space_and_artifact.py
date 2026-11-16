@@ -2909,17 +2909,19 @@ DRIFTING = dict(CONSTANT_VOL, Mu=0.5)
 SCALED = ({'DiffV2_Risk_Kappa': 0.6}, {'DiffV2_Risk_Kappa': 0.6 / np.sqrt(5.0), 'DiffV2_Risk_Horizon': 5})
 #: The default Huber shape on the day's increment.
 RUNNING = {'Reference_Mode': 'Running_Wealth', 'Huber_Aversion': 2.5}
+#: A log-OU spot of `HBAR` a calendar day and no reversion to speak of, which moves on every row.
+EVERY_ROW = {'Kappa': 1.0e-6, 'Sigma': (HBAR * 365.0) ** 0.5}
 
 
-def _spot_alone(cfg, block, **objective):
-    """`cfg` from its calibrated opening state with its spot a GARCH spot on `block` and every other
+def _spot_alone(cfg, block, spot='GARCHSpotModel', **objective):
+    """`cfg` from its calibrated opening state with its spot a `spot` on `block` and every other
     factor constant, under a linear utility at a declared scale of 1e5 (its `Objective` updated by
     `objective`), swept from the first decision with no fit, so each continuation is the wealth over
     the scale plus a constant."""
     market = cfg['Calc']['MergeMarketData']['ExplicitMarketData']
-    market['Price Models'] = {'GARCHSpotModel.PLATINUM_LME': block}
+    market['Price Models'] = {f'{spot}.PLATINUM_LME': block}
     market['Model Configuration'] = {'.ModelParams': {'modelfilters': {}, 'modeldefaults': {
-        'CommodityPrice': 'GARCHSpotModel', 'ForwardRate': '', 'InterestRate': '', 'ObservedBasis': ''}}}
+        'CommodityPrice': spot, 'ForwardRate': '', 'InterestRate': '', 'ObservedBasis': ''}}}
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
     hp['Randomize_Initial_State'] = 'No'
     hp['Objective'] = {'Object': 'AsymmetricUtility_Huber', 'Huber_Aversion': 0.0,
@@ -2928,13 +2930,13 @@ def _spot_alone(cfg, block, **objective):
     return cfg
 
 
-def _risk_roll(ckpt, path, block, held=True, objective=None, draws=None, **solver):
-    """The frozen roll of `ckpt` on one path of `_spot_alone`'s world on `block` (under `objective`)
+def _risk_roll(ckpt, path, block, held=True, objective=None, draws=None, spot='GARCHSpotModel', **solver):
+    """The frozen roll of `ckpt` on one path of `_spot_alone`'s world of `spot` on `block` (under `objective`)
     at 256 inner draws, `Inner_Draws` `draws` where given, trading the October leg alone; where
     `held`, the liability cut to one ounce and the book pinned short 25 contracts, which trade past
     the terminal, so every such roll's wealth moves as that future does. The decision dump it writes
     at `path`, and its result."""
-    cfg = _spot_alone(_cfg(batch=2, inner=256, load=ckpt), block, **(objective or {}))
+    cfg = _spot_alone(_cfg(batch=2, inner=256, load=ckpt), block, spot, **(objective or {}))
     if draws is not None:
         cfg['Calc']['Calculation']['Inner_Draws'] = draws
     hp = cfg['Calc']['Calculation']['Hedging_Problem']
@@ -2987,10 +2989,9 @@ def test_the_risk_horizon_s_semideviation_grows_as_its_root_on_a_constant_varian
     kappa 0.6 / sqrt(5) at k = 5, in the stepper roll on 90% of its 81 decisions and in the verdict
     on 93% of its 117 rows, neither below 85%. 20 s with the fixture.
 
-    Killing mutations: the window's inner paths drawn on a Sobol stream, which hands a path nearly
-    one point on every row (2.19); the risk term read off the one-step draws (0.46, the roll's books
-    agreeing on 28%); the landing one decision short (0.89); the verdict's `_decide` handed no risk
-    fork (its books agreeing on 50%)."""
+    Killing mutations: the risk term read off the one-step draws (0.46, the roll's books agreeing on
+    28%); the landing one decision short (0.89); the verdict's `_decide` handed no risk fork (its
+    books agreeing on 50%)."""
     ckpt, d, rolls = held_risk
     one = _semideviations(rolls['mean'][0], rolls['one'][0])
     five = _semideviations(rolls['mean'][0], rolls['five'][0])
@@ -3013,9 +3014,8 @@ def test_a_variance_above_its_mean_holds_the_risk_horizon_below_its_root(held_ri
     forecast there, 0.76 of sqrt(10), and 0.99 of it over the 81 (0.060 a decision), the first ten
     within 8% and below 0.85 sqrt(10), the 81 within 4%. 11 s with the fixture.
 
-    Killing mutations: the k-decision semideviation taken as sqrt(k) times the one-step one, the
-    constant-variance rule (1.30 of the forecast at the first ten); the window's inner paths drawn
-    on a Sobol stream (3.18)."""
+    Killing mutation: the k-decision semideviation taken as sqrt(k) times the one-step one, the
+    constant-variance rule (1.30 of the forecast at the first ten)."""
     ckpt = held_risk[0]
     mean, one, ten = [
         _risk_roll(ckpt, str(tmp_path / f'{name}.csv'), HIGH_VOL, **solver)[0]
@@ -3031,6 +3031,25 @@ def test_a_variance_above_its_mean_holds_the_risk_horizon_below_its_root(held_ri
     assert abs((ratio / forecast).mean() - 1.0) < 0.04, (ratio / forecast).mean()
 
 
+def test_a_fork_over_a_weekend_moves_a_calendar_clock_spot_on_each_of_its_rows(tmp_path):
+    """A fork's inner path is one quasi-random point with a dimension to each factor and row, so a law
+    drawing on every calendar row moves independently on each: on `EVERY_ROW`'s held roll the one-step
+    downside semideviation of a decision landing three days on is sqrt(3) times one landing the next
+    day, 1.004 of it over the 15 weekends and 63 weekdays, within 5%. 12 s.
+
+    Killing mutation: the fork's normals read off one Sobol stream strided over its rows and paths,
+    which hands an inner path nearly one point on every row (1.74)."""
+    ckpt = str(tmp_path / 'value_fn.pt')
+    _run(_spot_alone(_cfg(batch=8, inner=8, save=ckpt, active=[2]), EVERY_ROW, 'LogOUSpotModel'))
+    (mean, _), (one, result) = [
+        _risk_roll(ckpt, str(tmp_path / f'{name}.csv'), EVERY_ROW, spot='LogOUSpotModel', **solver)
+        for name, solver in (('mean', {}), ('one', {'DiffV2_Risk_Kappa': 1.0}))]
+    days = np.diff(result.bundle.decision_steps)
+    sd = _semideviations(mean, one)[:len(days)]
+    ratio = sd[days == 3].mean() / sd[days == 1].mean() / np.sqrt(3.0)
+    assert (days == 3).sum() == 15 and abs(ratio - 1.0) < 0.05, ((days == 3).sum(), ratio)
+
+
 def test_the_risk_horizon_s_fork_draws_its_own_paths_whatever_inner_draws_states(held_risk, tmp_path):
     """The risk horizon's fork draws iid inner paths on streams seeded by the batch's seed and the
     decision alone, whatever `Inner_Draws` states, so on one world its draws are the same under
@@ -3043,8 +3062,7 @@ def test_the_risk_horizon_s_fork_draws_its_own_paths_whatever_inner_draws_states
     Killing mutations: the fork's streams left unseeded (`torch.manual_seed(seed)` dropped from
     `CMC_State.own_stream`), its draws following whatever the run drew before (up to 0.032 apart);
     the window's inner paths drawn as `Inner_Draws` states (`stream is not None` dropped from
-    `use_random` in `_run_inner_mc_at_t`), one Sobol stream strided over its rows under 'sobol' (up
-    to 0.28 apart)."""
+    `use_random` in `_run_inner_mc_at_t`), quasi-random points under 'sobol' (up to 0.035 apart)."""
     ckpt, _, rolls = held_risk
     five = {'DiffV2_Risk_Kappa': 1.0, 'DiffV2_Risk_Horizon': 5}
     random = [_risk_roll(ckpt, str(tmp_path / f'{name}.csv'), CONSTANT_VOL, draws='random', **solver)[0]
@@ -3064,8 +3082,7 @@ def test_a_risk_horizon_past_the_terminal_lands_on_it(held_risk, tmp_path):
 
     Killing mutations: the landing capped at the last decision row (the last decision forks to its
     own row, a semideviation of 0, the ratio there NaN and 0.71 at the decision before); the landing
-    one decision short (the roll at 10,000 no longer the roll at n); the window's inner paths drawn
-    on a Sobol stream (6.8)."""
+    one decision short (the roll at 10,000 no longer the roll at n)."""
     ckpt, _, rolls = held_risk
     n = len(rolls['one'][1].bundle.decision_steps)
     far, at_n = [_risk_roll(ckpt, str(tmp_path / f'{k}.csv'), CONSTANT_VOL, DiffV2_Risk_Kappa=1.0,

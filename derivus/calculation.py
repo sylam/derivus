@@ -843,12 +843,11 @@ class CMC_State_Inner(CMC_State):
         """Draw the inner-mode correlated Gaussians, shaped
         `(num_factors, T, simulation_batch, simulation_sub_batch)`, and clear the per-batch caches.
 
-        `use_random` (`Inner_Draws='random'`) swaps the shared Sobol tensor for iid Gaussians: one
-        low-discrepancy stream strided across (T,B,B2) loses its uniformity on the per-(t,b)
-        B2-slices as B grows (measured at B=512), while iid draws keep per-fork label noise
-        B-independent.
+        `use_random` (`Inner_Draws='random'`) draws iid Gaussians where the default draws a Sobol
+        point an inner path, one dimension to each factor and row, so a path's rows are independent
+        coordinates.
 
-        `use_antithetic` (`Inner_Antithetic='Yes'`) draws B2/2 quasi-normals per (t, outer path) and
+        `use_antithetic` (`Inner_Antithetic='Yes'`) draws B2/2 normals per (t, outer path) and
         mirrors them (z, -z), halving the label/argmax variance of the E[C] estimate. Unbiased
         because the folded emissions are symmetric in z; auxiliary streams stay iid.
         """
@@ -861,29 +860,13 @@ class CMC_State_Inner(CMC_State):
         B2 = self.simulation_sub_batch
         if use_antithetic and B2 % 2:
             raise ValueError(f'Inner_Antithetic requires an even Inner_Sub_Batch; got {B2}.')
+        half = B2 // 2 if use_antithetic else B2
         if use_random:
-            # iid inner draws: no cross-(B,B2) coupling, unlike one Sobol stream strided over them
-            half = B2 // 2 if use_antithetic else B2
             z = torch.randn(num_factors, T, B, half, dtype=self.one.dtype, device=self.one.device)
-            z = torch.einsum('fg,gtbi->ftbi', self.t_cholesky, z)
-            self.t_random_numbers = torch.cat([z, -z], dim=-1) if use_antithetic else z
-            self.reset_cashflows(time_grid)
-            self.t_Buffer.clear()
-            return
-        # Sobol-based correlated Gaussian: draw T*B*B2 quasi-normal vectors of dim num_factors,
-        # transpose to (num_factors, T*B*B2), correlate via cholesky, reshape.
-        if use_antithetic:
-            Z_normal = self.quasi_rng(num_factors, T * B * (B2 // 2))[0]
-            half = torch.matmul(
-                self.t_cholesky, Z_normal.transpose(0, 1)
-            ).reshape(num_factors, T, B, B2 // 2)
-            self.t_random_numbers = torch.cat([half, -half], dim=-1)
         else:
-            Z_normal = self.quasi_rng(num_factors, T * B * B2)[0]                    # (T*B*B2, num_factors)
-            self.t_random_numbers = torch.matmul(
-                self.t_cholesky, Z_normal.transpose(0, 1)
-            ).reshape(num_factors, T, B, B2)
-
+            z = self.quasi_rng(num_factors * T, B * half)[0].reshape(B, half, T, num_factors).permute(3, 2, 0, 1)
+        z = torch.einsum('fg,gtbi->ftbi', self.t_cholesky, z)
+        self.t_random_numbers = torch.cat([z, -z], dim=-1) if use_antithetic else z
         self.reset_cashflows(time_grid)
         self.t_Buffer.clear()
 
@@ -3969,8 +3952,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
         # what the fork BORROWS, to give back exactly as found (see the finally below): a fork over
         # an outer-path SLICE would otherwise leave the state slice-sized
         borrowed_batch, borrowed_fill = shared_mem.simulation_batch, shared_mem.fillvalue
-        # iid on its own streams: one Sobol stream strided over a window's rows hands an inner path
-        # nearly the same point on each
+        # iid on streams of its own, so a window's fork moves no other draw
         own = contextlib.nullcontext() if stream is None else shared_mem.own_stream(stream)
         with grad_ctx, own:
             try:
