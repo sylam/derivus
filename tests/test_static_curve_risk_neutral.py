@@ -157,7 +157,7 @@ def test_a_hedge_reads_a_static_curve_as_its_no_model_declares(tmp_path):
         job['Calc']['Calculation'].update(Batch_Size=16, NoModel=nomodel)
         context = derivus.Context()
         context.load_json((json.dumps(job), 'hedge'))
-        liability[nomodel] = context.run_job()[1].bundle.liability_value.double().numpy()
+        liability[nomodel] = context.run_job()[1].bundle.liability_value.double().cpu().numpy()
     gap = np.abs(liability['RiskNeutral'] - liability['Constant']).max(axis=1)
     history = job['Calc']['Calculation']['Hedging_Problem']['History_Lookback_Business_Days']
     assert gap[:history + 1].max() == 0.0 and gap.max() > 100.0, gap

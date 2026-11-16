@@ -1,6 +1,6 @@
 {
  "accumulator_gbm": {
-  "mtm|0|Value": "0x0.0p+0",
+  "mtm|0|Value": "0x1.12afb2a49ceaep+6",
   "mtm|1|Ref_MTM": "0x0.0p+0",
   "mtm|1|Value": "0x1.12afb2a49ceaep+6"
  },
@@ -31,12 +31,12 @@
   "Greeks_First|('InterestRate.USD', 0.5041095890410959, 0.0, 0.0)|root": "0x1.31b2cd51eaab3p+9",
   "Greeks_First|('InterestRate.USD', 5.0, 0.0, 0.0)|Value": "0x1.68f5c28f5c290p+0",
   "Greeks_First|('InterestRate.USD', 5.0, 0.0, 0.0)|root": "0x1.925ac4b331adfp-1",
-  "mtm|0|Value": "0x0.0p+0",
+  "mtm|0|Value": "0x1.12afb2a49ceaep+6",
   "mtm|1|Ref_MTM": "0x0.0p+0",
   "mtm|1|Value": "0x1.12afb2a49ceaep+6"
  },
  "autocall_gbm": {
-  "mtm|0|Value": "0x0.0p+0",
+  "mtm|0|Value": "0x1.87ddbb0250f63p-2",
   "mtm|1|Ref_MTM": "0x0.0p+0",
   "mtm|1|Value": "0x1.87ddbb0250f63p-2"
  },
@@ -55,12 +55,12 @@
   "Greeks_First|('InterestRate.USD', 0.0, 0.0, 0.0)|root": "0x1.552e0ea77a87ep-1",
   "Greeks_First|('InterestRate.USD', 5.0, 0.0, 0.0)|Value": "0x1.47ae147ae147bp-5",
   "Greeks_First|('InterestRate.USD', 5.0, 0.0, 0.0)|root": "0x1.649f451f6184cp-3",
-  "mtm|0|Value": "0x0.0p+0",
+  "mtm|0|Value": "0x1.87ddbb0250f63p-2",
   "mtm|1|Ref_MTM": "0x0.0p+0",
   "mtm|1|Value": "0x1.87ddbb0250f63p-2"
  },
  "tarf_gbm": {
-  "mtm|0|Value": "0x0.0p+0",
+  "mtm|0|Value": "0x1.12afb2a49ceaep+6",
   "mtm|1|Ref_MTM": "0x0.0p+0",
   "mtm|1|Value": "0x1.12afb2a49ceaep+6"
  },
@@ -91,7 +91,7 @@
   "Greeks_First|('InterestRate.USD', 0.5041095890410959, 0.0, 0.0)|root": "0x1.31b2cd51eaab3p+9",
   "Greeks_First|('InterestRate.USD', 5.0, 0.0, 0.0)|Value": "0x1.68f5c28f5c290p+0",
   "Greeks_First|('InterestRate.USD', 5.0, 0.0, 0.0)|root": "0x1.925ac4b331adfp-1",
-  "mtm|0|Value": "0x0.0p+0",
+  "mtm|0|Value": "0x1.12afb2a49ceaep+6",
   "mtm|1|Ref_MTM": "0x0.0p+0",
   "mtm|1|Value": "0x1.12afb2a49ceaep+6"
  }
