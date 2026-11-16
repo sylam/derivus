@@ -227,6 +227,43 @@ def test_correlations_authored_in_a_job_reach_the_cholesky(tmp_path, caplog):
     assert live != unread, 'the declared correlations reach no draw'
 
 
+@pytest.mark.parametrize('method', ['Eigenvalue_Raising', 'Alternating_Projections'])
+def test_a_correlation_matrix_with_a_repeated_eigenvalue_heals_symmetrically(tmp_path, method):
+    """Three spots authored 0.9, 0.9 and -0.9 heal to 0.5, 0.5 and -0.5, the draws within 0.04.
+
+    Killing mutation: the general eigensolver - 0.39, 0.63 and -0.47, the projections raising."""
+    document = fixture('autocall_job.json')
+    names, calc = ('A', 'B', 'C'), document['Calc']
+    market = calc['MergeMarketData']['ExplicitMarketData']
+    for name in names:
+        for kind in ('EquityPrice', 'DividendRate', 'EquityPriceVol'):
+            market['Price Factors'][kind + '.' + name] = market['Price Factors'][kind + '.EQ']
+    market['Model Configuration'] = ModelParams(({'EquityPrice': 'GBMAssetPriceModel'}, {}))
+    market['Price Models'] = {'GBMAssetPriceModel.' + name: {'Vol': 0.2, 'Drift': 0.0}
+                              for name in names}
+    a, b, c = ('LognormalDiffusionProcess.' + name for name in names)
+    market['Correlations'] = {a: {b: 0.9, c: 0.9}, b: {c: -0.9}}
+    market['System Parameters']['Correlations_Healing_Method'] = method
+    calc['Calculation'] = {
+        'Object': 'CreditMonteCarlo', 'Base_Date': calc['Calculation']['Base_Date'],
+        'Currency': 'USD', 'Time_Grid': '0d 3m', 'Batch_Size': 4096, 'Simulation_Batches': 1,
+        'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD', 'Calc_Scenarios': 'All',
+        'Dynamic_Scenario_Dates': 'No', 'Generate_Cashflows': 'No'}
+    calc['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+        'Collateralized': 'False'}}, 'Children': [{'Instrument': {'.Deal': {
+            'Object': 'EquityForwardDeal', 'Reference': name, 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Equity': name, 'Equity_Volatility': name, 'Buy_Sell': 'Buy',
+            'Forward_Price': 100.0, 'Maturity_Date': pd.Timestamp('2025-06-27'), 'Units': 1.0}}}
+            for name in names]}]
+    context = derivus.Context()
+    context.load_json(authored(tmp_path, 'healed.json', document))
+    paths = context.run_job()[1]['Results']['scenarios']
+    drawn = np.corrcoef([np.log(paths['EquityPrice.' + name].values[:, -1] /
+                                paths['EquityPrice.' + name].values[:, 0]) for name in names])
+    assert np.abs(drawn[np.triu_indices(3, 1)] - [0.5, 0.5, -0.5]).max() < 0.04, drawn
+
+
 def test_an_implied_model_with_no_price_models_block_is_refused_by_name(tmp_path):
     """Row: `TypeError: 'NoneType' object is not subscriptable` naming neither field nor factor.
 
@@ -245,6 +282,23 @@ def test_an_implied_model_with_no_price_models_block_is_refused_by_name(tmp_path
     context.load_json(authored(tmp_path, 'implied_no_block.json', document))
     with pytest.raises(ValueError, match='Price Models.HullWhite2FactorImpliedInterestRateModel'
                                          '.USD-SOFR is not declared'):
+        context.run_job()
+
+
+def test_an_implied_model_whose_parameters_the_market_lacks_fails_naming_them(tmp_path):
+    """A `Price Models` block for the implied model with no parameter block fails the job by name.
+
+    Killing mutation: the KeyError logged and swallowed, the process built on an earlier one's."""
+    document = fixture('commodity_aps_world.json')
+    document['Calc']['Calculation'].update({'Batch_Size': 128, 'Simulation_Batches': 1})
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    market['Price Models']['HullWhite2FactorImpliedInterestRateModel.USD-SOFR'] = {
+        'Lambda_1': 0.0, 'Lambda_2': 0.0}
+    market['Model Configuration']['.ModelParams']['modeldefaults'][
+        'InterestRate'] = 'HullWhite2FactorImpliedInterestRateModel'
+    context = derivus.Context()
+    context.load_json(authored(tmp_path, 'implied_no_parameters.json', document))
+    with pytest.raises(KeyError, match='HullWhite2FactorModelParameters.USD-SOFR'):
         context.run_job()
 
 

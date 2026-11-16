@@ -136,3 +136,28 @@ def test_a_deal_sampling_an_unmodelled_spot_marks_its_base_valuation_on_the_firs
     marks = trials.marks(job)
     mark = float.fromhex(marks[reference]) + float.fromhex(marks['EQS'])
     assert abs(first.mean() - mark) <= 1e-5 * np.abs(first).max(), (reader, first.mean(), mark)
+
+
+def test_a_hedge_reads_a_static_curve_as_its_no_model_declares(tmp_path):
+    """The simulate-only hedge on an unmodelled USD-SOFR: its liability under `RiskNeutral` is its
+    `Constant` one to the base date and 136.75 apart at most later, on a 77,178 mark. Killing
+    mutation: the hedge state built without `NoModel`, which reads `Constant` to the bit."""
+    fixtures = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
+    with open(os.path.join(fixtures, 'data', 'MarketDataRF_platinum_calibrated.json')) as f:
+        market = json.load(f)
+    del market['MarketData']['Model Configuration']['.ModelParams']['modeldefaults']['InterestRate']
+    del market['MarketData']['Price Models']['PCAInterestRateModel.USD-SOFR']
+    (tmp_path / 'market.json').write_text(json.dumps(market))
+    with open(os.path.join(fixtures, 'policy_test_simulate_only.json')) as f:
+        job = json.load(f)
+    job['Calc']['MergeMarketData']['MarketDataFile'] = str(tmp_path / 'market.json')
+    job['Calc']['CalendDataFile'] = os.path.join(fixtures, 'data', 'calendars.cal')
+    liability = {}
+    for nomodel in ('Constant', 'RiskNeutral'):
+        job['Calc']['Calculation'].update(Batch_Size=16, NoModel=nomodel)
+        context = derivus.Context()
+        context.load_json((json.dumps(job), 'hedge'))
+        liability[nomodel] = context.run_job()[1].bundle.liability_value.double().numpy()
+    gap = np.abs(liability['RiskNeutral'] - liability['Constant']).max(axis=1)
+    history = job['Calc']['Calculation']['Hedging_Problem']['History_Lookback_Business_Days']
+    assert gap[:history + 1].max() == 0.0 and gap.max() > 100.0, gap

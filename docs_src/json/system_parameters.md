@@ -27,7 +27,7 @@ below $10^{-8}$, with a WARNING line each time; the size of the change is not re
 
 | Method | One repair |
 |---|---|
-| `Eigenvalue_Raising` | $C = V\Lambda V^\top$; floor the eigenvalues, $P = V\max(\Lambda, 10^{-4})V^\top$; rescale to a unit diagonal, $C' = D^{-1/2} P D^{-1/2}$ with $D = \mathrm{diag}(P)$ |
+| `Eigenvalue_Raising` | $C = V\Lambda V^\top$, $V$ orthonormal; floor the eigenvalues, $P = V\max(\Lambda, 10^{-4})V^\top$; rescale to a unit diagonal, $C' = D^{-1/2} P D^{-1/2}$ with $D = \mathrm{diag}(P)$ |
 | `Alternating_Projections` | start $B_0 = C_0 = C$. For $k = 0, \dots, 99$: $X_k = V\max(\Lambda, 10^{-4})V^\top$ from the eigendecomposition of $B_k$; $C_{k+1}$ is $X_k$ with its diagonal set to one; $B_{k+1} = B_k + (C_{k+1} - X_k)$. Stop when $\max\lvert C_{k+1} - C_k\rvert < 10^{-8}\max\lvert C_{k+1}\rvert$ or after 100 iterations |
 
 The second follows the alternating-projections idea of Higham [@higham2002] between the positive

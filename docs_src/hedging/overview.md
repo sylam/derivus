@@ -39,6 +39,10 @@ key no field declares is refused by name, as a calculation override is. **Held b
 `Simulation_Batches` is the number of batches of `Batch_Size` paths simulated in either mode; its
 field says what each mode does with them.
 
+A factor with no model is read at a later row as the calculation's `NoModel` declares, as a credit
+Monte Carlo reads it ([Definitions](../theory/definitions.md)). **Held by**
+`tests/test_static_curve_risk_neutral.py::test_a_hedge_reads_a_static_curve_as_its_no_model_declares`.
+
 ## Objective
 
 `solve_hedge` chooses hedge positions $q$ to maximise expected utility of hedged wealth,

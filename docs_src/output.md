@@ -23,7 +23,8 @@ calc, out = cx.Base_Valuation(overrides={})
 
 `Results` contains:
 
-- `mtm` — the mark-to-market of all instruments loaded, along with any tagged data
+- `mtm` — the mark-to-market of all instruments loaded, along with any tagged data; the root row
+  first, every structure and deal at the root summed
 - `Greeks_First` — AAD sensitivities of the portfolio by risk factor, when `Greeks` is `First` or
   `All`; `Greeks_Second`, the factor Hessian, under `All`
 - `Correlation_Bump` — under `Greeks: First` with a non-zero `Correlation_Bump`, each quanto, compo

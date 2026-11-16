@@ -722,3 +722,18 @@ def test_only_a_quanto_or_compo_payoff_asks_the_market_for_its_pair():
         cx.load_json((json.dumps(_job([dict(_forward('F'), Payoff_Type=payoff_type)], factors),
                                  cls=CustomJsonEncoder), 'compo'))
         assert set(cx.describe()['factors']['missing']) == wanted, payoff_type
+
+
+# --------------------------------------------------------------------------------------------
+# 7. a compo booked at the root is the book's value and its correlation's bump
+# --------------------------------------------------------------------------------------------
+def test_a_compo_booked_at_the_root_is_the_books_value_and_its_correlation_bump():
+    """A compo call held at the root is the root row's value, and its `Correlation_Bump` its marks
+    at 0.375 and 0.325 over 0.05. Killing mutation: the book summed over its structures alone."""
+    deal = _vanilla('CV')
+    out = _run(_job([deal], _factors(), calc={'Greeks': 'First'}))
+    up, down = (_mtm(_run(_job([deal], _factors(corr=CORR + side))), 'CV')
+                for side in (0.025, -0.025))
+    assert out['Results']['mtm']['Value'].iloc[0] == _mtm(out, 'CV') != 0.0
+    assert out['Results']['Correlation_Bump']['Gradient'].iloc[0] == pytest.approx(
+        (up - down) / 0.05, rel=1e-9)

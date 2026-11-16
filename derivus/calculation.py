@@ -1285,17 +1285,11 @@ class CreditMonteCarlo(Calculation):
                 self.config.params['Price Factor Interpolation'],
                 base_date=base_date)
             implied_factor = implied_factors.get(price_model)
-            try:
-                if implied_factor:
-                    implied_obj = construct_factor(
-                        implied_factor, self.config.params['Price Factors'],
-                        self.config.params['Price Factor Interpolation'],
-                        base_date=base_date)
-                    self.implied_factors[implied_factor] = implied_obj
-                else:
-                    implied_obj = None
-            except KeyError as e:
-                logging.error('Implied Factor {0} missing in market data file'.format(e.args))
+            implied_obj = None
+            if implied_factor:
+                implied_obj = self.implied_factors[implied_factor] = construct_factor(
+                    implied_factor, self.config.params['Price Factors'],
+                    self.config.params['Price Factor Interpolation'], base_date=base_date)
 
             self.stoch_factors[price_factor] = construct_process(
                 price_model.type, factor_obj,
@@ -1478,8 +1472,7 @@ class CreditMonteCarlo(Calculation):
                 correlation_matrix[index1, index2] = rho
                 correlation_matrix[index2, index1] = rho
 
-        raw_eigval, raw_eigvec = np.linalg.eig(correlation_matrix)
-        eigval, eigvec = np.real(raw_eigval), np.real(raw_eigvec)
+        eigval, eigvec = np.linalg.eigh(correlation_matrix)
         while (eigval < 1e-8).any():
             # matrix not positive definite - find a close positive definite matrix
             if self.config.params['System Parameters']['Correlations_Healing_Method'] == 'Eigenvalue_Raising':
@@ -1497,7 +1490,7 @@ class CreditMonteCarlo(Calculation):
 
                 # don't do more than 100 iterations - if we need to do this much, behaviour is undefined
                 for k in range(100):
-                    eigval, eigvec = np.linalg.eig(B)
+                    eigval, eigvec = np.linalg.eigh(B)
                     P_plus_B = eigvec.dot(np.diag(np.maximum(eigval, 1e-4))).dot(eigvec.T)
                     nC = P_plus_B + np.diag(1.0 - P_plus_B.diagonal())
                     D = nC - P_plus_B
@@ -1511,8 +1504,7 @@ class CreditMonteCarlo(Calculation):
                 new_correlation_matrix = nC
 
             correlation_matrix = new_correlation_matrix
-            raw_eigval, raw_eigvec = np.linalg.eig(correlation_matrix)
-            eigval, eigvec = np.real(raw_eigval), np.real(raw_eigvec)
+            eigval, eigvec = np.linalg.eigh(correlation_matrix)
 
         correlation_matrix = torch.tensor(
             correlation_matrix, device=self.device, dtype=self.dtype, requires_grad=False)
@@ -1548,7 +1540,7 @@ class CreditMonteCarlo(Calculation):
             torch.ones([1, 1], dtype=self.dtype, device=self.device), mcmc_sim, get_fxrate_factor(
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
             seed, quasi_seed, job_id, num_jobs, scale_by_survival,
-            nomodel=self.params.get('NoModel', 'Constant'),
+            nomodel=nomodel,
             keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
         shared_mem.boundary_aad = calc_greeks is not None
         # the kink kernel's Silverman width is sized from this job's WHOLE path count, not a batch's
@@ -2295,6 +2287,13 @@ class BaseValuation(Calculation):
 
         return shared_mem
 
+    def book_value(self):
+        """The book's value: each structure and deal at the root summed, one the run could not
+        value skipped and counted, never summed."""
+        root = self.netting_sets
+        return sum(x.Calc_res['Value'].item() for x in [s.obj for s in root.sub_structures] +
+                   root.dependencies if 'Value' in x.Calc_res and x.Instrument not in self.unpriced)
+
     def correlation_bump(self, params, width):
         """Every quanto, compo or mid-curve correlation a priced deal read, as a CENTRAL CRN bump of
         the marked value: the book is re-compiled and re-valued once each side on the job's own
@@ -2331,8 +2330,7 @@ class BaseValuation(Calculation):
                     self.set_deal_structures(self.config.deals['Deals']['Children'],
                                              self.netting_sets, shared.one, deal_level_mtm=True)
                     self.netting_sets.resolve_structure(shared, self.time_grid)
-                    sides.append(sum(x.obj.Calc_res['Value'].item()
-                                     for x in self.netting_sets.sub_structures))
+                    sides.append(self.book_value())
             finally:
                 marked['Value'], self.netting_sets = base, keep
             rows[utils.check_scope_name(factor)] = (h, (sides[0] - sides[1]) / (2.0 * h))
@@ -2435,9 +2433,7 @@ class BaseValuation(Calculation):
 
         data = dict(
             [(field, self.netting_sets.obj.Instrument.field.get(field, 'Root')) for field in ['Reference', 'Object']])
-        # a structure the run could not value is skipped and counted, never summed
-        data['Value'] = sum([x.obj.Calc_res['Value'].item() for x in self.netting_sets.sub_structures
-                             if 'Value' in x.obj.Calc_res and x.obj.Instrument not in self.unpriced])
+        data['Value'] = self.book_value()
         # the forward-skew reserve is the PORTFOLIO's, as the gradient it is composed from is, so it
         # sits on the row that carries the portfolio's value
         if 'Skew_Reserve' in self.netting_sets.obj.Calc_res:
@@ -3451,7 +3447,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             torch.ones([1, 1], dtype=self.dtype, device=self.device), mcmc_sim, get_fxrate_factor(
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
             seed, quasi_seed, job_id, num_jobs,
-            simulation_sub_batch=int(self.params['Inner_Sub_Batch']),
+            simulation_sub_batch=int(self.params['Inner_Sub_Batch']), nomodel=nomodel,
             keep_tensor=True)  # hedge stepper replays need the kept tensor, unconditionally
         # the roll's business day, and the market days every law steps
         state.business_day = self.config.holidays.get(
@@ -4213,13 +4209,14 @@ class NettingSetCalculation(Calculation):
         """The config as the run's compile reads it - the valuation calculation and its date - put
         back as it stood on the way out."""
         config = self.config
-        calculation = config.deals['Calculation']
+        calculation, stamped = config.deals['Calculation'], config.params['System Parameters']['Base_Date']
         try:
             config.deals['Calculation'] = self.valuation
             config.params['System Parameters']['Base_Date'] = self.valuation['Base_Date']
             yield
         finally:
             config.deals['Calculation'] = calculation
+            config.params['System Parameters']['Base_Date'] = stamped
 
     def base(self, over=None):
         """`[(value, skipped)]` per trade: the book compiled once as a scenario valuation compiles

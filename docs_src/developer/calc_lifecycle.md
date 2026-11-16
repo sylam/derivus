@@ -69,6 +69,12 @@ quote set's, a family's - as a compile's refusal by name stops every other calcu
 `tests/test_simm.py::test_a_trade_the_compile_refuses_is_set_aside_by_name_and_the_run_goes_on`.
 **Not gated:** `SACCR`'s set-aside, the same `base`'s.
 
+A `SIMM` or `SACCR` run writes its `Base_Date` into `System Parameters` for its compile and
+bootstrap and puts the market's own back on the way out, so a later job on the same context reads
+the market's date.
+**Held by**
+`tests/test_saccr.py::test_a_run_dated_after_its_market_file_leaves_the_files_date_standing`.
+
 A pass's arithmetic is its own: a column is the same to the bit whatever stands beside it, so the
 CRIF is the same whatever the chunk and the worker count. A pass of one is the exception: it sums a
 deal's terms with the scenario axis contiguous where a pass of several strides it, so a bump
@@ -269,7 +275,9 @@ iterating that order.
 ## Compile phase 2 — `_build_factor_state` {#compile-phase-2-_build_factor_state}
 
 1. **Factors.** `construct_process` for each stochastic factor, `construct_factor` for the rest, a
-   missing block skipped with a WARNING.
+   missing block skipped with a WARNING; an implied model whose parameter block is missing fails
+   the run with a `KeyError` naming it. **Held by**
+   `tests/test_loud_refusals.py::test_an_implied_model_whose_parameters_the_market_lacks_fails_naming_them`.
 2. **Leaves** ([@capriotti2011]): `stoch_var`, `implied_var` and `static_var`, `Gradient_Variables`
    choosing which require grad. `Calculation.factor_leaf` mints each, the one seam where a
    calibrated factor carries its quotes' graph as `leaf + (θ* − θ*.detach())`
@@ -308,9 +316,14 @@ Below an eigenvalue of `1e-8` the matrix is repaired with a WARNING, the size of
 unreported:
 `Eigenvalue_Raising` (default) floors eigenvalues at `1e-4` and rescales to a unit diagonal;
 `Alternating_Projections` is Higham's method [@higham2002] without Dykstra's correction (100 passes
-at most, to a relative `1e-8`), a nearby matrix, not provably the nearest. The matrix is no AAD leaf
-([decision 12](../limitations.md#decisions-waiting-on-the-desk)); a base valuation bumps a quanto,
-compo or mid-curve correlation under common random numbers (`Correlation_Bump`, 0.025).
+at most, to a relative `1e-8`), a nearby matrix, not provably the nearest. Both read the symmetric
+eigendecomposition (`eigh`), whose vectors stay orthonormal at a repeated eigenvalue. **Held by**
+`tests/test_loud_refusals.py::test_a_correlation_matrix_with_a_repeated_eigenvalue_heals_symmetrically`.
+The matrix is no AAD leaf ([decision 12](../limitations.md#decisions-waiting-on-the-desk)); a base
+valuation bumps a quanto, compo or mid-curve correlation under common random numbers
+(`Correlation_Bump`, 0.025) on the book's value, every structure and deal at the root summed.
+**Held by**
+`tests/test_compo_analytic_pricers.py::test_a_compo_booked_at_the_root_is_the_books_value_and_its_correlation_bump`.
 
 ## The batch loop
 

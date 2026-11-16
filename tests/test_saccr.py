@@ -32,8 +32,8 @@ import pytest
 from scipy import optimize, stats
 
 import derivus
-from derivus import utils
-from derivus.config import CustomJsonEncoder
+from derivus import bootstrappers, utils
+from derivus.config import CustomJsonEncoder, ModelParams
 from test_option_settlement_json import lag
 
 FIXTURES = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures')
@@ -728,3 +728,39 @@ def test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name(tmp_path, b
             said.replace('(', r'\(').replace(')', r'\)'))):
         run(document({'SET': ({}, [node(swap('SWAP', years(5), 'Fixed'))])}, saccr(
             mapping_file(tmp_path / 'mapping.json'), str(path))))
+
+
+def test_a_run_dated_after_its_market_file_leaves_the_files_date_standing(tmp_path):
+    """SA-CCR a day after its market file's date, then the file's quotes bootstrapped on the same
+    context mark a cash flow as a fresh context does, to the bit. Killing mutation: the run's date
+    left in the file's `System Parameters`, where the bootstrap solves the quotes a day late."""
+    found = dict(factors(0.2), **{'InterestRate.USD-OIS': {
+        'Currency': 'USD', 'Day_Count': 'ACT_365', 'Sub_Type': None,
+        'Curve': utils.Curve([], [[tenor(years(n)), 0.04 + 0.002 * n] for n in (1, 2, 5)])}})
+    quotes = bootstrappers.knot_prices('USD-OIS', found, ModelParams(), BASE, {}, {
+        'Fixed_Frequency': '1Y', 'Float_Frequency': '1Y', 'Compounding': 'OIS'})
+    market = tmp_path / 'market.json'
+    market.write_text(json.dumps({'MarketData': {
+        'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
+        'Valuation Configuration': {}, 'Price Factors': found, 'Market Prices': dict([quotes]),
+        'Bootstrapper Configuration': {'InterestRate': {'Prices': 'InterestRate'}}}},
+        cls=CustomJsonEncoder))
+    cash = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD',
+            'Discount_Rate': 'USD-OIS', 'Amount': 1e6, 'Payment_Date': years(3)}
+
+    def on_file(trade, calculation):
+        job = document({'NS': ({}, [node(trade)])}, calculation)
+        job['Calc']['MergeMarketData'] = {'MarketDataFile': str(market), 'ExplicitMarketData': {}}
+        return json.dumps(job), 'on_file'
+
+    def marked(context):
+        context.load_json(on_file(cash, {'Object': 'BaseValuation'}))
+        context.bootstrap()
+        frame = context.run_job()[1]['Results']['mtm']
+        return frame[frame['Reference'] == 'NS_CF']['Value'].item()
+
+    reused = derivus.Context()
+    reused.load_json(on_file(swap('SWAP', years(5), 'Fixed'), dict(
+        saccr(mapping_file(tmp_path / 'mapping.json')), Base_Date=BASE + pd.DateOffset(days=1))))
+    reused.run_job()
+    assert marked(reused) == marked(derivus.Context())
