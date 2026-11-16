@@ -73,6 +73,10 @@ FACTORS = {
                       'Surface': utils.Curve([], [[m, t, SIGMA] for m in (0.8, 1.0, 1.2)
                                                   for t in (0.02, 2.0)])}}
 
+#: The same world, its vol falling a quarter of a point for each point of moneyness.
+SKEWED = dict(FACTORS, **{'FXVol.EUR.USD': dict(FACTORS['FXVol.EUR.USD'], Surface=utils.Curve(
+    [], [[m, t, SIGMA - 0.25 * (m - 1.0)] for m in (0.8, 1.0, 1.2) for t in (0.02, 2.0)]))})
+
 
 def _deal(barrier_type, barrier, strike=1.25, at_start='No', option_type='Call',
           limit_days=LIMIT_D, expiry_days=EXPIRY_D, rebate=0.0):
@@ -87,7 +91,7 @@ def _deal(barrier_type, barrier, strike=1.25, at_start='No', option_type='Call',
             'Underlying_Amount': NOTIONAL}
 
 
-def _job(deal, calc=None):
+def _job(deal, calc=None, factors=FACTORS):
     return {'Calc': {
         'Calculation': dict({'Object': 'BaseValuation', 'Base_Date': BASE, 'Currency': 'USD',
                              'MCMC_Simulations': 1}, **(calc or {})),
@@ -96,7 +100,7 @@ def _job(deal, calc=None):
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': BASE},
             'Valuation Configuration': {},
-            'Price Factors': FACTORS}}}}
+            'Price Factors': factors}}}}
 
 
 def _cmc_job(deal, **calc):
@@ -313,16 +317,19 @@ def test_a_closed_start_window_reads_the_same_state_its_own_scenario_walk_does()
             assert abs(row0.max() - base) < 1e-6 * base, ('the walk and the mark disagree', where)
 
 
-def test_an_unreachable_barrier_is_the_vanilla_and_a_certain_one_is_nothing():
+@pytest.mark.parametrize('factors', [FACTORS, SKEWED], ids=['flat', 'skewed'])
+def test_an_unreachable_barrier_is_the_vanilla_and_a_certain_one_is_nothing(factors):
     """The two degenerate anchors: a KO whose barrier no path reaches is the plain European
-    (engine-vs-engine against an FXOptionDeal document), and its KI is worth nothing.
+    (engine-vs-engine against an FXOptionDeal document), and its KI is worth nothing, on a flat
+    surface and on a skewed one, where both deals read the vol at the forward's moneyness.
 
-    Killing mutation: the knock-in's parity taken with the wrong sign (`bs + pv`).
+    Killing mutations: the knock-in's parity taken with the wrong sign (`bs + pv`); the window
+    barrier's vol read at the spot's moneyness, the knock-out 2.9% over the vanilla on the skew.
     """
-    v_van = _mtm(_run(_job(VANILLA)), 'VAN')
+    v_van = _mtm(_run(_job(VANILLA, factors=factors)), 'VAN')
     for at_start in ('Yes', 'No'):
-        ko = _mtm(_run(_job(_deal('Up_And_Out', 5.0, at_start=at_start))))
-        ki = _mtm(_run(_job(_deal('Up_And_In', 5.0, at_start=at_start))))
+        ko = _mtm(_run(_job(_deal('Up_And_Out', 5.0, at_start=at_start), factors=factors)))
+        ki = _mtm(_run(_job(_deal('Up_And_In', 5.0, at_start=at_start), factors=factors)))
         assert abs(ko - v_van) / v_van < 2e-3, (at_start, ko, v_van)
         assert abs(ki) < 2e-3 * v_van, (at_start, ki)
 

@@ -2711,7 +2711,14 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     limit = daycount_fn(tau1)
     need_spot_at_expiry = deal_time.shape[0] - expiry.size
     spot_prior, spot_at = torch.split(spot, (expiry.size, need_spot_at_expiry))
-    moneyness = calc_moneyness(shared.one * strike, spot_prior, spot_prior, deal_data, False, invert_moneyness)
+    # cache the expiry tenors
+    expiry_years_key = ('Expiry_Years', tuple(expiry), tuple(limit))
+    if expiry_years_key not in factor_dep:
+        factor_dep[expiry_years_key] = (spot.new(expiry.reshape(-1, 1)), spot.new(limit.reshape(-1, 1)))
+
+    expiry_years, limit_years = factor_dep[expiry_years_key]
+    moneyness = calc_moneyness(shared.one * strike, spot_prior, spot_prior * torch.exp(b * expiry_years),
+                               deal_data, True, invert_moneyness)
     sigma = utils.VolSurface.rate(factor_dep['Volatility'], moneyness, expiry, shared)
 
     if factor_dep['Barrier_Monitoring']:
@@ -2721,12 +2728,6 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     else:
         adj_barrier = barrier
 
-    # cache the expiry tenors
-    expiry_years_key = ('Expiry_Years', tuple(expiry), tuple(limit))
-    if expiry_years_key not in factor_dep:
-        factor_dep[expiry_years_key] = (spot.new(expiry.reshape(-1, 1)), spot.new(limit.reshape(-1, 1)))
-
-    expiry_years, limit_years = factor_dep[expiry_years_key]
     r = torch.squeeze(discounts.gather_weighted_curve(
         shared, tau.reshape(-1, 1)), dim=1) / expiry_years.clamp(min=1e-5)
 
