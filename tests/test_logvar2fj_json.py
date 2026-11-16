@@ -951,15 +951,15 @@ def _model_ladder(**declared):
     return sections
 
 
-def _forward_rows(source):
-    """`WORLD_FACTOR`'s own forward smiles at `WORLD_TENORS`, as `Forward_Smiles` rows.
+def _forward_rows(source, tenors=WORLD_TENORS):
+    """`WORLD_FACTOR`'s own forward smiles at `tenors`, as `Forward_Smiles` rows.
 
     The family's own reader at a WRITTEN factor - no fit runs - which is the seat a reference
     model's rows take later: the same table and the same fields, a vol per window and strike.
     """
     cx = rf.Context()
     cx.load_json((_dumps(_job(_base(), (), **dict(
-        _model_ladder(Forward_Tenors=WORLD_TENORS, Forward_Smile_Source=source),
+        _model_ladder(Forward_Tenors=tenors, Forward_Smile_Source=source),
         **{'Price Factors': {FACTOR: WORLD_FACTOR}}))), 'forward_read.json'))
     params = cx.current_cfg.params
     family = bootstrappers.construct_bootstrapper(

@@ -28,11 +28,6 @@ features kept ahead of their build, not rows to close.
   allowlist and on multi-column Tables outside a four-name allowlist, and fourteen output-shaped
   descriptors have no widget.
 
-**The tests.**
-
-- **What is left of the test fold** (2026-10-09). `test_notebooks` needs a world file that is not in
-  the repository.
-
 ## Designed, not built
 
 - **The density recursion**: one FFT convolution per monitored date against the block Gaussian, as
