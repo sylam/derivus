@@ -571,10 +571,9 @@ def spot_model_reciprocal_axis(spot_model, underlying, currency, base, reference
     return True
 
 
-def get_interest_vol_factor(fieldname, tenor, static_offsets, stochastic_offsets, all_tenors):
-    """Read the index of the interest vol price factor"""
-    pricefactor = 'InterestRateVol' if pd.Timestamp('1900-01-01') + tenor <= pd.Timestamp('1900-01-01') + pd.DateOffset(
-        years=1) else 'InterestYieldVol'
+def get_interest_vol_factor(pricefactor, fieldname, static_offsets, stochastic_offsets, all_tenors):
+    """Read the index of a rate vol factor: `InterestRateVol`, a caplet's space, or `InterestYieldVol`,
+    a swaption's."""
     return [calc_factor_index(utils.Factor(pricefactor, fieldname), static_offsets,
                               stochastic_offsets, all_tenors)]
 
@@ -1979,14 +1978,12 @@ class MtMCrossCurrencySwapDeal(Deal):
         F('Pay_Currency', 'Text', default='', factors=['FxRate']),
         F('MtM_Side', 'Text', default='Pay', values=['Pay', 'Receive']),
         F('Receive_Currency', 'Text', default='', factors=['FxRate']),
-        F('Pay_Interest_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
-        F('Pay_Discount_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Pay_Interest_Rate_Volatility', 'Text', default='', convention=True, factors=['InterestRateVol']),
+        F('Pay_Discount_Rate_Volatility', 'Text', default='', convention=True, factors=['InterestRateVol']),
         F('Receive_Interest_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
+          factors=['InterestRateVol']),
         F('Receive_Discount_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol'])
+          factors=['InterestRateVol'])
     ])]
 
     documentation = ('Interest Rates',
@@ -2645,8 +2642,7 @@ class SwapInterestDeal(Deal):
           row=Row([F('Date', 'Date'), F('Amount', 'Float')])),
         F('Maturity_Date', 'Date', default=''),
         F('Interest_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
-        F('Interest_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Interest_Rate_Volatility', 'Text', default='', convention=True, factors=['InterestRateVol']),
         F('Effective_Date', 'Date', default=''),
         F('Floating_Margin', 'Float', default=0.0, convention=True),
         F('Fixed_Compounding', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -2655,8 +2651,7 @@ class SwapInterestDeal(Deal):
           values=['None', 'OIS', 'Include_Margin', 'Flat', 'Exclude_Margin']),
         F('Amortisation', 'DateList', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float', sized='magnitude')])),
-        F('Discount_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Discount_Rate_Volatility', 'Text', default='', convention=True, factors=['InterestRateVol']),
         F('Swap_Rate', 'Float', default=0.0),
         F('Principal', 'Float', default=0.0, sized=True)
     ]), own('SwapInterestDeal', [
@@ -3076,7 +3071,7 @@ class CFFloatingInterestListDeal(Deal):
                     field_index['Digital_Payoff_Rate'] = first_prop['Digital_Payoff_Rate']
                 field_index['Model'] = pricing.pricer_cap if is_cap else pricing.pricer_floor
                 field_index['VolSurface'] = get_interest_vol_factor(
-                    utils.check_rate_name(self.field['Forecast_Rate_Cap_Volatility']), pd.DateOffset(months=3),
+                    'InterestRateVol', utils.check_rate_name(self.field['Forecast_Rate_Cap_Volatility']),
                     static_offsets, stochastic_offsets, all_tenors)
 
                 field_index['Cashflows'].overwrite_rate(
@@ -3268,8 +3263,8 @@ class CapDeal(Deal):
             field_index['Currency'] = get_fx_and_zero_rate_factor(
                 field['Currency'], static_offsets, stochastic_offsets, all_tenors, all_factors)
             field_index['VolSurface'] = get_interest_vol_factor(
-                field['Forecast_Rate_Volatility'], self.field['Payment_Interval'],
-                static_offsets, stochastic_offsets, all_tenors)
+                'InterestRateVol', field['Forecast_Rate_Volatility'], static_offsets, stochastic_offsets,
+                all_tenors)
             # on its optionlet list it prices the list (`post_process`): its own caplets go unread
             if not self.has_children:
                 field_index['Cashflows'] = utils.TensorCashFlows.generate_float(
@@ -3325,8 +3320,7 @@ class SwaptionDeal(Deal):
         F('Swap_Rate', 'Float', default=0.0),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Expiry_Date', 'Date', default=''),
-        F('Forecast_Rate_Volatility', 'Text', default='', convention=True,
-          factors=['InterestRateVol', 'InterestYieldVol']),
+        F('Forecast_Rate_Volatility', 'Text', default='', convention=True, factors=['InterestYieldVol']),
         F('Settlement_Date', 'Date', default=''),
         F('Margin_Schedule', 'DateList', default='null', convention=True,
           row=Row([F('Date', 'Date'), F('Amount', 'Float')])),
@@ -3498,8 +3492,8 @@ class SwaptionDeal(Deal):
                            field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
                        'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
                        'VolSurface': get_interest_vol_factor(
-                           field['Forecast_Rate_Volatility'], pd.DateOffset(years=2),
-                           static_offsets, stochastic_offsets, all_tenors),
+                           'InterestYieldVol', field['Forecast_Rate_Volatility'], static_offsets,
+                           stochastic_offsets, all_tenors),
                        'Expiry': (self.field['Option_Expiry_Date'] - base_date).days}
         if field_index['Expiry'] < 0:
             raise utils.UnpriceableSchedule('{}: Option_Expiry_Date {:%Y-%m-%d} is behind the base date, {}'.format(

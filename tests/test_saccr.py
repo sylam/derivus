@@ -95,7 +95,6 @@ def factors(vol):
                                  years(k))] for k in range(1, 12)])},
         'InterestYieldVol.EUR': {'Property_Aliases': None, 'Distribution_Type': 'Lognormal',
                                  'Shift': utils.Percent(0.0), 'Surface': flat_space(vol)},
-        'InterestRateVol.EUR': {'Property_Aliases': None, 'Surface': flat_space(vol)},
         'ForwardRate.CARRY': {'Currency': 'USD', 'Curve': utils.Curve(
             [], [[excel(BASE), 0.01], [excel(years(10)), 0.01]])},
         'FXVol.EUR.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',

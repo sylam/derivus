@@ -2042,9 +2042,9 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     listed and left unstated, and the run refuses the pair by name and values the rest. The credit
     module's sold default swap on the overnight curve, its name's block quoted off it and its rows
     Risk_CreditQ on ISSUER in bucket 3, pins its survival curve to those coordinates, the module's,
-    and is valued writing its credit rows on them. The amortising swaption's two rate vol spaces
-    take Risk_IRVol in the currency of the curve they are named for, USD with no bucket or Label2,
-    the module's, whatever its rows say, and it is valued writing its vega rows on them. The fuel
+    and is valued writing its credit rows on them. The amortising swaption's rate vol space
+    takes Risk_IRVol in the currency of the curve it is named for, USD with no bucket or Label2,
+    the module's, whatever its rows say, and it is valued writing its vega rows on it. The fuel
     option, its rows Risk_Commodity and Risk_CommodityVol on FUEL in bucket 2, pins its forward
     curve and its smile to those coordinates, its reference price and sampling rule mapping null;
     the platinum future, its row Risk_Commodity on PLATINUM in bucket 12, pins the LME spot so,
@@ -2058,7 +2058,7 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     76.43; the bucket read off a hand table of ISDA's groups - ZAR's five rate rows in bucket 3; the
     disagreement applied rather than listed - the option's vega row under ZARUSD; the credit rule
     dropped - the survival curve listed unpinned and the swap refused by name; the rate vol rule
-    dropped - both spaces listed unpinned and the swaption refused by name, writing no vega row;
+    dropped - the space listed unpinned and the swaption refused by name, writing no vega row;
     the commodity price pin dropped - the fuel's forward curve and the LME spot listed unpinned and
     the option and the future refused by name; the commodity vol pin dropped - the smile so; the
     basis rule dropped - the three bases derived null, the future's row 173.41, a percent of its
@@ -2165,8 +2165,9 @@ def test_the_extract_utility_derives_the_mapping_from_the_source_crif(serial, tm
     with open(output / 'SIMM_MAPPING_{}.json'.format(date), 'rt', encoding='utf-8') as f:
         completed = json.load(f)
     unpinned = {'EquityPrice.EQ', 'EquityPrice.EQ2', 'EquityPriceVol.EQ', 'EquityPriceVol.EQ2'}
-    # the read gates', the credit gates' and the metal's own factors, which no document here reads
-    unread = set(PAIR_CORRELATION) | {'InterestRate.USD'} | {
+    # the read gates', the credit gates' and the metal's own factors and the cap's caplet space,
+    # which no document here reads
+    unread = set(PAIR_CORRELATION) | {'InterestRate.USD', 'InterestRateVol.USD-OIS'} | {
         name for name in COMMODITIES if 'METAL' in name}
     expected = {name: entry['SIMM'] for name, entry in module['Factors'].items()
                 if name not in unpinned | unread}

@@ -1217,10 +1217,8 @@ CAP_FLOOR = Group('CapFloor', 'Cap/floor terms', [
       values=['Average_Interest', 'Average_Rate', 'Pre_Aggregation', 'Post_Aggregation']),
     F('Payment_Interval', 'Period', default='3M', convention=True),
     F('Reset_Frequency', 'Period', default='3M', convention=True),
-    F('Discount_Rate_Volatility', 'Text', default='', convention=True,
-      factors=['InterestRateVol', 'InterestYieldVol']),
-    F('Forecast_Rate_Volatility', 'Text', default='', convention=True,
-      factors=['InterestRateVol', 'InterestYieldVol']),
+    F('Discount_Rate_Volatility', 'Text', default='', convention=True, factors=['InterestRateVol']),
+    F('Forecast_Rate_Volatility', 'Text', default='', convention=True, factors=['InterestRateVol']),
     F('Principal', 'Float', default=1000000.0, convention=True, sized=True)
 ])
 

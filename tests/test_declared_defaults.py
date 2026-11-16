@@ -908,6 +908,20 @@ def test_a_blank_equity_surface_is_no_surface_to_factor_discovery(block, crossed
         'EquityPriceVol.EQ', 'Correlation.EquityPrice.EQ/FxRate.EUR.USD', 'FXVol.EUR.USD'}
 
 
+@pytest.mark.parametrize('reference,unread', [('SWPT', 'InterestRateVol'), ('CAP', 'InterestYieldVol')])
+def test_a_rate_option_asks_the_market_for_the_one_space_it_reads(reference, unread):
+    """The book's swaption reads its swaption space and its cap its caplet space: on a market
+    without the other's, each misses no factor and resolves none of that type.
+
+    Killing mutation: a volatility field declaring both types, the unread one reported missing."""
+    job = book([next(deal for deal in BOOK if deal['Reference'] == reference)])
+    del job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][unread + '.USD-PROJ']
+    context = derivus.Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'space'))
+    factors = context.describe()['factors']
+    assert not factors['missing'] and not any(name.startswith(unread) for name in factors['resolved'])
+
+
 def test_a_blank_date_default_keeps_its_named_refusal():
     """`Expiry_Date` declares `''`, and a blank Date is not an absent one: completed, it reaches a
     date comparison as a `str` and the deal dies four layers down on

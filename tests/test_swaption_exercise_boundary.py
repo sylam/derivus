@@ -195,14 +195,9 @@ def config():
         DISCOUNT_CURVE, day_count=DAY_COUNT)
     surface = [(m, e, t, VOL) for m in (-0.02, 0.0, 0.02)
                for e in (0.25, 1.0, 2.0, 5.0) for t in (1.0, 3.0, 5.0)]
-    # the swaption reads InterestYieldVol (its underlying is longer than a year); the caplet space
-    # is authored beside it because `SwaptionDeal.factor_fields` declares both and a missing one is
-    # a warning on every run
     c.params['Price Factors']['InterestYieldVol.' + PROJECTION_CURVE] = {
         'Property_Aliases': None, 'Distribution_Type': 'Lognormal', 'Shift': utils.Percent(0.0),
         'Surface': utils.Curve([], surface)}
-    c.params['Price Factors']['InterestRateVol.' + PROJECTION_CURVE] = {
-        'Property_Aliases': None, 'Surface': utils.Curve([], surface)}
     c.params['Price Factors']['SurvivalProb.' + COUNTERPARTY] = {
         'Recovery_Rate': 0.4, 'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])}
     for curve in (DISCOUNT_CURVE, PROJECTION_CURVE):
