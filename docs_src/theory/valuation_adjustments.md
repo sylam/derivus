@@ -106,11 +106,9 @@ adjustments of this shape are derived by Burgard and Kjaer [@burgard2011] and Gr
 
 ### Inputs and defaults
 
-The xVA blocks of the `Calculation`, with the declared defaults. The engine completes the
-**top-level** block only: a block that is written takes no sub-field defaults, so a CVA block
-must state `Deflate_Stochastically` and `Stochastic_Hazard_Rates` (an omission raises `KeyError`),
-an FVA block that omits `Deflate_Stochastically` reads `No`, and an omitted `Gradient` or `Hessian`
-reads `No`.
+The xVA blocks of the `Calculation`, with the declared defaults. A block the job writes in part
+reads the default of every field it omits, so a CVA or FVA block omitting
+`Deflate_Stochastically` deflates stochastically and needs a model on the deflation curve.
 
 | block | field | default | read as |
 | --- | --- | --- | --- |

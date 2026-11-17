@@ -1297,7 +1297,7 @@ class CreditMonteCarlo(Calculation):
         self.all_factors.update(self.implied_factors)
         self.num_factors = sum([v.num_factors() for v in self.stoch_factors.values()])
 
-        tenor_offset = params.get('Tenor_Offset', 0.0)
+        tenor_offset = params['Tenor_Offset']
         greeks = bool(np.any([params[k].get('Gradient', 'No') == 'Yes' for k, v in params.items() if type(v) == dict]))
         sensitivities = params.get('Gradient_Variables', 'All')
 
@@ -1516,8 +1516,7 @@ class CreditMonteCarlo(Calculation):
                     implied_vars + list(self.stoch_var.items()) + list(self.static_var.items())).items())
             self.make_factor_index(self.all_var)
 
-        scale_by_survival = (
-            self.params['Funding_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes')
+        scale_by_survival = self.params['Funding_Valuation_Adjustment']['Calculate'] == 'Yes'
 
         shared_mem = CMC_State(
             self.get_cholesky_decomp(), self.static_var, self.batch_size,
@@ -1525,17 +1524,17 @@ class CreditMonteCarlo(Calculation):
                 utils.check_rate_name(reporting_currency), self.static_factors, self.stoch_factors),
             seed, quasi_seed, job_id, num_jobs, scale_by_survival,
             nomodel=nomodel,
-            keep_tensor=self.params.get('Keep_Tensor', 'No') == 'Yes')
+            keep_tensor=self.params['Keep_Tensor'] == 'Yes')
         shared_mem.boundary_aad = calc_greeks is not None
         # the kink kernel's Silverman width is sized from this job's WHOLE path count, not a batch's
         shared_mem.simulation_batches = self.params['Simulation_Batches']
-        shared_mem.recompute_inner_mc = self.params.get('Recompute_Inner_MC', 'No') == 'Yes'
-        shared_mem.checkpoint_outer_walk = self.params.get('Checkpoint_Outer_Walk', 'Yes') == 'Yes'
+        shared_mem.recompute_inner_mc = self.params['Recompute_Inner_MC'] == 'Yes'
+        shared_mem.checkpoint_outer_walk = self.params['Checkpoint_Outer_Walk'] == 'Yes'
         # `execute` completed the block. A Hessian registers the margin calls unasked: that is
         # what refuses it a collateralised set
         shared_mem.boundary_margin_calls = 'Yes' in (
             self.params['Boundary_AAD_Margin_Calls'],
-            self.params['Credit_Valuation_Adjustment'].get('Hessian', 'No'))
+            self.params['Credit_Valuation_Adjustment']['Hessian'])
         return shared_mem
 
     def report(self, output):
@@ -1676,9 +1675,9 @@ class CreditMonteCarlo(Calculation):
         correction, and a reporting row whose bandwidth LADDER diverges.
         """
         # the declaration is the single source of an omitted field's default
-        params = declared_defaults(type(self), params)
+        params = declared_block(type(self).fields, declared_defaults(type(self), params))
         credit = params['Credit_Valuation_Adjustment']
-        if credit.get('Hessian', 'No') == 'Yes' and credit.get('Gradient', 'No') != 'Yes':
+        if credit['Hessian'] == 'Yes' and credit['Gradient'] != 'Yes':
             raise ValueError(
                 "Credit_Valuation_Adjustment Hessian: 'Yes' needs Gradient: 'Yes' beside it - the "
                 'second derivatives are taken through the tape the first ones are reported off, '
@@ -1726,7 +1725,7 @@ class CreditMonteCarlo(Calculation):
             k: {} for k, v in params.items() if isinstance(v, dict)
             and v.get('Calculate', 'No') == 'Yes' and v.get('Gradient', 'No') == 'Yes'}
         together = params['Gradient_Total'] == 'Yes'
-        hessian = not together and credit.get('Hessian', 'No') == 'Yes'
+        hessian = not together and credit['Hessian'] == 'Yes'
         release = bool(grad_sum) and not hessian and all(v.is_leaf for _, v in self.all_var)
 
         for run in range(self.params['Simulation_Batches']):
@@ -1745,7 +1744,7 @@ class CreditMonteCarlo(Calculation):
                 shared_mem.set_quasi_batch(batch_offset + run)
 
             shared_mem.reset(
-                self.num_factors, self.time_grid, use_antithetic=params.get('Antithetic', 'No') == 'Yes')
+                self.num_factors, self.time_grid, use_antithetic=params['Antithetic'] == 'Yes')
 
             for key, value in self.stoch_factors.items():
                 shared_mem.t_Scenario_Buffer[key] = value.generate(shared_mem)
@@ -1757,10 +1756,10 @@ class CreditMonteCarlo(Calculation):
             fx_report = utils.calc_fx_cross(
                 shared_mem.Report_Currency, base_ccy, self.time_grid.time_grid[time_index], shared_mem)
 
-            if params['Collateral_Valuation_Adjustment'].get(
-                    'Calculate', 'No') == 'Yes' and shared_mem.simulation_batch > 1:
+            if params['Collateral_Valuation_Adjustment'][
+                    'Calculate'] == 'Yes' and shared_mem.simulation_batch > 1:
 
-                if params['Collateral_Valuation_Adjustment'].get('Gradient', 'No') == 'Yes':
+                if params['Collateral_Valuation_Adjustment']['Gradient'] == 'Yes':
                     tensors['collva_t'] = torch.mean(shared_mem.t_Credit['Funding'], dim=1)
                     tensors['collva'] = torch.sum(tensors['collva_t'])
 
@@ -1772,7 +1771,7 @@ class CreditMonteCarlo(Calculation):
                         output['grad_collva'] = sensitivity.report_grad()
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
-            if params['Initial_Margin'].get('Calculate', 'No') == 'Yes':
+            if params['Initial_Margin']['Calculate'] == 'Yes':
                 def calc_buckets(liq_w, tenor):
                     liquidity = {}
                     for col in liq_w.T.iterrows():
@@ -1865,7 +1864,7 @@ class CreditMonteCarlo(Calculation):
 
                 tensors['LCH_Margin'] = params['Initial_Margin']['Delta_Factor']*IM_delta_charge+IM_liquidity_charge
 
-            if params['Funding_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes':
+            if params['Funding_Valuation_Adjustment']['Calculate'] == 'Yes':
                 mtm_grid = self.time_grid.mtm_time_grid[time_index]
 
                 funding_cost = self.curve(params['Funding_Valuation_Adjustment']['Funding_Cost_Interest_Curve'])
@@ -1874,7 +1873,7 @@ class CreditMonteCarlo(Calculation):
                 discount = self.curve(params['Deflation_Interest_Rate'])
 
                 # note that for FVA, we already scale the exposure matrix by the survival probability
-                if params['Funding_Valuation_Adjustment'].get('Deflate_Stochastically', 'No') == 'Yes':
+                if params['Funding_Valuation_Adjustment']['Deflate_Stochastically'] == 'Yes':
                     needs_model(discount, 'Funding_Valuation_Adjustment.Deflate_Stochastically')
                     delta_scen_t = np.diff(mtm_grid).reshape(-1, 1)
 
@@ -1932,7 +1931,7 @@ class CreditMonteCarlo(Calculation):
 
                 tensors['fva'] = FCA - FBA
 
-                if params['Funding_Valuation_Adjustment'].get('Gradient', 'No') == 'Yes':
+                if params['Funding_Valuation_Adjustment']['Gradient'] == 'Yes':
                     # FVA carries its own objective - the CVA section is deleted by the shipped
                     # batch job, so the correction assembled there cannot fire here
                     fva_for_aad = tensors['fva']
@@ -1942,7 +1941,7 @@ class CreditMonteCarlo(Calculation):
                             delta_fund_cost_rf, delta_fund_benefit_rf)
                         correction = pricing.boundary_correction(
                             shared_mem, fva_objective, tensors['mtm'],
-                            float(params.get('Boundary_AAD_Bandwidth', 0.01)))
+                            float(params['Boundary_AAD_Bandwidth']))
                         if correction is not None:
                             fva_for_aad = fva_for_aad + correction
                     # the CVA's pass, where asked, walks this batch's graph after this one, and
@@ -1957,7 +1956,7 @@ class CreditMonteCarlo(Calculation):
                             output['grad_xva' if together else 'grad_fva'] = sensitivity.report_grad()
                             self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
-            if params['Credit_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes':
+            if params['Credit_Valuation_Adjustment']['Calculate'] == 'Yes':
                 discount = self.curve(params['Deflation_Interest_Rate'])
                 survival = get_survival_factor(
                     utils.check_rate_name(params['Credit_Valuation_Adjustment']['Counterparty']),
@@ -2009,7 +2008,7 @@ class CreditMonteCarlo(Calculation):
                 tensors['cva'] = (1.0 - recovery) * (
                         0.5 * (pv_exposure[1:] + pv_exposure[:-1]) * prob).mean(axis=1).sum()
 
-                if params['Credit_Valuation_Adjustment'].get('Gradient', 'No') == 'Yes':
+                if params['Credit_Valuation_Adjustment']['Gradient'] == 'Yes':
                     base_ir_curves = [x for x in self.stoch_var.keys() if
                                       x.type == 'InterestRate' and len(x.name) == 1]
                     self.jacobians = {}
@@ -2048,7 +2047,7 @@ class CreditMonteCarlo(Calculation):
                             prob, recovery)
                         correction = pricing.boundary_correction(
                             shared_mem, objective, tensors['mtm'],
-                            float(params.get('Boundary_AAD_Bandwidth', 0.01)))
+                            float(params['Boundary_AAD_Bandwidth']))
                         if correction is not None:
                             cva_for_aad = cva_for_aad + correction
                     if hessian:
@@ -2069,7 +2068,7 @@ class CreditMonteCarlo(Calculation):
                         output['grad_xva' if together else 'grad_cva'] = sensitivity.report_grad()
                         self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
-                        CDS_tenors = params['Credit_Valuation_Adjustment'].get('CDS_Tenors')
+                        CDS_tenors = params['Credit_Valuation_Adjustment']['CDS_Tenors']
                         if CDS_tenors and recovery < 1.0:
                             CDS_rates, shifted_tenor, shifted_curves = utils.calc_cds_rates(
                                 recovery, survival[0], discount[0], self.params['Base_Date'],
@@ -2091,7 +2090,7 @@ class CreditMonteCarlo(Calculation):
             if self.params['Generate_Cashflows'] == 'Yes':
                 shared_mem.save_cashflows(output, self.time_grid)
 
-            if self.params.get('Calc_Scenarios', 'No') != 'No':
+            if self.params['Calc_Scenarios'] != 'No':
                 for key, value in self.stoch_factors.items():
                     output.setdefault('scenarios', {}).setdefault(key, []).append(
                         shared_mem.t_Scenario_Buffer[key].cpu().detach().numpy())

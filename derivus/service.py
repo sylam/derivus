@@ -3607,15 +3607,14 @@ XVA_SIMULATION_BATCHES = 1
 
 #: The CVA block a recalc switches on, in the shape the engine's own CVA fixtures configure it.
 #: `Calculate` and `Counterparty` are decided per set; the rest is what a desk PROJECTION wants -
-#: deterministic deflation and hazard rates, no gradient. A partial block KeyErrors inside the run.
+#: deterministic deflation and hazard rates, no gradient.
 XVA_CVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Hazard_Rates': 'No',
                  'Gradient': 'No'}
 
 #: The FVA block a recalc switches on, beside the CVA one and off the SAME run - the projection's
 #: second column. `Counterparty` is the set's; the three curves are decided per set (see
-#: `funding_curves`); the rest is the CVA block's own desk-projection posture. A partial block
-#: KeyErrors in the run.
+#: `funding_curves`); the rest is the CVA block's own desk-projection posture.
 XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '', 'Risk_Free_Curve': '',
                  'Funding_Cost_Interest_Curve': '', 'Funding_Benefit_Interest_Curve': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Funding': 'No', 'Gradient': 'No'}

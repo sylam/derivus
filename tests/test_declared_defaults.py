@@ -1176,6 +1176,41 @@ def test_a_blank_deflation_risk_free_or_funding_curve_is_the_report_currency_s_o
         run(curves, '', models=('EUR-ESTR',))
 
 
+def test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_child_it_omits():
+    """A credit Monte Carlo on a dollar cashflow, a Hull-White on its deflation curve. An FVA block
+    omitting `Deflate_Stochastically` reports the FVA of the block stating its declared `Yes` to the
+    bit, not of `No`, and with no model on that curve is refused by name; a CVA block stating only
+    `Calculate` and `Counterparty` reports the CVA of the block stated whole, to the bit.
+
+    Killing mutation: the run completing its top level alone, a stated block's omitted child a
+    `KeyError`.
+    """
+    import trial_credit
+
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD',
+                'Amount': 1e6, 'Payment_Date': WORLD_EXPIRY}
+    funding = {'Calculate': 'Yes', 'Counterparty': 'ISSUER_A', 'Risk_Free_Curve': 'USD',
+               'Funding_Cost_Interest_Curve': 'USD-PROJ', 'Funding_Benefit_Interest_Curve': 'USD'}
+    credit = {'Calculate': 'Yes', 'Counterparty': 'ISSUER_A'}
+
+    def run(result, curve='USD', **block):
+        """`result` of the job stating `block`, a Hull-White on `curve`."""
+        _, out = simulated([cashflow], (curve,), trial_credit.FACTORS, **block)
+        return float(out['Results'][result])
+
+    omitted, stated, deterministic = (run('fva', Funding_Valuation_Adjustment=dict(funding, **switch))
+                                      for switch in ({}, {'Deflate_Stochastically': 'Yes'},
+                                                     {'Deflate_Stochastically': 'No'}))
+    assert omitted == stated != deterministic, (omitted, stated, deterministic)
+    with pytest.raises(ValueError, match='Funding_Valuation_Adjustment.Deflate_Stochastically is Yes '
+                                         'but USD has no model'):
+        run('fva', 'USD-PROJ', Funding_Valuation_Adjustment=funding)
+    whole = dict(credit, Bank='', Deflate_Stochastically='Yes', Stochastic_Hazard_Rates='No',
+                 Gradient='No', Hessian='No', CDS_Tenors=[])
+    partial = run('cva', Credit_Valuation_Adjustment=credit)
+    assert partial == run('cva', Credit_Valuation_Adjustment=whole) and partial > 0.0, partial
+
+
 def test_a_cap_stated_by_its_terms_prices_its_caplets():
     """The book's cap - a million capped at 4.5% for two years, quarterly on USD-PROJ - and its
     floor twin, stated by their terms alone. By hand, each optionlet Black on its simple ACT/365

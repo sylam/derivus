@@ -225,7 +225,8 @@ def _fva(spot, gradient, batch=1024, mcmc=192, batches=4, benefit='FUND'):
         'Funding_Valuation_Adjustment': {
             'Calculate': 'Yes', 'Funding_Cost_Interest_Curve': 'FUND',
             'Funding_Benefit_Interest_Curve': benefit, 'Risk_Free_Curve': 'USD',
-            'Counterparty': 'CPTY', 'Gradient': 'Yes' if gradient else 'No'}})
+            'Deflate_Stochastically': 'No', 'Counterparty': 'CPTY',
+            'Gradient': 'Yes' if gradient else 'No'}})
     fva = float(out['Results']['fva'])
     if not gradient:
         return fva, None

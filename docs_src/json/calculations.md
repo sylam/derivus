@@ -44,22 +44,20 @@ What follows from that order:
 
 ## Containers {#containers}
 
-A container the block states (`Credit_Valuation_Adjustment`, `Funding_Valuation_Adjustment`,
-`Collateral_Valuation_Adjustment`, `Initial_Margin`) replaces its declared default whole. Step 4
-does not reach inside it, so an omitted sub-field reads as whatever the consuming code falls back
-to. `HedgeMonteCarlo` is the exception: it completes its `Hedging_Problem` at every depth it states
-from the declarations (`schema.declared_block`), so there an omitted sub-field reads as its declared
-default (**Held by** `tests/test_action_space_and_artifact.py::test_a_reference_mode_stated_beside_logwealth_changes_nothing`,
-whose document stating no `Reference_Mode` reads its null convention). For the `CreditMonteCarlo`
-containers that is:
+A container the block omits reads its declared default whole, and one it states (the
+`CreditMonteCarlo` adjustment blocks, `HedgeMonteCarlo`'s `Hedging_Problem`) is completed at every
+depth it states from its children's declarations (`schema.declared_block`), so an omitted
+sub-field reads as its declared default (**Held by**
+`tests/test_declared_defaults.py::test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_child_it_omits`,
+`tests/test_action_space_and_artifact.py::test_a_reference_mode_stated_beside_logwealth_changes_nothing`).
+For the `CreditMonteCarlo` containers that is:
 
 | Sub-fields | Read when the container omits them |
 |---|---|
-| every `Calculate`, `Gradient` and `Hessian`; `CDS_Tenors` | the declared default |
-| `Funding_Valuation_Adjustment.Deflate_Stochastically` | **`No`**, where the declaration says `Yes` |
-| `Credit_Valuation_Adjustment`: `Counterparty`, `Deflate_Stochastically`, `Stochastic_Hazard_Rates` | no fallback: a stated block with `Calculate: Yes` must carry them |
-| `Funding_Valuation_Adjustment`: the three curves | no fallback, as above; a curve stated blank is the reporting currency's own, as a blank `Deflation_Interest_Rate` is |
-| `Initial_Margin`: every field but `Calculate` | no fallback, read under `Calculate: Yes` |
+| `Deflate_Stochastically` (CVA and FVA) | `Yes`: the deflation curve needs a model, and a run without one is refused by name |
+| `Credit_Valuation_Adjustment.Counterparty` | blank: a CVA under `Calculate: Yes` naming none fails, `Cannot find SurvivalProb.` |
+| `Funding_Valuation_Adjustment`: the three curves | blank: the reporting currency's own, as a blank `Deflation_Interest_Rate` is |
+| `Initial_Margin`: the weight files and currencies | blank, read under `Calculate: Yes` |
 | `Bank` (CVA and FVA), `Stochastic_Funding` (FVA) | read by nothing |
 
 `Hessian: Yes` without `Gradient: Yes` in the same CVA block is refused.

@@ -295,7 +295,7 @@ def _asked(tmp_path, cva, fva, total='No'):
     job['Calc']['Calculation'].update(Gradient_Total=total, Funding_Valuation_Adjustment={
         'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Risk_Free_Curve': 'USD',
         'Funding_Cost_Interest_Curve': 'FUND', 'Funding_Benefit_Interest_Curve': 'USD',
-        'Gradient': fva})
+        'Deflate_Stochastically': 'No', 'Gradient': fva})
     return _run(job, tmp_path, 'asked_{}_{}_{}'.format(cva, fva, total))
 
 
