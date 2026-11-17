@@ -360,10 +360,13 @@ knock is read off the fold (`projections.knocked`), never filed. **Held by**
 A keyed declaration - a market name, a close under its market and day, a file, an entity, an
 agreement, a quote, a print, a subject's state, a movement under its reference, a policy document
 (the capabilities document and the escrow key among them, read off the `decisions` fold) and a
-seat's key - is filed over what its own reader has standing under the key (`verbs.restated`,
-policies through `policy.declare_bytes`): the content in force declared again restates that body,
-which the writer coalesces, and anything else names the declaration it replaced (`supersedes`), so
-a return to earlier content is a new fact that takes effect. With no effective time, a late retry
+seat's key - takes effect when it returns to earlier content. `verbs.restated` files it over what
+its own reader has standing under the key: the content in force declared again restates that body,
+which the writer coalesces, and anything else names the declaration it replaced (`supersedes`). A
+file, an entity and an agreement are restated so on every declaration. The rest are filed by
+`verbs.keyed` as offered, at the cost of one tag lookup, and restated only where the log already
+holds that very fact (`SpineLog.held`) - the one case the writer would coalesce a return onto an
+older LSN - so the fold that finds what stands runs only then. With no effective time, a late retry
 of an earlier content arriving after a later one is such a return. **Held by**
 `test_spine_verbs.py::test_a_keyed_declaration_returned_to_earlier_content_is_a_new_fact_in_force`,
 `test_spine_capability.py::test_an_earlier_document_restored_by_grant_revokes_what_the_one_it_replaced_granted`,

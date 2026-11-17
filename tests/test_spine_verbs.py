@@ -775,34 +775,48 @@ KEYED = dict({
          {'tiers': [{'name': 'desk', 'four_eyes': True}]}))})
 
 
+#: The keyed declarations that name what they replaced on every restatement; the rest name it only
+#: where the log already holds the fact offered, the one case the writer would coalesce.
+EVERY_RESTATEMENT = ('file', 'entity', 'agreement')
+
+
 @pytest.mark.parametrize('declared', sorted(KEYED))
 def test_a_keyed_declaration_returned_to_earlier_content_is_a_new_fact_in_force(tmp_path,
                                                                                 declared):
-    """A keyed declaration filed A, A, B, A, A under one key: the second A coalesces onto the
-    first, the return to A is a new fact naming B (`supersedes`) and A is what the declaration's
-    own reader holds standing, and A once more coalesces onto the return. The home verifies and the
-    oracle holds.
+    """A keyed declaration filed A, A, B, A, A, B, A under one key: the second A coalesces onto the
+    first; B lands as offered, naming nothing replaced unless its kind names it on every
+    restatement; the return to A is a new fact naming B (`supersedes`) and A once more coalesces
+    onto it; then B and A alternate as new facts each naming the one before, and A is what the
+    declaration's own reader holds standing. The home verifies and the oracle holds.
 
-    Killing mutation: `verbs.restated` answering the body as handed in, so the return to A
-    coalesces onto the first A and B stays in force.
+    Killing mutations: `verbs.restated` answering the body as handed in, so the return to A
+    coalesces onto the first A and B stays in force; `verbs.keyed` restating every body, so B
+    names A where it was offered plain.
     """
     home, log = minted(tmp_path)
     declare, reader, a, b = KEYED[declared]
     first, again = declare(log, a), declare(log, a)
     shown = reader(log)
-    second, back, repeat = (declare(log, content) for content in (b, a, a))
+    second, back, repeat, forth, last = (declare(log, content) for content in (b, a, a, b, a))
 
     def body(envelope):
         return log.open_body(log.frame_at(envelope['lsn']))
 
-    assert [at['coalesced'] for at in (first, again, second, back, repeat)] == [
-        False, True, False, False, True]
+    assert [at['coalesced'] for at in (first, again, second, back, repeat, forth, last)] == [
+        False, True, False, False, True, False, False]
     assert (again['lsn'], repeat['lsn'], shown[0]) == (first['lsn'], back['lsn'], first['lsn'])
-    assert body(second)['supersedes'] == first['lsn']
+    assert first['lsn'] < second['lsn'] < back['lsn'] < forth['lsn'] < last['lsn']
+    assert body(first).get('supersedes') is None
+    if declared in EVERY_RESTATEMENT:
+        assert body(second)['supersedes'] == first['lsn']
+    else:
+        assert 'supersedes' not in body(second), 'B is filed as offered'
     assert body(back) == dict(body(first), supersedes=second['lsn'])
-    assert reader(log) == (back['lsn'], shown[1]), 'A is what stands'
+    assert body(forth) == dict(body(second), supersedes=back['lsn'])
+    assert body(last) == dict(body(first), supersedes=forth['lsn'])
+    assert reader(log) == (last['lsn'], shown[1]), 'A is what stands'
     log.close()
-    assert verify_home(home)['events'] == back['lsn']
+    assert verify_home(home)['events'] == last['lsn']
     assert oracle.failed(oracle.report(home)) == []
 
 

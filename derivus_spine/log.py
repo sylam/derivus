@@ -394,9 +394,8 @@ class SpineLog:
         self._authorize(event_type, body, actor, book, pending)
         record_time = now_stamp()
 
-        canonical = canonical_bytes(semantic_tuple(event_type, body, actor, book, effective_time))
+        canonical, tag = self._tagged(event_type, body, actor, book, effective_time)
         content_hash = hashlib.sha256(canonical).hexdigest()
-        tag = self.keys.blind_tag(canonical)
 
         held = self._tags.get(tag)
         if held is not None:
@@ -538,6 +537,18 @@ class SpineLog:
         envelope = dict((key, value) for key, value in stored.items() if key != 'body')
         envelope['coalesced'] = True
         return envelope
+
+    def held(self, event_type, body, actor, book=None, effective_time=None):
+        """The LSN already holding this very fact - the one `append` would coalesce it onto - or
+        None, asked writing nothing: every refusal `append` meets before its scope check raised
+        here, the home claimed first as `admits` claims it."""
+        self._checked(event_type, body, actor, book, effective_time)
+        return self._tags.get(self._tagged(event_type, body, actor, book, effective_time)[1])
+
+    def _tagged(self, event_type, body, actor, book, effective_time):
+        """`(canonical semantic bytes, idempotency tag)` - what `append` dedupes a fact on."""
+        canonical = canonical_bytes(semantic_tuple(event_type, body, actor, book, effective_time))
+        return canonical, self.keys.blind_tag(canonical)
 
     def admits(self, event_type, body, actor, book=None, effective_time=None):
         """Whether `append` would take this fact, asked writing nothing: every refusal it meets

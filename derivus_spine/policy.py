@@ -393,15 +393,15 @@ def declare_bytes(log, actor, policy, raw, effective_time=None):
     The writer judges the declaration before the blob is put, and fsyncs it before the
     `policy_declared` naming its address lands, so a refused one leaves the store as it found it.
     That event demands the `admin` scope, so only a governing seat moves the standard a claim is
-    held to. One document stands under a name, the latest (the `decisions` fold), and it restates
-    as `verbs.declare_file` restates a file.
+    held to. One document stands under a name, the latest (the `decisions` fold), filed by
+    `verbs.keyed`.
     """
-    from .verbs import restated, standing_under
+    from .verbs import keyed, standing_under
 
     blob = hashlib.sha256(raw).hexdigest()
-    envelope = log.append('policy_declared', restated(
-        log, standing_under(log, 'decisions', 'policies', policy), {'policy': policy, 'blob': blob}),
-        actor=actor, effective_time=effective_time, blob_refs=(blob,), pending=(raw,))
+    envelope = keyed(log, 'policy_declared', {'policy': policy, 'blob': blob},
+                     lambda: standing_under(log, 'decisions', 'policies', policy), actor,
+                     effective_time=effective_time, blob_refs=(blob,), pending=(raw,))
     return dict(envelope, policy=policy, blob=blob)
 
 

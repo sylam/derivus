@@ -51,7 +51,7 @@ from .errors import CustodyRefusal, SealedBodyUnreadable, SpineRefusal
 from .log import SpineLog
 from .policy import declare_bytes
 from .seal import KEY_BYTES, NONCE_BYTES
-from .verbs import restated
+from .verbs import keyed
 from .vocabulary import FIRM_CLASS, is_hash
 
 #: The wrap construction, named in the blob itself and versioned in the name, so an old wrap keeps
@@ -167,9 +167,8 @@ def enroll(log, subject, actor, public_key: bytes = None) -> dict:
     `seat_key_path`, this module's declared limitation. The public key is fsynced into the store
     first and a hub-minted private half is moved into place only after the append, so a refused
     append leaves an existing seat key exactly as it was. Re-enrollment replaces the seat key - the
-    lost laptop's remedy - restating as `verbs.declare_file` restates a file, and `rewrap` sees the
-    enrollment is younger than the wrap and issues a new one. `ESCROW_SUBJECT` is refused as a
-    subject.
+    lost laptop's remedy, filed by `verbs.keyed` - and `rewrap` sees the enrollment is younger than
+    the wrap and issues a new one. `ESCROW_SUBJECT` is refused as a subject.
     """
     subject = _subject(subject)
     if subject == ESCROW_SUBJECT:
@@ -187,14 +186,15 @@ def enroll(log, subject, actor, public_key: bytes = None) -> dict:
         material = None
         published = _recipient_bytes(public_key, 'the seat public key handed in')
     blob = log.store.put(published)
-    seat = _custody_state(log, FIRM_CLASS)[0].get(subject)
-    body = restated(log, seat and seat['lsn'],
-                    {'subject': subject, 'algorithm': SEAT_ALGORITHM, 'public_key': blob})
 
     path = seat_key_path(log.home, subject)
     scratch = None if material is None else _stage_secret(path, material)
     try:
-        envelope = log.append('seat_enrolled', body, actor=actor, blob_refs=(blob,))
+        envelope = keyed(
+            log, 'seat_enrolled',
+            {'subject': subject, 'algorithm': SEAT_ALGORITHM, 'public_key': blob},
+            lambda: (_custody_state(log, FIRM_CLASS)[0].get(subject) or {}).get('lsn'), actor,
+            blob_refs=(blob,))
     except BaseException:
         # A key nobody published is not a seat, so clearing the scratch leaves the existing seat
         # working.

@@ -916,9 +916,9 @@ def test_the_grant_verb_canonicalises_the_operators_file_and_declares_it(tmp_pat
 def test_an_earlier_document_restored_by_grant_revokes_what_the_one_it_replaced_granted(
         tmp_path, capsys):
     """`grant` files A, A, B, A, A, where B grants the desk `book` over its book and A does not:
-    the second A coalesces, the return to A is a new fact naming B (`supersedes`) and A is the
-    document in force, so the desk's booking that B admitted is refused, and A once more coalesces
-    onto the return.
+    the second A coalesces, B lands as offered, the return to A is a new fact naming B
+    (`supersedes`) and A is the document in force, so the desk's booking that B admitted is
+    refused, and A once more coalesces onto the return.
 
     Killing mutation: `verbs.restated` answering the body as handed in, so restoring A coalesces
     onto the first declaration of it and the grant B made stays in force.
@@ -948,7 +948,7 @@ def test_an_earlier_document_restored_by_grant_revokes_what_the_one_it_replaced_
         False, True, False, False, True]
     assert (again['lsn'], repeat['lsn'], back['lsn']) == (
         first['lsn'], back['lsn'], booked['lsn'] + 1)
-    assert body(second)['supersedes'] == first['lsn']
+    assert 'supersedes' not in body(second)
     assert body(back) == dict(body(first), supersedes=second['lsn'])
     assert state_at(log)[0] == json.loads(canonical_document(a))
     with pytest.raises(CapabilityDenied):

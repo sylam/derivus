@@ -33,7 +33,7 @@ import json
 from .canon import content_hash
 from .errors import MalformedEvent, ReplayRefused, UnknownEventType
 from .policy import PRIVATE_MARKET, compare, tolerances_in_force
-from .vocabulary import is_hash, is_integer, is_number, is_text, validate
+from .vocabulary import is_hash, is_integer, is_number, is_text
 
 #: The three attestation lanes, which are the three answers to "will this output be cited by a
 #: fact". `telemetry` is a repaint, superseded before anything could cite it; `curiosity` is a
@@ -207,7 +207,7 @@ def apply_lifecycle(log, actor, event_type, body, book=None, effective_time=None
     verb's own arm: the writer would refuse a knock as an unknown type but would accept a `fill`
     submitted here. A knock, an expiry or an accrual is a consequence of terms plus one of the three
     and is read off a projection. A determination is a fact about a ruling, not about the touch it
-    rules on. A print under its `(index, date, source)` restates as `declare_file` restates a file.
+    rules on. A print is keyed by its `(index, date, source)` and filed by `keyed`.
     """
     if event_type not in LIFECYCLE_TYPES:
         raise UnknownEventType(
@@ -222,9 +222,9 @@ def apply_lifecycle(log, actor, event_type, body, book=None, effective_time=None
             'than a consequence, and `transition` files it'.format(
                 event_type, ', '.join(LIFECYCLE_TYPES)))
     if event_type == 'fixing_observed':
-        validate(event_type, body)
-        body = restated(log, standing_under(log, 'lifecycle', 'fixings', *(
-            body[field] for field in ('index', 'date', 'source'))), body)
+        return keyed(log, event_type, body, lambda: standing_under(
+            log, 'lifecycle', 'fixings', *(body[field] for field in ('index', 'date', 'source'))),
+            actor, book=book, effective_time=effective_time)
     return log.append(event_type, body, actor=actor, book=book, effective_time=effective_time)
 
 
@@ -248,8 +248,7 @@ def transition(log, actor, subject, status, book=None, effective_time=None, amou
     movements are two, and a corrected amount restates the one it corrects; and the `agreement` it
     was paid under, which the cash fold shares it within. See `_movement`.
 
-    A state restates under its subject, and a movement under its reference, as `declare_file`
-    restates a file.
+    A state is keyed by its subject and a movement by its reference, each filed by `keyed`.
     """
     body = {'subject': subject, 'status': _name(status, 'status', 'transition')}
     if amount is None:
@@ -267,8 +266,8 @@ def transition(log, actor, subject, status, book=None, effective_time=None, amou
         body.update(_movement(log, subject, status, amount, asset, kind, reference,
                               effective_time, agreement))
         key = ('cash', reference)
-    return log.append('status_transition', restated(log, standing_under(log, *key), body),
-                      actor=actor, book=book, effective_time=effective_time)
+    return keyed(log, 'status_transition', body, lambda: standing_under(log, *key), actor,
+                 book=book, effective_time=effective_time)
 
 
 def approve(log, actor, plan_hash, book=None, effective_time=None, portfolio=None):
@@ -315,14 +314,13 @@ def declare_market(log, actor, name, values, effective_time=None):
     rule: SELF-DECLARED MEANS SELF-DECLARED, so the subject in the name must be the seat declaring
     it. Otherwise a seat could mint a market inside another's namespace and own it while the named
     seat was refused their own prefix, and a reader would have two answers to who owns one board.
-    A name declared again restates as `declare_file` restates a file. Firm-level, so it carries no
-    book.
+    A name is filed by `keyed`. Firm-level, so it carries no book.
     """
     name = _own(_name(name, 'name', 'declare_market'), actor, 'declare_market')
     address = _blob(log, values, 'the values vector')
-    envelope = log.append('market_declared', restated(
-        log, standing_under(log, 'markets', 'names', name), {'name': name, 'values_hash': address}),
-        actor=actor, effective_time=effective_time, blob_refs=(address,))
+    envelope = keyed(log, 'market_declared', {'name': name, 'values_hash': address},
+                     lambda: standing_under(log, 'markets', 'names', name), actor,
+                     effective_time=effective_time, blob_refs=(address,))
     return dict(envelope, name=name, values_hash=address)
 
 
@@ -333,8 +331,8 @@ def declare_close(log, actor, market, values, effective_time=None, date=None):
     The values are blobbed exactly as `declare_market` blobs them, so a close and the mark it stands
     on are one address. A SECOND close on one market supersedes the first rather than correcting it
     - the `markets` fold names the LSN it stands over - so a day restated is two facts and an as-at
-    read taken before the restatement still reads what it read. A close restates its day as
-    `declare_file` restates a file. Firm-level, so it carries no book.
+    read taken before the restatement still reads what it read. A close is keyed by its market and
+    day and filed by `keyed`. Firm-level, so it carries no book.
 
     The owner rule is `declare_market`'s and is asked here for the same reason: a close is one way
     of declaring what a name stands on, and one landing inside another seat's `private/` namespace
@@ -350,11 +348,10 @@ def declare_close(log, actor, market, values, effective_time=None, date=None):
             'values_hash': address}
     if date is not None:
         body['date'] = _day(date, 'declare_close')
-    # the day the markets fold files the close under: its date, else the day it is true on
-    day = date or (effective_time or now_stamp())[:10]
-    envelope = log.append('official_close_declared', restated(
-        log, standing_under(log, 'markets', 'days', body['market'], day), body), actor=actor,
-        effective_time=effective_time, blob_refs=(address,))
+    # the markets fold files a close under its date, else the day it is true on
+    envelope = keyed(log, 'official_close_declared', body, lambda: standing_under(
+        log, 'markets', 'days', body['market'], date or (effective_time or now_stamp())[:10]),
+        actor, effective_time=effective_time, blob_refs=(address,))
     return dict(envelope, market=market, values_hash=address)
 
 
@@ -432,7 +429,7 @@ def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
 
     `ticket` is the plan an approval of this quote would sign, a different hash for every quote,
     and `portfolio` the node it books into. Optional, because a body filed before them validates
-    exactly as it did. A quote filed again under its id restates as `declare_file` restates a file.
+    exactly as it did. A quote is keyed by its id and filed by `keyed`.
     """
     address = _blob(log, values, 'the values vector this quote was struck on')
     body = {'quote_id': _name(quote_id, 'quote_id', 'file_quote'),
@@ -443,10 +440,9 @@ def file_quote(log, actor, quote_id, structure, plan_hash, values, solved, edge,
         body['request'] = request
     if ticket is not None:
         body['ticket'] = _pinned(ticket, 'ticket')
-    body = _placed(body, 'file_quote', portfolio=portfolio)
-    envelope = log.append('quote_filed', restated(
-        log, standing_under(log, 'quotes', body['quote_id']), body), actor=actor, book=book,
-        effective_time=effective_time, blob_refs=(address,))
+    envelope = keyed(log, 'quote_filed', _placed(body, 'file_quote', portfolio=portfolio),
+                     lambda: standing_under(log, 'quotes', body['quote_id']), actor, book=book,
+                     effective_time=effective_time, blob_refs=(address,))
     return dict(envelope, quote_id=quote_id, plan_hash=body['plan_hash'], values_hash=address)
 
 
@@ -706,6 +702,17 @@ def restated(log, standing, body):
     held = log.open_body(log.frame_at(standing))
     return held if dict(held, supersedes=None) == dict(body, supersedes=None) else dict(
         body, supersedes=standing)
+
+
+def keyed(log, event_type, body, standing, actor, book=None, effective_time=None, **appended):
+    """Append the keyed declaration `body` and return the envelope: as offered, unless the log
+    already holds this very fact - the one case the writer would coalesce a return to earlier
+    content onto an older LSN - when it is `restated` over `standing()`, the LSN in force under
+    its key, asked only then."""
+    if log.held(event_type, body, actor, book, effective_time) is not None:
+        body = restated(log, standing(), body)
+    return log.append(event_type, body, actor=actor, book=book, effective_time=effective_time,
+                      **appended)
 
 
 def standing_under(log, projector, *key):

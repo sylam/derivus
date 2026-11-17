@@ -422,7 +422,8 @@ def test_the_file_standing_under_a_name_is_its_latest_declaration_by_lsn(tmp_pat
 def test_restatements_filed_naming_nothing_they_replaced_still_read(tmp_path):
     """A log written before a keyed declaration named what it replaced: each keyed type filed A
     then B by hand, no body carrying `supersedes`. The home verifies, every projector folds and the
-    oracle holds; and each verb restating A over it reads B as standing, filing a new fact naming B.
+    oracle holds; and each verb filing A again meets the A the log holds, reads B as standing and
+    files a new fact naming B.
 
     Killing mutations: `supersedes` declared a required field of one of these bodies, which refuses
     the restatement and the log it would read; a reader taking the field as present.
@@ -441,8 +442,9 @@ def test_restatements_filed_naming_nothing_they_replaced_still_read(tmp_path):
             for _ in values]
     tolerances = [{'tolerances': {'mtm': mtm}} for mtm in (1e-9, 1e-6)]
     state, paid = (hashlib.sha256(name).hexdigest() for name in (b'a state', b'a payment'))
-    filed = {name: [log.append(event_type, body(n), actor=ACTOR, effective_time=TUE)['lsn']
-                    for n in (0, 1)] for name, event_type, body in (
+    # the effective time each verb below files A at, `enroll` stating none
+    filed = {name: [log.append(event_type, body(n), actor=ACTOR, effective_time=(
+        None if name == 'seat' else TUE))['lsn'] for n in (0, 1)] for name, event_type, body in (
         ('market', 'market_declared',
          lambda n: {'name': 'official', 'values_hash': log.store.put(values[n])}),
         ('close', 'official_close_declared',
