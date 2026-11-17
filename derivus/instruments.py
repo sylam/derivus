@@ -1637,6 +1637,11 @@ class NettingCollateralSet(Deal):
 
         return field_index
 
+    def generate(self, shared, time_grid, deal_data):
+        """A set holding no deal marks nothing."""
+        return shared.one.new_zeros(
+            (deal_data.Time_dep.deal_time_grid.size, shared.simulation_batch))
+
     def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
         """Collateralise the accumulated child MTM and report the netting set's exposure.
 

@@ -270,6 +270,18 @@ def test_a_node_the_document_ignores_fails_nothing():
     assert mtm(result_id)['root'] == mtm(run(job())[0])['root'] != 0.0
 
 
+def test_a_set_holding_no_deal_marks_nothing_and_fails_no_run():
+    """Beside a netting set nothing is booked under: done, no `Deals Skipped`, the set's row zero
+    and the root the book's without it to the bit. Killing mutation: the set with no valuation of
+    its own - counted as a deal skipped, the run an error."""
+    empty = {'Object': 'NettingCollateralSet', 'Reference': 'EMPTY_SET', 'Netted': 'True',
+             'Collateralized': 'False'}
+    result_id, result = run(job(deals=(CASHFLOW, empty)))
+    assert result['status'] == 'done' and 'Deals Skipped' not in result['stats'], result
+    values = mtm(result_id)
+    assert values['EMPTY_SET'] == 0.0 and values['root'] == mtm(run(job())[0])['root'] != 0.0
+
+
 def test_the_ui_is_mounted_only_when_it_is_built(tmp_path):
     """The UI is an optional CLIENT, so the mount is a flag over a directory and an empty one
     refuses. The 404 on `/ui/portfolio` is pinned deliberately: `StaticFiles(html=True)` has no SPA
