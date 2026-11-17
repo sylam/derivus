@@ -35,6 +35,35 @@ its spot date. An `FxRate`'s `Spot` is the price for delivery on its spot date: 
 between currencies at that price carried back to the day on the domestic currency's curve less its
 own.
 
+e.g. USDCAD, which settles one business day on, with USD as the **Base Currency**
+
+```json
+{
+  "Price Factors": {
+    "FxRate.USD": {
+      "Domestic_Currency": null,
+      "Interest_Rate": "USD-SOFR",
+      "Spot": 1,
+      "Holiday_Calendar": "New York"
+    },
+    "FxRate.CAD": {
+      "Domestic_Currency": "USD",
+      "Interest_Rate": "CAD-CORRA",
+      "Spot": 0.73,
+      "Settlement_Days": 1,
+      "Holiday_Calendar": "Toronto"
+    }
+  }
+}
+```
+
+Each currency states its own calendar, one `Location` of the
+[CalendDataFile](index.md#calenddatafile), and the pair joins them: the one day counts on Toronto's
+calendar and the spot date rolls onto a business day of Toronto and of New York. From Wednesday
+17 June 2026 the spot date is Thursday 18 June; from Thursday 18 June it is Monday 22 June, the
+Friday being a New York holiday; from Tuesday 30 June it is Thursday 2 July, the Wednesday being a
+Toronto holiday. USD's own `Settlement_Days` is not read on a pair against it.
+
 Interest Rate price factors uses the .Curve format. e.g.
 
 ```json
