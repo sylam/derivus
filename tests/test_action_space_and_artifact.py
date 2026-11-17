@@ -991,6 +991,8 @@ def _on(cfg, spot='GARCHSpotModel', block=GARCH_SPOT, calendar=None, **solver):
     if calendar is not None:
         cfg['Calc']['CalendDataFile'] = calendar
         cfg['Calc']['Calculation']['Calendar'] = 'Testland'
+        # the file holds Testland alone, so the forward sample samples the weekdays, naming none
+        market['Price Factors']['ForwardPriceSample.USD']['Holiday_Calendar'] = ''
     cfg['Calc']['Calculation']['Hedging_Problem'].get('Solver', {}).update(solver)
     return cfg
 
@@ -1048,6 +1050,9 @@ def test_the_utility_scale_counts_its_horizon_on_the_job_s_calendar(tmp_path):
         cfg = jsonlib.load(open(FIXTURE))
         cfg['Calc']['CalendDataFile'] = calendar
         cfg['Calc']['Calculation'].update(Calendar=name, Batch_Size=2, Random_Seed=3)
+        # the file holds no New York, so the forward sample samples the weekdays, naming none
+        cfg['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+            'ForwardPriceSample.USD']['Holiday_Calendar'] = ''
         world = _run(cfg).bundle
         after = [(world.scenario_dates[i] + pd.Timedelta(days=1)).date()
                  for i in (world.initial_time_index,

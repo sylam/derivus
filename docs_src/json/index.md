@@ -187,6 +187,9 @@ weekend rule and holidays are part of the job's plan:
 | `Weekends` | one of `Saturday and Sunday`, `Friday and Saturday`, `Saturday`, `Sunday`, `Friday` |
 | `Holidays` | `YYYY-MM-DD|Name` entries separated by a comma and a space (`, `); a comma without the space does not separate |
 
+Every calendar a job names, in a price factor, a deal or its calculation, is one `Location` of this
+file: a name it does not hold, or any name where the job states no file, fails the job naming it.
+
 ```json
 {
   "Calc": {

@@ -28,7 +28,8 @@ Interest-rate curves and volatility surfaces stand alone; an `FxRate` or an `Equ
 in `Settlement_Days` the business days from a day to its spot date, between which a forward on it
 carries: 3 on an `EquityPrice` and 2 on an `FxRate` where omitted, an `FxRate`'s against USD.
 `Holiday_Calendar` names the calendar those days count on, on an `FxRate` the one its currency
-settles on; blank, Monday to Friday. A currency pair counts the
+settles on; blank, Monday to Friday, and a name the calendar file does not hold fails the job.
+A currency pair counts the
 most days of its currencies other than USD on the calendars of each and settles on a business day
 of both and of USD, as the market does, so a pair against USD may pass a New York holiday before
 its spot date. An `FxRate`'s `Spot` is the price for delivery on its spot date: a value converts

@@ -218,9 +218,13 @@ def test_the_surface_blocks_forward_is_the_priced_forward_at_every_pillar():
 
     surface = world(())
     surface.bootstrap()
+    # the weekdays' world: both names held as Locations of weekends alone
+    plain_days = Config().parse_calendar_file(None, '<Calendars>{}</Calendars>'.format(''.join(
+        '<Calendar Location="{}" Weekends="Saturday and Sunday" Holidays=""/>'.format(location)
+        for location in ('Johannesburg', 'New York'))))
     (name, block), (_, weekdays) = (LogVar2FJModelParameters.fx_surface_block(
         'USD.ZAR', surface.params['Price Factors'], surface.params['System Parameters'],
-        surface.params['Price Factor Interpolation'], calendars) for calendars in (surface.holidays, {}))
+        surface.params['Price Factor Interpolation'], calendars) for calendars in (surface.holidays, plain_days))
     instrument = block['instrument']
     expiries = sorted({row['Expiry_Date'] for row in instrument['European_Options']})
     config = world([dict(FX_OPTION, Reference=str(expiry.date()), Strike_Price=0.01,
@@ -237,7 +241,7 @@ def test_the_surface_blocks_forward_is_the_priced_forward_at_every_pillar():
         return {option['Expiry_Date']: forward for option, _, _, _, forward, _, _, _, _
                 in family.prepare_quotes(params['System Parameters'], instrument, resolved, spot, convention)}
 
-    fitted, plain = forwards(config.holidays), forwards({})
+    fitted, plain = forwards(config.holidays), forwards(plain_days)
     assert fitted != plain, 'the holiday moved no forward'
     frame = run_baseval(config)[1]['Results']['mtm']
     for expiry in expiries:

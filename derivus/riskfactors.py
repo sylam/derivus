@@ -66,7 +66,7 @@ class Factor0D(object):
     def spot_calendar(self, calendars):
         """The business days of the calendar this factor names in `Holiday_Calendar`, else Monday to
         Friday, as a `numpy.busdaycalendar`."""
-        bus_day = calendars.get(self.param.get('Holiday_Calendar'), {}).get('businessday')
+        bus_day = utils.business_day(calendars, self.param.get('Holiday_Calendar'))
         return np.busdaycalendar() if bus_day is None else bus_day.calendar
 
     def get_tenor_indices(self):

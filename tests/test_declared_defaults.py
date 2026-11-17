@@ -1408,10 +1408,98 @@ def test_the_calendar_a_job_names_is_in_its_plan_by_what_it_holds(tmp_path):
     assert moved != first and again == runs[0] and {run[1] for run in runs} == {values}
     assert (rolled - mark) / mark == pytest.approx(1.356e-3, rel=1e-3)
 
-    job = book([deal])
+    job = book([rates_world.deposit('DEP', 'USD', 'USD', 12, 4.2)])
     del job['Calc']['CalendDataFile']
     _, out = derivus.Context().load_json((json.dumps(job, cls=CustomJsonEncoder), 'none')).run_job()
     assert out['Stats']['Files'] == {'MarketDataFile': None, 'CalendDataFile': None}
+
+
+#: A calendar the job's calendar file does not hold: two of its locations stated in one field.
+UNHELD = 'Toronto, New York'
+EQUITY_OPTION = {'Object': 'EquityOptionDeal', 'Reference': 'EQO', 'Currency': 'USD', 'Equity': 'EQ',
+                 'Discount_Rate': 'USD', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
+                 'Option_Type': 'Call', 'Strike_Price': 100.0, 'Units': 10.0, 'Expiry_Date': WORLD_EXPIRY}
+#: A collateralised set, which closes out on the calendar its `Calendars` names.
+CLOSED_OUT = {'Object': 'NettingCollateralSet', 'Reference': 'CSA', 'Netted': 'True',
+              'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Liquidation_Period': 10.0,
+              'Settlement_Period': 0.0, 'Children': [{
+                  'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD', 'Amount': 1e6,
+                  'Payment_Date': WORLD_EXPIRY}]}
+#: Every kind of field naming a calendar, each read at its own site.
+CALENDAR_KINDS = ['fx_rate', 'share', 'forward_sample', 'schedule', 'index', 'reset', 'default_swap',
+                  'basket', 'netting_set', 'calculation']
+
+
+def calendar_job(kind, name=None):
+    """A job document whose `kind` of field states the calendar `name`, omitting it where None: a
+    base valuation over one deal, or the hedging fixture's simulation for a calculation's own."""
+    import trial_commodity
+    import trial_credit
+
+    def on(block, key):
+        return dict(block, **({} if name is None else {key: name}))
+
+    if kind == 'calculation':
+        job = json.load(open(os.path.join(FIXTURES, 'policy_test_simulate_only.json')))
+        calc = {key: value for key, value in job['Calc']['Calculation'].items() if key != 'Calendar'}
+        job['Calc'].update(CalendDataFile=CALENDARS, Calculation=dict(on(calc, 'Calendar'), Batch_Size=2))
+        return job
+    factors = dict(world(), **trial_credit.FACTORS, **trial_commodity.FACTORS)
+    deal, factor, key = {
+        'fx_rate': (fx_leg('FXOptionDeal', 'FXO', Expiry_Date=WORLD_EXPIRY), 'FxRate.EUR', 'Holiday_Calendar'),
+        'share': (EQUITY_OPTION, 'EquityPrice.EQ', 'Holiday_Calendar'),
+        'forward_sample': (next(deal for deal in trial_commodity.DEALS if deal['Reference'] == 'FUEL_FLOAT'),
+                           'ForwardPriceSample.FUEL', 'Holiday_Calendar'),
+        'schedule': (rates_world.deposit('DEP', 'USD', 'USD', 12, 4.2), None, 'Payment_Calendars'),
+        'index': (BOOK[0], None, 'Index_Calendars'),
+        'reset': (EQUITY_LEG, None, 'Reset_Calendars'),
+        'default_swap': (trial_credit.DEALS[0], None, 'Calendars'),
+        'basket': (trial_credit.DEALS[1], None, 'Calendars'),
+        'netting_set': (CLOSED_OUT, None, 'Calendars')}[kind]
+    if factor:
+        factors[factor] = on(factors[factor], key)
+    job = book([deal if factor else on(deal, key)])
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'] = factors
+    return job
+
+
+def answered(job):
+    """`(marks as hexes, deals and structures skipped)` of a base valuation job, or `(the business
+    day its clock steps on, 0)` of a hedging one, which skips nothing."""
+    answer = derivus.Context().load_json((json.dumps(job, cls=CustomJsonEncoder), 'calendar')).run_job()[1]
+    if not isinstance(answer, dict):
+        return answer.bundle.business_day, 0
+    return ([float(value).hex() for value in answer['Results']['mtm']['Value']],
+            answer['Stats'].get('Deals Skipped', 0) + answer['Stats'].get('Structs Skipped', 0))
+
+
+@pytest.mark.parametrize('kind', CALENDAR_KINDS)
+def test_a_calendar_its_file_does_not_hold_fails_the_job_by_name(kind):
+    """An FX rate's and a share's `Holiday_Calendar`, a forward price sample's, a deposit's payment
+    calendar, a swap's index calendar, an equity leg's reset calendar, a default swap's and a
+    basket's `Calendars`, a collateralised set's close-out `Calendars` and a hedging calculation's
+    `Calendar`, each stating `Toronto, New York`, two locations of the calendar file in one field,
+    fail the run naming it rather than pricing on a fallback calendar or skipping the deal; with no
+    calendar file the job fails the same way.
+
+    Killing mutation: any one site reading a name the file lacks as a blank - its kind prices."""
+    job = calendar_job(kind, UNHELD)
+    with pytest.raises(utils.UnpriceableSchedule, match="calendar 'Toronto, New York' is not a Location "
+                                                        "of the job's calendar file: state one Location, or none"):
+        answered(job)
+    del job['Calc']['CalendDataFile']
+    with pytest.raises(utils.UnpriceableSchedule, match='is not a Location of a calendar file the job names'):
+        answered(job)
+
+
+@pytest.mark.parametrize('kind', CALENDAR_KINDS)
+def test_a_blank_calendar_keeps_its_convention_and_a_held_one_prices(kind):
+    """The same jobs stating the field blank mark to the bit as omitting it, each site's own
+    convention, and stating a location the file holds run, skipping nothing.
+
+    Killing mutation: a blank refused as a name the file lacks - every blank job fails."""
+    omitted, blank, held = (answered(calendar_job(kind, name)) for name in (None, '', CALENDAR))
+    assert blank == omitted and omitted[1] == held[1] == 0, (blank, omitted, held)
 
 
 def wire_default(field):

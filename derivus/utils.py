@@ -2454,7 +2454,7 @@ class TensorCashFlows(TensorSchedule):
         """Floating/fixed cashflows from a data source under the energy model.
         TODO: allow an fxSample different from the forwardsample.
         """
-        forward_calendar_bday = calendars.get(forwardsample.get_holiday_calendar(), {'businessday': 'B'})['businessday']
+        forward_calendar_bday = business_day(calendars, forwardsample.get_holiday_calendar(), 'B')
 
         def row(cashflow):
             if cashflow['Payment_Date'] < reference_date:
@@ -4748,6 +4748,18 @@ def calc_discount_rate(block, tenors_in_days, shared, multiply_by_time=True):
         shared.t_Buffer[key_code] = discount_rates
 
     return shared.t_Buffer[key_code]
+
+
+def business_day(calendars, name, blank=None):
+    """The business day of the calendar `name` states, a `Location` of the job's calendar file
+    `calendars`, and `blank` where it states none."""
+    if not name:
+        return blank
+    if name not in calendars:
+        raise UnpriceableSchedule('calendar {!r} is not a Location of {}'.format(name, (
+            "the job's calendar file: state one Location, or none" if calendars else
+            'a calendar file the job names: name one holding it in CalendDataFile, or state none')))
+    return calendars[name]['businessday']
 
 
 def joint_calendar(calendars):

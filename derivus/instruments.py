@@ -735,7 +735,7 @@ class Deal(object):
             return self.field.read(leg + key)
 
         accrual_calendar = read(accrual) or read('Payment_Calendars')
-        rolls, pays = (calendars.get(name, {}).get('businessday') for name in (
+        rolls, pays = (utils.business_day(calendars, name) for name in (
             accrual_calendar, read('Payment_Calendars') or accrual_calendar))
         first, penultimate = (read('First_Coupon_Date'), read('Penultimate_Coupon_Date')) if stubs else (None, None)
         dates = utils.coupon_dates(maturity, effective, frequency, rolls, first, penultimate, method, forward)
@@ -750,7 +750,7 @@ class Deal(object):
         floating leg's `day_count` where blank, `Reset_Type`, `Index_Offset`, `Index_Calendars`,
         `Index_Publication_Calendars` and the floating leg's `frequency`."""
         def calendar(key):
-            return calendars.get(self.field.read(key), {}).get('businessday')
+            return utils.business_day(calendars, self.field.read(key))
 
         return utils.FloatIndex(
             utils.DayCount.code(self.field.read('Index_Day_Count', day_count)), self.field.read('Reset_Type'),
@@ -1337,9 +1337,8 @@ class NettingCollateralSet(Deal):
     def reset(self, calendars):
         super(NettingCollateralSet, self).reset()
         self.accum_dependencies = True
-        calendar = calendars.get(self.field.get('Calendars')) if self.closeout_window() else None
-        if calendar:
-            self.calendar = calendar['businessday']
+        if self.closeout_window():
+            self.calendar = utils.business_day(calendars, self.field.get('Calendars'))
 
     def calc_liquidation_settlement_dates(self, date, base_date):
         if self.options['Forward_Looking_Closeout']:
@@ -2560,15 +2559,19 @@ class DepositDeal(Deal):
         'whatever the timing.',
     ])
 
+    @staticmethod
+    def unadjusted_starts(deal):
+        """Each period's start on no calendar, the day a pinned rate is stated on."""
+        return utils.coupon_dates(deal['Maturity_Date'], deal['Effective_Date'], deal['Payment_Frequency'],
+                                  first=deal['First_Coupon_Date'] or None,
+                                  penultimate=deal['Penultimate_Coupon_Date'] or None)[:-1]
+
     @classmethod
     def quote(cls, deal, value, quote_type):
         """A deposit has no rate field of its own: the quote is pinned at every period's unadjusted
         start, which prices it as a fixed leg and keeps it off the forecast curve a solve builds -
         `reset` drops that dependency when the schedule covers every start."""
-        starts = utils.coupon_dates(deal['Maturity_Date'], deal['Effective_Date'], deal['Payment_Frequency'],
-                                    first=deal['First_Coupon_Date'] or None,
-                                    penultimate=deal['Penultimate_Coupon_Date'] or None)[:-1]
-        deal['Interest_Rate_Schedule'] = utils.DateList({date: value for date in starts})
+        deal['Interest_Rate_Schedule'] = utils.DateList({date: value for date in cls.unadjusted_starts(deal)})
 
     def reset(self, calendars):
         super(DepositDeal, self).reset()
@@ -2578,7 +2581,7 @@ class DepositDeal(Deal):
         self.ends = self.coupon_schedule(calendars, *terms, timing=None)[1]
         self.add_reval_dates(self.paydates.union(self.pays), self.field['Currency'])
         # a pinned rate is stated on its period's unadjusted start, the day `quote` can name
-        self.starts = self.coupon_schedule({}, *terms)[0][:-1]
+        self.starts = self.unadjusted_starts(self.field)
         schedule = self.field['Interest_Rate_Schedule']
         # full coverage means no forecast curve is read
         self.is_fixed = bool(schedule and set(self.starts).issubset(schedule.data))
@@ -5862,8 +5865,8 @@ class EquitySwapLeg(Deal):
             calendars, self.field['Effective_Date'], self.field['Maturity_Date'], self.field['Payment_Frequency'],
             method=self.field['Rate_Adjustment_Method'], forward=self.field['Roll_Direction'] == 'Forward')
         offset = int(self.field['Reset_Offset'])
-        resets = calendars.get(self.field['Reset_Calendars'] or self.field['Accrual_Calendars'] or
-                               self.field['Payment_Calendars'], {}).get('businessday') or pd.offsets.BDay()
+        resets = utils.business_day(calendars, self.field['Reset_Calendars'] or self.field['Accrual_Calendars'] or
+                                    self.field['Payment_Calendars'], pd.offsets.BDay())
         # no offset is no move: a zero multiple of a business day rolls a holiday forward
         self.fixings = [day - offset * resets for day in dates] if offset else list(dates)
         self.add_reval_dates(set(self.pays), self.payoff_ccy)
@@ -6876,7 +6879,7 @@ class CreditNthToDefault(Deal):
 
     def reset(self, calendars):
         super(CreditNthToDefault, self).reset()
-        bus_day = calendars.get(self.field['Calendars'], {'businessday': pd.offsets.Day(1)})['businessday']
+        bus_day = utils.business_day(calendars, self.field['Calendars'], pd.offsets.Day(1))
         if list(self.field['Pay_Frequency'].kwds.values()) == [0]:
             self.resetdates = pd.DatetimeIndex([self.field['Effective_Date'], self.field['Maturity_Date']])
         else:
@@ -6995,7 +6998,7 @@ class DealDefaultSwap(Deal):
 
     def reset(self, calendars):
         super(DealDefaultSwap, self).reset()
-        bus_day = calendars.get(self.field['Calendars'], {'businessday': pd.offsets.Day(1)})['businessday']
+        bus_day = utils.business_day(calendars, self.field['Calendars'], pd.offsets.Day(1))
         if list(self.field['Pay_Frequency'].kwds.values()) == [0]:
             self.resetdates = pd.DatetimeIndex([self.field['Effective_Date'], self.field['Maturity_Date']])
         else:

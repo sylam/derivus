@@ -3429,8 +3429,7 @@ class HedgeMonteCarlo(CreditMonteCarlo):
             simulation_sub_batch=int(self.params['Inner_Sub_Batch']), nomodel=nomodel,
             keep_tensor=True)  # hedge stepper replays need the kept tensor, unconditionally
         # the roll's business day, and the market days every law steps
-        state.business_day = self.config.holidays.get(
-            self.params['Calendar'], {'businessday': state.business_day})['businessday']
+        state.business_day = utils.business_day(self.config.holidays, self.params['Calendar'], state.business_day)
         return state
 
     @staticmethod
