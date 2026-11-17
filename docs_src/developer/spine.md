@@ -627,13 +627,17 @@ is covered by the next. Its generator is async, so an open stream holds no share
 
 The `document` verb declares the paper: `entity_declared`, and `agreement_declared` whose terms are
 the netting set its positions compile into, judged by the engine first, the agreement's entity its
-counterparty (`Credit_Support_Amounts.Counterparty`). A fill's `quantity` is the
-signed change in units; its optional `agreement`, `portfolio` and `price` say where and at what. One
+counterparty (`Credit_Support_Amounts.Counterparty`). A later declaration under one id names the
+one whose content it replaced (`supersedes`), as a file's does, so a return to earlier content is a
+new fact while the content in force declared again coalesces. A fill's `quantity` is the signed
+change in units; its optional `agreement`, `portfolio` and `price` say where and at what. One
 instrument under two agreements is two positions, credit exposure being per agreement; in two
 portfolios, two. The first booking or quote under a declared agreement splices its set from the
 declared terms. **Held by** `test_spine_paper.py::test_a_position_is_keyed_where_it_sits`,
+`::test_a_return_to_earlier_paper_is_a_new_fact_and_a_repeat_of_the_standing_paper_is_one`,
 `test_spine_engine.py::test_the_first_booking_under_a_declared_agreement_brings_its_set`,
-`test_spine_engine.py::test_the_set_s_counterparty_is_the_agreement_s_entity`.
+`::test_the_set_s_counterparty_is_the_agreement_s_entity`,
+`::test_paper_restated_and_then_restored_stands_restored`.
 
 `portfolio_declared` is judged at its parent. Once any node of a book stands, a fill books into the
 book or a declared node. `GET /book/positions` answers each standing position beside the file's

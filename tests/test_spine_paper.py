@@ -32,7 +32,7 @@ import pytest
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from derivus_spine import SpineLog, SpineRefusal, canonical_bytes, verify_home
-from derivus_spine import cli
+from derivus_spine import cli, oracle
 from derivus_spine.projections import (
     PROJECTORS, SEEDS, UNSEEDED, close_on, fold, fold_from, latest_seed, read_seed, seed_at)
 from derivus_spine.verbs import book, declare_agreement, declare_close, declare_entity
@@ -152,6 +152,57 @@ def test_the_paper_folds_by_its_ids_and_a_restatement_names_what_it_stood_over(t
     with pytest.raises(SpineRefusal) as lost:
         verify_home(home)
     assert first_terms in str(lost.value)
+
+
+def test_a_return_to_earlier_paper_is_a_new_fact_and_a_repeat_of_the_standing_paper_is_one(
+        tmp_path):
+    """An entity or an agreement declared again under its id names the declaration whose content it
+    replaced (`supersedes`), a first declaration naming none and carrying no such field. So A then A
+    is one fact; A, B, A is three, A standing and the third naming B's, and A once more coalesces
+    onto the third; A, B, B is two. A name backdated behind the one in force stands over nothing, so
+    the name in force declared again is the fact already standing. The oracle and the verification
+    hold over the log this leaves.
+
+    Killing mutations: the body no longer carrying `supersedes`, so the return to A coalesces onto
+    the first and B stays in force; a repeat filed as handed in rather than as the standing body,
+    so A once more answers the first declaration's LSN; the standing declaration read as the last
+    LSN under the id, so the name in force declared after the backdated one is a new fact.
+    """
+    home = seeded(tmp_path, clips=())
+    log = SpineLog(home)
+
+    def body(envelope):
+        return log.open_body(log.frame_at(envelope['lsn']))
+
+    for declare, projector, field, a, b in (
+            (lambda key, name: declare_entity(log, ACTOR, key, name), PROJECTORS['entities'],
+             'name', 'A counterparty', 'A counterparty, renamed'),
+            (lambda key, terms: declare_agreement(log, ACTOR, key, 'LEI-X', 'ISDA 2002', terms),
+             PROJECTORS['agreements'], 'terms', PAPER, RESTRUCK)):
+        once, again = (declare('AA', content) for content in (a, a))
+        assert (again['lsn'], again['coalesced']) == (once['lsn'], True)
+        assert 'supersedes' not in body(once)
+        first, second, back, repeat = (declare('ABA', content) for content in (a, b, a, a))
+        assert [at['coalesced'] for at in (first, second, back, repeat)] == [
+            False, False, False, True]
+        assert (back['lsn'], repeat['lsn']) == (second['lsn'] + 1, second['lsn'] + 1)
+        assert body(second)['supersedes'] == first['lsn']
+        assert body(back) == dict(body(first), supersedes=second['lsn'])
+        standing = fold(log, projector)['ABA']
+        assert (standing['lsn'], standing[field]) == (back['lsn'], body(first)[field])
+        _, held, kept = (declare('ABB', content) for content in (a, b, b))
+        assert (kept['lsn'], kept['coalesced']) == (held['lsn'], True)
+    assert standing['supersedes_lsn'] == second['lsn'], 'the agreement names what it stood over'
+
+    first = declare_entity(log, ACTOR, 'LEI-B', 'A counterparty')
+    declare_entity(log, ACTOR, 'LEI-B', 'a name backdated behind the one in force',
+                   effective_time=MON)
+    assert declare_entity(log, ACTOR, 'LEI-B', 'A counterparty')['lsn'] == first['lsn']
+    head = log.head()[0]
+    log.close()
+    assert verify_home(home)['events'] == head
+    answers = oracle.report(home)
+    assert oracle.failed(answers) == [] and answers['duplicates_coalesce']['held'], answers
 
 
 def test_a_reader_starts_at_the_newest_seed_a_named_folder_holds(tmp_path):

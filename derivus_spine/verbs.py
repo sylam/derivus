@@ -351,18 +351,14 @@ def declare_file(log, actor, name, kind, data):
     standing blob restates the standing body, which the writer coalesces. Firm-level, so it carries
     no book.
     """
-    from .projections import PROJECTORS, fold
-
     if kind not in FILE_KINDS:
         raise MalformedEvent(
             'declare_file: kind is {!r}, not one of {} - a job names a market data file and a '
             'calendar'.format(kind, ', '.join(FILE_KINDS)))
     name = _name(name, 'name', 'declare_file')
     address = _blob(log, data, 'the file')
-    standing = fold(log, PROJECTORS['files']).get(name)
-    body = {'name': name, 'kind': kind, 'blob': address, 'supersedes': standing and (
-        standing['supersedes'] if (standing['kind'], standing['blob']) == (kind, address)
-        else standing['lsn'])}
+    body = _restated(log, 'files', name,
+                     {'name': name, 'kind': kind, 'blob': address, 'supersedes': None})
     envelope = log.append('file_declared', body, actor=actor, blob_refs=(address,))
     return dict(envelope, name=name, blob=address)
 
@@ -372,13 +368,16 @@ def declare_entity(log, actor, entity, name, parent=None, effective_time=None):
 
     `entity` is its id as the deployment's legal system knows it and `name` what a reader is shown;
     `parent` groups it under another entity and says nothing else. A second declaration under one
-    id restates it. Firm-level, so it carries no book.
+    id restates it as `declare_file` restates a file: a return to earlier content is a new fact
+    naming the one it replaced, and a repeat of the content in force coalesces. Firm-level, so it
+    carries no book.
     """
     body = {'entity': _name(entity, 'entity', 'declare_entity'),
             'name': _name(name, 'name', 'declare_entity')}
     if parent is not None:
         body['parent'] = _name(parent, 'parent', 'declare_entity')
-    return log.append('entity_declared', body, actor=actor, effective_time=effective_time)
+    return log.append('entity_declared', _restated(log, 'entities', entity, body), actor=actor,
+                      effective_time=effective_time)
 
 
 def declare_agreement(log, actor, agreement, entity, kind, terms, effective_time=None):
@@ -387,14 +386,16 @@ def declare_agreement(log, actor, agreement, entity, kind, terms, effective_time
     `terms` is the canonical JSON of the netting set the agreement's positions are compiled into,
     as bytes - the caller canonicalises and validates, the engine knowing what a netting set may
     say - and `kind` the document's label as its declarer states it. A second declaration under one
-    id restates the agreement. Firm-level, so it carries no book.
+    id restates the agreement as `declare_entity` restates an entity. Firm-level, so it carries no
+    book.
     """
     address = _blob(log, terms, 'the canonical agreement terms')
-    envelope = log.append('agreement_declared',
-                          {'agreement': _name(agreement, 'agreement', 'declare_agreement'),
-                           'entity': _name(entity, 'entity', 'declare_agreement'),
-                           'kind': _name(kind, 'kind', 'declare_agreement'), 'terms': address},
-                          actor=actor, effective_time=effective_time, blob_refs=(address,))
+    body = _restated(log, 'agreements', agreement, {
+        'agreement': _name(agreement, 'agreement', 'declare_agreement'),
+        'entity': _name(entity, 'entity', 'declare_agreement'),
+        'kind': _name(kind, 'kind', 'declare_agreement'), 'terms': address})
+    envelope = log.append('agreement_declared', body, actor=actor, effective_time=effective_time,
+                          blob_refs=(address,))
     return dict(envelope, agreement=agreement, terms=address)
 
 
@@ -673,6 +674,21 @@ def _placed(body, verb, **named):
     body.update((field, _name(value, field, verb)) for field, value in named.items()
                 if value is not None)
     return body
+
+
+def _restated(log, projector, key, body):
+    """`body` as a declaration under `key` files it, against the one `projector`'s fold has standing
+    there: that declaration's own body where `body` repeats its content, which the writer coalesces,
+    otherwise `body` naming it as the one replaced (`supersedes`), so a return to earlier content is
+    a new fact. A first declaration is `body` as handed in."""
+    from .projections import PROJECTORS, fold
+
+    standing = fold(log, PROJECTORS[projector]).get(key)
+    if standing is None:
+        return body
+    held = log.open_body(log.frame_at(standing['lsn']))
+    return held if dict(held, supersedes=None) == dict(body, supersedes=None) else dict(
+        body, supersedes=standing['lsn'])
 
 
 def _movement(log, subject, status, amount, asset, kind, reference, effective_time, agreement):

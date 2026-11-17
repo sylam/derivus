@@ -273,14 +273,17 @@ CUSTODY_TYPES = {
 #: The reference vocabulary - who the book trades with and under what paper, said by the seat that
 #: keeps the legal documents rather than by the desk that books against them.
 REFERENCE_TYPES = {
-    # A legal entity is a counterparty the credit unit is; `parent` groups entities, nothing more.
+    # A legal entity is a counterparty the credit unit is; `parent` groups entities, nothing more. A
+    # later declaration under one id restates it as a file's does, `supersedes` naming the
+    # declaration whose content it replaced - absent from a first declaration, which replaced none.
     'entity_declared': _validator('entity_declared', (
-        ('entity', TEXT), ('name', TEXT)), optional=(('parent', TEXT),)),
+        ('entity', TEXT), ('name', TEXT)), optional=(('parent', TEXT), ('supersedes', INTEGER))),
     # An agreement's terms are an instrument - a netting set's, validated by the engine that prices
-    # it - cited by address. `kind` is the document's label as its declarer states it. A later
-    # declaration under one id restates the agreement; a balance is never here, being settlement.
+    # it - cited by address. `kind` is the document's label as its declarer states it. It restates
+    # as an entity does; a balance is never here, being settlement.
     'agreement_declared': _validator('agreement_declared', (
-        ('agreement', TEXT), ('entity', TEXT), ('kind', TEXT), ('terms', HASH))),
+        ('agreement', TEXT), ('entity', TEXT), ('kind', TEXT), ('terms', HASH)),
+        optional=(('supersedes', INTEGER),)),
 }
 
 #: The writer's own type: a denial is a decision and so is appended rather than logged. Said by the

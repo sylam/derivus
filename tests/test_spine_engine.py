@@ -1121,6 +1121,38 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_paper_restated_and_then_restored_stands_restored(recorded):
+    """Through the service, as a first-time user files it: an agreement declared with terms A,
+    then B, then A again is three facts with A in force, the third answered with a new LSN and its
+    row naming B's as the one it stood over, while A declared once more answers the third's LSN. An
+    entity renamed and then named back stands under its first name at the third LSN. The oracle and
+    the verification hold over what this leaves.
+
+    Killing mutation: the body no longer carrying `supersedes`, so the third answer is the first
+    declaration's LSN and B stays in force.
+    """
+    def declared(path, body):
+        answer = CLIENT.post(path, content=dump(body), headers=JSON)
+        assert answer.status_code == 200, answer.text
+        return answer.json()['recorded']['lsn']
+
+    named = [declared('/book/entities', {'entity': 'LEI-A', 'name': name})
+             for name in ('Client A', 'Client A plc', 'Client A')]
+    a = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
+    first, second, back, again = [
+        declared('/book/agreements', {'agreement': CLIENT_SET, 'entity': 'LEI-A',
+                                      'kind': 'ISDA 2002', 'terms': terms})
+        for terms in (a, dict(a, Liquidation_Period=10.0), a, a)]
+    assert len(set(named)) == 3 and len({first, second, back}) == 3 and again == back
+    row, = CLIENT.get('/book/agreements').json()['agreements']
+    assert (row['lsn'], row['supersedes_lsn'], row['terms']['Liquidation_Period']) == (
+        back, second, 0.0)
+    entity, = CLIENT.get('/book/entities').json()['entities']
+    assert (entity['lsn'], entity['name']) == (named[2], 'Client A')
+    assert oracle.failed(oracle.report(recorded)) == []
+    assert verify_home(recorded)['events'] == head(recorded) == back
+
+
 def test_a_declared_tree_is_where_a_book_books_and_a_restrike_is_judged(recorded, desk):
     """THE TREE IS DECLARED, BOOK BY BOOK. A book declaring no node books wherever its paths say,
     whatever another book declared; once any node of it stands, a fill books into the book itself
