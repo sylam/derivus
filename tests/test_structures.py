@@ -1827,6 +1827,41 @@ def test_the_diary_of_a_booked_quote_pays_on_the_delivery_dates(desk_quotes):
                                            if 'TARF_ExpiryDates' in deal else ['2027-05-18'])
 
 
+def test_a_daily_strip_fixes_once_on_each_weekday():
+    """A 2W TARF fixing daily from `DESK_DAY` quotes, fixing once on each of the ten weekdays to its
+    Monday expiry and settling each on its spot date, the last on the tenor's delivery.
+
+    Killing mutation: a weekend's fixings kept as repeated Monday rows, the strip refused.
+    """
+    strip = structures.quote(desk_book(False), 'TargetRedemptionForward', {
+        'pair': PAIR, 'expiry': '2W', 'notional': NOTIONAL, 'notional_currency': 'USD',
+        'fixing_frequency': '1D', 'buy_currency': 'USD', 'target': TARGET})
+    tarf = only_leg(strip)
+    assert [(fixing['.Timestamp'][5:], settles['.Timestamp'][5:])
+            for fixing, settles, _ in tarf['TARF_ExpiryDates']] == [
+        ('11-17', '11-19'), ('11-18', '11-20'), ('11-19', '11-23'), ('11-20', '11-24'),
+        ('11-23', '11-25'), ('11-24', '11-26'), ('11-25', '11-27'), ('11-26', '11-30'),
+        ('11-27', '12-01'), ('11-30', '12-02')]
+    assert tarf['Expiry_Date'] == {'.Timestamp': '2026-12-02'}
+    assert abs(strip['net']) <= SOLVE_TOLERANCE, strip['net']
+
+
+@pytest.mark.parametrize('currency', ['ZAR', 'USD'])
+def test_a_book_without_a_rate_of_the_pair_refuses_it_by_name(currency):
+    """A book quoting the pair's surface and carrying no `FxRate` for one of its currencies refuses
+    the quote naming that rate.
+
+    Killing mutation: the pair's spot convention read before its rates are, an AttributeError.
+    """
+    document = desk_book(False)
+    del document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+        'FxRate.' + currency]
+    with pytest.raises(ValueError, match=re.escape(
+            'FxRate.{0} is missing - a {0} quote cannot be struck on this book'.format(currency))):
+        structures.quote(document, 'Straddle', {'pair': PAIR, 'expiry': '6M', 'notional': NOTIONAL,
+                                                'notional_currency': 'USD', 'strike': 16.8})
+
+
 # --------------------------------------------------------------------------------------------
 # the range accrual: one to four nested tiers, a FXRangeAccrualDeal per tier
 # --------------------------------------------------------------------------------------------

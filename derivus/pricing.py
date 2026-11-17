@@ -373,6 +373,18 @@ def cash_settle(shared, currency, time_index, value):
         shared.t_Cashflows[currency][time_index] += value
 
 
+def carried_to_settlement(factor_dep, deal_time, shared):
+    """Each of the `deal_time` rows' discount from a deal's `Expiry` on to the `Settlement` its
+    declaration states, on its `Discount` curve, or None where that is the expiry."""
+    lag = factor_dep.get('Settlement', factor_dep['Expiry']) - factor_dep['Expiry']
+    if not lag:
+        return None
+    discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time, shared)
+    tau = (factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM]).reshape(-1, 1)
+    return torch.exp(torch.squeeze(discounts.gather_weighted_curve(shared, tau) -
+                                   discounts.gather_weighted_curve(shared, tau + lag), dim=1))
+
+
 def calc_moneyness(strike, spot, forward, deal_data, use_forward=False, invert_moneyness=False):
     '''
     Deals with different ways of calculating moneyness - either spot/strike, forward/strike
@@ -1733,12 +1745,14 @@ def partial_window_rebate(spot, barrier, r, b, sigma, eta, startBarrier, limit, 
 
 
 def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBarrier, limit, expiry,
-                            r, b, sigma, rebate=0.0):
+                            r, b, sigma, rebate=0.0, carried=1.0):
     '''Value a partial-time barrier option: the barrier is monitored only over the window that
     starts (`startBarrier`) or ends at `limit`. Knock-ins are priced by parity off the vanilla.
 
     `rebate` is PER UNIT and is valued on the deal's own coordinates, before the put-call
     transformation below reflects them - a survival probability is not invariant under it.
+    `carried` discounts the option and a knock-in's rebate from the expiry on to the day they
+    settle; a knock-out's rebate is paid at the hit.
 
     `limit` is SIGNED: a row past the limit date reads it negative. A START window resolves the two
     states its closed form cannot reach, on the same signed limit and spot-vs-level test the rebate
@@ -1838,7 +1852,7 @@ def getpartialbarrierpayoff(isKnockIn, eta, phi, spot, strike, barrier, startBar
 
     if isKnockIn:
         pv = bs - pv
-    return pv + reb if rebate else pv
+    return pv * carried + (reb * carried if isKnockIn else reb) if rebate else pv * carried
 
 
 def compo_vol(vols, fx_vols, rho):
@@ -2504,11 +2518,8 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
 
     barrierOption = getbarrierpayoff(direction, eta, phi, strike, barrier)
     r = torch.squeeze(discounts.gather_weighted_curve(shared, tau.reshape(-1, 1)), dim=1) / expiry_years.clamp(min=1e-5)
-    # each row's discount from the expiry on to the settlement, none where the deal states none
-    lag = factor_dep.get('Settlement', factor_dep['Expiry']) - factor_dep['Expiry']
-    carried = torch.exp(torch.squeeze(
-        discounts.gather_weighted_curve(shared, tau.reshape(-1, 1)) -
-        discounts.gather_weighted_curve(shared, (tau + lag).reshape(-1, 1)), dim=1)) if lag else [1.0] * tau.size
+    carried = carried_to_settlement(factor_dep, deal_time, shared)
+    carried = [1.0] * tau.size if carried is None else carried
 
     mtm_list = []
     prev_touched = 0.0
@@ -2571,7 +2582,8 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
     so between the touch and expiry the path holds a CERTAIN claim on the nominal, worth its
     discounted value rather than nothing. A no-touch pays it at expiry where the barrier was NEVER
     touched: on an untouched path what that one-touch leaves of the discounted nominal, and nothing
-    on a touched one.
+    on a touched one. Paid at expiry, the nominal is discounted on to a later `Settlement` the deal
+    states; paid at the touch, it is not.
 
     A compo prices and monitors S*X (`compo_process`), its barrier being the payoff-currency level
     on that product the deal declares.
@@ -2613,6 +2625,8 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
 
     r = torch.squeeze(discounts.gather_weighted_curve(
         shared, tau.reshape(-1, 1)), dim=1) / expiry_years.clamp(min=1e-5)
+    # a nominal paid at expiry is paid on the deal's settlement, one paid at the touch is not
+    carried = carried_to_settlement(factor_dep, deal_time, shared) if timing == 'Expiry' else None
 
     mtm_list = []
     prev_touched = 0.0
@@ -2621,8 +2635,10 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
     interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time, rho)
     prev_spot = None
 
-    for index, (sig, exp, b_t, r_t, s_t, cash_index) in enumerate(zip(
-            sigma, expiry_years, b, r, spot, deal_data.Time_dep.deal_time_grid)):
+    for index, (sig, exp, b_t, r_t, s_t, c_t, cash_index) in enumerate(zip(
+            sigma, expiry_years, b, r, spot, [1.0] * tau.size if carried is None else carried,
+            deal_data.Time_dep.deal_time_grid)):
+        paid = nominal * c_t
 
         # the same monitoring-adjusted barrier the closed form below prices against
         barrier_t = barrier * torch.exp(
@@ -2643,7 +2659,7 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
             payoff = 0.0
 
         # value still contingent on a touch that has not happened yet
-        one_touch_part = (1.0 - touched) * buy_or_sell * nominal * (
+        one_touch_part = (1.0 - touched) * buy_or_sell * paid * (
             torch.exp(-r_t * exp) - payoff if no_touch else payoff)
 
         if no_touch:
@@ -2658,13 +2674,13 @@ def pv_one_touch_option(shared, time_grid, deal_data, nominal, spot, b,
             if rebate_part.any():
                 cash_settle(shared, payoff_currency, cash_index, rebate_part)
         elif expiry[index] == 0.0:
-            rebate_part = buy_or_sell * nominal * touched
+            rebate_part = buy_or_sell * paid * touched
             if rebate_part.any():
                 cash_settle(shared, payoff_currency, cash_index, rebate_part)
         else:
             # touched but paid at expiry: a CERTAIN claim on the nominal, so carry its discounted
             # value rather than zero
-            rebate_part = touched * buy_or_sell * nominal * torch.exp(-r_t * exp)
+            rebate_part = touched * buy_or_sell * paid * torch.exp(-r_t * exp)
 
         mtm_list.append(rebate_part + one_touch_part)
         prev_touched = touched
@@ -2682,7 +2698,8 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     untouched knock-in, both valued over the WINDOW (``partial_window_rebate``): a surviving row
     carries its forward-looking rebate, and the knock-out's realised payment is the increment in the
     accumulated touch probability, settled on the date it falls due. The window is read SIGNED, so a
-    ``Barrier_Limit_Date`` already past pays no knock-out rebate and a certain knock-in one.
+    ``Barrier_Limit_Date`` already past pays no knock-out rebate and a certain knock-in one. A deal
+    stating a later ``Settlement`` has its option and its knock-in's rebate discounted on to it.
 
     BOUNDARY AAD (``shared.boundary_aad``): the touch test is a LATCH only where the bridge has no
     variance to work with, and only then can a ``LatchedBoundarySet`` register. With the bridge live
@@ -2742,13 +2759,15 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
         shared, tau.reshape(-1, 1)), dim=1) / expiry_years.clamp(min=1e-5)
 
     at_start = deal_data.Instrument.field['Barrier_At_Start'] == 'Yes'
+    carried = carried_to_settlement(factor_dep, deal_time, shared)
+    c_prior, c_at = (1.0, 1.0) if carried is None else (carried[:expiry.size], carried[expiry.size:])
     # `limit_years` goes SIGNED past the limit date and the payoff clamps it for the closed form
     # alone: the option is that formula's limit there, the rebate is not. The guard is on the
     # REBATE, so a rebate-free deal is bit-identical
     barrier_payoff = buy_or_sell * nominal * getpartialbarrierpayoff(
         isKnockIn, eta, phi, spot_prior, strike, adj_barrier, at_start,
         limit_years, expiry_years, r, b, sigma,
-        rebate=cash_rebate / nominal if cash_rebate else 0.0)
+        rebate=cash_rebate / nominal if cash_rebate else 0.0, carried=c_prior)
 
     if need_spot_at_expiry:
         # pv_barrier_option's running touch probability on the shifted barrier, ONLY inside the
@@ -2789,15 +2808,17 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
             b_obs_before.append(len(b_gaps))
         barrier_touched = torch.stack(rows)
         first_touch = barrier_touched[1:] - barrier_touched[:-1]
-        payoff_at = buy_or_sell * torch.relu(phi * (spot_at - strike))
+        payoff_at = buy_or_sell * torch.relu(phi * (spot_at - strike)) * c_at
 
         own_row = None
         if direction == BARRIER_IN:
             forward = spot_prior * torch.exp(b * expiry_years)
             payoff_prior = utils.black_european_option(
-                forward, strike, sigma, expiry, buy_or_sell, phi, shared) * torch.exp(-r * expiry_years)
+                forward, strike, sigma, expiry, buy_or_sell, phi, shared) * torch.exp(-r * expiry_years) * c_prior
             dead = nominal * torch.cat([payoff_prior, payoff_at], dim=0)
-            alive = F.pad(barrier_payoff, [0, 0, 0, 1], value=buy_or_sell * cash_rebate)
+            # an untouched knock-in's rebate is paid at expiry, on the settlement where one is stated
+            alive = F.pad(barrier_payoff, [0, 0, 0, 1], value=buy_or_sell * cash_rebate) if carried is None else \
+                torch.cat([barrier_payoff, buy_or_sell * cash_rebate * c_at * torch.ones_like(payoff_at)])
             european_part = barrier_touched * dead
             barrier_part = (1.0 - barrier_touched) * alive
             combined = european_part + barrier_part
@@ -5278,7 +5299,8 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
     is fitted to a lognormal and priced by Black against a strike net of the realised average. Each
     sample is forwarded to its own date on `carry`, the two curves whose spread carries the
     underlying, and reads its vol at its own tenor. Past the averaging period it is the intrinsic on
-    the realised average, at a token maturity so the AAD graph stays defined.
+    the realised average, at a token maturity so the AAD graph stays defined. The payoff is
+    discounted from the deal's `Settlement`, its expiry where it states none.
 
     A compo averages S*X, so the deal's own fixings already ARE composite prices and nothing
     converts them; only a SIMULATED past sample, read off the local spot factor, takes the cross.
@@ -5301,7 +5323,8 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             utils.split_counts([discount, spot], counts, shared)):
         t_block = discount_block.time_grid
         sample_index_t = start_index[index]
-        tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
+        # discounted from the day the deal settles, its expiry where it states no later one
+        settle_block = factor_dep.get('Settlement', factor_dep['Expiry']) - t_block[:, utils.TIME_GRID_MTM]
 
         sample_days = (dual_samples.np[sample_index_t:, utils.RESET_INDEX_End_Day].reshape(1, -1) -
                        t_block[:, utils.TIME_GRID_MTM, np.newaxis])
@@ -5368,13 +5391,14 @@ def pv_discrete_asian_option(shared, time_grid, deal_data, nominal, spot, forwar
             value = nominal * theo_price
 
         discount_rates = torch.squeeze(
-            utils.calc_discount_rate(discount_block, tenor_block.reshape(-1, 1), shared),
+            utils.calc_discount_rate(discount_block, settle_block.reshape(-1, 1), shared),
             dim=1)
 
         mtm_list.append(value * discount_rates)
 
-    cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], value[-1])
     mtm = torch.cat(mtm_list, dim=0)
+    # the expiry row books what the payment is worth there, the payoff itself where it pays that day
+    cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], mtm[-1])
 
     return mtm
 

@@ -301,9 +301,41 @@ def test_a_barrier_pays_on_the_delivery_date_its_family_declares():
     assert touch > 0.0 and marked['KO_REBATE_D'] == pytest.approx(marked['KO_D'] + touch, rel=1e-12)
 
 
-def test_a_blank_delivery_date_settles_every_fx_option_a_quote_writes_where_it_did():
-    """Each FX option type a quote writes marks to the bit with `Delivery_Date` blank as stated on
-    its expiry, and each strip, settling on its own schedule, as stated on any day.
+#: A start-window barrier to six months on, a one-touch at 1.40 paid at expiry or at the touch, the
+#: no-touch, and a quarterly-averaged Asian, each on the world's pair and expiry
+PARTIAL = dict(BARRIER, Object='FXPartialTimeBarrierOption', Payoff_Currency='USD', Barrier_At_Start='Yes',
+               Barrier_Limit_Date=BASE + pd.DateOffset(months=6))
+TOUCH = {'Currency': 'USD', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD', 'Buy_Sell': 'Buy',
+         'Underlying_Currency': 'EUR', 'FX_Volatility': 'EUR.USD', 'Cash_Payoff': CASH,
+         'Expiry_Date': EXPIRY, 'Barrier_Type': 'Up', 'Barrier_Price': 1.40}
+PAID = {'PKO': dict(PARTIAL, Reference='PKO', Barrier_Type='Up_And_Out'),
+        'PKI_REBATE': dict(PARTIAL, Reference='PKI_REBATE', Barrier_Type='Up_And_In', Cash_Rebate=1.0),
+        'PKO_REBATE': dict(PARTIAL, Reference='PKO_REBATE', Barrier_Type='Up_And_Out', Cash_Rebate=1.0),
+        'OT': dict(TOUCH, Object='FXOneTouchOption', Reference='OT', Payment_Timing='Expiry'),
+        'OT_TOUCH': dict(TOUCH, Object='FXOneTouchOption', Reference='OT_TOUCH', Payment_Timing='Touch'),
+        'NT': dict(TOUCH, Object='FXNoTouchOption', Reference='NT'),
+        'ASIAN': dict(FX, Object='FXDiscreteExplicitAsianOption', Reference='ASIAN', Sampling_Data=[
+            [BASE + pd.DateOffset(months=m), 0.0, 1.0] for m in (3, 6, 9)] + [[EXPIRY, 0.0, 1.0]])}
+
+
+def test_an_fx_option_paid_at_expiry_pays_on_the_delivery_date_its_family_declares():
+    """`Delivery_Date` stated, each partial barrier, one-touch and no-touch paid at expiry and Asian
+    marks its blank twin discounted from the expiry to the delivery; a touch's payment is not.
+
+    Killing mutation: `carried_to_settlement` answering none, every one at its blank twin.
+    """
+    marked = marks([*PAID.values(), *(dict(deal, Reference=name + '_D', Delivery_Date=SETTLE)
+                                      for name, deal in PAID.items())])
+    for name in ('PKO', 'PKI_REBATE', 'OT', 'NT', 'ASIAN'):
+        assert marked[name + '_D'] == pytest.approx(marked[name] * df((SETTLE - EXPIRY).days), rel=1e-12), name
+    assert marked['OT_TOUCH_D'] == marked['OT_TOUCH'] > marked['OT'] > 0.0
+    touch = marked['PKO_REBATE'] - marked['PKO']
+    assert touch > 0.0 and marked['PKO_REBATE_D'] == pytest.approx(marked['PKO_D'] + touch, rel=1e-12)
+
+
+def test_a_blank_delivery_date_settles_every_fx_option_where_it_did():
+    """Each FX option type declaring `Delivery_Date` marks to the bit with it blank as stated on its
+    expiry, and each strip, settling on its own schedule, as stated on any day.
 
     Killing mutation: a blank `Delivery_Date` on the barrier read two days after the expiry.
     """
@@ -311,7 +343,7 @@ def test_a_blank_delivery_date_settles_every_fx_option_a_quote_writes_where_it_d
             for m in (3, 6, 9, 12)]
     strip = dict({k: v for k, v in FX.items() if k != 'Expiry_Date'}, LeverageNotional=2.0 * UNITS,
                  Strike_Price=FX_SPOT * 0.98)
-    deals = [FX, *KNOCKS.values(),
+    deals = [FX, *KNOCKS.values(), *PAID.values(),
              dict(strip, Object='FXTARFOptionDeal', Reference='TARF', TargetLevel=0.1,
                   TARF_ExpiryDates=rows, Expiry_Date=rows[-1][1]),
              dict(strip, Object='FXAccumulatorOptionDeal', Reference='ACCU', Barrier_Type='Up_And_Out',

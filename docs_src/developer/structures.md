@@ -167,10 +167,13 @@ A leg whose type observes a fixing table (`accrues`, off `schema.OBSERVES`) is a
   observes, the observed column 0.0 because a quote is struck today. The n-th fixing is the expiry
   of the vanilla `n × fixing_frequency` long and settles on that vanilla's delivery
   ([dates](#dates)), so the last fixing is the structure's own expiry and none is a step off the
-  previous date (31 Jan + 1M + 1M is 28 Mar). A tenor holding no fixing refuses, and so does one the
-  frequency does not divide, which would end the strip short of the tenor the ticket says.
+  previous date (31 Jan + 1M + 1M is 28 Mar). A day two tenors land on — a daily strip's weekend,
+  rolled onto its Monday — is one row, so a strip fixes once a day; a day tenor rolls onto a weekday,
+  so a daily strip still fixes on a weekday holiday. A tenor holding no fixing refuses, and so does
+  one the frequency does not divide, which would end the strip short of the tenor the ticket says.
   **Held by** `test_a_strip_ends_on_its_own_expiry_or_refuses`,
-  `test_a_quote_expires_and_delivers_on_the_dates_the_market_deals`.
+  `test_a_quote_expires_and_delivers_on_the_dates_the_market_deals`,
+  `test_a_daily_strip_fixes_once_on_each_weekday`.
 - **Expiry.** A TARF's `Expiry_Date` is its last settlement — a strip is not over until its last
   cashflow lands; `FXAccumulatorOptionDeal` declares no such field, so its block carries none. A
   type declaring a `Settlement_Date` (`FXRangeAccrualDeal`) pays the whole strip once, on the last
@@ -232,8 +235,9 @@ at the next valuation and nothing says so. A pin whose factor is no longer on th
 A number a client could be handed for a trade nobody can book is worse than a refusal, so
 `materialize`, `declared` and `quote` refuse by name: a missing required or unknown parameter, or
 one that is not what it declares; a pair the book quotes no surface for (naming those it does —
-otherwise every leg is dropped at load); an expiry that does not parse or lands on or before the
-base date (a zero-day option); a non-positive notional (premiums with the sign reversed); a stated
+otherwise every leg is dropped at load); a pair one of whose `FxRate`s the book does not carry,
+named before the pair's spot convention is read; an expiry that does not parse or lands on or
+before the base date (a zero-day option); a non-positive notional (premiums with the sign reversed); a stated
 barrier on or through the spot on its own side (a level on the spot is through already, and a
 decumulator knocking out above the market solves an attractive rate for a strip that is dead where
 it stands); a TARF on the quote currency; a strip whose frequency does not divide its tenor; an
@@ -243,6 +247,7 @@ than one coordinate. **Held by**
 `test_what_a_client_cannot_be_quoted_refuses_before_a_leg_is_priced`,
 `test_an_unparsed_tenor_refuses_rather_than_expiring_today`,
 `test_a_stated_level_on_the_dead_side_of_its_own_direction_refuses`,
+`test_a_book_without_a_rate_of_the_pair_refuses_it_by_name`,
 `test_service.py::test_a_quote_for_a_client_the_book_never_opened_refuses_at_the_ask`.
 
 ### Solves are bracketed {#solves}

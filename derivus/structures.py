@@ -765,7 +765,8 @@ def fixing_grid(base_date, expiry, frequency, convention):
     struck today. The k-th fixing is the expiry of the vanilla `k x frequency` long and settles on
     that vanilla's delivery (`tenor_dates` under `convention`), up to and including the tenor, so
     the last fixing is the structure's own expiry and each is dated off the base date rather than
-    stepped off the one before (31 Jan + 1M + 1M is 28 Mar, not 31 Mar).
+    stepped off the one before (31 Jan + 1M + 1M is 28 Mar, not 31 Mar). A day two tenors land on,
+    a weekend rolled onto its Monday, is one row: a strip fixes once a day.
 
     A tenor holding no whole fixing period refuses rather than returning an empty strip, and so
     does a frequency that does not DIVIDE the tenor - the strip would end short of the tenor that
@@ -782,7 +783,8 @@ def fixing_grid(base_date, expiry, frequency, convention):
             pd.DateOffset(**{unit: n * step for unit, n in period.items()})), convention)
         if timestamp(fixing) > last:
             break
-        rows.append([fixing, settles, 0.0])
+        if not rows or rows[-1][0] != fixing:
+            rows.append([fixing, settles, 0.0])
         step += 1
     if not rows:
         raise ValueError('a {} tenor holds no {} fixing - the strip would be empty and the '
@@ -1284,8 +1286,6 @@ def materialize(structure, params, document):
                                       for name in sorted(factors)
                                       if name.startswith(family)) or 'no FX surface'))
     base_date = timestamp(document['Calc']['Calculation']['Base_Date'])
-    convention = pair_convention(market, context.current_cfg.holidays, (base, quote_ccy))
-    expires, delivers = tenor_dates(base_date, params['expiry'], convention)
 
     out = []
     furnished = ('FXOptionDeal', 'FXBarrierOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
@@ -1306,6 +1306,9 @@ def materialize(structure, params, document):
         # the quoted axis is the deal's own only when its underlying is the pair's BASE currency
         inverted = underlying == quote_ccy
         seed = engine_spot(market, underlying, settlement)
+        # the convention reads both of the pair's rates, which `engine_spot` has just found
+        convention = pair_convention(market, context.current_cfg.holidays, (base, quote_ccy))
+        expires, delivers = tenor_dates(base_date, params['expiry'], convention)
         shared = {'Currency': settlement, 'Discount_Rate': utils.own_curve_name(settlement, factors),
                   'Underlying_Currency': underlying, 'Underlying_Amount': notional,
                   'FX_Volatility': surface, 'Expiry_Date': expires,

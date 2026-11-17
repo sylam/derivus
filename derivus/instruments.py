@@ -37,6 +37,12 @@ def option_date_info(deal, base_date):
     return (deal.field['Expiry_Date'] - base_date).days, (settlement_date - base_date).days
 
 
+def declared_settlement(deal, base_date):
+    """The day offset of the last day `deal`'s own declaration settles on (`settlement_days`)."""
+    return (max(day for *_, day in settlement_days(deal.field, declared_settlements(type(deal)))
+                if day is not None) - base_date).days
+
+
 def expiry_fixing(field, base_date, time_grid, deal_type):
     """The expiry's print as a one-row reset, which a deal expired before the base date states in
     its `Price_Fixing` table: a payoff settling after the expiry is on that print, not on today's spot."""
@@ -3878,6 +3884,7 @@ class FXDiscreteExplicitAsianOption(Deal):
         field_index.update({
             'SettleCurrency': self.field['Currency'],
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
+            'Settlement': declared_settlement(self, base_date),
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field['Option_Type'] == 'Call' else -1.0})
         field_index.update(self.samples(base_date, time_grid))
@@ -5932,6 +5939,7 @@ class FXOneTouchOption(TouchLifecycle, Deal):
             'Barrier_Underlying': get_cross_barrier_underlying(
                 (field['Underlying_Currency'], field['Currency']), stochastic_offsets),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
+            'Settlement': declared_settlement(self, base_date),
             'Barrier_Monitoring': self.barrier_monitoring(base_date)})
         return field_index
 
@@ -6024,9 +6032,7 @@ class FXBarrierOption(Deal):
                 (field['Underlying_Currency'], field['Currency']), stochastic_offsets),
             'Barrier_Monitoring': self.barrier_monitoring(base_date),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
-            # the day its declaration settles the payoff on, the expiry where Delivery_Date is blank
-            'Settlement': (max(day for *_, day in settlement_days(
-                self.field, declared_settlements(type(self)))) - base_date).days})
+            'Settlement': declared_settlement(self, base_date)})
         if payoff != field['Currency']:
             logging.warning("Quanto deal. TODO!!!!!!!")
         return field_index
@@ -6101,6 +6107,7 @@ class FXPartialTimeBarrierOption(Deal):
             'Barrier_Underlying': get_cross_barrier_underlying(
                 (field['Underlying_Currency'], field['Currency']), stochastic_offsets),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
+            'Settlement': declared_settlement(self, base_date),
             'Limit_Date': (self.field['Barrier_Limit_Date'] - base_date).days})
         return field_index
 
