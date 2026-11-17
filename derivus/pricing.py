@@ -5681,7 +5681,7 @@ def _pricer_cap_floor_daily(all_resets, strike, accrual, expiries, tenor, factor
     payoff = _cap_floor_payoff(
         all_resets, strike, factor_dep, expiries, tenor, call_or_put, shared, expiries)
     daily_int = accrual.view(1, -1, 1) * payoff
-    all_int = torch.segment_reduce(daily_int, reduce="sum", lengths=lengths, axis=1)
+    all_int = utils.segment_sum(daily_int, lengths=lengths, axis=1)
     margin = shared.one.new_zeros(lengths.shape[1])
 
     return all_int, margin
@@ -5807,8 +5807,8 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
         reset_offset = factor_dep['Cashflows'].offsets[start_index[index]][1]
         # a day pays every row's fixed amount and the interest of the rows holding resets: a bullet,
         # holding none, is held out of the fold
-        fixed = torch.segment_reduce(cashflows.tn[:, utils.CASHFLOW_INDEX_FixedAmt], 'sum',
-                                     lengths=shared.upload(cash_counts, torch.int64))
+        fixed = utils.segment_sum(cashflows.tn[:, utils.CASHFLOW_INDEX_FixedAmt],
+                                  lengths=shared.upload(cash_counts, torch.int64))
         resetting = (cashflows.np[:, utils.CASHFLOW_INDEX_NumResets] >= 1).astype(np.int64)
         if resetting.all():
             reset_cashflows = cashflows
@@ -5898,8 +5898,8 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 # BEFORE aggregating
                 if factor_dep['AveragingMethod'] != 'Pre_Aggregation':
                     if method == 'None':
-                        all_resets = torch.segment_reduce(all_resets * weight.view(1, -1, 1),
-                                                          reduce="sum", lengths=lengths, axis=1)
+                        all_resets = utils.segment_sum(all_resets * weight.view(1, -1, 1),
+                                                       lengths=lengths, axis=1)
                     else:
                         # the fixings compound, read back as the rate whose (rate + margin) accrual
                         # the pricer pays: Include_Margin compounds the margin with each fixing
@@ -5907,10 +5907,9 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                         a = accrual.view(1, -1, 1)
                         log_rt = torch.log1p((all_resets + torch.repeat_interleave(
                             margin, reset_split, dim=1)) * a if method == 'Include_Margin' else all_resets * a)
-                        sum_log = torch.segment_reduce(
-                            log_rt, reduce="sum", lengths=lengths, axis=1)
-                        sum_acc = torch.segment_reduce(
-                            accrual, reduce="sum", lengths=reset_split, axis=0).view(1, -1, 1)
+                        sum_log = utils.segment_sum(log_rt, lengths=lengths, axis=1)
+                        sum_acc = utils.segment_sum(
+                            accrual, lengths=reset_split, axis=0).view(1, -1, 1)
                         all_resets = torch.expm1(sum_log)/sum_acc
                         if method == 'Include_Margin':
                             all_resets = all_resets - margin
@@ -5919,8 +5918,8 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                             cum = torch.cumsum(log_rt, dim=1)
                             after = torch.exp(torch.repeat_interleave(
                                 cum[:, reset_split.cumsum(0) - 1], reset_split, dim=1) - cum)
-                            all_resets = all_resets + margin * (torch.segment_reduce(
-                                a * after, reduce="sum", lengths=lengths, axis=1) / sum_acc - 1.0)
+                            all_resets = all_resets + margin * (utils.segment_sum(
+                                a * after, lengths=lengths, axis=1) / sum_acc - 1.0)
 
             if cashflow_pricer in [pricer_cap, pricer_floor]:
                 # the vol surface's tenor axis: averaged because the cashflows are meant to share
@@ -6771,7 +6770,7 @@ def pv_credit_step_down_cashflows(shared, time_grid, deal_data):
         lengths = torch.as_tensor(
             [np.r_[0,hs.searchsorted(x, side='right')-1] for hs,x in zip(hazard_samples, future_pmts)],
             device=shared.one.device)
-        expected_coupons = torch.segment_reduce(trapz, reduce="sum", lengths=lengths.diff(), axis=1)
+        expected_coupons = utils.segment_sum(trapz, lengths=lengths.diff(), axis=1)
         # per-period nominal carries Principal, Amortisation and the coupon's own sign, the
         # protection buyer paying it
         premium = expected_coupons * cashflows.tn[cash_index, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)

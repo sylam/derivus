@@ -1896,6 +1896,30 @@ def join_resets(blocks, dim, deal_data, codes):
     return torch.cat(blocks, dim)
 
 
+class _SegmentSum(torch.autograd.Function):
+    """`torch.segment_reduce`'s sum, whose backward hands each element its segment's gradient in
+    differentiable ops so that a second derivative still goes through."""
+
+    @staticmethod
+    def forward(ctx, data, lengths, axis):
+        ctx.save_for_backward(lengths)
+        ctx.axis, ctx.size = axis, data.shape[axis]
+        return torch.segment_reduce(data, 'sum', lengths=lengths, axis=axis)
+
+    @staticmethod
+    def backward(ctx, grad):
+        lengths, = ctx.saved_tensors
+        row = lengths.reshape(-1, lengths.shape[-1])[0]
+        return torch.repeat_interleave(grad, row, dim=ctx.axis, output_size=ctx.size), None, None
+
+
+def segment_sum(data, lengths, axis=0):
+    """The sum of `data` over consecutive segments of `lengths` along `axis`, by
+    `torch.segment_reduce`, differentiable to every order. `lengths` is shaped as `segment_reduce`
+    takes it, every row along the leading axes holding the same segments."""
+    return _SegmentSum.apply(data, lengths, axis)
+
+
 def unstated_reset(reference, day):
     """Warn that a rate reset fixed by the base date states no rate and is fixed at 0%."""
     logging.warning(

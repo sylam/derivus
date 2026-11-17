@@ -72,10 +72,13 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import numpy as np
+import pandas as pd
 import pytest
 import torch
 
 import derivus as rf
+import rates_world
+import test_declared_defaults as book
 from derivus import utils
 from crn_ladder import ladder
 
@@ -527,5 +530,50 @@ def test_the_kernel_width_is_the_runs_path_count_and_not_one_batchs(tmp_path, ca
         assert abs(b / a - 1.0) <= 0.02, (
             'the corrected {} moved {:.2%} when the same 65536 paths were run in two batches, '
             'against a tolerance of 2%: {:.8g} -> {:.8g}'.format(name, b / a - 1.0, a, b))
+
+
+# ---------------------------------------------------------------- sums over periods of any length
+
+def _daily_swap(compounding, hessian='No', h=0.0):
+    """A 1Y swap paying 0.5% quarterly against daily resets on a 4.5% projection under 20bp
+    Hull-White vols: in the money on every path of every row, so the kink term reads zero. `h`
+    moves the projection curve's 1Y knot."""
+    deal = dict(rates_world.par_swap('DSWAP', 'USD', 'USD-PROJ', 'USD', 1, 0.5, fixed_frequency=3),
+                Index_Tenor=pd.DateOffset(days=1), Compounding_Method=compounding)
+    levels = [r + (h if t == 1.0 else 0.0) for t, r in zip(book.KNOTS, book.PROJECTION)]
+    factors = {
+        'SurvivalProb.CPTY': {'Recovery_Rate': 0.4,
+                              'Curve': utils.Curve([], [[0.0, 0.0], [10.0, 0.4]])},
+        'InterestRate.USD-PROJ': rates_world.market(
+            'USD', {'USD-PROJ': (book.KNOTS, levels)}, 'USD')['InterestRate.USD-PROJ']}
+    _, out = book.simulated(
+        [deal], ['USD', 'USD-PROJ'], factors=factors, sigma=0.002, prec=torch.float64,
+        Time_Grid='0d 3m(3m) 12m', Gradient_Variables='All', Credit_Valuation_Adjustment={
+            'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No',
+            'Stochastic_Hazard_Rates': 'No', 'Gradient': 'Yes', 'Hessian': hessian})
+    return out['Results']
+
+
+@pytest.mark.parametrize('compounding', ['None', 'OIS'])
+def test_a_swap_summing_daily_resets_reports_the_derivative_of_its_grad_cva(compounding):
+    """A swap summing daily resets reports `grad_cva_hessian`, symmetric, two of whose entries are
+    the central difference of `grad_cva` under common random numbers.
+
+    Killing mutations: `utils.segment_sum` as the bare `torch.segment_reduce`, or its backward
+    marked `once_differentiable`; either refuses the run.
+    """
+    results = _daily_swap(compounding, hessian='Yes')
+    assert np.asarray(results['mtm'].values).min() > 0.0, 'an exposure crosses zero'
+    hessian = results['grad_cva_hessian']
+    values = np.asarray(hessian.values, dtype=float)
+    assert np.abs(values - values.T).max() <= 1e-12 * np.abs(values).max(), 'not symmetric'
+
+    h, column = 1e-5, ('Gradient', 'InterestRate.USD-PROJ', 1.0, 0.0, 0.0)
+    difference = (_daily_swap(compounding, h=h)['grad_cva']['Gradient'] -
+                  _daily_swap(compounding, h=-h)['grad_cva']['Gradient']) / (2.0 * h)
+    for row in (('InterestRate.USD-PROJ', 1.0, 0.0, 0.0), ('InterestRate.USD', 1.0, 0.0, 0.0)):
+        reported = float(hessian.loc[row, column])
+        assert abs(difference.loc[row] / reported - 1.0) < 1e-8, (
+            row, reported, difference.loc[row])
 
 

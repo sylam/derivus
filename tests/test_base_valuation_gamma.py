@@ -34,6 +34,7 @@ TWO REFUSALS, both because the alternative is a number that looks right.
   `Recompute_Inner_MC` is refused for its own reason and gated in `test_recompute_equity_pricers`;
   over a registered correction it is never asked, the outer refusal firing whichever way it is set.
 """
+import json
 import os
 import sys
 
@@ -46,11 +47,13 @@ import pytest
 import torch
 from scipy.stats import norm
 
-from derivus import run_baseval, utils
-from derivus.config import Config
+from derivus import Context, run_baseval, utils
+from derivus.config import Config, CustomJsonEncoder
 from derivus.instruments import construct_instrument
 import rates_world as rw
+import test_declared_defaults as book
 import test_recompute_equity_pricers as re_
+import trial_credit
 
 DTYPE = torch.float64
 #: The device `run_baseval` hands a job, and therefore the one the seam gate must walk: its oracle
@@ -368,6 +371,113 @@ def test_the_swap_curve_convexity_is_the_derivative_of_the_reported_delta(h, tol
     assert scale > 1e6, 'no convexity was reported - the ladder has nothing to converge to'
     assert relative < tolerance, (
         f'h={h:g}: the reported convexity is {relative:.3e} off the differenced delta')
+
+
+# ---------------------------------------------------------------- sums over periods of any length
+
+DAILY = pd.DateOffset(days=1)
+DAILY_SWAP = dict(rw.par_swap('SWAP1', 'USD', 'USD-PROJ', 'USD', 3, 4.5), Index_Tenor=DAILY)
+
+#: Every deal whose pricing sums over periods of any length (`utils.segment_sum`): a 3Y swap's
+#: daily resets averaged, compounded OIS, with the margin and flat, an OIS cashflow list, a cap
+#: capping each daily fixing before it sums them, and a basket integrating each coupon period.
+SEGMENT_SUMS = {
+    'DNONE': dict(DAILY_SWAP, Reference='DNONE'),
+    'DOIS': dict(DAILY_SWAP, Reference='DOIS', Compounding_Method='OIS'),
+    'DINC': dict(DAILY_SWAP, Reference='DINC', Compounding_Method='Include_Margin',
+                 Floating_Margin=10.0),
+    'DFLAT': dict(DAILY_SWAP, Reference='DFLAT', Compounding_Method='Flat', Floating_Margin=10.0),
+    'OISL': rw.ois_swap('OISL', 'USD', 'USD', 12, 4.0),
+    'CAPPRE': {
+        'Object': 'CapDeal', 'Reference': 'CAPPRE', 'Currency': 'USD', 'Discount_Rate': 'USD',
+        'Forecast_Rate': 'USD-PROJ', 'Forecast_Rate_Volatility': 'USD-PROJ', 'Buy_Sell': 'Buy',
+        'Effective_Date': rw.BASE, 'Maturity_Date': rw.BASE + pd.DateOffset(years=1),
+        'Cap_Rate': 4.5, 'Principal': 1e6, 'Averaging_Method': 'Pre_Aggregation',
+        'Reset_Frequency': DAILY},
+    'NTD': trial_credit.DEALS[1]}
+
+#: The value and each first-order Greek in reported order under `Greeks: 'First'`, read on the
+#: CPU, of one deal per `segment_sum` call in the pricers.
+SEGMENT_SUM_PINS = {
+    'CAPPRE': ['0x1.13883acc6b2fcp+18', '-0x1.a83127461e782p+15', '-0x1.0a39b0ca6e0c0p+17',
+               '-0x1.66613623d7df8p+22', '0x1.8958957a60596p+25', '0x1.b7619b4efc001p+21',
+               '0x1.9c069cc2d484ep+18', '0x1.aa77056641958p+19', '0x1.a347a904f2047p+15'],
+    'DFLAT': ['0x1.d497df79e1440p+11', '-0x1.27c6cefd62449p+13', '0x1.8b0ff44b16b00p+10',
+              '0x1.83f4f6f0e5978p+15', '0x1.ef88456959015p+6', '0x1.011b56bb08000p+13',
+              '0x1.1ee60253f0000p+16', '0x1.512d71fd5ce5ap+21', '0x1.cd4b0d614e3edp+11'],
+    'DNONE': ['0x1.543d13cba6800p+7', '-0x1.1fa7d5302dd80p+13', '0x1.e776ab79144e0p+11',
+              '0x1.9c6e7c5f4a1f6p+15', '0x1.f436d0cb18479p+6', '0x1.fb30f7c4f4000p+12',
+              '0x1.1bbb3c9aae000p+16', '0x1.4d66e1707ce70p+21', '0x1.c8083a7b972a9p+11'],
+    'DOIS': ['0x1.b7343703a9900p+9', '-0x1.21427d6807cebp+13', '0x1.ae0d0cce6cc20p+11',
+             '0x1.9797a89722a10p+15', '0x1.f3483ca26a766p+6', '0x1.0162e7b652000p+13',
+             '0x1.1edbff0ab4000p+16', '0x1.512262771fd82p+21', '0x1.cd2d60a98a5b0p+11'],
+    'NTD': ['-0x1.28cf4f83a85a8p+18', '0x1.8ab1b1cd8bc3bp+14', '0x1.7f5108eea5303p+17',
+            '0x1.c39661d5fadb7p+17', '0x1.4ef30166094c4p+6', '0x1.f87c25eb0b071p+16',
+            '0x1.45b4d32dba478p+14', '0x1.f44d464678d60p+16', '0x1.41c51d1b81d0fp+14',
+            '0x1.f9500df650eddp+16', '0x1.467b740f059fdp+14']}
+
+#: (h, tolerance) of each deal's central difference, the tolerance ten times its measured gap. The
+#: cap's optionlets fixing in its first days curve sharply, so its difference is truncation-bound
+#: until h = 1e-6.
+SEGMENT_SUM_RUNGS = {
+    'DNONE': (1e-5, 1e-7), 'DOIS': (1e-5, 2e-8), 'DINC': (1e-5, 3e-8), 'DFLAT': (1e-5, 2e-7),
+    'OISL': (1e-5, 8e-9), 'CAPPRE': (1e-6, 5e-8), 'NTD': (1e-5, 1e-9)}
+
+
+def segment_sum_config(reference, bump=None):
+    """`SEGMENT_SUMS[reference]` alone in the declared-defaults world beside `trial_credit`'s names,
+    through the JSON contract; `bump` is `(label, h)`, h added to the point the Greeks label so."""
+    job = book.book([SEGMENT_SUMS[reference]])
+    factors = job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    factors.update(trial_credit.FACTORS)
+    if bump:
+        (name, *coordinates), h = bump
+        field = 'Surface' if 'Surface' in factors[name] else 'Curve'
+        points = factors[name][field].array.copy()
+        # a surface's label reads its coordinates in the reverse of the order its points hold them
+        width = points.shape[1] - 1
+        row, = np.flatnonzero((points[:, :width] == coordinates[:width][::-1]).all(axis=1))
+        points[row, -1] += h
+        factors[name] = dict(factors[name], **{field: utils.Curve([], points.tolist())})
+    context = Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), reference))
+    return context.current_cfg
+
+
+@pytest.mark.parametrize('reference', sorted(SEGMENT_SUM_PINS))
+def test_a_segment_sum_moves_no_bit_of_a_value_or_a_first_order_greek(reference):
+    """The value and every first-order Greek of one deal per segment-sum site, to the bit as pinned.
+
+    Killing mutation: the sum taken as a difference of cumulative sums.
+    """
+    value, first, _ = valued(segment_sum_config(reference), greeks='First')
+    read = [value.hex()] + [x.hex() for x in first_order(first)]
+    assert read == SEGMENT_SUM_PINS[reference], f'{reference} reads {read}'
+
+
+@pytest.mark.parametrize('reference', sorted(SEGMENT_SUM_RUNGS))
+def test_a_segment_summed_deal_reports_the_derivative_of_its_own_greeks(reference):
+    """Each deal's second-order block is the central difference of its first-order Greeks under a
+    bump of each input the block holds, scored by the block's largest entry.
+
+    Killing mutations: `utils.segment_sum` as the bare `torch.segment_reduce`, which refuses the
+    run; its backward marked `once_differentiable`, the compounded swaps' blocks 0.251 off.
+    """
+    h, tolerance = SEGMENT_SUM_RUNGS[reference]
+    _, first, second = valued(segment_sum_config(reference))
+    # a cumulative hazard's zero-tenor knot sits on the copula's clamp of a zero default probability
+    columns = [label for label in second.index
+               if not (label[0].startswith('SurvivalProb.') and label[1] == 0.0)]
+
+    def greeks(label, step):
+        frame = valued(segment_sum_config(reference, (label, step)), greeks='First')[1]
+        return first_order(frame.reindex(first.index, fill_value=0.0))
+
+    finite_difference = np.array([(greeks(label, h) - greeks(label, -h)) / (2.0 * h)
+                                  for label in columns]).T
+    reported = np.array([[entry(second, row, label) for label in columns] for row in first.index])
+    relative = np.abs(finite_difference - reported).max() / np.abs(reported).max()
+    assert relative < tolerance, f'{reference}: the block is {relative:.3e} off the difference'
 
 
 # ---------------------------------------------------------------- what it refuses
