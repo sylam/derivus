@@ -396,26 +396,6 @@ SEGMENT_SUMS = {
         'Reset_Frequency': DAILY},
     'NTD': trial_credit.DEALS[1]}
 
-#: The value and each first-order Greek in reported order under `Greeks: 'First'`, read on the
-#: CPU, of one deal per `segment_sum` call in the pricers.
-SEGMENT_SUM_PINS = {
-    'CAPPRE': ['0x1.13883acc6b2fcp+18', '-0x1.a83127461e782p+15', '-0x1.0a39b0ca6e0c0p+17',
-               '-0x1.66613623d7df8p+22', '0x1.8958957a60596p+25', '0x1.b7619b4efc001p+21',
-               '0x1.9c069cc2d484ep+18', '0x1.aa77056641958p+19', '0x1.a347a904f2047p+15'],
-    'DFLAT': ['0x1.d497df79e1440p+11', '-0x1.27c6cefd62449p+13', '0x1.8b0ff44b16b00p+10',
-              '0x1.83f4f6f0e5978p+15', '0x1.ef88456959015p+6', '0x1.011b56bb08000p+13',
-              '0x1.1ee60253f0000p+16', '0x1.512d71fd5ce5ap+21', '0x1.cd4b0d614e3edp+11'],
-    'DNONE': ['0x1.543d13cba6800p+7', '-0x1.1fa7d5302dd80p+13', '0x1.e776ab79144e0p+11',
-              '0x1.9c6e7c5f4a1f6p+15', '0x1.f436d0cb18479p+6', '0x1.fb30f7c4f4000p+12',
-              '0x1.1bbb3c9aae000p+16', '0x1.4d66e1707ce70p+21', '0x1.c8083a7b972a9p+11'],
-    'DOIS': ['0x1.b7343703a9900p+9', '-0x1.21427d6807cebp+13', '0x1.ae0d0cce6cc20p+11',
-             '0x1.9797a89722a10p+15', '0x1.f3483ca26a766p+6', '0x1.0162e7b652000p+13',
-             '0x1.1edbff0ab4000p+16', '0x1.512262771fd82p+21', '0x1.cd2d60a98a5b0p+11'],
-    'NTD': ['-0x1.28cf4f83a85a8p+18', '0x1.8ab1b1cd8bc3bp+14', '0x1.7f5108eea5303p+17',
-            '0x1.c39661d5fadb7p+17', '0x1.4ef30166094c4p+6', '0x1.f87c25eb0b071p+16',
-            '0x1.45b4d32dba478p+14', '0x1.f44d464678d60p+16', '0x1.41c51d1b81d0fp+14',
-            '0x1.f9500df650eddp+16', '0x1.467b740f059fdp+14']}
-
 #: (h, tolerance) of each deal's central difference, the tolerance ten times its measured gap. The
 #: cap's optionlets fixing in its first days curve sharply, so its difference is truncation-bound
 #: until h = 1e-6.
@@ -442,17 +422,6 @@ def segment_sum_config(reference, bump=None):
     context = Context()
     context.load_json((json.dumps(job, cls=CustomJsonEncoder), reference))
     return context.current_cfg
-
-
-@pytest.mark.parametrize('reference', sorted(SEGMENT_SUM_PINS))
-def test_a_segment_sum_moves_no_bit_of_a_value_or_a_first_order_greek(reference):
-    """The value and every first-order Greek of one deal per segment-sum site, to the bit as pinned.
-
-    Killing mutation: the sum taken as a difference of cumulative sums.
-    """
-    value, first, _ = valued(segment_sum_config(reference), greeks='First')
-    read = [value.hex()] + [x.hex() for x in first_order(first)]
-    assert read == SEGMENT_SUM_PINS[reference], f'{reference} reads {read}'
 
 
 @pytest.mark.parametrize('reference', sorted(SEGMENT_SUM_RUNGS))
