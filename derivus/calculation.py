@@ -100,7 +100,9 @@ class DealStructure(object):
         read is skipped and counted, or kept and marked at zero on every date where `exclude` is
         False, the exception stamped on it either way (`unpriced_because`, which the diary reads);
         a framework fault or a schedule refused by name (`utils.is_fatal_pricing_error`) is counted
-        and stamped too, and raised, never swallowed."""
+        and stamped too, and raised, never swallowed. A deal its own history ended
+        (`utils.InstrumentExpired`) has expired: stamped, left out under either switch and never
+        counted, as one whose last date is behind the base date is left out."""
         try:
             deal = deal.resolve_history(base_date, calendars, valuation_options or {})
             deal_time_dep = self.calc_time_dependency(base_date, deal, time_grid)
@@ -110,6 +112,10 @@ class DealStructure(object):
                 base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                 calendars), unit)
             stats['Deals loaded'] = stats.setdefault('Deals loaded', 0) + 1
+        except utils.InstrumentExpired as e:
+            logging.warning('skipping expired deal {0}'.format(e))
+            deal.unpriced_because = e
+            return
         except Exception as e:
             fatal = utils.is_fatal_pricing_error(e)
             logging.error('{0} {1} {2} - {3}'.format(

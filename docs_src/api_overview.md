@@ -543,7 +543,10 @@ answers the same page as the file `DataFrame.to_csv` writes, every number at ful
 attachment named by the table and the run (`mtm.<result_id, 12 characters>.csv`). A group of tables — `cashflows`, `scenarios` —
 is flattened to the path that names each one (`cashflows/ZAR`), because a group has no page. An
 unknown table, like an unknown result, is a `404`. An `error` result carries the message the run
-failed with, and nothing else.
+failed with, and nothing else. A run that skipped a deal or a structure it could not price, a
+`Stats` count ending `Skipped`, is an `error` naming the counts and the engine's own sentences, so a
+partly priced book is never answered as the book; a node stated `Ignore: 'True'` is counted under
+`Ignored` and an expired deal nowhere, and neither fails the run.
 
 **Generating a client.** The service publishes its own OpenAPI document at
 `http://localhost:8000/openapi.json`, with a summary and a description on every endpoint. An SPA

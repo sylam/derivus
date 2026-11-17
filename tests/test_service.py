@@ -238,6 +238,38 @@ def test_a_done_result_carries_the_run_stats():
     assert CLIENT.get('/results/statless').json()['stats'] == {}
 
 
+#: A cash flow discounted on a curve the market data has no block for: its compile cannot read it.
+UNREAD = dict(CASHFLOW, Reference='CF_GAP', Discount_Rate='ZAR-SWAP')
+
+
+@pytest.mark.parametrize('switch', ['Yes', 'No'])
+def test_a_run_that_skipped_a_deal_is_an_error_naming_it(switch):
+    """Beside an unreadable cash flow, under either `Exclude_Deals_With_Missing_Market_Data`, the
+    engine completes counting it under `Deals Skipped` and the service answers `error` naming the
+    deal and the curve. Killing mutation: `work` running the job without `run_whole` - done."""
+    document = job(deals=(CASHFLOW, UNREAD))
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'][
+        'Exclude_Deals_With_Missing_Market_Data'] = switch
+    _, result = run(document)
+    assert result['status'] == 'error', result
+    assert '1 Deals Skipped' in result['error'] and 'CF_GAP' in result['error'], result['error']
+    assert 'InterestRate.ZAR-SWAP' in result['error'], result['error']
+    _, out = in_process(document).run_job()
+    assert (out['Stats']['Deals loaded'], out['Stats']['Deals Skipped']) == (1, 1), out['Stats']
+
+
+def test_a_node_the_document_ignores_fails_nothing():
+    """The unreadable cash flow's node stated `Ignore: 'True'`: done, counted under `Ignored`, its
+    root the book's without the node to the bit. Killing mutation: `run_whole` reading `Ignored` as
+    a skip - the run errors."""
+    document = job(deals=(CASHFLOW, UNREAD))
+    document['Calc']['Deals']['Deals']['Children'][1]['Ignore'] = 'True'
+    result_id, result = run(document)
+    assert result['status'] == 'done' and result['stats']['Ignored'] == 1, result
+    assert 'Deals Skipped' not in result['stats'], result['stats']
+    assert mtm(result_id)['root'] == mtm(run(job())[0])['root'] != 0.0
+
+
 def test_the_ui_is_mounted_only_when_it_is_built(tmp_path):
     """The UI is an optional CLIENT, so the mount is a flag over a directory and an empty one
     refuses. The 404 on `/ui/portfolio` is pinned deliberately: `StaticFiles(html=True)` has no SPA
@@ -876,10 +908,9 @@ def test_a_candidate_naming_market_data_the_book_lacks_is_refused(book):
     """The what-if validates its candidate before it queues, in the booking's own words.
 
     A candidate naming a curve the book has no block for LOADS and is then dropped by discovery, so
-    the run came back `done` with `Deals Skipped: 1` and no mtm row - the candidate's absence was a
-    count and nothing else. The same candidate on a curve the book carries queues and prices, which
-    is what says the check reads the DELTA: a what-if is no more blocked by the book's own gaps
-    than a booking is.
+    unchecked it would queue a run that fails on `Deals Skipped: 1`. The same candidate on a curve
+    the book carries queues and prices, which is what says the check reads the DELTA: a what-if is
+    no more blocked by the book's own gaps than a booking is.
 
     Killing mutation: validate-before-write switched off, which writes a deal the book refuses.
     """
@@ -5610,6 +5641,41 @@ def recalc(netting_sets=None):
 
 def xva_rows():
     return {entry['reference']: entry for entry in CLIENT.get('/book/xva').json()['sets']}
+
+
+#: An equity autocall whose first coupon, half a year behind the book's date, printed exactly on its
+#: trigger: the note called then, its own history ending it with its last coupon still to come.
+CALLED = {'Object': 'QEDI_CustomAutoCallSwap', 'Reference': 'AC_CALLED', 'Currency': 'USD',
+          'Payoff_Currency': 'USD', 'Equity': 'EQ', 'Dividends': 'EQ', 'Discount_Rate': 'USD',
+          'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Strike_Price': EQ_SPOT, 'Units': 10.0,
+          'Barrier': 0.7, 'Expiry_Date': BASE + pd.DateOffset(days=2),
+          'Price_Fixing': [[BASE - pd.DateOffset(days=183), EQ_SPOT],
+                           [BASE - pd.DateOffset(days=1), 60.0]],
+          'Autocall_Coupons': [[BASE - pd.DateOffset(days=180), 0.04],
+                               [BASE + pd.DateOffset(days=2), 0.04]],
+          'Autocall_Thresholds': [[BASE - pd.DateOffset(days=180), 1.0],
+                                  [BASE + pd.DateOffset(days=2), 1.0]],
+          'Barrier_Dates': [BASE - pd.DateOffset(days=183), BASE - pd.DateOffset(days=1)]}
+
+
+def test_a_deal_its_history_ended_is_expired_and_fails_no_run(tmp_path, monkeypatch):
+    """The called note beside the cash flow is done, no `Deals Skipped`, its root the cash flow's
+    alone to the bit; beside a vanilla in a netting set its xVA row lands done. Killing mutation:
+    the expired note counted under `Deals Skipped` - both fail."""
+    factors = dict(FACTORS, **EQUITY)
+    held, result = run(job(deals=(CASHFLOW, CALLED), factors=factors))
+    assert result['status'] == 'done' and 'Deals Skipped' not in result['stats'], result
+    assert mtm(held)['root'] == mtm(run(job(factors=factors))[0])['root'] != 0.0
+    assert 'AC_CALLED' not in mtm(held)
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    xva_book(tmp_path, [netting_set('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A'), CALLED])])
+    try:
+        recalc(['NS_A'])
+        row = xva_rows()['NS_A']
+    finally:
+        service.BOOK = None
+    assert row['status'] == 'done' and row['cva'] > 0.0, row
 
 
 def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(desk_xva):

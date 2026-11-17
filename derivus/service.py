@@ -370,6 +370,24 @@ class PlanCache:
             return deepcopy(self.plans[plan_id])
 
 
+def run_whole(run_job):
+    """`run_job()`'s answer, or a refusal naming what the run skipped: a run whose `Stats` count
+    anything under a name ending `Skipped` priced part of its book, and a part is never answered
+    as the book. The refusal carries the counts and what the run said at ERROR on this thread."""
+    captured = utils.CapturedErrors()
+    logging.getLogger().addHandler(captured)
+    try:
+        answer = run_job()
+    finally:
+        logging.getLogger().removeHandler(captured)
+    skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(
+        answer[1].get('Stats', {}).items()) if name.endswith('Skipped'))
+    if skipped:
+        raise utils.UnpriceableSchedule('the run skipped what it could not price ({}): {}'.format(
+            skipped, '; '.join(dict.fromkeys(captured.messages))))
+    return answer
+
+
 class ComputeExecutor:
     """One worker thread over one priority queue, and the result store it alone writes.
 
@@ -506,13 +524,14 @@ class ComputeExecutor:
 
     def work(self):
         """Run one job at a time, forever. A job that fails is a result like any other, so the
-        thread survives it and the next job runs."""
+        thread survives it and the next job runs; a run that skipped what it could not price fails
+        (`run_whole`)."""
         while True:
             _, _, job = self.queue.get()
             with self.lock:
                 self.results[job.result_id] = {'status': 'running'}
             try:
-                _, out = job.context.run_job()
+                _, out = run_whole(job.context.run_job)
                 # Stats is a flat dict of timings and counts, not a table - through `tables_of` it
                 # would flatten into fake table paths
                 result = dict(status='done', tables=tables_of(as_json(out['Results'])),
@@ -1512,10 +1531,9 @@ def book_price(request: dict):
     `/execute`, and the same content addressing applies: the same what-if twice is one run.
 
     THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
-    candidate naming market data the book does not carry would load and then be DROPPED by
-    discovery, leaving a run whose only trace of it is `Deals Skipped`. It refuses 422 in the
-    booking's own words instead. The book's own deals are not re-validated - only what the
-    candidate adds.
+    candidate naming market data the book does not carry would load, be DROPPED by discovery and
+    fail the run after the queue (`run_whole`). It refuses 422 in the booking's own words instead.
+    The book's own deals are not re-validated - only what the candidate adds.
 
     THE LANE IS CURIOSITY AND NOT A PARAMETER: nothing here will ever be cited by a fact, so it
     mints nothing whether or not a spine home is configured. A candidate that becomes a trade is
@@ -3762,7 +3780,8 @@ class XvaJob:
     data carries no `SurvivalProb` block for - lands `status: 'failed'` with the engine's own
     wording, because a desk reads why a number is missing off the same file the numbers are in. The
     error still travels to the result store, so `/results/{result_id}` is never told otherwise. A
-    run that skipped a deal is a failed run: a dropped deal must never read as a smaller CVA.
+    run that skipped a deal is a failed run (`run_whole`): a dropped deal must never read as a
+    smaller CVA.
 
     It holds the set's DOCUMENT and the bytes of each file it names as its stamp hashed them, and
     the worker loads the one over the other onto the executor's long-lived context
@@ -3818,24 +3837,14 @@ class XvaJob:
         return self.row(status='done', **self.adjustments(result['tables'], stored=True))
 
     def run_job(self):
-        captured = CapturedErrors()
-        logging.getLogger().addHandler(captured)
         try:
             session = EXECUTOR.session_for(self.document, self.stamp['values_hash'])
             session.held = self.held
-            _, out = load(self.document, session).run_job()
-            skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(
-                out['Stats'].items()) if name.endswith('Skipped'))
-            if skipped:
-                raise utils.UnpriceableSchedule('the run skipped what it could not price ({}): {}'
-                                                .format(skipped, '; '.join(dict.fromkeys(
-                                                    captured.messages))))
+            _, out = run_whole(lambda: load(self.document, session).run_job())
             landed = self.adjustments(out['Results'])
         except Exception as error:
             write_row(self.reference, self.row(status='failed', error=str(error)))
             raise
-        finally:
-            logging.getLogger().removeHandler(captured)
         write_row(self.reference, self.row(status='done', **landed))
         return None, out
 
