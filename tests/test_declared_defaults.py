@@ -1176,14 +1176,15 @@ def test_a_blank_deflation_risk_free_or_funding_curve_is_the_report_currency_s_o
         run(curves, '', models=('EUR-ESTR',))
 
 
-def test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_child_it_omits():
+def test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_child_it_omits(caplog):
     """A credit Monte Carlo on a dollar cashflow, a Hull-White on its deflation curve. An FVA block
     omitting `Deflate_Stochastically` reports the FVA of the block stating its declared `Yes` to the
-    bit, not of `No`, and with no model on that curve is refused by name; a CVA block stating only
-    `Calculate` and `Counterparty` reports the CVA of the block stated whole, to the bit.
+    bit, not of `No`, and with no model on that curve is refused by name; one naming no counterparty
+    asks for no survival curve; a CVA block stating only `Calculate` and `Counterparty` reports the
+    CVA of the block stated whole, to the bit.
 
-    Killing mutation: the run completing its top level alone, a stated block's omitted child a
-    `KeyError`.
+    Killing mutations: the run completing its top level alone, a stated block's omitted child a
+    `KeyError`; discovery reading the counterparty key's presence, a blank one a curve asked for.
     """
     import trial_credit
 
@@ -1205,6 +1206,9 @@ def test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_c
     with pytest.raises(ValueError, match='Funding_Valuation_Adjustment.Deflate_Stochastically is Yes '
                                          'but USD has no model'):
         run('fva', 'USD-PROJ', Funding_Valuation_Adjustment=funding)
+    caplog.clear()
+    run('fva', Funding_Valuation_Adjustment=dict(funding, Counterparty=''))
+    assert 'SurvivalProb' not in caplog.text
     whole = dict(credit, Bank='', Deflate_Stochastically='Yes', Stochastic_Hazard_Rates='No',
                  Gradient='No', Hessian='No', CDS_Tenors=[])
     partial = run('cva', Credit_Valuation_Adjustment=credit)

@@ -1270,7 +1270,7 @@ class Config(object):
                 add_interest_rate(options['Funding_Valuation_Adjustment']['Risk_Free_Curve'])
 
                 # need to weight the FVA by the survival prob of the counterparty (if defined)
-                if 'Counterparty' in options['Funding_Valuation_Adjustment']:
+                if options['Funding_Valuation_Adjustment'].get('Counterparty'):
                     dependent_factors.update(get_rates(
                         utils.Factor('SurvivalProb', utils.check_rate_name(
                             options['Funding_Valuation_Adjustment']['Counterparty'])), {})
