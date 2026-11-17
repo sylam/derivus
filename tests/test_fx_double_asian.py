@@ -209,3 +209,21 @@ def test_a_double_asian_prices_every_row_of_a_credit_monte_carlo():
             grid, nomodel, profile.iloc[0].mean(), base)
         if models is hull_white[2]:
             assert (profile.loc[E] == 0.0).all(), profile.loc[E].describe()
+
+
+def test_a_double_asian_stating_a_delivery_date_is_discounted_to_it():
+    """The trialled option delivered four days after its expiry marks the option delivered on it
+    times four days' discount at the flat 4%, and a blank delivery date marks that one to the bit.
+
+    Killing mutation: the payoff discounted from the expiry whatever day the deal settles on.
+    """
+    last, early = [(m, None) for m in (9, 10, 11, 12)], [(m, None) for m in (1, 2, 3, 4)]
+
+    def mark(days=None):
+        terms = {} if days is None else {'Delivery_Date': {'.Timestamp': (
+            month(12) + pd.Timedelta(days=days)).strftime('%Y-%m-%d')}}
+        return float.fromhex(marks(option(last, early, **terms))['FXDASN'])
+
+    blank = mark()
+    assert mark(0) == blank != 0.0
+    assert abs(mark(4) / (blank * math.exp(-book.DISCOUNT[0] * 4.0 / 365.0)) - 1.0) < 1e-12

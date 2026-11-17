@@ -5408,7 +5408,8 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
     """Spread option on two discretely sampled averages, by two-moment matching on each leg and
     Bjerksund-Stensland on the pair, every sample forwarded on `carry` as the single Asian's is and
     reading the at-the-money vol at its own tenor. Past both averaging periods it is the intrinsic
-    on the realised spread."""
+    on the realised spread. The payoff is discounted from the deal's `Settlement`, its expiry where
+    it states none."""
     mtm_list = []
     factor_dep = deal_data.Factor_dep
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
@@ -5443,6 +5444,8 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
             utils.split_counts([discount, spot], counts, shared)):
         t_block = discount_block.time_grid
         tenor_block = factor_dep['Expiry'] - t_block[:, utils.TIME_GRID_MTM]
+        # discounted from the day the deal settles, its expiry where it states no later one
+        settle_block = factor_dep.get('Settlement', factor_dep['Expiry']) - t_block[:, utils.TIME_GRID_MTM]
         # each leg's samples fixed by this block, keyed by the block's merged sample count
         fixed = [leg_start[start_index[index]] for leg_start in start_samples]
         # the realized averages so far
@@ -5510,14 +5513,15 @@ def pv_discrete_double_asian_option(shared, time_grid, deal_data, nominal, spot,
             theo_price = factor_dep['Buy_Sell'] * smooth_relu(-factor_dep['Option_Type'] * K_bar)
 
         discount_rates = torch.squeeze(
-            utils.calc_discount_rate(discount_block, tenor_block.reshape(-1, 1), shared),
+            utils.calc_discount_rate(discount_block, settle_block.reshape(-1, 1), shared),
             dim=1)
 
         cash = nominal * theo_price
         mtm_list.append(cash * discount_rates)
 
-    cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], cash[-1])
     mtm = torch.cat(mtm_list, dim=0)
+    # the expiry row books what the payment is worth there, the payoff itself where it pays that day
+    cash_settle(shared, factor_dep['SettleCurrency'], deal_data.Time_dep.deal_time_grid[-1], mtm[-1])
 
     return mtm
 
