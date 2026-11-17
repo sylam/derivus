@@ -480,7 +480,10 @@ name, with its scenario's position, before anything is priced, and a factor the 
 is ignored. Each factor a scenario states is valued on the nodes its compiled leaf stands on
 (`Calculation.laid`): a curve read at the compiled tenors, a `Delta_Surface` solved on the
 log-moneyness grid the compiled surface was solved on (`bootstrappers.FXVol.pinned_grid`), and any
-other factor stated on other nodes refused by name. Where it has scenarios,
+other factor stated on other nodes refused by name. A correlation mints no leaf, so a scenario
+moving one is refused by name
+(`tests/test_compo_analytic_pricers.py::test_a_scenario_moving_a_correlation_is_refused_and_one_restating_it_changes_nothing`).
+Where it has scenarios,
 every factor of a type that carries a scenario axis (`SuppliedValuesModel.factor_types`: spots,
 bases, price indices, every curve and every vol surface and space) but the base currency's price is
 a `SuppliedValuesModel`, which draws nothing and publishes its value on each scenario of a pass as

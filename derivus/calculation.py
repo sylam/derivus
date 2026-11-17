@@ -478,7 +478,8 @@ class Calculation(object):
         """Price factor `factor`'s value as the price factors `moved` state it, on the nodes its
         compiled factor stands on: a delta surface solved on the grid the compiled one was solved on
         (`bootstrappers.FXVol.pinned_grid`), a curve read at its tenors, and any other factor stated
-        on other nodes refused by name. A factor nothing compiled is valued as stated."""
+        on other nodes refused by name, as a correlation moved is, which mints no leaf. A factor
+        nothing compiled is valued as stated."""
         from .bootstrappers import FXVol
 
         stated = construct_factor(factor, moved, self.config.params['Price Factor Interpolation'],
@@ -486,6 +487,12 @@ class Calculation(object):
         standing = getattr(self.all_factors.get(factor), 'factor', self.all_factors.get(factor))
         if standing is None:
             return stated.current_value()
+        if factor.type in utils.DimensionLessFactors and not np.array_equal(
+                stated.current_value(), standing.current_value()):
+            raise ValueError(
+                'ScenarioValuation: a scenario moves {}, and a correlation mints no leaf a scenario '
+                'writes: value that market as a base valuation'.format(
+                    utils.check_tuple_name(factor)))
         # the grid the compiled surface stands on, whatever tolerance refined it
         grid = FXVol.pinned_grid(standing.param, stated.expiry, standing.param.get(
             'Grid_Tolerance')) if isinstance(stated, riskfactors.Factor2D) and (
@@ -2899,7 +2906,7 @@ class ScenarioValuation(BaseValuation):
         '  one value a scenario, and a scenario stating a model\'s parameters is priced alone.',
         '  Each is read on the nodes the market\'s own stands on: a curve at its tenors, a',
         '  delta-quoted surface solved on the market surface\'s log-moneyness grid, and any other',
-        '  factor stated on other nodes refused',
+        '  factor stated on other nodes refused, as a scenario moving a correlation is',
         '- **Batch Size** the scenarios priced in one pass, as many as half the device\'s free memory',
         '  holds where 0',
         '- **MCMC Simulations**, **Quasi Seed**, **Deterministic Kernels** and **Branch And Weight**',

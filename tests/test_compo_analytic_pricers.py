@@ -737,3 +737,20 @@ def test_a_compo_booked_at_the_root_is_the_books_value_and_its_correlation_bump(
     assert out['Results']['mtm']['Value'].iloc[0] == _mtm(out, 'CV') != 0.0
     assert out['Results']['Correlation_Bump']['Gradient'].iloc[0] == pytest.approx(
         (up - down) / 0.05, rel=1e-9)
+
+
+def test_a_scenario_moving_a_correlation_is_refused_and_one_restating_it_changes_nothing():
+    """A compo call valued on scenarios: one stating its correlation at another value is refused by
+    name, a correlation minting no leaf a scenario writes, and one restating it where it stands
+    reports the base value. Killing mutation: the refusal dropped, the moved column the base value."""
+    key = 'Correlation.EquityPrice.EQ/FxRate.EUR.USD'
+
+    def valued(corr):
+        return _run(_job([_vanilla('CV')], _factors(), calc={
+            'Object': 'ScenarioValuation', 'Scenarios': [{key: {'Value': corr}}]}))['Results']['mtm']
+
+    with pytest.raises(ValueError, match='a scenario moves ' + key):
+        valued(0.8)
+    rows = valued(CORR)
+    row = rows[rows['Reference'] == 'CV'].iloc[0]
+    assert row[0] == row['Value'] != 0.0

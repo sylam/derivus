@@ -7064,7 +7064,7 @@ class SuppliedValuesModel(StochasticProcess):
     SPOTS = ('CommodityPrice', 'EquityPrice', 'FxRate', 'ObservedBasis', 'PriceIndex')
     #: The factor types a scenario axis is carried for, each read off `t_Scenario_Buffer` where a
     #: process publishes it: the spots and every curve, vol surface and vol space; a model's
-    #: parameters and a correlation are read off their static leaf alone.
+    #: parameters are read off their static leaf alone, and a correlation mints none.
     factor_types = SPOTS + tuple(
         utils.OneDimensionalFactors + utils.TwoDimensionalFactors + utils.ThreeDimensionalFactors)
 
