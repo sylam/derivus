@@ -3697,9 +3697,7 @@ def funding_curves(deal, risk_free):
     identically zero - FCA and FBA are both spreads OVER risk-free. That zero is a READING, not a
     placeholder: the remedy is to author `Funding_Rate` on the set.
 
-    Cost and benefit are the same curve because a single `Funding_Rate` is all the set declares,
-    and because `Config.calc_dependencies` registers the cost and risk-free curves as factor
-    dependencies but not the benefit one, so a benefit curve nothing else pulls in fails the run.
+    Cost and benefit are the same curve because a single `Funding_Rate` is all the set declares.
     """
     funding = deal.get('Funding_Rate') or risk_free
     return funding, funding
@@ -3724,23 +3722,21 @@ def xva_document(document, node, counterparty):
     bucket, so the CVA integrand divides it back out and the `cva` column reads the same either
     way, 0 ULP on both of the gate's sets. FVA keeps the scaled cube it is defined on.
 
-    The synthesized fields are a FLOOR: `setdefault` leaves a book stating its own path count,
-    batching or deflation curve alone, and an authored adjustment block keeps every field but the
-    counterparty. `Deflation_Interest_Rate` is synthesized because the declaration's default names
-    a ZAR curve a book need not carry - the report currency's own is the one deflation any book
-    that priced at all has, and the risk-free curve the funding spread is measured against.
+    The synthesized fields are a FLOOR: `setdefault` leaves a book stating its own path count or
+    batching alone, and an authored adjustment block keeps every field but the counterparty. The
+    risk-free curve the funding spread is measured against is the book's own deflation curve, blank
+    where it states none, as the engine reads a blank: the report currency's own curve.
     """
     run = deepcopy(document)
     job_children(run)[:] = [node]
     calculation = dict(run['Calc']['Calculation'], Object='CreditMonteCarlo')
     calculation.setdefault('Batch_Size', XVA_BATCH_SIZE)
     calculation.setdefault('Simulation_Batches', XVA_SIMULATION_BATCHES)
-    calculation.setdefault('Deflation_Interest_Rate', calculation.get('Currency'))
     block = dict(XVA_CVA_BLOCK, **(calculation.get('Credit_Valuation_Adjustment') or {}))
     block.update(Calculate='Yes', Counterparty=counterparty)
     calculation['Credit_Valuation_Adjustment'] = block
 
-    risk_free = calculation['Deflation_Interest_Rate']
+    risk_free = calculation.get('Deflation_Interest_Rate', '')
     cost, benefit = funding_curves(node['Instrument']['.Deal'], risk_free)
     funding = dict(XVA_FVA_BLOCK, Risk_Free_Curve=risk_free,
                    Funding_Cost_Interest_Curve=cost, Funding_Benefit_Interest_Curve=benefit,

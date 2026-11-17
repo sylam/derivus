@@ -1211,6 +1211,9 @@ class Config(object):
             return children, resets, settlement_currencies
 
         def add_interest_rate(curve_name):
+            # a blank is the report currency's own curve, which its `FxRate` brings with these dates
+            if not curve_name:
+                return
             interest_rate_factor = utils.Factor(
                 'InterestRate', utils.check_rate_name(curve_name))
 
@@ -1273,8 +1276,7 @@ class Config(object):
                             options['Funding_Valuation_Adjustment']['Counterparty'])), {})
                     )
 
-            if options.get('Deflation_Interest_Rate'):
-                add_interest_rate(options['Deflation_Interest_Rate'])
+            add_interest_rate(options.get('Deflation_Interest_Rate'))
 
             # update the linked factor max tenors
             missing_tenors = {}

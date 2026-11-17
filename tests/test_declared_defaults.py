@@ -87,9 +87,11 @@ CALENDARS = os.path.join(FIXTURES, 'data', 'calendars.cal')
 CALENDAR = 'Johannesburg'
 
 
-def world():
+def world(names=None):
     """`Price Factors` for the book: a USD discount and projection curve, a EUR leg crossed onto
-    USD, one FX surface, an equity, and the two rate-vol spaces a cap and a swaption read."""
+    USD, one FX surface, an equity, and the two rate-vol spaces a cap and a swaption read. `names`
+    files a currency's own curve as a book may: under the name it maps the currency to, every rate
+    and share naming it there, or, where that is blank, under the currency's with none naming it."""
     factors = rates_world.market(
         'USD', {'USD': (KNOTS, DISCOUNT), 'USD-PROJ': (KNOTS, PROJECTION)}, 'USD')
     factors['FxRate.EUR'] = {'Domestic_Currency': None, 'Interest_Rate': 'EUR', 'Spot': X0}
@@ -111,6 +113,10 @@ def world():
         'Surface': utils.Curve([], surface)}
     factors['InterestRateVol.USD-PROJ'] = {'Property_Aliases': None,
                                            'Surface': utils.Curve([], surface)}
+    for currency, name in (names or {}).items():
+        factors['InterestRate.' + (name or currency)] = factors.pop('InterestRate.' + currency)
+        factors.update({key: dict(block, Interest_Rate=name) for key, block in factors.items()
+                        if block.get('Interest_Rate') == currency})
     return factors
 
 #: `(Barrier_Type, barrier, strike, option type)` - both directions and both option types, each
@@ -971,8 +977,9 @@ def stripped(block):
     return out
 
 
-def book(deals):
-    """A base-valuation job document over `deals`, in the wire form `Context.load_json` reads."""
+def book(deals, names=None):
+    """A base-valuation job document over `deals` on the world `names` files, in the wire form
+    `Context.load_json` reads."""
     def node(deal):
         block = {key: value for key, value in deal.items() if key != 'Children'}
         out = {'Instrument': {'.Deal': block}}
@@ -988,13 +995,13 @@ def book(deals):
                   'Deals': {'Children': [node(deal) for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': WORLD_BASE},
-            'Valuation Configuration': {}, 'Price Factors': world()}}}}
+            'Valuation Configuration': {}, 'Price Factors': world(names)}}}}
 
 
-def marks(deals, factors=None, system=None):
-    """`{reference: mark as hex}` for one document, `factors` beside the world's and `system`
-    beside its System Parameters, and the statistics the run reported."""
-    job = book(deals)
+def marks(deals, factors=None, system=None, names=None):
+    """`{reference: mark as hex}` for one document, `factors` beside the world `names` files and
+    `system` beside its System Parameters, and the statistics the run reported."""
+    job = book(deals, names)
     job['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(factors or {})
     job['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters'].update(system or {})
     context = derivus.Context()
@@ -1006,17 +1013,17 @@ def marks(deals, factors=None, system=None):
 
 
 def simulated(deals, curves, factors=None, sigma=0.01, prec=None, system=None, models=None,
-              **calculation):
-    """A credit Monte Carlo over `deals` held under one netting set, a Hull-White of volatility
-    `sigma` on each of `curves` and `models` `{factor: (model, block)}` beside them, `system` beside
-    the System Parameters, through the JSON contract and in the torch precision `prec` where one is
-    given: `(calculation, output)`."""
-    job = json.loads(json.dumps(book(deals), cls=CustomJsonEncoder))
+              names=None, **calculation):
+    """A credit Monte Carlo over `deals` held under one netting set on the world `names` files, a
+    Hull-White of volatility `sigma` on each of `curves` and `models` `{factor: (model, block)}`
+    beside them, `system` beside the System Parameters, through the JSON contract and in the torch
+    precision `prec` where one is given: `(calculation, output)`."""
+    job = json.loads(json.dumps(book(deals, names), cls=CustomJsonEncoder))
     calc = job['Calc']
-    calc['Calculation'] = dict(
-        Object='CreditMonteCarlo', Base_Date=calc['Calculation']['Base_Date'], Currency='USD',
-        Time_Grid='0d 3m(3m)', Batch_Size=256, Random_Seed=1, Deflation_Interest_Rate='USD',
-        DealLevel=True, **calculation)
+    calc['Calculation'] = dict({
+        'Object': 'CreditMonteCarlo', 'Base_Date': calc['Calculation']['Base_Date'], 'Currency': 'USD',
+        'Time_Grid': '0d 3m(3m)', 'Batch_Size': 256, 'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD',
+        'DealLevel': True}, **calculation)
     calc['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
         'Collateralized': 'False'}}, 'Children': calc['Deals']['Deals']['Children']}]
@@ -1071,6 +1078,96 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
                                       if lean_marks[key] != full_marks[key]]
     assert all(lean_marks[deal['Reference']] != float(0).hex() for deal in BOOK
                if deal['Object'] != 'NettingCollateralSet')
+
+
+#: How a book may file each currency's own curve (`world`): under the currency's name with its
+#: `FxRate` naming it, under it with none naming it, or under another name with nothing left under
+#: the currency's.
+BARE, UNNAMED, RENAMED = {'USD': 'USD', 'EUR': 'EUR'}, {'USD': '', 'EUR': ''}, {
+    'USD': 'USD-OIS', 'EUR': 'EUR-ESTR'}
+
+
+def own_curves(deal, names):
+    """`deal`, legs included, as an author leaving blank every discount curve it may that is its
+    currency's own, and naming any other curve of a currency as `names` files it."""
+    cls = getattr(instruments, deal['Object'])
+    out = {}
+    for key, value in deal.items():
+        if key == 'Children':
+            out[key] = [own_curves(child, names) for child in value]
+        elif 'InterestRate' not in cls.factor_fields.get(key, ()) or value not in names:
+            out[key] = value
+        elif not key.endswith('Discount_Rate') or key not in declared(cls):
+            out[key] = names[value] or value
+    return out
+
+
+def test_a_blank_curve_is_its_currency_s_own_whatever_the_book_calls_it():
+    """Every family's trial book (`tests/test_position_scaling.py`), and an equity knock-out its
+    history knocked out today, priced with every discount curve a deal may leave blank that is its
+    currency's own left blank (`own_curves`), marks to the bit as the book stating them: on curves
+    filed under their currencies' names, on the same curves with no `FxRate` naming them, and on
+    curves filed under other names with nothing under a bare currency. The families reach every
+    deal site reading a blank discount curve through `Deal.discount_name` - an FX
+    option's `fx_pair`, both legs of a mark-to-market cross-currency swap, a non-deliverable
+    forward's settlement currency, a commodity option's payoff currency, a swaplet list's paid one -
+    and the knock-out's rebate cashflow carries the barrier's blank.
+
+    Killing mutation: `discount_name` falling back to the bare currency, under which the renamed
+    book skips every deal leaving its curve blank (`Cannot find InterestRate.USD`).
+    """
+    import test_position_scaling as scaling
+    import trial_equity
+
+    knocked = dict(next(deal for deal in trial_equity.DEALS if deal['Reference'] == 'EQKO'),
+                   Reference='EQKO_HIT', Barrier_Dates=[[WORLD_BASE, 85.0]] + trial_equity.MONTHLY)
+    for family, trial in scaling.FAMILIES.items():
+        deals = trial.DEALS + [knocked] * (family == 'equity')
+        stated, _ = marks(deals, trial.FACTORS)
+        assert set(scaling.references(deals)) <= set(stated), family
+        for names in (BARE, UNNAMED, RENAMED):
+            blank, stats = marks([own_curves(deal, names) for deal in deals], trial.FACTORS,
+                                 names=names)
+            assert stats.get('Deals Skipped', 0) == 0, (family, names, stats)
+            assert blank == stated, (family, names, sorted(key for key in stated
+                                                           if blank.get(key) != stated[key]))
+        if family == 'equity':
+            assert float.fromhex(stated['EQKO_HIT']) == 500.0, 'the knock-out is its rebate today'
+
+
+def test_a_blank_deflation_risk_free_or_funding_curve_is_the_report_currency_s_own():
+    """A credit Monte Carlo on the renamed world over a euro cashflow alone, so no deal reads the
+    dollar curve, deflated stochastically on it. Leaving blank the deflation and risk-free curves,
+    funding stated at `USD-PROJ`, or the deflation and both funding curves, risk-free stated at
+    `USD-PROJ`, reports the CVA and the FVA to the bit as the job naming `USD-OIS` in their place:
+    the report currency's own, which its `FxRate` brings into the run. With no model on it a blank
+    deflation read stochastically is refused naming that curve.
+
+    Killing mutations: a blank read as the bare report currency, under which every blank job fails
+    (`Cannot find InterestRate.USD`); the refusal naming the stated deflation, a blank.
+    """
+    import trial_credit
+
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'EUR',
+                'Amount': 1e6, 'Payment_Date': WORLD_EXPIRY}
+    credit = {'Calculate': 'Yes', 'Counterparty': 'ISSUER_A', 'Deflate_Stochastically': 'Yes',
+              'Stochastic_Hazard_Rates': 'No'}
+    curves = ('Risk_Free_Curve', 'Funding_Cost_Interest_Curve', 'Funding_Benefit_Interest_Curve')
+
+    def run(blanks, own, models=('USD-OIS',)):
+        """`(cva, fva)` with the deflation curve and the funding block's `blanks` stating `own`."""
+        funding = dict({key: own if key in blanks else 'USD-PROJ' for key in curves},
+                       Calculate='Yes', Counterparty='ISSUER_A', Deflate_Stochastically='Yes')
+        _, out = simulated([cashflow], models, trial_credit.FACTORS, names=RENAMED,
+                           Deflation_Interest_Rate=own, Credit_Valuation_Adjustment=credit,
+                           Funding_Valuation_Adjustment=funding)
+        return float(out['Results']['cva']), float(out['Results']['fva'])
+
+    for blanks in (curves[:1], curves[1:]):
+        blank, named = run(blanks, ''), run(blanks, 'USD-OIS')
+        assert blank == named and blank[0] > 0.0 and blank[1] != 0.0, (blanks, blank, named)
+    with pytest.raises(ValueError, match='Deflate_Stochastically is Yes but USD-OIS has no model'):
+        run(curves, '', models=('EUR-ESTR',))
 
 
 def test_a_cap_stated_by_its_terms_prices_its_caplets():

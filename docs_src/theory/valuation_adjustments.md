@@ -30,8 +30,10 @@ counterparty defaults; the bank's own default, and with it DVA, is not modelled.
 Every reported adjustment is a mean over batches of the per-batch estimate; with equal batches this
 is the mean over all $N$ paths. Amounts are in the reporting currency at today's FX.
 
-**The deflator.** With `Deflate_Stochastically: No`, $D(t_i)=P(0,t_i)$, today's discount factor
-off the deflation curve, the same on every path. With `Yes`,
+**The deflator.** The deflation curve is `Deflation_Interest_Rate`, the reporting currency's own
+curve where it is blank: the curve that currency's `FxRate` names, its own code where it names none.
+With `Deflate_Stochastically: No`, $D(t_i)=P(0,t_i)$, today's discount factor off the deflation
+curve, the same on every path. With `Yes`,
 
 $$D_k(t_i)=\exp\Big(-\sum_{j=1}^{i}y_k(t_j;\Delta_j)\,\Delta_j\Big),\qquad D_k(t_0)=1,$$
 
@@ -118,14 +120,14 @@ reads `No`.
 | | `Gradient`, `Hessian` | `No`, `No` | Sensitivities below |
 | | `CDS_Tenors` | `[]` | years; par CDS rates and the CS01 map |
 | | `Bank` | blank | not read |
-| `Funding_Valuation_Adjustment` | `Funding_Cost_Interest_Curve`, `Funding_Benefit_Interest_Curve`, `Risk_Free_Curve` | blank | $c$, $b$, $f$ |
+| `Funding_Valuation_Adjustment` | `Funding_Cost_Interest_Curve`, `Funding_Benefit_Interest_Curve`, `Risk_Free_Curve` | blank | $c$, $b$, $f$, each the reporting currency's own curve where blank, so a blank funding curve beside a blank risk-free one reads a zero spread |
 | | `Deflate_Stochastically`, `Gradient` | `Yes`, `No` | as above |
 | | `Counterparty`, `Bank`, `Stochastic_Funding` | blank, blank, `No` | see FVA |
 | top level | `Batch_Size`, `Simulation_Batches`, `Random_Seed`, `Antithetic` | 1024, 1, 5120, `No` | paths and seed |
 | | `Quasi_Seed` | 1234 | the quasi-random draws: a pricer's inner paths and the Sobol-driven processes |
 | | `Time_Grid`, `Dynamic_Scenario_Dates` | `0d 2d 1w(1w) 3m(1m) 2y(3m)`, `Yes` | the grids |
 | | `MCMC_Simulations` | 2048 | inner paths of a Monte Carlo pricer |
-| | `Deflation_Interest_Rate`, `Currency`, `Percentile` | `ZAR-SWAP`, `ZAR`, `95` | the deflator, the reporting currency, the PFE |
+| | `Deflation_Interest_Rate`, `Currency`, `Percentile` | blank, required, `95` | the deflator (the reporting currency's own curve where blank), the reporting currency, the PFE |
 | | `NoModel`, `Gradient_Variables` | `Constant`, `All` | unmodelled factors; which leaves are differentiated |
 | | `Gradient_Total` | `No` | the gradients asked for, reported as one sum |
 | | `Boundary_AAD_Bandwidth`, `Boundary_AAD_Margin_Calls` | 0.01, `No` | the boundary correction's kernel width, and whether margin calls register for it |

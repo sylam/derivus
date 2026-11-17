@@ -58,7 +58,7 @@ containers that is:
 | every `Calculate`, `Gradient` and `Hessian`; `CDS_Tenors` | the declared default |
 | `Funding_Valuation_Adjustment.Deflate_Stochastically` | **`No`**, where the declaration says `Yes` |
 | `Credit_Valuation_Adjustment`: `Counterparty`, `Deflate_Stochastically`, `Stochastic_Hazard_Rates` | no fallback: a stated block with `Calculate: Yes` must carry them |
-| `Funding_Valuation_Adjustment`: the three curves | no fallback, as above |
+| `Funding_Valuation_Adjustment`: the three curves | no fallback, as above; a curve stated blank is the reporting currency's own, as a blank `Deflation_Interest_Rate` is |
 | `Initial_Margin`: every field but `Calculate` | no fallback, read under `Calculate: Yes` |
 | `Bank` (CVA and FVA), `Stochastic_Funding` (FVA) | read by nothing |
 

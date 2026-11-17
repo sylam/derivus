@@ -5968,6 +5968,43 @@ def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
             service.XvaJob.adjustments(on_results), deal['Reference']
 
 
+def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path, monkeypatch):
+    """A book whose rates name `USD-OIS` and `ZAR-OIS` and which files no curve under a bare
+    currency, its deals and sets leaving their discount and funding curves blank and its calculation
+    stating no deflation curve: the recalc lands both columns of each set, a real CVA beside NS_A's
+    FVA funding at `FUND` and NS_B's exact zero, and the run it builds names no curve the book did
+    not, the engine reading a blank as the report currency's own.
+
+    Killing mutation: the recalc deflating on the report currency's code, `USD`, which this book
+    does not carry, so both rows land failed.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    vanilla = {key: value for key, value in VANILLA.items() if key != 'Discount_Rate'}
+    path = xva_book(tmp_path, [
+        netting_set('NS_A', 'CPTY_A', [dict(vanilla, Reference='OPT_A')], funding_rate='FUND'),
+        netting_set('NS_B', 'CPTY_B', [dict(vanilla, Reference='OPT_B')], funding_rate='')])
+    document = json.loads(path.read_text())
+    factors = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    for currency in ('USD', 'ZAR'):
+        factors['InterestRate.{}-OIS'.format(currency)] = factors.pop('InterestRate.' + currency)
+        factors.update({key: dict(block, Interest_Rate=currency + '-OIS') for key, block
+                        in factors.items() if block.get('Interest_Rate') == currency})
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    try:
+        recalc()
+        rows = xva_rows()
+        assert all(row['status'] == 'done' and row['cva'] > 0.0 for row in rows.values()), [
+            row['error'] for row in rows.values()]
+        assert rows['NS_A']['fva'] > 0.0 and rows['NS_B']['fva'] == 0.0, rows
+        for _, node in service.netting_sets(document):
+            run = service.xva_document(document, node, '')['Calc']['Calculation']
+            funding = run['Funding_Valuation_Adjustment']
+            assert 'Deflation_Interest_Rate' not in run and funding['Risk_Free_Curve'] == ''
+            assert funding['Funding_Cost_Interest_Curve'] == node['Instrument']['.Deal']['Funding_Rate']
+    finally:
+        service.BOOK = None
+
+
 def test_a_row_filed_before_the_fva_column_existed_still_reads(desk_xva, tmp_path):
     """STALENESS IS DATA IN TIME AS WELL AS ACROSS SETS. A row written when CVA was the only
     adjustment has no `fva` key, and the view reads it as what it is - a done run with a real

@@ -980,7 +980,8 @@ class CreditMonteCarlo(Calculation):
         '- $V(t)$ is the deflated funding profile at time $t$',
         '- $f_{fc,C}(t)$ and $f_{fb,C}(t)$ are the forward rates of **Funding Cost Interest Curve** and',
         '  **Funding Benefit Interest Curve**',
-        '- $f_{rf,C}(t)$ is the forward rate of **Risk Free Curve**',
+        '- $f_{rf,C}(t)$ is the forward rate of **Risk Free Curve**, each of the three curves the reporting',
+        '  currency\'s own where blank',
         '- $SP_C(t)=S(0,t)$ is the survival probability of the counterparty each netting set names under',
         '  **Credit Support Amounts**.',
         '',
@@ -1002,7 +1003,8 @@ class CreditMonteCarlo(Calculation):
         '',
         'Calculation parameters are extended from the Base Valuation with these fields:',
         '',
-        ' - **Deflation Interest Rate** - the interest rate price factor that PVs the exposure to today',
+        ' - **Deflation Interest Rate** - the interest rate price factor that PVs the exposure to today, the',
+        '   reporting currency\'s own curve where blank (the curve its `FxRate` names)',
         ' - **Batch Size** - the number of simulations per batch (default 1024). Smaller batch sizes are more',
         '   likely to fit in memory; larger ones run quicker. Usually a power of 2.',
         ' - **Simulation Batches** - the number of batches to run (default 1). The total number of',
@@ -1030,7 +1032,8 @@ class CreditMonteCarlo(Calculation):
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default=REQUIRED),
         F('Time_Grid', 'Text', default='0d 2d 1w(1w) 3m(1m) 2y(3m)'),
-        F('Deflation_Interest_Rate', 'Text', default='ZAR-SWAP'),
+        F('Deflation_Interest_Rate', 'Text', default='', convention=True,
+          description='The curve the exposure is deflated on, blank being the reporting currency\'s own'),
         F('Percentile', 'Text', default='95'),
         F('MCMC_Simulations', 'Integer', default=2048),
         F('Simulation_Batches', 'Integer', default=1),
@@ -1624,6 +1627,16 @@ class CreditMonteCarlo(Calculation):
                 'declare a Price Models entry for a factor the deals reach, or run this book as '
                 'a BaseValuation')
 
+    def curve(self, name):
+        """The code of the curve `name` names, the reporting currency's own where it is blank
+        (`instruments.get_fx_zero_rate_factor`)."""
+        if name:
+            return get_interest_factor(
+                utils.check_rate_name(name), self.static_factors, self.stoch_factors, self.all_tenors)
+        return instruments.get_fx_zero_rate_factor(
+            utils.check_rate_name(self.params['Currency']), self.static_factors, self.stoch_factors,
+            self.all_tenors, self.all_factors)
+
     def execute(self, params, job_id=0, num_jobs=1, deterministic_batches=False):
         """Run the batched exposure simulation plus whichever sub-calculations `params` enables
         (collateral, initial margin, CVA, FVA, scenarios, cashflows) and return the netting sets,
@@ -1855,23 +1868,14 @@ class CreditMonteCarlo(Calculation):
             if params['Funding_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes':
                 mtm_grid = self.time_grid.mtm_time_grid[time_index]
 
-                funding_cost = get_interest_factor(
-                    utils.check_rate_name(params['Funding_Valuation_Adjustment']['Funding_Cost_Interest_Curve']),
-                    self.static_factors, self.stoch_factors, self.all_tenors)
-                funding_benefit = get_interest_factor(
-                    utils.check_rate_name(params['Funding_Valuation_Adjustment']['Funding_Benefit_Interest_Curve']),
-                    self.static_factors, self.stoch_factors, self.all_tenors)
-                riskfree = get_interest_factor(
-                    utils.check_rate_name(params['Funding_Valuation_Adjustment']['Risk_Free_Curve']),
-                    self.static_factors, self.stoch_factors, self.all_tenors)
-                discount = get_interest_factor(
-                    utils.check_rate_name(params['Deflation_Interest_Rate']),
-                    self.static_factors, self.stoch_factors, self.all_tenors)
+                funding_cost = self.curve(params['Funding_Valuation_Adjustment']['Funding_Cost_Interest_Curve'])
+                funding_benefit = self.curve(params['Funding_Valuation_Adjustment']['Funding_Benefit_Interest_Curve'])
+                riskfree = self.curve(params['Funding_Valuation_Adjustment']['Risk_Free_Curve'])
+                discount = self.curve(params['Deflation_Interest_Rate'])
 
                 # note that for FVA, we already scale the exposure matrix by the survival probability
                 if params['Funding_Valuation_Adjustment'].get('Deflate_Stochastically', 'No') == 'Yes':
-                    needs_model(discount, 'Funding_Valuation_Adjustment.Deflate_Stochastically',
-                                params['Deflation_Interest_Rate'])
+                    needs_model(discount, 'Funding_Valuation_Adjustment.Deflate_Stochastically')
                     delta_scen_t = np.diff(mtm_grid).reshape(-1, 1)
 
                     deflation = utils.calc_time_grid_curve_rate(
@@ -1954,9 +1958,7 @@ class CreditMonteCarlo(Calculation):
                             self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
             if params['Credit_Valuation_Adjustment'].get('Calculate', 'No') == 'Yes':
-                discount = get_interest_factor(
-                    utils.check_rate_name(params['Deflation_Interest_Rate']),
-                    self.static_factors, self.stoch_factors, self.all_tenors)
+                discount = self.curve(params['Deflation_Interest_Rate'])
                 survival = get_survival_factor(
                     utils.check_rate_name(params['Credit_Valuation_Adjustment']['Counterparty']),
                     self.static_factors, self.stoch_factors, self.all_tenors)
@@ -1969,8 +1971,7 @@ class CreditMonteCarlo(Calculation):
                 delta_scen_t = np.hstack((0.0, np.diff(mtm_grid)))
 
                 if params['Credit_Valuation_Adjustment']['Deflate_Stochastically'] == 'Yes':
-                    needs_model(discount, 'Credit_Valuation_Adjustment.Deflate_Stochastically',
-                                params['Deflation_Interest_Rate'])
+                    needs_model(discount, 'Credit_Valuation_Adjustment.Deflate_Stochastically')
                     zero = utils.calc_time_grid_curve_rate(
                         discount, self.time_grid.time_grid[time_index], shared_mem)
                     Dt_T = torch.exp(-torch.squeeze(zero.gather_weighted_curve(
@@ -1992,8 +1993,7 @@ class CreditMonteCarlo(Calculation):
                 pv_exposure = torch.relu(tensors['mtm'] * unscale * fx_report * Dt_T) / fx_report[0]
 
                 if params['Credit_Valuation_Adjustment']['Stochastic_Hazard_Rates'] == 'Yes':
-                    needs_model(survival, 'Credit_Valuation_Adjustment.Stochastic_Hazard_Rates',
-                                params['Credit_Valuation_Adjustment']['Counterparty'])
+                    needs_model(survival, 'Credit_Valuation_Adjustment.Stochastic_Hazard_Rates')
                     surv = utils.calc_time_grid_curve_rate(
                         survival, self.time_grid.time_grid[time_index], shared_mem)
                     St_T = torch.exp(-torch.cumsum(torch.squeeze(surv.gather_weighted_curve(
@@ -5714,10 +5714,11 @@ def summarize_data(data, percentiles):
     return pd.DataFrame(exposure)
 
 
-def needs_model(code, switch, name):
-    """A stochastic reading of a curve needs a model on that curve."""
+def needs_model(code, switch):
+    """A stochastic reading of a curve needs a model on that curve, named off its `code`."""
     if not any(rate[utils.FACTOR_INDEX_Stoch] for rate in code):
-        raise ValueError('{} is Yes but {} has no model: give it a model or state No'.format(switch, name))
+        raise ValueError('{} is Yes but {} has no model: give it a model or state No'.format(
+            switch, '.'.join(code[-1][utils.FACTOR_INDEX_Offset].name)))
 
 
 def worker_count(runparallel):

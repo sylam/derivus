@@ -694,7 +694,8 @@ class FxRate(Factor0D):
     fields = [
         F('Domestic_Currency', 'Text', default=''),
         F('Interest_Rate', 'Text', default='',
-          description='Associated interest rate curve name'),
+          description='The currency\'s own curve, which its forward and a blank discount curve read, '
+                      'its own code where blank'),
         F('Spot', 'Float', default=0.0, bind='value', description='Spot rate in base currency'),
         F('Settlement_Days', 'Integer', default=2, convention=True,
           description='Business days from a day to its spot date on a pair of this currency against USD'),
