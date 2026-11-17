@@ -665,18 +665,16 @@ class CSA:
         collateralise nothing, the engine then holding no collateral at all.
 
         `{Agreement_Currency, Balance_Currency, <each of DIALS>, haircuts}`: every
-        `CreditSupportList` at its first value, None where the terms state none - the independent
-        amount excepted, which the engine reads as nothing - the balance currency the agreement's
-        where unstated, and `haircuts` `{currency: Haircut_Posted}` off the cash rows of
-        `Collateral_Assets`, a currency being the one asset a close's spots value.
+        `CreditSupportList` at its first value, nothing where the terms state none, the balance
+        currency the agreement's where unstated, and `haircuts` `{currency: Haircut_Posted}` off the
+        cash rows of `Collateral_Assets`, a currency being the one asset a close's spots value.
         """
         if terms.get('Collateralized', 'False') != 'True':
             return None
         support = terms.get('Credit_Support_Amounts') or {}
-        dials = {dial: cls._first(support.get(dial)) for dial in cls.DIALS}
+        dials = {dial: cls._first(support.get(dial)) or 0.0 for dial in cls.DIALS}
         rows = (terms.get('Collateral_Assets') or {}).get('Cash_Collateral') or []
-        return dict(dials, Independent_Amount=dials['Independent_Amount'] or 0.0,
-                    Agreement_Currency=terms.get('Agreement_Currency'),
+        return dict(dials, Agreement_Currency=terms.get('Agreement_Currency'),
                     Balance_Currency=terms.get('Balance_Currency') or terms.get(
                         'Agreement_Currency'),
                     haircuts={row['Currency']: cls._percent(row.get('Haircut_Posted'))

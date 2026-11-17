@@ -74,9 +74,10 @@ def test_the_dials_are_read_as_the_engine_reads_them():
     its first place and its last amount - `Haircut_Posted` as the fraction the engine's `Percent`
     decodes to, and the balance currency the agreement's where unstated, as the engine defaults
     it. Terms that collateralise nothing have no CSA, and a dial the terms state none of reads
-    nothing - but the independent amount, which the engine reads as zero.
+    zero, the engine's convention for it.
 
-    Killing mutation: the first row's rating read as its amount, which puts every threshold at 1.
+    Killing mutations: the first row's rating read as its amount, which puts every threshold at 1;
+    an unstated dial read as None, which fails the call the engine prices.
     """
     dials = CSA.of(HAIRCUTS)
     stated = TERMS['Credit_Support_Amounts']
@@ -94,7 +95,8 @@ def test_the_dials_are_read_as_the_engine_reads_them():
     bare = CSA.of(dict(TERMS, Credit_Support_Amounts={
         'Received_Threshold': listed((1, 5.0))}))
     assert (bare['Independent_Amount'], bare['Received_Threshold'], bare['Posted_Threshold'],
-            bare['haircuts']) == (0.0, 5.0, None, {})
+            bare['haircuts']) == (0.0, 5.0, 0.0, {})
+    assert CSA.call(7.0, {}, bare, {'ZAR': 1.0})['call'] == 2.0
 
 
 def test_the_support_required_is_the_engine_s_own_at():
@@ -522,21 +524,28 @@ def test_a_set_omitting_its_support_amounts_and_assets_holds_a_zero_csa():
     independent amount, each one row at rating 1 of nothing, and no collateral asset - so a
     collateralised set stating neither marks and holds bit for bit as the set stating those zeros
     and four empty asset tables, where it once failed the run on the support it could not read.
-    No asset is cash in the balance currency cut by nothing, so a sole cash row stating only that
-    currency, neither haircut, marks and holds bit for bit the same.
+    An amount the stated block leaves out is that zero too, so a block stating the independent
+    amount and the thresholds alone marks and holds bit for bit the same. No asset is cash in the
+    balance currency cut by nothing, so a sole cash row stating only that currency, neither
+    haircut, marks and holds bit for bit the same.
 
     KILLING MUTATIONS: the support amounts' completion back to empty lists, whose `.value()` fails
     the set; a container's completion handed over as its children's wire defaults, the tables as
-    the four characters `'null'` read as assets; a haircut read off the row by name with no
-    convention, which fails the set's compile on the row stating none."""
+    the four characters `'null'` read as assets; a support amount's convention marker removed,
+    which fails the block stating the others on a KeyError for the one it omits; a haircut read
+    off the row by name with no convention, which fails the set's compile on the row stating
+    none."""
     zeros = {dial: listed((1, 0.0)) for dial in (
         'Independent_Amount', 'Received_Threshold', 'Posted_Threshold', 'Minimum_Received',
         'Minimum_Posted')}
     omitted = {key: value for key, value in TERMS.items() if key != 'Credit_Support_Amounts'}
+    some = {dial: zeros[dial] for dial in ('Independent_Amount', 'Received_Threshold',
+                                           'Posted_Threshold')}
     runs = []
     for terms in (omitted, dict(omitted, Credit_Support_Amounts=zeros, Collateral_Assets={
             table: [] for table in ('Cash_Collateral', 'Bond_Collateral', 'Equity_Collateral',
                                     'Commodity_Collateral')}),
+                  dict(omitted, Credit_Support_Amounts=some),
                   dict(omitted, Collateral_Assets={'Cash_Collateral': [{'Currency': 'EUR'}]})):
         context = derivus.Context()
         context.load_json((json.dumps(engine_job(terms)), 'zero csa'))
