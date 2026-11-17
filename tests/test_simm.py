@@ -35,7 +35,7 @@ import pytest
 import scipy.stats
 
 import derivus
-from derivus import bootstrappers, calculation, utils
+from derivus import bootstrappers, calculation, riskfactors, utils
 from derivus.config import CustomJsonEncoder, ModelParams
 
 import test_credit_prices as credit
@@ -1528,6 +1528,118 @@ def test_a_later_valuation_date_values_each_market_as_a_base_valuation_on_that_d
                           system={'Base_Date': later}, extra=extra))
         for trade in ('SWAP', 'FXO'):
             assert frame.loc[trade, column].hex() == on[trade].hex(), (column, trade)
+
+
+#: A USDZAR smile quoted in premium-adjusted forward delta on eleven pillars, its USD-call wing
+#: rich, and fifteen puts struck either side of the spot a month to three years out.
+WINGS = {-0.01: -0.008, -0.1: -0.007, -0.25: -0.005, 0.5: 0.0, 0.25: 0.011, 0.1: 0.023, 0.01: 0.031}
+PILLARS = (7 / 365, 14 / 365, 1 / 12, 2 / 12, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
+PUTS = [dict(OPTION, Reference='P{}_{}'.format(days, strike), Option_Type='Put',
+             Strike_Price=strike, Expiry_Date=BASE + pd.DateOffset(days=days))
+        for days in (35, 92, 304, 427, 851) for strike in (17.3, 19.2, 20.5)]
+
+
+def delta_smile(shift=0.0, wings=0.0):
+    """The USDZAR smile quoted in delta, every vol `shift` over and each wing's `wings` more."""
+    return {'Surface_Type': 'Malz', 'Moneyness_Rule': 'Sticky_Moneyness',
+            'Delta_Surface': utils.Curve([], [
+                [d, t, 0.12 + 0.004 * t + wing + shift + (wings if d != 0.5 else 0.0)]
+                for t in PILLARS for d, wing in WINGS.items()])}
+
+
+#: The rand a percent up, the smile two vol points up and down, and its wings a point up.
+DELTA_MARKETS = [{'FxRate.ZAR': dict(factors()['FxRate.ZAR'], Spot=1.01 / SPOT)}] + [
+    {'FXVol.USD.ZAR': delta_smile(*moved)} for moved in ((0.02,), (-0.02,), (0.0, 0.01))]
+
+
+def delta_book(calculation, market):
+    """The module's world on the delta-quoted smile, the puts beside the swap and the option, with
+    `market` stated over it."""
+    return world(calculation, configuration={}, deals=PUTS,
+                 extra=dict({'FXVol.USD.ZAR': delta_smile()}, **market))
+
+
+@functools.lru_cache(maxsize=None)
+def delta_scenarios(*positions):
+    """The delta book's `ScenarioValuation` against the `DELTA_MARKETS` at `positions`."""
+    return delta_book({'Object': 'ScenarioValuation', 'Scenarios': [
+        DELTA_MARKETS[at] for at in positions]}, {}).run_job()[1]['Results']['mtm'].set_index(
+        'Reference')
+
+
+def smile_grid(at):
+    """`(skews, grid)` - the smile per pillar of the market `DELTA_MARKETS[at]` states, the
+    standing one where None, and the log-moneyness grid the standing smile solves on."""
+    block = delta_smile() if at is None else DELTA_MARKETS[at]['FXVol.USD.ZAR']
+    deltas = block['Delta_Surface'].array
+    skews = riskfactors.Factor2D.malz_skews(deltas, np.unique(deltas[:, 1]),
+                                            riskfactors.FXVol.premium_adjusted(block))
+    return skews, riskfactors.Factor2D.malz_grid(skews if at is None else smile_grid(None)[0])
+
+
+def pinned(at, shift=0.0):
+    """The market `DELTA_MARKETS[at]` with its smile solved on the standing smile's grid and
+    stated as a Malz surface, every vol `shift` over."""
+    skews, grid = smile_grid(at)
+    return {'FXVol.USD.ZAR': {'Surface_Type': 'Malz', 'Moneyness_Rule': 'Sticky_Moneyness',
+                              'Surface': utils.Curve([], [[x, t, vol + shift] for x, t, vol in (
+                                  riskfactors.Factor2D.malz_surface(skews, grid))])}}
+
+
+def test_a_delta_quoted_surface_s_scenarios_price_in_one_pass_as_each_alone():
+    """A spot, a vol two points up and down and a wing scenario on a delta-quoted smile price in one
+    pass, each column the bits of its scenario alone. Killing mutation: each smile solved on its own
+    grid - its 281, 288 and 336 nodes refused beside the market's 278."""
+    frame = delta_scenarios(*range(len(DELTA_MARKETS)))
+    for at in range(len(DELTA_MARKETS)):
+        assert [x.hex() for x in frame[at]] == [x.hex() for x in delta_scenarios(at)[0]], at
+
+
+def test_a_delta_quoted_scenario_is_its_smile_solved_on_the_markets_grid():
+    """Each vol scenario values every trade to the bit as a base valuation of its smile solved on
+    the market's grid and stated as a Malz surface. Killing mutation: each smile solved on its own
+    grid - the 851-day put at 19.2 off by 12,654.79 two points down."""
+    for at in (1, 2, 3):
+        column = delta_scenarios(at)
+        for trade, value in valued(delta_book(VALUATION, pinned(at))).items():
+            assert column.loc[trade, 0].hex() == value.hex(), (at, trade)
+
+
+def test_a_delta_quoted_scenario_is_its_market_to_what_the_grid_resolves():
+    """Each trade two vol points up and down is a base valuation of that market within its vega
+    there times `malz_tol` and the market grid's error on the moved smile (`Factor2D.malz_error`),
+    and every put rises with the vol. Killing mutation: each smile solved on its own grid - 4 of
+    the 15 puts not monotone, one 84 times its tolerance off."""
+    up, down = (delta_scenarios(at) for at in (1, 2))
+    for at, frame in ((1, up), (2, down)):
+        skews, grid = smile_grid(at)
+        resolved = max(riskfactors.Factor2D.malz_error(skews[t], t, grid[t]).max() for t in grid)
+        market = valued(delta_book(VALUATION, DELTA_MARKETS[at]))
+        # each trade's vega on the moved smile: a tenth of a vol point either side of it
+        rises, falls = (valued(delta_book(VALUATION, pinned(at, shift))) for shift in (1e-3, -1e-3))
+        for trade in ['FXO'] + [put['Reference'] for put in PUTS]:
+            assert abs(frame.loc[trade, 0] - market[trade]) <= abs(rises[trade] - falls[trade]) / (
+                2e-3) * (riskfactors.Factor2D.malz_tol + resolved), (at, trade)
+    for put in PUTS:
+        trade = put['Reference']
+        assert down.loc[trade, 0] < up.loc[trade, 'Value'] < up.loc[trade, 0], trade
+
+
+def test_a_scenario_naming_no_price_factor_of_the_market_is_refused_by_name():
+    """A scenario keyed by a label or by a misspelt factor type is refused naming the key and its
+    scenario; one moving only a factor the book never reads values as the market. Killing mutation:
+    the key check dropped - both answer done at the market's values."""
+    up = DELTA_MARKETS[0]['FxRate.ZAR']
+    for scenarios, named in (([{}, {'USDZAR_up1': {'FxRate.ZAR': up}}], 'USDZAR_up1 (scenario 1)'),
+                             ([{'FXRate.ZAR': up}], 'FXRate.ZAR (scenario 0)')):
+        with pytest.raises(ValueError) as refused:
+            world({'Object': 'ScenarioValuation', 'Scenarios': scenarios},
+                  configuration={}).run_job()
+        assert named in str(refused.value)
+    frame = world({'Object': 'ScenarioValuation', 'Scenarios': [{'EquityPrice.EQ': dict(
+        INDEX['EquityPrice.EQ'], Spot=110.0)}]}, configuration={}, extra=INDEX).run_job()[1][
+        'Results']['mtm']
+    assert [x.hex() for x in frame[0]] == [x.hex() for x in frame['Value']]
 
 
 def test_the_chunked_batch_writes_the_same_crif():

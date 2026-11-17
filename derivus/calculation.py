@@ -468,13 +468,46 @@ class Calculation(object):
 
     def leaves(self, moved, factors=None):
         """`[(key, value)]` - each leaf of `factors`, the compiled price factors where None, that
-        the price factors `moved` write, keyed as the compile keys it, and the value written."""
-        found, interp = [], self.config.params['Price Factor Interpolation']
-        for factor in [f for f in (self.all_factors if factors is None else factors)
-                       if utils.check_tuple_name(f) in moved]:
-            found.extend(self.split(factor, construct_factor(
-                factor, moved, interp, base_date=self.base_date).current_value()))
-        return found
+        the price factors `moved` write, keyed as the compile keys it, and the value written on the
+        nodes the compiled factor stands on (`laid`)."""
+        return [leaf for factor in (self.all_factors if factors is None else factors)
+                if utils.check_tuple_name(factor) in moved
+                for leaf in self.split(factor, self.laid(factor, moved))]
+
+    def laid(self, factor, moved):
+        """Price factor `factor`'s value as the price factors `moved` state it, on the nodes its
+        compiled factor stands on: a delta surface solved on the grid the compiled one was solved on
+        (`bootstrappers.FXVol.pinned_grid`), a curve read at its tenors, and any other factor stated
+        on other nodes refused by name. A factor nothing compiled is valued as stated."""
+        from .bootstrappers import FXVol
+
+        stated = construct_factor(factor, moved, self.config.params['Price Factor Interpolation'],
+                                  base_date=self.base_date)
+        standing = getattr(self.all_factors.get(factor), 'factor', self.all_factors.get(factor))
+        if standing is None:
+            return stated.current_value()
+        # the grid the compiled surface stands on, whatever tolerance refined it
+        grid = FXVol.pinned_grid(standing.param, stated.expiry, standing.param.get(
+            'Grid_Tolerance')) if isinstance(stated, riskfactors.Factor2D) and (
+            stated.solves_delta_surface()) else None
+        if grid is not None:
+            skews = stated.malz_skews(stated.param['Delta_Surface'].array, stated.expiry,
+                                      stated.premium_adjusted(stated.param))
+            stated.param.update(Delta_Surface=None, Surface=utils.Curve([], stated.malz_surface(
+                skews, grid)))
+            stated.update()
+        nodes, stands = (dict(self.split(factor, found.get_tenor_indices()))
+                         for found in (stated, standing))
+        if nodes.keys() == stands.keys() and all(np.array_equal(nodes[key], stands[key])
+                                                 for key in nodes):
+            return stated.current_value()
+        if factor.type in utils.OneDimensionalFactors:
+            return stated.current_value(standing.tenors)
+        raise ValueError(
+            'ScenarioValuation: a scenario states {} on {} nodes other than the {} its market '
+            'stands on, and only a curve is read at its market\'s nodes'.format(
+                utils.check_tuple_name(factor), sum(map(len, nodes.values())),
+                sum(map(len, stands.values()))))
 
     @staticmethod
     def split(factor, value):
@@ -2860,10 +2893,13 @@ class ScenarioValuation(BaseValuation):
         '- **Currency** of the output.',
         '- **Base Date** of the market data, and **Valuation Date** the date the deals are valued on:',
         '  the base date where blank, a later one aging every deal to it',
-        '- **Scenarios** the markets, each the price factors it states over the job\'s own, by name;',
-        '  a curve, a spot, a survival, inflation or forward curve, a basis and a vol surface or',
-        '  space carry one value a scenario, and a scenario stating a model\'s parameters is priced',
-        '  alone',
+        '- **Scenarios** the markets, each the price factors it states over the job\'s own, keyed',
+        '  by the names the market holds them under, a key it holds none under refused; a curve, a',
+        '  spot, a survival, inflation or forward curve, a basis and a vol surface or space carry',
+        '  one value a scenario, and a scenario stating a model\'s parameters is priced alone.',
+        '  Each is read on the nodes the market\'s own stands on: a curve at its tenors, a',
+        '  delta-quoted surface solved on the market surface\'s log-moneyness grid, and any other',
+        '  factor stated on other nodes refused',
         '- **Batch Size** the scenarios priced in one pass, as many as half the device\'s free memory',
         '  holds where 0',
         '- **MCMC Simulations**, **Quasi Seed**, **Deterministic Kernels** and **Branch And Weight**',
@@ -3006,11 +3042,17 @@ class ScenarioValuation(BaseValuation):
         """Every deal's and structure's value on the job's market and on each of its `Scenarios`,
         the first priced alone to measure what a scenario takes."""
         params = self.params = declared_defaults(type(self), params)
+        scenarios, market = params['Scenarios'], self.config.params['Price Factors']
+        unknown = ['{} (scenario {})'.format(key, at) for at in range(len(scenarios))
+                   for key in scenarios[at] if key not in market]
+        if unknown:
+            raise ValueError('ScenarioValuation: no price factor of the market is named {}'.format(
+                ', '.join(unknown)))
         shared = self.update_factors(params, pd.Timestamp(params['Run_Date']))
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(self.config.deals['Deals']['Children'], self.netting_sets,
                                  shared.one, deal_level_mtm=True)
-        nodes, scenarios = list(self.nodes()), params['Scenarios']
+        nodes = list(self.nodes())
         table = np.full((len(nodes), len(scenarios) + 1), np.nan)
 
         def recorded(columns, markets):

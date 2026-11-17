@@ -474,7 +474,13 @@ net uncollateralised and `SIMM` and `SACCR`, pricing by one, value every trade i
 
 **`ScenarioValuation`** is one date against B given markets: a base valuation whose `Scenarios`
 are data, each the price factors it states over the job's own, which `SIMM` fills from its moves
-and a historical or stressed market would fill from an archive or a file. Where it has scenarios,
+and a historical or stressed market would fill from an archive or a file. A scenario's keys are
+the names the job's market holds its price factors under: a key it holds none under is refused by
+name, with its scenario's position, before anything is priced, and a factor the book does not read
+is ignored. Each factor a scenario states is valued on the nodes its compiled leaf stands on
+(`Calculation.laid`): a curve read at the compiled tenors, a `Delta_Surface` solved on the
+log-moneyness grid the compiled surface was solved on (`bootstrappers.FXVol.pinned_grid`), and any
+other factor stated on other nodes refused by name. Where it has scenarios,
 every factor of a type that carries a scenario axis (`SuppliedValuesModel.factor_types`: spots,
 bases, price indices, every curve and every vol surface and space) but the base currency's price is
 a `SuppliedValuesModel`, which draws nothing and publishes its value on each scenario of a pass as
@@ -490,6 +496,10 @@ prices a later grid point, the scenarios the markets there. **Held by**
 `tests/test_simm.py::test_a_scenario_is_the_move_it_was_filled_with`,
 `::test_a_scenario_stating_a_models_parameters_is_priced_alone_on_them`,
 `::test_a_later_valuation_date_values_each_market_as_a_base_valuation_on_that_date`,
+`::test_a_delta_quoted_surface_s_scenarios_price_in_one_pass_as_each_alone`,
+`::test_a_delta_quoted_scenario_is_its_smile_solved_on_the_markets_grid`,
+`::test_a_delta_quoted_scenario_is_its_market_to_what_the_grid_resolves`,
+`::test_a_scenario_naming_no_price_factor_of_the_market_is_refused_by_name`,
 `tests/test_collateral.py::test_a_scenario_valuation_values_a_collateralised_set_as_a_base_valuation_does`.
 **Not gated:** the leaf a pass of its own writes put back before the next pass.
 
