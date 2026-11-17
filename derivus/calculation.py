@@ -4234,9 +4234,10 @@ class NettingSetCalculation(Calculation):
         """`[(value, skipped)]` per trade: the book compiled once as a scenario valuation compiles
         it over the valuation's `Scenarios`, each trade alone under its set, on the price factors
         `over` states in place of the standing ones, and priced as it stands, with the engine's
-        sentences for what it skipped inside each trade, the distinct ones spoken at its deals. A
-        trade whose own compile refuses its document by name (`utils.UnpriceableSchedule`) is set
-        aside unvalued, its sentence among them."""
+        sentences for what it skipped inside each trade, the distinct ones spoken at its deals, or
+        the verdict the compile stamped on a trade it left out unspoken, an expired one. A trade
+        whose own compile refuses its document by name (`utils.UnpriceableSchedule`) is set aside
+        unvalued, its sentence among them."""
         factors = self.config.params['Price Factors']
         calc = self.compiled = ScenarioValuation(self.config, prec=torch.float64,
                                                  device=utils.calculation_device())
@@ -4270,6 +4271,10 @@ class NettingSetCalculation(Calculation):
         for (_, node), value in zip(self.trades, values):
             references = {deal['Instrument'].field.get('Reference') for _, deal in schema.walk([node])}
             mine = list(dict.fromkeys(said for deal, said in skipped if deal in references))
+            stamped = getattr(node['Instrument'], 'unpriced_because', None)
+            if value is None and not mine and stamped is not None:
+                # left out as expired, which logs no error: the compile's own verdict says why
+                mine = [str(stamped)]
             found.append((value, mine if value is not None else
                           mine + ['the trade itself was not valued']))
         return found

@@ -54,7 +54,7 @@ import os
 import threading
 from copy import deepcopy
 
-from . import Context, content_hash, instruments, riskfactors
+from . import Context, content_hash, instruments, riskfactors, utils
 from ._version import __version__
 from .calculation import BaseValuation, Diary, calculation_class
 from . import schema
@@ -958,7 +958,8 @@ def executor(kind=None, files=None):
         text = bytes(job).decode('utf-8')
         context = reading(json.loads(text), files, kind)().load_json((text, 'pinned'))
         context.patch_market(read_values(values))
-        _, out = context.run_job()
+        # a replay that skipped part of its book pins nothing, as the queue attests nothing of one
+        _, out = utils.run_whole(context.run_job)
         return __version__, result_of(out)
 
     return execute

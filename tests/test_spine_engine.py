@@ -737,6 +737,26 @@ def test_a_result_pinned_that_will_not_reproduce_is_refused_by_name(recorded, de
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_a_result_pinned_whose_replay_skipped_a_deal_is_refused_by_name(recorded, desk):
+    """A claim carrying the engine's own result for a job beside a cash flow on a curve the market
+    lacks is refused naming that deal and the curve, nothing appended. Killing mutation: the
+    executor running without `utils.run_whole` - the partly priced result is pinned, reproduced."""
+    declare(recorded, policy.TOLERANCE_POLICY, {'tolerances': {'mtm': 1e-9}})
+    unseen = job(deals=(dict(CASHFLOW, Reference='PIN-WHOLE'),
+                        dict(CASHFLOW, Reference='PIN-GAP', Discount_Rate='ZAR-SWAP')))
+    context = derivus.Context().load_json((dump(unseen), 'unseen'))
+    _, out = derivus.Context().load_json((dump(unseen), 'unseen')).run_job()
+    assert out['Stats']['Deals Skipped'] == 1, out['Stats']
+    standing = head(recorded)
+
+    with pytest.raises(utils.UnpriceableSchedule,
+                       match=r"PIN-GAP \('Cannot find InterestRate.ZAR-SWAP',\) - Skipped"):
+        derivus.Context().pin_result(
+            spine.canonical(unseen), spine.values_of(context), spine.result_of(out),
+            spine.replay(context))
+    assert head(recorded) == standing, 'a refused pin wrote something'
+
+
 def test_a_run_says_the_files_it_read_and_a_replay_reads_the_bytes_that_stood(recorded,
                                                                              tmp_path):
     """THE FILES A JOB NAMES, DECLARED BY THEIR CONTENT, on the book naming its market data file

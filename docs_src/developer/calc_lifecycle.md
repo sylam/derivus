@@ -365,12 +365,16 @@ batch find one, and the memory held, `Device_Memory` reporting the process's res
     `utils.is_fatal_pricing_error` names it (out of memory, an unbound schedule,
     `UnpriceableSchedule`). A deal that has expired, its last date behind the base date or its own
     history ending it (`utils.InstrumentExpired`), is left out under either switch and counted
-    nowhere. The service answers a run counting a skip `error` (`service.run_whole`).
+    nowhere. Every run the service, a structure quote, a solve's iterate or a replay pin answers
+    with refuses one counting a skip, by name (`utils.run_whole`).
     `Device_Memory` reports the peak, warning past the device; a run that valued nothing refuses.
     **Held by** `tests/test_fork_pricing_failures.py`,
     `tests/test_autocall_json.py::test_a_note_a_past_print_called_is_expired_and_left_out`,
     `tests/test_service.py::test_a_run_that_skipped_a_deal_is_an_error_naming_it`,
     `::test_a_deal_its_history_ended_is_expired_and_fails_no_run`,
+    `::test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk`,
+    `tests/test_structures.py::test_a_book_deal_the_risk_step_cannot_price_refuses_the_quote`,
+    `::test_a_leg_that_cannot_compile_refuses_the_quote`,
     `tests/test_multi_gpu.py::test_a_run_reports_what_it_held_and_warns_where_it_passed_the_device`.
 
 !!! warning "Invariant — `t_Buffer` per batch, `t_PreCalc` per calculation"

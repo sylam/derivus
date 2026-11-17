@@ -103,9 +103,10 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
     (target 0), sales margins, a collar's second strike, a strike to a premium.
 
     Each iterate rewrites the field in a copy of the wire document, loads and runs it, and reads
-    the deal's own row off the `mtm` frame. The document's seed is fixed, so a Monte-Carlo-priced
-    objective is DETERMINISTIC and the solved field is conditional on that draw. A deal field is
-    structural, so every iterate recompiles.
+    the deal's own row off the `mtm` frame; an iterate that skipped what it could not price
+    refuses by name (`utils.run_whole`), never reading a zero. The document's seed is fixed, so a
+    Monte-Carlo-priced objective is DETERMINISTIC and the solved field is conditional on that draw.
+    A deal field is structural, so every iterate recompiles.
 
     With `bounds`, bracketed brentq; without, a secant from the field's current value - exact in
     two evaluations for anything affine in the field. Raises when the residual cannot reach
@@ -139,7 +140,7 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
         if x not in priced:
             iterate = json.loads(json.dumps(document))
             deal_at(iterate, deal_path)['Instrument']['.Deal'][field] = x
-            _, out = Context().load_json((json.dumps(iterate), 'solve')).run_job()
+            _, out = utils.run_whole(Context().load_json((json.dumps(iterate), 'solve')).run_job)
             frame = out['Results']['mtm']
             priced[x] = (float(frame[frame['Reference'] == reference]['Value'].iloc[0]), out)
         return priced[x][0]

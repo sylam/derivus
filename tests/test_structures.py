@@ -1227,6 +1227,40 @@ def test_the_cap_and_the_floor(two_sided_book, standing):
         'the floored cap is not between the full-spread one and the unfloored one')
 
 
+#: A book deal on a surface the market does not carry: every run of the book skips it.
+UNPRICED = dict(option('UNPRICED', SPOT * 1.05, 'Call'), FX_Volatility='EUR.JPY')
+
+
+def test_a_book_deal_the_risk_step_cannot_price_refuses_the_quote(two_sided_book):
+    """A policy book holding a sold call beside a deal on a surface it lacks refuses the quote
+    naming that deal. Killing mutation: `vol_risk` running without `utils.run_whole` - the quote
+    lands, its scale and cap the sold call's alone."""
+    sold = option('SOLD', SPOT * 1.05, 'Call', buy_sell='Sell')
+    with pytest.raises(utils.UnpriceableSchedule,
+                       match=r"FXOptionDeal UNPRICED \('Cannot find FXVol.EUR.JPY',\) - Skipped"):
+        structures.quote(with_policy(holding(two_sided_book, [sold, UNPRICED])), COLLAR,
+                         params(floor=SPOT * 0.95))
+
+
+@pytest.mark.parametrize('switch', ['Yes', 'No'])
+def test_a_leg_that_cannot_compile_refuses_the_quote(book, switch):
+    """On a book missing the legs' discount curve, a straddle's priced legs and a TARF's solved leg
+    refuse the quote naming the leg and the curve. Killing mutations: `run_prices` without
+    `utils.run_whole` - under No the straddle prices 0.0; `solve_deal_field`'s iterate without it -
+    under No the TARF solves its strike to its bracket's end at a premium of 0.0."""
+    blind = copy.deepcopy(book)
+    market = blind['Calc']['MergeMarketData']['ExplicitMarketData']
+    del market['Price Factors']['InterestRate.USD']
+    market['System Parameters']['Exclude_Deals_With_Missing_Market_Data'] = switch
+    for name, ask, role in (
+            ('Straddle', params(strike=SPOT), 'call'),
+            ('TargetRedemptionForward', dict(accrual_params(target=TARGET),
+                                             notional_currency='USD'), 'tarf')):
+        refused = r"{}-\w+_{} \('Cannot find InterestRate.USD',\)".format(name, role)
+        with pytest.raises(utils.UnpriceableSchedule, match=refused):
+            structures.quote(blind, name, ask)
+
+
 def test_a_knock_in_plus_a_knock_out_is_the_vanilla(book):
     """In-out parity through the engine: a bought up-and-IN and a bought up-and-OUT call on the same
     strike and barrier are between them the vanilla. Three deals by hand, one run, no solve.

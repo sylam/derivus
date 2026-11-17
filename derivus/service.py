@@ -370,24 +370,6 @@ class PlanCache:
             return deepcopy(self.plans[plan_id])
 
 
-def run_whole(run_job):
-    """`run_job()`'s answer, or a refusal naming what the run skipped: a run whose `Stats` count
-    anything under a name ending `Skipped` priced part of its book, and a part is never answered
-    as the book. The refusal carries the counts and what the run said at ERROR on this thread."""
-    captured = utils.CapturedErrors()
-    logging.getLogger().addHandler(captured)
-    try:
-        answer = run_job()
-    finally:
-        logging.getLogger().removeHandler(captured)
-    skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(
-        answer[1].get('Stats', {}).items()) if name.endswith('Skipped'))
-    if skipped:
-        raise utils.UnpriceableSchedule('the run skipped what it could not price ({}): {}'.format(
-            skipped, '; '.join(dict.fromkeys(captured.messages))))
-    return answer
-
-
 class ComputeExecutor:
     """One worker thread over one priority queue, and the result store it alone writes.
 
@@ -525,13 +507,13 @@ class ComputeExecutor:
     def work(self):
         """Run one job at a time, forever. A job that fails is a result like any other, so the
         thread survives it and the next job runs; a run that skipped what it could not price fails
-        (`run_whole`)."""
+        (`utils.run_whole`)."""
         while True:
             _, _, job = self.queue.get()
             with self.lock:
                 self.results[job.result_id] = {'status': 'running'}
             try:
-                _, out = run_whole(job.context.run_job)
+                _, out = utils.run_whole(job.context.run_job)
                 # Stats is a flat dict of timings and counts, not a table - through `tables_of` it
                 # would flatten into fake table paths
                 result = dict(status='done', tables=tables_of(as_json(out['Results'])),
@@ -1532,7 +1514,7 @@ def book_price(request: dict):
 
     THE CANDIDATE IS VALIDATED BEFORE IT QUEUES, through the seam a booking is refused at: a
     candidate naming market data the book does not carry would load, be DROPPED by discovery and
-    fail the run after the queue (`run_whole`). It refuses 422 in the booking's own words instead.
+    fail the run after the queue (`utils.run_whole`). It refuses 422 in the booking's own words.
     The book's own deals are not re-validated - only what the candidate adds.
 
     THE LANE IS CURIOSITY AND NOT A PARAMETER: nothing here will ever be cited by a fact, so it
@@ -1724,7 +1706,7 @@ def connected_run(run, blocks, universe, carried, reading=Context):
         if name in carried else block for name, block in sorted(blocks.items())}
     context = load(quoted, reading())
     context.current_cfg.bootstrap(wanted=universe)
-    return context, context.run_job()[1]
+    return context, utils.run_whole(context.run_job)[1]
 
 
 def calibrated(run, blocks, universe, loaded, reading=Context):
@@ -1741,7 +1723,7 @@ def calibrated(run, blocks, universe, loaded, reading=Context):
         context, output = connected_run(run, blocks, universe, dict.fromkeys(switched, 'Yes'),
                                         reading)
     except Exception as refusal:
-        context, output, carried, failed = loaded, loaded.run_job()[1], [], refusal
+        context, output, carried, failed = loaded, utils.run_whole(loaded.run_job)[1], [], refusal
         for name in switched:
             try:
                 context, output = connected_run(run, blocks, universe, {
@@ -1779,7 +1761,7 @@ def quote_run(run, reading=Context):
     universe = set(loaded.current_cfg.factor_universe()['resolved']) if prices else set()
     blocks = sorted(quote_blocks(loaded.current_cfg.params, universe))
     if not blocks:
-        return loaded.run_job()[1], [], [], None
+        return utils.run_whole(loaded.run_job)[1], [], [], None
     key = content_hash({'market': run['Calc']['MergeMarketData'], 'files': reading().files(run),
                         'blocks': blocks})
     kept = BOOK and BOOK.calibrations.get(key)
@@ -1790,7 +1772,8 @@ def quote_run(run, reading=Context):
             for _, leaves in context.current_cfg.quote_leaves.values():
                 for leaf in leaves if isinstance(leaves, (list, tuple)) else [leaves]:
                     leaf.grad = None
-            return (context.run_job()[1],) + quote_rows(context.current_cfg) + (note,)
+            output = utils.run_whole(context.run_job)[1]
+            return (output,) + quote_rows(context.current_cfg) + (note,)
     context, output, note = calibrated(
         run, as_json({name: prices[name] for name in blocks}), universe, loaded, reading)
     # read before it is kept, as a run on the kept refit resets what this one left on its quotes
@@ -2876,7 +2859,7 @@ def live_marks(document, book, since):
     wanted = marked_instruments(book, since['lsn'])
     job = PnL.marks_job(document, PnL.held_terms(document, wanted, spine.stored))
     context = load(spine.compiled_job(job, strict=False, folds=folds()))
-    _, out = context.run_job()
+    _, out = utils.run_whole(context.run_job)
     return {'day': structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime(
         '%Y-%m-%d'), 'lsn': spine.pin()['lsn'], 'units': PnL.unit_marks(as_json(out['Results'])),
         'values': context.market_patch(), 'live': True}
@@ -2947,7 +2930,8 @@ def carried(job, day, reading=Context):
     if not write:
         raise ValueError('the start would not roll onto {}: {}'.format(
             day, '; '.join(outcome['refused'])))
-    _, out = load(spine.compiled_job(rolled, strict=False, folds=folds()), reading()).run_job()
+    _, out = utils.run_whole(
+        load(spine.compiled_job(rolled, strict=False, folds=folds()), reading()).run_job)
     return sum(PnL.unit_marks(as_json(out['Results'])).values())
 
 
@@ -3780,8 +3764,8 @@ class XvaJob:
     data carries no `SurvivalProb` block for - lands `status: 'failed'` with the engine's own
     wording, because a desk reads why a number is missing off the same file the numbers are in. The
     error still travels to the result store, so `/results/{result_id}` is never told otherwise. A
-    run that skipped a deal is a failed run (`run_whole`): a dropped deal must never read as a
-    smaller CVA.
+    run that skipped a deal is a failed run (`utils.run_whole`): a dropped deal must never read as
+    a smaller CVA.
 
     It holds the set's DOCUMENT and the bytes of each file it names as its stamp hashed them, and
     the worker loads the one over the other onto the executor's long-lived context
@@ -3840,7 +3824,7 @@ class XvaJob:
         try:
             session = EXECUTOR.session_for(self.document, self.stamp['values_hash'])
             session.held = self.held
-            _, out = run_whole(lambda: load(self.document, session).run_job())
+            _, out = utils.run_whole(lambda: load(self.document, session).run_job())
             landed = self.adjustments(out['Results'])
         except Exception as error:
             write_row(self.reference, self.row(status='failed', error=str(error)))

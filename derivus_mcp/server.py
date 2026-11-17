@@ -1926,8 +1926,11 @@ def fetch_table(result_id: str, table: str, offset: int = 0, limit: int = 50) ->
 def deal_values(result_id: str) -> dict:
     """`{reference: value}` off a finished base valuation's `mtm` table - the question after every
     booking and every what-if. The SHAPE is checked before anything is fetched: a Monte Carlo's
-    mtm is a scenario cube and is refused unfetched. Row 0's `Total` is the whole book."""
+    mtm is a scenario cube and is refused unfetched. Row 0's `Total` is the whole book; a run that
+    failed answers its own error."""
     raw = _raw_result(result_id)
+    if raw.get('status') == 'error':
+        raise ToolError('run {} failed: {}'.format(result_id, raw.get('error')))
     shape = raw.get('tables', {}).get('mtm')
     if shape is None or 'Reference' not in shape['columns'] or 'Value' not in shape['columns']:
         raise ToolError('this result carries no per-deal mtm frame - it is not a base valuation. '

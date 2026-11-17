@@ -747,12 +747,12 @@ def test_a_settlement_moving_another_amount_is_a_break_and_the_p_l_books_the_dia
 @pytest.mark.parametrize('switch', [None, 'Yes', 'No'])
 def test_a_live_window_nothing_can_price_is_named_and_never_a_500(recorded, desk, switch):
     """A READING NEVER 500s. A digital marked with its book whose surface then leaves the market:
-    the live window's own valuation cannot price it. With `Exclude_Deals_With_Missing_Market_Data`
-    left out or `Yes` the P&L answers with the digital named under `unknown`, no mark at the end;
-    under `No` the valuation keeps it at zero, so the window reads a mark of nothing and names
-    nothing unknown.
+    the live window's own valuation cannot price it, and with
+    `Exclude_Deals_With_Missing_Market_Data` left out, `Yes` or `No` the P&L refuses 422 naming the
+    digital and the surface - a window read to now is never the P&L of part of the book.
 
-    Killing mutation: the switch read by nothing, which names the digital under `No` too.
+    Killing mutation: `live_marks` running without `utils.run_whole` - 200, the digital under
+    `unknown`, or under `No` a mark of nothing.
     """
     body = json.loads(desk.read_text())
     if switch is not None:
@@ -768,10 +768,10 @@ def test_a_live_window_nothing_can_price_is_named_and_never_a_500(recorded, desk
     desk.write_text(json.dumps(body, indent=2), newline='\n')
 
     answer = CLIENT.get('/book/pnl', params={'start': START.strftime('%Y-%m-%d')})
-    digital = instrument_of('EQ-BIN')
-    assert answer.status_code == 200, answer.text
-    assert answer.json()['unknown'] == ([] if switch == 'No' else [
-        {'instrument': digital, 'what': 'no mark at the end - the run could not price it'}])
+    assert answer.status_code == 422, answer.text
+    said = answer.json()['detail']
+    assert said.startswith('the run skipped what it could not price (1 Deals Skipped)'), said
+    assert "{} ('Cannot find EquityPriceVol.EQ',)".format(instrument_of('EQ-BIN')) in said, said
 
 
 def structure(reference, legs):

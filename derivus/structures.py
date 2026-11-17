@@ -1461,12 +1461,13 @@ def run_price(document, deal):
 
 def run_prices(document, deals):
     """Each of `deals`' own values off ONE base valuation of them together against the book, as
-    `alone` prices one: a deal's row does not depend on its siblings."""
+    `alone` prices one: a deal's row does not depend on its siblings. A run that skipped one
+    refuses by name (`utils.run_whole`) rather than reading it at zero."""
     from . import Context
     iterate = alone(document, deals[0])[0]
     for deal in deals[1:]:
         schema.splice_deal(iterate, deal)
-    _, out = Context().load_json((json.dumps(iterate), 'quote')).run_job()
+    _, out = utils.run_whole(Context().load_json((json.dumps(iterate), 'quote')).run_job)
     return [own_value(out, deal['Reference']) for deal in deals]
 
 
@@ -1676,7 +1677,8 @@ def vol_risk(document, nodes, surface):
     each family's partial is correct while neither is the answer.
 
     An EMPTY deal tree has no value to differentiate and its risk is a zero vector, so it never
-    reaches a run.
+    reaches a run; a run that skipped a deal refuses by name (`utils.run_whole`), the risk of part
+    of a book not being the book's.
     """
     from . import Context
     from .config import CustomJsonEncoder
@@ -1685,7 +1687,7 @@ def vol_risk(document, nodes, surface):
         return {}
     context = Context().load_json((json.dumps(run, cls=CustomJsonEncoder), 'risk'))
     context.bootstrap()
-    context.run_job()
+    utils.run_whole(context.run_job)
     risk = {}
     for descriptors, leaves in context.current_cfg.quote_leaves.values():
         if leaves.grad is None:

@@ -1740,18 +1740,21 @@ def test_a_trades_product_class_is_its_walks_or_its_own_statement(serial):
 def test_an_autocall_a_past_print_called_writes_no_rows():
     """An autocall whose coupon a month behind the base date printed over its trigger was called
     then, and the compile leaves it out as expired - so it writes no CRIF row: the trade is
-    reported unvalued as one whose last date is behind the base date is, and the swap and the
-    option beside it write theirs.
+    reported unvalued in the verdict the compile stamped on it, and the swap and the option beside
+    it write theirs.
 
-    Killing mutation: the compile-time call test removed - the note is valued live and writes its
-    equity, vega and rate rows.
+    Killing mutations: the compile-time call test removed - the note is valued live and writes its
+    equity, vega and rate rows; the census not reading the stamp - the trade says only that it was
+    not valued.
     """
     output = world(deals=[CALLED], extra=INDEX).run_job()[1]
     crif, trades = output['Results']['CRIF'], output['Results']['Trades']
     assert set(crif['TradeID']) == {'SWAP', 'FXO'}
     called = trades[trades['TradeID'] == 'AC']
     assert called['Written'].item() == 0 and np.isnan(called['Value'].item())
-    assert called['Skipped'].item() == 'the trade itself was not valued'
+    assert called['Skipped'].item() == (
+        'AC: autocalled on {:%Y-%m-%d}; the trade itself was not valued'.format(
+            BASE - pd.DateOffset(days=30)))
 
 
 #: A note booked as two legs: an index autocall fixing three times for its two coupons, its last

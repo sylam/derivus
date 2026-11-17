@@ -5360,6 +5360,24 @@ def test_the_consolidated_risk_is_the_book_priced_once_and_it_follows_a_booking(
     assert max(abs(row['value']) for row in after['quotes']) > 1.0
 
 
+def test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk(quoting, tmp_path):
+    """`/book/risk` over a book holding the unreadable cash flow answers 422 in the skip's words,
+    with its surface refitted from its quotes and on its factors alike. Killing mutations: either
+    run of `quote_run` without `utils.run_whole` - 200, the book without CF_GAP."""
+    quoted = json.loads(quoting.read_text())
+    quoted['Calc']['Deals']['Deals']['Children'] += [
+        {'Instrument': {'.Deal': json.loads(dump(deal))}} for deal in (FX_OPTION, UNREAD)]
+    plain = json.loads(dump(job(deals=(CASHFLOW, UNREAD))))
+    for path, document in ((quoting, quoted), (tmp_path / 'plain.json', plain)):
+        path.write_text(json.dumps(document, indent=2), newline='\n')
+        service.BOOK = service.Book(str(path))
+        answer = CLIENT.get('/book/risk')
+        assert (answer.status_code, answer.json().get('detail')) == (422, (
+            "the book will not price a consolidated risk run: the run skipped what it could not "
+            "price (1 Deals Skipped): FixedCashflowDeal CF_GAP ('Cannot find "
+            "InterestRate.ZAR-SWAP',) - Skipped")), (path.name, answer.json())
+
+
 def curve_book(path, bootstrapper=True):
     """A book reading ONE curve - a four-year swap forecasting and discounting on `USD-3M` - whose
     block is solved against `USD-OIS`, the multi-curve world's own quotes and true curves standing

@@ -545,8 +545,9 @@ is flattened to the path that names each one (`cashflows/ZAR`), because a group 
 unknown table, like an unknown result, is a `404`. An `error` result carries the message the run
 failed with, and nothing else. A run that skipped a deal or a structure it could not price, a
 `Stats` count ending `Skipped`, is an `error` naming the counts and the engine's own sentences, so a
-partly priced book is never answered as the book; a node stated `Ignore: 'True'` is counted under
-`Ignored` and an expired deal nowhere, and neither fails the run.
+partly priced book is never answered as the book; a verb that values inline, `/book/risk` or a P&L
+read, refuses `422` in the same words. A node stated `Ignore: 'True'` is counted under `Ignored`
+and an expired deal nowhere, and neither fails the run.
 
 **Generating a client.** The service publishes its own OpenAPI document at
 `http://localhost:8000/openapi.json`, with a summary and a description on every endpoint. An SPA

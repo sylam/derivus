@@ -28,8 +28,8 @@ from mcp.server.mcpserver.exceptions import ResourceError, ToolError
 import derivus
 from derivus_mcp import server as mcp_server
 from derivus import service
-from test_service import (AMOUNT, BINARY, BOOKED, CLIENT, EQUITY, FACTORS, RATE, SPOT, VANILLA,
-                          Held, block_of, dump, file_world, job)
+from test_service import (AMOUNT, BINARY, BOOKED, CASHFLOW, CLIENT, EQUITY, FACTORS, JSON, RATE,
+                          SPOT, UNREAD, VANILLA, Held, block_of, dump, file_world, job)
 
 SERVER_FILE = mcp_server.__file__
 
@@ -697,6 +697,18 @@ def test_booking_a_deal_prices_it(book):
     assert run['status'] == 'done' and run['waited'] is True
     values = mcp_server.deal_values(run['result_id'])
     assert values['CF2'] == pytest.approx(BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
+
+
+def test_the_values_of_a_failed_run_are_its_own_error():
+    """`deal_values` on a run that skipped the unreadable cash flow answers the run's own error.
+    Killing mutation: the status unread - it answers that the result is not a base valuation."""
+    result_id = CLIENT.post('/execute', content=dump(job(deals=(CASHFLOW, UNREAD))),
+                            headers=JSON).json()['result_id']
+    service.EXECUTOR.queue.join()
+    with pytest.raises(ToolError, match=r"^run {} failed: the run skipped what it could not price "
+                                        r"\(1 Deals Skipped\): FixedCashflowDeal CF_GAP".format(
+                                            result_id)):
+        mcp_server.deal_values(result_id)
 
 
 def test_a_margin_target_is_money_and_the_deal_records_what_was_charged(book):

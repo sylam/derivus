@@ -3102,6 +3102,24 @@ class CapturedErrors(logging.Handler):
             self.said.append((record.name, record.getMessage()))
 
 
+def run_whole(run_job):
+    """`run_job()`'s answer, or a refusal naming what the run skipped: a run whose `Stats` count
+    anything under a name ending `Skipped` priced part of its book, and a part is never answered
+    as the book. The refusal carries the counts and what the run said at ERROR on this thread."""
+    captured = CapturedErrors()
+    logging.getLogger().addHandler(captured)
+    try:
+        answer = run_job()
+    finally:
+        logging.getLogger().removeHandler(captured)
+    skipped = ', '.join('{} {}'.format(count, name) for name, count in sorted(
+        answer[1].get('Stats', {}).items()) if name.endswith('Skipped'))
+    if skipped:
+        raise UnpriceableSchedule('the run skipped what it could not price ({}): {}'.format(
+            skipped, '; '.join(dict.fromkeys(captured.messages))))
+    return answer
+
+
 # Math Type stuff
 
 def hermite_interpolation(tenors, rates):

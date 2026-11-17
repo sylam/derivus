@@ -177,9 +177,10 @@ A leg whose type observes a fixing table (`accrues`, off `schema.OBSERVES`) is a
   no note. Otherwise `spot_model` pins `Structure.spot_model` (`LogVar2FJ`) for the deal type in the copy's
   `Valuation Configuration` where the book carries that pair's calibration, and otherwise leaves the
   leg on GBM with a `note` naming the missing factor and `/book/model`. The check is made here
-  because a switch whose factor is absent makes the engine skip the deal, and the quote would come
-  back priced at nothing. A book that already declares a `SpotModel` for the type keeps it, and the
-  check is made on that family, or a note would disagree with the number beside it. **Held by**
+  because a switch whose factor is absent makes the engine skip the deal, and a run that skipped a
+  leg refuses the quote (`utils.run_whole`). A book that already declares a `SpotModel` for the
+  type keeps it, and the check is made on that family, or a note would disagree with the number
+  beside it. **Held by**
   `test_the_absence_note_names_the_factor_the_book_would_need`,
   `test_a_tarf_on_a_fitted_pair_stops_riding_gbm`.
 
