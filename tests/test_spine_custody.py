@@ -784,6 +784,33 @@ def test_escrow_recovery_without_a_declaration_or_with_the_wrong_key_refuses_by_
         recover_escrow(SpineLog(home), custodian()[0])
 
 
+def test_a_seat_key_or_an_escrow_key_restored_is_the_key_in_force_and_its_wrap_opens(tmp_path):
+    """A seat's public key and the escrow key, each declared A, A, B, A, A: the second A
+    coalesces, the return to A is a new fact naming B (`supersedes`) and is the key in force - the
+    one the record owes a wrap to, which `rewrap` then issues and A's private half opens - and A
+    once more coalesces onto the return.
+
+    Killing mutation: `verbs.restated` answering the body as handed in, so the return to A
+    coalesces onto the first and the class key is wrapped to B, which A's private half cannot open.
+    """
+    home, log = seated(tmp_path, read=(DESK, MARKER))
+    for subject, declare in (
+            (MARKER, lambda public: enroll(log, MARKER, MINT, public_key=public)),
+            (ESCROW_SUBJECT, lambda public: declare_escrow(log, public, actor=MINT))):
+        (private, a), (_, b) = custodian(), custodian()
+        first, again, second, back, repeat = (declare(key) for key in (a, a, b, a, a))
+        assert [at['coalesced'] for at in (first, again, second, back, repeat)] == [
+            False, True, False, False, True], subject
+        assert (again['lsn'], repeat['lsn']) == (first['lsn'], back['lsn'])
+        body = log.open_body(log.frame_at(back['lsn']))
+        assert body == dict(log.open_body(log.frame_at(first['lsn'])), supersedes=second['lsn'])
+        assert dict(wrap_drift(log)['pending'])[subject] == hashlib.sha256(a).hexdigest()
+        wrapped = {row['subject']: row['wrap'] for row in rewrap(log, actor=MINT)['wrapped']}
+        assert unwrap_key(log.store.get(wrapped[subject]), private, subject) == read_class_key(home)
+    log.close()
+    assert verify_home(home)['events'] == SpineLog(home).head()[0]
+
+
 def test_no_seat_may_be_enrolled_as_escrow_and_the_refusal_writes_nothing(tmp_path):
     """A seat wearing the reserved name would receive the custodian's wrap, so the name is refused
     where it could be taken - and the refusal is a refusal: no key file, no blob, and the head

@@ -23,6 +23,10 @@ policy document is 64 lowercase hex and the object lives once in the blob store.
 refused everywhere except `policy_declared`, whose shape is versioned by the policy itself. Every
 declared string must be non-empty.
 
+A KEYED declaration, the latest under its key standing, may carry `supersedes`: the LSN of the
+declaration whose content it replaced, so a return to earlier content is a new fact
+(`verbs.restated`). A body filed without it validates as it always did.
+
 `BLOB_FIELDS` declares which of a body's hashes name bytes in the store, so referential closure is
 asked the same way by the writer and by a verifier over a log it did not write - not every 64-hex
 field is a blob. The closed set is in five parts by what each says (`FACT_TYPES`,
@@ -109,6 +113,8 @@ KINDS = (
     ('an object of name -> content hash or null', is_digests),
 )
 HASH, TEXT, NUMBER, INTEGER, MAYBE_INTEGER, COORDINATES, PATH, DIGESTS = range(8)
+#: The optional field a keyed declaration names the declaration it replaced by.
+SUPERSEDES = ('supersedes', INTEGER)
 
 
 def _validator(event_type, fields, open_body=False, optional=()):
@@ -184,7 +190,8 @@ FACT_TYPES = {
     # Keyed by (index, date, source), so an administrator's print and a vendor snap are different
     # facts and a republication is a new row under the same key rather than an edit.
     'fixing_observed': _validator('fixing_observed', (
-        ('index', TEXT), ('date', TEXT), ('source', TEXT), ('value', NUMBER))),
+        ('index', TEXT), ('date', TEXT), ('source', TEXT), ('value', NUMBER)),
+        optional=(SUPERSEDES,)),
     # A determination is a fact about a ruling, attributed to the actor the contract vests it in.
     'determination': _validator('determination', (
         ('subject', TEXT), ('ruling', TEXT))),
@@ -194,12 +201,12 @@ FACT_TYPES = {
     'status_transition': _validator('status_transition', (
         ('subject', TEXT), ('status', TEXT)),
         optional=(('amount', NUMBER), ('asset', TEXT), ('kind', TEXT), ('reference', TEXT),
-                  ('agreement', TEXT))),
+                  ('agreement', TEXT), SUPERSEDES)),
     # A market is a name resolved by a fold over these; officialness is a property of the name.
     'market_declared': _validator('market_declared', (
-        ('name', TEXT), ('values_hash', HASH))),
+        ('name', TEXT), ('values_hash', HASH)), optional=(SUPERSEDES,)),
     'official_close_declared': _validator('official_close_declared', (
-        ('market', TEXT), ('values_hash', HASH)), optional=(('date', TEXT),)),
+        ('market', TEXT), ('values_hash', HASH)), optional=(('date', TEXT), SUPERSEDES)),
     # A file a job names, declared by its content under a name the desk gives it. `supersedes` is
     # the declaration whose content this one replaced, so a rollback to an older blob is a new
     # fact while a repeat of the standing one restates its body and coalesces.
@@ -217,7 +224,8 @@ FACT_TYPES = {
     'rehash_declared': _validator('rehash_declared', (('algorithm', TEXT),)),
     'break_glass_used': _validator('break_glass_used', (('reason', TEXT),)),
     # Open-bodied: a policy document's shape is versioned by the policy itself.
-    'policy_declared': _validator('policy_declared', (('policy', TEXT),), open_body=True),
+    'policy_declared': _validator('policy_declared', (('policy', TEXT),), open_body=True,
+                                  optional=(SUPERSEDES,)),
     # A node of the desk's tree, declared at its parent: a book's own path is the firm's to declare.
     'portfolio_declared': _validator('portfolio_declared', (('path', PATH),)),
     'checkpoint': _validator('checkpoint', (
@@ -253,7 +261,7 @@ PROVENANCE_TYPES = {
     'quote_filed': _validator('quote_filed', (
         ('quote_id', TEXT), ('structure', TEXT), ('plan_hash', HASH), ('values_hash', HASH),
         ('solved', COORDINATES), ('edge', NUMBER)),
-        optional=(('request', TEXT), ('ticket', HASH), ('portfolio', PATH))),
+        optional=(('request', TEXT), ('ticket', HASH), ('portfolio', PATH), SUPERSEDES)),
 }
 
 
@@ -263,7 +271,7 @@ CUSTODY_TYPES = {
     # A seat exists because its public key was published. The private half never appears here, and
     # the subject is the pseudonymous reference identity yields, never a name.
     'seat_enrolled': _validator('seat_enrolled', (
-        ('subject', TEXT), ('algorithm', TEXT), ('public_key', HASH))),
+        ('subject', TEXT), ('algorithm', TEXT), ('public_key', HASH)), optional=(SUPERSEDES,)),
     # The class key wrapped to one seat. Rewrap on grant change adds one of these; revocation is
     # forward-only, so nothing here ever unwraps.
     'key_wrapped': _validator('key_wrapped', (
@@ -277,13 +285,13 @@ REFERENCE_TYPES = {
     # later declaration under one id restates it as a file's does, `supersedes` naming the
     # declaration whose content it replaced - absent from a first declaration, which replaced none.
     'entity_declared': _validator('entity_declared', (
-        ('entity', TEXT), ('name', TEXT)), optional=(('parent', TEXT), ('supersedes', INTEGER))),
+        ('entity', TEXT), ('name', TEXT)), optional=(('parent', TEXT), SUPERSEDES)),
     # An agreement's terms are an instrument - a netting set's, validated by the engine that prices
     # it - cited by address. `kind` is the document's label as its declarer states it. It restates
     # as an entity does; a balance is never here, being settlement.
     'agreement_declared': _validator('agreement_declared', (
         ('agreement', TEXT), ('entity', TEXT), ('kind', TEXT), ('terms', HASH)),
-        optional=(('supersedes', INTEGER),)),
+        optional=(SUPERSEDES,)),
 }
 
 #: The writer's own type: a denial is a decision and so is appended rather than logged. Said by the

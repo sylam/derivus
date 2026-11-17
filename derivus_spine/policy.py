@@ -380,17 +380,28 @@ def canonical_policy(policy, document, where=None):
 
 
 def declare(log, actor, policy, document, effective_time=None):
-    """Declare a policy document, returning the envelope plus its blob.
+    """Declare a policy document this module reads, returning the envelope plus its blob - its
+    canonical bytes (`canonical_policy`) declared by `declare_bytes`."""
+    return declare_bytes(log, actor, policy, canonical_policy(policy, document), effective_time)
+
+
+def declare_bytes(log, actor, policy, raw, effective_time=None):
+    """Declare `raw`, a policy document's bytes as the store keeps them, under `policy`, returning
+    the envelope plus its blob - the path every policy verb declares through, the capabilities
+    document's and the escrow key's included.
 
     The writer judges the declaration before the blob is put, and fsyncs it before the
     `policy_declared` naming its address lands, so a refused one leaves the store as it found it.
     That event demands the `admin` scope, so only a governing seat moves the standard a claim is
-    held to.
+    held to. One document stands under a name, the latest (the `decisions` fold), and it restates
+    as `verbs.declare_file` restates a file.
     """
-    raw = canonical_policy(policy, document)
+    from .verbs import restated, standing_under
+
     blob = hashlib.sha256(raw).hexdigest()
-    envelope = log.append('policy_declared', {'policy': policy, 'blob': blob}, actor=actor,
-                          effective_time=effective_time, blob_refs=(blob,), pending=(raw,))
+    envelope = log.append('policy_declared', restated(
+        log, standing_under(log, 'decisions', 'policies', policy), {'policy': policy, 'blob': blob}),
+        actor=actor, effective_time=effective_time, blob_refs=(blob,), pending=(raw,))
     return dict(envelope, policy=policy, blob=blob)
 
 

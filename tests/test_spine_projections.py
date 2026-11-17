@@ -419,6 +419,77 @@ def test_the_file_standing_under_a_name_is_its_latest_declaration_by_lsn(tmp_pat
     log.close()
 
 
+def test_restatements_filed_naming_nothing_they_replaced_still_read(tmp_path):
+    """A log written before a keyed declaration named what it replaced: each keyed type filed A
+    then B by hand, no body carrying `supersedes`. The home verifies, every projector folds and the
+    oracle holds; and each verb restating A over it reads B as standing, filing a new fact naming B.
+
+    Killing mutations: `supersedes` declared a required field of one of these bodies, which refuses
+    the restatement and the log it would read; a reader taking the field as present.
+    """
+    from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+    from cryptography.hazmat.primitives.serialization import Encoding, PublicFormat
+
+    from derivus_spine import oracle
+    from derivus_spine.custody import enroll
+    from derivus_spine.verbs import declare_close, declare_market, transition
+
+    home = seeded(tmp_path, clips=())
+    log = SpineLog(home)
+    values = (b'{"EURUSD":1.0851}', b'{"EURUSD":1.0857}')
+    keys = [X25519PrivateKey.generate().public_key().public_bytes(Encoding.Raw, PublicFormat.Raw)
+            for _ in values]
+    tolerances = [{'tolerances': {'mtm': mtm}} for mtm in (1e-9, 1e-6)]
+    state, paid = (hashlib.sha256(name).hexdigest() for name in (b'a state', b'a payment'))
+    filed = {name: [log.append(event_type, body(n), actor=ACTOR, effective_time=TUE)['lsn']
+                    for n in (0, 1)] for name, event_type, body in (
+        ('market', 'market_declared',
+         lambda n: {'name': 'official', 'values_hash': log.store.put(values[n])}),
+        ('close', 'official_close_declared',
+         lambda n: {'market': 'official', 'values_hash': log.store.put(values[n]), 'date': DATE}),
+        ('quote', 'quote_filed',
+         lambda n: {'quote_id': 'Q-1', 'structure': 'vanilla', 'plan_hash': 'a' * 64,
+                    'values_hash': log.store.put(values[n]), 'solved': {'strike': 1.0},
+                    'edge': 125.0 + n}),
+        ('state', 'status_transition',
+         lambda n: {'subject': state, 'status': ('pending', 'held')[n]}),
+        ('movement', 'status_transition',
+         lambda n: {'subject': paid, 'status': 'settled', 'amount': 1250.0 - n, 'asset': 'USD',
+                    'kind': 'payment', 'reference': 'PAY-1'}),
+        ('print', 'fixing_observed',
+         lambda n: {'index': INDEX, 'date': DATE, 'source': ECB, 'value': (1.0851, 1.0857)[n]}),
+        ('policy', 'policy_declared',
+         lambda n: {'policy': TOLERANCE_POLICY,
+                    'blob': log.store.put(canonical_bytes(tolerances[n]))}),
+        ('seat', 'seat_enrolled',
+         lambda n: {'subject': 'subject-seat', 'algorithm': 'x25519',
+                    'public_key': log.store.put(keys[n])}))}
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+    for projector in PROJECTORS.values():
+        projector.rows(fold(log, projector))
+    assert oracle.failed(oracle.report(home)) == []
+
+    log = SpineLog(home)
+    restated = {
+        'market': declare_market(log, ACTOR, 'official', values[0], effective_time=TUE),
+        'close': declare_close(log, ACTOR, 'official', values[0], effective_time=TUE, date=DATE),
+        'quote': file_quote(log, ACTOR, 'Q-1', 'vanilla', 'a' * 64, values[0], {'strike': 1.0},
+                            125.0, effective_time=TUE),
+        'state': transition(log, ACTOR, state, 'pending', effective_time=TUE),
+        'movement': transition(log, ACTOR, paid, 'settled', effective_time=TUE, amount=1250.0,
+                               asset='USD', kind='payment', reference='PAY-1'),
+        'print': apply_lifecycle(log, ACTOR, 'fixing_observed', {
+            'index': INDEX, 'date': DATE, 'source': ECB, 'value': 1.0851}, effective_time=TUE),
+        'policy': declare(log, ACTOR, TOLERANCE_POLICY, tolerances[0], effective_time=TUE),
+        'seat': enroll(log, 'subject-seat', ACTOR, public_key=keys[0])}
+    assert {name: log.open_body(log.frame_at(envelope['lsn'])).get('supersedes')
+            for name, envelope in restated.items()} == {
+        name: b for name, (_, b) in filed.items()}, 'each verb read B as standing'
+    log.close()
+    assert verify_home(home)['events'] == log.head()[0]
+
+
 def test_a_fixing_with_no_declared_source_refuses_and_the_order_is_the_authority(tmp_path):
     """The `fixings` policy is the authority an observation is read under. A home declaring none has
     named an authority for nothing and resolves nothing; once one is declared, an index it does not

@@ -46,7 +46,7 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from derivus_spine import (
     CapabilityDenied, MalformedEvent, MissingBlobRefusal, QuoteNotFirm, ReplayRefused, SpineLog,
     UnknownEventType, init_home, verify_home)
-from derivus_spine import cli, firmness, policy, projections, verbs
+from derivus_spine import cli, firmness, oracle, policy, projections, verbs
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 from test_spine import copy_of
@@ -711,6 +711,99 @@ def test_a_file_is_declared_by_its_bytes_and_the_latest_under_a_name_stands(tmp_
     filed = json.loads(capsys.readouterr().out)
     assert (filed['lsn'], filed['blob']) == (back['lsn'] + 1, address(b'<Calendars/>'))
     assert verify_home(home)['events'] == filed['lsn']
+
+
+def folded(projector, field, *path):
+    """A keyed declaration's reader: `(lsn, field)` of the row `projector`'s fold has standing at
+    `path`."""
+    def read(log):
+        row = projections.fold(log, projections.PROJECTORS[projector])
+        for name in path:
+            row = row[name]
+        return row['lsn'], row[field]
+    return read
+
+
+def in_force(name):
+    """A policy's reader: `(lsn, document)` of the declaration `policy.in_force` answers."""
+    def read(log):
+        _, document, lsn = policy.in_force(log, name)
+        return lsn, document
+    return read
+
+
+#: The settlement key the state and the movement below are filed against.
+SETTLED_KEY = address(b'CF1/fixed/payment/2026-06-28')
+
+#: Every keyed declaration this module's verbs and `policy.declare` file, as `(declare(log,
+#: content) under one key, its own reader, A, B)`.
+KEYED = dict({
+    'file': (lambda log, data: verbs.declare_file(log, MINT, 'risk-neutral', 'market', data),
+             folded('files', 'blob', 'risk-neutral'), VALUES, MOVED_VALUES),
+    'entity': (lambda log, name: verbs.declare_entity(log, MINT, COUNTERPARTY, name),
+               folded('entities', 'name', COUNTERPARTY), 'A bank', 'A bank, renamed'),
+    'agreement': (lambda log, terms: verbs.declare_agreement(log, MINT, CLIENT, COUNTERPARTY,
+                                                             'ISDA 2002', terms),
+                  folded('agreements', 'terms', CLIENT), INSTRUMENT, AMENDED),
+    'market': (lambda log, values: verbs.declare_market(log, MINT, 'official', values),
+               folded('markets', 'values_hash', 'names', 'official'), VALUES, MOVED_VALUES),
+    'close': (lambda log, values: verbs.declare_close(log, MINT, 'official', values,
+                                                      date='2026-08-28'),
+              folded('markets', 'values_hash', 'closes', 'official'), VALUES, MOVED_VALUES),
+    'close on the day it is true on': (
+        lambda log, values: verbs.declare_close(log, MINT, 'official', values),
+        folded('markets', 'values_hash', 'closes', 'official'), VALUES, MOVED_VALUES),
+    'quote': (lambda log, edge: verbs.file_quote(log, MINT, 'Q-1', 'vanilla', 'a' * 64, VALUES,
+                                                 {'Strike_Price': 18.5}, edge),
+              folded('quotes', 'edge', 'Q-1'), 125.0, 150.0),
+    'state': (lambda log, status: verbs.transition(log, MINT, SETTLED_KEY, status),
+              folded('lifecycle', 'status', 'transitions', SETTLED_KEY), 'pending', 'failed'),
+    'movement': (lambda log, amount: verbs.transition(
+        log, MINT, SETTLED_KEY, 'settled', effective_time=WHEN, amount=amount, asset='USD',
+        kind='payment', reference='PAY-1'), folded('cash', 'amount', 'PAY-1'), 1250.0, 1200.0),
+    'print': (lambda log, value: verbs.apply_lifecycle(log, MINT, 'fixing_observed', {
+        'index': 'FxRate.ZAR', 'date': '2026-08-28', 'source': 'ECB', 'value': value}),
+        folded('lifecycle', 'value', 'fixings', 'FxRate.ZAR', '2026-08-28', 'ECB'), 18.5, 18.6)},
+    **{'{} policy'.format(name): (
+        lambda log, document, name=name: policy.declare(log, MINT, name, document),
+        in_force(name), a, b) for name, a, b in (
+        (policy.TOLERANCE_POLICY, TOLERANCE, {'tolerances': {'mtm': 1e-3}}),
+        (policy.FIRMNESS_POLICY, {'pillar_seconds': 900}, {'pillar_seconds': 60}),
+        (policy.FIXINGS_POLICY, {'sources': {'FxRate.ZAR': ['ECB']}},
+         {'sources': {'FxRate.ZAR': ['BFIX']}}),
+        (policy.TIERS_POLICY, {'tiers': [{'name': 'desk'}]},
+         {'tiers': [{'name': 'desk', 'four_eyes': True}]}))})
+
+
+@pytest.mark.parametrize('declared', sorted(KEYED))
+def test_a_keyed_declaration_returned_to_earlier_content_is_a_new_fact_in_force(tmp_path,
+                                                                                declared):
+    """A keyed declaration filed A, A, B, A, A under one key: the second A coalesces onto the
+    first, the return to A is a new fact naming B (`supersedes`) and A is what the declaration's
+    own reader holds standing, and A once more coalesces onto the return. The home verifies and the
+    oracle holds.
+
+    Killing mutation: `verbs.restated` answering the body as handed in, so the return to A
+    coalesces onto the first A and B stays in force.
+    """
+    home, log = minted(tmp_path)
+    declare, reader, a, b = KEYED[declared]
+    first, again = declare(log, a), declare(log, a)
+    shown = reader(log)
+    second, back, repeat = (declare(log, content) for content in (b, a, a))
+
+    def body(envelope):
+        return log.open_body(log.frame_at(envelope['lsn']))
+
+    assert [at['coalesced'] for at in (first, again, second, back, repeat)] == [
+        False, True, False, False, True]
+    assert (again['lsn'], repeat['lsn'], shown[0]) == (first['lsn'], back['lsn'], first['lsn'])
+    assert body(second)['supersedes'] == first['lsn']
+    assert body(back) == dict(body(first), supersedes=second['lsn'])
+    assert reader(log) == (back['lsn'], shown[1]), 'A is what stands'
+    log.close()
+    assert verify_home(home)['events'] == back['lsn']
+    assert oracle.failed(oracle.report(home)) == []
 
 
 # --------------------------------------------------------------------------------------------

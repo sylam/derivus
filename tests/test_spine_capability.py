@@ -913,6 +913,52 @@ def test_the_grant_verb_canonicalises_the_operators_file_and_declares_it(tmp_pat
     assert verify_home(home)['events'] == SpineLog(home).head()[0]
 
 
+def test_an_earlier_document_restored_by_grant_revokes_what_the_one_it_replaced_granted(
+        tmp_path, capsys):
+    """`grant` files A, A, B, A, A, where B grants the desk `book` over its book and A does not:
+    the second A coalesces, the return to A is a new fact naming B (`supersedes`) and A is the
+    document in force, so the desk's booking that B admitted is refused, and A once more coalesces
+    onto the return.
+
+    Killing mutation: `verbs.restated` answering the body as handed in, so restoring A coalesces
+    onto the first declaration of it and the grant B made stays in force.
+    """
+    home, _ = minted(tmp_path)
+    a = document(grants=((MINT, ADMIN, ANY_BOOK),))
+    b = document(grants=((MINT, ADMIN, ANY_BOOK), (DESK, BOOK, BOOK_ONE)))
+
+    def granted(doc):
+        path = tmp_path / 'policy.json'
+        path.write_text(json.dumps(doc), encoding='utf-8')
+        assert cli.main(['grant', '--home', str(home), '--file', str(path), '--actor', MINT]) == 0
+        return json.loads(capsys.readouterr().out)
+
+    first, again, second = granted(a), granted(a), granted(b)
+    log = SpineLog(home)
+    booked = log.append('fill', fill('EXEC-1'), actor=DESK, book=BOOK_ONE)
+    log.close()
+    back, repeat = granted(a), granted(a)
+
+    log = SpineLog(home)
+
+    def body(envelope):
+        return log.open_body(log.frame_at(envelope['lsn']))
+
+    assert [at['coalesced'] for at in (first, again, second, back, repeat)] == [
+        False, True, False, False, True]
+    assert (again['lsn'], repeat['lsn'], back['lsn']) == (
+        first['lsn'], back['lsn'], booked['lsn'] + 1)
+    assert body(second)['supersedes'] == first['lsn']
+    assert body(back) == dict(body(first), supersedes=second['lsn'])
+    assert state_at(log)[0] == json.loads(canonical_document(a))
+    with pytest.raises(CapabilityDenied):
+        log.append('fill', fill('EXEC-2'), actor=DESK, book=BOOK_ONE)
+    assert denials(log)[-1][2] == {
+        'subject': DESK, 'verb': BOOK, 'book': BOOK_ONE, 'attempted_type': 'fill'}
+    log.close()
+    assert verify_home(home)['events'] == back['lsn'] + 1
+
+
 def test_the_grant_verb_refuses_a_file_it_cannot_read_and_says_which(tmp_path, capsys):
     """A refusal reaches the terminal as the library's own sentence and exit 1, naming the PATH -
     which is the thing the operator can go and fix - and writes nothing on the way out.

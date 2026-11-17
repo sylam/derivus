@@ -357,6 +357,19 @@ knock is read off the fold (`projections.knocked`), never filed. **Held by**
 `test_spine_projections.py::test_every_projector_replays_to_its_committed_golden`,
 `::test_a_republished_print_supersedes_by_as_of_key_and_the_first_is_still_read`.
 
+A keyed declaration - a market name, a close under its market and day, a file, an entity, an
+agreement, a quote, a print, a subject's state, a movement under its reference, a policy document
+(the capabilities document and the escrow key among them, read off the `decisions` fold) and a
+seat's key - is filed over what its own reader has standing under the key (`verbs.restated`,
+policies through `policy.declare_bytes`): the content in force declared again restates that body,
+which the writer coalesces, and anything else names the declaration it replaced (`supersedes`), so
+a return to earlier content is a new fact that takes effect. With no effective time, a late retry
+of an earlier content arriving after a later one is such a return. **Held by**
+`test_spine_verbs.py::test_a_keyed_declaration_returned_to_earlier_content_is_a_new_fact_in_force`,
+`test_spine_capability.py::test_an_earlier_document_restored_by_grant_revokes_what_the_one_it_replaced_granted`,
+`test_spine_custody.py::test_a_seat_key_or_an_escrow_key_restored_is_the_key_in_force_and_its_wrap_opens`,
+`test_spine_projections.py::test_restatements_filed_naming_nothing_they_replaced_still_read`.
+
 **Seeds.** A seed is a fold's `(lsn, state)` written at an official close, where the desk agrees
 what the day was, carrying the close's event hash, projector, version and state hash; one from
 another home or version, torn, or edited refuses by name. `DV_Spine seed` mints all but the strip,
