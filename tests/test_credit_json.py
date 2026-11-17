@@ -396,3 +396,28 @@ def test_a_hazard_simulated_at_zero_reversion_reads_its_limit():
         context.load_json((json.dumps(job), 'hazard'))
         cva[alpha] = float(context.run_job()[1]['Results']['cva'])
     assert cva[0.0] == pytest.approx(cva[1e-8], rel=1e-6) and cva[1e-8] > 0.0, cva
+
+
+@pytest.mark.parametrize('block, switch, curve', [
+    ('Funding_Valuation_Adjustment', 'Deflate_Stochastically', 'USD'),
+    ('Credit_Valuation_Adjustment', 'Deflate_Stochastically', 'USD'),
+    ('Credit_Valuation_Adjustment', 'Stochastic_Hazard_Rates', 'ISSUER_A')])
+def test_a_stochastic_reading_of_a_curve_no_model_moves_is_refused_by_name(block, switch, curve):
+    """Only EUR's FX rate carries a model, so the USD deflation curve and ISSUER_A's survival are
+    static, and a switch reading one along the path is refused naming the switch and the curve.
+
+    KILLING MUTATION: the `needs_model` call deleted from that switch's branch - a tensor broadcast
+    error for either deflation, a clean run for the hazard.
+    """
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'EUR',
+                'Discount_Rate': 'EUR', 'Amount': 1e6, 'Payment_Date': B + pd.DateOffset(years=1)}
+    stated = {'Credit_Valuation_Adjustment': {
+                  'Calculate': 'Yes', 'Counterparty': 'ISSUER_A', 'Deflate_Stochastically': 'No',
+                  'Stochastic_Hazard_Rates': 'No'},
+              'Funding_Valuation_Adjustment': {
+                  'Calculate': 'Yes', 'Risk_Free_Curve': 'USD', 'Funding_Cost_Interest_Curve': 'USD',
+                  'Funding_Benefit_Interest_Curve': 'USD'}}[block]
+    with pytest.raises(ValueError, match='{}.{} is Yes but {} has no model'.format(block, switch, curve)):
+        book.simulated([cashflow], (), trial_credit.FACTORS,
+                       models={'FxRate.EUR': ('GBMAssetPriceModel', {'Vol': 0.1, 'Drift': 0.0})},
+                       **{block: dict(stated, **{switch: 'Yes'})})

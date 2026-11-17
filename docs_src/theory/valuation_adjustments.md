@@ -36,9 +36,8 @@ off the deflation curve, the same on every path. With `Yes`,
 $$D_k(t_i)=\exp\Big(-\sum_{j=1}^{i}y_k(t_j;\Delta_j)\,\Delta_j\Big),\qquad D_k(t_0)=1,$$
 
 where $y_k(t;\tau)$ is the deflation curve's zero rate for tenor $\tau$ as it stands on path $k$ at
-row $t$, read for a tenor equal to the interval's length. A deflation curve with no model is read per the calculation's `NoModel`: `Constant` (the
-default) reads today's curve at tenor $\Delta_j$ on every interval, so the curve does not roll;
-`RiskNeutral` reads its forward from $t_j$.
+row $t$, read for a tenor equal to the interval's length. `Yes` needs a model on the deflation
+curve, and without one the run fails naming the switch and the curve.
 
 ### Exposure profile
 
@@ -69,6 +68,9 @@ per interval and then summed, an order the code keeps so the reported float does
 | --- | --- |
 | `No` | $\exp(-I(t_i))$, today's survival, the same on every path |
 | `Yes` | $\exp\big(-\sum_{j=1}^{i} I_k(t_j;\Delta_j)\big)$, $I_k(t;\tau)$ the simulated log-survival from $t$ over tenor $\tau$, read as the deflator is |
+
+`Yes` needs a model on the survival curve, and without one the run fails by name, as the
+deflator's does.
 
 Default is independent of exposure unless the survival curve is simulated (`HWHazardRateModel`),
 `Stochastic_Hazard_Rates` is `Yes` and `Correlations` declares a correlation between the hazard's

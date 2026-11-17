@@ -1870,6 +1870,8 @@ class CreditMonteCarlo(Calculation):
 
                 # note that for FVA, we already scale the exposure matrix by the survival probability
                 if params['Funding_Valuation_Adjustment'].get('Deflate_Stochastically', 'No') == 'Yes':
+                    needs_model(discount, 'Funding_Valuation_Adjustment.Deflate_Stochastically',
+                                params['Deflation_Interest_Rate'])
                     delta_scen_t = np.diff(mtm_grid).reshape(-1, 1)
 
                     deflation = utils.calc_time_grid_curve_rate(
@@ -1967,6 +1969,8 @@ class CreditMonteCarlo(Calculation):
                 delta_scen_t = np.hstack((0.0, np.diff(mtm_grid)))
 
                 if params['Credit_Valuation_Adjustment']['Deflate_Stochastically'] == 'Yes':
+                    needs_model(discount, 'Credit_Valuation_Adjustment.Deflate_Stochastically',
+                                params['Deflation_Interest_Rate'])
                     zero = utils.calc_time_grid_curve_rate(
                         discount, self.time_grid.time_grid[time_index], shared_mem)
                     Dt_T = torch.exp(-torch.squeeze(zero.gather_weighted_curve(
@@ -1988,6 +1992,8 @@ class CreditMonteCarlo(Calculation):
                 pv_exposure = torch.relu(tensors['mtm'] * unscale * fx_report * Dt_T) / fx_report[0]
 
                 if params['Credit_Valuation_Adjustment']['Stochastic_Hazard_Rates'] == 'Yes':
+                    needs_model(survival, 'Credit_Valuation_Adjustment.Stochastic_Hazard_Rates',
+                                params['Credit_Valuation_Adjustment']['Counterparty'])
                     surv = utils.calc_time_grid_curve_rate(
                         survival, self.time_grid.time_grid[time_index], shared_mem)
                     St_T = torch.exp(-torch.cumsum(torch.squeeze(surv.gather_weighted_curve(
@@ -5706,6 +5712,12 @@ def summarize_data(data, percentiles):
         exposure.update(extra)
 
     return pd.DataFrame(exposure)
+
+
+def needs_model(code, switch, name):
+    """A stochastic reading of a curve needs a model on that curve."""
+    if not any(rate[utils.FACTOR_INDEX_Stoch] for rate in code):
+        raise ValueError('{} is Yes but {} has no model: give it a model or state No'.format(switch, name))
 
 
 def worker_count(runparallel):
