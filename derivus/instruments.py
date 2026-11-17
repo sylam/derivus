@@ -294,6 +294,13 @@ def get_fxrate_component(fieldname, all_factors):
     return get_factor_component(utils.Factor('FxRate', fieldname), all_factors)
 
 
+def own_curve(currency, all_factors):
+    """`currency`'s own curve: the one its `FxRate` names (`FxRate.get_repo_curve_name`), its own
+    code where it has no `FxRate`."""
+    rate = get_fxrate_component(currency, all_factors)
+    return rate.get_repo_curve_name(currency) if rate else currency
+
+
 #: The rate of the currency FX settles through: a pair against it counts its spot days on the other
 #: currency alone, and a cross settles on a business day of it too.
 USD = utils.Factor('FxRate', ('USD',))
@@ -423,19 +430,21 @@ def get_interest_factor(fieldname, static_offsets, stochastic_offsets, all_tenor
 
 def get_equity_zero_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors, all_factors):
     """Read the equity's interest rate price factor (off the primary spot)"""
-    ir_curve = get_equity_component(fieldname, all_factors).get_repo_curve_name()
+    equity = get_equity_component(fieldname, all_factors)
+    ir_curve = equity.get_repo_curve_name(own_curve(equity.get_currency(), all_factors))
     return get_interest_factor(ir_curve, static_offsets, stochastic_offsets, all_tenors)
 
 
 def get_commodity_zero_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors, all_factors):
     """Read the commodity's interest rate price factor (off the primary spot)"""
-    ir_curve = get_commodity_component(fieldname, all_factors).get_repo_curve_name()
+    commodity = get_commodity_component(fieldname, all_factors)
+    ir_curve = commodity.get_repo_curve_name(own_curve(commodity.get_currency(), all_factors))
     return get_interest_factor(ir_curve, static_offsets, stochastic_offsets, all_tenors)
 
 
 def get_fx_zero_rate_factor(fieldname, static_offsets, stochastic_offsets, all_tenors, all_factors):
     """Read the Currency's interest rate price factor (off the primary spot)"""
-    ir_curve = get_fxrate_component(fieldname, all_factors).get_repo_curve_name(fieldname[:1])
+    ir_curve = own_curve(fieldname[:1], all_factors)
     return get_interest_factor(ir_curve, static_offsets, stochastic_offsets, all_tenors)
 
 
@@ -710,10 +719,8 @@ class Deal(object):
         return utils.check_rate_name(value) if value else otherwise
 
     def discount_name(self, key, currency, all_factors):
-        """The curve `key` names, else `currency`'s own: the one its `FxRate` names
-        (`FxRate.get_repo_curve_name`), its own code where it has no `FxRate`."""
-        rate = get_fxrate_component(currency, all_factors)
-        return self.check_factor_name(key) or (rate.get_repo_curve_name(currency) if rate else currency)
+        """The curve `key` names, else `currency`'s `own_curve`."""
+        return self.check_factor_name(key) or own_curve(currency, all_factors)
 
     def coupon_schedule(self, calendars, effective, maturity, frequency, leg='',
                         accrual='Accrual_Calendars', timing='Payment_Timing', method='Modified_Following',
@@ -7227,8 +7234,8 @@ class FloatingEnergyDeal(Deal):
             field_index["ForwardPrice"], field_index["ForwardFX"], field_index["CashFX"] = get_forwardprice_factor(
                 field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
                 all_factors, None, commodity_factor)
-            field_index["Repo_Rate"] = get_interest_factor(
-                commodity_factor.get_repo_curve_name(), static_offsets, stochastic_offsets, all_tenors)
+            field_index["Repo_Rate"] = get_commodity_zero_rate_factor(
+                field['Commodity'], static_offsets, stochastic_offsets, all_tenors, all_factors)
             field_index["Carry_Rate"] = get_forward_rate_factor(
                 commodity_factor.get_carry_curve_name(), static_offsets, stochastic_offsets, all_tenors)
             field_index['ForwardStart'] = np.array(

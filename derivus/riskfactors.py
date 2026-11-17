@@ -773,7 +773,7 @@ class EquityPrice(Factor0D):
         F('Respect_Default', 'Text', default='Yes', values=['Yes', 'No']),
         F('Jump_Level', 'Percent', default=0.0),
         F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
-        F('Interest_Rate', 'Text', default='', description='The equity repo curve'),
+        F('Interest_Rate', 'Text', default='', description='The equity repo curve, its currency\'s own where blank'),
         F('Spot', 'Float', default=0.0, bind='value',
           description='Spot price in the specified Currency'),
         F('Settlement_Days', 'Integer', default=3, convention=True,
@@ -782,9 +782,8 @@ class EquityPrice(Factor0D):
           description='Name of the calendar in the calendar file its spot date counts business days on')
     ]
 
-    def get_repo_curve_name(self):
-        return utils.check_rate_name(
-            self.param['Interest_Rate'] if self.param.get('Interest_Rate') else self.param['Currency'])
+    #: a share names its curve as a rate does, `default` where it names none
+    get_repo_curve_name = FxRate.get_repo_curve_name
 
     def get_currency(self):
         return utils.check_rate_name(self.param['Currency'])
@@ -803,7 +802,7 @@ class CommodityPrice(EquityPrice):
           description='Spot price in the specified Currency'),
         F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Interest_Rate', 'Text', default='',
-          description='The repo/lease (carry funding) curve'),
+          description='The repo/lease (carry funding) curve, its currency\'s own where blank'),
         F('Forward_Rate', 'Text', default='',
           description='The carry curve; falls back to Currency when blank')
     ]

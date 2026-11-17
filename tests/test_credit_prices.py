@@ -104,16 +104,17 @@ SOLD = dict(contract('5Y', 250.0, reference='SOLD'), Buy_Sell='Sell', Principal=
 
 
 def document(deals=(), factors=None, market_prices=None, entries=None, calculation=VALUATION):
-    """A job running `calculation` over `deals` on the world's curve, `factors` beside it,
-    carrying `market_prices` and the credit family's `Bootstrapper Configuration` entry or
-    `entries`."""
+    """A job running `calculation` over `deals` on the world's curve, `factors` beside it - one
+    stated None left out - carrying `market_prices` and the credit family's `Bootstrapper
+    Configuration` entry or `entries`."""
     return {'Calc': {
         'Calculation': dict({'Base_Date': B, 'Currency': 'USD'}, **calculation),
         'Deals': {'Reference': 'credit', 'Deals': {'Children': [
             {'Instrument': {'.Deal': deal}} for deal in deals]}},
         'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
             'System Parameters': {'Base_Currency': 'USD', 'Base_Date': B},
-            'Price Factors': dict(FACTORS, **(factors or {})),
+            'Price Factors': {key: value for key, value in dict(FACTORS, **(factors or {})).items()
+                              if value is not None},
             'Market Prices': market_prices or {},
             'Bootstrapper Configuration': entries or {'SurvivalProb': {'Prices': 'SurvivalProb'}}}}}}
 
@@ -359,6 +360,32 @@ def test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it
     assert np.abs(solved['InterestRate.USD']['Curve'].array[:, 1] -
                   FACTORS['InterestRate.USD']['Curve'].array[:, 1]).max() < 1e-10
     assert np.abs(curve(context)[1:, 1] / TRUE - 1.0).max() < 1e-10
+
+
+def test_a_curve_move_re_solves_the_survival_curve_discounting_on_it_whatever_it_is_called():
+    """The world's curve filed as `USD-OIS`, its `FxRate` naming it and nothing under `USD`, and
+    the survival block leaving `Discount_Rate` blank: the curve's quotes moved a basis point and
+    unsolved, a run narrowed to the curve's block re-solves the survival curve discounting on it,
+    to the bit the curve the whole document bootstraps.
+
+    Killing mutation: `bootstrappers.block_readers` reading the blank as the currency's code, under
+    which the narrowed run leaves the survival curve as it stood.
+    """
+    renamed = {'FxRate.USD': dict(FACTORS['FxRate.USD'], Interest_Rate='USD-OIS'),
+               'InterestRate.USD-OIS': FACTORS['InterestRate.USD'], 'InterestRate.USD': None}
+    name, moved = bootstrappers.knot_prices('USD-OIS', dict(FACTORS, **renamed), ModelParams(), B, {})
+    for point in moved['instrument']['Points']:
+        point['Quoted_Market_Value'] += 0.01
+    blank = block('Par_Spread', Discount_Rate='')
+    standing = bootstrapped({BLOCK: blank}, factors=renamed).current_cfg.params['Price Factors'][CURVE]
+    job = document(factors=dict(renamed, **{CURVE: standing}), market_prices={BLOCK: blank, name: moved},
+                   entries=FAMILIES)
+
+    whole, narrowed = loaded(job), loaded(job)
+    whole.bootstrap()
+    narrowed.bootstrap(only={name})
+    assert np.array_equal(curve(narrowed), curve(whole)), curve(narrowed) - curve(whole)
+    assert not np.array_equal(curve(whole), standing['Curve'].array), 'the moved quotes moved nothing'
 
 
 def jacobian(config):

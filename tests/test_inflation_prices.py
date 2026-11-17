@@ -259,31 +259,39 @@ def test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it
     assert np.abs(curve(context)[:, 1] / TRUE - 1.0).max() < 1e-10
 
 
-def test_a_curve_move_re_solves_the_inflation_curve_solved_on_it_and_no_other():
+@pytest.mark.parametrize('usd, stated', [('USD', 'USD'), ('USD-OIS', '')])
+def test_a_curve_move_re_solves_the_inflation_curve_solved_on_it_and_no_other(usd, stated):
     """The book carries the inflation curve its block's quotes solve, those quotes since moved a
     basis point and unsolved, beside two curve blocks quoting their own curves: USD, which the
     swaps discount on, and EUR, which they do not. A run narrowed to the EUR block leaves the
     inflation curve exactly as it stands; one narrowed to the USD block re-solves it on its moved
     quotes, to the bit the curve the whole document bootstraps (`bootstrappers.block_readers`
-    naming the block's `Discount_Rate`, else its currency's curve, as the credit family's).
+    naming the block's `Discount_Rate`, else its currency's own curve, as the credit family's).
+    The dollar curve is filed under the currency's name with the block naming it, and as `USD-OIS`,
+    its `FxRate` naming it, nothing under `USD` and the block's `Discount_Rate` blank.
 
-    Killing mutation: the inflation block read at its family's level, by every curve block - the
-    EUR run re-solves it too, every knot moving by 9.8e-5 to 1.06e-4.
+    Killing mutations: the inflation block read at its family's level, by every curve block - the
+    EUR run re-solves it too, every knot moving by 9.8e-5 to 1.06e-4; a blank `Discount_Rate` read
+    as the currency's code, under which the `USD-OIS` run leaves the curve as it stood.
     """
     eur = rates_world.market('EUR', {'EUR': ((1.0, 2.0, 5.0), (0.021, 0.024, 0.026))}, 'EUR')
-    curves = dict([bootstrappers.knot_prices('USD', FACTORS, ModelParams(), B, {}),
+    dollar = {'FxRate.USD': dict(FACTORS['FxRate.USD'], Interest_Rate=usd), 'InterestRate.USD': None}
+    dollar['InterestRate.' + usd] = FACTORS['InterestRate.USD']
+    curves = dict([bootstrappers.knot_prices(usd, dict(FACTORS, **dollar), ModelParams(), B, {}),
                    bootstrappers.knot_prices('EUR', eur, ModelParams(), B, {})])
-    moved_block = block()
+    moved_block = block(Discount_Rate=stated)
     for point in moved_block['instrument']['Points']:
         point['Quoted_Market_Value'] += 0.01
-    standing = bootstrapped({BLOCK: block()}).current_cfg.params['Price Factors'][CURVE]
+    solved = bootstrapped({BLOCK: block(Discount_Rate=stated)}, factors=dollar)
+    standing = solved.current_cfg.params['Price Factors'][CURVE]
     market = dict(curves, **{BLOCK: moved_block})
-    job = document(factors=dict(eur, **{CURVE: standing}), market_prices=market, entries=FAMILIES)
+    job = document(factors=dict(eur, **dollar, **{CURVE: standing}), market_prices=market,
+                   entries=FAMILIES)
 
     whole = loaded(job)
     whole.bootstrap()
     for moved_curve, expected in (('InterestRatePrices.EUR', standing['Curve'].array),
-                                  ('InterestRatePrices.USD', curve(whole))):
+                                  ('InterestRatePrices.' + usd, curve(whole))):
         narrowed = loaded(job)
         narrowed.bootstrap(only={moved_curve})
         assert np.array_equal(curve(narrowed), expected), (moved_curve, curve(narrowed) - expected)

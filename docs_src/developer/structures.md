@@ -124,9 +124,9 @@ which is exactly the discriminator the conversion needs. A leg type declaring no
 (`FXRangeAccrualDeal`) is instead PAID in its notional, so `notional_currency` is its `Currency`
 and the pair's other side its underlying, the axis read off the declaration and never the type's
 name; the shared block carries only what the leg's type declares. A leg discounts on its
-`Currency`'s `own_curve` — the curve that currency's `FxRate` names, else its own name — the one
-its forward reads for that currency. When the leg's underlying is the pair's quote currency the
-deal's axis is the reciprocal of the market's:
+`Currency`'s own curve (`utils.own_curve_name`) — the curve that currency's `FxRate` names,
+else its own name — the one its forward reads for that currency. When the leg's underlying is
+the pair's quote currency the deal's axis is the reciprocal of the market's:
 
 - `Strike_Price` and `Barrier_Price` become `1/K`;
 - the option sense flips (a market call is an engine put) and a barrier's direction flips with the
@@ -272,7 +272,7 @@ band not strictly inside the next wider, a coupon not above the next wider's). T
 | --- | --- | --- |
 | every cell, no `premium` | none: the legs are priced and `net_mid` is the premium, `charged_on` `'premium'` | — |
 | a `premium` and one blank cell | that cell | a coupon between its neighbours' coupons (else 0 and 100); a floor between the next wider floor (else `0.25 ×` spot) and the next narrower (else its own cap); a cap the mirror — each opened by `OPEN` (1e-9 of the span), an end being a tier the engine refuses |
-| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the expiry (`forward_rate`: one valuation of a unit of each currency received that day, each discounted on its `own_curve`, priced only when asked for) | `(1e-4, log 4)` |
+| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the expiry (`forward_rate`: one valuation of a unit of each currency received that day, each discounted on its own curve, priced only when asked for) | `(1e-4, log 4)` |
 
 Two blanks, a blank beside a blank premium, a tier stating no bound beside one that does, and a
 ticket stating every cell and a premium each refuse by name; no root refuses with the economics

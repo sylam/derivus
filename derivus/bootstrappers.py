@@ -835,9 +835,7 @@ class OptionQuoteFamily(ImpliedCalibration):
                 utils.Factor('FxRate', (currency,)), price_factors, factor_interp)
         # ONE read per leg, and it is the PRICER'S: `calc_fx_forward` grows each rate on the curve
         # its own `FxRate` names, so the fit's forward is the forward the deal is priced on
-        curve_of = lambda currency: price_factors[utils.check_tuple_name(
-            utils.Factor('FxRate', (currency,)))].get('Interest_Rate') or currency
-        carry_name, discount_name = curve_of(underlying), curve_of(domestic)
+        carry_name, discount_name = (utils.own_curve_name(x, price_factors) for x in (underlying, domestic))
         for currency, curve in ((underlying, carry_name), (domestic, discount_name)):
             if utils.check_tuple_name(
                     utils.Factor('InterestRate', utils.check_rate_name(curve))) not in price_factors:
@@ -6661,24 +6659,27 @@ def bootstrap_order(section):
                           for name, edges in sorted(unresolved.items()))))
 
 
-def block_readers(market_prices, entries):
-    """`{block: [every block reading what it writes]}` over one `Market Prices` section, each block
-    completed by its family's `entries` entry as the family reads it (`dict(entry, **block)`).
+def block_readers(market):
+    """`{block: [every block reading what it writes]}` over `market`'s `Market Prices`, each block
+    completed by its family's `Bootstrapper Configuration` entry as the family reads it
+    (`dict(entry, **block)`).
 
     A block is read two ways and both are the families' own declarations. `reads` names the price
     factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
     curve family names the very curve, in `Discount_Rate` and inside its benchmark deals
     (`benchmark_curves`), and the credit and inflation families the curve their swaps discount on,
-    `Discount_Rate` else the currency's own, so a curve is read by the curves discounting on it and
-    the survival and inflation curves solved on it and no others. A block of a type no family reads
-    is nobody's dependency.
+    `Discount_Rate` else the currency's own (`utils.own_curve_name` off `market`'s `Price Factors`),
+    so a curve is read by the curves discounting on it and the survival and inflation curves solved
+    on it and no others. A block of a type no family reads is nobody's dependency.
     """
+    market_prices, factors = market.get('Market Prices', {}), market.get('Price Factors', {})
+    entries = market.get('Bootstrapper Configuration', {})
     writer = {cls.market_factor_type: cls for cls in FAMILIES}
     blocks = {name: writer[utils.check_rate_name(name)[0]] for name in market_prices
               if utils.check_rate_name(name)[0] in writer}
     curves = InterestRate
     named = {name: {block.get('Discount_Rate')} | curves.benchmark_curves(block, name)
-             if cls is curves else {block.get('Discount_Rate') or block.get('Currency')}
+             if cls is curves else {block.get('Discount_Rate') or utils.own_curve_name(block.get('Currency'), factors)}
              for name, cls in blocks.items() if cls in (curves, SurvivalProb, InflationRate)
              for entry in [entries.get(cls.__name__)]
              for block in [dict(entry if isinstance(entry, dict) else {},
@@ -6693,18 +6694,19 @@ def block_readers(market_prices, entries):
     return readers
 
 
-def bootstrap_dependents(market_prices, moved, entries):
-    """The `Market Prices` blocks a run must COVER once the blocks named by `moved` carry new
-    numbers: those blocks, plus every block that reads what one of them writes, closed over."""
-    return utils.closed_over(block_readers(market_prices, entries), moved)
+def bootstrap_dependents(market, moved):
+    """The blocks of `market`'s `Market Prices` a run must COVER once the blocks named by `moved`
+    carry new numbers: those blocks, plus every block that reads what one of them writes, closed
+    over."""
+    return utils.closed_over(block_readers(market), moved)
 
 
-def bootstrap_precedents(market_prices, wanted, entries):
+def bootstrap_precedents(market, wanted):
     """The blocks a fit of `wanted` stands on: those blocks, plus every block one of them reads,
     closed over - the walk `bootstrap_dependents` takes, backwards. A curve discounting on another
     is one system with it, so its quotes move whatever the first is read by."""
     reads = {}
-    for written, readers in block_readers(market_prices, entries).items():
+    for written, readers in block_readers(market).items():
         for reader in readers:
             reads.setdefault(reader, []).append(written)
     return utils.closed_over(reads, wanted)

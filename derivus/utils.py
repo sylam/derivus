@@ -5541,6 +5541,12 @@ def check_tuple_name(factor):
     return '.'.join((factor.type,) + factor.name) if type(factor.name) == tuple else factor
 
 
+def own_curve_name(currency, price_factors):
+    """`currency`'s own curve in a `Price Factors` section: the one its `FxRate` names, its own code
+    where that names none or the section holds no `FxRate` for it."""
+    return (price_factors.get('FxRate.{}'.format(currency)) or {}).get('Interest_Rate') or currency
+
+
 #: The positional name-prefix chain, head type to tail type: a curve's tail is itself (a spread chain),
 #: a 0D spot's is the basis riding it.
 NESTED = {'InterestRate': 'InterestRate', 'InflationRate': 'InflationRate', 'FxRate': 'ObservedBasis',

@@ -1685,13 +1685,14 @@ def greek_rows(frame):
     return rows
 
 
-def quote_blocks(prices, universe, entries):
-    """The `Market Prices` blocks a risk run refits: every block writing a factor the book reads,
-    and every block one of those stands on - a curve discounting on another is one system with it,
-    so the other's quotes move the book too. A block the book reaches through nothing is left out,
-    so a market file carrying a few hundred fitted names refits the ones this book prices."""
+def quote_blocks(market, universe):
+    """The blocks of `market`'s `Market Prices` a risk run refits: every block writing a factor the
+    book reads, and every block one of those stands on - a curve discounting on another is one
+    system with it, so the other's quotes move the book too. A block the book reaches through
+    nothing is left out, so a market file carrying a few hundred fitted names refits the ones this
+    book prices."""
     return bootstrappers.bootstrap_precedents(
-        prices, bootstrappers.bootstrap_writers(prices, set(universe)), entries)
+        market, bootstrappers.bootstrap_writers(market['Market Prices'], set(universe)))
 
 
 def connected_run(run, blocks, universe, carried, reading=Context):
@@ -1758,8 +1759,7 @@ def quote_run(run, reading=Context):
     loaded = load(run, reading())
     prices = loaded.current_cfg.params['Market Prices']
     universe = set(loaded.current_cfg.factor_universe()['resolved']) if prices else set()
-    blocks = sorted(quote_blocks(
-        prices, universe, loaded.current_cfg.params['Bootstrapper Configuration']))
+    blocks = sorted(quote_blocks(loaded.current_cfg.params, universe))
     if not blocks:
         return loaded.run_job()[1], [], [], None
     key = content_hash({'market': run['Calc']['MergeMarketData'], 'files': reading().files(run),
@@ -4004,9 +4004,7 @@ def bootstrap_selection(market, outcome, patch):
     if outcome['installed'] or not outcome['updated'] or any(
             utils.check_rate_name(name)[0] in read for name in patch):
         return None
-    return bootstrappers.bootstrap_dependents(market.get('Market Prices', {}),
-                                              outcome['updated'],
-                                              market.get('Bootstrapper Configuration', {}))
+    return bootstrappers.bootstrap_dependents(market, outcome['updated'])
 
 
 def market_edit(document, quotes, patch, bootstrap=None, authored=(), reading=Context, retire=()):

@@ -90,8 +90,9 @@ CALENDAR = 'Johannesburg'
 def world(names=None):
     """`Price Factors` for the book: a USD discount and projection curve, a EUR leg crossed onto
     USD, one FX surface, an equity, and the two rate-vol spaces a cap and a swaption read. `names`
-    files a currency's own curve as a book may: under the name it maps the currency to, every rate
-    and share naming it there, or, where that is blank, under the currency's with none naming it."""
+    files a currency's own curve as a book may: under the name it maps the currency to, its rate
+    naming it there, or, where that is blank, under the currency's with none naming it; a share
+    funding on it then names no curve."""
     factors = rates_world.market(
         'USD', {'USD': (KNOTS, DISCOUNT), 'USD-PROJ': (KNOTS, PROJECTION)}, 'USD')
     factors['FxRate.EUR'] = {'Domestic_Currency': None, 'Interest_Rate': 'EUR', 'Spot': X0}
@@ -115,8 +116,8 @@ def world(names=None):
                                            'Surface': utils.Curve([], surface)}
     for currency, name in (names or {}).items():
         factors['InterestRate.' + (name or currency)] = factors.pop('InterestRate.' + currency)
-        factors.update({key: dict(block, Interest_Rate=name) for key, block in factors.items()
-                        if block.get('Interest_Rate') == currency})
+        factors.update({key: dict(block, Interest_Rate=name if key.startswith('FxRate.') else '')
+                        for key, block in factors.items() if block.get('Interest_Rate') == currency})
     return factors
 
 #: `(Barrier_Type, barrier, strike, option type)` - both directions and both option types, each
@@ -1082,7 +1083,7 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
 
 #: How a book may file each currency's own curve (`world`): under the currency's name with its
 #: `FxRate` naming it, under it with none naming it, or under another name with nothing left under
-#: the currency's.
+#: the currency's, a share funding on it naming none.
 BARE, UNNAMED, RENAMED = {'USD': 'USD', 'EUR': 'EUR'}, {'USD': '', 'EUR': ''}, {
     'USD': 'USD-OIS', 'EUR': 'EUR-ESTR'}
 
@@ -1105,16 +1106,18 @@ def own_curves(deal, names):
 def test_a_blank_curve_is_its_currency_s_own_whatever_the_book_calls_it():
     """Every family's trial book (`tests/test_position_scaling.py`), and an equity knock-out its
     history knocked out today, priced with every discount curve a deal may leave blank that is its
-    currency's own left blank (`own_curves`), marks to the bit as the book stating them: on curves
-    filed under their currencies' names, on the same curves with no `FxRate` naming them, and on
-    curves filed under other names with nothing under a bare currency. The families reach every
-    deal site reading a blank discount curve through `Deal.discount_name` - an FX
-    option's `fx_pair`, both legs of a mark-to-market cross-currency swap, a non-deliverable
-    forward's settlement currency, a commodity option's payoff currency, a swaplet list's paid one -
-    and the knock-out's rebate cashflow carries the barrier's blank.
+    currency's own left blank (`own_curves`), and with the share and the commodity funding on that
+    curve naming none, marks to the bit as the book stating them: on curves filed under their
+    currencies' names, on the same curves with no `FxRate` naming them, and on curves filed under
+    other names with nothing under a bare currency. The families reach every deal site reading a
+    blank discount curve through `Deal.discount_name` - an FX option's `fx_pair`, both legs of a
+    mark-to-market cross-currency swap, a non-deliverable forward's settlement currency, a
+    commodity option's payoff currency, a swaplet list's paid one - every deal reading a share's or
+    a commodity's curve, and the knock-out's rebate cashflow carrying the barrier's blank.
 
-    Killing mutation: `discount_name` falling back to the bare currency, under which the renamed
-    book skips every deal leaving its curve blank (`Cannot find InterestRate.USD`).
+    Killing mutations: `discount_name` falling back to the bare currency, or a share's or a
+    commodity's blank `Interest_Rate` read as its currency's code, under which the renamed book
+    skips every deal reading the curve (`Cannot find InterestRate.USD`).
     """
     import test_position_scaling as scaling
     import trial_equity
@@ -1123,11 +1126,14 @@ def test_a_blank_curve_is_its_currency_s_own_whatever_the_book_calls_it():
                    Reference='EQKO_HIT', Barrier_Dates=[[WORLD_BASE, 85.0]] + trial_equity.MONTHLY)
     for family, trial in scaling.FAMILIES.items():
         deals = trial.DEALS + [knocked] * (family == 'equity')
-        stated, _ = marks(deals, trial.FACTORS)
+        # a commodity funding on its currency's own curve, stated in the book and blank beside it
+        funded = {key: dict(block, Interest_Rate=block['Currency'])
+                  for key, block in trial.FACTORS.items() if key.startswith('CommodityPrice.')}
+        stated, _ = marks(deals, dict(trial.FACTORS, **funded))
         assert set(scaling.references(deals)) <= set(stated), family
         for names in (BARE, UNNAMED, RENAMED):
-            blank, stats = marks([own_curves(deal, names) for deal in deals], trial.FACTORS,
-                                 names=names)
+            blank, stats = marks([own_curves(deal, names) for deal in deals], dict(trial.FACTORS, **{
+                key: dict(block, Interest_Rate='') for key, block in funded.items()}), names=names)
             assert stats.get('Deals Skipped', 0) == 0, (family, names, stats)
             assert blank == stated, (family, names, sorted(key for key in stated
                                                            if blank.get(key) != stated[key]))

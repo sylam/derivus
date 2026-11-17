@@ -4683,8 +4683,7 @@ class SIMM(NettingSetCalculation):
             raise ValueError('SIMM: trade {} reads what {} writes, and a move here re-solves the '
                              'curve and credit families alone'.format(reference, ', '.join(others)))
         moves, base_date = [], self.config.params['System Parameters']['Base_Date']
-        for block in sorted(name for name in bootstrap_precedents(
-                prices, writers, self.config.params['Bootstrapper Configuration'])
+        for block in sorted(name for name in bootstrap_precedents(self.config.params, writers)
                             if utils.check_rate_name(name)[0] in families):
             rate = utils.check_rate_name(block)
             family = families[rate[0]]
@@ -4828,8 +4827,7 @@ class SIMM(NettingSetCalculation):
             factors[name], Curve=family.solved_curve(artifact.benchmarks, theta, curve))
             for curve in artifact.factors}
         return ridden if tangent else dict(ridden, **self.resolved(
-            bootstrappers.bootstrap_dependents(
-                prices, artifact.members, config.params['Bootstrapper Configuration']), ridden))
+            bootstrappers.bootstrap_dependents(config.params, artifact.members), ridden))
 
     def survival(self, block):
         """`(solver, instrument)` - the survival family as configured, and the survival block
