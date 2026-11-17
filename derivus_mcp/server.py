@@ -1845,10 +1845,11 @@ def declare_agreement(agreement: str, entity: str, kind: str, terms: dict,
     (`describe_instrument_type`), which every position booked under the agreement is compiled into.
 
     The terms carry the paper and nothing else: no Children - a position is a fill booked against
-    the agreement - and no balance or collateral amount, which arrive as settlements. The engine
-    judges them before anything is recorded and a refusal names what to fix. A second declaration
-    under one id restates the agreement. Answers `{recorded: {lsn}, agreement, terms}`, `terms` the
-    address they are stored at.
+    the agreement - and no balance or collateral amount, which arrive as settlements. The set's
+    counterparty is `entity`, written into `Credit_Support_Amounts.Counterparty`, so leave it out;
+    terms naming another are refused. The engine judges them before anything is recorded and a
+    refusal names what to fix. A second declaration under one id restates the agreement. Answers
+    `{recorded: {lsn}, agreement, terms}`, `terms` the address they are stored at.
     """
     return service().call('POST', '/book/agreements', json=dict(
         {'agreement': agreement, 'entity': entity, 'kind': kind, 'terms': terms},

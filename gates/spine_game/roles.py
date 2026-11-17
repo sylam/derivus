@@ -105,11 +105,11 @@ POLICIES = {
 
 #: The three days the bank closes: yesterday's book carried in, the day's trading, the settlement.
 D0, D1, D2 = '2024-06-27', '2024-06-28', '2024-07-01'
-#: The clients, each one agreement: `(entity, name, agreement, counterparty, currency,
-#: threshold, minimum transfer)`.
-CLIENTS = (('LEI-A', 'Client A Treasury', 'CSA-A', 'CPTY_A', 'USD', 100_000.0, 10_000.0),
-           ('LEI-B', 'Client B Pension Fund', 'CSA-B', 'CPTY_B', 'ZAR', 500_000.0, 50_000.0),
-           ('LEI-C', 'Client C Mining', 'CSA-C', 'CPTY_C', 'USD', 250_000.0, 25_000.0))
+#: The clients, each one agreement: `(entity, name, agreement, currency, threshold, minimum
+#: transfer)`, the entity the counterparty of its set.
+CLIENTS = (('LEI-A', 'Client A Treasury', 'CSA-A', 'USD', 100_000.0, 10_000.0),
+           ('LEI-B', 'Client B Pension Fund', 'CSA-B', 'ZAR', 500_000.0, 50_000.0),
+           ('LEI-C', 'Client C Mining', 'CSA-C', 'USD', 250_000.0, 25_000.0))
 #: The structure sales quotes, and the node each head declares under its desk.
 STRUCTURE = 'ZeroCostCollar'
 BOOKS = {'FX': 'Options', 'RATES': 'Swaps', 'COMMODITIES': 'Metals'}
@@ -353,7 +353,7 @@ def open_the_day(day, spot=None):
 def keep_the_paper(table):
     """Legal: declare each client and its one agreement - a collateralised netting set, stating
     no collateral rows, which the engine cannot yet carry without their amounts."""
-    for entity, name, agreement, counterparty, currency, threshold, minimum in CLIENTS:
+    for entity, name, agreement, currency, threshold, minimum in CLIENTS:
         declared = binding.declare_legal_entity(entity, name, actor=LEGAL)
         table.did(LEGAL, 'declare_legal_entity ' + entity, recorded=declared['recorded']['lsn'])
         dials = dict((dial, {'.CreditSupportList': [[1, amount]]}) for dial, amount in (
@@ -364,7 +364,7 @@ def keep_the_paper(table):
             'Object': 'NettingCollateralSet', 'Netted': 'True', 'Collateralized': 'True',
             'Agreement_Currency': currency, 'Balance_Currency': currency,
             'Funding_Rate': currency, 'Liquidation_Period': 0.0, 'Settlement_Period': 0.0,
-            'Credit_Support_Amounts': dict(dials, Counterparty=counterparty)}, actor=LEGAL)
+            'Credit_Support_Amounts': dials}, actor=LEGAL)
         table.did(LEGAL, 'declare_agreement ' + agreement, recorded=declared['recorded']['lsn'])
 
 

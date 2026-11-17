@@ -1058,7 +1058,7 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
     def declared(body):
         return CLIENT.post('/book/agreements', content=dump(body), headers=JSON)
 
-    terms = netting_set(CLIENT_SET, 'CPTY_A')['Instrument']['.Deal']
+    terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
     assert CLIENT.post('/book/entities', content=dump(
         {'entity': 'LEI-A', 'name': 'Client A', 'parent': 'LEI-GROUP'}),
         headers=JSON).status_code == 200
@@ -1182,7 +1182,7 @@ def test_the_money_a_settlement_moved_reads_back_as_balances(recorded, desk):
         return CLIENT.post('/book/transition', content=dump(dict({'status': 'settled'}, **body)),
                            headers=JSON)
 
-    terms = netting_set(CLIENT_SET, 'CPTY_A')['Instrument']['.Deal']
+    terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
     CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
                 headers=JSON)
     CLIENT.post('/book/agreements', content=dump({'agreement': CLIENT_SET, 'entity': 'LEI-A',
@@ -1231,7 +1231,7 @@ def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, 
                 headers=JSON)
     assert CLIENT.post('/book/agreements', content=dump({
         'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002',
-        'terms': netting_set(CLIENT_SET, 'CPTY_A')['Instrument']['.Deal']}),
+        'terms': netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']}),
         headers=JSON).status_code == 200
     document = json.loads(desk.read_text())
     document['Calc']['Deals']['Deals']['Children'] += [
@@ -3954,14 +3954,14 @@ def test_the_tick_and_the_verification_queue_under_the_seat_that_asked(recorded,
 # --------------------------------------------------------------------------------------------
 # The paper's set, reads by node, and the seat a token proves.
 
-def agreed(agreement, counterparty, entity='LEI-A'):
+def agreed(agreement, entity):
     """An entity and an agreement with it on the record through the service, its terms the
-    netting set `netting_set` spells for `counterparty`."""
+    netting set `netting_set` spells for that entity."""
     assert CLIENT.post('/book/entities', content=dump({'entity': entity, 'name': entity}),
                        headers=JSON).status_code == 200
     answer = CLIENT.post('/book/agreements', content=dump(
         {'agreement': agreement, 'entity': entity, 'kind': 'ISDA 2002',
-         'terms': netting_set(agreement, counterparty)['Instrument']['.Deal']}), headers=JSON)
+         'terms': netting_set(agreement, entity)['Instrument']['.Deal']}), headers=JSON)
     assert answer.status_code == 200, answer.text
 
 
@@ -4002,7 +4002,7 @@ def test_the_first_booking_under_a_declared_agreement_brings_its_set(recorded, d
             if node['Instrument']['.Deal']['Reference'] == 'ISDA-A']
     assert len(held) == 1, 'a second booking brought a second set'
     assert [(fill['agreement'], fill['counterparty']) for _, _, fill in facts(recorded, 'fill')] \
-        == [('ISDA-A', 'LEI-A')] * 2
+        == [('ISDA-A', 'CPTY_A')] * 2
     assert CLIENT.get('/book/reconcile').json()['terms_mismatch'] == []
 
     document = json.loads(desk.read_text())
@@ -4017,6 +4017,40 @@ def test_the_first_booking_under_a_declared_agreement_brings_its_set(recorded, d
         'agreement': 'ISDA-A', 'deal_path': held[0], 'fields': ['Liquidation_Period']}]
 
 
+def test_the_set_s_counterparty_is_the_agreement_s_entity(recorded, desk):
+    """THE COUNTERPARTY IS STATED ONCE, as the agreement's entity. Terms naming another are refused
+    by name with nothing appended; terms naming none are declared naming the entity, as
+    `/book/agreements` reads them back, and so is the set the first booking brings - a later
+    booking under it naming no agreement is taken, the entity on its fill as on the first's.
+
+    Killing mutations: the entity left out of the terms, which refuses the booking naming no
+    agreement on a set that names no counterparty; the refusal dropped, which declares terms
+    naming another counterparty with the entity written over it.
+    """
+    surviving(desk, 'LEI-A')
+    assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                       headers=JSON).status_code == 200
+
+    def declared(counterparty):
+        return CLIENT.post('/book/agreements', content=dump({
+            'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'ISDA 2002',
+            'terms': netting_set(CLIENT_SET, counterparty)['Instrument']['.Deal']}), headers=JSON)
+
+    head_before = head(recorded)
+    refused = declared('CPTY_A')
+    assert refused.status_code == 422 and "name counterparty 'CPTY_A' and the agreement is with " \
+        "'LEI-A'" in refused.json()['detail'], refused.text
+    assert head(recorded) == head_before, 'a refused declaration recorded something'
+
+    assert declared('').status_code == 200
+    assert [row['terms']['Credit_Support_Amounts']['Counterparty']
+            for row in CLIENT.get('/book/agreements').json()['agreements']] == ['LEI-A']
+    for execution, named in (('EXEC-PAPER', {'agreement': CLIENT_SET}), ('EXEC-SET', {})):
+        booked = ticketed(execution, **named).json()
+        assert booked.get('written') is True, booked
+    assert [fill['counterparty'] for _, _, fill in facts(recorded, 'fill')] == ['LEI-A'] * 2
+
+
 def test_a_quote_for_a_declared_agreement_brings_its_set_where_the_client_accepts(recorded,
                                                                                   quoting):
     """THE QUOTE PATH MATERIALISES AS THE BOOKING DOES: a quote named for a declared agreement
@@ -4028,7 +4062,7 @@ def test_a_quote_for_a_declared_agreement_brings_its_set_where_the_client_accept
     booking the only way to open a declared agreement.
     """
     surviving(quoting, 'CPTY_B')
-    agreed('ISDA-B', 'CPTY_B', entity='LEI-B')
+    agreed('ISDA-B', 'CPTY_B')
     before = quoting.read_bytes()
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set='ISDA-B')
     assert quoting.read_bytes() == before, 'a quote moved the book'

@@ -386,7 +386,7 @@ def test_the_mark_the_close_the_file_and_the_settlement_reach_a_model_as_four_ve
     mcp_server.declare_legal_entity('LEI-1', 'Client One', actor=actor)
     mcp_server.declare_agreement('CSA-1', 'LEI-1', 'ISDA 2002', {
         'Object': 'NettingCollateralSet', 'Netted': 'True', 'Collateralized': 'False',
-        'Credit_Support_Amounts': {'Counterparty': 'CPTY_A'}}, actor=actor)
+        'Credit_Support_Amounts': {'Counterparty': 'LEI-1'}}, actor=actor)
     paid = mcp_server.file_status(exported['rows'][0]['key'], 'settled', agreement='CSA-1',
                                   **money)
     assert paid['amount'] == AMOUNT and paid['recorded']['lsn'] > settled['recorded']['lsn']

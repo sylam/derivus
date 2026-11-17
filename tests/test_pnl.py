@@ -1420,7 +1420,7 @@ def test_a_payment_is_shared_within_the_agreement_it_names(recorded, desk):
     finally:
         log.close()
     agreed(CLIENT_SET, 'CPTY_A')
-    agreed('CLIENT_B', 'CPTY_B', entity='LEI-B')
+    agreed('CLIENT_B', 'CPTY_B')
     with_set(desk, 'CLIENT_B', 'CPTY_B')
     sets = ((CLIENT_SET, 1.0, '/FX'), ('CLIENT_B', 2.0, '/Hedge'))
     for agreement, units, portfolio in sets:
@@ -2046,15 +2046,14 @@ def test_the_worklist_counts_everything_and_answers_the_newest(recorded, desk):
 RATES_HOLDER = 'subject-rates-collateral'
 
 
-def agreed_csa(agreement, counterparty, currency, received, posted, minimum):
+def agreed_csa(agreement, entity, currency, received, posted, minimum):
     """An entity and a collateralised agreement with it on the record through the service: the
-    netting set `netting_set` spells for `counterparty`, its CSA in `currency` with no independent
+    netting set `netting_set` spells for `entity`, its CSA in `currency` with no independent
     amount, thresholds `received` and `posted`, and `minimum` transferred either way."""
-    terms = netting_set(agreement, counterparty)['Instrument']['.Deal']
+    terms = netting_set(agreement, entity)['Instrument']['.Deal']
     dials = {dial: {'.CreditSupportList': [[1, amount]]} for dial, amount in (
         ('Received_Threshold', received), ('Posted_Threshold', posted),
         ('Minimum_Received', minimum), ('Minimum_Posted', minimum))}
-    entity = 'LEI-' + agreement
     assert CLIENT.post('/book/entities', content=dump({'entity': entity, 'name': entity}),
                        headers=JSON).status_code == 200
     answer = CLIENT.post('/book/agreements', content=dump({
@@ -2119,7 +2118,7 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     agreed_csa('CSA-A', 'CPTY_A', 'USD', 1_000_000.0, -500_000.0, 100_000.0)
     agreed_csa('CSA-B', 'CPTY_B', 'ZAR', 0.0, -50_000.0, 10_000.0)
     agreed_csa('CSA-D', 'CPTY_A', 'USD', 0.0, 0.0, 1.0)
-    agreed('ISDA-C', 'CPTY_A', entity='LEI-C')
+    agreed('ISDA-C', 'LEI-C')
     dollar = ((LONG, 'EXEC-A', 17_800_000.0), (STRIP_COUPONS, 'EXEC-L', 5_300_000.0),
               (PAYING, 'EXEC-G', 1_850_000.0))
     for deal, reference, price in dollar:
@@ -2132,7 +2131,7 @@ def test_a_collateral_call_is_read_on_a_marked_close_and_settled_as_a_movement(r
     assert sorted(first) == ['CSA-A', 'CSA-B', 'CSA-D'], 'an agreement with no CSA has no call'
     a, b = first['CSA-A'], first['CSA-B']
     exposure = sum(unit(deal, START, 18.5) for deal, _, _ in dollar)
-    assert (a['currency'], a['entity'], a['unknown']) == ('USD', 'LEI-CSA-A', [])
+    assert (a['currency'], a['entity'], a['unknown']) == ('USD', 'CPTY_A', [])
     assert a['exposure'] == pytest.approx(exposure, rel=1e-12)
     assert a['required'] == pytest.approx(exposure - 1_000_000.0, rel=1e-12)
     assert (a['balance'], a['call'], a['direction'], a['minimum_transfer']) == (

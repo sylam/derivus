@@ -3112,14 +3112,15 @@ AGREEMENT_STATE = ('Opening_Balance',)
 HOLDING_AMOUNTS = ('Amount', 'Units', 'Principal')
 
 
-def agreement_terms(terms, agreement):
+def agreement_terms(terms, agreement, entity):
     """`terms` judged as the netting set an agreement's positions compile into, its `Reference`
-    the agreement's own id - or the 422 naming what is wrong with it.
+    the agreement's own id and its `Credit_Support_Amounts.Counterparty` the `entity` the agreement
+    is with - or the 422 naming what is wrong with it.
 
     Judged by the engine that prices it: a block that is not a `NettingCollateralSet`, one carrying
-    positions, one its own declarations say something about, and one stating a balance or a holding
-    are each refused by name. Nothing here reads a book, so a record with no book file declares its
-    paper the same way.
+    positions, one naming another counterparty, one its own declarations say something about, and
+    one stating a balance or a holding are each refused by name. Nothing here reads a book, so a
+    record with no book file declares its paper the same way.
     """
     if not isinstance(terms, dict) or terms.get('Object') != 'NettingCollateralSet':
         raise HTTPException(422, 'an agreement\'s terms are the netting set its positions are '
@@ -3130,7 +3131,14 @@ def agreement_terms(terms, agreement):
         raise HTTPException(422, 'the terms of {!r} carry Children: a position under an agreement '
                                  'is a fill booked against it, never part of its paper'.format(
                                      agreement))
-    stated = dict(terms, Reference=agreement)
+    support = terms.get('Credit_Support_Amounts') or {}
+    if support.get('Counterparty') not in (None, '', entity):
+        raise HTTPException(422, 'the terms of {!r} name counterparty {!r} and the agreement is '
+                                 'with {!r}: the set\'s counterparty is the agreement\'s entity, so '
+                                 'state that one or none'.format(
+                                     agreement, support['Counterparty'], entity))
+    stated = dict(terms, Reference=agreement,
+                  Credit_Support_Amounts=dict(support, Counterparty=entity))
     state = ['{} is {!r}'.format(field, stated[field]) for field in AGREEMENT_STATE
              if stated.get(field)]
     state += ['Collateral_Assets.{}[{}].{} is {!r}'.format(table, position, field, row[field])
@@ -3178,21 +3186,21 @@ def book_entities():
 def book_agreement_declared(request: dict):
     """`{agreement, entity, kind, terms, actor}` - declare an agreement: its id, the entity it is
     with, the document's kind as its declarer labels it, and its TERMS - the netting set every
-    position under it is compiled into.
+    position under it is compiled into, whose counterparty is the entity.
 
-    The terms are judged by the engine before anything appends (`agreement_terms`), the entity must
-    already be declared, and the act is `document`, enforced by the record. A second declaration
-    under one id restates the agreement, and a read before it still answers the terms it
-    answered. 404 where no home is configured.
+    The entity must already be declared, the terms are judged by the engine before anything
+    appends (`agreement_terms`), and the act is `document`, enforced by the record. A second
+    declaration under one id restates the agreement, and a read before it still answers the terms
+    it answered. 404 where no home is configured.
     """
     recorded()
     agreement, entity = request.get('agreement'), request.get('entity')
-    terms = agreement_terms(request.get('terms'), agreement)
     declared = sorted(row['entity'] for row in spine.entities())
     if entity not in declared:
         raise HTTPException(422, 'agreement {!r} names entity {!r} and the record declares {} - '
                                  'declare the entity first'.format(
                                      agreement, entity, ', '.join(declared) or 'none'))
+    terms = agreement_terms(request.get('terms'), agreement, entity)
     filed = spine.declare_agreement(agreement, entity, request.get('kind'), terms,
                                     actor_name=request.get('actor'))
     return {'recorded': {'lsn': filed['lsn']}, 'agreement': agreement, 'terms': filed['terms']}

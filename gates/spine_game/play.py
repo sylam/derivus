@@ -79,7 +79,7 @@ def book_at(path):
                                  'ForwardPrice': 'METAL'},
         'ForwardPrice.METAL': {'Currency': 'USD', 'Curve': curve((45400.0, 2300.0),
                                                                  (46200.0, 2400.0))}},
-        **{'SurvivalProb.' + client[3]: {'Recovery_Rate': 0.4, 'Curve': curve((0.0, 0.0),
+        **{'SurvivalProb.' + client[0]: {'Recovery_Rate': 0.4, 'Curve': curve((0.0, 0.0),
                                                                               (10.0, 0.2))}
            for client in roles.CLIENTS})
     first = pd.Timestamp(roles.D0)
