@@ -1502,6 +1502,33 @@ def test_a_blank_calendar_keeps_its_convention_and_a_held_one_prices(kind):
     assert blank == omitted and omitted[1] == held[1] == 0, (blank, omitted, held)
 
 
+def test_a_job_naming_no_calendar_file_holds_none_whatever_its_context_loaded_before(tmp_path):
+    """On one context, a deposit paying on Johannesburg runs on a market data file and the calendar
+    file; the same market data file then carries a job naming no calendar file, which runs where
+    its deposit names no calendar and fails naming Johannesburg, the no-file refusal, where it does.
+
+    Killing mutation: a job naming no calendar file keeping the calendars the first job left on
+    the context's parse of the market data file - the third job prices on them."""
+    path = tmp_path / 'market.json'
+    path.write_text(json.dumps({'MarketData': book([])['Calc']['MergeMarketData']['ExplicitMarketData']},
+                               cls=CustomJsonEncoder), encoding='utf-8')
+    plain, context = rates_world.deposit('DEP', 'USD', 'USD', 12, 4.2), derivus.Context()
+
+    def run(deal, calendar_file):
+        job = book([deal])
+        job['Calc']['MergeMarketData'] = {'MarketDataFile': str(path), 'ExplicitMarketData': {}}
+        if not calendar_file:
+            del job['Calc']['CalendDataFile']
+        return context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'reused')).run_job()[1]
+
+    run(dict(plain, Payment_Calendars=CALENDAR), True)
+    out = run(plain, False)
+    assert 'Deals Skipped' not in out['Stats'] and out['Stats']['Files']['CalendDataFile'] is None
+    with pytest.raises(utils.UnpriceableSchedule, match="calendar 'Johannesburg' is not a Location of a "
+                                                        'calendar file the job names'):
+        run(dict(plain, Payment_Calendars=CALENDAR), False)
+
+
 def wire_default(field):
     """One declared default in the WIRE form an author writes it, spelled here rather than read off
     `engine_default` - the whole point being that the two are different paths to one value.

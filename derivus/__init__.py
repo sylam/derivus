@@ -365,6 +365,9 @@ class Context:
             for section, section_data in market_data.get('ExplicitMarketData', {}).items():
                 cfg.merge_section(section, section_data)
 
+        # the calendars are the file the job names, none where it names none, whatever an earlier
+        # job left on a config this context keeps
+        cfg.holidays = {}
         if named['CalendDataFile']:
             cfg.holidays = self.cached(named['CalendDataFile'], cfg.parse_calendar_file, parses)
 
