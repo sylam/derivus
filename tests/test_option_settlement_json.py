@@ -274,6 +274,62 @@ def test_an_fx_option_pays_on_the_delivery_date_its_family_declares():
     assert marked['DELIVERED'] == pytest.approx(black * df((delivery - BASE).days), rel=1e-9)
 
 
+#: A bought up-and-in and up-and-out call on the world's pair, 10% above its spot, each also with a
+#: unit rebate
+BARRIER = dict(FX, Object='FXBarrierOption', Barrier_Price=FX_SPOT * 1.10, Cash_Rebate=0.0)
+KNOCKS = {'KI': dict(BARRIER, Reference='KI', Barrier_Type='Up_And_In'),
+          'KO': dict(BARRIER, Reference='KO', Barrier_Type='Up_And_Out'),
+          'KI_REBATE': dict(BARRIER, Reference='KI_REBATE', Barrier_Type='Up_And_In', Cash_Rebate=1.0),
+          'KO_REBATE': dict(BARRIER, Reference='KO_REBATE', Barrier_Type='Up_And_Out', Cash_Rebate=1.0)}
+
+
+def test_a_barrier_pays_on_the_delivery_date_its_family_declares():
+    """`Delivery_Date` stated on all three, a knock-in plus a knock-out is the vanilla, and each
+    barrier its blank twin discounted from the expiry to the delivery, a touch's rebate aside.
+
+    Killing mutation: the barrier discounting to the expiry, the pair 4.4e-4 above the vanilla.
+    """
+    delivered = {reference: dict(deal, Reference=reference + '_D', Delivery_Date=SETTLE)
+                 for reference, deal in KNOCKS.items()}
+    marked = marks([dict(FX, Delivery_Date=SETTLE), *KNOCKS.values(), *delivered.values()])
+    assert marked['KI_D'] > 0.0 and marked['KO_D'] > 0.0, 'the barrier is never reached'
+    assert marked['KI_D'] + marked['KO_D'] == pytest.approx(marked['FXO'], rel=1e-9)
+    for reference in ('KI', 'KO', 'KI_REBATE'):
+        assert marked[reference + '_D'] == pytest.approx(
+            marked[reference] * df((SETTLE - EXPIRY).days), rel=1e-12), reference
+    touch = marked['KO_REBATE'] - marked['KO']
+    assert touch > 0.0 and marked['KO_REBATE_D'] == pytest.approx(marked['KO_D'] + touch, rel=1e-12)
+
+
+def test_a_blank_delivery_date_settles_every_fx_option_a_quote_writes_where_it_did():
+    """Each FX option type a quote writes marks to the bit with `Delivery_Date` blank as stated on
+    its expiry, and each strip, settling on its own schedule, as stated on any day.
+
+    Killing mutation: a blank `Delivery_Date` on the barrier read two days after the expiry.
+    """
+    rows = [[BASE + pd.DateOffset(months=m), BASE + pd.DateOffset(months=m, days=3), 0.0]
+            for m in (3, 6, 9, 12)]
+    strip = dict({k: v for k, v in FX.items() if k != 'Expiry_Date'}, LeverageNotional=2.0 * UNITS,
+                 Strike_Price=FX_SPOT * 0.98)
+    deals = [FX, *KNOCKS.values(),
+             dict(strip, Object='FXTARFOptionDeal', Reference='TARF', TargetLevel=0.1,
+                  TARF_ExpiryDates=rows, Expiry_Date=rows[-1][1]),
+             dict(strip, Object='FXAccumulatorOptionDeal', Reference='ACCU', Barrier_Type='Up_And_Out',
+                  Barrier_Price=FX_SPOT * 1.10, Accumulator_ExpiryDates=rows),
+             {'Object': 'FXRangeAccrualDeal', 'Reference': 'RANGE', 'Currency': 'USD',
+              'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
+              'Buy_Sell': 'Buy', 'Lower_Barrier': 1.15, 'Upper_Barrier': 1.35, 'Payoff': CASH,
+              'Settlement_Date': rows[-1][1], 'Observation_Dates': [[fixing, None] for fixing, *_ in rows]}]
+    stated = [dict(deal, Reference=deal['Reference'] + '_D',
+                   Delivery_Date=SETTLE if deal['Reference'] in ('TARF', 'ACCU', 'RANGE') else EXPIRY)
+              for deal in deals]
+    marked = run(deals + stated, calc={'MCMC_Simulations': 256})['mtm']
+    marked = dict(zip(marked['Reference'], marked['Value'].astype(float)))
+    for deal in deals:
+        reference = deal['Reference']
+        assert marked[reference] != 0.0 and marked[reference + '_D'].hex() == marked[reference].hex(), reference
+
+
 def test_a_forward_carries_between_spot_dates():
     """An equity or FX option's forward is the spot carried from the valuation date's spot date to
     the expiry's, each the underlying factor's `Settlement_Days` business days on: three where the

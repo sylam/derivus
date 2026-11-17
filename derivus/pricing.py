@@ -1635,7 +1635,9 @@ def first_passage(log_bar, sigma, b, tenor, eta, r=None):
 
 def getbarrierpayoff(direction, eta, phi, strike, H):
     """The single-barrier closed form of Merton, Reiner and Rubinstein for one deal, as a function
-    of a scenario's `(sigma, expiry, cash_rebate, b, r, spot, barrier)`.
+    of a scenario's `(sigma, expiry, cash_rebate, b, r, spot, barrier, carried)`, `carried` the
+    discount from the expiry on to the day the payoff settles, which a knock-out's rebate, paid at
+    the touch, is not carried by.
 
     With ``w = barrier / spot`` and ``leg(x, s, p)`` the vanilla
     ``phi * (spot * exp((b - r) * expiry) * w**(p * (mu + 1)) * N(s * x)
@@ -1652,7 +1654,7 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
     if direction == BARRIER_OUT:
         weights = tuple(vanilla - knock_in for vanilla, knock_in in zip((1, 0, 0, 0), weights))
 
-    def barrier_option(sigma, expiry, cash_rebate, b, r, spot, barrier):
+    def barrier_option(sigma, expiry, cash_rebate, b, r, spot, barrier, carried=1.0):
         sigma2 = sigma * sigma
         vol = sigma * torch.sqrt(expiry)
         mu = (b - 0.5 * sigma2) / sigma2
@@ -1666,11 +1668,11 @@ def getbarrierpayoff(direction, eta, phi, strike, H):
                 strike * utils.scaled_norm_cdf(-r * expiry + power * mu * log_bar, sign * (x - vol)))
 
         legs = ((x1, phi, 0.0), (x2, phi, 0.0), (x1 + 2.0 * d, eta, 2.0), (y2, eta, 2.0))
-        option = sum(weight * leg(*terms) for weight, terms in zip(weights, legs) if weight)
+        option = carried * sum(weight * leg(*terms) for weight, terms in zip(weights, legs) if weight)
         if not cash_rebate:
             return option
         if direction == BARRIER_IN:
-            rebate = torch.exp(-r * expiry) * (1.0 - first_passage(log_bar, sigma, b, expiry, eta))
+            rebate = carried * torch.exp(-r * expiry) * (1.0 - first_passage(log_bar, sigma, b, expiry, eta))
         else:
             rebate = first_passage(log_bar, sigma, b, expiry, eta, r)
         return option + cash_rebate * rebate
@@ -2458,6 +2460,9 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
     A compo prices and monitors S*X (`compo_process`): the crossing test, the bridge and the
     continuity correction all read the composite spot, and strike and barrier are the
     payoff-currency levels on that product the deal declares.
+
+    A deal stating a `Settlement` after its expiry has the payoff discounted on to it, row by row; a
+    knock-out's rebate is paid at the touch.
     """
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
 
@@ -2499,14 +2504,19 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
 
     barrierOption = getbarrierpayoff(direction, eta, phi, strike, barrier)
     r = torch.squeeze(discounts.gather_weighted_curve(shared, tau.reshape(-1, 1)), dim=1) / expiry_years.clamp(min=1e-5)
+    # each row's discount from the expiry on to the settlement, none where the deal states none
+    lag = factor_dep.get('Settlement', factor_dep['Expiry']) - factor_dep['Expiry']
+    carried = torch.exp(torch.squeeze(
+        discounts.gather_weighted_curve(shared, tau.reshape(-1, 1)) -
+        discounts.gather_weighted_curve(shared, (tau + lag).reshape(-1, 1)), dim=1)) if lag else [1.0] * tau.size
 
     mtm_list = []
     prev_touched = 0.0
     interval_variance = utils.bridge_interval_variance(shared, factor_dep, deal_time, rho)
     prev_spot = None
 
-    for index, (sig, exp, b_t, r_t, s_t, f_t, cash_index) in enumerate(zip(
-            sigma, expiry_years, b, r, spot, forward, deal_data.Time_dep.deal_time_grid)):
+    for index, (sig, exp, b_t, r_t, s_t, f_t, c_t, cash_index) in enumerate(zip(
+            sigma, expiry_years, b, r, spot, forward, carried, deal_data.Time_dep.deal_time_grid)):
 
         # Broadie-Glasserman-Kou shift, AWAY from the live region by the monitoring interval's vol
         barrier_t = barrier * torch.exp(
@@ -2522,11 +2532,11 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
         if (1 - touched).any() and expiry[index] > 0:
 
             payoff = buy_or_sell * nominal * barrierOption(
-                sig, exp, cash_rebate / nominal, b_t, r_t, s_t, barrier_t)
+                sig, exp, cash_rebate / nominal, b_t, r_t, s_t, barrier_t, c_t)
         elif direction == BARRIER_OUT and expiry[index] == 0.0:
             # the closed form divides by sqrt(expiry) and cannot be asked for the value AT expiry,
             # where a surviving knock-out is worth exactly its intrinsic
-            payoff = buy_or_sell * nominal * torch.relu(phi * (f_t - strike))
+            payoff = buy_or_sell * nominal * torch.relu(phi * (f_t - strike)) * c_t
         else:
             payoff = 0.0
 
@@ -2536,9 +2546,9 @@ def pv_barrier_option(shared, time_grid, deal_data, nominal, spot, b,
             payoff_european = buy_or_sell * (
                 utils.black_european_option(f_t, strike, sig, expiry[index], 1.0, phi, shared) * torch.exp(
                     -r_t * exp) if expiry[index] else torch.relu(phi * (f_t - strike))
-            )
+            ) * c_t
             european_part = touched * (nominal * payoff_european)
-            rebate_part = buy_or_sell * cash_rebate * (1 - touched) if expiry[index] == 0.0 else 0.0
+            rebate_part = buy_or_sell * cash_rebate * (1 - touched) * c_t if expiry[index] == 0.0 else 0.0
             mtm_list.append(rebate_part + european_part + barrier_part)
         else:
             rebate_part = buy_or_sell * cash_rebate * (touched - prev_touched)

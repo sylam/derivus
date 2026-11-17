@@ -5996,7 +5996,9 @@ class FXBarrierOption(Deal):
         '[Single Barrier Options](#single-barrier-options) on every scenario date: vol floored at 5%,',
         'Brownian-bridge touch probability, Broadie-Glasserman-Kou shift for',
         '**Barrier_Monitoring_Frequency**. **Cash_Rebate** is an absolute amount. A **Payoff_Currency**',
-        'other than **Currency** is not quanto-adjusted (a warning is logged).'])
+        'other than **Currency** is not quanto-adjusted (a warning is logged). The payoff and a',
+        'knock-in\'s rebate are paid on **Delivery_Date**, the expiry where blank, and a knock-out\'s',
+        'rebate on the touch.'])
 
     def __init__(self, params, valuation_options):
         super(FXBarrierOption, self).__init__(params, valuation_options)
@@ -6021,7 +6023,10 @@ class FXBarrierOption(Deal):
             'Barrier_Underlying': get_cross_barrier_underlying(
                 (field['Underlying_Currency'], field['Currency']), stochastic_offsets),
             'Barrier_Monitoring': self.barrier_monitoring(base_date),
-            'Expiry': (self.field['Expiry_Date'] - base_date).days})
+            'Expiry': (self.field['Expiry_Date'] - base_date).days,
+            # the day its declaration settles the payoff on, the expiry where Delivery_Date is blank
+            'Settlement': (max(day for *_, day in settlement_days(
+                self.field, declared_settlements(type(self)))) - base_date).days})
         if payoff != field['Currency']:
             logging.warning("Quanto deal. TODO!!!!!!!")
         return field_index
