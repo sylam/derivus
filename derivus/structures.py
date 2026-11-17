@@ -44,10 +44,11 @@ on the pair's BASE currency and refuses the other side by name. A LEVEL crosses 
 barrier does, and a leverage is a ratio that never converts. See `furnish_accrual`.
 
 PARAMETERS vs A DEAL. The runner fills the shared block from the parameters, then the leg's pinned
-block, then its slots. `expiry` is a tenor the job grammar parses, or an ISO date for a broken
-one; anything else refuses by name rather than landing on today. Every step prices ONE leg against
-a deep copy of the whole book document with the deal tree emptied. `Price` is a plain base
-valuation; `Solve` is `derivus.solve_deal_field`, bracketed.
+block, then its slots. `expiry` is a tenor the job grammar parses, dated as the FX market dates it
+on the pair's own calendars (`tenor_dates`), or an ISO date for a broken one; anything else refuses
+by name rather than landing on today. Every step prices ONE leg against a deep copy of the whole
+book document with the deal tree emptied. `Price` is a plain base valuation; `Solve` is
+`derivus.solve_deal_field`, bracketed.
 
 A SPREAD IS QUOTED; A MID IS BOOKED. The book's `FXVol` surface is bootstrapped from
 `Quoted_Market_Value` alone, while the `FXVolPrices` block beside it may carry each pillar's
@@ -268,8 +269,8 @@ class Structure(object):
     QUOTED = (F('pair', 'Text', default=REQUIRED,
                 description='The market pair, base then quote - USDZAR is ZAR per USD'),
               F('expiry', 'Text', default=REQUIRED,
-                description="Tenor from the book's Base_Date - 3M, 1Y - or an ISO date for a "
-                            "broken one"),
+                description="Tenor dealt on the book's Base_Date - 1W, 3M, 1Y - or an ISO date for "
+                            "a broken expiry"),
               F('notional', 'Float', default=REQUIRED,
                 description='The amount, in notional_currency, each leg is struck on'),
               F('notional_currency', 'Text', default=REQUIRED,
@@ -300,8 +301,6 @@ class Structure(object):
           description='How long a quote stays approvable, in seconds')])
     #: The factor family a leg's `FX_Volatility` names; its quotes are filed as this plus `Prices`.
     SURFACE = 'FXVol'
-    #: Calendar days from a fixing to its settlement - a cashflow date, not an observation.
-    fixing_lag = 2
     #: The model an accrual leg is priced under where the book carries a calibration for its pair.
     spot_model = 'LogVar2FJ'
 
@@ -437,8 +436,8 @@ class TargetRedemptionForward(Structure):
     vernacular = 'tarf, target redemption forward, target forward'
     fields = [*Structure.QUOTED, *Structure.SELECTORS,
               F('fixing_frequency', 'Text', default=REQUIRED,
-                description='How often the strip fixes - 1M, 3M - counted off the book\'s '
-                            'Base_Date to the tenor'),
+                description='How often the strip fixes - 1M, 3M - the k-th fixing the expiry of a '
+                            'vanilla k periods long'),
               F('target', 'Float', default=REQUIRED,
                 description='The accrual cap that redeems the strip, in the PAIR\'s own units - '
                             '1.5 on USDZAR is 1.50 rand of cumulative favourable move'),
@@ -473,8 +472,8 @@ class Accumulator(Structure):
     vernacular = 'accumulator, decumulator, accumulator forward, accu'
     fields = [*Structure.QUOTED, *Structure.SELECTORS,
               F('fixing_frequency', 'Text', default=REQUIRED,
-                description='How often the strip fixes - 1M, 3M - counted off the book\'s '
-                            'Base_Date to the tenor'),
+                description='How often the strip fixes - 1M, 3M - the k-th fixing the expiry of a '
+                            'vanilla k periods long'),
               Structure.strike('knockout',
                                'The level that cancels the strip when a fixing observes it'),
               F('leverage', 'Float', default=2.0, convention=True,
@@ -500,8 +499,9 @@ class RangeAccrual(Structure):
 
     The desk states every cell but one and the `premium` the client pays, and the blank is solved
     to it; with coupons alone the unknown is the one width `w` putting the k-th innermost tier at
-    `F e^-kw` to `F e^kw` about the forward `F` to the expiry; with every cell stated and no premium
-    the premium is quoted. `unknown` says which, `completed` writes a candidate into the ticket.
+    `F e^-kw` to `F e^kw` about the forward `F` to the delivery; with every cell stated and no
+    premium the premium is quoted. `unknown` says which, `completed` writes a candidate into the
+    ticket.
     """
     vernacular = 'range accrual, wedding cake, corridor, fairway, digital range'
     TIERS = F('tiers', 'Table', default=REQUIRED, row=Row([
@@ -517,8 +517,8 @@ class RangeAccrual(Structure):
     CELLS = tuple(f.key for f in TIERS.row.fields)
     fields = [*Structure.QUOTED,
               F('fixing_frequency', 'Text', default=REQUIRED,
-                description='How often the strip fixes - 1M, 3M - counted off the book\'s '
-                            'Base_Date to the tenor'),
+                description='How often the strip fixes - 1M, 3M - the k-th fixing the expiry of a '
+                            'vanilla k periods long'),
               F('premium', 'Float', default=0.0, convention=True,
                 description='What the client pays for the structure, in notional_currency; blank '
                             'quotes it, stated it is the target the one blank tier parameter is '
@@ -692,67 +692,97 @@ def timestamp(value):
     return pd.Timestamp(value)
 
 
-def expiry_date(base_date, expiry):
-    """`Base_Date` plus a quoted tenor, as the wire form a deal's `Expiry_Date` carries.
+def pair_convention(market, calendars, pair):
+    """`(days, count, settle)`, the spot date a deal on `pair` counts on `market` and the job's
+    `calendars` (`instruments.spot_convention`), None at no days."""
+    from . import bootstrappers
+    return bootstrappers.OptionQuoteFamily.spot_convention(
+        [utils.Factor('FxRate', (currency,)) for currency in pair], market_data(market), None,
+        calendars)
 
-    A tenor is read through `utils.parse_period`, the grammar a job's date grid is read with, so
-    the letters mean here what they mean there. An ISO date passes through for a broken date, and
-    anything else refuses by name - an unparsed tenor landing on the base date is a zero-day
-    option. So does a tenor that lands ON or BEFORE the base date: nothing is left to price and
-    every premium the recipe quotes would be a premium for no optionality.
+
+def tenor_dates(base_date, expiry, convention):
+    """`(Expiry_Date, Delivery_Date)` of a tenor dealt on `base_date`, in a deal's wire form, as the
+    FX market dates it under the pair's spot `convention` (`pair_convention`, None counting none).
+
+    A month or year tenor delivers on the base date's spot date plus the tenor, modified following
+    on the pair's joint calendar - from a spot date on its month's last business day, on the
+    target month's last - and expires on the day whose spot date that is, counted back. A day or
+    week tenor expires on the base date plus its days rolled onto a weekday, and an ISO date is a
+    broken expiry as stated; each delivers on its spot date.
+
+    A tenor is read through `utils.parse_period`, the grammar a job's date grid is read with.
+    Anything else refuses by name - an unparsed tenor landing on the base date is a zero-day
+    option - and so does an expiry ON or BEFORE the base date: nothing is left to price and every
+    premium the recipe quotes would be a premium for no optionality.
     """
+    import numpy as np
     import pandas as pd
+    days, count, settle = convention or (0, np.busdaycalendar(), np.busdaycalendar())
+
+    def rolled(day, offset, roll, calendar=settle):
+        return pd.Timestamp(np.busday_offset(
+            np.datetime64(day, 'D'), offset, roll, busdaycal=calendar))
+
+    def spot(day):
+        return day + pd.Timedelta(days=int(utils.spot_lag(day, convention, [0])[0])) \
+            if convention else day
+
+    def month_end(day):
+        return rolled(day + pd.offsets.MonthEnd(0), 0, 'backward')
+
+    base = pd.Timestamp(base_date).normalize()
     try:
         offset = utils.parse_period(str(expiry))
     except ValueError:
         offset = None
-    if offset is not None:
-        expires = pd.Timestamp(base_date) + offset
-    else:
+    if offset is None:
         try:
             expires = pd.Timestamp(expiry)
         except (ValueError, TypeError):
             raise ValueError('{!r} is not a tenor (3M, 1Y) or a date'.format(expiry))
-    if expires <= pd.Timestamp(base_date):
+        delivers = spot(expires)
+    elif set(offset.kwds) <= {'days', 'weeks'}:
+        expires = rolled(base + offset, 0, 'forward', np.busdaycalendar())
+        delivers = spot(expires)
+    else:
+        start = spot(base)
+        delivers = month_end(start + offset) if start == month_end(start) else rolled(
+            start + offset, 0, 'modifiedfollowing')
+        expires = rolled(delivers, -days, 'forward', count)
+    if expires <= base:
         raise ValueError('an expiry of {!r} is {} - on or before the base date {}, where there is '
                          'no optionality left to quote'.format(
-                             expiry, expires.strftime('%Y-%m-%d'),
-                             pd.Timestamp(base_date).strftime('%Y-%m-%d')))
-    return {'.Timestamp': expires.strftime('%Y-%m-%d')}
+                             expiry, expires.strftime('%Y-%m-%d'), base.strftime('%Y-%m-%d')))
+    return tuple({'.Timestamp': day.strftime('%Y-%m-%d')} for day in (expires, delivers))
 
 
-def fixing_grid(base_date, expiry, frequency, lag):
+def fixing_grid(base_date, expiry, frequency, convention):
     """An accrual deal's fixing SCHEDULE, in the wire form both declarations read.
 
     `[[fixing, settlement, observed], ...]` - the row shape `TARF_ExpiryDates` and
     `Accumulator_ExpiryDates` share, untagged, with the observed fixing 0.0 because a quote is
-    struck today. Fixings run from the book's `Base_Date` at `frequency` up to and including the
-    tenor; each settles `lag` calendar days later.
-
-    Each fixing is `base + n x frequency` rather than a step off the previous one, an offset
-    applied repeatedly from a month end walking (31 Jan + 1M + 1M is 28 Mar, not 31 Mar).
+    struck today. The k-th fixing is the expiry of the vanilla `k x frequency` long and settles on
+    that vanilla's delivery (`tenor_dates` under `convention`), up to and including the tenor, so
+    the last fixing is the structure's own expiry and each is dated off the base date rather than
+    stepped off the one before (31 Jan + 1M + 1M is 28 Mar, not 31 Mar).
 
     A tenor holding no whole fixing period refuses rather than returning an empty strip, and so
     does a frequency that does not DIVIDE the tenor - the strip would end short of the tenor that
     was quoted while the ticket still said 1Y.
-
-    The base is normalized to MIDNIGHT first, as `expiry_date` normalizes its answer: a `Base_Date`
-    carrying a time would put the final fixing one comparison past a midnight last date.
     """
     import pandas as pd
     try:
         period = utils.parse_period(str(frequency)).kwds
     except ValueError:
         raise ValueError('{!r} is not a fixing frequency - 1M, 3M, 1W'.format(frequency))
-    base_date = pd.Timestamp(base_date).normalize()
-    last, rows, step = timestamp(expiry_date(base_date, expiry)), [], 1
+    last, rows, step = timestamp(tenor_dates(base_date, expiry, convention)[0]), [], 1
     while True:
-        fixing = base_date + pd.DateOffset(**{unit: n * step for unit, n in period.items()})
-        if fixing > last:
+        fixing, settles = tenor_dates(base_date, utils.offset_string(
+            pd.DateOffset(**{unit: n * step for unit, n in period.items()})), convention)
+        if timestamp(fixing) > last:
             break
-        rows.append([{'.Timestamp': fixing.strftime('%Y-%m-%d')},
-                     {'.Timestamp': (fixing + pd.DateOffset(days=lag)).strftime('%Y-%m-%d')},
-                     0.0])
+        rows.append([fixing, settles, 0.0])
         step += 1
     if not rows:
         raise ValueError('a {} tenor holds no {} fixing - the strip would be empty and the '
@@ -1215,8 +1245,9 @@ def materialize(structure, params, document):
 
     The shared block comes from the parameters - the two currencies off the pair, the surface named
     for it, the settlement currency's own curve discounting, the notional as the underlying amount,
-    and the expiry as a date - and carries what the leg's type declares of it. A type declaring no
-    `Underlying_Amount` is PAID in its notional, so `notional_currency` settles it and the other
+    the base date as the trade date, and the expiry and, on a leg with one expiry, the delivery its
+    tenor dates (`tenor_dates`) - and carries what the leg's type declares of it. A type declaring
+    no `Underlying_Amount` is PAID in its notional, so `notional_currency` settles it and the other
     side is its underlying. Then the leg's pinned block, then its slots. Strike-like slots and
     `Option_Type` cross to the engine axis together, exactly once, here. The legs are the ones
     `structure.dealt` says the ticket deals.
@@ -1230,7 +1261,7 @@ def materialize(structure, params, document):
     way; one the book quotes no surface for refuses here, naming the pairs it does. A notional is a
     positive amount - which side the desk is on is the structure's own statement, not the sign.
     """
-    from . import instruments
+    from . import Context, instruments
     params = declared(structure, params)
     base, quote_ccy = split_pair(params['pair'])
     named = str(params['notional_currency']).upper()
@@ -1241,7 +1272,8 @@ def materialize(structure, params, document):
     if notional <= 0.0:
         raise ValueError('a notional is a positive amount, not {:g} - the side the desk takes is '
                          "the structure's own".format(notional))
-    market = market_of(document)
+    context = Context()
+    market = market_of(document, context=context)
     factors = market_data(market)
     family = Structure.SURFACE + '.'
     spellings = ('{}.{}'.format(base, quote_ccy), '{}.{}'.format(quote_ccy, base))
@@ -1252,7 +1284,8 @@ def materialize(structure, params, document):
                                       for name in sorted(factors)
                                       if name.startswith(family)) or 'no FX surface'))
     base_date = timestamp(document['Calc']['Calculation']['Base_Date'])
-    expires = expiry_date(base_date, params['expiry'])
+    convention = pair_convention(market, context.current_cfg.holidays, (base, quote_ccy))
+    expires, delivers = tenor_dates(base_date, params['expiry'], convention)
 
     out = []
     furnished = ('FXOptionDeal', 'FXBarrierOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
@@ -1275,7 +1308,10 @@ def materialize(structure, params, document):
         seed = engine_spot(market, underlying, settlement)
         shared = {'Currency': settlement, 'Discount_Rate': utils.own_curve_name(settlement, factors),
                   'Underlying_Currency': underlying, 'Underlying_Amount': notional,
-                  'FX_Volatility': surface, 'Expiry_Date': expires}
+                  'FX_Volatility': surface, 'Expiry_Date': expires,
+                  'Trade_Date': {'.Timestamp': base_date.strftime('%Y-%m-%d')}}
+        if not accrues(leg.deal_type):
+            shared['Delivery_Date'] = delivers
         # a deal block is the field dict the pricer reads, so it carries what its type declares
         deal = dict({key: value for key, value in shared.items() if key in takes},
                     Object=leg.deal_type)
@@ -1321,7 +1357,7 @@ def materialize(structure, params, document):
             deal.setdefault('Barrier_Price',
                             seed * (0.75 if deal['Barrier_Type'].startswith('Down') else 1.25))
         note = furnish_accrual(structure, deal, params, document, base_date, underlying,
-                               inverted, position) if accrues(leg.deal_type) else None
+                               inverted, position, convention) if accrues(leg.deal_type) else None
         out.append(Materialized(leg.role, deal, inverted, note))
     return out
 
@@ -1333,13 +1369,14 @@ def accrues(deal_type):
     return observes is not None and observes.table is not None and observes.expires is None
 
 
-def furnish_accrual(structure, deal, params, document, base_date, underlying, inverted, position):
+def furnish_accrual(structure, deal, params, document, base_date, underlying, inverted, position,
+                    convention):
     """The rest of an accrual leg - the `position`-th the ticket deals: its fixing strip, its
     notionals or its range, and the one axis question a strip asks that a single expiry does not.
     Returns the leg's note.
 
-    THE SCHEDULE. `fixing_grid` grows it from the tenor and `fixing_frequency`, settling the
-    structure's `fixing_lag` on, and it is filed under the table the deal declares it observes.
+    THE SCHEDULE. `fixing_grid` grows it from the tenor and `fixing_frequency` under the pair's spot
+    `convention`, and it is filed under the table the deal declares it observes.
     `FXTARFOptionDeal` also declares an `Expiry_Date`, set to the LAST SETTLEMENT rather than to the
     tenor. A type declaring a `Settlement_Date` pays the whole strip once, on that last settlement,
     and its table holds each fixing with no `Value`, none having printed.
@@ -1374,8 +1411,7 @@ def furnish_accrual(structure, deal, params, document, base_date, underlying, in
             '{} would cap a move nobody quoted'.format(underlying))
     cls = getattr(instruments, deal['Object'])
     takes = schema.declared_fields(cls)
-    schedule = fixing_grid(base_date, params['expiry'], params['fixing_frequency'],
-                           structure.fixing_lag)
+    schedule = fixing_grid(base_date, params['expiry'], params['fixing_frequency'], convention)
     table = schema.OBSERVES[deal['Object']].table
     if 'Settlement_Date' in takes:
         deal[table] = [[fixing, None] for fixing, _, _ in schedule]
@@ -1472,12 +1508,17 @@ def run_prices(document, deals):
 
 
 def forward_rate(document, params):
-    """The pair's FX forward to the ticket's expiry in MARKET terms, as the engine prices it: one
-    base valuation of a unit of each currency received on that day, discounted on its own
+    """The pair's FX forward to the ticket's delivery date in MARKET terms, as the engine prices it:
+    one base valuation of a unit of each currency received on that day, discounted on its own
     `FxRate`'s curve, the ratio of the two values."""
+    from . import Context
     base, quote_ccy = split_pair(params['pair'])
-    factors = market_data(market_of(document))
-    settles = expiry_date(timestamp(document['Calc']['Calculation']['Base_Date']), params['expiry'])
+    context = Context()
+    market = market_of(document, context=context)
+    factors = market_data(market)
+    settles = tenor_dates(timestamp(document['Calc']['Calculation']['Base_Date']), params['expiry'],
+                          pair_convention(market, context.current_cfg.holidays,
+                                          (base, quote_ccy)))[1]
     units = [{'Object': 'FXForwardDeal', 'Reference': 'forward-{}'.format(bought),
               'Buy_Currency': bought, 'Buy_Amount': 1.0,
               'Buy_Discount_Rate': utils.own_curve_name(bought, factors),
@@ -1782,7 +1823,7 @@ def run_recipe(document, structure, params, reference, spot, charge=0.0, seed=No
     Returns `(legs, premiums, solved, params)`, `params` the ticket priced - a solved parameter
     written in. Legs are FRESH because `run_solve` writes the solved value back onto the leg it
     moved, so a second pass over the first pass's legs would seed itself from the answer it is
-    meant to find. `forward` answers the pair's forward to the expiry, for a parameter solve.
+    meant to find. `forward` answers the pair's forward to the delivery, for a parameter solve.
     """
     legs = named_legs(structure, params, document, reference)
     by_role = {leg.role: leg for leg in legs}

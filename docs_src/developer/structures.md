@@ -115,6 +115,20 @@ whichever is larger (`priced_job`): a booked strip is later marked by an ordinar
 the quote and the mark have to be one estimator. A book stating fewer gets a `notes` entry
 (`thin_paths`).
 
+### Dates {#dates}
+
+`tenor_dates` dates a tenor as the FX market deals it, on the pair's spot convention
+(`pair_convention`: `instruments.spot_convention` read off the book's `FxRate` blocks and the job's
+calendar file, as the pricer reads it — Monday to Friday where no calendar is named, and a calendar
+the file does not hold refuses as it does in the pricer). A month or year tenor delivers on the
+base date's spot date plus the tenor, modified following on the pair's joint calendar, end of month
+to end of month, and expires on the day whose spot date that delivery is, counted back. A day or
+week tenor expires on the base date plus its days rolled onto a weekday, and an ISO date is a broken
+expiry; each delivers on its spot date. Every leg carries `Trade_Date`, the base date; a leg with
+one expiry (`FXOptionDeal`, `FXBarrierOption`) also carries `Delivery_Date`, the day its type
+declares it settles on. **Held by** `test_a_quote_expires_and_delivers_on_the_dates_the_market_deals`,
+`test_a_straddle_is_exactly_its_two_legs`, `test_the_diary_of_a_booked_quote_pays_on_the_delivery_dates`.
+
 ### Market axis and engine axis {#axes}
 
 Parameters arrive in market terms (USDZAR 15.50 is ZAR per USD) and `materialize` converts once, so
@@ -150,12 +164,13 @@ A leg whose type observes a fixing table (`accrues`, off `schema.OBSERVES`) is a
 `furnish_accrual`:
 
 - **Schedule.** `fixing_grid` writes `[[fixing, settlement, 0.0], ...]` into the table the type
-  observes, the observed column 0.0 because a quote is struck today. Each fixing is
-  `base + n × fixing_frequency`, never a step off the previous date (31 Jan + 1M + 1M is 28 Mar),
-  settling `Structure.fixing_lag` days later, from a base normalised to midnight (a time on
-  `Base_Date` would drop the final fixing). A tenor holding no fixing refuses, and so does one the
+  observes, the observed column 0.0 because a quote is struck today. The n-th fixing is the expiry
+  of the vanilla `n × fixing_frequency` long and settles on that vanilla's delivery
+  ([dates](#dates)), so the last fixing is the structure's own expiry and none is a step off the
+  previous date (31 Jan + 1M + 1M is 28 Mar). A tenor holding no fixing refuses, and so does one the
   frequency does not divide, which would end the strip short of the tenor the ticket says.
-  **Held by** `test_a_strip_ends_on_its_own_expiry_or_refuses`.
+  **Held by** `test_a_strip_ends_on_its_own_expiry_or_refuses`,
+  `test_a_quote_expires_and_delivers_on_the_dates_the_market_deals`.
 - **Expiry.** A TARF's `Expiry_Date` is its last settlement — a strip is not over until its last
   cashflow lands; `FXAccumulatorOptionDeal` declares no such field, so its block carries none. A
   type declaring a `Settlement_Date` (`FXRangeAccrualDeal`) pays the whole strip once, on the last
@@ -273,7 +288,7 @@ band not strictly inside the next wider, a coupon not above the next wider's). T
 | --- | --- | --- |
 | every cell, no `premium` | none: the legs are priced and `net_mid` is the premium, `charged_on` `'premium'` | — |
 | a `premium` and one blank cell | that cell | a coupon between its neighbours' coupons (else 0 and 100); a floor between the next wider floor (else `0.25 ×` spot) and the next narrower (else its own cap); a cap the mirror — each opened by `OPEN` (1e-9 of the span), an end being a tier the engine refuses |
-| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the expiry (`forward_rate`: one valuation of a unit of each currency received that day, each discounted on its own curve, priced only when asked for) | `(1e-4, log 4)` |
+| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the tenor's delivery (`forward_rate`: one valuation of a unit of each currency received that day, each discounted on its own curve, priced only when asked for) | `(1e-4, log 4)` |
 
 Two blanks, a blank beside a blank premium, a tier stating no bound beside one that does, and a
 ticket stating every cell and a premium each refuse by name; no root refuses with the economics

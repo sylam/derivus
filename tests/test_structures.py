@@ -170,20 +170,26 @@ def two_sided_book(book):
     return document
 
 
+#: The 1Y tenor dealt on Friday 2024-06-28 by hand: spot Tuesday 2 July, delivered a year on, a
+#: Wednesday, and expiring two weekdays before it.
+EXPIRES, DELIVERS = {'.Timestamp': '2025-06-30'}, {'.Timestamp': '2025-07-02'}
+
+
 def option(reference, market_strike, market_type, buy_sell='Buy'):
     """One vanilla leg authored BY HAND on the engine's axis, with the market-to-engine conversion
     done in the gate rather than read from the runner - which is what makes the straddle identity a
     test of the runner and not a restatement of it.
 
     A rand-notional USDZAR option is an option on ZAR settled in USD, so the strike is USD per ZAR
-    (`1/K`) and the market's Call is the engine's Put on rand.
+    (`1/K`) and the market's Call is the engine's Put on rand. It expires and delivers on the 1Y
+    tenor's market dates.
     """
     return {'Object': 'FXOptionDeal', 'Reference': reference, 'Currency': 'USD',
             'Underlying_Currency': 'ZAR', 'Underlying_Amount': NOTIONAL,
             'Strike_Price': 1.0 / market_strike, 'Buy_Sell': buy_sell,
             'Option_Type': 'Put' if market_type == 'Call' else 'Call',
             'Option_Style': 'European', 'FX_Volatility': 'USD.ZAR', 'Discount_Rate': 'USD',
-            'Expiry_Date': {'.Timestamp': (BASE + pd_offset()).strftime('%Y-%m-%d')}}
+            'Expiry_Date': EXPIRES, 'Delivery_Date': DELIVERS}
 
 
 def pd_offset():
@@ -310,8 +316,8 @@ def test_an_unknown_structure_refuses_with_the_roster():
 
 def test_a_straddle_is_exactly_its_two_legs(book):
     """The runner's arithmetic against the same two options priced by hand, to 1e-9 relative: the
-    shared block, the tenor parse, the strike inversion and the option-sense flip all landed on the
-    same contract, with no solve in the way.
+    shared block, the tenor's expiry and delivery, the strike inversion and the option-sense flip
+    all landed on the same contract, with no solve in the way.
 
     The two wings priced at spot come out EQUAL, which is the forward statement this file needs: a
     call and a put agree in value only at the forward, so here the forward is the spot.
@@ -319,7 +325,8 @@ def test_a_straddle_is_exactly_its_two_legs(book):
     And the composed `StructuredDeal` prices to the quoted net - the deal riding the quote is the
     thing that was quoted.
 
-    Killing mutation: `split_pair` answering the pair's two currencies swapped.
+    Killing mutations: `split_pair` answering the pair's two currencies swapped; the legs written
+    without their `Delivery_Date`, each discounted two days short.
     """
     outcome = structures.quote(book, 'Straddle', params(strike=SPOT))
     by_hand = values(book, [option('CALL', SPOT, 'Call'), option('PUT', SPOT, 'Put')])
@@ -1308,7 +1315,8 @@ def test_a_market_strike_reaches_the_engine_axis(book):
     assert leg(outcome, 'protection')['strike_market'] == pytest.approx(15.50, rel=1e-12)
     assert protection['Option_Type'] == 'Call', 'a floor on the pair is a call on the rand'
     assert protection['Underlying_Currency'] == 'ZAR' and protection['Currency'] == 'USD'
-    assert protection['Expiry_Date'] == {'.Timestamp': '2025-06-28'}, 'the 1Y tenor mis-parsed'
+    assert (protection['Expiry_Date'], protection['Delivery_Date']) == (EXPIRES, DELIVERS), (
+        'the 1Y tenor mis-dated')
     assert protection['Structure_Reference'] == outcome['deal']['Reference']
 
 
@@ -1607,7 +1615,8 @@ def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accr
     balance, and a client accruing `(S - K)+` is better off the lower it goes. A runner that
     inverted a strike twice, or fed the pricer a leverage of one, lands above the forward.
 
-    The rest is what the parameters became: twelve monthly fixings settling two days on, the geared
+    The rest is what the parameters became: twelve monthly fixings, each the expiry of the vanilla
+    of its tenor and settling on that vanilla's delivery, the first 31 July and 2 August, the geared
     notional at `leverage x notional` off a default the client never stated, and the target copied
     through UNCONVERTED with `InvertedTarget` False.
 
@@ -1630,7 +1639,8 @@ def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accr
 
     assert len(deal['TARF_ExpiryDates']) == 12, 'a 1Y tenor holds twelve monthly fixings'
     fixing, settlement, observed = deal['TARF_ExpiryDates'][0]
-    assert fixing == {'.Timestamp': '2024-07-28'} and settlement == {'.Timestamp': '2024-07-30'}
+    assert fixing == {'.Timestamp': '2024-07-31'} and settlement == {'.Timestamp': '2024-08-02'}
+    assert deal['TARF_ExpiryDates'][-1][:2] == [EXPIRES, DELIVERS], 'the strip ends on the tenor'
     assert observed == 0.0, 'a quote is struck today and nothing in it has fixed'
     assert deal['Expiry_Date'] == deal['TARF_ExpiryDates'][-1][1], (
         'a strip expires with its last cashflow, not with its last fixing')
@@ -1690,31 +1700,131 @@ def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
     reported and spread at the SHORT tenor while the ticket says 1Y. So the strip refuses, naming
     the expiry, the frequency, the last fixing and the two ways out.
 
-    A BASE DATE CARRYING A TIME. `expiry_date` normalizes to a date and a terminal snapshot stamps
-    `Base_Date` at 16:30, so the final fixing landed one comparison past midnight and a
-    twelve-fixing year became eleven. The base is normalized before the loop.
+    A BASE DATE CARRYING A TIME. A terminal snapshot stamps `Base_Date` at 16:30, which would put
+    the final fixing one comparison past a midnight expiry and make a twelve-fixing year eleven. A
+    tenor is dated off the base's day.
 
     Killing mutation: a strip ending short of its tenor accepted.
     """
     import pandas as pd
 
-    lag = structures.Structure.fixing_lag
+    convention = structures.pair_convention(structures.market_of(book), {}, ('USD', 'ZAR'))
     with pytest.raises(ValueError) as refusal:
-        structures.fixing_grid(BASE, '1Y', '5M', lag)
-    assert '2025-04-28' in str(refusal.value), 'the refusal must name the fixing it would end on'
+        structures.fixing_grid(BASE, '1Y', '5M', convention)
+    assert '2025-04-30' in str(refusal.value), 'the refusal must name the fixing it would end on'
     assert '5M' in str(refusal.value) and '1Y' in str(refusal.value)
     assert 'divides the tenor' in str(refusal.value), 'a refusal without a remedy'
 
     stamped = structures.fixing_grid(pd.Timestamp(BASE) + pd.Timedelta(hours=16, minutes=30),
-                                     '1Y', '1M', lag)
-    assert len(stamped) == len(structures.fixing_grid(BASE, '1Y', '1M', lag)) == 12
-    assert stamped[-1][0] == {'.Timestamp': '2025-06-28'}, 'the last fixing IS the expiry'
+                                     '1Y', '1M', convention)
+    assert len(stamped) == len(structures.fixing_grid(BASE, '1Y', '1M', convention)) == 12
+    assert stamped[-1][0] == EXPIRES, 'the last fixing IS the expiry'
 
     # and the quote refuses through the runner, not just the helper
     with pytest.raises(ValueError) as quoted:
         structures.quote(book, 'TargetRedemptionForward', dict(
             accrual_params(target=TARGET), fixing_frequency='5M', notional_currency='USD'))
     assert '5M' in str(quoted.value)
+
+
+#: The rand desk's trade date, a Monday, whose spot date is Wednesday 18 November.
+DESK_DAY = '2026-11-16'
+
+#: A 6M monthly strip dealt on `DESK_DAY`, `(fixing, settlement)` by hand: each settlement the spot
+#: date that many months on, modified following, each fixing two rand business days before it.
+#: Named, the calendars move the first two: Johannesburg's 16 December and New York's 18 January.
+DESK_STRIP = {
+    False: [('2026-12-16', '2026-12-18'), ('2027-01-14', '2027-01-18'), ('2027-02-16', '2027-02-18'),
+            ('2027-03-16', '2027-03-18'), ('2027-04-15', '2027-04-19'), ('2027-05-14', '2027-05-18')],
+    True: [('2026-12-15', '2026-12-18'), ('2027-01-15', '2027-01-19'), ('2027-02-16', '2027-02-18'),
+           ('2027-03-16', '2027-03-18'), ('2027-04-15', '2027-04-19'), ('2027-05-14', '2027-05-18')]}
+
+
+def desk_book(calendars):
+    """The rand desk's book on `DESK_DAY`: flat dollar and rand curves, a flat 14% surface and,
+    where `calendars`, each rate naming its own calendar in the fixture's calendar file."""
+    flat = {currency: {'Currency': currency, 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                       'Curve': utils.Curve([], [[0.0, rate], [10.0, rate]])}
+            for currency, rate in (('USD', 0.044), ('ZAR', 0.072))}
+    factors = {'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
+               'FxRate.ZAR': {'Domestic_Currency': None, 'Interest_Rate': 'ZAR', 'Spot': 1 / 16.0},
+               'InterestRate.USD': flat['USD'], 'InterestRate.ZAR': flat['ZAR'],
+               'FXVol.USD.ZAR': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+                                 'Surface': utils.Curve([], [[m, t, 0.14] for m in (0.8, 1.0, 1.2)
+                                                             for t in (0.01, 3.0)])}}
+    calc = {'Calculation': {'Object': 'BaseValuation', 'Base_Date': {'.Timestamp': DESK_DAY},
+                            'Currency': 'USD'},
+            'Deals': {'Reference': 'desk', 'Deals': {'Children': []}},
+            'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
+                'System Parameters': {'Base_Currency': 'USD', 'Base_Date': {'.Timestamp': DESK_DAY}},
+                'Price Factors': factors}}}
+    if calendars:
+        factors['FxRate.USD']['Holiday_Calendar'] = 'New York'
+        factors['FxRate.ZAR']['Holiday_Calendar'] = 'Johannesburg'
+        calc['CalendDataFile'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
+                                              'data', 'calendars.cal')
+    return json.loads(dump({'Calc': calc}))
+
+
+@pytest.fixture(scope='module')
+def desk_quotes():
+    """`{calendars: (book, straddle, strip)}`: a 6M straddle and a 6M monthly TARF on a dollar
+    notional, quoted on `desk_book` with its calendars and without."""
+    ask = {'pair': PAIR, 'expiry': '6M', 'notional': NOTIONAL, 'notional_currency': 'USD'}
+    return {calendars: (document, structures.quote(document, 'Straddle', dict(ask, strike=16.8)),
+                        structures.quote(document, 'TargetRedemptionForward', dict(
+                            ask, fixing_frequency='1M', buy_currency='USD', target=TARGET)))
+            for calendars, document in ((False, desk_book(False)), (True, desk_book(True)))}
+
+
+@pytest.mark.parametrize('calendars', [False, True], ids=['weekdays', 'calendars'])
+def test_a_quote_expires_and_delivers_on_the_dates_the_market_deals(desk_quotes, calendars):
+    """A 6M straddle dealt on `DESK_DAY` expires Friday 14 May 2027 and delivers Tuesday 18 May, and
+    a 6M monthly strip fixes and settles on `DESK_STRIP`; each expiry's spot date is its delivery.
+
+    Killing mutation: the expiry the base date plus the tenor unrolled, Sunday 16 May.
+    """
+    import numpy as np
+    document, straddle, strip = desk_quotes[calendars]
+    traded = {'.Timestamp': DESK_DAY}
+    for child in straddle['deal']['Children']:
+        deal = child['Instrument']['.Deal']
+        assert (deal['Expiry_Date'], deal['Delivery_Date'], deal['Trade_Date']) == (
+            {'.Timestamp': '2027-05-14'}, {'.Timestamp': '2027-05-18'}, traded), deal['Reference']
+    tarf = only_leg(strip)
+    rows = [(fixing['.Timestamp'], settles['.Timestamp'])
+            for fixing, settles, _ in tarf['TARF_ExpiryDates']]
+    assert rows == DESK_STRIP[calendars]
+    assert tarf['Trade_Date'] == traded and 'Delivery_Date' not in tarf
+
+    calendar = derivus.Context().load_json((json.dumps(document), 'desk')).current_cfg.holidays
+    rand, dollar = [calendar[name]['businessday'].calendar for name in (
+        'Johannesburg', 'New York')] if calendars else [np.busdaycalendar()] * 2
+    convention = (2, rand, utils.joint_calendar([rand, dollar]))
+    for expiry, delivery in rows:
+        assert str(np.datetime64(expiry) + utils.spot_lag(expiry, convention, [0])[0]) == delivery
+
+
+def test_the_diary_of_a_booked_quote_pays_on_the_delivery_dates(desk_quotes):
+    """Booked, the calendar book's straddle pays each wing on its delivery and its strip pays each
+    fixing on that fixing's settlement.
+
+    Killing mutation: the option legs written without `Delivery_Date`, paying on their expiry.
+    """
+    from derivus import spine
+    from derivus.calculation import Diary
+    document, *quotes = desk_quotes[True]
+    booked = copy.deepcopy(document)
+    booked['Calc']['Deals']['Deals']['Children'] = [structures.book_node(q['deal']) for q in quotes]
+    paid = {}
+    for row in spine.diary(derivus.Context().load_json((json.dumps(booked), 'desk'))):
+        if row['kind'] == Diary.PAYMENT:
+            paid.setdefault(row['reference'], []).append(str(row['due_date']))
+    legs = [child['Instrument']['.Deal'] for q in quotes for child in q['deal']['Children']]
+    assert len(paid) == len(legs) == 3
+    for deal in legs:
+        assert paid[deal['Reference']] == ([settles for _, settles in DESK_STRIP[True]]
+                                           if 'TARF_ExpiryDates' in deal else ['2027-05-18'])
 
 
 # --------------------------------------------------------------------------------------------
@@ -1724,8 +1834,9 @@ def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
 CAKE = [[17.0, 20.0, 5.0], [18.0, 19.0, 8.0], [16.0, 21.0, 2.0]]
 #: The same tiers innermost first, with the increment each books over the tier outside it.
 INCREMENTS = [(18.0, 19.0, 3.0), (17.0, 20.0, 3.0), (16.0, 21.0, 2.0)]
-#: Twelve monthly fixings to a one-year expiry, 2025-06-28: the ACT/365 years over the fixings.
-YEARS, FIXINGS = 365 / 365.0, 12
+#: Twelve monthly fixings to a one-year expiry, Monday 2025-06-30: the ACT/365 years over the
+#: fixings.
+YEARS, FIXINGS = 367 / 365.0, 12
 
 
 def cake_params(tiers=CAKE, **extra):
@@ -1738,12 +1849,11 @@ def tier_legs(outcome):
 
 
 def unit_forward(document):
-    """The pair's forward to the cake's expiry the way any document prices one: a unit of each
-    currency received on 2025-06-28, the ratio of the two values."""
+    """The pair's forward to the cake's delivery the way any document prices one: a unit of each
+    currency received on 2025-07-02, the ratio of the two values."""
     units = [{'Object': 'FXForwardDeal', 'Reference': bought, 'Buy_Currency': bought,
               'Buy_Amount': 1.0, 'Buy_Discount_Rate': bought, 'Sell_Currency': sold,
-              'Sell_Amount': 0.0, 'Sell_Discount_Rate': sold,
-              'Settlement_Date': {'.Timestamp': '2025-06-28'}}
+              'Sell_Amount': 0.0, 'Sell_Discount_Rate': sold, 'Settlement_Date': DELIVERS}
              for bought, sold in (('USD', 'ZAR'), ('ZAR', 'USD'))]
     priced = values(document, units)
     return priced['USD'] / priced['ZAR']
@@ -1755,8 +1865,8 @@ def test_a_wedding_cake_is_its_nested_range_accruals_with_incremental_payoffs(bo
     books as one `FXRangeAccrualDeal` over its own range paying the increment over the tier
     outside it, `notional * increment / 100 * T / N` per fixing - the coupon a rate a year earned
     in full where every fixing lands - and a rand notional is the pair's quote currency, paid in
-    rand on the pair's own axis, so the bounds are the ticket's. One payment for the strip, two
-    days after the last fixing; no fixing has printed.
+    rand on the pair's own axis, so the bounds are the ticket's. One payment for the strip, on the
+    tenor's delivery; no fixing has printed.
 
     Killing mutations: the tier coupons used raw rather than as increments (the inner Payoff
     8,000/12 rather than 3,000/12); `T / N` dropped (the Payoff 30,000).
@@ -1773,7 +1883,7 @@ def test_a_wedding_cake_is_its_nested_range_accruals_with_incremental_payoffs(bo
             'FXRangeAccrualDeal', 'Buy', 'ZAR', 'USD')
         assert (leg['Lower_Barrier'], leg['Upper_Barrier']) == (floor, cap)
         assert leg['Payoff'] == NOTIONAL * increment / 100.0 * YEARS / FIXINGS, leg['Payoff']
-        assert leg['Settlement_Date'] == {'.Timestamp': '2025-06-30'}
+        assert leg['Settlement_Date'] == DELIVERS
         assert len(leg['Observation_Dates']) == FIXINGS and all(
             value is None for _, value in leg['Observation_Dates'])
         assert not {'Underlying_Amount', 'Expiry_Date', 'Strike_Price', 'LeverageNotional'} & set(
@@ -1868,7 +1978,7 @@ def carry_book(book):
 
 def test_coupons_alone_solve_the_widest_tiers_centred_on_the_forward(carry_book):
     """Coupons and a premium, no bound: the one width `w` is solved, the k-th innermost tier at
-    `F e^-kw` to `F e^kw` about the engine's own forward to the expiry - priced here through a
+    `F e^-kw` to `F e^kw` about the engine's own forward to the delivery - priced here through a
     document of its own - so `floor * cap = F^2` and `log(cap / F) = k w` within 1e-9, every bound
     written back. The composed deal reprices to the premium. At a margin the client holds paper
     worth the premium less it, and the bank's mirror marks at minus the premium plus it.
