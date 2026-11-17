@@ -123,8 +123,10 @@ no structure declares an orientation and none can get it wrong. An `FXOptionDeal
 which is exactly the discriminator the conversion needs. A leg type declaring no `Underlying_Amount`
 (`FXRangeAccrualDeal`) is instead PAID in its notional, so `notional_currency` is its `Currency`
 and the pair's other side its underlying, the axis read off the declaration and never the type's
-name; the shared block carries only what the leg's type declares. When the leg's underlying is the
-pair's quote currency the deal's axis is the reciprocal of the market's:
+name; the shared block carries only what the leg's type declares. A leg discounts on its
+`Currency`'s `own_curve` — the curve that currency's `FxRate` names, else its own name — the one
+its forward reads for that currency. When the leg's underlying is the pair's quote currency the
+deal's axis is the reciprocal of the market's:
 
 - `Strike_Price` and `Barrier_Price` become `1/K`;
 - the option sense flips (a market call is an engine put) and a barrier's direction flips with the
@@ -139,7 +141,8 @@ it. **Held by** `test_a_market_strike_reaches_the_engine_axis`,
 `test_the_same_trade_quotes_the_same_from_either_side_of_the_pair`,
 `test_a_forward_extra_quotes_the_same_from_either_side_of_the_pair`,
 `test_a_ticket_quotes_alike_whichever_way_round_the_book_carries_its_surface`,
-`test_a_range_accrual_on_the_base_currency_crosses_its_levels_and_swaps_them`.
+`test_a_range_accrual_on_the_base_currency_crosses_its_levels_and_swaps_them`,
+`test_a_leg_discounts_on_the_curve_its_fx_rate_names`.
 
 ### Accrual legs {#accrual}
 
@@ -269,7 +272,7 @@ band not strictly inside the next wider, a coupon not above the next wider's). T
 | --- | --- | --- |
 | every cell, no `premium` | none: the legs are priced and `net_mid` is the premium, `charged_on` `'premium'` | — |
 | a `premium` and one blank cell | that cell | a coupon between its neighbours' coupons (else 0 and 100); a floor between the next wider floor (else `0.25 ×` spot) and the next narrower (else its own cap); a cap the mirror — each opened by `OPEN` (1e-9 of the span), an end being a tier the engine refuses |
-| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the expiry (`forward_rate`: one valuation of a unit of each currency received that day, each discounted on the curve its `FxRate` names, else its own, priced only when asked for) | `(1e-4, log 4)` |
+| a `premium` and coupons alone | `width` `w`: the k-th innermost tier at `F e^{−kw}` to `F e^{kw}`, `F` the engine's forward to the expiry (`forward_rate`: one valuation of a unit of each currency received that day, each discounted on its `own_curve`, priced only when asked for) | `(1e-4, log 4)` |
 
 Two blanks, a blank beside a blank premium, a tier stating no bound beside one that does, and a
 ticket stating every cell and a premium each refuse by name; no root refuses with the economics

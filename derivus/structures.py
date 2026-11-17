@@ -990,6 +990,12 @@ def market_data(market):
     return market['Price Factors']
 
 
+def own_curve(factors, currency):
+    """The curve `currency` discounts on: the one its `FxRate` names, its own name where it names
+    none, as `FxRate.get_repo_curve_name` reads it."""
+    return factors['FxRate.{}'.format(currency)].get('Interest_Rate') or currency
+
+
 def engine_spot(market, underlying_currency, settlement_currency):
     """Today's rate on the DEAL's axis: units of `Currency` per unit of `Underlying_Currency`.
 
@@ -1214,7 +1220,7 @@ def materialize(structure, params, document):
     """Every leg of `structure` as a wire-form deal, in declaration order.
 
     The shared block comes from the parameters - the two currencies off the pair, the surface named
-    for it, the settlement currency doing the discounting, the notional as the underlying amount,
+    for it, the settlement currency's `own_curve` discounting, the notional as the underlying amount,
     and the expiry as a date - and carries what the leg's type declares of it. A type declaring no
     `Underlying_Amount` is PAID in its notional, so `notional_currency` settles it and the other
     side is its underlying. Then the leg's pinned block, then its slots. Strike-like slots and
@@ -1272,10 +1278,10 @@ def materialize(structure, params, document):
         settlement = quote_ccy if underlying == base else base
         # the quoted axis is the deal's own only when its underlying is the pair's BASE currency
         inverted = underlying == quote_ccy
-        shared = {'Currency': settlement, 'Discount_Rate': settlement,
+        seed = engine_spot(market, underlying, settlement)
+        shared = {'Currency': settlement, 'Discount_Rate': own_curve(factors, settlement),
                   'Underlying_Currency': underlying, 'Underlying_Amount': notional,
                   'FX_Volatility': surface, 'Expiry_Date': expires}
-        seed = engine_spot(market, underlying, settlement)
         # a deal block is the field dict the pricer reads, so it carries what its type declares
         deal = dict({key: value for key, value in shared.items() if key in takes},
                     Object=leg.deal_type)
@@ -1477,11 +1483,11 @@ def forward_rate(document, params):
     base, quote_ccy = split_pair(params['pair'])
     factors = market_data(market_of(document))
     settles = expiry_date(timestamp(document['Calc']['Calculation']['Base_Date']), params['expiry'])
-    # a currency's own curve where its `FxRate` names none, as `FxRate.get_repo_curve_name` reads it
-    curve = lambda currency: factors['FxRate.{}'.format(currency)].get('Interest_Rate') or currency
     units = [{'Object': 'FXForwardDeal', 'Reference': 'forward-{}'.format(bought),
-              'Buy_Currency': bought, 'Buy_Amount': 1.0, 'Buy_Discount_Rate': curve(bought),
-              'Sell_Currency': sold, 'Sell_Amount': 0.0, 'Sell_Discount_Rate': curve(sold),
+              'Buy_Currency': bought, 'Buy_Amount': 1.0,
+              'Buy_Discount_Rate': own_curve(factors, bought),
+              'Sell_Currency': sold, 'Sell_Amount': 0.0,
+              'Sell_Discount_Rate': own_curve(factors, sold),
               'Settlement_Date': settles}
              for bought, sold in ((base, quote_ccy), (quote_ccy, base))]
     in_base, in_quote = run_prices(document, units)

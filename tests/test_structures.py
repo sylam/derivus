@@ -1883,6 +1883,41 @@ def test_a_cake_on_fx_rates_naming_no_curve_centres_on_their_currencies_curves(c
     assert unnamed == stated
 
 
+def test_a_leg_discounts_on_the_curve_its_fx_rate_names(carry_book):
+    """A book filing its curves under the names its `FxRate` blocks state, and none under a bare
+    currency, quotes a collar, a forward extra and a TARF, each leg's `Discount_Rate` the curve its
+    settlement currency's `FxRate` names; solved levels, premiums and every other leg field are
+    the bit-identical twin's, the same curves filed under the bare currencies, whose legs still
+    state their `Currency`.
+
+    Killing mutation: the leg builder stating `settlement` as its `Discount_Rate`, a curve this
+    book does not carry, so the quote refuses."""
+    named = copy.deepcopy(carry_book)
+    factors = named['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']
+    curves = {'USD': 'USD-OIS', 'ZAR': 'ZAR-SWAP'}
+    for currency, curve in curves.items():
+        factors['InterestRate.' + curve] = factors.pop('InterestRate.' + currency)
+        factors['FxRate.' + currency]['Interest_Rate'] = curve
+
+    def plain(outcome):
+        """The quote with its references and leg curves blanked, beside its legs' deals."""
+        deals = [child['Instrument']['.Deal'] for child in outcome['deal']['Children']]
+        rows = [dict(row, reference=None) for row in outcome['legs']]
+        blanked = [dict(deal, Reference=None, Structure_Reference=None, Discount_Rate=None)
+                   for deal in deals]
+        return (outcome['params'], outcome['net'], rows, blanked), deals
+
+    for name, ask in (('ZeroCostCollar', params(floor=SPOT * 0.95)),
+                      ('ForwardExtra', forward_extra_params(floor=SPOT * 0.97)),
+                      ('TargetRedemptionForward', dict(
+                          accrual_params(target=TARGET), notional_currency='USD'))):
+        (twin, bare), (stated, legs) = (plain(structures.quote(document, name, ask))
+                                        for document in (carry_book, named))
+        assert stated == twin, name
+        assert [leg['Discount_Rate'] for leg in legs] == [curves[leg['Currency']] for leg in legs]
+        assert [leg['Discount_Rate'] for leg in bare] == [leg['Currency'] for leg in bare]
+
+
 def test_a_cake_quote_writes_its_sheet(book, tmp_path):
     """The `.xlsx` ticket for a cake: written whole, the tiers on the Quote sheet and each leg's
     range on the Legs sheet. A range leg has no strike, so its row's strike cell is blank.

@@ -734,19 +734,6 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     KILLING MUTATION - `name[:1]`: the key the kit forms becomes `FxRate.ZAR`, which the outer DOES
     publish, so every row starts from the outer's ZAR-in-USD state instead of its own level and the
     banked exposure moves. The bank is this device's, as every banked float here is.
-
-    THE BANK WAS RE-TAKEN when a quote stopped pricing on the book's own count: the deal below is
-    built from a quoted strip, whose strike is now solved on the count a base valuation declares
-    rather than the 64 paths this document states. The claim is unmoved - only the strike the
-    exposure is measured at. Re-taken again when the accumulator's carry became the curves'
-    integral over its year fraction (`pricing.zero_carry_rate`), which moves each inner path in
-    float32's last bit and the mean by 3.3e-7 of itself. Re-taken when a base valuation's inner
-    paths became the canonical block's, which moves the strike it solves, and a pricer's walk drew
-    its shocks off `Quasi_Seed`: mean -5,707.52 to -3,503.11, standard deviation 97,839.41 to
-    97,503.69. Re-taken when the accumulator's forward carried between spot dates: the Sunday row's
-    spot date is the Friday's, two days of carry on, the mean -3,503.11 to -3,085.85. Re-taken when
-    a value converted at each currency's price today and the outer's drift ran between spot dates:
-    the mean to -3,497.45, the standard deviation 97,518.78 to 97,611.96.
     """
     document = fitted('USD')
     market = document['Calc']['MergeMarketData']['ExplicitMarketData']
@@ -778,7 +765,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     assert np.isfinite(exposure).all() and exposure.shape[0] > 1
     assert exposure.std() > 0.0, 'a skipped deal has no spread, so zero would pass anything'
     assert (float(exposure.mean()), float(exposure.std())) == pytest.approx(
-        (-3497.448197484637, 97611.96037420288), rel=1e-9), (
+        (-3517.775739648069, 98090.26787172229), rel=1e-9), (
         'the cross re-seeds from its own level: this exposure moves if it inherits one')
 
 
