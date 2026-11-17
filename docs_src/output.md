@@ -1,7 +1,7 @@
 ## The output dictionary
 
 Every calculation method returns `(calc, out)`. For a base valuation `out` is a dict with three
-top-level keys, as does a scenario valuation; a credit Monte Carlo adds a fourth, `Jacobians`; a `SIMM` or an `SACCR` run
+top-level keys, as do a scenario valuation and a credit Monte Carlo; a `SIMM` or an `SACCR` run
 carries `Stats` and `Results` only; and a hedge run returns an attribute object instead (see
 [API Overview](api_overview.md#hedge-monte-carlo)):
 

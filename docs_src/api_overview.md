@@ -321,9 +321,8 @@ there's no implicit cache that needs to be invalidated.
 
 ## Output structure
 
-A base or a scenario valuation returns `(calc, out)` where `out` is a dict with three top-level keys; a credit
-Monte Carlo returns the same three plus a fourth; a `SIMM` or an `SACCR` run returns `Stats` and
-`Results` only.
+A base or a scenario valuation returns `(calc, out)` where `out` is a dict with three top-level keys, as
+does a credit Monte Carlo; a `SIMM` or an `SACCR` run returns `Stats` and `Results` only.
 (A hedge run returns a
 `HedgeRuntimeExecutionResult` instead of a dict — see [Hedge Monte Carlo](#hedge-monte-carlo).)
 
@@ -333,8 +332,6 @@ Monte Carlo returns the same three plus a fourth; a `SIMM` or an `SACCR` run ret
   `Random_Seed` a Monte Carlo reports.
 - `'Results'` — the user-facing dataframes / arrays. Keys vary by calculation type; see the
   [Output](output.md) page.
-- `'Jacobians'` — credit Monte Carlo only: the harvested Jacobians keyed by variable name, `{}`
-  when the run asked for no gradients.
 
 ## The same verbs over HTTP
 

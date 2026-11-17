@@ -160,8 +160,6 @@ A correlation is not a leaf; its delta is a bump ([decision 12](../limitations.m
   standard coupons, accrual on default; [@okane2008]) and, per tenor, the log-survival curve a 1bp
   bump of that tenor's rate implies (`Results['CS01']`), to map `grad_cva`'s survival rows onto CDS
   quotes.
-- **Curve Jacobians.** Where the market data holds an `InterestRateJacobian.<curve>` factor for a
-  simulated curve, its value is returned under `Jacobians` beside `grad_cva`.
 - **Hessian.** `Hessian: Yes` (with `Gradient: Yes`) reports the CVA's full second-derivative
   matrix, `grad_cva_hessian`, by a second differentiation of the first. Second-order AAD drops
   $\delta(V)\,V_\theta V_\theta^{\top}$ at the exposure's $\max(\cdot,0)$; a term worth zero in value

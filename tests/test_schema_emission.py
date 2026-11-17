@@ -45,7 +45,6 @@ UNDECLARED_FACTORS = {
     'Factor2D': 'dimension base', 'Factor3D': 'dimension base',
     'CurveModelParameters': 'the base of a spot model whose parameters carry term structures, never a type',
     'VolatilityGrid': 'the one vol-surface implementation, typed by its three asset-class tags, never a type',
-    'InterestRateJacobian': 'its block is keyed by BENCHMARK name, so it has no fixed field set',
 }
 
 # process classes no `Price Models` block authors: each is constructed by its calculation alone.

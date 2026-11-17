@@ -853,40 +853,6 @@ class ForwardPriceSample(Factor0D):
         return self.param.get('Sampling_Convention')
 
 
-class InterestRateJacobian(object):
-    def __init__(self, param):
-        self.param = param
-        self.tenors = None
-        self.instruments = sorted(self.param.keys())
-        self.jacobian = None
-        self.inverse_jacobian = None
-
-    def update(self, ir_curve):
-        self.tenors = ir_curve.tenors
-        j = []
-        for bench in self.instruments:
-            zero = np.zeros_like(self.tenors)
-            sense = self.param[bench].array
-            zero[np.searchsorted(self.tenors, sense[:, 0])] = sense[:, 1]
-            j.append(zero)
-        self.jacobian = np.array(j)
-        self.inverse_jacobian = np.linalg.pinv(self.jacobian)
-
-    def benchmark_tenors(self):
-        return np.sort([x.array[-1, 0] for x in self.param.values()])
-
-    def current_value(self):
-        """Returns the value of the vol surface"""
-
-        def approx_benchmark(ir_gradients):
-            sensitivities = ir_gradients.reshape(1, -1).dot(self.inverse_jacobian)
-            bench = dict(zip(self.instruments, sensitivities[0]))
-            errors = sensitivities.dot(self.jacobian)[0] - ir_gradients
-            return bench, errors
-
-        return approx_benchmark
-
-
 class Correlation(Factor0D):
     """The market implied correlation between the two rates its name pairs, e.g.
     `Correlation.FxRate.USD.ZAR/ReferencePrice.BRENT_OIL-IPE.USD`."""

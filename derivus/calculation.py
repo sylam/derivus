@@ -1124,7 +1124,6 @@ class CreditMonteCarlo(Calculation):
         super(CreditMonteCarlo, self).__init__(config, **kwargs)
         self.reset_dates = None
         self.settlement_currencies = None
-        self.jacobians = {}
         self.implied_factors = {}
         self.implied_var = {}
 
@@ -2009,24 +2008,6 @@ class CreditMonteCarlo(Calculation):
                         0.5 * (pv_exposure[1:] + pv_exposure[:-1]) * prob).mean(axis=1).sum()
 
                 if params['Credit_Valuation_Adjustment']['Gradient'] == 'Yes':
-                    base_ir_curves = [x for x in self.stoch_var.keys() if
-                                      x.type == 'InterestRate' and len(x.name) == 1]
-                    self.jacobians = {}
-                    for ir_factor in base_ir_curves:
-                        jacobian_factor = utils.Factor('InterestRateJacobian', ir_factor.name)
-                        ir_curve = self.stoch_factors[utils.Factor('InterestRate', ir_factor.name)].factor
-                        var_name = 'Stochastic_Input/{0}:0'.format(utils.check_tuple_name(ir_factor))
-                        try:
-                            jac = construct_factor(
-                                jacobian_factor, self.config.params['Price Factors'],
-                                self.config.params['Price Factor Interpolation'])
-                            jac.update(ir_curve)
-                            self.jacobians[var_name] = jac.current_value()
-                            logging.info('jacobian present for {0} - will attempt inverse bootstrap'.format(
-                                utils.check_tuple_name(ir_factor)))
-                        except KeyError:
-                            pass
-
                     if hessian and shared_mem.boundary_sets:
                         raise utils.SecondOrderRefused(
                             "Credit_Valuation_Adjustment Hessian: 'Yes' is refused - this book "
@@ -2097,7 +2078,7 @@ class CreditMonteCarlo(Calculation):
 
         self.calc_stats[execution_label] = time.monotonic() - self.calc_stats[execution_label]
 
-        results = {'Netting': self.netting_sets, 'Stats': self.calc_stats, 'Jacobians': self.jacobians}
+        results = {'Netting': self.netting_sets, 'Stats': self.calc_stats}
         results['Results'] = self.report(output)
 
         return results
