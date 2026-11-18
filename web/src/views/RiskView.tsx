@@ -2,7 +2,7 @@ import { Fragment, useMemo, useState, type ReactNode } from 'react';
 import { NO_SEAT } from '../api';
 import {
   bookClock, factorAxes, factorFamily, lagsBook, marketSource, marksTotal, pendingUnder,
-  perUnitText, plural, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer,
+  perOf, perUnitText, plural, quoteText, quoteView, reconciles, riskOf, riskReading, sharedPer,
   sortGreeks, stampText, tenorText, valuationDay, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
@@ -162,7 +162,7 @@ export function RiskView() {
                             state.schema, row.factor, row.tenor?.length ?? 0)) : quoteText(row.quote)}
                         </td>
                         <Risk row={row} />
-                        <td className="hint">{row.per ?? 'per unit'}</td>
+                        <td className="hint">{perOf(row)}</td>
                       </tr>
                     ))}
                     {rows.length === 0 && (
@@ -241,7 +241,7 @@ function DeskReading({ rows, currency }: { rows: GreekRow[]; currency: string })
             <tbody>
               {reading.spots.map((row) => (
                 <tr key={row.factor}>
-                  <FactorCell factor={row.factor} per={per ? undefined : row.per} />
+                  <FactorCell factor={row.factor} per={per ? undefined : perOf(row)} />
                   <td className="n">{row.level === null || row.level === undefined
                     ? '' : formatNumber(row.level)}</td>
                   <Risk row={row} />

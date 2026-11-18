@@ -138,14 +138,16 @@ const GREEKS = [
   read('ForwardPriceVol.GOLD', 100.0, 0.2, 0.01, false, 'per vol point', [47073, 0.5, 1.0]),
   read('ForwardPriceVol.GOLD', 50.0, 0.21, 0.01, false, 'per vol point', [47073, 0.5, 1.1]),
   read('FXVol.EUR.USD.rho', 17851.2, -0.4, 1, false, 'per unit', [0.4]),
+  { factor: 'EquityPrice.NOLEVEL', value: 42.0, level: null, risk: null, per: 'per 1%' },
 ];
 const reading = desk.riskReading(GREEKS, SCHEMA);
 check('every spot reads together, largest per its move first, and a per-unit row stands apart',
       'the spots ranked on the per-unit derivative, which puts the rand at 120m over the pound at '
-      + "6m though a 1% move of each is 69,566 against 78,720; or an SVI parameter, which has no "
-      + 'move, filed among the spots or the surfaces',
+      + "6m though a 1% move of each is 69,566 against 78,720; an SVI parameter, which has no "
+      + 'move, filed among the spots or the surfaces; or a spot whose level never came, its move '
+      + 'unread, shown among the spots at its per-unit number under "per 1%"',
       [reading.spots.map((row) => row.factor), reading.units.map((row) => row.factor)],
-      [['FxRate.GBP', 'FxRate.ZAR'], ['FXVol.EUR.USD.rho']]);
+      [['FxRate.GBP', 'FxRate.ZAR'], ['FXVol.EUR.USD.rho', 'EquityPrice.NOLEVEL']]);
 check("a surface's vega is its nodes summed across moneyness, an expiry each, in expiry order",
       'the nodes summed across the axis read by position, which sums an FX smile across expiry or '
       + "a forward space across delivery; or the buckets in the answer's order, 6M before 3M",

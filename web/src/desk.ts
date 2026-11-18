@@ -165,14 +165,16 @@ export function quoteView(risk: BookRisk): GreekRow[] {
           ...risk.greeks.filter((row) => !quoted.has(row.factor))];
 }
 
-/** A row's report-currency change per the move it is read per - the per-unit derivative on an
- * answer that reads none. */
+/** A row's report-currency change per the move it is read per, and the words for that move - the
+ * per-unit derivative, and `per unit`, where the answer read none or could not, its level absent. */
 export const riskOf = (row: GreekRow): number => row.risk ?? row.value;
+export const perOf = (row: GreekRow): string =>
+  (row.risk === null || row.risk === undefined ? undefined : row.per) ?? 'per unit';
 
 /** The words of the move every row shares, or null where they differ: a table names one move in
  * its header, or each row beside itself. */
 export function sharedPer(rows: GreekRow[]): string | null {
-  const words = new Set(rows.map((row) => row.per ?? 'per unit'));
+  const words = new Set(rows.map(perOf));
   return words.size === 1 ? [...words][0] : null;
 }
 
@@ -201,7 +203,7 @@ export function riskReading(rows: GreekRow[], schema: Schema | null) {
   const units: GreekRow[] = [];
   const held = new Map<string, GreekRow[]>();
   for (const row of rows) {
-    if ((row.per ?? 'per unit') === 'per unit') units.push(row);
+    if (perOf(row) === 'per unit') units.push(row);
     else if (row.tenor === undefined) spots.push(row);
     else held.set(row.factor, [...(held.get(row.factor) ?? []), row]);
   }
