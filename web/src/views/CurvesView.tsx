@@ -229,7 +229,13 @@ export function CurvesView() {
   // filed by currency, the one family being every curve's; every card stays mounted, since a
   // burst of edits posts a beat after its last commit and a click away must not drop it
   return (
-    <Navigator screen="curves" keep pages={[
+    <Navigator screen="curves" keep head={!Object.keys(answer.curves).length && (
+      <div className="note">
+        This book sets up no curve from benchmark rows: a rate curve it prices on is a price
+        factor stated whole, read under <b>Market Data</b>. The card below sets one up from
+        benchmarks.
+      </div>
+    )} pages={[
       ...Object.entries(answer.curves).map(([name, block]) => ({
         id: name, folder: block.currency, label: block.curve,
         hint: blockHint(doc, ['Market Prices', name]),

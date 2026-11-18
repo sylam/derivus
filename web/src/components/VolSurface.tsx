@@ -14,10 +14,13 @@ const vol = (value: number) => `${(value * 100).toFixed(2)} %`;
 
 type ViewProps = { shaped: Shaped; axes: string[] };
 
-/** The shared axis furniture: quiet lines, the app's own text colour. */
-function axis(palette: ReturnType<typeof chartPalette>, name: string, formatter?: unknown) {
+/** The shared axis furniture: quiet lines, the app's own text colour, the name centred along the
+ * axis so it never meets a legend or an end label. */
+function axis(palette: ReturnType<typeof chartPalette>, name: string, formatter?: unknown,
+              vertical = false) {
   return {
     type: 'value' as const, name, nameTextStyle: { color: palette.text },
+    nameLocation: 'middle' as const, nameGap: vertical ? 48 : 26,
     scale: true, axisLine: { lineStyle: { color: palette.axis } },
     axisLabel: { color: palette.text, formatter },
     splitLine: { lineStyle: { color: palette.axis, opacity: 0.5 } },
@@ -40,7 +43,7 @@ function Smiles({ shaped, axes }: ViewProps) {
         valueFormatter: (value: unknown) => vol(value as number),
       },
       xAxis: axis(palette, axes[0]),
-      yAxis: axis(palette, axes[2], (value: number) => vol(value)),
+      yAxis: axis(palette, axes[2], (value: number) => vol(value), true),
       series: shaped.smiles.map((smile, index) => ({
         name: smile.label, type: 'line' as const, data: smile.points,
         symbolSize: 5, smooth: 0.2,
@@ -66,7 +69,7 @@ function TermStructure({ shaped, axes }: ViewProps) {
         valueFormatter: (value: unknown) => vol(value as number),
       },
       xAxis: axis(palette, axes[1], (value: number) => tenorLabel(value)),
-      yAxis: axis(palette, axes[2], (value: number) => vol(value)),
+      yAxis: axis(palette, axes[2], (value: number) => vol(value), true),
       series: [{
         type: 'line' as const, data: termStructure(shaped, at), symbolSize: 6,
         lineStyle: { color: palette.accent, width: 2 }, itemStyle: { color: palette.accent },
@@ -117,7 +120,7 @@ function Heatmap({ shaped, axes }: ViewProps) {
       xAxis: { ...axis(palette, axes[0]),
                min: cellSpan(grid.xs, grid.xs[0])[0],
                max: cellSpan(grid.xs, grid.xs[grid.xs.length - 1])[1] },
-      yAxis: { ...axis(palette, axes[1]),
+      yAxis: { ...axis(palette, axes[1], undefined, true),
                min: cellSpan(grid.expiries, grid.expiries[0])[0],
                max: cellSpan(grid.expiries, grid.expiries[grid.expiries.length - 1])[1],
                axisLabel: { color: palette.text, formatter: (v: number) => tenorLabel(v) } },

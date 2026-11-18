@@ -165,7 +165,7 @@ function Row({ set, read, opened, onOpen }: {
     <>
       <tr className={orphan ? 'muted' : undefined}>
         <td>
-          <b>{set.reference}</b>
+          <b>{set.reference}</b>{' '}
           {orphan && (
             <span className="badge" title={set.note ?? undefined}>left the book</span>
           )}

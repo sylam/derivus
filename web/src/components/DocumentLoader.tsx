@@ -56,7 +56,10 @@ export function DocumentLoader() {
               : `live book · ${state.source.path.split('/').pop()}`}
           </span>
           {state.source.opened && (
-            <button className="ghost" onClick={closeOpened}>back to book</button>
+            <button className="ghost" onClick={closeOpened}
+                    title={`serve the desk's own book again - ${state.source.opened} stays filed in this desk's inbox with every edit made to it`}>
+              back to book
+            </button>
           )}
           <a className="ghost" href={BOOK_DOCUMENT} download
              title="the served document as the file it is, every edit made to it included">
@@ -66,7 +69,10 @@ export function DocumentLoader() {
       {state.source?.kind === 'local' && (
         <>
           <span className="source-chip local">local · {state.source.name}</span>
-          <button className="ghost" onClick={backToBook}>back to book</button>
+          <button className="ghost" onClick={backToBook}
+                  title="leave this read-only copy and show the book the service serves">
+            back to book
+          </button>
         </>
       )}
       <label className="filelabel">

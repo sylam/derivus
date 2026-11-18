@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
-  factorAxes, factorFamily, lagsBook, marksTotal, quoteText, quoteView, reconciles, sortGreeks,
-  stampText, tenorText, type GreekKey,
+  factorAxes, factorFamily, lagsBook, marksTotal, plural, quoteText, quoteView, reconciles,
+  sortGreeks, stampText, tenorText, type GreekKey,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import { useApp } from '../state';
@@ -80,6 +80,7 @@ export function RiskView() {
 
   const data = risk.data;
   const lagging = lagsBook(risk.bookEtag, source.etag);
+  const left = data.quotes.filter((row) => row.value === 0).length;
   const currency = data.currency ?? '';
 
   function sortBy(next: GreekKey) {
@@ -142,7 +143,8 @@ export function RiskView() {
           </div>
         ) : (
           <>
-            <div className="blotterbar">
+            <Marks risk={data} currency={currency} />
+            <div className="blotterbar" style={{ marginTop: 18 }}>
               {data.quotes.length > 0 && ['quotes', 'factors'].map((view) => (
                 <button key={view} className={`ghost${(view === 'quotes') === quotes ? ' on' : ''}`}
                         onClick={() => dispatch({ type: 'PICK', screen: 'risk', id: view })}>
@@ -153,10 +155,12 @@ export function RiskView() {
                 {quotes ? (
                   <><b>Risk in quotes</b> — the report-currency derivative per unit of each quote as
                     quoted, through the calibration that builds the factor; a factor no quote
-                    builds keeps its own row, and a quote the book does not move with is left off</>
+                    builds keeps its own row{left > 0 && `, and the ${plural(left, 'quote')} `
+                      + `the book does not move with ${left === 1 ? 'is' : 'are'} left off`}</>
                 ) : (
                   <><b>Aggregate greeks</b> — the report-currency derivative per unit of each
-                    factor, over the whole book</>
+                    factor, over the whole book; a factor the book does not move with, such as the
+                    vol under a pair whose vegas cancel, has no row</>
                 )}
               </span>
               <span className="spacer" />
@@ -208,8 +212,6 @@ export function RiskView() {
                 </tbody>
               </table>
             </div>
-
-            <Marks risk={data} currency={currency} />
           </>
         )}
       </div>
@@ -227,7 +229,7 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
 
   return (
     <>
-      <div className="blotterbar" style={{ marginTop: 18 }}>
+      <div className="blotterbar">
         <span className="hint">
           <b>Per-deal marks</b> — one row per top-level trade; a structure and a netting set each
           report their net
