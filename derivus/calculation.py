@@ -5366,7 +5366,9 @@ class SACCR(NettingSetCalculation):
     today read none, their value V's alone (52.10, 52.26), so a fixed and a floating leg are one
     swap the floating leg carries (52.1 FAQ3), and two floating legs of a currency, one received and
     one paid on another index, one basis trade, long the index it receives in the hedging set of the
-    pair at half Table 2's factor (52.46, 52.72-52.73); a leg paying a cap, a floor or a digital
+    pair at half Table 2's factor (52.46, 52.72-52.73); legs paying two currencies are one FX trade
+    (52.35, footnote 11 to 52.46), in that class alone (52.28: a convention), M a resetting swap's
+    next reset (52.37(5)), and three refuse by name; a leg paying a cap, a floor or a digital
     refuses by name, its caplets (52.43) not built. A credit entity's rating is the
     mapping's `SACCR.Rating` under its survival curve, AAA to CCC a single name and IG or SG an
     index; an equity is an index where its price's SIMM bucket is 11 or 12, Risk_Equity's index
@@ -5429,7 +5431,14 @@ class SACCR(NettingSetCalculation):
         'hedging set per basis at half Table 2\'s supervisory factor (CRE52.46, CRE52.72-52.73): two',
         'floating legs of a currency in a package, one received and one paid on another index, are one',
         'row, the received leg\'s, in the set of the pair, named in one order so the two ways round net,',
-        'long the index it receives. A leg paying a cap, a floor or a digital on its rate refuses',
+        'long the index it receives. Legs paying two currencies, a cross-currency swap, are one FX',
+        'trade on the pair (CRE52.35; footnote 11 to CRE52.46, two floating legs no basis), held in that',
+        'class alone (CRE52.28 lets a supervisor ask for more: a convention): $d$ the foreign leg\'s',
+        'notional, the larger where both are, each leg\'s largest still to pay (a convention), long the',
+        'currency it receives, $M$ its last pay day or, where its compile resets a leg\'s notional on',
+        'the pair, as a mark-to-market swap\'s, its next reset (CRE52.37(5)), that leg\'s notional the',
+        'other currency\'s as its compile states it; legs of three currencies refuse the run by name. A',
+        'leg paying a cap, a floor or a digital on its rate refuses',
         'the run by name, its caplets (CRE52.43) not built. The inputs are:',
         '',
         '- **Currency** the exposures are in, and **Base Date** they are read at.',
@@ -5741,16 +5750,24 @@ class SACCR(NettingSetCalculation):
 
     def package(self, node, mpor):
         """A package's rows, each child's its own as the child its `Component` (52.42(4)), one its
-        compile left out none: a fixed leg and a floating one a swap the floating leg carries, and
-        two floating legs of a currency, one received and one paid on another index, one basis
-        trade (52.46), long the index it receives in a hedging set of the pair, at half the factor
-        (52.73)."""
+        compile left out none: a fixed leg and a floating one a swap the floating leg carries; legs
+        paying two currencies one FX trade (`crossed`); and two floating legs of a currency, one
+        received and one paid on another index, one basis trade (52.46), long the index it receives
+        in a hedging set of the pair, at half the factor (52.73)."""
         children = [child for child in node['Children'] if child['Instrument'] in self.held]
         rows = [[dict(row, Component=row.get('Component') or child['Instrument'].field.get('Reference'))
                  for row in self.read(child, mpor)] for child in children]
+        legs = self.legs(children)
+        currencies = sorted({utils.check_rate_name(deal.field[terms.currency])[0] for _, deal, terms in legs})
+        if len(currencies) > 2:
+            raise ValueError('SACCR: trade {} is a package whose legs pay in {}, no one pair CRE52.35 '
+                             'reads'.format(node['Instrument'].field.get('Reference'), ', '.join(currencies)))
+        if len(currencies) == 2:
+            return [row for position, found in enumerate(rows) if all(
+                position != leg for leg, *_ in legs) for row in found] + [self.crossed(legs, mpor)]
         # a floating leg's index the curve its compile forecasts on
         floating = sorted((rows[position][0]['Delta'], position, '.'.join(self.held[deal]['Forward'][-1][
-            utils.FACTOR_INDEX_Offset].name)) for position, deal, terms in self.legs(children) if terms.amount)
+            utils.FACTOR_INDEX_Offset].name)) for position, deal, terms in legs if terms.amount)
         if len(floating) == 2 and floating[0][0] < 0 < floating[1][0] and floating[0][2] != floating[1][2] and (
                 rows[floating[0][1]][0]['HedgingSet'] == rows[floating[1][1]][0]['HedgingSet']):
             (_, paid, _), (_, received, index) = floating
@@ -5770,9 +5787,42 @@ class SACCR(NettingSetCalculation):
             terms := schema.EXPOSURES.get(child['Instrument'].field['Object']), schema.Exposure) and terms.currency
             and (terms.amount is None or isinstance(child['Instrument'].field[terms.amount], dict))]
 
+    def crossed(self, legs, mpor):
+        """The one FX row of `legs` paying two currencies, a cross-currency swap (52.35; footnote 11
+        to 52.46: two floating legs no basis): each leg's largest notional still to pay, a convention,
+        crossed, the larger where both are foreign, long the currency it receives; M its last pay
+        day, or a leg's next reset where its compile resets its notional on the pair (52.37(5)), a
+        notional that leg states in the other currency."""
+        found = []
+        for _, deal, terms in legs:
+            schedule = self.schedule(deal)
+            cash = schedule.schedule
+            found.append((utils.check_rate_name(deal.field[terms.currency])[0], cash[np.abs(
+                cash[:, CASHFLOW_INDEX_Nominal]).argmax(), CASHFLOW_INDEX_Nominal], cash, hasattr(schedule, 'FXResets')))
+        pair, domestic = sorted({leg[0] for leg in found}), utils.check_rate_name(self.params['Currency'])[0]
+        notional = max(abs(size) * self.fx(pair[1 - pair.index(currency)] if resets else currency)
+                       for currency, size, _, resets in found if currency != domestic)
+        own = next((currency for currency, size, *_ in found if size > 0), None)
+        maturity = min((day for *_, cash, resets in found if resets
+                        for day in cash[:, utils.CASHFLOW_INDEX_FXResetDate] if day > 0),
+                       default=max(cash[:, CASHFLOW_INDEX_Pay_Day].max() for *_, cash, _ in found))
+        return self.entry('FX', '/'.join(pair), '', '', notional, 1.0 if own == pair[0] else -1.0,
+                          self.years(maturity), mpor)
+
+    def entry(self, asset, hedging, subclass, bucket, notional, delta, maturity, mpor):
+        """A row of the trades frame: its MF sqrt(min(M, 1)), `maturity` M floored at ten business
+        days, or its set's (`mpor` None where unmargined), 1.5 sqrt(MPOR / 250) (52.48, 52.52), and
+        its effective notional were the set unmargined, `Unmargined`."""
+        supervisory = self.supervisory[asset, subclass]
+        unmargined = math.sqrt(min(max(maturity, self.horizon), 1.0))
+        factor = unmargined if mpor is None else self.margined_scale * math.sqrt(mpor / self.year)
+        return {'AssetClass': asset, 'HedgingSet': hedging, 'Subclass': subclass, 'Bucket': bucket,
+                'SupervisoryFactor': supervisory['factor'], 'Correlation': supervisory['correlation'],
+                'AdjustedNotional': notional, 'Delta': delta, 'MaturityFactor': factor,
+                'EffectiveNotional': notional * delta * factor, 'Unmargined': notional * delta * unmargined}
+
     def row(self, deal, terms, mpor):
-        """A row off `deal`'s declaration `terms`, its maturity factor its set's (`mpor` None where
-        unmargined), and its effective notional were the set unmargined, `Unmargined`."""
+        """A row off `deal`'s declaration `terms` (`entry`)."""
         fields, kind, reference = deal.field, deal.field['Object'], deal.field.get('Reference')
         asset = self.mapping['SACCR']['Asset_Class'].get(kind)
         if asset is None:
@@ -5849,14 +5899,8 @@ class SACCR(NettingSetCalculation):
                 math.inf, moneyness) if moneyness else 0.0
             delta = side * (scipy.stats.norm.cdf(d1) if call else -scipy.stats.norm.cdf(-d1))
         # M the last day, or the start a trade settles its cash at (Table 1, 52.32 FAQ2)
-        maturity = last if terms.runs is None or fields[terms.runs[0]] == terms.runs[1] else start
-        unmargined = math.sqrt(min(max(maturity, self.horizon), 1.0))
-        factor = unmargined if mpor is None else self.margined_scale * math.sqrt(mpor / self.year)
-        return {'AssetClass': asset, 'HedgingSet': hedging, 'Subclass': subclass, 'Bucket': bucket,
-                'SupervisoryFactor': supervisory['factor'], 'Correlation': supervisory['correlation'],
-                'AdjustedNotional': notional, 'Delta': delta, 'MaturityFactor': factor,
-                'EffectiveNotional': notional * delta * factor,
-                'Unmargined': notional * delta * unmargined}
+        return self.entry(asset, hedging, subclass, bucket, notional, delta, last if terms.runs is None or (
+            fields[terms.runs[0]] == terms.runs[1]) else start, mpor)
 
     def add_ons(self, rows, column):
         """`[add-on]` per asset class over a set's trade `rows`, each effective notional its
@@ -5954,8 +5998,9 @@ class SACCR(NettingSetCalculation):
     def report(self, base):
         """The run's results off the book's `base`: a row per netting set and per component of a
         trade it values, in book order, each deal read off its compile (`held`)."""
+        compiled = self.compiled.netting_sets
         self.held = {deal.Instrument.resolved_from or deal.Instrument: deal.Factor_dep for deal in itertools.chain(
-            self.compiled.netting_sets.deals(), (structure.obj for structure in self.compiled.netting_sets.structures()))}
+            compiled.deals(), (structure.obj for structure in compiled.structures()))}
         sets, trades = [], []
         for agreement in self.config.deals['Deals']['Children']:
             row, rows = self.netting_set(agreement, [

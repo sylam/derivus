@@ -10,10 +10,12 @@ pound at 1.5 and a dollar at 150 yen, so a notional in any is crossed; three sur
 CRE99.41 rates the entities; three commodities whose forward curves price a unit at 80, 100 and 25
 dollars, silver with an LBMA basis of -0.5 and WTI sampled daily; an index at 4,000 and a share at
 50, each yielding 2%; the FX, equity and commodity vol surfaces flat at 10%, which no exposure
-reads; and a USD cap surface flat at 20%, on which a capped leg compiles to be refused. The swaps' rates and the default swaps' coupons are solved for the market values the
-examples state and the receiver's vol for its 50 thousand. A commodity forward is worth its funded
-price, ten million and more, which no term moves, so silver is lent at the rate that makes the
-three forwards worth the 20 thousand CRE99.59 states together: each set is worth the example's V.
+reads; a USD-OIS curve flat at 3.9%, a basis's second index; and a USD cap surface flat at 20%, on
+which a capped leg compiles to be refused. The swaps' rates and the default swaps' coupons are
+solved for the market values the examples state and the receiver's vol for its 50 thousand. A
+commodity forward is worth its funded price, ten million and more, which no term moves, so silver
+is lent at the rate that makes the three forwards worth the 20 thousand CRE99.59 states together:
+each set is worth the example's V.
 A date counts in years of 30/360, so every tenor is the example's to the day. The module's mapping
 is the fixture's with the world's credit, equity and commodity factors stated beside it.
 
@@ -461,6 +463,30 @@ SWAP_LEGS = [cashflows(FIXED, 'FIXED', 'Sell', QUARTERS, 1e7), cashflows(FLOATIN
 BASIS = [package(reference, [cashflows(FLOATING, 'OIS', ois, every(12, 3), 1e7, curve='USD-OIS'),
                              cashflows(FLOATING, 'USD', usd, every(12, 3), 1e7)])
          for reference, ois, usd in (('OIS_RECEIVED', 'Buy', 'Sell'), ('OIS_PAID', 'Sell', 'Buy'))]
+#: Cross-currency swaps three years out, yearly: a floating leg on 1.25 million dollars against a
+#: fixed one on a million euros, the dollars received and then the euros; and a floating leg on a
+#: million euros received against a fixed one on 900 thousand pounds.
+CROSS = [package(reference, [cashflows(FLOATING, 'USD', usd, every(12, 3), 1.25e6),
+                             cashflows(FIXED, 'EUR', eur, every(12, 3), 1e6, currency='EUR')])
+         for reference, usd, eur in (('USD_RECEIVED', 'Buy', 'Sell'), ('EUR_RECEIVED', 'Sell', 'Buy'))] + [
+    package('FOREIGN', [cashflows(FLOATING, 'EUR', 'Buy', every(12, 3), 1e6, currency='EUR'),
+                        cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')])]
+
+
+def resetting(reference, side):
+    """A swap from three months out for two years, quarterly, exchanging its principals at its start
+    and end, whose euro leg's notional resets each quarter off 1.25 million dollars, paid where
+    `side` is Pay, against a dollar leg fixed at 4% on 1.25 million."""
+    dates = every(3, 8, BASE + pd.DateOffset(months=3))
+    euro = cashflows(FLOATING, 'EUR', 'Sell' if side == 'Pay' else 'Buy', dates, 1.25e6, currency='EUR')
+    euro['Cashflows']['Items'] = [dict(item, FX_Reset_Date=item['Accrual_Start_Date'])
+                                  for item in euro['Cashflows']['Items']]
+    paid, received = ('EUR', 'USD') if side == 'Pay' else ('USD', 'EUR')
+    return {'Instrument': {'.Deal': {
+        'Object': 'MtMCrossCurrencySwapDeal', 'Reference': reference, 'MtM_Side': side,
+        'Pay_Currency': paid, 'Receive_Currency': received, 'Principal_Exchange': 'Start_Maturity',
+        'Effective_Date': dates[0], 'Maturity_Date': dates[-1]}}, 'Children': [
+        node(euro), node(cashflows(FIXED, 'USD', 'Buy' if side == 'Pay' else 'Sell', dates, 1.25e6))]}
 
 
 def document(sets, calculation, vol=0.2):
@@ -573,7 +599,10 @@ def world(tmp_path_factory):
             'TWO_ROWS': ({}, [package('PACKAGE', [cashflows(FLOATING, 'FIVE', 'Buy', every(12, 5), 1e7),
                                                   cashflows(FLOATING, 'TWO', 'Sell', every(12, 2), 5e6)])]),
             'BASIS_RECEIVED': ({}, BASIS[:1]), 'BASIS_PAID': ({}, BASIS[1:]), 'BASIS_NETTED': ({}, BASIS),
-            'BASIS_BESIDE': ({}, BASIS[1:] + [node(swap('PAYER', years(3), 'Fixed'))])}
+            'BASIS_BESIDE': ({}, BASIS[1:] + [node(swap('PAYER', years(3), 'Fixed'))]),
+            'CCS_USD_RECEIVED': ({}, CROSS[:1]), 'CCS_EUR_RECEIVED': ({}, CROSS[1:2]),
+            'CCS_NETTED': ({}, CROSS[:2]), 'CCS_FOREIGN': ({}, CROSS[2:]),
+            'MTM_PAY': ({}, [resetting('MTM', 'Pay')]), 'MTM_RECEIVE': ({}, [resetting('MTM', 'Receive')])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1289,6 +1318,42 @@ def test_two_floating_legs_on_two_indices_are_one_basis_trade(world):
     assert found.loc['BASIS_BESIDE', 'AddOn_IR'] == pytest.approx(0.0075 * adjusted, rel=1e-14)
 
 
+def test_legs_paying_two_currencies_are_one_fx_trade(world):
+    """CRE52.35, CRE52.37(5) AND CRE52.39; FOOTNOTE 11 TO CRE52.46: A CROSS-CURRENCY SWAP IS AN FX
+    TRADE. A package of a floating leg on 1.25 million dollars and a fixed leg on a million euros,
+    three years out, is one row on EUR/USD, nothing beside it in the rate class (CRE52.28 holds a
+    trade in one class: a convention): its foreign leg the euros, 1,000,000 x 1.25 = 1,250,000, the
+    dollar leg domestic; short the pair, -1, receiving the dollars, long, +1, receiving the euros;
+    M three years, its maturity factor one; each set's add-on 4% of 1,250,000, 50,000, the two in
+    one set nothing. A floating leg on a million euros received against a fixed one on 900
+    thousand pounds has both legs foreign, the larger the pounds', 900,000 x 1.5 = 1,350,000, long
+    EUR/GBP, its add-on 54,000. A swap whose euro leg's notional resets each quarter off 1.25
+    million dollars (an `MtMCrossCurrencySwapDeal`) settles its exposure at each reset, so M runs
+    to the next, three months out, its maturity factor (1/4)^0.5 = 0.5; that leg states its
+    notional in dollars, 1,250,000, short paying the euros and long receiving them, each set's
+    add-on 4% of 1,250,000 x 0.5, 25,000.
+
+    Killing mutations: legs of two currencies read as rate legs - the dollar leg's IR row, no FX
+    row; the larger leg dropped for the smaller - the pound swap's 1,250,000, its add-on 50,000;
+    the resetting leg's notional read in euros - 1,562,500, its add-on 31,250; M the swap's last
+    day despite its resets - its maturity factor one, its add-on 50,000.
+    """
+    _, output = world
+    found = netting_sets(output)
+    for name, pair, adjusted, delta, factor in (
+            ('CCS_USD_RECEIVED', 'EUR/USD', 1.25e6, -1.0, 1.0), ('CCS_EUR_RECEIVED', 'EUR/USD', 1.25e6, 1.0, 1.0),
+            ('CCS_FOREIGN', 'EUR/GBP', 1.35e6, 1.0, 1.0), ('MTM_PAY', 'EUR/USD', 1.25e6, -1.0, 0.5),
+            ('MTM_RECEIVE', 'EUR/USD', 1.25e6, 1.0, 0.5)):
+        rows = trades(output, name)
+        assert list(zip(rows['AssetClass'], rows['HedgingSet'], rows['Delta'], rows['Component'])) == [
+            ('FX', pair, delta, '')], rows
+        assert rows['AdjustedNotional'].tolist() == pytest.approx([adjusted], rel=1e-15), rows
+        assert rows['MaturityFactor'].tolist() == pytest.approx([factor], rel=1e-15), rows
+        assert (found.loc[name, 'AddOn_IR'], found.loc[name, 'AddOn_FX']) == pytest.approx(
+            (0.0, 0.04 * adjusted * factor), rel=1e-15), found.loc[name]
+    assert found.loc['CCS_NETTED', 'AddOn_FX'] == 0.0, found.loc['CCS_NETTED']
+
+
 def capped(kind):
     """A floating leg received on a million three years out paying a `kind`, Cap or Floor, at 4.5%."""
     leg = cashflows(FLOATING, 'CAPPED', 'Buy', every(12, 3), 1e6, Forecast_Rate_Cap_Volatility='USD')
@@ -1304,15 +1369,21 @@ def capped(kind):
     (node(capped('Floor')), 'SET_CAPPED is a CFFloatingInterestListDeal paying a cap, a floor or a digital'),
     (dict(package('INNER', [SWAP_LEGS[1]]), Instrument={'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'INNER', 'Netted': 'True', 'Collateralized': 'False'}}),
-     'SET_INNER is a NettingCollateralSet, which declares no exposure CRE52 reads')])
+     'SET_INNER is a NettingCollateralSet, which declares no exposure CRE52 reads'),
+    (package('THREE', [cashflows(FLOATING, 'USD', 'Buy', every(12, 3), 1.25e6),
+                       cashflows(FIXED, 'EUR', 'Sell', every(12, 3), 1e6, currency='EUR'),
+                       cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')]),
+     'SET_THREE is a package whose legs pay in EUR, GBP, USD, no one pair CRE52.35 reads')])
 def test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name(tmp_path, held_node, said):
-    """CRE52.43 AND CRE52.74-52.76. A floating leg paying a cap or a floor on its rate, alone or in
-    a package, is caplets or floorlets, not built; and a netting set inside a netting set is
-    several sets to one agreement, not built: each refuses the run by name.
+    """CRE52.35, CRE52.43 AND CRE52.74-52.76. A floating leg paying a cap or a floor on its rate,
+    alone or in a package, is caplets or floorlets, not built; a netting set inside a netting set
+    is several sets to one agreement, not built; and a package whose legs pay in three currencies
+    is no one pair: each refuses the run by name.
 
     Killing mutations: the leg's optionlets unread - the capped package valued as a swap and its
     EAD written; a container read through its children whatever it is - the inner set's leg read
-    as the outer's own.
+    as the outer's own; legs of three currencies left unrefused - the package read as its rate
+    legs and the run valued.
     """
     with pytest.raises(ValueError, match='SACCR: trade ' + said):
         run(document({'SET': ({}, [held_node])}, saccr(mapping_file(tmp_path / 'mapping.json'))))

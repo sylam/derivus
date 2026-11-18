@@ -226,7 +226,10 @@ no row and its value enters V alone. A trade reads one or more rows (`SACCR.read
 counted once a trade; a package - a type with children declaring none, neither settling in their
 place nor a netting set - reads its children's rows (`SACCR.package`), the child the row's
 `Component`, two floating legs (`SACCR.legs`) of a currency, one received and one paid on another
-index, one row in the basis hedging set of the pair at `SACCR.BASIS` of the factor. A leg whose `amount` names a table is read off the schedule its compile bound
+index, one row in the basis hedging set of the pair at `SACCR.BASIS` of the factor, and legs paying
+two currencies one FX row (`SACCR.crossed`), M the next reset of a leg its compile resets on the
+pair (`TensorCashFlows.FXResets`, a mark-to-market swap's), whose notional is stated in the other
+currency. A leg whose `amount` names a table is read off the schedule its compile bound
 (`SACCR.schedule`, through `walk_schedules` as the diary reads it, and `SACCR.mean` reads an energy
 option's samples the same way): S, E and M its periods' first start, last end and last pay day, its
 notional averaged over them as an amortising swap's (`SACCR.averaged`), its side the sign of what it
@@ -281,6 +284,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_a_swap_booked_as_its_legs_reads_as_the_swap`,
 `::test_a_trade_enters_v_once_whatever_rows_it_reads`,
 `::test_two_floating_legs_on_two_indices_are_one_basis_trade`,
+`::test_legs_paying_two_currencies_are_one_fx_trade`,
 `::test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name`,
 `::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
