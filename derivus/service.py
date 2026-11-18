@@ -3144,9 +3144,9 @@ def agreement_terms(terms, agreement, entity):
     state = ['{} is {!r}'.format(field, stated[field]) for field in AGREEMENT_STATE
              if stated.get(field)]
     state += ['Collateral_Assets.{}[{}].{} is {!r}'.format(table, position, field, row[field])
-              for table, rows in sorted((stated.get('Collateral_Assets') or {}).items())
-              for position, row in enumerate(rows or []) if isinstance(row, dict)
-              for field in HOLDING_AMOUNTS if row.get(field)]
+              for table, rows in sorted(instruments.NettingCollateralSet.collateral(
+                  stated.get('Collateral_Assets')).items())
+              for position, row in enumerate(rows) for field in HOLDING_AMOUNTS if row.get(field)]
     if state:
         raise HTTPException(422, 'the terms of {!r} state {}: a balance and a holding are '
                                  'settlement state, arriving through the settlement interface, '

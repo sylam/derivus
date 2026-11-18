@@ -2012,6 +2012,24 @@ def test_the_one_blank_tier_parameter_solves_to_the_stated_premium(book):
             structures.quote(book, 'RangeAccrual', cake_params(tiers, premium=premium))
 
 
+def test_a_cake_s_tiers_are_read_alike_by_name_or_by_position(book):
+    """A TIER IS READ ONE WAY, whether its row states its cells by name - in any order - or as
+    `[floor, cap, coupon]`: a tier whose floor is not below its cap, one with a negative coupon
+    and two tiers that do not nest each refuse in the same words either way.
+
+    Killing mutation: the tiers read as cells whatever their spelling, which fails a row by name on
+    `'<' not supported between instances of 'str' and 'float'`.
+    """
+    for tiers, said in (([[20.0, 17.0, 5.0]], 'tiers[0] floor 20 is not below its cap 17'),
+                        ([[17.0, 20.0, -5.0]], 'tiers[0].coupon is -5 - a level and a coupon are'),
+                        ([[18.0, 19.5, 8.0], [17.0, 19.0, 5.0]],
+                         'tiers[0] is not strictly inside tiers[1]')):
+        named = [dict(reversed(list(zip(structures.RangeAccrual.CELLS, row)))) for row in tiers]
+        for spelled in (tiers, named):
+            with pytest.raises(ValueError, match=re.escape(said)):
+                structures.quote(book, 'RangeAccrual', cake_params(spelled))
+
+
 @pytest.fixture(scope='module')
 def carry_book(book):
     """The book with the rand curve 4% above the dollar one, so the forward is not the spot."""

@@ -17,8 +17,8 @@ from functools import partial, reduce
 
 from . import utils, pricing
 from .schema import (
-    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_settlements,
-    engine_default, Exposure, settlement_days,
+    Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_fields,
+    declared_settlements, engine_default, Exposure, settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
     FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, OPTION_STYLE, TOUCH,
     QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
@@ -1444,11 +1444,18 @@ class NettingCollateralSet(Deal):
         if self.field.get('Collateralized', 'False') == 'True' \
                 and not self.field.get('Agreement_Currency'):
             yield 'Collateralized is True, so Agreement_Currency is required'
-        rows = (self.field.get('Collateral_Assets') or {}).get('Cash_Collateral') or []
+        rows = self.collateral(self.field.get('Collateral_Assets')).get('Cash_Collateral', [])
         for i, row in enumerate(rows):
             if row.get('Collateral_Rate') and not row.get('Funding_Rate'):
                 yield ('Collateral_Assets.Cash_Collateral[{}]: Collateral_Rate is set, so '
                        'Funding_Rate is required'.format(i))
+
+    @classmethod
+    def collateral(cls, assets):
+        """`{table: rows}` for each collateral table `assets` states, every row read as
+        `{column: cell}` whichever spelling it is stated in."""
+        return {f.key: [f.row.read(row) for row in assets[f.key]]
+                for f in declared_fields(cls)['Collateral_Assets'].sub_fields if (assets or {}).get(f.key)}
 
     @classmethod
     def haircuts(cls, row):
@@ -1493,11 +1500,11 @@ class NettingCollateralSet(Deal):
             field_index['Bond_Collateral'] = []
             field_index['Cash_Collateral'] = []
 
-            collateral_assets = self.field.get('Collateral_Assets')
+            collateral_assets = self.collateral(self.field.get('Collateral_Assets'))
 
             if collateral_assets:
                 if collateral_assets.get('Equity_Collateral'):
-                    collateral_equity = self.field['Collateral_Assets']['Equity_Collateral']
+                    collateral_equity = collateral_assets['Equity_Collateral']
 
                     for col_equity in collateral_equity:
                         equity_rate = utils.check_rate_name(col_equity['Equity'])
@@ -1513,7 +1520,7 @@ class NettingCollateralSet(Deal):
                     collateral_defined = True
 
                 if collateral_assets.get('Bond_Collateral'):
-                    collateral_bond = self.field['Collateral_Assets']['Bond_Collateral']
+                    collateral_bond = collateral_assets['Bond_Collateral']
 
                     for col_bond in collateral_bond:
                         if np.array(list(col_bond['Coupon_Interval'].kwds.values())).any():
@@ -1547,7 +1554,7 @@ class NettingCollateralSet(Deal):
                     collateral_defined = True
 
                 if collateral_assets.get('Cash_Collateral'):
-                    collateral_cash = self.field['Collateral_Assets']['Cash_Collateral']
+                    collateral_cash = collateral_assets['Cash_Collateral']
                     # `Amount` weighs an asset in the collateral the balance counts: a sole asset's
                     # balance cancels it, so a sole row stating none is a unit; among several it is not
                     sole = len(collateral_cash) == 1 and not collateral_defined

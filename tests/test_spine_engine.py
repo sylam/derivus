@@ -1176,6 +1176,38 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_an_agreement_s_collateral_rows_read_alike_by_name_or_by_position(recorded):
+    """A TABLE ROW IS READ ONE WAY, whether it states its cells by its columns' names or in their
+    declared order: an agreement whose eligible cash is a row of cells is declared as the same row
+    by name is, while a row of cells stating a holding, or asking for ColVA with no funding curve,
+    is refused in the words the row by name is refused in.
+
+    Killing mutation: `Row.read` handing a row of cells back as given, which fails the declaration
+    on `'list' object has no attribute 'get'`.
+    """
+    terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
+    assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                       headers=JSON).status_code == 200
+
+    def declared(row):
+        return CLIENT.post('/book/agreements', content=dump({
+            'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'CSA', 'terms': dict(
+                terms, Collateral_Assets={'Cash_Collateral': [row]})}), headers=JSON)
+
+    for row, said in ((['USD', 500_000.0], 'Collateral_Assets.Cash_Collateral[0].Amount is 500000.0'),
+                      (['USD', None, None, None, 'USD'], 'Collateral_Assets.Cash_Collateral[0]: '
+                                                         'Collateral_Rate is set, so Funding_Rate is '
+                                                         'required')):
+        named = dict(zip(['Currency', 'Amount', 'Haircut_Posted', 'Haircut_Received',
+                          'Collateral_Rate'], row))
+        for spelled in (named, row):
+            refused = declared(spelled)
+            assert refused.status_code == 422 and said in refused.json()['detail'], spelled
+    for spelled in ({'Currency': 'USD', 'Haircut_Posted': {'.Percent': 10.0}},
+                    ['USD', None, {'.Percent': 10.0}]):
+        assert declared(spelled).status_code == 200, spelled
+
+
 def test_paper_restated_and_then_restored_stands_restored(recorded):
     """Through the service, as a first-time user files it: an agreement declared with terms A,
     then B, then A again is three facts with A in force, the third answered with a new LSN and its

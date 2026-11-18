@@ -136,6 +136,11 @@ class Row(object):
     def __init__(self, fields):
         self.fields = list(fields)
 
+    def read(self, row):
+        """`row` as `{column: cell}`, stated either by its columns' names or as its cells in their
+        declared order."""
+        return row if isinstance(row, dict) else dict(zip([f.key for f in self.fields], row))
+
 
 class F(object):
     """One field of one deal or one price factor.

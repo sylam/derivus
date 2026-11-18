@@ -550,8 +550,8 @@ class RangeAccrual(Structure):
         the next wider, overlapping bands having no single payoff per fixing, or a coupon not above
         the next wider one's, equal coupons being one tier.
         """
-        rows = [(row, [cell or None for cell in cells])
-                for row, cells in enumerate(params['tiers'])]
+        rows = [(row, [cells.get(key) or None for key in cls.CELLS])
+                for row, cells in enumerate(map(cls.TIERS.row.read, params['tiers']))]
         if len(rows) > len(cls.legs):
             raise ValueError('RangeAccrual: {} tiers - a cake is one to {}'.format(
                 len(rows), len(cls.legs)))
