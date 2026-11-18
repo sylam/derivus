@@ -1464,8 +1464,8 @@ class NettingCollateralSet(Deal):
         and a collateralised set's run refuses it with: a collateral row stated as a list of cells,
         and on a collateralised set an asset weighing nothing or less and a threshold on the other
         side of zero from the level of the set's value it is."""
-        assets, collateralised = self.field.get('Collateral_Assets'), \
-            self.field.get('Collateralized') == 'True'
+        assets = self.field.get('Collateral_Assets')
+        collateralised = self.field.get('Collateralized') == 'True'
         for table in self.collateral(assets):
             for i, row in enumerate(assets[table]):
                 if not isinstance(row, dict):
