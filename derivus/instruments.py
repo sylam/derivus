@@ -670,6 +670,9 @@ class Deal(object):
     #: whose quote reaches more than one place, or one place per quote type, says how.
     quoted = None
 
+    #: The field naming the last day a deal paying on the grid (`pays_on_grid`) pays on.
+    grid_end = 'Expiry_Date'
+
     #: valuation options this type reads, at the value an unstated one means
     option_defaults = {}
     #: `{field: [factor types]}` - read off the type's declarations (`F(..., factors=)`), never
@@ -720,7 +723,7 @@ class Deal(object):
         if not self.pays_on_grid():
             return
         if isinstance(grid, str):
-            grid_dates = parser(base_date, self.field['Expiry_Date'], grid)
+            grid_dates = parser(base_date, self.field[self.grid_end], grid)
             self.reval_dates.update(grid_dates)
             self.settlement_currencies.setdefault(self.payoff_ccy, set()).update(grid_dates)
         else:
@@ -5907,25 +5910,51 @@ class CashAccountDeal(Deal):
 class EquityDeal(Deal):
     vernacular = 'shares, stock position, equity holding'
     fields = [ADMIN, own('EquityDeal', [
-        F('Equity', 'Text', default='', factors=['EquityPrice']),
-        F('Investment_Horizon', 'Date', default=''),
+        F('Equity', 'Text', default='', factors=['EquityPrice', 'DividendRate']),
+        F('Investment_Horizon', 'Date', default='',
+          description='The day the holding ends, paid its dividends as they fall to that day and closed out on '
+                      'it at its value'),
         F('Currency', 'Text', default='', factors=['FxRate']),
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Units', 'Float', default=0.0, sized=True)
     ])]
 
+    grid_end = 'Investment_Horizon'
+
     documentation = ('Fx And Equity', [
-        'A holding of **Units** shares, not a forward: no strike is exchanged and no dividend is paid.',
-        'To **Investment_Horizon**, in the reporting currency,',
+        'A holding of **Units** shares, not a forward: no strike is exchanged. It is paid in **Currency**',
+        'what its shares pay as it falls: on each grid date $t_i$ to **Investment_Horizon** the dividends',
+        'since the one before,',
         '',
-        '$$V(t)=\\pm N\\,S(t)\\,X(t)$$',
+        '$$D_i=\\pm N\\,S(t_{i-1})\\,e^{\\int_{t_{i-1}}^{t_i}r}\\Big(1-e^{-\\int_{t_{i-1}}^{t_i}q}\\Big)$$',
         '',
-        'with $\\pm$ the **Buy_Sell** sign, $N$ **Units**, $S$ the equity price and $X$ the price of',
-        '**Currency** in the reporting currency.'])
+        'off the equity\'s repo curve $r$ and its dividend yield $q$, as an equity swap realises them, with',
+        '$\\pm$ the **Buy_Sell** sign, $N$ **Units** and $S$ the equity price. In the reporting currency,',
+        '$X$ the price of **Currency** in it, it is worth',
+        '',
+        '$$V(t_i)=\\big(\\pm N\\,S(t_i)+D_i\\big)\\,X(t_i)$$',
+        '',
+        'the shares and what they pay that day, as every deal is worth what it settles on a day. On the',
+        'horizon it is closed out at $\\pm N\\,S(H)$, and it is worth nothing after.'])
+
+    def __init__(self, params, valuation_options):
+        super(EquityDeal, self).__init__(params, valuation_options)
+        self.path_dependent = True
 
     def reset(self, calendars):
         super(EquityDeal, self).reset()
         self.add_reval_dates({self.field['Investment_Horizon']}, self.field['Currency'])
+
+    def pays_on_grid(self):
+        # its dividends settle on every grid date to its horizon
+        return True
+
+    def add_reval_date_offset(self, offset, relative_to_settlement=True):
+        # the grid dates its dividends settle on take no offset date, its horizon its own
+        if relative_to_settlement:
+            self.reval_dates.add(self.field['Investment_Horizon'] + pd.DateOffset(days=offset))
+        else:
+            super(EquityDeal, self).add_reval_date_offset(offset, relative_to_settlement)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -5935,8 +5964,11 @@ class EquityDeal(Deal):
         field_index = {'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
                        'Equity': utils.declared_spot(get_equity_rate_factor(
                            field['Equity'], static_offsets, stochastic_offsets), field['Equity']),
+                       'Equity_Zero': get_equity_zero_rate_factor(
+                           field['Equity'], static_offsets, stochastic_offsets, all_tenors, all_factors),
+                       'Dividend_Yield': get_dividend_rate_factor(
+                           field['Equity'][:1], static_offsets, stochastic_offsets, all_tenors),
                        'Expiry': (self.field['Investment_Horizon'] - base_date).days}
-        # TODO - Add more detail for dividend payments etc.
         return field_index
 
     def generate(self, shared, time_grid, deal_data):
@@ -5946,8 +5978,20 @@ class EquityDeal(Deal):
         spot = utils.spot_on_deal_grid(spot, deal_time, shared)
         fx_rep = utils.calc_fx_cross(factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
         nominal = (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * self.field['Units']
-        cash = nominal * spot
-        return cash * fx_rep
+        cash = paid = nominal * spot
+        rows, days = deal_data.Time_dep.deal_time_grid, deal_time[:, utils.TIME_GRID_MTM]
+        if rows.size > 1:
+            # each interval's dividends settle on its later row, as an equity swap realises them
+            dividends = nominal * utils.calc_realized_dividends(
+                spot[:-1].unsqueeze(0), factor_dep['Equity_Zero'], factor_dep['Dividend_Yield'],
+                [utils.calc_dividend_samples(days[k:k + 1], days[k + 1:k + 2], time_grid)[0]
+                 for k in range(rows.size - 1)], shared)[0]
+            for row, dividend in zip(rows[1:], dividends):
+                pricing.cash_settle(shared, self.field['Currency'], row, dividend)
+            # a row is worth its shares and the dividends it is paid on it
+            paid = cash + torch.cat([torch.zeros_like(cash[:1]), dividends])
+        pricing.closed_out(shared, time_grid, self.field['Currency'], factor_dep['Expiry'], cash[-1])
+        return paid * fx_rep
 
 
 class EquitySwapletListDeal(Deal):

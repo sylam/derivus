@@ -7036,6 +7036,11 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
     return torch.cat(mtm_list, dim=0)
 
 
+def closed_out(shared, time_grid, currency, horizon, value):
+    """Book a holding's `value` in `currency` on its horizon, `horizon` days from the base date."""
+    cash_settle(shared, currency, np.searchsorted(time_grid.mtm_time_grid, horizon), value)
+
+
 def settled_to_horizon(pricer, shared, time_grid, deal_data, *args):
     """`pricer`'s value of a cashflow list, its cash booked as `pricer` books it, or, for a holding
     to its `Investment_Horizon`, each payment before that day as it falls and on it the last row:
@@ -7046,7 +7051,7 @@ def settled_to_horizon(pricer, shared, time_grid, deal_data, *args):
     end = np.searchsorted(time_grid.mtm_time_grid, horizon)
     mtm = pricer(shared, time_grid, deal_data, *args, settle_cash=lambda shared, currency, index, value: (
         cash_settle(shared, currency, index, value) if index < end else None))
-    cash_settle(shared, deal_data.Factor_dep['SettleCurrency'], end, mtm[-1])
+    closed_out(shared, time_grid, deal_data.Factor_dep['SettleCurrency'], horizon, mtm[-1])
     return mtm
 
 

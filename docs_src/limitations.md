@@ -175,6 +175,12 @@ Grouped by where a validator meets them.
   booking and by the run, so a bond bought forward and held to a horizon cannot be booked; nothing
   is mispriced. Reading both is the forward's carry on repo to its settlement date ahead of the
   holding's close-out on its horizon, in each list's pricer: M.
+- **A share held to a horizon settles its dividends on the simulation grid** (2026-11-18).
+  `EquityDeal` books each grid interval's dividends off the share's dividend yield, carried at repo to
+  the interval's later date, $N S(t_0) e^{r\tau}(1-e^{-q\tau})$, not on the share's own ex-dates and
+  amounts, and the diary announces neither them nor its close-out. UNMEASURED: measuring it wants a
+  stated dividend schedule against the yield on the same grid. Reading a stated schedule, as the
+  equity swap leg reads its known dividends: M.
 - **Rating-dependent credit support is read at its first row** (2026-10-11).
   `utils.CreditSupportList.value` returns the first row's threshold, minimum transfer or independent
   amount whatever the counterparty's rating, in the engine and the spine's collateral call. Exact

@@ -534,17 +534,19 @@ def _hit_spread(spot, at, spread=True):
         (leg(lo) - leg(hi)) / (2.0 * EPS * STRIKE) if spread else leg(STRIKE))
 
 
-def _cmc_mtm(deals, valuation=None):
+def _cmc_mtm(deals, valuation=None, spot=False):
+    """The marks of `deals` by date and path, or where `spot` the share's price on the same paths."""
     doc = _job(deals, _equity_factors(), valuation=valuation, Object='CreditMonteCarlo',
                Time_grid='0d 1m(1m)', Batch_Size=256, Simulation_Batches=2, Random_Seed=1,
-               Deflation_Interest_Rate='USD', MCMC_Simulations=64)
+               Deflation_Interest_Rate='USD', MCMC_Simulations=64, Calc_Scenarios='All' if spot else 'No')
     market = doc['Calc']['MergeMarketData']['ExplicitMarketData']
     market['Price Models'] = {'GBMAssetPriceModel.EQ': {'Vol': VOL_ATM, 'Drift': 0.0}}
     market['Model Configuration'] = {'.ModelParams': {
         'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}
     cx = derivus.Context()
     cx.load_json((json.dumps(doc, cls=CustomJsonEncoder), 'digital_cmc'))
-    return derivus.run_cmc(cx.current_cfg, prec=torch.float64)[1]['Results']['mtm']
+    results = derivus.run_cmc(cx.current_cfg, prec=torch.float64)[1]['Results']
+    return results['scenarios']['EquityPrice.EQ'].loc[0.0].T if spot else results['mtm']
 
 
 @pytest.mark.parametrize('spread', [True, False], ids=['spread', 'one_vol'])
@@ -553,8 +555,8 @@ def test_an_already_knocked_in_digital_is_the_plain_binarys_spread_on_its_own_pa
     observed once, a month out, at 105, which some paths cross. On every row from that date, a
     crossed path is worth the plain binary off its own spot - its spread under the option, its
     cash-or-nothing at the strike's vol without it; the already-hit leg after the date, the parity
-    vanilla on it - and an uncrossed one nothing, the expiry row the intrinsic. The spot comes off
-    a share position on the same paths.
+    vanilla on it - and an uncrossed one nothing, the expiry row the intrinsic. The spot is the
+    run's own scenario of the share on the same paths, read beside a share position.
 
     MEASURED 108 of 512 paths crossed, twelve rows from the date, the crossed paths within 2.8e-14
     of the payoff and the uncrossed within 2.7e-14; without the spread, on the CPU's draws, 124
@@ -571,7 +573,7 @@ def test_an_already_knocked_in_digital_is_the_plain_binarys_spread_on_its_own_pa
     share = {'Object': 'EquityDeal', 'Reference': 'SHR', 'Currency': 'USD', 'Equity': 'EQ',
              'Buy_Sell': 'Buy', 'Units': 1.0, 'Investment_Horizon': EXPIRY}
     mtm = _cmc_mtm([deal], valuation=BARRIER_ON if spread else None)
-    spot = _cmc_mtm([share])
+    spot = _cmc_mtm([share], spot=True)
     assert (spot.iloc[0].values == SPOT).all() and spot.shape == mtm.shape, spot.shape
     crossed = spot.loc[BARRIER_DAY].values > HIT_LEVEL
     assert 0 < crossed.sum() < crossed.size, crossed.sum()
