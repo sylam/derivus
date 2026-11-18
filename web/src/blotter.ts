@@ -141,24 +141,40 @@ export function describe(schema: Schema | null, object: string, key: string): st
  * unit word of an amount counting the underlying. */
 export type Size = { side?: Picked; amount?: Picked; of?: Picked };
 
-/** The other of a two-sided word, its first part turned: `Up_And_In` seen from the other side of
- * the pair is `Down_And_In`. */
-const other = (value: string): string => value.replace(/^[A-Za-z]+/, (word) => OTHER[word] ?? word);
+/** The other of a two-sided word: of a field's two declared values, else the word with its first
+ * part turned - `Up_And_In` seen from the other side of the pair is `Down_And_In`. */
+const other = (value: string, values?: string[]): string => (values?.length === 2
+  ? values[Number(values[0] === value)]
+  : value.replace(/^[A-Za-z]+/, (word) => OTHER[word] ?? word));
 
 /** The amount is the first candidate the type declares `sized` - any the deal carries where the
  * type is undeclared - so a netting set's balance is no trade size. It is OF the first currency
  * the deal states among: the one a `settles` declaration pays that amount in, `<Word>_Currency`
  * for a word of its name, the deal's own `Currency`; `Units` and `Volume` are of none. A type
  * marking no side holds it in its sizes: a `Buy_` or `Sell_` amount, the other way if negative,
- * the amount beside that word then its size, unsigned. */
-export function sizeOf(deal: Record<string, unknown>, object: string, schema: Schema | null): Size {
+ * the amount beside that word then its size, unsigned. Held at `units` of the record, the amount
+ * is the written one times their size, and the side the other one where they are short. */
+export function sizeOf(deal: Record<string, unknown>, object: string, schema: Schema | null,
+                       units?: number): Size {
   const fields = fieldsOf(schema, object);
   const stated = pick(deal, SIDE_FIELDS);
   let amount = pick(deal, AMOUNT_FIELDS.filter((key) => !fields || fields[key]?.sized));
   const word = amount && /(Buy|Sell)_Amount$/.exec(amount.key)?.[1];
-  const side = stated ?? (amount && word
+  let side: Picked | undefined = stated ?? (amount && word
     ? { key: amount.key, value: Number(amount.value) < 0 ? OTHER[word] : word } : undefined);
   if (!stated && amount && word) amount = { ...amount, value: Math.abs(Number(amount.value)) };
+  if (units !== undefined) {
+    const held = `${formatNumber(units)} held`;
+    if (side && units < 0) {
+      side = { ...side, value: other(String(side.value), fields?.[side.key]?.values),
+               title: `${side.value} written, ${held}` };
+    }
+    if (amount) {
+      const written = Number(amount.value);
+      amount = { ...amount, value: written * Math.abs(units),
+                 title: `${formatNumber(written, 'money')} written, ${held}` };
+    }
+  }
   // a row stating no amount still says the currency the deal is in
   if (!amount) return { side, of: deal.Currency ? { key: 'Currency', value: deal.Currency } : undefined };
   if (UNIT_FIELDS.includes(amount.key)) {
@@ -311,6 +327,9 @@ export type BlotterRow = {
   reference: string;
   container: boolean;
   ignored: boolean;
+  /** The units the record holds of the position the row sits under - its own, or the structure's
+   * it is a leg of - where the desk keeps a record holding one. */
+  units?: number;
   /** The deal's own term end, where it declares one. */
   expiry?: string;
   /** The first date on or after Base_Date the deal carries anywhere - the next fixing, payment or
@@ -391,6 +410,16 @@ export function rowsByPath(rows: BlotterRow[],
   return index;
 }
 
+/** The file's tree holding what the record does: a node carrying positions at their net, as the
+ * book prices it, every leg under it the same, and a node carrying none as written. */
+export function heldRows(rows: BlotterRow[], held: Map<string, Position[]>,
+                         units?: number): BlotterRow[] {
+  return rows.map((row) => {
+    const at = held.get(row.path)?.reduce((sum, position) => sum + position.quantity, 0) ?? units;
+    return { ...row, units: at, children: heldRows(row.children, held, at) };
+  });
+}
+
 /** The earliest roll among `rows` - what a row holding them inherits. */
 const earliest = (rows: BlotterRow[]): string | undefined =>
   rows.map((row) => row.roll).filter((d): d is string => !!d).sort()[0];
@@ -422,7 +451,7 @@ export function groupedRows(nodes: TreeNode[], rows: Map<string, BlotterRow>,
     }
     const keyed = (row: BlotterRow, at: number): BlotterRow => ({
       ...row, path: node.id + row.path.slice(held.path.length), target: node.id, depth: at,
-      children: row.children.map((child) => keyed(child, at + 1)),
+      units: position?.quantity, children: row.children.map((child) => keyed(child, at + 1)),
     });
     return { ...keyed(held, depth), position };
   });

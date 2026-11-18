@@ -1,7 +1,8 @@
 import { useMemo, useState } from 'react';
 import {
-  WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, groupedRows, inWindow, nameOf,
-  quoted, rollingCount, rowsByPath, sizeOf, sortRows, toRows, type BlotterRow, type Picked,
+  WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, groupedRows, heldRows, inWindow,
+  nameOf, quoted, rollingCount, rowsByPath, sizeOf, sortRows, toRows, type BlotterRow,
+  type Picked,
 } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import {
@@ -40,10 +41,11 @@ export function BlotterView() {
   const recording = state.source?.kind === 'book' && state.record.spine !== null;
   const grouping = recording ? state.grouping : 'book';
   const paper = state.paper.data ?? NO_PAPER;
-  const tree = useMemo(() => (grouping === 'book' ? book : groupedRows(
-    grouping === 'portfolio' ? portfolioTree(paper.positions, paper.nodes) : clientTree(paper),
-    rowsByPath(book), byId(paper.positions), base)), [grouping, book, paper, base]);
   const heldAt = useMemo(() => byPath(paper.positions), [paper]);
+  const tree = useMemo(() => (grouping !== 'book' ? groupedRows(
+    grouping === 'portfolio' ? portfolioTree(paper.positions, paper.nodes) : clientTree(paper),
+    rowsByPath(book), byId(paper.positions), base) : recording ? heldRows(book, heldAt) : book),
+  [grouping, book, paper, base, recording, heldAt]);
 
   if (!doc) return null;
 
@@ -120,7 +122,7 @@ export function BlotterView() {
                   On
                 </th>
                 <th>Ccy</th>
-                <th className="n">Amount</th>
+                <th className="n" title={recording ? HELD : undefined}>Amount</th>
                 <th className="n" title={`${LEVELS}; a forward's outright`}>Strike</th>
                 <th className="n" title={LEVELS}>Barrier</th>
                 <th>Terms</th>
@@ -168,6 +170,8 @@ export function BlotterView() {
   );
 }
 
+const HELD = 'under a position, the written amount times the units the record holds of it';
+
 const LEVELS = 'an FX level as the market quotes its pair, base then quote';
 
 function Row(props: {
@@ -176,7 +180,7 @@ function Row(props: {
   opened: boolean; onToggle: () => void; onOpen: () => void; onSelect: () => void;
 }) {
   const { row, schema, selected, emphasised, collapsed, opened } = props;
-  const size = sizeOf(row.deal, row.object, schema);
+  const size = sizeOf(row.deal, row.object, schema, row.units);
   const read = quoted(row, props.market);
 
   return (
@@ -257,7 +261,7 @@ function Side({ side }: { side?: Picked }) {
   const text = side ? cellText(side.value) : undefined;
   if (!text) return null;
   const short = ['Sell', 'Pay', 'Payer', 'Lender'].includes(text) ? 'sell' : 'buy';
-  return <span className={`side ${short}`} title={side!.key}>{text}</span>;
+  return <span className={`side ${short}`} title={side!.title ?? side!.key}>{text}</span>;
 }
 
 /** One picked column. A shape a cell cannot state says so and points at the expander, which

@@ -264,6 +264,42 @@ check('a structure is on the one pair its legs are on, and a set holding two pai
        shown({ Object: 'StructuredDeal', Currency: 'EUR' }, [node(ON_ZAR), node(TARF)])[0]],
       ['EURZAR', null]);
 
+/** A size under the record: [side, amount, the amount's hover]. */
+const held = (deal, units) => {
+  const size = blotter.sizeOf(deal, deal.Object, SCHEMA, units);
+  return [size.side?.value ?? null, size.amount?.value ?? null, size.amount?.title ?? null];
+};
+
+check('under a position the amount is the written one times the units held, said in its hover',
+      'the amount shown as written under a position, which prints 4,000,000 beside a Qty of 0.5',
+      held({ ...ON_USD, Underlying_Amount: 4e6 }, 0.5),
+      ['Sell', 2e6, '4,000,000 written, 0.5 held']);
+
+check('a short position holds the other side, its amount unsigned, a word side as a field side',
+      'the side kept under a short position, or the sign carried into the amount, which prints '
+      + 'Sell -2,000,000 for a bought option unwound past flat',
+      [held(ON_USD, -1), held(FORWARD, -1)],
+      [['Buy', 2e6, '2,000,000 written, -1 held'],
+       ['Sell', 20091300, '20,091,300 written, -1 held']]);
+
+const BOOK = blotter.toRows([node({ Object: 'NettingCollateralSet', Reference: 'ISDA-1' }, [
+  node({ Object: 'StructuredDeal', Reference: 'FE' }, [node(ON_USD), node(TARF)]),
+  node(FORWARD)])], ['NettingCollateralSet', 'StructuredDeal'], '2026-11-16');
+const POSITION = { instrument: 'a'.repeat(64), agreement: 'ISDA-1', portfolio: 'desk',
+                   counterparty: 'K', quantity: 0.5, deal_paths: ['0/0'], reference: 'FE' };
+const units = (rows) => rows.map((row) => [row.units ?? null, units(row.children)]);
+
+check('every leg of a structure holds the units its position does, in the file\'s tree and the '
+      + 'record\'s, and a node no position carries holds none',
+      'the legs left at the written amount under a halved structure - the units read off the '
+      + 'position\'s own node alone - or a node no position carries scaled by its neighbour\'s',
+      [units(blotter.heldRows(BOOK, new Map([['0/0', [POSITION,
+                                                      { ...POSITION, quantity: 0.25 }]]]))),
+       units(blotter.groupedRows([{ id: 'p', label: 'FE' }], blotter.rowsByPath(BOOK),
+                                 new Map([['p', POSITION]]), '2026-11-16'))],
+      [[[null, [[0.75, [[0.75, []], [0.75, []]]], [null, []]]]],
+       [[0.5, [[0.5, []], [0.5, []]]]]]);
+
 check('a leg reads by its role under its structure, and any other reference whole',
       'every reference written whole, which clips a leg\'s role off a 1600 px screen; or a '
       + 'reference shortened by a structure it does not begin with',
@@ -274,7 +310,7 @@ check('a leg reads by its role under its structure, and any other reference whol
        blotter.nameOf({ reference: 'ZeroCostCollar-6a90461d', deal: {} })],
       ['protection', 'EURZAR-ZARCALL-REBOOKED-2027-05', 'ZeroCostCollar-6a90461d']);
 
-console.log(`\n${ran} checks over 6 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 9 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);
