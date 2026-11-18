@@ -1041,6 +1041,10 @@ EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', 'Equity option', [
       description='The dividend curve the option reads, the base equity\'s own when blank')
 ])
 
+#: An equity option's SA-CCR exposure, on its Units of the share (`Exposure`).
+EQUITY_OPTION = Exposure('Units', underlying='Equity', long=('Buy_Sell', 'Buy'), strike='Strike_Price',
+                         expiry='Expiry_Date', call=('Option_Type', 'Call'))
+
 #: The print an option's expiry fixed at, `[[Expiry_Date, print]]` - stated where the expiry is
 #: behind the base date, since a payoff settling after it is on that print and not on today's spot.
 EXPIRY_PRINT = F('Price_Fixing', 'DateValueList', default='null', convention=True,

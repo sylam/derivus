@@ -233,7 +233,9 @@ it priced with its bases' periods summed on); a type declaring no exposure, one
 the mapping classes in none and an unrated entity each refuse by name, and the parameters file is
 held to CRE52's shape at setup. An option's P is read off the compiled factors - a swaption's par
 rate off the legs it is written on (`TensorCashFlows.get_par_swap_rate`), an FX option's outright
-(`utils.calc_fx_forward`) or, its expiry behind the base date, its print - its delta at T nothing
+(`utils.calc_fx_forward`), an equity option's forward (`utils.calc_eq_forward`), a compo's times the
+outright of the share's currency in its payoff's, or, its expiry behind the base date, its print
+(`SACCR.underlying`) - its delta at T nothing
 the formula's limit, an FX option's taken on the pair in the order its `FXVol` surface's name
 states, as the pricer's `Invert_Moneyness` reads that name, and a date in years of 30/360 from the
 base date. A set is margined
@@ -256,6 +258,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_an_fx_european_option_reads_as_the_fx_option_it_is`,
 `::test_a_composed_commodity_reads_its_primarys_type_at_its_own_price`,
 `::test_a_cash_settled_swaption_matures_at_its_exercise_date`,
+`::test_an_equity_option_takes_its_delta_on_the_shares_forward`,
 `::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
 of a set of more than 5,000 trades.

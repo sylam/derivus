@@ -19,9 +19,9 @@ from . import utils, pricing
 from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_fields,
     declared_settlements, engine_default, Exposure, settlement_days,
-    ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_TOUCH, EXPIRY_PRINT,
-    FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR, OPTION_STYLE, TOUCH,
-    QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
+    ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_OPTION, EQUITY_TOUCH,
+    EXPIRY_PRINT, FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR,
+    OPTION_STYLE, TOUCH, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
 
 import numpy as np
 import pandas as pd
@@ -4225,6 +4225,7 @@ class EquityOptionDeal(Deal):
     vernacular = 'equity option, stock option, vanilla call or put'
     observes = Observes('Equity', 'EquityPrice', 'Price_Fixing', 1, elects='Settlement_Style',
                         expires='Expiry_Date')
+    exposure = EQUITY_OPTION
     fields = [ADMIN, PRICING, EQUITYOPTIONBASE, OPTION_STYLE, own('EquityOptionDeal', [
         F('Units', 'Float', default=0.0, sized=True),
         F('Payoff_Type', 'Text', default='Standard', convention=True, values=['Standard', 'Quanto', 'Compo']),

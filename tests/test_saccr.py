@@ -86,6 +86,7 @@ LEASE = 0.04 + math.log1p(2e-3) / tenor(years(5))
 
 def factors(vol):
     """The world's `Price Factors`, the receiver's surface flat at `vol`."""
+    surface = utils.Curve([], [[m, t, 0.1] for m in (0.8, 1.0, 1.2) for t in (0.5, 1.0, 2.0)])
     return dict({
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
         'FxRate.EUR': {'Domestic_Currency': 'USD', 'Interest_Rate': 'EUR', 'Spot': EURO},
@@ -100,10 +101,8 @@ def factors(vol):
                                  'Shift': utils.Percent(0.0), 'Surface': flat_space(vol)},
         'ForwardRate.CARRY': {'Currency': 'USD', 'Curve': utils.Curve(
             [], [[excel(BASE), 0.01], [excel(years(10)), 0.01]])}}, **{
-        'FXVol.' + pair: {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
-                          'Surface': utils.Curve([], [[m, t, 0.1] for m in (0.8, 1.0, 1.2)
-                                                      for t in (0.5, 1.0, 2.0)])}
-        for pair in ('EUR.USD', 'USD.JPY')}, **{
+        name: {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': surface}
+        for name in ('FXVol.EUR.USD', 'FXVol.USD.JPY', 'EquityPriceVol.INDEX', 'EquityPriceVol.SHARE')}, **{
         'EquityPrice.' + name: {'Spot': spot, 'Currency': 'USD', 'Interest_Rate': 'USD',
                                 'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0}
         for name, spot in (('INDEX', 4000.0), ('SHARE', 50.0))}, **{
@@ -301,6 +300,23 @@ AXES = [
          FX_Volatility='USD.JPY', Option_Type='Put', Strike_Price=1 / YEN, Underlying_Amount=1e6 * YEN)]
 
 
+def equity_option(reference, equity, side, kind, strike, units, expiry, **terms):
+    """An option on `units` of `equity` priced in dollars."""
+    return dict({'Object': 'EquityOptionDeal', 'Reference': reference, 'Currency': 'USD',
+                 'Discount_Rate': 'USD', 'Equity': equity, 'Equity_Volatility': equity, 'Buy_Sell': side,
+                 'Option_Type': kind, 'Strike_Price': strike, 'Units': units, 'Expiry_Date': expiry}, **terms)
+
+
+#: A bought call on a thousand units of the index struck at 4,200 a year out, a sold put on twenty
+#: thousand shares struck at 45 six months out, and the index call paid in euros on S X, struck at
+#: 3,360 euros.
+EQUITY_OPTIONS = [
+    equity_option('INDEX_CALL', 'INDEX', 'Buy', 'Call', 4200.0, 1e3, years(1)),
+    equity_option('SHARE_PUT', 'SHARE', 'Sell', 'Put', 45.0, 2e4, SIX_MONTHS),
+    equity_option('COMPO_CALL', 'INDEX', 'Buy', 'Call', 3360.0, 1e3, years(1), Payoff_Currency='EUR',
+                  Payoff_Type='Compo')]
+
+
 def node(deal):
     return {'Instrument': {'.Deal': deal}}
 
@@ -407,7 +423,8 @@ def world(tmp_path_factory):
             'AXES': ({}, [node(deal) for deal in AXES]),
             'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))]),
             'COMPOSED': ({}, [node(dict(MIXED[5], Commodity='SILVER.LBMA'))]),
-            'SETTLED': ({}, SWAPTIONS)}
+            'SETTLED': ({}, SWAPTIONS),
+            'EQUITY_OPTIONS': ({}, [node(deal) for deal in EQUITY_OPTIONS])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -687,9 +704,9 @@ def black_delta(forward, strike, vol, expiry, call):
     return stats.norm.cdf(d1) if call else -stats.norm.cdf(-d1)
 
 
-def between(expiry):
-    """The years from the base date's spot date to `expiry`'s, two business days on each."""
-    return ((expiry - BASE).days + lag(expiry, 2) - lag(BASE, 2)) / 365
+def between(expiry, days=2):
+    """The years from the base date's spot date to `expiry`'s, `days` business days on each."""
+    return ((expiry - BASE).days + lag(expiry, days) - lag(BASE, days)) / 365
 
 
 def test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_hand(world):
@@ -867,6 +884,35 @@ def test_a_cash_settled_swaption_matures_at_its_exercise_date(world):
     assert rows['AdjustedNotional'].tolist() == pytest.approx(
         [4e6 * EURO * supervisory_duration(0.5, 5.5)] * 2, rel=1e-14), rows
     assert list(rows['Bucket']) == ['3', '3'] and rows['Delta'].nunique() == 1, rows
+
+
+def test_an_equity_option_takes_its_delta_on_the_shares_forward(world):
+    """CRE52.36, CRE52.40 AND ITS FAQ1, CRE52.42(1). Each option's adjusted notional is its units at
+    the share's price, its delta Black at Table 2's vol on the share's forward to its expiry
+    between its spot dates, three business days on, carried at the 4% repo less the 2% dividend
+    yield (FAQ1: the forward, for the rate and the dividends). A bought call on a thousand units of
+    the index at 4,000, struck at 4,200 a year out at the index's 75%: 4,000,000 and +0.6318. A sold
+    put on twenty thousand shares at 50, struck at 45 six months out at a single name's 120%:
+    1,000,000, +0.2877, long the share, and its maturity factor (1/2)^0.5. The index call paid in
+    euros on S X (a compo), struck at 3,360 euros: its unit still the index at 4,000 dollars
+    (52.36), its P the index forward times the dollar's in euros, 0.8 e^((ln 1.06 - 0.04) 367/365),
+    +0.6410.
+
+    Killing mutations: P the spot - the index call's delta +0.6217; a compo's P left in the
+    share's currency against its strike in euros - +0.7370; the type declaring no exposure - the
+    run refused by name.
+    """
+    _, output = world
+    rows = trades(output, 'EQUITY_OPTIONS')
+    index = 4000.0 * math.exp(0.02 * between(years(1), 3))
+    dollar = math.exp((math.log(1.06) - 0.04) * between(years(1))) / EURO
+    expected = [black_delta(index, 4200.0, 0.75, 1.0, True),
+                -black_delta(50.0 * math.exp(0.02 * between(SIX_MONTHS, 3)), 45.0, 1.2, 0.5, False),
+                black_delta(index * dollar, 3360.0, 0.75, 1.0, True)]
+    assert rows['Delta'].tolist() == pytest.approx(expected, rel=1e-12), rows
+    assert list(rows['AdjustedNotional']) == [4e6, 1e6, 4e6], rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx([1.0, math.sqrt(0.5), 1.0], rel=1e-15)
+    assert list(rows['Subclass']) == ['Index', 'Single', 'Index'], rows
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',

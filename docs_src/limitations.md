@@ -220,6 +220,12 @@ Grouped by where a validator meets them.
   is fixed by then and owes nothing on the pair, yet until it pays its pair's effective notional
   counts it in the money at its whole notional. `SACCR` reads no `Settlement_Style`, as the
   option's price reads none.
+- **SA-CCR charges a quanto or a compo for its underlying alone** (2026-11-18). A trade paid in
+  another currency than its underlying's carries that pair's risk beside its underlying's, which
+  CRE52.28 lets a supervisor allocate to the FX class too; `SACCR` holds a trade in the one class
+  its type maps to (CRE52.26-52.27), so the pair's risk of a quanto or a compo enters no add-on.
+  Its unit is the underlying at its own price (CRE52.36) and its delta's P the underlying's forward,
+  a compo's that of S X in the currency it is struck in: CRE52 states neither, a convention.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
   `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only

@@ -14,6 +14,7 @@
    "QEDI_CustomAutoCallSwap": "Equity",
    "EquitySwapLeg": "Equity",
    "EquityForwardDeal": "Equity",
+   "EquityOptionDeal": "Equity",
    "CommodityForwardDeal": "Commodity",
    "CommodityFutureDeal": "Commodity",
    "FloatingEnergyDeal": "Commodity",

@@ -5388,7 +5388,9 @@ class SACCR(NettingSetCalculation):
     price (52.34-52.37); a non-deliverable forward is on the pair it buys and sells, its settlement
     currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
     sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
-    compiled factors, a rate option's P and K shifted by its currency's `option_shift`
+    compiled factors (52.40 FAQ1), a compo's the forward of S X in the currency it is struck in, a
+    quanto's of S, its unit the share at its own price (a convention: CRE52 states neither), a
+    rate option's P and K shifted by its currency's `option_shift`
     (52.38-52.40), an FX option's on the pair in the order its vol surface names it (52.59 FAQ1),
     at T nothing the formula's limit, one in the money and none out, an FX option past its expiry
     on the print it fixed; its MF sqrt(min(M, 1)), M floored at ten business days, or under a
@@ -5422,11 +5424,16 @@ class SACCR(NettingSetCalculation):
         'and that at its strike, a non-deliverable forward on the pair it buys and sells, its settlement',
         'currency outside it - and an equity or commodity trade\'s units at a unit\'s price; the',
         'supervisory delta $\\delta$ (CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black',
-        'delta on Table 2\'s vol at its underlying\'s forward $P$, an FX option\'s on its pair in the',
+        'delta on Table 2\'s vol at its underlying\'s forward $P$ (CRE52.40 FAQ1, the forward for the',
+        'rate and the dividends), an FX option\'s on its pair in the',
         'order its FX vol surface names it, the order a book quotes the pair\'s options in, a call on one',
         'currency a put on the other (CRE52.59 FAQ1), and at or past its exercise date, $T$ nothing,',
-        'the formula\'s limit, $\\pm1$ in the money and nothing out of it, an FX option past its expiry',
-        'on the print it fixed at (CRE52 states no $T$ for an option it has reached: a convention); the',
+        'the formula\'s limit, $\\pm1$ in the money and nothing out of it, an option past its expiry',
+        'on the print it fixed at (CRE52 states no $T$ for an option it has reached: a convention). An',
+        'option paid in another currency than its underlying\'s is read on its underlying alone, its',
+        'unit at the underlying\'s own price (CRE52.36), $P$ a quanto\'s the underlying\'s forward and a',
+        'compo\'s the forward of $S\\cdot X$ in the currency its strike is in (CRE52 states neither: a',
+        'convention, the payoff\'s own underlying, its currency risk in no class, CRE52.28); the',
         'maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$ the last day the trade is',
         'active, its start $S$ where it settles its cash there, as a swaption settled in cash does',
         '(CRE52.31-52.32 Table 1), floored at ten business days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a',
@@ -5588,23 +5595,48 @@ class SACCR(NettingSetCalculation):
         rate, annuity = floating.get_par_swap_rate(self.valuation['Base_Date'], curve)
         return 100.0 * rate * annuity / fixed.get_par_swap_rate(self.valuation['Base_Date'], curve)
 
-    def fx_forward(self, deal, terms):
-        """An FX option's outright to its expiry, a unit of its amount's currency in the other one,
-        as the engine carries a pair (`utils.calc_fx_forward`), or the print an expiry behind the
-        base date fixed at, which its pricer holds it at (`instruments.expiry_fixing`)."""
-        calc, expiry = self.compiled, deal.field[terms.expiry]
-        if expiry < self.valuation['Base_Date']:
-            return dict(deal.field['Price_Fixing'])[expiry]
-        pair = [utils.check_rate_name(deal.field[key]) for key in (terms.currency, terms.underlying)]
+    def exchange(self, deal, local, other, day):
+        """A unit of currency `local` in `other` for `day`, the pair carried between its spot dates
+        as the engine carries it (`utils.calc_fx_forward`)."""
+        calc, base = self.compiled, self.valuation['Base_Date']
+        pair = [utils.check_rate_name(currency) for currency in (local, other)]
         codes = [instruments.get_fx_and_zero_rate_factor(
             name, calc.static_factors, calc.stoch_factors, calc.all_tenors, calc.all_factors) for name in pair]
-        return utils.calc_fx_forward(
-            *codes, (expiry - self.valuation['Base_Date']).days,
-            calc.time_grid.time_grid[:1], self.shared, lag=deal.spot_lag(
-                'FxRate', pair[0], calc.all_factors, self.valuation['Base_Date'], calc.config.holidays, pair[1])).item()
+        return utils.calc_fx_forward(*codes, (day - base).days, calc.time_grid.time_grid[:1], self.shared, lag=(
+            deal.spot_lag('FxRate', pair[0], calc.all_factors, base, calc.config.holidays, pair[1]))).item()
 
-    #: How an option's P is read off the compiled factors, by its asset class.
-    FORWARDS = {'IR': swap_rate, 'FX': fx_forward}
+    def fx_forward(self, deal, terms, day):
+        """An FX option's outright for `day`, a unit of its amount's currency in the other one."""
+        return self.exchange(deal, deal.field[terms.currency], deal.field[terms.underlying], day)
+
+    def equity_forward(self, deal, terms, day):
+        """A share's forward for `day` on its repo and dividend curves, carried between spot dates as
+        an equity option carries it (`utils.calc_eq_forward`)."""
+        calc, base, name = self.compiled, self.valuation['Base_Date'], utils.check_rate_name(
+            deal.field[terms.underlying])
+        offsets = calc.static_factors, calc.stoch_factors
+        return utils.calc_eq_forward(
+            instruments.get_equity_rate_factor(name, *offsets),
+            instruments.get_equity_zero_rate_factor(name, *offsets, calc.all_tenors, calc.all_factors),
+            instruments.get_dividend_rate_factor(deal.check_factor_name('Dividends', name[:1]), *offsets,
+                                                 calc.all_tenors),
+            (day - base).days, calc.time_grid.time_grid[:1], self.shared,
+            lag=deal.spot_lag('EquityPrice', name, calc.all_factors, base, calc.config.holidays)).item()
+
+    #: How an option's P for a day is read off the compiled factors, by its asset class.
+    FORWARDS = {'FX': fx_forward, 'Equity': equity_forward}
+
+    def underlying(self, asset, deal, terms, day):
+        """P for `day` (52.40): a rate option's swap rate; for a day behind the base date the print
+        `Price_Fixing` states, which its pricer holds it at (`instruments.expiry_fixing`); else its
+        underlying's forward, a compo's the product S X's in the currency it pays and is struck in."""
+        if asset == 'IR':
+            return self.swap_rate(deal, terms)
+        if day < self.valuation['Base_Date']:
+            return dict(deal.field['Price_Fixing'])[day]
+        forward = self.FORWARDS[asset](self, deal, terms, day)
+        return forward * self.exchange(deal, self.price(deal, terms.price or terms.underlying)[1],
+                                       deal.payoff_ccy, day) if deal.payoff_type == 'Compo' else forward
 
     def exposure(self, index, mpor):
         """Trade `index`'s row of the trades frame, its maturity factor its set's (`mpor` None
@@ -5661,7 +5693,7 @@ class SACCR(NettingSetCalculation):
         if terms.strike:
             spread = supervisory['option_volatility'] * math.sqrt(self.years(fields[terms.expiry]))
             shift = self.shifts.get(hedging, 0.0) if asset == 'IR' else 0.0
-            moneyness = math.log((self.FORWARDS[asset](self, deal, terms) + shift) / (
+            moneyness = math.log((self.underlying(asset, deal, terms, fields[terms.expiry]) + shift) / (
                 fields[terms.strike] + shift))
             call = fields[terms.call[0]] == terms.call[1]
             surface = asset == 'FX' and fields[next(
