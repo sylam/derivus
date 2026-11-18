@@ -116,7 +116,7 @@ export function BlotterView() {
               <tr>
                 <th>Reference</th>
                 <th>Type</th>
-                <th>Side</th>
+                <th title={SIDE}>Desk side</th>
                 <th title={'what the trade is on - the pair as the market writes it, else the '
                            + 'commodity, equity or index it names - and an option\'s sense on it'}>
                   On
@@ -169,6 +169,10 @@ export function BlotterView() {
     </div>
   );
 }
+
+/** Whose side the Side column states. */
+const SIDE = 'the desk\'s side of the trade, as the desk booked it: Sell is the desk selling, '
+  + 'whatever the client calls the same trade';
 
 const HELD = 'under a position, the written amount times the units the record holds of it';
 
@@ -256,12 +260,15 @@ function Held({ held, entities }: { held: Position[]; entities: Paper['entities'
   );
 }
 
-/** Buy or sell as a chip, whatever the family calls it - Buy_Sell, Payer_Receiver, a lender. */
+/** Buy or sell as a chip, whatever the family calls it - Buy_Sell, Payer_Receiver, a lender - and
+ * always the desk's. */
 function Side({ side }: { side?: Picked }) {
   const text = side ? cellText(side.value) : undefined;
   if (!text) return null;
   const short = ['Sell', 'Pay', 'Payer', 'Lender'].includes(text) ? 'sell' : 'buy';
-  return <span className={`side ${short}`} title={side!.title ?? side!.key}>{text}</span>;
+  return (
+    <span className={`side ${short}`} title={`${SIDE} (${side!.title ?? side!.key})`}>{text}</span>
+  );
 }
 
 /** One picked column. A shape a cell cannot state says so and points at the expander, which
