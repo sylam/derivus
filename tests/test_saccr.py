@@ -114,7 +114,11 @@ def factors(vol):
         for name, hazard in (('FIRM_A', 0.005), ('FIRM_B', 0.02), ('CDX_IG', 0.01),
                              ('UNRATED', 0.01))},
         **commodity('WTI', 80.0), **commodity('BRENT', 100.0),
-        **commodity('SILVER', 25.0, 'SILVER_LEASE'), **{'ObservedBasis.SILVER.LBMA': {'Spot': -0.5}})
+        **commodity('SILVER', 25.0, 'SILVER_LEASE'), **{
+            'ObservedBasis.SILVER.LBMA': {'Spot': -0.5}, 'CommodityPriceVol.WTI': {
+                'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': surface},
+            'ForwardPriceSample.WTI': {'Offset': 0, 'Holiday_Calendar': '',
+                                       'Sampling_Convention': 'ForwardPriceSampleDaily'}})
 
 
 #: The module's credit, equity and commodity factors as its mapping states them beside the
@@ -129,6 +133,7 @@ STATED = {
                                       'Bucket': '2'}},
     'CommodityPrice.SILVER': {'SIMM': {'RiskType': 'Risk_Commodity', 'Qualifier': 'SILVER',
                                        'Bucket': '12'}},
+    'ForwardPrice.WTI': {'SIMM': {'RiskType': 'Risk_Commodity', 'Qualifier': 'WTI', 'Bucket': '2'}},
     'EquityPrice.INDEX': {'SIMM': {'RiskType': 'Risk_Equity', 'Qualifier': 'INDEX', 'Bucket': '11'}},
     'EquityPrice.SHARE': {'SIMM': {'RiskType': 'Risk_Equity', 'Qualifier': 'SHARE', 'Bucket': '5'}}}
 
@@ -317,6 +322,25 @@ EQUITY_OPTIONS = [
                   Payoff_Type='Compo')]
 
 
+def energy_option(reference, side, kind, strike, volume, start, end, realised=0.0):
+    """An option on the average of WTI's daily fixings from `start` to `end`, settled five days on,
+    `realised` the average of those already fixed."""
+    return {'Object': 'EnergySingleOption', 'Reference': reference, 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Sampling_Type': 'WTI', 'Reference_Type': 'WTI',
+            'Reference_Volatility': 'WTI', 'Buy_Sell': side, 'Option_Type': kind, 'Strike': strike,
+            'Volume': volume, 'Period_Start': start, 'Period_End': end, 'FX_Period_Start': start,
+            'FX_Period_End': end, 'Settlement_Date': end + pd.DateOffset(days=5),
+            'Realized_Average': realised, 'FX_Realized_Average': 0.0}
+
+
+#: A bought call on a thousand barrels of the month's average from a year out struck at 82, and a
+#: sold put on two thousand of the average from ten days ago to twenty days on, its fixings so far
+#: at 79.
+ENERGY = [energy_option('JANUARY', 'Buy', 'Call', 82.0, 1e3, years(1), years(1) + pd.DateOffset(months=1)),
+          energy_option('RUNNING', 'Sell', 'Put', 80.0, 2e3, BASE - pd.DateOffset(days=10),
+                        BASE + pd.DateOffset(days=20), 79.0)]
+
+
 def node(deal):
     return {'Instrument': {'.Deal': deal}}
 
@@ -424,7 +448,8 @@ def world(tmp_path_factory):
             'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))]),
             'COMPOSED': ({}, [node(dict(MIXED[5], Commodity='SILVER.LBMA'))]),
             'SETTLED': ({}, SWAPTIONS),
-            'EQUITY_OPTIONS': ({}, [node(deal) for deal in EQUITY_OPTIONS])}
+            'EQUITY_OPTIONS': ({}, [node(deal) for deal in EQUITY_OPTIONS]),
+            'ENERGY': ({}, [node(deal) for deal in ENERGY])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -913,6 +938,40 @@ def test_an_equity_option_takes_its_delta_on_the_shares_forward(world):
     assert list(rows['AdjustedNotional']) == [4e6, 1e6, 4e6], rows
     assert rows['MaturityFactor'].tolist() == pytest.approx([1.0, math.sqrt(0.5), 1.0], rel=1e-15)
     assert list(rows['Subclass']) == ['Index', 'Single', 'Index'], rows
+
+
+def test_an_energy_option_takes_its_delta_on_its_averages_current_value(world):
+    """CRE52.36, CRE52.42(1) AND CRE52.31. An energy option is on the average of its reference's
+    fixings over its period: its P is that average's current value, every weekday of the period
+    weighted alike, one fixed at the realised average stated for those fixed and one to come at the
+    forward of its own delivery off WTI's curve, 80 today rising 6% over six years; T is the
+    period's end, M the settlement five days on, d its barrels at today's 80, its type crude oil
+    at Table 2's 70%. The average over the month from a year out, 80.8326, under a bought call
+    struck at 82: +0.6348 on 80,000. The average from ten days ago to twenty days on, its first seven fixings at
+    79 and the rest to come, 79.6965, under a sold put struck at 80 over 19/360: +0.4774, long the
+    oil, on 160,000 at the maturity factor (24/360)^0.5.
+
+    Killing mutations: P the forward at the period's end - the call's delta +0.6350, the put's
+    +0.4666; the fixed samples read at their deliveries' forwards - the put's +0.4675; the
+    settlement left undeclared - the run refused, its tenor naming no day.
+    """
+    _, output = world
+    rows = trades(output, 'ENERGY')
+    six = (years(6) - BASE).days
+
+    def average(deal):
+        days = pd.bdate_range(deal['Period_Start'], deal['Period_End'])
+        return sum(deal['Realized_Average'] if day < BASE else 80.0 * (
+            1.0 + 0.06 * (day - BASE).days / six) for day in days) / len(days)
+
+    january, running = ENERGY
+    assert rows['Delta'].tolist() == pytest.approx([
+        black_delta(average(january), 82.0, 0.7, 1.0 + 1.0 / 12.0, True),
+        -black_delta(average(running), 80.0, 0.7, 19.0 / 360.0, False)], rel=1e-12), rows
+    assert list(rows['AdjustedNotional']) == [8e4, 1.6e5], rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx([1.0, math.sqrt(24.0 / 360.0)], rel=1e-15)
+    assert set(zip(rows['HedgingSet'], rows['Bucket'], rows['SupervisoryFactor'])) == {
+        ('Energy', '2', 0.18)}, rows
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',

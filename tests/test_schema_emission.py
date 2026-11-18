@@ -186,9 +186,8 @@ def test_every_published_section_carries_the_title_the_desk_sees():
 #: The deal types whose own declarations name no day they settle, expire or mature on: containers
 #: dated by what they hold, and schedules no field of theirs declares as settling.
 UNDATED = ('CFFixedInterestListDeal', 'CFFixedListDeal', 'CFFloatingInterestListDeal',
-           'CashAccountDeal', 'EnergySingleOption', 'EquityDeal', 'EquitySwapletListDeal',
-           'FixedEnergyDeal', 'FloatingEnergyDeal', 'NettingCollateralSet', 'StructuredDeal',
-           'YieldInflationCashflowListDeal')
+           'CashAccountDeal', 'EquityDeal', 'EquitySwapletListDeal', 'FixedEnergyDeal',
+           'FloatingEnergyDeal', 'NettingCollateralSet', 'StructuredDeal', 'YieldInflationCashflowListDeal')
 
 
 def test_every_deal_type_names_the_days_its_tenor_is_read_off():

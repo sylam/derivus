@@ -5388,7 +5388,9 @@ class SACCR(NettingSetCalculation):
     price (52.34-52.37); a non-deliverable forward is on the pair it buys and sells, its settlement
     currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
     sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
-    compiled factors (52.40 FAQ1), a compo's the forward of S X in the currency it is struck in, a
+    compiled factors (52.40 FAQ1), a reference price's for the delivery its fixing curve maps T to,
+    an option on an average its current value, each sample fixed at its level and each to come at
+    its forward (52.42(1)), a compo's the forward of S X in the currency it is struck in, a
     quanto's of S, its unit the share at its own price (a convention: CRE52 states neither), a
     rate option's P and K shifted by its currency's `option_shift`
     (52.38-52.40), an FX option's on the pair in the order its vol surface names it (52.59 FAQ1),
@@ -5425,9 +5427,13 @@ class SACCR(NettingSetCalculation):
         'currency outside it - and an equity or commodity trade\'s units at a unit\'s price; the',
         'supervisory delta $\\delta$ (CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black',
         'delta on Table 2\'s vol at its underlying\'s forward $P$ (CRE52.40 FAQ1, the forward for the',
-        'rate and the dividends), an FX option\'s on its pair in the',
-        'order its FX vol surface names it, the order a book quotes the pair\'s options in, a call on one',
-        'currency a put on the other (CRE52.59 FAQ1), and at or past its exercise date, $T$ nothing,',
+        'rate and the dividends), a reference price\'s for the delivery its fixing curve maps $T$ to,',
+        'an option on an average\'s $P$ that average\'s current value (CRE52.42(1)), each sample fixed at',
+        'its level and each to come at its forward - an energy option\'s its samples as its compile',
+        'draws them over its period, those fixed at its **Realized_Average** - an FX option\'s on its',
+        'pair in the order its FX vol surface names it, the order a book quotes the pair\'s options in, a',
+        'call on one currency a put on the other (CRE52.59 FAQ1), and at or past its exercise date, $T$',
+        'nothing,',
         'the formula\'s limit, $\\pm1$ in the money and nothing out of it, an option past its expiry',
         'on the print it fixed at (CRE52 states no $T$ for an option it has reached: a convention). An',
         'option paid in another currency than its underlying\'s is read on its underlying alone, its',
@@ -5623,20 +5629,41 @@ class SACCR(NettingSetCalculation):
             (day - base).days, calc.time_grid.time_grid[:1], self.shared,
             lag=deal.spot_lag('EquityPrice', name, calc.all_factors, base, calc.config.holidays)).item()
 
-    #: How an option's P for a day is read off the compiled factors, by its asset class.
-    FORWARDS = {'FX': fx_forward, 'Equity': equity_forward}
+    def reference_forward(self, deal, terms, day):
+        """A reference price's forward for the delivery its fixing curve maps `day` to."""
+        reference = self.compiled.all_factors[utils.Factor(
+            'ReferencePrice', utils.check_rate_name(deal.field[terms.underlying]))]
+        return self.compiled.all_factors[self.unit(deal, terms.underlying)].current_value(
+            [reference.get_fixings((day - utils.excel_offset).days)])[0]
 
-    def underlying(self, asset, deal, terms, day):
+    #: How an option's P for a day is read off the compiled factors, by its asset class.
+    FORWARDS = {'FX': fx_forward, 'Equity': equity_forward, 'Commodity': reference_forward}
+
+    def underlying(self, asset, deal, terms, day, forward=None):
         """P for `day` (52.40): a rate option's swap rate; for a day behind the base date the print
         `Price_Fixing` states, which its pricer holds it at (`instruments.expiry_fixing`); else its
-        underlying's forward, a compo's the product S X's in the currency it pays and is struck in."""
+        underlying's `forward` for the day, read here where None, a compo's the product S X's in
+        the currency it pays and is struck in."""
         if asset == 'IR':
             return self.swap_rate(deal, terms)
         if day < self.valuation['Base_Date']:
             return dict(deal.field['Price_Fixing'])[day]
-        forward = self.FORWARDS[asset](self, deal, terms, day)
+        forward = self.FORWARDS[asset](self, deal, terms, day) if forward is None else forward
         return forward * self.exchange(deal, self.price(deal, terms.price or terms.underlying)[1],
                                        deal.payoff_ccy, day) if deal.payoff_type == 'Compo' else forward
+
+    def mean(self, asset, deal, terms):
+        """P of an option on an average (52.42(1)), its current value: each sample fixed at its level
+        and each to come at its forward, by its weight. `average` names the realised average of an
+        energy option's samples as its compile draws them, each to come at its delivery's forward."""
+        base, curve = self.valuation['Base_Date'], self.compiled.all_factors[self.unit(deal, terms.underlying)]
+        samples = next(held.Factor_dep['Cashflow'].Resets.schedule for held in self.compiled.netting_sets.deals()
+                       if (held.Instrument.resolved_from or held.Instrument) is deal)
+        rows = [(base + pd.Timedelta(days=row[utils.RESET_INDEX_Reset_Day]), deal.field[terms.average],
+                 row[utils.RESET_INDEX_Weight], curve.current_value([row[utils.RESET_INDEX_End_Day]])[0])
+                for row in samples]
+        return sum(weight * (level if day < base else self.underlying(asset, deal, terms, day, forward))
+                   for day, level, weight, forward in rows) / sum(weight for _, _, weight, _ in rows)
 
     def exposure(self, index, mpor):
         """Trade `index`'s row of the trades frame, its maturity factor its set's (`mpor` None
@@ -5693,8 +5720,8 @@ class SACCR(NettingSetCalculation):
         if terms.strike:
             spread = supervisory['option_volatility'] * math.sqrt(self.years(fields[terms.expiry]))
             shift = self.shifts.get(hedging, 0.0) if asset == 'IR' else 0.0
-            moneyness = math.log((self.underlying(asset, deal, terms, fields[terms.expiry]) + shift) / (
-                fields[terms.strike] + shift))
+            moneyness = math.log(((self.mean(asset, deal, terms) if terms.average else self.underlying(
+                asset, deal, terms, fields[terms.expiry])) + shift) / (fields[terms.strike] + shift))
             call = fields[terms.call[0]] == terms.call[1]
             surface = asset == 'FX' and fields[next(
                 key for key, kinds in type(deal).factor_fields.items() if 'FXVol' in kinds)]

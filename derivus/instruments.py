@@ -7467,12 +7467,15 @@ class FixedEnergyDeal(Deal):
 
 class EnergySingleOption(Deal):
     vernacular = 'energy option, commodity option'
+    # an option on the average its samples fix over its period, struck at its end
+    exposure = Exposure('Volume', underlying='Reference_Type', long=('Buy_Sell', 'Buy'), strike='Strike',
+                        expiry='Period_End', call=('Option_Type', 'Call'), average='Realized_Average')
     fields = [ADMIN, PRICING, own('EnergySingleOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Sampling_Type', 'Text', default='', factors=['ForwardPriceSample']),
         F('FX_Sampling_Type', 'Text', default='', convention=True, factors=['ForwardPriceSample']),
         F('Average_FX', 'Text', default='No', convention=True, values=['Yes', 'No']),
-        F('Settlement_Date', 'Date', default=''),
+        F('Settlement_Date', 'Date', default='', settles=Cash('Payoff_Currency')),
         F('Period_Start', 'Date', default=''),
         F('Period_End', 'Date', default=''),
         F('Strike', 'Float', default=0.0),
