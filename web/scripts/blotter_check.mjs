@@ -300,6 +300,16 @@ check('every leg of a structure holds the units its position does, in the file\'
       [[[null, [[0.75, [[0.75, []], [0.75, []]]], [null, []]]]],
        [[0.5, [[0.5, []], [0.5, []]]]]]);
 
+const SHORT = { ...POSITION, quantity: -1 };
+check('a structure held short is short in every leg, in the file\'s tree and the record\'s',
+      'the sign of the units dropped on the way down to the legs, a short structure\'s legs then '
+      + 'reading the side they were written on',
+      [units(blotter.heldRows(BOOK, new Map([['0/0', [SHORT]]]))),
+       units(blotter.groupedRows([{ id: 'p', label: 'FE' }], blotter.rowsByPath(BOOK),
+                                 new Map([['p', SHORT]]), '2026-11-16'))],
+      [[[null, [[-1, [[-1, []], [-1, []]]], [null, []]]]],
+       [[-1, [[-1, []], [-1, []]]]]]);
+
 check('a leg reads by its role under its structure, and any other reference whole',
       'every reference written whole, which clips a leg\'s role off a 1600 px screen; or a '
       + 'reference shortened by a structure it does not begin with',
