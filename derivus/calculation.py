@@ -5399,7 +5399,8 @@ class SACCR(NettingSetCalculation):
     a leg's over its periods (52.37(2)), its delta by the sign of what it receives, an FX trade's
     foreign leg, the larger where both are, a forward's legs its two amounts and an
     option's its amount and that at its strike, or an equity or commodity trade's units at a unit's
-    price (52.34-52.37); a non-deliverable forward is on the pair it buys and sells, its settlement
+    price, a floating energy leg's every period's still to pay, its volume at its price multiplier
+    (52.34-52.37); a non-deliverable forward is on the pair it buys and sells, its settlement
     currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
     sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
     compiled factors (52.40 FAQ1), a reference price's for the delivery its fixing curve maps T to,
@@ -5465,7 +5466,9 @@ class SACCR(NettingSetCalculation):
         'the larger where both are (CRE52.35) - a forward\'s legs its two amounts, an option\'s its amount',
         'and that at its strike, a non-deliverable forward on the pair it buys and sells, its settlement',
         'currency outside it - and an equity or commodity trade\'s units at a unit\'s price, an',
-        'average-price swap\'s all the units it references, fixed or to fix (CRE52.36); the',
+        'average-price swap\'s all the units it references, fixed or to fix, a floating energy leg\'s',
+        'every period\'s its compile binds still to pay, its volume at its price multiplier, $M$ its last',
+        'pay day, long where it receives the average (CRE52.36); the',
         'supervisory delta $\\delta$ (CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black',
         'delta on Table 2\'s vol at its underlying\'s forward $P$ (CRE52.40 FAQ1, the forward for the',
         'rate and the dividends), a reference price\'s for the delivery its fixing curve maps $T$ to,',
@@ -5841,13 +5844,15 @@ class SACCR(NettingSetCalculation):
             raise ValueError('SACCR: trade {} is a {} paying a digital, whose collar of CRE52.42(3) is not '
                              'built'.format(reference, kind))
         if isinstance(fields[terms.amount], dict):
-            # a leg: S, E and M its periods' first start, last end and last pay day, its notional
-            # averaged over them as an amortising swap's is (52.37(2))
+            # a leg: S, E and M its periods' first start, last end and last pay day; a commodity's
+            # units each period's volume at its price multiplier (52.36), else its notional averaged
+            # over them as an amortising swap's is (52.37(2))
             cash = self.schedule(deal).schedule
             starts, nominal = cash[:, utils.CASHFLOW_INDEX_Start_Day], cash[:, CASHFLOW_INDEX_Nominal]
             start, end, last = (self.years(day) for day in (
                 starts.min(), cash[:, utils.CASHFLOW_INDEX_End_Day].max(), cash[:, CASHFLOW_INDEX_Pay_Day].max()))
-            amount = self.averaged(nominal[0], zip(map(self.years, starts[1:]), -np.diff(nominal)), end)
+            amount = (nominal * cash[:, utils.CASHFLOW_INDEX_Start_Mult]).sum() if asset == 'Commodity' else (
+                self.averaged(nominal[0], zip(map(self.years, starts[1:]), -np.diff(nominal)), end))
         else:
             end = last = self.years(fields[terms.end] if terms.end else max(day for *_, day in schema.settlement_days(
                 fields, schema.tenor_fields(type(deal))) if day is not None))

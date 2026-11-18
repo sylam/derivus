@@ -233,7 +233,8 @@ pair (`TensorCashFlows.FXResets`, a mark-to-market swap's), whose notional is st
 currency. A leg whose `amount` names a table is read off the schedule its compile bound
 (`SACCR.schedule`, through `walk_schedules` as the diary reads it, and `SACCR.mean` reads an energy
 option's samples the same way): S, E and M its periods' first start, last end and last pay day, its
-notional averaged over them as an amortising swap's (`SACCR.averaged`), its side the sign of what it
+notional averaged over them as an amortising swap's (`SACCR.averaged`), a commodity leg's units each
+period's volume at its price multiplier (`FloatingEnergyDeal`), its side the sign of what it
 receives, and one its compile prices as caplets or floorlets refused by name; its end and maturity are the last day
 `schema.tenor_fields` names, its maturity its start where the `(field, value)` of `runs` does not
 hold, a trade settling its cash there (a swaption settled in cash, an FRA paid at its start). A trade's asset class is
@@ -287,6 +288,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_two_floating_legs_on_two_indices_are_one_basis_trade`,
 `::test_legs_paying_two_currencies_are_one_fx_trade`,
 `::test_an_fx_swap_is_its_two_forwards_the_near_one_gone_once_settled`,
+`::test_a_floating_energy_leg_reads_the_units_it_has_still_to_pay`,
 `::test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name`,
 `::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor

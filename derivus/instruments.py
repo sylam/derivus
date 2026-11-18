@@ -7336,6 +7336,7 @@ class FRADeal(Deal):
 
 class FloatingEnergyDeal(Deal):
     vernacular = 'floating energy leg, floating-price energy swap'
+    exposure = Exposure('Payments', underlying='Reference_Type')
     fields = [ADMIN, PRICING, own('FloatingEnergyDeal', [
         F('Sampling_Type', 'Text', default='', factors=['ForwardPriceSample']),
         F('FX_Sampling_Type', 'Text', default='', convention=True, factors=['ForwardPriceSample']),

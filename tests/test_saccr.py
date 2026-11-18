@@ -482,6 +482,24 @@ def fx_swap(reference, near):
             'Near_Buy_Amount': 1e6, 'Near_Sell_Amount': 1.3e6, 'Far_Buy_Amount': 1.32e6, 'Far_Sell_Amount': 1e6}
 
 
+def energy_leg(reference, side):
+    """A leg on WTI's monthly average, `side` Receiver receiving it: a period paid a month ago; one
+    from ten days ago to twenty days on of a thousand barrels, fixed so far at 79; then two thousand
+    at a multiplier of a half and 1,500, each paid five days after its month."""
+    def period(start, end, volume, multiplier=1.0, realised=0.0):
+        return {'Payment_Date': end + pd.DateOffset(days=5), 'Period_Start': start, 'Period_End': end,
+                'Volume': volume, 'Fixed_Basis': 0.0, 'Price_Multiplier': multiplier,
+                'Realized_Average_Date': None, 'Realized_Average': realised, 'FX_Period_Start': start,
+                'FX_Period_End': end, 'FX_Realized_Average': 0.0}
+    month = pd.DateOffset(months=1)
+    return {'Object': 'FloatingEnergyDeal', 'Reference': reference, 'Currency': 'USD', 'Discount_Rate': 'USD',
+            'Sampling_Type': 'WTI', 'Reference_Type': 'WTI', 'Commodity': 'WTI', 'Payer_Receiver': side,
+            'Payments': {'Items': [
+                period(BASE - 2 * month, BASE - month - pd.DateOffset(days=10), 1e3),
+                period(BASE - pd.DateOffset(days=10), BASE + pd.DateOffset(days=20), 1e3, realised=79.0),
+                period(BASE + month, BASE + 2 * month, 2e3, 0.5), period(BASE + 2 * month, BASE + 3 * month, 1.5e3)]}}
+
+
 def resetting(reference, side):
     """A swap from three months out for two years, quarterly, exchanging its principals at its start
     and end, whose euro leg's notional resets each quarter off 1.25 million dollars, paid where
@@ -613,7 +631,9 @@ def world(tmp_path_factory):
             'CCS_NETTED': ({}, CROSS[:2]), 'CCS_FOREIGN': ({}, CROSS[2:]),
             'MTM_PAY': ({}, [resetting('MTM', 'Pay')]), 'MTM_RECEIVE': ({}, [resetting('MTM', 'Receive')]),
             'FX_SWAP': ({}, [node(fx_swap('SWAP', SIX_MONTHS))]),
-            'FX_SWAP_SEASONED': ({}, [node(fx_swap('SWAP', BASE - pd.DateOffset(months=1)))])}
+            'FX_SWAP_SEASONED': ({}, [node(fx_swap('SWAP', BASE - pd.DateOffset(months=1)))]),
+            'ENERGY_SWAP': ({}, [node(energy_leg('FLOATING', 'Receiver')), node(dict(KNOWN[2], Payer_Receiver='Payer'))]),
+            'ENERGY_PAYER': ({}, [node(energy_leg('FLOATING', 'Payer'))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1389,6 +1409,32 @@ def test_an_fx_swap_is_its_two_forwards_the_near_one_gone_once_settled(world):
         ('Far_Settlement_Date', -1.0, 1.0)], seasoned
     assert found.loc['FX_SWAP_SEASONED', 'AddOn_FX'] == pytest.approx(5e4, rel=1e-15), found
     assert rows['Value'].iloc[0] == found.loc['FX_SWAP', 'V'] and math.isnan(rows['Value'].iloc[1]), rows
+
+
+def test_a_floating_energy_leg_reads_the_units_it_has_still_to_pay(world):
+    """CRE52.36, CRE52.39 AND CRE52.48. A floating leg on WTI's monthly average is read off the
+    periods its compile binds still to pay, the one paid a month ago gone: its units every period's
+    volume at its price multiplier, fixed or to fix, 1,000 + 2,000 x 0.5 + 1,500 = 3,500, at today's
+    80, 280,000; crude oil, bucket 2 of the energy set at 18%; M its last pay day, 95/360 of 30/360,
+    its maturity factor 0.513701; long receiving the average and short paying it, the add-on 18% of
+    280,000 x (95/360)^0.5, 25,890.54. Beside it a fixed energy leg paid is amounts fixed today, its
+    value in V and no row.
+
+    Killing mutations: the price multiplier unread - 4,500 units, 360,000, the add-on 33,287.84; a
+    payer read long - its delta +1.
+    """
+    _, output = world
+    found = netting_sets(output)
+    for name, delta in (('ENERGY_SWAP', 1.0), ('ENERGY_PAYER', -1.0)):
+        rows = trades(output, name)
+        assert list(zip(rows.index, rows['HedgingSet'], rows['Bucket'], rows['Delta'])) == [
+            ('FLOATING', 'Energy', '2', delta)], rows
+        assert rows['AdjustedNotional'].tolist() == pytest.approx([3.5e3 * 80.0], rel=1e-15), rows
+        assert rows['MaturityFactor'].tolist() == pytest.approx([math.sqrt(95 / 360)], rel=1e-15), rows
+        assert found.loc[name, 'AddOn_Commodity'] == pytest.approx(0.18 * 2.8e5 * math.sqrt(95 / 360), rel=1e-14)
+    worth = valued([node(energy_leg('FLOATING', 'Receiver')), node(dict(KNOWN[2], Payer_Receiver='Payer'))])
+    assert found.loc['ENERGY_SWAP', 'V'] == pytest.approx(worth['BOOK_FLOATING'] + worth['BOOK_FIXED_ENERGY'],
+                                                          rel=1e-12), found.loc['ENERGY_SWAP']
 
 
 def capped(kind):
