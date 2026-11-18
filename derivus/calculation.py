@@ -571,8 +571,17 @@ class Calculation(object):
             indices = np.pad(tenors[factor_name], [[0, 0], [0, padding]], 'constant')
             self.gradient_index[factor_name] = (indices, pad_size)
 
+    def nan_gradient(self, header, rates):
+        """A gradient holding NaN on `rates` is something broken: named under `header` and counted
+        beside what the run could not value, its reported entries left NaN."""
+        if len(rates):
+            logging.error('{} - its gradient holds NaN on {}'.format(
+                header, ', '.join(dict.fromkeys(rates))))
+            self.calc_stats['Gradients Skipped'] = self.calc_stats.get('Gradients Skipped', 0) + 1
+
     def gradients_as_df(self, grad, header='Gradient', display_val=False):
         if isinstance(grad, dict):
+            self.nan_gradient(header, [name for name, v in grad.items() if np.isnan(v).any()])
             factor_values = {utils.check_scope_name(k): getattr(v, 'factor', v)
                              for k, v in self.all_factors.items()} if display_val else {}
             hessian_index = ([], [])
@@ -623,6 +632,7 @@ class Calculation(object):
                     m_index = [[extra_index] * rate.size] + m_index
                 multi_index.append(pd.MultiIndex.from_arrays(m_index))
 
+            self.nan_gradient(header, self.hessian_index[0][np.isnan(grad).any(axis=1)])
             values = grad[grad.any(axis=1)][:, grad.any(axis=0)]
             df = pd.DataFrame(values, index=multi_index[0], columns=multi_index[1]).sort_index(
                 level=[0, 1, 2, 3], axis=0).sort_index(level=[0, 1, 2, 3], axis=1)

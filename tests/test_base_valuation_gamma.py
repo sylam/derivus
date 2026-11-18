@@ -269,6 +269,38 @@ def test_a_nan_gradient_is_reported_as_nan_and_never_summed_into_a_number():
     assert second.shape == (2, 1) and second.iloc[0, 0] == 3.0 and np.isnan(second.iloc[1, 0]), second
 
 
+def test_a_gradient_holding_nan_is_named_counted_and_fails_a_whole_run(caplog):
+    """A NaN in a gradient is something broken, as a NaN in a value is: a run's own gradient with
+    its delta made NaN is named by its header and its factor at both orders, counted under
+    `Gradients Skipped`, reported as NaN, and refused by name where a whole run is asked for. The
+    run itself, whose gradient holds none, counts nothing.
+
+    Killing mutation: the check removed, which logs and counts nothing and answers the run whole.
+    """
+    import logging
+
+    calculation, out = run_baseval(equity_cfg(), prec=DTYPE, overrides={
+        'Greeks': 'All', 'Quasi_Seed': 1, 'MCMC_Simulations': 1})
+    assert 'Gradients Skipped' not in out['Stats']
+    held = out['Netting'].obj.Calc_res
+    first = {name: values.copy() for name, values in held['Greeks_First'].items()}
+    first['EquityPrice.EQ'][0] = np.nan
+    second = held['Greeks_Second'].copy()
+    second[:, -1] = np.nan
+
+    def reported():
+        frames = [calculation.gradients_as_df(gradient, header='EQOPT') for gradient in (first, second)]
+        return frames, {'Stats': calculation.calc_stats}
+
+    with caplog.at_level(logging.ERROR):
+        with pytest.raises(utils.UnpriceableSchedule) as refusal:
+            utils.run_whole(reported)
+    assert '2 Gradients Skipped' in str(refusal.value), refusal.value
+    assert 'EQOPT - its gradient holds NaN on EquityPrice.EQ' in str(refusal.value), refusal.value
+    frame = calculation.gradients_as_df(first, header='EQOPT')
+    assert np.isnan(frame.loc['EquityPrice.EQ', 'EQOPT']).all() and frame['EQOPT'].notna().sum() > 0
+
+
 # ---------------------------------------------------------------- the closed forms
 
 def test_black_scholes_gamma_is_exact_in_the_zero_carry_world():
