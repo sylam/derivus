@@ -72,6 +72,7 @@ between prints, while a delta-quoted surface is read at whatever spot is standin
 which it used under `spot`, read off the document it priced.
 """
 
+import collections
 import copy
 import functools
 import json
@@ -231,6 +232,22 @@ class SolveUnknown(object):
 
     def describe(self):
         return 'Solve the one blank parameter to {}'.format(self.target)
+
+
+class Loads(collections.namedtuple('Loads', 'document context')):
+    """The book as a quote loads it: its wire `document`, and `context`, which makes the new Context
+    each load of it is made on - in a quote, one holding the calendar parse of its first load
+    (`Context.reading`), while each merges onto a market of its own."""
+
+    @classmethod
+    def of(cls, book):
+        """`book` itself where it is one, else that document's own loads, each on a bare Context."""
+        from . import Context
+        return book if isinstance(book, cls) else cls(book, Context)
+
+    def market(self):
+        """`market_of` the book, loaded on a context of its own."""
+        return market_of(self.document, context=self.context())
 
 
 def crossed(deal_type, block):
@@ -925,7 +942,7 @@ def declared(structure, params):
             if stated(params, key) or key not in others}
 
 
-def spot_model(document, deal_type, underlying, settlement, model, reading):
+def spot_model(book, deal_type, underlying, settlement, model):
     """Pin `model` on `deal_type` where THIS book carries a calibration for the leg's pair.
     Returns the leg's note, or `None` when the model was pinned.
 
@@ -946,14 +963,14 @@ def spot_model(document, deal_type, underlying, settlement, model, reading):
     Writes IN PLACE on the document the runner holds; every pricing deep-copies it through `alone`,
     so one write reaches every iterate of the solve.
     """
-    market = market_of(document, context=reading())
+    market = book.market()
     factors = market_data(market)
     standing = (market['Valuation Configuration'].get(deal_type) or {}).get('SpotModel')
     model = standing or model
     token = utils.spot_model_currency(underlying, settlement, base_currency(market))
     factor = utils.spot_model_factor(model, token)
     if factor in factors:
-        valuation_entry(document, market, deal_type)['SpotModel'] = model
+        valuation_entry(book.document, market, deal_type)['SpotModel'] = model
         return None
     return ('{} - a spot model is keyed off the pair, so this leg looked up {}, '
             'which this book does not carry. Calibrate {} under {} (/book/model)'.format(
@@ -1046,7 +1063,7 @@ def engine_spot(market, underlying_currency, settlement_currency):
     return spots[underlying_currency] / spots[settlement_currency]
 
 
-def margin_value(document, margin, reading=None):
+def margin_value(book, margin):
     """A declared sales margin as money in the currency the legs price in, or `None` for no margin.
 
     `{'amount': 50000.0, 'currency': 'ZAR'}` is what a desk charges: an AMOUNT and the currency it
@@ -1066,8 +1083,9 @@ def margin_value(document, margin, reading=None):
     except (KeyError, TypeError, ValueError):
         raise ValueError("a margin is {{'amount': 50000.0, 'currency': 'ZAR'}} - an amount and the "
                          'currency it is stated in, not {!r}'.format(margin)) from None
-    market = market_of(document, context=reading and reading())
-    pricing = document['Calc']['Calculation'].get('Currency') or base_currency(market)
+    book = Loads.of(book)
+    market = book.market()
+    pricing = book.document['Calc']['Calculation'].get('Currency') or base_currency(market)
     return {'amount': amount, 'currency': currency, 'pricing_currency': pricing,
             'value': amount * engine_spot(market, currency, pricing)}
 
@@ -1172,38 +1190,26 @@ def quote_two_way(market, surface):
     return halves
 
 
-def without_spot_model(document, deal_type, reading):
-    """The book with no spot model declared for `deal_type`, or the document ITSELF where none is.
-
-    A leg walking a FITTED law never reads the written FX surface, so it publishes no quote
-    sensitivity and the two-way has nothing to charge against. The LOGNORMAL reading of the same
-    leg at the same terms does, and it is the vega a desk would deal in the quotes it trades. The
-    quote's own pin and the book's own are both dropped, on this copy alone.
-    """
-    market = market_of(document, context=reading())
-    if 'SpotModel' not in (market['Valuation Configuration'].get(deal_type) or {}):
-        return document
-    bare = copy.deepcopy(document)
-    del valuation_entry(bare, market, deal_type)['SpotModel']
-    return bare
-
-
-def leg_vega(document, leg, surface, reading):
+def leg_vega(book, leg, surface):
     """`(vega, source, note)` for one leg at its own terms: `{descriptor: dV/dq}` in the quote
     coordinates the two-way is quoted in, where that reading came from, and the leg's note.
 
     ONE first-order greeks run over the leg ALONE against the book, on the CLIENT's paper, exactly
     as `run_price` values it - so the vega priced and the premium quoted are the same deal at the
     same terms. The PIN decides which book that run is made against: a leg walking a fitted law
-    reads nothing off the written surface and would publish no quote leaves, so it is read
-    `without_spot_model` straight away rather than after a run whose emptiness the pin already
-    predicts. A leg no reading reaches carries no vega, and its NOTE says so: a quote that charged
-    nothing on a leg must not report a spread it did not levy.
+    reads nothing off the written surface and would publish no quote leaves, so the quote's pin and
+    the book's are dropped on the leg's copy straight away - the LOGNORMAL reading of the same leg
+    at the same terms, the vega a desk would deal in the quotes it trades - rather than after a run
+    whose emptiness the pin already predicts. A leg no reading reaches carries no vega, and its NOTE
+    says so: a quote that charged nothing on a leg must not report a spread it did not levy.
     """
-    run = alone(document, leg.deal)[0]
-    bare = without_spot_model(run, leg.deal['Object'], reading)
-    vega = vol_risk(bare, [], surface, reading)
-    return (vega, 'surface' if bare is run else 'lognormal reading', leg.note) if vega \
+    run, kind = alone(book.document, leg.deal)[0], leg.deal['Object']
+    market = book.market()
+    pinned = 'SpotModel' in (market['Valuation Configuration'].get(kind) or {})
+    if pinned:
+        del valuation_entry(run, market, kind)['SpotModel']
+    vega = vol_risk(book._replace(document=run), [], surface)
+    return (vega, 'lognormal reading' if pinned else 'surface', leg.note) if vega \
         else (None, None, ' '.join(filter(None, (
             leg.note, 'the two-way could not reach this leg - neither the surface nor a lognormal '
                       'reading of it publishes an FX vol quote sensitivity, so no spread was '
@@ -1248,7 +1254,7 @@ class Materialized(object):
         return 1.0 / engine_strike if self.inverted else engine_strike
 
 
-def materialize(structure, params, document, reading=None):
+def materialize(structure, params, book, reference=None):
     """Every leg of `structure` as a wire-form deal, in declaration order.
 
     The shared block comes from the parameters - the two currencies off the pair, the surface named
@@ -1258,18 +1264,18 @@ def materialize(structure, params, document, reading=None):
     no `Underlying_Amount` is PAID in its notional, so `notional_currency` settles it and the other
     side is its underlying. Then the leg's pinned block, then its slots. Strike-like slots and
     `Option_Type` cross to the engine axis together, exactly once, here. The legs are the ones
-    `structure.dealt` says the ticket deals.
+    `structure.dealt` says the ticket deals; with a `reference`, each is named `<reference>_<role>`.
 
     An ACCRUAL leg is furnished the same way plus a schedule - see `furnish_accrual`. It may WRITE
-    to `document` to pin the spot model on the deal type, so the caller owns the copy exactly as it
-    does for `with_live_spots`.
+    to the book's document to pin the spot model on the deal type, so the caller owns the copy
+    exactly as it does for `with_live_spots`.
 
     THE PAIR IS THE BOOK'S. A surface is quoted one way round and the legs name it as the book
     carries it, the engine reading the axis off that name, so a ticket may state the pair either
     way; one the book quotes no surface for refuses here, naming the pairs it does. A notional is a
     positive amount - which side the desk is on is the structure's own statement, not the sign.
     """
-    from . import Context, instruments
+    from . import instruments
     params = declared(structure, params)
     base, quote_ccy = split_pair(params['pair'])
     named = str(params['notional_currency']).upper()
@@ -1280,9 +1286,9 @@ def materialize(structure, params, document, reading=None):
     if notional <= 0.0:
         raise ValueError('a notional is a positive amount, not {:g} - the side the desk takes is '
                          "the structure's own".format(notional))
-    reading = reading or Context
-    context = reading()
-    market = market_of(document, context=context)
+    book = Loads.of(book)
+    context = book.context()
+    market = market_of(book.document, context=context)
     factors = market_data(market)
     family = Structure.SURFACE + '.'
     spellings = ('{}.{}'.format(base, quote_ccy), '{}.{}'.format(quote_ccy, base))
@@ -1292,7 +1298,7 @@ def materialize(structure, params, document, reading=None):
             params['pair'], ', '.join(name.split('.', 1)[1].replace('.', '')
                                       for name in sorted(factors)
                                       if name.startswith(family)) or 'no FX surface'))
-    base_date = timestamp(document['Calc']['Calculation']['Base_Date'])
+    base_date = timestamp(book.document['Calc']['Calculation']['Base_Date'])
 
     out = []
     furnished = ('FXOptionDeal', 'FXBarrierOption', 'FXTARFOptionDeal', 'FXAccumulatorOptionDeal',
@@ -1366,8 +1372,10 @@ def materialize(structure, params, document, reading=None):
             # read off the ENGINE axis the type now sits on
             deal.setdefault('Barrier_Price',
                             seed * (0.75 if deal['Barrier_Type'].startswith('Down') else 1.25))
-        note = furnish_accrual(structure, deal, params, document, base_date, underlying, inverted,
-                               position, convention, reading) if accrues(leg.deal_type) else None
+        note = furnish_accrual(structure, deal, params, book, base_date, underlying, inverted,
+                               position, convention) if accrues(leg.deal_type) else None
+        if reference:
+            deal.update(Reference='{}_{}'.format(reference, leg.role), Structure_Reference=reference)
         out.append(Materialized(leg.role, deal, inverted, note))
     return out
 
@@ -1379,8 +1387,8 @@ def accrues(deal_type):
     return observes is not None and observes.table is not None and observes.expires is None
 
 
-def furnish_accrual(structure, deal, params, document, base_date, underlying, inverted, position,
-                    convention, reading):
+def furnish_accrual(structure, deal, params, book, base_date, underlying, inverted, position,
+                    convention):
     """The rest of an accrual leg - the `position`-th the ticket deals: its fixing strip, its
     notionals or its range, and the one axis question a strip asks that a single expiry does not.
     Returns the leg's note.
@@ -1447,8 +1455,7 @@ def furnish_accrual(structure, deal, params, document, base_date, underlying, in
         deal.setdefault('Barrier', 0.0)
     if structure.spot_model not in cls.spot_models:
         return None
-    return spot_model(document, deal['Object'], underlying, deal['Currency'], structure.spot_model,
-                      reading)
+    return spot_model(book, deal['Object'], underlying, deal['Currency'], structure.spot_model)
 
 
 def declared_paths():
@@ -1501,35 +1508,33 @@ def own_value(out, reference):
     return float(row['Value'].iloc[0])
 
 
-def run_price(document, deal, reading=None):
+def run_price(book, deal):
     """One leg's value as an ordinary base valuation, which already reports the number."""
-    return run_prices(document, [deal], reading)[0]
+    return run_prices(Loads.of(book), [deal])[0]
 
 
-def run_prices(document, deals, reading=None):
+def run_prices(book, deals):
     """Each of `deals`' own values off ONE base valuation of them together against the book, as
     `alone` prices one: a deal's row does not depend on its siblings. A run that skipped one
     refuses by name (`utils.run_whole`) rather than reading it at zero."""
-    from . import Context
-    iterate = alone(document, deals[0])[0]
+    iterate = alone(book.document, deals[0])[0]
     for deal in deals[1:]:
         schema.splice_deal(iterate, deal)
-    _, out = utils.run_whole(
-        (reading or Context)().load_json((json.dumps(iterate), 'quote')).run_job)
+    _, out = utils.run_whole(book.context().load_json((json.dumps(iterate), 'quote')).run_job)
     return [own_value(out, deal['Reference']) for deal in deals]
 
 
-def forward_rate(document, params, reading):
+def forward_rate(book, params):
     """The pair's FX forward to the ticket's delivery date in MARKET terms, as the engine prices it:
     one base valuation of a unit of each currency received on that day, discounted on its own
     `FxRate`'s curve, the ratio of the two values."""
     base, quote_ccy = split_pair(params['pair'])
-    context = reading()
-    market = market_of(document, context=context)
+    context = book.context()
+    market = market_of(book.document, context=context)
     factors = market_data(market)
-    settles = tenor_dates(timestamp(document['Calc']['Calculation']['Base_Date']), params['expiry'],
-                          pair_convention(market, context.current_cfg.holidays,
-                                          (base, quote_ccy)))[1]
+    settles = tenor_dates(timestamp(book.document['Calc']['Calculation']['Base_Date']),
+                          params['expiry'], pair_convention(market, context.current_cfg.holidays,
+                                                            (base, quote_ccy)))[1]
     units = [{'Object': 'FXForwardDeal', 'Reference': 'forward-{}'.format(bought),
               'Buy_Currency': bought, 'Buy_Amount': 1.0,
               'Buy_Discount_Rate': utils.own_curve_name(bought, factors),
@@ -1537,11 +1542,11 @@ def forward_rate(document, params, reading):
               'Sell_Discount_Rate': utils.own_curve_name(sold, factors),
               'Settlement_Date': settles}
              for bought, sold in ((base, quote_ccy), (quote_ccy, base))]
-    in_base, in_quote = run_prices(document, units, reading)
+    in_base, in_quote = run_prices(book, units)
     return in_base / in_quote
 
 
-def run_solve(document, leg, field, target, spot, seed=None, reading=None):
+def run_solve(book, leg, field, target, spot, seed=None):
     """`derivus.solve_deal_field` over one leg, bracketed, writing the answer back onto the leg.
 
     A strike is bracketed around the market spot by `Solve.STRIKE_BRACKET` - `ACCRUAL_BRACKET` for
@@ -1557,7 +1562,8 @@ def run_solve(document, leg, field, target, spot, seed=None, reading=None):
     full bracket's either way. A solve with no seed runs the ends it always did.
     """
     from . import solve_deal_field
-    iterate, deal_path = alone(document, leg.deal)
+    book = Loads.of(book)
+    iterate, deal_path = alone(book.document, leg.deal)
     bounds = None
     if field == 'Strike_Price':
         ends = Solve.ACCRUAL_BRACKET if accrues(leg.deal['Object']) else Solve.STRIKE_BRACKET
@@ -1574,7 +1580,7 @@ def run_solve(document, leg, field, target, spot, seed=None, reading=None):
     for attempt, span in enumerate(ends):
         try:
             solved, _, _, out = solve_deal_field(
-                iterate, deal_path, field, target=target, bounds=span, reading=reading)
+                iterate, deal_path, field, target=target, bounds=span, reading=book.context)
             break
         except ValueError as error:
             if span is None or 'different signs' not in str(error):
@@ -1692,7 +1698,7 @@ def read_policy(document):
     return read
 
 
-def risk_document(document, nodes, surface, reading):
+def risk_document(book, nodes, surface):
     """The book as a GREEKS run, with `nodes` added to its deal tree and the vol quotes connected.
 
     Three edits and no others: the calculation becomes a quote's own (`priced_job`) with
@@ -1706,10 +1712,10 @@ def risk_document(document, nodes, surface, reading):
     this module's own contract is that its absence is 'Yes' (`quote_points`), so a hand-authored
     mid-only block that quotes must also be one the quote's own greeks run can read.
     """
-    run = copy.deepcopy(document)
+    run = copy.deepcopy(book.document)
     run['Calc']['Calculation'] = priced_job(run['Calc']['Calculation'], Greeks='First')
     schema.job_children(run).extend(nodes)
-    block = market_of(document, context=reading())['Market Prices'][prices_block(surface)]
+    block = book.market()['Market Prices'][prices_block(surface)]
     points = [dict(point, Use=point.get('Use', 'Yes'))
               for point in block['instrument'].get('Points') or []]
     run['Calc']['MergeMarketData']['ExplicitMarketData'].setdefault('Market Prices', {})[
@@ -1718,7 +1724,7 @@ def risk_document(document, nodes, surface, reading):
     return run
 
 
-def vol_risk(document, nodes, surface, reading):
+def vol_risk(book, nodes, surface):
     """`{descriptor: dV/dq}` for the book plus `nodes` - the vol book in QUOTE coordinates.
 
     The attachment is harvested at BOOTSTRAP rather than at run, so this bootstraps its own copy
@@ -1733,10 +1739,10 @@ def vol_risk(document, nodes, surface, reading):
     of a book not being the book's.
     """
     from .config import CustomJsonEncoder
-    run = risk_document(document, nodes, surface, reading)
+    run = risk_document(book, nodes, surface)
     if not schema.job_children(run):
         return {}
-    context = reading().load_json((json.dumps(run, cls=CustomJsonEncoder), 'risk'))
+    context = book.context().load_json((json.dumps(run, cls=CustomJsonEncoder), 'risk'))
     context.bootstrap()
     utils.run_whole(context.run_job)
     risk = {}
@@ -1748,20 +1754,19 @@ def vol_risk(document, nodes, surface, reading):
     return risk
 
 
-def book_risk(document, surface, cache, reading):
+def book_risk(book, surface, cache):
     """The book's OWN vol risk, kept in `cache` - an LRU the caller owns - under a hash of
     everything the run reads; `None` caches nothing. The book alone is the half of the measurement
     that does not depend on what is quoted, so a standing book pays one greeks run per quote."""
     if cache is None:
-        return vol_risk(document, [], surface, reading)
-    from . import Context, content_hash
-    etag = content_hash({'deals': document['Calc']['Deals']['Deals'],
-                         'market': document['Calc']['MergeMarketData'],
-                         'files': Context().files(document),
-                         'calculation': document['Calc']['Calculation'],
-                         'surface': surface})
+        return vol_risk(book, [], surface)
+    from . import content_hash
+    calc = book.document['Calc']
+    etag = content_hash({'deals': calc['Deals']['Deals'], 'market': calc['MergeMarketData'],
+                         'files': book.context().files(book.document),
+                         'calculation': calc['Calculation'], 'surface': surface})
     found = cache.get(etag)
-    return found if found is not None else cache.put(etag, vol_risk(document, [], surface, reading))
+    return found if found is not None else cache.put(etag, vol_risk(book, [], surface))
 
 
 def risk_buckets(before, after, halves):
@@ -1814,8 +1819,7 @@ def risk_scale(rows, cost, policy, charge_full, min_ticket):
     return scale, saving, scale * charge_full, note
 
 
-def run_recipe(document, structure, params, reference, spot, reading, charge=0.0, seed=None,
-               forward=None):
+def run_recipe(book, structure, params, reference, spot, charge=0.0, seed=None, forward=None):
     """One whole pass of the recipe at MID, from fresh legs.
 
     Materializes the legs and runs the steps in order against the book as it stands. EVERY leg
@@ -1836,30 +1840,30 @@ def run_recipe(document, structure, params, reference, spot, reading, charge=0.0
     moved, so a second pass over the first pass's legs would seed itself from the answer it is
     meant to find. `forward` answers the pair's forward to the delivery, for a parameter solve.
     """
-    legs = named_legs(structure, params, document, reference, reading)
+    legs = materialize(structure, params, book, reference)
     by_role = {leg.role: leg for leg in legs}
 
     premiums, solved = {}, {}
     for step in structure.recipe:
         if isinstance(step, SolveUnknown):
             legs, premiums, solved, params = run_unknown(
-                document, structure, params, reference, step, legs[0].to_market(spot), charge,
-                seed, forward, reading)
+                book, structure, params, reference, step, legs[0].to_market(spot), charge, seed,
+                forward)
             continue
         if step.role not in by_role:
             raise ValueError('{}: the recipe names leg {!r}, which is not declared'.format(
                 structure.__name__, step.role))
         leg = by_role[step.role]
         if isinstance(step, Price):
-            premiums[leg.role] = run_price(document, leg.deal, reading)
+            premiums[leg.role] = run_price(book, leg.deal)
         elif isinstance(step, Solve):
             # the target is the legs already priced, and the desk's charge with them: the client's
             # paper is worth minus what they are charged for it
             target = step.target.value(premiums) if isinstance(step.target, Premium) \
                 else float(step.target)
             value, premiums[leg.role] = run_solve(
-                document, leg, step.field, target - charge, spot,
-                (seed or {}).get(leg.role, {}).get(step.field), reading)
+                book, leg, step.field, target - charge, spot,
+                (seed or {}).get(leg.role, {}).get(step.field))
             solved.setdefault(leg.role, {})[step.field] = value
         else:
             raise ValueError('{}: {!r} is not a recipe step'.format(structure.__name__, step))
@@ -1871,16 +1875,7 @@ def run_recipe(document, structure, params, reference, spot, reading, charge=0.0
     return legs, premiums, solved, params
 
 
-def named_legs(structure, params, document, reference, reading):
-    """`materialize`'s legs, each named under the structure's `reference`."""
-    legs = materialize(structure, params, document, reading)
-    for leg in legs:
-        leg.deal['Reference'] = '{}_{}'.format(reference, leg.role)
-        leg.deal['Structure_Reference'] = reference
-    return legs
-
-
-def run_unknown(document, structure, params, reference, step, spot, charge, seed, forward, reading):
+def run_unknown(book, structure, params, reference, step, spot, charge, seed, forward):
     """`step` over the ticket, `(legs, premiums, solved, params)` as `run_recipe` returns them.
 
     `structure.unknown` names the blank parameter and its bracket, `spot` being the pair in market
@@ -1897,14 +1892,14 @@ def run_unknown(document, structure, params, reference, step, spot, charge, seed
     def priced(value):
         if value not in tried:
             ticket = structure.completed(params, path, value, forward)
-            legs = named_legs(structure, ticket, document, reference, reading)
-            tried[value] = legs, run_prices(document, [leg.deal for leg in legs], reading), ticket
+            legs = materialize(structure, ticket, book, reference)
+            tried[value] = legs, run_prices(book, [leg.deal for leg in legs]), ticket
         return tried[value]
 
     root = None
     if path is not None:
-        target = margin_value(document, {'amount': params[step.target],
-                                         'currency': params['notional_currency']}, reading)['value']
+        target = margin_value(book, {'amount': params[step.target],
+                                     'currency': params['notional_currency']})['value']
         before = next((solved[path] for solved in (seed or {}).values() if path in solved), None)
         ends = [bracket] if before is None else [
             (max(bracket[0], before * (1.0 - Solve.SEED_BRACKET)),
@@ -1928,7 +1923,7 @@ def run_unknown(document, structure, params, reference, step, spot, charge, seed
             {leg.role: {path: root} for leg in legs} if path else {}, ticket)
 
 
-def risk_impact(document, params, reference, surface, legs, halves, charge_full, cache, reading):
+def risk_impact(book, params, reference, surface, legs, halves, charge_full, cache):
     """The whole risk-impact step over a candidate the two-way has already been charged on.
 
     Measures the book with the candidate's MIRROR on it and without - the book alone through
@@ -1943,7 +1938,7 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full,
     reporting a zero nobody measured; the charge is not positive; or no vol quote leaves are
     published, so there are no coordinates to measure in.
     """
-    policy = read_policy(document)
+    policy = read_policy(book.document)
     empty = {'coordinates': 'quote-space', 'buckets': [], 'saving': None, 'charge_full': None,
              'charge_effective': None, 'scale': None, 'policy': policy}
     if policy is None:
@@ -1964,8 +1959,8 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full,
     # the MIRROR is the desk's side, and the same verb the approval books through, so the risk
     # measured and the trade booked cannot disagree by a sign
     candidate = book_node(mirror(compose(reference, legs)))
-    before = book_risk(document, surface, cache, reading)
-    after = vol_risk(document, [candidate], surface, reading)
+    before = book_risk(book, surface, cache)
+    after = vol_risk(book, [candidate], surface)
     if not (before or after):
         return dict(empty, charge_full=charge_full,
                     note='no FX vol quote leaves were published - the book carries no '
@@ -1976,9 +1971,8 @@ def risk_impact(document, params, reference, surface, legs, halves, charge_full,
     # a bp of NOTIONAL in the report currency: the notional is in its own currency and the charge
     # is in the run's, so the ops floor crosses on the same FxRate ratio `engine_spot` reads
     min_ticket = float(policy['min_ticket_bp']) * 1e-4 * float(params['notional']) * \
-        engine_spot(market_of(document, context=reading()),
-                    str(params['notional_currency']).upper(),
-                    document['Calc']['Calculation']['Currency'])
+        engine_spot(book.market(), str(params['notional_currency']).upper(),
+                    book.document['Calc']['Calculation']['Currency'])
     scale, saving, effective, note = risk_scale(rows, cost, policy, charge_full, min_ticket)
     return {'coordinates': 'quote-space', 'buckets': rows, 'saving': saving,
             'charge_full': charge_full, 'charge_effective': effective, 'scale': scale,
@@ -2069,12 +2063,12 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     # the client is checked before the price: a quote nobody could approve is not worth the solves
     check_netting_set(document, netting_set)
     structure = structure_named(structure_name)
-    context = (reading or Context)()
-    market = market_of(document, context=context)
-    reading = reading or context.reading
+    first = (reading or Context)()
+    market = market_of(document, context=first)
+    book = Loads(document, reading or first.reading)
     # what the BOOK already pinned, so what is reported below is what THIS quote pinned
     already = market['Valuation Configuration']
-    margin = margin_value(document, margin, reading)
+    margin = margin_value(book, margin)
     solves = [step for step in structure.recipe if isinstance(step, (Solve, SolveUnknown))]
     if margin is not None and len(solves) > 1:
         raise ValueError(
@@ -2091,7 +2085,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         'margin': margin, 'market': market, 'at': time.perf_counter()})
     reference = '{}-{}'.format(structure_name, quote_id[:8])
 
-    probe = materialize(structure, params, document, reading)[0]
+    probe = materialize(structure, params, book)[0]
     spot = engine_spot(market, probe.deal['Underlying_Currency'], probe.deal['Currency'])
     surface = probe.deal['FX_Volatility']
     halves = quote_two_way(market, surface)
@@ -2099,31 +2093,30 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     # blank, and the forward it may be placed about is priced once, only if it is asked for
     moved = [field for field in (step.field if isinstance(step, Solve) else structure.unknown(
         params, probe.to_market(spot))[0] for step in solves) if field]
-    forward = functools.lru_cache(maxsize=None)(lambda: forward_rate(document, params, reading))
+    forward = functools.lru_cache(maxsize=None)(lambda: forward_rate(book, params))
 
     # the desk's own charge rides the coordinate the recipe SOLVES, or the premium where it solves
     # nothing; either way the client pays the margin and the two-way on top of the mid
     charge = margin['value'] if margin else 0.0
     legs, premiums, solved, priced_params = run_recipe(
-        document, structure, params, reference, spot, reading, charge if moved else 0.0,
-        forward=forward)
+        book, structure, params, reference, spot, charge if moved else 0.0, forward=forward)
     # the MID solution's own vegas, one greeks run per leg, and never made at all on a book that
     # quotes no two-way: there is nothing to charge them at
-    vegas = [leg_vega(document, leg, surface, reading) for leg in legs] if halves \
+    vegas = [leg_vega(book, leg, surface) for leg in legs] if halves \
         else [(None, None, leg.note) for leg in legs]
     blocks = [spread_block(vega, source, halves) for vega, source, _ in vegas]
     priced = [block['spread_charge'] for block in blocks
               if block['spread_charge'] is not None]
     # a charge NO leg could be read for is not a charge of nothing; it is a charge nobody measured
     full = sum(priced) if priced else None
-    risk = risk_impact(document, params, reference, surface, legs, halves, full, cache, reading)
+    risk = risk_impact(book, params, reference, surface, legs, halves, full, cache)
     # what the charge was levied AT: the base pass takes the full two-way, a tightened quote the
     # policy's own scale, and the rows below are rebuilt at the money that was really charged
     charged = 1.0 if risk['scale'] is None else risk['scale']
     levied = charged * (full or 0.0)
     if levied and moved:
         legs, premiums, solved, priced_params = run_recipe(
-            document, structure, params, reference, spot, reading, charge + levied, solved, forward)
+            book, structure, params, reference, spot, charge + levied, solved, forward)
     if charged != 1.0:
         blocks = [spread_block(vega, source, halves, charged) for vega, source, _ in vegas]
 
@@ -2176,7 +2169,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         # the MODEL these legs were priced under where it is not the book's own default - the pin
         # `spot_model` wrote on the quote's copy, which `/book/quote` merges into the book
         'valuation_configuration': {
-            deal_type: entry for deal_type, entry in market_of(document, context=reading())[
+            deal_type: entry for deal_type, entry in book.market()[
                 'Valuation Configuration'].items() if entry != already.get(deal_type)} or None,
         'deal': compose(reference, legs, margin)}
     if margin:

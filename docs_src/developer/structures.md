@@ -319,7 +319,7 @@ the runner is that data's only reader.
 - `leg_vega` runs one first-order greeks valuation of the leg alone, on the client's paper, with
   `Quote_Sensitivity` on the `FXVolPrices` block (`vol_risk`). A leg walking a fitted spot model
   reads no surface and publishes no quote leaves, so it is read on a copy with its spot model dropped
-  (`without_spot_model`) — the lognormal reading at the same terms, the vega a desk would hedge in —
+  — the lognormal reading at the same terms, the vega a desk would hedge in —
   and `spread_source` says `'surface'` or `'lognormal reading'`. Without that substitution a fitted
   strip would capture nothing.
 - A leg's charge is `Σ_pillars |vega_p| × half_p`. The absolute value is the rule: a pillar is dealt
