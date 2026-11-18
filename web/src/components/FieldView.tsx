@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { failure } from '../api';
 import {
   curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, label, offsetText,
@@ -114,14 +114,16 @@ export type AmendField = (key: string, wireValue: unknown) => Promise<string[] |
  * carries it whole, its other keys standing, because an amendment merges top-level keys and a
  * container is one of them. `editable` narrows WHICH declared fields may edit - the market view
  * passes the bind='value' test, so structure stays read-only where the engine says it must.
- * `aside` is what a top-level field's label carries beside it - whose the entry is. */
-export function DescriptorPanel({ title, fields, values, onAmend, editable, aside }: {
+ * `aside` is what a top-level field's label carries beside it - whose the entry is. `ask` is
+ * what filing an edit does, where that is more than a save: a changed field asks it first. */
+export function DescriptorPanel({ title, fields, values, onAmend, editable, aside, ask }: {
   title: string;
   fields?: Record<string, Descriptor>;
   values: Record<string, unknown>;
   onAmend?: AmendField;
   editable?: (key: string, descriptor: Descriptor) => boolean;
   aside?: (key: string) => ReactNode;
+  ask?: string;
 }) {
   const declared = Object.entries(fields ?? {});
   const undeclared = Object.keys(values).filter((key) => !(fields ?? {})[key]);
@@ -144,7 +146,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
               <DescriptorPanel
                 title={labelOf(key, descriptor).text}
                 fields={descriptor?.sub_fields}
-                values={whole} editable={editable}
+                values={whole} editable={editable} ask={ask}
                 onAmend={onAmend && (!editable || editable(key, descriptor!))
                   ? (field, wire) => onAmend(key, { ...whole, [field]: wire }) : undefined}
               />
@@ -154,7 +156,7 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
                       stated={values[key] !== undefined && values[key] !== null && values[key] !== ''}
                       declared={!!descriptor || !undeclared.includes(key)}
                       onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
-                        ? onAmend : undefined} aside={aside?.(key)} />
+                        ? onAmend : undefined} aside={aside?.(key)} ask={ask} />
           );
         })}
       </div>
@@ -168,9 +170,9 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
  * what a form round-trips for nothing, so it is not a statement here either - which is what the
  * engine's own booking verdict says. `required` is the Instrument store's reading, MUST BE
  * STATED; on every other store it is still `default=REQUIRED`, and this panel renders both. */
-function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside }: {
+function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, ask }: {
   name: string; descriptor?: Descriptor; value: unknown; stated?: boolean; declared: boolean;
-  onAmend?: AmendField; aside?: ReactNode;
+  onAmend?: AmendField; aside?: ReactNode; ask?: string;
 }) {
   const editable = onAmend !== undefined && descriptor !== undefined &&
     isEditableScalar(descriptor, value);
@@ -185,35 +187,50 @@ function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside }:
       </div>
       <div className="v">
         {editable
-          ? <EditableScalar name={name} descriptor={descriptor!} value={value} onAmend={onAmend!} />
+          ? <EditableScalar name={name} descriptor={descriptor!} value={value} onAmend={onAmend!}
+                            ask={ask} />
           : <FieldView value={value} descriptor={descriptor} />}
       </div>
     </>
   );
 }
 
-/** One scalar input, saved on Enter or on leaving the field when changed. No client-side edit
- * state beyond this component: a successful save refreshes the book, the incoming value moves,
- * and the effect below re-syncs - the file is the truth, always. A refusal renders verbatim.
- * Exported because a quote ladder's value cells are the same input in a table cell. */
-export function EditableScalar({ name, descriptor, value, onAmend }: {
-  name: string; descriptor: Descriptor; value: unknown; onAmend: AmendField;
+/** One scalar input, saved on Enter or on leaving it where its VALUE changed - `2000000.00` over
+ * `2000000` is no change - and with `ask` only on the confirm beside it, declining restoring the
+ * value held. A save refreshes the book and the effect below re-syncs: the file is the truth. A
+ * refusal renders verbatim. Exported because a quote ladder's value cells are the same input. */
+export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
+  name: string; descriptor: Descriptor; value: unknown; onAmend: AmendField; ask?: string;
 }) {
   const incoming = editRaw(value);
   const [raw, setRaw] = useState(incoming);
   const [refused, setRefused] = useState<string[] | null>(null);
   const [saving, setSaving] = useState(false);
-  useEffect(() => { setRaw(incoming); setRefused(null); }, [incoming]);
+  const [asking, setAsking] = useState(false);
+  // a ref, not state: the blur a browser fires on an input disabled mid-save reads it current
+  const filing = useRef(false);
+  useEffect(() => { setRaw(incoming); setRefused(null); setAsking(false); }, [incoming]);
 
-  async function save(nextRaw: string | boolean) {
-    // an input disabled while it saves is blurred by the browser, which would save it again
-    if (saving || (typeof nextRaw === 'string' && nextRaw === incoming)) return;
+  const wire = (text: string) => JSON.stringify(encodeScalar(descriptor, text));
+  const restore = () => { setRaw(incoming); setAsking(false); };
+
+  function commit(text: string) {
+    if (wire(text) === wire(incoming)) restore();
+    else if (ask) setAsking(true);
+    else void save(text);
+  }
+
+  async function save(text: string) {
+    if (filing.current) return;
+    filing.current = true;
+    setAsking(false);
     setSaving(true);
     try {
-      setRefused(await onAmend(name, encodeScalar(descriptor, nextRaw)));
+      setRefused(await onAmend(name, encodeScalar(descriptor, text)));
     } catch (error) {
       setRefused([failure(error).error]);
     } finally {
+      filing.current = false;
       setSaving(false);
     }
   }
@@ -223,14 +240,15 @@ export function EditableScalar({ name, descriptor, value, onAmend }: {
   if (descriptor.widget === 'Dropdown') {
     input = (
       <select value={raw} disabled={saving}
-              onChange={(e) => { setRaw(e.target.value); void save(e.target.value); }}>
+              onChange={(e) => { setRaw(e.target.value); commit(e.target.value); }}>
         {(descriptor.values ?? []).map((option) => <option key={option}>{option}</option>)}
       </select>
     );
   } else if (descriptor.widget === 'Checkbox') {
     input = (
       <input type="checkbox" checked={raw === 'true'} disabled={saving}
-             onChange={(e) => { setRaw(String(e.target.checked)); void save(e.target.checked); }} />
+             onChange={(e) => { setRaw(String(e.target.checked));
+                                commit(String(e.target.checked)); }} />
     );
   } else {
     const kind = descriptor.widget === 'DatePicker' ? 'date'
@@ -240,8 +258,8 @@ export function EditableScalar({ name, descriptor, value, onAmend }: {
       <input
         type={kind} value={raw} disabled={saving} step="any"
         onChange={(e) => setRaw(e.target.value)}
-        onBlur={() => void save(raw)}
-        onKeyDown={(e) => { if (e.key === 'Enter') void save(raw); }}
+        onBlur={() => commit(raw)}
+        onKeyDown={(e) => { if (e.key === 'Enter') commit(raw); }}
       />
     );
   }
@@ -249,6 +267,13 @@ export function EditableScalar({ name, descriptor, value, onAmend }: {
     <span className="editcell">
       {input}{suffix && <span className="hint">{suffix}</span>}
       {saving && <span className="hint">saving…</span>}
+      {asking && (
+        <span className="banner">
+          {ask}
+          <button className="ghost" onClick={() => void save(raw)}>file it</button>
+          <button className="ghost" onClick={restore}>keep it as it was</button>
+        </span>
+      )}
       {refused && refused.map((message, i) => (
         <span key={i} className="refusal">{message}</span>
       ))}
