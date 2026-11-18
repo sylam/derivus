@@ -669,7 +669,7 @@ def delete_deal(deal_path: str, reference: str | None = None) -> dict:
 
 @MCP.tool()
 async def price_candidate(deal: dict | None = None, parent_reference: str | None = None,
-                          calculation_overrides: dict | None = None,
+                          calculation_overrides: dict | None = None, actor: str | None = None,
                           wait_seconds: float = 120.0, ctx: Context = None) -> dict:
     """Price the book PLUS a candidate deal without booking anything - the what-if verb, and the
     solving half of a par booking: price a trial amount, price a second, solve the affine
@@ -682,14 +682,10 @@ async def price_candidate(deal: dict | None = None, parent_reference: str | None
     surface's own nodes beside it), one backward pass however many factors. Waits up to
     `wait_seconds` for the run; the answer carries `tables` and `stats`, and `deal_values`
     projects per-deal values from it. Content-addressed: the same what-if twice is one run.
+    `actor` is the seat reading.
     """
-    request = {}
-    if deal is not None:
-        request['deal'] = deal
-    if parent_reference is not None:
-        request['parent_reference'] = parent_reference
-    if calculation_overrides:
-        request['calculation_overrides'] = calculation_overrides
+    request = _stated(deal=deal, parent_reference=parent_reference,
+                      calculation_overrides=calculation_overrides or None, actor=actor)
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/price', json=request)
     return await _await_result(submitted['result_id'], wait_seconds, ctx)
 
@@ -1039,8 +1035,8 @@ def book_dependencies(deal_path: str = None, deal: dict = None,
 
 @MCP.tool()
 async def setup_market(pair: str = None, deal: dict = None, parent_reference: str = None,
-                       deal_path: str = None, wait_seconds: float = 600.0,
-                       ctx: Context = None) -> dict:
+                       deal_path: str = None, actor: str | None = None,
+                       wait_seconds: float = 600.0, ctx: Context = None) -> dict:
     """Build the market a trade needs, off THIS workstation's terminal - the cure for a booking
     refused for missing market data, in one call rather than five.
 
@@ -1083,10 +1079,10 @@ async def setup_market(pair: str = None, deal: dict = None, parent_reference: st
     Refused by name where this workstation has no terminal, where the book declares no bootstrapper
     configuration, where the pair is one this desk's vocabulary does not spell (which
     `configure_securities` adds), and where the `deal` is one `book_deal` would itself refuse. Past
-    `wait_seconds` the id travels in `hint` and the set-up carries on service-side."""
-    request = {name: value for name, value in (('pair', pair), ('deal', deal),
-                                               ('parent_reference', parent_reference),
-                                               ('deal_path', deal_path)) if value is not None}
+    `wait_seconds` the id travels in `hint` and the set-up carries on service-side. `actor` is the
+    seat the run is queued under."""
+    request = _stated(pair=pair, deal=deal, parent_reference=parent_reference,
+                      deal_path=deal_path, actor=actor)
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/setup', json=request)
     answer = await _await_result(submitted['result_id'], wait_seconds, ctx, summarise=False,
                                  hint='; the set-up carries on service-side either way')
@@ -1098,8 +1094,8 @@ async def setup_market(pair: str = None, deal: dict = None, parent_reference: st
 
 
 @MCP.tool()
-async def calibrate_spot_model(pair: str, family: str = '', wait_seconds: float = 1800.0,
-                               ctx: Context = None) -> dict:
+async def calibrate_spot_model(pair: str, family: str = '', actor: str | None = None,
+                               wait_seconds: float = 1800.0, ctx: Context = None) -> dict:
     """Fit one FX pair's spot-model parameters to the vol surface the book already carries, and
     land them in the book - the model a TARF or an accumulator prices on when its `SpotModel` is
     that family. `family` blank takes the one the book's own runner pins, which is what a desk
@@ -1136,10 +1132,11 @@ async def calibrate_spot_model(pair: str, family: str = '', wait_seconds: float 
 
     There is nothing further to read: the written `<family>ModelParameters.<currency>` factor in
     the book's `Price Factors` IS the result, so `read_book` serves it like any other market data.
-    A pair the book carries no built surface for refuses BY NAME - tick the market first.
+    A pair the book carries no built surface for refuses BY NAME - tick the market first. `actor` is
+    the seat the run is queued under.
     """
-    submitted = await asyncio.to_thread(service().call, 'POST', '/book/model',
-                                        json={'pair': pair, 'family': family})
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/model', json=dict(
+        {'pair': pair, 'family': family}, **_stated(actor=actor)))
     outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     return dict(outcome, factor=submitted['factor'])
 
@@ -1147,7 +1144,8 @@ async def calibrate_spot_model(pair: str, family: str = '', wait_seconds: float 
 @MCP.tool()
 async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
                      bounds: list | None = None, calculation_overrides: dict | None = None,
-                     wait_seconds: float = 300.0, ctx: Context = None) -> dict:
+                     actor: str | None = None, wait_seconds: float = 300.0,
+                     ctx: Context = None) -> dict:
     """Solve ONE field of a candidate deal so the deal's own value lands on `target`, and get the
     deal back READY TO BOOK - the structuring tool. A par forward: solve the amount to target 0.
     A sales margin: target the margin. A zero-cost collar: fix one strike, solve the other to
@@ -1169,13 +1167,10 @@ async def solve_deal(deal: dict, field: str, target: float | dict = 0.0,
     The engine's FX convention is REPORTING units per one unit of the currency (`FxRate.ZAR`
     carries USD per ZAR), and an FX option's `Strike_Price` lives on that same axis - so a desk's
     'USDZAR call', the option paid when ZAR weakens, is a PUT on ZAR with `Underlying_Currency`
-    ZAR, and the strike solved here is quoted on that axis too.
+    ZAR, and the strike solved here is quoted on that axis too. `actor` is the seat reading.
     """
-    request = {'deal': deal, 'field': field, 'target': target}
-    if bounds is not None:
-        request['bounds'] = bounds
-    if calculation_overrides:
-        request['calculation_overrides'] = calculation_overrides
+    request = dict({'deal': deal, 'field': field, 'target': target}, **_stated(
+        bounds=bounds, calculation_overrides=calculation_overrides or None, actor=actor))
     submitted = await asyncio.to_thread(service().call, 'POST', '/book/solve', json=request)
     outcome = await _await_result(submitted['result_id'], wait_seconds, ctx)
     solved = outcome.get('stats', {}).pop('Solved', None) if 'stats' in outcome else None
@@ -1385,11 +1380,12 @@ def reject_quote(quote_id: str, reason: str, actor: str) -> dict:
 
 
 @MCP.tool()
-async def execute_book(calculation_overrides: dict | None = None,
+async def execute_book(calculation_overrides: dict | None = None, actor: str | None = None,
                        wait_seconds: float = 120.0, ctx: Context = None) -> dict:
     """Run the book's own calculation as it stands - `price_candidate` with no candidate. Waits
-    up to `wait_seconds`; on timeout the answer's `hint` says how to pick the run up later."""
-    return await price_candidate(calculation_overrides=calculation_overrides,
+    up to `wait_seconds`; on timeout the answer's `hint` says how to pick the run up later.
+    `actor` is the seat reading."""
+    return await price_candidate(calculation_overrides=calculation_overrides, actor=actor,
                                  wait_seconds=wait_seconds, ctx=ctx)
 
 
@@ -1411,7 +1407,7 @@ def describe_book() -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def book_risk_summary() -> dict:
+def book_risk_summary(actor: str | None = None) -> dict:
     """The desk's CONSOLIDATED risk: what the whole book is worth and what it is exposed to, in
     one read - the question after every booking and every tick.
 
@@ -1432,9 +1428,9 @@ def book_risk_summary() -> dict:
     renders the lot.
 
     Cheap and cached on the book's own content, so asking again after nothing moved costs nothing;
-    a booking or a market tick moves the etag and the numbers follow.
+    a booking or a market tick moves the etag and the numbers follow. `actor` is the seat reading.
     """
-    risk = service().call('GET', '/book/risk')
+    risk = service().call('GET', '/book/risk', params=_stated(actor=actor))
     greeks = sorted(risk['greeks'], key=lambda row: -abs(row['value']))
     quotes = sorted(risk['quotes'], key=lambda row: -abs(row['value']))
     return {'as_of': risk['as_of'], 'etag': risk['etag'], 'currency': risk['currency'],
@@ -1465,8 +1461,8 @@ def xva_view() -> dict:
 
 
 @MCP.tool()
-async def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600.0,
-                     ctx: Context = None) -> dict:
+async def recalc_xva(netting_sets: list | None = None, actor: str | None = None,
+                     wait_seconds: float = 600.0, ctx: Context = None) -> dict:
     """Recalculate the XVA projection - every netting set, or only the ones named.
 
     THIS IS THE EXPENSIVE ONE. Each set is a credit Monte Carlo over that set's own subtree of the
@@ -1482,10 +1478,11 @@ async def recalc_xva(netting_sets: list | None = None, wait_seconds: float = 600
 
     Waits up to `wait_seconds` for the LAST set queued and answers pointers - the queued
     `{reference, result_id}` pairs and where that last run got to. Read the numbers with `xva_view`
-    once it is done; `poll_result` follows any one set.
+    once it is done; `poll_result` follows any one set. `actor` is the seat the runs are queued
+    under.
     """
-    submitted = await asyncio.to_thread(service().call, 'POST', '/book/xva',
-                                        json={'netting_sets': netting_sets})
+    submitted = await asyncio.to_thread(service().call, 'POST', '/book/xva', json=dict(
+        {'netting_sets': netting_sets}, **_stated(actor=actor)))
     queued = submitted['queued']
     if not queued:
         return dict(submitted, hint='the book carries no netting sets - there is no XVA to run')

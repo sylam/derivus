@@ -938,6 +938,60 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
         service.BOOK = None
 
 
+#: The tools that put work on the hub's compute, or value the book where the queue would, each with
+#: the arguments that carry it past its own checks to the queue's question.
+QUEUED = (('price_candidate', {}), ('execute_book', {}),
+          ('solve_deal', {'deal': json.loads(dump(BOOKED)), 'field': 'Amount'}),
+          ('book_risk_summary', {}), ('recalc_xva', {'netting_sets': ['CLIENT_A']}),
+          ('setup_market', {'deal_path': '0'}), ('calibrate_spot_model', {'pair': 'USDZAR'}))
+
+
+@pytest.mark.parametrize('name, arguments', QUEUED, ids=[name for name, _ in QUEUED])
+def test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none(
+        name, arguments, recorded, tmp_path):
+    """Under a capabilities document the queue admits a named seat or nothing, so each tool that
+    puts work on the hub's compute, or values the book on the request thread, answers a seat
+    holding `validate` and, naming none, is refused in the service's own words. The book carries a
+    netting set, the FX vol bootstrapper, a short spot-model ladder and a ticked surface, so every
+    tool reaches that question. `setup_market` asks for a terminal first, so a box whose `blpapi`
+    does not import skips it.
+
+    Killing mutation: any one of the seven not forwarding its `actor`, which the service refuses
+    as unnamed.
+    """
+    from derivus_spine import SpineLog, policy
+    from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
+
+    from test_service import SHORT_LADDER, fx_vol_quotes, netting_set
+    document = job(sections={'Bootstrapper Configuration': {
+        'FXVol': {}, 'LogVar2FJModelParameters': SHORT_LADDER}})
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set('CLIENT_A', 'CPTY_A', ()))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        assert mcp_server.update_market_quotes(json.loads(dump(fx_vol_quotes())))['written']
+        if name == 'setup_market' and not mcp_server.desk_status()['terminal']['present']:
+            pytest.skip('the service refuses a box with no terminal before it asks the seat')
+        log = SpineLog(recorded)
+        try:
+            policy.declare_bytes(log, 'subject-desk-one', CAPABILITIES_POLICY, canonical_document(
+                {'grants': [{'subject': 'subject-desk-two', 'verb': 'validate', 'book': '*'}],
+                 'read': []}))
+        finally:
+            log.close()
+
+        def asked(**seat):
+            answer = getattr(mcp_server, name)(**arguments, **seat)
+            return asyncio.run(answer) if inspect.iscoroutine(answer) else answer
+
+        with pytest.raises(ToolError, match='no actor for this act'):
+            asked()
+        assert asked(actor='subject-desk-two'), name
+    finally:
+        service.BOOK = None
+
+
 def test_the_configuration_is_declared_and_one_dial_is_set(tmp_path):
     """The two configuration tools end to end, through the in-process service: the store read as
     the declarations with the menu it NAMES resolved beside it, one dial set on the live book, and
@@ -1129,7 +1183,7 @@ def test_a_market_is_set_up_from_what_a_trade_needs(book, tmp_path, monkeypatch)
     assert set(tools['book_dependencies'].input_schema['properties']) == {
         'deal_path', 'deal', 'parent_reference'}
     assert set(tools['setup_market'].input_schema['properties']) == {
-        'pair', 'deal', 'parent_reference', 'deal_path', 'wait_seconds'}
+        'pair', 'deal', 'parent_reference', 'deal_path', 'actor', 'wait_seconds'}
     assert rows['InterestRate.EUR']['supply']['key'] == 'EUR'
     assert rows['FxRate.JPY']['supply'] == {'block': 'fx_spot', 'key': 'USDJPY',
                                             'securities': 1, 'verified': 0}
