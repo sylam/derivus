@@ -222,7 +222,7 @@ class DealStructure(object):
                     continue
                 if structure.obj.Instrument.accum_dependencies and hasattr(shared, 'save_cashflows'):
                     shared.save_cashflows(structure.obj.Calc_res, time_grid)
-                if structure.obj.Instrument.field.get('Reference', 'root').startswith('FLIP'):
+                if (structure.obj.Instrument.field.get('Reference') or 'root').startswith('FLIP'):
                     logging.warning('Netting set starts with FLIP - inverting MTM')
                     struct = -struct
                 accum = accum + struct
@@ -2413,7 +2413,7 @@ class BaseValuation(Calculation):
                 data['Deal Currency'] = (deal.Factor_dep or {}).get(
                     'Local_Currency', deal.Instrument.field.get('Currency', self.params['Currency']))
                 try:
-                    data['Ref_MTM'] = float(deal.Instrument.field.get('MtM', 0.0))
+                    data['Ref_MTM'] = float(deal.Instrument.field.get('MtM') or 0.0)
                 except ValueError:
                     data['Ref_MTM'] = 0.0
                 for k, v in val.items():
@@ -2432,7 +2432,7 @@ class BaseValuation(Calculation):
                 format_row(n.obj, dict(parent), n.obj.Calc_res, greeks)
 
             for sub_struct in n.sub_structures:
-                data = dict(parent + [(field, sub_struct.obj.Instrument.field.get(field, 'Root'))
+                data = dict(parent + [(field, sub_struct.obj.Instrument.field.get(field) or 'Root')
                                       for field in ['Reference', 'Object']])
                 format_row(sub_struct.obj, data, sub_struct.obj.Calc_res, greeks)
                 block.append(data)
@@ -2445,7 +2445,7 @@ class BaseValuation(Calculation):
 
             valuations = [deal.Calc_res for deal in n.dependencies]
             for deal, val in zip(n.dependencies, valuations):
-                data = dict(parent + [(field, deal.Instrument.field.get(field, '?'))
+                data = dict(parent + [(field, deal.Instrument.field.get(field) or '?')
                                       for field in ['Reference', 'Object']])
                 format_row(deal, data, val, greeks)
                 block.append(data)

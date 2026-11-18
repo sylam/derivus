@@ -2227,7 +2227,7 @@ def pv_discrete_barrier_option(shared, time_grid, deal_data, spot, b, tau, fx_re
     direction = BARRIER_OUT if 'Out' in deal_data.Instrument.field['Barrier_Type'] else BARRIER_IN
     barrier = deal_data.Instrument.field['Barrier_Price']
     strike = deal_data.Instrument.field['Strike_Price']
-    cash_rebate = deal_data.Instrument.field.get('Cash_Rebate', 0.0)
+    cash_rebate = deal_data.Instrument.field.read('Cash_Rebate', 0.0)
 
     size = deal_data.Instrument.field['Cash_Payoff'] if isdigital else deal_data.Instrument.field['Units']
     nominal = factor_dep['Buy_Sell'] * size
@@ -2730,7 +2730,7 @@ def pv_partial_barrier_option(shared, time_grid, deal_data, nominal, spot, b, ta
     direction = BARRIER_OUT if 'Out' in barrierType else BARRIER_IN
     barrier = deal_data.Instrument.field['Barrier_Price']
     strike = deal_data.Instrument.field['Strike_Price']
-    cash_rebate = deal_data.Instrument.field.get('Cash_Rebate', 0.0)
+    cash_rebate = deal_data.Instrument.field.read('Cash_Rebate', 0.0)
     # get the zero curve
     discounts = utils.calc_time_grid_curve_rate(factor_dep['Discount'], deal_time[:-1], shared)
 
@@ -4324,7 +4324,7 @@ def pv_MC_Tarf(shared, time_grid, deal_data, spot, fx_rep):
     settle_index = settle_idx[fixing_indices]
 
     targetValue = deal_data.Instrument.field['TargetLevel']
-    barrier = deal_data.Instrument.field.get('Barrier', 0.0)
+    barrier = deal_data.Instrument.field.read('Barrier', 0.0)
     notional1 = factor_dep['Notional1'] * shared.one
     notional2 = factor_dep['Notional2'] * shared.one
     strike = factor_dep['Strike_Price']

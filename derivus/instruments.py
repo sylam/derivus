@@ -174,7 +174,7 @@ def resolve_discrete_barrier(deal, base_date, calendars, valuation_options, vani
     architecture. Continuous monitoring (no `Barrier_Dates`) needs a daily bar series to fold
     over, which nothing files yet, so it is returned untouched.
     """
-    rows = deal.field.get('Barrier_Dates', [])
+    rows = deal.field.read('Barrier_Dates', [])
     if not rows:
         return deal
     barrier_type = deal.field['Barrier_Type']
@@ -191,7 +191,7 @@ def resolve_discrete_barrier(deal, base_date, calendars, valuation_options, vani
     return became(deal, 'FixedCashflowDeal', calendars, valuation_options,
                   Currency=deal.payoff_ccy,
                   Amount=(1.0 if deal.field['Buy_Sell'] == 'Buy' else -1.0) *
-                         float(deal.field.get('Cash_Rebate', 0.0)),
+                         float(deal.field.read('Cash_Rebate', 0.0)),
                   Payment_Date=hit_on)
 
 
@@ -810,7 +810,7 @@ class Deal(object):
         stated, else `Barrier_Monitoring_Frequency` (`0M` continuous)."""
         # NOT a monitoring schedule the pricer walks: a touch is monitored CONTINUOUSLY and the
         # dates only estimate the spacing the continuity correction is sized on
-        dates = self.field.get('Barrier_Dates', [])
+        dates = self.field.read('Barrier_Dates', [])
         days = np.mean([x.days for x in np.diff(sorted(set(dates)))]) if dates else (
             base_date + self.field['Barrier_Monitoring_Frequency'] - base_date).days
         return 0.5826 * np.sqrt(days / 365.0)
@@ -1449,7 +1449,7 @@ class NettingCollateralSet(Deal):
         collateralised set's run refuses them (`meaningless`). Reads defensively: validation runs
         BEFORE the contract is known to hold.
         """
-        if self.field.get('Collateralized', 'False') == 'True' \
+        if self.field['Collateralized'] == 'True' \
                 and not self.field.get('Agreement_Currency'):
             yield 'Collateralized is True, so Agreement_Currency is required'
         yield from self.meaningless()
@@ -3947,7 +3947,7 @@ class FXDiscreteExplicitAsianOption(Deal):
         if missing_fixings:
             logging.error('Past fixings not defined - please specify fixings for {}'.format(
                 ', '.join([str(x[0]) for x in missing_fixings])))
-        return {'Digital': self.field.get('Is_Digital', 'No') == 'Yes',
+        return {'Digital': self.field.read('Is_Digital', 'No') == 'Yes',
                 'Samples': utils.TensorResets.from_observations(
                     base_date, time_grid, self.field['Sampling_Data'], weighted=True),
                 'Strike': self.field['Strike_Price']}
@@ -3996,8 +3996,8 @@ class FXDiscreteExplicitDoubleAsianOption(FXDiscreteExplicitAsianOption):
     def samples(self, base_date, time_grid):
         """The two averaged strips, their multipliers and the strike."""
         return {'Alpha_0': self.field['Strike_Multiplier'],
-                'Alpha_1': self.field.get('Sampling_Multiplier_1', 1.0),
-                'Alpha_2': self.field.get('Sampling_Multiplier_2', 1.0),
+                'Alpha_1': self.field['Sampling_Multiplier_1'],
+                'Alpha_2': self.field['Sampling_Multiplier_2'],
                 'Samples_1': utils.TensorResets.from_observations(
                     base_date, time_grid, self.field['Sampling_Data_1'], weighted=True),
                 'Samples_2': utils.TensorResets.from_observations(
@@ -4154,7 +4154,7 @@ class EquityBarrierBinaryOption(Deal):
         field['Dividends'] = self.check_factor_name('Dividends', field['Equity'][:1])
         field['Discount_Rate'] = self.discount_name('Discount_Rate', field['Currency'], all_factors)
 
-        ab = {d for d, _ in barrier_monitoring_rows(self.field.get('Barrier_Dates', []))}
+        ab = {d for d, _ in barrier_monitoring_rows(self.field.read('Barrier_Dates', []))}
         all_dates = sorted(ab.union([self.field['Expiry_Date']]))
 
         field_index = {
@@ -4264,7 +4264,7 @@ class EquityOptionDeal(Deal):
     def __init__(self, params, valuation_options):
         super(EquityOptionDeal, self).__init__(params, valuation_options)
         # the binary subclass declares no Option_Style, so its absence reads European here
-        self.path_dependent = self.field.get('Option_Style', 'European') == 'American'
+        self.path_dependent = self.field.read('Option_Style', 'European') == 'American'
 
     def reset(self, calendars):
         super(EquityOptionDeal, self).reset()
@@ -4308,7 +4308,7 @@ class EquityOptionDeal(Deal):
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field.get('Buy_Sell', 'Buy') == 'Buy' else -1.0,
             'Option_Type': 1.0 if self.field.get('Option_Type', 'Call') == 'Call' else -1.0,
-            'Option_Style': self.field.get('Option_Style', 'European'),
+            'Option_Style': self.field.read('Option_Style', 'European'),
             'Expiry': expiry,
             'Settlement': settlement,
             'Spot_Lag': self.spot_lag('EquityPrice', field['Equity'], all_factors, base_date, calendars),
@@ -4442,7 +4442,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         the first coupon's own observation are its strike observation and no coupon's and are
         dropped. Fixings that do not partition into one non-empty window per coupon are refused.
         """
-        declared = dict(self.field.get('Coupon_Observations', []))
+        declared = dict(self.field.read('Coupon_Observations', []))
         if declared:
             ref = self.field.get('Reference', 'this QEDI_CustomAutoCallSwap')
             authored = {x[0] for x in self.field['Price_Fixing']}
@@ -4546,7 +4546,7 @@ class QEDI_CustomAutoCallSwap(Deal):
         ac = dict(self.field['Autocall_Coupons'])
         at = dict(self.field['Autocall_Thresholds'])
         floats = self.floating_dates()
-        ab = set(self.field.get('Barrier_Dates', []))
+        ab = set(self.field.read('Barrier_Dates', []))
         # a threshold row is the coupon row of its own POSITION whatever date it carries - the
         # book dates them on the observation and the repo on the coupon
         tl = {c: at[t] for c, t in zip(ac, at)}
@@ -4621,7 +4621,7 @@ class QEDI_CustomAutoCallSwap(Deal):
                                          field['Equity_Volatility'], static_offsets, stochastic_offsets, all_tenors),
             'Strike_Price': self.field['Strike_Price'],
             'Buy_Sell': 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0,
-            'Barrier': self.field.get('Barrier', 0.0) * self.field['Strike_Price'],
+            'Barrier': self.field['Barrier'] * self.field['Strike_Price'],
             'Barrier_Observation': self.field['Barrier_Observation'],
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Spot_Lag': self.spot_lag('EquityPrice', field['Equity'], all_factors, base_date, calendars)
@@ -5029,7 +5029,7 @@ class EquityBarrierOption(Deal):
 
     def reset(self, calendars):
         super(EquityBarrierOption, self).reset()
-        if self.field.get('Barrier_Dates', []):
+        if self.field.read('Barrier_Dates'):
             barrierdates = {d for d, _ in barrier_monitoring_rows(self.field['Barrier_Dates'])}
             self.add_reval_dates(barrierdates.union({self.field['Expiry_Date']}), self.payoff_ccy)
         else:
@@ -5084,7 +5084,7 @@ class EquityBarrierOption(Deal):
                        'Spot_Lag': self.spot_lag('EquityPrice', field['Equity'], all_factors, base_date, calendars)
                        }
 
-        if self.field.get('Barrier_Dates', []):
+        if self.field.read('Barrier_Dates'):
             ab = {d for d, _ in barrier_monitoring_rows(self.field['Barrier_Dates'])}
             all_dates = sorted(ab.union([self.field['Expiry_Date']]))
             field_index['Observation_Dates'] = utils.TensorResets.from_observations(
@@ -7037,10 +7037,10 @@ class CreditNthToDefault(Deal):
             'Names': [get_survival_factor(
                 name, static_offsets, stochastic_offsets, all_tenors) for name in field['Names']],
             'Coupon': pay_rate,
-            'Correlation': self.field.get('Correlation', 0.0),
+            'Correlation': self.field['Correlation'],
             'Max_Defaults': self.field['Max_Defaults'],
-            'Defaults_So_Far': self.field.get('Defaults_So_Far', 0),
-            'Quadrature_Points': self.field.get('Quadrature_Points', 81),
+            'Defaults_So_Far': self.field['Defaults_So_Far'],
+            'Quadrature_Points': self.field['Quadrature_Points'],
             # the accrual measure the coupon is quoted against - NOT the discount curve's
             'Accrual_Daycount': partial(utils.DayCount.accrual, base_date, code=accrual_daycount)
         }
@@ -7163,7 +7163,7 @@ class DealDefaultSwap(Deal):
         field_index = {
             'Currency': get_fxrate_factor(field['Currency'], static_offsets, stochastic_offsets),
             'SettleCurrency': self.field['Currency'],
-            'Accrue_Fee': self.field.get('Accrue_Fee', 'No') == 'Yes',
+            'Accrue_Fee': self.field['Accrue_Fee'] == 'Yes',
             'Discount': get_interest_factor(
                 field['Discount_Rate'], static_offsets, stochastic_offsets, all_tenors),
             'Name': get_survival_factor(field['Name'], static_offsets, stochastic_offsets, all_tenors),
@@ -7236,8 +7236,8 @@ class FRADeal(Deal):
 
     def reset(self, calendars):
         super(FRADeal, self).reset()
-        self.pay_date = self.field['Maturity_Date'] if self.field.get(
-            'Payment_Timing', 'End') == 'End' else self.field['Effective_Date']
+        self.pay_date = self.field['Maturity_Date'] if self.field[
+            'Payment_Timing'] == 'End' else self.field['Effective_Date']
         self.add_reval_dates({self.pay_date}, self.field['Currency'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,

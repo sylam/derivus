@@ -205,6 +205,86 @@ def test_half_a_unit_marks_half_and_short_marks_minus_to_the_bit(name):
         assert float.fromhex(short[reference]) == -value, (reference, short[reference], value)
 
 
+def conventions(block):
+    """The conventions the type of the deal `block` declares, its `Reference` aside."""
+    return {key for key, field in schema.declared_fields(
+        getattr(instruments, block['Object'])).items() if field.convention} - {'Reference'}
+
+
+def nulled(node):
+    """`node` with every convention it leaves out stated null, and its children's alike."""
+    block = node['Instrument']['.Deal']
+    return dict(node, Instrument={'.Deal': dict(dict.fromkeys(conventions(block)), **block)}, **(
+        {'Children': [nulled(child) for child in node['Children']]} if node.get('Children') else {}))
+
+
+@pytest.mark.parametrize('name', sorted(FAMILIES))
+def test_a_convention_left_out_and_one_stated_null_mark_alike(name):
+    """A NULL IS A FIELD NOT SET, as a file states what it does not set. Every trial deal of a
+    family with every convention it leaves out stated null marks as it does written, bit for bit.
+
+    Killing mutation: the report reading `MtM` beside a fallback of its own, which fails every
+    family on a null it cannot make a number of.
+    """
+    job = document(FAMILIES[name])
+    stated = copy.deepcopy(job)
+    nodes = stated['Calc']['Deals']['Deals']['Children']
+    nodes[:] = [nulled(node) for node in nodes]
+    assert marks(stated) == marks(job)
+
+
+#: The conventions a trial STATES whose read once took a stated null for a value, by its reference.
+STATED_NULL = [('FRA', 'Payment_Timing'), ('EQO', 'Option_Style'), ('EQKO', 'Cash_Rebate'),
+               ('EQKOBIN', 'Barrier_Dates'), ('FXDASN', 'Sampling_Multiplier_1'),
+               ('FXDASN', 'Sampling_Multiplier_2'), ('NTD', 'Correlation'),
+               ('NTD', 'Defaults_So_Far'), ('NTD', 'Quadrature_Points'), ('ACS', 'Barrier'),
+               ('ACS', 'Barrier_Dates'), ('ACS', 'Coupon_Observations'), ('ACS_V2', 'Barrier'),
+               ('ACS_V2', 'Barrier_Dates'), ('ACS_V2', 'Coupon_Observations')]
+
+
+@pytest.mark.parametrize('reference,key', STATED_NULL, ids=['.'.join(case) for case in STATED_NULL])
+def test_a_stated_convention_made_null_marks_as_the_deal_leaving_it_out(reference, key):
+    """The trial deal alone in its family's world, the convention stated null against the same
+    deal leaving it out: one mark, a number, to the bit.
+
+    Killing mutation: the read taking the null for a value - a FRA's `Payment_Timing` then pays at
+    the period's start, 413.95 for 409.80, and an equity option's `Option_Style` marks 273.05 for
+    263.64.
+    """
+    family, deal = next((family, deal) for family in FAMILIES.values() for deal in family.DEALS
+                        if deal['Reference'] == reference)
+    job = document(family)
+    node = next(node for node in job['Calc']['Deals']['Deals']['Children']
+                if node['Instrument']['.Deal']['Reference'] == reference)
+    read = []
+    for block in ({k: v for k, v in node['Instrument']['.Deal'].items() if k != key},
+                  dict(node['Instrument']['.Deal'], **{key: None})):
+        alone = copy.deepcopy(job)
+        alone['Calc']['Deals']['Deals']['Children'] = [dict(node, Instrument={'.Deal': block})]
+        read.append(marks(alone)[reference])
+    assert read[0] == read[1] and math.isfinite(float.fromhex(read[0])), read
+
+
+@pytest.mark.parametrize('kind', ['FRADeal', 'SwaptionDeal'])
+def test_a_reference_stated_null_is_reported_as_one_left_out(kind):
+    """A deal and a structure stating a null `Reference`, each alone in the core world, are reported
+    row for row as the same one leaving it out.
+
+    Killing mutation: the structure's reference read beside a fallback of its own, which fails the
+    run asking a null what it starts with.
+    """
+    job = document(CORE)
+    node = next(node for node in job['Calc']['Deals']['Deals']['Children']
+                if node['Instrument']['.Deal']['Object'] == kind)
+    read = []
+    for block in ({k: v for k, v in node['Instrument']['.Deal'].items() if k != 'Reference'},
+                  dict(node['Instrument']['.Deal'], Reference=None)):
+        alone = copy.deepcopy(job)
+        alone['Calc']['Deals']['Deals']['Children'] = [dict(node, Instrument={'.Deal': block})]
+        read.append(marks(alone))
+    assert read[0] == read[1] and len(read[0]) > 1, read
+
+
 def test_every_type_a_position_is_held_in_declares_its_sizes_beside_its_trial():
     """THE CENSUS. Every type the store publishes but the netting set either declares its sizes or
     is a container whose legs carry the whole of them, and every one is held in a trial. A size is
