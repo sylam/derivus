@@ -1850,23 +1850,21 @@ def test_a_discount_curve_stated_on_the_entry_re_solves_what_discounts_on_it(des
         whole.current_cfg.params['Price Factors']['InterestRate.ZAR'])), sort_keys=True)
 
 
-#: A `NettingCollateralSet` authored as a DEAL compiles like any other and has no `Deal.generate`,
-#: so `Deal.calculate` logs CRITICAL and marks it at nothing - a real book whose PRICING talks on
-#: the channel `CapturedErrors` listens to.
-SKIPPED_NETTING = 'generate in class NettingCollateralSet not implemented yet'
+#: What a run says of each cash flow it cannot read (`UNREAD`), on the channel `CapturedErrors`
+#: listens to.
+SKIPPED_CASHFLOW = ' - Skipped'
 
-#: The density knob: one CRITICAL per deal per priced run, so 40 gives ~4,000 lines across the tick
-#: loop below - which is what makes the overlap the gate depends on a fact rather than a hope.
+#: The density knob: one ERROR per unread deal per priced run.
 NOISY_DEALS = 40
 
 
-def skipped_netting_deal(reference):
+def bare_netting_set(reference):
     return {'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
             'Collateralized': 'False', 'Settlement_Currency': ''}
 
 
 class Chatter(logging.Handler):
-    """Counts the PRICED run's CRITICAL lines by message, not by thread - `TestClient` runs a sync
+    """Counts the PRICED run's ERROR lines by message, not by thread - `TestClient` runs a sync
     endpoint on an anyio worker thread this gate never sees. Read as a delta across each POST, so
     each tick answers for its own window.
     """
@@ -1876,29 +1874,29 @@ class Chatter(logging.Handler):
         self.count = 0
 
     def emit(self, record):
-        if SKIPPED_NETTING in record.getMessage():
+        if SKIPPED_CASHFLOW in record.getMessage():
             self.count += 1
 
 
 def test_a_concurrent_runs_critical_does_not_refuse_an_innocent_tick(tmp_path):
     """`market_edit` captures the root logger around `context.bootstrap()`, and the root logger is
-    every thread's - so a queued `/book/price` logging a CRITICAL inside that window turned a good
+    every thread's - so a queued `/book/price` logging an ERROR inside that window turned a good
     tick into `written: False` with a FOREIGN run's message as the reason. `record.thread` against
     the constructing thread's ident is the fix, and it is a comparison rather than a timing window.
 
-    The recipe: a real book (one cashflow, the FX vol bootstrapper, a real USDZAR block, 40
-    `NettingCollateralSet` deals the pricer skips), a background thread keeping `/book/price`
-    queued, 25 ticks each moving the ATM.
+    The recipe: a real book (one cashflow, the FX vol bootstrapper, a real USDZAR block, 40 cash
+    flows the run cannot read), a background thread keeping `/book/price` queued, 25 ticks each
+    moving the ATM.
 
     The OVERLAP is asserted per POST, so a quiet worker fails the gate rather than passing it
-    vacuously: measured 22-24 of 25 ticks carry a foreign CRITICAL in their own window, over ~4,100
-    records in ~0.5 s. MUTANT (thread test removed): 9, 7 and 8 of 25 ticks written across three
-    runs; with it in place, 25 of 25 five times over.
+    vacuously: measured 25 of 25 ticks carry a foreign ERROR in their own window, over ~15,000
+    records. MUTANT (thread test removed): 8 and 10 of 25 ticks written across two runs; with it
+    in place, 25 of 25 three times over.
 
     The negative arm is `test_a_bootstrap_that_complains_writes_nothing`: an error on the tick's OWN
     thread still refuses the whole write.
     """
-    deals = [CASHFLOW] + [skipped_netting_deal('NCS{}'.format(i)) for i in range(NOISY_DEALS)]
+    deals = [CASHFLOW] + [dict(UNREAD, Reference='GAP{}'.format(i)) for i in range(NOISY_DEALS)]
     path = tmp_path / 'book.json'
     path.write_text(json.dumps(json.loads(dump(job(deals=deals, sections={
         'Bootstrapper Configuration': {'FXVol': {}}}))), indent=2), newline='\n')
@@ -1926,7 +1924,8 @@ def test_a_concurrent_runs_critical_does_not_refuse_an_innocent_tick(tmp_path):
         logging.getLogger().addHandler(chatter)
         pricer.start()
         # let the worker get into the book first, so the loop opens against a busy queue
-        while chatter.count == 0 and not stop.is_set():
+        waited = time.monotonic() + 30
+        while chatter.count == 0 and time.monotonic() < waited:
             time.sleep(0.005)
 
         ticks = []
@@ -3195,7 +3194,7 @@ def test_a_subtree_is_a_portfolio(tmp_path, vocabulary):
     """
     document = json.loads(dump(job(deals=())))
     document['Calc']['Deals']['Deals']['Children'] = [
-        {'Instrument': {'.Deal': skipped_netting_deal(reference)},
+        {'Instrument': {'.Deal': bare_netting_set(reference)},
          'Children': [{'Instrument': {'.Deal': json.loads(dump(deal))}}]}
         for reference, deal in (('CP1', CASHFLOW),
                                 ('CP2', dict(CASHFLOW, Reference='CF2', Currency='USD',
