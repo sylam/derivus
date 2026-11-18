@@ -708,8 +708,8 @@ def tenor_dates(base_date, expiry, convention):
     A month or year tenor delivers on the base date's spot date plus the tenor, modified following
     on the pair's joint calendar - from a spot date on its month's last business day, on the
     target month's last - and expires on the day whose spot date that is, counted back. A day or
-    week tenor expires on the base date plus its days rolled onto a weekday, and an ISO date is a
-    broken expiry as stated; each delivers on its spot date.
+    week tenor expires on the base date plus its days rolled onto a weekday other than 1 January,
+    and an ISO date is a broken expiry as stated; each delivers on its spot date.
 
     A tenor is read through `utils.parse_period`, the grammar a job's date grid is read with.
     Anything else refuses by name - an unparsed tenor landing on the base date is a zero-day
@@ -743,7 +743,9 @@ def tenor_dates(base_date, expiry, convention):
             raise ValueError('{!r} is not a tenor (3M, 1Y) or a date'.format(expiry))
         delivers = spot(expires)
     elif set(offset.kwds) <= {'days', 'weeks'}:
-        expires = rolled(base + offset, 0, 'forward', np.busdaycalendar())
+        landed = base + offset
+        expires = rolled(landed, 0, 'forward', np.busdaycalendar(holidays=[
+            '{}-01-01'.format(year) for year in (landed.year, landed.year + 1)]))
         delivers = spot(expires)
     else:
         start = spot(base)

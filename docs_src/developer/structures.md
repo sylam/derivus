@@ -123,8 +123,8 @@ calendar file, as the pricer reads it — Monday to Friday where no calendar is 
 the file does not hold refuses as it does in the pricer). A month or year tenor delivers on the
 base date's spot date plus the tenor, modified following on the pair's joint calendar, end of month
 to end of month, and expires on the day whose spot date that delivery is, counted back. A day or
-week tenor expires on the base date plus its days rolled onto a weekday, and an ISO date is a broken
-expiry; each delivers on its spot date. Every leg carries `Trade_Date`, the base date; a leg with
+week tenor expires on the base date plus its days rolled onto a weekday other than 1 January, and an
+ISO date is a broken expiry; each delivers on its spot date. Every leg carries `Trade_Date`, the base date; a leg with
 one expiry (`FXOptionDeal`, `FXBarrierOption`) also carries `Delivery_Date`, the day its type
 declares it settles on. **Held by** `test_a_quote_expires_and_delivers_on_the_dates_the_market_deals`,
 `test_a_straddle_is_exactly_its_two_legs`, `test_the_diary_of_a_booked_quote_pays_on_the_delivery_dates`.
@@ -168,8 +168,9 @@ A leg whose type observes a fixing table (`accrues`, off `schema.OBSERVES`) is a
   of the vanilla `n × fixing_frequency` long and settles on that vanilla's delivery
   ([dates](#dates)), so the last fixing is the structure's own expiry and none is a step off the
   previous date (31 Jan + 1M + 1M is 28 Mar). A day two tenors land on — a daily strip's weekend,
-  rolled onto its Monday — is one row, so a strip fixes once a day; a day tenor rolls onto a weekday,
-  so a daily strip still fixes on a weekday holiday. A tenor holding no fixing refuses, and so does
+  rolled onto its Monday — is one row, so a strip fixes once a day; a day tenor rolls onto a weekday
+  other than 1 January, so a daily strip fixes on a weekday holiday of either currency, as a vanilla
+  may expire on one. A tenor holding no fixing refuses, and so does
   one the frequency does not divide, which would end the strip short of the tenor the ticket says.
   **Held by** `test_a_strip_ends_on_its_own_expiry_or_refuses`,
   `test_a_quote_expires_and_delivers_on_the_dates_the_market_deals`,

@@ -1846,6 +1846,17 @@ def test_a_daily_strip_fixes_once_on_each_weekday():
     assert abs(strip['net']) <= SOLVE_TOLERANCE, strip['net']
 
 
+def test_no_expiry_and_no_fixing_falls_on_new_years_day():
+    """A 1W tenor dealt Thursday 25 December 2025 expires Friday 2 January, and a 1W daily strip
+    dealt Monday 29 December fixes on the 30th, the 31st, the 2nd and the 5th.
+
+    Killing mutation: a day tenor rolled onto a weekday alone - each holds Thursday 1 January.
+    """
+    assert structures.tenor_dates('2025-12-25', '1W', None)[0] == {'.Timestamp': '2026-01-02'}
+    assert [fixing['.Timestamp'][5:] for fixing, *_ in structures.fixing_grid(
+        '2025-12-29', '1W', '1D', None)] == ['12-30', '12-31', '01-02', '01-05']
+
+
 @pytest.mark.parametrize('currency', ['ZAR', 'USD'])
 def test_a_book_without_a_rate_of_the_pair_refuses_it_by_name(currency):
     """A book quoting the pair's surface and carrying no `FxRate` for one of its currencies refuses
