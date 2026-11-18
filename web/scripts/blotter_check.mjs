@@ -123,14 +123,15 @@ check('a payout is of the payoff currency the deal states, and of its own Curren
       [['Buy', 'USD', 1e6], ['Buy', 'ZAR', 1e6]]);
 
 check('a forward\'s direction is a word: a buy amount buys, and a negative one sells',
-      'the side left to the sign, which shows a GBP sale as `-5 000 000` and nothing else; or the '
-      + 'word read off the field name alone, which calls a negative buy amount a Buy',
+      'the side left to the sign, which shows a GBP sale as `-5 000 000` and nothing else; the '
+      + 'word read off the field name alone, which calls a negative buy amount a Buy; or the sign '
+      + 'kept beside the word, which reads as the sale of a negative',
       [read('FXNonDeliverableForward', { Buy_Currency: 'GBP', Buy_Amount: -5e6,
                                          Sell_Currency: 'ZAR', Sell_Amount: -1.138e8,
                                          Settlement_Currency: 'ZAR' }),
        read('FXForwardDeal', { Buy_Currency: 'ZAR', Buy_Amount: 20091300, Sell_Currency: 'EUR',
                                Sell_Amount: 1e6 })],
-      [['Sell', 'GBP', -5e6], ['Buy', 'ZAR', 20091300]]);
+      [['Sell', 'GBP', 5e6], ['Buy', 'ZAR', 20091300]]);
 
 check('a count of shares is of no currency, and says it counts units',
       'the unit test dropped, which prints 25 000 shares as ZAR 25 000',
@@ -139,10 +140,11 @@ check('a count of shares is of no currency, and says it counts units',
 
 check('a netting set\'s balance is no trade size, nor a key a declared type does not declare',
       'the candidates read without the `sized` declaration, which shows a collateral balance of '
-      + '2 500 000 as the size of the set, and a stray Underlying_Amount on a structure as its own',
+      + '2 500 000 as the size of the set, and a stray Underlying_Amount on a structure as its own; '
+      + 'or the currency dropped with the amount, which blanks the Ccy of every list and structure',
       [read('NettingCollateralSet', { Opening_Balance: 2.5e6, Balance_Currency: 'EUR' }),
        read('StructuredDeal', { Currency: 'ZAR', Underlying_Amount: 4e6 })],
-      [[null, null, null], [null, null, null]]);
+      [[null, null, null], [null, 'ZAR', null]]);
 
 check('a type the schema does not declare still shows the amount it carries',
       'the `sized` test asked of a type nobody declared, which blanks the size of every type the '

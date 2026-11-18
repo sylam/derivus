@@ -127,7 +127,7 @@ export function PortfolioView() {
 
 /** What filing an edit does under a record, where an amendment of a booked trade is a restrike. */
 const RESTRIKE = 'Filing this restrikes the trade: its new terms are filed under a new instrument '
-  + 'and the trade waits for approval again.';
+  + 'and go through approval again.';
 
 const said = (widget: string, description: string): Descriptor =>
   ({ widget, description, value: null });

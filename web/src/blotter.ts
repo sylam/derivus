@@ -132,15 +132,20 @@ export type Size = { side?: Picked; amount?: Picked; of?: Picked };
  * type is undeclared - so a netting set's balance is no trade size. It is OF the first currency
  * the deal states among: the one a `settles` declaration pays that amount in, `<Word>_Currency`
  * for a word of its name, the deal's own `Currency`; `Units` and `Volume` are of none. A type
- * marking no side holds it in its sizes: a `Buy_` or `Sell_` amount, the other way if negative. */
+ * marking no side holds it in its sizes: a `Buy_` or `Sell_` amount, the other way if negative,
+ * the amount beside that word then its size, unsigned. */
 export function sizeOf(deal: Record<string, unknown>, object: string, schema: Schema | null): Size {
   const fields = fieldsOf(schema, object);
-  const amount = pick(deal, AMOUNT_FIELDS.filter((key) => !fields || fields[key]?.sized));
+  const stated = pick(deal, SIDE_FIELDS);
+  let amount = pick(deal, AMOUNT_FIELDS.filter((key) => !fields || fields[key]?.sized));
   const word = amount && /(Buy|Sell)_Amount$/.exec(amount.key)?.[1];
-  const side = pick(deal, SIDE_FIELDS) ?? (amount && word
+  const side = stated ?? (amount && word
     ? { key: amount.key, value: Number(amount.value) < 0 ? OTHER[word] : word } : undefined);
-  if (!amount || UNIT_FIELDS.includes(amount.key)) {
-    return { side, amount, of: amount && { key: amount.key, value: amount.key.toLowerCase() } };
+  if (!stated && amount && word) amount = { ...amount, value: Math.abs(Number(amount.value)) };
+  // a row stating no amount still says the currency the deal is in
+  if (!amount) return { side, of: deal.Currency ? { key: 'Currency', value: deal.Currency } : undefined };
+  if (UNIT_FIELDS.includes(amount.key)) {
+    return { side, amount, of: { key: amount.key, value: amount.key.toLowerCase() } };
   }
   const paid = Object.values(fields ?? {}).flatMap((field) => (
     Array.isArray(field.settles) ? field.settles : [])).find((cash) => cash.amount === amount.key);
