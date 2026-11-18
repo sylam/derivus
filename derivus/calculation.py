@@ -5378,7 +5378,8 @@ class SACCR(NettingSetCalculation):
 
     A trade's dates count in years of 30/360 from the base date, a whole number of months exact as
     the methodology's examples count a tenor: S its declared start, zero once started, E and M the
-    last day its type's tenor fields name (`schema.tenor_fields`), T its declared expiry (52.31).
+    last day its type's tenor fields name (`schema.tenor_fields`), T its declared expiry, nothing
+    once reached (52.31).
     Its d is an IR or credit notional crossed times SD, averaged over its life where it amortises,
     an FX trade's foreign leg, the larger where both are, a forward's legs its two amounts and an
     option's its amount and that at its strike, or an equity or commodity trade's units at a unit's
@@ -5386,7 +5387,8 @@ class SACCR(NettingSetCalculation):
     currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
     sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
     compiled factors, a rate option's P and K shifted by its currency's `option_shift`
-    (52.38-52.40); its MF sqrt(min(M, 1)), M floored at ten business days, or under a margined set
+    (52.38-52.40), at T nothing the formula's limit, one in the money and none out, an FX option
+    past its expiry on the print it fixed; its MF sqrt(min(M, 1)), M floored at ten business days, or under a margined set
     1.5 sqrt(MPOR / 250) (52.48, 52.52).
 
     Not built: CDO tranches (52.41); basis and volatility hedging sets (52.46-52.47), every trade
@@ -5417,7 +5419,9 @@ class SACCR(NettingSetCalculation):
         'currency outside it - and an equity or commodity trade\'s units at a unit\'s price; the',
         'supervisory delta $\\delta$',
         '(CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black delta on Table 2\'s vol at its',
-        'underlying\'s forward $P$; the maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$',
+        'underlying\'s forward $P$, and at or past its exercise date, $T$ nothing, the formula\'s limit,',
+        '$\\pm1$ in the money and nothing out of it, an FX option past its expiry on the print it fixed',
+        'at (CRE52 states no $T$ for an option it has reached: a convention); the maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$',
         'floored at ten business days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a margined set; and',
         '$D=d\\,\\delta\\,\\mathrm{MF}$. The add-ons (CRE52.55-52.70): IR by currency over three maturity',
         'buckets, $\\mathrm{EN}=(D_1^2+D_2^2+D_3^2+1.4D_1D_2+1.4D_2D_3+0.6D_1D_3)^{1/2}$; FX by pair,',
@@ -5569,13 +5573,16 @@ class SACCR(NettingSetCalculation):
 
     def fx_forward(self, deal, terms):
         """An FX option's outright to its expiry, a unit of its amount's currency in the other one,
-        as the engine carries a pair (`utils.calc_fx_forward`)."""
-        calc = self.compiled
+        as the engine carries a pair (`utils.calc_fx_forward`), or the print an expiry behind the
+        base date fixed at, which its pricer holds it at (`instruments.expiry_fixing`)."""
+        calc, expiry = self.compiled, deal.field[terms.expiry]
+        if expiry < self.valuation['Base_Date']:
+            return dict(deal.field['Price_Fixing'])[expiry]
         pair = [utils.check_rate_name(deal.field[key]) for key in (terms.currency, terms.underlying)]
         codes = [instruments.get_fx_and_zero_rate_factor(
             name, calc.static_factors, calc.stoch_factors, calc.all_tenors, calc.all_factors) for name in pair]
         return utils.calc_fx_forward(
-            *codes, (deal.field[terms.expiry] - self.valuation['Base_Date']).days,
+            *codes, (expiry - self.valuation['Base_Date']).days,
             calc.time_grid.time_grid[:1], self.shared, lag=deal.spot_lag(
                 'FxRate', pair[0], calc.all_factors, self.valuation['Base_Date'], calc.config.holidays, pair[1])).item()
 
@@ -5637,10 +5644,13 @@ class SACCR(NettingSetCalculation):
 
         delta = side
         if terms.strike:
-            expiry, vol = self.years(fields[terms.expiry]), supervisory['option_volatility']
+            spread = supervisory['option_volatility'] * math.sqrt(self.years(fields[terms.expiry]))
             shift = self.shifts.get(hedging, 0.0) if asset == 'IR' else 0.0
-            d1 = (math.log((self.FORWARDS[asset](self, deal, terms) + shift) / (
-                fields[terms.strike] + shift)) + 0.5 * vol * vol * expiry) / (vol * math.sqrt(expiry))
+            moneyness = math.log((self.FORWARDS[asset](self, deal, terms) + shift) / (
+                fields[terms.strike] + shift))
+            # T nothing at or past the exercise date: the formula's limit, one in the money, none out
+            d1 = (moneyness + 0.5 * spread * spread) / spread if spread else math.copysign(
+                math.inf, moneyness) if moneyness else 0.0
             delta = side * (scipy.stats.norm.cdf(d1) if fields[terms.call[0]] == terms.call[1]
                             else -scipy.stats.norm.cdf(-d1))
         unmargined = math.sqrt(min(max(end, self.horizon), 1.0))

@@ -266,6 +266,15 @@ FX_LINEAR = [
      'Sell_Amount': 0.9e6, 'Sell_Currency': 'GBP', 'Settlement_Currency': 'USD',
      'Settlement_Date': years(1)}]
 
+#: A call and a put on the euro on their expiry day, delivering two business days on, and a call on
+#: two million euros that expired the business day before at a print of 1.31, delivering the next.
+EXPIRED = [
+    dict(MIXED[0], Reference='EXPIRY_CALL', Expiry_Date=BASE, Delivery_Date=BASE + pd.offsets.BDay(2)),
+    dict(MIXED[0], Reference='EXPIRY_PUT', Option_Type='Put', Expiry_Date=BASE,
+         Delivery_Date=BASE + pd.offsets.BDay(2)),
+    dict(MIXED[0], Reference='EXERCISED', Underlying_Amount=2e6, Expiry_Date=BASE - pd.offsets.BDay(1),
+         Delivery_Date=BASE + pd.offsets.BDay(1), Price_Fixing=[[BASE - pd.offsets.BDay(1), 1.31]])]
+
 
 def node(deal):
     return {'Instrument': {'.Deal': deal}}
@@ -368,6 +377,7 @@ def world(tmp_path_factory):
             'THRESHOLD': (THRESHOLD, five), 'OVER': (OVER, five), 'POSTED': (POSTED, five),
             'MIXED': ({}, [node(deal) for deal in MIXED]),
             'FX_LINEAR': ({}, [node(deal) for deal in FX_LINEAR]),
+            'EXPIRED': ({}, [node(deal) for deal in EXPIRED]),
             'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
@@ -721,6 +731,27 @@ def test_an_fx_forward_reads_its_foreign_leg_the_larger_where_both_are(world):
     assert found['AddOn_FX'] == pytest.approx(fx, rel=1e-14), found
     assert found['EAD'] == pytest.approx(1.4 * (max(found['V'], 0.0) + multiplier(
         found['V'], 0.0, fx) * fx), rel=1e-14), found
+
+
+def test_an_fx_option_at_or_past_its_expiry_is_its_deltas_limit(world):
+    """CRE52.31, CRE52.40 AND CRE52.48. T runs to the latest exercise date, nothing once that is
+    reached, and there 52.40's delta is its limit, one in the money and nothing out of it. On their
+    expiry day a call and a put struck at 1.3 on a million euros, P the spot of 1.25: the call out
+    of the money, its delta nothing, the put in, -1; a call on two million expired the business day
+    before at a print of 1.31, P the print its pricer holds it at, +1. Each delivers inside ten
+    business days, its maturity factor (10/250)^0.5 = 0.2; the adjusted notionals 1,250,000 and
+    2,500,000, and the add-on 4% of |-1,250,000 x 0.2 + 2,500,000 x 0.2|, 10,000.
+
+    Killing mutations: d1 as printed at T nothing - the run refused, a division by zero; P the
+    forward for an expiry behind the base date - the exercised call out of the money at 1.25, its
+    delta nothing.
+    """
+    _, output = world
+    found, rows = netting_sets(output).loc['EXPIRED'], trades(output, 'EXPIRED')
+    assert list(rows['Delta']) == [0.0, -1.0, 1.0], rows['Delta']
+    assert list(rows['AdjustedNotional']) == [1e6 * EURO, 1e6 * EURO, 2e6 * EURO], rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx([math.sqrt(10 / 250)] * 3, rel=1e-15)
+    assert found['AddOn_FX'] == pytest.approx(0.04 * abs(-1.25e6 * 0.2 + 2.5e6 * 0.2), rel=1e-14)
 
 
 def test_an_fx_european_option_reads_as_the_fx_option_it_is(world):

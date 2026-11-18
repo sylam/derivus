@@ -213,6 +213,13 @@ Grouped by where a validator meets them.
   UNMEASURED: a basis swap and a variance swap booked beside outright trades of their classes, and
   the add-ons read with each in its own set at its own factor against the ordinary one, would
   measure it; no type declaring an exposure is a basis swap, and the engine has no variance swap.
+- **SA-CCR reads a cash-settled FX option past its expiry as the forward it would deliver**
+  (2026-11-18). From its exercise date an option's delta is the limit of CRE52.40's, plus or minus
+  one in the money and nothing out of it, which is the forward a physically settled option leaves
+  until it delivers; CRE52 states no T for an option it has reached. A cash-settled option's payoff
+  is fixed by then and owes nothing on the pair, yet until it pays its pair's effective notional
+  counts it in the money at its whole notional. `SACCR` reads no `Settlement_Style`, as the
+  option's price reads none.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
   `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only
