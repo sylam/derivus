@@ -10,11 +10,11 @@ pip install derivus
 
 The core dependencies, and what each is for:
 
-- [PyTorch](https://pytorch.org/) >= 2.0 - the computational library that evaluates tensors on
+- [PyTorch](https://pytorch.org/) >= 2.6 - the computational library that evaluates tensors on
   CPU or GPU, and the automatic-differentiation engine every sensitivity comes from.
 - [NumPy](https://numpy.org/) >= 1.23.5 and [SciPy](https://scipy.org/) >= 1.15 - array plumbing,
   interpolation, root finding and optimisation.
-- [Pandas](https://pandas.pydata.org/) >= 1.0 - every tabular input and result.
+- [Pandas](https://pandas.pydata.org/) >= 2.2 - every tabular input and result.
 - [pyparsing](https://github.com/pyparsing/pyparsing) >= 2.4.7 - the time-grid grammar.
 
 ## Python and SciPy versions
@@ -22,9 +22,10 @@ The core dependencies, and what each is for:
 The package requires **Python >= 3.10**: the MCP binding's `mcp` needs it, and so does SciPy 1.15,
 the first SciPy whose `scipy.optimize.basinhopping` takes the `rng` keyword the two-factor
 Hull-White bootstrapper (`HullWhite2FactorModelParameters`) passes - hence **SciPy >= 1.15**, and
-NumPy >= 1.23.5, that SciPy's own floor. The test suite runs on Python 3.13 (NumPy 2.5, SciPy 1.18,
-pandas 3.0, PyTorch 2.13); the pandas and PyTorch floors are the declared ones and are not tested
-below those versions.
+NumPy >= 1.23.5, that SciPy's own floor. **PyTorch >= 2.6** is the first with
+`torch.cuda.get_per_process_memory_fraction`, which the GPU memory budget reads. **Pandas >= 2.2**
+is the oldest line that installs beside NumPy 2. The test suite runs on Python 3.13 (NumPy 2.5,
+SciPy 1.18, pandas 3.0, PyTorch 2.13) and on nothing older.
 
 ## Extras
 

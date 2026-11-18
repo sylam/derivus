@@ -54,10 +54,11 @@ setup(
     # exactly what the package imports — pyparsing was previously only reaching us by accident,
     # as a transitive dependency of matplotlib, and sortedcontainers was declared and read by
     # nothing at all
-    # scipy 1.15 is the first to take basinhopping's `rng` (the HW2F bootstrap), and numpy
-    # 1.23.5 is that scipy's own floor
-    install_requires=['numpy>=1.23.5', 'scipy>=1.15', 'pandas>=1.0', 'pyparsing>=2.4.7',
-                      'torch>=2.0'],
+    # scipy 1.15 is the first to take basinhopping's `rng` (the HW2F bootstrap) and numpy 1.23.5
+    # its own floor; torch 2.6 the first with `torch.cuda.get_per_process_memory_fraction`; pandas
+    # 2.2 the oldest line that installs beside numpy 2
+    install_requires=['numpy>=1.23.5', 'scipy>=1.15', 'pandas>=2.2', 'pyparsing>=2.4.7',
+                      'torch>=2.6'],
     extras_require={
         'interactive': ['jupyter', 'matplotlib>=3.0'],
         # GARCHSpotModel's calibration only; the import is lazy, so the rest of the library
