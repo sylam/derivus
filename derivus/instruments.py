@@ -5256,26 +5256,10 @@ class CommodityDigitalOption(Deal):
             digital_spread=spread, payoff_style=self.field['Payoff_Style'].lower()) * fx_rep
 
 
-class CommodityOneTouchOption(TouchLifecycle, Deal):
-    vernacular = 'commodity one-touch, energy one-touch, one touch on a reference price'
-    fields = [ADMIN, PRICING, COMMODITY_TOUCH, TOUCH, own('CommodityOneTouchOption', [
-        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
-    ], role='Timing', title='Payment timing')]
-
-    documentation = ('Energy', [
-        'A one-touch on a commodity reference price, priced by the closed form and bridge described',
-        '[here](./fx_and_equity.md#one-touch-and-no-touch-binary-options-and-rebates) for equity and FX.',
-        "The monitored price on each date is the reference's fixing there, the forward curve read at",
-        'the delivery its `Fixing_Curve` maps that date to, and its carry to the expiry is',
-        "$b = \\ln\\big(F(t,D(T))/F(t,D(t))\\big)/(T-t)$, so the closed form's forward is the forward of",
-        "the expiry's delivery. That holds while the delivery stays put (one contract) or moves with the",
-        'date (a spot-like reference); a reference that rolls from one contract to another before the',
-        'expiry jumps at the roll, which the closed form cannot price, and is refused by name. The',
-        'bridge observes endpoints: the forward-price process publishes no bridge variance.',
-        '',
-        'Paid in another currency than the forward curve\'s, a `Quanto` or `Compo` **Payoff_Type** reads',
-        '`Correlation.FxRate.<forward>.<payoff>/ReferencePrice.<reference>.<forward>`, stated local to',
-        'payoff and read as stated - the opposite sign to the equity touch\'s sorted-pair spelling.'])
+class CommodityFixingWatch:
+    """What a closed form on a commodity reference price's fixing compiles and reads, a touch's or a
+    barrier's: the fixing each date watches, its carry into the expiry's forward, and the payoff's
+    currency and settlement."""
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -5307,7 +5291,8 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
             'Expiry': expiry - base,
             # the delivery each row's fixing reads, off the days since the base date
             'Fixing_Curve': (curve[:, 0] - base, curve[:, 1]),
-            'Delivery': float(reference_factor.get_fixings(expiry))}
+            'Delivery': float(reference_factor.get_fixings(expiry)),
+            'Settlement': declared_settlement(self, base_date)}
         field_index['ForwardPrice'], _, _ = get_forwardprice_factor(
             field['Payoff_Currency'], static_offsets, stochastic_offsets, all_tenors,
             all_factors, reference_factor, forward_factor)
@@ -5316,7 +5301,9 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
 
         return field_index
 
-    def generate(self, shared, time_grid, deal_data):
+    def watched(self, shared, time_grid, deal_data):
+        """`(spot, b, tau, fx_rep)` on the deal's grid: the fixing each row watches, its carry into the
+        expiry's forward, the days to the expiry and the payoff currency's price in the report's."""
         factor_dep = deal_data.Factor_dep
         deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
         fx_rep = utils.calc_fx_cross(factor_dep['Payoff_Currency'], shared.Report_Currency, deal_time, shared)
@@ -5333,7 +5320,32 @@ class CommodityOneTouchOption(TouchLifecycle, Deal):
         # the carry growing the watched fixing into the expiry's forward; on the expiry row the two
         # are one read, so its log is 0 over a year fraction held off 0
         b = torch.log(forward / spot) / torch.where(years > 0.0, years, 1.0)
+        return spot, b, tau, fx_rep
 
+
+class CommodityOneTouchOption(TouchLifecycle, CommodityFixingWatch, Deal):
+    vernacular = 'commodity one-touch, energy one-touch, one touch on a reference price'
+    fields = [ADMIN, PRICING, COMMODITY_TOUCH, TOUCH, own('CommodityOneTouchOption', [
+        F('Payment_Timing', 'Text', default='Expiry', convention=True, values=['Touch', 'Expiry'])
+    ], role='Timing', title='Payment timing')]
+
+    documentation = ('Energy', [
+        'A one-touch on a commodity reference price, priced by the closed form and bridge described',
+        '[here](./fx_and_equity.md#one-touch-and-no-touch-binary-options-and-rebates) for equity and FX.',
+        "The monitored price on each date is the reference's fixing there, the forward curve read at",
+        'the delivery its `Fixing_Curve` maps that date to, and its carry to the expiry is',
+        "$b = \\ln\\big(F(t,D(T))/F(t,D(t))\\big)/(T-t)$, so the closed form's forward is the forward of",
+        "the expiry's delivery. That holds while the delivery stays put (one contract) or moves with the",
+        'date (a spot-like reference); a reference that rolls from one contract to another before the',
+        'expiry jumps at the roll, which the closed form cannot price, and is refused by name. The',
+        'bridge observes endpoints: the forward-price process publishes no bridge variance.',
+        '',
+        'Paid in another currency than the forward curve\'s, a `Quanto` or `Compo` **Payoff_Type** reads',
+        '`Correlation.FxRate.<forward>.<payoff>/ReferencePrice.<reference>.<forward>`, stated local to',
+        'payoff and read as stated - the opposite sign to the equity touch\'s sorted-pair spelling.'])
+
+    def generate(self, shared, time_grid, deal_data):
+        spot, b, tau, fx_rep = self.watched(shared, time_grid, deal_data)
         return pricing.pv_one_touch_option(
             shared, time_grid, deal_data, self.field['Cash_Payoff'], spot, b, tau, self.payoff_ccy) * fx_rep
 
@@ -5350,6 +5362,54 @@ class CommodityNoTouchOption(CommodityOneTouchOption):
         'A no-touch on a commodity reference price, the one-touch above paying **Cash_Payoff** at expiry',
         'where the barrier was never touched - the one-touch paid at expiry on the same terms is its',
         'complement, the two together the discounted payout.'])
+
+
+class CommodityBarrierOption(CommodityFixingWatch, Deal):
+    vernacular = 'commodity barrier option, energy barrier option, commodity knock-in, commodity knock-out'
+    fields = [ADMIN, PRICING, COMMODITY_TOUCH, own('CommodityBarrierOption', [
+        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+        F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
+        F('Strike_Price', 'Float', default=0.0),
+        F('Units', 'Float', default=0.0, sized=True),
+        F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True),
+        F('Barrier_Type', 'Text', default='Down_And_In',
+          values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
+        F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
+        F('Settlement_Date', 'Date', default='', convention=True,
+          settles=Cash('Currency', otherwise='Expiry_Date'))
+    ])]
+
+    documentation = ('Energy', [
+        'A barrier option on **Units** of a commodity reference price, priced by the closed form of',
+        '[Single Barrier Options](./fx_and_equity.md#single-barrier-options) on every scenario date off',
+        'the fixing, carry and bridge the one-touch above reads, a reference rolling from one contract',
+        'to another before the expiry refused by name as it is there. **Strike_Price** and',
+        '**Barrier_Price** are levels of that fixing, its vol the **Reference_Volatility** surface at',
+        "the forward's moneyness over the expiry and **Barrier_Monitoring_Frequency** the",
+        'Broadie-Glasserman-Kou shift. **Cash_Rebate** is an absolute amount, a knock-out\'s paid at the',
+        "touch; the payoff and a knock-in's rebate are paid on **Settlement_Date**, the expiry where",
+        "blank. A `Quanto` or `Compo` **Payoff_Type** reads the one-touch's correlation.",
+        '',
+        "The barrier is continuous, a stated **Barrier_Dates** sizing the shift as a touch's does: the",
+        "equity barrier's observed closes and One-Step Survival arm are not built, and a **SpotModel**",
+        'other than `None` is refused by name. No structure recipe or market quote is built on it.'])
+
+    def __init__(self, params, valuation_options):
+        super(CommodityBarrierOption, self).__init__(params, valuation_options)
+        self.path_dependent = True
+
+    def reset(self, calendars):
+        super(CommodityBarrierOption, self).reset()
+        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
+
+    def pays_on_grid(self):
+        # a cash rebate is paid on touch if the option knocks out
+        return bool(self.field['Cash_Rebate'])
+
+    def generate(self, shared, time_grid, deal_data):
+        spot, b, tau, fx_rep = self.watched(shared, time_grid, deal_data)
+        return pricing.pv_barrier_option(shared, time_grid, deal_data, self.field['Units'], spot, b, tau,
+                                         self.payoff_ccy, use_forwards=True) * fx_rep
 
 
 class CommodityForwardDeal(Deal):

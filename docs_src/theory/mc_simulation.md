@@ -19,7 +19,7 @@ autocall).
 | `pv_MC_ExtendableForward` | `FXExtendableForwardDeal` | the zero-continuation boundary $H_j$ | the terminated branch: nothing further |
 
 Not on this page: the continuously monitored barrier (`EquityBarrierOption` without
-`Barrier_Dates`, `FXBarrierOption`) and the partial-time barrier are closed forms weighted by a
+`Barrier_Dates`, `FXBarrierOption`, `CommodityBarrierOption`) and the partial-time barrier are closed forms weighted by a
 Brownian-bridge touch probability [@beaglehole1997], with the Broadie-Glasserman-Kou shift [@broadie1997] for a discrete monitoring
 frequency ([FX and Equity](../valuation/fx_and_equity.md)).
 

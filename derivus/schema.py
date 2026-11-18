@@ -1556,7 +1556,7 @@ mapping = {
             'New Energy Derivative':
                 ['FloatingEnergyDeal', 'FixedEnergyDeal', 'EnergySingleOption',
                  'CommodityDigitalOption', 'CommodityOneTouchOption', 'CommodityNoTouchOption',
-                 'CommodityForwardDeal', 'CommodityFutureDeal',
+                 'CommodityBarrierOption', 'CommodityForwardDeal', 'CommodityFutureDeal',
                  'CommodityAveragePriceSwapDeal'],
             'New Equity Derivative':
                 ['EquityDeal', 'EquitySwapLeg', 'EquityForwardDeal',

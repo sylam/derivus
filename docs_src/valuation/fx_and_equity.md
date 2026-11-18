@@ -42,11 +42,12 @@ and the partial-time rebate below read the same $\lambda$.
 
 ### On the scenario grid
 
-`FXBarrierOption`, and `EquityBarrierOption` without **Barrier_Dates**, apply the closed form on every
-scenario date $t_i$ of the deal:
+`FXBarrierOption`, `CommodityBarrierOption`, and `EquityBarrierOption` without **Barrier_Dates**, apply
+the closed form on every scenario date $t_i$ of the deal:
 
-- An `FXBarrierOption` stating **Delivery_Date** has each row's option and knock-in rebate discounted
-  on from the expiry to it; the knock-out's rebate is paid at the touch.
+- An `FXBarrierOption` stating **Delivery_Date**, or a `CommodityBarrierOption` stating
+  **Settlement_Date**, has each row's option and knock-in rebate discounted on from the expiry to it;
+  the knock-out's rebate is paid at the touch.
 - $\sigma=\sigma(m,\tau)$ is the surface vol at the deal's moneyness. Each power of $H/S$ is added to
   the log of the normal tail it multiplies, so a vol low enough to overflow the power prices finitely.
 - The touch probability $P_i$ accumulates between scenario dates by the Brownian-bridge crossing
@@ -85,8 +86,9 @@ $$H'=He^{\pm\beta\sigma\sqrt\delta},\qquad \beta=-\frac{\zeta(1/2)}{\sqrt{2\pi}}
 
 $\zeta$ is the Riemann zeta function. The sign follows the barrier TYPE, not the spot: an up barrier is
 shifted up and a down barrier down. $\delta$ is the calendar days in **Barrier_Monitoring_Frequency** over
-365; `0M` is continuous monitoring. An equity one-touch with **Barrier_Dates** takes $\delta$ as the mean
-gap between those dates and stays continuously monitored: the dates are not an observation schedule.
+365; `0M` is continuous monitoring. An equity or commodity touch, or a commodity barrier, with
+**Barrier_Dates** takes $\delta$ as the mean gap between those dates and stays continuously monitored: the
+dates are not an observation schedule.
 
 ## Partial Barrier Options
 

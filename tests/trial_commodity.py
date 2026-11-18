@@ -1,5 +1,5 @@
 """Commodity and energy - forwards, futures, average-price swaps, the energy option, both energy
-legs and the touches, as `tests/test_position_scaling.py` trials them."""
+legs, the digital, the touches and the barrier, as `tests/test_position_scaling.py` trials them."""
 
 import pandas as pd
 
@@ -30,6 +30,11 @@ FUEL = {'Currency': 'USD', 'Discount_Rate': 'USD', 'Sampling_Type': 'FUEL',
 TOUCH = {'Currency': 'USD', 'Discount_Rate': 'USD', 'Reference_Type': 'FUEL',
          'Reference_Volatility': 'FUEL', 'Buy_Sell': 'Buy', 'Expiry_Date': E, 'Cash_Payoff': 10_000.0,
          'Barrier_Type': 'Up', 'Barrier_Price': 83.0}
+#: a knock-out call on the fuel reference, struck at 82 and out at 90 with a rebate
+BARRIER = {'Object': 'CommodityBarrierOption', 'Reference': 'FUEL_KO', 'Currency': 'USD', 'Discount_Rate': 'USD',
+           'Reference_Type': 'FUEL', 'Reference_Volatility': 'FUEL', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+           'Expiry_Date': E, 'Strike_Price': 82.0, 'Units': 1000.0, 'Barrier_Type': 'Up_And_Out',
+           'Barrier_Price': 90.0, 'Cash_Rebate': 2_000.0}
 FUTURE = dict(METAL, Object='CommodityFutureDeal', Maturity_Date=month(6), Repo_Rate='USD',
               Carry='METAL_CARRY')
 
@@ -59,6 +64,7 @@ DEALS = [
      'Payoff': 25_000.0},
     dict(TOUCH, Object='CommodityOneTouchOption', Reference='FUEL_OT'),
     dict(TOUCH, Object='CommodityNoTouchOption', Reference='FUEL_NT'),
+    BARRIER,
 ]
 
 FACTORS = {
