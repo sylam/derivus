@@ -556,6 +556,30 @@ def test_a_set_omitting_its_support_amounts_and_assets_holds_a_zero_csa():
     assert np.unique(runs[0][1]).size > 1, 'the balance never moves, so the CSA reads nothing'
 
 
+def test_a_term_stated_null_is_one_left_out():
+    """A NULL IS A FIELD NOT SET, as a legacy file states one: a collateralised set stating both
+    minimum transfers and its collateral assets null marks and holds bit for bit as the set leaving
+    them out, where a null `Minimum_Posted` once failed the set on `'NoneType' object has no
+    attribute 'value'` with validation clean.
+
+    Killing mutation: a convention stated null read as stated, which fails the set's call on the
+    null minimum.
+    """
+    support = {key: value for key, value in TERMS['Credit_Support_Amounts'].items()
+               if not key.startswith('Minimum_')}
+    runs = []
+    for terms in (dict(TERMS, Credit_Support_Amounts=support),
+                  dict(TERMS, Collateral_Assets=None, Credit_Support_Amounts=dict(
+                      support, Minimum_Posted=None, Minimum_Received=None))):
+        context = derivus.Context()
+        context.load_json((json.dumps(engine_job(terms)), 'null'))
+        _, out = derivus.run_cmc(context.current_cfg, prec=torch.float64)
+        result = out['Netting'].sub_structures[0].obj.Calc_res
+        runs.append([np.asarray(result[key][0]) for key in ('Value', 'Collateral')])
+    assert all(np.array_equal(left, null) for left, null in zip(*runs))
+    assert np.unique(runs[0][1]).size > 1, 'the balance never moves, so the CSA reads nothing'
+
+
 def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it(caplog):
     """`Amount` weighs an asset in the collateral the balance is counted in, and with one asset the
     weight cancels - the balance is held in units of it - so a sole cash row stating none, as the
