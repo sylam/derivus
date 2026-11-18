@@ -11,6 +11,7 @@
 # warranty of MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.
 ########################################################################
 
+import contextlib
 import logging
 import math
 import time
@@ -371,6 +372,19 @@ def cash_settle(shared, currency, time_index, value):
     pricer books through its `settle_cash`: this, False, or its caller's own where the caller gates it."""
     if shared.t_Cashflows is not None and time_index in shared.t_Cashflows.get(currency, []):
         shared.t_Cashflows[currency][time_index] += value
+
+
+@contextlib.contextmanager
+def captured_cash(shared):
+    """Hold apart from the run's cash what the pricers inside the block book on its cash days, left on
+    `t_Held` once the run's own `t_Cashflows` stands again; None where the run tracks no cash."""
+    booked = shared.t_Cashflows
+    shared.t_Cashflows = None if booked is None else {
+        currency: {row: torch.zeros_like(cash) for row, cash in days.items()} for currency, days in booked.items()}
+    try:
+        yield
+    finally:
+        shared.t_Held, shared.t_Cashflows = shared.t_Cashflows, booked
 
 
 def carried_to_settlement(factor_dep, deal_time, shared):

@@ -1477,6 +1477,10 @@ def capped(kind):
     (dict(package('INNER', [SWAP_LEGS[1]]), Instrument={'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'INNER', 'Netted': 'True', 'Collateralized': 'False'}}),
      'SET_INNER is a NettingCollateralSet, which declares no exposure CRE52 reads'),
+    (dict(package('PRICE_SWAP', [KNOWN[3]]), Instrument={'.Deal': {
+        'Object': 'PriceSwapDeal', 'Reference': 'PRICE_SWAP', 'Currency': 'USD', 'Buy_Sell': 'Buy',
+        'Strike_Amount': 9e5, 'Maturity_Date': years(1)}}),
+     'SET_PRICE_SWAP is a PriceSwapDeal, which declares no exposure CRE52 reads'),
     (package('THREE', [cashflows(FLOATING, 'USD', 'Buy', every(12, 3), 1.25e6),
                        cashflows(FIXED, 'EUR', 'Sell', every(12, 3), 1e6, currency='EUR'),
                        cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')]),
@@ -1484,13 +1488,14 @@ def capped(kind):
 def test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name(tmp_path, held_node, said):
     """CRE52.35, CRE52.43 AND CRE52.74-52.76. A floating leg paying a cap or a floor on its rate,
     alone or in a package, is caplets or floorlets, not built; a netting set inside a netting set
-    is several sets to one agreement, not built; and a package whose legs pay in three currencies
-    is no one pair: each refuses the run by name.
+    is several sets to one agreement, not built; a price swap settles in its children's place, a
+    trade on their value that its children's own rows do not read; and a package whose legs pay in
+    three currencies is no one pair: each refuses the run by name.
 
     Killing mutations: the leg's optionlets unread - the capped package valued as a swap and its
-    EAD written; a container read through its children whatever it is - the inner set's leg read
-    as the outer's own; legs of three currencies left unrefused - the package read as its rate
-    legs and the run valued.
+    EAD written; a container read through its children whatever it is - the price swap's bond
+    read as amounts fixed today, its add-on nothing; legs of three currencies left unrefused - the
+    package read as its rate legs and the run valued.
     """
     with pytest.raises(ValueError, match='SACCR: trade ' + said):
         run(document({'SET': ({}, [held_node])}, saccr(mapping_file(tmp_path / 'mapping.json'))))

@@ -1558,7 +1558,7 @@ mapping = {
         # the create-deal menu, the one hand-kept part of the store; whether a type holds children
         # is `Deal.accepts_children`, emitted as `containers` below
         'groups': {
-            'New Structure': ['NettingCollateralSet', 'StructuredDeal'],
+            'New Structure': ['NettingCollateralSet', 'StructuredDeal', 'PriceSwapDeal'],
             'New Interest Rate Derivative':
                 ['FixedCashflowDeal', 'CFFixedListDeal', 'CFFixedInterestListDeal',
                  'CFFloatingInterestListDeal', 'DepositDeal', 'CapDeal', 'FRADeal',

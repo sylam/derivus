@@ -122,5 +122,9 @@ DEALS = [
     fixed_list('FIXED_FWD', 'Buy', redeeming(book.fixed_items(4.5)),
                Settlement_Date=B + months(3), Settlement_Amount=950_000.0),
     float_list('FLOAT_REDEEMING', 'Buy', redeeming(book.float_items())),
+    # the bond is what the swap is written on: held short, the swap flips and its bond stands
+    {'Object': 'PriceSwapDeal', 'Reference': 'PRICE_SWAP', 'Currency': 'USD', 'Buy_Sell': 'Buy',
+     'Strike_Amount': 950_000.0, 'Maturity_Date': STEP, 'Children': [
+         fixed_list('PRICE_SWAP_BOND', 'Buy', redeeming(book.fixed_items(4.5)))]},
 ]
-UNMARKED = {'SWPT_AMORT_FIXED', 'SWPT_AMORT_FLOAT', 'XCCY_MTM_EUR', 'XCCY_MTM_USD'}
+UNMARKED = {'SWPT_AMORT_FIXED', 'SWPT_AMORT_FLOAT', 'XCCY_MTM_EUR', 'XCCY_MTM_USD', 'PRICE_SWAP_BOND'}

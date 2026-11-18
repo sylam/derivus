@@ -146,6 +146,11 @@ Grouped by where a validator meets them.
   ladder is inexpressible, and the initial-margin funding charge posts each leg's margin gross,
   over-margining a calendar spread. UNMEASURED: no document carries two underlyings, a leg of
   another type or a spread ladder.
+- **A container in the hedging engine's liability is valued at nothing** (2026-11-18). The
+  liability's marks and cash are accumulated off its leaves (`DealStructure.resolve_hedge_structure`),
+  which runs no container's `post_process`, so a structure's legs and a price swap's children and
+  settlement are left out. UNMEASURED, found by reading. The fix is the accumulation running each
+  container's `post_process` as a valuation does: S.
 - **The LogVar2FJ spot fit writes no standard errors** (2026-11-03). `LogVar2FJSpotCalibration`
   maximises on numerical gradients in float (1.3 s for a five-year fit against the history fit's
   AAD path's 32 s), so nothing downstream can weight its parameters. The fix is the AAD Hessian the

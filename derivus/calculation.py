@@ -48,6 +48,8 @@ from .hedge_solver import StreamingSolve
 
 class Aggregation(object):
     '''Container class that represents the base Instrument for aggregation'''
+    settles_children = False
+
     def __init__(self, name):
         self.reval_dates = None
         self.field = {'Reference': name}
@@ -210,35 +212,39 @@ class DealStructure(object):
         # - post_process runs only once the children are priced, so the mark cannot wait
         mark = len(shared.boundary_sets) if getattr(shared, 'boundary_aad', False) else None
 
-        if self.sub_structures:
-            for structure in self.sub_structures:
-                logging.root.name = structure.obj.Instrument.field.get('Reference', 'root')
-                if structure.obj.Instrument.accum_dependencies and hasattr(shared, 'reset_cashflows'):
-                    shared.reset_cashflows(time_grid)
-                struct = structure.resolve_structure(shared, time_grid)
-                if (struct != struct).any():
-                    logging.critical('Netting set contains NANS! Please Investigate! - skipping for now')
-                    self.unpriced(shared, structure, 'its value holds NaN')
-                    continue
-                if structure.obj.Instrument.accum_dependencies and hasattr(shared, 'save_cashflows'):
-                    shared.save_cashflows(structure.obj.Calc_res, time_grid)
-                if (structure.obj.Instrument.field.get('Reference') or 'root').startswith('FLIP'):
-                    logging.warning('Netting set starts with FLIP - inverting MTM')
-                    struct = -struct
-                accum = accum + struct
+        # beneath a deal settling in its children's place their cash is held apart, its post_process
+        # reading it once the run's own stands again, and its own deals are priced here
+        settles = self.obj.Instrument.settles_children
+        with pricing.captured_cash(shared) if settles else contextlib.nullcontext():
+            if self.sub_structures:
+                for structure in self.sub_structures:
+                    logging.root.name = structure.obj.Instrument.field.get('Reference', 'root')
+                    if structure.obj.Instrument.accum_dependencies and hasattr(shared, 'reset_cashflows'):
+                        shared.reset_cashflows(time_grid)
+                    struct = structure.resolve_structure(shared, time_grid)
+                    if (struct != struct).any():
+                        logging.critical('Netting set contains NANS! Please Investigate! - skipping for now')
+                        self.unpriced(shared, structure, 'its value holds NaN')
+                        continue
+                    if structure.obj.Instrument.accum_dependencies and hasattr(shared, 'save_cashflows'):
+                        shared.save_cashflows(structure.obj.Calc_res, time_grid)
+                    if (structure.obj.Instrument.field.get('Reference') or 'root').startswith('FLIP'):
+                        logging.warning('Netting set starts with FLIP - inverting MTM')
+                        struct = -struct
+                    accum = accum + struct
 
-        if self.dependencies and self.obj.Instrument.accum_dependencies:
-            deal_tensors = 0.0
+            if self.dependencies and (self.obj.Instrument.accum_dependencies or settles):
+                deal_tensors = 0.0
 
-            for deal_data in self.dependencies:
-                logging.root.name = deal_data.Instrument.field.get('Reference', 'root')
-                deal_mark = len(shared.boundary_sets) if mark is not None else None
-                mtm = deal_data.Instrument.calculate(shared, time_grid, deal_data)
-                if deal_mark is not None:
-                    utils.BoundarySet.stamp(shared, deal_mark, logging.root.name)
-                deal_tensors = deal_tensors + mtm
+                for deal_data in self.dependencies:
+                    logging.root.name = deal_data.Instrument.field.get('Reference', 'root')
+                    deal_mark = len(shared.boundary_sets) if mark is not None else None
+                    mtm = deal_data.Instrument.calculate(shared, time_grid, deal_data)
+                    if deal_mark is not None:
+                        utils.BoundarySet.stamp(shared, deal_mark, logging.root.name)
+                    deal_tensors = deal_tensors + mtm
 
-            accum = accum + deal_tensors
+                accum = accum + deal_tensors
 
         if hasattr(self.obj.Instrument, 'post_process'):
             logging.root.name = self.obj.Instrument.field.get('Reference', 'root')
@@ -2616,10 +2622,12 @@ class Diary(BaseValuation):
         self.netting_sets = DealStructure(Aggregation('root'), store_results=True)
         self.set_deal_structures(self.config.deals['Deals']['Children'], self.netting_sets,
                                  shared.one, deal_level_mtm=True)
-        rows, compiled = [], {held.Instrument.resolved_from or held.Instrument: held
-                              for held in self.netting_sets.deals()}
+        rows, compiled = [], {held.Instrument.resolved_from or held.Instrument: held for held in itertools.chain(
+            self.netting_sets.deals(), (structure.obj for structure in self.netting_sets.structures()))}
         options = self.config.params.get('Valuation Configuration', {})
-        for path, netting_set, deal in self._leaves(self.config.deals['Deals']['Children']):
+        for path, netting_set, deal, until in self._leaves(self.config.deals['Deals']['Children']):
+            if until is not None and until < base_date:
+                continue
             held = compiled.get(deal)
             # a deal carrying the compile's verdict is read by it, which resolving again could raise
             became = deal if held is not None or hasattr(deal, 'unpriced_because') else (
@@ -2627,7 +2635,10 @@ class Diary(BaseValuation):
             rows.extend(dict(row, deal_path=path, netting_set=netting_set) for row in (
                 self._deal_rows(held.Instrument, held.Factor_dep, base_date) if held is not None
                 else self._dropped_rows(became) if self._expired(base_date, became)
-                else [self._unreadable_row(base_date, deal)]))
+                else [self._unreadable_row(base_date, deal)])
+                # beneath a deal settling in its place, a child pays nothing and observes to its last day
+                if until is None or row['kind'] in (self.FIXING, self.BARRIER, self.UNREADABLE)
+                and (row['due_date'] or '') <= until.date().isoformat())
         return rows
 
     @staticmethod
@@ -2637,18 +2648,20 @@ class Diary(BaseValuation):
             else netting_set
 
     @classmethod
-    def _leaves(cls, children, netting_set=None, path=()):
-        """Every LEAF deal of a compiled config's tree, as `(deal path, netting set, deal)`, the set
-        the `Reference` of the one it sits in and None outside one. A container is its structure
-        and carries no schedule of its own."""
+    def _leaves(cls, children, netting_set=None, path=(), until=None):
+        """Every LEAF deal of a compiled config's tree, as `(deal path, netting set, deal, until)`,
+        the set the `Reference` of the one it sits in and None outside one. A container is its
+        structure and carries no schedule of its own, unless it settles in its children's place
+        (`Deal.settles_children`): then it is read too, and `until`, its last day, rides beneath it."""
         for position, node in enumerate(children):
             deal, at = node.get('Instrument'), path + (position,)
             if node.get('Ignore') == 'True' or not isinstance(deal, Deal):
                 continue
+            if not node.get('Children') or deal.settles_children:
+                yield '/'.join(map(str, at)), netting_set, deal, until
             if node.get('Children'):
-                yield from cls._leaves(node['Children'], cls._within(deal, netting_set), at)
-            else:
-                yield '/'.join(map(str, at)), netting_set, deal
+                yield from cls._leaves(node['Children'], cls._within(deal, netting_set), at, max(
+                    deal.get_reval_dates()) if deal.settles_children else until)
 
     def _expired(self, base_date, deal):
         """Whether the compile left this deal out because it has EXPIRED - its last date behind the
@@ -5369,7 +5382,7 @@ class SACCR(NettingSetCalculation):
     the mapping classes in none, or declaring none, refuses by name. A type declaring several
     components reads a row each, named by its last day, one settled before the base date none: an
     FX swap its near and far forwards, each with its own M (52.35; a convention). A package, a type
-    holding children and declaring nothing that is no netting set, is
+    holding children and declaring nothing, neither settling in their place nor a netting set, is
     read through them, each child's rows its own, the child its `Component` (52.42(4)); amounts
     fixed today read none, their value V's alone (52.10, 52.26), so a fixed and a floating leg are
     one swap the floating leg carries (52.1 FAQ3), and two floating legs of a currency, one received
@@ -5435,7 +5448,7 @@ class SACCR(NettingSetCalculation):
         'stating its last day, one settled before the base date none: an FX swap is its near and far',
         'forwards, each with its own $M$ (CRE52.35 states no split: a convention). A package, a type',
         'holding children and declaring nothing that',
-        'is no netting set, is read through its children, each child\'s',
+        'neither settles in their place nor is a netting set, is read through its children, each child\'s',
         'rows its own (CRE52.42(4)); amounts fixed today (a fixed leg, a fixed cash flow or list, a fixed',
         'energy leg) carry no risk factor CRE52 charges and read no row, their value in $V$ alone',
         '(CRE52.10, CRE52.26), so a package of a fixed and a floating leg of one currency is one swap the',
@@ -5750,12 +5763,13 @@ class SACCR(NettingSetCalculation):
 
     def read(self, node, mpor):
         """The rows `node` reads: its type's declaration's, none where that states its amounts fixed
-        today; a package's, a type with children declaring none that is no netting set, its
-        children's (`package`)."""
+        today; a package's, a type with children declaring none that neither settles in their
+        place nor is a netting set, its children's (`package`)."""
         deal = node['Instrument']
         kind = deal.field['Object']
         terms = schema.EXPOSURES.get(kind)
-        if terms is None and node.get('Children') and kind != 'NettingCollateralSet':
+        if terms is None and node.get('Children') and not deal.settles_children and (
+                kind != 'NettingCollateralSet'):
             return self.package(node, mpor)
         if terms is None:
             raise ValueError('SACCR: trade {} is a {}, which declares no exposure CRE52 reads'.format(

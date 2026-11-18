@@ -479,12 +479,22 @@ and, starting after its expiry, the gap's legs, which reset after the base date.
 unstated reset is fixed at 0% with
 a warning naming it (`utils.unstated_reset`). A swap, cap or floor on its legs revalues on their
 days (`Deal.children_dates`) and is their sum, each priced on the parent's grid
-(`Deal.sum_children`).
+(`Deal.sum_children`). A deal settling in its children's place (`Deal.settles_children`, a price
+swap) has everything beneath it, at any depth, resolved with the cash it pays held apart
+(`pricing.captured_cash` in `DealStructure.resolve_structure`), its own deals priced there too; its
+`post_process` then reads what was held off `t_Held`, the run's `t_Cashflows` standing again, and
+books once on its maturity their value less what they would have paid that day less the strike. Its
+dates end the day after it, so no child's later date lands on the maturity's row, and its children's
+settlement days are not the run's.
 **Held by**
 `tests/test_declared_defaults.py::test_a_cap_on_its_optionlet_list_states_no_principal_or_known_rates`,
 `::test_a_swaption_on_its_legs_compiles_no_swap_of_its_own`,
 `::test_a_swap_on_its_legs_is_their_sum_and_compiles_no_legs_of_its_own`,
 `::test_a_swap_on_its_legs_revalues_on_their_days`,
+`tests/test_price_swap_json.py::test_under_simulation_a_price_swap_is_its_children_less_the_strike_and_settles_once`,
+`::test_a_swap_framed_by_no_netting_set_takes_no_later_payment_of_a_child_as_paid_on_its_maturity`,
+`::test_a_structure_beneath_a_swap_settles_nothing_and_the_swap_settles_once`,
+`::test_a_child_s_payment_days_are_no_cash_days_of_a_run_holding_the_swap_alone`,
 `tests/test_swaption_exercise_boundary.py::test_an_amortising_swap_reads_its_vol_at_its_duration_equivalent_tenor`,
 `::test_a_forward_start_swap_reads_the_mid_curve_vol_of_two_co_starting_swaps`.
 

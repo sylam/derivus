@@ -661,6 +661,11 @@ class Deal(object):
     #: so a reset those terms leave unstated warns nobody.
     has_children = False
 
+    #: Whether this deal settles in its `Children`'s place, nothing beneath it paying: the structure
+    #: holds their cash apart for its `post_process`, and the diary announces its own settlement and
+    #: only their fixings to its last day.
+    settles_children = False
+
     #: The booked deal whose observed history made this one (`became`), None for a booked deal: a
     #: reader of the compile finds a substitute's node through it.
     resolved_from = None
@@ -2614,6 +2619,76 @@ class StructuredDealBreakClause(StructuredDeal):
 
     def __init__(self, params, valuation_options):
         super(StructuredDealBreakClause, self).__init__(params, valuation_options)
+
+
+class PriceSwapDeal(Deal):
+    accepts_children = True
+    # its children are the position it swaps: a position sizes them and flips the swap
+    option_on_children = True
+    settles_children = True
+    vernacular = 'price swap, bond price swap'
+    fields = [ADMIN, own('PriceSwapDeal', [
+        F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
+        F('Currency', 'Text', default=REQUIRED, factors=['FxRate']),
+        F('Strike_Amount', 'Float', default=0.0, sized=True,
+          description='The fixed amount in Currency the children are swapped against'),
+        F('Maturity_Date', 'Date', default='', settles=Cash('Currency'))
+    ])]
+
+    documentation = ('Container', [
+        'A price swap exchanges the value of its children for a fixed **Strike_Amount** $K$ in',
+        '**Currency** on **Maturity_Date** $T$. The children carry their own sides and pay nothing while',
+        'they sit under it - their income belongs to whatever is booked beside it. To $T$,',
+        '',
+        '$$V(t)=\\pm\\Big(\\sum_i V_i(t)-K\\,X(t)\\Big)$$',
+        '',
+        'with $\\pm$ the **Buy_Sell** sign (a **Buy** receives the children and pays the strike), $V_i$',
+        'the children\'s values in the reporting currency and $X$ the price of **Currency** in it; $K$ is',
+        'not discounted. On $T$ it settles once, in **Currency**, the children\'s value less what they',
+        'would pay that day, less $K$; after $T$ it is worth nothing.'])
+
+    def reset(self, calendars=None):
+        super(PriceSwapDeal, self).reset()
+        self.add_reval_dates({self.field['Maturity_Date']}, self.field['Currency'])
+
+    def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
+        maturity = self.field['Maturity_Date']
+        if node_children is not None:
+            for child in node_children:
+                child.add_reval_date_offset(1)
+                child.add_reval_dates({maturity})
+                node_resets.update(child.get_reval_dates())
+            # the children are revalued to the maturity and the day after it, so no later date of theirs
+            # lands on its row; they settle nothing, what they pay on it read in each of their currencies
+            node_resets.difference_update({day for day in node_resets if day > maturity})
+            node_resets.add(maturity + pd.DateOffset(days=1))
+            self.settlement_currencies.update({currency: {maturity} for currency in node_settlements})
+            node_settlements.clear()
+        return super(PriceSwapDeal, self).finalize_dates(
+            parser, base_date, grid, node_children, node_resets, node_settlements)
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        return {'Settles': {currency: get_fxrate_factor(utils.check_rate_name(currency), static_offsets,
+                                                         stochastic_offsets) for currency in self.settlement_currencies}}
+
+    def post_process(self, accum, shared, time_grid, deal_data, child_dependencies):
+        # the rows to the maturity, the last of them the maturity's, priced in each currency it settles
+        rows, last = deal_data.Time_dep.interp.size, deal_data.Time_dep.deal_time_grid[-1]
+
+        def fx(currency, start=0):
+            return utils.calc_fx_cross(deal_data.Factor_dep['Settles'][currency], shared.Report_Currency,
+                                       time_grid.time_grid[start:rows], shared)
+
+        own, strike = self.field['Currency'], self.field['Strike_Amount']
+        sign = 1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0
+        if last in (shared.t_Held or {}).get(own, ()):
+            # the children's value on the maturity less the cash they paid that day, held apart, in Currency
+            left = accum[last] - sum(shared.t_Held[currency][last] * fx(currency, last)[0]
+                                     for currency in deal_data.Factor_dep['Settles'])
+            pricing.cash_settle(shared, own, last, sign * (left / fx(own, last)[0] - strike))
+        return pricing.interpolate(sign * (accum[:rows] - strike * fx(own)), shared, time_grid, deal_data,
+                                   interpolate_grid=False)
 
 
 class DepositDeal(Deal):

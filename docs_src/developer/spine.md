@@ -435,7 +435,10 @@ declared on its fields (`settles=schema.Cash(...)`); monitoring days are never p
 cash-settled option waits for its expiry fixing and its payoff; a cashflow list held to an
 `Investment_Horizon` pays and fixes to that day and, where it pays after it, is closed out there
 on its `Settlement` leg at a null amount the market decides; an unreadable deal is an
-`unreadable` row. A row carries its deal's `reference`, its `deal_path` and the `netting_set` it
+`unreadable` row. A deal settling in its children's place (`Deal.settles_children`, a price swap)
+announces its own settlement at the amount the market decides, and its children only the fixings
+they need to its last day, no payment and nothing after. A row carries its deal's `reference`,
+its `deal_path` and the `netting_set` it
 sits in, and takes the instrument booked at that path (`service.booked_instruments`), references
 not being unique in a book: two live deals under one reference are two instruments, each row keyed
 under its own, and a deal its history resolved (`became`) is read at its node's path. A row's key,
@@ -451,7 +454,8 @@ the key names any.
 `::test_two_live_deals_under_one_reference_are_two_instruments_each_settled_on_its_own_key`,
 `::test_a_barrier_its_history_knocked_in_is_read_as_the_vanilla_it_became`,
 `test_pnl.py::test_a_payment_is_shared_within_the_agreement_it_names`,
-`test_bond_holding_json.py::test_the_diary_of_a_holding_pays_to_its_horizon_and_settles_there_and_nothing_after`.
+`test_bond_holding_json.py::test_the_diary_of_a_holding_pays_to_its_horizon_and_settles_there_and_nothing_after`,
+`test_price_swap_json.py::test_the_diary_announces_one_settlement_on_the_maturity_and_of_the_children_their_fixings_to_it`.
 
 **Premiums.** The book's diary also announces what its fills paid or received
 (`service.announced`, `spine.premiums`): one `premium` row per fill of the book whose price moves
