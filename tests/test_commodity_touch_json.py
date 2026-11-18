@@ -79,6 +79,31 @@ CROSS = {'Correlation.EquityPrice.EQ/FxRate.EUR.USD': {'Value': CORR},
 PAID_IN_EUR = [('Quanto', 'Down', 90.0), ('Quanto', 'Up', 110.0), ('Compo', 'Down', 72.0), ('Compo', 'Up', 88.0)]
 
 
+def test_a_commodity_touch_reads_its_vol_at_the_forward_s_moneyness():
+    """On the trial's fuel reference, its forward sloping from 80 to 84, under a surface 5 vol points
+    lower per 10% of moneyness: a one-touch up at 90 and a no-touch down at 76 mark, bit for bit, as
+    the same two on a flat surface at the vol the skew holds at the expiry's forward over the
+    barrier - the reading the commodity digital, the energy option and the barrier take.
+
+    KILLING MUTATION: the vol read at the watched fixing's moneyness, 80 over the barrier - the
+    one-touch marks 7,017.86 for 6,904.41.
+    """
+    def surface(vol_at):
+        return {'CommodityPriceVol.FUEL': {
+            'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+            'Surface': utils.Curve([], [[m, t, vol_at(m)] for m in (0.8, 0.9, 1.0, 1.1, 1.2)
+                                        for t in (0.1, 1.0, 3.0)])}}
+
+    for kind, direction, barrier in (('OneTouch', 'Up', 90.0), ('NoTouch', 'Down', 76.0)):
+        deal = dict(trial_commodity.TOUCH, Object='Commodity{}Option'.format(kind), Reference='T',
+                    Barrier_Type=direction, Barrier_Price=barrier)
+        skewed, _ = book.marks([deal], {**trial_commodity.FACTORS, **surface(
+            lambda m: 0.30 - 0.5 * (m - 1.0))})
+        flat, _ = book.marks([deal], {**trial_commodity.FACTORS, **surface(
+            lambda m: 0.30 - 0.5 * (84.0 / barrier - 1.0))})
+        assert skewed['T'] == flat['T'] and float.fromhex(skewed['T']) > 0.0, (kind, skewed, flat)
+
+
 def test_a_quanto_or_compo_commodity_touch_prices_as_the_equity_touch_it_maps_to():
     """Paid in EUR on a USD reference: each quanto and compo one-touch, down and up, on the touch and
     at expiry, booked on the world's equity and on the reference whose forward is that equity's, the

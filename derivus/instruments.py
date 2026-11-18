@@ -5338,7 +5338,9 @@ class CommodityOneTouchOption(TouchLifecycle, CommodityFixingWatch, Deal):
         "the expiry's delivery. That holds while the delivery stays put (one contract) or moves with the",
         'date (a spot-like reference); a reference that rolls from one contract to another before the',
         'expiry jumps at the roll, which the closed form cannot price, and is refused by name. The',
-        'bridge observes endpoints: the forward-price process publishes no bridge variance.',
+        "vol is the **Reference_Volatility** surface at the forward's moneyness over the barrier, as",
+        'the digital and the barrier below read theirs. The bridge observes endpoints: the',
+        'forward-price process publishes no bridge variance.',
         '',
         'Paid in another currency than the forward curve\'s, a `Quanto` or `Compo` **Payoff_Type** reads',
         '`Correlation.FxRate.<forward>.<payoff>/ReferencePrice.<reference>.<forward>`, stated local to',
@@ -5347,7 +5349,8 @@ class CommodityOneTouchOption(TouchLifecycle, CommodityFixingWatch, Deal):
     def generate(self, shared, time_grid, deal_data):
         spot, b, tau, fx_rep = self.watched(shared, time_grid, deal_data)
         return pricing.pv_one_touch_option(
-            shared, time_grid, deal_data, self.field['Cash_Payoff'], spot, b, tau, self.payoff_ccy) * fx_rep
+            shared, time_grid, deal_data, self.field['Cash_Payoff'], spot, b, tau, self.payoff_ccy,
+            use_forwards=True) * fx_rep
 
 
 class CommodityNoTouchOption(CommodityOneTouchOption):
