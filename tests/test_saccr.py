@@ -459,6 +459,10 @@ AMORTISED = [1e7, 8e6, 6e6, 4e6, 2e6]
 #: The payer of ten million five years out, quarterly, booked as a package of its two legs.
 QUARTERS = every(3, 20)
 SWAP_LEGS = [cashflows(FIXED, 'FIXED', 'Sell', QUARTERS, 1e7), cashflows(FLOATING, 'FLOAT', 'Buy', QUARTERS, 1e7)]
+#: Two lists of fixed amounts beside them: ten million received at the end, 500 thousand paid in six months.
+AMOUNTS = [dict(KNOWN[0], Reference=reference, Buy_Sell=side, Cashflows={'Items': [
+    {'Payment_Date': day, 'Fixed_Amount': amount}]}) for reference, side, day, amount in (
+        ('PRINCIPAL', 'Buy', years(5), 1e7), ('FEE', 'Sell', SIX_MONTHS, 5e5))]
 #: Ten million three years out, yearly, received on USD-OIS against USD and the other way round.
 BASIS = [package(reference, [cashflows(FLOATING, 'OIS', ois, every(12, 3), 1e7, curve='USD-OIS'),
                              cashflows(FLOATING, 'USD', usd, every(12, 3), 1e7)])
@@ -470,7 +474,9 @@ CROSS = [package(reference, [cashflows(FLOATING, 'USD', usd, every(12, 3), 1.25e
                              cashflows(FIXED, 'EUR', eur, every(12, 3), 1e6, currency='EUR')])
          for reference, usd, eur in (('USD_RECEIVED', 'Buy', 'Sell'), ('EUR_RECEIVED', 'Sell', 'Buy'))] + [
     package('FOREIGN', [cashflows(FLOATING, 'EUR', 'Buy', every(12, 3), 1e6, currency='EUR'),
-                        cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')])]
+                        cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')]),
+    package('FLOATING', [cashflows(FLOATING, 'USD', 'Buy', every(12, 3), 1.25e6),
+                         cashflows(FLOATING, 'EUR', 'Sell', every(12, 3), 1e6, currency='EUR')])]
 
 
 def fx_swap(reference, near):
@@ -621,6 +627,7 @@ def world(tmp_path_factory):
             'PAID_LEG': ({}, [node(cashflows(FLOATING, 'LEG', 'Sell', STARTED, AMORTISED))]),
             'SWAP_ALONE': ({}, [node(swap('SWAP', years(5), 'Fixed'))]),
             'SWAP_LEGS': ({}, [package('SWAP', SWAP_LEGS)]),
+            'SWAP_AMOUNTS': ({}, [package('SWAP', SWAP_LEGS + AMOUNTS)]),
             'SWAP_NETTED': ({}, [node(swap('PAYER', years(5), 'Fixed')), package('RECEIVER', [
                 dict(leg, Buy_Sell='Buy' if leg['Buy_Sell'] == 'Sell' else 'Sell') for leg in SWAP_LEGS])]),
             'TWO_ROWS': ({}, [package('PACKAGE', [cashflows(FLOATING, 'FIVE', 'Buy', every(12, 5), 1e7),
@@ -628,7 +635,7 @@ def world(tmp_path_factory):
             'BASIS_RECEIVED': ({}, BASIS[:1]), 'BASIS_PAID': ({}, BASIS[1:]), 'BASIS_NETTED': ({}, BASIS),
             'BASIS_BESIDE': ({}, BASIS[1:] + [node(swap('PAYER', years(3), 'Fixed'))]),
             'CCS_USD_RECEIVED': ({}, CROSS[:1]), 'CCS_EUR_RECEIVED': ({}, CROSS[1:2]),
-            'CCS_NETTED': ({}, CROSS[:2]), 'CCS_FOREIGN': ({}, CROSS[2:]),
+            'CCS_NETTED': ({}, CROSS[:2]), 'CCS_FOREIGN': ({}, CROSS[2:3]), 'CCS_FLOATING': ({}, CROSS[3:]),
             'MTM_PAY': ({}, [resetting('MTM', 'Pay')]), 'MTM_RECEIVE': ({}, [resetting('MTM', 'Receive')]),
             'FX_SWAP': ({}, [node(fx_swap('SWAP', SIX_MONTHS))]),
             'FX_SWAP_SEASONED': ({}, [node(fx_swap('SWAP', BASE - pd.DateOffset(months=1)))]),
@@ -1277,7 +1284,9 @@ def test_a_swap_booked_as_its_legs_reads_as_the_swap(world):
     0.25 years of 30/360 each so the average is exact, SD = (1 - e^(-0.25)) / 0.05, 44,239,843.39 in
     bucket 2, long, at a maturity factor one, the add-on 221,199.22: the swap's to the last digit,
     its value the swap's, so the set holding the payer beside the package received the other way
-    up has V, each effective notional's sum and the add-on nothing.
+    up has V, each effective notional's sum and the add-on nothing. The package beside two lists of
+    fixed amounts, ten million received at its end and 500 thousand paid in six months, reads the
+    same one row, the lists their value alone in V.
 
     Killing mutation: the fixed leg read as a floating one, its paid notional short the rate - the
     package two rows, long and short 44,239,843.39, its add-on nothing.
@@ -1295,6 +1304,11 @@ def test_a_swap_booked_as_its_legs_reads_as_the_swap(world):
     netted = found.loc['SWAP_NETTED']
     assert (netted['V'], trades(output, 'SWAP_NETTED')['EffectiveNotional'].sum(), netted['AddOn_IR']) == (
         0.0, 0.0, 0.0), netted
+    amounts = trades(output, 'SWAP_AMOUNTS')
+    assert list(amounts[columns[:-1]].itertuples(index=False)) == list(rows[columns[:-1]].itertuples(index=False))
+    assert found.loc['SWAP_AMOUNTS', 'AddOn_IR'] == found.loc['SWAP_ALONE', 'AddOn_IR'], found.loc['SWAP_AMOUNTS']
+    assert found.loc['SWAP_AMOUNTS', 'V'] == pytest.approx(valued([package('SWAP', SWAP_LEGS + AMOUNTS)])[
+        'BOOK_SWAP'], rel=1e-12), found.loc['SWAP_AMOUNTS']
 
 
 def test_a_trade_enters_v_once_whatever_rows_it_reads(world):
@@ -1358,7 +1372,9 @@ def test_legs_paying_two_currencies_are_one_fx_trade(world):
     M three years, its maturity factor one; each set's add-on 4% of 1,250,000, 50,000, the two in
     one set nothing. A floating leg on a million euros received against a fixed one on 900
     thousand pounds has both legs foreign, the larger the pounds', 900,000 x 1.5 = 1,350,000, long
-    EUR/GBP, its add-on 54,000. A swap whose euro leg's notional resets each quarter off 1.25
+    EUR/GBP, its add-on 54,000. Two floating legs, on 1.25 million dollars received and a million
+    euros paid, are no basis but the same FX trade, -1 on 1,250,000, its add-on 50,000 (the
+    footnote). A swap whose euro leg's notional resets each quarter off 1.25
     million dollars (an `MtMCrossCurrencySwapDeal`) settles its exposure at each reset, so M runs
     to the next, three months out, its maturity factor (1/4)^0.5 = 0.5; that leg states its
     notional in dollars, 1,250,000, short paying the euros and long receiving them, each set's
@@ -1373,7 +1389,8 @@ def test_legs_paying_two_currencies_are_one_fx_trade(world):
     found = netting_sets(output)
     for name, pair, adjusted, delta, factor in (
             ('CCS_USD_RECEIVED', 'EUR/USD', 1.25e6, -1.0, 1.0), ('CCS_EUR_RECEIVED', 'EUR/USD', 1.25e6, 1.0, 1.0),
-            ('CCS_FOREIGN', 'EUR/GBP', 1.35e6, 1.0, 1.0), ('MTM_PAY', 'EUR/USD', 1.25e6, -1.0, 0.5),
+            ('CCS_FOREIGN', 'EUR/GBP', 1.35e6, 1.0, 1.0), ('CCS_FLOATING', 'EUR/USD', 1.25e6, -1.0, 1.0),
+            ('MTM_PAY', 'EUR/USD', 1.25e6, -1.0, 0.5),
             ('MTM_RECEIVE', 'EUR/USD', 1.25e6, 1.0, 0.5)):
         rows = trades(output, name)
         assert list(zip(rows['AssetClass'], rows['HedgingSet'], rows['Delta'], rows['Component'])) == [
