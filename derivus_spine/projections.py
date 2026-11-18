@@ -55,8 +55,8 @@ EXERCISE = 'exercise'
 #: name rather than dropping out of the sequence, so a replica of a hub running a newer vocabulary
 #: still shows every LSN; the gate holds the table against the vocabulary this hub has.
 SUMMARIES = {
-    'fill': 'a clip was booked',
-    'amendment': 'terms were restruck under a new instrument',
+    'fill': 'a trade was booked',
+    'amendment': "a trade's terms were amended",
     'election': 'a holder made its choice',
     'fixing_observed': 'an observation was printed',
     'determination': 'a ruling was made',
@@ -64,8 +64,8 @@ SUMMARIES = {
     'market_declared': 'a market name was pointed at a values vector',
     'official_close_declared': 'the official close was declared',
     'file_declared': 'a file a job names was declared by its content',
-    'approval': 'a plan was approved',
-    'rejection': 'a plan was rejected',
+    'approval': 'a ticket was signed',
+    'rejection': 'a ticket was refused',
     'snapshot_registered': 'a snapshot was registered',
     'retention_declared': 'a retention policy was declared',
     'rehash_declared': 'a hash algorithm was declared',
@@ -80,7 +80,7 @@ SUMMARIES = {
     'key_wrapped': 'a class key was wrapped to a seat',
     'entity_declared': 'a legal entity was declared',
     'agreement_declared': 'an agreement was declared',
-    'capability_denied': 'the writer refused an append',
+    'capability_denied': 'a seat was refused an act it holds no grant for',
 }
 
 #: The projectors a seed is never minted for. The strip's state IS its history, so copying it out of

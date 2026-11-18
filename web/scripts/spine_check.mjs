@@ -38,7 +38,7 @@ const HELD = [row(18, 'official_close_declared', 'the official close was declare
               row(19, 'rehash_declared', 'a hash algorithm was declared', null),
               row(20, 'snapshot_registered', 'a snapshot was registered')];
 const PAGE = { lsn: 22, rows: [row(21, 'break_glass_used', 'the recovery seat was used', null),
-                               row(22, 'fill', 'a clip was booked')] };
+                               row(22, 'fill', 'a trade was booked')] };
 
 // one row per market, which is what the fold answers, each list in the order the service sorts
 // it: `official` restated by a second close, a second market closed once, two declared names and

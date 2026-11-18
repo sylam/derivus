@@ -21,7 +21,8 @@ type Said = { refused: boolean; text: string } | null;
  * agreement's terms rendered off the netting set's declaration, and a form for each - an
  * agreement's terms being the netting set itself, every field at its convention until stated.
  * Declaring is the acting seat's; the record's `document` grant and the engine's judge of the
- * terms refuse, in their own words. Read again at every move of the record's head. */
+ * terms refuse, in their own words. Read again at every move of the record's head. An agreement
+ * a row of the record opened stands open, an entity it opened marked. */
 export function PaperView() {
   const { state } = useApp();
   const { schema } = state;
@@ -52,6 +53,8 @@ export function PaperView() {
     );
   }
   const named = (id: string) => paper.entities.find((row) => row.entity === id)?.name ?? id;
+  // what a row of the record opened here: an agreement, or an entity
+  const picked = state.selection.picks.paper;
   return (
     <div className="main">
       <div className="panel">
@@ -62,7 +65,7 @@ export function PaperView() {
             <table className="data">
               <tbody>
                 {paper.entities.map((row) => (
-                  <tr key={row.entity}>
+                  <tr key={row.entity} className={picked === row.entity ? 'selected' : ''}>
                     <td className="mono">{row.entity}</td>
                     <td>{row.name}</td>
                     <td>{row.parent ? `under ${named(row.parent)}` : ''}</td>
@@ -76,7 +79,8 @@ export function PaperView() {
         <section className="card">
           <h3>Agreements ({paper.agreements.length})</h3>
           {paper.agreements.map((row) => (
-            <details className="fold" key={row.agreement}>
+            <details className="fold" key={row.agreement}
+                     open={picked === row.agreement || undefined}>
               <summary>
                 <span className="mono">{row.agreement}</span> · {named(row.entity)} · {row.kind}
               </summary>

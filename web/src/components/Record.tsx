@@ -164,14 +164,13 @@ function Divergences({ reconcile }: { reconcile: Reconcile }) {
 }
 
 /** The record's strip at the foot of the frame: one line per event, newest first, as far back as
- * this client has merged.
- *
- * It opens no body on the way here - the fold reads envelopes alone - so every type shows,
- * including one this deployment has no sentence for, which renders its own name. Collapsed it is
- * the last thing that happened; expanded it is the sequence.
+ * this client has merged - each the service's sentence for what it is about and who did it, and a
+ * row naming a deal, an agreement or an entity opens it. Every type shows, including one this
+ * deployment has no sentence for, which renders its own name. Collapsed it is the last thing that
+ * happened; expanded it is the sequence.
  */
 export function ActivityStrip() {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
   const [open, setOpen] = useState(false);
   if (recorded(state) === null) return null;
 
@@ -185,8 +184,8 @@ export function ActivityStrip() {
       </button>
       {newest ? (
         <span>
-          <b className="mono">LSN {newest.lsn}</b> {newest.summary}
-          {' · '}{newest.actor}{' · '}{stampText(newest.record_time)}
+          <b className="mono">LSN {newest.lsn}</b> {newest.by}: {newest.summary}
+          {' · '}{stampText(newest.record_time)}
         </span>
       ) : <span>nothing has been recorded here yet</span>}
       <span className="spacer" />
@@ -195,19 +194,24 @@ export function ActivityStrip() {
         <div className="rows">
           <table className="data">
             <tbody>
-              {rows.map((row) => (
-                <tr key={row.lsn}>
-                  <td className="n mono">{row.lsn}</td>
-                  {/* the writer's own clock, in UTC; the title is when the fact is TRUE, which is
-                      null where the fact carries no truth-time of its own */}
-                  <td title={row.effective_time ?? 'no truth-time of its own'}>
-                    {stampText(row.record_time)}
-                  </td>
-                  <td>{row.actor}</td>
-                  <td>{row.summary}</td>
-                  <td>{row.book ?? ''}</td>
-                </tr>
-              ))}
+              {rows.map((row) => {
+                const opens = row.deal_path ?? row.agreement ?? row.entity;
+                return (
+                  <tr key={row.lsn} className={opens ? 'pick' : ''}
+                      title={opens ? `open ${opens}` : undefined}
+                      onClick={() => opened(dispatch, row.deal_path, row.agreement ?? row.entity)}>
+                    <td className="n mono">{row.lsn}</td>
+                    {/* the writer's own clock, in UTC; the title is when the fact is TRUE, which
+                        is null where the fact carries no truth-time of its own */}
+                    <td title={row.effective_time ?? 'no truth-time of its own'}>
+                      {stampText(row.record_time)}
+                    </td>
+                    <td>{row.by}</td>
+                    <td>{row.summary}</td>
+                    <td>{row.book ?? ''}</td>
+                  </tr>
+                );
+              })}
             </tbody>
           </table>
         </div>

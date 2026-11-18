@@ -2466,10 +2466,11 @@ def expiries(rows, today):
 def book_activity(since: str = None, limit: int = 200, actor: str = None):
     """`{lsn, rows}` - one line per event, newest last, beside the cursor to ask again from.
 
-    THE STRIP OPENS NO BODY: the `activity` fold reads envelopes alone and every type in the
+    THE FOLD OPENS NO BODY: the `activity` fold reads envelopes alone and every type in the
     vocabulary, so it costs the length of the history rather than the price of a key, and a type
     the declared table has no sentence for renders its own name rather than dropping out of the
-    sequence.
+    sequence. THE PAGE IS TOLD (`told`): this box opens the bodies of the rows it answers, so each
+    names what it is about and who did it, and says what it opens.
 
     A PAGE WALKS THE RECORD FORWARD. With `?since=` it is the OLDEST `limit` rows after that
     position and the cursor is THE LAST ROW DELIVERED, so a reader asking again with the cursor it
@@ -2504,7 +2505,130 @@ def book_activity(since: str = None, limit: int = 200, actor: str = None):
         return {'lsn': rows[-1]['lsn'] if rows else cursor, 'rows': rows}
 
     page = spine.folded(read)
-    return dict(page, rows=spine.visible(page['rows'], spine.sight(actor), 'book'))
+    return dict(page, rows=told(spine.visible(page['rows'], spine.sight(actor), 'book')))
+
+
+def told(rows):
+    """The strip's `rows` as a reader is told them (`telling`), or - where this box cannot open
+    what they say, a crypto-shredded class - each with the fold's own sentence, `by` its actor and
+    nothing to open: the strip reads whatever the record withholds."""
+    try:
+        return telling(rows)
+    except spine.SpineRefused:
+        return [dict(row, by=row['actor'], deal_path=None, agreement=None, entity=None)
+                for row in rows]
+
+
+def telling(rows):
+    """The strip's `rows`, each its `summary` naming the trade, agreement or client it is about,
+    `by` who did it - the refused seat on a denial, the tier on the hub's own approval - and the
+    `deal_path`, `agreement` and `entity` it opens, null where it names none. A box serving no
+    book names a trade off the record's own copy of its terms, at no path."""
+    if not rows:
+        return rows
+    document = None if BOOK is None else BOOK.read()[0]
+
+    def opened(lsns):
+        return spine.folded(lambda log: {lsn: log.open_body(log.frame_at(lsn)) for lsn in lsns}
+                            ) if lsns else {}
+
+    bodies, standing, clients = opened([row['lsn'] for row in rows]), spine.standing(
+        folds=folds()), client_names()
+    holders = {row['instrument']: row for row in standing}
+    booked = {entry['ticket']: entry['lsn'] for row in standing for entry in row['tickets']}
+    fills = {spine.fill_key(entry['instrument'], entry['execution_reference']): (
+        row['instrument'], entry) for row in standing for entry in row['tickets']}
+    kinds, verdicts = {row['lsn']: row['event_type'] for row in rows}, ('approval', 'rejection')
+    # a verdict's trade is the event its ticket was booked by: in the page, else where it stands
+    trades = {body['ticket']: lsn for lsn, body in bodies.items()
+              if kinds[lsn] in ('fill', 'amendment') and body.get('ticket')}
+    signed = opened(sorted({booked[body['plan_hash']] for lsn, body in bodies.items()
+                            if kinds[lsn] in verdicts and body['plan_hash'] not in trades
+                            and body['plan_hash'] in booked}))
+    bodies.update(signed)
+    trades.update((body['ticket'], lsn) for lsn, body in signed.items())
+
+    def about(kind, body):
+        # the instrument an event booked, restruck, signed or settled, and the act it names
+        if kind in verdicts:
+            body = bodies.get(trades.get(body['plan_hash']))
+        if body is not None and kind in verdicts + ('fill', 'amendment'):
+            return body.get('amended_to') or body['instrument'], body
+        if kind == 'status_transition' and body['subject'] in fills:
+            return fills[body['subject']]
+        return None, None
+
+    held = {row['lsn']: about(row['event_type'], bodies[row['lsn']]) for row in rows
+            if row['lsn'] in bodies}
+    # a row opens the terms the file holds now, a restruck deal's last
+    moved = {row['instrument']: row['amended_to'] for row in standing if row['amended_to']}
+    now = {instrument: amended_head(moved, instrument) for instrument, _ in held.values()
+           if instrument}
+    names = named_trades(document, set(now) | set(now.values()))
+    writer = spine.package().vocabulary.WRITER
+    reporting = reporting_currency(document) if document else ''
+
+    def said(row):
+        kind, body, actor = row['event_type'], bodies.get(row['lsn']), row['actor']
+        instrument, act = held.get(row['lsn'], (None, None))
+        answer = {'by': actor, 'deal_path': None, 'agreement': None, 'entity': None}
+        if body is None:
+            return answer
+        if instrument is not None:
+            position = holders.get(instrument, {})
+            what = '{} for {}'.format(
+                names.get(instrument, {}).get('reference') or instrument[:12],
+                clients.get(position.get('counterparty'), position.get('counterparty')))
+            answer.update(deal_path=names.get(now[instrument], {}).get('deal_path'),
+                          agreement=body.get('agreement') or body.get('netting_set')
+                          or position.get('agreement'))
+        if kind == 'fill':
+            quantity, price = float(body['quantity']), body.get('price')
+            return dict(answer, summary='{} {}{} under {}{}, execution {}'.format(
+                'booked' if quantity > 0 else 'unwound',
+                '' if abs(quantity) == 1 else '{:g} of '.format(abs(quantity)), what,
+                answer['agreement'], '' if price is None else ' at {:,.2f} {}'.format(
+                    price, body.get('currency') or reporting).rstrip(),
+                body['execution_reference']))
+        if instrument is not None:
+            if kind == 'amendment':
+                return dict(answer, summary='amended the terms of {} - a restrike, ticketed '
+                                            'again'.format(what))
+            if kind == 'rejection':
+                return dict(answer, summary='refused {}: {}'.format(what, body['reason']))
+            if kind == 'approval' and actor == writer:
+                return dict(answer, by='tier {}'.format(act.get('tier')), summary='signed {} '
+                            'automatically: its tier needs no second seat'.format(what))
+            if kind == 'approval':
+                return dict(answer, summary='signed {}'.format(what))
+            return dict(answer, summary='{} {}, execution {}{}'.format(
+                body['status'], what, act['execution_reference'], money(body)))
+        if kind == 'capability_denied':
+            return dict(answer, by=body['subject'],
+                        summary='refused: holds no {} scope over {}, so its {} was not '
+                                'filed'.format(body['verb'], body['book'],
+                                               body['attempted_type'].replace('_', ' ')))
+        if kind == 'agreement_declared':
+            return dict(answer, agreement=body['agreement'], entity=body['entity'],
+                        summary='{} agreement {} ({}) with {}'.format(
+                            'restated' if body.get('supersedes') else 'declared',
+                            body['agreement'], body['kind'],
+                            clients.get(body['entity'], body['entity'])))
+        if kind == 'entity_declared':
+            return dict(answer, entity=body['entity'], summary='{} {} ({}) as a legal entity{}'
+                        .format('restated' if body.get('supersedes') else 'declared',
+                                body['name'], body['entity'], ' under {}'.format(
+                                    body['parent']) if body.get('parent') else ''))
+        if kind == 'status_transition':
+            return dict(answer, agreement=body.get('agreement'), summary='{} {}{}'.format(
+                body['status'], body.get('agreement') or body['subject'], money(body)))
+        return answer
+
+    def money(body):
+        return '' if body.get('amount') is None else ' - {} {:,.2f} {}'.format(
+            body.get('kind') or 'paid', float(body['amount']), body.get('asset') or '')
+
+    return [dict(row, **said(row)) for row in rows]
 
 
 @app.get('/book/markets', summary="The record's markets - the closes, the names, the snapshots")

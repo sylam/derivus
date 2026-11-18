@@ -260,10 +260,10 @@ export type SpineBlock = {
  * the document it already holds and reads only the record's block here. */
 export type BookStatus = { etag: string; spine: SpineBlock | null };
 
-/** One line of the strip, envelope only - which is why it renders on a replica holding no key.
- * `record_time` is the writer's clock; `effective_time` is when the fact is TRUE and is null where
- * the fact carries no truth-time of its own. `summary` is the declared sentence for the type, or
- * the type's own name where this hub's table has none. */
+/** One line of the strip: the envelope - `record_time` the writer's clock, `effective_time` when
+ * the fact is TRUE, null where it carries no truth-time of its own - and what the service tells of
+ * it: `summary` naming what it is about, `by` who did it, and the deal, agreement and entity it
+ * opens, each null where it names none. */
 export type ActivityRow = {
   lsn: number;
   record_time: string;
@@ -272,6 +272,10 @@ export type ActivityRow = {
   event_type: string;
   book: string | null;
   summary: string;
+  by: string;
+  deal_path: string | null;
+  agreement: string | null;
+  entity: string | null;
 };
 
 /** `GET /book/activity`: the rows newest last, and the head the fold reached - the `since` a

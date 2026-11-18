@@ -1561,7 +1561,10 @@ def close_check(date: str) -> dict:
 def book_activity(since: int | None = None, limit: int = 200,
                   actor: str | None = None) -> dict:
     """The record's own strip: one line per event - where it sits, when it was recorded and when
-    it is TRUE, who said it, and the declared sentence for what it was.
+    it is TRUE, who said it, and the sentence for what it was: `summary` names the trade and
+    client, agreement or entity it is about, `by` is who did it (the seat refused on a refusal,
+    the tier on an automatic signature), and `deal_path`, `agreement` and `entity` are what it
+    names, null where it names none.
 
     Newest last, beside the `lsn` to ask again from. A PAGE WALKS FORWARD: with `since` it is the
     OLDEST `limit` rows after that position and the `lsn` is the last row delivered, so asking

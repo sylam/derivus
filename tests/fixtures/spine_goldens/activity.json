@@ -42,7 +42,7 @@
     "event_type": "fill",
     "lsn": 5,
     "record_time": "the writer stamped this",
-    "summary": "a clip was booked"
+    "summary": "a trade was booked"
   },
   {
     "actor": "subject-desk-one",
@@ -51,7 +51,7 @@
     "event_type": "fill",
     "lsn": 6,
     "record_time": "the writer stamped this",
-    "summary": "a clip was booked"
+    "summary": "a trade was booked"
   },
   {
     "actor": "subject-desk-one",
@@ -60,7 +60,7 @@
     "event_type": "amendment",
     "lsn": 7,
     "record_time": "the writer stamped this",
-    "summary": "terms were restruck under a new instrument"
+    "summary": "a trade's terms were amended"
   },
   {
     "actor": "subject-desk-one",
@@ -78,7 +78,7 @@
     "event_type": "approval",
     "lsn": 9,
     "record_time": "the writer stamped this",
-    "summary": "a plan was approved"
+    "summary": "a ticket was signed"
   },
   {
     "actor": "subject-desk-two",
@@ -87,7 +87,7 @@
     "event_type": "rejection",
     "lsn": 10,
     "record_time": "the writer stamped this",
-    "summary": "a plan was rejected"
+    "summary": "a ticket was refused"
   },
   {
     "actor": "subject-desk-one",

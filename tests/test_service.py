@@ -7584,8 +7584,9 @@ def test_the_doorbell_carries_a_position_and_never_a_fact(recorded):
 
 def test_the_frames_read_is_the_twelve_fields_and_the_strip_is_six(recorded):
     """Why a replica needs a read of its own. `/spine/frames` answers what `SpineLog.frames`
-    yields, in canonical bytes; `/book/activity` answers six of those fields plus a declared
-    sentence, and every one of the six it drops is something `accept` asks for - the sealed body,
+    yields, in canonical bytes; `/book/activity` answers six of those fields plus what it tells of
+    each - its sentence, who did it and what it opens - and every one of the six it drops is
+    something `accept` asks for - the sealed body,
     the two hashes the chain is made of, the tag uniqueness is enforced on and the class the body
     is sealed against. A strip is a reading for a person; a frame is the line itself.
     """
@@ -7612,7 +7613,8 @@ def test_the_frames_read_is_the_twelve_fields_and_the_strip_is_six(recorded):
     strip = CLIENT.get('/book/activity').json()['rows']
     assert canonical_bytes(strip) != canonical_bytes(held)
     kept = set(strip[0]) & set(FRAME_FIELDS)
-    assert len(kept) == 6 and set(strip[0]) - kept == {'summary'}
+    assert len(kept) == 6 and set(strip[0]) - kept == {
+        'summary', 'by', 'deal_path', 'agreement', 'entity'}
     assert set(FRAME_FIELDS) - kept == {
         'body', 'entitlement_class', 'event_hash', 'event_version', 'idempotency_tag', 'prev_hash'}
 

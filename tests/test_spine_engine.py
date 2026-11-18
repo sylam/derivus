@@ -2854,6 +2854,74 @@ def test_a_restrike_is_a_trade_and_the_position_reads_its_ticket(recorded, desk)
     assert oracle.failed(oracle.report(recorded)) == []
 
 
+#: A seat that may act on nothing in the book - risk reading it.
+RISK_SEAT = 'subject-risk'
+
+
+def papered(recorded):
+    """The client's set on the book, its entity and agreement declared, a tier signing what is
+    under the cap and a second seat what is not, and the desk's three seats entitled."""
+    terms = netting_set(CLIENT_SET, 'CPTY_A')['Instrument']['.Deal']
+    for path, body in (('/book/entities', {'entity': 'CPTY_A', 'name': 'Client A Ltd'}),
+                       ('/book/agreements', {'agreement': CLIENT_SET, 'entity': 'CPTY_A',
+                                             'kind': 'ISDA 2002', 'terms': terms})):
+        assert CLIENT.post(path, content=dump(body), headers=JSON).status_code == 200
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'auto', 'max_notional': {'amount': BIG, 'currency': 'USD'}},
+        {'name': 'desk', 'four_eyes': True}))
+    entitle(recorded, [(ACTOR, verb, '*') for verb in ('admin', 'book', 'validate', 'approve')]
+            + [(DESK_TWO, 'approve', '*'), (RISK_SEAT, 'validate', '*')])
+
+
+def test_a_strip_row_names_the_trade_who_did_it_and_what_it_opens(recorded, desk):
+    """THE PAGE IS TOLD. Each row of the strip names what it is about in the desk's words - the
+    trade's reference and client, the agreement, how much was unwound - says who did it, and the
+    deal path or agreement it opens: the agreement declared, the hub's automatic signature under
+    the tier that gave it beside a second seat's, a booking, an unwind, a restrike and a refusal
+    filed under the seat refused.
+
+    Killing mutations: a denial's `by` read off the envelope, which files every refusal under the
+    writer; and the hub's own approval told as a seat's, which reads an automatic signature
+    exactly like a trader's.
+    """
+    with_client(desk)
+    papered(recorded)
+    auto = ticketed('EXEC-AUTO', notional=AMOUNT, notional_currency='USD').json()
+    big = ticketed('EXEC-BIG', notional=10 * BIG, notional_currency='USD').json()
+    assert CLIENT.post('/book/approve', json={'ticket': big['ticket'], 'actor': DESK_TWO}
+                       ).status_code == 200
+    assert CLIENT.post('/book/deals', content=dump({
+        'action': 'fill', 'deal_path': auto['deal_path'], 'reference': 'EXEC-AUTO',
+        'quantity': -0.5, 'execution_reference': 'EXEC-HALF', 'notional': AMOUNT / 2,
+        'notional_currency': 'USD', 'actor': ACTOR}), headers=JSON).json()['written'] is True
+    seated = CLIENT.post('/book/approve', json={'ticket': big['ticket'], 'actor': RISK_SEAT})
+    assert seated.status_code == 422 and 'holds no approve scope' in seated.json()['detail']
+    assert restruck(big['deal_path'], Amount=300_000.0)['written'] is True
+
+    told = [(row['by'], row['summary'], row['deal_path'], row['agreement'])
+            for row in strip()['rows'] if row['event_type'] in (
+                'agreement_declared', 'approval', 'fill', 'amendment', 'capability_denied')]
+    auto_trade, big_trade = 'EXEC-AUTO for Client A Ltd', 'EXEC-BIG for Client A Ltd'
+    assert told == [
+        (ACTOR, 'declared agreement {} (ISDA 2002) with Client A Ltd'.format(CLIENT_SET), None,
+         CLIENT_SET),
+        ('tier auto', 'signed {} automatically: its tier needs no second seat'.format(auto_trade),
+         auto['deal_path'], CLIENT_SET),
+        (ACTOR, 'booked {} under {}, execution EXEC-AUTO'.format(auto_trade, CLIENT_SET),
+         auto['deal_path'], CLIENT_SET),
+        (ACTOR, 'booked {} under {}, execution EXEC-BIG'.format(big_trade, CLIENT_SET),
+         big['deal_path'], CLIENT_SET),
+        (DESK_TWO, 'signed {}'.format(big_trade), big['deal_path'], CLIENT_SET),
+        ('tier auto', 'signed {} automatically: its tier needs no second seat'.format(auto_trade),
+         auto['deal_path'], CLIENT_SET),
+        (ACTOR, 'unwound 0.5 of {} under {}, execution EXEC-HALF'.format(auto_trade, CLIENT_SET),
+         auto['deal_path'], CLIENT_SET),
+        (RISK_SEAT, 'refused: holds no approve scope over spine-desk, so its approval was not '
+                    'filed', None, None),
+        (ACTOR, 'amended the terms of {} - a restrike, ticketed again'.format(big_trade),
+         big['deal_path'], CLIENT_SET)], told
+
+
 def test_a_deal_booked_again_as_it_was_is_the_trade_the_record_holds(recorded, desk):
     """A TICKET IS THE TRADE: the plan it leaves and its own fields. A delete records nothing, so a
     deal deleted and booked again as it was - its reference, quantity and price - is the trade the
@@ -3356,9 +3424,10 @@ def test_a_partial_unwind_leaves_the_file_and_the_record_agreeing(recorded, book
 # --------------------------------------------------------------------------------------------
 # The record's own readings - the strip, the markets, and the verdict a banner reads off them.
 
-#: Every field one line of the strip carries. The envelope and nothing else, which is what lets a
-#: replica holding no key render the sequence.
-STRIP_FIELDS = {'lsn', 'record_time', 'effective_time', 'actor', 'event_type', 'book', 'summary'}
+#: Every field one line of the strip carries: the envelope, the sentence the service tells it in,
+#: who did it and what it opens.
+STRIP_FIELDS = {'lsn', 'record_time', 'effective_time', 'actor', 'event_type', 'book', 'summary',
+                'by', 'deal_path', 'agreement', 'entity'}
 
 
 def strip(**params):
@@ -3419,8 +3488,9 @@ def filed(home, event_type, body, book=None):
 
 
 def test_the_strip_is_every_event_and_a_page_is_what_came_after(recorded, booking):
-    """The activity read is the record's own sequence with nothing left out: the fold
-    opens no body, so every type is a line and the summary is the declared sentence for it.
+    """The activity read is the record's own sequence with nothing left out: the fold opens no
+    body, so every type is a line, its summary the declared sentence for it where the service
+    tells it no other - a booking it names by its reference, client and agreement.
 
     `?since=` answers what came after, and merging that page onto the rows already held reproduces
     the whole strip - the rule `web/src/spine.ts` renders by, mirrored here. With no `?since=`
@@ -3437,7 +3507,11 @@ def test_the_strip_is_every_event_and_a_page_is_what_came_after(recorded, bookin
     assert whole['lsn'] == head(recorded)
     assert [row['event_type'] for row in whole['rows'][-2:]] == ['fill', 'fill']
     assert all(set(row) == STRIP_FIELDS for row in whole['rows'])
-    assert all(row['summary'] == projections.SUMMARIES[row['event_type']] for row in whole['rows'])
+    assert all(row['summary'] == projections.SUMMARIES[row['event_type']]
+               for row in whole['rows'][:-2])
+    assert [row['summary'] for row in whole['rows'][-2:]] == [
+        'booked 250000 of {} for CPTY_A under {}, execution EXEC-{}'.format(
+            reference, CLIENT_SET, reference) for reference in ('ONE', 'TWO')]
     assert [row['lsn'] for row in strip(limit=3)['rows']] == [row['lsn'] for row
                                                               in whole['rows'][-3:]]
 
@@ -3607,7 +3681,7 @@ def test_what_the_file_lost_is_drift_under_a_pin_that_has_seen_every_position(re
 
 
 def test_a_home_with_no_book_at_all_still_reads_the_record(recorded):
-    """The strip and the markets open no DOCUMENT, so they answer on a box serving no book - the
+    """The strip and the markets need no DOCUMENT, so they answer on a box serving no book - the
     replica posture the strip exists for, where the record is the whole of what there is to read.
     Reconcile is the one that compares against a file, and says so in the book verb's own words.
 
@@ -3623,8 +3697,8 @@ def test_a_home_with_no_book_at_all_still_reads_the_record(recorded):
 
 def test_a_shredded_home_answers_the_records_own_words_and_never_a_500(recorded, booking):
     """A home whose class key is gone is CRYPTO-SHREDDED, which is an entitlement fact rather than
-    a fault: the strip still reads, opening no body, and every read that opens one answers the
-    spine's own sentence as a 422.
+    a fault: the strip still reads, each row in the fold's own sentence where its body will not
+    open, and every other read that opens one answers the spine's own sentence as a 422.
 
     Killing mutation: the handler dropped, after which a reading takes the verb down and a desk
     meets a stack trace where the record's own words belong.
