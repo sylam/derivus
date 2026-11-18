@@ -4823,6 +4823,25 @@ class TouchLifecycle:
         super().add_reval_date_offset(offset, relative_to_settlement)
 
 
+class BarrierLifecycle:
+    """What a single barrier registers, whatever it watches: its expiry, the day its payoff settles
+    and, where it pays a rebate, every grid date the touch may pay it on."""
+
+    def __init__(self, params, valuation_options):
+        super().__init__(params, valuation_options)
+        self.path_dependent = True
+
+    def reset(self, calendars):
+        super().reset()
+        # a touch's rebate may pay on the expiry, the payoff on the day it settles
+        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy if self.pays_on_grid() else None)
+        self.add_settlement_dates()
+
+    def pays_on_grid(self):
+        # a cash rebate is paid on touch if the option knocks out
+        return bool(self.field['Cash_Rebate'])
+
+
 class EquityOneTouchOption(TouchLifecycle, Deal):
     vernacular = 'equity one-touch, one touch, touch option'
     fields = [ADMIN, PRICING, EQUITY_TOUCH, TOUCH, own('EquityOneTouchOption', [
@@ -4914,7 +4933,7 @@ class EquityNoTouchOption(EquityOneTouchOption):
         'expiry on the same terms is its complement, the two together the discounted payout.'])
 
 
-class EquityBarrierOption(Deal):
+class EquityBarrierOption(BarrierLifecycle, Deal):
     vernacular = 'equity barrier option, knock-in, knock-out'
     observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date',
                         monitors=True)
@@ -5023,25 +5042,14 @@ class EquityBarrierOption(Deal):
         '$S\\cdot X$ is worth; the bridge composes the two factors\' published variance rates',
         'with the implied correlation and observes endpoints where either publishes none.'])
 
-    def __init__(self, params, valuation_options):
-        super(EquityBarrierOption, self).__init__(params, valuation_options)
-        self.path_dependent = True
-
     def resolve_history(self, base_date, calendars, valuation_options):
         return resolve_discrete_barrier(
             self, base_date, calendars, valuation_options, 'EquityOptionDeal')
 
     def reset(self, calendars):
-        super(EquityBarrierOption, self).reset()
+        super(EquityBarrierOption, self).reset(calendars)
         if self.field.read('Barrier_Dates'):
-            barrierdates = {d for d, _ in barrier_monitoring_rows(self.field['Barrier_Dates'])}
-            self.add_reval_dates(barrierdates.union({self.field['Expiry_Date']}), self.payoff_ccy)
-        else:
-            self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
-
-    def pays_on_grid(self):
-        # a cash rebate is paid on touch if the option knocks out
-        return bool(self.field['Cash_Rebate'])
+            self.add_reval_dates({d for d, _ in barrier_monitoring_rows(self.field['Barrier_Dates'])}, self.payoff_ccy)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -5371,7 +5379,7 @@ class CommodityNoTouchOption(CommodityOneTouchOption):
         'complement, the two together the discounted payout.'])
 
 
-class CommodityBarrierOption(CommodityFixingWatch, Deal):
+class CommodityBarrierOption(BarrierLifecycle, CommodityFixingWatch, Deal):
     vernacular = 'commodity barrier option, energy barrier option, commodity knock-in, commodity knock-out'
     observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
     fields = [ADMIN, PRICING, COMMODITY_TOUCH, own('CommodityBarrierOption', [
@@ -5405,20 +5413,6 @@ class CommodityBarrierOption(CommodityFixingWatch, Deal):
         "The barrier is continuous, a stated **Barrier_Dates** sizing the shift as a touch's does: the",
         "equity barrier's observed closes and One-Step Survival arm are not built, and a **SpotModel**",
         'other than `None` is refused by name. No structure recipe or market quote is built on it.'])
-
-    def __init__(self, params, valuation_options):
-        super(CommodityBarrierOption, self).__init__(params, valuation_options)
-        self.path_dependent = True
-
-    def reset(self, calendars):
-        super(CommodityBarrierOption, self).reset()
-        # a touch's rebate may pay on the expiry, the payoff on the day it settles
-        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy if self.pays_on_grid() else None)
-        self.add_settlement_dates()
-
-    def pays_on_grid(self):
-        # a cash rebate is paid on touch if the option knocks out
-        return bool(self.field['Cash_Rebate'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -6115,7 +6109,7 @@ class FXNoTouchOption(FXOneTouchOption):
         'expiry on the same terms is its complement, the two together the discounted payout.'])
 
 
-class FXBarrierOption(Deal):
+class FXBarrierOption(BarrierLifecycle, Deal):
     vernacular = 'FX barrier option, knock-in, knock-out'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
                         expires='Expiry_Date')
@@ -6143,20 +6137,6 @@ class FXBarrierOption(Deal):
         'rebate on the touch. The barrier is watched to the expiry; past it the payoff is on what the',
         'expiry fixed: the path\'s own level on the expiry row or, where the expiry is behind the base',
         'date, the print **Price_Fixing** states for it, which it must.'])
-
-    def __init__(self, params, valuation_options):
-        super(FXBarrierOption, self).__init__(params, valuation_options)
-        self.path_dependent = True
-
-    def reset(self, calendars):
-        super(FXBarrierOption, self).reset()
-        # a touch's rebate may pay on the expiry, the payoff on the day it settles
-        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy if self.pays_on_grid() else None)
-        self.add_settlement_dates()
-
-    def pays_on_grid(self):
-        # a cash rebate is paid on touch if the option knocks out
-        return bool(self.field['Cash_Rebate'])
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
