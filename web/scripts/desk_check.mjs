@@ -78,7 +78,21 @@ check("a named calculation's unstated dial stands at the book's own, where its t
                     { Simulation_Batches: {}, Batch_Size: {}, Antithetic: {} }),
       { Simulation_Batches: 20 });
 
-// --- the reading of a tenor and a quote
+// --- the reading of a stamp, a tenor and a quote
+const stamps = (zone) => {
+  process.env.TZ = zone;
+  return ['2026-11-16T19:21:07.364541Z', '2026-11-16T21:21:07.123+02:00',
+          '2026-11-16T21:21:07.123', 'not a stamp'].map(desk.stampText);
+};
+check("every stamp reads on the browser's clock with its offset named, whatever zone it was taken in",
+      "the record's UTC and the service's local time shown as written, unlabelled, two hours "
+      + "apart on one screen; or one offset hard-coded, which is wrong on any other desk",
+      [stamps('Africa/Johannesburg'), stamps('America/New_York')],
+      [['2026-11-16 21:21:07 UTC+2', '2026-11-16 21:21:07 UTC+2', '2026-11-16 21:21:07',
+        'not a stamp'],
+       ['2026-11-16 14:21:07 UTC-5', '2026-11-16 14:21:07 UTC-5', '2026-11-16 21:21:07',
+        'not a stamp']]);
+
 const FACTORS = { Factor: { types: {
   InterestRate: { Curve: { widget: 'Curve', description: 'Continuously compounded interest rate' } },
   ForwardPrice: { Curve: { widget: 'Curve', description:
@@ -102,7 +116,7 @@ check('a vol quote reads as a dealer names it, and any other quote as itself',
         .map(desk.quoteText),
       ['2M ATM', '1M 25D RR', '1W 10D BF', 'USD 1M', 'ATM 2M']);
 
-console.log(`\n${ran} checks over 6 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 7 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

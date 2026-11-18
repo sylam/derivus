@@ -13,12 +13,11 @@ import type { BookRisk, BookXva, DealMark, GreekRow, JobDoc, Schema, XvaSet } fr
 import { axisNames } from './vols';
 
 // ---- stamps -------------------------------------------------------------------------------------
-// The service stamps every answer in local time to milliseconds. Two stamps from the same service
-// are the only clocks compared here: an age is measured from a row's run to the READ that carried
-// it, never to the browser's clock, which belongs to a different machine in a different timezone
-// and would put a desk's numbers hours out for no reason it could see.
+// The service stamps every answer on its own clock to milliseconds, with the offset it runs at. Two
+// stamps from the same service are the only clocks compared here: an age is measured from a row's
+// run to the READ that carried it, never to the browser's clock, which belongs to another machine.
 
-const STAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?/;
+const STAMP = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d+))?(Z|[+-][\d:]{4,5})?/;
 
 /** A service stamp as milliseconds on one arbitrary clock, or undefined. Read through `Date.UTC`
  * rather than `Date.parse` so no local timezone - and no DST edge inside one - can move a
@@ -30,12 +29,24 @@ export function stampMs(stamp: string | null | undefined): number | undefined {
   return Date.UTC(+parts[1], +parts[2] - 1, +parts[3], +parts[4], +parts[5], +parts[6], fraction);
 }
 
-/** A stamp as a desk reads it - `2026-08-28 20:51:34`, the milliseconds dropped. Anything that is
- * not a stamp reads as itself: a shape this does not recognise is still shown. */
+const pad = (value: number) => String(value).padStart(2, '0');
+
+/** A stamp as a desk reads it: on this browser's clock with its offset named, the seconds kept -
+ * `2026-08-28 22:51:34 UTC+2` - so every time on a screen compares with every other. A stamp naming
+ * no zone reads as written; anything that is not a stamp reads as itself. */
 export function stampText(stamp: string | null | undefined): string {
   const parts = stamp === null || stamp === undefined ? null : STAMP.exec(stamp);
   if (!parts) return stamp ?? '';
-  return `${parts[1]}-${parts[2]}-${parts[3]} ${parts[4]}:${parts[5]}:${parts[6]}`;
+  if (!parts[8]) return `${parts[1]}-${parts[2]}-${parts[3]} ${parts[4]}:${parts[5]}:${parts[6]}`;
+  const [hours, minutes] = parts[8] === 'Z' ? [0, 0] : parts[8].slice(1).split(/:?(?=\d{2}$)/);
+  const east = (parts[8][0] === '-' ? -1 : 1) * (+hours * 60 + +minutes);
+  const at = new Date(stampMs(stamp)! - east * 60_000);
+  const west = at.getTimezoneOffset();
+  const size = Math.abs(west);
+  const zone = size === 0 ? 'UTC'
+    : `UTC${west > 0 ? '-' : '+'}${Math.floor(size / 60)}${size % 60 ? `:${pad(size % 60)}` : ''}`;
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())} ${
+    pad(at.getHours())}:${pad(at.getMinutes())}:${pad(at.getSeconds())} ${zone}`;
 }
 
 export function plural(count: number, unit: string): string {

@@ -5726,6 +5726,16 @@ def xva_rows():
     return {entry['reference']: entry for entry in CLIENT.get('/book/xva').json()['sets']}
 
 
+def test_a_service_stamp_names_the_offset_it_was_taken_at(desk_xva):
+    """A read's `as_of` is the service's clock with its offset, the instant it was read. Killing
+    mutation: the stamp naive - a reader on another clock places it hours out."""
+    import datetime
+
+    stamp = datetime.datetime.fromisoformat(CLIENT.get('/book/xva').json()['as_of'])
+    assert stamp.utcoffset() is not None, stamp
+    assert abs(datetime.datetime.now(datetime.timezone.utc) - stamp) < datetime.timedelta(minutes=1)
+
+
 #: An equity autocall whose first coupon, half a year behind the book's date, printed exactly on its
 #: trigger: the note called then, its own history ending it with its last coupon still to come.
 CALLED = {'Object': 'QEDI_CustomAutoCallSwap', 'Reference': 'AC_CALLED', 'Currency': 'USD',

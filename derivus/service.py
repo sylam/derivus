@@ -1636,11 +1636,12 @@ def run_calculation(request: dict):
 def as_of():
     """When a projection or a risk vector was computed, as one ISO stamp - what a blotter shows
     beside a number to say how old it is. Milliseconds, not seconds: two recalcs of one set can
-    land inside the same second, and the stamp is the ordering key the mosaic is read by.
+    land inside the same second, and the stamp is the ordering key the mosaic is read by. The
+    service's own clock with the offset it runs at, so a reader on another clock can compare it.
     """
     import datetime
 
-    return datetime.datetime.now().isoformat(timespec='milliseconds')
+    return datetime.datetime.now().astimezone().isoformat(timespec='milliseconds')
 
 
 def risk_etag(document):
