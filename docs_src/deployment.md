@@ -9,7 +9,7 @@ from a user's side; the developer pages linked below hold the design behind each
 
 Everything installs from one package. The core is the engine alone; the extras add the service, the
 model binding, the quote sheet and the record (the full list is on [Requirements](require.md#extras)).
-Python 3.10 or later is required.
+Python 3.11 or later is required.
 
 | install | what it brings |
 | --- | --- |

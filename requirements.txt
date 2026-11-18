@@ -1,8 +1,8 @@
-# Python >= 3.10
-numpy>=1.23.5
+# Python >= 3.11
+numpy>=1.26
 scipy>=1.15
-pandas>=1.0.0
-torch>=2.0.0
+pandas>=3.0
+torch>=2.6
 pyparsing>=2.4.7
 setuptools>=49.6.0
 # The notebook Workbench only (the `interactive` extra) - nothing in the package imports it
@@ -13,7 +13,7 @@ setuptools>=49.6.0
 # DV_Service only (the `service` extra) - derivus/service.py is the sole importer
 # fastapi>=0.100
 # uvicorn>=0.23
-# The MCP binding only (the `mcp` extra; python 3.10+) - derivus_mcp imports all three
+# The MCP binding only (the `mcp` extra) - derivus_mcp imports all three
 # mcp>=2,<3
 # mcp-types
 # requests

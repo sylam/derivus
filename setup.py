@@ -48,16 +48,16 @@ setup(
     description='An XVA quantitative library with AAD',
     long_description=long_description,
     long_description_content_type="text/markdown",
-    # 3.10 is the floor three ways: the MCP binding (mcp needs it), `float | None` annotations in
-    # derivus_bloomberg, and scipy 1.15 below; the test suite runs on 3.13
-    python_requires='>=3.10',
+    # 3.11 is the floor: it is the oldest pandas 3.0 below supports; the test suite runs on 3.13
+    python_requires='>=3.11',
     # exactly what the package imports — pyparsing was previously only reaching us by accident,
     # as a transitive dependency of matplotlib, and sortedcontainers was declared and read by
     # nothing at all
-    # scipy 1.15 is the first to take basinhopping's `rng` (the HW2F bootstrap), and numpy
-    # 1.23.5 is that scipy's own floor
-    install_requires=['numpy>=1.23.5', 'scipy>=1.15', 'pandas>=1.0', 'pyparsing>=2.4.7',
-                      'torch>=2.0'],
+    # each floor is the first release with what the package calls: scipy's basinhopping `rng`,
+    # pandas' grouped sum `skipna` (numpy 1.26 is that pandas' own floor), and torch's
+    # `torch.cuda.get_per_process_memory_fraction`
+    install_requires=['numpy>=1.26', 'scipy>=1.15', 'pandas>=3.0', 'pyparsing>=2.4.7',
+                      'torch>=2.6'],
     extras_require={
         'interactive': ['jupyter', 'matplotlib>=3.0'],
         # GARCHSpotModel's calibration only; the import is lazy, so the rest of the library
@@ -68,7 +68,7 @@ setup(
         # DV_Service only; derivus/service.py is the sole importer, so `import derivus` never
         # needs either of these
         'service': SERVICE,
-        # the MCP binding's own two imports (mcp needs python 3.10+); `desk` is the whole
+        # the MCP binding's own two imports; `desk` is the whole
         # working stack - service plus MCP, with the packaged UI riding in the wheel as data
         'mcp': MCP,
         # the quote sheet a structure is priced into - it joins `desk` above, so the working
@@ -97,7 +97,6 @@ setup(
                  'Intended Audience :: Science/Research',
                  'Topic :: Office/Business :: Financial',
                  'Programming Language :: Python :: 3',
-                 'Programming Language :: Python :: 3.10',
                  'Programming Language :: Python :: 3.11',
                  'Programming Language :: Python :: 3.12',
                  'Programming Language :: Python :: 3.13'],
