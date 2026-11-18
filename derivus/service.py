@@ -2293,6 +2293,16 @@ def refused_document(request, refusal):
     return JSONResponse(status_code=422, content={'detail': str(refusal)})
 
 
+@app.exception_handler(Exception)
+def unrefused(request, error):
+    """Whatever a request meets that no verb refuses by name answers 500, its `detail` the
+    exception's type and message, and is logged with its traceback. Starlette raises it again once
+    the answer is sent, for the server and for a test client that asks to see it."""
+    LOG.error('%s %s failed', request.method, request.url.path, exc_info=error)
+    return JSONResponse(status_code=500, content={'detail': '{}: {}'.format(
+        type(error).__name__, error)})
+
+
 @app.get('/book/reconcile', summary='Where the book file and the record disagree')
 def book_reconcile(actor: str = None):
     """The record's positions AT ITS HEAD, against the deals the book file holds.

@@ -1574,3 +1574,18 @@ def test_an_amendment_naming_a_field_its_type_does_not_declare_is_an_answer_nami
         'FixedCashflowDeal declares no Amout']
     assert book.read_bytes() == before
     assert mcp_server.amend_deal('0', {'Amount': 500_000.0}, reference='CF1')['written'] is True
+
+
+def test_a_failure_the_service_has_no_refusal_for_reaches_a_model_as_its_type_and_message(book):
+    """The service's 500 for a request no verb refuses carries the exception's type and message,
+    and the tool error a model reads relays them, where it once relayed `Internal Server Error`.
+
+    Killing mutation: the service's handler for the unrefused removed.
+    """
+    mcp_server.configure(base_url='http://testserver',
+                         session=TestClient(service.app, raise_server_exceptions=False))
+    with pytest.raises(ToolError) as refused:
+        asyncio.run(mcp_server.price_candidate(deal={'.Deal': json.loads(dump(BOOKED))}))
+    assert str(refused.value) == ('DV_Service answered 500 for POST /book/price: {"detail":'
+                                  '"AttributeError: \'DeferredDeal\' object has no attribute '
+                                  '\'get\'"}')

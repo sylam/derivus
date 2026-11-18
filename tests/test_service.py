@@ -838,6 +838,25 @@ def test_a_what_if_prices_the_candidate_and_writes_nothing(book):
     assert book.read_bytes() == before
 
 
+def test_a_failure_no_verb_refuses_answers_its_type_and_message(book, caplog):
+    """A request the service has no refusal for - a candidate posted in the wire's `{".Deal":
+    ...}` shape - answers 500 with the exception's type and message as its `detail`, read through a
+    client that does not raise what the server raised, and is logged with its traceback; the file
+    never moves.
+
+    Killing mutation: the handler removed, which answers the bare text `Internal Server Error`.
+    """
+    before = book.read_bytes()
+    with caplog.at_level(logging.ERROR, logger='derivus.service'):
+        answer = TestClient(service.app, raise_server_exceptions=False).post(
+            '/book/price', content=dump({'deal': {'.Deal': BOOKED}}), headers=JSON)
+    assert (answer.status_code, answer.text) == (
+        500, '{"detail":"AttributeError: \'DeferredDeal\' object has no attribute \'get\'"}')
+    assert [record.exc_info[0] for record in caplog.records
+            if record.name == 'derivus.service'] == [AttributeError]
+    assert book.read_bytes() == before
+
+
 def test_a_calculation_override_is_judged_against_its_own_declarations(book):
     """An override is a dial of a declared calculation, so a field it does not declare - a base
     valuation's `Random_Seed` among them, its draws being `Quasi_Seed`'s - a value outside that

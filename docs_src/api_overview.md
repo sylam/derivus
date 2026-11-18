@@ -548,7 +548,9 @@ failed with, and nothing else. A run that skipped a deal or a structure it could
 `Stats` count ending `Skipped`, is an `error` naming the counts and the engine's own sentences, so a
 partly priced book is never answered as the book; a verb that values inline, `/book/risk` or a P&L
 read, refuses `422` in the same words. A node stated `Ignore: 'True'` is counted under `Ignored`
-and an expired deal nowhere, and neither fails the run.
+and an expired deal nowhere, and neither fails the run. A request meeting a failure no verb refuses
+by name answers `500` with `{detail}` naming the exception's type and message, and the service
+logs it with its traceback.
 
 **Generating a client.** The service publishes its own OpenAPI document at
 `http://localhost:8000/openapi.json`, with a summary and a description on every endpoint. An SPA

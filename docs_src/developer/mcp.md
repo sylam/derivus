@@ -117,11 +117,14 @@ deal, about a deal the book carried no message for, or about market data the boo
 lack, because a deal the book cannot price loads and is then dropped by discovery. A refusal is a
 normal return, `{written: false, refused: [...]}`, because the model's next move is to fix what it
 names; a tool error means the call cannot proceed (the service down, a parent that takes no
-children, a quote id with nothing filed). `price_candidate` and `solve_deal` run the same check
-before they queue. **Held by**
+children, a quote id with nothing filed), and a failure the service has no refusal for arrives as
+its 500, the exception's type and message in its `detail`. `price_candidate` and `solve_deal` run
+the same check before they queue. **Held by**
 `test_a_rejected_booking_is_an_answer_that_wrote_nothing`,
 `test_a_parent_that_takes_no_children_is_refused`,
 `test_the_service_being_down_names_dv_service`,
+`test_a_failure_the_service_has_no_refusal_for_reaches_a_model_as_its_type_and_message`,
+`test_service.py::test_a_failure_no_verb_refuses_answers_its_type_and_message`,
 `test_service.py::test_a_malformed_booking_is_refused_by_name_and_writes_nothing`,
 `::test_a_deal_missing_a_term_is_refused_by_name_and_a_convention_is_not`,
 `::test_a_candidate_naming_market_data_the_book_lacks_is_refused`,
