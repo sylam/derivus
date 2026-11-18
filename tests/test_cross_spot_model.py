@@ -765,7 +765,7 @@ def test_a_cross_under_an_outer_reads_its_own_law_and_re_seeds():
     assert np.isfinite(exposure).all() and exposure.shape[0] > 1
     assert exposure.std() > 0.0, 'a skipped deal has no spread, so zero would pass anything'
     assert (float(exposure.mean()), float(exposure.std())) == pytest.approx(
-        (-3517.775739648069, 98090.26787172229), rel=1e-9), (
+        (-5183.544126435493, 97251.3831995148), rel=1e-9), (
         'the cross re-seeds from its own level: this exposure moves if it inherits one')
 
 

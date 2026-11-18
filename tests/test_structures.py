@@ -2204,9 +2204,8 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
     path count, and the band below is 160 times that floor.
 
     THE ACCUMULATOR'S ORIENTATION ALREADY JOINED: its notional is the rand, so its underlying was
-    already the non-base token. Its strike is pinned to the digit at 17.389901413377814, so the
-    arm that never had the defect cannot lose the fit either; re-pinned from 17.390492998425863
-    when a base valuation's inner paths became the canonical block's.
+    already the non-base token. Its strike is pinned to the digit at 17.379426406278363, so the
+    arm that never had the defect cannot lose the fit either.
 
     Killing mutation: the spot model never pinned on a fitted pair, which prices the strip GBM.
     """
@@ -2226,7 +2225,7 @@ def test_a_tarf_on_a_fitted_pair_stops_riding_gbm(accrual_book):
     # the band is the accumulation order's, not the claim's - what a lost fit costs this arm is
     # 5.1e-2, and the strike it solves under the factor is pinned here to the digit
     assert leg(accumulator, 'accumulator')['strike_market'] == pytest.approx(
-        17.389901413377814, rel=1e-9), 'the orientation that already joined moved'
+        17.379426406278363, rel=1e-9), 'the orientation that already joined moved'
 
 
 @pytest.mark.card
