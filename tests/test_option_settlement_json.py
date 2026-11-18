@@ -396,8 +396,9 @@ def valued_on(job, base):
 
 
 #: The declared-defaults world's FX options on its expiry, each delivered forty days after it, past
-#: the next monthly row: up barriers at 1.375 and a 50 rebate, start-window ones to six months on, a
-#: one-touch at 1.35 paid at expiry and one paid at the touch, the no-touch, and a quarterly Asian
+#: the next monthly row: up barriers at 1.375 and a 50 rebate, start-window ones to six months on
+#: and an end-window one from there, a one-touch at 1.35 paid at expiry and one paid at the touch,
+#: the no-touch, and a quarterly Asian
 WORLD_EXPIRY = book.WORLD_EXPIRY
 DELIVERED = WORLD_EXPIRY + pd.DateOffset(days=40)
 UP = {'Expiry_Date': WORLD_EXPIRY, 'Barrier_Price': 1.375}
@@ -410,6 +411,8 @@ SETTLING = {
     'KI': book.fx_leg('FXBarrierOption', 'KI', Barrier_Type='Up_And_In', **UP),
     'KOR': book.fx_leg('FXBarrierOption', 'KOR', Barrier_Type='Up_And_Out', Cash_Rebate=50.0, **UP),
     'PKO': book.fx_leg('FXPartialTimeBarrierOption', 'PKO', Barrier_Type='Up_And_Out', **WINDOW),
+    'PKOE': book.fx_leg('FXPartialTimeBarrierOption', 'PKOE', Barrier_Type='Up_And_Out',
+                        **dict(WINDOW, Barrier_At_Start='No')),
     'PKOR': book.fx_leg('FXPartialTimeBarrierOption', 'PKOR', Barrier_Type='Up_And_Out', Cash_Rebate=50.0,
                         **WINDOW),
     'PKIR': book.fx_leg('FXPartialTimeBarrierOption', 'PKIR', Barrier_Type='Up_And_In', Cash_Rebate=50.0,
@@ -441,7 +444,7 @@ def delivered():
                   ('USD',), models=EURUSD, Time_Grid='0d 1m(1m)')
 
 
-def delivered_identities(dates, ledgers, profiles, names, expiry, paid_on, exact):
+def delivered_identities(dates, ledgers, profiles, names, expiry, paid_on, exact, rtol=1e-13):
     """Each of `names` paid on `paid_on`, against its blank twin settling on `expiry`, on one run of
     a monthly grid, read on the rows both price - the months, the expiry and `paid_on`, a row only
     another deal adds reading each interpolated: every row to the expiry the twin's times that row's
@@ -457,7 +460,7 @@ def delivered_identities(dates, ledgers, profiles, names, expiry, paid_on, exact
     forward = unit[before] / profiles['AT_EXPIRY'][before]
     for name in names:
         blank, late = profiles[name], profiles[name + '_D']
-        assert np.allclose(late[before], blank[before] * forward, rtol=1e-13, atol=0.0), name
+        assert np.allclose(late[before], blank[before] * forward, rtol=rtol, atol=0.0), name
         paid = np.asarray(ledgers[name + '_D'].loc[paid_on].values, dtype=float)
         owed = np.asarray(ledgers[name].loc[expiry].values, dtype=float)
         assert paid.any() and paid.min() < paid.max(), (name, 'a payoff varying across the paths')
@@ -489,7 +492,7 @@ def test_stated_on_its_expiry_an_fx_option_simulates_and_books_as_its_blank_twin
 
 def test_delivered_after_its_expiry_an_fx_option_holds_what_the_expiry_fixed_and_books_it_on_the_delivery():
     """Delivered forty days after its expiry, under a float64 credit Monte Carlo with a Hull-White on
-    USD, each barrier, start-window barrier, one-touch and no-touch paid at expiry and the Asian,
+    USD, each barrier, start-window and end-window barrier, one-touch and no-touch paid at expiry and the Asian,
     read on the monthly rows, the expiry and the delivery: to the expiry every row is its blank
     twin's times that row's own forward discount from the expiry to the delivery, read off a unit
     paid on each, to 1e-13 - the closed form carries the same two curve reads in another order; the
@@ -501,11 +504,13 @@ def test_delivered_after_its_expiry_an_fx_option_holds_what_the_expiry_fixed_and
 
     Killing mutation: the cash left on the expiry row, each pricer booking its expiry row's mark there
     (`pv_barrier_option`, `pv_partial_barrier_option`, `pv_one_touch_option`,
-    `pv_discrete_asian_option`).
+    `pv_discrete_asian_option`); or the end-window barrier still watched on the rows past its expiry.
     """
     dates, ledgers, profiles = delivered()
     delivered_identities(dates, ledgers, profiles, ('KO', 'KI', 'PKO', 'PKIR', 'OT', 'NT', 'ASN'), WORLD_EXPIRY,
                          DELIVERED, exact=('KO', 'KI', 'PKO', 'PKIR', 'OT', 'NT'))
+    # the end-window barrier's closed form is ill-conditioned on the day its window opens, 1.6e-11 there
+    delivered_identities(dates, ledgers, profiles, ('PKOE',), WORLD_EXPIRY, DELIVERED, ('PKOE',), rtol=1e-10)
 
 
 def test_a_knock_out_s_rebate_and_a_one_touch_paid_at_the_touch_pay_when_they_pay():
