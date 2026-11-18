@@ -639,6 +639,7 @@ def world(tmp_path_factory):
             'MTM_PAY': ({}, [resetting('MTM', 'Pay')]), 'MTM_RECEIVE': ({}, [resetting('MTM', 'Receive')]),
             'FX_SWAP': ({}, [node(fx_swap('SWAP', SIX_MONTHS))]),
             'FX_SWAP_SEASONED': ({}, [node(fx_swap('SWAP', BASE - pd.DateOffset(months=1)))]),
+            'FX_SWAP_TODAY': ({}, [node(fx_swap('SWAP', BASE))]),
             'ENERGY_SWAP': ({}, [node(energy_leg('FLOATING', 'Receiver')), node(dict(KNOWN[2], Payer_Receiver='Payer'))]),
             'ENERGY_PAYER': ({}, [node(energy_leg('FLOATING', 'Payer'))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
@@ -1408,11 +1409,14 @@ def test_an_fx_swap_is_its_two_forwards_the_near_one_gone_once_settled(world):
     million a year out is two forwards, each a row with its own M: the near one long EUR/USD on its
     euros, 1,000,000 x 1.25 = 1,250,000, at (1/2)^0.5; the far one short, buying the dollars, on the
     euros it sells, 1,250,000, at one; the add-on 4% of 1,250,000 (1 - (1/2)^0.5), 14,644.66. The
-    same swap whose near leg settled a month ago is its far forward alone, its add-on 50,000; the
-    value of each swap on its first row.
+    same swap whose near leg settled a month ago is its far forward alone, its add-on 50,000, and
+    one whose near leg settles today still holds it, at the ten business days M is floored at,
+    (10/250)^0.5 = 0.2, its add-on 4% of 1,250,000 (1 - 0.2), 40,000; the value of each swap on its
+    first row.
 
     Killing mutations: each forward matured at the swap's last day - the near one's maturity factor
-    one, the add-on nothing; the settled near forward kept - two rows, the add-on 40,000.
+    one, the add-on nothing; the settled near forward kept - two rows, the add-on 40,000; a forward
+    settling today dropped - one row, the add-on 50,000.
     """
     _, output = world
     found = netting_sets(output)
@@ -1425,6 +1429,9 @@ def test_an_fx_swap_is_its_two_forwards_the_near_one_gone_once_settled(world):
     assert list(zip(seasoned['Component'], seasoned['Delta'], seasoned['MaturityFactor'])) == [
         ('Far_Settlement_Date', -1.0, 1.0)], seasoned
     assert found.loc['FX_SWAP_SEASONED', 'AddOn_FX'] == pytest.approx(5e4, rel=1e-15), found
+    today = trades(output, 'FX_SWAP_TODAY')
+    assert today['MaturityFactor'].tolist() == pytest.approx([0.2, 1.0], rel=1e-15), today
+    assert found.loc['FX_SWAP_TODAY', 'AddOn_FX'] == pytest.approx(4e4, rel=1e-14), found
     assert rows['Value'].iloc[0] == found.loc['FX_SWAP', 'V'] and math.isnan(rows['Value'].iloc[1]), rows
 
 
