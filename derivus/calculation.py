@@ -170,7 +170,9 @@ class DealStructure(object):
         time_grid.set_report_dates(base_date, self.obj.Instrument.get_report_dates())
 
     def add_structure_to_structure(self, struct, base_date, static_offsets, stochastic_offsets,
-                                   all_factors, all_tenors, time_grid, calendars, stats, unit):
+                                   all_factors, all_tenors, time_grid, calendars, shared, unit):
+        """Compile `struct` into this structure; `shared` is the calculation, which counts it and
+        names one its compile refuses among those it could not value (`unpriced`)."""
         struct_time_dep = self.calc_time_dependency(base_date, struct.obj.Instrument, time_grid)
         if struct_time_dep is not None:
             try:
@@ -182,14 +184,14 @@ class DealStructure(object):
                     Time_dep=struct_time_dep,
                     Calc_res={} if self.store_results or struct.obj.Instrument.accum_dependencies else None)
                 self.sub_structures.append(struct)
-                stats['Structs loaded'] = stats.setdefault('Structs loaded', 0) + 1
+                shared.calc_stats['Structs loaded'] = shared.calc_stats.setdefault('Structs loaded', 0) + 1
             except Exception as e:
                 logging.error('{0} {1} - Skipped'.format(struct.obj.Instrument.field['Object'], e.args))
                 # same rule as `add_deal_to_structure`: a skipped STRUCTURE takes its whole netting
                 # set's deals out of the report with it
                 if utils.is_fatal_pricing_error(e):
                     raise
-                stats['Structs Skipped'] = stats.setdefault('Structs Skipped', 0) + 1
+                self.unpriced(shared, struct, e)
 
     def deals(self):
         """Every deal beneath this structure, sub-structures first - the order `report` lists
@@ -658,7 +660,7 @@ class Calculation(object):
                 self.set_deal_structures(node['Children'], struct, unit, deal_level_mtm, exclude)
                 output.add_structure_to_structure(
                     struct, self.base_date, self.static_factors, self.stoch_factors, self.all_factors,
-                    self.all_tenors, self.time_grid, self.config.holidays, self.calc_stats, unit)
+                    self.all_tenors, self.time_grid, self.config.holidays, self, unit)
                 continue
 
             output.add_deal_to_structure(

@@ -367,7 +367,8 @@ batch find one, and the memory held, `Device_Memory` reporting the process's res
     history ending it (`utils.InstrumentExpired`), is left out under either switch and counted
     nowhere. Every run the service, a structure quote, a solve's iterate or a replay pin answers
     with refuses one counting a skip, by name (`utils.run_whole`).
-    `Device_Memory` reports the peak, warning past the device; a run that valued nothing refuses.
+    `Device_Memory` reports the peak, warning past the device; a run that valued nothing refuses,
+    naming each structure it could not value with its reason, one its compile refused among them.
     **Held by** `tests/test_fork_pricing_failures.py`,
     `tests/test_autocall_json.py::test_a_note_a_past_print_called_is_expired_and_left_out`,
     `tests/test_service.py::test_a_run_that_skipped_a_deal_is_an_error_naming_it`,

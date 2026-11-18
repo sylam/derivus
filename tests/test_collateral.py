@@ -638,15 +638,17 @@ def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it(caplog):
         assert 'CSA-1: a Cash_Collateral row states no Amount, its weight among several' in caplog.text
 
 
-def test_a_collateral_asset_weighing_nothing_or_less_is_refused_by_name(caplog):
+def test_a_collateral_asset_weighing_nothing_or_less_is_refused_by_name():
     """AN ASSET WEIGHS IN THE COLLATERAL BY A POSITIVE AMOUNT. A sole cash row stating an `Amount`
     of zero makes the unit of collateral the balance is counted in worth nothing, and one stating
     less makes it worth less than nothing: `validate` names the row before a run, and the run
-    refuses the set in the same sentence, where a zero weight once ended the run on "its value
-    holds NaN" with validation clean. An equity's `Units` of zero is named the same way.
+    refuses the set in the same sentence, which its refusal carries, where a zero weight once ended
+    the run on "its value holds NaN" with validation clean. An equity's `Units` of zero is named
+    the same way.
 
     Killing mutations: a weight of zero let through, which leaves validation clean; the run's
-    refusal dropped, which leaves the sentence out of the run's log.
+    refusal dropped, which leaves the sentence out of the run's refusal; the compile's refusal
+    left unstamped, which ends the run's refusal on 'nothing to report: ' with no reason.
     """
     def judged(assets):
         context = derivus.Context()
@@ -658,25 +660,25 @@ def test_a_collateral_asset_weighing_nothing_or_less_is_refused_by_name(caplog):
                 'the collateral is positive'.format(amount))
         context, deals = judged({'Cash_Collateral': [{'Currency': 'USD', 'Amount': amount}]})
         assert deals == {'CSA-1': [said]}, deals
-        caplog.clear()
-        with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued'):
+        with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued') as run:
             derivus.run_cmc(context.current_cfg, prec=torch.float64)
-        assert 'CSA-1: ' + said in caplog.text
+        assert str(run.value).endswith('CSA-1 - CSA-1: ' + said), run.value
     assert judged({'Equity_Collateral': [{'Equity': 'EQ', 'Units': 0.0}]})[1] == {'CSA-1': [
         'Collateral_Assets.Equity_Collateral[0].Units is 0.0: the weight of an asset in the '
         'collateral is positive']}
 
 
-def test_a_threshold_on_the_other_side_of_zero_is_refused_by_name(caplog):
+def test_a_threshold_on_the_other_side_of_zero_is_refused_by_name():
     """A THRESHOLD IS A LEVEL OF THE SET'S VALUE: the bank receives above the received threshold
     and posts below the posted one, so the first is zero or positive and the second zero or
     negative. A posted threshold of +1,600,000 rand, the bank posting while it is owed, is named by
-    `validate` before a run and refuses the run in the same sentence, and so is a received
-    threshold of -1 at any rating it lists; the CSA's own -1,600,000 and +2,000,000 run (every
-    engine gate above).
+    `validate` before a run and refuses the run in the same sentence, which its refusal carries,
+    and so is a received threshold of -1 at any rating it lists; the CSA's own -1,600,000 and
+    +2,000,000 run (every engine gate above).
 
-    Killing mutation: the posted threshold's sign left unread, which leaves validation clean and
-    runs the set posting collateral while it is owed.
+    Killing mutations: the posted threshold's sign left unread, which leaves validation clean and
+    runs the set posting collateral while it is owed; the compile's refusal left unstamped, which
+    ends the run's refusal on 'nothing to report: ' with no reason.
     """
     support = TERMS['Credit_Support_Amounts']
     for key, stated, said in (
@@ -690,7 +692,6 @@ def test_a_threshold_on_the_other_side_of_zero_is_refused_by_name(caplog):
         context = derivus.Context()
         context.load_json((json.dumps(engine_job(terms)), 'threshold'))
         assert context.validate()['deals'] == {'CSA-1': [said]}, key
-        caplog.clear()
-        with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued'):
+        with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued') as run:
             derivus.run_cmc(context.current_cfg, prec=torch.float64)
-        assert 'CSA-1: ' + said in caplog.text
+        assert str(run.value).endswith('CSA-1 - CSA-1: ' + said), run.value
