@@ -123,8 +123,7 @@ BOOKED = {'CARRIED': ('RATES', (), 'CSA-B', 1.0, 18_490_000.0, (1_000_000.0, 'ZA
           'SWAP-1': ('RATES', ('Swaps',), 'CSA-B', 1.0, 0.0, (100_000_000.0, 'ZAR')),
           'METAL-1': ('COMMODITIES', ('Metals',), 'CSA-C', 1.0, 1_150_000.0, (1_150_000.0, 'USD'))}
 #: What `/book/reconcile` can say the file and the record disagree about.
-DIVERGENCES = ('in_record_not_in_file', 'in_file_not_in_record', 'quantity_mismatch',
-               'terms_mismatch')
+DIVERGENCES = ('in_record_not_in_file', 'in_file_not_in_record', 'terms_mismatch')
 #: How long a seat waits on the hub's compute before it says so rather than hanging the day.
 WAIT_SECONDS = 600.0
 

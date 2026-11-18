@@ -1111,7 +1111,7 @@ def test_a_trade_restruck_back_and_restruck_again_stands_where_the_file_has_it(r
     filed = [lsn for lsn, _, _ in facts(recorded, 'amendment')]
     assert filed == [answer['recorded']['lsn'] for answer in landed] and len(set(filed)) == 3, filed
     drift = CLIENT.get('/book/reconcile', params={'actor': ACTOR}).json()
-    assert drift['in_record_not_in_file'] == [] and drift['quantity_mismatch'] == [], drift
+    assert drift['in_record_not_in_file'] == [], drift
     assert 'EXEC-R' not in [row['reference'] for row in drift['in_file_not_in_record']], drift
 
 
@@ -1903,10 +1903,9 @@ def booked_deal(reference, amount=5_000.0):
 
 
 def reconciles_clean():
-    """Whether the record and the file agree on every one of `/book/reconcile`'s three lists."""
+    """Whether the record and the file agree on both of `/book/reconcile`'s position lists."""
     answer = CLIENT.get('/book/reconcile').json()
-    return answer['in_record_not_in_file'] == answer['in_file_not_in_record'] == answer[
-        'quantity_mismatch'] == []
+    return answer['in_record_not_in_file'] == answer['in_file_not_in_record'] == []
 
 
 def lockless_deal(path, reference, **fields):
@@ -2960,7 +2959,7 @@ def test_a_retry_lands_every_event_on_the_lsn_it_already_has(recorded, desk):
         'lsn': amended['recorded']['lsn'], 'deal_path': booked['deal_path']}, again
     assert [len(facts(recorded, kind)) for kind in ('fill', 'amendment', 'approval')] == [1, 1, 2]
     reconciled = CLIENT.get('/book/reconcile').json()
-    assert reconciled['in_record_not_in_file'] == reconciled['quantity_mismatch'] == []
+    assert reconciled['in_record_not_in_file'] == []
     assert oracle.failed(oracle.report(recorded)) == []
 
 
@@ -3239,7 +3238,6 @@ def test_reconcile_names_a_divergence_by_its_instrument(recorded, booking):
     assert clean['events_behind'] == clean['positions_behind'] == 0
     assert clean['lsn'] == head(recorded)
     assert clean['in_record_not_in_file'] == clean['in_file_not_in_record'] == []
-    assert clean['quantity_mismatch'] == []
 
     booked = deal_at(json.loads(booking.read_text()), '0/0')
     address = derivus.content_hash(service.instrument_of(booked))
@@ -3254,7 +3252,7 @@ def test_reconcile_names_a_divergence_by_its_instrument(recorded, booking):
     lost = CLIENT.get('/book/reconcile').json()
     assert [row['instrument'] for row in lost['in_record_not_in_file']] == [address]
     assert lost['in_record_not_in_file'][0]['netting_set'] == CLIENT_SET
-    assert lost['in_file_not_in_record'] == [] and lost['quantity_mismatch'] == []
+    assert lost['in_file_not_in_record'] == []
 
     rewritten(booking, lambda node: node['Children'].append(
         {'Instrument': {'.Deal': dict(json.loads(dump(CASHFLOW)), Reference='BY_HAND')}}))
@@ -3294,13 +3292,65 @@ def test_a_fill_the_file_never_took_is_what_reconcile_is_for(recorded, booking):
     assert len(answer['in_record_not_in_file']) == 1
     assert answer['in_record_not_in_file'][0]['quantity'] == 500_000.0
     assert answer['events_behind'] == answer['positions_behind'] == 1
-    assert answer['in_file_not_in_record'] == [] and answer['quantity_mismatch'] == []
+    assert answer['in_file_not_in_record'] == []
 
     # a POLICY past the pin is not drift: it moves the events and no position
     declare(recorded, policy.FIXINGS_POLICY, {'sources': {'FxRate.ZAR': ['ECB']}})
     after = CLIENT.get('/book/reconcile').json()
     assert (after['events_behind'], after['positions_behind']) == (2, 1)
     assert len(after['in_record_not_in_file']) == 1, 'a policy moved a position'
+
+
+def test_a_partial_unwind_leaves_the_file_and_the_record_agreeing(recorded, booking):
+    """THEY MEET WHERE THE BOOK PRICES. A trade unwound by half against the node that books it is
+    one node in the file and two fills on the record, the node priced at the net the record holds,
+    so the two agree - and closed out they still do. What they disagree about is a node of those
+    terms under a client's set the record holds them nowhere under, which prices as written, and a
+    trade the file lost, named by the reference on the record's own copy of its terms and by its
+    client.
+
+    Killing mutations: the file's nodes counted against the record's fills, which raises a
+    disagreement on every partial unwind; the reconcile keyed on the instrument alone, which reads
+    the copy under another client's set as the trade booked; and a lost trade named off the file
+    alone, which names it nothing.
+    """
+    def filled(quantity, execution, **body):
+        answer = CLIENT.post('/book/deals', content=dump(dict(
+            body, quantity=quantity, execution_reference=execution)), headers=JSON).json()
+        assert answer['written'] is True, answer
+        return answer
+
+    def disagreements():
+        return {name: rows for name, rows in CLIENT.get('/book/reconcile').json().items()
+                if isinstance(rows, list) and rows}
+
+    booked = filled(1.0, 'EXEC-UNWOUND', action='add', parent_reference=CLIENT_SET,
+                    deal=dict(CASHFLOW, Reference='UNWOUND'))
+    path = booked['deal_path']
+    filled(-0.5, 'EXEC-HALF', action='fill', deal_path=path, reference='UNWOUND')
+    held = next(row for row in CLIENT.get('/book/positions').json()['positions']
+                if row['reference'] == 'UNWOUND')
+    assert (held['quantity'], held['clips'], held['deal_paths']) == (0.5, 2, [path])
+    assert disagreements() == {}, 'a partial unwind reads as the file and the record disagreeing'
+    filled(-0.5, 'EXEC-CLOSE', action='fill', deal_path=path, reference='UNWOUND')
+    assert disagreements() == {}, 'a trade closed out reads as a disagreement'
+
+    copied = deal_at(json.loads(booking.read_text()), path)
+    document = json.loads(booking.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(
+        netting_set('CLIENT_B', 'CPTY_B', [copied['Instrument']['.Deal']]))
+    booking.write_text(json.dumps(document, indent=2), newline='\n')
+    assert disagreements() == {'in_file_not_in_record': [{
+        'deal_path': '1/0', 'reference': 'UNWOUND', 'instrument': booked['recorded']['instrument'],
+        'netting_set': 'CLIENT_B', 'client': 'CPTY_B'}]}, 'the copy reconciled as the booked trade'
+
+    kept = filled(1.0, 'EXEC-KEPT', action='add', parent_reference=CLIENT_SET,
+                  deal=dict(CASHFLOW, Reference='KEPT'))
+    rewritten(booking, lambda node: node['Children'].pop())
+    lost = disagreements()['in_record_not_in_file']
+    assert [(row['reference'], row['client'], row['netting_set'], row['quantity'])
+            for row in lost] == [('KEPT', 'CPTY_A', CLIENT_SET, 1.0)], lost
+    assert lost[0]['instrument'] == kept['recorded']['instrument']
 
 
 # --------------------------------------------------------------------------------------------
@@ -3325,9 +3375,9 @@ def merged(held, page):
     return [rows[lsn] for lsn in sorted(rows)]
 
 
-#: A reconcile answer's three lists where none has been fetched - what the banner knows before it
-#: asks, which is nothing about what the two hold.
-NO_LISTS = {'in_record_not_in_file': [], 'in_file_not_in_record': [], 'quantity_mismatch': []}
+#: A reconcile answer's two position lists where none has been fetched - what the banner knows
+#: before it asks, which is nothing about what the two hold.
+NO_LISTS = {'in_record_not_in_file': [], 'in_file_not_in_record': []}
 
 
 def verdict(pinned, answer):
@@ -3336,15 +3386,14 @@ def verdict(pinned, answer):
     THE LISTS DECIDE AND THE COUNTS NEVER DO: every write to the book file re-pins it at the head,
     the write that is the other half of a divergence included, so a verdict gated on the counts is
     told `clean` about a trade the desk deleted through its own verb. DRIFT IS WHAT THE RECORD
-    MOVING FORWARD CANNOT EXPLAIN - a deal the file holds that nobody booked, a clip count the two
-    disagree on, or a trade the record holds and the file has LOST under a pin that has seen every
-    position there is.
+    MOVING FORWARD CANNOT EXPLAIN - a deal the file holds that nobody booked, or a trade the record
+    holds and the file has LOST under a pin that has seen every position there is.
     """
     if pinned is None:
         return 'none'
     lists = answer or NO_LISTS
     lost = len(lists['in_record_not_in_file'])
-    if lists['in_file_not_in_record'] or lists['quantity_mismatch'] \
+    if lists['in_file_not_in_record'] \
             or (lost and not (pinned['positions_behind'] or 0) > 0):
         return 'drifted'
     return 'behind' if lost else 'clean'
@@ -3513,7 +3562,7 @@ def test_the_banner_reads_clean_then_behind_then_drifted(recorded, booking):
     assert (pinned['events_behind'], pinned['positions_behind']) == (3, 2)
     answer = CLIENT.get('/book/reconcile').json()
     assert len(answer['in_record_not_in_file']) == 2
-    assert answer['in_file_not_in_record'] == answer['quantity_mismatch'] == []
+    assert answer['in_file_not_in_record'] == []
     assert verdict(pinned, answer) == 'behind'
 
     rewritten(booking, lambda node: node['Children'].append(
@@ -3541,7 +3590,7 @@ def test_what_the_file_lost_is_drift_under_a_pin_that_has_seen_every_position(re
     assert (pinned['events_behind'], pinned['positions_behind']) == (0, 0)
     answer = CLIENT.get('/book/reconcile').json()
     assert [row['quantity'] for row in answer['in_record_not_in_file']] == [250_000.0]
-    assert answer['in_file_not_in_record'] == answer['quantity_mismatch'] == []
+    assert answer['in_file_not_in_record'] == []
     assert verdict(pinned, answer) == 'drifted'
 
     # the other half: a hand edit, then a booking that re-pins over it - both lists standing and

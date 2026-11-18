@@ -2005,31 +2005,36 @@ POSITION_EVENTS = ('fill', 'amendment')
 
 
 def record_positions(lsn=None):
-    """The record's positions at `lsn`, or AT THE HEAD where none is named, per INSTRUMENT - the
-    file's own unit - each amendment chain collapsed onto its HEAD.
+    """The record's positions at `lsn`, or AT THE HEAD where none is named, per INSTRUMENT AND
+    AGREEMENT - what the book prices a node at - each amendment chain collapsed onto its HEAD.
 
     The record keys a position where it sits, instrument by agreement by portfolio, and the file
-    holds a deal node per instrument, so the two meet on the instrument: every row of one is summed
-    and the netting set is the agreement a row sits under. A deal whose terms were restruck is the
-    deal the file now holds, so the chain's clips and its signed quantity are answered under the
-    instrument it was amended INTO - which reconciles clean whichever end of the link the quantity
-    is carried on.
+    prices the node of those terms under that agreement's set, so the two meet there: the rows of
+    one summed over its portfolios. A deal whose terms were restruck is the deal the file now
+    holds, so the chain's signed quantity is answered under the instrument it was amended INTO -
+    which reconciles clean whichever end of the link the quantity is carried on.
     """
     rows = spine.positions(lsn)
     moved = dict((row['instrument'], row['amended_to']) for row in rows if row['amended_to'])
     heads = {}
     for row in rows:
-        instrument, seen = row['instrument'], set()
-        while instrument in moved and instrument not in seen:
-            seen.add(instrument)
-            instrument = moved[instrument]
-        head = heads.setdefault(instrument, {'instrument': instrument, 'quantity': 0.0,
-                                             'clips': 0, 'netting_set': None, 'last_lsn': 0})
+        instrument = amended_head(moved, row['instrument'])
+        head = heads.setdefault((instrument, row['agreement']), {
+            'instrument': instrument, 'netting_set': row['agreement'], 'quantity': 0.0,
+            'counterparty': row['counterparty'], 'last_lsn': 0})
         head['quantity'] += row['quantity']
-        head['clips'] += row['clips']
-        head['netting_set'] = row['agreement'] or head['netting_set']
         head['last_lsn'] = max(head['last_lsn'], row['last_lsn'])
     return heads
+
+
+def amended_head(moved, instrument):
+    """The instrument `instrument`'s amendment chain ends at, `moved` being `{instrument:
+    amended_to}` - the terms the file holds a restruck deal under."""
+    seen = set()
+    while instrument in moved and instrument not in seen:
+        seen.add(instrument)
+        instrument = moved[instrument]
+    return instrument
 
 
 def reconciled(document):
@@ -2037,32 +2042,64 @@ def reconciled(document):
 
     THE FILE IS THE SUBJECT rather than the output: it keeps its content - the market data is not
     in the fold at all, and a hand edit is the desk's own act - and the fold says what the two
-    disagree about. A trade the record holds and the file lost, a trade the file holds that nobody
-    booked, and an instrument they count a different number of clips of: the file carries terms and
-    never a signed quantity, so what the two can disagree about is HOW MANY clips stand, with the
-    record's own quantity beside it, compared as VALUES rather than as types.
+    disagree about. THEY MEET WHERE THE BOOK PRICES: the first node of a position's terms under its
+    agreement's set prices at the record's net and any other node of them is ignored
+    (`spine.compiled_job`), so how many nodes carry a position is no disagreement - an unwind filed
+    against the node it unwinds is one node and two fills. What they can disagree about is a
+    position no node carries, which nothing prices (`in_record_not_in_file`), and a node no
+    position carries, which prices as written (`in_file_not_in_record`): each row names its
+    `netting_set`, the trade's `reference` - off the record's own copy of the terms where the file
+    lost it - and the `client`'s name, the file's row its `deal_path`.
 
     THE FOLD IS AT THE HEAD and never at the pin. A booking whose file write did not land is the
     one failure this verb exists to name, and it lives entirely past the pin; folding there would
     make it invisible by construction.
     """
     record = record_positions()
-    held = file_positions(document, record)
+    held = {}
+    for instrument, nodes in file_positions(document, {address for address, _ in record}).items():
+        for node in nodes:
+            placed = enclosing_set(document, node['deal_path']) or {}
+            held.setdefault((instrument, placed.get('Reference')), []).append(
+                dict(node, client=set_terms(placed)[0] or None))
+    lost = [row for key, row in sorted(record.items()) if row['quantity'] and key not in held]
+    names, clients = named_trades(document, {row['instrument'] for row in lost}), client_names()
     return {
         'in_record_not_in_file': [
-            {key: row[key] for key in ('instrument', 'netting_set', 'quantity', 'last_lsn')}
-            for instrument, row in sorted(record.items())
-            if row['quantity'] and instrument not in held],
+            dict({key: row[key] for key in ('instrument', 'netting_set', 'quantity', 'last_lsn')},
+                 reference=names.get(row['instrument'], {}).get('reference'),
+                 client=clients.get(row['counterparty'], row['counterparty']))
+            for row in lost],
         'in_file_not_in_record': [
-            dict(node, instrument=instrument) for instrument in sorted(held)
-            if instrument not in record for node in held[instrument]],
-        'quantity_mismatch': [
-            {'instrument': instrument, 'record_clips': record[instrument]['clips'],
-             'file_nodes': len(held[instrument]),
-             'record_quantity': record[instrument]['quantity']}
-            for instrument in sorted(held) if instrument in record
-            and len(held[instrument]) != record[instrument]['clips']],
+            dict(node, instrument=key[0], netting_set=key[1],
+                 client=clients.get(node['client'], node['client']))
+            for key in sorted(held, key=str) if key not in record for node in held[key]],
         'terms_mismatch': terms_moved(document)}
+
+
+def named_trades(document, instruments):
+    """`{instrument: {reference, deal_path}}` - what a reader is told each of `instruments` is: the
+    first node the file holds it at, else the record's own copy of its terms with no path, and
+    nothing where this box's store lacks that copy too."""
+    found = {}
+    for path, address in (booked_instruments(document) if document else {}).items():
+        if address in instruments and address not in found:
+            found[address] = {'deal_path': path, 'reference': deal_at(document, path)[
+                'Instrument']['.Deal'].get('Reference')}
+    kept = set(instruments) - set(found) and spine.folded(
+        lambda log: set(filter(log.store.has, set(instruments) - set(found))))
+    for address in kept or ():
+        try:
+            found[address] = {'deal_path': None, 'reference': json.loads(
+                spine.stored(address).decode('utf-8')).get('Reference')}
+        except (ValueError, AttributeError):
+            pass  # bytes another writer filed under the address are no terms to name it by
+    return found
+
+
+def client_names():
+    """`{entity: name}` for every legal entity the record declares."""
+    return {row['entity']: row['name'] for row in spine.entities()}
 
 
 def terms_moved(document):
@@ -2318,11 +2355,10 @@ def book_reconcile(actor: str = None):
     visible instead of silent, the fold being taken AT THE HEAD. `events_behind` counts every event
     since the file was written and `positions_behind` the fills and amendments among them, which
     are the only ones that can move a row here. `actor` is the seat reading, which sees the rows
-    of the instruments held at the nodes it acts at (`sighted`) - each row the book's own reading
-    of the instrument at its net across every node, presentation rather than a per-node compile.
-    404 where no home is configured. A file nothing has pinned - written before its record, or
-    landed by another system - answers its three counts null and its lists all the same, a deal
-    nobody booked being what a take-on fills (`POST /book/deals`).
+    of the instruments held at the nodes it acts at (`sighted`). 404 where no home is configured.
+    A file nothing has pinned - written before its record, or landed by another system - answers
+    its three counts null and its lists all the same, a deal nobody booked being what a take-on
+    fills (`POST /book/deals`).
     """
     document, _ = recording().read()
     pinned = live_book().pinned()

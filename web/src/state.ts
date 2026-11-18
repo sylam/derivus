@@ -265,6 +265,19 @@ export function reducer(state: AppState, action: Action): AppState {
   }
 }
 
+/** Open what a row of the record names: a deal or a position on the Portfolio, else an agreement
+ * or an entity on the Paper. */
+export function opened(dispatch: Dispatch<Action>, deal: string | null | undefined,
+                       paper?: string | null) {
+  if (deal) {
+    dispatch({ type: 'SELECT_DEAL', path: deal });
+    dispatch({ type: 'TAB', tab: 'portfolio' });
+  } else if (paper) {
+    dispatch({ type: 'PICK', screen: 'paper', id: paper });
+    dispatch({ type: 'TAB', tab: 'paper' });
+  }
+}
+
 /** A `GET /book` answer as the document it loads - `refresh` where it is the one on screen moved,
  * which keeps the user's place. */
 export function bookLoaded(live: BookResponse, refresh = false): Action {

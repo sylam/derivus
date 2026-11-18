@@ -1501,10 +1501,12 @@ def book_reconcile(actor: str | None = None) -> dict:
     """Where the book file and the book of record disagree - the record read AT ITS HEAD.
 
     A READING, never a refusal. The file is the desk's working copy and the record is what is true,
-    so this names three things: a trade the record holds that the file has lost
-    (`in_record_not_in_file`), a deal the file holds that nobody booked (`in_file_not_in_record`),
-    and an instrument the two count a different number of clips of (`quantity_mismatch`) - the file
-    carrying terms and never a signed quantity, which lives only in the record.
+    and they meet where the book prices - a position is its terms under its agreement's set, priced
+    at the record's net, so an unwind is no disagreement. This names two things, each row by its
+    `netting_set`, the trade's `reference` and the `client`: a trade the record holds that the file
+    has lost, which nothing prices (`in_record_not_in_file`) - book it again under its execution
+    reference to put it back - and a deal the file holds that nobody booked under that set, which
+    prices as written (`in_file_not_in_record`, with its `deal_path`) - book it or delete it.
 
     The record is folded AT ITS HEAD, so a booking whose file write never landed is exactly what
     shows up here. `events_behind` counts every event since the file was written and

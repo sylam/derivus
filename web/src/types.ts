@@ -311,19 +311,20 @@ export type BookMarkets = {
   snapshots: MarketSnapshot[];
 };
 
-/** `GET /book/reconcile` - where the file and the record disagree, the record folded AT ITS HEAD.
- * The file carries terms and never a signed quantity, so what the two can disagree about is how
- * many CLIPS stand, with the record's own quantity beside them. */
+/** `GET /book/reconcile` - where the file and the record disagree, the record folded AT ITS HEAD,
+ * the two meeting where the book prices: a position no node carries, and a node no position
+ * carries, each named by its set, the trade's reference and the client. */
 export type Reconcile = {
   lsn: number | null;
   events_behind: number | null;
   positions_behind: number | null;
   in_record_not_in_file: {
-    instrument: string; netting_set: string | null; quantity: number; last_lsn: number;
+    instrument: string; netting_set: string; quantity: number; last_lsn: number;
+    reference: string | null; client: string | null;
   }[];
-  in_file_not_in_record: { instrument: string; deal_path: string; reference: string | null }[];
-  quantity_mismatch: {
-    instrument: string; record_clips: number; file_nodes: number; record_quantity: number;
+  in_file_not_in_record: {
+    instrument: string; deal_path: string; reference: string | null; netting_set: string | null;
+    client: string | null;
   }[];
   /** A client's netting set whose paper is not what legal declared, with the fields that moved. */
   terms_mismatch: { agreement: string; deal_path: string; fields: string[] }[];

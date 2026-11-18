@@ -936,7 +936,7 @@ def test_a_book_written_before_its_record_is_taken_on_as_if_it_were_booked(recor
     assert again.json()['booked']['deal_path'] == '0/2' and head(home) == at
     assert risk() == unbooked, 'the take-on moved a number'
     clean = CLIENT.get('/book/reconcile').json()
-    assert clean['in_file_not_in_record'] == clean['quantity_mismatch'] == []
+    assert clean['in_file_not_in_record'] == clean['in_record_not_in_file'] == []
     assert clean['positions_behind'] == 0
     migrated = carried(desk)
 

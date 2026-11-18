@@ -9,6 +9,7 @@
 
 import { plural } from './desk';
 import type { Source } from './state';
+import { formatNumber } from './tokens';
 import type {
   ActivityPage, ActivityRow, BookMarkets, Doorbell, MarketClose, Reconcile, SpineBlock, Worklist,
 } from './types';
@@ -37,9 +38,8 @@ export function pinnedAt(spine: SpineBlock | null): string | null {
 export function reconciledAs(reconcile: Reconcile | null): string | null {
   return reconcile === null ? null : JSON.stringify([
     reconcile.lsn, reconcile.events_behind, reconcile.positions_behind,
-    reconcile.in_record_not_in_file.map((row) => [row.instrument, row.quantity]),
+    reconcile.in_record_not_in_file.map((row) => [row.instrument, row.netting_set, row.quantity]),
     reconcile.in_file_not_in_record.map((row) => [row.instrument, row.deal_path]),
-    reconcile.quantity_mismatch.map((row) => [row.instrument, row.record_clips, row.file_nodes]),
     (reconcile.terms_mismatch ?? []).map((row) => [row.agreement, row.fields]),
   ]);
 }
@@ -94,10 +94,43 @@ export type Verdict = {
   positions: number;
   recordOnly: number;
   fileOnly: number;
-  mismatched: number;
   /** Netting sets whose paper is not what legal declared. */
   terms: number;
 };
+
+/** One disagreement as a desk reads it: the trade it is on, what disagrees, what to do, and what a
+ * click opens - the deal the file holds, the position the record holds, or the agreement. */
+export type Divergence = {
+  key: string; trade: string; what: string; todo: string;
+  deal?: string; position?: { instrument: string; agreement: string }; agreement?: string;
+};
+
+const traded = (row: { reference: string | null; instrument: string; client: string | null }) =>
+  `${row.reference ?? row.instrument.slice(0, 12)}${row.client ? ` for ${row.client}` : ''}`;
+
+/** The reconcile lists as the rows a desk reads, in their order. */
+export function divergences(reconcile: Reconcile): Divergence[] {
+  return [
+    ...reconcile.in_record_not_in_file.map((row) => ({
+      key: `record/${row.instrument}/${row.netting_set}`, trade: traded(row),
+      what: `booked under ${row.netting_set}, quantity ${formatNumber(row.quantity)}, and missing `
+        + 'from the book file, so nothing prices it',
+      todo: 'send its booking again with the same execution reference - the record files '
+        + 'nothing new and the file takes it back',
+      position: { instrument: row.instrument, agreement: row.netting_set } })),
+    ...reconcile.in_file_not_in_record.map((row) => ({
+      key: `file/${row.deal_path}`, trade: traded(row),
+      what: `in the book file at ${row.deal_path}${row.netting_set ? ` under ${row.netting_set}`
+        : ''} and booked by nobody there, so it prices as written`,
+      todo: 'book it where it sits, or delete it from the file', deal: row.deal_path })),
+    ...(reconcile.terms_mismatch ?? []).map((row) => ({
+      key: `paper/${row.deal_path}`, trade: row.agreement,
+      what: `the netting set at ${row.deal_path} is off the paper legal declared: `
+        + row.fields.join(', '),
+      todo: 'runs read the declared terms - bring the set in the file to them, or restate the '
+        + 'agreement', agreement: row.agreement })),
+  ];
+}
 
 /** `held` with `page` merged into it: LSN order, no row twice, the newest `cap` kept.
  *
@@ -131,10 +164,11 @@ export function ringsAhead(beat: Doorbell, cursor: number): boolean {
  * about a trade it deleted through its own verb.
  *
  * `drifted` is what the record moving FORWARD cannot explain: a deal the file holds that nobody
- * booked, a clip count the two disagree on, or a trade the record holds and the file has LOST
- * that `positions_behind` cannot account for. `behind` is the record being ahead - rows it
- * holds that `positions_behind` accounts for. `clean` is all three lists empty, whatever the
- * counts say, so a fixings policy past the pin lights nothing. */
+ * booked, a set off its paper, or a trade the record holds and the file has LOST that
+ * `positions_behind` cannot account for - its line naming the trades, a lone one with what is
+ * wrong. `behind` is the record being ahead - rows it holds that `positions_behind` accounts for.
+ * `clean` is every list empty, whatever the counts say, so a fixings policy past the pin lights
+ * nothing. */
 export function reconcileVerdict(spine: SpineBlock | null | undefined,
                                  reconcile: Reconcile | null): Verdict {
   const counts = {
@@ -142,17 +176,19 @@ export function reconcileVerdict(spine: SpineBlock | null | undefined,
     positions: spine?.positions_behind ?? 0,
     recordOnly: reconcile?.in_record_not_in_file.length ?? 0,
     fileOnly: reconcile?.in_file_not_in_record.length ?? 0,
-    mismatched: reconcile?.quantity_mismatch.length ?? 0,
     terms: reconcile?.terms_mismatch?.length ?? 0,
   };
   if (!spine) return { state: 'none', line: '', ...counts };
-  if (counts.fileOnly > 0 || counts.mismatched > 0 || counts.terms > 0
-      || counts.recordOnly > counts.positions) {
+  if (reconcile && (counts.fileOnly > 0 || counts.terms > 0
+      || counts.recordOnly > counts.positions)) {
+    const found = divergences(reconcile);
+    const named = found.slice(0, 3).map((row) => row.trade).join(', ');
     return {
       state: 'drifted', ...counts,
-      line: `file and record disagree: ${counts.recordOnly} in record not in file, `
-        + `${counts.fileOnly} in file not in record, ${counts.mismatched} quantity mismatches${
-          counts.terms ? `, ${plural(counts.terms, 'netting set')} off the paper` : ''}`,
+      line: found.length === 1
+        ? `The book file and the record disagree on ${found[0].trade}: ${found[0].what}`
+        : `The book file and the record disagree in ${found.length} places: ${named}${
+          found.length > 3 ? ` and ${found.length - 3} more` : ''}`,
     };
   }
   if (counts.recordOnly === 0) return { state: 'clean', line: '', ...counts };

@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react';
 import { SEAT, TOKEN, failure, getBookReconcile, getWorklist, stored } from '../api';
 import { stampText } from '../desk';
+import { positionId } from '../positions';
 import {
-  reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt, worklistLine,
+  divergences, reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt, worklistLine,
 } from '../spine';
-import { useApp, type AppState } from '../state';
+import { opened, useApp, type AppState } from '../state';
 import type { Reconcile, Worklist } from '../types';
 
 /** The record's own block, and null where this client is not looking at the LIVE BOOK: the record
@@ -47,9 +48,9 @@ export function ReconcileBanner() {
   return (
     <div className={`recordbar ${verdict.state}`}>
       <span>{verdict.line}</span>
-      {reconcile && (
+      {reconcile && verdict.state === 'drifted' && (
         <button className="ghost" onClick={() => setOpen(!open)}>
-          {open ? 'hide' : 'show'} what the two hold
+          {open ? 'hide' : 'show'} which, and what to do
         </button>
       )}
       <span className="spacer" />
@@ -133,51 +134,32 @@ export function SeatControl() {
   );
 }
 
-/** The lists as one table, each row named by its INSTRUMENT ADDRESS - the identity both sides are
- * compared on, so a renamed deal is two rows rather than a clean reconcile - and a client's set off
- * its paper by the agreement it materialises. */
+/** The disagreements as a desk reads them: the trade, what is wrong, what to do - each row opening
+ * the deal the file holds, the position the record holds, or the agreement. */
 function Divergences({ reconcile }: { reconcile: Reconcile }) {
+  const { state, dispatch } = useApp();
+  const positions = state.paper.data?.positions ?? [];
   return (
     <div className="rows">
       <table className="data">
         <tbody>
-          {reconcile.in_record_not_in_file.map((row) => (
-            <Divergence key={`record-${row.instrument}`} what="in the record, not in the file"
-                        instrument={row.instrument} detail={row.netting_set ?? ''}
-                        number={row.quantity} />
-          ))}
-          {reconcile.in_file_not_in_record.map((row) => (
-            <Divergence key={`file-${row.deal_path}`} what="in the file, nobody booked"
-                        instrument={row.instrument}
-                        detail={`${row.reference ?? '(no reference)'} at ${row.deal_path}`} />
-          ))}
-          {reconcile.quantity_mismatch.map((row) => (
-            <Divergence key={`clips-${row.instrument}`} what="the two count different clips"
-                        instrument={row.instrument}
-                        detail={`${row.file_nodes} in the file, ${row.record_clips} recorded`}
-                        number={row.record_quantity} />
-          ))}
-          {(reconcile.terms_mismatch ?? []).map((row) => (
-            <Divergence key={`paper-${row.deal_path}`} what="the set is off its paper"
-                        instrument={row.agreement}
-                        detail={`${row.fields.join(', ')} at ${row.deal_path}`} />
-          ))}
+          {divergences(reconcile).map((row) => {
+            const held = row.position && positions.find((position) => (
+              position.instrument === row.position!.instrument
+              && position.agreement === row.position!.agreement));
+            return (
+              <tr key={row.key} className="pick"
+                  onClick={() => opened(dispatch, held ? positionId(held) : row.deal,
+                                        row.agreement ?? row.position?.agreement)}>
+                <td>{row.trade}</td>
+                <td>{row.what}</td>
+                <td>{row.todo}</td>
+              </tr>
+            );
+          })}
         </tbody>
       </table>
     </div>
-  );
-}
-
-function Divergence(props: {
-  what: string; instrument: string; detail: string; number?: number;
-}) {
-  return (
-    <tr>
-      <td>{props.what}</td>
-      <td className="mono" title={props.instrument}>{props.instrument.slice(0, 12)}</td>
-      <td>{props.detail}</td>
-      <td className="n">{props.number === undefined ? '' : props.number}</td>
-    </tr>
   );
 }
 

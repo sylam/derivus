@@ -468,11 +468,16 @@ under `premiums` at the fill, and a premium settlement is no payment it reads. *
 
 The book file keeps its content and gains `Spine: {lsn, head, hydrated_at}`, a sibling of `Calc`,
 so the pin cannot move a plan. A booking appends first and writes the file second. `GET
-/book/reconcile` folds at the head, where a lost write lives, and names by instrument address a
-trade the file lost, a deal nobody booked, a differing clip count and paper that is not its declared
-terms - a reading, never a refusal. **Held by**
+/book/reconcile` folds at the head, where a lost write lives, and compares the two where the book
+prices: a position is its instrument under its agreement, priced at the record's net on the first
+node of those terms under that agreement's set, so how many nodes carry it is no disagreement and a
+partial unwind filed against its node is none. It names a position no node carries, a node no
+position carries - each by its set, the trade's reference (off the record's copy of the terms
+where the file lost them) and the client's name - and paper that is not its declared terms; a
+reading, never a refusal. **Held by**
 `test_spine_engine.py::test_the_pin_cannot_move_the_plan_hash`,
-`::test_a_fill_the_file_never_took_is_what_reconcile_is_for`.
+`::test_a_fill_the_file_never_took_is_what_reconcile_is_for`,
+`::test_a_partial_unwind_leaves_the_file_and_the_record_agreeing`.
 
 A close is legal when nothing due by its day waits: a fixing nobody printed, a payment or a
 premium nobody settled, an expiry nobody elected, or any `unreadable` row. A deal the compile left out is judged
@@ -494,8 +499,9 @@ filed under; a premium due on no day is never instructed.
 `GET /book/activity` is the strip: with `?since=` the oldest rows after it, the cursor the last
 delivered, so a capped walk loses nothing; it reads no book file. The web banner
 (`web/src/spine.ts`) follows reconcile's lists, never the behind counts, because every write
-re-pins the file at the head, a delete included. `GET /book/worklist` lists what waits on the
-asking seat, each row keyed by what its clearing fact is filed against. **Held by**
+re-pins the file at the head, a delete included, and names each disagreement's trade, what is
+wrong and what to do. `GET /book/worklist` lists what waits on the asking seat, each row
+keyed by what its clearing fact is filed against. **Held by**
 `test_spine_engine.py::test_a_page_walks_the_record_forward_one_event_at_a_time`,
 `::test_what_the_file_lost_is_drift_under_a_pin_that_has_seen_every_position`,
 `test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`.

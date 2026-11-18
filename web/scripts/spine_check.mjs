@@ -64,15 +64,18 @@ const BEHIND = { ...PINNED, events_behind: 2, positions_behind: 2 };
 const POLICY = { ...PINNED, events_behind: 1, positions_behind: 0 };
 
 const CLEAN = { lsn: 20, events_behind: 0, positions_behind: 0,
-                in_record_not_in_file: [], in_file_not_in_record: [], quantity_mismatch: [] };
-const RECORD_ONLY = [{ instrument: 'a1', netting_set: 'CLIENT_A', quantity: 250000.0,
-                       last_lsn: 21 },
-                     { instrument: 'a2', netting_set: 'CLIENT_A', quantity: 500000.0,
-                       last_lsn: 22 }];
+                in_record_not_in_file: [], in_file_not_in_record: [] };
+const RECORD_ONLY = [{ instrument: 'a1d9443814bc', netting_set: 'CLIENT_A', quantity: 1.0,
+                       last_lsn: 21, reference: 'CF-ONE', client: 'Client A Ltd' },
+                     { instrument: 'a2000d85d29c', netting_set: 'CLIENT_A', quantity: 2.0,
+                       last_lsn: 22, reference: null, client: 'Client A Ltd' }];
 const AHEAD = { ...CLEAN, events_behind: 2, positions_behind: 2,
                 in_record_not_in_file: RECORD_ONLY };
 const DRIFTED = { ...AHEAD, in_file_not_in_record: [
-  { instrument: 'b1', deal_path: '0/1', reference: 'BY_HAND' }] };
+  { instrument: 'b1', deal_path: '1/0', reference: 'BY_HAND', netting_set: 'CLIENT_B',
+    client: 'CPTY_B' }] };
+const OFF_PAPER = { ...CLEAN, terms_mismatch: [
+  { agreement: 'ISDA-A', deal_path: '1', fields: ['Liquidation_Period'] }] };
 // the desk's own delete verb: the record holds a live position the file has lost, and the pin has
 // seen every event there is
 const DELETED = { ...CLEAN, in_record_not_in_file: [RECORD_ONLY[0]] };
@@ -200,25 +203,48 @@ check('one event past the pin reads as one event',
                              { ...CLEAN, in_record_not_in_file: [RECORD_ONLY[0]] }).line,
       'record ahead by 1 event (1 position)');
 const drifted = spine.reconcileVerdict(BEHIND, DRIFTED);
-check('a deal the file holds that nobody booked is DRIFT, not a lag',
+check('a deal the file holds that nobody booked is DRIFT, not a lag, and the line names the trades',
       'the drift read off `in_record_not_in_file` alone, which calls every record that is one '
-      + 'trade ahead of its file a drift and leaves a desk no word for the edit it cannot undo',
+      + 'trade ahead of its file a drift and leaves a desk no word for the edit it cannot undo; or '
+      + 'the line counting lists, which names no trade a desk could go and look at',
       [drifted.state, drifted.line],
-      ['drifted', 'file and record disagree: 2 in record not in file, 1 in file not in record, '
-        + '0 quantity mismatches']);
-check('a clip count the two disagree on is drift with nothing else wrong',
-      'the mismatch list left out of the test, which reconciles a deal booked twice in the file '
-      + 'against one clip in the record as merely behind',
-      spine.reconcileVerdict(BEHIND, { ...AHEAD, quantity_mismatch: [
-        { instrument: 'a1', record_clips: 1, file_nodes: 2, record_quantity: 250000.0 }] }).state,
-      'drifted');
-check('a trade the file LOST under a pin that has seen everything is drift',
+      ['drifted', 'The book file and the record disagree in 3 places: CF-ONE for Client A Ltd, '
+        + 'a2000d85d29c for Client A Ltd, BY_HAND for CPTY_B']);
+check('a trade the file LOST under a pin that has seen everything is drift, said in full',
       'the `positions === 0` arm dropped, after which a deal deleted through the desk\'s own verb '
-      + '- which records nothing and re-pins at the head - is invisible on every screen, forever',
+      + '- which records nothing and re-pins at the head - is invisible on every screen, forever; '
+      + 'or a lone disagreement named without what is wrong with it',
       [spine.reconcileVerdict(PINNED, DELETED).state,
        spine.reconcileVerdict(PINNED, DELETED).line],
-      ['drifted', 'file and record disagree: 1 in record not in file, 0 in file not in record, '
-        + '0 quantity mismatches']);
+      ['drifted', 'The book file and the record disagree on CF-ONE for Client A Ltd: booked under '
+        + 'CLIENT_A, quantity 1, and missing from the book file, so nothing prices it']);
+check('more than three disagreements name three and count the rest',
+      'every trade spelled into the one line, which runs a banner off the screen on the day a '
+      + 'desk has most to read',
+      spine.reconcileVerdict(PINNED, { ...DRIFTED, terms_mismatch: OFF_PAPER.terms_mismatch })
+        .line.endsWith('BY_HAND for CPTY_B and 1 more'), true);
+
+// --- divergences: each row a trade, what is wrong, what to do and what it opens
+const rows = spine.divergences({ ...DRIFTED, terms_mismatch: OFF_PAPER.terms_mismatch });
+check('a lost trade opens the position the record holds, a deal nobody booked its node, and a '
+      + 'set off its paper the agreement',
+      'the open target taken off the wrong list - a lost trade sent to a deal path the file no '
+      + 'longer has, or a hand-placed deal to the record\'s position that does not exist',
+      rows.map((row) => [row.trade, row.position ?? null, row.deal ?? null,
+                         row.agreement ?? null]),
+      [['CF-ONE for Client A Ltd', { instrument: 'a1d9443814bc', agreement: 'CLIENT_A' }, null,
+        null],
+       ['a2000d85d29c for Client A Ltd', { instrument: 'a2000d85d29c', agreement: 'CLIENT_A' },
+        null, null],
+       ['BY_HAND for CPTY_B', null, '1/0', null], ['ISDA-A', null, null, 'ISDA-A']]);
+check('each says what to do, and the deal nobody booked says where it sits',
+      'one remedy for every list, which tells a desk to rebook a deal nobody ever booked; or the '
+      + 'set dropped from the place, which leaves a copy under another client unexplained',
+      [rows[0].todo.startsWith('send its booking again with the same execution reference'),
+       rows[2].what, rows[2].todo, rows[3].what],
+      [true, 'in the book file at 1/0 under CLIENT_B and booked by nobody there, so it prices as '
+        + 'written', 'book it where it sits, or delete it from the file',
+       'the netting set at 1 is off the paper legal declared: Liquidation_Period']);
 check('a lost trade beside a lagging fill is still drift',
       'the drift arm asking for zero positions behind, so one late fill beside a deletion reads '
       + 'the deleted trade into the lag\'s own line',
@@ -248,15 +274,13 @@ check('a desk that records nothing is never asked',
       [spine.wantsReconcile(null, null, ETAG), spine.wantsReconcile(null, ETAG, MOVED)],
       [false, false]);
 
-check('a netting set off its paper is drift, named after the three lists',
+check('a netting set off its paper is drift, named by its agreement',
       'the paper mismatch left out of the drift test, which reads a client set a hand edit moved '
       + 'off its agreement as clean',
-      [spine.reconcileVerdict(PINNED, { ...CLEAN, terms_mismatch: [
-        { agreement: 'ISDA-A', deal_path: '1', fields: ['Liquidation_Period'] }] }).state,
-       spine.reconcileVerdict(PINNED, { ...CLEAN, terms_mismatch: [
-        { agreement: 'ISDA-A', deal_path: '1', fields: ['Liquidation_Period'] }] }).line],
-      ['drifted', 'file and record disagree: 0 in record not in file, 0 in file not in record, '
-        + '0 quantity mismatches, 1 netting set off the paper']);
+      [spine.reconcileVerdict(PINNED, OFF_PAPER).state, spine.reconcileVerdict(PINNED, OFF_PAPER)
+        .line],
+      ['drifted', 'The book file and the record disagree on ISDA-A: the netting set at 1 is off '
+        + 'the paper legal declared: Liquidation_Period']);
 
 // --- wantsWorklist and worklistLine: THE RECORD'S HEAD asks, and the counts say how much waits
 // an approval moves the head and no position, which is exactly what a worklist row waits on; a
@@ -347,7 +371,7 @@ check("the desk's own book is asked every beat whether it moved, a document open
        spine.polled({ kind: 'local', name: 'job.json' }), spine.polled(null)],
       [true, false, false, false]);
 
-console.log(`\n${ran} checks over 13 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 14 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);
