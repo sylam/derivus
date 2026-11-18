@@ -4,14 +4,14 @@
 // which deal rolls when - is one pure function of (document, schema).
 //
 // The column choices are VALUE-FIRST, the same discipline `FieldView` holds: a candidate field
-// wins because the deal carries it, and the schema's declaration supplies the label and the
-// details block. A type nobody anticipated therefore still fills what columns it can and renders
-// the rest in its expander, rather than raising.
+// wins because the deal carries it, and the schema's declaration supplies the label, the details
+// block and what an amount is a size of (`sizeOf`). A type nobody anticipated therefore still
+// fills what columns it can and renders the rest in its expander, rather than raising.
 
 import type { Position } from './positions';
 import { formatNumber, isObject, token } from './tokens';
 import type { TreeNode } from './tree';
-import type { DealNode, JobDoc, Market, Schema } from './types';
+import type { DealNode, Descriptor, JobDoc, Market, Schema } from './types';
 
 // ---- the candidate lists: one per column, most specific first ----------------------------------
 // Read against the deal's own keys. Every name below is declared by at least one instrument in
@@ -19,10 +19,11 @@ import type { DealNode, JobDoc, Market, Schema } from './types';
 
 const SIDE_FIELDS = ['Buy_Sell', 'Payer_Receiver', 'Borrower_Lender', 'MtM_Side'];
 
-const CURRENCY_FIELDS = [
-  'Currency', 'Payoff_Currency', 'Settlement_Currency', 'Underlying_Currency', 'Buy_Currency',
-  'Pay_Currency', 'Agreement_Currency', 'Balance_Currency', 'Equity_Currency',
-];
+/** The other side, for a type whose sizes carry it. */
+const OTHER: Record<string, string> = { Buy: 'Sell', Sell: 'Buy' };
+
+/** Amounts counting the underlying in its own units: no currency is ever beside them. */
+const UNIT_FIELDS = ['Units', 'Volume'];
 
 const AMOUNT_FIELDS = [
   'Principal', 'Underlying_Amount', 'Amount', 'Buy_Amount', 'Near_Buy_Amount', 'Sell_Amount',
@@ -110,14 +111,42 @@ export function pick(deal: Record<string, unknown>, candidates: string[]): Picke
   return undefined;
 }
 
+/** A type's declared fields, its sections merged; undefined where the schema declares no type. */
+function fieldsOf(schema: Schema | null, object: string): Record<string, Descriptor> | undefined {
+  const sections = schema?.Instrument.types[object];
+  return sections
+    && Object.assign({}, ...sections.map((name) => schema!.Instrument.sections[name]));
+}
+
 /** The declared description for a field of this type, for the cell's tooltip - so a reader can
  * always see WHICH field the blotter chose to show. Falls back to the raw key. */
 export function describe(schema: Schema | null, object: string, key: string): string {
-  for (const section of schema?.Instrument.types[object] ?? []) {
-    const descriptor = schema?.Instrument.sections[section]?.[key];
-    if (descriptor) return descriptor.description || key;
+  return fieldsOf(schema, object)?.[key]?.description || key;
+}
+
+/** A row's side, amount, and what the amount is OF: a currency by the field stating it, or the
+ * unit word of an amount counting the underlying. */
+export type Size = { side?: Picked; amount?: Picked; of?: Picked };
+
+/** The amount is the first candidate the type declares `sized` - any the deal carries where the
+ * type is undeclared - so a netting set's balance is no trade size. It is OF the first currency
+ * the deal states among: the one a `settles` declaration pays that amount in, `<Word>_Currency`
+ * for a word of its name, the deal's own `Currency`; `Units` and `Volume` are of none. A type
+ * marking no side holds it in its sizes: a `Buy_` or `Sell_` amount, the other way if negative. */
+export function sizeOf(deal: Record<string, unknown>, object: string, schema: Schema | null): Size {
+  const fields = fieldsOf(schema, object);
+  const amount = pick(deal, AMOUNT_FIELDS.filter((key) => !fields || fields[key]?.sized));
+  const word = amount && /(Buy|Sell)_Amount$/.exec(amount.key)?.[1];
+  const side = pick(deal, SIDE_FIELDS) ?? (amount && word
+    ? { key: amount.key, value: Number(amount.value) < 0 ? OTHER[word] : word } : undefined);
+  if (!amount || UNIT_FIELDS.includes(amount.key)) {
+    return { side, amount, of: amount && { key: amount.key, value: amount.key.toLowerCase() } };
   }
-  return key;
+  const paid = Object.values(fields ?? {}).flatMap((field) => (
+    Array.isArray(field.settles) ? field.settles : [])).find((cash) => cash.amount === amount.key);
+  const key = [paid?.currency, ...amount.key.split('_').map((part) => `${part}_Currency`),
+    'Currency'].find((name) => name && deal[name]);
+  return { side, amount, of: key ? { key, value: deal[key] } : undefined };
 }
 
 /** One cell of a scalar column, or undefined where the value is a shape a cell cannot state -
@@ -151,9 +180,6 @@ export type BlotterRow = {
   reference: string;
   container: boolean;
   ignored: boolean;
-  side?: Picked;
-  currency?: Picked;
-  amount?: Picked;
   strike?: Picked;
   barrier?: Picked;
   /** The deal's own term end, where it declares one. */
@@ -207,9 +233,6 @@ export function toRows(
       reference: String(deal.Reference ?? ''),
       container: containers.includes(object) || children.length > 0,
       ignored,
-      side: pick(deal, SIDE_FIELDS),
-      currency: pick(deal, CURRENCY_FIELDS),
-      amount: pick(deal, AMOUNT_FIELDS),
       strike: pick(deal, STRIKE_FIELDS),
       barrier: pick(deal, BARRIER_FIELDS),
       expiry: expiryDate,

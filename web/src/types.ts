@@ -10,6 +10,11 @@ export type Descriptor = {
   required?: boolean;
   /** Instrument only: leaving this field out MEANS `value`, so an author may say nothing. */
   convention?: boolean;
+  /** Instrument only: an amount of the instrument, which a position of q units scales q times. */
+  sized?: boolean | string;
+  /** Instrument only: what a date settles, each payment naming the field stating its currency and
+   * the one stating its amount; a table's keyed by its column. */
+  settles?: { currency: string; amount: string | null }[] | Record<string, unknown>;
   values?: string[];
   bind?: string;
   obj?: string | string[];

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
   WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, groupedRows, inWindow,
-  rollingCount, rowsByPath, sortRows, toRows, type BlotterRow,
+  rollingCount, rowsByPath, sizeOf, sortRows, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import { DescriptorPanel } from '../components/FieldView';
 import {
@@ -161,6 +161,7 @@ function Row(props: {
 }) {
   const { row, schema, selected, emphasised, collapsed, opened } = props;
   const sections = schema?.Instrument.types[row.object];
+  const size = sizeOf(row.deal, row.object, schema);
 
   return (
     <>
@@ -180,11 +181,11 @@ function Row(props: {
           {row.ignored && <span className="badge">ignored</span>}
         </td>
         <td className="type">{row.object}</td>
-        <td><Side row={row} /></td>
-        <td>{row.currency ? cellText(row.currency.value) ?? '' : ''}</td>
-        <Value row={row} field="amount" schema={schema} />
-        <Value row={row} field="strike" schema={schema} />
-        <Value row={row} field="barrier" schema={schema} />
+        <td><Side side={size.side} /></td>
+        <td title={size.of?.key}>{size.of ? cellText(size.of.value) ?? '' : ''}</td>
+        <Value picked={size.amount} object={row.object} schema={schema} />
+        <Value picked={row.strike} object={row.object} schema={schema} />
+        <Value picked={row.barrier} object={row.object} schema={schema} />
         {/* a container carrying no dates of its own shows the roll it INHERITS, marked, so the
             days beside it are never a number with nothing behind it */}
         <td className="date">
@@ -241,22 +242,21 @@ function Held({ held, entities }: { held: Position[]; entities: Paper['entities'
 }
 
 /** Buy or sell as a chip, whatever the family calls it - Buy_Sell, Payer_Receiver, a lender. */
-function Side({ row }: { row: BlotterRow }) {
-  const text = row.side ? cellText(row.side.value) : undefined;
+function Side({ side }: { side?: Picked }) {
+  const text = side ? cellText(side.value) : undefined;
   if (!text) return null;
   const short = ['Sell', 'Pay', 'Payer', 'Lender'].includes(text) ? 'sell' : 'buy';
-  return <span className={`side ${short}`} title={row.side!.key}>{text}</span>;
+  return <span className={`side ${short}`} title={side!.key}>{text}</span>;
 }
 
 /** One picked column. A shape a cell cannot state says so and points at the expander, which
  * renders it whole - the viewer never hides a value it cannot format. */
-function Value({ row, field, schema }: {
-  row: BlotterRow; field: 'amount' | 'strike' | 'barrier'; schema: Schema | null;
+function Value({ picked, object, schema }: {
+  picked?: Picked; object: string; schema: Schema | null;
 }) {
-  const picked = row[field];
   if (!picked) return <td className="n" />;
   const text = cellText(picked.value);
-  const title = describe(schema, row.object, picked.key);
+  const title = describe(schema, object, picked.key);
   if (text === undefined) {
     return <td className="n"><span className="hint" title={title}>{'{…}'}</span></td>;
   }
