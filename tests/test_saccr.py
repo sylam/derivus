@@ -353,6 +353,25 @@ ASIANS = [
              [SIX_MONTHS, 0.0, 1.0]])]
 
 
+#: The euro call knocked out above 1.6, and sold knocked in below 1.1 watched for six months; the
+#: index call knocked in above 4,100 by a close five days ago at 4,150, and the sold share put
+#: knocked out below 40 watched monthly; and a bought put on a thousand barrels of WTI a year out
+#: struck at 81, knocked out below 60.
+BARRIERS = [
+    dict(MIXED[0], Object='FXBarrierOption', Reference='FX_OUT', Barrier_Type='Up_And_Out',
+         Barrier_Price=1.6),
+    dict(MIXED[0], Object='FXPartialTimeBarrierOption', Reference='FX_WINDOW', Buy_Sell='Sell',
+         Barrier_Type='Down_And_In', Barrier_Price=1.1, Barrier_Limit_Date=SIX_MONTHS),
+    dict(EQUITY_OPTIONS[0], Object='EquityBarrierOption', Reference='INDEX_IN', Barrier_Type='Up_And_In',
+         Barrier_Price=4100.0, Barrier_Dates=[[BASE - pd.DateOffset(days=5), 4150.0]]),
+    dict(EQUITY_OPTIONS[1], Object='EquityBarrierOption', Reference='SHARE_OUT', Barrier_Type='Down_And_Out',
+         Barrier_Price=40.0, Barrier_Dates=[[BASE + pd.DateOffset(months=k), None] for k in range(1, 7)]),
+    {'Object': 'CommodityBarrierOption', 'Reference': 'WTI_OUT', 'Currency': 'USD', 'Discount_Rate': 'USD',
+     'Reference_Type': 'WTI', 'Reference_Volatility': 'WTI', 'Buy_Sell': 'Buy', 'Option_Type': 'Put',
+     'Strike_Price': 81.0, 'Units': 1e3, 'Barrier_Type': 'Down_And_Out', 'Barrier_Price': 60.0,
+     'Expiry_Date': years(1)}]
+
+
 def node(deal):
     return {'Instrument': {'.Deal': deal}}
 
@@ -462,7 +481,8 @@ def world(tmp_path_factory):
             'SETTLED': ({}, SWAPTIONS),
             'EQUITY_OPTIONS': ({}, [node(deal) for deal in EQUITY_OPTIONS]),
             'ENERGY': ({}, [node(deal) for deal in ENERGY]),
-            'ASIANS': ({}, [node(deal) for deal in ASIANS])}
+            'ASIANS': ({}, [node(deal) for deal in ASIANS]),
+            'BARRIERS': ({}, [node(deal) for deal in BARRIERS])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1007,6 +1027,32 @@ def test_an_asian_option_takes_its_delta_on_its_averages_current_value(world):
         black_delta(sum(euro) / 3.0, 1.3, 0.15, 1.0, True),
         -black_delta((2.0 * 3950.0 + sum(index)) / 4.0, 3900.0, 0.75, 0.5, False)], rel=1e-12), rows
     assert list(rows['AdjustedNotional']) == [1e6 * EURO, 4e6], rows
+
+
+def test_a_barrier_option_reads_as_its_vanilla(world):
+    """CRE52.40 AND CRE52.42(1); A CONVENTION, CRE52 STATING NO BARRIER'S DELTA. A barrier option
+    is read by CRE52.40 on its own strike, expiry and underlying, its barrier unread: the US
+    agencies hold a path-dependent option to the supervisory delta, no model of its own (the
+    SA-CCR final rule's preamble, 85 FR 4385-4386), and the UAE central bank's SA-CCR guidance
+    applies the standardised delta to barrier options (Q&A D.5). The euro call knocked out above
+    1.6 reads the vanilla euro call's row, +0.3787 on 1,250,000, and sold knocked in below 1.1 over
+    a window its negative; the index call knocked in by a close behind the base date is the
+    vanilla it became, +0.6318; the sold share put knocked out below 40, +0.2877 at (1/2)^0.5. A
+    bought put on a thousand barrels of WTI struck at 81 a year out reads WTI's forward for the
+    delivery its fixing curve maps the expiry to, 80 (1 + 0.06 365/2191): -0.3645 on 80,000.
+
+    Killing mutations: an FX barrier declaring no exposure - the run refused by name; P read at
+    the reference price's delivery today - the WTI put's delta -0.3698.
+    """
+    _, output = world
+    rows, vanillas = trades(output, 'BARRIERS'), trades(output, 'MIXED').loc['EUR_CALL']
+    equities = trades(output, 'EQUITY_OPTIONS')
+    expected = [vanillas['Delta'], -vanillas['Delta'], equities.loc['INDEX_CALL', 'Delta'],
+                equities.loc['SHARE_PUT', 'Delta'],
+                black_delta(80.0 * (1.0 + 0.06 * 365 / (years(6) - BASE).days), 81.0, 0.7, 1.0, False)]
+    assert rows['Delta'].tolist() == pytest.approx(expected, rel=1e-13), rows
+    assert list(rows['AdjustedNotional']) == [1e6 * EURO] * 2 + [4e6, 1e6, 8e4], rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx([1.0] * 3 + [math.sqrt(0.5), 1.0], rel=1e-15)
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',

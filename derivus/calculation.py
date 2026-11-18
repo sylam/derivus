@@ -5392,6 +5392,8 @@ class SACCR(NettingSetCalculation):
     an option on an average its current value, each sample fixed at its level and each to come at
     its forward (52.42(1)), a compo's the forward of S X in the currency it is struck in, a
     quanto's of S, its unit the share at its own price (a convention: CRE52 states neither), a
+    barrier option's its vanilla's at its strike and expiry, the barrier unread (a convention: CRE52
+    states no barrier's delta, the US agencies' rule holding path-dependent options to it), a
     rate option's P and K shifted by its currency's `option_shift`
     (52.38-52.40), an FX option's on the pair in the order its vol surface names it (52.59 FAQ1),
     at T nothing the formula's limit, one in the money and none out, an FX option past its expiry
@@ -5441,7 +5443,12 @@ class SACCR(NettingSetCalculation):
         'option paid in another currency than its underlying\'s is read on its underlying alone, its',
         'unit at the underlying\'s own price (CRE52.36), $P$ a quanto\'s the underlying\'s forward and a',
         'compo\'s the forward of $S\\cdot X$ in the currency its strike is in (CRE52 states neither: a',
-        'convention, the payoff\'s own underlying, its currency risk in no class, CRE52.28); the',
+        'convention, the payoff\'s own underlying, its currency risk in no class, CRE52.28). A barrier',
+        'option is read as the vanilla on its strike, expiry and underlying, its barrier unread, one the',
+        'history it states has knocked in the vanilla it became: CRE52 states no barrier\'s delta, so',
+        'this is a convention, the one regulators take, who hold a path-dependent option to the',
+        'supervisory delta rather than a model of its own (the US SA-CCR rule\'s preamble, 85 FR',
+        '4385-4386; the UAE central bank\'s SA-CCR guidance, Q&A D.5); the',
         'maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$ the last day the trade is',
         'active, its start $S$ where it settles its cash there, as a swaption settled in cash does',
         '(CRE52.31-52.32 Table 1), floored at ten business days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a',

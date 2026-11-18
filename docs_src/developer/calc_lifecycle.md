@@ -265,6 +265,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_an_equity_option_takes_its_delta_on_the_shares_forward`,
 `::test_an_energy_option_takes_its_delta_on_its_averages_current_value`,
 `::test_an_asian_option_takes_its_delta_on_its_averages_current_value`,
+`::test_a_barrier_option_reads_as_its_vanilla`,
 `::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
 of a set of more than 5,000 trades.

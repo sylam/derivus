@@ -7,6 +7,8 @@
    "YieldInflationCashflowListDeal": "IR",
    "FXOptionDeal": "FX",
    "FXDiscreteExplicitAsianOption": "FX",
+   "FXBarrierOption": "FX",
+   "FXPartialTimeBarrierOption": "FX",
    "FXEuropeanOption": "FX",
    "FXForwardDeal": "FX",
    "FXNonDeliverableForward": "FX",
@@ -17,8 +19,10 @@
    "EquityForwardDeal": "Equity",
    "EquityOptionDeal": "Equity",
    "EquityDiscreteExplicitAsianOption": "Equity",
+   "EquityBarrierOption": "Equity",
    "CommodityForwardDeal": "Commodity",
    "CommodityFutureDeal": "Commodity",
+   "CommodityBarrierOption": "Commodity",
    "FloatingEnergyDeal": "Commodity",
    "EnergySingleOption": "Commodity"
   }

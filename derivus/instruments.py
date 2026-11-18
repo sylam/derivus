@@ -4943,6 +4943,8 @@ class EquityBarrierOption(BarrierLifecycle, Deal):
     vernacular = 'equity barrier option, knock-in, knock-out'
     observes = Observes('Equity', 'EquityPrice', 'Barrier_Dates', 1, expires='Expiry_Date',
                         monitors=True)
+    # CRE52 states no barrier's delta: the vanilla at its strike and expiry, the barrier unread
+    exposure = EQUITY_OPTION
     fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityBarrierOption', [
         F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True),
         F('Units', 'Float', default=0.0, sized=True),
@@ -5388,6 +5390,8 @@ class CommodityNoTouchOption(CommodityOneTouchOption):
 class CommodityBarrierOption(BarrierLifecycle, CommodityFixingWatch, Deal):
     vernacular = 'commodity barrier option, energy barrier option, commodity knock-in, commodity knock-out'
     observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
+    exposure = Exposure('Units', underlying='Reference_Type', long=('Buy_Sell', 'Buy'), strike='Strike_Price',
+                        expiry='Expiry_Date', call=('Option_Type', 'Call'))
     fields = [ADMIN, PRICING, COMMODITY_TOUCH, own('CommodityBarrierOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -6119,6 +6123,7 @@ class FXBarrierOption(BarrierLifecycle, Deal):
     vernacular = 'FX barrier option, knock-in, knock-out'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
                         expires='Expiry_Date')
+    exposure = FX_OPTION
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXBarrierOption', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
@@ -6193,6 +6198,7 @@ class FXPartialTimeBarrierOption(Deal):
     vernacular = 'partial barrier, window barrier, partial-time barrier'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
                         expires='Expiry_Date')
+    exposure = FX_OPTION
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXPartialTimeBarrierOption', [
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),

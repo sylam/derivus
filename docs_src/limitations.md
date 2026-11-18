@@ -226,6 +226,15 @@ Grouped by where a validator meets them.
   its type maps to (CRE52.26-52.27), so the pair's risk of a quanto or a compo enters no add-on.
   Its unit is the underlying at its own price (CRE52.36) and its delta's P the underlying's forward,
   a compo's that of S X in the currency it is struck in: CRE52 states neither, a convention.
+- **SA-CCR reads a barrier option as its vanilla** (2026-11-18). CRE52 states no barrier's delta,
+  and the regulators who speak to it hold a path-dependent option to CRE52.40's supervisory delta
+  (the US SA-CCR rule's preamble, 85 FR 4385-4386; the UAE central bank's SA-CCR guidance, Q&A D.5),
+  so `SACCR` reads a barrier on its strike, expiry and underlying with its barrier unread: a
+  knock-out near its barrier carries the vanilla's delta where its own falls away, a knock-in far
+  from its barrier the vanilla's where its own is nearly none. An equity barrier its stated closes
+  have knocked in is the vanilla it became; one they knocked out is the rebate it pays on the
+  crossing day, read as the vanilla on that day alone and after it not valued, its set's `Skipped`
+  naming it.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
   `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only
