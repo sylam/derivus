@@ -1208,6 +1208,30 @@ def test_an_agreement_s_collateral_rows_read_alike_by_name_or_by_position(record
         assert declared(spelled).status_code == 200, spelled
 
 
+def test_an_agreement_s_holding_is_refused_whatever_it_states(recorded):
+    """A HOLDING IS SETTLEMENT STATE, NEVER PAPER, whatever amount it states: an agreement's cash
+    row stating an `Amount` of 0.0, by name or as a cell, is refused naming it as one stating
+    500,000 is, while a row stating none, or null, is declared.
+
+    Killing mutation: the amount tested by its truth, which declares the row stating 0.0.
+    """
+    terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
+    assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                       headers=JSON).status_code == 200
+
+    def declared(row):
+        return CLIENT.post('/book/agreements', content=dump({
+            'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'CSA', 'terms': dict(
+                terms, Collateral_Assets={'Cash_Collateral': [row]})}), headers=JSON)
+
+    for row in ({'Currency': 'USD', 'Amount': 0.0}, ['USD', 0.0]):
+        refused = declared(row)
+        assert refused.status_code == 422, row
+        assert 'Collateral_Assets.Cash_Collateral[0].Amount is 0.0' in refused.json()['detail']
+    for row in ({'Currency': 'USD'}, {'Currency': 'USD', 'Amount': None}, ['USD', None]):
+        assert declared(row).status_code == 200, row
+
+
 def test_paper_restated_and_then_restored_stands_restored(recorded):
     """Through the service, as a first-time user files it: an agreement declared with terms A,
     then B, then A again is three facts with A in force, the third answered with a new LSN and its

@@ -593,3 +593,32 @@ def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it(caplog):
         with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued'):
             run(assets)
         assert 'CSA-1: a Cash_Collateral row states no Amount, its weight among several' in caplog.text
+
+
+def test_a_collateral_asset_weighing_nothing_or_less_is_refused_by_name(caplog):
+    """AN ASSET WEIGHS IN THE COLLATERAL BY A POSITIVE AMOUNT. A sole cash row stating an `Amount`
+    of zero makes the unit of collateral the balance is counted in worth nothing, and one stating
+    less makes it worth less than nothing: `validate` names the row before a run, and the run
+    refuses the set in the same sentence, where a zero weight once ended the run on "its value
+    holds NaN" with validation clean. An equity's `Units` of zero is named the same way.
+
+    Killing mutations: a weight of zero let through, which leaves validation clean; the run's
+    refusal dropped, which leaves the sentence out of the run's log.
+    """
+    def judged(assets):
+        context = derivus.Context()
+        context.load_json((json.dumps(engine_job(dict(TERMS, Collateral_Assets=assets))), 'weight'))
+        return context, context.validate()['deals']
+
+    for amount in (0.0, -4.0):
+        said = ('Collateral_Assets.Cash_Collateral[0].Amount is {!r}: the weight of an asset in '
+                'the collateral is positive'.format(amount))
+        context, deals = judged({'Cash_Collateral': [{'Currency': 'USD', 'Amount': amount}]})
+        assert deals == {'CSA-1': [said]}, deals
+        caplog.clear()
+        with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued'):
+            derivus.run_cmc(context.current_cfg, prec=torch.float64)
+        assert 'CSA-1: ' + said in caplog.text
+    assert judged({'Equity_Collateral': [{'Equity': 'EQ', 'Units': 0.0}]})[1] == {'CSA-1': [
+        'Collateral_Assets.Equity_Collateral[0].Units is 0.0: the weight of an asset in the '
+        'collateral is positive']}

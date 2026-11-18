@@ -1078,6 +1078,8 @@ class NettingCollateralSet(Deal):
     #: The two haircuts every collateral row declares, a row stating neither cutting nothing.
     HAIRCUTS = (F('Haircut_Posted', 'Percent', default=0.0, convention=True),
                 F('Haircut_Received', 'Percent', default=0.0, convention=True))
+    #: The column weighing each collateral table's asset in the collateral the balance counts.
+    WEIGHTS = {'Cash_Collateral': 'Amount', 'Bond_Collateral': 'Principal', 'Equity_Collateral': 'Units'}
     fields = [ADMIN, own('NettingCollateralSet', [
         F('Agreement_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Apply_Closeout_When_Uncollateralized', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -1320,7 +1322,8 @@ class NettingCollateralSet(Deal):
         'interest rates, FX and equity prices over the closeout period; **Commodity_Collateral** is',
         'declared and not read. With none stated, the collateral is cash in the **Balance_Currency**.',
         'The relative amounts of the assets are held constant, so each asset\'s share of the portfolio',
-        'moves with its price. The value of the portfolio is:',
+        'moves with its price; each amount is positive, and one of nothing or less is refused by name.',
+        'The value of the portfolio is:',
         '',
         '$$S(t)=\\sum_i a_i S_i(t),\\qquad S_p(t)=\\sum_i (1-h^p_i)a_iS_i(t),\\qquad '
         'S_r(t)=\\sum_i (1-h^r_i)a_iS_i(t)$$',
@@ -1438,17 +1441,29 @@ class NettingCollateralSet(Deal):
         set states none and a collateralised one cannot be priced without it - a rule spanning two
         fields, which is this method rather than a declaration. Collateral_Rate and Funding_Rate are
         each optional on the row, but post_process enters the ColVA block on Collateral_Rate alone
-        and then reads Funding_Rate unconditionally. Reads defensively: validation runs BEFORE the
-        contract is known to hold.
+        and then reads Funding_Rate unconditionally. A collateralised set's terms that mean nothing
+        are named as the run refuses them (`meaningless`). Reads defensively: validation runs BEFORE
+        the contract is known to hold.
         """
-        if self.field.get('Collateralized', 'False') == 'True' \
-                and not self.field.get('Agreement_Currency'):
-            yield 'Collateralized is True, so Agreement_Currency is required'
+        if self.field.get('Collateralized', 'False') == 'True':
+            if not self.field.get('Agreement_Currency'):
+                yield 'Collateralized is True, so Agreement_Currency is required'
+            yield from self.meaningless()
         rows = self.collateral(self.field.get('Collateral_Assets')).get('Cash_Collateral', [])
         for i, row in enumerate(rows):
             if row.get('Collateral_Rate') and not row.get('Funding_Rate'):
                 yield ('Collateral_Assets.Cash_Collateral[{}]: Collateral_Rate is set, so '
                        'Funding_Rate is required'.format(i))
+
+    def meaningless(self):
+        """Each term of a collateralised set that means nothing, in the one sentence `validate`
+        names it in and the run refuses the set with: an asset weighing nothing or less."""
+        for table, rows in self.collateral(self.field.get('Collateral_Assets')).items():
+            for i, row in enumerate(rows):
+                weight = row.get(self.WEIGHTS.get(table))
+                if isinstance(weight, (int, float)) and not weight > 0:
+                    yield ('Collateral_Assets.{}[{}].{} is {!r}: the weight of an asset in the '
+                           'collateral is positive'.format(table, i, self.WEIGHTS[table], weight))
 
     @classmethod
     def collateral(cls, assets):
@@ -1479,6 +1494,9 @@ class NettingCollateralSet(Deal):
                 field_index['Survival_Prob'] = None
 
         if self.field['Collateralized'] == 'True':
+            said = next(self.meaningless(), None)
+            if said:
+                raise ValueError('{}: {}'.format(self.field.get('Reference'), said))
             field['Agreement_Currency'] = utils.check_rate_name(self.field['Agreement_Currency'])
             field['Funding_Rate'] = self.check_factor_name('Funding_Rate')
 
