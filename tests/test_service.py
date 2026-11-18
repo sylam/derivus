@@ -5603,7 +5603,8 @@ def test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from(t
     every row twice; the blocks the book reads refitted without the blocks they stand on, which
     drops the OIS rows, the OIS curve then a constant of the 3M fit; the blocks solved one at a
     time under a quote derivative, which leaves the OIS leaf with no gradient at all - the curve
-    family formed its coupled sets for a ride alone; and a family nothing fits going unsaid.
+    family formed its coupled sets for a ride alone; a family nothing fits going unsaid; and a rate
+    quote read per its curve's basis point, its unit being the quote's own and no decimal rate.
     """
     document = curve_book(tmp_path / 'book.json')
     service.BOOK = service.Book(str(tmp_path / 'book.json'))
@@ -5620,6 +5621,7 @@ def test_the_consolidated_risk_is_read_on_the_quotes_the_curves_are_built_from(t
     rows = {}
     for row in risk['quotes']:
         assert (row['block'], row['quote']) not in rows, 'a quote reported twice'
+        assert (row['per'], row['risk']) == ('per unit', row['value']), row
         rows[row['block'], row['quote']] = row['value']
     for block, market_price in prices.items():
         assert [quote for name, quote in rows if name == block] == [
