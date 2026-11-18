@@ -1370,6 +1370,9 @@ class NettingCollateralSet(Deal):
         return reval_dates
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
+        if not node_children:
+            # a set holding no deal reaches no date of its own and moves no other set's
+            node_children, node_resets, node_settlements = (), {base_date}, {}
         if self.field['Collateralized'] == 'True':
             for child in node_children:
                 child.add_reval_date_offset(1)

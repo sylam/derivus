@@ -282,6 +282,41 @@ def test_a_set_holding_no_deal_marks_nothing_and_fails_no_run():
     assert values['EMPTY_SET'] == 0.0 and values['root'] == mtm(run(job())[0])['root'] != 0.0
 
 
+def test_a_set_holding_no_deal_moves_no_number_of_a_credit_monte_carlo(tmp_path, monkeypatch):
+    """A SET HOLDING NO DEAL MARKS NOTHING under a credit Monte Carlo too: beside a set holding the
+    bought call, a set stating no deal runs, and the book's CVA is the call's set's alone to the
+    bit whichever of the two is listed first - 125.05 with both sets uncollateralised, 19.00 with
+    both collateralised over a ten-day liquidation.
+
+    Killing mutations: no children read as given, which fails the run on `'NoneType' object is not
+    iterable`; the set's dates finalised over the book's own, which moves the collateralised CVA to
+    16.57 where the set holding nothing is listed second.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path))
+    calculation = {'Object': 'CreditMonteCarlo', 'Batch_Size': 256, 'Simulation_Batches': 1,
+                   'Credit_Valuation_Adjustment': {
+                       'Calculate': 'Yes', 'Counterparty': 'CPTY_A',
+                       'Deflate_Stochastically': 'No', 'Stochastic_Hazard_Rates': 'No'}}
+    collateralised = {'Collateralized': 'True', 'Liquidation_Period': 10, 'Settlement_Period': 2}
+    try:
+        for terms, expected in (({}, 125.05), (collateralised, 19.00)):
+            held, empty = (netting_set(reference, counterparty, deals) for reference, counterparty,
+                           deals in (('NS_A', 'CPTY_A', [dict(VANILLA, Reference='OPT_A')]),
+                                     ('NS_EMPTY', 'CPTY_B', [])))
+            for node in (held, empty):
+                node['Instrument']['.Deal'].update(terms)
+            cvas = []
+            for sets in ([held], [held, empty], [empty, held]):
+                document = json.loads(xva_book(tmp_path, sets).read_text())
+                document['Calc']['Calculation'].update(calculation)
+                out = in_process(document).run_job()[1]
+                assert not [key for key in out['Stats'] if 'Skipped' in key], out['Stats']
+                cvas.append(float(out['Results']['cva']))
+            assert cvas[0] == cvas[1] == cvas[2] == pytest.approx(expected, abs=0.01), (terms, cvas)
+    finally:
+        service.BOOK = None
+
+
 def test_the_ui_is_mounted_only_when_it_is_built(tmp_path):
     """The UI is an optional CLIENT, so the mount is a flag over a directory and an empty one
     refuses. The 404 on `/ui/portfolio` is pinned deliberately: `StaticFiles(html=True)` has no SPA
