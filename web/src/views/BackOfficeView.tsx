@@ -99,7 +99,7 @@ function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string })
     try {
       await postTransition(moves ? {
         subject: row.key, status: 'settled', amount: Number(amount), asset: row.currency,
-        kind: list === 'payments' ? 'payment' : kind, reference, value_date: valueDate,
+        kind: list === 'payments' ? row.kind : kind, reference, value_date: valueDate,
         ...(row.agreement ? { agreement: row.agreement } : {}),
       } : { subject: row.key, status: 'confirmed' });
       setRefused(null);

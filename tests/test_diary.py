@@ -597,15 +597,23 @@ def test_a_premium_with_no_value_date_is_due_on_no_day_and_one_with_no_price_is_
                                                                                     tmp_path):
     """A booking done at a price and stating no value date is announced in the book's own currency
     and due on NO day, the row saying why - never dated on the trade day or any other, so no close
-    waits on it. A booking with no price announces nothing. A value date with no price dates a
-    consideration there is none of: refused by name, nothing filed and the file untouched.
+    waits on it. A booking with no price, or done at nothing, moves no money and announces
+    nothing, and another book's fill is that book's to announce. A value date with no price dates
+    a consideration there is none of: refused by name, nothing filed and the file untouched.
 
     Killing mutations: an undated premium dated on the day it was booked; a row announced for a
-    fill with no price; a value date filed beside no price.
+    fill with no price, for one done at nothing or for another book's; a value date filed beside
+    no price.
     """
+    path = serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')])
+    other = json.loads(path.read_text())
+    other['Calc']['Deals']['Reference'] = 'another-desk'
+    path.write_text(json.dumps(other, indent=2), newline='\n')
+    assert premium_booked('ELSEWHERE', price=5_000.0).json()['written'] is True
     path = serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')])
     assert premium_booked('PRICED', price=10_000.0).json()['written'] is True
     assert premium_booked('FREE').json()['written'] is True
+    assert premium_booked('ZERO', price=0.0, value_date=str(BASE.date())).json()['written'] is True
 
     rows = premiums(diary_rows()['rows'])
     assert [(row['reference'], row['amount'], row['currency'], row['due_date'], row['reason'])
