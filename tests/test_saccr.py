@@ -473,6 +473,15 @@ CROSS = [package(reference, [cashflows(FLOATING, 'USD', usd, every(12, 3), 1.25e
                         cashflows(FIXED, 'GBP', 'Sell', every(12, 3), 9e5, currency='GBP')])]
 
 
+def fx_swap(reference, near):
+    """A swap buying a million euros for 1.3 million dollars on `near` and selling them back for 1.32
+    million a year out."""
+    return {'Object': 'FXSwapDeal', 'Reference': reference, 'Near_Settlement_Date': near,
+            'Far_Settlement_Date': years(1), 'Near_Buy_Far_Sell_Ccy': 'EUR', 'Near_Sell_Far_Buy_Ccy': 'USD',
+            'Near_Buy_Far_Sell_Discount_Rate': 'EUR', 'Near_Sell_Far_Buy_Discount_Rate': 'USD',
+            'Near_Buy_Amount': 1e6, 'Near_Sell_Amount': 1.3e6, 'Far_Buy_Amount': 1.32e6, 'Far_Sell_Amount': 1e6}
+
+
 def resetting(reference, side):
     """A swap from three months out for two years, quarterly, exchanging its principals at its start
     and end, whose euro leg's notional resets each quarter off 1.25 million dollars, paid where
@@ -602,7 +611,9 @@ def world(tmp_path_factory):
             'BASIS_BESIDE': ({}, BASIS[1:] + [node(swap('PAYER', years(3), 'Fixed'))]),
             'CCS_USD_RECEIVED': ({}, CROSS[:1]), 'CCS_EUR_RECEIVED': ({}, CROSS[1:2]),
             'CCS_NETTED': ({}, CROSS[:2]), 'CCS_FOREIGN': ({}, CROSS[2:]),
-            'MTM_PAY': ({}, [resetting('MTM', 'Pay')]), 'MTM_RECEIVE': ({}, [resetting('MTM', 'Receive')])}
+            'MTM_PAY': ({}, [resetting('MTM', 'Pay')]), 'MTM_RECEIVE': ({}, [resetting('MTM', 'Receive')]),
+            'FX_SWAP': ({}, [node(fx_swap('SWAP', SIX_MONTHS))]),
+            'FX_SWAP_SEASONED': ({}, [node(fx_swap('SWAP', BASE - pd.DateOffset(months=1)))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1352,6 +1363,32 @@ def test_legs_paying_two_currencies_are_one_fx_trade(world):
         assert (found.loc[name, 'AddOn_IR'], found.loc[name, 'AddOn_FX']) == pytest.approx(
             (0.0, 0.04 * adjusted * factor), rel=1e-15), found.loc[name]
     assert found.loc['CCS_NETTED', 'AddOn_FX'] == 0.0, found.loc['CCS_NETTED']
+
+
+def test_an_fx_swap_is_its_two_forwards_the_near_one_gone_once_settled(world):
+    """CRE52.35, CRE52.39 AND CRE52.48; A CONVENTION, CRE52 STATING NO SPLIT OF AN FX SWAP. A swap
+    buying a million euros for 1.3 million dollars six months out and selling them back for 1.32
+    million a year out is two forwards, each a row with its own M: the near one long EUR/USD on its
+    euros, 1,000,000 x 1.25 = 1,250,000, at (1/2)^0.5; the far one short, buying the dollars, on the
+    euros it sells, 1,250,000, at one; the add-on 4% of 1,250,000 (1 - (1/2)^0.5), 14,644.66. The
+    same swap whose near leg settled a month ago is its far forward alone, its add-on 50,000; the
+    value of each swap on its first row.
+
+    Killing mutations: each forward matured at the swap's last day - the near one's maturity factor
+    one, the add-on nothing; the settled near forward kept - two rows, the add-on 40,000.
+    """
+    _, output = world
+    found = netting_sets(output)
+    rows, seasoned = trades(output, 'FX_SWAP'), trades(output, 'FX_SWAP_SEASONED')
+    assert list(zip(rows['Component'], rows['HedgingSet'], rows['Delta'])) == [
+        ('Near_Settlement_Date', 'EUR/USD', 1.0), ('Far_Settlement_Date', 'EUR/USD', -1.0)], rows
+    assert list(rows['AdjustedNotional']) == [1.25e6, 1.25e6], rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx([math.sqrt(0.5), 1.0], rel=1e-15), rows
+    assert found.loc['FX_SWAP', 'AddOn_FX'] == pytest.approx(0.04 * 1.25e6 * (1.0 - math.sqrt(0.5)), rel=1e-14)
+    assert list(zip(seasoned['Component'], seasoned['Delta'], seasoned['MaturityFactor'])) == [
+        ('Far_Settlement_Date', -1.0, 1.0)], seasoned
+    assert found.loc['FX_SWAP_SEASONED', 'AddOn_FX'] == pytest.approx(5e4, rel=1e-15), found
+    assert rows['Value'].iloc[0] == found.loc['FX_SWAP', 'V'] and math.isnan(rows['Value'].iloc[1]), rows
 
 
 def capped(kind):

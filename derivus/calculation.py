@@ -5360,16 +5360,18 @@ class SACCR(NettingSetCalculation):
     A TRADE IS READ THROUGH ITS TYPE'S DECLARATION. Its asset class is the `Mapping`'s
     `SACCR.Asset_Class` for its type, one class a trade (52.26-52.27; 52.28's allocation to several
     is not built), and what its exposure is read off is its type's own `schema.Exposure`; a type
-    the mapping classes in none, or declaring none, refuses by name. A package, a type holding
-    children and declaring nothing that is no netting set, is read
-    through them, each child's rows its own, the child its `Component` (52.42(4)); amounts fixed
-    today read none, their value V's alone (52.10, 52.26), so a fixed and a floating leg are one
-    swap the floating leg carries (52.1 FAQ3), and two floating legs of a currency, one received and
-    one paid on another index, one basis trade, long the index it receives in the hedging set of the
-    pair at half Table 2's factor (52.46, 52.72-52.73); legs paying two currencies are one FX trade
-    (52.35, footnote 11 to 52.46), in that class alone (52.28: a convention), M a resetting swap's
-    next reset (52.37(5)), and three refuse by name; a leg paying a cap, a floor or a digital
-    refuses by name, its caplets (52.43) not built. A credit entity's rating is the
+    the mapping classes in none, or declaring none, refuses by name. A type declaring several
+    components reads a row each, named by its last day, one settled before the base date none: an
+    FX swap its near and far forwards, each with its own M (52.35; a convention). A package, a type
+    holding children and declaring nothing that is no netting set, is
+    read through them, each child's rows its own, the child its `Component` (52.42(4)); amounts
+    fixed today read none, their value V's alone (52.10, 52.26), so a fixed and a floating leg are
+    one swap the floating leg carries (52.1 FAQ3), and two floating legs of a currency, one received
+    and one paid on another index, one basis trade, long the index it receives in the hedging set of
+    the pair at half Table 2's factor (52.46, 52.72-52.73); legs paying two currencies are one FX
+    trade (52.35, footnote 11 to 52.46), in that class alone (52.28: a convention), M a resetting
+    swap's next reset (52.37(5)), and three refuse by name; a leg paying a cap, a floor or a
+    digital refuses by name, its caplets (52.43) not built. A credit entity's rating is the
     mapping's `SACCR.Rating` under its survival curve, AAA to CCC a single name and IG or SG an
     index; an equity is an index where its price's SIMM bucket is 11 or 12, Risk_Equity's index
     buckets; a commodity's type is its price's SIMM bucket, whose `commodity_sets` row in the
@@ -5422,7 +5424,10 @@ class SACCR(NettingSetCalculation):
         'The exposure at default of each netting set under the standardised approach to counterparty',
         'credit risk [@bcbscre52], $\\mathrm{EAD}=\\alpha(\\mathrm{RC}+\\mathrm{PFE})$ (CRE52.1), off one base',
         'valuation of the book and each trade\'s terms as its type declares them, its value entering $V$',
-        'once whatever rows it reads. A package, a type holding children and declaring nothing that',
+        'once whatever rows it reads. A type of several components reads a row each, named by the field',
+        'stating its last day, one settled before the base date none: an FX swap is its near and far',
+        'forwards, each with its own $M$ (CRE52.35 states no split: a convention). A package, a type',
+        'holding children and declaring nothing that',
         'is no netting set, is read through its children, each child\'s',
         'rows its own (CRE52.42(4)); amounts fixed today (a fixed leg, a fixed cash flow or list, a fixed',
         'energy leg) carry no risk factor CRE52 charges and read no row, their value in $V$ alone',
@@ -5746,7 +5751,11 @@ class SACCR(NettingSetCalculation):
         if terms is None:
             raise ValueError('SACCR: trade {} is a {}, which declares no exposure CRE52 reads'.format(
                 deal.field.get('Reference'), kind))
-        return [] if terms.amount is None else [self.row(deal, terms, mpor)]
+        if isinstance(terms, schema.Exposure):
+            return [] if terms.amount is None else [self.row(deal, terms, mpor)]
+        # a type of several components: a row each, named by its last day, one settled before today none
+        return [dict(self.row(deal, part, mpor), Component=part.end) for part in terms
+                if deal.field[part.end] >= self.valuation['Base_Date']]
 
     def package(self, node, mpor):
         """A package's rows, each child's its own as the child its `Component` (52.42(4)), one its
@@ -5840,7 +5849,7 @@ class SACCR(NettingSetCalculation):
                 starts.min(), cash[:, utils.CASHFLOW_INDEX_End_Day].max(), cash[:, CASHFLOW_INDEX_Pay_Day].max()))
             amount = self.averaged(nominal[0], zip(map(self.years, starts[1:]), -np.diff(nominal)), end)
         else:
-            end = last = self.years(max(day for *_, day in schema.settlement_days(
+            end = last = self.years(fields[terms.end] if terms.end else max(day for *_, day in schema.settlement_days(
                 fields, schema.tenor_fields(type(deal))) if day is not None))
             start = self.years(fields[terms.start]) if terms.start else 0.0
             amount = fields[terms.amount]

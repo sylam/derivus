@@ -223,7 +223,8 @@ CRE52, `1.4 (RC + PFE)`, off its trades' values and their terms as each type dec
 factor pricing a unit, its start and its long side are read off, an FX trade's amount in its other
 currency, and an option's strike, expiry and call; `schema.KNOWN_CASH`, amounts fixed today, reads
 no row and its value enters V alone. A trade reads one or more rows (`SACCR.read`), its value
-counted once a trade; a package - a type with children declaring none, neither settling in their
+counted once a trade: a type declaring a tuple of exposures, each stating its `end`, reads a row
+per component still to settle, named by that field (`FXSwapDeal`'s near and far forwards); a package - a type with children declaring none, neither settling in their
 place nor a netting set - reads its children's rows (`SACCR.package`), the child the row's
 `Component`, two floating legs (`SACCR.legs`) of a currency, one received and one paid on another
 index, one row in the basis hedging set of the pair at `SACCR.BASIS` of the factor, and legs paying
@@ -285,6 +286,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_a_trade_enters_v_once_whatever_rows_it_reads`,
 `::test_two_floating_legs_on_two_indices_are_one_basis_trade`,
 `::test_legs_paying_two_currencies_are_one_fx_trade`,
+`::test_an_fx_swap_is_its_two_forwards_the_near_one_gone_once_settled`,
 `::test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name`,
 `::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor

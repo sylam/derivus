@@ -104,7 +104,9 @@ one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`
   with its own sentence, its EAD written regardless
 - `trades` — one row per component of a trade the run valued, a trade of amounts fixed today
   reading none: `TradeID`, `Component` (blank where the row reads the trade whole, else the
-  `Reference` of the child of a package it reads), `NettingSet`, `AssetClass`, `HedgingSet` (an IR
+  `Reference` of the child of a package it reads, or the field stating the last day of the
+  component of a type of several, an FX swap's `Near_Settlement_Date` or
+  `Far_Settlement_Date`), `NettingSet`, `AssetClass`, `HedgingSet` (an IR
   trade's currency, an FX trade's pair, a credit or equity trade's entity, a commodity trade's
   set), `Subclass` (Table 2's row), `Bucket` (an IR trade's maturity bucket, a commodity trade's
   type), `SupervisoryFactor`, `AdjustedNotional`, `Delta`, `MaturityFactor`, `EffectiveNotional`

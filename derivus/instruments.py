@@ -2289,6 +2289,11 @@ class FXNonDeliverableForward(Deal):
 
 class FXSwapDeal(Deal):
     vernacular = 'FX swap, forex swap, near and far legs'
+    # two forwards, the far one buying back what the near one sells
+    exposure = (Exposure('Near_Buy_Amount', 'Near_Buy_Far_Sell_Ccy', 'Near_Sell_Far_Buy_Ccy', other='Near_Sell_Amount',
+                         end='Near_Settlement_Date'),
+                Exposure('Far_Buy_Amount', 'Near_Sell_Far_Buy_Ccy', 'Near_Buy_Far_Sell_Ccy', other='Far_Sell_Amount',
+                         end='Far_Settlement_Date'))
     fields = [ADMIN, own('FXSwapDeal', [
         F('Near_Settlement_Date', 'Date', default='', settles=(
             Cash('Near_Buy_Far_Sell_Ccy', 'Near_Buy_Amount'),

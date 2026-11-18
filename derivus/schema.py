@@ -128,9 +128,10 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
 #: `expiry` and `call` the (field, value) of a call where an option; `amortisation` its steps;
 #: `other` an FX trade's amount in that other currency, where its terms state one; `runs` the
 #: (field, value) under which it runs to its end, else settling at its start; `average` the field
-#: stating what has fixed of the average an option is on; `digital` the (field, value) of a digital.
+#: stating what has fixed of the average an option is on; `digital` the (field, value) of a digital;
+#: `end` its last day, the last its tenor fields name where None. A type of several declares each.
 Exposure = namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
-                                  'amortisation other runs average digital', defaults=(None,) * 13)
+                                  'amortisation other runs average digital end', defaults=(None,) * 14)
 
 #: Amounts fixed today (`Exposure`): no risk factor CRE52 charges, their value in V alone.
 KNOWN_CASH = Exposure(None)
