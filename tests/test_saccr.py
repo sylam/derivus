@@ -8,7 +8,9 @@ at 4% and a EUR one through 6% a year at each anniversary of the base date, so t
 receiver's legs have the forward swap rate of 6% CRE99.31 assumes; a euro at 1.25 dollars, a
 pound at 1.5 and a dollar at 150 yen, so a notional in any is crossed; three survival curves rated in the module's mapping as
 CRE99.41 rates the entities; three commodities whose forward curves price a unit at 80, 100 and 25
-dollars. The swaps' rates and the default swaps' coupons are solved for the market values the
+dollars, silver with an LBMA basis of -0.5 and WTI sampled daily; an index at 4,000 and a share at
+50, each yielding 2%; and the FX, equity and commodity vol surfaces flat at 10%, which no exposure
+reads. The swaps' rates and the default swaps' coupons are solved for the market values the
 examples state and the receiver's vol for its 50 thousand. A commodity forward is worth its funded
 price, ten million and more, which no term moves, so silver is lent at the rate that makes the
 three forwards worth the 20 thousand CRE99.59 states together: each set is worth the example's V.
