@@ -6019,6 +6019,36 @@ def test_the_xva_projection_is_a_mosaic_a_partial_recalc_moves_one_row_of(desk_x
     assert after['NS_B'] == before['NS_B'], 'a partial recalc touched a row it was not asked for'
 
 
+def test_an_xva_row_says_the_currency_its_own_run_reported_in(desk_xva, tmp_path):
+    """A row states the currency ITS OWN run reported in. NS_A run on the USD book reads USD and
+    NS_B, never run, none. The book opened again in ZAR and NS_B run there reads ZAR beside NS_A's
+    USD - a row is never relabelled by the book that is open - and a row filed before the field was
+    kept reads no currency.
+
+    Killing mutations: the currency read off the open book rather than the row, which labels NS_A's
+    USD number ZAR; a row with none read as the open book's.
+    """
+    recalc(['NS_A'])
+    rows = xva_rows()
+    assert (rows['NS_A']['currency'], rows['NS_B']['currency']) == ('USD', None), rows
+
+    zar = json.loads(desk_xva.read_text())
+    zar['Calc']['Calculation']['Currency'] = 'ZAR'
+    service.DESK = str(desk_xva)
+    try:
+        assert CLIENT.post('/book/open', json={'name': 'IN_ZAR.json', 'document': zar}).json()
+        recalc(['NS_B'])
+        rows = xva_rows()
+    finally:
+        service.DESK = None
+    assert (rows['NS_A']['currency'], rows['NS_B']['currency']) == ('USD', 'ZAR'), rows
+
+    projection = json.loads((tmp_path / 'xva.json').read_text())
+    del projection['sets']['NS_A']['currency']
+    (tmp_path / 'xva.json').write_text(json.dumps(projection, indent=2), newline='\n')
+    assert xva_rows()['NS_A']['currency'] is None
+
+
 def test_an_unknown_set_refuses_by_name_and_a_missing_survival_curve_lands_in_the_row(
         tmp_path, monkeypatch):
     """Two refusals, neither losing the projection.

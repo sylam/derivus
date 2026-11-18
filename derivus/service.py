@@ -4022,13 +4022,14 @@ class XvaJob:
         """The set's row: who it is against, what was run, and what came back - the replay tuple
         included, so a number on the blotter can be reproduced from the row alone: `plan_hash` the
         content hash of the set's document, `values_hash` that of the digests of the market data
-        and calendar files it names.
+        and calendar files it names, and `currency` the one the run reported in.
 
         Both adjustment columns are in the BASE dict as nulls, so a row is never filed missing one:
         a failure path states its error and nothing else, and every row the file carries has the
         same keys whatever happened to it."""
         return dict({'counterparty': self.counterparty, 'collateralized': self.collateralized,
                      'cva': None, 'fva': None,
+                     'currency': self.document['Calc']['Calculation'].get('Currency'),
                      'result_id': self.result_id, 'plan_hash': self.stamp['plan_hash'],
                      'values_hash': self.stamp['values_hash'], 'seed': self.stamp['seed'],
                      'quasi_seed': self.stamp['quasi_seed'],
@@ -4139,13 +4140,15 @@ def projection_entry(row, **book):
     nulls beside it - so a blotter renders one table rather than branching per row.
 
     A row filed before a column existed is still a row: `fva` is read like every other field, so a
-    CVA-only row reads `done` with a null `fva`. The projection is a mosaic in TIME as well as
-    across sets, and the remedy for a null column is the recalc an old `as_of` takes."""
+    CVA-only row reads `done` with a null `fva`, and one filed before `currency` a null currency
+    rather than the open book's. The projection is a mosaic in TIME as well as across sets, and the
+    remedy for a null column is the recalc an old `as_of` takes."""
     row = row or {}
     entry = dict({'reference': None, 'deal_path': None, 'counterparty': row.get('counterparty'),
                   'collateralized': row.get('collateralized'), 'note': None}, **book)
     entry.update(status=row.get('status', 'never run'), cva=row.get('cva'), fva=row.get('fva'),
-                 as_of=row.get('as_of'), result_id=row.get('result_id'),
+                 currency=row.get('currency'), as_of=row.get('as_of'),
+                 result_id=row.get('result_id'),
                  plan_hash=row.get('plan_hash'), values_hash=row.get('values_hash'),
                  seed=row.get('seed'), quasi_seed=row.get('quasi_seed'), error=row.get('error'),
                  recalc=None)
@@ -4175,6 +4178,7 @@ def book_xva_view():
 
     STALENESS IS DATA. The rows carry different `as_of` stamps on purpose - that is what a partial
     recalc means - so the view never blocks, never runs a CMC, and never hides a number's age.
+    `currency` is the one the row's own run reported in.
     """
     document, _ = live_book().read()
     rows = read_projection().get('sets') or {}

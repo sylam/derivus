@@ -1463,7 +1463,8 @@ def xva_view() -> dict:
     `status` and the replay tuple - `result_id`, `plan_hash`, `values_hash`, `seed`). `status` is
     `done`, `failed` (with the engine's own wording in `error` - a counterparty with no survival
     curve lands here) or `never run`. A set the book no longer holds is still reported, with a
-    `note` saying so and no `deal_path`; a recalc still in flight rides under `recalc`.
+    `note` saying so and no `deal_path`; a recalc still in flight rides under `recalc`. `currency`
+    is the one the row's run reported in, null on a row filed before it was kept.
     """
     return service().call('GET', '/book/xva')
 
