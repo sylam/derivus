@@ -6,6 +6,7 @@
    "CapDeal": "IR",
    "FRADeal": "IR",
    "YieldInflationCashflowListDeal": "IR",
+   "CFFloatingInterestListDeal": "IR",
    "FXOptionDeal": "FX",
    "FXDiscreteExplicitAsianOption": "FX",
    "FXBarrierOption": "FX",

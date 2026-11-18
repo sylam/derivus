@@ -9,8 +9,8 @@ receiver's legs have the forward swap rate of 6% CRE99.31 assumes; a euro at 1.2
 pound at 1.5 and a dollar at 150 yen, so a notional in any is crossed; three survival curves rated in the module's mapping as
 CRE99.41 rates the entities; three commodities whose forward curves price a unit at 80, 100 and 25
 dollars, silver with an LBMA basis of -0.5 and WTI sampled daily; an index at 4,000 and a share at
-50, each yielding 2%; and the FX, equity and commodity vol surfaces flat at 10%, which no exposure
-reads. The swaps' rates and the default swaps' coupons are solved for the market values the
+50, each yielding 2%; the FX, equity and commodity vol surfaces flat at 10%, which no exposure
+reads; and a USD cap surface flat at 20%, on which a capped leg compiles to be refused. The swaps' rates and the default swaps' coupons are solved for the market values the
 examples state and the receiver's vol for its 50 thousand. A commodity forward is worth its funded
 price, ten million and more, which no term moves, so silver is lent at the rate that makes the
 three forwards worth the 20 thousand CRE99.59 states together: each set is worth the example's V.
@@ -101,6 +101,7 @@ def factors(vol):
                                  years(k))] for k in range(1, 12)])},
         'InterestYieldVol.EUR': {'Property_Aliases': None, 'Distribution_Type': 'Lognormal',
                                  'Shift': utils.Percent(0.0), 'Surface': flat_space(vol)},
+        'InterestRateVol.USD': {'Property_Aliases': None, 'Surface': flat_space(0.2)},
         'ForwardRate.CARRY': {'Currency': 'USD', 'Curve': utils.Curve(
             [], [[excel(BASE), 0.01], [excel(years(10)), 0.01]])}}, **{
         name: {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness', 'Surface': surface}
@@ -403,6 +404,60 @@ def held(prefix, nodes):
         for item in nodes]
 
 
+def cashflows(kind, reference, side, dates, notionals, currency='USD', curve=None, **terms):
+    """A list of `kind` in `currency`, at 4% where fixed and on `curve` (the currency's own where
+    None) where floating, received where `side` is Buy: a period between each two of `dates`, on
+    each of `notionals` (or the one), paid at its end, a reset behind the base date fixed at 4%."""
+    fixed = kind == 'CFFixedInterestListDeal'
+
+    def item(start, end, notional):
+        accrual = (end - start).days / 365.0
+        return dict({'Payment_Date': end, 'Notional': notional, 'Accrual_Start_Date': start,
+                     'Accrual_End_Date': end, 'Accrual_Day_Count': 'ACT_365',
+                     'Accrual_Year_Fraction': accrual, 'Fixed_Amount': 0.0, 'FX_Reset_Date': None,
+                     'Known_FX_Rate': 0.0}, **({'Rate': utils.Percent(4.0), 'Discounted': 'No'} if fixed else {
+                         'Margin': utils.Basis(0.0), 'Resets': [[start, start, end, accrual, pd.DateOffset(
+                             days=1), 'ACT_365', '0D', 0.0, 'No', utils.Percent(4.0)]]}))
+
+    sizes = notionals if isinstance(notionals, list) else [notionals] * (len(dates) - 1)
+    return dict({'Object': kind, 'Reference': reference, 'Currency': currency, 'Discount_Rate': currency,
+                 'Buy_Sell': side, 'Cashflows': dict({'Compounding': 'No'} if fixed else {
+                     'Compounding_Method': 'None', 'Averaging_Method': 'Average_Rate', 'Properties': []},
+                     Items=[item(*period) for period in zip(dates[:-1], dates[1:], sizes)])},
+                **({} if fixed else {'Forecast_Rate': curve or currency}), **terms)
+
+
+def package(reference, legs, currency='USD'):
+    """A structured deal holding `legs`."""
+    return {'Instrument': {'.Deal': {'Object': 'StructuredDeal', 'Reference': reference,
+                                     'Currency': currency}}, 'Children': [node(leg) for leg in legs]}
+
+
+def every(months, count, first=BASE):
+    """`count` periods of `months` from `first`, as their `count + 1` dates."""
+    return [first + pd.DateOffset(months=months * k) for k in range(count + 1)]
+
+
+FIXED, FLOATING = 'CFFixedInterestListDeal', 'CFFloatingInterestListDeal'
+#: Amounts fixed today: a list of two, a fee, a fixed energy leg received and a fixed leg alone; and
+#: a package of the list and the fee.
+KNOWN = [{'Object': 'CFFixedListDeal', 'Reference': 'AMOUNTS', 'Currency': 'USD', 'Discount_Rate': 'USD',
+          'Buy_Sell': 'Buy', 'Cashflows': {'Items': [{'Payment_Date': SIX_MONTHS, 'Fixed_Amount': 5e4},
+                                                     {'Payment_Date': years(1), 'Fixed_Amount': 7.5e4}]}},
+         {'Object': 'FixedCashflowDeal', 'Reference': 'FEE', 'Currency': 'USD', 'Discount_Rate': 'USD',
+          'Amount': 1e5, 'Payment_Date': years(2)},
+         {'Object': 'FixedEnergyDeal', 'Reference': 'FIXED_ENERGY', 'Currency': 'USD', 'Discount_Rate': 'USD',
+          'Payer_Receiver': 'Receiver', 'Payments': {'Items': [
+              {'Payment_Date': BASE + pd.DateOffset(months=3), 'Volume': 1e3, 'Fixed_Price': 80.0}]}},
+         cashflows(FIXED, 'FIXED_LEG', 'Buy', every(12, 3), 1e6)]
+#: A floating leg on ten million amortising two a year, its first period begun six months ago.
+STARTED = every(12, 5, BASE - pd.DateOffset(months=6))
+AMORTISED = [1e7, 8e6, 6e6, 4e6, 2e6]
+#: The payer of ten million five years out, quarterly, booked as a package of its two legs.
+QUARTERS = every(3, 20)
+SWAP_LEGS = [cashflows(FIXED, 'FIXED', 'Sell', QUARTERS, 1e7), cashflows(FLOATING, 'FLOAT', 'Buy', QUARTERS, 1e7)]
+
+
 def document(sets, calculation, vol=0.2):
     """The job of `sets`, `{reference: (agreement terms, [trade node])}`, each trade's reference
     prefixed with its set's, running `calculation` on the world, the receiver's surface at `vol`."""
@@ -501,7 +556,17 @@ def world(tmp_path_factory):
             'ENERGY': ({}, [node(deal) for deal in ENERGY]),
             'ASIANS': ({}, [node(deal) for deal in ASIANS]),
             'BARRIERS': ({}, [node(deal) for deal in BARRIERS]),
-            'SINGLES': ({}, [node(deal) for deal in SINGLES])}
+            'SINGLES': ({}, [node(deal) for deal in SINGLES]),
+            'KNOWN': ({}, [node(deal) for deal in KNOWN]),
+            'KNOWN_PACKAGE': ({}, [package('PACKAGE', KNOWN[:2])]),
+            'RECEIVED_LEG': ({}, [node(cashflows(FLOATING, 'LEG', 'Buy', STARTED, AMORTISED))]),
+            'PAID_LEG': ({}, [node(cashflows(FLOATING, 'LEG', 'Sell', STARTED, AMORTISED))]),
+            'SWAP_ALONE': ({}, [node(swap('SWAP', years(5), 'Fixed'))]),
+            'SWAP_LEGS': ({}, [package('SWAP', SWAP_LEGS)]),
+            'SWAP_NETTED': ({}, [node(swap('PAYER', years(5), 'Fixed')), package('RECEIVER', [
+                dict(leg, Buy_Sell='Buy' if leg['Buy_Sell'] == 'Sell' else 'Sell') for leg in SWAP_LEGS])]),
+            'TWO_ROWS': ({}, [package('PACKAGE', [cashflows(FLOATING, 'FIVE', 'Buy', every(12, 5), 1e7),
+                                                  cashflows(FLOATING, 'TWO', 'Sell', every(12, 2), 5e6)])])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1093,6 +1158,129 @@ def test_an_fra_matures_where_it_pays_and_an_average_price_swap_reads_its_units(
     assert rows['MaturityFactor'].tolist() == pytest.approx(
         [1.0, math.sqrt(0.5), math.sqrt(120 / 360)], rel=1e-15), rows
     assert list(zip(rows['HedgingSet'], rows['Bucket'])) == [('USD', '2'), ('USD', '2'), ('Energy', '2')]
+
+
+def test_amounts_fixed_today_read_no_row_and_enter_v_alone(world):
+    """CRE52.10 AND CRE52.26: KNOWN CASH IS VALUE ONLY. A list of two fixed amounts, a fee of 100
+    thousand two years out, a fixed energy leg received and a fixed leg at 4% standing alone are
+    amounts fixed today, which carry no risk factor CRE52 charges: no row, the add-on nothing, the
+    multiplier one on V above nothing and the EAD 1.4 V, V their values off one base valuation, the
+    fee's 100,000 e^(-0.04 x 730/365) = 92,311.63. A package of the list and the fee the same.
+
+    Killing mutation: the fee's type declaring no exposure - the run refused by name.
+    """
+    _, output = world
+    found, frame = netting_sets(output), output['Results']['SACCR']['trades']
+    assert frame[frame['NettingSet'].isin(['KNOWN', 'KNOWN_PACKAGE'])].empty
+    worth = valued([node(deal) for deal in KNOWN] + [package('PACKAGE', KNOWN[:2])])
+    assert worth['BOOK_FEE'] == pytest.approx(1e5 * math.exp(-0.04 * 730 / 365), rel=1e-12), worth
+    for name, value in (('KNOWN', sum(worth['BOOK_' + deal['Reference']] for deal in KNOWN)),
+                        ('KNOWN_PACKAGE', worth['BOOK_PACKAGE'])):
+        row = found.loc[name]
+        assert row['V'] == pytest.approx(value, rel=1e-12) and row['AddOn_Aggregate'] == 0.0, row
+        assert row['Multiplier'] == 1.0 and row['EAD'] == pytest.approx(1.4 * value, rel=1e-12), row
+
+
+def test_a_floating_leg_reads_its_notional_averaged_over_its_periods(world):
+    """CRE52.34, CRE52.37(2) AND CRE52.39. A floating leg on ten million amortising two million a
+    year, its first period begun six months ago and its last ending 4.5 years out, read off the
+    periods its compile binds: S nothing, the period begun counting from today, E and M 4.5, its
+    notional averaged over those 4.5 years, (10 x 0.5 + 8 + 6 + 4 + 2) / 4.5 million = 5,555,555.56,
+    times SD = (1 - e^(-0.225)) / 0.05 = 4.0296756, 22,387,086.80 in bucket 2 of USD, received long
+    and paid short, at a maturity factor one; each set's add-on 0.5% of it, 111,935.43.
+
+    Killing mutations: the notional the first period's whole - 40,296,756.25; the paid leg read long
+    off its periods' sizes - its delta +1.
+    """
+    _, output = world
+    adjusted = (10 * 0.5 + 8 + 6 + 4 + 2) * 1e6 / 4.5 * supervisory_duration(0.0, 4.5)
+    for name, delta in (('RECEIVED_LEG', 1.0), ('PAID_LEG', -1.0)):
+        row, found = trades(output, name).loc['LEG'], netting_sets(output).loc[name]
+        assert row['AdjustedNotional'] == pytest.approx(adjusted, rel=1e-14), row
+        assert (row['Delta'], row['MaturityFactor'], row['HedgingSet'], row['Bucket'], row['Component']) == (
+            delta, 1.0, 'USD', '2', ''), row
+        assert found['AddOn_IR'] == pytest.approx(0.005 * adjusted, rel=1e-14), found
+
+
+def test_a_swap_booked_as_its_legs_reads_as_the_swap(world):
+    """CRE52.1 FAQ3, CRE52.34 AND CRE52.39: A LINEAR SWAP IS READ WHOLE. The payer of ten million
+    five years out, quarterly at 4%, booked as a SwapInterestDeal and as a package of its fixed leg
+    paid and its floating leg received on the same days: the floating leg carries the swap, the
+    fixed leg its value alone - S nothing, E and M five, its notional 10,000,000 over every quarter,
+    0.25 years of 30/360 each so the average is exact, SD = (1 - e^(-0.25)) / 0.05, 44,239,843.39 in
+    bucket 2, long, at a maturity factor one, the add-on 221,199.22: the swap's to the last digit,
+    its value the swap's, so the set holding the payer beside the package received the other way
+    up has V, each effective notional's sum and the add-on nothing.
+
+    Killing mutation: the fixed leg read as a floating one, its paid notional short the rate - the
+    package two rows, long and short 44,239,843.39, its add-on nothing.
+    """
+    _, output = world
+    found, rows, legs = netting_sets(output), trades(output, 'SWAP_ALONE'), trades(output, 'SWAP_LEGS')
+    adjusted = 1e7 * supervisory_duration(0.0, 5.0)
+    assert rows.loc['SWAP', 'AdjustedNotional'] == pytest.approx(adjusted, rel=1e-14), rows
+    columns = ['AssetClass', 'HedgingSet', 'Bucket', 'AdjustedNotional', 'Delta', 'MaturityFactor',
+               'EffectiveNotional', 'Value']
+    assert list(legs[columns].itertuples(index=False)) == list(rows[columns].itertuples(index=False)), legs
+    assert list(legs['Component']) == ['SWAP_LEGS_FLOAT'], legs
+    assert found.loc['SWAP_LEGS', 'AddOn_IR'] == found.loc['SWAP_ALONE', 'AddOn_IR'] == pytest.approx(
+        0.005 * adjusted, rel=1e-14), found
+    netted = found.loc['SWAP_NETTED']
+    assert (netted['V'], trades(output, 'SWAP_NETTED')['EffectiveNotional'].sum(), netted['AddOn_IR']) == (
+        0.0, 0.0, 0.0), netted
+
+
+def test_a_trade_enters_v_once_whatever_rows_it_reads(world):
+    """CRE52.10 AND CRE52.42(4): V COUNTS EACH TRADE ONCE. A package of a floating leg received on
+    ten million five years out and one paid on five million two years out reads a row per leg, its
+    `Component`: 44,239,843.39 long and 5,000,000 (1 - e^(-0.1)) / 0.05 = 9,516,258.20 short, both in
+    bucket 2, the add-on 0.5% of 34,723,585.19, 173,617.93; the package's value on its first row
+    alone, and V that value off one base valuation. A package of amounts fixed today reads no row,
+    its V its value all the same.
+
+    Killing mutation: V summed over the rows, each carrying its trade's value - the first package's
+    V twice its value, the second's nothing.
+    """
+    _, output = world
+    found, rows = netting_sets(output), trades(output, 'TWO_ROWS')
+    adjusted = [1e7 * supervisory_duration(0.0, 5.0), 5e6 * supervisory_duration(0.0, 2.0)]
+    assert list(rows['Component']) == ['TWO_ROWS_FIVE', 'TWO_ROWS_TWO'], rows
+    assert rows['AdjustedNotional'].tolist() == pytest.approx(adjusted, rel=1e-14), rows
+    assert list(rows['Delta']) == [1.0, -1.0] and list(rows['Bucket']) == ['2', '2'], rows
+    assert found.loc['TWO_ROWS', 'AddOn_IR'] == pytest.approx(0.005 * (adjusted[0] - adjusted[1]), rel=1e-14)
+    worth = valued([package('PACKAGE', [cashflows(FLOATING, 'FIVE', 'Buy', every(12, 5), 1e7),
+                                        cashflows(FLOATING, 'TWO', 'Sell', every(12, 2), 5e6)])])
+    assert found.loc['TWO_ROWS', 'V'] == pytest.approx(worth['BOOK_PACKAGE'], rel=1e-12), found.loc['TWO_ROWS']
+    assert rows['Value'].iloc[0] == found.loc['TWO_ROWS', 'V'] and math.isnan(rows['Value'].iloc[1]), rows
+
+
+def capped(kind):
+    """A floating leg received on a million three years out paying a `kind`, Cap or Floor, at 4.5%."""
+    leg = cashflows(FLOATING, 'CAPPED', 'Buy', every(12, 3), 1e6, Forecast_Rate_Cap_Volatility='USD')
+    leg['Cashflows']['Properties'] = [{'Digital_Payoff_Rate': None, 'Cap_Strike': utils.Percent(4.5),
+                                       'Floor_Strike': utils.Percent(4.5), 'Cap_Multiplier': float(kind == 'Cap'),
+                                       'Floor_Multiplier': float(kind == 'Floor')}]
+    return leg
+
+
+@pytest.mark.parametrize('held_node, said', [
+    (package('PACKAGE', [SWAP_LEGS[0], capped('Cap')]), 'SET_CAPPED is a CFFloatingInterestListDeal paying '
+                                                        'a cap, a floor or a digital on its rate'),
+    (node(capped('Floor')), 'SET_CAPPED is a CFFloatingInterestListDeal paying a cap, a floor or a digital'),
+    (dict(package('INNER', [SWAP_LEGS[1]]), Instrument={'.Deal': {
+        'Object': 'NettingCollateralSet', 'Reference': 'INNER', 'Netted': 'True', 'Collateralized': 'False'}}),
+     'SET_INNER is a NettingCollateralSet, which declares no exposure CRE52 reads')])
+def test_a_container_or_leg_the_reader_cannot_read_is_refused_by_name(tmp_path, held_node, said):
+    """CRE52.43 AND CRE52.74-52.76. A floating leg paying a cap or a floor on its rate, alone or in
+    a package, is caplets or floorlets, not built; and a netting set inside a netting set is
+    several sets to one agreement, not built: each refuses the run by name.
+
+    Killing mutations: the leg's optionlets unread - the capped package valued as a swap and its
+    EAD written; a container read through its children whatever it is - the inner set's leg read
+    as the outer's own.
+    """
+    with pytest.raises(ValueError, match='SACCR: trade ' + said):
+        run(document({'SET': ({}, [held_node])}, saccr(mapping_file(tmp_path / 'mapping.json'))))
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',

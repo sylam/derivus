@@ -121,7 +121,8 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
                       defaults=(None,) * 6)
 
 #: What a deal type's SA-CCR exposure is read off: `amount` its size, a notional in the currency
-#: `currency` names or units priced at the factor `price` names (`underlying`'s where None),
+#: `currency` names or units priced at the factor `price` names (`underlying`'s where None), a
+#: table's per period as its compile binds it, None where its amounts are fixed today;
 #: `underlying` its primary risk factor (an FX trade's other currency), `start` its start, `long`
 #: the (field, value) long that factor or, an option, bought, else by the amount's sign; `strike`,
 #: `expiry` and `call` the (field, value) of a call where an option; `amortisation` its steps;
@@ -130,6 +131,9 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
 #: stating what has fixed of the average an option is on; `digital` the (field, value) of a digital.
 Exposure = namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
                                   'amortisation other runs average digital', defaults=(None,) * 13)
+
+#: Amounts fixed today (`Exposure`): no risk factor CRE52 charges, their value in V alone.
+KNOWN_CASH = Exposure(None)
 
 
 class Row(object):

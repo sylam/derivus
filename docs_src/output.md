@@ -102,11 +102,13 @@ one compile's counts as a base valuation's does (`Deals loaded`, `Deals Skipped`
   (`AddOn_IR`, `AddOn_FX`, `AddOn_Credit`, `AddOn_Equity`, `AddOn_Commodity`), `AddOn_Aggregate`,
   `Multiplier`, `PFE`, `EAD` and `Skipped`, every trade the engine skipped inside the set named
   with its own sentence, its EAD written regardless
-- `trades` — one row per trade the run valued: `TradeID`, `NettingSet`, `AssetClass`, `HedgingSet`
-  (an IR trade's currency, an FX trade's pair, a credit or equity trade's entity, a commodity
-  trade's set), `Subclass` (Table 2's row), `Bucket` (an IR trade's maturity bucket, a commodity
-  trade's type), `SupervisoryFactor`, `AdjustedNotional`, `Delta`, `MaturityFactor`,
-  `EffectiveNotional` and `Value`
+- `trades` — one row per component of a trade the run valued, a trade of amounts fixed today
+  reading none: `TradeID`, `Component` (blank where the row reads the trade whole, else the
+  `Reference` of the child of a package it reads), `NettingSet`, `AssetClass`, `HedgingSet` (an IR
+  trade's currency, an FX trade's pair, a credit or equity trade's entity, a commodity trade's
+  set), `Subclass` (Table 2's row), `Bucket` (an IR trade's maturity bucket, a commodity trade's
+  type), `SupervisoryFactor`, `AdjustedNotional`, `Delta`, `MaturityFactor`, `EffectiveNotional`
+  and `Value`, the trade's on its first row and blank on the rest, so `V` counts each trade once
 
 `Stats['Parameters']` records the `version` the SA-CCR parameters file states, beside the one
 compile's counts.

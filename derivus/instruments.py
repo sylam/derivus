@@ -18,7 +18,7 @@ from functools import partial, reduce
 from . import utils, pricing
 from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_fields,
-    declared_settlements, engine_default, Exposure, settlement_days,
+    declared_settlements, engine_default, Exposure, KNOWN_CASH, settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_OPTION, EQUITY_TOUCH,
     EXPIRY_PRINT, FX_OPTION, FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE,
     CAP_FLOOR, OPTION_STYLE, TOUCH, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
@@ -2847,6 +2847,8 @@ class SwapInterestDeal(Deal):
 
 class CFFixedInterestListDeal(Deal):
     vernacular = 'fixed-rate bond, fixed leg, fixed coupons'
+    # amounts fixed today, its notionals in Currency: a package paying two currencies reads them
+    exposure = Exposure(None, 'Currency')
     quoted = 'Cashflows'
     fields = [ADMIN, PRICING, CASHFLOWLISTDEAL, own('CFFixedInterestListDeal', [
         F('Cashflows', 'Container',
@@ -2927,6 +2929,7 @@ class CFFixedInterestListDeal(Deal):
 
 class CFFixedListDeal(Deal):
     vernacular = 'fixed cashflows, cashflow schedule, known payments'
+    exposure = KNOWN_CASH
     fields = [ADMIN, PRICING, own('CFFixedListDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Description', 'Text', default='', convention=True),
@@ -2974,6 +2977,7 @@ class CFFixedListDeal(Deal):
 
 class FixedCashflowDeal(Deal):
     vernacular = 'fixed cashflow, single payment, fee'
+    exposure = KNOWN_CASH
     fields = [ADMIN, PRICING, own('FixedCashflowDeal', [
         F('Calendars', 'Text', default='', convention=True),
         F('Amount', 'Float', default=0.0, sized=True),
@@ -3026,6 +3030,7 @@ class FixedCashflowDeal(Deal):
 class CFFloatingInterestListDeal(Deal):
     vernacular = 'floating-rate note, floating leg, FRN'
     observes = Observes('Forecast_Rate', 'InterestRate')
+    exposure = Exposure('Cashflows', 'Currency')
     fields = [ADMIN, PRICING, CASHFLOWLISTDEAL, own('CFFloatingInterestListDeal', [
         F('Discount_Rate_Swaption_Volatility', 'Text', default='', convention=True,
           factors=['InterestYieldVol']),
@@ -7430,6 +7435,7 @@ class FloatingEnergyDeal(Deal):
 
 class FixedEnergyDeal(Deal):
     vernacular = 'fixed energy leg, fixed-price energy swap'
+    exposure = KNOWN_CASH
     fields = [ADMIN, PRICING, own('FixedEnergyDeal', [
         F('Payoff_Currency', 'Text', default='', convention=True, factors=['FxRate']),
         F('Payer_Receiver', 'Text', default='Payer', values=['Payer', 'Receiver'], side=True),

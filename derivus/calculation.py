@@ -5360,7 +5360,12 @@ class SACCR(NettingSetCalculation):
     A TRADE IS READ THROUGH ITS TYPE'S DECLARATION. Its asset class is the `Mapping`'s
     `SACCR.Asset_Class` for its type, one class a trade (52.26-52.27; 52.28's allocation to several
     is not built), and what its exposure is read off is its type's own `schema.Exposure`; a type
-    the mapping classes in none, or declaring none, refuses by name. A credit entity's rating is the
+    the mapping classes in none, or declaring none, refuses by name. A package, a type holding
+    children and declaring nothing that is no netting set, is read
+    through them, each child's rows its own, the child its `Component` (52.42(4)); amounts fixed
+    today read none, their value V's alone (52.10, 52.26), so a fixed and a floating leg are one
+    swap the floating leg carries (52.1 FAQ3); a leg paying a cap, a floor or a digital refuses by
+    name, its caplets (52.43) not built. A credit entity's rating is the
     mapping's `SACCR.Rating` under its survival curve, AAA to CCC a single name and IG or SG an
     index; an equity is an index where its price's SIMM bucket is 11 or 12, Risk_Equity's index
     buckets; a commodity's type is its price's SIMM bucket, whose `commodity_sets` row in the
@@ -5370,7 +5375,8 @@ class SACCR(NettingSetCalculation):
     The netting set's terms, symbol by symbol:
 
     - margined (52.2): `Collateralized` True.
-    - V (52.10): its trades' values in the calculation currency, each off its own structure.
+    - V (52.10): its trades' values in the calculation currency, each off its own structure, once
+      a trade whatever rows it reads.
     - C (52.11, 52.18): a margined set's `Opening_Balance` as the engine's balance counts it.
     - MPOR (52.50-52.51): `Liquidation_Period` in business days, floored as the file floors it.
     - TH (52.18): `Received_Threshold` at its first value, crossed from `Agreement_Currency`.
@@ -5379,11 +5385,13 @@ class SACCR(NettingSetCalculation):
 
     A trade's dates count in years of 30/360 from the base date, a whole number of months exact as
     the methodology's examples count a tenor: S its declared start, zero once started, E and M the
-    last day its type's tenor fields name (`schema.tenor_fields`), M a trade's S where it settles its
-    cash there, a swaption settled in cash or an FRA paid at its start (52.32 Table 1 and its FAQ2),
-    T its declared expiry, nothing once reached (52.31).
+    last day its type's tenor fields name (`schema.tenor_fields`), a leg's S, E and M its periods'
+    first start, last end and last pay day as its compile binds them, M a trade's S where it settles
+    its cash there, a swaption settled in cash or an FRA paid at its start (52.32 Table 1 and its
+    FAQ2), T its declared expiry, nothing once reached (52.31).
     Its d is an IR or credit notional crossed times SD, averaged over its life where it amortises,
-    an FX trade's foreign leg, the larger where both are, a forward's legs its two amounts and an
+    a leg's over its periods (52.37(2)), its delta by the sign of what it receives, an FX trade's
+    foreign leg, the larger where both are, a forward's legs its two amounts and an
     option's its amount and that at its strike, or an equity or commodity trade's units at a unit's
     price (52.34-52.37); a non-deliverable forward is on the pair it buys and sells, its settlement
     currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
@@ -5409,7 +5417,14 @@ class SACCR(NettingSetCalculation):
     documentation = ('Calculations', [
         'The exposure at default of each netting set under the standardised approach to counterparty',
         'credit risk [@bcbscre52], $\\mathrm{EAD}=\\alpha(\\mathrm{RC}+\\mathrm{PFE})$ (CRE52.1), off one base',
-        'valuation of the book and each trade\'s terms as its type declares them. The inputs are:',
+        'valuation of the book and each trade\'s terms as its type declares them, its value entering $V$',
+        'once whatever rows it reads. A package, a type holding children and declaring nothing that',
+        'is no netting set, is read through its children, each child\'s',
+        'rows its own (CRE52.42(4)); amounts fixed today (a fixed leg, a fixed cash flow or list, a fixed',
+        'energy leg) carry no risk factor CRE52 charges and read no row, their value in $V$ alone',
+        '(CRE52.10, CRE52.26), so a package of a fixed and a floating leg of one currency is one swap the',
+        'floating leg carries (CRE52.1 FAQ3); a leg paying a cap, a floor or a digital on its rate refuses',
+        'the run by name, its caplets (CRE52.43) not built. The inputs are:',
         '',
         '- **Currency** the exposures are in, and **Base Date** they are read at.',
         '- **Mapping**: per instrument type its asset class (`SACCR.Asset_Class`), per credit factor its',
@@ -5423,8 +5438,10 @@ class SACCR(NettingSetCalculation):
         '- **MCMC Simulations** and **Quasi Seed**, as a base valuation reads them.',
         '',
         'Per trade, its dates in years of 30/360 from the base date: the adjusted notional $d$',
-        '(CRE52.34-52.37), an IR or credit trade\'s notional, averaged over time where it amortises,',
-        'times $SD=(e^{-0.05S}-e^{-0.05E})/0.05$ floored at ten business days, an FX trade\'s foreign leg,',
+        '(CRE52.34-52.37), an IR or credit trade\'s notional, averaged over time where it amortises -',
+        'a floating leg\'s over the periods its compile binds still to pay (CRE52.37(2)), $S$, $E$ and $M$',
+        'their first start, last end and last pay day, $\\delta$ $+1$ received - times',
+        '$SD=(e^{-0.05S}-e^{-0.05E})/0.05$ floored at ten business days, an FX trade\'s foreign leg,',
         'the larger where both are (CRE52.35) - a forward\'s legs its two amounts, an option\'s its amount',
         'and that at its strike, a non-deliverable forward on the pair it buys and sells, its settlement',
         'currency outside it - and an equity or commodity trade\'s units at a unit\'s price, an',
@@ -5484,7 +5501,7 @@ class SACCR(NettingSetCalculation):
     SETS = ('Counterparty', 'Margined', 'MPOR', 'V', 'C', 'RC') + tuple(
         'AddOn_' + asset for asset in SUBCLASSES) + (
         'AddOn_Aggregate', 'Multiplier', 'PFE', 'EAD', 'Skipped')
-    TRADES = ('TradeID', 'NettingSet', 'AssetClass', 'HedgingSet', 'Subclass', 'Bucket',
+    TRADES = ('TradeID', 'Component', 'NettingSet', 'AssetClass', 'HedgingSet', 'Subclass', 'Bucket',
               'SupervisoryFactor', 'AdjustedNotional', 'Delta', 'MaturityFactor',
               'EffectiveNotional', 'Value')
     fields = [
@@ -5542,9 +5559,11 @@ class SACCR(NettingSetCalculation):
             return self.report(self.base())
 
     def years(self, day):
-        """`day` in years of 30/360 from the base date, nothing once it has passed."""
+        """`day`, a date or the float days from the base date a compile counts, in years of 30/360
+        from the base date, nothing once it has passed."""
         base = self.valuation['Base_Date']
-        return max(utils.DayCount.accrual(base, (day - base).days, utils.DayCount.ACT30_360), 0.0)
+        days = int(day) if isinstance(day, float) else (day - base).days
+        return max(utils.DayCount.accrual(base, days, utils.DayCount.ACT30_360), 0.0)
 
     def fx(self, currency):
         """What one unit of `currency` is worth in the calculation currency at the base date, off
@@ -5585,13 +5604,13 @@ class SACCR(NettingSetCalculation):
         ), found.get_currency()
 
     def averaged(self, principal, steps, end):
-        """52.37(2): `principal` less the amortisation `steps` it has reached, averaged over time
-        from the base date to `end`."""
+        """52.37(2): `principal` less the `(year, step)` `steps` it has reached, averaged over time
+        from the base date to `end`, what it holds there where that is now."""
         held, area, last = principal, 0.0, 0.0
-        for day, step in sorted(steps.data.items()):
-            reached = min(self.years(day), end)
+        for year, step in sorted(steps):
+            reached = min(year, end)
             area, held, last = area + held * (reached - last), held - step, reached
-        return (area + held * (end - last)) / end
+        return (area + held * (end - last)) / end if end else held
 
     def duration(self, start, end):
         """SD (52.34), `(exp(-r S) - exp(-r E)) / r` at the supervisory rate, floored at ten
@@ -5664,6 +5683,16 @@ class SACCR(NettingSetCalculation):
         return forward * self.exchange(deal, self.price(deal, terms.price or terms.underlying)[1],
                                        deal.payoff_ccy, day) if deal.payoff_type == 'Compo' else forward
 
+    def schedule(self, deal):
+        """The cash flow schedule `deal`'s compile bound, found by the walk the diary reads it by
+        (`walk_schedules`); one its compile prices as caplets or floorlets is refused by name."""
+        compiled = self.held[deal]
+        if compiled.get('Model') in (pricing.pricer_cap, pricing.pricer_floor):
+            raise ValueError('SACCR: trade {} is a {} paying a cap, a floor or a digital on its rate, '
+                             'whose caplets of CRE52.43 are not built'.format(
+                                 deal.field.get('Reference'), deal.field['Object']))
+        return next(found for _, found in walk_schedules(compiled) if isinstance(found, TensorCashFlows))
+
     def mean(self, asset, deal, terms):
         """P of an option on an average (52.42(1)), its current value: each sample fixed at its level
         and each to come at its forward, by its weight. `average` names a table of `[day, price,
@@ -5674,31 +5703,65 @@ class SACCR(NettingSetCalculation):
             rows = [(day, price, weight, None) for day, price, weight in stated]
         else:
             curve = self.compiled.all_factors[self.unit(deal, terms.underlying)]
-            samples = next(held.Factor_dep['Cashflow'].Resets.schedule for held in self.compiled.netting_sets.deals()
-                           if (held.Instrument.resolved_from or held.Instrument) is deal)
+            samples = self.schedule(deal).Resets.schedule
             rows = [(base + pd.Timedelta(days=row[utils.RESET_INDEX_Reset_Day]), stated, row[utils.RESET_INDEX_Weight],
                      curve.current_value([row[utils.RESET_INDEX_End_Day]])[0]) for row in samples]
         return sum(weight * (level if day < base else self.underlying(asset, deal, terms, day, forward))
                    for day, level, weight, forward in rows) / sum(weight for _, _, weight, _ in rows)
 
-    def exposure(self, index, mpor):
-        """Trade `index`'s row of the trades frame, its maturity factor its set's (`mpor` None
-        where unmargined), and its effective notional were the set unmargined, `Unmargined`."""
+    def exposures(self, index, mpor):
+        """Trade `index`'s rows of the trades frame (`read`), each `Component` blank where it reads
+        the trade whole."""
         agreement, node = self.trades[index]
+        return [dict({'Component': ''}, **row, TradeID=node['Instrument'].field.get('Reference'),
+                     NettingSet=agreement['Instrument'].field.get('Reference'))
+                for row in self.read(node, mpor)]
+
+    def read(self, node, mpor):
+        """The rows `node` reads: its type's declaration's, none where that states its amounts fixed
+        today; a package's, a type with children declaring none that is no netting set, its
+        children's (`package`)."""
         deal = node['Instrument']
+        kind = deal.field['Object']
+        terms = schema.EXPOSURES.get(kind)
+        if terms is None and node.get('Children') and kind != 'NettingCollateralSet':
+            return self.package(node, mpor)
+        if terms is None:
+            raise ValueError('SACCR: trade {} is a {}, which declares no exposure CRE52 reads'.format(
+                deal.field.get('Reference'), kind))
+        return [] if terms.amount is None else [self.row(deal, terms, mpor)]
+
+    def package(self, node, mpor):
+        """A package's rows, each child's its own as the child its `Component` (52.42(4)), one its
+        compile left out none: a fixed leg and a floating one a swap the floating leg carries."""
+        return [dict(row, Component=row.get('Component') or child['Instrument'].field.get('Reference'))
+                for child in node['Children'] if child['Instrument'] in self.held
+                for row in self.read(child, mpor)]
+
+    def row(self, deal, terms, mpor):
+        """A row off `deal`'s declaration `terms`, its maturity factor its set's (`mpor` None where
+        unmargined), and its effective notional were the set unmargined, `Unmargined`."""
         fields, kind, reference = deal.field, deal.field['Object'], deal.field.get('Reference')
-        terms, asset = schema.EXPOSURES.get(kind), self.mapping['SACCR']['Asset_Class'].get(kind)
-        if terms is None or asset is None:
-            raise ValueError('SACCR: trade {} is a {}, {}'.format(
-                reference, kind, 'which declares no exposure CRE52 reads' if terms is None else
-                'and the mapping classes it under no SACCR.Asset_Class'))
+        asset = self.mapping['SACCR']['Asset_Class'].get(kind)
+        if asset is None:
+            raise ValueError('SACCR: trade {} is a {}, and the mapping classes it under no '
+                             'SACCR.Asset_Class'.format(reference, kind))
         if terms.digital and fields[terms.digital[0]] == terms.digital[1]:
             raise ValueError('SACCR: trade {} is a {} paying a digital, whose collar of CRE52.42(3) is not '
                              'built'.format(reference, kind))
-        end = self.years(max(day for *_, day in schema.settlement_days(
-            fields, schema.tenor_fields(type(deal))) if day is not None))
-        start = self.years(fields[terms.start]) if terms.start else 0.0
-        amount = fields[terms.amount]
+        if isinstance(fields[terms.amount], dict):
+            # a leg: S, E and M its periods' first start, last end and last pay day, its notional
+            # averaged over them as an amortising swap's is (52.37(2))
+            cash = self.schedule(deal).schedule
+            starts, nominal = cash[:, utils.CASHFLOW_INDEX_Start_Day], cash[:, CASHFLOW_INDEX_Nominal]
+            start, end, last = (self.years(day) for day in (
+                starts.min(), cash[:, utils.CASHFLOW_INDEX_End_Day].max(), cash[:, CASHFLOW_INDEX_Pay_Day].max()))
+            amount = self.averaged(nominal[0], zip(map(self.years, starts[1:]), -np.diff(nominal)), end)
+        else:
+            end = last = self.years(max(day for *_, day in schema.settlement_days(
+                fields, schema.tenor_fields(type(deal))) if day is not None))
+            start = self.years(fields[terms.start]) if terms.start else 0.0
+            amount = fields[terms.amount]
         side = math.copysign(1.0, amount) * (
             1.0 if terms.long is None or fields[terms.long[0]] == terms.long[1] else -1.0)
         name = terms.underlying and utils.check_tuple_name(self.unit(deal, terms.underlying))
@@ -5724,7 +5787,8 @@ class SACCR(NettingSetCalculation):
         size = abs(amount)
         if asset in ('IR', 'Credit'):
             steps = terms.amortisation and fields[terms.amortisation]
-            notional = (self.averaged(size, steps, end) if steps else size) * self.fx(
+            notional = (self.averaged(size, [(self.years(day), step) for day, step in steps.data.items()],
+                                      end) if steps else size) * self.fx(
                 fields[terms.currency]) * self.duration(start, end)
         elif asset == 'FX':
             other = abs(fields[terms.other]) if terms.other else size * fields[terms.strike]
@@ -5752,12 +5816,11 @@ class SACCR(NettingSetCalculation):
             d1 = (moneyness + 0.5 * spread * spread) / spread if spread else math.copysign(
                 math.inf, moneyness) if moneyness else 0.0
             delta = side * (scipy.stats.norm.cdf(d1) if call else -scipy.stats.norm.cdf(-d1))
-        # M the end, or the start a trade settles its cash at (Table 1, 52.32 FAQ2)
-        maturity = end if terms.runs is None or fields[terms.runs[0]] == terms.runs[1] else start
+        # M the last day, or the start a trade settles its cash at (Table 1, 52.32 FAQ2)
+        maturity = last if terms.runs is None or fields[terms.runs[0]] == terms.runs[1] else start
         unmargined = math.sqrt(min(max(maturity, self.horizon), 1.0))
         factor = unmargined if mpor is None else self.margined_scale * math.sqrt(mpor / self.year)
-        return {'TradeID': reference, 'NettingSet': agreement['Instrument'].field.get('Reference'),
-                'AssetClass': asset, 'HedgingSet': hedging, 'Subclass': subclass, 'Bucket': bucket,
+        return {'AssetClass': asset, 'HedgingSet': hedging, 'Subclass': subclass, 'Bucket': bucket,
                 'SupervisoryFactor': supervisory['factor'], 'Correlation': supervisory['correlation'],
                 'AdjustedNotional': notional, 'Delta': delta, 'MaturityFactor': factor,
                 'EffectiveNotional': notional * delta * factor,
@@ -5804,15 +5867,17 @@ class SACCR(NettingSetCalculation):
         return multiplier, multiplier * add_on
 
     def netting_set(self, agreement, indices, base):
-        """The set's row of the netting sets frame and its valued trades' rows: RC (52.10, 52.18),
-        PFE (52.20) and EAD (52.1), a margined set's capped at its unmargined one (52.2)."""
+        """The set's row of the netting sets frame and its valued trades' rows, a trade's value on
+        its first: RC (52.10, 52.18), PFE (52.20) and EAD (52.1), a margined set's capped at its
+        unmargined one (52.2)."""
         terms = agreement['Instrument'].field
         margined = terms['Collateralized'] == 'True'
         mpor = max(terms['Liquidation_Period'], self.floors[1] if len(indices) > self.floors[2]
                    else self.floors[0]) if margined else None
-        rows = [dict(self.exposure(index, mpor), Value=base[index][0]) for index in indices
-                if base[index][0] is not None]
-        v = sum(row['Value'] for row in rows)
+        valued = [index for index in indices if base[index][0] is not None]
+        rows = [dict(row, Value=None if position else base[index][0]) for index in valued
+                for position, row in enumerate(self.exposures(index, mpor))]
+        v = sum(base[index][0] for index in valued)
         c, margin = self.collateral(terms) if margined else (0.0, 0.0)
         add_ons = self.add_ons(rows, 'EffectiveNotional')
         multiplier, pfe = self.potential(v, c, sum(add_ons))
@@ -5855,8 +5920,10 @@ class SACCR(NettingSetCalculation):
         return instruments.collateral_credit(balance, face, held), margin
 
     def report(self, base):
-        """The run's results off the book's `base`: a row per netting set and per trade it
-        values, in book order."""
+        """The run's results off the book's `base`: a row per netting set and per component of a
+        trade it values, in book order, each deal read off its compile (`held`)."""
+        self.held = {deal.Instrument.resolved_from or deal.Instrument: deal.Factor_dep for deal in itertools.chain(
+            self.compiled.netting_sets.deals(), (structure.obj for structure in self.compiled.netting_sets.structures()))}
         sets, trades = [], []
         for agreement in self.config.deals['Deals']['Children']:
             row, rows = self.netting_set(agreement, [
