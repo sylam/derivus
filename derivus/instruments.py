@@ -2195,6 +2195,7 @@ class MtMCrossCurrencySwapDeal(Deal):
 
 class FXNonDeliverableForward(Deal):
     vernacular = 'non-deliverable forward, NDF'
+    exposure = Exposure('Buy_Amount', 'Buy_Currency', 'Sell_Currency', other='Sell_Amount')
     fields = [ADMIN, own('FXNonDeliverableForward', [
         F('Sell_Currency', 'Text', default='', factors=['FxRate']),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
@@ -2413,6 +2414,7 @@ class FXSwapDeal(Deal):
 class FXForwardDeal(Deal):
     vernacular = 'FX forward, outright forward, deliverable forward'
     quoted = 'Buy_Amount'
+    exposure = Exposure('Buy_Amount', 'Buy_Currency', 'Sell_Currency', other='Sell_Amount')
     fields = [ADMIN, own('FXForwardDeal', [
         F('Sell_Currency', 'Text', default='', factors=['FxRate']),
         F('Sell_Amount', 'Float', default=0.0, sized=True),
@@ -6825,7 +6827,7 @@ class FXOptionDeal(Deal):
 
 
 class FXEuropeanOption(FXOptionDeal):
-    pass
+    exposure = FXOptionDeal.exposure
 
 
 class FXBinaryOption(FXOptionDeal):

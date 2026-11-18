@@ -220,8 +220,8 @@ section of a file, read under the ten-day constants
 CRE52, `1.4 (RC + PFE)`, off its trades' values and their terms as each type declares them
 (`schema.Exposure`, `exposure` on the class, `schema.EXPOSURES` holding each type's own as
 `schema.OBSERVES` does `observes`): the fields its notional and its currency, or its units and the
-factor pricing a unit, its start and its long side are read off, and an option's strike, expiry and
-call; its end and maturity are the last day `schema.tenor_fields` names. A trade's asset class is
+factor pricing a unit, its start and its long side are read off, an FX trade's amount in its other
+currency, and an option's strike, expiry and call; its end and maturity are the last day `schema.tenor_fields` names. A trade's asset class is
 the `Asset_Class` the `Mapping`'s `SACCR` section states for its type, a credit entity's rating
 the `Rating` under its survival curve's `SACCR` entry, an
 equity an index where its SIMM bucket is 11 or 12, a commodity's type its SIMM bucket, whose row in
@@ -243,6 +243,8 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_a_margined_sets_collateral_is_its_balance_as_the_engine_counts_it`,
 `::test_an_over_collateralised_set_keeps_its_add_on_at_the_five_percent_floor`,
 `::test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_hand`,
+`::test_an_fx_forward_reads_its_foreign_leg_the_larger_where_both_are`,
+`::test_an_fx_european_option_reads_as_the_fx_option_it_is`,
 `::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
 of a set of more than 5,000 trades.

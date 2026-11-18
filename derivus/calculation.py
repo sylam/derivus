@@ -5380,8 +5380,10 @@ class SACCR(NettingSetCalculation):
     the methodology's examples count a tenor: S its declared start, zero once started, E and M the
     last day its type's tenor fields name (`schema.tenor_fields`), T its declared expiry (52.31).
     Its d is an IR or credit notional crossed times SD, averaged over its life where it amortises,
-    an FX trade's foreign leg, the larger where both are, or an equity or commodity trade's units at
-    a unit's price (52.34-52.37); its delta plus or minus one by its long side and the amount's
+    an FX trade's foreign leg, the larger where both are, a forward's legs its two amounts and an
+    option's its amount and that at its strike, or an equity or commodity trade's units at a unit's
+    price (52.34-52.37); a non-deliverable forward is on the pair it buys and sells, its settlement
+    currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
     sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
     compiled factors, a rate option's P and K shifted by its currency's `option_shift`
     (52.38-52.40); its MF sqrt(min(M, 1)), M floored at ten business days, or under a margined set
@@ -5410,7 +5412,10 @@ class SACCR(NettingSetCalculation):
         'Per trade, its dates in years of 30/360 from the base date: the adjusted notional $d$',
         '(CRE52.34-52.37), an IR or credit trade\'s notional, averaged over time where it amortises,',
         'times $SD=(e^{-0.05S}-e^{-0.05E})/0.05$ floored at ten business days, an FX trade\'s foreign leg,',
-        'and an equity or commodity trade\'s units at a unit\'s price; the supervisory delta $\\delta$',
+        'the larger where both are (CRE52.35) - a forward\'s legs its two amounts, an option\'s its amount',
+        'and that at its strike, a non-deliverable forward on the pair it buys and sells, its settlement',
+        'currency outside it - and an equity or commodity trade\'s units at a unit\'s price; the',
+        'supervisory delta $\\delta$',
         '(CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black delta on Table 2\'s vol at its',
         'underlying\'s forward $P$; the maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$',
         'floored at ten business days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a margined set; and',
@@ -5622,11 +5627,10 @@ class SACCR(NettingSetCalculation):
             notional = (self.averaged(size, steps, end) if steps else size) * self.fx(
                 fields[terms.currency]) * self.duration(start, end)
         elif asset == 'FX':
-            legs = [(size, fields[terms.currency])] + (
-                [(size * fields[terms.strike], fields[terms.underlying])] if terms.strike else [])
-            notional = max(leg * self.fx(currency) for leg, currency in legs
-                           if utils.check_rate_name(currency) != utils.check_rate_name(
-                               self.params['Currency']))
+            other = abs(fields[terms.other]) if terms.other else size * fields[terms.strike]
+            notional = max(leg * self.fx(currency) for leg, currency in (
+                (size, fields[terms.currency]), (other, fields[terms.underlying]))
+                if utils.check_rate_name(currency) != utils.check_rate_name(self.params['Currency']))
         else:
             price, currency = self.price(deal, terms.price or terms.underlying)
             notional = size * price * self.fx(currency)

@@ -5,8 +5,8 @@ out.
 
 Every level is invented, chosen so the examples' terms are what the engine reads: a USD curve flat
 at 4% and a EUR one through 6% a year at each anniversary of the base date, so the one-into-ten
-receiver's legs have the forward swap rate of 6% CRE99.31 assumes; the pair at 1.25 dollars a
-euro, so a euro notional is crossed; three survival curves rated in the module's mapping as
+receiver's legs have the forward swap rate of 6% CRE99.31 assumes; a euro at 1.25 dollars and a
+pound at 1.5, so a notional in either is crossed; three survival curves rated in the module's mapping as
 CRE99.41 rates the entities; three commodities whose forward curves price a unit at 80, 100 and 25
 dollars. The swaps' rates and the default swaps' coupons are solved for the market values the
 examples state and the receiver's vol for its 50 thousand. A commodity forward is worth its funded
@@ -41,7 +41,7 @@ PARAMETERS = os.path.join(FIXTURES, 'saccr_parameters.json')
 
 BASE = pd.Timestamp('2025-01-15')
 SIX_MONTHS = BASE + pd.DateOffset(months=6)
-EURO = 1.25
+EURO, STERLING = 1.25, 1.5
 
 
 def years(n):
@@ -89,7 +89,9 @@ def factors(vol):
     return dict({
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
         'FxRate.EUR': {'Domestic_Currency': 'USD', 'Interest_Rate': 'EUR', 'Spot': EURO},
+        'FxRate.GBP': {'Domestic_Currency': 'USD', 'Interest_Rate': 'GBP', 'Spot': STERLING},
         'InterestRate.USD': flat(0.04), 'InterestRate.SILVER_LEASE': flat(LEASE),
+        'InterestRate.GBP': flat(0.05, 'GBP'),
         'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[tenor(years(k)), k * math.log(1.06) / tenor(
                                  years(k))] for k in range(1, 12)])},
@@ -248,6 +250,23 @@ MIXED = [
      'Maturity_Date': years(1)}]
 
 
+def outright(reference, bought, sold, settles):
+    """A deliverable forward buying `bought` for `sold`, each `(amount, currency)`, on `settles`."""
+    return {'Object': 'FXForwardDeal', 'Reference': reference, 'Buy_Amount': bought[0],
+            'Buy_Currency': bought[1], 'Buy_Discount_Rate': bought[1], 'Sell_Amount': sold[0],
+            'Sell_Currency': sold[1], 'Sell_Discount_Rate': sold[1], 'Settlement_Date': settles}
+
+
+#: Euros bought for dollars six months out and sold back a year out, and a non-deliverable forward
+#: buying euros for pounds a year out, settled in dollars.
+FX_LINEAR = [
+    outright('FWD_EUR', (1e6, 'EUR'), (1.3e6, 'USD'), SIX_MONTHS),
+    outright('FWD_USD', (1.3e6, 'USD'), (1e6, 'EUR'), years(1)),
+    {'Object': 'FXNonDeliverableForward', 'Reference': 'NDF', 'Buy_Amount': 1e6, 'Buy_Currency': 'EUR',
+     'Sell_Amount': 0.9e6, 'Sell_Currency': 'GBP', 'Settlement_Currency': 'USD',
+     'Settlement_Date': years(1)}]
+
+
 def node(deal):
     return {'Instrument': {'.Deal': deal}}
 
@@ -347,7 +366,9 @@ def world(tmp_path_factory):
             'EX5': (EXAMPLE_5, rates + forwards),
             'SHORT': ({}, [node(swap('WEEK', BASE + pd.DateOffset(days=7), 'Fixed'))]),
             'THRESHOLD': (THRESHOLD, five), 'OVER': (OVER, five), 'POSTED': (POSTED, five),
-            'MIXED': ({}, [node(deal) for deal in MIXED])}
+            'MIXED': ({}, [node(deal) for deal in MIXED]),
+            'FX_LINEAR': ({}, [node(deal) for deal in FX_LINEAR]),
+            'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -674,6 +695,45 @@ def test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_
     assert found['AddOn_Aggregate'] == pytest.approx(aggregate, rel=1e-14), found
     assert found['Multiplier'] == pytest.approx(multiplier(found['V'], 0.0, aggregate), rel=1e-14)
     assert found['EAD'] == pytest.approx(1.4 * (max(found['V'], 0.0) + found['PFE']), rel=1e-15)
+
+
+def test_an_fx_forward_reads_its_foreign_leg_the_larger_where_both_are(world):
+    """CRE52.35, CRE52.39, CRE52.48 AND CRE52.59. One unmargined set: a forward buying a million
+    euros for 1.3 million dollars six months out, its adjusted notional the euros crossed,
+    1,250,000, long the pair EUR/USD at the maturity factor (1/2)^0.5; one buying the dollars back
+    for the million euros a year out, its foreign leg the euros it sells, 1,250,000, short the
+    pair; and a non-deliverable forward buying a million euros for 900 thousand pounds a year out,
+    settled in dollars outside its pair EUR/GBP, both legs foreign and the larger the pounds',
+    1,350,000, long. The add-on 4% of |1,250,000 (1/2)^0.5 - 1,250,000| plus 4% of 1,350,000.
+
+    Killing mutations: the smaller leg where both are foreign - the forward's adjusted notional
+    1,250,000; the amount's leg alone - the run refused, the dollar buyer reading no foreign leg;
+    the side not turned to the pair's order - the dollar buyer long, its effective notional
+    +1,250,000.
+    """
+    _, output = world
+    found, rows = netting_sets(output).loc['FX_LINEAR'], trades(output, 'FX_LINEAR')
+    assert list(rows['HedgingSet']) == ['EUR/USD', 'EUR/USD', 'EUR/GBP'], rows['HedgingSet']
+    assert list(rows['AdjustedNotional']) == [1e6 * EURO, 1e6 * EURO, 0.9e6 * STERLING], rows
+    assert list(rows['Delta']) == [1.0, -1.0, 1.0], rows['Delta']
+    assert rows['MaturityFactor'].tolist() == pytest.approx([math.sqrt(0.5), 1.0, 1.0], rel=1e-15)
+    fx = 0.04 * abs(1.25e6 * math.sqrt(0.5) - 1.25e6) + 0.04 * 1.35e6
+    assert found['AddOn_FX'] == pytest.approx(fx, rel=1e-14), found
+    assert found['EAD'] == pytest.approx(1.4 * (max(found['V'], 0.0) + multiplier(
+        found['V'], 0.0, fx) * fx), rel=1e-14), found
+
+
+def test_an_fx_european_option_reads_as_the_fx_option_it_is(world):
+    """`FXEuropeanOption` is `FXOptionDeal` under another name: the bought euro call booked as one
+    reads the row it reads booked as the other, value and all.
+
+    Killing mutation: the alias declaring no exposure - the run refused by name.
+    """
+    _, output = world
+    columns = ['AssetClass', 'HedgingSet', 'AdjustedNotional', 'Delta', 'MaturityFactor',
+               'EffectiveNotional', 'Value']
+    assert list(trades(output, 'ALIAS').loc['EUR_CALL', columns]) == list(
+        trades(output, 'MIXED').loc['EUR_CALL', columns])
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
