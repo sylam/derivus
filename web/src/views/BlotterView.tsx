@@ -81,6 +81,13 @@ export function BlotterView() {
               {window.label}
             </button>
           ))}
+          {!recording && (
+            <span className="hint">
+              {state.source?.kind === 'book' ? 'this desk keeps no record'
+                : 'a file opened here has no record'}, so no grouping, quantity, portfolio, client
+              or status
+            </span>
+          )}
           <span className="spacer" />
           <span className="hint" title={'a trade rolls off on its own expiry; a fixing or a payment '
                                            + 'before it is its next date, and does not roll it'}>

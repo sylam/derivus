@@ -41,14 +41,22 @@ export class ApiError extends Error {
   }
 }
 
+/** What a desk is told where an act names no seat and the deployment wants one. */
+export const NO_SEAT = 'No seat is set, and this desk files every act under the seat that asks: '
+  + 'type yours in the seat box at the top right.';
+
 /** A thrown error as the pair a view renders: the status, and the service's OWN wording. A book
  * verb refusing carries its cause in `detail` (`the book will not price a consolidated risk run:
  * ...`), and printing the JSON envelope at a reader would put a second author between the engine
- * and the desk. Anything that is not an `ApiError` - the network being down - reads as itself. */
+ * and the desk. Anything that is not an `ApiError` - the network being down - reads as itself. The
+ * one rewording is a seat named by nobody, which the desk fixes in its own box. */
 export function failure(error: unknown): { status: number | null; error: string } {
   if (!(error instanceof ApiError)) return { status: null, error: String(error) };
   try {
     const detail = (JSON.parse(error.message) as { detail?: unknown }).detail;
+    if (typeof detail === 'string' && detail.startsWith('no actor for this act')) {
+      return { status: error.status, error: NO_SEAT };
+    }
     if (typeof detail === 'string') return { status: error.status, error: detail };
   } catch { /* not JSON: the body is already the message */ }
   return { status: error.status, error: error.message || `HTTP ${error.status}` };

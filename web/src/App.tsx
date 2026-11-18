@@ -2,7 +2,7 @@ import { useEffect, useReducer, useRef, useState } from 'react';
 import {
   DOORBELL, failure, getBook, getBookActivity, getBookAgreements, getBookEntities, getBookMarket,
   getBookPortfolios, getBookPositions, getBookRisk, getBookStatus, getBookXva, getPaths, getSchema,
-  postDescribe,
+  postDescribe, SEAT, stored,
 } from './api';
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
@@ -16,6 +16,7 @@ const BOOK_POLL_MS = 2000;
 export function App() {
   const [state, dispatch] = useReducer(reducer, INITIAL, (initial) => ({
     ...initial,
+    seat: stored(SEAT),
     tab: WORKSPACES.some((w) => w.id === location.hash.slice(1))
       ? location.hash.slice(1) : initial.tab,
   }));
@@ -45,6 +46,8 @@ export function App() {
   // Where the record's strip has read up to. A ref rather than state: the beat below is
   // recreated whenever the book moves, and a cursor that reset with it would re-read the history.
   const since = useRef(0);
+  const seat = useRef(state.seat);
+  seat.current = state.seat;
 
   // The record's own read - the pin and how far the record has moved past it, then the events
   // after the cursor. ONE FUNCTION on two clocks, the poll's beat and the doorbell's, so the two
@@ -70,6 +73,8 @@ export function App() {
         if (live.etag !== etag || live.path !== path) {
           dispatch(bookLoaded(live, live.path === path));
         }
+        // the seat box keeps its own; a seat typed there is what a refused read waits on
+        if (stored(SEAT) !== seat.current) dispatch({ type: 'SEAT', seat: stored(SEAT) });
         await readRecord();
       } catch { /* the poll outlives a service restart */ }
     }, BOOK_POLL_MS);
@@ -107,7 +112,7 @@ export function App() {
       .then((risk) => { if (live) dispatch({ type: 'RISK_LOADED', risk, bookEtag }); })
       .catch((error) => { if (live) dispatch({ type: 'RISK_FAILED', ...failure(error) }); });
     return () => { live = false; };
-  }, [state.source, riskWanted]);
+  }, [state.source, riskWanted, state.seat]);
 
   // The XVA view is a file read, not a run: it re-reads on FOCUS - a recalc asked for through the
   // MCP verbs lands in that file while nobody is looking at this screen - and again whenever the

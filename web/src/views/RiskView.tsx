@@ -1,4 +1,5 @@
 import { useMemo, useState } from 'react';
+import { NO_SEAT } from '../api';
 import {
   factorAxes, factorFamily, lagsBook, marksTotal, plural, quoteText, quoteView, reconciles,
   sortGreeks, stampText, tenorText, type GreekKey,
@@ -57,9 +58,11 @@ export function RiskView() {
     return (
       <div className="main">
         <div className="panel">
-          <div className="error-box">{risk.error}</div>
+          <div className={risk.error === NO_SEAT ? 'banner' : 'error-box'}>{risk.error}</div>
           <div className="hint">
-            {risk.status === 422
+            {risk.error === NO_SEAT
+              ? 'The risk is read again as soon as a seat is set.'
+              : risk.status === 422
               ? 'Nothing was cached and nothing partial was served. Fix the book — the etag moves, and this screen asks again on its own.'
               : 'The consolidated risk could not be read.'}
           </div>
