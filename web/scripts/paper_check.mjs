@@ -1,6 +1,6 @@
 // Drives the rules the Paper tab reads an agreement by, where the eye cannot: the sections a type's
-// own terms are, when a set's collateral is off and what then reads, and the currency an amount's
-// description names.
+// own terms are, when a set's collateral is off and what then reads, the currency an amount's
+// description names, the terms a restatement moves, and where an agreement stands in the book.
 // Every check names the MUTATION it kills - the change that would still typecheck, still render,
 // and still be wrong.
 //
@@ -17,6 +17,7 @@ async function bundled(module) {
   return import('data:text/javascript;base64,' + Buffer.from(out.outputFiles[0].text).toString('base64'));
 }
 const tokens = await bundled('tokens.ts');
+const { standing } = await bundled('state.ts');
 
 let ran = 0;
 const missed = [];
@@ -95,7 +96,39 @@ check("an amount is in the currency field its description says it is in, by key 
        tokens.currencyOf('Threshold, in the agreement currency', ['Currency'], read({ Currency: 'ZAR' }))],
       ['EUR', 'USD', 'ZAR', undefined, undefined, undefined]);
 
-console.log(`\n${ran} checks over 4 functions, ${missed.length} missed`);
+check('a restatement names each term it moves, a container by the term inside it',
+      'a container compared whole, which names Credit_Support_Amounts where one minimum moved; a '
+      + 'blank read as a statement, which names every field a form round-trips empty; or the '
+      + 'terms a restatement leaves out unnamed, which reverts them silently',
+      [tokens.termsMoved(CSA, { ...CSA, Liquidation_Period: 15, Netted: '', Credit_Support_Amounts: {
+        ...CSA.Credit_Support_Amounts, Minimum_Received: support([[1, 250000]]) } }),
+       tokens.termsMoved(CSA, { Object: 'NettingCollateralSet' }),
+       tokens.termsMoved(CSA, structuredClone(CSA))],
+      [['Credit_Support_Amounts.Minimum_Received', 'Liquidation_Period'],
+       ['Agreement_Currency', 'Collateralized', 'Credit_Support_Amounts.Counterparty',
+        'Credit_Support_Amounts.Minimum_Received', 'Liquidation_Period', 'Reference'],
+       []]);
+
+const node = (deal, children) => ({ Instrument: { '.Deal': deal }, ...(children ? { Children: children } : {}) });
+const DOC = { Calc: { Deals: { Deals: { Children: [
+  node({ Object: 'FXForwardDeal', Reference: 'CSA-2' }),
+  node(ISDA, [node({ Object: 'FXForwardDeal', Reference: 'FWD-1' })]),
+  node({ Object: 'StructuredDeal', Reference: 'BOOK' }, [node(CSA)]),
+] } } } };
+const RECONCILE = { terms_mismatch: [{ agreement: 'CSA-1', deal_path: '2/0', fields: ['Netted'] }] };
+check('an agreement stands where the book holds a set of its type under its id, off its paper on '
+      + 'the fields the reconcile names, and nowhere before its first booking',
+      'a set matched on its reference alone, which takes a trade named like the agreement for its '
+      + 'set; the walk kept to the top level, which loses a set nested under a book node; or the '
+      + "reconcile's fields read for another agreement",
+      [standing(DOC, RECONCILE, { agreement: 'ISDA-1', terms: ISDA }),
+       standing(DOC, RECONCILE, { agreement: 'CSA-1', terms: CSA }),
+       standing(DOC, RECONCILE, { agreement: 'CSA-2', terms: CSA }),
+       standing(null, null, { agreement: 'ISDA-1', terms: ISDA })],
+      [{ path: '1', moved: [] }, { path: '2/0', moved: ['Netted'] }, { path: null, moved: [] },
+       { path: null, moved: [] }]);
+
+console.log(`\n${ran} checks over 6 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

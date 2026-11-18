@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import {
   declareAgreement, declareEntity, failure, getBookAgreements, getBookEntities,
 } from '../api';
@@ -6,8 +6,8 @@ import { DealPanels } from '../components/FieldView';
 import { EmptyState } from '../components/EmptyState';
 import type { Agreement, Entity } from '../positions';
 import { worklistAt } from '../spine';
-import { useApp } from '../state';
-import { COLLATERAL, statedOnly, uncollateralised } from '../tokens';
+import { opened, standing, useApp } from '../state';
+import { COLLATERAL, statedOnly, termsMoved, uncollateralised } from '../tokens';
 import type { Schema } from '../types';
 
 /** The declaration an agreement's terms are: the netting set's own, as `/schema` publishes it. */
@@ -16,19 +16,27 @@ const TERMS = 'NettingCollateralSet';
 /** What a declaration answered: where it landed, or the service's refusal in its own words. */
 type Said = { refused: boolean; text: string } | null;
 
+/** An entity as a reader tells it from another: its name with its id beside it. */
+const entityText = (entities: Entity[], id: string) => {
+  const name = entities.find((row) => row.entity === id)?.name;
+  return name ? `${name} (${id})` : id;
+};
+
 /** The paper the book trades under: every legal entity and agreement the record declares, each
- * agreement's terms rendered off the netting set's declaration, and a form for each - an
- * agreement's terms being the netting set itself, every field at its convention until stated.
- * Declaring is the acting seat's; the record's `document` grant and the engine's judge of the
- * terms refuse, in their own words. Read again at every move of the record's head. An agreement
- * a row of the record opened stands open, an entity it opened marked. */
+ * agreement with where it stands on the desk and its terms rendered off the netting set's
+ * declaration, and a form for each - an agreement's terms being the netting set itself, every
+ * field at its convention until stated, an agreement amended from the terms in force. Declaring
+ * is the acting seat's; the record's `document` grant and the engine's judge of the terms refuse,
+ * in their own words. Read again at every move of the record's head. An agreement a row of the
+ * record opened stands open, an entity it opened marked. */
 export function PaperView() {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
   const { schema } = state;
   const at = worklistAt(state.source?.kind === 'book' ? state.record.spine : null);
   const [paper, setPaper] = useState<{
     entities: Entity[]; agreements: Agreement[]; error: string | null }>(
     { entities: [], agreements: [], error: null });
+  const [amending, setAmending] = useState<{ from: Agreement; at: number } | null>(null);
 
   useEffect(() => {
     if (at === null) return;
@@ -51,7 +59,7 @@ export function PaperView() {
       />
     );
   }
-  const named = (id: string) => paper.entities.find((row) => row.entity === id)?.name ?? id;
+  const named = (id: string) => entityText(paper.entities, id);
   // what a row of the record opened here: an agreement, or an entity
   const picked = state.selection.picks.paper;
   return (
@@ -73,21 +81,42 @@ export function PaperView() {
               </tbody>
             </table>
           </div>
-          <EntityForm />
+          <EntityForm entities={paper.entities} />
         </section>
         <section className="card">
           <h3>Agreements ({paper.agreements.length})</h3>
-          {paper.agreements.map((row) => (
-            <details className="fold" key={row.agreement}
-                     open={picked === row.agreement || undefined}>
-              <summary>
-                <span className="mono">{row.agreement}</span> · {named(row.entity)} · {row.kind}
-              </summary>
-              <Terms schema={schema} terms={row.terms} />
-            </details>
-          ))}
+          {paper.agreements.map((row) => {
+            const { path, moved } = standing(state.doc, state.record.reconcile, row);
+            return (
+              <details className="fold" key={row.agreement}
+                       open={picked === row.agreement || undefined}>
+                <summary>
+                  <span className="mono">{row.agreement}</span> · {named(row.entity)} · {row.kind}
+                  {' · '}
+                  <span className={moved.length ? 'chip error' : 'chip'}>
+                    {path === null ? 'no trade booked under it yet: its netting set enters the '
+                      + 'book at the first booking'
+                      : moved.length ? `in the book, its set off the paper on ${moved.join(', ')}`
+                        : 'in the book, as declared'}
+                  </span>
+                  {path !== null && (
+                    <button className="ghost" onClick={(event) => {
+                      event.preventDefault();
+                      opened(dispatch, path);
+                    }}>open its set</button>
+                  )}
+                  <button className="ghost" onClick={(event) => {
+                    event.preventDefault();
+                    setAmending({ from: row, at: Date.now() });
+                  }}>amend</button>
+                </summary>
+                <Terms schema={schema} terms={row.terms} />
+              </details>
+            );
+          })}
         </section>
-        <AgreementForm schema={schema} entities={paper.entities} />
+        <AgreementForm key={amending?.at} schema={schema} entities={paper.entities}
+                       agreements={paper.agreements} from={amending?.from} />
       </div>
     </div>
   );
@@ -115,7 +144,7 @@ function Terms({ schema, terms, onChange }: {
 
 /** Declaring a legal entity: its id as the legal system knows it, its name and the parent it is
  * grouped under. */
-function EntityForm() {
+function EntityForm({ entities }: { entities: Entity[] }) {
   const [entity, setEntity] = useState({ entity: '', name: '', parent: '' });
   const [said, setSaid] = useState<Said>(null);
 
@@ -132,10 +161,17 @@ function EntityForm() {
 
   return (
     <div className="statusrow">
-      {(['entity', 'name', 'parent'] as const).map((field) => (
+      {(['entity', 'name'] as const).map((field) => (
         <input key={field} placeholder={field} value={entity[field]}
                onChange={(event) => setEntity({ ...entity, [field]: event.target.value })} />
       ))}
+      <select value={entity.parent}
+              onChange={(event) => setEntity({ ...entity, parent: event.target.value })}>
+        <option value="">under no parent</option>
+        {entities.map((row) => (
+          <option key={row.entity} value={row.entity}>{entityText(entities, row.entity)}</option>
+        ))}
+      </select>
       <button className="ghost" onClick={declare}>declare the entity</button>
       {said && <span className={said.refused ? 'refusal' : 'hint'}>{said.text}</span>}
     </div>
@@ -143,11 +179,20 @@ function EntityForm() {
 }
 
 /** Declaring an agreement with an entity: its id, the document's kind and its terms - the netting
- * set every position under it compiles into, edited off the declaration and posted as it stands. */
-function AgreementForm({ schema, entities }: { schema: Schema; entities: Entity[] }) {
-  const [named, setNamed] = useState({ agreement: '', entity: '', kind: '' });
-  const [terms, setTerms] = useState<Record<string, unknown>>({ Object: TERMS });
+ * set every position under it compiles into, edited off the declaration and posted as it stands.
+ * Started `from` an agreement in force, it holds that one's terms; an id the record declares
+ * already is a restatement, which names every term it moves before it is filed. */
+function AgreementForm({ schema, entities, agreements, from }: {
+  schema: Schema; entities: Entity[]; agreements: Agreement[]; from?: Agreement;
+}) {
+  const [named, setNamed] = useState({
+    agreement: from?.agreement ?? '', entity: from?.entity ?? '', kind: from?.kind ?? '' });
+  const [terms, setTerms] = useState<Record<string, unknown>>(from?.terms ?? { Object: TERMS });
   const [said, setSaid] = useState<Said>(null);
+  const card = useRef<HTMLElement>(null);
+  useEffect(() => { if (from) card.current?.scrollIntoView({ block: 'start' }); }, [from]);
+  const held = agreements.find((row) => row.agreement === named.agreement);
+  const moved = held ? termsMoved(held.terms, terms) : [];
 
   async function declare() {
     try {
@@ -159,20 +204,32 @@ function AgreementForm({ schema, entities }: { schema: Schema; entities: Entity[
   }
 
   return (
-    <section className="card">
-      <h3>Declare an agreement</h3>
+    <section className="card" ref={card}>
+      <h3>{held ? `Restate ${held.agreement}` : 'Declare an agreement'}</h3>
       <div className="statusrow">
         <input placeholder="agreement" value={named.agreement}
                onChange={(event) => setNamed({ ...named, agreement: event.target.value })} />
         <select value={named.entity}
                 onChange={(event) => setNamed({ ...named, entity: event.target.value })}>
           <option value="">with entity…</option>
-          {entities.map((row) => <option key={row.entity} value={row.entity}>{row.name}</option>)}
+          {entities.map((row) => (
+            <option key={row.entity} value={row.entity}>{entityText(entities, row.entity)}</option>
+          ))}
         </select>
         <input placeholder="kind (ISDA 2002 with CSA)" value={named.kind}
                onChange={(event) => setNamed({ ...named, kind: event.target.value })} />
-        <button className="ghost" onClick={declare}>declare the agreement</button>
+        <button className="ghost" onClick={declare}>
+          {held ? 'restate the agreement' : 'declare the agreement'}
+        </button>
       </div>
+      {held && (
+        <div className="banner">
+          {named.agreement} is in force: filing this restates it whole, every term left out going
+          back to its convention. {moved.length
+            ? `Terms that differ from the version in force: ${moved.join(', ')}.`
+            : 'No term differs from the version in force yet.'}
+        </div>
+      )}
       {said && <div className={said.refused ? 'error-box' : 'hint'}>{said.text}</div>}
       <Terms schema={schema} terms={terms} onChange={setTerms} />
     </section>

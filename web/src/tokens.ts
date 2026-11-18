@@ -216,3 +216,16 @@ export function statedOnly(fields: Section, values: Record<string, unknown>,
       ? { ...field, sub_fields: statedOnly(field.sub_fields, values[key]) } : field]));
 }
 
+/** Every term two statements of a deal differ on, a container's by `Container.Term`: a blank or
+ * a null is no statement, and a wire token is one value. */
+export function termsMoved(held: Record<string, unknown>, edited: Record<string, unknown>,
+                           at = ''): string[] {
+  const said = (value: unknown) => (value === '' || value === null ? undefined : value);
+  const plain = (value: unknown): value is Record<string, unknown> | undefined =>
+    value === undefined || (isObject(value) && !Object.keys(value).some((key) => key.startsWith('.')));
+  return [...new Set([...Object.keys(held), ...Object.keys(edited)])].sort().flatMap((key) => {
+    const [was, now] = [said(held[key]), said(edited[key])];
+    if (plain(was) && plain(now)) return termsMoved(was ?? {}, now ?? {}, `${at}${key}.`);
+    return JSON.stringify(was) === JSON.stringify(now) ? [] : [`${at}${key}`];
+  });
+}

@@ -8,8 +8,9 @@ import type { Grouping, Paper } from './positions';
 import { readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
 import type {
-  ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc, Market,
-  PathsAnswer, Reconcile, ResultSummary, Schema, SpineBlock, TablePage, ValidateResult, Worklist,
+  ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DealNode, DescribeResult, JobDoc,
+  Market, PathsAnswer, Reconcile, ResultSummary, Schema, SpineBlock, TablePage, ValidateResult,
+  Worklist,
 } from './types';
 
 /** `opened` names the job file the served book was opened from, where it was opened from one. */
@@ -318,6 +319,29 @@ export function holds(record: unknown, path: string[]): boolean {
     held = held[key];
   }
   return true;
+}
+
+/** Where an agreement stands on the desk: the path of the set the book file holds for it - one of
+ * its terms' type under its id, none before the first booking under it - and the fields that set
+ * reads off the paper, as the record's reconcile names them. */
+export function standing(doc: JobDoc | null, reconcile: Reconcile | null,
+                         agreement: { agreement: string; terms: Record<string, unknown> }):
+  { path: string | null; moved: string[] } {
+  const find = (nodes: DealNode[], at: string): string | null => {
+    for (const [position, node] of nodes.entries()) {
+      const path = `${at}${position}`;
+      const deal = node.Instrument['.Deal'];
+      if (deal.Reference === agreement.agreement && deal.Object === agreement.terms.Object) {
+        return path;
+      }
+      const below = find(node.Children ?? [], `${path}/`);
+      if (below !== null) return below;
+    }
+    return null;
+  };
+  return { path: find(doc?.Calc.Deals.Deals.Children ?? [], ''),
+           moved: reconcile?.terms_mismatch?.find((row) => row.agreement === agreement.agreement)
+             ?.fields ?? [] };
 }
 
 /** A tree item's word for an entry the block states over the file the book names; nothing on a
