@@ -191,7 +191,17 @@ check('the roll-off count counts trades, a structure once and what holds it neve
        blotter.rollingCount(GROUPED, 200), blotter.rollingCount(BOOK, 200)],
       [1, 1, 3, 2]);
 
-console.log(`\n${ran} checks over 9 functions, ${missed.length} missed`);
+// --- the status a row reads
+const ticketed = (status, quantity, pending) => ({ ...TOP, status, quantity, pending });
+check('a trade pending whole reads pending once, and a part awaiting a seat says how much',
+      'the pending quantity printed beside its own status, which reads `pending · 1 pending` and '
+      + 'is cut at 1600 px; or the part dropped, which hides an increase that waits on a seat',
+      [positions.statusText([ticketed('pending', 1, 1)]),
+       positions.statusText([ticketed('approved', 1.5, 0.5)]),
+       positions.statusText([ticketed('approved', 1, 0), ticketed('rejected', -1, 0)])],
+      ['pending', 'approved · 0.5 pending', 'approved, rejected']);
+
+console.log(`\n${ran} checks over 10 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

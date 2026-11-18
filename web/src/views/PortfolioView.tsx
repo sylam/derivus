@@ -1,5 +1,5 @@
 import { amendDeal } from '../api';
-import { DescriptorPanel, type AmendField } from '../components/FieldView';
+import { DealPanels, DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Tree, type TreeNode } from '../components/Tree';
 import {
   GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, portfolioTree, type Paper,
@@ -60,7 +60,6 @@ export function PortfolioView() {
   const held = position ? [position] : (dealPath && byPath(paper.positions).get(dealPath)) || [];
   const selected = dealPath !== undefined ? nodeAt(children, dealPath) : undefined;
   const deal = selected?.Instrument['.Deal'];
-  const sections = deal ? schema.Instrument.types[String(deal.Object)] : undefined;
 
   // editing exists only over the LIVE BOOK - a local file has nothing server-side to amend.
   // A successful amendment refreshes the book at once rather than waiting a poll tick.
@@ -106,20 +105,10 @@ export function PortfolioView() {
             this agreement - the banner above names where the two disagree.
           </div>
         )}
-        {deal && sections && sections.map((section) => (
-          <DescriptorPanel
-            key={section}
-            title={schema.Instrument.titles?.[section] ?? section}
-            fields={schema.Instrument.sections[section]}
-            values={Object.fromEntries(Object.entries(deal).filter(
-              ([key]) => key in schema.Instrument.sections[section]))}
-            onAmend={onAmend} ask={recording ? RESTRIKE : undefined}
-          />
-        ))}
-        {deal && !sections && (
-          <DescriptorPanel title={`${deal.Object} (undeclared type)`} values={deal} />
+        {deal && (
+          <DealPanels deal={deal} schema={schema} onAmend={onAmend}
+                      ask={recording ? RESTRIKE : undefined} />
         )}
-        {deal && sections && <UndeclaredPanel deal={deal} sections={sections} />}
       </div>
     </div>
   );
@@ -170,17 +159,4 @@ function Held({ position, paper }: { position: Position; paper: Paper }) {
                          ? { Expired: position.expired, Settles: position.settles } : {}),
                      }} />
   );
-}
-
-/** Every key of the deal no section covers - the viewer's honesty panel. */
-function UndeclaredPanel({ deal, sections }: {
-  deal: Record<string, unknown>; sections: string[];
-}) {
-  const { state } = useApp();
-  const declared = new Set(
-    sections.flatMap((s) => Object.keys(state.schema?.Instrument.sections[s] ?? {})));
-  const extra = Object.fromEntries(
-    Object.entries(deal).filter(([key]) => !declared.has(key)));
-  if (!Object.keys(extra).length) return null;
-  return <DescriptorPanel title="Undeclared fields" values={extra} />;
 }

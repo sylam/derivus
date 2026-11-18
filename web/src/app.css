@@ -383,7 +383,14 @@ table.blotter .side.buy { background: color-mix(in srgb, var(--good) 14%, transp
 
 table.blotter .side.sell { background: color-mix(in srgb, var(--bad) 14%, transparent); color: var(--bad); }
 
-table.blotter td.opener { text-align: right; color: var(--text-muted); width: 28px; }
+/* the opener rides the right edge: a panel opens without scrolling the references off the left */
+table.blotter td.opener {
+  text-align: right; color: var(--text-muted); width: 28px;
+  position: sticky; right: 0; background: var(--surface);
+}
+
+/* a long name keeps the row on the screen and reads whole on its hover */
+table.blotter td.clip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
 
 table.blotter td.opener span { cursor: pointer; padding: 0 4px; }
 

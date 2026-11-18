@@ -81,6 +81,15 @@ export function clientName(entities: Entity[], id: string | null): string {
   return entities.find((entity) => entity.entity === id)?.name ?? id ?? '';
 }
 
+/** What the tickets of `held` read, and the quantity awaiting a second seat where that is not the
+ * whole of what is held - a trade pending whole reads `pending` once. */
+export function statusText(held: Position[]): string {
+  const pending = held.reduce((sum, row) => sum + row.pending, 0);
+  const quantity = held.reduce((sum, row) => sum + row.quantity, 0);
+  const read = [...new Set(held.map((row) => row.status))].join(', ');
+  return pending && pending !== quantity ? `${read} · ${formatNumber(pending)} pending` : read;
+}
+
 /** One position as a leaf, by the reference a desk knows it by. `other` is the coordinate the tree
  * does not file it by - the agreement in the portfolio tree, the portfolio in the client tree - so
  * the same terms held twice under one folder still read as two things. A position the file does

@@ -4,7 +4,7 @@ import {
   curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, kindOf, label,
   offsetText, supportRows, token,
 } from '../tokens';
-import type { Descriptor } from '../types';
+import type { Descriptor, Schema } from '../types';
 import { axisNames } from '../vols';
 import { CurveChart } from './CurveChart';
 import { DataTable } from './DataTable';
@@ -168,6 +168,32 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
         })}
       </div>
     </section>
+  );
+}
+
+/** A deal as its type declares it: a card per section holding that section's fields, then every
+ * key no section covers - the viewer's honesty panel; a type nobody declared is one card whole. */
+export function DealPanels({ deal, schema, onAmend, ask }: {
+  deal: Record<string, unknown>; schema: Schema | null; onAmend?: AmendField; ask?: string;
+}) {
+  const object = String(deal.Object ?? '?');
+  const sections = schema?.Instrument.types[object];
+  if (!schema || !sections) {
+    return <DescriptorPanel title={`${object} (undeclared type)`} values={deal} />;
+  }
+  const of = (section: string) => schema.Instrument.sections[section] ?? {};
+  const pick = (keep: (key: string) => boolean) =>
+    Object.fromEntries(Object.entries(deal).filter(([key]) => keep(key)));
+  const extra = pick((key) => !sections.some((section) => key in of(section)));
+  return (
+    <>
+      {sections.map((section) => (
+        <DescriptorPanel key={section} title={schema.Instrument.titles?.[section] ?? section}
+                         fields={of(section)} values={pick((key) => key in of(section))}
+                         onAmend={onAmend} ask={ask} />
+      ))}
+      <DescriptorPanel title="Undeclared fields" values={extra} />
+    </>
   );
 }
 

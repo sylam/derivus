@@ -3,10 +3,10 @@ import {
   WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, groupedRows, inWindow,
   rollingCount, rowsByPath, sizeOf, sortRows, toRows, type BlotterRow, type Picked,
 } from '../blotter';
-import { DescriptorPanel } from '../components/FieldView';
+import { DealPanels } from '../components/FieldView';
 import {
-  GROUPINGS, NO_PAPER, byId, byPath, clientName, clientTree, portfolioTree, type Paper,
-  type Position,
+  GROUPINGS, NO_PAPER, byId, byPath, clientName, clientTree, portfolioTree, statusText,
+  type Paper, type Position,
 } from '../positions';
 import { marketOf, useApp } from '../state';
 import { formatNumber, type Kind } from '../tokens';
@@ -82,8 +82,9 @@ export function BlotterView() {
             </button>
           ))}
           <span className="spacer" />
-          <span className="hint">
-            <b>{rolling}</b> within 30 days
+          <span className="hint" title={'a trade rolls off on its own expiry; a fixing or a payment '
+                                           + 'before it is its next date, and does not roll it'}>
+            <b>{rolling}</b> {rolling === 1 ? 'trade rolls' : 'trades roll'} off within 30 days
           </span>
           <span className="hint">
             base date <span className="mono">{base ?? 'not stated'}</span>
@@ -113,7 +114,7 @@ export function BlotterView() {
                 <th className="n">Barrier</th>
                 <th>Expiry</th>
                 <th>Next date</th>
-                <th className="n">Days</th>
+                <th className="n" title="days to the roll: the expiry, else the next date">Days</th>
                 {recording && <th className="n">Qty</th>}
                 {recording && <th>Portfolio</th>}
                 {recording && <th>Client</th>}
@@ -160,7 +161,6 @@ function Row(props: {
   onToggle: () => void; onOpen: () => void; onSelect: () => void;
 }) {
   const { row, schema, selected, emphasised, collapsed, opened } = props;
-  const sections = schema?.Instrument.types[row.object];
   const size = sizeOf(row.deal, row.object, schema);
 
   return (
@@ -203,16 +203,7 @@ function Row(props: {
       {opened && (
         <tr className="detail">
           <td colSpan={props.held ? 15 : 11}>
-            {sections
-              ? sections.map((section) => (
-                  <DescriptorPanel
-                    key={section}
-                    title={schema?.Instrument.titles?.[section] ?? section}
-                    fields={schema?.Instrument.sections[section]}
-                    values={row.deal}
-                  />
-                ))
-              : <DescriptorPanel title={`${row.object} (undeclared type)`} values={row.deal} />}
+            <DealPanels deal={row.deal} schema={schema} />
           </td>
         </tr>
       )}
@@ -225,17 +216,16 @@ function Row(props: {
  * is grouped by the record, every one the file's node holds where it is not. */
 function Held({ held, entities }: { held: Position[]; entities: Paper['entities'] }) {
   const distinct = (values: string[]) => [...new Set(values)].join(', ');
-  const pending = held.reduce((sum, row) => sum + row.pending, 0);
+  const quantity = held.reduce((sum, row) => sum + row.quantity, 0);
+  const portfolios = distinct(held.map((row) => row.portfolio));
+  const clients = distinct(held.map((row) => clientName(entities, row.counterparty)));
   return (
     <>
-      <td className="n">
-        {held.length ? formatNumber(held.reduce((sum, row) => sum + row.quantity, 0)) : ''}
-      </td>
-      <td>{distinct(held.map((row) => row.portfolio))}</td>
-      <td>{distinct(held.map((row) => clientName(entities, row.counterparty)))}</td>
+      <td className="n">{held.length ? formatNumber(quantity) : ''}</td>
+      <td className="clip" title={portfolios}>{portfolios}</td>
+      <td className="clip" title={clients}>{clients}</td>
       <td className={held.some((row) => row.status === 'rejected') ? 'rejected' : ''}>
-        {distinct(held.map((row) => row.status))}
-        {pending ? ` · ${formatNumber(pending)} pending` : ''}
+        {statusText(held)}
       </td>
     </>
   );
