@@ -2700,7 +2700,8 @@ class Diary(BaseValuation):
     @classmethod
     def _deal_rows(cls, deal, compiled, base_date):
         """One deal's whole diary: its schedules, its monitoring table, the payments its
-        declarations settle, and its expiry."""
+        declarations settle, and its expiry. A holding of a list is read to its `Investment_Horizon`,
+        where it is closed out at a value the market decides, the `Settlement` leg."""
         fields = deal.field
         terms = schema.OBSERVES.get(fields.get('Object'))
         reference = fields.get('Reference')
@@ -2727,6 +2728,11 @@ class Diary(BaseValuation):
         rows.extend(cls._barrier_rows(fields, terms, indices, reference))
         rows.extend(cls._expiry_fixing(fields, terms, indices, reference, rows))
         rows.extend(cls._settled_rows(fields, type(deal), reference, since=base_date))
+        horizon = compiled.get('Investment_Horizon') if isinstance(compiled, dict) else None
+        if horizon is not None:
+            end = (base_date + pd.Timedelta(days=int(horizon))).date().isoformat()
+            rows = [row for row in rows if row['due_date'] <= end] + [cls._row(
+                cls.PAYMENT, reference, cls.SETTLEMENT, 0, end, currency=cls._currency(fields, settlement))]
         rows.append(cls._expiry_row(deal, cls.DUE))
         return rows
 

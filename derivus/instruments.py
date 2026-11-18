@@ -101,6 +101,33 @@ def refuse_zero_payoff(field, deal_type, fieldname='Cash_Payoff'):
                 field.get('Reference', deal_type), deal_type, fieldname))
 
 
+def forward_and_holding(field):
+    """What a cashflow list stating both its ends is refused with, before a run and by it: a forward
+    is bought on its `Settlement_Date` and a holding ends on its `Investment_Horizon`."""
+    if field.get('Settlement_Date') and field['Investment_Horizon']:
+        yield ('Settlement_Date and Investment_Horizon are both stated, and a forward bought on the '
+               'one is not a holding ending on the other')
+
+
+def list_dates(paydates, horizon, settlement=None):
+    """The days a cashflow list paying on `paydates` revalues on: a forward's before its `settlement`
+    and that day, a holding's to its `horizon`, where it ends, else its payment days."""
+    if settlement:
+        return {x for x in paydates if x < settlement} | {settlement}
+    return {min(x, horizon) for x in paydates} if horizon else paydates
+
+
+def list_horizon(field, base_date, cashflows):
+    """The day a holding of a cashflow list ends, in days from `base_date`: its `Investment_Horizon`
+    where `cashflows` still pay after it, else None, the list held to its last payment. Stated
+    beside a `Settlement_Date` it is refused by name."""
+    for said in forward_and_holding(field):
+        raise utils.UnpriceableSchedule('{}: {}'.format(field.get('Reference'), said))
+    horizon = field['Investment_Horizon']
+    days = horizon and (horizon - base_date).days
+    return days if horizon and (cashflows.schedule[:, utils.CASHFLOW_INDEX_Pay_Day] > days).any() else None
+
+
 def became(source, deal_type, calendars, valuation_options, **overrides):
     """`source` as a live `deal_type`, carrying every field that type declares plus `overrides`.
 
@@ -2880,7 +2907,14 @@ class CFFixedInterestListDeal(Deal):
     ])]
 
     documentation = (
-        'Interest Rates', ['A series of fixed interest cashflows as described [here](#fixed-interest-cashflows)'])
+        'Interest Rates', [
+            'A series of fixed interest cashflows as described [here](#fixed-interest-cashflows).',
+            '',
+            'To **Investment_Horizon** the list is a holding, not a forward: no strike is exchanged.',
+            'It is paid each cashflow on or before the horizon as it falls and, on the horizon, is',
+            'closed out at its value then, the cashflows after it on **Discount_Rate**; it is worth',
+            'nothing after, and before the horizon it marks as the list held to its last payment, as',
+            'described [here](#cashflow-lists).'])
 
     @classmethod
     def quote(cls, deal, value, quote_type):
@@ -2892,16 +2926,11 @@ class CFFixedInterestListDeal(Deal):
         super(CFFixedInterestListDeal, self).reset()
 
         paydates = set([x['Payment_Date'] for x in self.field['Cashflows']['Items']])
-        if self.field.get('Settlement_Date'):
-            resetdates = {x for x in paydates if x < self.field['Settlement_Date']}
-            resetdates.add(self.field['Settlement_Date'])
-        else:
-            resetdates = paydates
-
-        self.add_reval_dates(resetdates, self.field['Currency'])
+        self.add_reval_dates(list_dates(
+            paydates, self.field['Investment_Horizon'], self.field.get('Settlement_Date')), self.field['Currency'])
 
     def validate(self):
-        """A settlement amount is paid ON a date.
+        """A settlement amount is paid ON a date, and a list is a forward or a holding, not both.
 
         calc_dependencies leaves Settlement_Date as None when it is not supplied, and
         pv_fixed_cashflows reaches `factor_dep['Settlement_Date'] - time_block` under
@@ -2909,6 +2938,7 @@ class CFFixedInterestListDeal(Deal):
         """
         if self.field.get('Settlement_Amount') and not self.field.get('Settlement_Date'):
             yield 'Settlement_Amount is set, so Settlement_Date is required'
+        yield from forward_and_holding(self.field)
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -2935,6 +2965,7 @@ class CFFixedInterestListDeal(Deal):
         field_index['Settlement_Date'] = (self.field.get('Settlement_Date') -
                                           base_date).days if self.field.get('Settlement_Date') else None
         field_index['Settlement_Amount'] = self.field.get('Settlement_Amount', 0.0) * buy_sell
+        field_index['Investment_Horizon'] = list_horizon(self.field, base_date, field_index['Cashflows'])
 
         return field_index
 
@@ -3081,7 +3112,8 @@ class CFFloatingInterestListDeal(Deal):
 
     documentation = (
         'Interest Rates', [
-            'A series of floating interest cashflows as described [here](#floating-interest-cashflows)',
+            'A series of floating interest cashflows as described [here](#floating-interest-cashflows),',
+            'held to an **Investment_Horizon** as described [here](#cashflow-lists).',
             '',
             'A cashflow Properties row with a non-zero **Cap_Multiplier** or **Floor_Multiplier**',
             'prices the leg as caplets or floorlets; **Digital_Payoff_Rate** makes each one a',
@@ -3111,7 +3143,7 @@ class CFFloatingInterestListDeal(Deal):
     def reset(self, calendars):
         super(CFFloatingInterestListDeal, self).reset()
         reset_dates = set([x['Payment_Date'] for x in self.field['Cashflows']['Items']])
-        self.add_reval_dates(reset_dates, self.field['Currency'])
+        self.add_reval_dates(list_dates(reset_dates, self.field['Investment_Horizon']), self.field['Currency'])
 
     def validate(self):
         """A floating list settles no forward: its pricer reads no settlement field or curve."""
@@ -3143,6 +3175,7 @@ class CFFloatingInterestListDeal(Deal):
 
         field_index['CompoundingMethod'] = self.field['Cashflows']['Compounding_Method']
         field_index['AveragingMethod'] = self.field['Cashflows']['Averaging_Method']
+        field_index['Investment_Horizon'] = list_horizon(self.field, base_date, float_cashflows)
 
         if field_index['CompoundingMethod'] is None:
             field_index['CompoundingMethod'] = 'None'
@@ -3226,22 +3259,21 @@ class YieldInflationCashflowListDeal(Deal):
                                    'on every row that one constant, the inflation curve read forward from the row, or',
                                    'off its own model where it has one - and is skipped by name otherwise, as any',
                                    'deal its pricer cannot value.',
+                                   '',
+                                   'An **Investment_Horizon** makes the list a holding to that day, as described',
+                                   '[here](./interest_rates.md#cashflow-lists).',
                                    ])
 
     def reset(self, calendars):
         super(YieldInflationCashflowListDeal, self).reset()
 
         paydates = set([x['Payment_Date'] for x in self.field['Cashflows']['Items']])
-        if self.field.get('Settlement_Date'):
-            resetdates = {x for x in paydates if x < self.field['Settlement_Date']}
-            resetdates.add(self.field['Settlement_Date'])
-        else:
-            resetdates = paydates
-
-        self.add_reval_dates(resetdates, self.field['Currency'])
+        self.add_reval_dates(list_dates(
+            paydates, self.field['Investment_Horizon'], self.field.get('Settlement_Date')), self.field['Currency'])
 
     def validate(self):
-        """Each cashflow must pin both index references: the known VALUE, or the DATE to read it at.
+        """Each cashflow must pin both index references: the known VALUE, or the DATE to read it at,
+        and the list is a forward or a holding, not both.
 
         TensorCashFlows.index flags a reference stating no value and reads it off its date, the
         base date where none was given - so supplying neither prices against the base date's
@@ -3252,6 +3284,7 @@ class YieldInflationCashflowListDeal(Deal):
                 if not (cashflow.get(ref + '_Reference_Value') or cashflow.get(ref + '_Reference_Date')):
                     yield ('Cashflows.Items[{}]: supply {}_Reference_Value or '
                            '{}_Reference_Date'.format(i, ref, ref))
+        yield from forward_and_holding(self.field)
 
     def reference_rule(self):
         """`(months_lag, interpolated)`: how many months back an index reference reads, and whether
@@ -3296,6 +3329,7 @@ class YieldInflationCashflowListDeal(Deal):
         field_index['SettleCurrency'] = self.field['Currency']
         field_index['Settlement_Date'] = (self.field.get('Settlement_Date') -
                                           base_date).days if self.field.get('Settlement_Date') else None
+        field_index['Investment_Horizon'] = list_horizon(self.field, base_date, field_index['Cashflows'])
 
         return field_index
 

@@ -170,6 +170,11 @@ Grouped by where a validator meets them.
   them is a pricer change, not a diary row: the leg carried to the settlement date on repo, the
   amount paid there and the cashflows before it dropped, as `pricing.pv_fixed_cashflows` and
   `utils.TensorCashFlows.fixed` do for the fixed list, through the plain, cap and floor pricers: M.
+- **A cashflow list held to a horizon cannot be bought forward** (2026-11-18). A fixed, floating or
+  inflation-linked list stating `Settlement_Date` beside `Investment_Horizon` is refused by name at
+  booking and by the run, so a bond bought forward and held to a horizon cannot be booked; nothing
+  is mispriced. Reading both is the forward's carry on repo to its settlement date ahead of the
+  holding's close-out on its horizon, in each list's pricer: M.
 - **Rating-dependent credit support is read at its first row** (2026-10-11).
   `utils.CreditSupportList.value` returns the first row's threshold, minimum transfer or independent
   amount whatever the counterparty's rating, in the engine and the spine's collateral call. Exact

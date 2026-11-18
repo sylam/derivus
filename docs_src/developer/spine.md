@@ -432,7 +432,9 @@ so a plan named once is the plan that runs and an auditor recompiles from what w
 so the two cannot disagree. An amount resets will fix reads `amount: null`, never 0.0, a
 settlement file saying zero being a wrong payment. What a deal settles without a schedule is
 declared on its fields (`settles=schema.Cash(...)`); monitoring days are never payments. A
-cash-settled option waits for its expiry fixing and its payoff; an unreadable deal is an
+cash-settled option waits for its expiry fixing and its payoff; a cashflow list held to an
+`Investment_Horizon` pays and fixes to that day and, where it pays after it, is closed out there
+on its `Settlement` leg at a null amount the market decides; an unreadable deal is an
 `unreadable` row. A row carries its deal's `reference`, its `deal_path` and the `netting_set` it
 sits in, and takes the instrument booked at that path (`service.booked_instruments`), references
 not being unique in a book: two live deals under one reference are two instruments, each row keyed
@@ -448,7 +450,8 @@ the key names any.
 `::test_a_derived_key_is_the_same_key_thirty_days_later`,
 `::test_two_live_deals_under_one_reference_are_two_instruments_each_settled_on_its_own_key`,
 `::test_a_barrier_its_history_knocked_in_is_read_as_the_vanilla_it_became`,
-`test_pnl.py::test_a_payment_is_shared_within_the_agreement_it_names`.
+`test_pnl.py::test_a_payment_is_shared_within_the_agreement_it_names`,
+`test_bond_holding_json.py::test_the_diary_of_a_holding_pays_to_its_horizon_and_settles_there_and_nothing_after`.
 
 **Premiums.** The book's diary also announces what its fills paid or received
 (`service.announced`, `spine.premiums`): one `premium` row per fill of the book whose price moves

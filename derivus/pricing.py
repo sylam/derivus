@@ -7036,13 +7036,27 @@ def pv_equity_cashflows(shared, time_grid, deal_data):
     return torch.cat(mtm_list, dim=0)
 
 
+def settled_to_horizon(pricer, shared, time_grid, deal_data, *args):
+    """`pricer`'s value of a cashflow list, its cash booked as `pricer` books it, or, for a holding
+    to its `Investment_Horizon`, each payment before that day as it falls and on it the last row:
+    the day's own payment and the close-out at the value of the cashflows after it."""
+    horizon = deal_data.Factor_dep.get('Investment_Horizon')
+    if horizon is None:
+        return pricer(shared, time_grid, deal_data, *args)
+    end = np.searchsorted(time_grid.mtm_time_grid, horizon)
+    mtm = pricer(shared, time_grid, deal_data, *args, settle_cash=lambda shared, currency, index, value: (
+        cash_settle(shared, currency, index, value) if index < end else None))
+    cash_settle(shared, deal_data.Factor_dep['SettleCurrency'], end, mtm[-1])
+    return mtm
+
+
 @utils.log_exception
 def pv_fixed_leg(shared, time_grid, deal_data):
     """The fixed leg in the reporting currency."""
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
-    mtm = pv_fixed_cashflows(shared, time_grid, deal_data) * FX_rep
+    mtm = settled_to_horizon(pv_fixed_cashflows, shared, time_grid, deal_data) * FX_rep
 
     return mtm
 
@@ -7065,7 +7079,7 @@ def pv_float_leg(shared, time_grid, deal_data):
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'][0], shared.Report_Currency, deal_time, shared)
     model = deal_data.Factor_dep.get('Model', pricer_float_cashflows)
-    mtm = pv_float_cashflow_list(shared, time_grid, deal_data, model) * FX_rep
+    mtm = settled_to_horizon(pv_float_cashflow_list, shared, time_grid, deal_data, model) * FX_rep
 
     return mtm
 
@@ -7076,7 +7090,7 @@ def pv_index_leg(shared, time_grid, deal_data):
     deal_time = time_grid.time_grid[deal_data.Time_dep.deal_time_grid]
     FX_rep = utils.calc_fx_cross(
         deal_data.Factor_dep['Currency'], shared.Report_Currency, deal_time, shared)
-    mtm = pv_index_cashflows(shared, time_grid, deal_data) * FX_rep
+    mtm = settled_to_horizon(pv_index_cashflows, shared, time_grid, deal_data) * FX_rep
 
     return mtm
 

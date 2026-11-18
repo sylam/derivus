@@ -142,6 +142,13 @@ For cash settled deals, the valuation profile terminates at $T$ with a correspon
 $V(T)=(U(t)-K)\delta$. If physically settled, then the cashflow is $-K\delta$ at $T$ and the profile
 continues until $t_n$.
 
+An optional **Investment_Horizon** $H$ makes the list a holding, not a forward: no strike is
+exchanged. For $t\le H$ the deal is worth $V(t)=U(t)\delta$, as the list held to its last payment;
+each cashflow paid on or before $H$ is paid as it falls, and on $H$ the deal is closed out at
+$\sum_i [t_i\gt H]U_i(H)\delta$, the value then on the discount curve of the cashflows after it,
+and is worth nothing after. A horizon on or after $t_n$ is the list held to its last payment, one
+behind the base date has ended, and one stated beside a **Settlement Date** is refused by name.
+
 #### Fixed Compounding Cashflow Lists
 
 For cashflow lists with the interest frequency greater than its payment frequency with payment dates

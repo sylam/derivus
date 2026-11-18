@@ -1032,7 +1032,10 @@ CASHFLOWLISTDEAL = Group('CashflowListDeal.Fields', 'Cashflow list', [
     F('Description', 'Text', default='', convention=True),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Settlement_Date', 'Date', default='', convention=True),
-    F('Settlement_Rate', 'Text', default='', convention=True, factors=['InterestRate'])
+    F('Settlement_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
+    F('Investment_Horizon', 'Date', default='', convention=True,
+      description='The day a holding of the list ends, paid its cashflows as they fall to that day and '
+                  'closed out on it at its value, blank for the list held to its last payment')
 ])
 
 EQUITYOPTIONBASE = Group('EquityOptionBase.Fields', 'Equity option', [
