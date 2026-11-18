@@ -6330,8 +6330,9 @@ class Metronome:
 class SolveJob:
     """A solve as ONE unit of queued work: the loop runs on the worker like any pricing, so it
     cannot interleave with other jobs, and its answer files under a result_id like any run. The
-    loop itself is `derivus.solve_deal_field` - this only packages what came back, with the
-    solved coordinates riding the run's own Stats."""
+    loop itself is `derivus.solve_deal_field`, each iterate taking the calendar off one load of the
+    book (`Context.reading`) - this only packages what came back, with the solved coordinates
+    riding the run's own Stats."""
 
     def __init__(self, document, deal_path, solve, margin=None):
         self.document, self.deal_path, self.solve = document, deal_path, solve
@@ -6339,7 +6340,7 @@ class SolveJob:
 
     def run_job(self):
         solved, evaluations, residual, out = solve_deal_field(
-            self.document, self.deal_path, **self.solve)
+            self.document, self.deal_path, reading=load(self.document).reading, **self.solve)
         answer = dict(self.solve, value=solved, evaluations=evaluations, residual=residual)
         if self.margin:
             # the target as it was asked for, beside the number it was solved against
@@ -6516,19 +6517,20 @@ def board_age(document, quoted_at):
     return max(measured) if measured else None
 
 
-def mirrored_plan(document, deal, parent_reference=None, models=None):
+def mirrored_plan(document, deal, parent_reference=None, models=None, reading=Context):
     """THE PLAN AN ACCEPTANCE LEAVES THE BOOK AT: the quote's MIRROR spliced in and its pinned spot
     models merged, through the booking's own seams, `splice_deal` and `structures.pin_models` - so
     the plan is the plan and not a near one: a fitted strip books a `Valuation Configuration` entry
     beside its deal, and that entry is PLAN. The quote pins it and the acceptance, which reaches it
     by booking, refuses where the two are not one number. A hash is not a verdict and nothing is
     validated here; the pin cannot refuse, the legs having just priced on those parameters.
+    `reading` makes the context it loads on.
     """
     booked = deepcopy(document)
     splice_deal(booked, instrument_of(booked_node(structures.mirror(deal))), parent_reference)
     if models:
         structures.pin_models(booked, deal, models)
-    return load(booked).plan_hash()
+    return load(booked, reading()).plan_hash()
 
 
 def check_pins(pending, document, quote_id):
@@ -6722,17 +6724,16 @@ class StructureJob:
         self.netting_set, self.request, self.margin = netting_set, request, margin
         self.actor, self.portfolio = actor, portfolio
 
-    def pinned(self, quoted_at):
+    def pinned(self, quoted_at, context):
         """What the acceptance will file, or None with no home: the book's two hashes, the values
         vector behind them and the board's age.
 
-        Read at the TOP of the run, off the document as handed in, because `patch_live_spot` is
+        Read off `context`, the book loaded at the TOP of the run, because `patch_live_spot` is
         about to move this copy's spot: pinning after it would pin a market that exists only inside
         this quote, and what a booking asks is whether the BOOK's market and plan have moved.
         """
         if not spine.configured():
             return None
-        context = load(self.document)
         return {'plan_hash': context.plan_hash(), 'values_hash': context.values_hash(),
                 'values': spine.values_of(context), 'pillar_age': board_age(
                     self.document, quoted_at)}
@@ -6754,8 +6755,10 @@ class StructureJob:
         # the stamp first: the board's age and the desk's own firm window are both measured
         # against it, and only the thing that files a quote knows when it was given
         quoted_at = quote_stamp()
-        # the book's own pins, taken before the live spot moves this copy's market
-        pinned = self.pinned(quoted_at)
+        # the book loaded before the live spot moves this copy's market: its own pins, and the
+        # calendar every load of the quote takes (`Context.reading`)
+        context = load(self.document)
+        pinned = self.pinned(quoted_at, context)
         # the live spot lands BEFORE anything is priced, so `engine_spot`, every solve bracket and
         # every leg - and the sheet written from this same document - read one market
         spot_source = patch_live_spot(self.document, self.params)
@@ -6763,7 +6766,7 @@ class StructureJob:
         # below are the file's, which is what the acceptance re-derives them from
         outcome = structures.quote(priced(self.document, 'BaseValuation'), self.structure,
                                    self.params, spot_source, self.netting_set, self.margin,
-                                   live_book().vol_risk_cache)
+                                   live_book().vol_risk_cache, context.reading)
         directory = quote_dir()
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')
@@ -6775,7 +6778,7 @@ class StructureJob:
             # a plan does not read a spot, so the live one this copy now carries cannot move it:
             # this is the plan the acceptance books the book to, the quote's model pin included
             pinned['plan'] = mirrored_plan(self.document, outcome['deal'], self.netting_set,
-                                           outcome['valuation_configuration'])
+                                           outcome['valuation_configuration'], context.reading)
             # the values vector travels as JSON and canonicalises back to the hash beside it, so
             # the acceptance files the vector this quote was struck on and not a second reading
             record['pinned'] = dict(pinned, values=json.loads(pinned['values'].decode('utf-8')))

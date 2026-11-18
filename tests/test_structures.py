@@ -1730,6 +1730,10 @@ def test_a_strip_ends_on_its_own_expiry_or_refuses(book):
 #: The rand desk's trade date, a Monday, whose spot date is Wednesday 18 November.
 DESK_DAY = '2026-11-16'
 
+#: The fixture calendar file, holding every location the desk deals.
+CALENDAR_FILE = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures', 'data',
+                             'calendars.cal')
+
 #: A 6M monthly strip dealt on `DESK_DAY`, `(fixing, settlement)` by hand: each settlement the spot
 #: date that many months on, modified following, each fixing two rand business days before it.
 #: Named, the calendars move the first two: Johannesburg's 16 December and New York's 18 January.
@@ -1761,8 +1765,7 @@ def desk_book(calendars):
     if calendars:
         factors['FxRate.USD']['Holiday_Calendar'] = 'New York'
         factors['FxRate.ZAR']['Holiday_Calendar'] = 'Johannesburg'
-        calc['CalendDataFile'] = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'fixtures',
-                                              'data', 'calendars.cal')
+        calc['CalendDataFile'] = CALENDAR_FILE
     return json.loads(dump({'Calc': calc}))
 
 
@@ -1825,6 +1828,70 @@ def test_the_diary_of_a_booked_quote_pays_on_the_delivery_dates(desk_quotes):
     for deal in legs:
         assert paid[deal['Reference']] == ([settles for _, settles in DESK_STRIP[True]]
                                            if 'TARF_ExpiryDates' in deal else ['2027-05-18'])
+
+
+def test_each_quote_reads_the_calendar_file_as_it_stands(tmp_path):
+    """The 6M strip strikes on `DESK_STRIP[True]` while the book's calendar file holds
+    Johannesburg's 16 December and New York's 18 January, on the weekday strip once the file is
+    rewritten without them, and on the weekday strip on a book naming no file, quoted between the
+    two. Each strip's premium is the base valuation a new context reads of it, to the bit.
+
+    Killing mutation: a calendar's parse kept by its file's name past the quote that read it, so
+    the rewritten file is never read.
+    """
+    path = tmp_path / 'calendars.cal'
+    with open(CALENDAR_FILE, 'rb') as fixture:
+        path.write_bytes(fixture.read())
+    named = desk_book(True)
+    named['Calc']['CalendDataFile'] = str(path)
+    ask = {'pair': PAIR, 'expiry': '6M', 'notional': NOTIONAL, 'notional_currency': 'USD',
+           'fixing_frequency': '1M', 'buy_currency': 'USD', 'target': TARGET}
+
+    def strip(document):
+        outcome = structures.quote(document, 'TargetRedemptionForward', dict(ask))
+        tarf = only_leg(outcome)
+        assert outcome['legs'][0]['premium'] == structures.run_price(document, tarf)
+        return [(fixing['.Timestamp'], settles['.Timestamp'])
+                for fixing, settles, _ in tarf['TARF_ExpiryDates']]
+
+    assert strip(named) == DESK_STRIP[True]
+    assert strip(desk_book(False)) == DESK_STRIP[False]
+    path.write_bytes(path.read_bytes().replace(b'2026-12-16|Day of Reconciliation, ', b'').replace(
+        b'2027-01-18|Martin Luther King Jr. Day, ', b''))
+    assert strip(named) == DESK_STRIP[False]
+
+
+def test_each_pricing_of_a_quote_loads_the_market_its_file_holds(book, tmp_path):
+    """A two-way collar on a book naming a calendar file and a market FILE whose vol quotes moved
+    after its surface was fitted - a quote patch does not refit: every leg's premium is the base
+    valuation a new context reads of it, to the bit. The legs' vega runs refit the surface from
+    those quotes, while the second pass prices on the file's own. A context made for a later load
+    carries the calendar's parse, the very object, and nothing of the market.
+
+    Killing mutations: every load of a quote on its one context (`Context.reading` answering
+    itself), so the second pass prices on the surface a vega run refitted; a context made carrying
+    no parse, so every load reads the calendar file again.
+    """
+    document = two_way(book)
+    market = document['Calc']['MergeMarketData']['ExplicitMarketData']
+    for point in market['Market Prices']['FXVolPrices.USD.ZAR']['instrument']['Points']:
+        for key in ('Quoted_Market_Value', 'Quoted_Bid', 'Quoted_Ask'):
+            point[key] += 0.01
+    market['Price Factors']['FxRate.USD']['Holiday_Calendar'] = 'New York'
+    market['Price Factors']['FxRate.ZAR']['Holiday_Calendar'] = 'Johannesburg'
+    path = tmp_path / 'market.json'
+    path.write_text(json.dumps({'MarketData': market}))
+    document['Calc']['MergeMarketData'] = {'MarketDataFile': str(path), 'ExplicitMarketData': {}}
+    document['Calc']['CalendDataFile'] = CALENDAR_FILE
+
+    outcome = structures.quote(document, COLLAR, params(floor=SPOT * 0.95))
+    assert outcome['edge'] > 0.0, 'no two-way was charged, so there was no second pass'
+    for row, child in zip(outcome['legs'], outcome['deal']['Children']):
+        assert row['premium'] == structures.run_price(document, child['Instrument']['.Deal'])
+
+    loaded = derivus.Context().load_json((json.dumps(document), 'read'))
+    calendar, made = loaded.current_cfg.files['CalendDataFile'], loaded.reading().parsed
+    assert list(made) == [calendar] and made[calendar] is loaded.parsed[calendar]
 
 
 def test_a_daily_strip_fixes_once_on_each_weekday():

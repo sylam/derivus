@@ -98,7 +98,7 @@ def load_market_data(rundate, path, json_name='MarketData.json', calendar_name='
 
 
 def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolerance=0.01,
-                     max_iterations=30):
+                     max_iterations=30, reading=None):
     """Solve ONE field of a deal so the deal's own value lands on `target` - par forwards
     (target 0), sales margins, a collar's second strike, a strike to a premium.
 
@@ -118,7 +118,7 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
     own terms and this restates in the field, the target and the last residual.
 
     Returns `(solved_value, evaluations, residual, out)`, `out` being the full output of the run
-    AT the solved value.
+    AT the solved value. `reading` makes the context each iterate loads on, a new one by default.
     """
     from scipy import optimize
 
@@ -140,7 +140,8 @@ def solve_deal_field(document, deal_path, field, target=0.0, bounds=None, tolera
         if x not in priced:
             iterate = json.loads(json.dumps(document))
             deal_at(iterate, deal_path)['Instrument']['.Deal'][field] = x
-            _, out = utils.run_whole(Context().load_json((json.dumps(iterate), 'solve')).run_job)
+            _, out = utils.run_whole(
+                (reading or Context)().load_json((json.dumps(iterate), 'solve')).run_job)
             frame = out['Results']['mtm']
             priced[x] = (float(frame[frame['Reference'] == reference]['Value'].iloc[0]), out)
         return priced[x][0]
@@ -334,6 +335,16 @@ class Context:
         None where it names none, read and not parsed - what a run of it reports in `Stats['Files']`
         while the files hold still."""
         return {key: name and self.digest(name)[1] for key, name in self.named(document).items()}
+
+    def reading(self):
+        """A new Context on this one's maps holding this one's parse of the calendar its last job
+        named: a calendar is read and never written, while each load merges onto a market of its
+        own."""
+        context = Context(self.path_map, self.file_map)
+        digest = self.current_cfg.files.get('CalendDataFile')
+        if digest:
+            context.parsed[digest] = self.parsed[digest]
+        return context
 
     def load_json(self, jobfilename, compress=True, parses=None):
 
