@@ -70,6 +70,12 @@ check('an edit holds the exact value, whatever the display rounds it to',
                           tokens.editRaw(0.000299999999999999)),
       0.000299999999999999);
 
+check('a number typed with the grouping the screens show is that number, any other comma left alone',
+      'every comma stripped, which files 2,5 as 25; or none stripped, which refuses the 61,000,000 '
+      + 'a reader copies off the screen',
+      ['61,000,000', '-1,234.5', '2,5', '1,23,456', '1234.5'].map(tokens.ungrouped),
+      ['61000000', '-1234.5', '2,5', '1,23,456', '1234.5']);
+
 check('a tenor reads as a dealer says it',
       "the nearest of a fixed table, which reads 4M as `0.33Y`; or a tolerance in percent, which "
       + "misses a 28-day month and a 7-year point stamped from dates",

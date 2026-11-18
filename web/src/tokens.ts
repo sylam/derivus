@@ -54,6 +54,12 @@ function digits(value: number, most: number, least = 0): string {
   return /^-[0.,]*$/.test(text) ? text.slice(1) : text;
 }
 
+/** A typed number with the grouping the screens themselves show taken out: `61,000,000` is
+ * 61000000, while any other comma (`2,5`) is left to be refused, since it could be a decimal. */
+export function ungrouped(text: string): string {
+  return /^-?\d{1,3}(,\d{3})+(\.\d+)?$/.test(text) ? text.replace(/,/g, '') : text;
+}
+
 /** A number for display, never for an input - an edit holds the exact value. */
 export function formatNumber(value: number, kind: Kind = 'plain'): string {
   if (!isFinite(value)) return String(value);

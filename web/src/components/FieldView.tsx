@@ -2,7 +2,7 @@ import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { failure } from '../api';
 import {
   curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, kindOf, label,
-  offsetText, supportRows, token,
+  offsetText, supportRows, token, ungrouped,
 } from '../tokens';
 import type { Descriptor, Schema } from '../types';
 import { axisNames } from '../vols';
@@ -251,10 +251,9 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
   const restore = () => { setRaw(incoming); setAsking(false); setRefused(null); };
 
   function commit(typed: string) {
-    const text = numeric ? typed.trim() : typed;
+    const text = numeric ? ungrouped(typed.trim()) : typed;
     if (numeric && text !== '' && !isFinite(Number(text))) {
-      setRefused([`${text} is not a number: write it with a decimal point and no separators, `
-        + 'as 1234.5']);
+      setRefused([`${text} is not a number: write it with a decimal point, as 1234.5 or 1,234.5`]);
     } else if (wire(text) === wire(incoming)) restore();
     else if (ask) setAsking(true);
     else void save(text);
