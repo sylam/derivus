@@ -5379,8 +5379,9 @@ class SACCR(NettingSetCalculation):
 
     A trade's dates count in years of 30/360 from the base date, a whole number of months exact as
     the methodology's examples count a tenor: S its declared start, zero once started, E and M the
-    last day its type's tenor fields name (`schema.tenor_fields`), T its declared expiry, nothing
-    once reached (52.31).
+    last day its type's tenor fields name (`schema.tenor_fields`), M a trade's S where it settles its
+    cash there, a swaption settled in cash (52.32 Table 1), T its declared expiry, nothing once
+    reached (52.31).
     Its d is an IR or credit notional crossed times SD, averaged over its life where it amortises,
     an FX trade's foreign leg, the larger where both are, a forward's legs its two amounts and an
     option's its amount and that at its strike, or an equity or commodity trade's units at a unit's
@@ -5426,8 +5427,10 @@ class SACCR(NettingSetCalculation):
         'currency a put on the other (CRE52.59 FAQ1), and at or past its exercise date, $T$ nothing,',
         'the formula\'s limit, $\\pm1$ in the money and nothing out of it, an FX option past its expiry',
         'on the print it fixed at (CRE52 states no $T$ for an option it has reached: a convention); the',
-        'maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$ floored at ten business',
-        'days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a margined set; and',
+        'maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$ the last day the trade is',
+        'active, its start $S$ where it settles its cash there, as a swaption settled in cash does',
+        '(CRE52.31-52.32 Table 1), floored at ten business days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a',
+        'margined set; and',
         '$D=d\\,\\delta\\,\\mathrm{MF}$. The add-ons (CRE52.55-52.70): IR by currency over three maturity',
         'buckets, $\\mathrm{EN}=(D_1^2+D_2^2+D_3^2+1.4D_1D_2+1.4D_2D_3+0.6D_1D_3)^{1/2}$; FX by pair,',
         '$|\\sum D|$; credit and equity by entity and commodity by type within its hedging set, each',
@@ -5671,7 +5674,9 @@ class SACCR(NettingSetCalculation):
             d1 = (moneyness + 0.5 * spread * spread) / spread if spread else math.copysign(
                 math.inf, moneyness) if moneyness else 0.0
             delta = side * (scipy.stats.norm.cdf(d1) if call else -scipy.stats.norm.cdf(-d1))
-        unmargined = math.sqrt(min(max(end, self.horizon), 1.0))
+        # M the end, or the start a trade settles its cash at (Table 1, 52.32 FAQ2)
+        maturity = end if terms.runs is None or fields[terms.runs[0]] == terms.runs[1] else start
+        unmargined = math.sqrt(min(max(maturity, self.horizon), 1.0))
         factor = unmargined if mpor is None else self.margined_scale * math.sqrt(mpor / self.year)
         return {'TradeID': reference, 'NettingSet': agreement['Instrument'].field.get('Reference'),
                 'AssetClass': asset, 'HedgingSet': hedging, 'Subclass': subclass, 'Bucket': bucket,

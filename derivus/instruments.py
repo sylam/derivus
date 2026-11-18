@@ -3385,7 +3385,8 @@ class SwaptionDeal(Deal):
     vernacular = 'swaption, payer swaption, receiver swaption'
     # a payer is a call on the swap rate, its strike in percent, the unit its forward is read in
     exposure = Exposure('Principal', 'Currency', start='Swap_Effective_Date', long=('Buy_Sell', 'Buy'),
-                        strike='Swap_Rate', expiry='Option_Expiry_Date', call=('Payer_Receiver', 'Payer'))
+                        strike='Swap_Rate', expiry='Option_Expiry_Date', call=('Payer_Receiver', 'Payer'),
+                        runs=('Settlement_Style', 'Physical'))
     fields = [ADMIN, PRICING, FLOATING_INDEX, own('SwaptionDeal', [
         F('Floating_Margin', 'Float', default=0.0, convention=True),
         F('Rate_Schedule', 'DateList', default='null', convention=True,

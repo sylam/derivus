@@ -221,7 +221,9 @@ CRE52, `1.4 (RC + PFE)`, off its trades' values and their terms as each type dec
 (`schema.Exposure`, `exposure` on the class, `schema.EXPOSURES` holding each type's own as
 `schema.OBSERVES` does `observes`): the fields its notional and its currency, or its units and the
 factor pricing a unit, its start and its long side are read off, an FX trade's amount in its other
-currency, and an option's strike, expiry and call; its end and maturity are the last day `schema.tenor_fields` names. A trade's asset class is
+currency, and an option's strike, expiry and call; its end and maturity are the last day
+`schema.tenor_fields` names, its maturity its start where the `(field, value)` of `runs` does not
+hold, a trade settling its cash there (a swaption settled in cash). A trade's asset class is
 the `Asset_Class` the `Mapping`'s `SACCR` section states for its type, a credit entity's rating
 the `Rating` under its survival curve's `SACCR` entry, an
 equity an index where its SIMM bucket is 11 or 12, a commodity's type its SIMM bucket, whose row in
@@ -253,6 +255,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_an_fx_option_at_or_past_its_expiry_is_its_deltas_limit`,
 `::test_an_fx_european_option_reads_as_the_fx_option_it_is`,
 `::test_a_composed_commodity_reads_its_primarys_type_at_its_own_price`,
+`::test_a_cash_settled_swaption_matures_at_its_exercise_date`,
 `::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
 of a set of more than 5,000 trades.

@@ -125,9 +125,10 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
 #: `underlying` its primary risk factor (an FX trade's other currency), `start` its start, `long`
 #: the (field, value) long that factor or, an option, bought, else by the amount's sign; `strike`,
 #: `expiry` and `call` the (field, value) of a call where an option; `amortisation` its steps;
-#: `other` an FX trade's amount in that other currency, where its terms state one.
+#: `other` an FX trade's amount in that other currency, where its terms state one; `runs` the
+#: (field, value) under which it runs to its end, else settling at its start.
 Exposure = namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
-                                  'amortisation other', defaults=(None,) * 10)
+                                  'amortisation other runs', defaults=(None,) * 11)
 
 
 class Row(object):

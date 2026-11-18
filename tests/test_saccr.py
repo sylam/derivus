@@ -160,40 +160,48 @@ def forward(name, price, notional, maturity, side):
 ANNIVERSARIES = [years(k) for k in range(1, 12)]
 
 
-def receiver_leg(kind, terms, own):
-    """The one-into-ten's leg of `kind`, annual on four million euros, its `terms` and `own` the
-    columns of the period from `start` to `end`."""
+def receiver_leg(kind, terms, own, dates):
+    """A receiver's leg of `kind`, annual over `dates` on four million euros, its `terms` and `own`
+    the columns of the period from `start` to `end`."""
     return {'Instrument': {'.Deal': {
         'Object': kind, 'Reference': 'SWPT_' + kind[2:7], 'Currency': 'EUR', 'Discount_Rate': 'EUR',
         'Forecast_Rate': 'EUR', 'Buy_Sell': 'Buy', 'Cashflows': dict(terms, Items=[dict({
             'Payment_Date': end, 'Notional': 4e6, 'Accrual_Start_Date': start,
             'Accrual_End_Date': end, 'Fixed_Amount': 0.0, 'FX_Reset_Date': None,
-            'Known_FX_Rate': 0.0}, **own(start, end)) for start, end in zip(
-            ANNIVERSARIES[:-1], ANNIVERSARIES[1:])])}}}
+            'Known_FX_Rate': 0.0}, **own(start, end)) for start, end in zip(dates[:-1], dates[1:])])}}}
+
+
+def receiver(expiry, dates, **terms):
+    """A bought receiver struck at 5% on four million euros, exercised on `expiry` into the swap
+    over `dates`, on its legs: a 30/360 fixed leg, so a year accrues one."""
+    return {'Instrument': {'.Deal': dict({
+        'Object': 'SwaptionDeal', 'Reference': 'SWPT', 'Currency': 'EUR', 'Discount_Rate': 'EUR',
+        'Forecast_Rate': 'EUR', 'Forecast_Rate_Volatility': 'EUR', 'Buy_Sell': 'Buy',
+        'Payer_Receiver': 'Receiver', 'Settlement_Style': 'Physical', 'Option_Expiry_Date': expiry,
+        'Swap_Effective_Date': dates[0], 'Swap_Maturity_Date': dates[-1], 'Settlement_Date': expiry,
+        'Principal': 4e6, 'Swap_Rate': 5.0, 'Index_Tenor': pd.DateOffset(months=12),
+        'Index_Day_Count': 'ACT_365', 'Pay_Frequency': pd.DateOffset(months=12),
+        'Pay_Day_Count': 'ACT_365', 'Receive_Frequency': pd.DateOffset(months=12),
+        'Receive_Day_Count': '_30_360'}, **terms)},
+        'Children': [
+            receiver_leg('CFFixedInterestListDeal', {'Compounding': 'No'}, lambda start, end: {
+                'Rate': utils.Percent(5.0), 'Accrual_Day_Count': '_30_360',
+                'Accrual_Year_Fraction': 1.0, 'Discounted': 'No'}, dates),
+            receiver_leg('CFFloatingInterestListDeal', {
+                'Compounding_Method': 'None', 'Averaging_Method': 'Average_Rate', 'Properties': []},
+                lambda start, end: {
+                    'Accrual_Day_Count': 'ACT_365', 'Accrual_Year_Fraction': (end - start).days / 365.0,
+                    'Resets': [[start, start, end, (end - start).days / 365.0, pd.DateOffset(days=1),
+                                'ACT_365', '0D', 0.0, 'No', utils.Percent(0.0)]],
+                    'Margin': utils.Basis(0.0)}, dates)]}
 
 
 #: Example 1's European swaption, a bought receiver one year into ten struck at 5% on five million
-#: dollars' worth of euros, on its legs (CRE99.22): a 30/360 fixed leg, so a year accrues one.
-RECEIVER = {'Instrument': {'.Deal': {
-    'Object': 'SwaptionDeal', 'Reference': 'SWPT', 'Currency': 'EUR', 'Discount_Rate': 'EUR',
-    'Forecast_Rate': 'EUR', 'Forecast_Rate_Volatility': 'EUR', 'Buy_Sell': 'Buy',
-    'Payer_Receiver': 'Receiver', 'Settlement_Style': 'Physical', 'Option_Expiry_Date': years(1),
-    'Swap_Effective_Date': years(1), 'Swap_Maturity_Date': years(11), 'Settlement_Date': years(1),
-    'Principal': 4e6, 'Swap_Rate': 5.0, 'Index_Tenor': pd.DateOffset(months=12),
-    'Index_Day_Count': 'ACT_365', 'Pay_Frequency': pd.DateOffset(months=12),
-    'Pay_Day_Count': 'ACT_365', 'Receive_Frequency': pd.DateOffset(months=12),
-    'Receive_Day_Count': '_30_360'}},
-    'Children': [
-        receiver_leg('CFFixedInterestListDeal', {'Compounding': 'No'}, lambda start, end: {
-            'Rate': utils.Percent(5.0), 'Accrual_Day_Count': '_30_360',
-            'Accrual_Year_Fraction': 1.0, 'Discounted': 'No'}),
-        receiver_leg('CFFloatingInterestListDeal', {
-            'Compounding_Method': 'None', 'Averaging_Method': 'Average_Rate', 'Properties': []},
-            lambda start, end: {
-                'Accrual_Day_Count': 'ACT_365', 'Accrual_Year_Fraction': (end - start).days / 365.0,
-                'Resets': [[start, start, end, (end - start).days / 365.0, pd.DateOffset(days=1),
-                            'ACT_365', '0D', 0.0, 'No', utils.Percent(0.0)]],
-                'Margin': utils.Basis(0.0)})]}
+#: dollars' worth of euros, on its legs (CRE99.22).
+RECEIVER = receiver(years(1), ANNIVERSARIES)
+#: Table 1's swaption six months into five years, settled physically and in cash (CRE52.32).
+SWAPTIONS = [receiver(SIX_MONTHS, [SIX_MONTHS + pd.DateOffset(years=k) for k in range(6)],
+                      Reference=style.upper(), Settlement_Style=style) for style in ('Physical', 'Cash')]
 
 #: CRE99.22 and CRE99.41: each linear trade and the market value its rate is solved for, in
 #: thousands; CRE99.59's forwards, worth their funded prices.
@@ -398,7 +406,8 @@ def world(tmp_path_factory):
             'EXPIRED': ({}, [node(deal) for deal in EXPIRED]),
             'AXES': ({}, [node(deal) for deal in AXES]),
             'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))]),
-            'COMPOSED': ({}, [node(dict(MIXED[5], Commodity='SILVER.LBMA'))])}
+            'COMPOSED': ({}, [node(dict(MIXED[5], Commodity='SILVER.LBMA'))]),
+            'SETTLED': ({}, SWAPTIONS)}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -841,6 +850,23 @@ def test_a_composed_commodity_reads_its_primarys_type_at_its_own_price(world):
     row = trades(output, 'COMPOSED').loc['SILVER_FUT']
     assert (row['HedgingSet'], row['Bucket']) == ('Metals', '12'), row
     assert (row['AdjustedNotional'], row['Delta']) == (4e4 * 24.5, -1.0), row
+
+
+def test_a_cash_settled_swaption_matures_at_its_exercise_date(world):
+    """CRE52.31, CRE52.32 TABLE 1 AND CRE52.48. Table 1's European swaption six months into a
+    five-year swap: settled physically, M is the swap's end, 5.5 years, its maturity factor one;
+    settled in cash, M is the exercise date, the start of the swap it fixes, half a year, its
+    maturity factor (1/2)^0.5. Each reads S 0.5 and E 5.5 alike, the adjusted notional four million
+    euros crossed times SD = (e^(-0.025) - e^(-0.275)) / 0.05, in bucket 3, and the one delta.
+
+    Killing mutation: M read as E whatever the settlement - the cash-settled maturity factor one.
+    """
+    _, output = world
+    rows = trades(output, 'SETTLED')
+    assert rows['MaturityFactor'].tolist() == pytest.approx([1.0, math.sqrt(0.5)], rel=1e-15), rows
+    assert rows['AdjustedNotional'].tolist() == pytest.approx(
+        [4e6 * EURO * supervisory_duration(0.5, 5.5)] * 2, rel=1e-14), rows
+    assert list(rows['Bucket']) == ['3', '3'] and rows['Delta'].nunique() == 1, rows
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
