@@ -636,10 +636,10 @@ class RangeAccrual(Structure):
 
     @classmethod
     def completed(cls, params, path, value, forward):
-        """The ticket with `value` written at `path` - one cell, or under `width` every tier's floor
-        and cap, the k-th innermost at `F e^-kw` and `F e^kw` about `forward()`. `None` writes
-        nothing."""
-        tiers = [list(cells) for cells in params['tiers']]
+        """The ticket, its tiers as `[floor, cap, coupon]` whichever spelling they were stated in,
+        with `value` written at `path` - one cell, or under `width` every tier's floor and cap, the
+        k-th innermost at `F e^-kw` and `F e^kw` about `forward()`. `None` writes nothing."""
+        tiers = [[row.get(key) for key in cls.CELLS] for row in map(cls.TIERS.row.read, params['tiers'])]
         if path == 'width':
             centre = forward()
             for k, (row, _) in enumerate(cls.ordered(params), 1):

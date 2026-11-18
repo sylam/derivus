@@ -2014,18 +2014,34 @@ def test_the_one_blank_tier_parameter_solves_to_the_stated_premium(book):
 
 def test_a_cake_s_tiers_are_read_alike_by_name_or_by_position(book):
     """A TIER IS READ ONE WAY, whether its row states its cells by name - in any order - or as
-    `[floor, cap, coupon]`: a tier whose floor is not below its cap, one with a negative coupon
-    and two tiers that do not nest each refuse in the same words either way.
+    `[floor, cap, coupon]`: the three-tier cake quotes the same premium either way, and so does
+    the cake with one coupon blank, solved to the premium the client pays, each ticket coming back
+    as the same cells and the same legs but for the references naming the ticket as posted; a
+    tier whose floor is not below its cap, one with a negative coupon and two tiers that do not
+    nest each refuse in the same words either way.
 
-    Killing mutation: the tiers read as cells whatever their spelling, which fails a row by name on
-    `'<' not supported between instances of 'str' and 'float'`.
+    Killing mutations: the tiers read as cells whatever their spelling, which fails a row by name on
+    `'<' not supported between instances of 'str' and 'float'`; the ticket written back as its rows
+    were stated, which turns a row by name into its column names and fails the quote the same way.
     """
+    def terms(leg):
+        # the references name the ticket as posted, which differs by spelling
+        return {key: value for key, value in leg.items() if 'Reference' not in key}
+
+    def named(tiers):
+        return [dict(reversed(list(zip(structures.RangeAccrual.CELLS, row)))) for row in tiers]
+
+    for tiers, extra in ((CAKE, {}), ([[17.0, 20.0, None]] + CAKE[1:], {'premium': CAKE_PREMIUM})):
+        by_cells, by_name = (structures.quote(book, 'RangeAccrual', cake_params(spelled, **extra))
+                             for spelled in (tiers, named(tiers)))
+        assert by_name['net'] == by_cells['net'] > 0.0, (by_name['net'], by_cells['net'])
+        assert by_name['params']['tiers'] == by_cells['params']['tiers']
+        assert [terms(leg) for leg in tier_legs(by_name)] == [terms(leg) for leg in tier_legs(by_cells)]
     for tiers, said in (([[20.0, 17.0, 5.0]], 'tiers[0] floor 20 is not below its cap 17'),
                         ([[17.0, 20.0, -5.0]], 'tiers[0].coupon is -5 - a level and a coupon are'),
                         ([[18.0, 19.5, 8.0], [17.0, 19.0, 5.0]],
                          'tiers[0] is not strictly inside tiers[1]')):
-        named = [dict(reversed(list(zip(structures.RangeAccrual.CELLS, row)))) for row in tiers]
-        for spelled in (tiers, named):
+        for spelled in (tiers, named(tiers)):
             with pytest.raises(ValueError, match=re.escape(said)):
                 structures.quote(book, 'RangeAccrual', cake_params(spelled))
 
