@@ -5387,9 +5387,10 @@ class SACCR(NettingSetCalculation):
     currency outside it (52.29, 52.45). Its delta plus or minus one by its long side and the amount's
     sign, or an option's by Black on the supervisory vol at P, its underlying's forward at T off the
     compiled factors, a rate option's P and K shifted by its currency's `option_shift`
-    (52.38-52.40), at T nothing the formula's limit, one in the money and none out, an FX option
-    past its expiry on the print it fixed; its MF sqrt(min(M, 1)), M floored at ten business days, or under a margined set
-    1.5 sqrt(MPOR / 250) (52.48, 52.52).
+    (52.38-52.40), an FX option's on the pair in the order its vol surface names it (52.59 FAQ1),
+    at T nothing the formula's limit, one in the money and none out, an FX option past its expiry
+    on the print it fixed; its MF sqrt(min(M, 1)), M floored at ten business days, or under a
+    margined set 1.5 sqrt(MPOR / 250) (52.48, 52.52).
 
     Not built: CDO tranches (52.41); basis and volatility hedging sets (52.46-52.47), every trade
     sitting in its ordinary set; the non-daily, cleared, illiquid and disputed MPOR floors
@@ -5417,12 +5418,14 @@ class SACCR(NettingSetCalculation):
         'the larger where both are (CRE52.35) - a forward\'s legs its two amounts, an option\'s its amount',
         'and that at its strike, a non-deliverable forward on the pair it buys and sells, its settlement',
         'currency outside it - and an equity or commodity trade\'s units at a unit\'s price; the',
-        'supervisory delta $\\delta$',
-        '(CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black delta on Table 2\'s vol at its',
-        'underlying\'s forward $P$, and at or past its exercise date, $T$ nothing, the formula\'s limit,',
-        '$\\pm1$ in the money and nothing out of it, an FX option past its expiry on the print it fixed',
-        'at (CRE52 states no $T$ for an option it has reached: a convention); the maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$',
-        'floored at ten business days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a margined set; and',
+        'supervisory delta $\\delta$ (CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black',
+        'delta on Table 2\'s vol at its underlying\'s forward $P$, an FX option\'s on its pair in the',
+        'order its FX vol surface names it, the order a book quotes the pair\'s options in, a call on one',
+        'currency a put on the other (CRE52.59 FAQ1), and at or past its exercise date, $T$ nothing,',
+        'the formula\'s limit, $\\pm1$ in the money and nothing out of it, an FX option past its expiry',
+        'on the print it fixed at (CRE52 states no $T$ for an option it has reached: a convention); the',
+        'maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$ floored at ten business',
+        'days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a margined set; and',
         '$D=d\\,\\delta\\,\\mathrm{MF}$. The add-ons (CRE52.55-52.70): IR by currency over three maturity',
         'buckets, $\\mathrm{EN}=(D_1^2+D_2^2+D_3^2+1.4D_1D_2+1.4D_2D_3+0.6D_1D_3)^{1/2}$; FX by pair,',
         '$|\\sum D|$; credit and equity by entity and commodity by type within its hedging set, each',
@@ -5648,11 +5651,17 @@ class SACCR(NettingSetCalculation):
             shift = self.shifts.get(hedging, 0.0) if asset == 'IR' else 0.0
             moneyness = math.log((self.FORWARDS[asset](self, deal, terms) + shift) / (
                 fields[terms.strike] + shift))
+            call = fields[terms.call[0]] == terms.call[1]
+            surface = asset == 'FX' and fields[next(
+                key for key, kinds in type(deal).factor_fields.items() if 'FXVol' in kinds)]
+            if surface and utils.check_rate_name(surface)[0] == utils.check_rate_name(
+                    fields[terms.underlying])[0]:
+                # priced in what its vol surface quotes first: on the pair as quoted (52.59 FAQ1)
+                moneyness, call, side = -moneyness, not call, -side
             # T nothing at or past the exercise date: the formula's limit, one in the money, none out
             d1 = (moneyness + 0.5 * spread * spread) / spread if spread else math.copysign(
                 math.inf, moneyness) if moneyness else 0.0
-            delta = side * (scipy.stats.norm.cdf(d1) if fields[terms.call[0]] == terms.call[1]
-                            else -scipy.stats.norm.cdf(-d1))
+            delta = side * (scipy.stats.norm.cdf(d1) if call else -scipy.stats.norm.cdf(-d1))
         unmargined = math.sqrt(min(max(end, self.horizon), 1.0))
         factor = unmargined if mpor is None else self.margined_scale * math.sqrt(mpor / self.year)
         return {'TradeID': reference, 'NettingSet': agreement['Instrument'].field.get('Reference'),

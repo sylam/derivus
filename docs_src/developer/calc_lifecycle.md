@@ -230,7 +230,9 @@ the mapping classes in none and an unrated entity each refuse by name, and the p
 held to CRE52's shape at setup. An option's P is read off the compiled factors - a swaption's par
 rate off the legs it is written on (`TensorCashFlows.get_par_swap_rate`), an FX option's outright
 (`utils.calc_fx_forward`) or, its expiry behind the base date, its print - its delta at T nothing
-the formula's limit, and a date in years of 30/360 from the base date. A set is margined
+the formula's limit, an FX option's taken on the pair in the order its `FXVol` surface's name
+states, as the pricer's `Invert_Moneyness` reads that name, and a date in years of 30/360 from the
+base date. A set is margined
 where it is `Collateralized`, its MPOR its `Liquidation_Period` in business days floored at ten,
 its C its `Opening_Balance` as the engine's balance counts it (`instruments.collateral_credit`), its
 TH, MTA and NICA its credit support amounts at their first values, and its EAD is capped at the
@@ -244,6 +246,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_a_margined_sets_collateral_is_its_balance_as_the_engine_counts_it`,
 `::test_an_over_collateralised_set_keeps_its_add_on_at_the_five_percent_floor`,
 `::test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_hand`,
+`::test_an_fx_option_takes_its_delta_on_the_pair_as_its_surface_quotes_it`,
 `::test_an_fx_forward_reads_its_foreign_leg_the_larger_where_both_are`,
 `::test_an_fx_option_at_or_past_its_expiry_is_its_deltas_limit`,
 `::test_an_fx_european_option_reads_as_the_fx_option_it_is`,

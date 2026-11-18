@@ -5,8 +5,8 @@ out.
 
 Every level is invented, chosen so the examples' terms are what the engine reads: a USD curve flat
 at 4% and a EUR one through 6% a year at each anniversary of the base date, so the one-into-ten
-receiver's legs have the forward swap rate of 6% CRE99.31 assumes; a euro at 1.25 dollars and a
-pound at 1.5, so a notional in either is crossed; three survival curves rated in the module's mapping as
+receiver's legs have the forward swap rate of 6% CRE99.31 assumes; a euro at 1.25 dollars, a
+pound at 1.5 and a dollar at 150 yen, so a notional in any is crossed; three survival curves rated in the module's mapping as
 CRE99.41 rates the entities; three commodities whose forward curves price a unit at 80, 100 and 25
 dollars. The swaps' rates and the default swaps' coupons are solved for the market values the
 examples state and the receiver's vol for its 50 thousand. A commodity forward is worth its funded
@@ -41,7 +41,7 @@ PARAMETERS = os.path.join(FIXTURES, 'saccr_parameters.json')
 
 BASE = pd.Timestamp('2025-01-15')
 SIX_MONTHS = BASE + pd.DateOffset(months=6)
-EURO, STERLING = 1.25, 1.5
+EURO, STERLING, YEN = 1.25, 1.5, 150.0
 
 
 def years(n):
@@ -90,18 +90,20 @@ def factors(vol):
         'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
         'FxRate.EUR': {'Domestic_Currency': 'USD', 'Interest_Rate': 'EUR', 'Spot': EURO},
         'FxRate.GBP': {'Domestic_Currency': 'USD', 'Interest_Rate': 'GBP', 'Spot': STERLING},
+        'FxRate.JPY': {'Domestic_Currency': 'USD', 'Interest_Rate': 'JPY', 'Spot': 1.0 / YEN},
         'InterestRate.USD': flat(0.04), 'InterestRate.SILVER_LEASE': flat(LEASE),
-        'InterestRate.GBP': flat(0.05, 'GBP'),
+        'InterestRate.GBP': flat(0.05, 'GBP'), 'InterestRate.JPY': flat(0.01, 'JPY'),
         'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[tenor(years(k)), k * math.log(1.06) / tenor(
                                  years(k))] for k in range(1, 12)])},
         'InterestYieldVol.EUR': {'Property_Aliases': None, 'Distribution_Type': 'Lognormal',
                                  'Shift': utils.Percent(0.0), 'Surface': flat_space(vol)},
         'ForwardRate.CARRY': {'Currency': 'USD', 'Curve': utils.Curve(
-            [], [[excel(BASE), 0.01], [excel(years(10)), 0.01]])},
-        'FXVol.EUR.USD': {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
+            [], [[excel(BASE), 0.01], [excel(years(10)), 0.01]])}}, **{
+        'FXVol.' + pair: {'Surface_Type': 'Explicit', 'Moneyness_Rule': 'Sticky_Moneyness',
                           'Surface': utils.Curve([], [[m, t, 0.1] for m in (0.8, 1.0, 1.2)
-                                                      for t in (0.5, 1.0, 2.0)])}}, **{
+                                                      for t in (0.5, 1.0, 2.0)])}
+        for pair in ('EUR.USD', 'USD.JPY')}, **{
         'EquityPrice.' + name: {'Spot': spot, 'Currency': 'USD', 'Interest_Rate': 'USD',
                                 'Issuer': '', 'Respect_Default': 'No', 'Jump_Level': 0.0}
         for name, spot in (('INDEX', 4000.0), ('SHARE', 50.0))}, **{
@@ -275,6 +277,17 @@ EXPIRED = [
     dict(MIXED[0], Reference='EXERCISED', Underlying_Amount=2e6, Expiry_Date=BASE - pd.offsets.BDay(1),
          Delivery_Date=BASE + pd.offsets.BDay(1), Price_Fixing=[[BASE - pd.offsets.BDay(1), 1.31]])]
 
+#: The bought euro call written as a dollar put in euros, and a bought dollar call in yen struck at
+#: 150 a year out written each way up, each pair's surface named as the market quotes it.
+AXES = [
+    dict(MIXED[0], Reference='EUR_CALL'),
+    dict(MIXED[0], Reference='USD_PUT', Currency='EUR', Underlying_Currency='USD', Discount_Rate='EUR',
+         Option_Type='Put', Strike_Price=1 / 1.3, Underlying_Amount=1.3e6),
+    dict(MIXED[0], Reference='USD_CALL', Currency='JPY', Underlying_Currency='USD', Discount_Rate='JPY',
+         FX_Volatility='USD.JPY', Strike_Price=YEN, Underlying_Amount=1e6),
+    dict(MIXED[0], Reference='JPY_PUT', Currency='USD', Underlying_Currency='JPY', Discount_Rate='USD',
+         FX_Volatility='USD.JPY', Option_Type='Put', Strike_Price=1 / YEN, Underlying_Amount=1e6 * YEN)]
+
 
 def node(deal):
     return {'Instrument': {'.Deal': deal}}
@@ -378,6 +391,7 @@ def world(tmp_path_factory):
             'MIXED': ({}, [node(deal) for deal in MIXED]),
             'FX_LINEAR': ({}, [node(deal) for deal in FX_LINEAR]),
             'EXPIRED': ({}, [node(deal) for deal in EXPIRED]),
+            'AXES': ({}, [node(deal) for deal in AXES]),
             'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
@@ -658,32 +672,33 @@ def black_delta(forward, strike, vol, expiry, call):
     return stats.norm.cdf(d1) if call else -stats.norm.cdf(-d1)
 
 
+def between(expiry):
+    """The years from the base date's spot date to `expiry`'s, two business days on each."""
+    return ((expiry - BASE).days + lag(expiry, 2) - lag(BASE, 2)) / 365
+
+
 def test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_hand(world):
     """CRE52.35, CRE52.36, CRE52.37(2), CRE52.59 AND CRE52.66. One unmargined set: a bought euro
     call in dollars, its notional the million euros crossed, its delta Black on the pair's forward
     a year out between its spot dates, 1.25 e^((0.04 - ln 1.06) 367/365), at the 15% vol; a sold
-    dollar call in euros, its foreign leg the 750 thousand euros its strike pays, its forward
-    0.8 e^((ln 1.06 - 0.04) 181/365) six months out, and the pair ordered euro first, so long
-    dollars is short its risk factor and the sold call's delta is +0.772; the two summed in the one
-    pair at 4%. A forward on an index, Risk_Equity bucket 11, at 20% and a correlation of 80%, and a
-    sold one on a share at 32% and 50%, aggregated as CRE52.66(4) states; a payer amortising two
-    million a year, its notional averaged over its life, six million; and a future short 40,000
-    units of silver at 25, its delta -1 by the sign of its units. Each class's add-on, the
+    dollar call in euros, its foreign leg the 750 thousand euros its strike pays, its delta taken
+    on EUR/USD as its surface quotes the pair (52.59 FAQ1), a sold euro put struck at 1/0.75 on
+    the forward 1.25 e^((0.04 - ln 1.06) 181/365) six months out, +0.7392; the two summed in the
+    one pair at 4%. A forward on an index, Risk_Equity bucket 11, at 20% and a correlation of 80%,
+    and a sold one on a share at 32% and 50%, aggregated as CRE52.66(4) states; a payer amortising
+    two million a year, its notional averaged over its life, six million; and a future short
+    40,000 units of silver at 25, its delta -1 by the sign of its units. Each class's add-on, the
     aggregate, the multiplier on V and the EAD by hand.
 
-    Killing mutations: the pair's ordering ignored - the FX add-on 1,548.2 against 39,416.9; the index
+    Killing mutations: the pair's ordering ignored - the FX add-on 666.4 against 38,535.1; the index
     bucket rule dropped, the index a single name - the equity add-on 3,116,056 against 1,862,742; the
     amortising principal read whole - its adjusted notional 44,239,843 against 26,543,906.
     """
     _, output = world
     found, rows = netting_sets(output).loc['MIXED'], trades(output, 'MIXED')
-    def between(expiry):
-        """The years from the base date's spot date to `expiry`'s, two business days on each."""
-        return ((expiry - BASE).days + lag(expiry, 2) - lag(BASE, 2)) / 365
-
     euro = black_delta(1.25 * math.exp((0.04 - math.log(1.06)) * between(years(1))), 1.3, 0.15, 1.0, True)
-    dollar = black_delta(0.8 * math.exp((math.log(1.06) - 0.04) * between(SIX_MONTHS)), 0.75, 0.15, 0.5,
-                         True)
+    dollar = -black_delta(1.25 * math.exp((0.04 - math.log(1.06)) * between(SIX_MONTHS)), 1 / 0.75,
+                          0.15, 0.5, False)
     assert rows.loc['EUR_CALL', 'AdjustedNotional'] == 1.25e6, rows.loc['EUR_CALL']
     assert rows.loc['USD_CALL', 'AdjustedNotional'] == 0.75e6 * 1.25, rows.loc['USD_CALL']
     assert rows.loc['EUR_CALL', 'Delta'] == pytest.approx(euro, rel=1e-12), rows.loc['EUR_CALL']
@@ -705,6 +720,32 @@ def test_the_fx_equity_and_commodity_classes_and_an_amortising_notional_read_by_
     assert found['AddOn_Aggregate'] == pytest.approx(aggregate, rel=1e-14), found
     assert found['Multiplier'] == pytest.approx(multiplier(found['V'], 0.0, aggregate), rel=1e-14)
     assert found['EAD'] == pytest.approx(1.4 * (max(found['V'], 0.0) + found['PFE']), rel=1e-15)
+
+
+def test_an_fx_option_takes_its_delta_on_the_pair_as_its_surface_quotes_it(world):
+    """CRE52.59 FAQ1 AND CRE52.40. A call on EUR/USD is a put on USD/EUR, whose delta is not the
+    call's; each pair is read in one order, the one its options are quoted in, which a book states
+    as the name of the vol surface it quotes them on. A bought euro call in dollars struck at 1.3 a
+    year out, and the same written as a bought dollar put in euros struck at 1/1.3 on 1.3 million
+    dollars: each Black on EUR/USD's forward 1.25 e^((0.04 - ln 1.06) 367/365) at 1.3, its adjusted
+    notional the million euros crossed. A bought dollar call in yen struck at 150 a year out on a
+    million dollars, and the same written as a bought yen put in dollars at 1/150 on 150 million
+    yen, the surface USD.JPY: each Black on USD/JPY's forward 150 e^((0.01 - 0.04) 367/365) at 150,
+    0.4498, short the pair as its hedging set orders it, JPY/USD, so -0.4498, its adjusted notional
+    the yen leg's million dollars.
+
+    Killing mutations: the delta on the side of the pair the deal is written on - the dollar put's
+    0.3231 against the call's 0.3787; the pair read in the order its hedging set sorts it - the
+    dollar call's -0.3912 against -0.4498.
+    """
+    _, output = world
+    rows = trades(output, 'AXES')
+    euro = black_delta(1.25 * math.exp((0.04 - math.log(1.06)) * between(years(1))), 1.3, 0.15, 1.0, True)
+    dollar = black_delta(YEN * math.exp((0.01 - 0.04) * between(years(1))), YEN, 0.15, 1.0, True)
+    assert list(rows['HedgingSet']) == ['EUR/USD', 'EUR/USD', 'JPY/USD', 'JPY/USD'], rows
+    assert rows['Delta'].tolist() == pytest.approx([euro, euro, -dollar, -dollar], rel=1e-12), rows
+    assert rows['AdjustedNotional'].tolist() == pytest.approx([1e6 * EURO] * 2 + [1e6] * 2,
+                                                              rel=1e-15), rows
 
 
 def test_an_fx_forward_reads_its_foreign_leg_the_larger_where_both_are(world):
