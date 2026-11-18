@@ -87,8 +87,7 @@ export function currencyOf(description: string, keys: string[],
                            read: (key: string) => unknown): string | undefined {
   const at = (key: string) => description.search(
     new RegExp(`\\bin (the )?(${key}|${key.replace(/_/g, ' ')})\\b`, 'i'));
-  return keys.filter((key) => /(^|_)Currency$/.test(key) && at(key) >= 0)
-    .sort((a, b) => at(a) - at(b)).map(read)
+  return keys.filter((key) => /(^|_)Currency$/.test(key) && at(key) >= 0).map(read)
     .find((value): value is string => typeof value === 'string' && value !== '');
 }
 
