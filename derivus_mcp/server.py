@@ -319,7 +319,7 @@ def list_instrument_types() -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def describe_instrument_type(deal_type: str) -> dict:
+def describe_instrument_type(name: str) -> dict:
     """Every field one deal type takes, as the engine declares it - call this before booking a
     type you have not booked before.
 
@@ -335,27 +335,27 @@ def describe_instrument_type(deal_type: str) -> dict:
     curves are named by a string that must match a `Price Factors` block. `accepts_children` says
     whether this type can hold other deals.
 
-    `deal_type` is one of the names `list_instrument_types` returns, spelled exactly; a name that is
+    `name` is one of the names `list_instrument_types` returns, spelled exactly; a name that is
     not one is answered with the types whose name or `vernacular` holds it, those it names whole
     first.
     """
     schema = service().call('GET', '/schema')['Instrument']
-    sections = schema['types'].get(deal_type)
+    sections = schema['types'].get(name)
     if sections is None:
-        asked = deal_type.strip().lower()
-        said = {t: [name.strip().lower() for name in schema['vernacular'][t].split(',')]
+        asked = name.strip().lower()
+        said = {t: [word.strip().lower() for word in schema['vernacular'][t].split(',')]
                 for t in schema['types']}
         close = sorted((t for t in schema['types'] if asked in t.lower()
-                        or any(asked in name for name in said[t])),
+                        or any(asked in word for word in said[t])),
                        key=lambda t: asked not in said[t])
         raise ToolError('{!r} is not a deal type. {}'.format(
-            deal_type, 'Close matches: {}'.format(', '.join(close)) if close
+            name, 'Close matches: {}'.format(', '.join(close)) if close
             else 'Call list_instrument_types for the full list.'))
     fields = {}
     for section in sections:
         fields.update(schema['sections'][section])
-    return {'deal_type': deal_type, 'vernacular': schema['vernacular'][deal_type],
-            'sections': sections, 'accepts_children': deal_type in schema['containers'],
+    return {'deal_type': name, 'vernacular': schema['vernacular'][name],
+            'sections': sections, 'accepts_children': name in schema['containers'],
             'fields': fields,
             'required': [key for key, meta in fields.items() if meta.get('required')]}
 
@@ -427,31 +427,31 @@ def describe_structure(name: str = None) -> dict:
 
 
 @MCP.tool(annotations=READ_ONLY)
-def describe_calculation_type(calc_type: str) -> dict:
+def describe_calculation_type(name: str) -> dict:
     """Every field one calculation type takes, any type the schema declares and a name it does not
     refused with the list - what `calculation_overrides` in `execute_book` / `price_candidate` may
     override."""
     types = service().call('GET', '/schema')['Calculation']['types']
-    if calc_type not in types:
+    if name not in types:
         raise ToolError('{!r} is not a calculation type - one of: {}'.format(
-            calc_type, ', '.join(sorted(types))))
-    fields = types[calc_type]
-    return {'calc_type': calc_type, 'fields': fields,
+            name, ', '.join(sorted(types))))
+    fields = types[name]
+    return {'calc_type': name, 'fields': fields,
             'required': [key for key, meta in fields.items() if meta.get('required')]}
 
 
 @MCP.tool(annotations=READ_ONLY)
-def describe_factor_type(factor_type: str) -> dict:
+def describe_factor_type(name: str) -> dict:
     """Every field one price-factor type carries (`InterestRate`, `FxRate`, `FXVol`, ...)
     plus the stochastic processes that can drive it and the interpolations it accepts - for
     READING the book's market data; nothing here edits it."""
     schema = service().call('GET', '/schema')
-    if factor_type not in schema['Factor']['types']:
+    if name not in schema['Factor']['types']:
         raise ToolError('{!r} is not a factor type - one of: {}'.format(
-            factor_type, ', '.join(sorted(schema['Factor']['types']))))
-    return {'factor_type': factor_type, 'fields': schema['Factor']['types'][factor_type],
-            'processes': schema['Process_factor_map'].get(factor_type, []),
-            'interpolations': schema['Interpolation_factor_map'].get(factor_type, [])}
+            name, ', '.join(sorted(schema['Factor']['types']))))
+    return {'factor_type': name, 'fields': schema['Factor']['types'][name],
+            'processes': schema['Process_factor_map'].get(name, []),
+            'interpolations': schema['Interpolation_factor_map'].get(name, [])}
 
 
 @MCP.tool(annotations=READ_ONLY)

@@ -598,6 +598,19 @@ def test_the_structure_store_is_the_quoting_menu():
     assert cake['fields']['tiers']['required'] and 'premium' in cake['fields']
 
 
+def test_every_describe_tool_takes_the_name_of_what_it_describes_as_name():
+    """A model that has called one describe tool spells the next one's argument the same way, so
+    each tool describing one named type or structure takes it as `name` and nothing else.
+
+    Killing mutation: any one of them back on a spelling of its own (`deal_type`, `calc_type`,
+    `factor_type`), which a host calling it with `name` hears as a missing field.
+    """
+    tools = {tool.name: tool for tool in asyncio.run(mcp_server.MCP.list_tools())}
+    for name in ('describe_instrument_type', 'describe_calculation_type', 'describe_factor_type',
+                 'describe_structure'):
+        assert set(tools[name].input_schema['properties']) == {'name'}, name
+
+
 @pytest.fixture
 def file_book(tmp_path, monkeypatch):
     """The service gates' book naming a market data file (`file_world`), taken down after."""

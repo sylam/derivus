@@ -47,7 +47,9 @@ how the market and the record are worked. **Held by**
 A tool's docstring is the contract the model reads, and every read carries the read-only hint so a
 host runs discovery without asking to write. **Held by**
 `test_every_tool_is_registered_and_carries_its_contract`, which holds the registry to exactly these
-tools and the writers to exactly those without the hint.
+tools and the writers to exactly those without the hint. A tool describing one named type or
+structure takes it as `name`. **Held by**
+`test_every_describe_tool_takes_the_name_of_what_it_describes_as_name`.
 
 | tool | endpoint: what |
 | --- | --- |
