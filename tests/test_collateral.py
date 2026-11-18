@@ -580,6 +580,25 @@ def test_a_term_stated_null_is_one_left_out():
     assert np.unique(runs[0][1]).size > 1, 'the balance never moves, so the CSA reads nothing'
 
 
+def test_a_set_its_call_cannot_value_is_named_with_its_error_s_own_words():
+    """A SET THE RUN COULD NOT VALUE IS NAMED WITH ITS ERROR, as every other structure is: a cash
+    row asking for ColVA with no funding curve, which `validate` names before a run, fails the
+    set's call, and the run names the set and the error in its own words, never the Python tuple
+    of its arguments.
+
+    Killing mutation: the error's arguments handed on in place of the error, which names the set
+    `("'NoneType' object is not iterable",)`.
+    """
+    assets = {'Cash_Collateral': [{'Currency': 'USD', 'Collateral_Rate': 'USD'}]}
+    context = derivus.Context()
+    context.load_json((json.dumps(engine_job(dict(TERMS, Collateral_Assets=assets))), 'colva'))
+    assert context.validate()['deals'] == {'CSA-1': [
+        'Collateral_Assets.Cash_Collateral[0]: Collateral_Rate is set, so Funding_Rate is required']}
+    with pytest.raises(utils.UnpriceableSchedule) as refused:
+        derivus.run_cmc(context.current_cfg, prec=torch.float64)
+    assert str(refused.value).endswith("CSA-1 - 'NoneType' object is not iterable"), refused.value
+
+
 def test_a_sole_cash_asset_stating_no_amount_is_one_unit_of_it(caplog):
     """`Amount` weighs an asset in the collateral the balance is counted in, and with one asset the
     weight cancels - the balance is held in units of it - so a sole cash row stating none, as the

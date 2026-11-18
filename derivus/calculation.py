@@ -251,7 +251,7 @@ class DealStructure(object):
                 # named refusal, and swallowing one leaves the structure marking at its accumulation
                 if utils.is_fatal_pricing_error(e):
                     raise
-                self.unpriced(shared, self, e.args)
+                self.unpriced(shared, self, e)
             finally:
                 if mark is not None:
                     utils.BoundarySet.claim(shared, mark)
