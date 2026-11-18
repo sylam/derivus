@@ -5398,8 +5398,9 @@ class SACCR(NettingSetCalculation):
     on the print it fixed; its MF sqrt(min(M, 1)), M floored at ten business days, or under a
     margined set 1.5 sqrt(MPOR / 250) (52.48, 52.52).
 
-    Not built: CDO tranches (52.41); basis and volatility hedging sets (52.46-52.47), every trade
-    sitting in its ordinary set; the non-daily, cleared, illiquid and disputed MPOR floors
+    Not built: CDO tranches (52.41); a digital's collar (52.42(3)), an option declaring it pays one
+    refused by name; basis and volatility hedging sets (52.46-52.47), every trade sitting in its
+    ordinary set; the non-daily, cleared, illiquid and disputed MPOR floors
     (52.50(2)-(3), 52.51(2)-(3)), which a netting set declares nothing to read off; several margin
     agreements to a set or sets to an agreement (52.74-52.76).
     """
@@ -5429,7 +5430,8 @@ class SACCR(NettingSetCalculation):
         'delta on Table 2\'s vol at its underlying\'s forward $P$ (CRE52.40 FAQ1, the forward for the',
         'rate and the dividends), a reference price\'s for the delivery its fixing curve maps $T$ to,',
         'an option on an average\'s $P$ that average\'s current value (CRE52.42(1)), each sample fixed at',
-        'its level and each to come at its forward - an energy option\'s its samples as its compile',
+        'its level and each to come at its forward, by its weight - a discrete Asian\'s the rows of its',
+        '**Sampling_Data**, an energy option\'s its samples as its compile',
         'draws them over its period, those fixed at its **Realized_Average** - an FX option\'s on its',
         'pair in the order its FX vol surface names it, the order a book quotes the pair\'s options in, a',
         'call on one currency a put on the other (CRE52.59 FAQ1), and at or past its exercise date, $T$',
@@ -5456,7 +5458,8 @@ class SACCR(NettingSetCalculation):
         'with $F$ 5% (CRE52.23); RC is $\\max(V-C,0)$ unmargined and $\\max(V-C,\\,TH+MTA-NICA,\\,0)$',
         'margined (CRE52.10, CRE52.18), a margined set\'s EAD capped at its unmargined one (CRE52.2).',
         '',
-        'Not built: CDO tranches (CRE52.41); basis and volatility hedging sets (CRE52.46-52.47); a trade\'s',
+        'Not built: CDO tranches (CRE52.41); a digital\'s collar (CRE52.42(3)), an option paying one',
+        'refusing the run by name; basis and volatility hedging sets (CRE52.46-52.47); a trade\'s',
         'allocation to several classes (CRE52.28); the non-daily, cleared, illiquid and disputed MPOR',
         'floors (CRE52.50-52.51); several margin agreements to a set, or sets to one (CRE52.74-52.76). A',
         'type declaring no exposure refuses the run by name.'])
@@ -5654,14 +5657,18 @@ class SACCR(NettingSetCalculation):
 
     def mean(self, asset, deal, terms):
         """P of an option on an average (52.42(1)), its current value: each sample fixed at its level
-        and each to come at its forward, by its weight. `average` names the realised average of an
-        energy option's samples as its compile draws them, each to come at its delivery's forward."""
-        base, curve = self.valuation['Base_Date'], self.compiled.all_factors[self.unit(deal, terms.underlying)]
-        samples = next(held.Factor_dep['Cashflow'].Resets.schedule for held in self.compiled.netting_sets.deals()
-                       if (held.Instrument.resolved_from or held.Instrument) is deal)
-        rows = [(base + pd.Timedelta(days=row[utils.RESET_INDEX_Reset_Day]), deal.field[terms.average],
-                 row[utils.RESET_INDEX_Weight], curve.current_value([row[utils.RESET_INDEX_End_Day]])[0])
-                for row in samples]
+        and each to come at its forward, by its weight. `average` names a table of `[day, price,
+        weight]` samples, or the realised average of an energy option's samples as its compile draws
+        them, each to come at its delivery's forward."""
+        base, stated = self.valuation['Base_Date'], deal.field[terms.average]
+        if isinstance(stated, list):
+            rows = [(day, price, weight, None) for day, price, weight in stated]
+        else:
+            curve = self.compiled.all_factors[self.unit(deal, terms.underlying)]
+            samples = next(held.Factor_dep['Cashflow'].Resets.schedule for held in self.compiled.netting_sets.deals()
+                           if (held.Instrument.resolved_from or held.Instrument) is deal)
+            rows = [(base + pd.Timedelta(days=row[utils.RESET_INDEX_Reset_Day]), stated, row[utils.RESET_INDEX_Weight],
+                     curve.current_value([row[utils.RESET_INDEX_End_Day]])[0]) for row in samples]
         return sum(weight * (level if day < base else self.underlying(asset, deal, terms, day, forward))
                    for day, level, weight, forward in rows) / sum(weight for _, _, weight, _ in rows)
 
@@ -5676,6 +5683,9 @@ class SACCR(NettingSetCalculation):
             raise ValueError('SACCR: trade {} is a {}, {}'.format(
                 reference, kind, 'which declares no exposure CRE52 reads' if terms is None else
                 'and the mapping classes it under no SACCR.Asset_Class'))
+        if terms.digital and fields[terms.digital[0]] == terms.digital[1]:
+            raise ValueError('SACCR: trade {} is a {} paying a digital, whose collar of CRE52.42(3) is not '
+                             'built'.format(reference, kind))
         end = self.years(max(day for *_, day in schema.settlement_days(
             fields, schema.tenor_fields(type(deal))) if day is not None))
         start = self.years(fields[terms.start]) if terms.start else 0.0

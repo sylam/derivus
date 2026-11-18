@@ -127,9 +127,9 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
 #: `expiry` and `call` the (field, value) of a call where an option; `amortisation` its steps;
 #: `other` an FX trade's amount in that other currency, where its terms state one; `runs` the
 #: (field, value) under which it runs to its end, else settling at its start; `average` the field
-#: stating what has fixed of the average an option is on.
+#: stating what has fixed of the average an option is on; `digital` the (field, value) of a digital.
 Exposure = namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
-                                  'amortisation other runs average', defaults=(None,) * 12)
+                                  'amortisation other runs average digital', defaults=(None,) * 13)
 
 
 class Row(object):
@@ -1068,6 +1068,10 @@ FXOPTIONBASE = Group('FXOptionBase.Fields', 'FX option', [
     F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
     F('Strike_Price', 'Float', default=REQUIRED, description=FX_AXIS.format('Strike price'))
 ])
+
+#: An FX option's SA-CCR exposure, on its Underlying_Amount of the currency it is on (`Exposure`).
+FX_OPTION = Exposure('Underlying_Amount', 'Underlying_Currency', 'Currency', long=('Buy_Sell', 'Buy'),
+                     strike='Strike_Price', expiry='Expiry_Date', call=('Option_Type', 'Call'))
 
 #: How an option is exercised and settled, and whether it is written on the forward.
 OPTION_STYLE = Group('OptionStyle', 'Exercise and settlement', [

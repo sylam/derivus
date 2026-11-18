@@ -20,8 +20,8 @@ from .schema import (
     Cash, DAY_COUNTS, F, Observes, REQUIRED, Row, own, DealFields, declared_factors, declared_fields,
     declared_settlements, engine_default, Exposure, settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_OPTION, EQUITY_TOUCH,
-    EXPIRY_PRINT, FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE, CAP_FLOOR,
-    OPTION_STYLE, TOUCH, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
+    EXPIRY_PRINT, FX_OPTION, FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE,
+    CAP_FLOOR, OPTION_STYLE, TOUCH, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
 
 import numpy as np
 import pandas as pd
@@ -3914,6 +3914,7 @@ class SwaptionDeal(Deal):
 class FXDiscreteExplicitAsianOption(Deal):
     vernacular = 'FX Asian option, average-rate option'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Sampling_Data', 1)
+    exposure = FX_OPTION._replace(average='Sampling_Data', digital=('Is_Digital', 'Yes'))
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXDiscreteExplicitAsianOption', [
         F('Expiry_Date', 'Date', default=''),
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
@@ -4014,6 +4015,7 @@ class EquityDiscreteExplicitAsianOption(Deal):
     # a Compo's samples are S*X, which no print of the equity is
     observes = Observes('Equity', 'EquityPrice', 'Sampling_Data', 1,
                         unless=('Payoff_Type', 'Compo'))
+    exposure = EQUITY_OPTION._replace(average='Sampling_Data', digital=('Is_Digital', 'Yes'))
     fields = [ADMIN, PRICING, EQUITYOPTIONBASE, own('EquityDiscreteExplicitAsianOption', [
         F('Is_Digital', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Units', 'Float', default=0.0, sized=True),
@@ -6764,8 +6766,7 @@ class FXOptionDeal(Deal):
     vernacular = 'FX option, currency option, vanilla call or put'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
                         elects='Settlement_Style', expires='Expiry_Date')
-    exposure = Exposure('Underlying_Amount', 'Underlying_Currency', 'Currency', long=('Buy_Sell', 'Buy'),
-                        strike='Strike_Price', expiry='Expiry_Date', call=('Option_Type', 'Call'))
+    exposure = FX_OPTION
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, FX_OPTION_STYLE, own('FXOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Expiry_Date', 'Date', default=''),

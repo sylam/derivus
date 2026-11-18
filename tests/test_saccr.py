@@ -341,6 +341,18 @@ ENERGY = [energy_option('JANUARY', 'Buy', 'Call', 82.0, 1e3, years(1), years(1) 
                         BASE + pd.DateOffset(days=20), 79.0)]
 
 
+#: A bought euro call in dollars on the average of a fixing a month ago at 1.24 and two to come,
+#: six months and a year out; and a sold put on a thousand units of the index's average, a fixing
+#: ten days ago at 3,950 weighing twice each of two to come, three and six months out.
+ASIANS = [
+    dict(MIXED[0], Object='FXDiscreteExplicitAsianOption', Reference='FX_AVERAGE', Sampling_Data=[
+        [BASE - pd.DateOffset(months=1), 1.24, 1.0], [SIX_MONTHS, 0.0, 1.0], [years(1), 0.0, 1.0]]),
+    dict(equity_option('INDEX_AVERAGE', 'INDEX', 'Sell', 'Put', 3900.0, 1e3, SIX_MONTHS),
+         Object='EquityDiscreteExplicitAsianOption', Sampling_Data=[
+             [BASE - pd.DateOffset(days=10), 3950.0, 2.0], [BASE + pd.DateOffset(months=3), 0.0, 1.0],
+             [SIX_MONTHS, 0.0, 1.0]])]
+
+
 def node(deal):
     return {'Instrument': {'.Deal': deal}}
 
@@ -449,7 +461,8 @@ def world(tmp_path_factory):
             'COMPOSED': ({}, [node(dict(MIXED[5], Commodity='SILVER.LBMA'))]),
             'SETTLED': ({}, SWAPTIONS),
             'EQUITY_OPTIONS': ({}, [node(deal) for deal in EQUITY_OPTIONS]),
-            'ENERGY': ({}, [node(deal) for deal in ENERGY])}
+            'ENERGY': ({}, [node(deal) for deal in ENERGY]),
+            'ASIANS': ({}, [node(deal) for deal in ASIANS])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -974,6 +987,28 @@ def test_an_energy_option_takes_its_delta_on_its_averages_current_value(world):
         ('Energy', '2', 0.18)}, rows
 
 
+def test_an_asian_option_takes_its_delta_on_its_averages_current_value(world):
+    """CRE52.35, CRE52.36 AND CRE52.42(1). An option on a discrete average reads P as the average's
+    current value: each sample its table states fixed at its price, each to come at the forward to
+    its day, by its weight over all the weights; else it reads as its vanilla. The euro call in
+    dollars struck at 1.3 a year out, on a fixing at 1.24 and EUR/USD's forwards six months and a
+    year out, 1.2353: +0.3954 on its million euros crossed, 1,250,000. The sold put on a thousand
+    units of the index struck at 3,900 six months out, on a fixing at 3,950 weighing twice and the
+    index's forwards three and six months out, 3,989.69: +0.3790, long the index, on 4,000,000.
+
+    Killing mutations: P the forward at the expiry - the call's delta +0.3787; the weights left
+    unnormalised - the put's P 15,958.8 and its delta +0.0017.
+    """
+    _, output = world
+    rows = trades(output, 'ASIANS')
+    euro = [1.24] + [1.25 * math.exp((0.04 - math.log(1.06)) * between(day)) for day in (SIX_MONTHS, years(1))]
+    index = [4000.0 * math.exp(0.02 * between(day, 3)) for day in (BASE + pd.DateOffset(months=3), SIX_MONTHS)]
+    assert rows['Delta'].tolist() == pytest.approx([
+        black_delta(sum(euro) / 3.0, 1.3, 0.15, 1.0, True),
+        -black_delta((2.0 * 3950.0 + sum(index)) / 4.0, 3900.0, 0.75, 0.5, False)], rel=1e-12), rows
+    assert list(rows['AdjustedNotional']) == [1e6 * EURO, 4e6], rows
+
+
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
               'Equity_Currency': 'USD', 'Discount_Rate': 'USD', 'Equity': 'INDEX', 'Buy_Sell': 'Buy',
               'Effective_Date': BASE, 'Maturity_Date': years(1),
@@ -986,15 +1021,19 @@ EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',
     (MIXED[2], ('EquityForwardDeal',), 'SET_INDEX_FWD is a EquityForwardDeal, and the mapping '
                                        'classes it under no SACCR.Asset_Class'),
     (default_swap('CDS', 'UNRATED', years(5), 'Buy'), (),
-     'SET_CDS reads SurvivalProb.UNRATED, and the mapping states no SACCR.Rating for it')])
+     'SET_CDS reads SurvivalProb.UNRATED, and the mapping states no SACCR.Rating for it'),
+    (dict(ASIANS[0], Is_Digital='Yes'), (), 'SET_FX_AVERAGE is a FXDiscreteExplicitAsianOption paying '
+                                           'a digital, whose collar of CRE52.42\\(3\\) is not built')])
 def test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name(
         tmp_path, deal, drop, said):
     """A TRADE IS READ THROUGH ITS DECLARATIONS. An equity swap leg, whose type declares no
     exposure; an equity forward, which does, under a mapping classing its type in no asset class;
-    and a default swap on a survival curve the mapping rates nothing: each refuses the run by name.
+    a default swap on a survival curve the mapping rates nothing; and an Asian paying a digital,
+    whose collar is not built: each refuses the run by name.
 
-    Killing mutation: a type declaring no exposure skipped - the leg's set valued and its EAD
-    written, nothing refused.
+    Killing mutations: a type declaring no exposure skipped - the leg's set valued and its EAD
+    written, nothing refused; a digital read as the vanilla its strike states - the Asian's set
+    valued.
     """
     mapping = mapping_file(tmp_path / 'mapping.json', drop)
     with pytest.raises(ValueError, match='SACCR: trade ' + said):
