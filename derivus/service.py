@@ -1333,9 +1333,8 @@ def expected_reference(document, request):
 def book_deals(request: dict):
     """`{action: 'add', deal, parent_reference?}`, `{action: 'fill', deal_path}`, `{action:
     'amend', deal_path, fields}` or `{action: 'delete', deal_path}`. An amendment MERGES `fields`
-    into the deal at `deal_path`, judged first against the declarations of the type it leaves: a
-    key that type does not declare, or a value its field refuses, is refused by name with nothing
-    written or filed.
+    into the deal at `deal_path`, and one naming a field the type it leaves does not declare is
+    refused by name with nothing written or filed.
 
     `deal` is a deal block, or a whole node - a container with its `Children` - which is how a
     quoted structure books: the legs land with the container, in one write and under one verdict.
@@ -1401,10 +1400,12 @@ def book_deals(request: dict):
             expected_reference(document, request)
             baseline = live_book().baseline(document, etag)
             node = deal_at(document, request['deal_path'])
-            # a block laid over the deal, judged by the type the merge leaves
+            # an amendment names fields of the type the merge leaves; what they hold is the
+            # verdict's to judge, as a booking's is
             named = str(dict(node['Instrument']['.Deal'], **request['fields']).get('Object'))
-            refused = judged(named, declared_fields(getattr(instruments, named, None)).values(),
-                             request['fields'])
+            declared = declared_fields(getattr(instruments, named, None))
+            refused = declared and stated_messages(named, declared.values(), {
+                key: None for key in request['fields'] if key not in declared})
             if refused:
                 return False, {'written': False, 'refused': refused, 'validate': baseline}
             # a leg of a structure held whole amends THAT instrument, its position carried onto
@@ -1488,19 +1489,13 @@ def booked_again(outcome, booked, written, what):
     return written, dict(outcome, _validated=outcome['validate'], **answer) if written else answer
 
 
-def judged(owner, fields, stated, known=()):
-    """What `stated`, a block laid over one of `owner`'s, states that its declared `fields` refuse,
-    decoded as a run reads it (`schema.stated_messages`)."""
-    decoded = json.loads(json.dumps(stated), object_hook=lambda wire: decode_wire(
-        wire, lambda deal: deal))
-    return stated_messages(owner, fields, decoded, known)
-
-
 def judge_calculation(calculation, stated):
     """Refuse by name what the calculation `calculation` names declares against what `stated`
-    states (`judged`), `Object` being the type token."""
+    states, decoded as a run reads it (`schema.stated_messages`), `Object` being the type token."""
     cls = calculation_class(calculation.get('Object'))
-    refused = judged(cls.__name__, declared_fields(cls).values(), stated, ('Object',))
+    decoded = json.loads(json.dumps(stated), object_hook=lambda wire: decode_wire(
+        wire, lambda deal: deal))
+    refused = stated_messages(cls.__name__, declared_fields(cls).values(), decoded, ('Object',))
     if refused:
         raise ValueError('; '.join(refused))
 

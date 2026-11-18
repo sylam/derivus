@@ -577,14 +577,12 @@ def test_a_deal_missing_a_term_is_refused_by_name_and_a_convention_is_not(book, 
         {'action': 'add', 'deal': dict(SWAP, Reference='SW0', Swap_Rate=0.0)}), headers=JSON).json()
     assert zero['written'] is True, zero
 
-    # and an AMENDMENT cannot put the nothing back that the booking refused - a menu's blank
-    # refused by the amendment's own judge, before the merge, naming the choices
+    # and an AMENDMENT cannot put the nothing back that the booking refused
     amended = CLIENT.post('/book/deals', json={
         'action': 'amend', 'deal_path': zero['deal_path'], 'reference': 'SW0',
         'fields': {key: None}}).json()
     assert amended['written'] is False
-    assert {'Pay_Rate_Type': 'Pay_Rate_Type is blank, not one of Fixed, Floating'}.get(
-        key, '{} is not stated'.format(key)) in amended['refused'], amended['refused']
+    assert '{} is not stated'.format(key) in amended['refused'], amended['refused']
 
     CLIENT.post('/book/deals', json={'action': 'delete', 'deal_path': zero['deal_path'],
                                      'reference': 'SW0'})

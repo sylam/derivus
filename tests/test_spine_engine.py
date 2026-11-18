@@ -1061,8 +1061,8 @@ def test_a_booking_through_the_book_verb_writes_the_event_before_the_file(record
 
 def test_an_amendment_naming_a_field_its_type_does_not_declare_is_refused_and_files_nothing(
         recorded, desk):
-    """AN AMENDMENT IS A BLOCK LAID OVER THE DEAL, judged by its type's declarations before it
-    merges. On a structure booked whole, a key the structure does not declare and a misspelt key on
+    """AN AMENDMENT NAMES FIELDS OF ITS DEAL'S TYPE, and one that type does not declare is refused
+    before it merges. On a structure booked whole, a key the structure does not declare and a key on
     one of its legs each refuse naming the key and the type, the file byte-identical and nothing
     filed; an amount the leg declares restrikes the structure. A booking still takes a key its type
     does not declare, as every deal of a legacy book carries one.
