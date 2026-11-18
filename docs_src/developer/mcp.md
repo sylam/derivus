@@ -22,7 +22,7 @@ imports only `asyncio`, `os`, `time`, `requests`, `mcp` and `mcp_types`. **Held 
 ## Running it
 
 ```
-pip install 'derivus[desk]'                     # service, binding and quote sheet; python 3.11+
+pip install 'derivus[desk]'                     # service, binding and quote sheet; python 3.10+
 DV_Service --book path/to/job.json
 claude mcp add derivus -- DV_MCP
 claude mcp add derivus --env RF_SERVICE_URL=http://host:8000 -- DV_MCP   # a service elsewhere

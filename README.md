@@ -14,15 +14,15 @@ full greek vector costs one backward pass however many factors it covers.
 pip install derivus
 ```
 
-Requires python >= 3.11, pandas >= 3.0 and pytorch >= 2.6; the tests run on python 3.13. A GPU build of pytorch is strongly recommended — the
+Requires python >= 3.10 and pytorch >= 2.0; the tests run on python 3.13. A GPU build of pytorch is strongly recommended — the
 scenario engine is written for it.
 
 Optional extras:
 
 ```
-pip install "derivus[desk]"         # the working stack: the HTTP service, the MCP binding, the quote ticket
+pip install "derivus[desk]"         # the working stack: the HTTP service, the MCP binding, the quote ticket (python 3.10+, mcp's floor)
 pip install "derivus[service]"      # DV_Service alone (fastapi, uvicorn)
-pip install "derivus[mcp]"          # the MCP binding alone
+pip install "derivus[mcp]"          # the MCP binding alone (python 3.10+)
 pip install "derivus[quote]"        # the Excel quote ticket alone (xlsxwriter)
 pip install "derivus[garch]"        # GARCHSpotModel calibration (lazy import; the rest runs without it)
 pip install "derivus[interactive]"  # jupyter and matplotlib

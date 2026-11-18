@@ -12,7 +12,7 @@ pip install "derivus[desk]"            # the engine, DV_Service, the MCP binding
 pip install torch                      # the CUDA build if you have an NVIDIA GPU
 ```
 
-Derivus needs Python 3.11 or later; [Requirements](require.md) lists every extra and the GPU
+Derivus needs Python 3.10 or later; [Requirements](require.md) lists every extra and the GPU
 notes. A release wheel serves its own web UI, so there is nothing to build.
 
 Working on derivus itself is the clone route instead:

@@ -248,6 +248,27 @@ def test_the_second_order_block_is_reported_under_a_stable_key_beside_the_first(
         assert row not in first.index and abs(entry(second, EQUITY, row)) > 0.9
 
 
+def test_a_nan_gradient_is_reported_as_nan_and_never_summed_into_a_number():
+    """The reported block sums the deals' columns that share a label, and a NaN among them is the
+    NaN the block reports: two deals' gradients on two factors, one deal's NaN on the second, give
+    the sum on the first and NaN on the second, in the first-order spelling and the five-level one.
+
+    Killing mutation: the plain grouped sum, which reports the other deal's 5.0 for the NaN.
+    """
+    from derivus.calculation import summed_greeks
+
+    rows = pd.Index(['FxRate.EUR', 'InterestRate.USD'])
+    deals = [pd.Series([1.0, np.nan], rows, name='Gradient'),
+             pd.Series([2.0, 5.0], rows, name='Gradient')]
+    first = summed_greeks(deals, 0)
+    assert first.shape == (2, 1) and first.iloc[0, 0] == 3.0 and np.isnan(first.iloc[1, 0]), first
+
+    columns = pd.MultiIndex.from_tuples([('BOOK', 'FxRate.EUR', 0.0, 0.0, 0.0)])
+    second = summed_greeks(
+        [pd.DataFrame(deal.to_numpy(), rows, columns) for deal in deals], [0, 1, 2, 3, 4])
+    assert second.shape == (2, 1) and second.iloc[0, 0] == 3.0 and np.isnan(second.iloc[1, 0]), second
+
+
 # ---------------------------------------------------------------- the closed forms
 
 def test_black_scholes_gamma_is_exact_in_the_zero_carry_world():

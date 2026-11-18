@@ -2132,6 +2132,14 @@ class CreditMonteCarlo(Calculation):
         return results
 
 
+def summed_greeks(frames, level):
+    """The columns of `frames` sharing a label at `level`, summed, a NaN among them reported as NaN
+    and never summed away into a zero. Grouped on the transpose and masked, which every pandas
+    from 1.x runs alike: `groupby(axis=1)` left in pandas 3 and a grouped `skipna` arrived in it."""
+    rows = pd.concat(frames, axis=1).T
+    return rows.groupby(level=level).sum().mask(rows.isna().groupby(level=level).any()).T
+
+
 class Base_Reval_State(utils.Calculation_State):
     def __init__(self, static_buffer, one, mcmc_sims, report_currency, calc_greeks, gamma, quasi_seed,
                  nomodel='Constant'):
@@ -2449,13 +2457,10 @@ class BaseValuation(Calculation):
 
         self.output['mtm'] = pd.DataFrame(mtm)
         for greek_name, greek_val in greeks.items():
-            # the transposed spelling is pandas' own migration off groupby(axis=1) (removed in
-            # pandas 3) and runs identically back to 1.x
             if greek_name == 'Greeks_Second':
-                summary = pd.concat(greek_val, axis=1).T.groupby(level=[0, 1, 2, 3, 4]).sum(skipna=False).T
+                summary = summed_greeks(greek_val, [0, 1, 2, 3, 4])
             elif greek_name == 'Greeks_First':
-                # a NaN gradient is reported as NaN, never summed away into a zero
-                summary = pd.concat(greek_val, axis=1).T.groupby(level=0).sum(skipna=False).T
+                summary = summed_greeks(greek_val, 0)
             else:
                 raise Exception('Unknown Greek requested', greek_name)
             self.output.setdefault(greek_name, summary)
