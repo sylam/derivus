@@ -7,11 +7,16 @@
 // them. With none, only the synthetic arity-4 space below runs.
 
 import { readFileSync } from 'node:fs';
-import { transformSync } from 'esbuild';
+import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 
-const ts = readFileSync(new URL('../src/vols.ts', import.meta.url), 'utf8');
-const js = transformSync(ts, { loader: 'ts', format: 'esm' }).code;
-const vols = await import(`data:text/javascript;base64,${Buffer.from(js).toString('base64')}`);
+const bundled = await build({
+  stdin: { contents: "export * from './vols'; export { tenorLabel } from './tokens';",
+           resolveDir: fileURLToPath(new URL('../src', import.meta.url)), loader: 'ts' },
+  bundle: true, format: 'esm', write: false, logLevel: 'silent',
+});
+const vols = await import('data:text/javascript;base64,' +
+  Buffer.from(bundled.outputFiles[0].text).toString('base64'));
 
 function read(title, description, data) {
   const arity = data[0].length;

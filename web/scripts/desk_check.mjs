@@ -78,7 +78,31 @@ check("a named calculation's unstated dial stands at the book's own, where its t
                     { Simulation_Batches: {}, Batch_Size: {}, Antithetic: {} }),
       { Simulation_Batches: 20 });
 
-console.log(`\n${ran} checks over 3 functions, ${missed.length} missed`);
+// --- the reading of a tenor and a quote
+const FACTORS = { Factor: { types: {
+  InterestRate: { Curve: { widget: 'Curve', description: 'Continuously compounded interest rate' } },
+  ForwardPrice: { Curve: { widget: 'Curve', description:
+    '(excel date, price) pairs giving the forward price at each contract expiry' } },
+  FXVol: { ATM_Vol: { widget: 'Curve', description: 'Skew and SVI parameter' },
+           Surface: { widget: 'Surface', description:
+             '(moneyness, expiry, volatility) triples, flat extrapolated' } },
+} } };
+const tenor = (factor, coordinates) =>
+  desk.tenorText(coordinates, desk.factorAxes(FACTORS, factor, coordinates.length));
+check("a factor's coordinates read as its declaration names them",
+      'the axes the declaration names left unread, which prints a tenor as its year fraction, '
+      + '`0,5`, and a commodity curve\'s excel day as `46,316`',
+      [tenor('InterestRate.ZAR', [0.5]), tenor('InterestRate.USD', [7.005479]),
+       tenor('ForwardPrice.TIN', [46316]), tenor('FXVol.USD.ZAR', [-0.0625, 0.25])],
+      ['6M', '7Y', '2026-10-21', '-0.0625 / 3M']);
+
+check('a vol quote reads as a dealer names it, and any other quote as itself',
+      'the engine\'s name shown as is, `RR 0.25 0.0833333`; or a curve\'s own `USD 1M` rewritten',
+      ['ATM 0.166667', 'RR 0.25 0.0833333', 'BF 0.1 0.0191781', 'USD 1M', 'ATM 2M']
+        .map(desk.quoteText),
+      ['2M ATM', '1M 25D RR', '1W 10D BF', 'USD 1M', 'ATM 2M']);
+
+console.log(`\n${ran} checks over 6 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

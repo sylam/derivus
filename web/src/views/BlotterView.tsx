@@ -9,7 +9,7 @@ import {
   type Position,
 } from '../positions';
 import { marketOf, useApp } from '../state';
-import { formatNumber } from '../tokens';
+import { formatNumber, type Kind } from '../tokens';
 import type { Schema } from '../types';
 
 /** The desk blotter: one row per booked deal over the live book, the tree flattened with
@@ -183,7 +183,7 @@ function Row(props: {
         <td className="type">{row.object}</td>
         <td><Side side={size.side} /></td>
         <td title={size.of?.key}>{size.of ? cellText(size.of.value) ?? '' : ''}</td>
-        <Value picked={size.amount} object={row.object} schema={schema} />
+        <Value picked={size.amount} object={row.object} schema={schema} kind="money" />
         <Value picked={row.strike} object={row.object} schema={schema} />
         <Value picked={row.barrier} object={row.object} schema={schema} />
         {/* a container carrying no dates of its own shows the roll it INHERITS, marked, so the
@@ -251,12 +251,13 @@ function Side({ side }: { side?: Picked }) {
 
 /** One picked column. A shape a cell cannot state says so and points at the expander, which
  * renders it whole - the viewer never hides a value it cannot format. */
-function Value({ picked, object, schema }: {
-  picked?: Picked; object: string; schema: Schema | null;
+function Value({ picked, object, schema, kind }: {
+  picked?: Picked; object: string; schema: Schema | null; kind?: Kind;
 }) {
   if (!picked) return <td className="n" />;
-  const text = cellText(picked.value);
-  const title = describe(schema, object, picked.key);
+  const text = cellText(picked.value, kind);
+  const exact = typeof picked.value === 'number' ? `: ${picked.value}` : '';
+  const title = describe(schema, object, picked.key) + exact;
   if (text === undefined) {
     return <td className="n"><span className="hint" title={title}>{'{…}'}</span></td>;
   }

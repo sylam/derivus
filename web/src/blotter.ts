@@ -9,7 +9,7 @@
 // fills what columns it can and renders the rest in its expander, rather than raising.
 
 import type { Position } from './positions';
-import { formatNumber, isObject, token } from './tokens';
+import { formatNumber, isObject, token, type Kind } from './tokens';
 import type { TreeNode } from './tree';
 import type { DealNode, Descriptor, JobDoc, Market, Schema } from './types';
 
@@ -154,14 +154,14 @@ export function sizeOf(deal: Record<string, unknown>, object: string, schema: Sc
   return { side, amount, of: key ? { key, value: deal[key] } : undefined };
 }
 
-/** One cell of a scalar column, or undefined where the value is a shape a cell cannot state -
- * the details expander carries those whole. */
-export function cellText(value: unknown): string | undefined {
-  if (typeof value === 'number') return formatNumber(value);
+/** One cell of a scalar column, a number as the `kind` it is, or undefined where the value is a
+ * shape a cell cannot state - the details expander carries those whole. */
+export function cellText(value: unknown, kind: Kind = 'plain'): string | undefined {
+  if (typeof value === 'number') return formatNumber(value, kind);
   const percent = token(value, '.Percent');
-  if (typeof percent === 'number') return `${formatNumber(percent)} %`;
+  if (typeof percent === 'number') return formatNumber(percent, 'percent');
   const basis = token(value, '.Basis');
-  if (typeof basis === 'number') return `${formatNumber(basis)} bp`;
+  if (typeof basis === 'number') return formatNumber(basis, 'basis');
   const stamp = dateOf(value);
   if (stamp) return stamp;
   if (typeof value === 'string') return value;

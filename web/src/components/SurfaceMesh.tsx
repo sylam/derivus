@@ -3,7 +3,8 @@ import { SurfaceChart } from 'echarts-gl/charts';
 import { Grid3DComponent } from 'echarts-gl/components';
 import echarts, { GRADIENT, chartPalette } from '../charts/echarts';
 import { useChart } from '../charts/useChart';
-import { tenorLabel, type Mesh } from '../vols';
+import { formatNumber, tenorLabel } from '../tokens';
+import type { Mesh } from '../vols';
 
 // Registered onto the same core the other charts use, on IMPORT - and this module is reached only
 // through a dynamic import, so the GL code is its own chunk and a desk that never opens the mesh
@@ -26,7 +27,7 @@ export default function SurfaceMesh({ mesh, axes }: { mesh: Mesh; axes: string[]
     return {
       animation: false,
       tooltip: { formatter: (point: { value: number[] }) =>
-        `${axes[1]} ${tenorLabel(point.value[1])}<br/>${axes[0]} ${point.value[0]}<br/>` +
+        `${axes[1]} ${tenorLabel(point.value[1])}<br/>${axes[0]} ${formatNumber(point.value[0])}<br/>` +
         `${axes[2]} ${(point.value[2] * 100).toFixed(2)} %` },
       visualMap: {
         min: Math.min(...values), max: Math.max(...values), dimension: 2,

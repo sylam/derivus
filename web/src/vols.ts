@@ -3,34 +3,21 @@
 // grid whose AXIS NAMES come off the factor's own declaration, and the grid is ragged, because a
 // bootstrapped smile refines its own x nodes per expiry.
 
-/** Positional stand-ins, where the declaration's prose does not name one per column. */
-const POSITIONAL = ['x', 'expiry', 'tenor', 'value'];
+import { tenorLabel } from './tokens';
 
-/** The conventional labels a year fraction can land on. */
-const LABELS: [number, string][] = [
-  [1 / 365, '1D'], [7 / 365, '1W'], [14 / 365, '2W'], [21 / 365, '3W'],
-  [1 / 12, '1M'], [2 / 12, '2M'], [3 / 12, '3M'], [6 / 12, '6M'], [9 / 12, '9M'],
-  [1, '1Y'], [1.5, '18M'], [2, '2Y'], [3, '3Y'], [4, '4Y'], [5, '5Y'], [7, '7Y'],
-  [10, '10Y'], [15, '15Y'], [20, '20Y'], [30, '30Y'],
-];
+/** Positional stand-ins, where the declaration's prose does not name one per column: a curve's
+ * first axis is its tenor in years. */
+const POSITIONAL: Record<number, string[]> = {
+  2: ['tenor', 'value'], 3: ['x', 'expiry', 'value'], 4: ['x', 'expiry', 'tenor', 'value'],
+};
 
-/** One axis name per COLUMN, read off the descriptor: every `Surface` declaration opens with the
- * tuple its rows carry — `(moneyness, expiry, volatility) triples`, `(delivery, expiry, moneyness,
- * volatility) quads` — so the order is the engine's and not a rule spelled here. */
+/** One axis name per COLUMN, read off the descriptor: a declaration names the tuple its rows
+ * carry — `(moneyness, expiry, volatility) triples`, `(excel date, price) pairs` — so the order is
+ * the engine's and not a rule spelled here. */
 export function axisNames(description: string | undefined, arity: number): string[] {
-  const found = /^\(([^)]*)\)/.exec((description ?? '').trim());
+  const found = /\(([^)]*)\)/.exec(description ?? '');
   const names = found ? found[1].split(',').map((name) => name.trim()) : [];
-  if (names.length === arity) return names;
-  return arity === 4 ? POSITIONAL : [POSITIONAL[0], POSITIONAL[1], POSITIONAL[3]];
-}
-
-/** A year fraction as its nearest conventional label, within 2%. Further off it reads as the
- * fraction itself rather than as a tenor it is not. */
-export function tenorLabel(years: number): string {
-  const [best, label] = LABELS.reduce((a, b) =>
-    Math.abs(b[0] - years) < Math.abs(a[0] - years) ? b : a);
-  return Math.abs(best - years) <= 0.02 * Math.max(years, LABELS[0][0])
-    ? label : `${years.toFixed(2)}Y`;
+  return names.length === arity ? names : POSITIONAL[arity] ?? POSITIONAL[3];
 }
 
 const sortedSet = (values: number[]) => [...new Set(values)].sort((a, b) => a - b);

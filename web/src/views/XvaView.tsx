@@ -84,13 +84,13 @@ export function XvaView() {
           {totals.counted > 0 && (
             <span className="hint" title={`the sum over the ${totals.counted} of the book's own sets that have a number; a set that never ran contributes nothing, and an off-book row is not the book's exposure`}>
               CVA over the {totals.counted} that ran{' '}
-              <b>{formatNumber(totals.cva)}</b> {currency}
+              <b>{formatNumber(totals.cva, 'money')}</b> {currency}
             </span>
           )}
           {totals.countedFva > 0 && (
             <span className="hint" title={`the sum over the ${totals.countedFva} rows that CARRY a funding number; a row filed before the column existed carries none, and is not counted here`}>
               FVA over the {totals.countedFva} that carry one{' '}
-              <b>{formatNumber(totals.fva)}</b> {currency}
+              <b>{formatNumber(totals.fva, 'money')}</b> {currency}
             </span>
           )}
           <span className="spacer" />
@@ -235,8 +235,10 @@ function Row({ set, read, opened, onOpen }: {
  * run for a CVA, a row older than the column for an FVA. */
 function Money({ value, absent }: { value: number | null; absent: string }) {
   return (
-    <td className={`n${value !== null && value < 0 ? ' neg' : ''}`}>
-      {value === null ? <span className="hint" title={absent}>—</span> : formatNumber(value)}
+    <td className={`n${value !== null && value < 0 ? ' neg' : ''}`}
+        title={value === null ? undefined : String(value)}>
+      {value === null ? <span className="hint" title={absent}>—</span>
+        : formatNumber(value, 'money')}
     </td>
   );
 }

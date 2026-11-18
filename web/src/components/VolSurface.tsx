@@ -1,9 +1,10 @@
 import { Suspense, lazy, useMemo, useState, type ComponentType } from 'react';
 import { GRADIENT, chartPalette, ramp } from '../charts/echarts';
 import { useChart } from '../charts/useChart';
+import { axisText, formatNumber, tenorLabel } from '../tokens';
 import type { Descriptor } from '../types';
 import {
-  axisNames, mesh, neutralX, shape, sliceKeys, tenorLabel, termStructure, triples, type Shaped,
+  axisNames, mesh, neutralX, shape, sliceKeys, termStructure, triples, type Shaped,
 } from '../vols';
 
 const SurfaceMesh = lazy(() => import('./SurfaceMesh'));
@@ -77,7 +78,8 @@ function TermStructure({ shaped, axes }: ViewProps) {
       <div className="pager">
         <span>{axes[0]}</span>
         <select value={at} onChange={(event) => setX(Number(event.target.value))}>
-          {shaped.xs.map((value) => <option key={value} value={value}>{value}</option>)}
+          {shaped.xs.map((value) => (
+            <option key={value} value={value}>{formatNumber(value)}</option>))}
         </select>
       </div>
       <div className="chart" ref={useChart(option)} />
@@ -108,7 +110,7 @@ function Heatmap({ shaped, axes }: ViewProps) {
       grid: { left: 62, right: 96, top: 20, bottom: 44 },
       tooltip: {
         formatter: (point: { value: number[] }) =>
-          `${axes[1]} ${tenorLabel(point.value[1])}<br/>${axes[0]} ${point.value[0]}` +
+          `${axes[1]} ${tenorLabel(point.value[1])}<br/>${axes[0]} ${formatNumber(point.value[0])}` +
           `<br/>${axes[2]} ${vol(point.value[2])}`,
       },
       // the axis ends at the outermost CELL edge, so no half cell is clipped away
@@ -195,7 +197,8 @@ export function VolSurface({ data, descriptor }: { data: number[][]; descriptor?
           <>
             <span>{axes[2]}</span>
             <select value={slice} onChange={(event) => setKey(Number(event.target.value))}>
-              {keys.map((value) => <option key={value} value={value}>{value}</option>)}
+              {keys.map((value) => (
+                <option key={value} value={value}>{axisText(axes[2], value)}</option>))}
             </select>
           </>
         )}

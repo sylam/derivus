@@ -1,7 +1,7 @@
 import { useMemo } from 'react';
 import { chartPalette } from '../charts/echarts';
 import { useChart } from '../charts/useChart';
-import { label } from '../tokens';
+import { formatNumber, label } from '../tokens';
 import type { TablePage } from '../types';
 
 const MAX_SERIES = 12;
@@ -21,7 +21,8 @@ export function TimeSeriesChart({ page }: { page: TablePage }) {
       // the grid holds its own labels: a nine-figure exposure is wider than any fixed margin
       grid: { left: 12, right: 20, top: 30, bottom: 36, containLabel: true },
       legend: { top: 0, textStyle: { color: palette.text } },
-      tooltip: { trigger: 'axis' as const },
+      tooltip: { trigger: 'axis' as const,
+                 valueFormatter: (value: unknown) => formatNumber(value as number) },
       dataZoom: [{ type: 'inside' as const }, { type: 'slider' as const, height: 18, bottom: 8 }],
       xAxis: {
         type: 'category' as const, data: dates,

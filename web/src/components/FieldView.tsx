@@ -1,10 +1,11 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { failure } from '../api';
 import {
-  curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, label, offsetText,
-  supportRows, token,
+  curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, kindOf, label,
+  offsetText, supportRows, token,
 } from '../tokens';
 import type { Descriptor } from '../types';
+import { axisNames } from '../vols';
 import { CurveChart } from './CurveChart';
 import { DataTable } from './DataTable';
 import { JsonView } from './JsonView';
@@ -20,7 +21,9 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
   const curve = curveOf(value);
   if (curve) {
     const arity = curve.data[0]?.length ?? 0;
-    if (arity === 2) return <CurveChart data={curve.data} />;
+    if (arity === 2) {
+      return <CurveChart data={curve.data} axes={axisNames(descriptor?.description, 2)} />;
+    }
     if (arity === 3 || arity === 4) {
       return <VolSurface data={curve.data} descriptor={descriptor} />;
     }
@@ -85,7 +88,11 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
     return <span className="hint">—</span>;
   }
   if (typeof value === 'boolean') return <span>{value ? '✓ true' : '✗ false'}</span>;
-  if (typeof value === 'number') return <span className="num">{formatNumber(value)}</span>;
+  if (typeof value === 'number') {
+    return (
+      <span className="num" title={String(value)}>{formatNumber(value, kindOf(descriptor))}</span>
+    );
+  }
   return (
     <span>
       {String(value)}
@@ -207,15 +214,22 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
   const [refused, setRefused] = useState<string[] | null>(null);
   const [saving, setSaving] = useState(false);
   const [asking, setAsking] = useState(false);
+  const [editing, setEditing] = useState(false);
   // a ref, not state: the blur a browser fires on an input disabled mid-save reads it current
   const filing = useRef(false);
   useEffect(() => { setRaw(incoming); setRefused(null); setAsking(false); }, [incoming]);
 
+  const numeric = ['Float', 'Integer'].includes(descriptor.widget)
+    || descriptor.obj === 'Percent' || descriptor.obj === 'Basis';
   const wire = (text: string) => JSON.stringify(encodeScalar(descriptor, text));
-  const restore = () => { setRaw(incoming); setAsking(false); };
+  const restore = () => { setRaw(incoming); setAsking(false); setRefused(null); };
 
-  function commit(text: string) {
-    if (wire(text) === wire(incoming)) restore();
+  function commit(typed: string) {
+    const text = numeric ? typed.trim() : typed;
+    if (numeric && text !== '' && !isFinite(Number(text))) {
+      setRefused([`${text} is not a number: write it with a decimal point and no separators, `
+        + 'as 1234.5']);
+    } else if (wire(text) === wire(incoming)) restore();
     else if (ask) setAsking(true);
     else void save(text);
   }
@@ -251,14 +265,16 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
                                 commit(String(e.target.checked)); }} />
     );
   } else {
-    const kind = descriptor.widget === 'DatePicker' ? 'date'
-      : ['Float', 'Integer'].includes(descriptor.widget)
-        || descriptor.obj === 'Percent' || descriptor.obj === 'Basis' ? 'number' : 'text';
+    // a number reads as the desk reads one until it is edited, and then as the exact value
+    const shown = numeric && !editing && raw === incoming && raw !== ''
+      ? formatNumber(Number(raw), descriptor.sized ? 'money' : 'plain') : raw;
     input = (
       <input
-        type={kind} value={raw} disabled={saving} step="any"
+        type={descriptor.widget === 'DatePicker' ? 'date' : 'text'}
+        inputMode={numeric ? 'decimal' : undefined} value={shown} disabled={saving}
+        onFocus={() => setEditing(true)}
         onChange={(e) => setRaw(e.target.value)}
-        onBlur={() => commit(raw)}
+        onBlur={() => { setEditing(false); commit(raw); }}
         onKeyDown={(e) => { if (e.key === 'Enter') commit(raw); }}
       />
     );

@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
-  factorFamily, lagsBook, marksTotal, quoteView, reconciles, sortGreeks, stampText, tenorText,
-  type GreekKey,
+  factorAxes, factorFamily, lagsBook, marksTotal, quoteText, quoteView, reconciles, sortGreeks,
+  stampText, tenorText, type GreekKey,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import { useApp } from '../state';
@@ -93,8 +93,8 @@ export function RiskView() {
         <div className="stats">
           <div className="stat">
             <div className="label">Book MTM</div>
-            <div className={`value${data.mtm < 0 ? ' neg' : ''}`}>
-              {formatNumber(data.mtm)}
+            <div className={`value${data.mtm < 0 ? ' neg' : ''}`} title={String(data.mtm)}>
+              {formatNumber(data.mtm, 'money')}
               {currency && <span className="unit">{currency}</span>}
             </div>
           </div>
@@ -171,9 +171,7 @@ export function RiskView() {
                       descending={descending} onSort={sortBy}
                       title="sorted by name, each factor's coordinates in curve order beneath it"
                     />
-                    <th className={quotes ? undefined : 'n'}>
-                      {quotes ? 'Quote · Tenor' : 'Tenor'}
-                    </th>
+                    <th>{quotes ? 'Quote · Tenor' : 'Tenor'}</th>
                     <SortTh
                       label={currency ? `Value (${currency})` : 'Value'} mine="magnitude"
                       key_={key} descending={descending} onSort={sortBy} numeric
@@ -190,11 +188,12 @@ export function RiskView() {
                       </td>
                       {/* a factor with no coordinates carries no tenor key at all - the cell is
                           empty because there is nothing there, not because it was dropped */}
-                      <td className={row.quote === undefined ? 'n tenor' : 'tenor'}>
-                        {row.quote ?? tenorText(row.tenor)}
+                      <td className="tenor" title={row.quote ?? row.tenor?.join(' / ')}>
+                        {row.quote === undefined ? tenorText(row.tenor, factorAxes(
+                          state.schema, row.factor, row.tenor?.length ?? 0)) : quoteText(row.quote)}
                       </td>
-                      <td className={`n${row.value < 0 ? ' neg' : ''}`}>
-                        {formatNumber(row.value)}
+                      <td className={`n${row.value < 0 ? ' neg' : ''}`} title={String(row.value)}>
+                        {formatNumber(row.value, 'whole')}
                       </td>
                     </tr>
                   ))}
@@ -260,7 +259,9 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
                     </span>
                   )}
                 </td>
-                <td className={`n${row.value < 0 ? ' neg' : ''}`}>{formatNumber(row.value)}</td>
+                <td className={`n${row.value < 0 ? ' neg' : ''}`} title={String(row.value)}>
+                  {formatNumber(row.value, 'money')}
+                </td>
               </tr>
             ))}
             {risk.per_deal.length === 0 && (
@@ -269,7 +270,9 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
             <tr className="total">
               <td>Book</td>
               <td />
-              <td className={`n${total < 0 ? ' neg' : ''}`}>{formatNumber(total)}</td>
+              <td className={`n${total < 0 ? ' neg' : ''}`} title={String(total)}>
+                {formatNumber(total, 'money')}
+              </td>
             </tr>
           </tbody>
         </table>
@@ -278,8 +281,8 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
           worth interrupting a reader for */}
       {!agrees && (
         <div className="error-box">
-          The headline mark ({formatNumber(risk.mtm)}) is not the sum of the rows above
-          ({formatNumber(total)}). Read neither number until that is explained.
+          The headline mark ({formatNumber(risk.mtm, 'money')}) is not the sum of the rows above
+          ({formatNumber(total, 'money')}). Read neither number until that is explained.
         </div>
       )}
     </>

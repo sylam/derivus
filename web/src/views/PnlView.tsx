@@ -7,12 +7,16 @@ import {
 } from '../pnl';
 import type { Agreement, Entity } from '../positions';
 import { useApp } from '../state';
-import { formatNumber } from '../tokens';
+import { formatNumber, type Kind } from '../tokens';
 
 /** A figure as a cell: a number signed in colour, and a dash for what nobody can know. */
-function Figure({ value }: { value: number | null | undefined }) {
+function Figure({ value, kind = 'money' }: { value: number | null | undefined; kind?: Kind }) {
   if (value === null || value === undefined) return <td className="n">—</td>;
-  return <td className={`n${value < 0 ? ' neg' : ''}`}>{formatNumber(value)}</td>;
+  return (
+    <td className={`n${value < 0 ? ' neg' : ''}`} title={String(value)}>
+      {formatNumber(value, kind)}
+    </td>
+  );
 }
 
 /** The desk's P&L between two marked days, or from the last marks to the book as it stands - per
@@ -142,7 +146,8 @@ export function PnlView() {
             <div className="stat" key={figure}>
               <div className="label">{figure === 'pnl' ? 'P&L' : figure[0].toUpperCase() + figure.slice(1)}</div>
               <div className={`value${(answer.total[figure] ?? 0) < 0 ? ' neg' : ''}`}>
-                {answer.total[figure] === null ? '—' : formatNumber(answer.total[figure] as number)}
+                {answer.total[figure] === null ? '—'
+                  : formatNumber(answer.total[figure] as number, 'money')}
                 {currency && <span className="unit">{currency}</span>}
               </div>
             </div>
@@ -205,14 +210,14 @@ function Explained({ explain, currency }: { explain: NonNullable<Pnl['explain']>
           <div className="stat" key={line.label}>
             <div className="label">{line.label}</div>
             <div className={`value${(line.value ?? 0) < 0 ? ' neg' : ''}`}>
-              {line.value === null ? '—' : formatNumber(line.value)}
+              {line.value === null ? '—' : formatNumber(line.value, 'money')}
               {currency && <span className="unit">{currency}</span>}
             </div>
           </div>
         ))}
         <div className="stat">
           <div className="label">Residual share</div>
-          <div className="value">{share === null ? '—' : `${formatNumber(100 * share)}%`}</div>
+          <div className="value">{share === null ? '—' : formatNumber(100 * share, 'percent')}</div>
         </div>
       </div>
       <div className="hint">
@@ -232,8 +237,9 @@ function Explained({ explain, currency }: { explain: NonNullable<Pnl['explain']>
             {explain.factors.map((row) => (
               <tr key={factorLabel(row)}>
                 <td>{factorLabel(row)}</td>
-                <Figure value={row.delta} /><Figure value={row.start} /><Figure value={row.end} />
-                <Figure value={row.move} /><Figure value={row.pnl} />
+                <Figure value={row.delta} /><Figure value={row.start} kind="plain" />
+                <Figure value={row.end} kind="plain" /><Figure value={row.move} kind="plain" />
+                <Figure value={row.pnl} />
               </tr>
             ))}
           </tbody>

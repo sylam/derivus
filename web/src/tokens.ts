@@ -26,17 +26,80 @@ export function label(value: unknown): string {
   if (stamp !== undefined) return String(stamp);
   if (token(value, '.DateOffset') !== undefined) return offsetText(value);
   const percent = token(value, '.Percent');
-  if (percent !== undefined) return `${formatNumber(percent as number)} %`;
+  if (percent !== undefined) return formatNumber(percent as number, 'percent');
   const basis = token(value, '.Basis');
-  if (basis !== undefined) return `${formatNumber(basis as number)} bp`;
+  if (basis !== undefined) return formatNumber(basis as number, 'basis');
   if (value === null || value === undefined) return '';
   return String(value);
 }
 
-export function formatNumber(value: number): string {
+// ---- numbers, tenors and dates as a desk reads them ----
+
+/** What a number is, which says how it shows: `money` to the cent, `whole` in whole units, a
+ * `percent` to four decimals and a `basis` point to two with their units, and `plain` to six
+ * significant digits, never rounding left of the point and to the cent past a thousand. */
+export type Kind = 'money' | 'whole' | 'percent' | 'basis' | 'plain';
+
+const FORMATS = new Map<string, Intl.NumberFormat>();
+
+/** `value` to at most `most` decimals and at least `least`, in the one locale every screen uses:
+ * a decimal point and commas between thousands, whatever the machine is set to. */
+function digits(value: number, most: number, least = 0): string {
+  const key = `${most}/${least}`;
+  if (!FORMATS.has(key)) {
+    FORMATS.set(key, new Intl.NumberFormat('en-US', {
+      minimumFractionDigits: least, maximumFractionDigits: most }));
+  }
+  const text = FORMATS.get(key)!.format(value);
+  return /^-[0.,]*$/.test(text) ? text.slice(1) : text;
+}
+
+/** A number for display, never for an input - an edit holds the exact value. */
+export function formatNumber(value: number, kind: Kind = 'plain'): string {
   if (!isFinite(value)) return String(value);
-  if (value !== 0 && Math.abs(value) < 1e-4) return value.toExponential(4);
-  return value.toLocaleString(undefined, { minimumFractionDigits: 0, maximumFractionDigits: 6 });
+  const cents = Number.isInteger(value) ? digits(value, 0) : digits(value, 2, 2);
+  switch (kind) {
+    case 'money': return cents;
+    case 'whole': return digits(value, 0);
+    case 'percent': return `${digits(value, 4)} %`;
+    case 'basis': return `${digits(value, 2)} bp`;
+  }
+  const size = Math.abs(value);
+  if (size >= 1000) return cents;
+  if (value !== 0 && size < 1e-6) return value.toExponential(3);
+  return digits(value, value === 0 ? 0 : 5 - Math.floor(Math.log10(size)));
+}
+
+/** What a declared field's number is: an amount of the instrument (`sized`) is money, a Percent
+ * or a Basis carries its unit, and anything else is plain. */
+export const kindOf = (descriptor?: Descriptor): Kind => (descriptor?.sized ? 'money'
+  : descriptor?.obj === 'Percent' ? 'percent' : descriptor?.obj === 'Basis' ? 'basis' : 'plain');
+
+/** An excel day number as the ISO date it names. */
+export const excelDate = (serial: number): string =>
+  new Date(Date.UTC(1899, 11, 30) + Math.round(serial) * 86_400_000).toISOString().slice(0, 10);
+
+/** A length in years as a dealer says it - 3D, 1W, 2M, 18M, 7Y - a month count within half a week
+ * (a hundredth on a long one) of a whole one; any other length reads in years. */
+export function tenorLabel(years: number): string {
+  const days = years * 365;
+  if (Math.abs(days) < 0.5) return '0D';
+  if (days > 0 && days < 6.5) return `${Math.round(days)}D`;
+  const weeks = Math.round(days / 7);
+  if (weeks >= 1 && weeks <= 3 && Math.abs(days - 7 * weeks) <= 1) return `${weeks}W`;
+  const months = Math.round(years * 12);
+  if (months >= 1 && Math.abs(days - months * 365 / 12) <= Math.max(3.5, days / 100)) {
+    return months % 12 === 0 ? `${months / 12}Y` : `${months}M`;
+  }
+  return `${digits(years, 2)}Y`;
+}
+
+/** A coordinate as its axis is named: a date axis's excel day number as its date, an expiry or a
+ * tenor in years as a dealer says it, anything else as a number. */
+export function axisText(name: string, value: number): string {
+  if (/(^|[^a-z])date([^a-z]|$)/i.test(name)) return excelDate(value);
+  if (/^(expiry|tenor)$/i.test(name.trim())) return tenorLabel(value);
+  return formatNumber(value);
 }
 
 /** `.Grid` entries and `.DateOffset` strings as one line of text. */

@@ -1,5 +1,5 @@
 import type { ReactNode } from 'react';
-import { formatNumber, label } from '../tokens';
+import { axisText, label } from '../tokens';
 
 /** Runs of equal adjacent values, for the top row of a two-level header. */
 function runs(values: string[]): { text: string; span: number }[] {
@@ -12,9 +12,14 @@ function runs(values: string[]): { text: string; span: number }[] {
   return out;
 }
 
-function Cell({ value }: { value: unknown }) {
+/** A number reads as its column names it - an expiry or a tenor as one, a date column's day as its
+ * date - with the exact value its hover. */
+function Cell({ value, column }: { value: unknown; column: unknown }) {
   if (value === null || value === undefined) return <td className="n">—</td>;
-  if (typeof value === 'number') return <td className="n">{formatNumber(value)}</td>;
+  if (typeof value === 'number') {
+    const name = label(Array.isArray(column) ? column[column.length - 1] : column);
+    return <td className="n" title={String(value)}>{axisText(name, value)}</td>;
+  }
   return <td>{label(value)}</td>;
 }
 
@@ -67,7 +72,8 @@ export function DataTable({ columns, index, data, cell }: {
               {row.map((value, c) => {
                 const override = cell?.(r, c);
                 return override === undefined
-                  ? <Cell key={c} value={value} /> : <td key={c}>{override}</td>;
+                  ? <Cell key={c} value={value} column={columns[c]} />
+                  : <td key={c}>{override}</td>;
               })}
             </tr>
           ))}

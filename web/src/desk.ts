@@ -8,8 +8,9 @@
 // the XVA verb never runs anything at all. A recalc is asked for through the MCP verbs, and this
 // module has no vocabulary for one on purpose.
 
-import { formatNumber } from './tokens';
-import type { BookRisk, BookXva, DealMark, GreekRow, JobDoc, XvaSet } from './types';
+import { axisText, formatNumber, tenorLabel } from './tokens';
+import type { BookRisk, BookXva, DealMark, GreekRow, JobDoc, Schema, XvaSet } from './types';
+import { axisNames } from './vols';
 
 // ---- stamps -------------------------------------------------------------------------------------
 // The service stamps every answer in local time to milliseconds. Two stamps from the same service
@@ -85,9 +86,29 @@ export function ageOf(ran: string | null, read: string): Age {
 export type GreekKey = 'factor' | 'magnitude';
 
 /** A factor's coordinates as one cell: empty where the factor has none (the key is absent on a
- * scalar like an FxRate spot), one number for a curve point, two for a vol-surface node. */
-export function tenorText(tenor?: number[]): string {
-  return tenor === undefined ? '' : tenor.map(formatNumber).join(' / ');
+ * scalar like an FxRate spot), one for a curve point, two for a vol-surface node - each as its
+ * axis is named, so a tenor reads as one and an excel day as its date. */
+export function tenorText(tenor?: number[], axes: string[] = []): string {
+  return tenor === undefined ? ''
+    : tenor.map((value, at) => axisText(axes[at] ?? '', value)).join(' / ');
+}
+
+/** The names of a factor's coordinates, off the curve or the surface its type declares. */
+export function factorAxes(schema: Schema | null, factor: string, count: number): string[] {
+  const shape = Object.values(schema?.Factor.types[factorFamily(factor)] ?? {})
+    .find((field) => field.widget === (count === 1 ? 'Curve' : 'Surface'));
+  return axisNames(shape?.description, count + 1);
+}
+
+/** A vol quote as a dealer names it - `2M ATM`, `1M 25D RR` - off the engine's own name for it, its
+ * type then its pillar delta then its expiry in years; any other name reads as itself. */
+export function quoteText(quote: string): string {
+  const [type, ...rest] = quote.split(' ');
+  const numbers = rest.map(Number);
+  if (!['ATM', 'RR', 'BF'].includes(type) || numbers.length !== (type === 'ATM' ? 1 : 2)
+      || numbers.some((value) => !isFinite(value))) return quote;
+  const expiry = tenorLabel(numbers[numbers.length - 1]);
+  return type === 'ATM' ? `${expiry} ATM` : `${expiry} ${formatNumber(100 * numbers[0])}D ${type}`;
 }
 
 /** Coordinates in reading order, a factor with none first - a spot sits above its own curve. */
@@ -273,7 +294,7 @@ export function replayRows(set: XvaSet): [string, string | null][] {
     ['Deal path', set.deal_path],
     ['Counterparty', set.counterparty],
     ['Collateralised', set.collateralized ? 'yes' : 'no'],
-    ['FVA', set.fva === null ? null : formatNumber(set.fva)],
+    ['FVA', set.fva === null ? null : formatNumber(set.fva, 'money')],
     ['Last run', set.as_of === null ? null : stampText(set.as_of)],
     ['Result id', set.result_id],
     ['Plan hash', set.plan_hash],
