@@ -1067,8 +1067,9 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
             dropped(child) for child in deal.get('Children', ()))
 
     lean, full = [stripped(deal) for deal in BOOK], [furnished(deal) for deal in BOOK]
-    # the admin group's Product_Class convention among them, one on each of the fourteen deals
-    assert sum(dropped(deal) for deal in BOOK) == 183
+    # the admin group's Product_Class convention among them, one on each of the fourteen deals, and
+    # the option's and the barrier's expiry print
+    assert sum(dropped(deal) for deal in BOOK) == 184
 
     lean_marks, lean_stats = marks(lean)
     full_marks, full_stats = marks(full)

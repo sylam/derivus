@@ -47,7 +47,12 @@ the closed form on every scenario date $t_i$ of the deal:
 
 - An `FXBarrierOption` stating **Delivery_Date**, or a `CommodityBarrierOption` stating
   **Settlement_Date**, has each row's option and knock-in rebate discounted on from the expiry to it;
-  the knock-out's rebate is paid at the touch.
+  the knock-out's rebate is paid at the touch. Its rows run on to that day, which books the payoff:
+  the barrier is watched to the expiry and a row past it holds the payoff the expiry fixed,
+  discounted from the settlement, on the path's own level at the expiry or, where the expiry is
+  behind the base date, the print **Price_Fixing** states for it, which it must. No touch before the
+  base date is known, so a deal valued past its expiry is untouched; a `Compo` valued so is refused
+  by name.
 - $\sigma=\sigma(m,\tau)$ is the surface vol at the deal's moneyness. Each power of $H/S$ is added to
   the log of the normal tail it multiplies, so a vol low enough to overflow the power prices finitely.
 - The touch probability $P_i$ accumulates between scenario dates by the Brownian-bridge crossing
@@ -75,7 +80,8 @@ $e^{-r\tau}$ less it and a one-touch paid at the touch $F/R$. The vol is read at
 On the scenario grid the touch probability $P_i$ is the bridge probability above: before a touch the value
 is $(1-P_i)$ times the closed form; a touched one-touch paid at expiry carries $P_i\,e^{-r\tau}$, one paid at
 the touch settles $P_i-P_{i-1}$ on $t_i$. A no-touch reports $(1-P_i)(e^{-r\tau}-\text{one-touch})$. An FX
-payment at expiry is discounted on to **Delivery_Date** where one is stated; one at the touch is not.
+payment at expiry is paid on **Delivery_Date** where one is stated, discounted on to it and booked
+there, a row past the expiry holding the touch the expiry left; one at the touch is not.
 
 ### Discontinuous Barrier Sampling
 
@@ -123,8 +129,8 @@ $$\mathcal P(p_1,\dots,p_8;\rho_1,\rho_2)=F\Big[M(p_1,p_2;\rho_1)-\big(\tfrac{H}
   probability of $E$ (still discounted from expiry) and the touch value of $F$, both with $\tau_\ell$ in
   place of $\tau$; for an end window their bivariate analogues with correlation $\rho$ and the same
   $\lambda$, a path already beyond the barrier at $t_\ell$ touching there.
-- **Delivery_Date** stated, the option and a knock-in's rebate are discounted on from the expiry to it;
-  a knock-out's rebate is paid at the touch.
+- **Delivery_Date** stated, the option and a knock-in's rebate are discounted on from the expiry to it
+  and booked there, as on a single barrier; a knock-out's rebate is paid at the touch.
 - $\sigma$ is one surface vol at the strike's moneyness and the expiry, used for both the window and the
   remaining life; using one vol for the two periods is an approximation, unmeasured.
 - On the scenario grid the bridge touch probability of Single Barrier Options accumulates on the rows
@@ -148,7 +154,8 @@ $$\bar S=\sum_{i=1}^n\omega_iS(t_i),\qquad \omega_i=d_i\Big/\sum_{k=1}^n d_k,$$
 
 $t_i$ and $d_i$ the dates and weights of **Sampling_Data**, $K$ the strike and $\delta=\pm1$ for a call or
 put. **Is_Digital** `Yes` pays the amount itself when $\delta(\bar S-K)>0$. The value is discounted on
-**Discount_Rate** from the day it is paid: an FX Asian's **Delivery_Date**, else **Expiry_Date**.
+**Discount_Rate** from the day it is paid, which books it: an FX Asian's **Delivery_Date**, else
+**Expiry_Date**.
 
 A sample dated before the base date is the **Price** its row states; one between the base date and $t$
 is the simulated spot on that sample's scenario date (today's spot for an unsimulated underlying). A
@@ -194,7 +201,7 @@ to whichever of $t^1_i$ and $t^2_j$ is earlier:
 $$M_\rho=\sum_{i,j}\omega^1_i\omega^2_jF(t,t^1_i)F(t,t^2_j)e^{\sigma_{ij}^2\tau_{ij}},\qquad \rho=\frac{\log M_\rho-\log F_1-\log F_2}{v_1v_2}$$
 
 - Both strips live: the Bjerksund-Stensland spread formula [@bjerksund2014] on $(\alpha_1F_1,\alpha_2F_2,\bar K,v_1,v_2,\rho)$,
-  discounted from the expiry.
+  discounted from the day it is paid, as for the single Asian.
 - One strip fully fixed: Black on the live strip, struck at $\bar K$ (first strip live) or at $-\bar K$ with
   the option type reversed (second strip live), and exercised with certainty where that strike is not
   positive.

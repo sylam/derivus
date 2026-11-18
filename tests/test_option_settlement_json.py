@@ -9,7 +9,8 @@ paid the same way; settled physically it becomes the swap its legs make and book
 THE ORACLES: under a credit Monte Carlo every row from the expiry on is the settlement row's payoff
 discounted to it, scenario by scenario, and the ledger books that payoff on the settlement row and
 nothing on the expiry's; under a base valuation past the expiry the mark is the print's intrinsic
-discounted to the settlement, exact.
+discounted to the settlement, exact. A barrier, a touch and an Asian are read besides against a twin
+settling on the expiry, on the same paths.
 """
 import functools
 import json
@@ -362,6 +363,213 @@ def test_a_blank_delivery_date_settles_every_fx_option_where_it_did():
         assert marked[reference] != 0.0 and marked[reference + '_D'].hex() == marked[reference].hex(), reference
 
 
+def held(reference, deals):
+    """`deals` in an uncollateralised netting set of their own."""
+    return {'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
+            'Collateralized': 'False', 'Children': deals}
+
+
+def by_set(sets, curves, **simulated):
+    """One float64 credit Monte Carlo of the declared-defaults world over `sets`, each a netting set
+    beneath the one `book.simulated` holds them in, its cash generated: `(dates, {set: its USD
+    ledger}, {reference: profile})`."""
+    calc, out = book.simulated(sets, curves, prec=torch.float64, Generate_Cashflows='Yes', **simulated)
+    sets = calc.netting_sets.sub_structures[0].sub_structures
+    priced = [x.obj for s in sets for x in s.sub_structures] + [d for s in sets for d in s.dependencies]
+    ledgers = {s.obj.Instrument.field['Reference']: pd.concat(s.obj.Calc_res['cashflows']['USD'], axis=1)
+               for s in sets}
+    profiles = {x.Instrument.field['Reference']: np.concatenate(x.Calc_res['Value'], axis=-1)
+                for x in priced if (x.Calc_res or {}).get('Value')}
+    return list(out['Results']['mtm'].index), ledgers, profiles
+
+
+def valued_on(job, base):
+    """`{reference: mark}` of the job document `job` valued on `base`, its market's date moved too."""
+    job = json.loads(json.dumps(job, cls=CustomJsonEncoder))
+    day = {'.Timestamp': base.strftime('%Y-%m-%d')}
+    job['Calc']['Calculation']['Base_Date'] = day
+    job['Calc']['MergeMarketData']['ExplicitMarketData']['System Parameters']['Base_Date'] = day
+    context = derivus.Context()
+    context.load_json((json.dumps(job), 'valued'))
+    frame = context.run_job()[1]['Results']['mtm']
+    return dict(zip(frame['Reference'], frame['Value'].astype(float)))
+
+
+#: The declared-defaults world's FX options on its expiry, each delivered forty days after it, past
+#: the next monthly row: up barriers at 1.375 and a 50 rebate, start-window ones to six months on, a
+#: one-touch at 1.35 paid at expiry and one paid at the touch, the no-touch, and a quarterly Asian
+WORLD_EXPIRY = book.WORLD_EXPIRY
+DELIVERED = WORLD_EXPIRY + pd.DateOffset(days=40)
+UP = {'Expiry_Date': WORLD_EXPIRY, 'Barrier_Price': 1.375}
+WINDOW = dict(UP, Barrier_At_Start='Yes', Barrier_Limit_Date=book.WORLD_BASE + pd.DateOffset(months=6))
+TOUCHES = {'Currency': 'USD', 'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
+           'Buy_Sell': 'Buy', 'Expiry_Date': WORLD_EXPIRY, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Up',
+           'Barrier_Price': 1.35}
+SETTLING = {
+    'KO': book.fx_leg('FXBarrierOption', 'KO', Barrier_Type='Up_And_Out', **UP),
+    'KI': book.fx_leg('FXBarrierOption', 'KI', Barrier_Type='Up_And_In', **UP),
+    'KOR': book.fx_leg('FXBarrierOption', 'KOR', Barrier_Type='Up_And_Out', Cash_Rebate=50.0, **UP),
+    'PKO': book.fx_leg('FXPartialTimeBarrierOption', 'PKO', Barrier_Type='Up_And_Out', **WINDOW),
+    'PKOR': book.fx_leg('FXPartialTimeBarrierOption', 'PKOR', Barrier_Type='Up_And_Out', Cash_Rebate=50.0,
+                        **WINDOW),
+    'PKIR': book.fx_leg('FXPartialTimeBarrierOption', 'PKIR', Barrier_Type='Up_And_In', Cash_Rebate=50.0,
+                        **WINDOW),
+    'OT': dict(TOUCHES, Object='FXOneTouchOption', Reference='OT'),
+    'OTT': dict(TOUCHES, Object='FXOneTouchOption', Reference='OTT', Payment_Timing='Touch'),
+    'NT': dict(TOUCHES, Object='FXNoTouchOption', Reference='NT'),
+    'ASN': book.fx_leg('FXDiscreteExplicitAsianOption', 'ASN', Expiry_Date=WORLD_EXPIRY, Sampling_Data=[
+        [book.WORLD_BASE + pd.DateOffset(months=m), 0.0, 1.0] for m in (3, 6, 9, 12)])}
+#: Each settles where `SETTLING` does: blank, stated on its expiry, and stated forty days after it
+TWINS = {'': {}, '_E': {'Delivery_Date': WORLD_EXPIRY}, '_D': {'Delivery_Date': DELIVERED}}
+#: EURUSD a GBM at the surface's 15%
+EURUSD = {'FxRate.EUR': ('GBMAssetPriceModel', {'Vol': book.SIGMA, 'Drift': 0.0})}
+
+
+def units():
+    """A unit paid on the world's expiry and one on the delivery, each in a set of its own."""
+    return [held(name, [{'Object': 'FixedCashflowDeal', 'Reference': name, 'Currency': 'USD', 'Discount_Rate': 'USD',
+                         'Amount': 1.0, 'Payment_Date': day}])
+            for name, day in (('AT_EXPIRY', WORLD_EXPIRY), ('AT_DELIVERY', DELIVERED))]
+
+
+@functools.lru_cache(maxsize=None)
+def delivered():
+    """One float64 credit Monte Carlo on a monthly grid, `EURUSD` and a Hull-White on USD, of each of
+    `SETTLING` in each of `TWINS` beside the two `units`, every one in a netting set of its own."""
+    return by_set([held(name + tag, [dict(deal, Reference=name + tag, **stated)])
+                   for name, deal in SETTLING.items() for tag, stated in TWINS.items()] + units(),
+                  ('USD',), models=EURUSD, Time_Grid='0d 1m(1m)')
+
+
+def delivered_identities(dates, ledgers, profiles, names, expiry, paid_on, exact):
+    """Each of `names` paid on `paid_on`, against its blank twin settling on `expiry`, on one run of
+    a monthly grid, read on the rows both price - the months, the expiry and `paid_on`, a row only
+    another deal adds reading each interpolated: every row to the expiry the twin's times that row's
+    forward discount between the two days, a unit on each read path by path; every row after it the
+    payoff booked on `paid_on` discounted to that row, the unit paid there; nothing booked on the
+    expiry; and the payoff booked whole, path by path the twin's on its expiry - to the bit where
+    `exact` names it."""
+    months = {dates[0] + pd.DateOffset(months=n) for n in range(len(dates))} | {expiry, paid_on}
+    last, priced = dates.index(expiry), [row for row, day in enumerate(dates) if day in months]
+    before, after = [row for row in priced if row <= last], [row for row in priced if expiry < dates[row] <= paid_on]
+    assert len(before) > 3 and len(after) > 1 and after[-1] == dates.index(paid_on), [dates[row] for row in after]
+    unit = profiles['AT_DELIVERY']
+    forward = unit[before] / profiles['AT_EXPIRY'][before]
+    for name in names:
+        blank, late = profiles[name], profiles[name + '_D']
+        assert np.allclose(late[before], blank[before] * forward, rtol=1e-13, atol=0.0), name
+        paid = np.asarray(ledgers[name + '_D'].loc[paid_on].values, dtype=float)
+        owed = np.asarray(ledgers[name].loc[expiry].values, dtype=float)
+        assert paid.any() and paid.min() < paid.max(), (name, 'a payoff varying across the paths')
+        assert np.array_equal(paid, owed) if name in exact else np.allclose(paid, owed, rtol=1e-12, atol=0.0), (
+            name, np.abs(paid - owed).max())
+        assert not np.asarray(ledgers[name + '_D'].loc[expiry].values, dtype=float).any(), name
+        for row in after:
+            assert late[row].any() and np.allclose(late[row], paid * unit[row], rtol=1e-13, atol=0.0), (
+                name, dates[row])
+
+
+def test_stated_on_its_expiry_an_fx_option_simulates_and_books_as_its_blank_twin():
+    """Under a float64 credit Monte Carlo every FX option `SETTLING` holds - the barriers, the
+    start-window barriers, the one-touches paid at expiry and at the touch, the no-touch and the
+    Asian - stated on its expiry simulates every row and books every cash flow, its ledger's days
+    among them, to the bit as with its `Delivery_Date` blank. The base valuation's marks are held so
+    by `test_a_blank_delivery_date_settles_every_fx_option_where_it_did`.
+
+    Killing mutation: a blank `Delivery_Date` read two days after the expiry (in
+    `schema.settlement_days`), the blank twins' rows and cash moving off the stated ones.
+    """
+    dates, ledgers, profiles = delivered()
+    for name in SETTLING:
+        assert np.array_equal(profiles[name + '_E'], profiles[name]), name
+        blank, stated = ledgers[name], ledgers[name + '_E']
+        assert stated.index.equals(blank.index) and np.array_equal(stated.values, blank.values), name
+        assert np.asarray(blank.values, dtype=float).any(), name
+
+
+def test_delivered_after_its_expiry_an_fx_option_holds_what_the_expiry_fixed_and_books_it_on_the_delivery():
+    """Delivered forty days after its expiry, under a float64 credit Monte Carlo with a Hull-White on
+    USD, each barrier, start-window barrier, one-touch and no-touch paid at expiry and the Asian,
+    read on the monthly rows, the expiry and the delivery: to the expiry every row is its blank
+    twin's times that row's own forward discount from the expiry to the delivery, read off a unit
+    paid on each, to 1e-13 - the closed form carries the same two curve reads in another order; the
+    monthly row after the expiry and the delivery's are not zero and hold the payoff the delivery
+    books, discounted to them as the unit paid there is; nothing is booked on the expiry; and the
+    delivery books the payoff whole, path by path the blank twin's on its expiry - to the bit but for
+    the Asian, within 1e-12, whose expiry row reads its last sample as a forward at no tenor where
+    the rows after it read it fixed.
+
+    Killing mutation: the cash left on the expiry row, each pricer booking its expiry row's mark there
+    (`pv_barrier_option`, `pv_partial_barrier_option`, `pv_one_touch_option`,
+    `pv_discrete_asian_option`).
+    """
+    dates, ledgers, profiles = delivered()
+    delivered_identities(dates, ledgers, profiles, ('KO', 'KI', 'PKO', 'PKIR', 'OT', 'NT', 'ASN'), WORLD_EXPIRY,
+                         DELIVERED, exact=('KO', 'KI', 'PKO', 'PKIR', 'OT', 'NT'))
+
+
+def test_a_knock_out_s_rebate_and_a_one_touch_paid_at_the_touch_pay_when_they_pay():
+    """Delivered forty days after the expiry, a knock-out and a start-window knock-out paying a 50
+    rebate at the touch book every rebate before the expiry to the bit as their blank twins do, the
+    knock-out the one its last interval touches on the expiry itself, on some paths and not others,
+    and the delivery the rest: the expiry's and the delivery's cash sum to the blank twin's on the
+    expiry to 1e-13. A one-touch paid at the touch reads no delivery, its rows and cash the blank
+    twin's to the bit.
+
+    Killing mutations: the knock-out's rebate on the expiry row left unbooked (`pv_barrier_option`
+    booking it only before the expiry), short by that interval's touch on those paths; the one-touch
+    paid at the touch registering its delivery (`TouchLifecycle.reset`), its rows running on to it.
+    """
+    dates, ledgers, profiles = delivered()
+    for name in ('KOR', 'PKOR'):
+        blank, late = ledgers[name], ledgers[name + '_D']
+        before = [day for day in blank.index if day < WORLD_EXPIRY]
+        assert np.array_equal(late.loc[before].values, blank.loc[before].values), name
+        assert np.asarray(late.loc[before].values, dtype=float).any(), name
+        on_expiry, paid = (np.asarray(late.loc[day].values, dtype=float) for day in (WORLD_EXPIRY, DELIVERED))
+        owed = np.asarray(blank.loc[WORLD_EXPIRY].values, dtype=float)
+        assert np.allclose(on_expiry + paid, owed, rtol=1e-13, atol=1e-13) and paid.any(), name
+    touched = np.asarray(ledgers['KOR_D'].loc[WORLD_EXPIRY].values, dtype=float)
+    assert (touched > 0.0).any() and (touched == 0.0).any(), 'touched in the last interval on some paths'
+    assert np.array_equal(profiles['OTT_D'], profiles['OTT'])
+    assert np.array_equal(ledgers['OTT_D'].values, ledgers['OTT'].values)
+    assert np.asarray(ledgers['OTT'].values, dtype=float).any()
+
+
+def test_between_its_expiry_and_its_delivery_an_fx_option_marks_what_the_expiry_fixed():
+    """On a base date between the expiry and the delivery, the knock-out and the start-window
+    knock-out mark the print `Price_Fixing` states, 1.30 inside the barrier, its intrinsic discounted
+    to the delivery, the Asian its printed samples' average's, to 1e-12. No touch before the base
+    date is known - nothing states one, as a seasoned barrier states none - so the knock-in marks
+    the rebate it pays untouched, the one-touch paid at expiry nothing and the no-touch its payoff,
+    each discounted, neither touch reading a print. A barrier stating no print refuses by name,
+    naming the deal, the table and the day.
+
+    Killing mutation: the print not read, each barrier's level today's spot at the expiry's zero
+    tenor (`held_level` in `pv_barrier_option`, `held_past_expiry` in `pv_partial_barrier_option`),
+    both knock-outs at nothing.
+    """
+    base, printed = EXPIRY + pd.offsets.BDay(1), 1.30
+    fixed, d = [[EXPIRY, printed]], df((SETTLE - base).days)
+    samples = [[day, 1.28 + 0.02 * n, weight] for n, (day, _, weight) in enumerate(PAID['ASIAN']['Sampling_Data'])]
+    barriers = [dict(KNOCKS['KO'], Delivery_Date=SETTLE), dict(KNOCKS['KI_REBATE'], Delivery_Date=SETTLE),
+                dict(PAID['PKO'], Delivery_Date=SETTLE)]
+    marked = marks([dict(deal, Price_Fixing=fixed) for deal in barriers] + [
+        dict(PAID[name], Delivery_Date=SETTLE) for name in ('OT', 'NT')] + [
+        dict(PAID['ASIAN'], Delivery_Date=SETTLE, Sampling_Data=samples)], base)
+    intrinsic = UNITS * (printed - FX_SPOT) * d
+    assert marked['KO'] == pytest.approx(intrinsic, rel=1e-12)
+    assert marked['PKO'] == pytest.approx(intrinsic, rel=1e-12)
+    assert marked['KI_REBATE'] == pytest.approx(1.0 * d, rel=1e-12)
+    assert marked['OT'] == 0.0 and marked['NT'] == pytest.approx(CASH * d, rel=1e-12)
+    assert marked['ASIAN'] == pytest.approx(UNITS * (1.31 - FX_SPOT) * d, rel=1e-12)
+    for unstated in barriers:
+        with pytest.raises(Exception) as refusal:
+            marks([unstated], base)
+        message = str(refusal.value)
+        assert all(word in message for word in (unstated['Reference'], 'Price_Fixing', '2025-06-27')), message
+
+
 def test_a_forward_carries_between_spot_dates():
     """An equity or FX option's forward is the spot carried from the valuation date's spot date to
     the expiry's, each the underlying factor's `Settlement_Days` business days on: three where the
@@ -704,26 +912,12 @@ def swaptions():
     the swaption, its cash twin, the swap it delivers beside a unit paid on the twin's day, and the
     amortising par yield swaption beside the swap it becomes, each in a netting set of its own -
     `(dates, {set: ledger}, {reference: profile})`."""
-    def held(reference, deals):
-        return {'Object': 'NettingCollateralSet', 'Reference': reference, 'Netted': 'True',
-                'Collateralized': 'False', 'Children': deals}
-
     swap = [dict(leg, Reference='SWAP' + leg['Reference'][4:]) for leg in SWPT['Children']]
     amortised = [dict(leg, Reference='AMORTISED' + leg['Reference'][10:]) for leg in AMORT['Children']]
     unit = {'Object': 'FixedCashflowDeal', 'Reference': 'UNIT', 'Currency': 'USD',
             'Discount_Rate': 'USD', 'Amount': 1.0, 'Payment_Date': SWPT_PAID}
-    calc, out = book.simulated(
-        [held('PHYSICAL', [SWPT]), held('CASH', [CASH_SWPT]), held('SWAP', swap + [unit]),
-         held('YIELD', [YIELD_SWPT]), held('AMORTISED', amortised)],
-        ('USD', 'USD-PROJ'), prec=torch.float64, Generate_Cashflows='Yes'
-        )
-    sets = calc.netting_sets.sub_structures[0].sub_structures
-    priced = [x.obj for s in sets for x in s.sub_structures] + [d for s in sets for d in s.dependencies]
-    ledgers = {s.obj.Instrument.field['Reference']: pd.concat(s.obj.Calc_res['cashflows']['USD'], axis=1)
-               for s in sets}
-    profiles = {x.Instrument.field['Reference']: np.concatenate(x.Calc_res['Value'], axis=-1)
-                for x in priced if (x.Calc_res or {}).get('Value')}
-    return list(out['Results']['mtm'].index), ledgers, profiles
+    return by_set([held('PHYSICAL', [SWPT]), held('CASH', [CASH_SWPT]), held('SWAP', swap + [unit]),
+                   held('YIELD', [YIELD_SWPT]), held('AMORTISED', amortised)], ('USD', 'USD-PROJ'))
 
 
 def test_a_physical_swaption_settles_the_swap_it_becomes_and_nothing_where_it_lapses():

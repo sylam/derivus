@@ -107,7 +107,7 @@ MUST_COVER = {
     ('getbarrierpayoff', 'if direction == BARRIER_OUT:', 'body'),
     ('getbarrierpayoff.barrier_option', 'if direction == BARRIER_IN:', 'body'),
     ('getbarrierpayoff.barrier_option', 'if direction == BARRIER_IN:', 'else'),
-    ('pv_barrier_option', 'if cash_rebate and expiry[index] > 0.0:', 'body'),
+    ('pv_barrier_option', 'if cash_rebate and (expiry[index] > 0.0 or index < live < tau.size):', 'body'),
 }
 
 

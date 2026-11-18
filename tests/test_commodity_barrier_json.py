@@ -6,6 +6,7 @@ monitored price, and its carry to the expiry is the log-ratio of the expiry's fo
 commodity barrier on a reference whose forward curve IS an equity's forward prices as that equity
 barrier does - the identity the first test holds every variant to.
 """
+import functools
 import logging
 import math
 import sys
@@ -17,6 +18,7 @@ import pytest
 sys.path.insert(0, 'tests')
 import test_commodity_touch_json as touch  # noqa: E402
 import test_declared_defaults as book  # noqa: E402
+import test_option_settlement_json as settled  # noqa: E402
 import trial_commodity  # noqa: E402
 from derivus import utils  # noqa: E402
 
@@ -242,3 +244,94 @@ def test_under_a_credit_monte_carlo_the_knock_out_pays_its_rebate_on_the_grid_an
     before, after = profile.index < E, profile.index > E
     assert before.any() and after.any()
     assert (profile.loc[before, 'EE'] > 0.0).all() and (profile.loc[after].abs().to_numpy() == 0.0).all()
+
+
+#: The trial's knock-out with its 2,000 rebate, without one, and its knock-in, each settled where
+#: `settled.TWINS` says, `Settlement_Date` being the field the type settles on
+FUEL = {'KOR': trial_commodity.BARRIER, 'KO': dict(trial_commodity.BARRIER, Cash_Rebate=0.0),
+        'KI': dict(trial_commodity.BARRIER, Barrier_Type='Up_And_In', Cash_Rebate=0.0)}
+TWINS = {tag: {'Settlement_Date': day['Delivery_Date']} if day else {} for tag, day in settled.TWINS.items()}
+
+
+@functools.lru_cache(maxsize=None)
+def delivered():
+    """`FUEL` in each of `TWINS`, each in a netting set of its own beside a unit paid on the expiry and
+    one forty days after it, in one float64 credit Monte Carlo on a monthly grid, the fuel forward a
+    Clewlow-Strickland and a Hull-White on USD."""
+    return settled.by_set([settled.held(name + tag, [dict(deal, Reference=name + tag, **stated)])
+                           for name, deal in FUEL.items() for tag, stated in TWINS.items()] + settled.units(),
+                          ['USD'], factors=trial_commodity.FACTORS, Time_Grid='0d 1m(1m)', models={'ForwardPrice.FUEL': (
+                              'CSForwardPriceModel', {'Alpha': 0.35, 'Drift': 0.0, 'Sigma': 0.2})})
+
+
+def test_stated_on_its_expiry_a_commodity_barrier_simulates_and_books_as_its_blank_twin():
+    """Under a float64 credit Monte Carlo the trial's knock-out, with and without its rebate, and the
+    knock-in each stated settling on its expiry simulate every row and book every cash flow, the
+    ledger's days among them, to the bit as with `Settlement_Date` blank, and mark so on the base
+    date.
+
+    Killing mutation: a blank `Settlement_Date` read two days after the expiry (in
+    `schema.settlement_days`), the blank twins' rows and cash moving off the stated ones.
+    """
+    _, ledgers, profiles = delivered()
+    for name in FUEL:
+        assert np.array_equal(profiles[name + '_E'], profiles[name]), name
+        blank, stated = ledgers[name], ledgers[name + '_E']
+        assert stated.index.equals(blank.index) and np.array_equal(stated.values, blank.values), name
+    marks, _ = book.marks([dict(deal, Reference=name + tag, **stated) for name, deal in FUEL.items()
+                           for tag, stated in list(TWINS.items())[:2]], trial_commodity.FACTORS)
+    assert all(marks[name + '_E'] == marks[name] != (0.0).hex() for name in FUEL), marks
+
+
+def test_delivered_after_its_expiry_a_commodity_barrier_holds_what_the_expiry_fixed_and_books_it_then():
+    """Settled forty days after its expiry under that run, the rebate-free knock-out and the
+    knock-in read on the monthly rows, the expiry and the settlement as every FX option delivered
+    there does (`settled.delivered_identities`): to the expiry each row its blank twin's times that
+    row's own forward discount to the settlement, to 1e-13; after it, the monthly row and the
+    settlement's not zero and the payoff discounted to them; nothing booked on the expiry; and the
+    settlement booking, path by path, to the bit what the blank twin books on its expiry. The
+    knock-out's rebate is paid at the touch: every one before the expiry booked to the bit as its
+    blank twin books it, and the expiry's and the settlement's cash summing to that twin's on its
+    expiry to 1e-13.
+
+    Killing mutation: the cash left on the expiry row (`pv_barrier_option` booking its expiry row's
+    mark there).
+    """
+    dates, ledgers, profiles = delivered()
+    settled.delivered_identities(dates, ledgers, profiles, ('KO', 'KI'), E, settled.DELIVERED, exact=('KO', 'KI'))
+    blank, late = ledgers['KOR'], ledgers['KOR_D']
+    before = [day for day in blank.index if day < E]
+    assert np.array_equal(late.loc[before].values, blank.loc[before].values)
+    assert np.asarray(late.loc[before].values, dtype=float).any()
+    on_expiry, paid = (np.asarray(late.loc[day].values, dtype=float) for day in (E, settled.DELIVERED))
+    assert np.allclose(on_expiry + paid, np.asarray(blank.loc[E].values, dtype=float), rtol=1e-13, atol=1e-13)
+
+
+def test_between_its_expiry_and_its_settlement_a_commodity_barrier_marks_its_print_and_refuses_without_it():
+    """On a base date the day after the expiry, settled forty days after it: the trial's knock-out
+    without its rebate marks the expiry's fixing `Price_Fixing` states, 85 under its 90 barrier,
+    `1000 (85 - 82)` discounted from the settlement, to 1e-12, no touch before the base date known;
+    stating no print it refuses by name, naming the deal, the table and the day; and a `Compo` one,
+    whose S*X no print of the reference fixes, refuses by name with its print stated.
+
+    Killing mutation: the print not read (`held_level` in `pv_barrier_option` passed over), the
+    knock-out at today's fixing's intrinsic.
+    """
+    base, paid_on = E + pd.offsets.BDay(1), settled.DELIVERED
+
+    def job(deal, factors):
+        document = book.book([dict(deal, Settlement_Date=paid_on)])
+        document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(factors)
+        return document
+
+    fixed = [[E, 85.0]]
+    marked = settled.valued_on(job(dict(FUEL['KO'], Price_Fixing=fixed), trial_commodity.FACTORS), base)
+    assert marked['FUEL_KO'] == pytest.approx(1000.0 * 3.0 * df((paid_on - base).days), rel=1e-12)
+    compo = barrier('CommodityBarrierOption', 'COMPO', 'Up_And_Out', 88.0, Reference_Type='EQC',
+                    Reference_Volatility='EQC', Currency='EUR', Discount_Rate='EUR', Payoff_Type='Compo',
+                    Strike_Price=80.0, Price_Fixing=fixed)
+    for deal, factors, words in ((FUEL['KO'], trial_commodity.FACTORS, ('FUEL_KO', 'Price_Fixing', '2027-08-03')),
+                                 (compo, {**touch.reference('EQC'), **touch.CROSS}, ('COMPO', 'a compo expired'))):
+        with pytest.raises(Exception) as refusal:
+            settled.valued_on(job(deal, factors), base)
+        assert all(word in str(refusal.value) for word in words), str(refusal.value)

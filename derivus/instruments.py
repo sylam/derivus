@@ -3927,7 +3927,8 @@ class FXDiscreteExplicitAsianOption(Deal):
 
     def reset(self, calendars):
         super(FXDiscreteExplicitAsianOption, self).reset()
-        self.add_reval_dates({self.field['Expiry_Date']}, self.field['Currency'])
+        self.add_reval_dates({self.field['Expiry_Date']})
+        self.add_settlement_dates()
 
     def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
                           calendars):
@@ -4807,7 +4808,10 @@ class TouchLifecycle:
 
     def reset(self, calendars):
         super().reset()
-        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
+        # paid at the touch it pays on the grid to its expiry, paid at expiry on the day it settles
+        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy if self.pays_on_grid() else None)
+        if not self.pays_on_grid():
+            self.add_settlement_dates()
 
     def pays_on_grid(self):
         return self.payment_timing == 'Touch'
@@ -5369,6 +5373,7 @@ class CommodityNoTouchOption(CommodityOneTouchOption):
 
 class CommodityBarrierOption(CommodityFixingWatch, Deal):
     vernacular = 'commodity barrier option, energy barrier option, commodity knock-in, commodity knock-out'
+    observes = Observes('Reference_Type', 'ReferencePrice', 'Price_Fixing', 1, expires='Expiry_Date')
     fields = [ADMIN, PRICING, COMMODITY_TOUCH, own('CommodityBarrierOption', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -5379,7 +5384,8 @@ class CommodityBarrierOption(CommodityFixingWatch, Deal):
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
         F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
         F('Settlement_Date', 'Date', default='', convention=True,
-          settles=Cash('Currency', otherwise='Expiry_Date'))
+          settles=Cash('Currency', otherwise='Expiry_Date')),
+        EXPIRY_PRINT
     ])]
 
     documentation = ('Energy', [
@@ -5391,7 +5397,10 @@ class CommodityBarrierOption(CommodityFixingWatch, Deal):
         "the forward's moneyness over the expiry and **Barrier_Monitoring_Frequency** the",
         'Broadie-Glasserman-Kou shift. **Cash_Rebate** is an absolute amount, a knock-out\'s paid at the',
         "touch; the payoff and a knock-in's rebate are paid on **Settlement_Date**, the expiry where",
-        "blank. A `Quanto` or `Compo` **Payoff_Type** reads the one-touch's correlation.",
+        "blank. The barrier is watched to the expiry; past it the payoff is on the fixing the expiry",
+        "fixed, the path's own or, where the expiry is behind the base date, the print **Price_Fixing**",
+        "states for it, which it must. A `Quanto` or `Compo` **Payoff_Type** reads the one-touch's",
+        "correlation, a `Compo` expired before the base date refused by name.",
         '',
         "The barrier is continuous, a stated **Barrier_Dates** sizing the shift as a touch's does: the",
         "equity barrier's observed closes and One-Step Survival arm are not built, and a **SpotModel**",
@@ -5403,11 +5412,19 @@ class CommodityBarrierOption(CommodityFixingWatch, Deal):
 
     def reset(self, calendars):
         super(CommodityBarrierOption, self).reset()
-        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
+        # a touch's rebate may pay on the expiry, the payoff on the day it settles
+        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy if self.pays_on_grid() else None)
+        self.add_settlement_dates()
 
     def pays_on_grid(self):
         # a cash rebate is paid on touch if the option knocks out
         return bool(self.field['Cash_Rebate'])
+
+    def calc_dependencies(self, base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid,
+                          calendars):
+        return dict(super(CommodityBarrierOption, self).calc_dependencies(
+            base_date, static_offsets, stochastic_offsets, all_factors, all_tenors, time_grid, calendars),
+            Expiry_Fixing=expiry_fixing(self.field, base_date, time_grid, 'CommodityBarrierOption'))
 
     def generate(self, shared, time_grid, deal_data):
         spot, b, tau, fx_rep = self.watched(shared, time_grid, deal_data)
@@ -6100,6 +6117,8 @@ class FXNoTouchOption(FXOneTouchOption):
 
 class FXBarrierOption(Deal):
     vernacular = 'FX barrier option, knock-in, knock-out'
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
+                        expires='Expiry_Date')
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXBarrierOption', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
@@ -6109,7 +6128,8 @@ class FXBarrierOption(Deal):
         F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True),
         F('Barrier_Type', 'Text', default='Down_And_In',
           values=['Down_And_In', 'Down_And_Out', 'Up_And_In', 'Up_And_Out']),
-        F('Expiry_Date', 'Date', default='')
+        F('Expiry_Date', 'Date', default=''),
+        EXPIRY_PRINT
     ])]
 
     documentation = ('Fx And Equity', [
@@ -6120,7 +6140,9 @@ class FXBarrierOption(Deal):
         '**Barrier_Monitoring_Frequency**. **Cash_Rebate** is an absolute amount. A **Payoff_Currency**',
         'other than **Currency** is not quanto-adjusted (a warning is logged). The payoff and a',
         'knock-in\'s rebate are paid on **Delivery_Date**, the expiry where blank, and a knock-out\'s',
-        'rebate on the touch.'])
+        'rebate on the touch. The barrier is watched to the expiry; past it the payoff is on what the',
+        'expiry fixed: the path\'s own level on the expiry row or, where the expiry is behind the base',
+        'date, the print **Price_Fixing** states for it, which it must.'])
 
     def __init__(self, params, valuation_options):
         super(FXBarrierOption, self).__init__(params, valuation_options)
@@ -6128,7 +6150,9 @@ class FXBarrierOption(Deal):
 
     def reset(self, calendars):
         super(FXBarrierOption, self).reset()
-        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy)
+        # a touch's rebate may pay on the expiry, the payoff on the day it settles
+        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy if self.pays_on_grid() else None)
+        self.add_settlement_dates()
 
     def pays_on_grid(self):
         # a cash rebate is paid on touch if the option knocks out
@@ -6146,7 +6170,8 @@ class FXBarrierOption(Deal):
                 (field['Underlying_Currency'], field['Currency']), stochastic_offsets),
             'Barrier_Monitoring': self.barrier_monitoring(base_date),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
-            'Settlement': declared_settlement(self, base_date)})
+            'Settlement': declared_settlement(self, base_date),
+            'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'FXBarrierOption')})
         if payoff != field['Currency']:
             logging.warning("Quanto deal. TODO!!!!!!!")
         return field_index
@@ -6180,6 +6205,8 @@ class FXBarrierOption(Deal):
 
 class FXPartialTimeBarrierOption(Deal):
     vernacular = 'partial barrier, window barrier, partial-time barrier'
+    observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
+                        expires='Expiry_Date')
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXPartialTimeBarrierOption', [
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
@@ -6191,7 +6218,8 @@ class FXPartialTimeBarrierOption(Deal):
         F('Barrier_At_Start', 'Text', default='No', convention=True, values=['Yes', 'No']),
         F('Barrier_Limit_Date', 'Date', default=''),
         F('Barrier_Monitoring_Frequency', 'Period', default='0M', convention=True),
-        F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True)
+        F('Cash_Rebate', 'Float', default=0.0, convention=True, sized=True),
+        EXPIRY_PRINT
     ])]
 
     documentation = ('Fx And Equity', [
@@ -6205,7 +6233,10 @@ class FXPartialTimeBarrierOption(Deal):
 
     def reset(self, calendars):
         super(FXPartialTimeBarrierOption, self).reset()
-        self.add_reval_dates({self.field['Expiry_Date'], self.field['Barrier_Limit_Date']}, self.payoff_ccy)
+        # a touch's rebate may pay on the expiry, the payoff on the day it settles
+        self.add_reval_dates({self.field['Barrier_Limit_Date']}, self.payoff_ccy)
+        self.add_reval_dates({self.field['Expiry_Date']}, self.payoff_ccy if self.pays_on_grid() else None)
+        self.add_settlement_dates()
 
     def pays_on_grid(self):
         # a cash rebate is paid on touch if the option knocks out; an untouched knock-in pays its
@@ -6222,6 +6253,7 @@ class FXPartialTimeBarrierOption(Deal):
                 (field['Underlying_Currency'], field['Currency']), stochastic_offsets),
             'Expiry': (self.field['Expiry_Date'] - base_date).days,
             'Settlement': declared_settlement(self, base_date),
+            'Expiry_Fixing': expiry_fixing(self.field, base_date, time_grid, 'FXPartialTimeBarrierOption'),
             'Limit_Date': (self.field['Barrier_Limit_Date'] - base_date).days})
         return field_index
 
@@ -6234,13 +6266,13 @@ class FXPartialTimeBarrierOption(Deal):
             deal_data.Factor_dep['Underlying_Currency'][0], deal_data.Factor_dep['Currency'][0],
             deal_time, shared, quoted=True), deal_time, shared)
 
-        # need to adjust if there's just 1 timepoint - i.e. base reval
-        if time_grid.mtm_time_grid.size > 1:
-            tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])[:-1]
-            tau1 = (deal_data.Factor_dep['Limit_Date'] - deal_time[:, utils.TIME_GRID_MTM])[:-1]
-        else:
-            tau = (deal_data.Factor_dep['Expiry'] - deal_time[:, utils.TIME_GRID_MTM])
-            tau1 = (deal_data.Factor_dep['Limit_Date'] - deal_time[:, utils.TIME_GRID_MTM])
+        # the closed form prices the rows before the expiry's, a base valuation's one row where it is
+        # not past the expiry; the expiry's row and those after it pay on what the expiry fixed
+        days = deal_time[:, utils.TIME_GRID_MTM]
+        live = int((deal_data.Factor_dep['Expiry'] - days >= 0).sum())
+        window = max(live - (time_grid.mtm_time_grid.size > 1), 0)
+        tau = (deal_data.Factor_dep['Expiry'] - days)[:window]
+        tau1 = (deal_data.Factor_dep['Limit_Date'] - days)[:window]
 
         b = torch.squeeze(pricing.deal_carry_rate(
             deal_data.Factor_dep,
