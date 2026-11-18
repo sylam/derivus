@@ -531,6 +531,99 @@ def test_the_close_check_is_the_catch_up_rule(recorded, tmp_path):
     assert cleared['due'] == verdict['due'], 'the row is answered, not dropped'
 
 
+def premium_booked(reference, **stated):
+    """A fixed leg booked under the client's set through the service, with what `stated` says it
+    was done at."""
+    return CLIENT.post('/book/deals', content=dump(dict(
+        {'action': 'add', 'deal': fixed_leg(reference), 'parent_reference': CLIENT_SET,
+         'quantity': 2.0, 'execution_reference': 'EXEC-' + reference}, **stated)), headers=JSON)
+
+
+def premiums(rows):
+    return [row for row in rows if row['kind'] == spine.PREMIUM]
+
+
+def test_a_premium_is_due_on_its_value_date_until_a_premium_settles_it_into_cash(recorded,
+                                                                                 tmp_path):
+    """A booking done at a price in dollars, settling two days on, is ONE `premium` row: the
+    consideration from the bank's side - two units bought at 25,000 pay 50,000 - in the fill's own
+    currency, due on its value date under the diary's key over the fill's instrument and execution
+    reference. Not yet due on the trade day, the worklist lists it among the payments once the book
+    stands on its day and the close of that day names it outstanding. Settled through
+    `/book/transition` as a `premium`, it leaves the worklist, the close passes it and `/book/cash`
+    reads the movement on its value date and not before.
+
+    Killing mutations: the row not announced; the settlement's kind read as a payment.
+    """
+    serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')])
+    day = str((BASE + pd.DateOffset(days=2)).date())
+    booked = premium_booked('BOUGHT', price=25_000.0, price_currency='USD', value_date=day).json()
+    assert booked['written'] is True, booked
+    instrument = booked['recorded']['instrument']
+
+    (row,) = premiums(diary_rows()['rows'])
+    assert (row['reference'], row['leg'], row['instrument'], row['amount'], row['currency'],
+            row['due_date'], row['state']) == (
+        'BOUGHT', 'EXEC-BOUGHT', instrument, -50_000.0, 'USD', day, Diary.DUE)
+    assert row['key'] == spine.cashflow_key(instrument, 'EXEC-BOUGHT', spine.PREMIUM, day)
+    assert CLIENT.get('/book/worklist').json()['payments'] == [], 'due before its value date'
+
+    moved = CLIENT.post('/book/date', content=dump({'base_date': day}), headers=JSON)
+    assert moved.status_code == 200, moved.text
+    listed = CLIENT.get('/book/worklist').json()['payments']
+    assert [(entry['kind'], entry['key'], entry['amount'], entry['currency'], entry['since'])
+            for entry in listed] == [(spine.PREMIUM, row['key'], -50_000.0, 'USD', day)]
+    verdict = CLIENT.get('/book/close/check', params={'date': day}).json()
+    assert verdict['legal'] is False and [
+        (found['kind'], found['key']) for found in verdict['outstanding']] == [
+        (spine.PREMIUM, row['key'])]
+
+    settled = CLIENT.post('/book/transition', content=dump({
+        'subject': row['key'], 'status': spine.SETTLED, 'actor': ACTOR, 'amount': -50_000.0,
+        'asset': 'USD', 'kind': spine.PREMIUM, 'reference': 'PREM-1', 'value_date': day}),
+        headers=JSON)
+    assert settled.status_code == 200, settled.text
+    assert CLIENT.get('/book/worklist').json()['payments'] == []
+    assert CLIENT.get('/book/close/check', params={'date': day}).json()['legal'] is True
+    assert premiums(diary_rows()['rows'])[0]['state'] == spine.SETTLED
+    cash = CLIENT.get('/book/cash', params={'date': day}).json()
+    assert [(entry['kind'], entry['subject'], entry['amount'], entry['asset'],
+             entry['effective_time'][:10]) for entry in cash['movements']] == [
+        (spine.PREMIUM, row['key'], -50_000.0, 'USD', day)]
+    assert CLIENT.get('/book/cash', params={'date': str(BASE.date())}).json()['movements'] == []
+
+
+def test_a_premium_with_no_value_date_is_due_on_no_day_and_one_with_no_price_is_none(recorded,
+                                                                                    tmp_path):
+    """A booking done at a price and stating no value date is announced in the book's own currency
+    and due on NO day, the row saying why - never dated on the trade day or any other, so no close
+    waits on it. A booking with no price announces nothing. A value date with no price dates a
+    consideration there is none of: refused by name, nothing filed and the file untouched.
+
+    Killing mutations: an undated premium dated on the day it was booked; a row announced for a
+    fill with no price; a value date filed beside no price.
+    """
+    path = serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')])
+    assert premium_booked('PRICED', price=10_000.0).json()['written'] is True
+    assert premium_booked('FREE').json()['written'] is True
+
+    rows = premiums(diary_rows()['rows'])
+    assert [(row['reference'], row['amount'], row['currency'], row['due_date'], row['reason'])
+            for row in rows] == [('PRICED', -20_000.0, 'ZAR', None, spine.UNDATED.format(
+                'EXEC-PRICED'))]
+    assert rows[0]['key'] == spine.cashflow_key(rows[0]['instrument'], 'EXEC-PRICED',
+                                                spine.PREMIUM, None)
+    for day in (str(BASE.date()), '2026-12-31'):
+        assert CLIENT.get('/book/close/check', params={'date': day}).json()['legal'] is True, day
+    assert CLIENT.get('/book/worklist').json()['payments'] == []
+
+    head, before = at(recorded), path.read_bytes()
+    refused = premium_booked('DATED', value_date=str(BASE.date()))
+    assert refused.status_code == 422 and 'value_date' in refused.text \
+        and 'states no price' in refused.text, refused.text
+    assert at(recorded) == head and path.read_bytes() == before, 'a refused booking moved something'
+
+
 def test_the_close_check_and_reconcile_are_a_404_on_a_box_that_records_nothing(unrecorded,
                                                                                tmp_path):
     """A box with no home has no record to check against, and says so rather than answering an

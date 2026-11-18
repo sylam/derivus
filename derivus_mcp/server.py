@@ -565,7 +565,7 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
               portfolio: str | None = None, price: float | None = None,
               price_currency: str | None = None, notional: float | None = None,
               notional_currency: str | None = None, deal_path: str | None = None,
-              reference: str | None = None) -> dict:
+              reference: str | None = None, value_date: str | None = None) -> dict:
     """Book one deal into the live book. VALIDATED FIRST: the service splices it into a copy,
     validates the whole document, and only writes the file if nothing is said against this deal -
     its own authoring rules, or market data the book does not carry. A refusal comes back as
@@ -590,8 +590,10 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
     name (`<book>/Rates/EM`, the book itself if left out), and `price` what it was done at - the
     consideration per unit as written, signed from the desk's side, in `price_currency` where it
     was agreed in another currency than the book reports in: the service crosses it at the
-    booking's own board, so never convert it by hand. `actor` is the seat the fact is filed
-    under. A desk that keeps no record ignores all of them.
+    booking's own board, so never convert it by hand. `value_date` (`YYYY-MM-DD`) is the day that
+    consideration settles - `book_diary` then announces it as a `premium` row due that day, and
+    one booked without it is due on no day; stated without a price it is refused. `actor` is the
+    seat the fact is filed under. A desk that keeps no record ignores all of them.
 
     EVERY BOOKING IS A TICKET, which the answer carries: where the desk's tiers policy caps sizes
     or tenors, state the `notional` and `notional_currency` the whole trade deals, its `quantity`
@@ -628,7 +630,8 @@ def book_deal(deal: dict | None = None, parent_reference: str | None = None,
         **_stated(parent_reference=parent_reference, quantity=quantity,
                   execution_reference=execution_reference, actor=actor, agreement=agreement,
                   portfolio=portfolio, price=price, price_currency=price_currency,
-                  notional=notional, notional_currency=notional_currency, reference=reference))))
+                  notional=notional, notional_currency=notional_currency, reference=reference,
+                  value_date=value_date))))
 
 
 @MCP.tool()
@@ -1515,7 +1518,8 @@ def book_reconcile(actor: str | None = None) -> dict:
 
 @MCP.tool(annotations=READ_ONLY)
 def book_diary(due_before: str | None = None, actor: str | None = None) -> dict:
-    """Everything the book OWES or is owed: every payment, fixing and expiry its deals carry.
+    """Everything the book OWES or is owed: every payment, fixing and expiry its deals carry, and
+    a `premium` row for each booking whose price moves money, due on its `value_date`.
 
     The compile's own schedule, so the diary and the pricer cannot disagree about a payment. A row
     names its deal's instrument, `reference` and `deal_path` - the path is the identity, since
@@ -1539,8 +1543,9 @@ def close_check(date: str) -> dict:
     """Whether a close on `date` is legal, and what it is waiting on - the catch-up rule as a read.
 
     A close is legal when every diary entry due on or before that day has its fact. Outstanding is
-    exactly three things: a fixing no declared source has printed, a payment no settlement was
-    filed against, and an expiry whose terms leave a choice nobody has elected. `legal: false`
+    exactly three things: a fixing no declared source has printed, a payment or a premium no
+    settlement was filed against, and an expiry whose terms leave a choice nobody has elected.
+    `legal: false`
     comes with the rows - each one names the deal, the leg and the day - so what has to happen
     before the close is a list rather than a verdict.
 
@@ -1642,9 +1647,9 @@ def file_status(subject: str, status: str, actor: str | None = None, amount: flo
                 asset: str | None = None, kind: str | None = None, reference: str | None = None,
                 value_date: str | None = None, agreement: str | None = None) -> dict:
     """Say that a payment settled, a confirmation matched, or collateral moved - the back office's
-    half of the record, each act its own verb: `settled` with no money or with a `payment` or a
-    `fee` is the `settle` seat's, `confirmed` the `confirm` seat's, and `collateral` or `margin`
-    moved the `collateral` seat's.
+    half of the record, each act its own verb: `settled` with no money or with a `payment`, a
+    `premium` or a `fee` is the `settle` seat's, `confirmed` the `confirm` seat's, and
+    `collateral` or `margin` moved the `collateral` seat's.
 
     `subject` is the row's own `key`, which `book_diary` carries on every row and
     `export_settlements` carries on every row it instructs: it is a 64-hex address, so paste the
@@ -1654,12 +1659,12 @@ def file_status(subject: str, status: str, actor: str | None = None, amount: flo
 
     WHERE MONEY MOVED, say how much: `amount` signed from the bank's side (received positive, paid
     or posted negative), the `asset` it is an amount of (a currency, or a security for collateral),
-    its `kind` - `payment` against a diary row's key, `fee` against an instrument, `collateral` or
-    `margin` against an agreement the record declares - the settlement system's own `reference`
-    and the `value_date` (`YYYY-MM-DD`) it settled on, all under `settled`; and for a payment the
-    `agreement` it was paid under, the one its row carries, required where the row's instrument
-    sits under more than one. Filed again under one reference, a movement restates the one it
-    corrects; `book_cash` reads them back.
+    its `kind` - `payment` against a diary row's key, `premium` against a premium row's, `fee`
+    against an instrument, `collateral` or `margin` against an agreement the record declares - the
+    settlement system's own `reference` and the `value_date` (`YYYY-MM-DD`) it settled on, all
+    under `settled`; and for a payment the `agreement` it was paid under, the one its row carries,
+    required where the row's instrument sits under more than one. Filed again under one reference,
+    a movement restates the one it corrects; `book_cash` reads them back.
 
     A key the book no longer announces a row for is still RECORDED: the record holds what it was
     told and the reading is a fold, so a late settlement against a paid-away row is a fact rather

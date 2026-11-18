@@ -701,6 +701,14 @@ def pair_convention(market, calendars, pair):
         calendars)
 
 
+def spot_date(day, convention):
+    """The spot date of a deal dealt on `day` under a pair's spot `convention` (`pair_convention`),
+    `day` itself where it counts none."""
+    import pandas as pd
+    return day + pd.Timedelta(days=int(utils.spot_lag(day, convention, [0])[0])) \
+        if convention else day
+
+
 def tenor_dates(base_date, expiry, convention):
     """`(Expiry_Date, Delivery_Date)` of a tenor dealt on `base_date`, in a deal's wire form, as the
     FX market dates it under the pair's spot `convention` (`pair_convention`, None counting none).
@@ -724,10 +732,6 @@ def tenor_dates(base_date, expiry, convention):
         return pd.Timestamp(np.busday_offset(
             np.datetime64(day, 'D'), offset, roll, busdaycal=calendar))
 
-    def spot(day):
-        return day + pd.Timedelta(days=int(utils.spot_lag(day, convention, [0])[0])) \
-            if convention else day
-
     def month_end(day):
         return rolled(day + pd.offsets.MonthEnd(0), 0, 'backward')
 
@@ -741,14 +745,14 @@ def tenor_dates(base_date, expiry, convention):
             expires = pd.Timestamp(expiry)
         except (ValueError, TypeError):
             raise ValueError('{!r} is not a tenor (3M, 1Y) or a date'.format(expiry))
-        delivers = spot(expires)
+        delivers = spot_date(expires, convention)
     elif set(offset.kwds) <= {'days', 'weeks'}:
         landed = base + offset
         expires = rolled(landed, 0, 'forward', np.busdaycalendar(holidays=[
             '{}-01-01'.format(year) for year in (landed.year, landed.year + 1)]))
-        delivers = spot(expires)
+        delivers = spot_date(expires, convention)
     else:
-        start = spot(base)
+        start = spot_date(base, convention)
         delivers = month_end(start + offset) if start == month_end(start) else rolled(
             start + offset, 0, 'modifiedfollowing')
         expires = rolled(delivers, -days, 'forward', count)

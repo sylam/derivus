@@ -128,8 +128,8 @@ from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire, family_entries
 from .instruments import construct_instrument
 from .calculation import Diary, calculation_class
-from .spine import (AGREEMENT_STATE, HOLDING_AMOUNTS, SETTLED, Collateral, PnL, book_name, diary,
-                    export_settlements, paper, replay)
+from .spine import (AGREEMENT_STATE, HOLDING_AMOUNTS, SETTLED, SETTLES, Collateral, PnL, book_name,
+                    diary, export_settlements, paper, replay)
 
 LOG = logging.getLogger(__name__)
 
@@ -1159,7 +1159,7 @@ def declared_agreement(agreement):
 
 def spine_fill(document, deal_path, quantity, execution_reference, actor=None, agreement=None,
                portfolio=None, price=None, price_currency=None, plan=None, terms=None, quote=None,
-               once=False):
+               once=False, value_date=None):
     """Append the `fill` for a booking, and answer what the record now says. `{}` with no home.
 
     THE EVENT GOES FIRST: called after the verdict and before `Book.mutate` writes the file, so a
@@ -1174,7 +1174,8 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
     `portfolio` is the path where the position sits (`placed`); once any node of the book's tree
     is declared it is the book or a declared node. `price` is what it was done at, per unit, in
     `price_currency` where one is stated - crossed at THIS booking's own board, the book's spots,
-    and filed with the currency and the rate, so nobody converts a consideration by hand.
+    and filed with the currency and the rate, so nobody converts a consideration by hand - and
+    `value_date` the day that consideration settles, which the booking states or nobody does.
 
     `plan` is the plan the book has once it lands, which the fill's ticket is taken over, and
     `terms` what a tiers policy reads of it (`ticket_terms`): the record routes it after every
@@ -1234,7 +1235,7 @@ def spine_fill(document, deal_path, quantity, execution_reference, actor=None, a
         instrument_of(deal_at(document, deal_path)), quantity, counterparty,
         node.get('Reference'), execution_reference, actor_name=actor, book_name=book, price=price,
         currency=currency, rate=rate, agreement=agreement, portfolio=portfolio, plan=plan,
-        terms=terms, quote=quote, once=once, folds=folds())
+        terms=terms, quote=quote, once=once, folds=folds(), value_date=value_date)
 
 
 def spine_amendment(document, deal_path, before, actor=None, plan=None, terms=None):
@@ -1352,8 +1353,9 @@ def book_deals(request: dict):
     `NettingCollateralSet` naming a counterparty; each of the three refuses by name. `agreement`
     names a declared agreement the set materialises - spliced at the root from the terms legal
     declared where the file carries no set of that name, and the parent where none is named -
-    `portfolio` the path the position sits at, its top node the book, `<book>/Rates/EM`, and
-    `price` what it was done at. EVERY BOOKING IS A TICKET - `spine.ticket` over the plan the book
+    `portfolio` the path the position sits at, its top node the book, `<book>/Rates/EM`, `price`
+    what it was done at and `value_date` the day that consideration settles, refused by name
+    without a price. EVERY BOOKING IS A TICKET - `spine.ticket` over the plan the book
     has with it and its own fields - and A TRADE IS TAKEN ONCE: one whose fill already stands under
     its key, the instrument and the execution reference, with the fields it states is answered
     `{written: False, booked: {lsn, deal_path}}` and nothing is spliced or filed - the file taking
@@ -1456,7 +1458,7 @@ def book_deals(request: dict):
             request.get('portfolio'), request.get('price'), request.get('price_currency'),
             context.plan_hash(), ticket_terms(
                 document, request, instrument_of(deal_at(document, outcome['deal_path'])),
-                context.values_hash()), once=True)
+                context.values_hash()), once=True, value_date=request.get('value_date'))
         if 'refused' in filled:
             return False, dict(filled, written=False)
         if 'booked' in filled:
@@ -2152,6 +2154,14 @@ def answered(rows, lsn=None):
     return answers
 
 
+def announced(document, rows):
+    """The book's own diary `rows` with the premiums its fills move beside them (`spine.premiums`),
+    in the diary's order and each as the record answers it (`answered`) - none where no home is
+    configured."""
+    return answered(spine.ordered(rows + spine.premiums(
+        book_name(document), reporting_currency(document))) if spine.configured() else rows)
+
+
 def diary_etag(document):
     """What a DIARY compile reads, hashed - its cache key and the etag the answer carries.
 
@@ -2573,19 +2583,20 @@ def book_transition(request: dict):
 
     A SETTLEMENT THAT MOVED MONEY SAYS HOW MUCH: the signed `amount` from the bank's side
     (received positive, paid or posted negative), the `asset` it is an amount of, its `kind` -
-    `payment` against a diary row's key, `fee` against an instrument, `collateral` or `margin`
-    against an agreement the record declares - the settlement system's own `reference`, and the
-    `value_date` it settled on. `GET /book/cash` reads them back. A payment names the declared
-    `agreement` it was paid under - the one its diary row carries - which the P&L shares it
-    within, and must where its key is due under more than one netting set, refused by name here
-    otherwise, the diary being what knows where a row is due.
+    `payment` against a diary row's key, `premium` against a premium row's, `fee` against an
+    instrument, `collateral` or `margin` against an agreement the record declares - the settlement
+    system's own `reference`, and the `value_date` it settled on. `GET /book/cash` reads them
+    back. A payment names the declared `agreement` it was paid under - the one its diary row
+    carries - which the P&L shares it within, and must where its key is due under more than one
+    netting set, refused by name here otherwise, the diary being what knows where a row is due.
 
     A SUBJECT THE DIARY DOES NOT CARRY IS STILL A FACT. The record holds what it was told and a
     fold says what answers for it, so a state filed against a row the book has since paid away
     lands rather than refusing; what reads the two against each other is a projection. A seat the
-    capabilities document does not scope for the act - `settle` a payment or a fee, `confirm` a
-    confirmation, `collateral` money held under paper - is refused in the record's own words with
-    the denial landed, which this verb does not restate. 404 where no home is configured.
+    capabilities document does not scope for the act - `settle` a payment, a premium or a fee,
+    `confirm` a confirmation, `collateral` money held under paper - is refused in the record's own
+    words with the denial landed, which this verb does not restate. 404 where no home is
+    configured.
     """
     document, _ = recording().read()
     value_date = request.get('value_date')
@@ -2942,21 +2953,26 @@ def carried(job, day, reading=Context):
     return sum(PnL.unit_marks(as_json(out['Results'])).values())
 
 
+def reporting_currency(document):
+    """The currency `document` reports in, which a price stating no other is in: its
+    `Calculation.Currency`, else its market's base."""
+    return (document['Calc']['Calculation'].get('Currency')
+            or structures.base_currency(market_of(document)))
+
+
 def consideration(document, price, currency):
     """`(currency, rate)` a fill files beside its `price`: none where the price is stated in the
     book's own reporting currency, else that currency and what one unit of it is worth in the
     book's, at this booking's own board - or the 422 naming a currency the book carries no spot for.
     """
-    market = market_of(document)
-    reporting = (document['Calc']['Calculation'].get('Currency')
-                 or structures.base_currency(market))
+    reporting = reporting_currency(document)
     if currency is None or currency == reporting:
         return None, None
     if price is None:
         raise spine.SpineRefused('this booking states price_currency {!r} and no price - the '
                                  'currency is what the price is stated in'.format(currency))
     try:
-        return currency, structures.engine_spot(market, currency, reporting)
+        return currency, structures.engine_spot(market_of(document), currency, reporting)
     except ValueError as missing:
         raise spine.SpineRefused('a price in {} is crossed into {} at the booking\'s own board, '
                                  'and {}'.format(currency, reporting, missing))
@@ -3324,7 +3340,8 @@ def book_diary(due_before: str = None, actor: str = None):
     compile determines one and `null` where it does not, and the derived key a settlement fact
     names it by, taken off the instrument booked at that path. Under a home each row also
     carries what the record answers: `settled` where a transition moved its key, and the
-    administrator whose print satisfied a fixing. `actor` is the seat reading, which sees the rows
+    administrator whose print satisfied a fixing; and each fill whose price moves money is a
+    `premium` row of its own (`announced`). `actor` is the seat reading, which sees the rows
     of the instruments held at the nodes it acts at (`sighted`), each the book's own compile at the
     instrument's net: presentation, not a per-node compile. The compile is the hub's own, run
     under `DV_SPINE_ACTOR` whoever reads it.
@@ -3332,7 +3349,7 @@ def book_diary(due_before: str = None, actor: str = None):
     document, _ = live_book().read()
     answer = hub_diary(document)
     see = sighted(document, spine.sight(actor))
-    rows = [row for row in answered(answer['rows']) if see(row['instrument'])]
+    rows = [row for row in announced(document, answer['rows']) if see(row['instrument'])]
     if due_before:
         day = read_day(due_before)
         rows = [row for row in rows if row['due_date'] and row['due_date'] <= day]
@@ -3356,8 +3373,9 @@ def book_worklist(actor: str = None):
     Each list is what one act clears, where the seat holds the verb the map in force has that act
     demand (`spine.demands`), the vocabulary's named here: `pending` the tickets awaiting a
     second seat's approval - a fill's or a restrike's, one row each (`spine.standing`) - for
-    `approve`; `payments` the payments due by the book's own day no settlement was filed against
-    (`close_verdict` - a fee settles nothing), for `settle`; `unconfirmed` the clips no `confirmed`
+    `approve`; `payments` the payments and premiums due by the book's own day no settlement was
+    filed against, each row's `kind` its own (`close_verdict` - a fee settles nothing), for
+    `settle`; `unconfirmed` the clips no `confirmed`
     status filed since their own ticket stands against, keyed as they were filled
     (`spine.fill_key`) - so a restrike makes a re-confirmation due - for `confirm`; `calls` the
     collateral the marks of the book's day call for or post, keyed by agreement, every movement
@@ -3433,14 +3451,14 @@ def book_worklist(actor: str = None):
     lists = {
         'pending': ticketed(demands['approval'], 'pending', 'awaits a second seat\'s approval',
                             ticket, lambda position, entry, at: entry['status'] == 'pending'),
-        'payments': [dict(row('payment', '{} {} pays {} {}'.format(
+        'payments': [dict(row(entry['kind'], '{} {} pays {} {}'.format(
             entry['reference'], entry['leg'],
             'an undetermined amount' if entry['amount'] is None else entry['amount'],
             entry['currency']), entry['key'], None, entry['due_date']), amount=entry['amount'],
             currency=entry['currency'], agreement=entry['agreement'])
-            for entry in close_verdict(answered(hub_diary(document)['rows']),
+            for entry in close_verdict(announced(document, hub_diary(document)['rows']),
                                        day)['outstanding']
-            if entry['kind'] == Diary.PAYMENT and see(entry['instrument'])],
+            if entry['kind'] in SETTLES and see(entry['instrument'])],
         'unconfirmed': ticketed(demands[confirmed], 'unconfirmed', 'is not confirmed', confirming,
                                 unconfirmed, lambda position, entry: entry['execution_reference']),
         'calls': [called(call) for call in due if call['direction'] or call['unknown']],
@@ -3482,10 +3500,10 @@ def close_verdict(rows, day):
     """Whether a close on `day` is legal over an already-compiled diary, and what it waits on.
 
     Outstanding is exactly four things: a `fixing` row no declared source holds a print for, a
-    `payment` row no settlement transition was filed against its key, an `expiry` row whose terms
-    vest a choice nobody has elected, and - on every day, having no date of its own - an
-    `unreadable` row, a deal the compile could not read at all. An expiry a fixing determines never
-    blocks a close: the fixing and payment rows already carry it.
+    `payment` or `premium` row no settlement transition was filed against its key, an `expiry` row
+    whose terms vest a choice nobody has elected, and - on every day, having no date of its own -
+    an `unreadable` row, a deal the compile could not read at all. An expiry a fixing determines
+    never blocks a close: the fixing and payment rows already carry it.
 
     Over ROWS rather than over the book, so the read and the declaration answer one verdict about
     one document: the verb that declares a close compiles once and asks here, where calling the
@@ -3496,7 +3514,7 @@ def close_verdict(rows, day):
     # over a book the engine could not read is a clean bill nobody earned
     outstanding = [row for row in rows if row['kind'] == Diary.UNREADABLE] + [row for row in due if
                    (row['kind'] == Diary.FIXING and row['source'] is None) or
-                   (row['kind'] == Diary.PAYMENT and row['state'] != SETTLED) or
+                   (row['kind'] in SETTLES and row['state'] != SETTLED) or
                    (row['kind'] == Diary.EXPIRY and row['needs'] is not None)]
     return {'date': day, 'legal': not outstanding, 'due': len(due), 'outstanding': outstanding}
 
@@ -3511,7 +3529,7 @@ def book_close_check(date: str):
     """
     day = read_day(date)
     document, _ = recording().read()
-    return close_verdict(answered(hub_diary(document)['rows']), day)
+    return close_verdict(announced(document, hub_diary(document)['rows']), day)
 
 
 @app.post('/book/close', summary='Declare the official close - behind the check\'s own verdict')
@@ -3537,7 +3555,8 @@ def book_close(request: dict):
     market = OFFICIAL_MARKET if request.get('market') is None else request['market']
     day = (structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
            if request.get('date') is None else read_day(request['date']))
-    verdict = close_verdict(answered(diary_of(document, request.get('actor'))['rows']), day)
+    verdict = close_verdict(announced(document, diary_of(document, request.get('actor'))['rows']),
+                            day)
     if not verdict['legal']:
         raise HTTPException(422, 'a close on {} is not legal here and nothing is declared - it '
                                  'waits on {}. A close does not pass over a payment nobody '
@@ -6562,6 +6581,16 @@ def mirror_price(quote):
     return 0.0 if quote['charged_on'] != 'premium' else -float(quote['net'])
 
 
+def spot_day(document, context, pair):
+    """The day an accepted quote's premium settles: `pair`'s spot date for `document`'s base date
+    on the calendars `context` loaded, the convention its legs are dated under
+    (`structures.tenor_dates`)."""
+    day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).normalize()
+    return structures.spot_date(day, structures.pair_convention(
+        market_of(document), context.current_cfg.holidays, structures.split_pair(pair))).strftime(
+        '%Y-%m-%d')
+
+
 def spot_failure():
     """The remembered live-spot failure while it is still believed, or None. Read before every
     attempt, so a dead terminal is learned once rather than costing every quote its timeout."""
@@ -6894,7 +6923,8 @@ def book_quote(request: dict):
 
     Then ONE ACT of the writer (`spine.routed`): `quote_filed` under the ACCEPTOR's seat and the
     fill's own ticket, the tier step where a `tiers` policy is in force, the `fill` under the quote
-    id as its execution reference at the `portfolio` the quote stated, and last the book file. The
+    id as its execution reference at the `portfolio` the quote stated, its premium settling on the
+    pair's spot date (`spot_day`), and last the book file. The
     acceptance is a FACT whatever the tier then says, so a ticket no tier admits still answers
     `accepted` and leaves the file untouched, and a four-eyes tier books the trade PENDING. THE
     WHOLE ACT RUNS UNDER THE BOOK LOCK (`Book.transact`), because an edit that appends before it
@@ -6972,7 +7002,8 @@ def book_quote(request: dict):
             return True, dict(outcome, **spine_fill(
                 book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id, request.get('actor'),
                 price=mirror_price(pending['quote'])))
-        plan = load(book).plan_hash()
+        context = load(book)
+        plan = context.plan_hash()
         if plan != pending['pinned'].get('plan'):
             raise HTTPException(
                 422, 'quote {} pinned the plan {} and booking it here leaves the book at {} - the '
@@ -6983,6 +7014,7 @@ def book_quote(request: dict):
         filled = spine_fill(
             book, outcome['deal_path'], MIRROR_AS_WRITTEN, quote_id, request.get('actor'),
             portfolio=pending.get('portfolio'), price=mirror_price(pending['quote']), plan=plan,
+            value_date=spot_day(book, context, quoted['params']['pair']),
             terms=ticket_terms(book, quoted.get('params') or {}, pending['deal'],
                                pending['pinned']['values_hash']),
             quote={'quote_id': quote_id, 'structure': quoted['structure'],

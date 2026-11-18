@@ -436,8 +436,8 @@ set has every request but the doorbell carry an ID token whose subject is the se
 ([Security](deployment.md#security)).
 
 **The back office and the paper.** `POST /book/transition` files what the back office moved - a
-payment or a fee under `settle`, a confirmation under `confirm`, collateral or margin under
-`collateral`, the record reading which act a transition is off its body - and a payment names the
+payment, a premium or a fee under `settle`, a confirmation under `confirm`, collateral or margin
+under `collateral`, the record reading which act a transition is off its body - and a payment names the
 declared `agreement` it was paid under, the one its diary row carries, which the service requires
 where the row's key is due under more than one netting set. The web client's Back Office
 workspace works `/book/worklist`, `/book/close/check` and `/book/close` under the acting seat, and

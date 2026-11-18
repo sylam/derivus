@@ -39,7 +39,7 @@ from .canon import canonical_bytes, content_hash
 from .errors import SpineRefusal
 from .log import as_of_key, parse_number
 from .policy import FIXINGS_POLICY, FIXINGS_SECTION, in_force
-from .verbs import HELD, PAYMENT, REPLAY_FIELDS
+from .verbs import HELD, PAYMENT, REPLAY_FIELDS, SETTLES
 from .vocabulary import is_hash
 
 #: Where a seed is filed, beside `log/` and `blobs/`. Not a blob: a blob is write-once and never
@@ -236,6 +236,7 @@ class Lifecycle(Projector):
     """
 
     name = 'lifecycle'
+    version = 2
     reads = ('fixing_observed', 'election', 'determination', 'status_transition')
 
     def initial(self):
@@ -247,8 +248,8 @@ class Lifecycle(Projector):
             self._observe(state['fixings'], frame, body)
             return
         if frame['event_type'] == 'status_transition':
-            # Only a payment moves a state; a fee or a balance moved money and nothing else.
-            if body.get('kind', PAYMENT) == PAYMENT:
+            # Only what settles a row moves a state; a fee or a balance moved money and nothing else.
+            if body.get('kind', PAYMENT) in SETTLES:
                 _stand(state['transitions'], body['subject'], frame, {'status': body['status']})
             return
         row = state['instruments'].setdefault(

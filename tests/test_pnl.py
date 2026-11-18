@@ -1114,6 +1114,59 @@ def test_a_settlement_eight_business_days_late_is_matched_to_the_row_it_settles(
         assert answer['breaks'] == short, (window, answer['breaks'])
 
 
+#: A cashflow bought for a rand premium, and the figures a P&L answers with beside its rows.
+PREMIUM_PAID = cashflow('CF-PREM', 300_000.0, START + pd.DateOffset(years=1))
+ANSWERED = ('rows', 'total', 'unknown', 'breaks', 'complete')
+
+
+def test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l(recorded, desk):
+    """THE CONSIDERATION IS COUNTED ONCE, AT THE FILL. A cashflow bought on the second day for a
+    rand premium settling on the third is announced by the diary, and that day's close passes it;
+    the window it was traded in counts it under `premiums` at the price crossed at the booking's
+    rate, and pays it nothing. On the third day the close waits on it, and the P&L read live there
+    is the same, row by row, before it settles and after it settles as a `premium`; the day's
+    window, closed once it has, names nothing unknown and counts no premium or payment on it.
+
+    Killing mutation: the premium's settlement filed as a payment, which the P&L reads as money
+    against a payment no diary of its own announces.
+    """
+    designated(recorded, fixings=False)
+    price = 266_539.62
+    booked(LONG, 1.0, 'EXEC-A', BOOK, 17_800_000.0)
+    closed_and_marked()
+    rolled(desk, END, 18.0)
+    booked(PREMIUM_PAID, 1.0, 'EXEC-PREM', BOOK, price, 'ZAR', value_date='2024-07-02')
+    (row,) = [row for row in CLIENT.get('/book/diary').json()['rows']
+              if row['kind'] == verbs.PREMIUM and row['leg'] == 'EXEC-PREM']
+    assert (row['amount'], row['currency'], row['due_date'], row['state']) == (
+        -price, 'ZAR', '2024-07-02', 'due')
+    closed_and_marked()
+
+    traded = between('2024-06-28', '2024-07-01')
+    assert traded['complete'] is True and traded['unknown'] == []
+    bought = keyed(traded)[(instrument_of('CF-PREM'), BOOK)]
+    assert bought['premiums'] == pytest.approx(-price * 18.0) and bought['payments'] == 0.0
+    assert bought['pnl'] == pytest.approx(bought['value_end'] + bought['premiums'], rel=1e-12)
+
+    rolled(desk, THIRD, 18.0)
+    waiting = CLIENT.post('/book/close', content=dump({'actor': ACTOR}), headers=JSON)
+    assert waiting.status_code == 422 and 'premium EXEC-PREM on 2024-07-02' in waiting.text
+    unsettled = CLIENT.get('/book/pnl').json()
+    settle({'subject': row['key'], 'amount': -price, 'asset': 'ZAR', 'kind': verbs.PREMIUM,
+            'reference': 'PREM-1', 'value_date': '2024-07-02'})
+    settled = CLIENT.get('/book/pnl').json()
+    assert {name: settled[name] for name in ANSWERED} == {
+        name: unsettled[name] for name in ANSWERED}, 'settling the premium moved the P&L'
+    assert unsettled['complete'] is True and unsettled['unknown'] == []
+
+    closed_and_marked()
+    assert between('2024-06-28', '2024-07-01') == traded, 'a day struck never moves'
+    third = between('2024-07-01', '2024-07-02')
+    assert third['complete'] is True and third['unknown'] == [] and third['breaks'] == []
+    held_on = keyed(third)[(instrument_of('CF-PREM'), BOOK)]
+    assert (held_on['premiums'], held_on['payments'], held_on['fees']) == (0.0, 0.0, 0.0)
+
+
 PAYING = cashflow('CF-G', 100_000.0, END)
 DUE_MONDAY = cashflow('CF-J', 10_000.0, END)
 

@@ -93,8 +93,11 @@ STANDING_TYPE = 'run_completed'
 SETTLEMENT_EXPORT = 'settlement_export'
 PNL = 'pnl'
 
-#: Where a diary row stands once the record answers it, stamped by whoever holds the log.
-SETTLED = 'settled'
+#: Where a diary row stands once the record answers it, stamped by whoever holds the log; the kind
+#: of row a fill's consideration is announced as; and the rows a settlement clears -
+#: `derivus_spine.verbs.PREMIUM` and `SETTLES`, respelled.
+SETTLED, PREMIUM = 'settled', 'premium'
+SETTLES = (Diary.PAYMENT, PREMIUM)
 
 #: What an agreement's paper never says: the balance and the holdings are settlement state, brought in
 #: by what the settlement interface files, so a netting set's opening balance and every collateral
@@ -1026,7 +1029,7 @@ def executor(kind=None, files=None):
 def book(deal, quantity, counterparty, netting_set, execution_reference,
          actor_name=None, book_name=None, effective_time=None, price=None, agreement=None,
          portfolio=None, currency=None, rate=None, plan=None, terms=None, quote=None,
-         once=False, folds=None):
+         once=False, folds=None, value_date=None):
     """Book a fill against the canonical instrument `deal`, answering what the record now says
     (`routed`) - or, with `once`, answering the fill already standing under its key (`_booked`):
     a booking sent again.
@@ -1036,9 +1039,9 @@ def book(deal, quantity, counterparty, netting_set, execution_reference,
     `execution_reference` has no default: it is what makes a retry the same fact. `quantity` is the
     position change in units of the instrument; `agreement`, `portfolio` and `price` are filed
     where they are stated, a price in another currency with that `currency` and the `rate` the
-    booking crossed it at. Once any node under the book is declared, a portfolio below the book is
-    one of them - read off the tree ADVANCED in `folds`. `quote` is an acceptance's quote, filed
-    before the fill under the fill's own ticket.
+    booking crossed it at, and the `value_date` it settles on. Once any node under the book is
+    declared, a portfolio below the book is one of them - read off the tree ADVANCED in `folds`.
+    `quote` is an acceptance's quote, filed before the fill under the fill's own ticket.
     """
     spine = package()
     with writing() as log:
@@ -1053,7 +1056,8 @@ def book(deal, quantity, counterparty, netting_set, execution_reference,
                         portfolio, book_name, ', '.join(declared)))
         body = spine.verbs.fill(log, canonical(deal), quantity, counterparty, netting_set,
                                 execution_reference, price=price, agreement=agreement,
-                                portfolio=portfolio, currency=currency, rate=rate)
+                                portfolio=portfolio, currency=currency, rate=rate,
+                                value_date=value_date)
         return once and _booked(log, body, folds) or routed(
             log, 'fill', body, subject, book_name, effective_time, plan, terms, quote, folds)
 
@@ -1792,8 +1796,38 @@ def diary(context, instruments=None):
         instrument = named.get(row['deal_path'])
         rows.append(dict(key=_key(instrument, row['leg'], row['kind'], row['due_date']),
                          instrument=instrument, **row))
+    return ordered(rows)
+
+
+def ordered(rows):
+    """Diary rows in the order the diary reads: by due day, a row due on none first, then kind,
+    leg, position and instrument."""
     return sorted(rows, key=lambda row: (row['due_date'] or '', row['kind'], row['leg'],
                                          row['schedule_index'], row['instrument'] or ''))
+
+
+#: What a premium row names where its fill states no value date: a day nobody can know.
+UNDATED = ('fill {} was booked with a price and no value date, so the day its consideration '
+           'settles is not known')
+
+
+def premiums(book, currency):
+    """A `premium` row for every fill of `book` whose price moves money: its consideration from the
+    bank's side, in the fill's own currency - else `currency`, the book's - due on its
+    `value_date`, keyed as the diary keys a row over its instrument and execution reference, and
+    its deal named by the record's own terms. A fill stating no value date is due on no day, the
+    row saying why (`UNDATED`)."""
+    priced = [fill for fill in fills() if fill['book'] == book and fill.get('price')]
+    terms = folded(lambda log: {fill['instrument']: json.loads(log.store.get(
+        fill['instrument']).decode('utf-8')) for fill in priced})
+    return [dict(Diary._row(
+        PREMIUM, terms[fill['instrument']].get('Reference'), fill['execution_reference'], 0,
+        fill.get('value_date'), currency=fill.get('currency') or currency, determined=True,
+        amount=-float(fill['quantity']) * float(fill['price']),
+        reason=None if fill.get('value_date') else UNDATED.format(fill['execution_reference'])),
+        deal_path=None, netting_set=fill['netting_set'], instrument=fill['instrument'],
+        key=cashflow_key(fill['instrument'], fill['execution_reference'], PREMIUM,
+                         fill.get('value_date'))) for fill in priced]
 
 
 def export_settlements(rows, official_values_hash, due_before):

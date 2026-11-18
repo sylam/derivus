@@ -241,6 +241,41 @@ def test_the_diary_reaches_a_model_as_rows_it_can_act_on(book, tmp_path, monkeyp
         row for row in answer['rows'] if row['due_date'] <= day]
 
 
+def test_a_booking_s_value_date_reaches_the_record_and_the_diary_announces_its_premium(
+        recorded, tmp_path, monkeypatch):
+    """`book_deal` carries the day a booking's consideration settles, and `book_diary` announces
+    the premium due that day: one row of the shape every diary row has, the consideration from the
+    bank's side in the currency it was agreed in.
+
+    Killing mutation: `book_deal` not sending the `value_date` it takes, which leaves the premium
+    due on no day.
+    """
+    from test_spine_engine import netting_set
+
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    document = json.loads(dump(job()))
+    document['Calc']['Deals']['Deals']['Children'].append(
+        json.loads(dump(netting_set('CLIENT_A', 'CPTY_A'))))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        booked = mcp_server.book_deal(
+            json.loads(dump(dict(CASHFLOW, Reference='CF-MCP'))), parent_reference='CLIENT_A',
+            quantity=1.0, execution_reference='EXEC-MCP', actor='subject-desk-one',
+            price=1_000.0, price_currency='ZAR', value_date='2024-07-02')
+        assert booked['written'] is True, booked
+        (row,) = [row for row in mcp_server.book_diary()['rows'] if row['kind'] == 'premium']
+    finally:
+        service.BOOK = None
+    assert (row['reference'], row['leg'], row['amount'], row['currency'], row['due_date']) == (
+        'CF-MCP', 'EXEC-MCP', -1_000.0, 'ZAR', '2024-07-02')
+    assert set(row) == {'key', 'instrument', 'reference', 'deal_path', 'leg', 'schedule_index',
+                        'kind', 'due_date', 'currency', 'amount', 'determined', 'notional',
+                        'index', 'source', 'observed', 'needs', 'reason', 'state',
+                        'netting_set', 'agreement'}
+
+
 def test_the_record_reads_say_so_on_a_box_that_records_nothing(book, tmp_path, monkeypatch):
     """The five reads that need a RECORD, and a deployment that keeps none answers a 404 the tool
     turns into the service's own sentence rather than an empty answer a model would read as

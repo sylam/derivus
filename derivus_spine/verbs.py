@@ -60,14 +60,16 @@ REPLAY_FIELDS = ('plan_hash', 'values_hash', 'engine_version', 'seed', 'quasi_se
 FILE_KINDS = ('market', 'calendar')
 
 #: What a settlement may move, and the one status money moves under. A `payment` settles the diary
-#: row its subject keys, as a bare `settled` does, under the agreement it names where it names one;
-#: a `fee` is money a trade cost that no row announced, filed on its instrument; `collateral` and
-#: `margin` move a balance held under an agreement. Only a payment moves a state - the other three
+#: row its subject keys, as a bare `settled` does, under the agreement it names where it names one,
+#: and a `premium` the row a priced fill's consideration is announced as; a `fee` is money a trade
+#: cost that no row announced, filed on its instrument; `collateral` and `margin` move a balance
+#: held under an agreement. Only the two that settle a row move a state (`SETTLES`) - the others
 #: move money and nothing else. A trade matched with its counterparty is `confirmed`, filed against
 #: its fill key.
-PAYMENT, FEE, COLLATERAL, MARGIN = 'payment', 'fee', 'collateral', 'margin'
-MOVEMENTS = (PAYMENT, FEE, COLLATERAL, MARGIN)
+PAYMENT, FEE, COLLATERAL, MARGIN, PREMIUM = 'payment', 'fee', 'collateral', 'margin', 'premium'
+MOVEMENTS = (PAYMENT, FEE, COLLATERAL, MARGIN, PREMIUM)
 HELD = (COLLATERAL, MARGIN)
+SETTLES = (PAYMENT, PREMIUM)
 SETTLED, CONFIRMED = 'settled', 'confirmed'
 
 #: The book a marks job is filed under - `marks:<book>@<lsn>`, a name no book carries so a compile
@@ -115,7 +117,7 @@ def mints(lane):
 
 def book(log, actor, instrument, quantity, counterparty, netting_set, execution_reference,
          book=None, effective_time=None, price=None, agreement=None, portfolio=None,
-         currency=None, rate=None, ticket=None):
+         currency=None, rate=None, ticket=None, value_date=None):
     """Book a fill, returning the envelope plus the instrument's address.
 
     `instrument` is the canonical JSON of the deal's terms as bytes - the caller canonicalises,
@@ -129,13 +131,13 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
     and `portfolio` say where the position sits and `price` what it was done at, each filed only
     where stated. A price stated in another currency than the book's carries that `currency` and
     the `rate` the booking crossed it at - units of the book's currency per unit of it - so the
-    consideration is on the record as it was agreed and as it was booked. `ticket` is what an
-    approval of this booking signs. The instrument blob is fsynced before the event citing it
-    appends.
+    consideration is on the record as it was agreed and as it was booked, and `value_date` the day
+    it settles. `ticket` is what an approval of this booking signs. The instrument blob is fsynced
+    before the event citing it appends.
     """
     body = fill(log, instrument, quantity, counterparty, netting_set, execution_reference,
                 price=price, agreement=agreement, portfolio=portfolio, currency=currency,
-                rate=rate)
+                rate=rate, value_date=value_date)
     if ticket is not None:
         body['ticket'] = _pinned(ticket, 'ticket')
     envelope = log.append('fill', body, actor=actor, book=book, effective_time=effective_time)
@@ -143,7 +145,7 @@ def book(log, actor, instrument, quantity, counterparty, netting_set, execution_
 
 
 def fill(log, instrument, quantity, counterparty, netting_set, execution_reference, price=None,
-         agreement=None, portfolio=None, currency=None, rate=None):
+         agreement=None, portfolio=None, currency=None, rate=None, value_date=None):
     """The body `book` files, every field it asserts checked and the instrument blob fsynced -
     what a caller routing the fill first asks the writer about before anything appends."""
     address = _blob(log, instrument, 'the canonical instrument')
@@ -168,6 +170,12 @@ def fill(log, instrument, quantity, counterparty, netting_set, execution_referen
                 'was crossed at, a positive number - this states price {!r}, currency {!r} and '
                 'rate {!r}'.format(price, currency, rate))
         body['currency'], body['rate'] = _name(currency, 'currency', 'book'), rate
+    if value_date is not None:
+        if price is None:
+            raise MalformedEvent(
+                'book: value_date {!r} is the day a fill\'s consideration settles, and this fill '
+                'states no price - there is no consideration to date'.format(value_date))
+        body['value_date'] = _day(value_date, 'book')
     return _placed(body, 'book', agreement=agreement, portfolio=portfolio)
 
 
@@ -756,9 +764,10 @@ def _movement(log, subject, status, amount, asset, kind, reference, effective_ti
             'an amount, or the amount once it settled'.format(SETTLED, status))
     if kind not in MOVEMENTS:
         raise MalformedEvent(
-            'transition: kind is {!r}, not one of {} - a {} settles a diary row, a {} is money a '
-            'trade cost on its instrument, and {} and {} move a balance held under an '
-            'agreement'.format(kind, ', '.join(MOVEMENTS), PAYMENT, FEE, COLLATERAL, MARGIN))
+            'transition: kind is {!r}, not one of {} - a {} settles a diary row, a {} the row a '
+            'fill\'s consideration is announced as, a {} is money a trade cost on its instrument, '
+            'and {} and {} move a balance held under an agreement'.format(
+                kind, ', '.join(MOVEMENTS), PAYMENT, PREMIUM, FEE, COLLATERAL, MARGIN))
     if effective_time is None:
         raise MalformedEvent(
             'transition: money moves on a value date, and this movement states none - file it with '

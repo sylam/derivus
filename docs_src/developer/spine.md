@@ -265,7 +265,7 @@ another, each demanded by these acts under the vocabulary's map:
 | `approve` | `approval`, `rejection`, `result_pinned` |
 | `mark` | `market_declared`, `official_close_declared`, `fixing_observed`, `determination`, `file_declared` |
 | `document` | `entity_declared`, `agreement_declared` |
-| `settle` | `status_transition` paying: `settled` moving no money, a `payment` or a `fee` |
+| `settle` | `status_transition` paying: `settled` moving no money, a `payment`, a `premium` or a `fee` |
 | `confirm` | `status_transition` matching a trade: `confirmed` |
 | `collateral` | `status_transition` moving `collateral` or `margin` under an agreement |
 | `admin` | `policy_declared`, `portfolio_declared`, `retention_declared`, `rehash_declared`, `checkpoint`, `seat_enrolled`, `key_wrapped` |
@@ -450,6 +450,22 @@ the key names any.
 `::test_a_barrier_its_history_knocked_in_is_read_as_the_vanilla_it_became`,
 `test_pnl.py::test_a_payment_is_shared_within_the_agreement_it_names`.
 
+**Premiums.** The book's diary also announces what its fills paid or received
+(`service.announced`, `spine.premiums`): one `premium` row per fill of the book whose price moves
+money, its consideration from the bank's side - minus the quantity times the price - in the fill's
+own `currency`, else the book's reporting currency, due on the fill's `value_date`, keyed
+`cashflow_key(instrument, execution_reference, 'premium', value_date)`. A priced fill stating no
+value date is due on no day, its `reason` naming it, so no close waits on it; a fill with no price
+or a price of nothing announces none. The worklist lists a premium due by the book's day among its
+payments, the close waits on it as on a payment, and a `premium` settlement against its key clears
+it. The P&L never reads these rows - its diary is the marks jobs' compile (`window_payments`) - so
+the consideration is counted once, under `premiums` at the fill, and a premium settlement is no
+payment it reads. **Held by**
+`test_diary.py::test_a_premium_is_due_on_its_value_date_until_a_premium_settles_it_into_cash`,
+`::test_a_premium_with_no_value_date_is_due_on_no_day_and_one_with_no_price_is_none`,
+`test_pnl.py::test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l`,
+`test_mcp.py::test_a_booking_s_value_date_reaches_the_record_and_the_diary_announces_its_premium`.
+
 The book file keeps its content and gains `Spine: {lsn, head, hydrated_at}`, a sibling of `Calc`,
 so the pin cannot move a plan. A booking appends first and writes the file second. `GET
 /book/reconcile` folds at the head, where a lost write lives, and names by instrument address a
@@ -458,8 +474,8 @@ terms - a reading, never a refusal. **Held by**
 `test_spine_engine.py::test_the_pin_cannot_move_the_plan_hash`,
 `::test_a_fill_the_file_never_took_is_what_reconcile_is_for`.
 
-A close is legal when nothing due by its day waits: a fixing nobody printed, a payment nobody
-settled, an expiry nobody elected, or any `unreadable` row. A deal the compile left out is judged
+A close is legal when nothing due by its day waits: a fixing nobody printed, a payment or a
+premium nobody settled, an expiry nobody elected, or any `unreadable` row. A deal the compile left out is judged
 as what its history made it, so a barrier its prints knocked out waits on its rebate and on nothing
 after. `GET /book/close/check?date=` answers that, and `POST /book/close` refuses an illegal day
 with nothing appended; a second close for a day supersedes the first. `POST /book/settlements`
@@ -565,11 +581,13 @@ at the same prices is one market, and the age is the oldest of those clocks. **H
 the plan, refused where the book moved under the solve; the pillar age past `pillar_seconds`; and
 the plan acceptance leaves, refused where it is not the one pinned (an edited file). The market is
 reported as `{pinned, current, moved}`, never refused, the desk's window bounding it. Then one act:
-`quote_filed` under the acceptor, the tier step, one unit of the mirror filled under the quote id,
-the file. A quote filed before a tier refuses stands; the client took the price. **Held by**
+`quote_filed` under the acceptor, the tier step, one unit of the mirror filled under the quote id
+at the premium, value dated on the pair's spot date for the trade day (`service.spot_day`, the
+spot rule `structures.tenor_dates` dates the legs with), the file. A quote filed before a tier refuses stands; the client took the price. **Held by**
 `test_spine_engine.py::test_a_booking_between_the_quote_and_the_acceptance_refuses_with_nothing_appended`,
 `::test_an_edited_pending_file_no_longer_says_what_was_quoted`,
-`::test_a_moved_market_between_the_quote_and_the_acceptance_books_and_says_so`.
+`::test_a_moved_market_between_the_quote_and_the_acceptance_books_and_says_so`,
+`::test_an_accepted_premium_settles_on_the_pair_s_spot_date`.
 
 !!! warning "An edit that appends before it writes takes `Book.transact`"
     The acceptance, and `/book/deals` under a home, run under the book lock in one pass, because
@@ -656,7 +674,8 @@ the netting set its positions compile into, judged by the engine first, the agre
 counterparty (`Credit_Support_Amounts.Counterparty`). A later declaration under one id names the
 one whose content it replaced (`supersedes`), as a file's does, so a return to earlier content is a
 new fact while the content in force declared again coalesces. A fill's `quantity` is the signed
-change in units; its optional `agreement`, `portfolio` and `price` say where and at what. One
+change in units; its optional `agreement`, `portfolio` and `price` say where and at what, and
+`value_date` the day that price's consideration settles - refused by name without a price. One
 instrument under two agreements is two positions, credit exposure being per agreement; in two
 portfolios, two. The first booking or quote under a declared agreement splices its set from the
 declared terms, and every compile writes the terms standing at its LSN over it
@@ -687,8 +706,9 @@ anything in whole, so a structure is taken on as the one instrument it is. **Hel
 ## Cash, cost and P&L {#pnl}
 
 A `settled` transition may carry a signed `amount` (received positive), `asset`, `kind` and the
-settlement system's `reference`: a `payment` settles its diary row, a `fee` sits on its instrument,
-`collateral` and `margin` move a balance under a declared agreement. The reference is the movement,
+settlement system's `reference`: a `payment` settles its diary row and a `premium` a fill's premium
+row, the two kinds that move a row's state; a `fee` sits on its instrument; `collateral` and
+`margin` move a balance under a declared agreement. The reference is the movement,
 so a correction under it restates the amount. A payment or a fee may name the declared `agreement`
 it was paid under, and `POST /book/transition` refuses a payment naming none by name where its
 key is due under more than one netting set: the P&L shares a movement among the positions under

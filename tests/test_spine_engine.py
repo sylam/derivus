@@ -1819,6 +1819,42 @@ def test_the_acceptance_files_the_quote_then_the_fill_and_a_retry_coalesces(reco
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_an_accepted_premium_settles_on_the_pair_s_spot_date(recorded, tmp_path):
+    """THE ACCEPTANCE DATES WHAT CHANGES HANDS. A straddle quoted at its strike on the rand desk's
+    book, each rate on its own calendar, charges the client a premium, and the acceptance books
+    the mirror at it: the fill states the pair's spot date for the trade day - Wednesday 18
+    November for Monday 16 November, the day the quote's own legs count delivery from - and the
+    diary announces the premium due that day, received, in the book's currency.
+
+    Killing mutation: the value date the trade day itself, the pair's spot convention unread.
+    """
+    from test_structures import DESK_DAY, desk_book
+
+    document = desk_book(True)
+    document['Calc']['Deals']['Deals']['Children'].append(
+        json.loads(dump(netting_set(CLIENT_SET, 'CPTY_A'))))
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        quote = quote_of('Straddle', {'pair': 'USDZAR', 'expiry': '6M', 'notional': AMOUNT,
+                                      'notional_currency': 'USD', 'strike': 16.8},
+                         netting_set=CLIENT_SET)
+        assert quote['charged_on'] == 'premium' and quote['net'] > 0.0
+        booked = accept(quote).json()
+        assert booked['written'] is True, booked
+        (_, _, fill), = facts(recorded, 'fill')
+        assert (fill['value_date'], fill['price']) == ('2026-11-18', -quote['net'])
+        assert DESK_DAY == '2026-11-16'
+        (row,) = [row for row in CLIENT.get('/book/diary').json()['rows']
+                  if row['kind'] == spine.PREMIUM]
+        assert (row['leg'], row['due_date'], row['currency']) == (
+            quote['quote_id'], '2026-11-18', 'USD')
+        assert row['amount'] == pytest.approx(quote['net'], rel=1e-15)
+    finally:
+        service.BOOK = None
+
+
 class RacingBook(service.Book):
     """A live book that lets a SECOND WRITER in at a named moment - THE GATE'S OWN DATA rather than
     a patch, the way `SpotMovingParams` supplies a terminal, the interleaving a lock exists for
