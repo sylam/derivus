@@ -96,6 +96,7 @@ def factors(vol):
         'FxRate.JPY': {'Domestic_Currency': 'USD', 'Interest_Rate': 'JPY', 'Spot': 1.0 / YEN},
         'InterestRate.USD': flat(0.04), 'InterestRate.SILVER_LEASE': flat(LEASE),
         'InterestRate.GBP': flat(0.05, 'GBP'), 'InterestRate.JPY': flat(0.01, 'JPY'),
+        'InterestRate.USD-OIS': flat(0.039),
         'InterestRate.EUR': {'Currency': 'EUR', 'Day_Count': 'ACT_365', 'Sub_Type': None,
                              'Curve': utils.Curve([], [[tenor(years(k)), k * math.log(1.06) / tenor(
                                  years(k))] for k in range(1, 12)])},
@@ -456,6 +457,10 @@ AMORTISED = [1e7, 8e6, 6e6, 4e6, 2e6]
 #: The payer of ten million five years out, quarterly, booked as a package of its two legs.
 QUARTERS = every(3, 20)
 SWAP_LEGS = [cashflows(FIXED, 'FIXED', 'Sell', QUARTERS, 1e7), cashflows(FLOATING, 'FLOAT', 'Buy', QUARTERS, 1e7)]
+#: Ten million three years out, yearly, received on USD-OIS against USD and the other way round.
+BASIS = [package(reference, [cashflows(FLOATING, 'OIS', ois, every(12, 3), 1e7, curve='USD-OIS'),
+                             cashflows(FLOATING, 'USD', usd, every(12, 3), 1e7)])
+         for reference, ois, usd in (('OIS_RECEIVED', 'Buy', 'Sell'), ('OIS_PAID', 'Sell', 'Buy'))]
 
 
 def document(sets, calculation, vol=0.2):
@@ -566,7 +571,9 @@ def world(tmp_path_factory):
             'SWAP_NETTED': ({}, [node(swap('PAYER', years(5), 'Fixed')), package('RECEIVER', [
                 dict(leg, Buy_Sell='Buy' if leg['Buy_Sell'] == 'Sell' else 'Sell') for leg in SWAP_LEGS])]),
             'TWO_ROWS': ({}, [package('PACKAGE', [cashflows(FLOATING, 'FIVE', 'Buy', every(12, 5), 1e7),
-                                                  cashflows(FLOATING, 'TWO', 'Sell', every(12, 2), 5e6)])])}
+                                                  cashflows(FLOATING, 'TWO', 'Sell', every(12, 2), 5e6)])]),
+            'BASIS_RECEIVED': ({}, BASIS[:1]), 'BASIS_PAID': ({}, BASIS[1:]), 'BASIS_NETTED': ({}, BASIS),
+            'BASIS_BESIDE': ({}, BASIS[1:] + [node(swap('PAYER', years(3), 'Fixed'))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1252,6 +1259,34 @@ def test_a_trade_enters_v_once_whatever_rows_it_reads(world):
                                         cashflows(FLOATING, 'TWO', 'Sell', every(12, 2), 5e6)])])
     assert found.loc['TWO_ROWS', 'V'] == pytest.approx(worth['BOOK_PACKAGE'], rel=1e-12), found.loc['TWO_ROWS']
     assert rows['Value'].iloc[0] == found.loc['TWO_ROWS', 'V'] and math.isnan(rows['Value'].iloc[1]), rows
+
+
+def test_two_floating_legs_on_two_indices_are_one_basis_trade(world):
+    """CRE52.46, CRE52.72 AND CRE52.73: A BASIS TRADE IS HELD IN A HEDGING SET OF ITS OWN. Basis
+    trades, two risk factors in one currency, form a hedging set per basis at half Table 2's
+    supervisory factor, 0.25% for rates. A package receiving USD-OIS on ten million three years out
+    and paying USD is one row: its received leg's, 10,000,000 (1 - e^(-0.15)) / 0.05 = 27,858,404.70
+    in bucket 2, in the set `USD USD/USD-OIS`, the pair in one order so the two ways round net,
+    short it where it receives the second, -1; the add-on 0.25% of that, 69,646.01. Received the
+    other way round it is long, +1, at the same add-on; the two in one set net to nothing; and
+    beside a payer of ten million three years out, whose 27,858,404.70 sits in USD's own set at
+    0.5%, offset by none of it, the add-on 0.75% of 27,858,404.70, 208,938.04.
+
+    Killing mutations: the basis left in the currency's own set - each package its two legs, long
+    and short, its add-on nothing, and the set beside the payer 139,292.02; the pair named with the
+    index received first, every basis row long - the two ways round in two sets, the netted set's
+    add-on 139,292.02; the factor not halved - each package's add-on 139,292.02.
+    """
+    _, output = world
+    found, adjusted = netting_sets(output), 1e7 * supervisory_duration(0.0, 3.0)
+    for name, delta in (('BASIS_RECEIVED', -1.0), ('BASIS_PAID', 1.0)):
+        rows = trades(output, name)
+        assert list(zip(rows['HedgingSet'], rows['Bucket'], rows['SupervisoryFactor'], rows['Delta'],
+                        rows['Component'])) == [('USD USD/USD-OIS', '2', 0.0025, delta, '')], rows
+        assert rows['AdjustedNotional'].tolist() == pytest.approx([adjusted], rel=1e-14), rows
+        assert found.loc[name, 'AddOn_IR'] == pytest.approx(0.0025 * adjusted, rel=1e-14), found.loc[name]
+    assert found.loc['BASIS_NETTED', 'AddOn_IR'] == 0.0, found.loc['BASIS_NETTED']
+    assert found.loc['BASIS_BESIDE', 'AddOn_IR'] == pytest.approx(0.0075 * adjusted, rel=1e-14)
 
 
 def capped(kind):

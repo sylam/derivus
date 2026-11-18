@@ -204,15 +204,16 @@ Grouped by where a validator meets them.
   paragraphs 10(b) and 11(a)), so a `Horizon` naming a file's one-day section weighs that section's
   parameters under them. Unmeasured: the one-day methodology is not in the repository, and
   measuring it takes its constants and one book's margin stated under each horizon.
-- **SA-CCR holds a basis or a volatility trade in its ordinary hedging set** (2026-10-20).
-  CRE52.46-52.47 hold a trade on the basis between two risk factors of one currency, or on a risk
-  factor's volatility, in a hedging set of its own at half, or five times, its class's supervisory
-  factor (CRE52.73). `SACCR` holds every trade in its class's ordinary set at the ordinary factor,
-  so a basis swap offsets the outright rate trades of its currency where its own set would offset
-  none at half the factor, and a volatility trade is charged a fifth of its own set's factor.
-  UNMEASURED: a basis swap and a variance swap booked beside outright trades of their classes, and
-  the add-ons read with each in its own set at its own factor against the ordinary one, would
-  measure it; no type declaring an exposure is a basis swap, and the engine has no variance swap.
+- **SA-CCR holds a volatility trade, and a basis swap booked as one swap, in its ordinary hedging
+  set** (2026-10-20). CRE52.46-52.47 hold a trade on the basis between two risk factors of one
+  currency, or on a risk factor's volatility, in a hedging set of its own at half, or five times,
+  its class's supervisory factor (CRE52.73). `SACCR` reads a package of two floating legs of a
+  currency on two indices in its basis set; a `SwapInterestDeal` booked over two such legs is read
+  off its own terms, a fixed leg against a floating one in its currency's ordinary set, offsetting
+  the outright rate trades its own set would offset none of, and a volatility trade would be
+  charged a fifth of its own set's factor. UNMEASURED: the swap booked beside outright trades of
+  its currency, read off its legs against its own terms, would measure the first; the engine has
+  no variance swap.
 - **SA-CCR reads a cash-settled FX option past its expiry as the forward it would deliver**
   (2026-11-18). From its exercise date an option's delta is the limit of CRE52.40's, plus or minus
   one in the money and nothing out of it, which is the forward a physically settled option leaves

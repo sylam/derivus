@@ -5364,8 +5364,10 @@ class SACCR(NettingSetCalculation):
     children and declaring nothing that is no netting set, is read
     through them, each child's rows its own, the child its `Component` (52.42(4)); amounts fixed
     today read none, their value V's alone (52.10, 52.26), so a fixed and a floating leg are one
-    swap the floating leg carries (52.1 FAQ3); a leg paying a cap, a floor or a digital refuses by
-    name, its caplets (52.43) not built. A credit entity's rating is the
+    swap the floating leg carries (52.1 FAQ3), and two floating legs of a currency, one received and
+    one paid on another index, one basis trade, long the index it receives in the hedging set of the
+    pair at half Table 2's factor (52.46, 52.72-52.73); a leg paying a cap, a floor or a digital
+    refuses by name, its caplets (52.43) not built. A credit entity's rating is the
     mapping's `SACCR.Rating` under its survival curve, AAA to CCC a single name and IG or SG an
     index; an equity is an index where its price's SIMM bucket is 11 or 12, Risk_Equity's index
     buckets; a commodity's type is its price's SIMM bucket, whose `commodity_sets` row in the
@@ -5409,8 +5411,8 @@ class SACCR(NettingSetCalculation):
     margined set 1.5 sqrt(MPOR / 250) (52.48, 52.52).
 
     Not built: CDO tranches (52.41); a digital's collar (52.42(3)), an option declaring it pays one
-    refused by name; basis and volatility hedging sets (52.46-52.47), every trade sitting in its
-    ordinary set; the non-daily, cleared, illiquid and disputed MPOR floors
+    refused by name; volatility hedging sets (52.47), a volatility trade sitting in its ordinary
+    set; the non-daily, cleared, illiquid and disputed MPOR floors
     (52.50(2)-(3), 52.51(2)-(3)), which a netting set declares nothing to read off; several margin
     agreements to a set or sets to an agreement (52.74-52.76).
     """
@@ -5423,7 +5425,11 @@ class SACCR(NettingSetCalculation):
         'rows its own (CRE52.42(4)); amounts fixed today (a fixed leg, a fixed cash flow or list, a fixed',
         'energy leg) carry no risk factor CRE52 charges and read no row, their value in $V$ alone',
         '(CRE52.10, CRE52.26), so a package of a fixed and a floating leg of one currency is one swap the',
-        'floating leg carries (CRE52.1 FAQ3); a leg paying a cap, a floor or a digital on its rate refuses',
+        'floating leg carries (CRE52.1 FAQ3). Basis trades, two risk factors of one currency, form a',
+        'hedging set per basis at half Table 2\'s supervisory factor (CRE52.46, CRE52.72-52.73): two',
+        'floating legs of a currency in a package, one received and one paid on another index, are one',
+        'row, the received leg\'s, in the set of the pair, named in one order so the two ways round net,',
+        'long the index it receives. A leg paying a cap, a floor or a digital on its rate refuses',
         'the run by name, its caplets (CRE52.43) not built. The inputs are:',
         '',
         '- **Currency** the exposures are in, and **Base Date** they are read at.',
@@ -5485,7 +5491,7 @@ class SACCR(NettingSetCalculation):
         'margined (CRE52.10, CRE52.18), a margined set\'s EAD capped at its unmargined one (CRE52.2).',
         '',
         'Not built: CDO tranches (CRE52.41); a digital\'s collar (CRE52.42(3)), an option paying one',
-        'refusing the run by name; basis and volatility hedging sets (CRE52.46-52.47); a trade\'s',
+        'refusing the run by name; volatility hedging sets (CRE52.47); a trade\'s',
         'allocation to several classes (CRE52.28); the non-daily, cleared, illiquid and disputed MPOR',
         'floors (CRE52.50-52.51); several margin agreements to a set, or sets to one (CRE52.74-52.76). A',
         'type declaring no exposure refuses the run by name.'])
@@ -5497,6 +5503,8 @@ class SACCR(NettingSetCalculation):
                   'Commodity': ('Electricity', 'Oil/Gas', 'Metals', 'Agricultural', 'Other')}
     #: Risk_Equity's index buckets, which make an equity an index.
     EQUITY_INDICES = ('11', '12')
+    #: A basis hedging set's supervisory factor as a share of its class's (52.73).
+    BASIS = 0.5
     #: The columns of the netting sets frame and of the trades frame.
     SETS = ('Counterparty', 'Margined', 'MPOR', 'V', 'C', 'RC') + tuple(
         'AddOn_' + asset for asset in SUBCLASSES) + (
@@ -5733,10 +5741,34 @@ class SACCR(NettingSetCalculation):
 
     def package(self, node, mpor):
         """A package's rows, each child's its own as the child its `Component` (52.42(4)), one its
-        compile left out none: a fixed leg and a floating one a swap the floating leg carries."""
-        return [dict(row, Component=row.get('Component') or child['Instrument'].field.get('Reference'))
-                for child in node['Children'] if child['Instrument'] in self.held
-                for row in self.read(child, mpor)]
+        compile left out none: a fixed leg and a floating one a swap the floating leg carries, and
+        two floating legs of a currency, one received and one paid on another index, one basis
+        trade (52.46), long the index it receives in a hedging set of the pair, at half the factor
+        (52.73)."""
+        children = [child for child in node['Children'] if child['Instrument'] in self.held]
+        rows = [[dict(row, Component=row.get('Component') or child['Instrument'].field.get('Reference'))
+                 for row in self.read(child, mpor)] for child in children]
+        # a floating leg's index the curve its compile forecasts on
+        floating = sorted((rows[position][0]['Delta'], position, '.'.join(self.held[deal]['Forward'][-1][
+            utils.FACTOR_INDEX_Offset].name)) for position, deal, terms in self.legs(children) if terms.amount)
+        if len(floating) == 2 and floating[0][0] < 0 < floating[1][0] and floating[0][2] != floating[1][2] and (
+                rows[floating[0][1]][0]['HedgingSet'] == rows[floating[1][1]][0]['HedgingSet']):
+            (_, paid, _), (_, received, index) = floating
+            row, pair = rows[received][0], sorted(name for *_, name in floating)
+            flip = 1.0 if index == pair[0] else -1.0
+            rows[paid], rows[received] = [], [dict(
+                row, HedgingSet='{} {}/{}'.format(row['HedgingSet'], *pair), Component='',
+                SupervisoryFactor=self.BASIS * row['SupervisoryFactor'],
+                **{key: flip * row[key] for key in ('Delta', 'EffectiveNotional', 'Unmargined')})]
+        return [row for found in rows for row in found]
+
+    @staticmethod
+    def legs(children):
+        """`[(position, deal, terms)]` of the legs among `children`: each declaring the currency it
+        pays and its size a table's its compile binds, or none, its amounts fixed today."""
+        return [(position, child['Instrument'], terms) for position, child in enumerate(children) if isinstance(
+            terms := schema.EXPOSURES.get(child['Instrument'].field['Object']), schema.Exposure) and terms.currency
+            and (terms.amount is None or isinstance(child['Instrument'].field[terms.amount], dict))]
 
     def row(self, deal, terms, mpor):
         """A row off `deal`'s declaration `terms`, its maturity factor its set's (`mpor` None where
