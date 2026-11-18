@@ -5599,6 +5599,7 @@ class CommodityFutureDeal(Deal):
 class CommodityAveragePriceSwapDeal(Deal):
     vernacular = 'average price swap, commodity swap, Asian swap'
     observes = Observes('Commodity', 'CommodityPrice', 'Sampling_Data', 1)
+    exposure = Exposure('Units', underlying='Commodity', long=('Buy_Sell', 'Buy'))
     fields = [ADMIN, PRICING, own('CommodityAveragePriceSwapDeal', [
         F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
         F('Commodity', 'Text', default=REQUIRED, factors=['CommodityPrice']),
@@ -7228,6 +7229,9 @@ class FRADeal(Deal):
     vernacular = 'forward rate agreement, FRA'
     observes = Observes('Interest_Rate', 'InterestRate')
     quoted = 'FRA_Rate'
+    # a borrower pays the fixed rate, long the rate; paid at its start, its cash settles there
+    exposure = Exposure('Principal', 'Currency', start='Effective_Date', long=('Borrower_Lender', 'Borrower'),
+                        runs=('Payment_Timing', 'End'))
     fields = [ADMIN, PRICING, own('FRADeal', [
         F('Use_Known_Rate', 'Text', default='No', convention=True, values=['Yes', 'No'],
           description='Yes where the reset has fixed at Known_Rate, which a reset behind the base date must'),

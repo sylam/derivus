@@ -5380,8 +5380,8 @@ class SACCR(NettingSetCalculation):
     A trade's dates count in years of 30/360 from the base date, a whole number of months exact as
     the methodology's examples count a tenor: S its declared start, zero once started, E and M the
     last day its type's tenor fields name (`schema.tenor_fields`), M a trade's S where it settles its
-    cash there, a swaption settled in cash (52.32 Table 1), T its declared expiry, nothing once
-    reached (52.31).
+    cash there, a swaption settled in cash or an FRA paid at its start (52.32 Table 1 and its FAQ2),
+    T its declared expiry, nothing once reached (52.31).
     Its d is an IR or credit notional crossed times SD, averaged over its life where it amortises,
     an FX trade's foreign leg, the larger where both are, a forward's legs its two amounts and an
     option's its amount and that at its strike, or an equity or commodity trade's units at a unit's
@@ -5427,7 +5427,8 @@ class SACCR(NettingSetCalculation):
         'times $SD=(e^{-0.05S}-e^{-0.05E})/0.05$ floored at ten business days, an FX trade\'s foreign leg,',
         'the larger where both are (CRE52.35) - a forward\'s legs its two amounts, an option\'s its amount',
         'and that at its strike, a non-deliverable forward on the pair it buys and sells, its settlement',
-        'currency outside it - and an equity or commodity trade\'s units at a unit\'s price; the',
+        'currency outside it - and an equity or commodity trade\'s units at a unit\'s price, an',
+        'average-price swap\'s all the units it references, fixed or to fix (CRE52.36); the',
         'supervisory delta $\\delta$ (CRE52.38-52.40), $\\pm1$ by its long side or an option\'s Black',
         'delta on Table 2\'s vol at its underlying\'s forward $P$ (CRE52.40 FAQ1, the forward for the',
         'rate and the dividends), a reference price\'s for the delivery its fixing curve maps $T$ to,',
@@ -5450,8 +5451,9 @@ class SACCR(NettingSetCalculation):
         'supervisory delta rather than a model of its own (the US SA-CCR rule\'s preamble, 85 FR',
         '4385-4386; the UAE central bank\'s SA-CCR guidance, Q&A D.5); the',
         'maturity factor (CRE52.48, CRE52.52), $\\sqrt{\\min(M,1)}$ with $M$ the last day the trade is',
-        'active, its start $S$ where it settles its cash there, as a swaption settled in cash does',
-        '(CRE52.31-52.32 Table 1), floored at ten business days, or $1.5\\sqrt{\\mathrm{MPOR}/250}$ under a',
+        'active, its start $S$ where it settles its cash there, as a swaption settled in cash and an FRA',
+        'paid at its start do (CRE52.31-52.32 Table 1 and its FAQ2), floored at ten business days, or',
+        '$1.5\\sqrt{\\mathrm{MPOR}/250}$ under a',
         'margined set; and',
         '$D=d\\,\\delta\\,\\mathrm{MF}$. The add-ons (CRE52.55-52.70): IR by currency over three maturity',
         'buckets, $\\mathrm{EN}=(D_1^2+D_2^2+D_3^2+1.4D_1D_2+1.4D_2D_3+0.6D_1D_3)^{1/2}$; FX by pair,',

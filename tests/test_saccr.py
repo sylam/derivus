@@ -372,6 +372,22 @@ BARRIERS = [
      'Expiry_Date': years(1)}]
 
 
+def fra(reference, side, timing):
+    """Table 1's forward rate agreement on ten million dollars from six months to a year out."""
+    return {'Object': 'FRADeal', 'Reference': reference, 'Currency': 'USD', 'Discount_Rate': 'USD',
+            'Interest_Rate': 'USD', 'Principal': 1e7, 'FRA_Rate': 4.0, 'Borrower_Lender': side,
+            'Payment_Timing': timing, 'Effective_Date': SIX_MONTHS, 'Maturity_Date': years(1)}
+
+
+#: The agreement borrowed and paid at its end, lent and paid at its start discounted; and a sold
+#: swap of a thousand barrels of WTI's average over three monthly fixings, settled four months out.
+SINGLES = [fra('PAID_AT_END', 'Borrower', 'End'), fra('PAID_AT_START', 'Lender', 'Discounted'),
+           {'Object': 'CommodityAveragePriceSwapDeal', 'Reference': 'WTI_SWAP', 'Currency': 'USD',
+            'Discount_Rate': 'USD', 'Commodity': 'WTI', 'Carry': 'CARRY', 'Buy_Sell': 'Sell', 'Units': 1e3,
+            'Fixed_Price': 80.0, 'Settlement_Date': BASE + pd.DateOffset(months=4), 'Sampling_Data': [
+                [BASE + pd.DateOffset(months=k), 0.0, 1.0] for k in (1, 2, 3)]}]
+
+
 def node(deal):
     return {'Instrument': {'.Deal': deal}}
 
@@ -482,7 +498,8 @@ def world(tmp_path_factory):
             'EQUITY_OPTIONS': ({}, [node(deal) for deal in EQUITY_OPTIONS]),
             'ENERGY': ({}, [node(deal) for deal in ENERGY]),
             'ASIANS': ({}, [node(deal) for deal in ASIANS]),
-            'BARRIERS': ({}, [node(deal) for deal in BARRIERS])}
+            'BARRIERS': ({}, [node(deal) for deal in BARRIERS]),
+            'SINGLES': ({}, [node(deal) for deal in SINGLES])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -1053,6 +1070,27 @@ def test_a_barrier_option_reads_as_its_vanilla(world):
     assert rows['Delta'].tolist() == pytest.approx(expected, rel=1e-13), rows
     assert list(rows['AdjustedNotional']) == [1e6 * EURO] * 2 + [4e6, 1e6, 8e4], rows
     assert rows['MaturityFactor'].tolist() == pytest.approx([1.0] * 3 + [math.sqrt(0.5), 1.0], rel=1e-15)
+
+
+def test_an_fra_matures_where_it_pays_and_an_average_price_swap_reads_its_units(world):
+    """CRE52.32 TABLE 1 AND ITS FAQ2, CRE52.34, CRE52.36 AND CRE52.39. Table 1's forward rate
+    agreement for the period six months to a year out: S 0.5 and E 1, its adjusted notional ten
+    million times SD = (e^(-0.025) - e^(-0.05)) / 0.05, 4,816,097.5, in bucket 2; borrowed and paid
+    at its end, M is E, long the rate, its maturity factor one; lent and paid at its start, M is
+    the start (FAQ2), short, at (1/2)^0.5. A sold swap of a thousand barrels of WTI's average: its
+    units at today's 80, 80,000, short, its maturity factor its settlement's, (120/360)^0.5.
+
+    Killing mutations: the agreement paid at its start matured at E - its maturity factor one; a
+    lender read long - its delta +1.
+    """
+    _, output = world
+    rows = trades(output, 'SINGLES')
+    adjusted = 1e7 * supervisory_duration(0.5, 1.0)
+    assert rows['AdjustedNotional'].tolist() == pytest.approx([adjusted, adjusted, 8e4], rel=1e-14), rows
+    assert list(rows['Delta']) == [1.0, -1.0, -1.0], rows
+    assert rows['MaturityFactor'].tolist() == pytest.approx(
+        [1.0, math.sqrt(0.5), math.sqrt(120 / 360)], rel=1e-15), rows
+    assert list(zip(rows['HedgingSet'], rows['Bucket'])) == [('USD', '2'), ('USD', '2'), ('Energy', '2')]
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',

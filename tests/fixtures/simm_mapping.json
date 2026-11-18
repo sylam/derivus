@@ -4,6 +4,7 @@
    "SwapInterestDeal": "IR",
    "SwaptionDeal": "IR",
    "CapDeal": "IR",
+   "FRADeal": "IR",
    "YieldInflationCashflowListDeal": "IR",
    "FXOptionDeal": "FX",
    "FXDiscreteExplicitAsianOption": "FX",
@@ -23,6 +24,7 @@
    "CommodityForwardDeal": "Commodity",
    "CommodityFutureDeal": "Commodity",
    "CommodityBarrierOption": "Commodity",
+   "CommodityAveragePriceSwapDeal": "Commodity",
    "FloatingEnergyDeal": "Commodity",
    "EnergySingleOption": "Commodity"
   }
