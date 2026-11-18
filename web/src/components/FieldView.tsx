@@ -301,7 +301,8 @@ function TableEdit({ name, declared, value, onAmend }: {
 /** One scalar input, saved on Enter or on leaving it where its VALUE changed - `2000000.00` over
  * `2000000` is no change - and with `ask` only on the confirm beside it, declining restoring the
  * value held. A save refreshes the book and the effect below re-syncs: the file is the truth. A
- * refusal renders verbatim. Exported because a quote ladder's value cells are the same input. */
+ * refusal renders verbatim over the value that stands, until the next edit. Exported because a
+ * quote ladder's value cells are the same input. */
 export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
   name: string; descriptor: Descriptor; value: unknown; onAmend: AmendField; ask?: string;
 }) {
@@ -318,12 +319,15 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
   const numeric = ['Float', 'Integer'].includes(descriptor.widget)
     || descriptor.obj === 'Percent' || descriptor.obj === 'Basis';
   const wire = (text: string) => JSON.stringify(encodeScalar(descriptor, text));
-  const restore = () => { setRaw(incoming); setAsking(false); setRefused(null); };
+  const restore = () => { setRaw(incoming); setAsking(false); };
+  // a refused value goes back to the one standing, the refusal kept beside it
+  const refuse = (said: string[] | null) => { if (said) restore(); setRefused(said); };
+  const edit = (text: string) => { setRaw(text); setRefused(null); };
 
   function commit(typed: string) {
     const text = numeric ? ungrouped(typed.trim()) : typed;
     if (numeric && text !== '' && !isFinite(Number(text))) {
-      setRefused([`${text} is not a number: write it with a decimal point, as 1234.5 or 1,234.5`]);
+      refuse([`${text} is not a number: write it with a decimal point, as 1234.5 or 1,234.5`]);
     } else if (wire(text) === wire(incoming)) restore();
     else if (ask) setAsking(true);
     else void save(text);
@@ -335,9 +339,9 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
     setAsking(false);
     setSaving(true);
     try {
-      setRefused(await onAmend(name, encodeScalar(descriptor, text)));
+      refuse(await onAmend(name, encodeScalar(descriptor, text)));
     } catch (error) {
-      setRefused([failure(error).error]);
+      refuse([failure(error).error]);
     } finally {
       filing.current = false;
       setSaving(false);
@@ -349,14 +353,14 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
   if (descriptor.widget === 'Dropdown') {
     input = (
       <select value={raw} disabled={saving}
-              onChange={(e) => { setRaw(e.target.value); commit(e.target.value); }}>
+              onChange={(e) => { edit(e.target.value); commit(e.target.value); }}>
         {(descriptor.values ?? []).map((option) => <option key={option}>{option}</option>)}
       </select>
     );
   } else if (descriptor.widget === 'Checkbox') {
     input = (
       <input type="checkbox" checked={raw === 'true'} disabled={saving}
-             onChange={(e) => { setRaw(String(e.target.checked));
+             onChange={(e) => { edit(String(e.target.checked));
                                 commit(String(e.target.checked)); }} />
     );
   } else {
@@ -368,7 +372,7 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
         type={descriptor.widget === 'DatePicker' ? 'date' : 'text'}
         inputMode={numeric ? 'decimal' : undefined} value={shown} disabled={saving}
         onFocus={() => setEditing(true)}
-        onChange={(e) => setRaw(e.target.value)}
+        onChange={(e) => edit(e.target.value)}
         onBlur={() => { setEditing(false); commit(raw); }}
         onKeyDown={(e) => { if (e.key === 'Enter') commit(raw); }}
       />
