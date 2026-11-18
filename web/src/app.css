@@ -310,6 +310,8 @@ table.data td {
 
 table.data td.n { text-align: right; font-family: var(--mono); font-size: 12px; }
 table.data th.n { text-align: right; }
+/* a sentence in a cell - why a ticket waits - wraps rather than widening the table */
+table.data td.prose { white-space: normal; min-width: 260px; }
 
 table.data tr:hover td { background: var(--surface-2); }
 

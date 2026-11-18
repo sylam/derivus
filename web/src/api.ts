@@ -6,7 +6,8 @@ import type { Agreement, Entity, Position } from './positions';
 import type {
   ActivityPage, BookMarket, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva,
   CalculationOutcome,
-  CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, DescribeResult, JobDoc, PathMaps,
+  CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
+  PathMaps,
   PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome,
   TablePage, ValidateResult, Worklist,
 } from './types';
@@ -155,6 +156,11 @@ export const postTransition = (fact: Record<string, unknown>) =>
 export const getCloseCheck = (date: string) =>
   call<CloseVerdict>('GET', `/book/close/check?date=${date}`);
 export const postClose = (date: string) => call<Recorded>('POST', '/book/close', signed({ date }));
+// a verdict on a ticket under the acting seat: signed, or refused with the reason on the row
+export const approveTicket = (ticket: string) =>
+  call<Decided>('POST', '/book/approve', signed({ ticket }));
+export const rejectTicket = (ticket: string, reason: string) =>
+  call<Decided>('POST', '/book/reject', signed({ ticket, reason }));
 // the positions standing, each where the file holds it with the status its ticket reads, the paper
 // they sit under and the declared tree - the keys the grouped views file the book by
 export const getBookPositions = () => call<{ positions: Position[] }>('GET', '/book/positions');

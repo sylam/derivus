@@ -416,11 +416,11 @@ def trade_commodities(table):
 
 def approve_what_waits(desk, rejecting=()):
     """The desk's approver: every ticket its worklist lists as pending, approved - but those whose
-    execution the script names in `rejecting`, which it rejects and leaves standing."""
+    trade reference the script names in `rejecting`, which it rejects and leaves standing."""
     def act(table):
         approver = seat(desk, 'approver')
         for row in table.work(approver, 'pending'):
-            rejected = row['what'].startswith(rejecting) if rejecting else False
+            rejected = (row['reference'] or '').startswith(rejecting) if rejecting else False
             ruled = (binding.reject_ticket(row['key'], 'over the desk\'s appetite', approver)
                      if rejected else binding.approve_ticket(row['key'], approver))
             table.did(approver, 'reject_ticket' if rejected else 'approve_ticket',
@@ -581,7 +581,7 @@ DAY = (('product control', PRODUCT_CONTROL, open_the_day(D0)),
        ('rates trader', seat('RATES', 'trader'), trade_rates),
        ('commodities trader', seat('COMMODITIES', 'trader'), trade_commodities),
        ('fx approver', seat('FX', 'approver'), approve_what_waits('FX')),
-       ('rates approver', seat('RATES', 'approver'), approve_what_waits('RATES', 'EXEC-SWAP')),
+       ('rates approver', seat('RATES', 'approver'), approve_what_waits('RATES', 'SWAP')),
        ('commodities approver', seat('COMMODITIES', 'approver'),
         approve_what_waits('COMMODITIES')),
        ('confirmations', CONFIRMATIONS, confirm_what_waits),

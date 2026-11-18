@@ -3549,6 +3549,11 @@ def book_worklist(actor: str = None):
     happened, and closing it is somebody's act. A read no seat signs on a box checking no token
     lists them all, `seat` null; otherwise `seat` is the seat the lists wait on. 404 where no home
     is configured.
+
+    A ticket's row - `pending`, `unconfirmed`, `rejected` - names its trade: the `reference` and
+    `deal_path` the file holds it at, the `client`, the `agreement` and its `booker`; a pending
+    one also its `tier`, the `price` and `currency` it was booked at, and `waits_on`, the tier's
+    own sentence for what it wants.
     """
     document, _ = recording().read()
     book, sight = book_name(document), spine.sight(actor)
@@ -3556,8 +3561,8 @@ def book_worklist(actor: str = None):
     demands = spine.demands()
     day = structures.timestamp(document['Calc']['Calculation']['Base_Date']).strftime('%Y-%m-%d')
     rows = [row for row in spine.standing(folds=folds()) if row['book'] == book]
-    names = {address: deal_at(document, path)['Instrument']['.Deal'].get('Reference')
-             for path, address in booked_instruments(document).items()}
+    names = named_trades(document, {row['instrument'] for row in rows if row['tickets']})
+    clients = client_names()
     moved = {row['subject']: row for row in spine.lifecycle()['transitions']}
     market = spine.designation(spine.PNL)
     closes = [] if market is None else spine.closes(market)
@@ -3567,13 +3572,12 @@ def book_worklist(actor: str = None):
     def row(kind, what, key, lsn, when):
         return {'kind': kind, 'what': what, 'key': key, 'lsn': lsn, 'since': when}
 
-    def named(instrument):
-        return names.get(instrument) or instrument[:12]
-
     def traded(position, entry):
         # a restruck clip keeps the instrument it was filled on, which is not its position's
-        return (entry['execution_reference'] if entry['instrument'] == position['instrument']
-                else 'the restrike of ' + named(position['instrument']))
+        return '{}{} for {}'.format(
+            '' if entry['instrument'] == position['instrument'] else 'the restrike of ',
+            names.get(position['instrument'], {}).get('reference') or position['instrument'][:12],
+            clients.get(position['counterparty'], position['counterparty']))
 
     def ticket(position, entry):
         return entry['ticket']
@@ -3592,9 +3596,26 @@ def book_worklist(actor: str = None):
             for entry in position['tickets']:
                 at = key(position, entry)
                 if waiting(position, entry, at):
-                    found[at] = row(kind, '{} {}'.format(name(position, entry), what), at,
-                                    entry['lsn'], entry['at'])
+                    found[at] = dict(
+                        row(kind, '{} {}'.format(name(position, entry), what), at, entry['lsn'],
+                            entry['at']), client=clients.get(position['counterparty'],
+                                                             position['counterparty']),
+                        agreement=position['agreement'], booker=entry['actor'],
+                        **names.get(position['instrument'], {'reference': None, 'deal_path': None}))
         return list(found.values())
+
+    def waiting(found):
+        # what a pending trade was booked at and the sentence its tier waits on, off its own fact
+        if not found:
+            return found
+        booked = spine.folded(lambda log: {row['lsn']: log.open_body(log.frame_at(row['lsn']))
+                                           for row in found})
+        tiers, reporting = spine.package().tiers, reporting_currency(document)
+        return [dict(row, tier=booked[row['lsn']].get('tier'), price=booked[row['lsn']].get(
+            'price'), currency=booked[row['lsn']].get('currency') or reporting,
+            waits_on=tiers.standing_approval({'name': booked[row['lsn']].get('tier'),
+                                              'four_eyes': True}, row['booker'],
+                                             spine.verdicts(row['key']))[1]) for row in found]
 
     # a seat that posts collateral nowhere pays nothing for calls it cannot see
     due = [] if day not in marks or sight is not None and sight[demands['collateral']] == [] else (
@@ -3611,8 +3632,9 @@ def book_worklist(actor: str = None):
             currency=call['currency'], unknown=call['unknown'])
 
     lists = {
-        'pending': ticketed(demands['approval'], 'pending', 'awaits a second seat\'s approval',
-                            ticket, lambda position, entry, at: entry['status'] == 'pending'),
+        'pending': waiting(ticketed(
+            demands['approval'], 'pending', 'awaits a second seat\'s approval', ticket,
+            lambda position, entry, at: entry['status'] == 'pending')),
         'payments': [dict(row(entry['kind'], '{} {} pays {} {}'.format(
             entry['reference'], entry['leg'],
             'an undetermined amount' if entry['amount'] is None else entry['amount'],
@@ -3622,7 +3644,8 @@ def book_worklist(actor: str = None):
                                        day)['outstanding']
             if entry['kind'] in SETTLES and see(entry['instrument'])],
         'unconfirmed': ticketed(demands[confirmed], 'unconfirmed', 'is not confirmed', confirming,
-                                unconfirmed, lambda position, entry: entry['execution_reference']),
+                                unconfirmed, lambda position, entry: '{} of {}'.format(
+                                    entry['execution_reference'], traded(position, entry))),
         'calls': [called(call) for call in due if call['direction'] or call['unknown']],
         'unmarked': [row('unmarked', 'the close of {} on {} is not marked'.format(
             close['date'], market), close['date'], close['lsn'], close['date'])

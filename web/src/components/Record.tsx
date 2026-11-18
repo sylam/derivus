@@ -64,7 +64,7 @@ export function ReconcileBanner() {
  * it: six lists read off what stands, so a row leaves the moment its fact lands, held in the store
  * and asked again where the record's head or the seat moved (`wantsWorklist`), never on the beat
  * or the file alone - the answer compiles the diary. Nothing at all where nothing waits; a read
- * that failed says so. A row opens where it is cleared - the Back Office or the P&L. */
+ * that failed says so. A row opens where it is cleared - the Back Office, the P&L, the trade. */
 export function WorklistBanner() {
   const { state, dispatch } = useApp();
   const [open, setOpen] = useState(false);
@@ -104,7 +104,8 @@ export function WorklistBanner() {
             <tbody>
               {WAITING.flatMap(([list]) => worklist[list].map((row) => (
                 <tr key={`${row.kind}/${row.key}/${row.lsn}`} className="pick"
-                    onClick={() => dispatch({ type: 'TAB', tab: clearedOn[list] ?? 'backoffice' })}>
+                    onClick={() => (list === 'rejected' ? opened(dispatch, row.deal_path)
+                      : dispatch({ type: 'TAB', tab: clearedOn[list] ?? 'backoffice' }))}>
                   <td>{row.kind}</td>
                   <td>{row.what}</td>
                   <td>{stampText(row.since)}</td>

@@ -6,6 +6,7 @@
 
 import { formatNumber } from './tokens';
 import { GROUP, type TreeNode } from './tree';
+import type { DealNode } from './types';
 
 /** One row of `GET /book/positions`: the fold's own row, and where the book file holds it. */
 export type Position = {
@@ -63,6 +64,18 @@ export const positionId = (position: Position): string =>
 /** The positions by their ids. */
 export const byId = (positions: Position[]): Map<string, Position> =>
   new Map(positions.map((position) => [positionId(position), position]));
+
+/** The node of the file at a deal path ('0/2/1'), or undefined where it holds none. */
+export function nodeAt(nodes: DealNode[], path: string): DealNode | undefined {
+  let node: DealNode | undefined;
+  let level = nodes;
+  for (const position of path.split('/').map(Number)) {
+    node = level[position];
+    if (!node) return undefined;
+    level = node.Children ?? [];
+  }
+  return node;
+}
 
 /** The positions each node of the file CARRIES, by its deal path: the first node holding the
  * terms, which the book prices at the net, and never a later clip of the same terms, which it

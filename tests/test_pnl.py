@@ -1990,7 +1990,7 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
                                              'reason': 'over the limit'}).status_code == 200
     listed = worklist()
     assert waiting(listed)['rejected'] == [rejected['ticket']] and listed['rejected'][0][
-        'what'] == 'EXEC-R was rejected and still stands'
+        'what'] == 'CF-A for CPTY_A was rejected and still stands'
     booked(LONG, -1.0, 'EXEC-R2', BOOK + '/Rates', 17_800_000.0)
     closing = fills(recorded)[-1]
     assert waiting(worklist())['rejected'] == [], 'a trade closed out still waits'

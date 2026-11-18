@@ -1,8 +1,13 @@
 import { useEffect, useState } from 'react';
-import { failure, getCloseCheck, postClose, postTransition } from '../api';
+import {
+  approveTicket, failure, getCloseCheck, postClose, postTransition, rejectTicket,
+} from '../api';
+import { cellText, sizeOf } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
-import { useApp } from '../state';
-import type { CloseVerdict, WorkRow } from '../types';
+import { stampText } from '../desk';
+import { nodeAt } from '../positions';
+import { opened, useApp } from '../state';
+import type { CloseVerdict, Decided, WorkRow } from '../types';
 
 /** The three lists this seat clears, each by its own verb. */
 type List = 'payments' | 'unconfirmed' | 'calls';
@@ -12,8 +17,8 @@ const LISTS: { list: List; title: string; verb: string }[] = [
   { list: 'calls', title: 'Collateral called', verb: 'collateral' },
 ];
 
-/** The back office's seat: the payments due, the trades unconfirmed and the collateral the
- * day's marks call, each row beside the fact that clears it, and the book's day's
+/** What waits on this seat: the tickets it signs, the payments due, the trades unconfirmed and the
+ * collateral the day's marks call, each row beside the fact that clears it, and the book's day's
  * close behind the check's own verdict. Read off the ONE worklist the banner reads, so the two
  * never count apart, and nothing kept here - a row leaves when its fact lands. A refusal is the
  * service's own sentence. */
@@ -38,7 +43,7 @@ export function BackOfficeView() {
     return (
       <EmptyState
         title="The back office works the live book's record."
-        hint="Start the service with --book and a spine home: the payments due, the trades to confirm and the collateral called appear here, each with the fact that clears it."
+        hint="Start the service with --book and a spine home: the tickets to sign, the payments due, the trades to confirm and the collateral called appear here, each with the fact that clears it."
       />
     );
   }
@@ -47,13 +52,14 @@ export function BackOfficeView() {
   if (!worklist) {
     return error ? (
       <div className="main"><div className="panel"><div className="error-box">{error}</div></div></div>
-    ) : <EmptyState title="Reading what waits…" hint="The diary's payments, the fills, the day's calls." />;
+    ) : <EmptyState title="Reading what waits…" hint="The tickets, the diary's payments, the fills, the day's calls." />;
   }
   return (
     <div className="main">
       <div className="panel">
         {error && <div className="error-box">{error}</div>}
         {check && <CloseCheck check={check} />}
+        <Tickets rows={worklist.pending} count={worklist.counts.pending} />
         {LISTS.map(({ list, title, verb }) => (
           <section className="card" key={list}>
             <h3>{title} ({worklist.counts[list]}) <span className="hint">{verb}</span></h3>
@@ -73,6 +79,100 @@ export function BackOfficeView() {
         ))}
       </div>
     </div>
+  );
+}
+
+/** The tickets waiting for this seat's signature, each a trade as the desk reads it - the client,
+ * the deal, how much, what it was booked at, who booked it, since when and why it waits, in the
+ * tier's own words - beside the two verdicts that clear it. What each verdict answered stays
+ * here after its row leaves, which it does when the record's head moves past it. */
+function Tickets({ rows, count }: { rows: WorkRow[]; count: number }) {
+  const [said, setSaid] = useState<string | null>(null);
+  return (
+    <section className="card">
+      <h3>Tickets to sign ({count}) <span className="hint">approve</span></h3>
+      {said && <div className="hint">{said}</div>}
+      {rows.length ? (
+        <div className="tablewrap">
+          <table className="data">
+            <thead>
+              <tr>
+                <th>Trade</th><th>Client</th><th>Deal</th><th className="n">Amount</th>
+                <th>Ccy</th><th className="n">Booked at</th><th>Booker</th><th>Waiting since</th>
+                <th>Why it waits</th><th />
+              </tr>
+            </thead>
+            <tbody>
+              {rows.map((row) => <Ticket key={row.key} row={row} onSaid={setSaid} />)}
+            </tbody>
+          </table>
+        </div>
+      ) : <div className="hint">nothing waits on this seat</div>}
+      {rows.length > 0 && (
+        <div className="hint">
+          Not on the record yet, so not shown: the margin, the spread charged and the limit used.
+        </div>
+      )}
+    </section>
+  );
+}
+
+/** One ticket and its two verdicts: signed, or refused with a reason the row keeps. The refusal of
+ * either is the service's sentence, verbatim. */
+function Ticket({ row, onSaid }: { row: WorkRow; onSaid: (said: string) => void }) {
+  const { state, dispatch } = useApp();
+  const [reason, setReason] = useState('');
+  const [refused, setRefused] = useState<string | null>(null);
+  const [filing, setFiling] = useState(false);
+  const deal = row.deal_path && state.doc ? nodeAt(state.doc.Calc.Deals.Deals.Children,
+                                                   row.deal_path)?.Instrument['.Deal'] : undefined;
+  const object = String(deal?.Object ?? '');
+  const size = deal ? sizeOf(deal, object, state.schema) : {};
+  const trade = row.reference ?? row.key.slice(0, 12);
+
+  async function decide(verdict: () => Promise<Decided>) {
+    setFiling(true);
+    try {
+      const answer = await verdict();
+      setRefused(null);
+      onSaid(`${trade} for ${row.client}: ${answer.status}, recorded at LSN ${
+        answer.recorded.lsn}`);
+    } catch (error) {
+      setRefused(failure(error).error);
+    } finally {
+      setFiling(false);
+    }
+  }
+
+  return (
+    <tr>
+      <td>
+        <button className="ghost" onClick={() => opened(dispatch, row.deal_path)}>{trade}</button>
+      </td>
+      <td>{row.client ?? ''}<div className="hint">{row.agreement ?? ''}</div></td>
+      <td>{object}{size.side ? <div className="hint">{String(size.side.value)}</div> : null}</td>
+      <td className="n">{size.amount ? cellText(size.amount.value) : ''}</td>
+      <td>{size.of ? String(size.of.value) : ''}</td>
+      <td className="n">
+        {row.price === null || row.price === undefined ? '' : `${cellText(row.price)} ${
+          row.currency ?? ''}`}
+      </td>
+      <td>{row.booker ?? ''}</td>
+      <td>{stampText(row.since)}</td>
+      <td className="prose">{row.waits_on ?? ''}</td>
+      <td>
+        <span className="editcell">
+          <button className="ghost" disabled={filing}
+                  onClick={() => decide(() => approveTicket(row.key))}>approve</button>
+          <input placeholder="reason" title="why it is refused - the record keeps it on the row"
+                 value={reason}
+                 onChange={(event) => setReason(event.target.value)} />
+          <button className="ghost" disabled={filing || !reason.trim()}
+                  onClick={() => decide(() => rejectTicket(row.key, reason.trim()))}>refuse</button>
+          {refused && <span className="refusal">{refused}</span>}
+        </span>
+      </td>
+    </tr>
   );
 }
 

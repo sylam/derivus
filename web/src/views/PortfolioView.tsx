@@ -2,8 +2,8 @@ import { amendDeal } from '../api';
 import { DealPanels, DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Tree, type TreeNode } from '../components/Tree';
 import {
-  GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, portfolioTree, type Paper,
-  type Position,
+  GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, nodeAt, portfolioTree,
+  type Paper, type Position,
 } from '../positions';
 import { useApp, written } from '../state';
 import type { DealNode, Descriptor } from '../types';
@@ -24,17 +24,6 @@ function toTree(nodes: DealNode[], containers: string[], path = ''): TreeNode[] 
       children: node.Children ? toTree(node.Children, containers, id) : undefined,
     };
   });
-}
-
-function nodeAt(nodes: DealNode[], path: string): DealNode | undefined {
-  let node: DealNode | undefined;
-  let level = nodes;
-  for (const position of path.split('/').map(Number)) {
-    node = level[position];
-    if (!node) return undefined;
-    level = node.Children ?? [];
-  }
-  return node;
 }
 
 /** The book as a tree beside the deal picked. Where the desk keeps a record the tree groups by

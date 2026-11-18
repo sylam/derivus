@@ -337,11 +337,14 @@ export type Reconcile = {
 /** One row of `GET /book/worklist`: what waits, and `key` the fact that clears it is filed
  * against - a ticket, a diary key, a fill's own key, an agreement, a day; a payment carries its
  * amount, currency and the agreement it is due under where it is one, a call the amount and
- * currency it calls, and a call nobody can work out what is not known. */
+ * currency it calls, and a call nobody can work out what is not known. A ticket's row names its
+ * trade, and a pending one its tier, what it was booked at and why it waits. */
 export type WorkRow = {
   kind: string; what: string; key: string; lsn: number | null; since: string | null;
   amount?: number | null; currency?: string | null; agreement?: string | null;
   unknown?: { instrument: string | null; what: string }[];
+  reference?: string | null; deal_path?: string | null; client?: string | null;
+  booker?: string; tier?: string | null; price?: number | null; waits_on?: string | null;
 };
 
 /** `GET /book/close/check` - whether a close on `date` is legal, and the diary rows it waits on. */
@@ -353,6 +356,9 @@ export type CloseVerdict = {
 
 /** What a write to the record answers: the position it landed at, beside its own fields. */
 export type Recorded = { recorded: { lsn: number } };
+
+/** What a verdict on a ticket answers: where it landed and what the trade reads now. */
+export type Decided = Recorded & { ticket: string; portfolio: string; status: string | null };
 
 /** `GET /book/worklist` - six lists of what waits on the seat asking, read off what stands, so a
  * row leaves when its fact lands: how many each holds, and the newest of them. `seat` is the seat
