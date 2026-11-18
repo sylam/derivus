@@ -96,6 +96,12 @@ PNL = 'pnl'
 #: Where a diary row stands once the record answers it, stamped by whoever holds the log.
 SETTLED = 'settled'
 
+#: What an agreement's paper never says: the balance and the holdings are settlement state, brought in
+#: by what the settlement interface files, so a netting set's opening balance and every collateral
+#: row's amount are refused in its terms.
+AGREEMENT_STATE = ('Opening_Balance',)
+HOLDING_AMOUNTS = ('Amount', 'Units', 'Principal')
+
 #: The factor families whose level is positive, read off the engine's own declarations.
 POSITIVE = tuple(name for name, declared in vars(riskfactors).items()
                  if isinstance(declared, type) and getattr(declared, 'positive', False))
@@ -595,6 +601,11 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
     balance its spots cannot cross, as every valuation does. `runs` False is a job that values
     nothing - a diary's schedules - and reads no balance at all. The margin is never written, nor
     a movement dated after the base date. The `cash` fold advances in `folds` (`advancing`).
+
+    A netting set materialising a declared agreement - its `Reference` the agreement's id - whose
+    paper is not the terms standing at `lsn` (`paper`) is written those terms, keeping its children,
+    its balance and its holdings' amounts, so a corrected agreement reaches every run from the event
+    that recorded it; the file keeps its copy, which `/book/reconcile` names.
     """
     if not configured():
         return document
@@ -603,16 +614,21 @@ def compiled_job(document, lsn=None, strict=True, runs=None, folds=None):
     except ValueError:
         return document
     held = _nets(lsn, book_name(document))
-    balances = {} if runs is False else _balances(document, lsn, folds)
+    papers = _papers(document, lsn)
+    balances = {} if runs is False else _balances(document, papers, lsn, folds)
     if (runs or document['Calc']['Calculation'].get('Object')) == BaseValuation.__name__:
         balances = {}
-    if not held and not balances and not _observing(document):
+    if not held and not balances and not papers and not _observing(document):
         return document
     filled = deepcopy(document)
     _hold(filled, held)
     for _, node in walk_job_deals(filled):
         deal = node['Instrument']['.Deal']
-        if deal.get('Object') == 'NettingCollateralSet' and deal.get('Reference') in balances:
+        if deal.get('Object') != 'NettingCollateralSet':
+            continue
+        if deal.get('Reference') in papers:
+            node['Instrument']['.Deal'] = deal = _papered(deal, papers[deal['Reference']])
+        if deal.get('Reference') in balances:
             deal['Opening_Balance'] = balances[deal['Reference']]
     observing = _observing(filled)
     # an index is named in the market's base currency, which only an observed deal asks
@@ -649,17 +665,19 @@ def _nets(lsn=None, book=None):
     return nets
 
 
-def _balances(document, lsn=None, folds=None):
+def _balances(document, papers, lsn=None, folds=None):
     """`{agreement: balance}` - the `Opening_Balance` of each collateralised netting set of
-    `document` the record holds collateral under at `lsn`: what it holds by the job's base date,
-    counted as the call counts it (`CSA.valued`), in the set's `Balance_Currency`, every other
-    asset crossed at the job's own spots (`PnL.rates`). The `cash` fold is ADVANCED in `folds`,
-    and folded only where such a set exists. A set holding an asset those spots cannot cross
-    REFUSES by name, a plan and a read alike: the book lacks that market, and nothing is valued on
-    a zero."""
-    sets = {deal.get('Reference'): deal for deal in (
+    `document` the record holds collateral under at `lsn`, each read on the paper `papers` holds
+    for it where it holds one: what it holds by the job's base date, counted as the call counts it
+    (`CSA.valued`), in the set's `Balance_Currency`, every other asset crossed at the job's own
+    spots (`PnL.rates`). The `cash` fold is ADVANCED in `folds`, and folded only where such a set
+    exists. A set holding an asset those spots cannot cross REFUSES by name, a plan and a read
+    alike: the book lacks that market, and nothing is valued on a zero."""
+    sets = {deal.get('Reference'): papers.get(deal.get('Reference'), deal) for deal in (
         node['Instrument']['.Deal'] for _, node in walk_job_deals(document))
-        if deal.get('Object') == 'NettingCollateralSet' and deal.get('Collateralized') == 'True'}
+        if deal.get('Object') == 'NettingCollateralSet'}
+    sets = {agreement: terms for agreement, terms in sets.items()
+            if terms.get('Collateralized') == 'True'}
     if not sets:
         return {}
     spine = package()
@@ -684,6 +702,43 @@ def _balances(document, lsn=None, folds=None):
         if holding:
             balances[agreement] = spine.projections.CSA.valued(holding, dials, fx)
     return balances
+
+
+def paper(block):
+    """A netting set as paper says it - its `Children`, its balance and every collateral holding's
+    amount left out, being positions and settlement state rather than terms."""
+    stated = {key: value for key, value in block.items()
+              if key not in ('Children',) + AGREEMENT_STATE}
+    if isinstance(stated.get('Collateral_Assets'), dict):
+        stated['Collateral_Assets'] = {table: [
+            {field: value for field, value in row.items() if field not in HOLDING_AMOUNTS}
+            if isinstance(row, dict) else row for row in rows or []]
+            for table, rows in stated['Collateral_Assets'].items()}
+    return stated
+
+
+def _papers(document, lsn=None):
+    """`{agreement: paper}` - the terms declared at `lsn` for each netting set of `document`
+    materialising an agreement whose paper is not those terms; folded only where a set is."""
+    sets = [node['Instrument']['.Deal'] for _, node in walk_job_deals(document)
+            if node['Instrument']['.Deal'].get('Object') == 'NettingCollateralSet']
+    declared = {row['agreement']: paper(row['terms']) for row in agreements(lsn)} if sets else {}
+    return {deal['Reference']: declared[deal['Reference']] for deal in sets
+            if deal.get('Reference') in declared and paper(deal) != declared[deal['Reference']]}
+
+
+def _papered(deal, terms):
+    """The netting set `deal` on the paper `terms`, keeping what paper never says: its balance, and
+    the amount of the holding at each collateral row's position."""
+    papered = dict(terms, **{key: deal[key] for key in AGREEMENT_STATE if key in deal})
+    held = deal.get('Collateral_Assets')
+    if isinstance(terms.get('Collateral_Assets'), dict) and isinstance(held, dict):
+        papered['Collateral_Assets'] = {table: [
+            dict(row, **{key: holding[key] for key in HOLDING_AMOUNTS if key in holding})
+            if isinstance(row, dict) and isinstance(holding, dict) else row
+            for row, holding in zip(rows, list(held.get(table) or []) + [None] * len(rows))]
+            for table, rows in terms['Collateral_Assets'].items()}
+    return papered
 
 
 def _hold(document, nets):

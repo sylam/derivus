@@ -65,7 +65,7 @@ from derivus_spine import oracle, policy, projections
 from derivus_spine.capability import CAPABILITIES_POLICY, canonical_document
 
 import test_spine_identity
-from test_service import file_world
+from test_service import VANILLA, file_world
 
 ACTOR = 'subject-desk-one'
 BASE = pd.Timestamp('2024-06-28')
@@ -4102,6 +4102,77 @@ def test_the_first_booking_under_a_declared_agreement_brings_its_set(recorded, d
     desk.write_text(json.dumps(document, indent=2), newline='\n')
     assert CLIENT.get('/book/reconcile').json()['terms_mismatch'] == [{
         'agreement': 'ISDA-A', 'deal_path': held[0], 'fields': ['Liquidation_Period']}]
+
+
+def test_a_corrected_agreement_is_the_paper_every_run_prices_from_the_event_that_recorded_it(
+        recorded, desk):
+    """THE PAPER IS THE RECORD'S. The first booking under a declared agreement brings its set into
+    the file; legal then corrects the received threshold from out of reach to nothing, and the
+    set's CVA falls with it - every run compiles the paper standing at its own position in the
+    record over the file's copy, the set's children, balance and holdings' amounts kept, a book
+    holding nothing under it included - while the file keeps the paper it was spliced with, which
+    `/book/reconcile` names. The book compiled at the position before the correction is the first
+    paper's: its xVA job is the first run's and values to the first number.
+
+    Killing mutations: the paper not written over the file's set, under which the second CVA is the
+    first; the compile returning the file where only the paper moved, which hands the book holding
+    nothing the first paper.
+    """
+    desk.write_text(json.dumps(json.loads(dump(job(factors=dict(FACTORS, **EQUITY), sections={
+        'Price Models': {'GBMAssetPriceModel.EQ': {'Vol': 0.25, 'Drift': 0.0}},
+        'Model Configuration': {'.ModelParams': {
+            'modeldefaults': {'EquityPrice': 'GBMAssetPriceModel'}, 'modelfilters': {}}}}))),
+        indent=2), newline='\n')
+    surviving(desk, 'LEI-A')
+    assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
+                       headers=JSON).status_code == 200
+
+    def declared(threshold):
+        terms = dict(netting_set('ISDA-A', 'LEI-A')['Instrument']['.Deal'], Collateralized='True',
+                     Collateral_Assets={'Cash_Collateral': [{'Currency': 'USD'}]})
+        terms['Credit_Support_Amounts'] = dict(terms['Credit_Support_Amounts'], Received_Threshold={
+            '.CreditSupportList': [[1, threshold]]})
+        answer = CLIENT.post('/book/agreements', content=dump({
+            'agreement': 'ISDA-A', 'entity': 'LEI-A', 'kind': 'ISDA 2002 with CSA',
+            'terms': terms}), headers=JSON)
+        assert answer.status_code == 200, answer.text
+
+    def xva():
+        CLIENT.post('/book/xva', content=dump({'netting_sets': ['ISDA-A']}), headers=JSON)
+        service.EXECUTOR.queue.join()
+        row = {row['reference']: row for row in CLIENT.get('/book/xva').json()['sets']}['ISDA-A']
+        assert row['status'] == 'done', row
+        return row
+
+    declared(1e9)
+    booked = ticketed('EXEC-A', agreement='ISDA-A', parent_reference=None,
+                      deal=dict(VANILLA, Reference='OPT-A')).json()
+    assert booked['written'] is True, booked
+    first, before = xva(), head(recorded)
+    declared(0.0)
+    second = xva()
+    assert 0.0 < second['cva'] < first['cva'], (first['cva'], second['cva'])
+    assert CLIENT.get('/book/reconcile').json()['terms_mismatch'] == [{
+        'agreement': 'ISDA-A', 'deal_path': '1', 'fields': ['Credit_Support_Amounts']}]
+
+    document = json.loads(desk.read_text())
+    pinned = spine.compiled_job(document, lsn=before, strict=False, runs='CreditMonteCarlo')
+    (_, node), = service.netting_sets(pinned)
+    run = service.xva_document(pinned, node, 'LEI-A')
+    assert derivus.content_hash(run) == first['plan_hash'], 'the pinned book is not the first one'
+    assert float(service.load(run).run_job()[1]['Results']['cva']) == first['cva']
+
+    written = deal_at(document, '1')['Instrument']['.Deal']
+    written['Opening_Balance'] = 5.0
+    written['Collateral_Assets']['Cash_Collateral'][0]['Amount'] = 3.0
+    unheld = dict(document, Calc=dict(document['Calc'], Deals=dict(
+        document['Calc']['Deals'], Reference='another-desk')))
+    for compiled in (service.priced(document), spine.compiled_job(unheld)):
+        compiled = deal_at(compiled, '1')
+        terms = compiled['Instrument']['.Deal']
+        assert (terms['Credit_Support_Amounts']['Received_Threshold'], terms['Opening_Balance'],
+                terms['Collateral_Assets']['Cash_Collateral'][0]['Amount'],
+                len(compiled['Children'])) == ({'.CreditSupportList': [[1, 0.0]]}, 5.0, 3.0, 1)
 
 
 def test_the_set_s_counterparty_is_the_agreement_s_entity(recorded, desk):

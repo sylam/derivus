@@ -55,7 +55,7 @@ features kept ahead of their build, not rows to close.
   positions by agreement and portfolio, instrument terms and each agreement's netting set, but the
   book file stays the materialisation, checked by `/book/reconcile`. One composer closes it: a view
   (a portfolio, the book, or an agreement netted across portfolios) and a point in the record give
-  the job. The XVA tab reads netting sets off the file until then.
+  the job. The XVA tab reads the file's netting sets, on the record's paper, until then.
 - **Prints as one fact, the archive as their fold.** A rate history, a close, a vendor correction
   and a reset are all cells under `(index, date, source)`: one fact, a source and a blob of dated
   rows (close, low, high), filed at any time. One fold resolves the latest print per cell, sources

@@ -128,7 +128,8 @@ from ._version import __version__
 from .config import Config, ModelParams, as_json, decode_wire, family_entries
 from .instruments import construct_instrument
 from .calculation import Diary, calculation_class
-from .spine import SETTLED, Collateral, PnL, book_name, diary, export_settlements, replay
+from .spine import (AGREEMENT_STATE, HOLDING_AMOUNTS, SETTLED, Collateral, PnL, book_name, diary,
+                    export_settlements, paper, replay)
 
 LOG = logging.getLogger(__name__)
 
@@ -2081,19 +2082,6 @@ def terms_moved(document):
     return found
 
 
-def paper(block):
-    """A netting set as paper says it - its `Children`, its balance and every collateral holding's
-    amount left out, being positions and settlement state rather than terms."""
-    stated = {key: value for key, value in block.items()
-              if key not in ('Children',) + AGREEMENT_STATE}
-    if isinstance(stated.get('Collateral_Assets'), dict):
-        stated['Collateral_Assets'] = {table: [
-            {field: value for field, value in row.items() if field not in HOLDING_AMOUNTS}
-            if isinstance(row, dict) else row for row in rows or []]
-            for table, rows in stated['Collateral_Assets'].items()}
-    return stated
-
-
 def behind(pinned):
     """How far the record has moved since the file was written: every event, and the FILLS AND
     AMENDMENTS among them, which are the only ones a position can be made of.
@@ -3119,13 +3107,6 @@ def collateral_calls(document, marks, day, market, sight, verb=None, positions=N
             through=True)
         calls = Collateral.calls(close, valued, agreements, movements, None if filed else day)
     return {'date': day, 'marks': marks[day]['lsn'], 'lsn': head, 'calls': calls}
-
-
-#: What an agreement's paper never says: the balance and the holdings are settlement state, brought in
-#: by what the settlement interface files, so a netting set's opening balance and every collateral
-#: row's amount are refused in its terms.
-AGREEMENT_STATE = ('Opening_Balance',)
-HOLDING_AMOUNTS = ('Amount', 'Units', 'Principal')
 
 
 def agreement_terms(terms, agreement, entity):

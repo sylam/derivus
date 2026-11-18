@@ -382,8 +382,9 @@ instead, a redo being a second run of what the first pass already filed.
 UNDER A SPINE HOME THE BOOK PRICES AT ITS NET. The verbs that price the live book - `/book/risk`,
 `/book/xva`, `/book/price`, `/calculations/run` and a quote's risk-impact step, beside `/execute`
 and `/prepare` - price it compiled: every position the record holds written at its net, the same
-terms' second node under one set ignored as the first one's clip, and every print the declared
-sources order filled in. A deal the file holds that nobody booked prices as written, one unit,
+terms' second node under one set ignored as the first one's clip, every print the declared
+sources order filled in, and every netting set a declared agreement materialises on the terms the
+record holds for it, the file's own copy being what `GET /book/reconcile` compares. A deal the file holds that nobody booked prices as written, one unit,
 outside the P&L until `POST /book/deals` `{action: 'fill', deal_path}` takes it on, a fill of one
 under its own reference that moves no number; `GET /book/reconcile` names each such deal under
 `in_file_not_in_record`, on a file nothing has pinned as on any other. Every deal type declares which of its fields are

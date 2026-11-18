@@ -413,6 +413,12 @@ so a plan named once is the plan that runs and an auditor recompiles from what w
   non-base legs' prints. A plan is `strict` and refuses an unordered index; a read names it on the
   row. **Held by** `test_spine_engine.py::test_a_print_dated_after_the_base_date_is_left_standing`,
   `test_diary.py::test_a_cross_is_the_ratio_of_its_legs_prints_and_waits_for_both`.
+- **Paper.** A netting set materialising a declared agreement, its `Reference` the agreement's id,
+  whose paper (`spine.paper`) is not the terms standing at the compile's LSN is written those terms,
+  its children, balance and holdings' amounts kept, so a correction prices from the event that
+  recorded it and a job compiled before it prices the earlier paper. The file keeps its copy, which
+  reconcile names. **Held by**
+  `test_spine_engine.py::test_a_corrected_agreement_is_the_paper_every_run_prices_from_the_event_that_recorded_it`.
 - **Collateral balances**, for a run that reads one: [Collateral](#collateral).
 
 ## The diary, reconcile and the close {#the-diary}
@@ -649,7 +655,8 @@ new fact while the content in force declared again coalesces. A fill's `quantity
 change in units; its optional `agreement`, `portfolio` and `price` say where and at what. One
 instrument under two agreements is two positions, credit exposure being per agreement; in two
 portfolios, two. The first booking or quote under a declared agreement splices its set from the
-declared terms. **Held by** `test_spine_paper.py::test_a_position_is_keyed_where_it_sits`,
+declared terms, and every compile writes the terms standing at its LSN over it
+([the plan](#the-plan)). **Held by** `test_spine_paper.py::test_a_position_is_keyed_where_it_sits`,
 `::test_a_return_to_earlier_paper_is_a_new_fact_and_a_repeat_of_the_standing_paper_is_one`,
 `test_spine_engine.py::test_the_first_booking_under_a_declared_agreement_brings_its_set`,
 `::test_the_set_s_counterparty_is_the_agreement_s_entity`,
@@ -788,9 +795,9 @@ beside an adversary and scripted faults; its roles are callables, so a model hos
 
 ## Open {#open}
 
-Unbuilt parts of the design: the deal tree is the book file with nets written on, not composed
-from the fold; and a print is not yet one fact feeding both a calibration's archive and a deal's
-fixings ([designed, not built](roadmap.md#designed-not-built)). The rotation and replay limits are
+Unbuilt parts of the design: the deal tree is the book file with nets and paper written on, not
+composed from the fold; and a print is not yet one fact feeding both a calibration's archive and a
+deal's fixings ([designed, not built](roadmap.md#designed-not-built)). The rotation and replay limits are
 [trust limits](#trust-limits) and the replay tuple's reach is on
 [Model Limitations](../limitations.md#the-engine); which verbs take a seat and whether a rotation
 is signed by the key it retires are
