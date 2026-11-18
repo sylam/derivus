@@ -5780,8 +5780,7 @@ class SACCR(NettingSetCalculation):
         # a floating leg's index the curve its compile forecasts on
         floating = sorted((rows[position][0]['Delta'], position, '.'.join(self.held[deal]['Forward'][-1][
             utils.FACTOR_INDEX_Offset].name)) for position, deal, terms in legs if terms.amount)
-        if len(floating) == 2 and floating[0][0] < 0 < floating[1][0] and floating[0][2] != floating[1][2] and (
-                rows[floating[0][1]][0]['HedgingSet'] == rows[floating[1][1]][0]['HedgingSet']):
+        if len(floating) == 2 and floating[0][0] < 0 < floating[1][0] and floating[0][2] != floating[1][2]:
             (_, paid, _), (_, received, index) = floating
             row, pair = rows[received][0], sorted(name for *_, name in floating)
             flip = 1.0 if index == pair[0] else -1.0
