@@ -877,8 +877,8 @@ def retire_market_overrides(paths: list[list[str]]) -> dict:
 
 @MCP.tool()
 async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
-                                     pillars: list = None, wait_seconds: float = 360.0,
-                                     ctx: Context = None) -> dict:
+                                     pillars: list = None, actor: str | None = None,
+                                     wait_seconds: float = 360.0, ctx: Context = None) -> dict:
     """Tick the live book's market off THIS workstation's Bloomberg terminal - the whole "get me
     today's market" move, and on a fresh machine the call that PROVISIONS the desk.
 
@@ -916,10 +916,9 @@ async def tick_market_from_bloomberg(pairs: list = None, expiries: list = None,
     a candidate whose last print is stale (a retired benchmark keeps quoting a plausible price -
     that is the trap the verification exists for), a seed spelling the terminal does not know, or
     a bootstrap complaint that refuses the whole write. Each names the ticker or the file, so the
-    next move is to fix that one thing and call again.
+    next move is to fix that one thing and call again. `actor` is the seat the run is queued under.
     """
-    request = {key: value for key, value in (('pairs', pairs), ('expiries', expiries),
-                                             ('pillars', pillars)) if value is not None}
+    request = _stated(pairs=pairs, expiries=expiries, pillars=pillars, actor=actor)
     submitted = await asyncio.to_thread(
         service().call, 'POST', '/book/bloomberg', json=request)
     # a provisioning answer is what installed and what was refused, so this one is not summarised
@@ -974,7 +973,8 @@ def configure_securities(block: str, key: str, entry: dict | list | None = None)
 
 @MCP.tool()
 async def verify_securities(block: str = None, key: str = None, securities: list = None,
-                            wait_seconds: float = 600.0, ctx: Context = None) -> dict:
+                            actor: str | None = None, wait_seconds: float = 600.0,
+                            ctx: Context = None) -> dict:
     """Re-verify the desk's ticker vocabulary against THIS workstation's terminal, and write what
     it answered into the security map.
 
@@ -993,9 +993,8 @@ async def verify_securities(block: str = None, key: str = None, securities: list
 
     Call it after `configure_securities` adds an entry, and when a curve row reads `unmapped` or
     carries a verdict in `used`. Past `wait_seconds` the id and the way forward travel in `hint`
-    and the verification carries on service-side."""
-    request = {name: value for name, value in (('block', block), ('key', key),
-                                               ('securities', securities)) if value is not None}
+    and the verification carries on service-side. `actor` is the seat the run is queued under."""
+    request = _stated(block=block, key=key, securities=securities, actor=actor)
     submitted = await asyncio.to_thread(
         service().call, 'POST', '/book/securities/verify', json=request)
     # a verification's answer is the drift and the verdicts, so this one is not summarised

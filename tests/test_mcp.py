@@ -494,7 +494,7 @@ def test_no_tool_advertises_the_context_the_sdk_injects():
     for name, tool in tools.items():
         assert 'ctx' not in tool.input_schema['properties'], name
     assert set(tools['tick_market_from_bloomberg'].input_schema['properties']) == {
-        'pairs', 'expiries', 'pillars', 'wait_seconds'}
+        'pairs', 'expiries', 'pillars', 'actor', 'wait_seconds'}
 
 
 def test_every_waiting_tool_is_async_and_takes_the_context():
@@ -956,20 +956,28 @@ def test_a_recorded_desk_books_and_accepts_through_the_binding(recorded, tmp_pat
 QUEUED = (('price_candidate', {}), ('execute_book', {}),
           ('solve_deal', {'deal': json.loads(dump(BOOKED)), 'field': 'Amount'}),
           ('book_risk_summary', {}), ('recalc_xva', {'netting_sets': ['CLIENT_A']}),
-          ('setup_market', {'deal_path': '0'}), ('calibrate_spot_model', {'pair': 'USDZAR'}))
+          ('calibrate_spot_model', {'pair': 'USDZAR'}))
+
+#: The tools whose admitted run is a trip to the terminal, which no test makes: each is asked only
+#: as the seats the queue refuses.
+TERMINAL = (('setup_market', {'deal_path': '0'}), ('tick_market_from_bloomberg', {}),
+            ('verify_securities', {'block': 'fx_spot'}))
 
 
-@pytest.mark.parametrize('name, arguments', QUEUED, ids=[name for name, _ in QUEUED])
+@pytest.mark.parametrize('name, arguments, admitted', [
+    (*tool, admitted) for tools, admitted in ((QUEUED, True), (TERMINAL, False)) for tool in tools],
+    ids=[name for name, _ in QUEUED + TERMINAL])
 def test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none(
-        name, arguments, recorded, tmp_path):
+        name, arguments, admitted, recorded, tmp_path):
     """Under a capabilities document the queue admits a named seat or nothing, so each tool that
-    puts work on the hub's compute, or values the book on the request thread, answers a seat
-    holding `validate` and, naming none, is refused in the service's own words. The book carries a
-    netting set, the FX vol bootstrapper, a short spot-model ladder and a ticked surface, so every
-    tool reaches that question. `setup_market` asks for a terminal first, so a box whose `blpapi`
-    does not import skips it.
+    puts work on the hub's compute, or values the book on the request thread, is refused naming no
+    seat in the service's own words, refused by name as a seat holding no grant, and answers a seat
+    holding `validate`. A terminal's tools are asked only the two refusals, and a box whose
+    `blpapi` does not import, which refuses them for the terminal first, skips them. The book
+    carries a netting set, the FX vol bootstrapper, a short spot-model ladder and a ticked surface,
+    so every tool reaches the queue's question.
 
-    Killing mutation: any one of the seven not forwarding its `actor`, which the service refuses
+    Killing mutation: any one of the nine not forwarding its `actor`, which the service refuses
     as unnamed.
     """
     from derivus_spine import SpineLog, policy
@@ -984,7 +992,7 @@ def test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none(
     service.BOOK = service.Book(str(path))
     try:
         assert mcp_server.update_market_quotes(json.loads(dump(fx_vol_quotes())))['written']
-        if name == 'setup_market' and not mcp_server.desk_status()['terminal']['present']:
+        if not admitted and not mcp_server.desk_status()['terminal']['present']:
             pytest.skip('the service refuses a box with no terminal before it asks the seat')
         log = SpineLog(recorded)
         try:
@@ -1000,7 +1008,9 @@ def test_a_tool_that_asks_the_queue_answers_the_seat_it_names_and_refuses_none(
 
         with pytest.raises(ToolError, match='no actor for this act'):
             asked()
-        assert asked(actor='subject-desk-two'), name
+        with pytest.raises(ToolError, match='subject-desk-three'):
+            asked(actor='subject-desk-three')
+        assert not admitted or asked(actor='subject-desk-two'), name
     finally:
         service.BOOK = None
 
@@ -1147,7 +1157,7 @@ def test_the_ticker_vocabulary_and_its_evidence_are_one_read(book, tmp_path, mon
     assert set(tools['configure_securities'].input_schema['properties']) == {
         'block', 'key', 'entry'}
     assert set(tools['verify_securities'].input_schema['properties']) == {
-        'block', 'key', 'securities', 'wait_seconds'}
+        'block', 'key', 'securities', 'actor', 'wait_seconds'}
     assert bare['provisioned'] is False and set(bare['seed']) == {'rates'}
     assert bare['used'] == [] and bare['seed']['rates']['ZAR']['prefix'] == 'SASW'
 
