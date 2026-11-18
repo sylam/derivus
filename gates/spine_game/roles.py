@@ -457,12 +457,12 @@ def settle_what_is_due(day):
                   instructed=[row['key'] for row in instructed])
         for number, row in enumerate(instructed):
             paid = dict(subject=row['key'], status=SETTLED, actor=SETTLEMENTS,
-                        amount=row['amount'], asset=row['currency'], kind='payment',
+                        amount=row['amount'], asset=row['currency'], kind=row['kind'],
                         value_date=row['due_date'], reference='PAY-{}-{}'.format(day, number))
             landed = binding.file_status(**paid)
             table.standing['paid'] = (paid, landed['recorded']['lsn'])
-            table.did(SETTLEMENTS, 'file_status payment {} {}'.format(row['amount'],
-                                                                      row['currency']),
+            table.did(SETTLEMENTS, 'file_status {} {} {}'.format(row['kind'], row['amount'],
+                                                                 row['currency']),
                       recorded=landed['recorded']['lsn'])
 
     return act

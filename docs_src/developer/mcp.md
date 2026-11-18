@@ -84,7 +84,7 @@ structure takes it as `name`. **Held by**
 | `book_markets`, `declare_market` | `GET`/`POST /book/markets`: the closes, names and snapshots; a name declared |
 | `book_files`, `declare_file` | `GET`/`POST /book/files`: the files the record declares by content, beside the ones the book names by path; a file declared |
 | `book_reconcile`, `book_activity` | `GET /book/reconcile`, `/book/activity`: file against record; the record's strip |
-| `export_settlements` | `POST /book/settlements`: the settlement file for a day |
+| `export_settlements` | `POST /book/settlements`: the settlement file for a day, its payments and premiums each with its kind |
 | `file_status`, `file_lifecycle` | `POST /book/transition`, `/book/lifecycle`: a payment, a premium or a fee under the agreement it names, a confirmation, collateral moved - `settle`, `confirm`, `collateral`; a fixing, election or ruling |
 | `book_cash`, `collateral_calls` | `GET /book/cash`, `/book/collateral`: money moved; what each CSA calls |
 | `mark_book`, `book_pnl` | `POST /book/marks`, `GET /book/pnl`: the close's marks; the P&L between them |

@@ -471,8 +471,9 @@ def test_a_floating_amount_is_null_and_the_exporter_refuses_it_by_name(unrecorde
 
     Killing mutations: the determined flag taken from the fixed amount rather than from whether the
     schedule has resets left to fix, which exports every floating coupon as a zero; the cutoff
-    ignored, which settles a payment years early; and a row naming no currency totalled anyway,
-    which is money going nowhere.
+    ignored, which settles a payment years early; a row naming no currency totalled anyway, which
+    is money going nowhere; and that refusal screening payments alone, which totals a premium
+    under none.
     """
     serving(tmp_path, [node(swap())])
     rows = payments(diary_rows()['rows'])
@@ -491,9 +492,11 @@ def test_a_floating_amount_is_null_and_the_exporter_refuses_it_by_name(unrecorde
     assert exported['values_hash'] == 'a' * 64 and len(exported['rows']) == len(fixed)
     assert exported['totals']['ZAR'] == pytest.approx(sum(row['amount'] for row in fixed))
 
-    with pytest.raises(ValueError) as unnamed:
-        spine.export_settlements([dict(fixed[0], currency=None)], 'a' * 64, ever)
-    assert 'no currency' in str(unnamed.value)
+    assert {row['kind'] for row in exported['rows']} == {Diary.PAYMENT}
+    for kind in spine.SETTLES:
+        with pytest.raises(ValueError) as unnamed:
+            spine.export_settlements([dict(fixed[0], kind=kind, currency=None)], 'a' * 64, ever)
+        assert 'no currency' in str(unnamed.value), kind
 
     cutoff = min(row['due_date'] for row in fixed)
     trimmed = spine.export_settlements(fixed, 'a' * 64, cutoff)

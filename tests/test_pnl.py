@@ -130,13 +130,14 @@ def marked():
     return answer.json()
 
 
-def designated(home, fixings=True, indices=(INDEX,)):
-    """The desk's workflow on the record: the close P&L is marked at, and the fixings' source."""
+def designated(home, fixings=True, indices=(INDEX,), processes=('pnl',)):
+    """The desk's workflow on the record: the close each of `processes` reads, and the fixings'
+    source."""
     log = SpineLog(home)
     try:
         policy.declare(log, ACTOR, policy.TIERS_POLICY,
                        {'tiers': [{'name': 'desk', 'four_eyes': True}],
-                        'designations': {'pnl': 'official'}})
+                        'designations': dict.fromkeys(processes, 'official')})
         if fixings:
             policy.declare(log, ACTOR, policy.FIXINGS_POLICY,
                            {'sources': {index: ['EXCHANGE'] for index in indices}})
@@ -1114,9 +1115,17 @@ def test_a_settlement_eight_business_days_late_is_matched_to_the_row_it_settles(
         assert answer['breaks'] == short, (window, answer['breaks'])
 
 
-#: A cashflow bought for a rand premium, and the figures a P&L answers with beside its rows.
+#: A cashflow bought for a rand premium, one paying rand on the third day, and the figures a P&L
+#: answers with beside its rows.
 PREMIUM_PAID = cashflow('CF-PREM', 300_000.0, START + pd.DateOffset(years=1))
+PAYS_THIRD = cashflow('CF-DUE', 40_000.0, THIRD)
 ANSWERED = ('rows', 'total', 'unknown', 'breaks', 'complete')
+
+
+def struck(day):
+    answer = CLIENT.post('/book/settlements', json={'due_before': day})
+    assert answer.status_code == 200, answer.text
+    return answer.json()
 
 
 def test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l(recorded, desk):
@@ -1127,12 +1136,22 @@ def test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l(recorded
     is the same, row by row, before it settles and after it settles as a `premium`; the day's
     window, closed once it has, names nothing unknown and counts no premium or payment on it.
 
-    Killing mutation: the premium's settlement filed as a payment, which the P&L reads as money
-    against a payment no diary of its own announces.
+    THE SETTLEMENT FILE INSTRUCTS IT. Struck for the third day it carries the premium beside the
+    rand coupon due that day, each row with its kind, and their sum under ZAR; struck for the day
+    before it carries neither, and the first day's premiums, booked with no value date, never. The
+    P&L read after the strike is the one read before it and the worklist still waits on both; each
+    row filed back under its own key and kind clears the worklist and leaves the file.
+
+    Killing mutations: the premium's settlement filed as a payment, which the P&L reads as money
+    against a payment no diary of its own announces; the exporter keeping payments alone, or the
+    verb handing it the compile without the premiums; the row's kind left off or read as a
+    payment; a settled premium instructed again; an undated premium taken as due on every day;
+    the cutoff waived for a premium; and the export settling what it instructs.
     """
-    designated(recorded, fixings=False)
+    designated(recorded, fixings=False, processes=('pnl', 'settlement_export'))
     price = 266_539.62
     booked(LONG, 1.0, 'EXEC-A', BOOK, 17_800_000.0)
+    booked(PAYS_THIRD, 1.0, 'EXEC-DUE', BOOK, 720_000.0)
     closed_and_marked()
     rolled(desk, END, 18.0)
     booked(PREMIUM_PAID, 1.0, 'EXEC-PREM', BOOK, price, 'ZAR', value_date='2024-07-02')
@@ -1152,8 +1171,23 @@ def test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l(recorded
     waiting = CLIENT.post('/book/close', content=dump({'actor': ACTOR}), headers=JSON)
     assert waiting.status_code == 422 and 'premium EXEC-PREM on 2024-07-02' in waiting.text
     unsettled = CLIENT.get('/book/pnl').json()
-    settle({'subject': row['key'], 'amount': -price, 'asset': 'ZAR', 'kind': verbs.PREMIUM,
-            'reference': 'PREM-1', 'value_date': '2024-07-02'})
+    filed, coupon = struck('2024-07-02'), due('CF-DUE', '2024-07-02')
+    assert CLIENT.get('/book/pnl').json() == unsettled, 'striking the file moved the P&L'
+    assert [(entry['kind'], entry['key'], entry['amount'], entry['currency'], entry['due_date'])
+            for entry in filed['rows']] == [
+        (verbs.PAYMENT, coupon['key'], 40_000.0, 'ZAR', '2024-07-02'),
+        (verbs.PREMIUM, row['key'], -price, 'ZAR', '2024-07-02')]
+    assert filed['totals'] == {'ZAR': pytest.approx(40_000.0 - price, rel=1e-15)}
+    assert struck('2024-07-01')['rows'] == [], 'a file struck for the day before carried them'
+    assert [entry['due_date'] for entry in CLIENT.get('/book/diary').json()['rows']
+            if entry['kind'] == verbs.PREMIUM and entry['leg'] != 'EXEC-PREM'] == [None, None]
+    assert [(entry['kind'], entry['key']) for entry in worklist()['payments']] == [
+        (entry['kind'], entry['key']) for entry in filed['rows']], 'the strike settled something'
+    for number, entry in enumerate(filed['rows']):
+        settle({'subject': entry['key'], 'amount': entry['amount'], 'asset': entry['currency'],
+                'kind': entry['kind'], 'reference': 'SET-{}'.format(number),
+                'value_date': entry['due_date']})
+    assert worklist()['payments'] == [] and struck('2024-07-02')['rows'] == []
     settled = CLIENT.get('/book/pnl').json()
     assert {name: settled[name] for name in ANSWERED} == {
         name: unsettled[name] for name in ANSWERED}, 'settling the premium moved the P&L'

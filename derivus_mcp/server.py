@@ -1876,10 +1876,10 @@ def declare_survival_curve(counterparty: str, spread: float | list[dict], recove
 
 @MCP.tool()
 def export_settlements(due_before: str, actor: str | None = None) -> dict:
-    """The settlement file for one day: every payment due by `due_before` that nobody has settled,
-    each row with its key, deal, leg, currency, amount and the `agreement` it is due under where it
-    is one, and the totals by currency - each row a settle seat clears with `file_status`
-    `settled`, kind `payment`, naming that agreement.
+    """The settlement file for one day: every payment and premium due by `due_before` that nobody
+    has settled, each row with its key, `kind` (`payment` or `premium`), deal, leg, currency, amount
+    and the `agreement` it is due under where it is one, and the totals by currency - each row a
+    settle seat clears with `file_status` `settled` under the row's own kind, naming that agreement.
 
     `due_before` is required - a settlement file is struck FOR a day, and one carrying every future
     payment would instruct the whole book.

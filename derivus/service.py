@@ -3576,8 +3576,8 @@ def book_close(request: dict):
 
 @app.post('/book/settlements', summary='The settlement file for one day, on the designated market')
 def book_settlements(request: dict):
-    """`{due_before, actor?}` - every payment due by a day that nobody has settled, totalled by
-    currency and struck on ONE market.
+    """`{due_before, actor?}` - every payment and premium due by a day that nobody has settled,
+    totalled by currency and struck on ONE market.
 
     `due_before` HAS NO DEFAULT: a settlement file is struck FOR a day, and one that exported every
     payment the book will ever make would instruct the whole book.
@@ -3589,7 +3589,8 @@ def book_settlements(request: dict):
 
     The rows are the DIARY's, compiled and cached exactly as `GET /book/diary` compiles them - one
     job on the compute queue at a base valuation's cost class, admitted under this request's own
-    seat before the cache is read, and two asks over an unmoved book are one compile. A row whose
+    seat before the cache is read, and two asks over an unmoved book are one compile - with the
+    premiums its fills move (`announced`), each row saying the `kind` it settles as. A row whose
     amount is not determined, and a row naming no currency, refuse BY NAME rather than instructing a
     payment of zero.
 
@@ -3606,7 +3607,7 @@ def book_settlements(request: dict):
                                  'the book will ever make would instruct the whole book')
     day = read_day(request['due_before'])
     market = spine.designated_market(spine.SETTLEMENT_EXPORT)
-    rows = answered(diary_of(document, request.get('actor'))['rows'])
+    rows = announced(document, diary_of(document, request.get('actor'))['rows'])
     try:
         exported = export_settlements(rows, market['values_hash'], day)
     except ValueError as error:

@@ -1831,19 +1831,20 @@ def premiums(book, currency):
 
 
 def export_settlements(rows, official_values_hash, due_before):
-    """The settlement file for ONE day: every payment due on or before `due_before` that is not
-    already settled, against one market.
+    """The settlement file for ONE day: every payment and premium (`SETTLES`) due on or before
+    `due_before` that is not already settled, against one market.
 
     Takes the diary, the hash of the market it is struck on and the day it settles, and nothing else
     - no book, no service, no executor. The hash comes back as `values_hash`, the BOARD the file was
     struck on, leaving `market` free for the name a caller resolved it under. `due_before` has no
     default: a settlement file is struck FOR a date, and one that exported every future payment
-    would instruct the whole book. A row whose amount is UNDETERMINED refuses by name rather than
-    exporting a zero: a floating amount is not known until its resets fix, and instructing a payment
-    of 0.0 for one is a wrong payment rather than a missing one. A row carries the `agreement` the
-    diary's row is due under, null where the record names none.
+    would instruct the whole book. A row due on no day is never instructed. A row whose amount is
+    UNDETERMINED refuses by name rather than exporting a zero: a floating amount is not known until
+    its resets fix, and instructing a payment of 0.0 for one is a wrong payment rather than a
+    missing one. A row carries its `kind`, which its settlement is filed under, and the `agreement`
+    the diary's row is due under, null where the record names none.
     """
-    payments = [row for row in rows if row['kind'] == Diary.PAYMENT and row['state'] != SETTLED
+    payments = [row for row in rows if row['kind'] in SETTLES and row['state'] != SETTLED
                 and row['due_date'] and row['due_date'] <= due_before]
     undetermined = [row for row in payments if not row['determined']]
     if undetermined:
@@ -1869,8 +1870,8 @@ def export_settlements(rows, official_values_hash, due_before):
         totals[row['currency']] = totals.get(row['currency'], 0.0) + row['amount']
     return {'values_hash': official_values_hash, 'due_before': due_before, 'totals': totals,
             'rows': [{field: row[field] for field in
-                      ('key', 'instrument', 'leg', 'schedule_index', 'due_date', 'currency',
-                       'amount', 'agreement')} for row in payments]}
+                      ('key', 'kind', 'instrument', 'leg', 'schedule_index', 'due_date',
+                       'currency', 'amount', 'agreement')} for row in payments]}
 
 
 class PnL:

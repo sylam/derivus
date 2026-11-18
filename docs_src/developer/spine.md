@@ -457,10 +457,10 @@ own `currency`, else the book's reporting currency, due on the fill's `value_dat
 `cashflow_key(instrument, execution_reference, 'premium', value_date)`. A priced fill stating no
 value date is due on no day, its `reason` naming it, so no close waits on it; a fill with no price
 or a price of nothing announces none. The worklist lists a premium due by the book's day among its
-payments, the close waits on it as on a payment, and a `premium` settlement against its key clears
-it. The P&L never reads these rows - its diary is the marks jobs' compile (`window_payments`) - so
-the consideration is counted once, under `premiums` at the fill, and a premium settlement is no
-payment it reads. **Held by**
+payments, the close waits on it as on a payment, the settlement file instructs it beside the day's
+payments, and a `premium` settlement against its key clears it. The P&L never reads these rows -
+its diary is the marks jobs' compile (`window_payments`) - so the consideration is counted once,
+under `premiums` at the fill, and a premium settlement is no payment it reads. **Held by**
 `test_diary.py::test_a_premium_is_due_on_its_value_date_until_a_premium_settles_it_into_cash`,
 `::test_a_premium_with_no_value_date_is_due_on_no_day_and_one_with_no_price_is_none`,
 `test_pnl.py::test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l`,
@@ -480,11 +480,14 @@ as what its history made it, so a barrier its prints knocked out waits on its re
 after. `GET /book/close/check?date=` answers that, and `POST /book/close` refuses an illegal day
 with nothing appended; a second close for a day supersedes the first. `POST /book/settlements`
 takes only `due_before`, a file being struck for a day, on the market the `tiers` policy
-designates, so pointing it elsewhere is unrepresentable.
+designates, so pointing it elsewhere is unrepresentable. It instructs every payment and premium due
+by that day that nobody settled, totalled by currency, each row naming the `kind` its settlement is
+filed under; a premium due on no day is never instructed.
 **Held by** `test_diary.py::test_the_close_check_is_the_catch_up_rule`,
 `::test_a_barrier_its_prints_knocked_out_owes_its_rebate_and_nothing_after`,
 `::test_a_close_is_declared_only_on_a_day_the_check_calls_legal`,
-`::test_the_settlement_file_is_struck_on_the_market_the_record_designates`.
+`::test_the_settlement_file_is_struck_on_the_market_the_record_designates`,
+`test_pnl.py::test_a_premium_announced_and_settled_moves_no_figure_of_the_p_and_l`.
 
 ## The record's readers on the desk {#readers}
 
