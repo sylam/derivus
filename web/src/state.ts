@@ -41,10 +41,12 @@ export type Fetched<T> = {
   loading: boolean;
 };
 
-/** The consolidated risk, plus the BOOK etag it was fetched at. That second etag is what makes
- * "the risk on screen is behind the book" answerable: the risk's own `etag` is a hash of a
- * different thing, and comparing the two would always read stale. */
-export type RiskState = Fetched<BookRisk> & { bookEtag: string | null };
+/** A desk view read off the live book, plus the CLOCK it was fetched at (`desk.bookClock`): the
+ * book's etag and where the record stood. That is what makes "the numbers on screen are behind
+ * the book" answerable - the risk's own `etag` is a hash of a different thing, and comparing the
+ * two would always read stale. */
+export type Clocked<T> = Fetched<T> & { clock: string | null };
+export type RiskState = Clocked<BookRisk>;
 
 /** What the RECORD answers this client, off the one poll the app already runs. The slice and both
  * its transitions live in `web/src/spine.ts`, where they are arithmetic a node check drives:
@@ -67,7 +69,7 @@ export type AppState = {
   validate: ValidateResult | null;
   run: RunState;
   risk: RiskState;
-  xva: Fetched<BookXva>;
+  xva: Clocked<BookXva>;
   /** The market the live book prices on, read again whenever the book moves. */
   market: Fetched<BookMarket>;
   /** Where this workstation reads the files the served book names, read with the market. */
@@ -86,8 +88,8 @@ export const IDLE_RUN: RunState = {
 
 const NOTHING_FETCHED = { data: null, error: null, status: null, loading: false };
 
-export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, bookEtag: null };
-export const IDLE_XVA: Fetched<BookXva> = NOTHING_FETCHED;
+export const IDLE_RISK: RiskState = { ...NOTHING_FETCHED, clock: null };
+export const IDLE_XVA: Clocked<BookXva> = { ...NOTHING_FETCHED, clock: null };
 export const IDLE_MARKET: Fetched<BookMarket> = NOTHING_FETCHED;
 export const IDLE_PATHS: Fetched<PathsAnswer> = NOTHING_FETCHED;
 export const IDLE_PAPER: Fetched<Paper> = NOTHING_FETCHED;
@@ -123,10 +125,10 @@ export type Action =
   | { type: 'SCALARS_LOADED'; scalars: Record<string, unknown> }
   // the desk views: one fetch each, off the etag the book poll already moves
   | { type: 'RISK_FETCHING' }
-  | { type: 'RISK_LOADED'; risk: BookRisk; bookEtag: string }
+  | { type: 'RISK_LOADED'; risk: BookRisk; clock: string }
   | { type: 'RISK_FAILED'; error: string; status: number | null }
   | { type: 'XVA_FETCHING' }
-  | { type: 'XVA_LOADED'; xva: BookXva }
+  | { type: 'XVA_LOADED'; xva: BookXva; clock: string }
   | { type: 'XVA_FAILED'; error: string; status: number | null }
   | { type: 'MARKET_LOADED'; market: BookMarket }
   | { type: 'MARKET_FAILED'; error: string; status: number | null }
@@ -206,23 +208,26 @@ export function reducer(state: AppState, action: Action): AppState {
     case 'RISK_LOADED':
       return {
         ...state,
-        risk: { data: action.risk, bookEtag: action.bookEtag, error: null, status: null, loading: false },
+        risk: { data: action.risk, clock: action.clock, error: null, status: null, loading: false },
       };
     // a refusal REPLACES the numbers: a 422 says the book will not price, and a stale mark left
     // on screen under a red box is a number a desk might still read
     case 'RISK_FAILED':
       return {
         ...state,
-        risk: { data: null, bookEtag: null, error: action.error, status: action.status, loading: false },
+        risk: { data: null, clock: null, error: action.error, status: action.status, loading: false },
       };
     case 'XVA_FETCHING':
       return { ...state, xva: { ...state.xva, loading: true } };
     case 'XVA_LOADED':
-      return { ...state, xva: { data: action.xva, error: null, status: null, loading: false } };
+      return {
+        ...state,
+        xva: { data: action.xva, clock: action.clock, error: null, status: null, loading: false },
+      };
     case 'XVA_FAILED':
       return {
         ...state,
-        xva: { data: null, error: action.error, status: action.status, loading: false },
+        xva: { data: null, clock: null, error: action.error, status: action.status, loading: false },
       };
     // no market is the service saying the one held is still current: its etag and stamp move
     case 'MARKET_LOADED': {

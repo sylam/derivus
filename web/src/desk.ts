@@ -8,8 +8,11 @@
 // the XVA verb never runs anything at all. A recalc is asked for through the MCP verbs, and this
 // module has no vocabulary for one on purpose.
 
-import { axisText, formatNumber, tenorLabel } from './tokens';
-import type { BookRisk, BookXva, DealMark, GreekRow, JobDoc, Schema, XvaSet } from './types';
+import type { Position } from './positions';
+import { axisText, formatNumber, isObject, label, tenorLabel, token } from './tokens';
+import type {
+  BookRisk, BookXva, DealMark, GreekRow, JobDoc, Market, Schema, XvaSet,
+} from './types';
 import { axisNames } from './vols';
 
 // ---- stamps -------------------------------------------------------------------------------------
@@ -133,15 +136,15 @@ function compareTenor(a: number[] | undefined, b: number[] | undefined): number 
 }
 
 /** The gradient sorted for reading. By MAGNITUDE - the default - it is a ranking: what the book
- * is most exposed to, sign carried but not sorted on, so the biggest short shows beside the
- * biggest long. By FACTOR it is a curve read in order: the factors alphabetical, and each one's
- * coordinates always ascending inside it, because a curve reversed is not a ranking of anything.
- * Never mutates the answer it is given. */
+ * is most exposed to per the move each row is read per, sign carried but not sorted on, so the
+ * biggest short shows beside the biggest long. By FACTOR it is a curve read in order: the factors
+ * alphabetical, and each one's coordinates always ascending inside it, because a curve reversed is
+ * not a ranking of anything. Never mutates the answer it is given. */
 export function sortGreeks(rows: GreekRow[], key: GreekKey, descending: boolean): GreekRow[] {
   const direction = descending ? -1 : 1;
   return [...rows].sort((a, b) => {
     if (key === 'magnitude') {
-      const difference = Math.abs(a.value) - Math.abs(b.value);
+      const difference = Math.abs(riskOf(a)) - Math.abs(riskOf(b));
       if (difference !== 0) return direction * (difference < 0 ? -1 : 1);
       return a.factor.localeCompare(b.factor) || compareTenor(a.tenor, b.tenor);
     }
@@ -158,8 +161,88 @@ export function sortGreeks(rows: GreekRow[], key: GreekKey, descending: boolean)
 export function quoteView(risk: BookRisk): GreekRow[] {
   const quoted = new Set(risk.quoted);
   return [...risk.quotes.filter((row) => row.value !== 0)
-            .map(({ block, quote, value }) => ({ factor: block, quote, value })),
+            .map(({ block, ...row }) => ({ ...row, factor: block })),
           ...risk.greeks.filter((row) => !quoted.has(row.factor))];
+}
+
+/** A row's report-currency change per the move it is read per - the per-unit derivative on an
+ * answer that reads none. */
+export const riskOf = (row: GreekRow): number => row.risk ?? row.value;
+
+/** The words of the move every row shares, or null where they differ: a table names one move in
+ * its header, or each row beside itself. */
+export function sharedPer(rows: GreekRow[]): string | null {
+  const words = new Set(rows.map((row) => row.per ?? 'per unit'));
+  return words.size === 1 ? [...words][0] : null;
+}
+
+/** What the raw derivative a row was read from says, for a reader who wants it: per unit of the
+ * factor as stored, at the level it was taken. */
+export function perUnitText(row: GreekRow): string {
+  const at = row.level === null || row.level === undefined ? '' : ` at ${formatNumber(row.level)}`;
+  return `${formatNumber(row.value)} per unit${at}`;
+}
+
+/** One bucket of a ladder: its coordinates less the one summed across, the risk of its nodes. */
+export type Bucket = { key: number[]; risk: number; nodes: GreekRow[] };
+
+/** One factor's buckets in coordinate order, the names of its axes - `across` the position of the
+ * one its buckets sum over, -1 where none is - and its parallel move, every node at once. */
+export type Ladder = {
+  factor: string; per: string | null; axes: string[]; across: number; buckets: Bucket[];
+  total: number;
+};
+
+/** The gradient as a desk reads it: every spot's delta together, largest first; each curve's
+ * ladder by tenor; each surface's buckets by expiry - its nodes summed across the axis its type
+ * declares as moneyness, the nodes kept on the bucket - and every row read per unit apart. */
+export function riskReading(rows: GreekRow[], schema: Schema | null) {
+  const spots: GreekRow[] = [];
+  const units: GreekRow[] = [];
+  const held = new Map<string, GreekRow[]>();
+  for (const row of rows) {
+    if ((row.per ?? 'per unit') === 'per unit') units.push(row);
+    else if (row.tenor === undefined) spots.push(row);
+    else held.set(row.factor, [...(held.get(row.factor) ?? []), row]);
+  }
+  const curves: Ladder[] = [];
+  const surfaces: Ladder[] = [];
+  for (const factor of [...held.keys()].sort()) {
+    const nodes = held.get(factor)!;
+    const count = nodes[0].tenor!.length;
+    const axes = factorAxes(schema, factor, count).slice(0, count);
+    const across = axes.findIndex((axis) => /moneyness/i.test(axis));
+    const buckets = new Map<string, Bucket>();
+    for (const node of nodes) {
+      const key = node.tenor!.filter((_, at) => at !== across);
+      const bucket = buckets.get(JSON.stringify(key)) ?? { key, risk: 0, nodes: [] };
+      bucket.risk += riskOf(node);
+      bucket.nodes.push(node);
+      buckets.set(JSON.stringify(key), bucket);
+    }
+    (count === 1 ? curves : surfaces).push({
+      factor, per: sharedPer(nodes), axes, across,
+      buckets: [...buckets.values()].sort((a, b) => compareTenor(a.key, b.key)),
+      total: nodes.reduce((sum, node) => sum + riskOf(node), 0),
+    });
+  }
+  spots.sort((a, b) => Math.abs(riskOf(b)) - Math.abs(riskOf(a))
+    || a.factor.localeCompare(b.factor));
+  return { spots, curves, surfaces, units };
+}
+
+/** The positions awaiting a second seat inside each marked row, by its deal path: a position the
+ * row's node holds, or one any node beneath it does. */
+export function pendingUnder(marks: DealMark[], positions: Position[]): Map<string, Position[]> {
+  const under = new Map<string, Position[]>();
+  for (const mark of marks) {
+    if (mark.deal_path === null) continue;
+    const path = mark.deal_path;
+    const held = positions.filter((position) => position.pending !== 0 && position.deal_paths
+      .some((at) => at === path || at.startsWith(`${path}/`)));
+    if (held.length) under.set(path, held);
+  }
+  return under;
 }
 
 /** The family a factor name opens with - `FxRate`, `InterestRate`, `FXVol`. What a desk groups by
@@ -184,18 +267,45 @@ export function reconciles(risk: BookRisk): boolean {
   return Math.abs(risk.mtm - marksTotal(risk.per_deal)) <= RECONCILE_TOLERANCE * scale;
 }
 
-/** Whether the risk on screen was computed over an OLDER book than the one the app now holds.
- * Asked of the book etag the answer was FETCHED at and never of the risk's own `etag`: the two are
- * hashes of different things, and comparing them would read stale forever. */
-export function lagsBook(fetchedAt: string | null, bookEtag: string | null | undefined): boolean {
-  return fetchedAt !== null && !!bookEtag && fetchedAt !== bookEtag;
+/** The one clock an answer read off the live book is held against: the book's etag, and on a
+ * desk that records how far the record stands (`pinnedAt`) - a booking moves the first, and an
+ * approval, a declaration or a fill the record alone holds the second. */
+export const bookClock = (etag: string, recordAt: string | null): string =>
+  `${etag}@${recordAt ?? ''}`;
+
+/** Whether an answer on screen was read at an OLDER clock than the one the app now holds. Asked of
+ * the clock the answer was FETCHED at and never of the risk's own `etag`: the two are hashes of
+ * different things, and comparing them would read stale forever. */
+export function lagsBook(fetchedAt: string | null, now: string | null | undefined): boolean {
+  return fetchedAt !== null && !!now && fetchedAt !== now;
 }
 
-/** The report currency, off the document the app already holds - the same currency the risk
- * answer states, and the one a CVA is denominated in, which `/book/xva` does not repeat. */
+/** The report currency, off the document the app already holds - the one the risk answer states
+ * and a recalc would report in now; an XVA row states its own. */
 export function currencyOf(doc: JobDoc | null): string {
   const currency = doc?.Calc?.Calculation?.['Currency'];
   return typeof currency === 'string' ? currency : '';
+}
+
+/** The day the book values on, its calculation's `Base_Date` as written. */
+export const valuationDay = (doc: JobDoc | null): string =>
+  label(doc?.Calc?.Calculation?.Base_Date);
+
+/** Where the book says its market comes from: the file it names, null where its own block is all
+ * of it, and the latest moment any quote of the market it prices on says it was seen. */
+export function marketSource(doc: JobDoc | null, market: Market | null) {
+  const named = doc?.Calc?.MergeMarketData?.MarketDataFile;
+  const seen = [
+    ...Object.values(market?.['Market Prices'] ?? {}).flatMap((block) => {
+      const points = token(token(block, 'instrument'), 'Points');
+      return Array.isArray(points) ? points.map((point) => token(point, 'Timestamp')) : [];
+    }),
+    ...Object.values(market?.['Price Factors'] ?? {})
+      .map((block) => token(block, 'Quote_Timestamp')),
+  ].map((stamp) => (isObject(stamp) ? String(stamp['.Timestamp']) : ''))
+    .filter((stamp) => stampMs(stamp) !== undefined)
+    .sort((a, b) => stampMs(a)! - stampMs(b)!);
+  return { file: named ? named.split(/[\\/]/).pop()! : null, seen: seen.pop() ?? null };
 }
 
 // ---- a named calculation ------------------------------------------------------------------------
@@ -249,6 +359,14 @@ export function lastRunChip(set: XvaSet): Chip {
   }
 }
 
+/** One currency's sums: the CVA over the book's own sets that have RUN in it - never an orphan,
+ * whose exposure has left the book, nor a set with no number - and the FVA over the rows that CARRY
+ * one, counted apart since a row filed before the column existed reads null there. `currency` is
+ * null for rows filed before the run kept one. */
+export type XvaSum = {
+  currency: string | null; cva: number; counted: number; fva: number; countedFva: number;
+};
+
 export type XvaTotals = {
   /** Sets the book holds now. Orphans are counted apart, because they are not the book's. */
   sets: number;
@@ -257,20 +375,13 @@ export type XvaTotals = {
   neverRun: number;
   running: number;
   orphans: number;
-  /** The CVA over the book's own sets that have RUN - never over an orphan, whose exposure has
-   * left the book, and never over a set with no number. */
-  cva: number;
-  counted: number;
-  /** The FVA over the rows that CARRY one, counted apart: a done row filed before the column
-   * existed reads null there, so this count can be short of `counted` and the screen says so. */
-  fva: number;
-  countedFva: number;
+  /** One sum per currency the rows were run in: amounts in two currencies never add. */
+  sums: XvaSum[];
 };
 
 export function xvaTotals(view: BookXva): XvaTotals {
   const totals: XvaTotals = {
-    sets: 0, done: 0, failed: 0, neverRun: 0, running: 0, orphans: 0,
-    cva: 0, counted: 0, fva: 0, countedFva: 0,
+    sets: 0, done: 0, failed: 0, neverRun: 0, running: 0, orphans: 0, sums: [],
   };
   for (const set of view.sets) {
     if (set.recalc) totals.running += 1;
@@ -283,13 +394,18 @@ export function xvaTotals(view: BookXva): XvaTotals {
     else if (set.status === 'failed') totals.failed += 1;
     else if (set.status === 'never run') totals.neverRun += 1;
     if (set.status !== 'done') continue;
+    let sum = totals.sums.find((held) => held.currency === set.currency);
+    if (!sum) {
+      sum = { currency: set.currency, cva: 0, counted: 0, fva: 0, countedFva: 0 };
+      totals.sums.push(sum);
+    }
     if (typeof set.cva === 'number') {
-      totals.cva += set.cva;
-      totals.counted += 1;
+      sum.cva += set.cva;
+      sum.counted += 1;
     }
     if (typeof set.fva === 'number') {
-      totals.fva += set.fva;
-      totals.countedFva += 1;
+      sum.fva += set.fva;
+      sum.countedFva += 1;
     }
   }
   return totals;
@@ -305,6 +421,7 @@ export function replayRows(set: XvaSet): [string, string | null][] {
     ['Deal path', set.deal_path],
     ['Counterparty', set.counterparty],
     ['Collateralised', set.collateralized ? 'yes' : 'no'],
+    ['Reported in', set.currency],
     ['FVA', set.fva === null ? null : formatNumber(set.fva, 'money')],
     ['Last run', set.as_of === null ? null : stampText(set.as_of)],
     ['Result id', set.result_id],

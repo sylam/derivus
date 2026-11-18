@@ -164,13 +164,23 @@ export type GreekRow = {
   tenor?: number[];
   /** The report-currency derivative per unit of the factor, aggregated over the WHOLE book. */
   value: number;
+  /** The factor's own value at the row's coordinates: a spot, a rate, a vol. */
+  level?: number | null;
+  /** The same derivative per the move a desk quotes the factor by, `per` its words - `per 1%`,
+   * `per bp`, `per vol point`, `per unit` where its class declares none. */
+  risk?: number | null;
+  per?: string;
   /** A QUOTE's row as the quote view reads it: `factor` is the block the quote came off. */
   quote?: string;
 };
 
 /** One quote: the report-currency derivative per unit of the quote AS QUOTED - a par rate in
- * percent reads per 1% - taken through the calibration that builds a factor from it. */
-export type QuoteRow = { block: string; quote: string; value: number };
+ * percent reads per 1% - taken through the calibration that builds a factor from it, and read per
+ * its natural move where it has one. */
+export type QuoteRow = {
+  block: string; quote: string; value: number; level?: number | null; risk?: number | null;
+  per?: string;
+};
 
 /** One TOP-LEVEL trade's mark. A structure or a netting set appears once, with its net - its legs
  * are inside the row their container reports, which is why `mtm` is exactly the sum of these. */
@@ -214,11 +224,14 @@ export type XvaSet = {
   /** 'done' | 'failed' | 'never run'. Typed as the wire's own string: the view branches on the
    * three it knows and shows anything else as itself rather than swallowing it. */
   status: string;
-  /** The book's report currency, and null unless `status` is 'done'. */
+  /** Null unless `status` is 'done'; in `currency`. */
   cva: number | null;
+  /** The currency THIS row's run reported in - not the open book's - and null on a row filed
+   * before the run kept it. */
+  currency: string | null;
   /** The funding adjustment, a column of the SAME run - one CMC per set, so it shares this row's
-   * `as_of` and replay tuple. Null on a done row means that row was filed before the column
-   * existed, not that funding cost nothing: a set declaring no `Funding_Rate` reads exactly 0.0. */
+   * `as_of`, replay tuple and currency. Null on a done row means that row was filed before the
+   * column existed, not that funding cost nothing: a set declaring no `Funding_Rate` reads 0.0. */
   fva: number | null;
   /** When THAT row's run happened - not when the view was read. */
   as_of: string | null;

@@ -7,6 +7,7 @@ import {
 import { DocumentLoader } from './components/DocumentLoader';
 import { JobHeader } from './components/JobHeader';
 import { ActivityStrip, ReconcileBanner, SeatControl, WorklistBanner } from './components/Record';
+import { bookClock } from './desk';
 import { WORKSPACES } from './registry';
 import { pinnedAt, polled, ringsAhead } from './spine';
 import { AppContext, INITIAL, bookLoaded, reducer } from './state';
@@ -91,37 +92,39 @@ export function App() {
     return () => bell.close();
   }, [recording, readRecord]);
 
-  // The desk's two data views ride the SAME etag: the poll above is the only clock in the client,
-  // and a booking, an amendment or a market tick moves the book here and the numbers follow.
-  //
+  // The desk's two data views ride the ONE clock (`bookClock`): the book's etag the poll above
+  // moves, and where the record stands - a booking, an amendment or a tick moves the first, an
+  // approval or a record event the book prices off the second - and the numbers follow either.
+  const recordAt = pinnedAt(state.record.spine);
+  const clock = state.source?.kind === 'book' ? bookClock(state.source.etag, recordAt) : null;
+
   // The risk verb RUNS the book on a miss, so it is priced while a desk is LOOKING at it and only
-  // then: taking the tab prices it, every etag move under that gaze re-prices it, and a tab left
-  // behind or a window gone hidden costs nothing until it is looked at again.
+  // then: taking the tab prices it, every move of the clock under that gaze re-prices it, and a tab
+  // left behind or a window gone hidden costs nothing until it is looked at again.
   const riskWanted = state.tab === 'risk' && visible;
   useEffect(() => {
-    if (state.source?.kind !== 'book' || !riskWanted) return;
-    const bookEtag = state.source.etag;
+    if (clock === null || !riskWanted) return;
     let live = true;
     dispatch({ type: 'RISK_FETCHING' });
     getBookRisk()
-      .then((risk) => { if (live) dispatch({ type: 'RISK_LOADED', risk, bookEtag }); })
+      .then((risk) => { if (live) dispatch({ type: 'RISK_LOADED', risk, clock }); })
       .catch((error) => { if (live) dispatch({ type: 'RISK_FAILED', ...failure(error) }); });
     return () => { live = false; };
-  }, [state.source, riskWanted, state.seat]);
+  }, [state.source, clock, riskWanted, state.seat]);
 
   // The XVA view is a file read, not a run: it re-reads on FOCUS - a recalc asked for through the
   // MCP verbs lands in that file while nobody is looking at this screen - and again whenever the
-  // book moves under it, which is what turns a set that has left the book into an orphan row.
+  // clock moves under it, which is what says a row is of an earlier book, or an orphan.
   const onXva = state.tab === 'xva';
   useEffect(() => {
-    if (state.source?.kind !== 'book' || !onXva) return;
+    if (clock === null || !onXva) return;
     let live = true;
     dispatch({ type: 'XVA_FETCHING' });
     getBookXva()
-      .then((xva) => { if (live) dispatch({ type: 'XVA_LOADED', xva }); })
+      .then((xva) => { if (live) dispatch({ type: 'XVA_LOADED', xva, clock }); })
       .catch((error) => { if (live) dispatch({ type: 'XVA_FAILED', ...failure(error) }); });
     return () => { live = false; };
-  }, [state.source, onXva]);
+  }, [state.source, clock, onXva]);
 
   // The market the book prices on and where this box reads the files it names, read on the same
   // etag so a write anywhere repaints them. The market is asked with the stamp held, through a ref
@@ -140,12 +143,11 @@ export function App() {
     return () => { live = false; };
   }, [state.source]);
 
-  // The positions and the paper they sit under, for the two screens that group the book by them:
-  // read while one of them is looked at on a desk that records, and again whenever the file or the
-  // record moves under it - a booking moves both, a declaration the record alone.
-  const paperWanted = (state.tab === 'portfolio' || state.tab === 'blotter') && visible
+  // The positions and the paper they sit under, for the screens that group the book by them and
+  // the Risk screen counting what waits on a second seat: read while one is looked at on a desk
+  // that records, and again whenever the file or the record moves under it.
+  const paperWanted = ['portfolio', 'blotter', 'risk'].includes(state.tab) && visible
     && recording;
-  const recordAt = pinnedAt(state.record.spine);
   useEffect(() => {
     if (state.source?.kind !== 'book' || !paperWanted) return;
     let live = true;

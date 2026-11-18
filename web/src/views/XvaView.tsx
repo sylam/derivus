@@ -1,20 +1,31 @@
 import { useState } from 'react';
 import {
-  ageOf, currencyOf, isOrphan, lastRunChip, replayRows, stampText, statusChip, xvaTotals,
+  ageOf, bookClock, currencyOf, isOrphan, lagsBook, lastRunChip, replayRows, stampText,
+  statusChip, xvaTotals, type XvaSum,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
+import { pinnedAt } from '../spine';
 import { useApp } from '../state';
 import { formatNumber } from '../tokens';
 import type { XvaSet } from '../types';
+import { OnStrip } from './RiskView';
+
+/** What each adjustment's sign means, in the engine's own convention (the xVA theory page): a CVA
+ * is the loss expected from the counterparty's default, an FVA is positive for a net funding cost,
+ * both in the run's reporting currency at its FX. */
+const SIGNS = {
+  cva: 'positive: the loss expected if the counterparty defaults',
+  fva: 'positive: a net cost of funding the exposure',
+};
 
 /** The XVA projection: one row per netting set, the last run over what the book says the set is
  * now. Netting sets are the instruments here, and a CVA is minutes of device time, so this is a
  * CACHED projection read off the desk's own file - never a run, and never a live number.
  *
- * STALENESS IS DATA. Every row states its own age against the read that carried it, a set the
- * book carries with no row yet says `never run` rather than showing a zero, and a row whose set
- * has left the book stays, marked, with the last numbers it had. A number that was on the blotter
- * yesterday disappearing without a word is how a desk loses track of a position.
+ * STALENESS IS DATA. Every row states its own age against the read that carried it and the
+ * currency its own run reported in; a set the book carries with no row yet says `never run` rather
+ * than showing a zero, and a row whose set has left the book stays, marked, with the last numbers
+ * it had.
  *
  * READ-ONLY BY DESIGN: recalcs are asked for through the MCP verbs. There is no button here, and
  * the bar says so rather than leaving a reader to wonder where it went.
@@ -67,10 +78,16 @@ export function XvaView() {
   const view = xva.data;
   const totals = xvaTotals(view);
   const currency = currencyOf(doc);
+  const lagging = lagsBook(xva.clock, bookClock(source.etag, pinnedAt(state.record.spine)));
 
   return (
     <div className="main">
       <div className="panel">
+        <OnStrip
+          computed={<>each row its own run, read {stampText(view.as_of)}</>}
+          currency={<>each row its own{currency && <>; this book reports in {currency}</>}</>}
+          lagging={lagging} loading={xva.loading}
+        />
         <div className="blotterbar">
           <span className="hint">
             <b>{totals.sets}</b> netting set{totals.sets === 1 ? '' : 's'}
@@ -81,20 +98,8 @@ export function XvaView() {
             {totals.orphans > 0 && <> · <b>{totals.orphans}</b> off-book</>}
             {totals.running > 0 && <> · <b>{totals.running}</b> recalculating</>}
           </span>
-          {totals.counted > 0 && (
-            <span className="hint" title={`the sum over the ${totals.counted} of the book's own sets that have a number; a set that never ran contributes nothing, and an off-book row is not the book's exposure`}>
-              CVA over the {totals.counted} that ran{' '}
-              <b>{formatNumber(totals.cva, 'money')}</b> {currency}
-            </span>
-          )}
-          {totals.countedFva > 0 && (
-            <span className="hint" title={`the sum over the ${totals.countedFva} rows that CARRY a funding number; a row filed before the column existed carries none, and is not counted here`}>
-              FVA over the {totals.countedFva} that carry one{' '}
-              <b>{formatNumber(totals.fva, 'money')}</b> {currency}
-            </span>
-          )}
+          {totals.sums.map((sum) => <Sums key={sum.currency ?? ''} sum={sum} />)}
           <span className="spacer" />
-          <span className="hint" title={view.as_of}>read {stampText(view.as_of)}</span>
         </div>
 
         {/* the standing note, not a disabled button: a surface that looked like it could start a
@@ -103,7 +108,8 @@ export function XvaView() {
           Recalcs are asked for through the MCP verbs — <code>recalc_xva</code> — and never from
           here. A credit Monte Carlo is minutes of device time, so this screen is a <b>read</b> of{' '}
           <span className="mono" title={view.path}>{view.path}</span>: the last run per set, as old
-          as each row says it is.
+          as each row says it is. The adjustments are unilateral — only the counterparty defaults —
+          and each is in the currency its own run reported in, at that run's FX.
           {totals.running > 0 && ' A recalc is in flight — this view re-reads when you return to it.'}
         </div>
 
@@ -115,8 +121,12 @@ export function XvaView() {
                 <th>Path</th>
                 <th>Counterparty</th>
                 <th>CSA</th>
-                <th className="n">{currency ? `CVA (${currency})` : 'CVA'}</th>
-                <th className="n">{currency ? `FVA (${currency})` : 'FVA'}</th>
+                <th className="n" title={SIGNS.cva}>
+                  CVA<div className="sub">+ is an expected loss</div>
+                </th>
+                <th className="n" title={SIGNS.fva}>
+                  FVA<div className="sub">+ is a funding cost</div>
+                </th>
                 <th>Last run</th>
                 <th>Status</th>
                 <th />
@@ -153,6 +163,19 @@ export function XvaView() {
   );
 }
 
+/** One currency's sums over the book's own sets that ran in it: amounts in two currencies are
+ * never added, and a row filed before its run kept a currency is summed apart and says so. */
+function Sums({ sum }: { sum: XvaSum }) {
+  const unit = sum.currency ?? '(currency unknown)';
+  return (
+    <span className="hint" title={`the ${sum.counted} of the book's own sets that ran in ${unit}; a set that never ran contributes nothing, and an off-book row is not the book's exposure`}>
+      {sum.counted > 0 && <>CVA over the {sum.counted} run in {unit}:{' '}
+        <b>{formatNumber(sum.cva, 'money')}</b></>}
+      {sum.countedFva > 0 && <> · FVA <b>{formatNumber(sum.fva, 'money')}</b></>}
+    </span>
+  );
+}
+
 function Row({ set, read, opened, onOpen }: {
   set: XvaSet; read: string; opened: boolean; onOpen: () => void;
 }) {
@@ -184,8 +207,10 @@ function Row({ set, read, opened, onOpen }: {
             {set.collateralized ? 'CSA' : 'no CSA'}
           </span>
         </td>
-        <Money value={set.cva} absent="a CVA is reported only for a run that completed" />
-        <Money value={set.fva} absent="this row was filed before the funding column existed" />
+        <Money value={set.cva} currency={set.currency}
+               absent="a CVA is reported only for a run that completed" />
+        <Money value={set.fva} currency={set.currency}
+               absent="this row was filed before the funding column existed" />
         <td className={`age ${age.tone}`} title={age.title}>{age.text}</td>
         <td>
           <span className={`chip ${chip.tone}`} title={chip.title}>{chip.text}</span>
@@ -231,14 +256,26 @@ function Row({ set, read, opened, onOpen }: {
   );
 }
 
-/** One adjustment's cell. A null is an ABSENCE, and the two have different reasons: no completed
- * run for a CVA, a row older than the column for an FVA. */
-function Money({ value, absent }: { value: number | null; absent: string }) {
+/** One adjustment's cell, in the currency its own run reported in. A null is an ABSENCE, and the
+ * two have different reasons: no completed run for a CVA, a row older than the column for an FVA;
+ * a row filed before its run kept a currency says that instead of borrowing the open book's. */
+function Money({ value, currency, absent }: {
+  value: number | null; currency: string | null; absent: string;
+}) {
   return (
     <td className={`n${value !== null && value < 0 ? ' neg' : ''}`}
         title={value === null ? undefined : String(value)}>
-      {value === null ? <span className="hint" title={absent}>—</span>
-        : formatNumber(value, 'money')}
+      {value === null ? <span className="hint" title={absent}>—</span> : (
+        <>
+          {formatNumber(value, 'money')}{' '}
+          {currency ? <span className="unit">{currency}</span> : (
+            <span className="unit unknown"
+                  title="this row was filed before its run kept the currency it reported in">
+              currency unknown
+            </span>
+          )}
+        </>
+      )}
     </td>
   );
 }

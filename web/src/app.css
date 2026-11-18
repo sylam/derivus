@@ -619,3 +619,36 @@ td .editcell .refusal { max-width: 320px; white-space: normal; }
 .files table.data :is(th, td) { white-space: normal; overflow-wrap: anywhere; }
 .files td .editcell { display: flex; }
 .files td .editcell input { flex: 1; min-width: 0; }
+/* what a desk screen's numbers are ON: the day, the run, the currency and the market, and in
+   words where the answer on screen is of an earlier book */
+.onstrip {
+  display: flex; flex-wrap: wrap; gap: 6px 22px; align-items: baseline;
+  padding: 8px 12px; margin-bottom: 10px; font-size: 12.5px;
+  background: var(--surface); border: 1px solid var(--border); border-radius: 8px;
+}
+.onstrip .k {
+  margin-right: 6px; font-size: 10.5px; text-transform: uppercase; letter-spacing: 0.05em;
+  color: var(--text-muted);
+}
+.onstrip.behind { border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.onstrip .lag { flex-basis: 100%; color: var(--warn); font-weight: 550; }
+.stat.warn { border-color: color-mix(in srgb, var(--warn) 50%, transparent); }
+.stat.warn .value { color: var(--warn); }
+
+/* the gradient read by a desk: a card per curve and per surface, side by side */
+.ladders-title {
+  margin: 18px 0 8px; font-size: 12px; font-weight: 650; text-transform: uppercase;
+  letter-spacing: 0.06em; color: var(--text-muted);
+}
+.ladders { display: grid; grid-template-columns: repeat(auto-fill, minmax(330px, 1fr)); gap: 14px; }
+.ladders .card { margin-bottom: 0; }
+.card.ladder > h3 { text-transform: none; letter-spacing: 0; font-size: 13px; color: var(--text); }
+table.desk tr.node td { background: var(--bg); font-size: 12px; }
+table.desk tr.node td.tenor { padding-left: 24px; }
+table.desk tr.pending td:first-child { box-shadow: inset 3px 0 0 var(--warn); }
+table.desk .badge.pending {
+  margin-left: 0; background: color-mix(in srgb, var(--warn) 12%, transparent); color: var(--warn);
+}
+table.data th .sub { font-size: 10.5px; font-weight: 400; text-transform: none; letter-spacing: 0; }
+table.desk td .unit { margin-left: 2px; color: var(--text-muted); font-size: 11px; }
+table.desk td .unit.unknown { color: var(--warn); }
