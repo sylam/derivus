@@ -268,6 +268,10 @@ FX_LINEAR = [
      'Sell_Amount': 0.9e6, 'Sell_Currency': 'GBP', 'Settlement_Currency': 'USD',
      'Settlement_Date': years(1)}]
 
+#: `FX_LINEAR` as a book of record states each trade the other way: both its amounts negative.
+FX_SIGNED = [dict(deal, Buy_Amount=-deal['Buy_Amount'], Sell_Amount=-deal['Sell_Amount'])
+             for deal in FX_LINEAR]
+
 #: A call and a put on the euro on their expiry day, delivering two business days on, and a call on
 #: two million euros that expired the business day before at a print of 1.31, delivering the next.
 EXPIRED = [
@@ -390,6 +394,7 @@ def world(tmp_path_factory):
             'THRESHOLD': (THRESHOLD, five), 'OVER': (OVER, five), 'POSTED': (POSTED, five),
             'MIXED': ({}, [node(deal) for deal in MIXED]),
             'FX_LINEAR': ({}, [node(deal) for deal in FX_LINEAR]),
+            'FX_SIGNED': ({}, [node(deal) for deal in FX_SIGNED]),
             'EXPIRED': ({}, [node(deal) for deal in EXPIRED]),
             'AXES': ({}, [node(deal) for deal in AXES]),
             'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))])}
@@ -772,6 +777,20 @@ def test_an_fx_forward_reads_its_foreign_leg_the_larger_where_both_are(world):
     assert found['AddOn_FX'] == pytest.approx(fx, rel=1e-14), found
     assert found['EAD'] == pytest.approx(1.4 * (max(found['V'], 0.0) + multiplier(
         found['V'], 0.0, fx) * fx), rel=1e-14), found
+
+
+def test_an_fx_forward_stating_both_amounts_negative_is_the_opposite_trade_of_the_same_size(world):
+    """CRE52.35 AND CRE52.39. `FX_LINEAR`'s three trades with both amounts negative, as a book of
+    record states a trade the other way: each adjusted notional is its twin's, 1,250,000, 1,250,000
+    and 1,350,000, and each delta the opposite, short, long and short.
+
+    Killing mutation: the second leg read with its sign - the dollar seller's foreign leg then
+    -1,250,000 and the non-deliverable forward's the smaller, 1,250,000.
+    """
+    _, output = world
+    rows, twins = trades(output, 'FX_SIGNED'), trades(output, 'FX_LINEAR')
+    assert list(rows['AdjustedNotional']) == list(twins['AdjustedNotional']), rows['AdjustedNotional']
+    assert list(rows['Delta']) == [-1.0, 1.0, -1.0], rows['Delta']
 
 
 def test_an_fx_option_at_or_past_its_expiry_is_its_deltas_limit(world):
