@@ -1117,9 +1117,13 @@ class NettingCollateralSet(Deal):
               F('Independent_Amount', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
                 row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')])),
               F('Received_Threshold', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
-                row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')])),
+                row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]),
+                description='The level of the set\'s value above which the bank receives collateral, '
+                            'in the agreement currency: zero or positive'),
               F('Posted_Threshold', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
-                row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')])),
+                row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]),
+                description='The level of the set\'s value below which the bank posts collateral, '
+                            'in the agreement currency: zero or negative'),
               F('Minimum_Received', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
                 row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')])),
               F('Minimum_Posted', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
@@ -1273,10 +1277,10 @@ class NettingCollateralSet(Deal):
         '(Thresholds, minimum transfers etc.) are expressed in the **Agreement Currency**.',
         '- $I$ the independent amount of collateral in agreement currency that is either posted (negative)'
         ' or received (positive).',
-        '- $H(t)$ the received threshold of collateral: if the portfolio value is above this, the agreed '
-        'collateral value must be increased by the difference.',
-        '- $G(t)$ the posted threshold of collateral: if the portfolio value is below this, the agreed '
-        'collateral value must be decreased by the difference.',
+        '- $H(t)$ the received threshold of collateral, zero or positive: if the portfolio value is above '
+        'this, the agreed collateral value must be increased by the difference.',
+        '- $G(t)$ the posted threshold of collateral, zero or negative: if the portfolio value is below '
+        'this, the agreed collateral value must be decreased by the difference.',
         '- $M_r(t)$ the minimum received transfer amount. The collateral held will not increase unless '
         'the increase is more than this amount.',
         '- $M_p(t)$ the minimum posted transfer amount. The collateral posted will not increase unless '
@@ -1457,13 +1461,22 @@ class NettingCollateralSet(Deal):
 
     def meaningless(self):
         """Each term of a collateralised set that means nothing, in the one sentence `validate`
-        names it in and the run refuses the set with: an asset weighing nothing or less."""
+        names it in and the run refuses the set with: an asset weighing nothing or less, and a
+        threshold on the other side of zero from the level of the set's value it is."""
         for table, rows in self.collateral(self.field.get('Collateral_Assets')).items():
             for i, row in enumerate(rows):
                 weight = row.get(self.WEIGHTS.get(table))
                 if isinstance(weight, (int, float)) and not weight > 0:
                     yield ('Collateral_Assets.{}[{}].{} is {!r}: the weight of an asset in the '
                            'collateral is positive'.format(table, i, self.WEIGHTS[table], weight))
+        support = self.field.get('Credit_Support_Amounts') or {}
+        for key, side, level in (
+                ('Received_Threshold', 1.0, 'above which the bank receives, so zero or positive'),
+                ('Posted_Threshold', -1.0, 'below which the bank posts, so zero or negative')):
+            for amount in getattr(support.get(key), 'data', {}).values():
+                if isinstance(amount, (int, float)) and side * amount < 0:
+                    yield ("Credit_Support_Amounts.{} is {!r}: it is the level of the set's value "
+                           '{}'.format(key, amount, level))
 
     @classmethod
     def collateral(cls, assets):

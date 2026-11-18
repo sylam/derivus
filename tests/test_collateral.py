@@ -622,3 +622,32 @@ def test_a_collateral_asset_weighing_nothing_or_less_is_refused_by_name(caplog):
     assert judged({'Equity_Collateral': [{'Equity': 'EQ', 'Units': 0.0}]})[1] == {'CSA-1': [
         'Collateral_Assets.Equity_Collateral[0].Units is 0.0: the weight of an asset in the '
         'collateral is positive']}
+
+
+def test_a_threshold_on_the_other_side_of_zero_is_refused_by_name(caplog):
+    """A THRESHOLD IS A LEVEL OF THE SET'S VALUE: the bank receives above the received threshold
+    and posts below the posted one, so the first is zero or positive and the second zero or
+    negative. A posted threshold of +1,600,000 rand, the bank posting while it is owed, is named by
+    `validate` before a run and refuses the run in the same sentence, and so is a received
+    threshold of -1 at any rating it lists; the CSA's own -1,600,000 and +2,000,000 run (every
+    engine gate above).
+
+    Killing mutation: the posted threshold's sign left unread, which leaves validation clean and
+    runs the set posting collateral while it is owed.
+    """
+    support = TERMS['Credit_Support_Amounts']
+    for key, stated, said in (
+            ('Posted_Threshold', listed((1, 1_600_000.0)),
+             "Credit_Support_Amounts.Posted_Threshold is 1600000.0: it is the level of the set's "
+             'value below which the bank posts, so zero or negative'),
+            ('Received_Threshold', listed((1, 2_000_000.0), (2, -1.0)),
+             "Credit_Support_Amounts.Received_Threshold is -1.0: it is the level of the set's "
+             'value above which the bank receives, so zero or positive')):
+        terms = dict(TERMS, Credit_Support_Amounts=dict(support, **{key: stated}))
+        context = derivus.Context()
+        context.load_json((json.dumps(engine_job(terms)), 'threshold'))
+        assert context.validate()['deals'] == {'CSA-1': [said]}, key
+        caplog.clear()
+        with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued'):
+            derivus.run_cmc(context.current_cfg, prec=torch.float64)
+        assert 'CSA-1: ' + said in caplog.text
