@@ -115,7 +115,7 @@ def factors(vol):
         for name, hazard in (('FIRM_A', 0.005), ('FIRM_B', 0.02), ('CDX_IG', 0.01),
                              ('UNRATED', 0.01))},
         **commodity('WTI', 80.0), **commodity('BRENT', 100.0),
-        **commodity('SILVER', 25.0, 'SILVER_LEASE'))
+        **commodity('SILVER', 25.0, 'SILVER_LEASE'), **{'ObservedBasis.SILVER.LBMA': {'Spot': -0.5}})
 
 
 #: The module's credit, equity and commodity factors as its mapping states them beside the
@@ -397,7 +397,8 @@ def world(tmp_path_factory):
             'FX_SIGNED': ({}, [node(deal) for deal in FX_SIGNED]),
             'EXPIRED': ({}, [node(deal) for deal in EXPIRED]),
             'AXES': ({}, [node(deal) for deal in AXES]),
-            'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))])}
+            'ALIAS': ({}, [node(dict(MIXED[0], Object='FXEuropeanOption'))]),
+            'COMPOSED': ({}, [node(dict(MIXED[5], Commodity='SILVER.LBMA'))])}
     return mapping, run(document(sets, saccr(mapping), receiver_vol()))
 
 
@@ -825,6 +826,21 @@ def test_an_fx_european_option_reads_as_the_fx_option_it_is(world):
                'EffectiveNotional', 'Value']
     assert list(trades(output, 'ALIAS').loc['EUR_CALL', columns]) == list(
         trades(output, 'MIXED').loc['EUR_CALL', columns])
+
+
+def test_a_composed_commodity_reads_its_primarys_type_at_its_own_price(world):
+    """CRE52.36 AND CRE52.69-52.71. A future short 40,000 units of `SILVER.LBMA`, silver at 25 and
+    its LBMA basis at -0.5: its commodity type is silver's, the one the mapping states for the
+    primary, bucket 12 in the metals set, and a unit is the composed price the trade references,
+    24.5, its adjusted notional 980,000.
+
+    Killing mutations: the mapping read under the composed name - the run refused for want of
+    its SIMM.Bucket; the unit priced at its primary alone - 1,000,000.
+    """
+    _, output = world
+    row = trades(output, 'COMPOSED').loc['SILVER_FUT']
+    assert (row['HedgingSet'], row['Bucket']) == ('Metals', '12'), row
+    assert (row['AdjustedNotional'], row['Delta']) == (4e4 * 24.5, -1.0), row
 
 
 EQUITY_LEG = {'Object': 'EquitySwapLeg', 'Reference': 'LEG', 'Currency': 'USD',

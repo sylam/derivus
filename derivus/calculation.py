@@ -5364,7 +5364,8 @@ class SACCR(NettingSetCalculation):
     mapping's `SACCR.Rating` under its survival curve, AAA to CCC a single name and IG or SG an
     index; an equity is an index where its price's SIMM bucket is 11 or 12, Risk_Equity's index
     buckets; a commodity's type is its price's SIMM bucket, whose `commodity_sets` row in the
-    `Parameters` names its hedging set and subclass.
+    `Parameters` names its hedging set and subclass. A reference price is mapped under its forward
+    curve and a composed price under its primary, a unit of it priced with its bases' periods.
 
     The netting set's terms, symbol by symbol:
 
@@ -5406,7 +5407,8 @@ class SACCR(NettingSetCalculation):
         '- **Mapping**: per instrument type its asset class (`SACCR.Asset_Class`), per credit factor its',
         '  rating (`Factors.<name>.SACCR.Rating`, AAA to CCC a single name, IG or SG an index), and the',
         '  SIMM bucket of an equity, which is an index in buckets 11 and 12, and of a commodity, which is',
-        '  its type.',
+        '  its type: a reference price\'s that of its forward curve, a composed price\'s (a primary and',
+        '  its bases) its primary\'s, a unit of it priced as the primary plus its bases.',
         '- **Parameters**: Table 2 of CRE52.72, alpha, the multiplier\'s floor, the maturity buckets and',
         '  correlations of CRE52.57, the maturity and MPOR floors of CRE52.48-52.52, each commodity',
         '  bucket\'s hedging set and subclass and a currency\'s option shift, each beside its paragraph.',
@@ -5533,17 +5535,26 @@ class SACCR(NettingSetCalculation):
                              'it'.format(reference, name, regime, key))
         return str(found)
 
+    def unit(self, deal, field):
+        """The factor a unit of what `field` names is priced and mapped under: a reference price's
+        forward curve, a composed spot's primary (`instruments.get_factor_component`)."""
+        factor = utils.Factor(type(deal).factor_fields[field][0], utils.check_rate_name(deal.field[field]))
+        if factor.type == 'ReferencePrice':
+            return utils.Factor('ForwardPrice', self.compiled.all_factors[factor].get_forwardprice())
+        return factor._replace(name=factor.name[:1]) if factor.type in utils.BASIS_COMPOSABLE_TYPES else factor
+
     def price(self, deal, field):
         """`(price, currency)` of one unit of what `field` names at the base date (52.36): a spot
-        as compiled, or a reference price's forward curve at the base date's delivery, its first
-        where the curve starts later."""
-        found = self.compiled.all_factors[utils.Factor(
-            type(deal).factor_fields[field][0], utils.check_rate_name(deal.field[field]))]
-        if isinstance(found, riskfactors.ReferencePrice):
-            found = self.compiled.all_factors[utils.Factor('ForwardPrice', found.get_forwardprice())]
+        as compiled, a composed one with its bases' periods summed on, or a reference price's
+        forward curve at the base date's delivery, its first where the curve starts later."""
+        factor, name = self.unit(deal, field), utils.check_rate_name(deal.field[field])
+        found = self.compiled.all_factors[factor]
+        if factor.type == 'ForwardPrice':
             return found.current_value(
                 [(self.valuation['Base_Date'] - utils.excel_offset).days])[0], found.get_currency()
-        return found.current_value()[0], found.get_currency()
+        return found.current_value()[0] + sum(self.compiled.all_factors[utils.Factor(
+            'ObservedBasis', name[:period])].current_value()[0] for period in range(2, len(name) + 1)
+        ), found.get_currency()
 
     def averaged(self, principal, steps, end):
         """52.37(2): `principal` less the amortisation `steps` it has reached, averaged over time
@@ -5609,9 +5620,7 @@ class SACCR(NettingSetCalculation):
         amount = fields[terms.amount]
         side = math.copysign(1.0, amount) * (
             1.0 if terms.long is None or fields[terms.long[0]] == terms.long[1] else -1.0)
-        name = terms.underlying and utils.check_tuple_name(utils.Factor(
-            type(deal).factor_fields[terms.underlying][0],
-            utils.check_rate_name(fields[terms.underlying])))
+        name = terms.underlying and utils.check_tuple_name(self.unit(deal, terms.underlying))
         bucket = ''
         if asset == 'IR':
             hedging, subclass = utils.check_rate_name(fields[terms.currency])[0], ''

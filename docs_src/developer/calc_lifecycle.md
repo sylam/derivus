@@ -225,7 +225,9 @@ currency, and an option's strike, expiry and call; its end and maturity are the 
 the `Asset_Class` the `Mapping`'s `SACCR` section states for its type, a credit entity's rating
 the `Rating` under its survival curve's `SACCR` entry, an
 equity an index where its SIMM bucket is 11 or 12, a commodity's type its SIMM bucket, whose row in
-the `Parameters`' `commodity_sets` is its hedging set and subclass; a type declaring no exposure, one
+the `Parameters`' `commodity_sets` is its hedging set and subclass, each read under the factor a unit
+is priced on (`SACCR.unit`: a reference price's forward curve, a composed price's primary, a unit of
+it priced with its bases' periods summed on); a type declaring no exposure, one
 the mapping classes in none and an unrated entity each refuse by name, and the parameters file is
 held to CRE52's shape at setup. An option's P is read off the compiled factors - a swaption's par
 rate off the legs it is written on (`TensorCashFlows.get_par_swap_rate`), an FX option's outright
@@ -250,6 +252,7 @@ set's unmargined one. **Held by** `tests/test_saccr.py::test_the_rates_example_i
 `::test_an_fx_forward_reads_its_foreign_leg_the_larger_where_both_are`,
 `::test_an_fx_option_at_or_past_its_expiry_is_its_deltas_limit`,
 `::test_an_fx_european_option_reads_as_the_fx_option_it_is`,
+`::test_a_composed_commodity_reads_its_primarys_type_at_its_own_price`,
 `::test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name`,
 `::test_a_parameters_file_stating_an_entry_amiss_is_refused_by_name`. **Not gated:** the MPOR floor
 of a set of more than 5,000 trades.
