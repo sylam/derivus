@@ -281,6 +281,9 @@ body {
 
 .fields .required { color: var(--bad); font-weight: 600; }
 
+/* a term left at its convention reads lighter than one stated */
+.fields > .v.convention { opacity: 0.55; }
+
 /* a card holding a card: a stat that is a dict of dicts */
 .card > .nested { padding: 12px 14px 0; }
 

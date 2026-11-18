@@ -1081,10 +1081,13 @@ class NettingCollateralSet(Deal):
     #: The column weighing each collateral table's asset in the collateral the balance counts.
     WEIGHTS = {'Cash_Collateral': 'Amount', 'Bond_Collateral': 'Principal', 'Equity_Collateral': 'Units'}
     fields = [ADMIN, own('NettingCollateralSet', [
-        F('Agreement_Currency', 'Text', default='', convention=True, factors=['FxRate']),
+        F('Agreement_Currency', 'Text', default='', convention=True, factors=['FxRate'],
+          description='Agreement currency, which every amount of the agreement is in'),
         F('Apply_Closeout_When_Uncollateralized', 'Text', default='No', convention=True, values=['Yes', 'No']),
-        F('Balance_Currency', 'Text', default='', convention=True, factors=['FxRate']),
-        F('Opening_Balance', 'Float', default=0.0, convention=True),
+        F('Balance_Currency', 'Text', default='', convention=True, factors=['FxRate'],
+          description="Balance currency of the collateral, blank for the agreement's"),
+        F('Opening_Balance', 'Float', default=0.0, convention=True,
+          description='Opening balance the bank holds, in the balance currency'),
         F('Base_Collateral_Call_Date', 'Date', default='', convention=True),
         F('Calendars', 'Text', default='', convention=True),
         F('Collateral_Assets', 'Container',
@@ -1112,10 +1115,13 @@ class NettingCollateralSet(Deal):
         F('Netted', 'Text', default='True', convention=True, values=['True', 'False']),
         F('Credit_Support_Amounts', 'Container',
           convention=True, sub_fields=[
-              F('Bank', 'Text', default=''),
-              F('Counterparty', 'Text', default='', factors=['SurvivalProb']),
+              F('Bank', 'Text', default='',
+                description="Bank: the bank's own credit curve, which the set does not read"),
+              F('Counterparty', 'Text', default='', factors=['SurvivalProb'],
+                description='Counterparty: the entity the agreement is with'),
               F('Independent_Amount', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
-                row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')])),
+                row=Row([F('Independent Amount', 'Float'), F('Credit Rating', 'Integer')]),
+                description='Independent amount the bank receives, in the agreement currency'),
               F('Received_Threshold', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
                 row=Row([F('Threshold Amount', 'Float'), F('Credit Rating', 'Integer')]),
                 description='The level of the set\'s value above which the bank receives collateral, '
@@ -1125,12 +1131,16 @@ class NettingCollateralSet(Deal):
                 description='The level of the set\'s value below which the bank posts collateral, '
                             'in the agreement currency: zero or negative'),
               F('Minimum_Received', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
-                row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')])),
+                row=Row([F('Minimum Amount', 'Float'), F('Credit Rating', 'Integer')]),
+                description='Minimum transfer the bank receives, in the agreement currency'),
               F('Minimum_Posted', 'CreditSupportList', default=ZERO_SUPPORT, convention=True,
-                row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]))]),
+                row=Row([F('Minimum Posted', 'Float'), F('Credit Rating', 'Integer')]),
+                description='Minimum transfer the bank posts, in the agreement currency')]),
         F('Funding_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
-        F('Liquidation_Period', 'Integer', default=0, convention=True),
-        F('Settlement_Period', 'Integer', default=0, convention=True),
+        F('Liquidation_Period', 'Integer', default=0, convention=True,
+          description='Liquidation period, in calendar days'),
+        F('Settlement_Period', 'Integer', default=0, convention=True,
+          description='Settlement period, in calendar days'),
         F('Post_Regulations', 'Text', default='', convention=True,
           description='The regulatory regimes initial margin is POSTED under this agreement by, as '
                       'the CRIF carries them (comma-separated where several), blank where none is '

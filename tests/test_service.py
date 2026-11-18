@@ -223,6 +223,28 @@ def test_the_schema_publishes_which_deals_take_children():
     assert set(published['containers']) <= menued
 
 
+def test_an_agreements_amounts_say_whose_they_are_and_the_currency_they_are_in():
+    """A credit officer reads a netting set's terms off `/schema`: each one-sided amount says it is
+    the bank's and that it is in the agreement currency, the words the client reads that
+    currency's value by, and each period its unit. The engine reads no description.
+
+    Killing mutation: a description left to default to the field name, which reads 'Minimum
+    Received 100,000' with no currency and no side, and 'Liquidation Period 10' with no unit.
+    """
+    terms = CLIENT.get('/schema').json()['Instrument']['sections']['NettingCollateralSet.Fields']
+    support = terms['Credit_Support_Amounts']['sub_fields']
+    said = {key: field['description'] for key, field in {**terms, **support}.items()}
+
+    for key in ('Independent_Amount', 'Minimum_Received', 'Minimum_Posted', 'Received_Threshold',
+                'Posted_Threshold'):
+        assert 'the bank' in said[key] and 'in the agreement currency' in said[key], key
+    assert 'the bank holds, in the balance currency' in said['Opening_Balance']
+    assert all('in calendar days' in said[key] for key in ('Liquidation_Period', 'Settlement_Period'))
+    # short enough to be the label a panel shows, rather than a hover behind the field's name
+    assert max(len(said[key]) for key in ('Independent_Amount', 'Minimum_Received',
+                                           'Opening_Balance', 'Liquidation_Period')) <= 64
+
+
 def test_a_done_result_carries_the_run_stats():
     """`Stats` - timings, deals loaded, calibration provenance - rides the summary as a flat dict,
     never through `tables_of` (which would flatten `Calibrations` into a fake table path). A

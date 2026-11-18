@@ -1,10 +1,10 @@
 import { useEffect, useRef, useState, type ReactNode } from 'react';
 import { failure } from '../api';
 import {
-  curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject, kindOf, label,
-  offsetText, supportRows, token, ungrouped,
+  SUPPORT_ROW, currencyOf, curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject,
+  kindOf, label, offsetText, sharedSections, supportRows, token, ungrouped,
 } from '../tokens';
-import type { Descriptor, Schema } from '../types';
+import type { Descriptor, Schema, Section } from '../types';
 import { axisNames } from '../vols';
 import { CurveChart } from './CurveChart';
 import { DataTable } from './DataTable';
@@ -36,12 +36,20 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
   if (Array.isArray(grid)) {
     return <span className="num">{grid.map(offsetText).join(' ')}</span>;
   }
-  for (const list of ['.DateList', '.DateEqualList', '.CreditSupportList'] as const) {
+  for (const list of ['.DateList', '.DateEqualList'] as const) {
     const rows = token(value, list);
     if (Array.isArray(rows)) {
-      const data = list === '.CreditSupportList' ? supportRows(rows) : rows;
-      return <DataTable columns={descriptor?.col_names ?? []} index={[]} data={data} />;
+      return <DataTable columns={descriptor?.col_names ?? []} index={[]} data={rows} />;
     }
+  }
+  const support = token(value, '.CreditSupportList');
+  if (Array.isArray(support)) {
+    return (
+      <>
+        <DataTable columns={descriptor?.col_names ?? []} index={[]} data={supportRows(support)} />
+        <div className="hint">{SUPPORT_ROW}</div>
+      </>
+    );
   }
   // 'null' is the wire blank of every table, what a table widget writes for an empty one
   if (value === 'null' && descriptor?.widget === 'Table') {
@@ -122,8 +130,11 @@ export type AmendField = (key: string, wireValue: unknown) => Promise<string[] |
  * container is one of them. `editable` narrows WHICH declared fields may edit - the market view
  * passes the bind='value' test, so structure stays read-only where the engine says it must.
  * `aside` is what a top-level field's label carries beside it - whose the entry is. `ask` is
- * what filing an edit does, where that is more than a save: a changed field asks it first. */
-export function DescriptorPanel({ title, fields, values, onAmend, editable, aside, ask }: {
+ * what filing an edit does, where that is more than a save: a changed field asks it first.
+ * `tables` edits a table too, a cell at a time; `currency` reads the currency an amount's
+ * description names, a container's children reading their deal's. */
+export function DescriptorPanel({ title, fields, values, onAmend, editable, aside, ask, tables,
+                                  currency }: {
   title: string;
   fields?: Record<string, Descriptor>;
   values: Record<string, unknown>;
@@ -131,6 +142,8 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
   editable?: (key: string, descriptor: Descriptor) => boolean;
   aside?: (key: string) => ReactNode;
   ask?: string;
+  tables?: boolean;
+  currency?: (description: string) => string | undefined;
 }) {
   const declared = Object.entries(fields ?? {});
   const undeclared = Object.keys(values).filter((key) => !(fields ?? {})[key]);
@@ -139,6 +152,9 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
     ...undeclared.map((key) => ({ key, descriptor: undefined })),
   ].filter(({ key, descriptor }) => descriptor !== undefined || values[key] !== undefined);
   if (!rows.length) return null;
+  const inCurrency = currency ?? ((description: string) => currencyOf(
+    description, [...declared.map(([key]) => key), ...undeclared],
+    (key) => values[key] ?? fields?.[key]?.value));
 
   return (
     <section className="card">
@@ -146,14 +162,15 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
       <div className="fields">
         {rows.map(({ key, descriptor }) => {
           const value = values[key] !== undefined ? values[key] : descriptor?.value;
-          const container = descriptor?.widget === 'Container';
-          const whole = isObject(value) ? value : {};
-          return container ? (
+          // a container's children are stated only where it states them
+          const whole = isObject(values[key]) ? values[key] as Record<string, unknown> : {};
+          return descriptor?.widget === 'Container' ? (
             <div key={key} style={{ gridColumn: '1 / -1' }}>
               <DescriptorPanel
-                title={labelOf(key, descriptor).text}
+                title={labelOf(key, descriptor).text
+                  + (descriptor.convention && values[key] === undefined ? ' · convention' : '')}
                 fields={descriptor?.sub_fields}
-                values={whole} editable={editable} ask={ask}
+                values={whole} editable={editable} ask={ask} tables={tables} currency={inCurrency}
                 onAmend={onAmend && (!editable || editable(key, descriptor!))
                   ? (field, wire) => onAmend(key, { ...whole, [field]: wire }) : undefined}
               />
@@ -161,7 +178,8 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
           ) : (
             <FieldRow key={key} name={key} descriptor={descriptor} value={value}
                       stated={values[key] !== undefined && values[key] !== null && values[key] !== ''}
-                      declared={!!descriptor || !undeclared.includes(key)}
+                      declared={!!descriptor || !undeclared.includes(key)} tables={tables}
+                      currency={descriptor && inCurrency(descriptor.description)}
                       onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
                         ? onAmend : undefined} aside={aside?.(key)} ask={ask} />
           );
@@ -171,28 +189,32 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
   );
 }
 
-/** A deal as its type declares it: a card per section holding that section's fields, then every
- * key no section covers - the viewer's honesty panel; a type nobody declared is one card whole. */
-export function DealPanels({ deal, schema, onAmend, ask }: {
-  deal: Record<string, unknown>; schema: Schema | null; onAmend?: AmendField; ask?: string;
+/** A deal as its type declares it: a card per section holding that section's fields - its `own`
+ * alone, the sections every type shares left out - then every key no section covers, the viewer's
+ * honesty panel; a type nobody declared is one card whole. `cut` narrows a section's fields. */
+export function DealPanels({ deal, schema, own, cut = (fields) => fields, ...panel }: {
+  deal: Record<string, unknown>; schema: Schema | null; own?: boolean;
+  cut?: (fields: Section) => Section;
+  onAmend?: AmendField; ask?: string; tables?: boolean;
 }) {
   const object = String(deal.Object ?? '?');
   const sections = schema?.Instrument.types[object];
   if (!schema || !sections) {
     return <DescriptorPanel title={`${object} (undeclared type)`} values={deal} />;
   }
+  const shared = own ? sharedSections(schema.Instrument.types) : [];
   const of = (section: string) => schema.Instrument.sections[section] ?? {};
   const pick = (keep: (key: string) => boolean) =>
     Object.fromEntries(Object.entries(deal).filter(([key]) => keep(key)));
   const extra = pick((key) => !sections.some((section) => key in of(section)));
   return (
     <>
-      {sections.map((section) => (
+      {sections.filter((section) => !shared.includes(section)).map((section) => (
         <DescriptorPanel key={section} title={schema.Instrument.titles?.[section] ?? section}
-                         fields={of(section)} values={pick((key) => key in of(section))}
-                         onAmend={onAmend} ask={ask} />
+                         fields={cut(of(section))} values={pick((key) => key in of(section))}
+                         {...panel} />
       ))}
-      <DescriptorPanel title="Undeclared fields" values={extra} />
+      <DescriptorPanel title="Fields the engine does not know" values={extra} />
     </>
   );
 }
@@ -202,29 +224,77 @@ export function DealPanels({ deal, schema, onAmend, ask }: {
  * between a term the author wrote and a placeholder standing in for one. A `null` or a blank is
  * what a form round-trips for nothing, so it is not a statement here either - which is what the
  * engine's own booking verdict says. `required` is the Instrument store's reading, MUST BE
- * STATED; on every other store it is still `default=REQUIRED`, and this panel renders both. */
-function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, ask }: {
+ * STATED; on every other store it is still `default=REQUIRED`, and this panel renders both. A
+ * convention left unstated reads as one, lighter and named so; `currency` is the amount's. */
+function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, ask, tables,
+                    currency }: {
   name: string; descriptor?: Descriptor; value: unknown; stated?: boolean; declared: boolean;
-  onAmend?: AmendField; aside?: ReactNode; ask?: string;
+  onAmend?: AmendField; aside?: ReactNode; ask?: string; tables?: boolean; currency?: string;
 }) {
   const editable = onAmend !== undefined && descriptor !== undefined &&
     isEditableScalar(descriptor, value);
   const { text, title } = labelOf(name, descriptor);
+  const convention = descriptor?.convention && !stated;
   return (
     <>
       <div className="k" title={title}>
         {text}
         {descriptor?.required && !stated && <span className="required"> *</span>}
-        {!declared && <span className="hint">(not declared)</span>}
+        {currency && <span className="chip">{currency}</span>}
+        {convention && <span className="hint">convention</span>}
+        {!declared && <span className="hint">(the engine has no such field)</span>}
         {aside}
       </div>
-      <div className="v">
-        {editable
-          ? <EditableScalar name={name} descriptor={descriptor!} value={value} onAmend={onAmend!}
-                            ask={ask} />
-          : <FieldView value={value} descriptor={descriptor} />}
+      <div className={convention ? 'v convention' : 'v'}>
+        {tables && onAmend && descriptor?.widget === 'Table'
+          ? <TableEdit name={name} declared={descriptor} value={value} onAmend={onAmend} />
+          : editable
+            ? <EditableScalar name={name} descriptor={descriptor!} value={value} onAmend={onAmend!}
+                              ask={ask} />
+            : <FieldView value={value} descriptor={descriptor} />}
       </div>
     </>
+  );
+}
+
+/** One table edited a cell at a time - a credit support list or a list of collateral - its
+ * columns and their forms the declaration's own, a row added blank and the last one dropped. */
+function TableEdit({ name, declared, value, onAmend }: {
+  name: string; declared: Descriptor; value: unknown; onAmend: AmendField;
+}) {
+  const columns = declared.col_names ?? [];
+  const support = declared.obj === 'CreditSupportList';
+  const forms = support ? ['Float', 'Integer'] : (declared.obj ?? []) as string[];
+  const rows: unknown[][] = support
+    ? supportRows((token(value, '.CreditSupportList') ?? []) as unknown[][])
+    : (Array.isArray(value) ? value : []).map((row) => columns.map(
+      (column) => (row as Record<string, unknown>)[column]));
+  const file = (next: unknown[][]) => onAmend(name, support
+    ? { '.CreditSupportList': supportRows(next) }
+    : next.map((row) => Object.fromEntries(columns.map((column, at) => [column, row[at]]))));
+  const cell = (form: string, column: string): Descriptor => ({
+    widget: ['Float', 'Percent'].includes(form) ? 'Float' : form === 'Integer' ? 'Integer' : 'Text',
+    obj: form, description: column, value: null,
+  });
+  return (
+    <div>
+      <DataTable columns={columns} index={[]} data={rows} cell={(r, c) => (
+        <EditableScalar name={columns[c]} descriptor={cell(forms[c], columns[c])} value={rows[r][c]}
+                        onAmend={(_, edited) => file(rows.map((row, at) => (at === r
+                          ? row.map((held, column) => (column === c ? edited : held)) : row)))} />
+      )} />
+      {support && <div className="hint">{SUPPORT_ROW}</div>}
+      <div className="statusrow">
+        <button className="ghost" onClick={() => void file([...rows, columns.map(() => null)])}>
+          add a row
+        </button>
+        {rows.length > 0 && (
+          <button className="ghost" onClick={() => void file(rows.slice(0, -1))}>
+            drop the last row
+          </button>
+        )}
+      </div>
+    </div>
   );
 }
 

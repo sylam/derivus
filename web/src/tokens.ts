@@ -1,7 +1,7 @@
 // The wire tokens a job document carries (`CustomJsonEncoder` is the source of truth), the small
 // formatters the read-only renderer shares, and the write half's encoder.
 
-import type { Descriptor } from './types';
+import type { Descriptor, Section } from './types';
 
 export function token(value: unknown, name: string): unknown {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
@@ -16,6 +16,10 @@ export const isObject = (value: unknown): value is Record<string, unknown> =>
 /** A credit support row travels [rating, amount], the reverse of the columns it declares; the
  * map is its own inverse, so it reads the wire and writes it. */
 export const supportRows = (rows: unknown[][]): unknown[][] => rows.map((row) => [...row].reverse());
+
+/** What one row of a credit support list is, as a run reads the list. */
+export const SUPPORT_ROW = 'Each row is the amount that applies at its credit rating; a run reads '
+  + 'the first row.';
 
 /** A column, index or cell entry as text: tuples join, and every scalar wire token reads as what
  * it is - a date, a period, a percent or a basis with its unit. A table's cells carry the same
@@ -74,6 +78,18 @@ export function formatNumber(value: number, kind: Kind = 'plain'): string {
   if (size >= 1000) return cents;
   if (value !== 0 && size < 1e-6) return value.toExponential(3);
   return digits(value, value === 0 ? 0 : 5 - Math.floor(Math.log10(size)));
+}
+
+/** The currency an amount is stated in: the first `*Currency` field its description says it is
+ * `in` - by key or in words, `in Sales_Margin_Currency`, `in the agreement currency` - that `read`
+ * answers with one. */
+export function currencyOf(description: string, keys: string[],
+                           read: (key: string) => unknown): string | undefined {
+  const at = (key: string) => description.search(
+    new RegExp(`\\bin (the )?(${key}|${key.replace(/_/g, ' ')})\\b`, 'i'));
+  return keys.filter((key) => /(^|_)Currency$/.test(key) && at(key) >= 0)
+    .sort((a, b) => at(a) - at(b)).map(read)
+    .find((value): value is string => typeof value === 'string' && value !== '');
 }
 
 /** What a declared field's number is: an amount of the instrument (`sized`) is money, a Percent
@@ -173,3 +189,30 @@ export function encodeScalar(descriptor: Descriptor, raw: string | boolean): unk
     default: return raw;
   }
 }
+
+// ---- an agreement's terms: a deal's own sections, read off the declaration ----
+
+/** The sections every instrument type carries - a trade's admin block - which no type's own
+ * terms are. */
+export function sharedSections(types: Record<string, string[]>): string[] {
+  const all = Object.values(types);
+  return (all[0] ?? []).filter((section) => all.every((sections) => sections.includes(section)));
+}
+
+/** The flag a netting set's collateral turns on. */
+export const COLLATERAL = 'Collateralized';
+
+/** Whether `values` declare a set whose collateral flag reads off, stated or at its convention. */
+export const uncollateralised = (fields: Section, values: Record<string, unknown>): boolean =>
+  COLLATERAL in fields && String(values[COLLATERAL] ?? fields[COLLATERAL].value) === 'False';
+
+/** `fields` cut to the ones `values` state - a container's to the children it states - and those
+ * `also` names: what reads of terms whose conventions mean nothing. */
+export function statedOnly(fields: Section, values: Record<string, unknown>,
+                           also: string[] = []): Section {
+  return Object.fromEntries(Object.entries(fields)
+    .filter(([key]) => values[key] !== undefined || also.includes(key))
+    .map(([key, field]) => [key, field.sub_fields && isObject(values[key])
+      ? { ...field, sub_fields: statedOnly(field.sub_fields, values[key]) } : field]));
+}
+

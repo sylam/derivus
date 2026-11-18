@@ -2,14 +2,13 @@ import { useEffect, useState } from 'react';
 import {
   declareAgreement, declareEntity, failure, getBookAgreements, getBookEntities,
 } from '../api';
-import { DataTable } from '../components/DataTable';
-import { DescriptorPanel, EditableScalar } from '../components/FieldView';
+import { DealPanels } from '../components/FieldView';
 import { EmptyState } from '../components/EmptyState';
 import type { Agreement, Entity } from '../positions';
 import { worklistAt } from '../spine';
 import { useApp } from '../state';
-import { isObject, supportRows, token } from '../tokens';
-import type { Descriptor, Schema } from '../types';
+import { COLLATERAL, statedOnly, uncollateralised } from '../tokens';
+import type { Schema } from '../types';
 
 /** The declaration an agreement's terms are: the netting set's own, as `/schema` publishes it. */
 const TERMS = 'NettingCollateralSet';
@@ -94,81 +93,23 @@ export function PaperView() {
   );
 }
 
-/** An agreement's terms as the netting set declares them: its sections, the way a deal's panel
- * renders, each field its convention where the terms state nothing, and every table the terms
- * carry editable a cell at a time where `onChange` takes the terms back. */
+/** An agreement's terms as the netting set declares them: its own sections, the way a deal's
+ * panel renders, each term its convention where the terms state nothing - those of a set whose
+ * collateral is off left out, being collateral it does not have - and every term, a table's
+ * cells among them, editable where `onChange` takes the terms back. */
 function Terms({ schema, terms, onChange }: {
   schema: Schema; terms: Record<string, unknown>;
   onChange?: (terms: Record<string, unknown>) => void;
 }) {
-  const sections = schema.Instrument.types[TERMS] ?? [];
-  const stated = (key: string, wire: unknown) => onChange?.({ ...terms, [key]: wire });
-  // the tables sit inside the containers, which take a table back whole
-  const tables = sections.flatMap((section) => Object.entries(schema.Instrument.sections[section])
-    .filter(([, field]) => field.widget === 'Container')
-    .flatMap(([key, field]) => Object.entries(field.sub_fields ?? {})
-      .filter(([, sub]) => sub.widget === 'Table')
-      .map(([name, sub]) => ({ key, name, sub }))));
+  const bare = !onChange && (schema.Instrument.types[TERMS] ?? []).some((section) =>
+    uncollateralised(schema.Instrument.sections[section], terms));
   return (
-    <>
-      {sections.map((section) => (
-        <DescriptorPanel key={section} title={schema.Instrument.titles?.[section] ?? section}
-                         fields={schema.Instrument.sections[section]} values={terms}
-                         onAmend={onChange && (async (key, wire) => { stated(key, wire); return null; })} />
-      ))}
-      {onChange && tables.map(({ key, name, sub }) => {
-        const held = isObject(terms[key]) ? terms[key] as Record<string, unknown> : {};
-        return (
-          <TableEdit key={`${key}.${name}`} name={`${key} · ${name}`} declared={sub}
-                     value={name in held ? held[name] : sub.value}
-                     onChange={(wire) => stated(key, { ...held, [name]: wire })} />
-        );
-      })}
-    </>
-  );
-}
-
-/** One table of the terms - a credit support list or a list of eligible collateral - its columns
- * and their forms the declaration's own, a cell edited at a time and a row added blank. */
-function TableEdit({ name, declared, value, onChange }: {
-  name: string; declared: Descriptor; value: unknown; onChange: (wire: unknown) => void;
-}) {
-  const columns = declared.col_names ?? [];
-  const support = declared.obj === 'CreditSupportList';
-  const forms = support ? ['Float', 'Integer'] : (declared.obj ?? []) as string[];
-  const rows: unknown[][] = support
-    ? supportRows((token(value, '.CreditSupportList') ?? []) as unknown[][])
-    : (Array.isArray(value) ? value : []).map((row) => columns.map(
-      (column) => (row as Record<string, unknown>)[column]));
-  const wire = (next: unknown[][]) => (support
-    ? { '.CreditSupportList': supportRows(next) }
-    : next.map((row) => Object.fromEntries(columns.map((column, at) => [column, row[at]]))));
-  const cell = (form: string, column: string): Descriptor => ({
-    widget: ['Float', 'Percent'].includes(form) ? 'Float' : form === 'Integer' ? 'Integer' : 'Text',
-    obj: form, description: column, value: null,
-  });
-  return (
-    <section className="card">
-      <h3>{name}</h3>
-      <DataTable columns={columns} index={[]} data={rows} cell={(r, c) => (
-        <EditableScalar name={columns[c]} descriptor={cell(forms[c], columns[c])} value={rows[r][c]}
-                        onAmend={async (_, edited) => {
-                          onChange(wire(rows.map((row, at) => (at === r
-                            ? row.map((held, column) => (column === c ? edited : held)) : row))));
-                          return null;
-                        }} />
-      )} />
-      <div className="statusrow">
-        <button className="ghost" onClick={() => onChange(wire([...rows, columns.map(() => null)]))}>
-          add a row
-        </button>
-        {rows.length > 0 && (
-          <button className="ghost" onClick={() => onChange(wire(rows.slice(0, -1)))}>
-            drop the last row
-          </button>
-        )}
-      </div>
-    </section>
+    <DealPanels deal={terms} schema={schema} own tables={!!onChange}
+                cut={bare ? (fields) => statedOnly(fields, terms, [COLLATERAL]) : undefined}
+                onAmend={onChange && (async (key, wire) => {
+                  onChange({ ...terms, [key]: wire });
+                  return null;
+                })} />
   );
 }
 
