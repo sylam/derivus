@@ -390,7 +390,14 @@ table.blotter td.opener {
 }
 
 /* a long name keeps the row on the screen and reads whole on its hover */
-table.blotter td.clip { max-width: 220px; overflow: hidden; text-overflow: ellipsis; }
+table.blotter td.clip { max-width: 160px; overflow: hidden; text-overflow: ellipsis; }
+
+/* the widest table on the desk keeps inside the screen: tighter gutters, the reference and the
+   type clipped to their hover, and the terms wrapping rather than widening the row */
+table.blotter th, table.blotter td { padding-left: 6px; padding-right: 6px; }
+table.blotter td.ref { max-width: 230px; overflow: hidden; text-overflow: ellipsis; }
+table.blotter td.type { max-width: 130px; overflow: hidden; text-overflow: ellipsis; }
+table.blotter td.terms { white-space: normal; min-width: 160px; max-width: 190px; }
 
 table.blotter td.opener span { cursor: pointer; padding: 0 4px; }
 

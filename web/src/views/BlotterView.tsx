@@ -1,7 +1,7 @@
 import { useMemo, useState } from 'react';
 import {
-  WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, groupedRows, inWindow,
-  rollingCount, rowsByPath, sizeOf, sortRows, toRows, type BlotterRow, type Picked,
+  WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, groupedRows, inWindow, nameOf,
+  quoted, rollingCount, rowsByPath, sizeOf, sortRows, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import {
@@ -10,7 +10,7 @@ import {
 } from '../positions';
 import { marketOf, useApp } from '../state';
 import { formatNumber, type Kind } from '../tokens';
-import type { Schema } from '../types';
+import type { Market, Schema } from '../types';
 
 /** The desk blotter: one row per booked deal over the live book, the tree flattened with
  * containers still holding their legs, sorted by days-to-roll so "who rolls off this week" is one
@@ -115,10 +115,15 @@ export function BlotterView() {
                 <th>Reference</th>
                 <th>Type</th>
                 <th>Side</th>
+                <th title={'what the trade is on - the pair as the market writes it, else the '
+                           + 'commodity, equity or index it names - and an option\'s sense on it'}>
+                  On
+                </th>
                 <th>Ccy</th>
                 <th className="n">Amount</th>
-                <th className="n">Strike</th>
-                <th className="n">Barrier</th>
+                <th className="n" title={`${LEVELS}; a forward's outright`}>Strike</th>
+                <th className="n" title={LEVELS}>Barrier</th>
+                <th>Terms</th>
                 <th>Expiry</th>
                 <th>Next date</th>
                 <th className="n" title="days to the roll: the expiry, else the next date">Days</th>
@@ -135,6 +140,7 @@ export function BlotterView() {
                   key={row.path}
                   row={row}
                   schema={schema}
+                  market={market}
                   held={!recording ? null
                     : row.position ? [row.position] : grouping === 'book'
                       ? heldAt.get(row.path) ?? [] : []}
@@ -150,7 +156,7 @@ export function BlotterView() {
                 />
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={recording ? 15 : 11} className="hint">
+                <tr><td colSpan={recording ? 17 : 13} className="hint">
                   nothing rolls off in this window.
                 </td></tr>
               )}
@@ -162,13 +168,16 @@ export function BlotterView() {
   );
 }
 
+const LEVELS = 'an FX level as the market quotes its pair, base then quote';
+
 function Row(props: {
-  row: BlotterRow; schema: Schema | null; held: Position[] | null; entities: Paper['entities'];
-  selected: boolean; emphasised: boolean; collapsed: boolean; opened: boolean;
-  onToggle: () => void; onOpen: () => void; onSelect: () => void;
+  row: BlotterRow; schema: Schema | null; market: Market | null; held: Position[] | null;
+  entities: Paper['entities']; selected: boolean; emphasised: boolean; collapsed: boolean;
+  opened: boolean; onToggle: () => void; onOpen: () => void; onSelect: () => void;
 }) {
   const { row, schema, selected, emphasised, collapsed, opened } = props;
   const size = sizeOf(row.deal, row.object, schema);
+  const read = quoted(row, props.market);
 
   return (
     <>
@@ -177,22 +186,27 @@ function Row(props: {
           row.ignored ? 'muted ' : ''}${row.container ? 'group' : ''}`}
         onClick={props.onSelect}
       >
-        <td style={{ paddingLeft: 10 + row.depth * 18 }}>
+        <td className="ref" style={{ paddingLeft: 10 + row.depth * 18 }} title={row.reference}>
           <span
             className="caret"
             onClick={(e) => { e.stopPropagation(); props.onToggle(); }}
           >
             {row.children.length ? (collapsed ? '▸' : '▾') : ''}
           </span>
-          {row.reference || <span className="hint">(no reference)</span>}
+          {nameOf(row) || <span className="hint">(no reference)</span>}
           {row.ignored && <span className="badge">ignored</span>}
         </td>
-        <td className="type">{row.object}</td>
+        <td className="type" title={row.object}>{row.object}</td>
         <td><Side side={size.side} /></td>
+        <td title={read.on?.key}>
+          {read.on ? cellText(read.on.value) : ''}{read.sense && <span> {read.sense}</span>}
+        </td>
         <td title={size.of?.key}>{size.of ? cellText(size.of.value) ?? '' : ''}</td>
         <Value picked={size.amount} object={row.object} schema={schema} kind="money" />
-        <Value picked={row.strike} object={row.object} schema={schema} />
-        <Value picked={row.barrier} object={row.object} schema={schema} />
+        <Value picked={read.strike} object={row.object} schema={schema} />
+        <Value picked={read.barrier} object={row.object} schema={schema} />
+        {/* a wrapped line never opens on the separator */}
+        <td className="terms" title={read.terms?.title}>{read.terms?.parts.join('\u00a0· ')}</td>
         {/* a container carrying no dates of its own shows the roll it INHERITS, marked, so the
             days beside it are never a number with nothing behind it */}
         <td className="date">
@@ -209,7 +223,7 @@ function Row(props: {
       </tr>
       {opened && (
         <tr className="detail">
-          <td colSpan={props.held ? 15 : 11}>
+          <td colSpan={props.held ? 17 : 13}>
             <DealPanels deal={row.deal} schema={schema} />
           </td>
         </tr>
@@ -254,7 +268,7 @@ function Value({ picked, object, schema, kind }: {
   if (!picked) return <td className="n" />;
   const text = cellText(picked.value, kind);
   const exact = typeof picked.value === 'number' ? `: ${picked.value}` : '';
-  const title = describe(schema, object, picked.key) + exact;
+  const title = picked.title ?? describe(schema, object, picked.key) + exact;
   if (text === undefined) {
     return <td className="n"><span className="hint" title={title}>{'{…}'}</span></td>;
   }

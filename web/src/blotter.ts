@@ -19,8 +19,10 @@ import type { DealNode, Descriptor, JobDoc, Market, Schema } from './types';
 
 const SIDE_FIELDS = ['Buy_Sell', 'Payer_Receiver', 'Borrower_Lender', 'MtM_Side'];
 
-/** The other side, for a type whose sizes carry it. */
-const OTHER: Record<string, string> = { Buy: 'Sell', Sell: 'Buy' };
+/** The other of a word a side, a sense or a barrier's direction is written in. */
+const OTHER: Record<string, string> = {
+  Buy: 'Sell', Sell: 'Buy', Call: 'Put', Put: 'Call', Up: 'Down', Down: 'Up',
+};
 
 /** Amounts counting the underlying in its own units: no currency is ever beside them. */
 const UNIT_FIELDS = ['Units', 'Volume'];
@@ -33,10 +35,19 @@ const AMOUNT_FIELDS = [
 
 const STRIKE_FIELDS = [
   'Strike_Price', 'Strike', 'Fixed_Price', 'Forward_Price', 'Swap_Rate', 'FRA_Rate', 'Cap_Rate',
-  'Floor_Rate', 'Interest_Rate', 'Extension_Strike', 'TargetLevel',
+  'Floor_Rate', 'Interest_Rate', 'Extension_Strike',
 ];
 
 const BARRIER_FIELDS = ['Barrier_Price', 'Barrier'];
+
+/** What a deal naming no pair is on: a commodity, its reference price, an equity, an index. */
+const UNDERLYING_FIELDS = ['Commodity', 'Reference_Type', 'Equity', 'Index'];
+
+/** A schedule each row of which is a fixing paying the deal's amount; one the amount averages. */
+const STRIP_FIELDS = [
+  'TARF_ExpiryDates', 'Accumulator_ExpiryDates', 'Extendable_ExpiryDates', 'Observation_Dates',
+];
+const AVERAGE_FIELDS = ['Sampling_Data'];
 
 /** The term-end date: what "rolls off" means for this deal. */
 const EXPIRY_FIELDS = [
@@ -97,7 +108,9 @@ export function datesIn(value: unknown, depth = 0): string[] {
 
 // ---- field picking --------------------------------------------------------------------------------
 
-export type Picked = { key: string; value: unknown };
+/** A field a column shows, and - where the cell is not the field as written - a hover saying how
+ * it was read. */
+export type Picked = { key: string; value: unknown; title?: string };
 
 /** The first candidate the DEAL carries with a value worth showing. Value-first: the deal decides,
  * the declaration only labels (see `describe`). */
@@ -127,6 +140,10 @@ export function describe(schema: Schema | null, object: string, key: string): st
 /** A row's side, amount, and what the amount is OF: a currency by the field stating it, or the
  * unit word of an amount counting the underlying. */
 export type Size = { side?: Picked; amount?: Picked; of?: Picked };
+
+/** The other of a two-sided word, its first part turned: `Up_And_In` seen from the other side of
+ * the pair is `Down_And_In`. */
+const other = (value: string): string => value.replace(/^[A-Za-z]+/, (word) => OTHER[word] ?? word);
 
 /** The amount is the first candidate the type declares `sized` - any the deal carries where the
  * type is undeclared - so a netting set's balance is no trade size. It is OF the first currency
@@ -169,6 +186,115 @@ export function cellText(value: unknown, kind: Kind = 'plain'): string | undefin
   return undefined;
 }
 
+// ---- the market's axis --------------------------------------------------------------------------
+// The engine states an FX deal on its `Underlying_Currency` priced in its `Currency`, every level in
+// `Currency` per 1 `Underlying_Currency`; the market quotes a pair, base then quote. The deal names
+// its pair, so the turn between the two is read off the deal and never off a table of currencies.
+
+/** A currency pair as the market writes it, base then quote: EURZAR is ZAR per 1 EUR. */
+type Pair = { base: string; quote: string };
+
+/** The pair a deal is on: the `BASE.QUOTE` its `FX_Volatility` names, else - a forward names none
+ * - the one the market holds an `FXVol.BASE.QUOTE` surface for on the two currencies it buys and
+ * sells, in either order. */
+function pairOf(deal: Record<string, unknown>, market: Market | null): Pair | undefined {
+  const named = String(deal.FX_Volatility ?? '').split('.');
+  if (named.length === 2) return { base: named[0], quote: named[1] };
+  const surfaces = market?.['Price Factors'] ?? {};
+  const [base, quote] = [[deal.Buy_Currency, deal.Sell_Currency],
+    [deal.Sell_Currency, deal.Buy_Currency]].find(([a, b]) => `FXVol.${a}.${b}` in surfaces) ?? [];
+  return base ? { base: String(base), quote: String(quote) } : undefined;
+}
+
+/** Whether a deal states its levels on its pair's QUOTE currency, so the market reads each as
+ * `1 / level` and its sense the other way round - the engine's own `Invert_Moneyness`. */
+const inverts = (deal: Record<string, unknown>, pair?: Pair): boolean =>
+  !!pair && deal.Underlying_Currency === pair.quote;
+
+/** Every level column's one road: a number a deal on a pair states, on the pair's axis - its
+ * reciprocal where the deal `inverts` - with a hover saying what is shown and which field it was
+ * read off; anything else as written. */
+function onAxis(deal: Record<string, unknown>, picked: Picked | undefined,
+                pair?: Pair): Picked | undefined {
+  if (!picked || !pair || typeof picked.value !== 'number') return picked;
+  const value = inverts(deal, pair) ? 1 / picked.value : picked.value;
+  return { key: picked.key, value, title: `${pair.base}${pair.quote} ${formatNumber(value)}, `
+    + `written as ${picked.key} ${formatNumber(picked.value)} ${deal.Currency} per `
+    + `${deal.Underlying_Currency}` };
+}
+
+/** A forward's outright on its pair: the quote currency's `<Buy|Sell>_Amount` per the base's. */
+function outright(deal: Record<string, unknown>, pair?: Pair): Picked | undefined {
+  if (!pair) return undefined;
+  const [quote, base] = [pair.quote, pair.base].map((currency) => ['Buy', 'Sell'].find(
+    (word) => deal[`${word}_Currency`] === currency));
+  if (!quote || !base) return undefined;
+  const [over, under] = [quote, base].map((word) => Math.abs(Number(deal[`${word}_Amount`])));
+  const value = over / under;
+  return { key: `${quote}_Amount`, value, title: `${pair.base}${pair.quote} ${formatNumber(value)}`
+    + `, the outright: ${formatNumber(over, 'money')} ${pair.quote} for `
+    + `${formatNumber(under, 'money')} ${pair.base}` };
+}
+
+/** A row's terms, each a few words, and the hover saying them whole. */
+export type Terms = { parts: string[]; title: string };
+
+/** The terms a row's other columns cannot hold, its hover adding the levels as written: a strip's
+ * fixings and that its amount is per fixing, an average's fixings, a target in its unit, a
+ * leverage, a range's two levels and a barrier's direction - the last two on the pair's axis. A
+ * type nobody anticipated says nothing rather than something wrong. */
+function termsOf(deal: Record<string, unknown>, pair?: Pair): Terms | undefined {
+  const count = (keys: string[]) => {
+    const rows = pick(deal, keys)?.value;
+    return Array.isArray(rows) ? rows.length : undefined;
+  };
+  const [strip, average] = [count(STRIP_FIELDS), count(AVERAGE_FIELDS)];
+  const [per, of] = deal.InvertedTarget ? [deal.Underlying_Currency, deal.Currency]
+    : [deal.Currency, deal.Underlying_Currency];
+  const leverage = Number(deal.LeverageNotional) / Number(deal.Underlying_Amount);
+  const range = ['Lower_Barrier', 'Upper_Barrier'].map(
+    (key) => onAxis(deal, pick(deal, [key]), pair));
+  const [low, high] = range.map((level) => level?.value).sort((a, b) => Number(a) - Number(b));
+  const parts = [
+    strip !== undefined && `${strip} fixings, amount per fixing`,
+    average !== undefined && `average of ${average} fixings`,
+    typeof deal.TargetLevel === 'number'
+      && `target ${formatNumber(deal.TargetLevel)} ${per} per ${of}`,
+    leverage > 0 && isFinite(leverage) && `leverage ${formatNumber(leverage)}×`,
+    typeof low === 'number' && typeof high === 'number'
+      && `range ${formatNumber(low)}\u00a0–\u00a0${formatNumber(high)}`,
+    typeof deal.Barrier_Type === 'string' && (inverts(deal, pair) ? other(deal.Barrier_Type)
+      : deal.Barrier_Type).replace(/_/g, ' ').toLowerCase(),
+  ].filter((part): part is string => !!part);
+  const written = range.map((level) => level?.title).filter(Boolean);
+  return parts.length ? { parts, title: [parts.join(' · '), ...written].join('\n') } : undefined;
+}
+
+/** A row the way the market states it: what it is on - the pair as the market writes it, else the
+ * commodity, equity or index it names, else the one thing every row under it is on - an option's
+ * sense on that pair, its two level columns and its terms. */
+export type Quoted = {
+  on?: Picked; sense?: string; strike?: Picked; barrier?: Picked; terms?: Terms;
+};
+
+export function quoted(row: BlotterRow, market: Market | null): Quoted {
+  const { deal } = row;
+  const pair = pairOf(deal, market);
+  const legs = row.children.map((child) => quoted(child, market).on);
+  const named = pick(deal, UNDERLYING_FIELDS);
+  const sense = typeof deal.Option_Type === 'string' ? deal.Option_Type : undefined;
+  return {
+    on: pair ? { key: deal.FX_Volatility ? 'FX_Volatility' : `FXVol.${pair.base}.${pair.quote}`,
+                 value: pair.base + pair.quote }
+      : named ?? (new Set(legs.map((leg) => leg?.value)).size === 1 ? legs[0] : undefined),
+    sense: sense && inverts(deal, pair) ? other(sense) : sense,
+    strike: onAxis(deal, pick(deal, STRIKE_FIELDS), pair) ?? outright(deal, pair),
+    // a barrier of nought is no barrier
+    barrier: onAxis(deal, pick(deal, BARRIER_FIELDS.filter((key) => deal[key] !== 0)), pair),
+    terms: termsOf(deal, pair),
+  };
+}
+
 // ---- the rows ---------------------------------------------------------------------------------
 
 export type BlotterRow = {
@@ -185,8 +311,6 @@ export type BlotterRow = {
   reference: string;
   container: boolean;
   ignored: boolean;
-  strike?: Picked;
-  barrier?: Picked;
   /** The deal's own term end, where it declares one. */
   expiry?: string;
   /** The first date on or after Base_Date the deal carries anywhere - the next fixing, payment or
@@ -238,8 +362,6 @@ export function toRows(
       reference: String(deal.Reference ?? ''),
       container: containers.includes(object) || children.length > 0,
       ignored,
-      strike: pick(deal, STRIKE_FIELDS),
-      barrier: pick(deal, BARRIER_FIELDS),
       expiry: expiryDate,
       next,
       roll,
@@ -248,6 +370,15 @@ export function toRows(
       children,
     };
   });
+}
+
+/** A row's name as it reads under its structure's row: what follows the `Structure_Reference` a
+ * leg's own reference begins with - its role - and any other reference whole. */
+export function nameOf(row: BlotterRow): string {
+  const structure = row.deal.Structure_Reference;
+  const role = typeof structure === 'string' && structure && row.reference.startsWith(structure)
+    ? row.reference.slice(structure.length).replace(/^[\W_]+/, '') : '';
+  return role || row.reference;
 }
 
 /** Every row by its deal path, legs included - what a position's row is read off. */

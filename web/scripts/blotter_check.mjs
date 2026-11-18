@@ -161,7 +161,120 @@ check('a cell\'s hover is the field\'s declared description, the key where none 
        blotter.describe(null, 'FXOptionDeal', 'Underlying_Amount')],
       ['Underlying Amount', 'Nothing_Declared', 'Underlying_Amount']);
 
-console.log(`\n${ran} checks over 2 functions, ${missed.length} missed`);
+// ---- the market's axis, what a trade is on, its size under the record, its terms ----------------
+// Deals as the lab book writes them: an EURZAR collar on ZAR, a USDZAR one on USD, a forward and two
+// NDFs naming no pair, a TARF, a range accrual, an Asian, a platinum barrier.
+
+const MARKET = { 'Price Factors': { 'FXVol.EUR.ZAR': {}, 'FXVol.USD.ZAR': {}, 'FxRate.GBP': {} } };
+const ON_ZAR = { Object: 'FXOptionDeal', Currency: 'EUR', Underlying_Currency: 'ZAR',
+                 FX_Volatility: 'EUR.ZAR', Underlying_Amount: 6e7, Buy_Sell: 'Sell',
+                 Option_Type: 'Call', Strike_Price: 0.05128205128205128 };
+const ON_USD = { Object: 'FXOptionDeal', Currency: 'ZAR', Underlying_Currency: 'USD',
+                 FX_Volatility: 'USD.ZAR', Underlying_Amount: 2e6, Buy_Sell: 'Sell',
+                 Option_Type: 'Call', Strike_Price: 18.25 };
+const FORWARD = { Object: 'FXForwardDeal', Buy_Currency: 'ZAR', Buy_Amount: 20091300,
+                  Sell_Currency: 'EUR', Sell_Amount: 1e6 };
+const NDF = { Object: 'FXNonDeliverableForward', Buy_Currency: 'USD', Buy_Amount: -3e6,
+              Sell_Currency: 'ZAR', Sell_Amount: -5.49e7, Settlement_Currency: 'ZAR' };
+const ROWS = (n) => Array.from({ length: n }, () => [{ '.Timestamp': '2027-01-16' }, null]);
+const TARF = { ...ON_USD, Object: 'FXTARFOptionDeal', Option_Type: 'Put', Strike_Price: 18.6148,
+               TargetLevel: 2.5, LeverageNotional: 8e6, Underlying_Amount: 4e6, Barrier: 0.0,
+               InvertedTarget: false, TARF_ExpiryDates: ROWS(6) };
+const RANGE = { Object: 'FXRangeAccrualDeal', Currency: 'EUR', Underlying_Currency: 'ZAR',
+                FX_Volatility: 'EUR.ZAR', Buy_Sell: 'Sell', Lower_Barrier: 0.04587155963302752,
+                Upper_Barrier: 0.050505050505050504, Payoff: 63151.84, Observation_Dates: ROWS(12) };
+const XPT = { Object: 'CommodityBarrierOption', Currency: 'USD', Reference_Type: 'XPT',
+              Buy_Sell: 'Sell', Option_Type: 'Call', Strike_Price: 1050, Units: 500,
+              Barrier_Type: 'Up_And_Out', Barrier_Price: 1250 };
+
+const node = (deal, children) => (
+  { Instrument: { '.Deal': deal }, ...(children && { Children: children }) });
+const rowOf = (deal, children) => blotter.toRows([node(deal, children)], ['StructuredDeal'],
+                                                 '2026-11-16')[0];
+/** A row as a reader sees it - [on, sense, strike, barrier, terms] - numbers as cells print them. */
+const shown = (deal, children, market = MARKET) => {
+  const read = blotter.quoted(rowOf(deal, children), market);
+  return [read.on?.value ?? null, read.sense ?? null, blotter.cellText(read.strike?.value) ?? null,
+          blotter.cellText(read.barrier?.value) ?? null, read.terms?.parts.join(' · ') ?? null];
+};
+
+check('a level written on the pair\'s quote currency reads one over it, its sense turned',
+      'the level shown as written, which prints the EURZAR collar as 0.0512821 against a market '
+      + 'quoting 19.5; or the sense not turned, which calls a call on the rand an EURZAR call when '
+      + 'it is the put on the euro',
+      shown(ON_ZAR), ['EURZAR', 'Put', '19.5', null, null]);
+
+check('a level written on the pair\'s base currency reads as written, its sense as written',
+      'every level of a deal naming a pair turned, which prints USDZAR 18.25 as 0.0547945 and '
+      + 'its call as a put',
+      shown(ON_USD), ['USDZAR', 'Call', '18.25', null, null]);
+
+check('a level\'s hover says what is shown and which field it was read off, as written',
+      'the hover left on the field\'s description, which never says the cell is 1 / Strike_Price',
+      blotter.quoted(rowOf(ON_ZAR), MARKET).strike.title,
+      'EURZAR 19.5, written as Strike_Price 0.0512821 EUR per ZAR');
+
+check('a forward\'s outright is the quote currency\'s amount per the base\'s, on the market\'s '
+      + 'pair',
+      'the forward\'s rate read the wrong way up, which prints EURZAR 20.0913 as 0.0497728; or the '
+      + 'pair read off the currencies\' order on the deal, which calls a ZAR-bought forward ZAREUR',
+      [shown(FORWARD), shown(NDF)],
+      [['EURZAR', null, '20.0913', null, null], ['USDZAR', null, '18.3', null, null]]);
+
+check('a deal naming no pair the market holds a surface for shows no pair and no rate',
+      'a pair guessed from the two currencies the market holds no surface for, which prints a '
+      + 'GBPZAR outright nobody quotes',
+      shown({ ...NDF, Buy_Currency: 'GBP' }), [null, null, null, null, null]);
+
+check('a deal naming no pair - a metal - reads as written, on what it names',
+      'the commodity read as a pair or turned, or what it is on left blank for want of a pair',
+      shown(XPT), ['XPT', 'Call', '1,050', '1,250', 'up and out']);
+
+check('a range reads on the pair\'s axis, its two bounds crossed by the turn, and its barrier '
+      + 'direction turned with it',
+      'the range shown as written (0.0458716 - 0.0505051); the bounds left in their written order, '
+      + 'which prints 21.8 - 19.8; or an up-and-in on the rand left up-and-in on the euro',
+      [shown(RANGE),
+       shown({ ...ON_ZAR, Object: 'FXBarrierOption', Barrier_Type: 'Up_And_In',
+               Barrier_Price: 0.045 })[4]],
+      [['EURZAR', null, null, null,
+        '12 fixings, amount per fixing · range 19.8\u00a0–\u00a021.8'], 'down and in']);
+
+check('a strip states its fixings and that the amount is per fixing, its target in its unit and '
+      + 'its leverage, and a barrier of nought is no barrier',
+      'the barrier read whatever its value, which prints a TARF\'s 0 as a level; the target\'s unit '
+      + 'dropped; or the leverage read off the leveraged notional alone, which prints 8,000,000',
+      shown(TARF),
+      ['USDZAR', 'Put', '18.6148', null,
+       '6 fixings, amount per fixing · target 2.5 ZAR per USD · leverage 2×']);
+
+check('an average states its fixings and never that its amount is per fixing, and a type nobody '
+      + 'anticipated says nothing',
+      'an Asian\'s samples read as a strip, which calls its whole notional a per-fixing amount; or '
+      + 'a term invented for a type carrying none of the candidates',
+      [shown({ ...ON_USD, Object: 'FXDiscreteExplicitAsianOption', Sampling_Data: ROWS(3) })[4],
+       shown({ Object: 'NewDeal', Currency: 'USD', Principal: 1e6 })],
+      ['average of 3 fixings', [null, null, null, null, null]]);
+
+check('a structure is on the one pair its legs are on, and a set holding two pairs on none',
+      'the container\'s pair read off its first leg alone, which files a set holding an EURZAR '
+      + 'collar and a USDZAR TARF as EURZAR',
+      [shown({ Object: 'StructuredDeal', Currency: 'EUR' },
+             [node(ON_ZAR), node({ ...ON_ZAR, Option_Type: 'Put' })])[0],
+       shown({ Object: 'StructuredDeal', Currency: 'EUR' }, [node(ON_ZAR), node(TARF)])[0]],
+      ['EURZAR', null]);
+
+check('a leg reads by its role under its structure, and any other reference whole',
+      'every reference written whole, which clips a leg\'s role off a 1600 px screen; or a '
+      + 'reference shortened by a structure it does not begin with',
+      [blotter.nameOf({ reference: 'ZeroCostCollar-6a90461d_protection',
+                        deal: { Structure_Reference: 'ZeroCostCollar-6a90461d' } }),
+       blotter.nameOf({ reference: 'EURZAR-ZARCALL-REBOOKED-2027-05',
+                        deal: { Structure_Reference: 'ZeroCostCollar-6a90461d' } }),
+       blotter.nameOf({ reference: 'ZeroCostCollar-6a90461d', deal: {} })],
+      ['protection', 'EURZAR-ZARCALL-REBOOKED-2027-05', 'ZeroCostCollar-6a90461d']);
+
+console.log(`\n${ran} checks over 6 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);
