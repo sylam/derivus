@@ -3,13 +3,13 @@
 // etag moved - a booking made by any other client appears within a tick.
 
 import { createContext, useContext, type Dispatch } from 'react';
-import { getBook, type BookDealOutcome } from './api';
+import { SEAT, getBook, stored, type BookDealOutcome } from './api';
 import type { Grouping, Paper } from './positions';
 import { readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DescribeResult, JobDoc, Market,
-  PathsAnswer, Reconcile, ResultSummary, Schema, SpineBlock, TablePage, ValidateResult,
+  PathsAnswer, Reconcile, ResultSummary, Schema, SpineBlock, TablePage, ValidateResult, Worklist,
 } from './types';
 
 /** `opened` names the job file the served book was opened from, where it was opened from one. */
@@ -58,6 +58,8 @@ export type AppState = {
   source: Source | null;
   docError: string | null;
   tab: string;
+  /** The seat this browser acts as where no token names one - what the record's reads wait on. */
+  seat: string;
   /** The deal the portfolio shows, and the page each navigated screen shows, by screen. */
   selection: { deal: string | null; picks: Record<string, string> };
   describe: DescribeResult | null;
@@ -91,12 +93,13 @@ export const IDLE_MARKET: Fetched<BookMarket> = NOTHING_FETCHED;
 export const IDLE_PATHS: Fetched<PathsAnswer> = NOTHING_FETCHED;
 export const IDLE_PAPER: Fetched<Paper> = NOTHING_FETCHED;
 export const NO_RECORD: RecordState = {
-  spine: null, rows: [], reconcile: null, reconciledAt: null,
+  spine: null, rows: [], reconcile: null, reconciledAt: null, worklist: null, worklistAt: null,
+  worklistError: null,
 };
 
 export const INITIAL: AppState = {
   schema: null, schemaError: null, doc: null, source: null, docError: null,
-  tab: 'portfolio', selection: { deal: null, picks: {} },
+  tab: 'portfolio', seat: stored(SEAT), selection: { deal: null, picks: {} },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
   market: IDLE_MARKET, paths: IDLE_PATHS, record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
   seat: '',
@@ -109,6 +112,7 @@ export type Action =
   | { type: 'DOC_LOADED'; doc: JobDoc; source: Source; refresh?: boolean }
   | { type: 'DOC_FAILED'; error: string }
   | { type: 'TAB'; tab: string }
+  | { type: 'SEAT'; seat: string }
   | { type: 'SELECT_DEAL'; path: string | null }
   | { type: 'PICK'; screen: string; id: string }
   | { type: 'DESCRIBED'; describe: DescribeResult }
@@ -138,7 +142,9 @@ export type Action =
   // the record, read on the book poll's own beat: where the file stands, and the strip's next
   // page; then the reconcile answer, under the file etag it was folded against
   | { type: 'RECORD_READ'; spine: SpineBlock | null; page: ActivityPage | null }
-  | { type: 'RECONCILED'; reconcile: Reconcile; etag: string | null };
+  | { type: 'RECONCILED'; reconcile: Reconcile; etag: string | null }
+  // the one worklist every screen counts from, read at a head and seat (`worklistAt`)
+  | { type: 'WORKLISTED'; at: string | null; worklist: Worklist | null; error: string | null };
 
 export function reducer(state: AppState, action: Action): AppState {
   switch (action.type) {
@@ -162,6 +168,8 @@ export function reducer(state: AppState, action: Action): AppState {
       return { ...state, docError: action.error };
     case 'TAB':
       return { ...state, tab: action.tab };
+    case 'SEAT':
+      return { ...state, seat: action.seat };
     case 'SELECT_DEAL':
       return { ...state, selection: { ...state.selection, deal: action.path } };
     case 'PICK':
@@ -262,6 +270,9 @@ export function reducer(state: AppState, action: Action): AppState {
       const record = reconciledRecord(state.record, action.reconcile, action.etag);
       return record === state.record ? state : { ...state, record };
     }
+    case 'WORKLISTED':
+      return { ...state, record: { ...state.record, worklist: action.worklist,
+                                   worklistAt: action.at, worklistError: action.error } };
   }
 }
 

@@ -1,8 +1,9 @@
 // Drives `src/spine.ts` where the eye cannot: the page a poll merges onto the strip it holds, the
 // strip under a doorbell stream whose beats are dropped, duplicated and reordered, the verdict the
-// banner reads off the reconcile lists, what a fold at the head is asked for, the two transitions
-// the store holds it by, the shape the markets panel renders, when the worklist is asked for and
-// what its banner says, and which served book the poll asks at all. Every check names the MUTATION
+// banner reads off the reconcile lists and the rows it opens, what a fold at the head is asked for,
+// the two transitions the store holds it by, the shape the markets panel renders, when the
+// worklist is asked for - at which head, for which seat - and what its banner says, and which
+// served book the poll asks at all. Every check names the MUTATION
 // it kills - the change to the module that would still typecheck, still render, and still be
 // wrong.
 //
@@ -290,20 +291,28 @@ const REPINNED = { ...SIGNED, lsn: SIGNED.lsn + 1, events_behind: 0 };
 check('the worklist is asked for where the head moved, a verdict moving no position included',
       'the ask gated on `positions_behind` - the counts - after which a ticket signed, a payment '
       + 'settled or a close marked never leaves the banner, none of them moving a position',
-      [spine.wantsWorklist(SIGNED, spine.worklistAt(PINNED)),
-       spine.wantsWorklist(PINNED, spine.worklistAt(PINNED)),
-       spine.wantsWorklist(null, null)],
+      [spine.wantsWorklist(SIGNED, '', spine.worklistAt(PINNED)),
+       spine.wantsWorklist(PINNED, '', spine.worklistAt(PINNED)),
+       spine.wantsWorklist(null, '', null)],
       [true, false, false]);
 check('a file written at the head the record stands at asks nothing',
       'the ask keyed on the file\'s pin or its etag, which re-reads the worklist on every tick - '
       + 'telemetry that moves no fact a row waits on',
-      [spine.wantsWorklist(REPINNED, spine.worklistAt(SIGNED)),
+      [spine.wantsWorklist(REPINNED, '', spine.worklistAt(SIGNED)),
        spine.worklistAt({ ...PINNED, lsn: null, events_behind: null })],
-      [false, '']);
+      [false, '|']);
+check('another seat named asks again at the same head',
+      'the seat left out of the key, after which every screen keeps counting what waited on the '
+      + 'seat - or on nobody - that was named before, beside a Back Office read as the new one',
+      [spine.wantsWorklist(PINNED, 'risk', spine.worklistAt(PINNED, 'fx-trader')),
+       spine.wantsWorklist(PINNED, 'risk', spine.worklistAt(PINNED, 'risk')),
+       spine.wantsWorklist(PINNED, 'risk', spine.worklistAt(PINNED))],
+      [true, false, true]);
 const ROW = (kind, key) => ({ kind, what: `${key} waits`, key, lsn: 7, since: '2024-06-28' });
-const NOTHING = { date: '2024-06-28', pending: [], payments: [], unconfirmed: [], calls: [],
-                  unmarked: [], rejected: [], counts: { pending: 0, payments: 0, unconfirmed: 0,
-                                                        calls: 0, unmarked: 0, rejected: 0 } };
+const NOTHING = { date: '2024-06-28', seat: ACTOR, pending: [], payments: [], unconfirmed: [],
+                  calls: [], unmarked: [], rejected: [],
+                  counts: { pending: 0, payments: 0, unconfirmed: 0, calls: 0, unmarked: 0,
+                            rejected: 0 } };
 check('the banner counts what each list holds and says nothing where none waits',
       'the line built from every list whatever it holds, which lights a banner reading `0 tickets '
       + 'to sign` over a desk with nothing to do; the rows counted in place of the counts, which '
@@ -314,6 +323,13 @@ check('the banner counts what each list holds and says nothing where none waits'
         calls: [ROW('call', 'CSA-A')], rejected: [ROW('rejected', 't3')],
         counts: { ...NOTHING.counts, pending: 2037, calls: 1, rejected: 1 } })],
       ['', '', '2037 tickets to sign · 1 collateral call due · 1 rejected trade standing']);
+check('lists read with no seat named say they wait on anyone, and nothing waiting says nothing',
+      'the seat the answer was read as left out of the line, which calls every seat to act on '
+      + 'what waits on others',
+      [spine.worklistLine({ ...NOTHING, seat: null, pending: [ROW('pending', 't1')],
+                            counts: { ...NOTHING.counts, pending: 1 } }),
+       spine.worklistLine({ ...NOTHING, seat: null })],
+      ['no seat is named, so this is what waits on anyone: 1 ticket to sign', '']);
 
 // --- the store's two transitions, which are this module's and answer the SAME OBJECT
 const held = { spine: PINNED, rows: HELD, reconcile: AHEAD, reconciledAt: ETAG };

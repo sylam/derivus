@@ -1998,7 +1998,7 @@ def test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands(r
 
     everything = worklist()
     assert everything['counts'] == {name: len(rows) for name, rows in everything.items()
-                                    if name not in ('date', 'counts')}
+                                    if name not in ('date', 'counts', 'seat')}
     grants = [{'subject': ACTOR, 'verb': verb, 'book': '*'} for verb in ('admin', 'validate')] + [
         {'subject': FX_READER, 'verb': 'validate', 'book': BOOK + '/FX'},
         {'subject': APPROVER, 'verb': 'approve', 'book': BOOK + '/Rates'}] + [

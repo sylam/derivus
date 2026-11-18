@@ -355,9 +355,11 @@ export type CloseVerdict = {
 export type Recorded = { recorded: { lsn: number } };
 
 /** `GET /book/worklist` - six lists of what waits on the seat asking, read off what stands, so a
- * row leaves when its fact lands: how many each holds, and the newest of them. */
+ * row leaves when its fact lands: how many each holds, and the newest of them. `seat` is the seat
+ * they wait on, null where none was named and they are what waits on anyone. */
 export type Worklist = {
   date: string;
+  seat: string | null;
   counts: { pending: number; payments: number; unconfirmed: number; calls: number;
             unmarked: number; rejected: number };
   pending: WorkRow[];

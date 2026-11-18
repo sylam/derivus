@@ -2922,6 +2922,36 @@ def test_a_strip_row_names_the_trade_who_did_it_and_what_it_opens(recorded, desk
          big['deal_path'], CLIENT_SET)], told
 
 
+def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk):
+    """ONE ANSWER FOR WHAT WAITS ON A SEAT. A ticket under four eyes waits on the seat that may sign
+    it and on no seat that may sign nothing, each answer naming the seat it waits on; a read no seat
+    signs, or one on a box narrowing no seat's reads, lists it beside `seat` null. Signed by the
+    second seat, it leaves the list.
+
+    Killing mutation: `seat` answered as the name the request carried, which tells a box that
+    narrows no seat that its lists wait on one.
+    """
+    def worklist(**params):
+        return CLIENT.get('/book/worklist', params=params).json()
+
+    with_client(desk)
+    assert worklist(actor=DESK_TWO)['seat'] is None, 'a box narrowing no seat named one'
+    papered(recorded)
+    waiting = ticketed('EXEC-BIG', notional=10 * BIG, notional_currency='USD', price=1250.0).json()
+
+    listed = worklist(actor=DESK_TWO)
+    assert (listed['seat'], listed['counts']['pending']) == (DESK_TWO, 1)
+    assert listed['pending'][0]['key'] == waiting['ticket']
+    risk = worklist(actor=RISK_SEAT)
+    assert risk['seat'] == RISK_SEAT and set(risk['counts'].values()) == {0}, risk['counts']
+    nobody = worklist()
+    assert nobody['seat'] is None and nobody['pending'][0]['key'] == waiting['ticket']
+
+    assert CLIENT.post('/book/approve', json={'ticket': waiting['ticket'], 'actor': DESK_TWO}
+                       ).json()['status'] == 'approved'
+    assert worklist(actor=DESK_TWO)['counts']['pending'] == 0
+
+
 def test_a_deal_booked_again_as_it_was_is_the_trade_the_record_holds(recorded, desk):
     """A TICKET IS THE TRADE: the plan it leaves and its own fields. A delete records nothing, so a
     deal deleted and booked again as it was - its reference, quantity and price - is the trade the

@@ -3547,7 +3547,8 @@ def book_worklist(actor: str = None):
     earlier day is owed - for `mark` over the book; and `rejected` the tickets
     rejected that still stand in a position netting to something, for `book` - the trade
     happened, and closing it is somebody's act. A read no seat signs on a box checking no token
-    lists them all. 404 where no home is configured.
+    lists them all, `seat` null; otherwise `seat` is the seat the lists wait on. 404 where no home
+    is configured.
     """
     document, _ = recording().read()
     book, sight = book_name(document), spine.sight(actor)
@@ -3634,7 +3635,8 @@ def book_worklist(actor: str = None):
                              and position['quantity'])}
     return dict({name: sorted(found, key=lambda row: (row['since'] or '', row['lsn'] or 0))[
         -WORKLIST_ROWS:] for name, found in lists.items()}, date=day,
-        counts={name: len(found) for name, found in lists.items()})
+        counts={name: len(found) for name, found in lists.items()},
+        seat=None if sight is None else actor or spine.REQUESTER.get())
 
 
 @app.get('/book/portfolios', summary="The book's declared tree - where a position may sit")

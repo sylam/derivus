@@ -504,18 +504,19 @@ an automatic signature came from - and `deal_path`, `agreement` and `entity` are
 restruck deal opening the terms the file holds now. The web banner (`web/src/spine.ts`) follows
 reconcile's lists, never the behind counts, because every write re-pins the file at the head, a
 delete included, and names each disagreement's trade, what is wrong and what to do.
-`GET /book/worklist` lists what waits on the asking seat, each row keyed by what its clearing
-fact is filed against. **Held by**
+`GET /book/worklist` lists what waits on the asking seat, `seat` null where none was named, each
+row keyed by what its clearing fact is filed against. **Held by**
 `test_spine_engine.py::test_a_page_walks_the_record_forward_one_event_at_a_time`,
 `::test_what_the_file_lost_is_drift_under_a_pin_that_has_seen_every_position`,
 `::test_a_strip_row_names_the_trade_who_did_it_and_what_it_opens`,
+`::test_the_worklist_names_each_ticket_and_the_seat_it_waits_on`,
 `test_pnl.py::test_the_worklist_names_what_waits_and_each_row_leaves_when_its_fact_lands`.
 
-The web client's Back Office workspace (`web/src/views/BackOfficeView.tsx`) is the seat that pays,
-confirms and posts: it reads the worklist at the record's head as the banner does, again at every
-move of it, and shows the `payments`, `unconfirmed` and `calls` lists - each the list of its own
-verb - every row beside the fact that clears it, with the day's close check and the close behind
-its verdict. The Paper workspace
+The web client reads the worklist ONCE per head and seat into its store (`worklistAt` keys both),
+and the banner and the Back Office count from that one answer. The Back Office workspace
+(`web/src/views/BackOfficeView.tsx`) is the seat that pays, confirms and posts: the `payments`,
+`unconfirmed` and `calls` lists - each the list of its own verb - every row beside the fact that
+clears it, with the day's close check and the close behind its verdict. The Paper workspace
 (`web/src/views/PaperView.tsx`) lists the entities and the agreements with their terms and
 declares both, an agreement's terms the netting set rendered off the `NettingCollateralSet`
 declaration `/schema` publishes, and opens on what a row of the strip names. Each posts under the

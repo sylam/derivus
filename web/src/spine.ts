@@ -45,13 +45,17 @@ export function reconciledAs(reconcile: Reconcile | null): string | null {
 }
 
 /** What this client holds of the record: where the file stands, the strip as it has been merged,
- * and the reconcile answer with the file etag it was folded against. The store holds exactly
- * this, so the two transitions below are the whole of what a beat can do to it. */
+ * the reconcile answer with the file etag it was folded against, and the one worklist every
+ * screen counts from with the head and seat it was read at (`worklistAt`) or the read's refusal.
+ * The two transitions below are the whole of what a beat can do to it. */
 export type RecordHeld = {
   spine: SpineBlock | null;
   rows: ActivityRow[];
   reconcile: Reconcile | null;
   reconciledAt: string | null;
+  worklist: Worklist | null;
+  worklistAt: string | null;
+  worklistError: string | null;
 };
 
 /** The record after one beat's read - THE SAME OBJECT where neither the rows nor the pin moved.
@@ -200,31 +204,36 @@ export function reconcileVerdict(spine: SpineBlock | null | undefined,
 }
 
 /** Where a worklist answer was read: the RECORD's head - the pin and how far the record has moved
- * past it - so any move of the head asks again, an approval included, which moves no position,
- * while a file write that re-pins at the same head, a tick among them, asks nothing. */
-export function worklistAt(spine: SpineBlock | null): string | null {
+ * past it - and the seat it was read as, so any move of the head asks again, an approval
+ * included, which moves no position, and so does another seat named; a file write that re-pins
+ * at the same head, a tick among them, asks nothing. */
+export function worklistAt(spine: SpineBlock | null, seat = ''): string | null {
   return spine === null ? null
-    : `${spine.lsn === null ? '' : spine.lsn + (spine.events_behind ?? 0)}`;
+    : `${spine.lsn === null ? '' : spine.lsn + (spine.events_behind ?? 0)}|${seat}`;
 }
 
-/** Whether the banner owes a `/book/worklist`: the head moved since the answer in hand. Never on
- * the beat, and never on the file alone - the answer compiles the diary on a miss. */
-export function wantsWorklist(spine: SpineBlock | null, heldAt: string | null): boolean {
-  return spine !== null && heldAt !== worklistAt(spine);
+/** Whether the one worklist read is owed: the head or the seat moved since the answer in hand.
+ * Never on the beat, and never on the file alone - the answer compiles the diary on a miss. */
+export function wantsWorklist(spine: SpineBlock | null, seat: string,
+                              heldAt: string | null): boolean {
+  return spine !== null && heldAt !== worklistAt(spine, seat);
 }
 
-/** The worklist's lists, as the words the banner counts them in. */
-const WAITING: [keyof Worklist['counts'], string, string][] = [
+/** The worklist's lists, in the order the banner reads them and as the words it counts them in. */
+export const WAITING: [keyof Worklist['counts'], string, string][] = [
   ['pending', 'ticket', 'to sign'], ['payments', 'payment', 'due unsettled'],
   ['unconfirmed', 'fill', 'to confirm'], ['calls', 'collateral call', 'due'],
   ['unmarked', 'close', 'to mark'], ['rejected', 'rejected trade', 'standing'],
 ];
 
 /** The banner's one line: every list that holds anything, by its count - the rows are the newest
- * of them - and nothing where all six are empty. A row is a thing somebody has to do. */
+ * of them - and nothing where all six are empty. A row is a thing somebody has to do: this seat,
+ * or - where no seat was named - anybody, which the line says. */
 export function worklistLine(worklist: Worklist | null): string {
-  return worklist === null ? '' : WAITING.filter(([list]) => worklist.counts[list])
+  const line = worklist === null ? '' : WAITING.filter(([list]) => worklist.counts[list])
     .map(([list, noun, rest]) => `${plural(worklist.counts[list], noun)} ${rest}`).join(' · ');
+  return line && worklist?.seat === null
+    ? `no seat is named, so this is what waits on anyone: ${line}` : line;
 }
 
 /** A close with what it stands over said out loud: a close is superseded by a NEW close rather

@@ -3,10 +3,10 @@ import { SEAT, TOKEN, failure, getBookReconcile, getWorklist, stored } from '../
 import { stampText } from '../desk';
 import { positionId } from '../positions';
 import {
-  divergences, reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt, worklistLine,
+  WAITING, divergences, reconcileVerdict, wantsReconcile, wantsWorklist, worklistAt, worklistLine,
 } from '../spine';
 import { opened, useApp, type AppState } from '../state';
-import type { Reconcile, Worklist } from '../types';
+import type { Reconcile } from '../types';
 
 /** The record's own block, and null where this client is not looking at the LIVE BOOK: the record
  * is the deployment's and says nothing about a copy opened from somebody's disk. */
@@ -60,38 +60,38 @@ export function ReconcileBanner() {
   );
 }
 
-/** What waits on this seat, beside the reconcile banner: six lists read off what stands, so a row
- * leaves the moment its fact lands, and a rejected trade is named for as long as it stands. Asked
- * where the record's head moved (`wantsWorklist`), never on the beat or the file alone - the answer
- * compiles the diary - and nothing at all where nothing waits; a read that failed says so.
- */
+/** What waits on this seat, beside the reconcile banner, read ONCE for every screen that counts
+ * it: six lists read off what stands, so a row leaves the moment its fact lands, held in the store
+ * and asked again where the record's head or the seat moved (`wantsWorklist`), never on the beat
+ * or the file alone - the answer compiles the diary. Nothing at all where nothing waits; a read
+ * that failed says so. A row opens where it is cleared - the Back Office or the P&L. */
 export function WorklistBanner() {
-  const { state } = useApp();
+  const { state, dispatch } = useApp();
   const [open, setOpen] = useState(false);
-  const [held, setHeld] = useState<{
-    worklist: Worklist | null; error: string | null; at: string | null }>(
-    { worklist: null, error: null, at: null });
   const spine = recorded(state);
-  const at = worklistAt(spine);
+  const { worklist, worklistAt: heldAt, worklistError } = state.record;
+  const at = worklistAt(spine, state.seat);
 
   useEffect(() => {
-    if (!wantsWorklist(spine, held.at)) return;
+    if (!wantsWorklist(spine, state.seat, heldAt)) return;
     let live = true;
     getWorklist()
-      .then((worklist) => { if (live) setHeld({ worklist, error: null, at }); })
+      .then((read) => {
+        if (live) dispatch({ type: 'WORKLISTED', at, worklist: read, error: null });
+      })
       .catch((error) => {
-        if (live) setHeld({ worklist: null, error: failure(error).error, at });
+        if (live) dispatch({ type: 'WORKLISTED', at, worklist: null, error: failure(error).error });
       });
     return () => { live = false; };
     // the answer's own position is not a dependency: it moves BECAUSE of this fetch
-  }, [at]);
+  }, [at, dispatch]);
 
-  if (held.error) {
-    return <div className="recordbar drifted"><span>worklist unread: {held.error}</span></div>;
+  if (worklistError) {
+    return <div className="recordbar drifted"><span>worklist unread: {worklistError}</span></div>;
   }
-  const line = worklistLine(held.worklist);
-  if (!line || !held.worklist) return null;
-  const { date: _, counts: __, ...lists } = held.worklist;
+  const line = worklistLine(worklist);
+  if (!line || !worklist) return null;
+  const clearedOn: Record<string, string> = { unmarked: 'pnl' };
   return (
     <div className="recordbar behind">
       <span>{line}</span>
@@ -102,14 +102,14 @@ export function WorklistBanner() {
         <div className="rows">
           <table className="data">
             <tbody>
-              {Object.values(lists).flat().map((row) => (
-                <tr key={`${row.kind}/${row.key}/${row.lsn}`}>
+              {WAITING.flatMap(([list]) => worklist[list].map((row) => (
+                <tr key={`${row.kind}/${row.key}/${row.lsn}`} className="pick"
+                    onClick={() => dispatch({ type: 'TAB', tab: clearedOn[list] ?? 'backoffice' })}>
                   <td>{row.kind}</td>
                   <td>{row.what}</td>
-                  <td className="mono" title={row.key}>{row.key.slice(0, 12)}</td>
-                  <td>{row.since ?? ''}</td>
+                  <td>{stampText(row.since)}</td>
                 </tr>
-              ))}
+              )))}
             </tbody>
           </table>
         </div>
@@ -119,17 +119,19 @@ export function WorklistBanner() {
 }
 
 /** Who this browser acts as where the service checks no token: the seat a write is filed under
- * and a read narrowed to, kept in this browser. A stored sign-in token names the seat instead. */
+ * and a read narrowed to, kept in this browser and in the store, so every read waiting on it asks
+ * again. A stored sign-in token names the seat instead. */
 export function SeatControl() {
-  const [seat, setSeat] = useState(stored(SEAT));
+  const { state, dispatch } = useApp();
   if (stored(TOKEN)) return <span className="hint">signed in</span>;
   return (
-    <input className="seat" placeholder="seat" value={seat} title="the seat this desk acts as"
+    <input className="seat" placeholder="seat" value={state.seat}
+           title="the seat this desk acts as"
            onChange={(event) => {
-             setSeat(event.target.value);
              try {
                localStorage.setItem(SEAT, event.target.value);
              } catch { /* storage blocked: the seat lasts the page */ }
+             dispatch({ type: 'SEAT', seat: event.target.value });
            }} />
   );
 }

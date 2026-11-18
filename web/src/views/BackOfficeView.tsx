@@ -1,9 +1,8 @@
 import { useEffect, useState } from 'react';
-import { failure, getCloseCheck, getWorklist, postClose, postTransition } from '../api';
+import { failure, getCloseCheck, postClose, postTransition } from '../api';
 import { EmptyState } from '../components/EmptyState';
-import { worklistAt } from '../spine';
 import { useApp } from '../state';
-import type { CloseVerdict, WorkRow, Worklist } from '../types';
+import type { CloseVerdict, WorkRow } from '../types';
 
 /** The three lists this seat clears, each by its own verb. */
 type List = 'payments' | 'unconfirmed' | 'calls';
@@ -13,33 +12,29 @@ const LISTS: { list: List; title: string; verb: string }[] = [
   { list: 'calls', title: 'Collateral called', verb: 'collateral' },
 ];
 
-/** The back office's seat: the payments due, the trades unconfirmed and the collateral the day's
- * marks call, each row beside the fact that clears it, and the book's day's close behind the
- * check's own verdict. Read off the worklist at the record's head, again at every move of it, and
- * nothing kept here - a row leaves when its fact lands. A refusal is the service's own sentence. */
+/** The back office's seat: the payments due, the trades unconfirmed and the collateral the
+ * day's marks call, each row beside the fact that clears it, and the book's day's
+ * close behind the check's own verdict. Read off the ONE worklist the banner reads, so the two
+ * never count apart, and nothing kept here - a row leaves when its fact lands. A refusal is the
+ * service's own sentence. */
 export function BackOfficeView() {
   const { state } = useApp();
-  const spine = state.source?.kind === 'book' ? state.record.spine : null;
-  const at = worklistAt(spine);
-  const [read, setRead] = useState<{
-    worklist: Worklist | null; check: CloseVerdict | null; error: string | null }>(
-    { worklist: null, check: null, error: null });
+  const { spine, worklist, worklistError } = state.source?.kind === 'book'
+    ? state.record : { spine: null, worklist: null, worklistError: null };
+  const [read, setRead] = useState<{ check: CloseVerdict | null; error: string | null }>(
+    { check: null, error: null });
 
+  // the day's close is checked again at every read of what waits, which is every head move
   useEffect(() => {
-    if (at === null) return;
+    if (!worklist) return;
     let live = true;
-    getWorklist()
-      .then(async (worklist) => {
-        const check = await getCloseCheck(worklist.date);
-        if (live) setRead({ worklist, check, error: null });
-      })
-      .catch((error) => {
-        if (live) setRead((held) => ({ ...held, error: failure(error).error }));
-      });
+    getCloseCheck(worklist.date)
+      .then((check) => { if (live) setRead({ check, error: null }); })
+      .catch((error) => { if (live) setRead({ check: null, error: failure(error).error }); });
     return () => { live = false; };
-  }, [at]);
+  }, [worklist]);
 
-  if (at === null) {
+  if (spine === null) {
     return (
       <EmptyState
         title="The back office works the live book's record."
@@ -47,7 +42,8 @@ export function BackOfficeView() {
       />
     );
   }
-  const { worklist, check, error } = read;
+  const { check } = read;
+  const error = worklistError ?? read.error;
   if (!worklist) {
     return error ? (
       <div className="main"><div className="panel"><div className="error-box">{error}</div></div></div>

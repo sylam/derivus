@@ -1806,7 +1806,9 @@ def worklist(actor: str | None = None) -> dict:
     `currency` called, which a collateral seat clears with `file_status` `settled`, kind
     `collateral` or `margin`, the agreement as subject; `unmarked` closes (`mark_book`, for a mark
     seat); and `rejected` trades still standing, which a book seat closes out. `counts` says how
-    many each list holds; each list answers the newest 200. 404 on a box that records nothing.
+    many each list holds; each list answers the newest 200. `seat` is the seat the lists wait
+    on, null where none was named and they are everything waiting on anyone. 404 on a box that
+    records nothing.
     """
     return service().call('GET', '/book/worklist', params=_stated(actor=actor))
 
