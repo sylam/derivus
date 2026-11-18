@@ -367,7 +367,11 @@ file, an entity and an agreement are restated so on every declaration. The rest 
 `verbs.keyed` as offered, at the cost of one tag lookup, and restated only where the log already
 holds that very fact (`SpineLog.held`) - the one case the writer would coalesce a return onto an
 older LSN - so the fold that finds what stands runs only then. With no effective time, a late retry
-of an earlier content arriving after a later one is such a return. **Held by**
+of an earlier content arriving after a later one is such a return. An amendment is filed the same
+way over the fact that last moved its terms (`verbs.moved`), so terms restruck, restruck back and
+restruck again are three facts and the position follows each. **Held by**
+`test_spine_verbs.py::test_terms_amended_back_and_amended_again_move_the_position_each_time`,
+`test_spine_engine.py::test_a_trade_restruck_back_and_restruck_again_stands_where_the_file_has_it`,
 `test_spine_verbs.py::test_a_keyed_declaration_returned_to_earlier_content_is_a_new_fact_in_force`,
 `test_spine_capability.py::test_an_earlier_document_restored_by_grant_revokes_what_the_one_it_replaced_granted`,
 `test_spine_custody.py::test_a_seat_key_or_an_escrow_key_restored_is_the_key_in_force_and_its_wrap_opens`,

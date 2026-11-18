@@ -179,12 +179,23 @@ def amend(log, actor, instrument, amended_to, book=None, effective_time=None, po
     instruments are registered because both are cited; the old one dedups to the address it already
     has, so a deal booked before this home existed still closes referentially. Terms that
     canonicalise to the same hash raise `MalformedEvent`. `portfolio` is the deepest node holding
-    every position in the terms, which is where it is judged.
+    every position in the terms, which is where it is judged. A restrike the log already holds,
+    since undone, is a new fact naming what moved the terms last (`moved`).
     """
+    from .projections import PROJECTORS, fold
+
     body = amendment(log, instrument, amended_to, portfolio=portfolio)
-    envelope = log.append('amendment', body, actor=actor, book=book,
-                          effective_time=effective_time)
+    envelope = keyed(log, 'amendment', body, lambda: moved(
+        fold(log, PROJECTORS['positions']), body['instrument']), actor, book=book,
+        effective_time=effective_time)
     return dict(envelope, instrument=body['instrument'], amended_to=body['amended_to'])
+
+
+def moved(positions, instrument):
+    """The LSN of the fact that last moved a position in `instrument`, read off the `positions`
+    fold's state, or None where it holds none."""
+    return max((row['last_lsn'] for under in positions.get(instrument, {}).values()
+                for row in under.values()), default=None)
 
 
 def amendment(log, instrument, amended_to, portfolio=None):

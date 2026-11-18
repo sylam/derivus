@@ -1084,7 +1084,7 @@ def _booked(log, body, folds=None):
 
 
 def routed(log, event_type, body, subject, book_name, effective_time, plan, terms, quote=None,
-           folds=None):
+           folds=None, standing=None):
     """File `body` - a fill or a restrike - as its ticket routes it, in ONE act of the writer:
     `{recorded, ticket, accepted?, tier?, waits_on?}`, or `{ticket, accepted?, refused}` with
     nothing booked.
@@ -1100,7 +1100,8 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
     land PENDING, `waits_on` saying on whom; and one no tier admits answers `refused` with every
     sentence the route collected. A crash between the approval and the event is the one way an
     approval stands alone, which the oracle names until the act is retried. A seat the scope
-    refuses is answered by the append itself, which lands the denial.
+    refuses is answered by the append itself, which lands the denial. A body the log already holds
+    is filed over `standing`, the LSN of what it replaces, where one is handed in (`verbs.restated`).
     """
     admitted = log.admits(event_type, body, subject, book_name, effective_time)
     answer = {}
@@ -1124,6 +1125,9 @@ def routed(log, event_type, body, subject, book_name, effective_time, plan, term
                 'approval', {'plan_hash': body['ticket']}, book=book_name)['lsn']
         elif route['approval_lsn'] is None:
             answer['waits_on'] = route['waits_on']
+    if standing is not None and log.held(
+            event_type, body, subject, book_name, effective_time) is not None:
+        body = package().verbs.restated(log, standing, body)
     answer['recorded'] = dict(log.append(event_type, body, subject, book=book_name,
                                          effective_time=effective_time),
                               **{field: body[field] for field in package().vocabulary.BLOB_FIELDS[
@@ -1207,7 +1211,7 @@ def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None
             log, canonical(deal), canonical(amended_to), portfolio=spine.capability.deepest(
                 spine.capability.holders(held, was, book_name)))
         return routed(log, 'amendment', body, subject, book_name, effective_time, plan, terms,
-                      folds=folds)
+                      folds=folds, standing=spine.verbs.moved(held, was))
 
 
 def _restruck(positions, was, now):

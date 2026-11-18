@@ -1094,6 +1094,27 @@ def test_an_amendment_naming_a_field_its_type_does_not_declare_is_refused_and_fi
     assert tagged['written'] is True, tagged
 
 
+def test_a_trade_restruck_back_and_restruck_again_stands_where_the_file_has_it(recorded, desk):
+    """A booked cash flow restruck to a new amount, back, and to the new amount again is three
+    amendments on the record, and the record's position stands on the terms the file holds: the
+    reconciliation finds no position the file lacks and the trade nowhere unbooked.
+
+    Killing mutation: the third restrike filed as offered, which the writer answers with the
+    first's LSN - two amendments, and a position the record still holds on the terms it left.
+    """
+    with_client(desk)
+    booked = ticketed('EXEC-R').json()
+    assert booked['written'] is True, booked
+    landed = [restruck(booked['deal_path'], Amount=amount) for amount in (
+        300_000.0, 250_000.0, 300_000.0)]
+    assert all(answer['written'] is True for answer in landed), landed
+    filed = [lsn for lsn, _, _ in facts(recorded, 'amendment')]
+    assert filed == [answer['recorded']['lsn'] for answer in landed] and len(set(filed)) == 3, filed
+    drift = CLIENT.get('/book/reconcile', params={'actor': ACTOR}).json()
+    assert drift['in_record_not_in_file'] == [] and drift['quantity_mismatch'] == [], drift
+    assert 'EXEC-R' not in [row['reference'] for row in drift['in_file_not_in_record']], drift
+
+
 def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(recorded, desk):
     """Legal's half and the desk's, through the service.
 

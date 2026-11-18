@@ -441,6 +441,31 @@ def test_an_amendment_is_a_new_instrument_hash_and_never_a_changed_one(tmp_path)
     assert verify_home(home)['events'] == 6
 
 
+def test_terms_amended_back_and_amended_again_move_the_position_each_time(tmp_path):
+    """Terms amended, amended back and amended again are three facts. The third offers content the
+    log already holds as the first, so it names the fact that moved the terms last (`supersedes`)
+    and lands, the position standing on the amended terms; asked once more, it is that same fact.
+
+    Killing mutation: the amendment appended as offered, which answers the third with the first's
+    LSN and leaves the position on the terms it was amended away from.
+    """
+    from derivus_spine.projections import PROJECTORS, fold
+
+    home, log = minted(tmp_path)
+    verbs.book(log, DESK, INSTRUMENT, 1.0, COUNTERPARTY, CLIENT, 'EXEC-1', book=BOOK)
+    there, back, again = [verbs.amend(log, DESK, was, now, book=BOOK)['lsn'] for was, now in (
+        (INSTRUMENT, AMENDED), (AMENDED, INSTRUMENT), (INSTRUMENT, AMENDED))]
+    assert there < back < again, (there, back, again)
+    assert 'supersedes' not in log.open_body(log.frame_at(there))
+    assert log.open_body(log.frame_at(again))['supersedes'] == back
+    clips = {instrument: sum(row['clips'] for under in held.values() for row in under.values())
+             for instrument, held in fold(log, PROJECTORS['positions']).items()}
+    assert clips == {address(INSTRUMENT): 0, address(AMENDED): 1}, clips
+    assert verbs.amend(log, DESK, INSTRUMENT, AMENDED, book=BOOK)['lsn'] == again
+    log.close()
+    assert verify_home(home)['events'] == again
+
+
 # --------------------------------------------------------------------------------------------
 # Market declaration, and the scope that moves a name.
 

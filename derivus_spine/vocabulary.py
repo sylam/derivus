@@ -184,7 +184,7 @@ FACT_TYPES = {
     # and `tier`, as a fill's.
     'amendment': _validator('amendment', (
         ('instrument', HASH), ('amended_to', HASH)),
-        optional=(('portfolio', PATH), ('ticket', HASH), ('tier', TEXT))),
+        optional=(('portfolio', PATH), ('ticket', HASH), ('tier', TEXT), SUPERSEDES)),
     'election': _validator('election', (
         ('instrument', HASH), ('choice', TEXT))),
     # Keyed by (index, date, source), so an administrator's print and a vendor snap are different
