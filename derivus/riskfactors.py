@@ -30,6 +30,12 @@ INTERPOLATION_METHODS = ('HermiteRT', 'Hermite', 'LinearRT', 'Linear')
 #: fallback below, and `Factor1D.check_interpolation`'s own last branch.
 INTERPOLATION_DEFAULT = 'Linear'
 
+#: The moves a desk reads a factor's risk per - `(size, relative to the factor's level, words)` -
+#: one of which a class declares as `risk_move`; None reads per unit of the factor as stored.
+PERCENT = (0.01, True, 'per 1%')
+BASIS_POINT = (1e-4, False, 'per bp')
+VOL_POINT = (0.01, False, 'per vol point')
+
 # map the names of various factor interpolations to something simpler
 factor_interp_map = {
     'CubicSplineCurveInterpolation': 'Hermite',
@@ -50,6 +56,7 @@ factor_interp_map = {
 
 class Factor0D(object):
     """Represents an instantaneous Rate (0D) risk factor"""
+    risk_move = None
 
     def __init__(self, param):
         self.param = param
@@ -83,6 +90,7 @@ class Factor0D(object):
 
 class Factor1D(object):
     """Represents a risk factor with a term structure (1D)"""
+    risk_move = None
 
     def __init__(self, param):
         """Sets up the tenor grid and the interpolation scheme.
@@ -207,6 +215,7 @@ class Factor1D(object):
 
 class Factor2D(object):
     """Represents a risk factor that's a surface (2D) - Currently this is only vol surfaces"""
+    risk_move = VOL_POINT
     svi_params = ['ATM_Ref', 'a', 'b', 'rho', 'm', 'sigma']
     skew_params = ['ATM_Vol', 'ATM_Ref', 's', 'L', 'R', 'C', 'D', 'lam', 'rho']
     #: The log-moneyness nodes every Malz x-grid refines FROM.
@@ -593,6 +602,7 @@ class Factor2D(object):
 
 class Factor3D(object):
     """Represents a risk factor that's a space (3D) - Things like swaption volatility spaces"""
+    risk_move = VOL_POINT
     MONEYNESS_INDEX = 0
     EXPIRY_INDEX = 1
     TENOR_INDEX = 2
@@ -691,6 +701,7 @@ class FxRate(Factor0D):
     """
     #: a price: its level is positive, so a print of it that is not is no print
     positive = True
+    risk_move = PERCENT
     fields = [
         F('Domestic_Currency', 'Text', default=''),
         F('Interest_Rate', 'Text', default='',
@@ -715,6 +726,7 @@ class FuturesPrice(Factor0D):
     Spot price of a single listed futures contract. Used when a deal references the price of one
     specific futures by name rather than a forward curve indexed by maturity.
     """
+    risk_move = PERCENT
     fields = [
         F('Price', 'Float', default=0.0, bind='value',
           description='The current settlement price of the futures contract in its quote currency')
@@ -729,6 +741,7 @@ class PriceIndex(Factor0D):
     Used to represent things like CPI/Stock Indices etc.
     """
     positive = True
+    risk_move = PERCENT
     fields = [
         F('Index', 'Curve', description='Series of (date, value) pairs, the date an excel integer'),
         F('Next_Publication_Date', 'Date', default=''),
@@ -768,6 +781,7 @@ class EquityPrice(Factor0D):
     This is just the equity price on a particular end of day
     """
     positive = True
+    risk_move = PERCENT
     fields = [
         F('Issuer', 'Text', default=''),
         F('Respect_Default', 'Text', default='Yes', values=['Yes', 'No']),
@@ -867,6 +881,7 @@ class DividendRate(Factor1D):
     """
     Represents the Dividend Yield risk factor
     """
+    risk_move = BASIS_POINT
     fields = [
         F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Curve', 'Curve', bind='value', description='Continuous dividend yield')
@@ -910,6 +925,9 @@ class SurvivalProb(Factor1D):
     """
     Represents the Probability of Survival risk factor
     """
+    #: the curve holds -ln S(t), linear in the spread through s = h(1-R): a move of 1% of every
+    #: knot is a 1% widening of the spread at every tenor, where a basis point of -ln S is none
+    risk_move = (0.01, True, 'per 1% of hazard')
     fields = [
         F('Recovery_Rate', 'Float', default=0.4, bind='value',
           description='The assumed recovery amount, entered as 0.4 for 40%'),
@@ -953,6 +971,7 @@ class InterestRate(Factor1D):
     Remember that the tenors are normally expressed as year fractions - not days.
     """
     interpolation_methods = INTERPOLATION_METHODS
+    risk_move = BASIS_POINT
     fields = [
         F('Sub_Type', 'Text', default='',
           description='Set to BasisSpread if this curve is a spread over its parent'),
@@ -985,6 +1004,7 @@ class InflationRate(Factor1D):
     Remember that the tenors are normally expressed as year fractions - not days.
     """
     interpolation_methods = INTERPOLATION_METHODS
+    risk_move = BASIS_POINT
     fields = [
         F('Price_Index', 'Text', default='',
           description='Name of the associated PriceIndex factor'),
@@ -1006,6 +1026,8 @@ class ForwardPrice(Factor1D):
     """
     Used to represent things like Futures prices on OIL/GOLD/Platinum etc.
     """
+    #: its curve holds prices, each a percent of itself as a spot is
+    risk_move = PERCENT
     fields = [
         F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Curve', 'Curve', bind='value',
@@ -1032,6 +1054,7 @@ class ForwardRate(ForwardPrice):
     extends that line outside them — the flat-clipping `Linear` default loses the
     curvature term wherever a contract trades in front of the first knot."""
     interpolation_methods = ('Linear', 'LinearExtrapolate')
+    risk_move = BASIS_POINT
     fields = [
         F('Currency', 'Text', default='', description='The currency this factor is denominated in'),
         F('Curve', 'Curve', bind='value',
@@ -1521,6 +1544,9 @@ class InterestYieldVol(Factor3D):
     read with `.get` but has no descriptor, so no schema-authored block can carry it. It is the
     LEGACY spelling of the displacement, and `displacement` below states what outranks it.
     """
+    #: per unit: `Distribution_Type` is per surface, and a vol point of a Normal one is 100bp of
+    #: normal vol, a hundred times what the class would claim
+    risk_move = None
     fields = [
         F('Surface', 'Space', bind='value',
           description='(moneyness, expiry, tenor, volatility) quads, flat extrapolated and '

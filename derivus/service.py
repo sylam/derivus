@@ -1679,6 +1679,8 @@ def greek_rows(frame):
     back PER FACTOR rather than per row - a curve's front point is a tenor of 0.0 and would
     otherwise trim to nothing and read as a spot. So an all-zero factor carries no `tenor` key at
     all, and one with any non-zero coordinate carries the list out to its own last used one.
+
+    Each row is also read per the move its factor's class declares (`read_per`).
     """
     table = as_json(frame)['.DataFrame']
     columns = [position for position, name in enumerate(table['columns']) if name != 'Value']
@@ -1694,8 +1696,37 @@ def greek_rows(frame):
             row['tenor'] = list(index[1:1 + depth[index[0]]])
         row['value'] = float(sum(data[position] or 0.0 for position in columns))
         row['level'] = None if level is None or data[level] is None else float(data[level])
-        rows.append(row)
+        rows.append(read_per(row, factor_move(row['factor'])))
     return rows
+
+
+def factor_move(factor):
+    """`(size, relative, words)`: the move `factor`'s risk is read per, its class's `risk_move` -
+    None, per unit, for a type no class declares and for a leaf one of its type's own fields names:
+    a parameter of a surface stating parameters, which is no vol."""
+    name = utils.check_rate_name(factor)
+    kind = getattr(riskfactors, name[0], None)
+    if name[-1] in {field.name for field in getattr(kind, 'fields', ())}:
+        return None
+    return getattr(kind, 'risk_move', None)
+
+
+def quote_move(block):
+    """The move a quote of `block` is read per: a vol point where the family fitting it writes a
+    surface, whose quotes are in the surface's own units (0.12 for 12 vols); None, per unit as
+    quoted, for any other family - a rate's quote is in percent, a spread's in basis points."""
+    kind = utils.check_rate_name(block)[0]
+    family = next((one for one in bootstrappers.FAMILIES if one.market_factor_type == kind), None)
+    move = family and getattr(riskfactors, family.__name__).risk_move
+    return move if move is riskfactors.VOL_POINT else None
+
+
+def read_per(row, move):
+    """`row` with `risk`, the report-currency change for `move` - `value` times its size, times the
+    `level` where the move is relative to it - and `per`, its words; per unit where it is None."""
+    size, relative, words = move or (1.0, False, 'per unit')
+    level = row['level'] if relative else 1.0
+    return dict(row, risk=None if level is None else row['value'] * size * level, per=words)
 
 
 def quote_blocks(market, universe):
@@ -1797,8 +1828,9 @@ def quote_run(run, reading=Context):
 
 
 def quote_rows(config):
-    """`(rows, factors)`: `{block, quote, value, level}` per quote a bootstrap left connected - the
-    derivative and the quote it is taken at - and the factors those rows stand for. A coupled set
+    """`(rows, factors)`: `{block, quote, value, level, risk, per}` per quote a bootstrap left
+    connected - the derivative, the quote it is taken at and the derivative read per the quote's
+    natural move (`quote_move`) - and the factors those rows stand for. A coupled set
     publishes ONE leaf under every member's name, its quotes prefixed by the block each came off,
     so a leaf is read once and each row filed under its own block; a leaf the book never reached
     carries no gradient and no row."""
@@ -1816,9 +1848,9 @@ def quote_rows(config):
         for descriptor, value, level in zip(descriptors, flat([one.grad for one in leaf]),
                                             flat(leaf)):
             named = next((name for name in blocks if descriptor.startswith(name + ': ')), None)
-            rows.append({'block': named or blocks[0],
-                         'quote': descriptor[len(named) + 2:] if named else descriptor,
-                         'value': value, 'level': level})
+            rows.append(read_per({'block': named or blocks[0],
+                                  'quote': descriptor[len(named) + 2:] if named else descriptor,
+                                  'value': value, 'level': level}, quote_move(named or blocks[0])))
     return rows, sorted(map(utils.check_tuple_name, config.calibrated_factors))
 
 
@@ -1891,10 +1923,11 @@ def book_risk(actor: str = None):
     anything; a book that will not price answers 422 naming the cause and caches nothing.
 
     `mtm` is the sum of `per_deal`, one row per top-level trade; `greeks` is `{factor, tenor?,
-    value}` flattened off the gradient frame, trimmed at the last non-zero coordinate; `quotes` is
-    `{block, quote, value}` per quote the book's factors are built from, per unit of the quote as
-    quoted, `quoted` the factors those rows stand for and `quote_note` names each block read on
-    its factors instead, and why.
+    value, level, risk, per}` flattened off the gradient frame, trimmed at the last non-zero
+    coordinate - `value` per unit of the factor at `level`, `risk` the same per the move `per`
+    names; `quotes` is `{block, quote, value, level, risk, per}` per quote the book's factors are
+    built from, `value` per unit of the quote as quoted, `quoted` the factors those rows stand for
+    and `quote_note` names each block read on its factors instead, and why.
     """
     live = live_book()
     document = priced(live.read()[0], 'BaseValuation')

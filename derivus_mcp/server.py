@@ -1425,7 +1425,9 @@ def book_risk_summary(actor: str | None = None) -> dict:
     1%), taken through the calibration that builds the factor, `quoted` naming the factors those
     rows stand for and `quote_note` why a book's quotes did not reach its risk where they did not.
     `greeks` is every factor's own row - `factor`, `tenor` (absent for a spot) and `value` per
-    unit of that factor - where a spot, and anything no quote builds, is read. Never the whole
+    unit of that factor - where a spot, and anything no quote builds, is read. Every row also
+    carries `level`, the factor or quote it is taken at, and `risk`, the same derivative per the
+    move `per` names - a spot per 1% of itself, a rate per bp, a vol per vol point. Never the whole
     per-deal table: `deal_values` on an `execute_book` run serves that, and the web blotter
     renders the lot.
 
@@ -1433,8 +1435,12 @@ def book_risk_summary(actor: str | None = None) -> dict:
     a booking or a market tick moves the etag and the numbers follow. `actor` is the seat reading.
     """
     risk = service().call('GET', '/book/risk', params=_stated(actor=actor))
-    greeks = sorted(risk['greeks'], key=lambda row: -abs(row['value']))
-    quotes = sorted(risk['quotes'], key=lambda row: -abs(row['value']))
+
+    def size(row):
+        # largest per the move each row is read per, the per-unit derivative where it reads none
+        return -abs(row['value'] if row.get('risk') is None else row['risk'])
+
+    greeks, quotes = sorted(risk['greeks'], key=size), sorted(risk['quotes'], key=size)
     return {'as_of': risk['as_of'], 'etag': risk['etag'], 'currency': risk['currency'],
             'mtm': risk['mtm'], 'deals': len(risk['per_deal']),
             'quotes': quotes[:MAX_GREEK_ROWS], 'quote_rows': len(quotes),

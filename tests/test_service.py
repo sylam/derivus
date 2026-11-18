@@ -5410,7 +5410,8 @@ def test_the_consolidated_risk_is_the_book_priced_once_and_it_follows_a_booking(
 
     The book carries a real USDZAR surface, so the gradient is not vacuous: the FX option puts
     `FXVol.USD.ZAR` rows in `greeks` on TWO tenor coordinates - the surface-node case the
-    flattening exists for - beside one-coordinate curve rows and a no-coordinate spot.
+    flattening exists for - beside one-coordinate curve rows and a no-coordinate spot. Its quotes
+    are vols, so each reads per vol point; killing mutation: a vol quote read per unit.
     """
     before = CLIENT.get('/book/risk').json()
     assert CLIENT.get('/book/risk').json() == before, 'a warm hit re-ran the book'
@@ -5445,6 +5446,101 @@ def test_the_consolidated_risk_is_the_book_priced_once_and_it_follows_a_booking(
     assert after['quoted'] == ['FXVol.USD.ZAR'] and after['quote_note'] is None
     assert {row['block'] for row in after['quotes']} == {'FXVolPrices.USD.ZAR'}
     assert max(abs(row['value']) for row in after['quotes']) > 1.0
+    # a vol quote is in the surface's own units, so it reads per vol point as the surface does
+    assert {row['per'] for row in after['quotes']} == {'per vol point'}
+    assert all(row['risk'] == row['value'] * 0.01 for row in after['quotes'])
+
+
+def test_the_risk_reads_each_factor_per_the_move_a_desk_quotes_and_that_move_reprices_to_it(book):
+    """`/book/risk` reads every row per the move its factor's class declares - a spot per 1% of its
+    level, a curve point per basis point, a surface node per vol point, a type declaring none per
+    unit, as is each parameter of an SVI surface, which is no vol - `value` and `level` standing as
+    they were. BY HAND: each move bumped on the live book through `POST /book/market`, up and down -
+    the ZAR and equity spots by 1% of themselves, every knot of the ZAR curve by a basis point,
+    every node of the equity surface by a vol point - moves `mtm` by that factor's rows' `risk`
+    summed, to first order (a central difference).
+
+    Killing mutations: a relative move read without its level, `risk` = value x 0.01, which reads
+    the ZAR spot 18.5 times small; a curve read per unit, its basis point dropped; `level` taken
+    as the factor's own for the absolute moves too, which scales the curve by its 2% rate; and a
+    surface's parameter read per vol point, its own field names unread.
+    """
+    svi = dict({'Surface_Type': 'SVI', 'Moneyness_Rule': 'Sticky_Moneyness'}, **{
+        name: utils.Curve([], [[t, value] for t, value in zip((0.4, 1.5), values)])
+        for name, values in (('ATM_Ref', (SPOT, SPOT)), ('a', (0.018, 0.016)), ('b', (0.06, 0.04)),
+                             ('rho', (-0.4, -0.3)), ('m', (0.03, 0.05)), ('sigma', (0.15, 0.25)))})
+    document = json.loads(book.read_text())
+    document['Calc']['Deals']['Deals']['Children'] += [{'Instrument': {'.Deal': json.loads(
+        dump(deal))}} for deal in (dict(BINARY, Payoff=1_000_000.0), FX_OPTION)]
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(
+        json.loads(dump(dict(EQUITY, **{'FXVol.USD.ZAR': svi}))))
+    book.write_text(json.dumps(document, indent=4), newline='\n')
+    risk = CLIENT.get('/book/risk').json()
+    factors = {}
+    for row in risk['greeks']:
+        factors.setdefault(row['factor'], []).append(row)
+    parameters = [row for row in risk['greeks'] if row['factor'].startswith('FXVol.USD.ZAR.')]
+    assert parameters and all(row['per'] == 'per unit' and row['risk'] == row['value']
+                              for row in parameters), parameters
+    assert {name: {row['per'] for row in rows} for name, rows in factors.items()
+            if not name.startswith('FXVol.')} == {
+        'FxRate.ZAR': {'per 1%'}, 'EquityPrice.EQ': {'per 1%'}, 'InterestRate.ZAR': {'per bp'},
+        'InterestRate.USD': {'per bp'}, 'DividendRate.EQ': {'per bp'},
+        'EquityPriceVol.EQ': {'per vol point'}}
+    assert factors['FxRate.ZAR'][0]['level'] == SPOT
+
+    def moved(name, field, shift):
+        standing = document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'][
+            name][field]
+        marks = []
+        for sign in (1.0, -1.0, 0.0):
+            assert CLIENT.post('/book/market', json={'patch': {name: {field: shift(
+                standing, sign)}}}).json()['written'] is True
+            marks.append(CLIENT.get('/book/risk').json()['mtm'])
+        return (marks[0] - marks[1]) / 2.0
+
+    def shifted(by):
+        # a shape's values patch is its last column, the coordinates standing
+        return lambda shape, sign: [row[-1] + sign * by for row in shape['.Curve']['data']]
+
+    for name, field, shift, tolerance in (
+            ('FxRate.ZAR', 'Spot', lambda spot, sign: spot * (1.0 + 0.01 * sign), 1e-3),
+            ('EquityPrice.EQ', 'Spot', lambda spot, sign: spot * (1.0 + 0.01 * sign), 1e-3),
+            ('InterestRate.ZAR', 'Curve', shifted(1e-4), 1e-6),
+            ('EquityPriceVol.EQ', 'Surface', shifted(0.01), 1e-3)):
+        read = sum(row['risk'] for row in factors[name])
+        assert abs(read) > 10.0, '{} barely moves the book, so the comparison is vacuous'.format(
+            name)
+        assert moved(name, field, shift) == pytest.approx(read, rel=tolerance), name
+    assert CLIENT.get('/book/risk').json()['mtm'] == risk['mtm'], 'the bumps were not put back'
+
+
+def test_a_swaption_vol_reads_per_unit_its_distribution_being_each_surface_s_own(tmp_path):
+    """`/book/risk` reads a swaption vol space per unit: `Distribution_Type` is the surface's own,
+    and a vol point of a Normal space is 100bp of normal vol, so no move suits the class. The
+    declared-defaults world's swaption, served as the book, reads its `InterestYieldVol` rows so.
+
+    Killing mutation: `InterestYieldVol` left at the vol point `Factor3D` declares.
+    """
+    sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
+    import test_declared_defaults as declared
+
+    swaption = dict(next(deal for deal in declared.BOOK if deal['Reference'] == 'SWPT'))
+    legs = swaption.pop('Children')
+    document = json.loads(dump(job(
+        deals=(swaption,), factors=declared.world(), Base_Date=declared.WORLD_BASE,
+        sections={'System Parameters': {'Base_Currency': 'USD', 'Base_Date': declared.WORLD_BASE}})))
+    document['Calc']['Deals']['Deals']['Children'][0]['Children'] = [
+        {'Instrument': {'.Deal': json.loads(dump(leg))}} for leg in legs]
+    (tmp_path / 'book.json').write_text(json.dumps(document, indent=2), newline='\n')
+    service.BOOK = service.Book(str(tmp_path / 'book.json'))
+    try:
+        greeks = CLIENT.get('/book/risk').json()['greeks']
+    finally:
+        service.BOOK = None
+    vols = [row for row in greeks if row['factor'] == 'InterestYieldVol.USD-PROJ']
+    assert vols and all(row['per'] == 'per unit' and row['risk'] == row['value']
+                        for row in vols), vols
 
 
 def test_a_book_holding_a_deal_it_cannot_price_has_no_consolidated_risk(quoting, tmp_path):

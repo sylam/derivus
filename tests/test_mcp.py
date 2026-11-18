@@ -747,6 +747,19 @@ def test_booking_a_deal_prices_it(book):
     assert values['CF2'] == pytest.approx(BOOKED['Amount'] * SPOT * np.exp(-RATE * 2.0), rel=1e-3)
 
 
+def test_the_risk_summary_ranks_by_the_move_each_row_is_read_per(book):
+    """`book_risk_summary` leads with what the book moves most per the move a desk reads each
+    factor by. On the one-cash-flow book the rand spot's 1% outranks the ZAR curve's basis point,
+    though per unit the curve's derivative is twenty times the spot's.
+
+    Killing mutation: the rows ranked by the per-unit `value`, which leads with the curve.
+    """
+    greeks = mcp_server.book_risk_summary()['greeks']
+    assert [(row['factor'], row['per']) for row in greeks[:2]] == [
+        ('FxRate.ZAR', 'per 1%'), ('InterestRate.ZAR', 'per bp')], greeks
+    assert abs(greeks[1]['value']) > abs(greeks[0]['value']), 'the ranking test is vacuous'
+
+
 def test_the_values_of_a_failed_run_are_its_own_error():
     """`deal_values` on a run that skipped the unreadable cash flow answers the run's own error.
     Killing mutation: the status unread - it answers that the result is not a base valuation."""
