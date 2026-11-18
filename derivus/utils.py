@@ -5575,8 +5575,10 @@ def get_fieldname(field, obj):
     """Needed to evaluate nested fields - e.g. collateral fields"""
     if isinstance(field, tuple):
         if len(field) == 1:
+            # a table's row that is not an object names no factor; its deal's validation names it
+            rows = [row for row in obj if isinstance(row, dict)] if isinstance(obj, list) else obj
             try:
-                return [element.get(field[0]) for element in obj if element.get(field[0])]
+                return [element.get(field[0]) for element in rows if element.get(field[0])]
             except:
                 return [obj[field[0]]] if obj.get(field[0]) else []
         else:

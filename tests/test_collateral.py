@@ -668,6 +668,25 @@ def test_a_collateral_asset_weighing_nothing_or_less_is_refused_by_name():
         'collateral is positive']}
 
 
+def test_a_collateralised_set_with_a_row_of_cells_refuses_its_run_by_name():
+    """A COLLATERAL ROW IS STATED BY ITS COLUMNS' NAMES: a collateralised set whose cash is a list
+    of cells is named by `validate` before a run and refuses the run in the same sentence, which
+    its refusal carries.
+
+    Killing mutation: the row of cells left unnamed, which leaves validation clean and ends the
+    run on the `'Currency'` a row stating nothing lacks.
+    """
+    said = ("Collateral_Assets.Cash_Collateral[0] is a list of cells: a collateral row is stated "
+            "by its columns' names")
+    context = derivus.Context()
+    context.load_json((json.dumps(engine_job(dict(TERMS, Collateral_Assets={
+        'Cash_Collateral': [['USD', None, {'.Percent': 50.0}]]}))), 'cells'))
+    assert context.validate()['deals'] == {'CSA-1': [said]}
+    with pytest.raises(utils.UnpriceableSchedule, match='Nothing in the book was valued') as run:
+        derivus.run_cmc(context.current_cfg, prec=torch.float64)
+    assert str(run.value).endswith('CSA-1 - CSA-1: ' + said), run.value
+
+
 def test_a_threshold_on_the_other_side_of_zero_is_refused_by_name():
     """A THRESHOLD IS A LEVEL OF THE SET'S VALUE: the bank receives above the received threshold
     and posts below the posted one, so the first is zero or positive and the second zero or

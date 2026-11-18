@@ -1445,14 +1445,14 @@ class NettingCollateralSet(Deal):
         set states none and a collateralised one cannot be priced without it - a rule spanning two
         fields, which is this method rather than a declaration. Collateral_Rate and Funding_Rate are
         each optional on the row, but post_process enters the ColVA block on Collateral_Rate alone
-        and then reads Funding_Rate unconditionally. A collateralised set's terms that mean nothing
-        are named as the run refuses them (`meaningless`). Reads defensively: validation runs BEFORE
-        the contract is known to hold.
+        and then reads Funding_Rate unconditionally. Terms that mean nothing are named as a
+        collateralised set's run refuses them (`meaningless`). Reads defensively: validation runs
+        BEFORE the contract is known to hold.
         """
-        if self.field.get('Collateralized', 'False') == 'True':
-            if not self.field.get('Agreement_Currency'):
-                yield 'Collateralized is True, so Agreement_Currency is required'
-            yield from self.meaningless()
+        if self.field.get('Collateralized', 'False') == 'True' \
+                and not self.field.get('Agreement_Currency'):
+            yield 'Collateralized is True, so Agreement_Currency is required'
+        yield from self.meaningless()
         rows = self.collateral(self.field.get('Collateral_Assets')).get('Cash_Collateral', [])
         for i, row in enumerate(rows):
             if row.get('Collateral_Rate') and not row.get('Funding_Rate'):
@@ -1460,15 +1460,24 @@ class NettingCollateralSet(Deal):
                        'Funding_Rate is required'.format(i))
 
     def meaningless(self):
-        """Each term of a collateralised set that means nothing, in the one sentence `validate`
-        names it in and the run refuses the set with: an asset weighing nothing or less, and a
-        threshold on the other side of zero from the level of the set's value it is."""
-        for table, rows in self.collateral(self.field.get('Collateral_Assets')).items():
-            for i, row in enumerate(rows):
+        """Each term the set states that means nothing, in the one sentence `validate` names it in
+        and a collateralised set's run refuses it with: a collateral row stated as a list of cells,
+        and on a collateralised set an asset weighing nothing or less and a threshold on the other
+        side of zero from the level of the set's value it is."""
+        assets, collateralised = self.field.get('Collateral_Assets'), \
+            self.field.get('Collateralized') == 'True'
+        for table in self.collateral(assets):
+            for i, row in enumerate(assets[table]):
+                if not isinstance(row, dict):
+                    yield ("Collateral_Assets.{}[{}] is a list of cells: a collateral row is stated "
+                           "by its columns' names".format(table, i))
+                    continue
                 weight = row.get(self.WEIGHTS.get(table))
-                if isinstance(weight, (int, float)) and not weight > 0:
+                if collateralised and isinstance(weight, (int, float)) and not weight > 0:
                     yield ('Collateral_Assets.{}[{}].{} is {!r}: the weight of an asset in the '
                            'collateral is positive'.format(table, i, self.WEIGHTS[table], weight))
+        if not collateralised:
+            return
         support = self.field.get('Credit_Support_Amounts') or {}
         for key, side, level in (
                 ('Received_Threshold', 1.0, 'above which the bank receives, so zero or positive'),
@@ -1480,9 +1489,10 @@ class NettingCollateralSet(Deal):
 
     @classmethod
     def collateral(cls, assets):
-        """`{table: rows}` for each collateral table `assets` states, every row read as
-        `{column: cell}` whichever spelling it is stated in."""
-        return {f.key: [f.row.read(row) for row in assets[f.key]]
+        """`{table: rows}` for each collateral table `assets` states, a row stated by its columns'
+        names as it is and one stated as a list of cells as a row stating nothing, which
+        `meaningless` names."""
+        return {f.key: [row if isinstance(row, dict) else {} for row in assets[f.key]]
                 for f in declared_fields(cls)['Collateral_Assets'].sub_fields if (assets or {}).get(f.key)}
 
     @classmethod

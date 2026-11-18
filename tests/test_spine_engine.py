@@ -1176,42 +1176,49 @@ def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(r
     assert verify_home(recorded)['events'] == head(recorded)
 
 
-def test_an_agreement_s_collateral_rows_read_alike_by_name_or_by_position(recorded):
-    """A TABLE ROW IS READ ONE WAY, whether it states its cells by its columns' names or in their
-    declared order: an agreement whose eligible cash is a row of cells is declared as the same row
-    by name is, while a row of cells stating a holding, or asking for ColVA with no funding curve,
-    is refused in the words the row by name is refused in.
+def test_a_collateral_row_stated_as_cells_is_refused_by_name_wherever_it_is_posted(recorded, desk):
+    """A COLLATERAL ROW HAS ONE SPELLING, BY ITS COLUMNS' NAMES, the one every reader of the table
+    reads. A netting set whose eligible cash is a list of cells is refused in one sentence wherever
+    it is posted - as an agreement's terms with a 422, as a set booked into the book unwritten, and
+    in a job handed to `/validate` - never with a 500, and nothing is written or recorded; the same
+    row stated by its columns' names is declared.
 
-    Killing mutation: `Row.read` handing a row of cells back as given, which fails the declaration
-    on `'list' object has no attribute 'get'`.
+    Killing mutations: discovery reading every row of a table as an object, which fails the
+    booking on `'list' object has no attribute 'get'`; the row of cells left unnamed, which declares
+    the agreement.
     """
+    said = ("Collateral_Assets.Cash_Collateral[0] is a list of cells: a collateral row is stated "
+            "by its columns' names")
     terms = netting_set(CLIENT_SET, 'LEI-A')['Instrument']['.Deal']
+    cells = dict(terms, Collateral_Assets={'Cash_Collateral': [['USD', None, {'.Percent': 10.0}]]})
     assert CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
                        headers=JSON).status_code == 200
+    book, record = desk.read_bytes(), head(recorded)
 
-    def declared(row):
+    def declared(stated):
         return CLIENT.post('/book/agreements', content=dump({
-            'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'CSA', 'terms': dict(
-                terms, Collateral_Assets={'Cash_Collateral': [row]})}), headers=JSON)
+            'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'CSA', 'terms': stated}),
+            headers=JSON)
 
-    for row, said in ((['USD', 500_000.0], 'Collateral_Assets.Cash_Collateral[0].Amount is 500000.0'),
-                      (['USD', None, None, None, 'USD'], 'Collateral_Assets.Cash_Collateral[0]: '
-                                                         'Collateral_Rate is set, so Funding_Rate is '
-                                                         'required')):
-        named = dict(zip(['Currency', 'Amount', 'Haircut_Posted', 'Haircut_Received',
-                          'Collateral_Rate'], row))
-        for spelled in (named, row):
-            refused = declared(spelled)
-            assert refused.status_code == 422 and said in refused.json()['detail'], spelled
-    for spelled in ({'Currency': 'USD', 'Haircut_Posted': {'.Percent': 10.0}},
-                    ['USD', None, {'.Percent': 10.0}]):
-        assert declared(spelled).status_code == 200, spelled
+    refused = declared(cells)
+    assert refused.status_code == 422 and said in refused.json()['detail'], refused.text
+    booked = CLIENT.post('/book/deals', content=dump({
+        'action': 'add', 'deal': {'Instrument': {'.Deal': dict(cells, Reference='NS-CELLS')}},
+        'quantity': 1.0, 'execution_reference': 'EXEC-CELLS'}), headers=JSON)
+    assert booked.status_code == 200 and booked.json()['written'] is False, booked.text
+    assert said in booked.json()['refused'], booked.text
+    validated = CLIENT.post('/validate', content=dump(job(deals=(dict(cells, Reference='NS-CELLS'),))),
+                            headers=JSON)
+    assert validated.status_code == 200 and validated.json()['deals'] == {'NS-CELLS': [said]},         validated.text
+    assert desk.read_bytes() == book and head(recorded) == record, 'a refusal wrote or recorded'
+    assert declared(dict(terms, Collateral_Assets={'Cash_Collateral': [
+        {'Currency': 'USD', 'Haircut_Posted': {'.Percent': 10.0}}]})).status_code == 200
 
 
 def test_an_agreement_s_holding_is_refused_whatever_it_states(recorded):
     """A HOLDING IS SETTLEMENT STATE, NEVER PAPER, whatever amount it states: an agreement's cash
-    row stating an `Amount` of 0.0, by name or as a cell, is refused naming it as one stating
-    500,000 is, while a row stating none, or null, is declared.
+    row stating an `Amount` of 0.0 is refused naming it as one stating 500,000 is, while a row
+    stating none, or null, is declared.
 
     Killing mutation: the amount tested by its truth, which declares the row stating 0.0.
     """
@@ -1224,11 +1231,10 @@ def test_an_agreement_s_holding_is_refused_whatever_it_states(recorded):
             'agreement': CLIENT_SET, 'entity': 'LEI-A', 'kind': 'CSA', 'terms': dict(
                 terms, Collateral_Assets={'Cash_Collateral': [row]})}), headers=JSON)
 
-    for row in ({'Currency': 'USD', 'Amount': 0.0}, ['USD', 0.0]):
-        refused = declared(row)
-        assert refused.status_code == 422, row
-        assert 'Collateral_Assets.Cash_Collateral[0].Amount is 0.0' in refused.json()['detail']
-    for row in ({'Currency': 'USD'}, {'Currency': 'USD', 'Amount': None}, ['USD', None]):
+    refused = declared({'Currency': 'USD', 'Amount': 0.0})
+    assert refused.status_code == 422, refused.text
+    assert 'Collateral_Assets.Cash_Collateral[0].Amount is 0.0' in refused.json()['detail']
+    for row in ({'Currency': 'USD'}, {'Currency': 'USD', 'Amount': None}):
         assert declared(row).status_code == 200, row
 
 
