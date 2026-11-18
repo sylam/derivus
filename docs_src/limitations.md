@@ -111,9 +111,9 @@ Grouped by where a validator meets them.
 - **A commodity touch or barrier is watched on its scenario dates alone under simulation**
   (2026-11-18). The forward-price process publishes no bridge variance, so the touch probability
   tests each interval's endpoints and misses a crossing that returns. The trial's knock-out, rebate
-  aside, under a Clewlow-Strickland forward at a 20% vol marks 4.2% high nine months in on a
-  quarterly grid against a daily one (four seeds of 4,096 paths, four standard errors), within noise
-  at three and six months. The fix is that process publishing its fixing's variance rate.
+  aside, under a Clewlow-Strickland forward at a 20% vol marks about 4% high nine months in on a
+  quarterly grid against a daily one (four seeds of 4,096 paths: 3.8% on the card, 4.2% on the
+  CPU, each past four standard errors), within noise at three and six months. The fix is that process publishing its fixing's variance rate.
 - **The FX range accrual's simulated fixings carry no boundary correction.** A fixing after the
   base date is the path's own inclusive indicator, a step on outer state that `pv_fx_range_accrual`
   registers no `BoundarySet` for, so a credit Monte Carlo's sensitivities drop its flux on every row
