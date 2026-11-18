@@ -1059,6 +1059,41 @@ def test_a_booking_through_the_book_verb_writes_the_event_before_the_file(record
     assert verify_home(recorded)['events'] == head(recorded)
 
 
+def test_an_amendment_naming_a_field_its_type_does_not_declare_is_refused_and_files_nothing(
+        recorded, desk):
+    """AN AMENDMENT IS A BLOCK LAID OVER THE DEAL, judged by its type's declarations before it
+    merges. On a structure booked whole, a key the structure does not declare and a misspelt key on
+    one of its legs each refuse naming the key and the type, the file byte-identical and nothing
+    filed; an amount the leg declares restrikes the structure. A booking still takes a key its type
+    does not declare, as every deal of a legacy book carries one.
+
+    Killing mutation: the judge removed, which writes both keys and files an amendment for each.
+    """
+    with_client(desk)
+    legs = [{'Instrument': {'.Deal': dict(CASHFLOW, Reference='LEG-{}'.format(leg))}}
+            for leg in (1, 2)]
+    booked = ticketed('EXEC-S', deal={'Object': 'StructuredDeal', 'Reference': 'STRUCT',
+                                      'Currency': 'ZAR', 'Children': legs}).json()
+    assert booked['written'] is True, booked
+    before, head_before = desk.read_bytes(), head(recorded)
+    for path, fields, said in (
+            (booked['deal_path'], {'Underlying_Amount': 4_000_000.0}, 'StructuredDeal declares no '
+             'Underlying_Amount - it declares Currency, MtM, Net_Cashflows, Object, Product_Class,'
+             ' Reference, Sales_Margin, Sales_Margin_Currency'),
+            (booked['deal_path'] + '/0', {'Amout': 5.0}, 'FixedCashflowDeal declares no Amout')):
+        refused = restruck(path, **fields)
+        assert refused['written'] is False, refused
+        assert [message[:len(said)] for message in refused['refused']] == [said], refused
+        assert desk.read_bytes() == before, 'a refused amendment moved the file'
+        assert head(recorded) == head_before, 'a refused amendment filed something'
+
+    amended = restruck(booked['deal_path'] + '/0', Amount=2_000_000.0)
+    assert amended['written'] is True and amended['recorded']['event_type'] == 'amendment'
+    assert [lsn for lsn, _, _ in facts(recorded, 'amendment')] == [amended['recorded']['lsn']]
+    tagged = ticketed('EXEC-T', deal=dict(CASHFLOW, Reference='CF-T', Tags=['legacy'])).json()
+    assert tagged['written'] is True, tagged
+
+
 def test_the_paper_is_declared_and_a_booking_names_the_agreement_it_sits_under(recorded, desk):
     """Legal's half and the desk's, through the service.
 

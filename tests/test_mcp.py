@@ -1559,3 +1559,18 @@ def test_a_waiting_tool_notifies_the_host_the_whole_time_it_waits(book):
     assert max(b - a for a, b in zip([0.0] + seconds, seconds + [waited])) <= 5.0
     said = {(total, note) for _, total, note in watching.reported}
     assert (120.0, 'queued') in said and said <= {(120.0, 'queued'), (120.0, 'running')}
+
+
+def test_an_amendment_naming_a_field_its_type_does_not_declare_is_an_answer_naming_it(book):
+    """A misspelt field reaches a model as the refusal naming the key and the deal's type, the
+    file untouched, and the field spelt right amends.
+
+    Killing mutation: the amendment's judge removed, which writes `Amout` beside `Amount`.
+    """
+    before = book.read_bytes()
+    refused = mcp_server.amend_deal('0', {'Amout': 500_000.0}, reference='CF1')
+    assert refused['written'] is False, refused
+    assert [message.split(' - ')[0] for message in refused['refused']] == [
+        'FixedCashflowDeal declares no Amout']
+    assert book.read_bytes() == before
+    assert mcp_server.amend_deal('0', {'Amount': 500_000.0}, reference='CF1')['written'] is True

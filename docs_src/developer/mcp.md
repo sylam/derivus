@@ -133,9 +133,12 @@ before they queue. **Held by**
 A wrong argument refuses by name before anything prices, because the alternative is a solver's or
 a tensor's exception naming neither the field nor the deal: a solve on an undeclared field, a
 `bounds` that is not a pair or an unreachable target; a calculation override the calculation does
-not declare, which would otherwise be ignored, or one that is not what it declares; a quote for a
-netting set the book never opened; a credit Monte Carlo with no model or no live deal; a node whose
-`Object` names no type, by walk position. **Held by**
+not declare, which would otherwise be ignored, or one that is not what it declares; an amendment
+naming a field its deal's type does not declare, refused before it merges and files nothing, while
+a booking still carries one; a quote for a netting set the book never opened; a credit Monte Carlo
+with no model or no live deal; a node whose `Object` names no type, by walk position. **Held by**
+`test_an_amendment_naming_a_field_its_type_does_not_declare_is_an_answer_naming_it`,
+`test_spine_engine.py::test_an_amendment_naming_a_field_its_type_does_not_declare_is_refused_and_files_nothing`,
 `test_service.py::test_a_solve_refuses_a_field_and_a_bounds_the_deal_cannot_carry`,
 `::test_a_calculation_override_is_judged_against_its_own_declarations`,
 `::test_a_credit_monte_carlo_this_book_cannot_frame_refuses_before_it_draws`,
