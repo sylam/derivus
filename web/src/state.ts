@@ -76,8 +76,6 @@ export type AppState = {
   paper: Fetched<Paper>;
   /** How the Portfolio screen and the blotter group the book - one choice for both. */
   grouping: Grouping;
-  /** The seat the seat box names, which a read that wants one is asked again under. */
-  seat: string;
 };
 
 export const IDLE_RUN: RunState = {
@@ -102,7 +100,6 @@ export const INITIAL: AppState = {
   tab: 'portfolio', seat: stored(SEAT), selection: { deal: null, picks: {} },
   describe: null, validate: null, run: IDLE_RUN, risk: IDLE_RISK, xva: IDLE_XVA,
   market: IDLE_MARKET, paths: IDLE_PATHS, record: NO_RECORD, paper: IDLE_PAPER, grouping: 'book',
-  seat: '',
 };
 
 export type Action =
@@ -138,7 +135,6 @@ export type Action =
   | { type: 'PAPER_LOADED'; paper: Paper }
   | { type: 'PAPER_FAILED'; error: string; status: number | null }
   | { type: 'GROUP'; grouping: Grouping }
-  | { type: 'SEAT'; seat: string }
   // the record, read on the book poll's own beat: where the file stands, and the strip's next
   // page; then the reconcile answer, under the file etag it was folded against
   | { type: 'RECORD_READ'; spine: SpineBlock | null; page: ActivityPage | null }
@@ -258,8 +254,6 @@ export function reducer(state: AppState, action: Action): AppState {
       };
     case 'GROUP':
       return { ...state, grouping: action.grouping };
-    case 'SEAT':
-      return { ...state, seat: action.seat };
     // both transitions are `web/src/spine.ts`'s, and both answer the record they were handed
     // where nothing moved - the beat is two seconds and most beats of it bring nothing at all
     case 'RECORD_READ': {
