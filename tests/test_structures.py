@@ -346,6 +346,26 @@ def test_a_straddle_is_exactly_its_two_legs(book):
     assert [row['solved'] for row in outcome['legs']] == [None, None], 'a straddle solves nothing'
 
 
+def test_a_quotes_money_says_the_currency_it_is_in(book):
+    """Every money a quote carries is in ONE currency, the book's reporting currency, and the
+    outcome names it. The same straddle on the same market reported in rand is every dollar amount
+    times 18.5, the rand's `FxRate` standing at 1/18.5 dollars here, and `currency` says which.
+
+    Killing mutation: `currency` read off the market's base rather than the calculation, which
+    names the rand quote's money dollars.
+    """
+    in_rand = copy.deepcopy(book)
+    in_rand['Calc']['Calculation']['Currency'] = 'ZAR'
+    dollars, rand = (structures.quote(document, 'Straddle', params(strike=SPOT))
+                     for document in (book, in_rand))
+
+    assert (dollars['currency'], rand['currency']) == ('USD', 'ZAR')
+    assert [rand[key] for key in ('net', 'net_mid')] == pytest.approx(
+        [SPOT * dollars[key] for key in ('net', 'net_mid')], rel=1e-12)
+    assert [row['premium'] for row in rand['legs']] == pytest.approx(
+        [SPOT * row['premium'] for row in dollars['legs']], rel=1e-12)
+
+
 def test_a_zero_cost_collar_costs_nothing(book):
     """The client names a floor; the cap is whatever strike makes the sold call pay for the bought
     put.

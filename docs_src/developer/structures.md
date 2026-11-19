@@ -330,7 +330,8 @@ the runner is that data's only reader.
 - The charge moves the solved coordinate in a second pass seeded on the first. A recipe that solves
   nothing (straddle, strangle) charges the premium instead; `charged_on` names which.
 
-Outcome fields, all in the client's sign convention: `net_mid` (the legs at mid), `net` (plus
+Outcome fields, all in the client's sign convention and in the outcome's `currency` (the book's
+reporting currency, `structures.reporting_currency`): `net_mid` (the legs at mid), `net` (plus
 everything charged), `edge` (the two-way charge alone, non-negative by construction), and per leg
 `spread_charge`, `spread_source` and `spread` rows `{pillar, vega, half, cost}`, where `half` is always
 the market's half-spread and `cost` the money charged. A leg no reading reaches carries `null`, never

@@ -1223,7 +1223,8 @@ async def solve_structure(structure: str, params: dict, netting_set: str | None 
     The answer IS the quote - `quote_id`, the params as read, one row per leg (role, deal type,
     buy/sell, the strike in MARKET terms, the premium, what was solved) and the `net`: zero for a
     zero-cost structure, MINUS the margin where one was charged, since every premium here is in
-    the client's sign and the client's paper is worth minus what they paid for it. The `margin`
+    the client's sign and the client's paper is worth minus what they paid for it. Every money in
+    it is in `currency`, the book's reporting currency. The `margin`
     block says what was charged and what it converted to; the booked mirror is the bank's side of
     it, marking at plus the margin. `deal` rides with it, the composed structured deal ready to
     book, carrying `Sales_Margin` and `Sales_Margin_Currency` as the record of what was agreed.

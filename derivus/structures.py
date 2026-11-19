@@ -1085,7 +1085,7 @@ def margin_value(book, margin):
                          'currency it is stated in, not {!r}'.format(margin)) from None
     book = Loads.of(book)
     market = book.market()
-    pricing = book.document['Calc']['Calculation'].get('Currency') or base_currency(market)
+    pricing = reporting_currency(book.document, market)
     return {'amount': amount, 'currency': currency, 'pricing_currency': pricing,
             'value': amount * engine_spot(market, currency, pricing)}
 
@@ -1094,6 +1094,12 @@ def base_currency(market):
     """The reporting currency every `FxRate.<ccy>.Spot` in a `market_of` is quoted in - the engine's
     own where nothing states one, as the engine prices."""
     return market['System Parameters']['Base_Currency']
+
+
+def reporting_currency(document, market):
+    """The currency `document` reports in, which every premium it prices is in: its
+    `Calculation.Currency`, else `market`'s base."""
+    return document['Calc']['Calculation'].get('Currency') or base_currency(market)
 
 
 def crossed_spots(base, crosses):
@@ -1970,9 +1976,10 @@ def risk_impact(book, params, reference, surface, legs, halves, charge_full, cac
     rows, cost = risk_buckets(before, after, halves)
     # a bp of NOTIONAL in the report currency: the notional is in its own currency and the charge
     # is in the run's, so the ops floor crosses on the same FxRate ratio `engine_spot` reads
+    market = book.market()
     min_ticket = float(policy['min_ticket_bp']) * 1e-4 * float(params['notional']) * \
-        engine_spot(book.market(), str(params['notional_currency']).upper(),
-                    book.document['Calc']['Calculation']['Currency'])
+        engine_spot(market, str(params['notional_currency']).upper(),
+                    reporting_currency(book.document, market))
     scale, saving, effective, note = risk_scale(rows, cost, policy, charge_full, min_ticket)
     return {'coordinates': 'quote-space', 'buckets': rows, 'saving': saving,
             'charge_full': charge_full, 'charge_effective': effective, 'scale': scale,
@@ -1989,8 +1996,9 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     `structure`, `params`, the `variation` selected and the `client` cashflows read off it, `netting_set`, a row per leg (reference, role,
     deal type, side, market-terms strike and barrier, premium, whatever was solved, the two-way
     `spread_charge` levied on it with its `spread_source` and pillar rows, and any `note`), `net`,
-    `net_mid`, `edge`, `charged_on`, `spot`, `risk`, `notes` - what the runner did that the book
-    did not say, a book stating too few inner paths for a simulated leg among them -
+    `net_mid`, `edge`, `currency` - the one every money here is in, the book's reporting currency
+    (`reporting_currency`) - `charged_on`, `spot`, `risk`, `notes` - what the runner did that the
+    book did not say, a book stating too few inner paths for a simulated leg among them -
     `valuation_configuration`, and `deal` - the composed `StructuredDeal` in wire form, ready for
     the booking verb. `quote_id` hashes the structure, the
     parameters, the market the book was carrying AND a submission clock: a quote is an ACT, so two
@@ -2156,6 +2164,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         # every number above is CLIENT-frame; the desk's capture is said once under its own name,
         # and it IS the charge, so it is non-negative by construction
         'edge': levied,
+        # the one currency every money in this outcome is in, legs, spread and risk rows included
+        'currency': reporting_currency(document, market),
         'spread_note': None if halves else '{} {} - there is no two-way to charge, so the quote '
         'is the mid'.format(prices_block(surface),
                             'carries no Quoted_Bid/Quoted_Ask'
