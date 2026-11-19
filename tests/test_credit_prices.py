@@ -13,8 +13,9 @@ WHAT IS HELD:
   the round trip    every quote type, and a block mixing them, back to the curve to 1e-10
   the standard model the credit Monte Carlo's `CDS_Tenors` reprices the solved curve's quotes
   the knobs         read off the block and its family's entry
-  the refusals      a contract maturing at the base date; a quote type the family does not take
-  the order         a block discounting on a curve another family solves is solved after it
+  the refusals      a contract maturing at the base date; a quote type the family does not take;
+                    a block naming no discount curve, this family's and the inflation family's
+  the order        a block discounting on a curve another family solves is solved after it
   the quote side    dtheta/dq against re-bootstrapped differences, and a default swap's dV/dq
                     beside its factor greek, the two one chain rule, its swap quote deltas
                     carrying the survival curve's re-solve
@@ -41,6 +42,7 @@ import torch
 
 import derivus
 import rates_world
+import test_inflation_prices as inflation
 from derivus import bootstrappers, schema, utils
 from derivus.config import CustomJsonEncoder, ModelParams
 from derivus_bloomberg import cds, discover
@@ -341,6 +343,41 @@ def test_a_quote_type_the_family_does_not_take_is_refused_by_name_and_left_out(c
     assert np.abs(solved[1:, 1] / TRUE[:-1] - 1.0).max() < 1e-10
 
 
+@pytest.mark.parametrize('family,world,rule', [
+    (bootstrappers.SurvivalProb, sys.modules[__name__], 'Par_Spread'),
+    (bootstrappers.InflationRate, inflation, inflation.INTERPOLATED)], ids=['credit', 'inflation'])
+def test_a_block_naming_no_discount_curve_is_judged_so_and_solves_nothing(family, world, rule):
+    """A credit or an inflation block states the curve its swaps discount on. Judged by its
+    family's declarations as a calculation's block is (`schema.validate_block` over the block
+    completed by its declared defaults), a blank or an omitted `Discount_Rate` is exactly
+    `Discount_Rate is required`, and one the family's `Bootstrapper Configuration` entry states
+    is the block's. Nothing guesses the curve: the blank prices the swaps on `InterestRate.`,
+    which the market cannot carry, and the omission fails the solve on the key, while the entry's
+    USD solves the curve the block stating USD solves, to the bit.
+
+    KILLING MUTATIONS: the currency's own curve read again where the block is blank (the solve's
+    `block['Discount_Rate'] or utils.own_curve_name(...)`) - the blank block solves and nothing
+    raises; the field declared `default='', convention=True` again - the blank judged silent.
+    """
+    entry = {family.__name__: {'Prices': family.__name__, 'Discount_Rate': 'USD'}}
+    blank, omitted = world.block(rule, Discount_Rate=''), world.block(rule)
+    del omitted['instrument']['Discount_Rate']
+
+    def judged(block, entry={}):
+        return schema.validate_block(family, schema.declared_defaults(
+            family, dict(entry, **block['instrument'])))
+
+    assert [judged(blank), judged(omitted), judged(omitted, entry[family.__name__])] == [
+        ['Discount_Rate is required'], ['Discount_Rate is required'], []]
+    with pytest.raises(Exception) as unnamed:
+        world.bootstrapped({world.BLOCK: blank})
+    assert (type(unnamed.value), str(unnamed.value)) == (Exception, 'Cannot find InterestRate.')
+    with pytest.raises(KeyError, match="'Discount_Rate'"):
+        world.bootstrapped({world.BLOCK: omitted})
+    assert np.array_equal(world.curve(world.bootstrapped({world.BLOCK: omitted}, entries=entry)),
+                          world.curve(world.bootstrapped({world.BLOCK: world.block(rule)})))
+
+
 def test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it():
     """The book carries a STALE USD curve, 1% flat, and an `InterestRatePrices.USD` block quoting
     the world's curve on its own knots (`bootstrappers.knot_prices`); the entries list the credit
@@ -364,21 +401,21 @@ def test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it
 
 def test_a_curve_move_re_solves_the_survival_curve_discounting_on_it_whatever_it_is_called():
     """The world's curve filed as `USD-OIS`, its `FxRate` naming it and nothing under `USD`, and
-    the survival block leaving `Discount_Rate` blank: the curve's quotes moved a basis point and
+    the survival block naming it in `Discount_Rate`: the curve's quotes moved a basis point and
     unsolved, a run narrowed to the curve's block re-solves the survival curve discounting on it,
     to the bit the curve the whole document bootstraps.
 
-    Killing mutation: `bootstrappers.block_readers` reading the blank as the currency's code, under
-    which the narrowed run leaves the survival curve as it stood.
+    Killing mutation: `bootstrappers.block_readers` reading the block's `Currency` for the curve,
+    under which the narrowed run leaves the survival curve as it stood.
     """
     renamed = {'FxRate.USD': dict(FACTORS['FxRate.USD'], Interest_Rate='USD-OIS'),
                'InterestRate.USD-OIS': FACTORS['InterestRate.USD'], 'InterestRate.USD': None}
     name, moved = bootstrappers.knot_prices('USD-OIS', dict(FACTORS, **renamed), ModelParams(), B, {})
     for point in moved['instrument']['Points']:
         point['Quoted_Market_Value'] += 0.01
-    blank = block('Par_Spread', Discount_Rate='')
-    standing = bootstrapped({BLOCK: blank}, factors=renamed).current_cfg.params['Price Factors'][CURVE]
-    job = document(factors=dict(renamed, **{CURVE: standing}), market_prices={BLOCK: blank, name: moved},
+    named = block('Par_Spread', Discount_Rate='USD-OIS')
+    standing = bootstrapped({BLOCK: named}, factors=renamed).current_cfg.params['Price Factors'][CURVE]
+    job = document(factors=dict(renamed, **{CURVE: standing}), market_prices={BLOCK: named, name: moved},
                    entries=FAMILIES)
 
     whole, narrowed = loaded(job), loaded(job)
@@ -605,12 +642,14 @@ def test_the_terminal_authors_the_blocks_the_family_solves():
     `CDS_QUOTED_PRICE` and are `Upfront` rows at a hundred less the price, its 6M, 7Y and 10Y
     answer the spread alone and are `Par_Spread` rows with the two-way; the index answers no price
     and its 10Y, quoted against a 500bp coupon, is refused `off-coupon` by name. The seed's
-    conventions are emitted beside the rows, and the family solves both blocks: one knot per row
-    at its standard maturity, and every row's contract spelt by hand at its own quote marking
-    within a millionth of the principal of par on the solved curve.
+    conventions are emitted beside the rows, the curve the swaps discount on, USD, among them,
+    and the family solves both blocks: one knot per row at its standard maturity, and every row's
+    contract spelt by hand at its own quote marking within a millionth of the principal of par on
+    the solved curve.
 
-    Killing mutation: the price read as the upfront, every GS upfront row a hundred points out
-    and the solve off the market.
+    KILLING MUTATIONS: the price read as the upfront, every GS upfront row a hundred points out
+    and the solve off the market; the block authored with its `Discount_Rate` blank, the emitted
+    conventions differing.
     """
     seed = packaged_credit()
     name, gs, _ = emitted(seed, 'GS')
@@ -624,7 +663,7 @@ def test_the_terminal_authors_the_blocks_the_family_solves():
     assert all(row['Deal'] == {} and row['Timestamp'] == {'.Timestamp': YESTERDAY} for row in rows)
     conventions = seed['credit']['GS']['conventions']
     assert {key: value for key, value in gs['instrument'].items() if key != 'Points'} == {
-        'Currency': conventions['currency'], 'Discount_Rate': '',
+        'Currency': conventions['currency'], 'Discount_Rate': 'USD',
         'Recovery_Rate': conventions['recovery_rate'], 'Standard_Coupon': conventions['coupon'],
         'Pay_Frequency': {'.DateOffset': conventions['pay_frequency']},
         'Accrual_Day_Count': conventions['accrual_day_count']}
@@ -679,18 +718,20 @@ def test_a_re_tick_is_a_values_patch_and_a_row_changing_its_type_a_new_plan():
 def test_a_seed_entry_without_its_conventions_refuses_by_name():
     """A CDS quote is not a contract until something says what it is quoted against, so a seed
     entry with no `conventions` refuses naming the entry, and one declaring half of them refuses
-    naming every field it lacks at once.
+    naming every field it lacks at once, the curve the swaps discount on among them.
 
-    Killing mutation: a missing coupon defaulted rather than refused.
+    Killing mutations: a missing coupon defaulted rather than refused; a missing discount curve
+    authored blank.
     """
     seed = packaged_credit()
     del seed['credit']['GS']['conventions']
     with pytest.raises(BloombergConfigurationError, match='GS carries no `conventions` block'):
         emitted(seed, 'GS')
     seed = packaged_credit()
-    for field in ('coupon', 'recovery_rate'):
+    for field in ('discount_rate', 'coupon', 'recovery_rate'):
         del seed['credit']['CDX-IG']['conventions'][field]
-    with pytest.raises(BloombergConfigurationError, match='CDX-IG declares no coupon, recovery_rate'):
+    with pytest.raises(BloombergConfigurationError,
+                       match='CDX-IG declares no discount_rate, coupon, recovery_rate'):
         emitted(seed, 'CDX-IG')
 
 

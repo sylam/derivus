@@ -126,7 +126,7 @@ holding a quote out with `Use` drops its knot too. An OIS swap is a `StructuredD
 Each `Points` row is a `Tenor` and the number a CDS on the block's name is quoted at. The contract
 is the block's standard one - bought from the base date to the 20th of the March, June, September or
 December the tenor reaches, paying at `Pay_Frequency` on `Accrual_Day_Count` with the accrued paid
-on default, discounting on `Discount_Rate` (the currency's own where blank) - and the row's `Deal`
+on default, discounting on `Discount_Rate` - and the row's `Deal`
 replaces any of its terms. `Quote_Type` says what the number is: `Par_Spread`, basis points of
 running coupon with no upfront, or `Upfront`, percent of principal the buyer pays on the effective
 date at `Standard_Coupon`. A conventional spread quoted against a standard coupon is stated as a
@@ -139,6 +139,7 @@ after the curves it discounts on.
   "SurvivalProbPrices.CPTY_A": {
     "instrument": {
       "Currency": "USD",
+      "Discount_Rate": "USD",
       "Recovery_Rate": 0.4,
       "Standard_Coupon": 100.0,
       "Points": [
@@ -159,7 +160,7 @@ Each `Points` row is a `Tenor` in whole years and the `Breakeven` a zero-coupon 
 `Price_Index` is quoted at, in percent. The swap is the block's standard one - from the base date
 to the tenor, the index ratio from the base date's reference to the maturity's on a million against
 the million compounded annually at the breakeven, $(1+b)^T$, both paid at maturity and discounted
-on `Discount_Rate` (the currency's own where blank) - its references read `Months_Lag` months back,
+on `Discount_Rate` - its references read `Months_Lag` months back,
 `Interpolated` between two months' prints or `Single`, three months interpolated where the block
 states neither; the row's `Deal` replaces any term of the structure, its legs under `Children`
 included. The solved curve carries one knot per used quote, at the latest month its final
@@ -172,6 +173,7 @@ discounts on. A row whose reference reads only printed months, and an index the 
   "InflationRatePrices.CPI": {
     "instrument": {
       "Currency": "USD",
+      "Discount_Rate": "USD",
       "Price_Index": "CPI",
       "Months_Lag": 3,
       "Reference_Type": "Interpolated",

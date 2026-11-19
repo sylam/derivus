@@ -4950,12 +4950,6 @@ def as_period(value):
     return utils.parse_period(value) if isinstance(value, str) else value
 
 
-def swaps_discount(block, price_factors):
-    """The curve a credit or inflation block's swaps discount on: its `Discount_Rate`, else its
-    currency's own (`utils.own_curve_name`)."""
-    return block.get('Discount_Rate') or utils.own_curve_name(block.get('Currency'), price_factors)
-
-
 def quote_nodes(points, discount_rate, shift=0.0):
     """The used quotes as deal-tree nodes, each authored at its own quote plus `shift` in its unit.
 
@@ -5751,9 +5745,8 @@ class SurvivalProb(Construction):
          '**Residual.** Each used `Points` row is the block\'s standard contract at its `Tenor`, bought',
          'from the base date to the 20th of March, June, September or December the tenor reaches, on',
          'a principal of one million of the block\'s name, paying at `Pay_Frequency` on',
-         '`Accrual_Day_Count` with the accrued paid on default and discounting on `Discount_Rate` (the',
-         'currency\'s own curve where blank); the row\'s own `Deal` replaces any of it. `Quote_Type` is',
-         'what the number is:',
+         '`Accrual_Day_Count` with the accrued paid on default and discounting on `Discount_Rate`;',
+         'the row\'s own `Deal` replaces any of it. `Quote_Type` is what the number is:',
          '',
          '| `Quote_Type` | The contract | `Quoted_Market_Value` |',
          '| --- | --- | --- |',
@@ -5809,8 +5802,8 @@ class SurvivalProb(Construction):
     fields = [
         F('Currency', 'Text', default=REQUIRED,
           description='The currency the default swaps are struck in'),
-        F('Discount_Rate', 'Text', default='', convention=True,
-          description='The curve the default swaps discount on, blank being the currency\'s own'),
+        F('Discount_Rate', 'Text', default=REQUIRED,
+          description='The curve the default swaps discount on'),
         F('Recovery_Rate', 'Float', default=0.4, convention=True,
           description='The recovery the default swaps are priced at and the solved curve carries, '
                       '0.4 for 40%'),
@@ -5918,7 +5911,7 @@ class SurvivalProb(Construction):
         connected discount curve through its graph, so a curve quote's derivative carries this
         curve's re-solve."""
         factor = utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:])
-        points, discount = self.contracts(block, market_price, base_date), swaps_discount(block, price_factors)
+        points, discount = self.contracts(block, market_price, base_date), block['Discount_Rate']
         nodes = quote_nodes(points, discount)
         knots = InterestRate.live_knots(market_price, points, nodes, base_date, self.DAY_COUNT,
                                         calendars)
@@ -5973,10 +5966,10 @@ class InflationRate(Construction):
          'the base date $t_0$ to the maturity $M$: a `YieldInflationCashflowListDeal` row paying a',
          'principal $P$ of one million grown by the index ratio $I_R(M)/I_R(t_0)$, its references read',
          'under the block\'s `Months_Lag` and `Reference_Type`, against a compounding',
-         '`CFFixedInterestListDeal` paying $P(1+b)^T$, both at $M$ and discounted on `Discount_Rate`',
-         '(the currency\'s own curve where blank); the row\'s own `Deal` replaces any term of the',
-         'structure, its legs included. `Quote_Type` is `Breakeven`, the quote $b$ in percent and a',
-         'fraction here. With $\\theta$ the growth rates at the knots,',
+         '`CFFixedInterestListDeal` paying $P(1+b)^T$, both at $M$ and discounted on `Discount_Rate`;',
+         'the row\'s own `Deal` replaces any term of the structure, its legs included. `Quote_Type` is',
+         '`Breakeven`, the quote $b$ in percent and a fraction here. With $\\theta$ the growth rates at',
+         'the knots,',
          '',
          '$$F_i(\\theta,b_i)=P\\,D(t_0,M_i)\\Big(\\frac{I_R(M_i)}{I_R(t_0)}-(1+b_i)^{T_i}\\Big)=0,'
          '\\qquad i=1,\\dots,n.$$',
@@ -6018,8 +6011,7 @@ class InflationRate(Construction):
     #: the principal a swap is struck on, which scales its residual and nothing it solves
     PRINCIPAL = 1e6
     fields = [field for field in InterestRate.fields if field.key in ('Currency', 'Day_Count')] + [
-        F('Discount_Rate', 'Text', default='', convention=True,
-          description='The curve the swaps discount on, blank being the currency\'s own'),
+        F('Discount_Rate', 'Text', default=REQUIRED, description='The curve the swaps discount on'),
         F('Price_Index', 'Text', default=REQUIRED,
           description='The PriceIndex factor whose prints the swaps reference'),
         F('Months_Lag', 'Integer', default=3, convention=True,
@@ -6156,7 +6148,7 @@ class InflationRate(Construction):
         if prints is None:
             raise ValueError('{}: Price_Index {} names no PriceIndex the market carries, and the '
                              'swaps reference its prints'.format(market_price, block['Price_Index']))
-        points, discount = self.contracts(block, market_price, base_date), swaps_discount(block, price_factors)
+        points, discount = self.contracts(block, market_price, base_date), block['Discount_Rate']
         nodes = quote_nodes(points, discount)
         knots = self.live_knots(market_price, points, nodes, prints['Last_Period_Start'],
                                 block['Day_Count'])
@@ -6674,18 +6666,17 @@ def block_readers(market):
     factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
     curve family names the very curve, in `Discount_Rate` and inside its benchmark deals
     (`benchmark_curves`), and the credit and inflation families the curve their swaps discount on,
-    `Discount_Rate` else the currency's own (`swaps_discount` off `market`'s `Price Factors`),
-    so a curve is read by the curves discounting on it and the survival and inflation curves solved
-    on it and no others. A block of a type no family reads is nobody's dependency.
+    the `Discount_Rate` the block states, so a curve is read by the curves discounting on it and
+    the survival and inflation curves solved on it and no others. A block of a type no family reads
+    is nobody's dependency.
     """
-    market_prices, factors = market.get('Market Prices', {}), market.get('Price Factors', {})
-    entries = market.get('Bootstrapper Configuration', {})
+    market_prices, entries = market.get('Market Prices', {}), market.get('Bootstrapper Configuration', {})
     writer = {cls.market_factor_type: cls for cls in FAMILIES}
     blocks = {name: writer[utils.check_rate_name(name)[0]] for name in market_prices
               if utils.check_rate_name(name)[0] in writer}
     curves = InterestRate
-    named = {name: {block.get('Discount_Rate')} | curves.benchmark_curves(block, name)
-             if cls is curves else {swaps_discount(block, factors)}
+    named = {name: {block.get('Discount_Rate')} | (
+                 curves.benchmark_curves(block, name) if cls is curves else set())
              for name, cls in blocks.items() if cls in (curves, SurvivalProb, InflationRate)
              for entry in [entries.get(cls.__name__)]
              for block in [dict(entry if isinstance(entry, dict) else {},

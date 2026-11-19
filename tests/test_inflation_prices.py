@@ -259,30 +259,30 @@ def test_a_block_discounting_on_a_curve_another_family_solves_is_solved_after_it
     assert np.abs(curve(context)[:, 1] / TRUE - 1.0).max() < 1e-10
 
 
-@pytest.mark.parametrize('usd, stated', [('USD', 'USD'), ('USD-OIS', '')])
-def test_a_curve_move_re_solves_the_inflation_curve_solved_on_it_and_no_other(usd, stated):
+@pytest.mark.parametrize('usd', ['USD', 'USD-OIS'])
+def test_a_curve_move_re_solves_the_inflation_curve_solved_on_it_and_no_other(usd):
     """The book carries the inflation curve its block's quotes solve, those quotes since moved a
     basis point and unsolved, beside two curve blocks quoting their own curves: USD, which the
     swaps discount on, and EUR, which they do not. A run narrowed to the EUR block leaves the
     inflation curve exactly as it stands; one narrowed to the USD block re-solves it on its moved
     quotes, to the bit the curve the whole document bootstraps (`bootstrappers.block_readers`
-    naming the block's `Discount_Rate`, else its currency's own curve, as the credit family's).
-    The dollar curve is filed under the currency's name with the block naming it, and as `USD-OIS`,
-    its `FxRate` naming it, nothing under `USD` and the block's `Discount_Rate` blank.
+    naming the block's `Discount_Rate`, as the credit family's). The dollar curve is filed under
+    the currency's name, and as `USD-OIS`, its `FxRate` naming it and nothing under `USD`, the
+    block's `Discount_Rate` naming it either way.
 
     Killing mutations: the inflation block read at its family's level, by every curve block - the
-    EUR run re-solves it too, every knot moving by 9.8e-5 to 1.06e-4; a blank `Discount_Rate` read
-    as the currency's code, under which the `USD-OIS` run leaves the curve as it stood.
+    EUR run re-solves it too, every knot moving by 9.8e-5 to 1.06e-4; the block's `Currency` read
+    for the curve, under which the `USD-OIS` run leaves the curve as it stood.
     """
     eur = rates_world.market('EUR', {'EUR': ((1.0, 2.0, 5.0), (0.021, 0.024, 0.026))}, 'EUR')
     dollar = {'FxRate.USD': dict(FACTORS['FxRate.USD'], Interest_Rate=usd), 'InterestRate.USD': None}
     dollar['InterestRate.' + usd] = FACTORS['InterestRate.USD']
     curves = dict([bootstrappers.knot_prices(usd, dict(FACTORS, **dollar), ModelParams(), B, {}),
                    bootstrappers.knot_prices('EUR', eur, ModelParams(), B, {})])
-    moved_block = block(Discount_Rate=stated)
+    moved_block = block(Discount_Rate=usd)
     for point in moved_block['instrument']['Points']:
         point['Quoted_Market_Value'] += 0.01
-    solved = bootstrapped({BLOCK: block(Discount_Rate=stated)}, factors=dollar)
+    solved = bootstrapped({BLOCK: block(Discount_Rate=usd)}, factors=dollar)
     standing = solved.current_cfg.params['Price Factors'][CURVE]
     market = dict(curves, **{BLOCK: moved_block})
     job = document(factors=dict(eur, **dollar, **{CURVE: standing}), market_prices=market,
@@ -548,14 +548,15 @@ def emitted(seed, name, as_of=AS_OF, **answers):
 def test_the_terminal_authors_the_block_and_the_index_the_family_solves():
     """Three indices off one scripted terminal. USCPI's swaps print the world's breakevens to 10Y,
     two invented beyond it and nothing at 20Y, which is held out with `Use` No by name and carries
-    no number, its verdict on the ledger; the seed's conventions ride beside the rows. The index
+    no number, its verdict on the ledger; the seed's conventions ride beside the rows, the curve
+    the swaps discount on, USD, among them. The index
     is its prints from the first month the base date's reference reads to the last: the world's
     own May and June rows, in excel days from the month's start, under three months back
     interpolated, June alone under UKRPI's two months back single, June the last period and the
     terminal's next release the next publication. A 30Y printing 280, a decimal-shifted 2.8, is
     held out `off-market`. A swap printed eleven days before the base date, an index whose next
     release is the base date and a history missing May each refuse the trip by name, as does a
-    seed entry declaring no `months_lag`.
+    seed entry declaring no `discount_rate` and no `months_lag`.
 
     The family solves the block on the module's world reading the emitted index alone: the
     world's curve back at its six knots within 7.8e-15, held to 1e-10, the 15Y and 30Y knots
@@ -573,7 +574,8 @@ def test_the_terminal_authors_the_block_and_the_index_the_family_solves():
     swap held out by the screen and the trip standing; the next-release rule dropped, the due
     print unnoticed; the month check dropped, June authored alone, the curve 9.7e-2 off and the
     linker 0.17% over; the band in basis points, the credit screen's, the shifted 30Y believed; a
-    missing lag defaulted rather than refused.
+    missing lag defaulted rather than refused; the block authored with its `Discount_Rate` blank,
+    the emitted conventions differing; a missing discount curve authored blank rather than refused.
     """
     seed = packaged_inflation()
     name, authored, index_name, index, strip = emitted(seed, 'USCPI')
@@ -587,7 +589,7 @@ def test_the_terminal_authors_the_block_and_the_index_the_family_solves():
     assert all(row.get('Timestamp') == ({'.Timestamp': FRIDAY} if row['Use'] == 'Yes' else None)
                for row in rows)
     assert {key: value for key, value in authored['instrument'].items() if key != 'Points'} == {
-        'Currency': 'USD', 'Discount_Rate': '', 'Day_Count': 'ACT_365', 'Price_Index': 'USCPI',
+        'Currency': 'USD', 'Discount_Rate': 'USD', 'Day_Count': 'ACT_365', 'Price_Index': 'USCPI',
         'Months_Lag': 3, 'Reference_Type': 'Interpolated'}
     assert index == {
         'Index': {'.Curve': {'meta': [], 'data': trial_rates.FACTORS['PriceIndex.INFL'][
@@ -612,8 +614,9 @@ def test_the_terminal_authors_the_block_and_the_index_the_family_solves():
     with pytest.raises(IncompleteStrip, match='CPURNSA Index answered 2026-06 105.965'):
         emitted(seed, 'USCPI', unprinted=('2026-05-31',))
     unstated = packaged_inflation()
-    del unstated['inflation']['UKRPI']['conventions']['months_lag']
-    with pytest.raises(BloombergConfigurationError, match='UKRPI declares no months_lag'):
+    for field in ('discount_rate', 'months_lag'):
+        del unstated['inflation']['UKRPI']['conventions'][field]
+    with pytest.raises(BloombergConfigurationError, match='UKRPI declares no discount_rate, months_lag'):
         emitted(unstated, 'UKRPI')
 
     solved_name, emitted_index = 'InflationRate.USCPI', {index_name: index}

@@ -55,21 +55,20 @@ PAR = 100.0
 #: print, and a floor of one quote, which is a flat hazard rather than no curve.
 SCREEN = CurveScreen(rate_band=(0.0, 1e4), minimum_points=1)
 
-#: The conventions a seeded name must declare before its block can be authored, and the one that
-#: carries a default: a blank discount curve is the currency's own.
-REQUIRED_CONVENTIONS = ('currency', 'coupon', 'recovery_rate', 'pay_frequency', 'accrual_day_count')
-OPTIONAL_CONVENTIONS = {'discount_rate': ''}
+#: The conventions a seeded name must declare before its block can be authored.
+REQUIRED_CONVENTIONS = ('currency', 'discount_rate', 'coupon', 'recovery_rate', 'pay_frequency',
+                        'accrual_day_count')
 
 
 @dataclass(frozen=True)
 class CreditConventions:
     """What a name's quotes are quoted against - read off the seed, never inferred from a ticker."""
     currency: str
+    discount_rate: str
     coupon: float
     recovery_rate: float
     pay_frequency: str
     accrual_day_count: str
-    discount_rate: str = OPTIONAL_CONVENTIONS['discount_rate']
 
 
 def credit_conventions(seed, name):
@@ -90,9 +89,7 @@ def credit_conventions(seed, name):
         raise BloombergConfigurationError(
             '{} declares no {} - the full set this emitter reads is {}. Fix the {} entry in your '
             'seed'.format(name, ', '.join(missing), ', '.join(REQUIRED_CONVENTIONS), name))
-    return CreditConventions(**{field: declared[field] for field in REQUIRED_CONVENTIONS},
-                             **{field: declared[field] for field in OPTIONAL_CONVENTIONS
-                                if field in declared})
+    return CreditConventions(**{field: declared[field] for field in REQUIRED_CONVENTIONS})
 
 
 def credit_entries(document, seed, name):

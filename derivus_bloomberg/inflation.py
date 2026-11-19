@@ -59,21 +59,20 @@ SCREEN = CurveScreen(minimum_points=1)
 #: package imports no engine module.
 EXCEL_ORIGIN = datetime.date(1899, 12, 30)
 
-#: The conventions a seeded index must declare before its block can be authored, and the one that
-#: carries a default: a blank discount curve is the currency's own.
-REQUIRED_CONVENTIONS = ('currency', 'months_lag', 'reference_type', 'day_count', 'publication')
-OPTIONAL_CONVENTIONS = {'discount_rate': ''}
+#: The conventions a seeded index must declare before its block can be authored.
+REQUIRED_CONVENTIONS = ('currency', 'discount_rate', 'months_lag', 'reference_type', 'day_count',
+                        'publication')
 
 
 @dataclass(frozen=True)
 class InflationConventions:
     """What an index's swaps are quoted against, read off the seed, never inferred from a ticker."""
     currency: str
+    discount_rate: str
     months_lag: int
     reference_type: str
     day_count: str
     publication: str
-    discount_rate: str = OPTIONAL_CONVENTIONS['discount_rate']
 
 
 @dataclass(frozen=True)
@@ -104,9 +103,7 @@ def inflation_conventions(seed, name):
         raise BloombergConfigurationError(
             '{} declares no {} - the full set this emitter reads is {}. Fix the {} entry in your '
             'seed'.format(name, ', '.join(missing), ', '.join(REQUIRED_CONVENTIONS), name))
-    return InflationConventions(**{field: declared[field] for field in REQUIRED_CONVENTIONS},
-                                **{field: declared[field] for field in OPTIONAL_CONVENTIONS
-                                   if field in declared})
+    return InflationConventions(**{field: declared[field] for field in REQUIRED_CONVENTIONS})
 
 
 def inflation_entries(document, seed, name):

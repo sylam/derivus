@@ -4926,7 +4926,7 @@ class SIMM(NettingSetCalculation):
         return float(bootstrappers.par_quotes([dict(contract, Deal=dict(
             contract['Deal'], Pay_Rate=utils.Basis(
                 1e4 * float(contract['Deal']['Pay_Rate']) - shift)))],
-            bootstrappers.swaps_discount(instrument, found), instrument['Currency'], found,
+            instrument['Discount_Rate'], instrument['Currency'], found,
             config.params['Price Factor Interpolation'], base_date, config.holidays)[0])
 
     def resolved(self, blocks, curves, position=None):

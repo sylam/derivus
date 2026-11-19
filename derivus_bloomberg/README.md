@@ -323,8 +323,8 @@ fix. What ships:
 `cds` turns one seeded name's verified default swaps into one `SurvivalProbPrices` block. A seed
 `credit` entry is the name's `security` pattern with `{tenor}` in it (`GS CDS USD SR {tenor} D14
 Corp`, `CDX IG CDSI GEN {tenor} Corp`), the NAME fragment discovery checks, its standard tenors
-and its `conventions` — currency, coupon, recovery, frequency, day count and, blank for the
-currency's own, the discount curve — and an entry without them refuses by name. Each contract is
+and its `conventions` — currency, the discount curve, coupon, recovery, frequency and day count —
+and an entry without them refuses by name. Each contract is
 asked `PX_LAST`/`PX_BID`/`PX_ASK`, `CDS_QUOTED_PRICE`, `SW_SPREAD` and `LAST_UPDATE_DT`, screened
 as a strip is, and authored as an `Upfront` row (a hundred less the price) where the price answers
 and a `Par_Spread` row where the spread alone does; one quoted against another coupon is refused
@@ -337,8 +337,8 @@ and a `Par_Spread` row where the spread alone does; one quoted against another c
 block, and the index's prints into the `PriceIndex` factor the block reads, off one trip. A seed
 `inflation` entry names the index's print (`security`, `expect`), the swaps' `security` pattern
 with `{tenor}` in it, the token the whole number of years (`USSWIT5 Curncy` is the 5Y), their
-`expect` and `tenors`, and its `conventions` - currency, the discount curve (blank for the
-currency's own), `months_lag`, `reference_type`, the curve's `day_count` and the index's
+`expect` and `tenors`, and its `conventions` - currency, the discount curve, `months_lag`,
+`reference_type`, the curve's `day_count` and the index's
 `publication` - and an entry without them refuses by name. The shipped USCPI, UKRPI and EUHICPX
 entries (`CPURNSA Index` and `USSWIT`, `UKRPI Index` and `BPSWIT`, `CPTFEMU Index` and `EUSWI`)
 are candidate vocabulary no terminal has verified: discovery checks each `NAME` fragment at a

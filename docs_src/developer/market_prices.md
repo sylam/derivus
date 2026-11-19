@@ -164,8 +164,8 @@ family alone logs and skips it. On the service an ERROR refuses the write ([belo
 **A run narrows to what moved.** `Config.bootstrap(only=…)` covers the blocks whose numbers moved
 plus every block reading one of them (`bootstrap_dependents`): a family's `reads`, and for curves the
 very curve a block names, so a curve re-solves the curves discounting on it and no others; a
-survival or inflation block reads the curve its swaps discount on, `Discount_Rate` else the
-currency's own, and no other. Each block is read as its family reads it, completed by the entry,
+survival or inflation block reads the curve its swaps discount on, its `Discount_Rate`, and no
+other. Each block is read as its family reads it, completed by the entry,
 so a `Discount_Rate` the entry states couples as one the block states. `wanted=` narrows to what
 named factors stand on, so a calculation bootstraps only what its book reads. **Held by**
 `test_service.py::test_a_moved_curve_re_solves_what_reads_it_and_nothing_else`,
@@ -325,7 +325,7 @@ other's curves solve as one system ([multi-curve](quote_propagation.md#multi-cur
 The residual, solver and refusals are on [Credit](../bootstrapping/credit.md#survivalprob).
 
 **A row is a tenor on the block's standard contract.** The block declares the contract its quotes
-are on - `Currency`, `Discount_Rate` (the currency's own where blank), `Recovery_Rate`,
+are on - `Currency`, `Discount_Rate`, `Recovery_Rate`,
 `Standard_Coupon`, `Pay_Frequency`, `Accrual_Day_Count` - and `SurvivalProb.contracts` authors each
 used row as that `DealDefaultSwap`, bought from the base date to the standard quarterly date its
 `Tenor` reaches (`utils.cds_dates`) with the accrued paid on default, on the curve the block is filed
@@ -387,7 +387,7 @@ name, and the seed's conventions beside the rows. **Held by**
 The residual, solver and refusals are on [Inflation](../bootstrapping/inflation.md#inflationrate).
 
 **A row is a tenor on the block's standard swap.** The block declares what its quotes are on -
-`Currency`, `Discount_Rate` (the currency's own where blank), `Price_Index`, and the reference rule
+`Currency`, `Discount_Rate`, `Price_Index`, and the reference rule
 `Months_Lag` and `Reference_Type`, three months interpolated by convention and spelt as a
 `YieldInflationCashflowListDeal`'s `Index_Reference`, which `reference_rule` reads - and
 `InflationRate.contracts` authors each used row as a `StructuredDeal` over the engine's own two
