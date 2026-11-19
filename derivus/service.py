@@ -1269,11 +1269,12 @@ def deal_expiry(deal):
 def deal_size(market, base, deal):
     """`{currency: amount}`, the most `deal` deals in each currency it states one in, read off what
     its type declares SA-CCR reads (`schema.Exposure`), the largest of several - a container's the
-    largest of its children's, never its own terms. An amount is its field's, a table's its largest
-    `sized` cell, units' at today's price of one where `market` states that as one number, in the
-    price's currency (CRE52.36), and a strip's times its rows dated on or after `base` (`per`,
-    CRE52.37(4)); amounts fixed today are the cash their settlements state (`schema.Cash`). Empty
-    where the type declares none."""
+    largest of its children's, never its own terms. An amount is its field's, an FX trade's other
+    side too where it states one (`other`, CRE52.35), a table's its largest `sized` cell, units' at
+    today's price of one where `market` states that as one number, in the price's currency
+    (CRE52.36), and a strip's times its rows dated on or after `base` (`per`, CRE52.37(4)); amounts
+    fixed today are the cash their settlements state (`schema.Cash`). Empty where the type declares
+    none."""
     def sized(field, value):
         # every amount `field` declares in `value`: itself, or its sub-fields' or its rows' cells
         if field.sub_fields and isinstance(value, dict):
@@ -1296,19 +1297,20 @@ def deal_size(market, base, deal):
                 stated += [(fields.get(cash.currency or 'Currency'), fields.get(cash.amount))
                            for *_, cash in declared_settlements(cls) if cash.amount]
                 continue
-            amount = max(sized(declared[part.amount], fields.get(part.amount)), default=0.0)
-            if part.per:
-                rows = fields.get(part.per)
-                amount *= sum(structures.timestamp(row[0]) >= base
-                              for row in (rows if isinstance(rows, list) else []))
+            rows = fields.get(part.per)
+            times = sum(structures.timestamp(row[0]) >= base for row in (
+                rows if isinstance(rows, list) else [])) if part.per else 1
+            amounts = [times * max(sized(declared[key], fields.get(key)), default=0.0)
+                       for key in (part.amount, part.other) if key]
             if part.currency:
-                stated.append((fields.get(part.currency), amount))
+                # an FX trade stating its other side too is the larger of the two (CRE52.35)
+                stated += zip([fields.get(part.currency), fields.get(part.underlying)], amounts)
                 continue
             named = part.price or part.underlying
             unit = (market.get('Price Factors') or {}).get('{}.{}'.format(
                 declared_factors(cls)[named][0], fields.get(named))) or {}
             if isinstance(unit.get('Spot'), (int, float)):
-                stated.append((unit.get('Currency'), amount * unit['Spot']))
+                stated.append((unit.get('Currency'), amounts[0] * unit['Spot']))
     size = {}
     for currency, amount in stated:
         if currency and isinstance(amount, (int, float)) and abs(amount) > size.get(currency, 0.0):
@@ -1322,7 +1324,8 @@ def ticket_terms(document, deal, values_hash, quantity=1.0):
 
     THE NOTIONAL IS THE TRADE'S, NEVER STATED AND NEVER CROSSED BY A POLICY CHECK: `deal_size` off
     the terms as booked, at `quantity`'s magnitude - the size the whole trade deals, its quantity in
-    it, carrying no side; a quote's acceptance and a restrike are the terms as written. Each
+    it, carrying no side; a quote's acceptance is the terms as written, and a restrike one unit of
+    the terms it amends to, which `spine.amend` takes at every unit it moves. Each
     amount's OWN currency needs no market data and is always there; every other currency is one
     this book can VALUE it in, crossed at the book's own spots through the seam `margin_value`
     converts on, the largest in each, so the ticket is a fact about the trade rather than about

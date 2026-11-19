@@ -645,8 +645,9 @@ def amend_deal(deal_path: str, fields: dict, reference: str | None = None,
     path: another host's booking moves every position, and a path that no longer holds it refuses
     rather than amending whoever sits there now. `actor` is the seat the amendment is filed under
     where the desk keeps a record. A RESTRIKE IS A TICKET: where the desk's tiers policy is in
-    force it is routed as `book_deal` is, on the size of the terms it amends to, and under four
-    eyes the position reads PENDING until another seat signs (`approve_ticket`)."""
+    force it is routed as `book_deal` is, on the size of the terms it amends to at every unit of
+    the position it moves, and under four eyes the position reads PENDING until another seat
+    signs (`approve_ticket`)."""
     return _booking(service().call('POST', '/book/deals', json=dict(
         {'action': 'amend', 'deal_path': deal_path, 'fields': fields},
         **_stated(reference=reference, actor=actor))))

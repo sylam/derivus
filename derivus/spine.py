@@ -1201,8 +1201,9 @@ def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None
     """Record that these terms became those terms - a new instrument hash linked to the old one -
     judged at the deepest node holding every position in them under the book, read off the
     positions ADVANCED in `folds` and never stated by a caller. A restrike is a trade of its own,
-    ticketed and routed as `book` routes a fill (`routed`), and one that already landed is
-    answered `{booked: {lsn}}` rather than filed again (`_restruck`)."""
+    ticketed and routed as `book` routes a fill (`routed`), on `terms` sizing one unit of the terms
+    it amends to (`service.ticket_terms`) taken at every unit of every position it moves, and one
+    that already landed is answered `{booked: {lsn}}` rather than filed again (`_restruck`)."""
     spine = package()
     was, now = (hashlib.sha256(canonical(terms)).hexdigest() for terms in (deal, amended_to))
     with writing() as log:
@@ -1211,6 +1212,10 @@ def amend(deal, amended_to, actor_name=None, book_name=None, effective_time=None
         landed = _restruck(held, was, now)
         if landed is not None:
             return {'booked': {'lsn': landed}}
+        units = sum(abs(row['quantity']) for rows in held.get(was, {}).values()
+                    for row in rows.values())
+        terms = terms and dict(terms, notional_in={
+            currency: units * amount for currency, amount in terms['notional_in'].items() if units})
         body = spine.verbs.amendment(
             log, canonical(deal), canonical(amended_to), portfolio=spine.capability.deepest(
                 spine.capability.holders(held, was, book_name)))

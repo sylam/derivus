@@ -2909,23 +2909,33 @@ SWAP = {'Object': 'FXSwapDeal', 'Reference': 'SWAP', 'Near_Buy_Far_Sell_Ccy': 'U
         'Near_Buy_Amount': AMOUNT, 'Near_Sell_Amount': AMOUNT * USDZAR, 'Far_Buy_Amount': 1e5,
         'Far_Sell_Amount': 1e5 * SPOT}
 
+#: A forward buying one dollar for 100,000,000 rand a year out: 1,850,000,000 dollars on this
+#: book's axis, all of it on the side it sells.
+OFF_MARKET = {'Object': 'FXForwardDeal', 'Reference': 'OFF', 'Buy_Currency': 'USD',
+              'Buy_Amount': 1.0, 'Buy_Discount_Rate': 'USD', 'Sell_Currency': 'ZAR',
+              'Sell_Amount': 1e8, 'Sell_Discount_Rate': 'ZAR',
+              'Settlement_Date': BASE + pd.DateOffset(years=1)}
 
-def test_a_structure_is_its_largest_leg_and_a_swap_its_larger_side(recorded, quoting):
+
+def test_a_structure_is_its_largest_leg_and_an_fx_trade_its_larger_side(recorded, quoting):
     """A CONTAINER IS ITS LARGEST CHILD, never their sum: a collar's two legs are each on a million
-    dollars, so it is a 1,000,000 trade an automatic tier capped at 1,500,000 signs. An FX swap of a
-    million dollars near and 100,000 rand far is sized by its larger side, the far one at 1,850,000
-    dollars, which that tier passes to four eyes.
+    dollars, so it is a 1,000,000 trade an automatic tier capped at 1,500,000 signs. AN FX TRADE IS
+    ITS LARGER SIDE (CRE52.35): a swap of a million dollars near and 100,000 rand far is its far
+    side, 1,850,000 dollars, and an off-market forward buying one dollar for 100,000,000 rand is
+    its sell side, 1,850,000,000 dollars - each passed by that tier to four eyes.
 
     Killing mutations: the children summed - the collar 2,000,000 and pending; the swap read by its
-    first exposure alone - 1,000,000, signed by the hub.
+    first exposure alone - 1,000,000, signed by the hub; the other side not read - the forward one
+    dollar, signed by the hub.
     """
     capped(recorded, 1_500_000.0)
     quote = quote_of('ZeroCostCollar', COLLAR, netting_set=CLIENT_SET)
     answer = accept(quote).json()
     assert answer['written'] is True and answer['tier']['name'] == 'auto', answer
-    swapped = booked(SWAP, 'EXEC-SWAP')
-    assert swapped['written'] is True and swapped['tier']['name'] == 'desk', swapped
-    assert dollars(quoting, swapped['deal_path']) == 1e5 * SPOT
+    for deal, size in ((SWAP, 1e5 * SPOT), (OFF_MARKET, 1e8 * SPOT)):
+        dealt = booked(deal, 'EXEC-' + deal['Reference'])
+        assert dealt['written'] is True and dealt['tier']['name'] == 'desk', dealt
+        assert dollars(quoting, dealt['deal_path']) == size
 
 
 #: A deposit of a thousand rand: 18,500 dollars on this book's axis, were its type to declare it.
@@ -2966,6 +2976,21 @@ def test_a_fill_is_its_quantity_times_the_instrument_and_an_undeclared_type_no_s
     assert terms['notional_in'] == {}
     assert any('not stated in USD' in one for one in spine.route_ticket(
         deposit['ticket'], terms, ACTOR)['refusals'])
+
+
+def test_a_restrike_is_sized_at_every_unit_of_the_positions_it_moves(recorded, desk):
+    """A RESTRIKE DEALS ITS TERMS AT THE POSITION IT MOVES, as a fill deals its quantity: two clips
+    of one cash flow, restruck to 100,000 rand - 1,850,000 dollars a unit on this book's axis -
+    deal 3,700,000, past an automatic tier capped at 2,500,000, and land pending under four eyes.
+
+    Killing mutation: the held quantity not read - one unit, 1,850,000, signed by the hub.
+    """
+    with_client(desk)
+    first = ticketed('EXEC-1', amount=1e3).json()
+    assert ticketed('EXEC-1', amount=1e3, execution_reference='EXEC-1B').json()['written'] is True
+    capped(recorded, 2_500_000.0)
+    amended = restruck(first['deal_path'], Amount=1e5)
+    assert amended['written'] is True and amended['tier']['name'] == 'desk', amended
 
 
 #: Two desks' approvers, each at its own node of the book.
