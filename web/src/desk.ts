@@ -48,6 +48,16 @@ export function stampMs(stamp: string | null | undefined): number | undefined {
 
 const pad = (value: number) => String(value).padStart(2, '0');
 
+/** A stamp as the instant it names, its offset applied, so the record's UTC and a run's local
+ * time compare; one naming no zone is read as UTC, and anything that is not a stamp is undefined. */
+export function instantMs(stamp: string | null | undefined): number | undefined {
+  const zone = (stamp && STAMP.exec(stamp)?.[8]) || 'Z';
+  const [hours, minutes] = zone === 'Z' ? [0, 0] : zone.slice(1).split(/:?(?=\d{2}$)/);
+  const east = (zone[0] === '-' ? -1 : 1) * (+hours * 60 + +minutes);
+  const ms = stampMs(stamp);
+  return ms === undefined ? undefined : ms - east * 60_000;
+}
+
 /** A stamp as a desk reads it: on this browser's clock with its offset named, the seconds kept -
  * `2026-08-28 22:51:34 UTC+2` - so every time on a screen compares with every other. A stamp naming
  * no zone reads as written; anything that is not a stamp reads as itself. */
@@ -55,9 +65,7 @@ export function stampText(stamp: string | null | undefined): string {
   const parts = stamp === null || stamp === undefined ? null : STAMP.exec(stamp);
   if (!parts) return stamp ?? '';
   if (!parts[8]) return `${parts[1]}-${parts[2]}-${parts[3]} ${parts[4]}:${parts[5]}:${parts[6]}`;
-  const [hours, minutes] = parts[8] === 'Z' ? [0, 0] : parts[8].slice(1).split(/:?(?=\d{2}$)/);
-  const east = (parts[8][0] === '-' ? -1 : 1) * (+hours * 60 + +minutes);
-  const at = new Date(stampMs(stamp)! - east * 60_000);
+  const at = new Date(instantMs(stamp)!);
   const west = at.getTimezoneOffset();
   const size = Math.abs(west);
   const zone = size === 0 ? 'UTC'

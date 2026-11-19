@@ -100,6 +100,13 @@ check("every stamp reads on the browser's clock with its offset named, whatever 
        ['2026-11-16 14:21:07 UTC-5', '2026-11-16 14:21:07 UTC-5', '2026-11-16 21:21:07',
         'not a stamp']]);
 
+check('two stamps written at different offsets name one instant, a stamp naming no zone read as UTC',
+      "the offset's sign turned, which puts the service's local time four hours from the record's "
+      + 'UTC; or the offset ignored, two hours',
+      ['2026-11-16T19:21:07.123Z', '2026-11-16T21:21:07.123+02:00', '2026-11-16T14:21:07.123-05:00',
+       '2026-11-16T19:21:07.123', 'not a stamp'].map(desk.instantMs),
+      [...Array(4).fill(Date.UTC(2026, 10, 16, 19, 21, 7, 123)), undefined]);
+
 const FACTORS = { Factor: { types: {
   InterestRate: { Curve: { widget: 'Curve', description: 'Continuously compounded interest rate' } },
   ForwardPrice: { Curve: { widget: 'Curve', description:
@@ -419,7 +426,7 @@ check('amounts in two currencies are never added: one sum per currency the rows 
       desk.xvaTotals(VIEW).sums.map((sum) => [sum.currency, sum.cva, sum.counted, sum.countedFva]),
       [['USD', 6114.49, 1, 1], ['ZAR', 1295.26, 1, 1], [null, 10, 1, 0]]);
 
-console.log(`\n${ran} checks over 32 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 33 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);
