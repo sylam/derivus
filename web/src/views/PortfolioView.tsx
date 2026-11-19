@@ -3,8 +3,8 @@ import { quoted, toRows } from '../blotter';
 import { DealPanels, DescriptorPanel, type AmendField } from '../components/FieldView';
 import { Tree, type TreeNode } from '../components/Tree';
 import {
-  GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, nodeAt, portfolioTree,
-  type Paper, type Position,
+  GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientName, clientTree, closed, nodeAt,
+  portfolioTree, type Paper, type Position,
 } from '../positions';
 import { marketOf, openTrade, useApp, written } from '../state';
 import { tradeAt } from '../trade';
@@ -159,10 +159,11 @@ const SETTLING: Record<string, Descriptor> = {
   Settles: said('Text', 'The day it settles, on which it rolls off the book'),
 };
 
-/** Where one position sits and how big it is, as the record says. */
+/** Where one position sits and how big it is, as the record says - or that it closed. */
 function Held({ position, paper }: { position: Position; paper: Paper }) {
   return (
-    <DescriptorPanel title={`Position in ${position.portfolio || 'no portfolio'}`}
+    <DescriptorPanel title={`Position in ${position.portfolio || 'no portfolio'}${
+                       closed(position.quantity) ? ', closed: the record holds none of it' : ''}`}
                      fields={position.expired ? { ...HELD, ...SETTLING } : HELD}
                      values={{
                        Quantity: position.quantity,

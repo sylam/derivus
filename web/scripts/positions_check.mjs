@@ -212,7 +212,28 @@ check('a row held twice sums its quantity and names each portfolio and client on
       [[1, 'desk, desk/Rates/EM, desk/Rates', 'Client A, CPTY_B', 'approved'],
        [null, '', '', '']]);
 
-console.log(`\n${ran} checks over 11 functions, ${missed.length} missed`);
+// --- a position netted to nothing
+const SHUT = { ...row('e', 'ISDA-1', 'desk/FX', 'LEI-A', 0, ['1/1'], 'CALL1', 'FXOptionDeal'),
+               status: 'approved', pending: 0 };
+check('nothing held is closed; a short and a row the record holds no position of are not',
+      'an unheld row read as closed, which shuts every trade on a desk keeping no record; or a short '
+        + 'read as closed',
+      [positions.closed(0), positions.closed(-0.5), positions.closed(undefined)], [true, false, false]);
+check('a position netted to nothing reads closed in its leaf and in the blotter\'s status',
+      'the leaf saying ×0 and the status the tickets\' approved, which reads a closed trade as live',
+      [seen(positions.portfolioTree([SHUT])), positions.heldColumns([SHUT], PAPER.entities)[3],
+       positions.heldColumns([{ ...SHUT, quantity: 1 }, { ...SHUT, quantity: -1 }], PAPER.entities)[3]],
+      [[['desk', [['FX', [['CALL1', 'closed · ISDA-1']]]]]], 'closed', 'closed']);
+const ROLLING = blotter.heldRows(blotter.toRows([{ ...deal('NettingCollateralSet', 'ISDA-1'),
+  Children: [deal('FXOptionDeal', 'CALL1', { Expiry_Date: { '.Timestamp': '2026-02-01' } }),
+             deal('FXOptionDeal', 'CALL2', { Expiry_Date: { '.Timestamp': '2026-02-01' } })] }],
+['NettingCollateralSet'], '2026-01-01'), new Map([['0/0', [SHUT]], ['0/1', [EM]]]));
+check('a closed trade rolls off nobody\'s window',
+      'a trade netted to nothing counted as rolling off, which tells a desk to act on what it '
+        + 'no longer holds',
+      blotter.rollingCount(ROLLING, 60), 1);
+
+console.log(`\n${ran} checks over 12 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

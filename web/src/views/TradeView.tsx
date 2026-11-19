@@ -5,7 +5,9 @@ import {
 } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
 import { currencyOf, lagsBook, stampText } from '../desk';
-import { NO_PAPER, byPath, clientName, nodeAt, type Position, type Ticket } from '../positions';
+import {
+  NO_PAPER, byPath, clientName, closed, nodeAt, type Position, type Ticket,
+} from '../positions';
 import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { WORKSPACES } from '../registry';
 import { pinnedAt } from '../spine';
@@ -106,6 +108,7 @@ function Terms({ row, set, held, quote }: {
   const market = marketOf(state);
   const units = held?.length ? held.reduce((sum, position) => sum + position.quantity, 0)
     : undefined;
+  const shut = closed(units);
   const read = quoted(row, market, schema);
   const what = tradeName(row, quote, schema);
   const legs = legsOf(row);
@@ -122,7 +125,8 @@ function Terms({ row, set, held, quote }: {
           {held && (
             <span title="the net of every fill, in units of the trade as written">
               {units === undefined ? <>the record holds <b>none</b> of it now: its sizes are as
-                written</> : <>held <b>{formatNumber(units)}</b> of the trade as written</>}
+                written</> : shut ? <><b>closed</b>: netted to nothing, its sizes are as written</>
+                : <>held <b>{formatNumber(units)}</b> of the trade as written</>}
             </span>
           )}
         </div>
@@ -146,7 +150,7 @@ function Terms({ row, set, held, quote }: {
             </thead>
             <tbody>
               {legs.map((leg) => {
-                const size = sizeOf(leg.deal, leg.object, schema, units);
+                const size = sizeOf(leg.deal, leg.object, schema, shut ? undefined : units);
                 const levels = quoted(leg, market, schema);
                 return (
                   <tr key={leg.path}>
@@ -371,6 +375,7 @@ function Actions({ row, held, recording }: {
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const children = state.doc?.Calc.Deals.Deals.Children ?? [];
   const live = state.source?.kind === 'book';
+  const open = held.filter((position) => !closed(position.quantity));
   return (
     <section className="card">
       <h3>What can be done</h3>
@@ -395,12 +400,12 @@ function Actions({ row, held, recording }: {
         {!recording ? (
           <div className="note">This desk keeps no record, so nothing is unwound at a price here:
             an unwind is a fill, and a fill is filed on a desk that records.</div>
-        ) : held.length ? held.map((position) => (
+        ) : open.length ? open.map((position) => (
           <Unwind key={`${position.agreement}/${position.portfolio}`} row={row} position={position}
                   onVerdict={setVerdict} />
         )) : (
-          <div className="note">Nothing of this trade is held on the record: there is nothing to
-            unwind.</div>
+          <div className="note">{held.length ? 'Closed: the record holds none of it'
+            : 'Nothing of this trade is held on the record'}, so there is nothing to unwind.</div>
         )}
         {verdict && (verdict.booked ? (
           <div className="statusrow">

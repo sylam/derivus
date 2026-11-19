@@ -6,7 +6,7 @@
 import type { Dispatch } from 'react';
 import { rowsByPath, toRows, type BlotterRow } from './blotter';
 import { SURVIVAL, entityText, instantMs, plural } from './desk';
-import { byPath, type Agreement, type Entity, type Position } from './positions';
+import { byPath, closed, type Agreement, type Entity, type Position } from './positions';
 import { standing, type Action } from './state';
 import {
   COLLATERAL, currencyOf, formatNumber, label, sharedSections, token, uncollateralised,
@@ -160,8 +160,8 @@ export function termsReading(terms: Record<string, unknown>, schema: Schema): Te
 // ---- what the desk has on with it -------------------------------------------------------------
 
 /** One trade under a client's agreement: the file's row under its set, held at the position the
- * record files it as - or CLOSED, where a desk that records holds nothing of it - or a position the
- * file does not hold under the set, which has no row. */
+ * record files it as - CLOSED where that is netted to nothing, or where a desk that records holds no
+ * position of it - or a position the file does not hold under the set, which has no row. */
 export type Held = { row?: BlotterRow; position?: Position; closed: boolean };
 
 /** The trades under the set at `path`, with `positions` - the agreement's own, null on a desk that
@@ -174,7 +174,8 @@ export function heldUnder(path: string | null, rows: Map<string, BlotterRow>,
   const filed = new Set(children.map((row) => row.path));
   return [
     ...children.flatMap((row): Held[] => (at.has(row.path) ? at.get(row.path)!.map((position) => ({
-      row: { ...row, units: position.quantity }, position, closed: false })) : [{ row, closed: true }])),
+      row: { ...row, units: position.quantity }, position, closed: closed(position.quantity) }))
+      : [{ row, closed: true }])),
     ...positions.filter((position) => !filed.has(position.deal_paths[0]))
       .map((position) => ({ position, closed: false })),
   ];

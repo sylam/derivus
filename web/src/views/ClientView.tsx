@@ -309,7 +309,7 @@ function OnBook({ own, reads, rows, market, schema }: {
           <div key={agreement.agreement} className="agreement">
             <div className="pager">
               <b className="mono">{agreement.agreement}</b>
-              <span>{plural(trades.length, 'trade')}{closed ? `, ${closed} closed` : ''}</span>
+              <span>{plural(trades.length - closed, 'trade')} on{closed ? `, ${closed} closed` : ''}</span>
               <span>
                 {mark ? <>marked <b>{markText(mark.value, risk!.currency)}</b>, read {stampText(risk!.as_of)}</>
                   : reads.risk.error ? `no mark: ${reads.risk.error}`

@@ -8,7 +8,7 @@
 // block and what an amount is a size of (`sizeOf`). A type nobody anticipated therefore still
 // fills what columns it can and renders the rest in its expander, rather than raising.
 
-import type { Position } from './positions';
+import { closed, type Position } from './positions';
 import { formatNumber, isObject, token, type Kind } from './tokens';
 import type { TreeNode } from './tree';
 import type { DealNode, Descriptor, JobDoc, Market, Schema } from './types';
@@ -568,11 +568,11 @@ const rollsWithin = (row: BlotterRow, horizon: number | null): boolean =>
   rollsOwn(row, horizon) || row.children.some((child) => rollsWithin(child, horizon));
 
 /** How many trades roll inside the window: a trade anything in which rolls is one - a structure is
- * one trade and its legs its parts - and a row holding trades counts what rolls among them and
- * never itself. */
+ * one trade and its legs its parts - a closed one none, and a row holding trades counts what rolls
+ * among them and never itself. */
 export function rollingCount(rows: BlotterRow[], horizon: number | null): number {
   return rows.reduce((sum, row) => sum + (holdsTrades(row) ? rollingCount(row.children, horizon)
-    : Number(rollsWithin(row, horizon))), 0);
+    : Number(!closed(row.units) && rollsWithin(row, horizon))), 0);
 }
 
 /** Sorted WITHIN the tree, never across it: siblings order by days-to-roll (undated last), and a

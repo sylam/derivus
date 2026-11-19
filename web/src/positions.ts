@@ -69,6 +69,11 @@ export const POSITION = 'position:';
 export const positionId = (position: Position): string =>
   POSITION + JSON.stringify([position.instrument, position.agreement, position.portfolio]);
 
+/** Whether the record holds nothing of a trade - a position netted to nothing, which stands only to
+ * say it closed, or a row of the file the record holds at a net of none. Closed counts as live
+ * nowhere. */
+export const closed = (units: number | undefined): boolean => units === 0;
+
 /** The positions by their ids. */
 export const byId = (positions: Position[]): Map<string, Position> =>
   new Map(positions.map((position) => [positionId(position), position]));
@@ -112,24 +117,27 @@ export function statusText(held: Position[]): string {
 }
 
 /** What the record holds of a row as the blotter's four record columns: the net quantity - none
- * where nothing is held - the portfolios and the clients it sits under, and what its tickets read. */
+ * where nothing is held - the portfolios and the clients it sits under, and what its tickets read,
+ * or that it closed. */
 export function heldColumns(held: Position[], entities: Entity[]):
   [number | undefined, string, string, string] {
   const distinct = (values: string[]) => [...new Set(values)].join(', ');
-  return [held.length ? held.reduce((sum, row) => sum + row.quantity, 0) : undefined,
-    distinct(held.map((row) => row.portfolio)),
-    distinct(held.map((row) => clientName(entities, row.counterparty))), statusText(held)];
+  const net = held.length ? held.reduce((sum, row) => sum + row.quantity, 0) : undefined;
+  return [net, distinct(held.map((row) => row.portfolio)),
+    distinct(held.map((row) => clientName(entities, row.counterparty))),
+    closed(net) ? 'closed' : statusText(held)];
 }
 
 /** One position as a leaf, by the reference a desk knows it by. `other` is the coordinate the tree
  * does not file it by - the agreement in the portfolio tree, the portfolio in the client tree - so
  * the same terms held twice under one folder still read as two things. A position the file does
- * not hold says so, and one whose deal has expired says when it settles. */
+ * not hold says so, one netted to nothing that it closed, and one whose deal has expired says when
+ * it settles. */
 function leaf(position: Position, other: string): TreeNode {
   return {
     id: positionId(position),
     label: position.reference ?? `${position.instrument.slice(0, 12)}…`,
-    hint: `×${formatNumber(position.quantity)} · ${
+    hint: `${closed(position.quantity) ? 'closed' : `×${formatNumber(position.quantity)}`} · ${
       position.deal_paths.length ? other : 'not in the file'}${
       position.expired ? ` · expired ${position.expired}, settles ${position.settles}` : ''}`,
   };

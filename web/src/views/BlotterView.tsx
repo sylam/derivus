@@ -6,8 +6,8 @@ import {
 } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import {
-  GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientTree, heldColumns, portfolioTree, type Paper,
-  type Position,
+  GROUPINGS, NO_PAPER, POSITION, byId, byPath, clientTree, closed, heldColumns, portfolioTree,
+  type Paper, type Position,
 } from '../positions';
 import { marketOf, openTrade, useApp } from '../state';
 import { formatNumber, type Kind } from '../tokens';
@@ -210,12 +210,13 @@ function Row(props: {
   const { row, schema, selected, emphasised, collapsed, opened } = props;
   const size = sizeOf(row.deal, row.object, schema, row.units);
   const read = quoted(row, props.market, schema);
+  const shut = closed(row.units);
 
   return (
     <>
       <tr
-        className={`${emphasised ? 'rolling ' : ''}${selected ? 'selected ' : ''}${
-          row.ignored ? 'muted ' : ''}${row.container ? 'group' : ''}`}
+        className={`${emphasised && !shut ? 'rolling ' : ''}${selected ? 'selected ' : ''}${
+          row.ignored || shut ? 'muted ' : ''}${row.container ? 'group' : ''}`}
         onClick={props.onSelect}
       >
         <td className="ref" style={{ paddingLeft: 10 + row.depth * 18 }} title={row.reference}>
@@ -232,6 +233,7 @@ function Row(props: {
             </button>
           ) : nameOf(row) || <span className="hint">(no reference)</span>}
           {row.ignored && <span className="badge">ignored</span>}
+          {shut && !!props.held?.length && <span className="badge">closed</span>}
         </td>
         <td className="type" title={row.object}>{row.object}</td>
         <td><Side side={size.side} /></td>

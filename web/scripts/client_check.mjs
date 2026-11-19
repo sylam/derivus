@@ -176,6 +176,11 @@ check("an agreement's trades are its set's rows, each at the units the record ho
       [[['F1', 0.5, 0.5, false], ['F2', null, null, true], ['F3', 1, 1, false],
         ['F3', 2, 2, false], [null, null, 3, false]],
        [['F1', null, null, false], ['F2', null, null, false], ['F3', null, null, false]]]);
+check('a position the record holds netted to nothing is a closed trade, beside one still on',
+      'the position read as live because the record still lists it, which counts a trade unwound '
+        + 'today among the trades on',
+      held([position('0/0', 0), position('0/2', 1)]),
+      [['F1', 0, 0, true], ['F2', null, null, true], ['F3', 1, 1, false]]);
 
 check("a mark is said as the desk's side: worth something to the desk is in its favour",
       "the sign read the client's way, which tells a desk owed money that it owes it",

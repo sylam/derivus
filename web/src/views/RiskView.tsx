@@ -6,7 +6,7 @@ import {
   sharedPer, sortGreeks, stampText, tenorText, valuationDay, type GreekKey, type Ladder,
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
-import type { Position } from '../positions';
+import { closed, type Position } from '../positions';
 import { clockOf, marketOf, openTrade, useApp } from '../state';
 import { axisText, formatNumber } from '../tokens';
 import { tradeAt } from '../trade';
@@ -392,7 +392,9 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
   const agrees = reconciles(risk);
   const recording = state.record.spine !== null;
   const positions = state.paper.data?.positions;
-  const under = positionsUnder(risk.per_deal, positions ?? []);
+  // a position netted to nothing is inside no mark
+  const under = positionsUnder(risk.per_deal, (positions ?? [])
+    .filter((position) => !closed(position.quantity)));
   const holds = (path: string | null) => markHolds(
     (path === null ? undefined : under.get(path)) ?? [], state.paper.data?.entities ?? []);
   const waiting = risk.per_deal.flatMap((row) => holds(row.deal_path).pending);
