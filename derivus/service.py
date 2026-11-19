@@ -120,7 +120,7 @@ import pandas as pd
 from . import (PATHS_FILE, Context, bootstrappers, content_hash, dv_home, instruments, riskfactors,
                solve_deal_field, spine, structures, utils)
 from .schema import (PRICES_KEY, mapping, deal_at, declared_defaults, declared_fields,
-                     instrument_of, job_children, quote_plan, quote_stamps, remove_deal,
+                     instrument_of, job_children, live_deals, quote_plan, quote_stamps, remove_deal,
                      settlement_days, sniff_indent, splice_deal, stated_messages, tables_of,
                      tenor_fields, update_market_quote, validate_instrument, value_message,
                      walk_job_deals)
@@ -1852,14 +1852,6 @@ def quote_rows(config):
                                   'quote': descriptor[len(named) + 2:] if named else descriptor,
                                   'value': value, 'level': level}, quote_move(named or blocks[0])))
     return rows, sorted(map(utils.check_tuple_name, config.calibrated_factors))
-
-
-def live_deals(children):
-    """Whether anything under `children` prices: a deal the file does not ignore, however deep in
-    the netting sets and structures that only frame it. A book closed out answers as an empty one."""
-    return any(node.get('Ignore') != 'True' and (
-        node['Instrument']['.Deal'].get('Object') not in ('NettingCollateralSet', 'StructuredDeal')
-        or live_deals(node.get('Children', []))) for node in children)
 
 
 def consolidated_risk(document):

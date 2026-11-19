@@ -1322,6 +1322,15 @@ def leaves(nodes):
     return (node for _, node in walk(nodes) if not node.get('Children'))
 
 
+def live_deals(children):
+    """Whether anything under `children` prices: a deal the file does not ignore, however deep in
+    the netting sets and structures that only frame it. A book closed out, or of sets holding
+    nothing, answers as an empty one."""
+    return any(node.get('Ignore') != 'True' and (
+        node['Instrument']['.Deal'].get('Object') not in ('NettingCollateralSet', 'StructuredDeal')
+        or live_deals(node.get('Children', []))) for node in children)
+
+
 def leaf_deals(node):
     """The deals a constructed deal-tree node prices - itself, or its children's if a container."""
     return [leaf['Instrument'] for leaf in leaves([node])]

@@ -32,7 +32,7 @@ import pytest
 
 import derivus
 from derivus import bootstrappers, schema, structures, utils
-from test_service import BASE, FACTORS, SPOT, dump, fx_vol_quotes, job
+from test_service import BASE, FACTORS, SPOT, dump, fx_vol_quotes, job, netting_set
 
 #: The client's numbers, in the market's own terms - USDZAR, a rand notional, a one-year tenor.
 PAIR = 'USDZAR'
@@ -1288,6 +1288,34 @@ def test_a_book_deal_the_risk_step_cannot_price_refuses_the_quote(two_sided_book
                        match=r"FXOptionDeal UNPRICED \('Cannot find FXVol.EUR.JPY',\) - Skipped"):
         structures.quote(with_policy(holding(two_sided_book, [sold, UNPRICED])), COLLAR,
                          params(floor=SPOT * 0.95))
+
+
+def test_a_clients_first_quote_on_a_book_of_one_empty_set_is_the_quote_without_it(
+        two_sided_book):
+    """A collar quoted FOR a client whose netting set holds no trade, on a policy book holding
+    nothing else, prices, and is the same collar quoted on that book with the set left out.
+
+    By hand: a set holding no trade adds no risk, so the book's own risk is 0.0 in all six buckets;
+    each residual then costs `|after| x half >= 0`, the saving is `max(0, -cost) = 0` and the charge
+    stands at the full two-way, `scale = 1` exactly. The legs and their vegas are priced alone, off
+    the book's deal tree, so the two quotes differ by 0, to the bit.
+
+    Killing mutation: `vol_risk` reading a tree as empty only when it has no node at all (`not
+    schema.job_children(run)`) - the set's greeks run has nothing to differentiate and the quote
+    raises "element 0 of tensors does not require grad".
+    """
+    ask = params(floor=SPOT * 0.95)
+    for_client = with_policy(two_sided_book)
+    schema.job_children(for_client)[:] = [netting_set('CLIENT_A', 'CPTY_A', [])]
+    quoted = structures.quote(for_client, COLLAR, dict(ask), netting_set='CLIENT_A')
+    without = structures.quote(with_policy(two_sided_book), COLLAR, dict(ask))
+
+    risk = quoted['risk']
+    assert {row['bucket']: row['before'] for row in risk['buckets']} == dict.fromkeys(PILLARS, 0.0)
+    assert (risk['scale'], risk['saving']) == (1.0, 0.0)
+    assert risk['charge_effective'] == risk['charge_full'] == quoted['edge'] > 0.0
+    assert (quoted['net'], quoted['edge'], cap_of(quoted)) == (
+        without['net'], without['edge'], cap_of(without))
 
 
 @pytest.mark.parametrize('switch', ['Yes', 'No'])
