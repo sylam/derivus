@@ -972,10 +972,11 @@ def spot_model(book, deal_type, underlying, settlement, model):
     if factor in factors:
         valuation_entry(book.document, market, deal_type)['SpotModel'] = model
         return None
-    return ('{} - a spot model is keyed off the pair, so this leg looked up {}, '
-            'which this book does not carry. Calibrate {} under {} (/book/model)'.format(
-                'SKIPPED, this book pinning {} itself'.format(standing) if standing
-                else 'priced GBM', factor, token, model))
+    pair = '{}.{}'.format(underlying, settlement)
+    return ('{} - this book carries no {} calibration for {}: a spot model is keyed off the pair, '
+            'so this leg looked up {}. calibrate_spot_model(pair={!r}, family={!r}) fits '
+            'it'.format('SKIPPED, this book pinning {} itself'.format(standing) if standing
+                        else 'priced GBM', model, pair, factor, pair, model))
 
 
 def valuation_entry(document, market, deal_type):

@@ -6856,7 +6856,8 @@ def live_spot_crosses(base_currency, currencies, host=None, port=None):
         path = provisioned()
         if path is None:
             return None, NO_LIVE_SPOT.format(
-                'no security map in {} - a quote never provisions'.format(security_map.home()))
+                'this desk has no security map, and a quote never provisions one - '
+                'tick_market_from_bloomberg verifies its securities on a Bloomberg terminal')
         map_document = security_map.load(path)
         pairs = {}
         for currency in currencies:

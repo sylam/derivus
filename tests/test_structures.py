@@ -2266,9 +2266,11 @@ def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
     A spot model's parameters are named for the pair's NON-BASE token - the only leg the engine
     simulates and the only one a calibration can write - so `structures.spot_model` and
     `get_spot_model_params_factor` make the same lookup. Unfitted, the note names that factor and
-    the verb that installs it; fitted, both orientations pin and there is no note.
+    the MCP verb that installs it, called on the leg's own pair; fitted, both orientations pin and
+    there is no note.
 
-    Killing mutation: the spot model never pinned on a fitted pair, which prices the strip GBM.
+    Killing mutations: the spot model never pinned on a fitted pair, which prices the strip GBM; the
+    remedy named as the HTTP route rather than the verb a desk calls.
     """
     tarf = structures.quote(copy.deepcopy(accrual_book), 'TargetRedemptionForward', dict(
         accrual_params(target=TARGET), notional_currency='USD'))
@@ -2277,7 +2279,8 @@ def test_the_absence_note_names_the_factor_the_book_would_need(accrual_book):
     assert 'LogVar2FJModelParameters.ZAR' in note, 'the factor looked up is unnamed'
     assert 'LogVar2FJModelParameters.USD' not in note, (
         'the base currency is a numeraire, never a rate - it can name no block')
-    assert 'keyed off the pair' in note and '/book/model' in note, 'a note without a remedy'
+    assert 'keyed off the pair' in note and "calibrate_spot_model(pair='USD.ZAR', family=" \
+        "'LogVar2FJ')" in note and '/book/' not in note, 'a note without a remedy'
     assert tarf['valuation_configuration'] is None, 'a model was pinned that cannot be resolved'
 
     # and on the fitted book BOTH orientations join: the TARF forced onto the base currency, and

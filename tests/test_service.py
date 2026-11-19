@@ -5258,12 +5258,15 @@ def test_a_quote_with_no_map_prices_on_the_book_and_names_the_spot_it_used(quoti
 
     This `DV_HOME` holds no security map - a fresh desk, and the one live-spot refusal reachable
     with no terminal, since a quote never provisions. So the quote runs on the book's own ticked
-    spot, names the home it looked in, and comes out identical to the same structure quoted through
-    `structures.quote`. Close would not do: a fallback that moved a price would be the live-spot
-    feature firing where there is no live spot.
+    spot, says what is missing and the verb that provisions it - never the server's own path - and
+    comes out identical to the same structure quoted through `structures.quote`. Close would not
+    do: a fallback that moved a price would be the live-spot feature firing where there is no live
+    spot.
 
     The book file is untouched either way - a spot is `bind='value'` data patched onto the JOB's
     copy, and a quote is not a trade.
+
+    Killing mutation: the note naming the home it looked in, a path on the service's own disk.
     """
     before = quoting.read_bytes()
     quote = quote_of('ZeroCostCollar', COLLAR)
@@ -5271,7 +5274,9 @@ def test_a_quote_with_no_map_prices_on_the_book_and_names_the_spot_it_used(quoti
     unchanged = structures.quote(document, 'ZeroCostCollar', COLLAR)
 
     assert quote['spot']['source'] == 'book'
-    assert 'no security map in {}'.format(tmp_path) in quote['spot']['note']
+    note = quote['spot']['note']
+    assert 'no security map' in note and 'tick_market_from_bloomberg' in note, note
+    assert str(tmp_path) not in note, 'the note leaks a path on the service\'s own disk'
     assert quote['spot']['value_market'] == USDZAR
 
     assert (quote['net'], quote['net_mid']) == (unchanged['net'], unchanged['net_mid'])
