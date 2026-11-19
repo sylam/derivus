@@ -7,7 +7,7 @@ import type { Agreement, Entity, Position } from './positions';
 import type {
   Acceptance, ActivityPage, BookCollateral, BookMarket, BookMarkets, BookResponse, BookRisk,
   BookStatus, BookXva,
-  CalculationOutcome, PendingQuote,
+  CalculationOutcome, PendingQuote, QuoteGiven,
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
   PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome,
@@ -214,6 +214,9 @@ export const QUOTE_SHEET = (id: string) => `/book/quote/${encodeURIComponent(id)
 export const getQuoteSheet = async (id: string) => (await send('GET', QUOTE_SHEET(id))).blob();
 export const acceptQuote = (id: string) =>
   call<Acceptance>('POST', '/book/quote', signed({ quote_id: id }));
+// ---- the desk's quotes ----
+// every quote the desk has given, newest first, with where each stands
+export const getQuotes = () => call<{ quotes: QuoteGiven[] }>('GET', '/book/quotes');
 // ---- a trade's own page ----
 // a signed change of the position the file's node at `dealPath` is held in, at a price - an unwind
 // is a fill toward nothing - answered with the booking fields an acceptance answers

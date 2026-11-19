@@ -11,7 +11,8 @@ import { entityText, stampMs } from './desk';
 import type { Agreement, Entity } from './positions';
 import { formatNumber, isObject } from './tokens';
 import type {
-  Acceptance, DealNode, Descriptor, JobDoc, Quote, QuotedLeg, Schema, Section, StructureType,
+  Acceptance, DealNode, Descriptor, JobDoc, Quote, QuoteGiven, QuotedLeg, Schema, Section,
+  StructureType,
 } from './types';
 
 // ---- the ticket asked for -----------------------------------------------------------------------
@@ -259,13 +260,28 @@ export function verdictOf(answer: Acceptance): Verdict {
   return { words: answer.refused ?? [], requote: !answer.accepted };
 }
 
-// ---- the quotes this browser keeps --------------------------------------------------------------
+// ---- the desk's quotes --------------------------------------------------------------------------
 
-/** A quote this browser opened or made, and the one it re-quotes where it is a re-quote. */
-export type Kept = { id: string; from?: string };
-
-/** `list` with `id` first, keeping what it re-quotes. */
-export function keep(list: Kept[], id: string, from?: string): Kept[] {
-  const held = from ?? list.find((entry) => entry.id === id)?.from;
-  return [{ id, ...(held ? { from: held } : {}) }, ...list.filter((entry) => entry.id !== id)];
+/** Where a quote stands at `now`: booked; accepted on the record and not booked; else firm until the
+ * book's window closes or past it, `until` saying when - one stating no time it was quoted at is
+ * aged, as the acceptance reads it - and only quoted where the book declares no window. */
+export function standsAt(row: Pick<QuoteGiven, 'quoted_at' | 'accepted' | 'booked'>,
+                         seconds: number | null, now: number):
+  { word: 'booked' | 'accepted' | 'firm' | 'lapsed' | 'quoted'; until?: string } {
+  if (row.booked) return { word: 'booked' };
+  if (row.accepted) return { word: 'accepted' };
+  if (seconds === null) return { word: 'quoted' };
+  const until = firmUntil(row.quoted_at, seconds);
+  return { word: until !== undefined && Date.parse(until) >= now ? 'firm' : 'lapsed', until };
 }
+
+/** The quote a trade was booked from: the one that landed at its deal path. */
+export const quoteAt = (rows: QuoteGiven[], path: string): QuoteGiven | undefined =>
+  rows.find((row) => row.booked?.deal_path === path);
+
+/** A re-quote made here and the quote it re-quotes, which the service does not link. */
+export type Kept = { id: string; from: string };
+
+/** `list` with the re-quote `id` of `from` first. */
+export const keep = (list: Kept[], id: string, from: string): Kept[] =>
+  [{ id, from }, ...list.filter((entry) => entry.id !== id)];

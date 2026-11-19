@@ -310,12 +310,41 @@ check('an acceptance reads as where it landed, the service\'s words, and whether
        { words: ['the book would not take it'], requote: true },
        { words: ['no tier admits it'], requote: false }]);
 
-check('the quotes kept here run newest first, a re-quote keeping the quote it changes',
-      'a quote opened again losing what it re-quotes, which un-links a re-quote from its original',
-      quote.keep(quote.keep(quote.keep([], 'a'), 'b', 'a'), 'b'),
-      [{ id: 'b', from: 'a' }, { id: 'a' }]);
+check('a re-quote made here is kept with the quote it changes, once, the newest first',
+      'a re-quote kept twice where it is made again, or its link dropped for the newest',
+      quote.keep(quote.keep(quote.keep([], 'b', 'a'), 'c', 'b'), 'b', 'a'),
+      [{ id: 'b', from: 'a' }, { id: 'c', from: 'b' }]);
 
-console.log(`\n${ran} checks over 18 functions, ${missed.length} missed`);
+// --- the desk's quotes
+const AT = '2026-11-19T22:51:18.078+00:00';
+const NOW = Date.parse('2026-11-19T22:53:00.078Z');
+const given = (extra) => ({ quoted_at: AT, accepted: null, booked: null, ...extra });
+check('a quote stands booked, accepted, firm until its window closes, past it, or simply quoted '
+        + 'where the book declares no window',
+      'a booked quote read against the window, which shows the desk\'s own trade as lapsed; a '
+        + 'quote stating no time read as firm, which the acceptance refuses as aged; or the window '
+        + 'read as open at its closing instant\'s far side',
+      [quote.standsAt(given({ booked: { lsn: 30, deal_path: '0/2' } }), 60, NOW),
+       quote.standsAt(given({ accepted: { lsn: 28, ticket: 't' } }), 600, NOW),
+       quote.standsAt(given(), 600, NOW), quote.standsAt(given(), 60, NOW),
+       quote.standsAt(given(), 102, NOW), quote.standsAt(given({ quoted_at: null }), 600, NOW),
+       quote.standsAt(given(), null, NOW)],
+      [{ word: 'booked' }, { word: 'accepted' },
+       { word: 'firm', until: '2026-11-19T23:01:18.078Z' },
+       { word: 'lapsed', until: '2026-11-19T22:52:18.078Z' },
+       { word: 'firm', until: '2026-11-19T22:53:00.078Z' }, { word: 'lapsed', until: undefined },
+       { word: 'quoted' }]);
+
+const LISTED = [given({ quote_id: 'q3' }), given({ quote_id: 'q2', booked: { lsn: 30, deal_path: '0/20' } }),
+                given({ quote_id: 'q1', booked: { lsn: null, deal_path: '0/2' } })];
+check('a trade\'s quote is the one that landed at its deal path, and none landed elsewhere is it',
+      'a path matched by its start, so the trade at 0/2 takes the quote booked at 0/20; or the first '
+        + 'quote of the list taken for any trade',
+      [quote.quoteAt(LISTED, '0/2')?.quote_id, quote.quoteAt(LISTED, '0/20')?.quote_id,
+       quote.quoteAt(LISTED, '1/0')],
+      ['q1', 'q2', undefined]);
+
+console.log(`\n${ran} checks over 20 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

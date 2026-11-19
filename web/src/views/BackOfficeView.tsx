@@ -6,15 +6,14 @@ import { baseDateOf, rowsByPath, toRows, type BlotterRow } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
 import { stampText } from '../desk';
 import { NO_PAPER } from '../positions';
-import { clientText, spreadText } from '../quote';
+import { clientText, quoteAt, spreadText } from '../quote';
 import { marketOf, opened, useApp } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
   holdsFor, paperText, ticketWords, tradeAt, tradeName, waitedText, waitingElsewhere,
 } from '../trade';
 import type { CloseVerdict, Decided, PendingQuote, WorkRow, Worklist } from '../types';
-import { TicketCard } from './QuoteView';
-import { useQuotes } from './TradeView';
+import { TicketCard, useQuoteList, useQuotes } from './QuoteView';
 
 /** The three lists this seat clears, each by its own verb. */
 type List = 'payments' | 'unconfirmed' | 'calls';
@@ -115,16 +114,20 @@ function Tickets({ worklist }: { worklist: Worklist }) {
   const elsewhere = waitingElsewhere(positions, worklist.pending);
   const executions = new Map(positions.flatMap((position) => position.tickets)
     .map((ticket) => [ticket.ticket, ticket.execution_reference]));
+  // each ticket's quote is the one that landed at its trade, read whole for its margin and spread
+  const desk = useQuoteList();
+  const given = (row: WorkRow) => (desk.data && row.deal_path
+    ? quoteAt(desk.data.quotes, row.deal_path) : undefined);
   const quotes = useQuotes([...new Set([...worklist.pending, ...elsewhere]
-    .flatMap((row) => executions.get(row.key) ?? []))]);
+    .flatMap((row) => given(row)?.quote_id ?? []))]);
   const own = worklist.pending.filter((row) => row.booker === worklist.seat).length;
   const signing = (row: WorkRow, listed: boolean) => {
     const at = row.deal_path ? tradeAt(children, row.deal_path) : undefined;
-    const execution = executions.get(row.key);
+    const quote = given(row);
     return (
       <Signing key={row.key} row={row} trade={at && rows.get(at.path)} now={now}
-               hold={holdsFor(row, worklist.seat, listed)} execution={execution}
-               quote={quotes && execution !== undefined ? quotes[execution] : undefined}
+               hold={holdsFor(row, worklist.seat, listed)} execution={executions.get(row.key)}
+               quote={!desk.data ? undefined : quote ? quotes.data?.[quote.quote_id] : null}
                onSaid={setSaid} />
     );
   };
@@ -135,6 +138,9 @@ function Tickets({ worklist }: { worklist: Worklist }) {
           ? `${own} booked by this seat, which another seat signs`
           : 'approve, or refuse with a reason'}</span></h3>
         <div className="nested">
+          {(desk.error ?? quotes.error) && (
+            <div className="error-box">the desk's quotes did not answer: {desk.error ?? quotes.error}</div>
+          )}
           {said && (
             <div className="statusrow">
               <span className={`chip ${said.status === 'approved' ? 'done' : 'error'}`}>
@@ -198,13 +204,9 @@ function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
   }
 
   const quoted = () => {
-    if (execution === undefined) {
-      return state.paper.error ? `the positions did not answer: ${state.paper.error}`
-        : 'reading the positions…';
-    }
     if (quote === undefined) return 'reading…';
-    if (quote === null) return <>booked without a quote: its execution reference is{' '}
-      <span className="mono">{execution}</span></>;
+    if (quote === null) return <>booked from no quote this desk gave{execution !== undefined && <>:
+      its execution reference is <span className="mono">{execution}</span></>}</>;
     const { net, currency, margin } = quote.quote;
     return (
       <>
@@ -223,7 +225,7 @@ function Signing({ row, trade, now, hold, execution, quote, onSaid }: {
     <div className="signing">
       <div className="ticketline">
         <b>{client}</b>
-        <span>{trade ? ticketWords(trade, tradeName(trade, quote ?? undefined, schema),
+        <span>{trade ? ticketWords(trade, tradeName(trade, quote?.quote, schema),
                                    marketOf(state), schema)
           : `the book file holds no trade at ${row.deal_path ?? 'any path'}`}</span>
         <button className="tradelink ref" title="open the trade's page"

@@ -117,6 +117,11 @@ export type PendingQuote = {
   booked?: { lsn: number | null; deal_path: string } | null;
 };
 
+/** One row of `GET /book/quotes`, newest first: what was quoted, for whom, its net, who quoted it
+ * and when, and - once the acceptance wrote them - `accepted` and where it was `booked`. */
+export type QuoteGiven = Pick<Quote, 'quote_id' | 'structure' | 'variation' | 'netting_set' | 'net'
+  | 'currency'> & Pick<PendingQuote, 'quoted_at' | 'quoted_by' | 'accepted' | 'booked'>;
+
 /** What `POST /book/quote` answers short of a 422: a booking, a refusal in words, or the quote
  * already booked; on a desk keeping a record, the tier it was routed through. */
 export type Acceptance = {

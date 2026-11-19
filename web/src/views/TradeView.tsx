@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
-import { NO_SEAT, failure, fillDeal, getBookActivity, getQuote } from '../api';
+import { NO_SEAT, failure, fillDeal, getBookActivity } from '../api';
 import {
   baseDateOf, cellText, nameOf, quoted, rowsByPath, sizeOf, toRows, type BlotterRow,
 } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
 import { currencyOf, lagsBook, stampText } from '../desk';
 import { NO_PAPER, byPath, clientName, nodeAt, type Position, type Ticket } from '../positions';
-import { clientText, verdictOf, type Verdict } from '../quote';
+import { clientText, quoteAt, verdictOf, type Verdict } from '../quote';
 import { WORKSPACES } from '../registry';
 import { pinnedAt } from '../spine';
 import { clockOf, marketOf, useApp, written } from '../state';
@@ -15,10 +15,10 @@ import {
   bookedBy, datesOf, historyOf, legsOf, markOf, tradeAt, tradeName, tradeSize, unwindFill,
   unwindWords, wholeRecord, type Price,
 } from '../trade';
-import type { ActivityRow, PendingQuote } from '../types';
+import type { ActivityRow, QuoteGiven } from '../types';
 import { Side, Value } from './BlotterView';
 import { DealEditor } from './PortfolioView';
-import { TicketCard } from './QuoteView';
+import { TicketCard, useQuoteList, useQuotes } from './QuoteView';
 import { OnStrip } from './RiskView';
 
 /** Every row of the record, read whole where the desk keeps one and again whenever it moves - the
@@ -33,21 +33,6 @@ function useRecordRows(recording: boolean, at: string | null) {
     return () => { live = false; };
   }, [recording, at]);
   return rows;
-}
-
-/** The quote each execution reference names, null where it names none - all of it null until
- * the first read lands. */
-export function useQuotes(references: string[]) {
-  const [found, setFound] = useState<Record<string, PendingQuote | null> | null>(null);
-  const key = references.join('\n');
-  useEffect(() => {
-    let live = true;
-    Promise.all(references.map((reference) => getQuote(reference).then(
-      (pending) => [reference, pending] as const, () => [reference, null] as const)))
-      .then((read) => { if (live) setFound(Object.fromEntries(read)); });
-    return () => { live = false; };
-  }, [key]);
-  return found;
 }
 
 /** The way back to the tab a page was opened from, where it was opened from one. */
@@ -79,8 +64,7 @@ export function TradeView() {
   const record = useRecordRows(recording, pinnedAt(state.record.spine));
   const paper = state.paper.data ?? NO_PAPER;
   const held = (trade && byPath(paper.positions).get(trade.path)) || [];
-  const quotes = useQuotes([...new Set(held.flatMap((position) => position.tickets
-    .map((ticket) => ticket.execution_reference)))]);
+  const listed = useQuoteList();
 
   if (!doc) return null;
   if (!trade || !row) {
@@ -91,7 +75,7 @@ export function TradeView() {
   }
   const history = typeof record === 'string' || record === null ? record
     : historyOf(record, trade.path);
-  const quote = Object.values(quotes ?? {}).find(Boolean) ?? undefined;
+  const quote = listed.data ? quoteAt(listed.data.quotes, trade.path) ?? null : undefined;
 
   return (
     <div className="main">
@@ -100,8 +84,9 @@ export function TradeView() {
         <h2 className="tradetitle">{row.reference || '(no reference)'}
           <span className="hint" title="where the book file holds it">{row.object} at{' '}
             <span className="mono">{trade.path}</span></span></h2>
-        <Terms row={row} set={trade.set} held={recording ? held : undefined} quote={quote} />
-        <Origin recording={recording} held={held} history={history} quotes={quotes} />
+        <Terms row={row} set={trade.set} held={recording ? held : undefined}
+               quote={quote ?? undefined} />
+        <Origin recording={recording} held={held} history={history} quote={quote} />
         <Worth path={trade.path} />
         <History recording={recording} history={history} />
         <Actions key={`act ${trade.path}`} row={row} held={held} recording={recording} />
@@ -113,7 +98,7 @@ export function TradeView() {
 /** What the trade is, as the market says it: the client, what it is and on what, how much of it
  * the record holds, its dates, and each leg's side, size and levels on the market's axis. */
 function Terms({ row, set, held, quote }: {
-  row: BlotterRow; set: string | null; held?: Position[]; quote?: PendingQuote;
+  row: BlotterRow; set: string | null; held?: Position[]; quote?: QuoteGiven;
 }) {
   const { state } = useApp();
   const { schema } = state;
@@ -191,66 +176,54 @@ function Terms({ row, set, held, quote }: {
 
 const CHIP: Record<string, string> = { approved: 'done', pending: 'running', rejected: 'error' };
 
-/** Where the trade came from: who booked it and when, the quote a fill names opened as its ticket,
- * and every clip with what its ticket reads - a pending one with its tier and the seat it waits on,
- * where the record tells this seat. */
-function Origin({ recording, held, history, quotes }: {
+/** Where the trade came from: the quote that landed at it, on any desk, its ticket a click away;
+ * and where the desk records, who booked it and when, and every clip with what its ticket reads -
+ * a pending one with its tier and the seat it waits on, where the record tells this seat. */
+function Origin({ recording, held, history, quote }: {
   recording: boolean; held: Position[]; history: ActivityRow[] | string | null;
-  quotes: Record<string, PendingQuote | null> | null;
+  quote: QuoteGiven | null | undefined;
 }) {
   const { state } = useApp();
-  const [showing, setShowing] = useState<string | null>(null);
+  const [showing, setShowing] = useState(false);
+  const read = useQuotes(showing && quote ? [quote.quote_id] : []);
+  const pending = quote && read.data?.[quote.quote_id];
   const waiting = state.record.worklist?.pending ?? [];
-  if (!recording) {
-    return (
-      <section className="card">
-        <h3>Where it came from</h3>
-        <div className="nested">
-          <div className="note">
-            This desk keeps no record: nothing here files who booked this trade, the quote it was
-            booked from or a ticket for it.
-          </div>
-        </div>
-      </section>
-    );
-  }
   const booked = Array.isArray(history) ? bookedBy(history) : undefined;
   const tickets: Ticket[] = held.flatMap((position) => position.tickets)
     .sort((a, b) => a.fill - b.fill);
-  const from = Object.entries(quotes ?? {})
-    .filter((entry): entry is [string, PendingQuote] => !!entry[1]);
   return (
     <section className="card">
       <h3>Where it came from</h3>
       <div className="nested">
-        <div className="ticketline">
-          {booked ? (
-            <span>booked by <b>{booked.by}</b> at {stampText(booked.record_time)}, record
-              position {booked.lsn}</span>
-          ) : (
-            <span className="hint">{typeof history === 'string'
-              ? `the record did not answer: ${history}` : history === null
-                ? 'reading the record…' : 'no fill on the record opens this trade'}</span>
-          )}
-        </div>
-        {from.map(([id, pending]) => (
-          <div key={id} className="statusrow">
-            <span>booked from quote <span className="mono" title={id}>{id.slice(0, 8)}…</span>,
-              quoted by <b>{pending.quoted_by ?? 'no seat named'}</b> at{' '}
-              {stampText(pending.quoted_at)}
-            </span>
-            <button className="ghost" onClick={() => setShowing(showing === id ? null : id)}>
-              {showing === id ? 'hide its ticket' : 'show its ticket'}
-            </button>
-          </div>
-        ))}
-        {quotes && !from.length && tickets.length > 0 && (
-          <div className="hint">
-            No fill of it names a quote: its execution references are its own.
+        {!recording ? (
+          <div className="note">This desk keeps no record: nothing here files who booked this
+            trade or a ticket for it.</div>
+        ) : (
+          <div className="ticketline">
+            {booked ? (
+              <span>booked by <b>{booked.by}</b> at {stampText(booked.record_time)}, record
+                position {booked.lsn}</span>
+            ) : (
+              <span className="hint">{typeof history === 'string'
+                ? `the record did not answer: ${history}` : history === null
+                  ? 'reading the record…' : 'no fill on the record opens this trade'}</span>
+            )}
           </div>
         )}
-        {from.map(([id, pending]) => showing === id && <TicketCard key={id} pending={pending} />)}
-        {tickets.length > 0 ? (
+        {quote ? (
+          <div className="statusrow">
+            <span>booked from quote <span className="mono" title={quote.quote_id}>
+              {quote.quote_id.slice(0, 8)}…</span>, quoted by{' '}
+              <b>{quote.quoted_by ?? 'no seat named'}</b> at {stampText(quote.quoted_at)}
+            </span>
+            <button className="ghost" onClick={() => setShowing(!showing)}>
+              {showing ? 'hide its ticket' : 'show its ticket'}
+            </button>
+          </div>
+        ) : quote === null && <div className="hint">No quote this desk gave landed here.</div>}
+        {showing && (read.error ? <div className="error-box">{read.error}</div>
+          : pending ? <TicketCard pending={pending} /> : <div className="hint">reading its ticket…</div>)}
+        {!recording ? null : tickets.length > 0 ? (
           <div className="tablewrap">
             <table className="data desk">
               <thead>
@@ -268,7 +241,7 @@ function Origin({ recording, held, history, quotes }: {
                       <td className="n">{ticket.fill}</td>
                       <td className="n">{formatNumber(ticket.quantity)}</td>
                       <td className="mono" title={ticket.execution_reference}>
-                        {quotes?.[ticket.execution_reference] ? `quote ${
+                        {ticket.execution_reference === quote?.quote_id ? `quote ${
                           ticket.execution_reference.slice(0, 8)}…` : ticket.execution_reference}
                       </td>
                       <td>{ticket.actor}{ticket.lsn !== ticket.fill && (

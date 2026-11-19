@@ -10,7 +10,7 @@ import type { Agreement, Position } from './positions';
 import { salesNames } from './quote';
 import { COLLATERAL, formatNumber, uncollateralised } from './tokens';
 import type {
-  ActivityPage, ActivityRow, DealMark, DealNode, Market, PendingQuote, Schema, WorkRow,
+  ActivityPage, ActivityRow, DealMark, DealNode, Market, QuoteGiven, Schema, WorkRow,
 } from './types';
 
 /** The trade a deal path names: the outermost node on the path that is no netting set - a leg
@@ -132,12 +132,12 @@ export function unwindWords(held: number, units: number, size: Size, price: Pric
 
 /** What a trade is in the market's words: a structure booked from a quote by its sales name and the
  * form it was dealt in, else its type - a structure's with how many legs it has. */
-export function tradeName(row: BlotterRow, quote: PendingQuote | undefined,
-                          schema: Schema | null): string {
+export function tradeName(row: BlotterRow, quote: Pick<QuoteGiven, 'structure' | 'variation'>
+                          | undefined, schema: Schema | null): string {
   if (!quote) return row.children.length ? `${row.object} of ${row.children.length} legs` : row.object;
-  const declared = schema?.Structure?.types[quote.quote.structure];
-  return `${declared ? salesNames(declared)[0] : quote.quote.structure}${
-    quote.quote.variation ? ` · ${quote.quote.variation}` : ''}`;
+  const declared = schema?.Structure?.types[quote.structure];
+  return `${declared ? salesNames(declared)[0] : quote.structure}${
+    quote.variation ? ` · ${quote.variation}` : ''}`;
 }
 
 /** A side as the desk says it of itself: it buys, it sells, else it is the side its field names. */

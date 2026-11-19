@@ -194,7 +194,7 @@ check('a row naming a trade or a leg opens the trade\'s page; a set, a position 
        [['PICK', 'ISDA-A'], ['TAB', 'paper']]]);
 
 // --- a ticket to sign
-const QUOTED = { quote: { structure: 'ZeroCostCollar', variation: 'floor' } };
+const QUOTED = { structure: 'ZeroCostCollar', variation: 'floor' };
 const SCHEMA = {
   Structure: { types: { ZeroCostCollar: { vernacular: 'zero-cost collar, range forward' } } },
   Instrument: { types: { NettingCollateralSet: ['Set'] }, sections: { Set: {
@@ -207,7 +207,7 @@ check('a structure booked from a quote is its sales name and form; any other tra
       'the structure\'s type named where its quote declares a sales name, a collar read as '
         + 'StructuredDeal; or an undeclared structure left nameless',
       [trade.tradeName(collar, QUOTED, SCHEMA),
-       trade.tradeName(collar, { quote: { structure: 'Seagull', variation: null } }, null),
+       trade.tradeName(collar, { structure: 'Seagull', variation: null }, null),
        trade.tradeName(collar, undefined, SCHEMA), trade.tradeName(rows.get('0/0'), undefined, null)],
       ['zero-cost collar · floor', 'Seagull', 'StructuredDeal of 2 legs', 'FXOptionDeal']);
 

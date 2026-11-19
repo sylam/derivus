@@ -1,27 +1,45 @@
 import { useEffect, useRef, useState } from 'react';
-import { acceptQuote, failure, getQuote, getQuoteSheet, getResult, quoteStructure } from '../api';
+import {
+  acceptQuote, failure, getQuote, getQuoteSheet, getQuotes, getResult, quoteStructure,
+} from '../api';
 import { cellText, dateOf } from '../blotter';
 import { EmptyState } from '../components/EmptyState';
 import { DealPanels, DescriptorPanel, FieldView } from '../components/FieldView';
 import { Navigator } from '../components/Navigator';
 import { stampText } from '../desk';
-import { NO_PAPER } from '../positions';
+import { NO_PAPER, nodeAt } from '../positions';
 import {
-  clientText, clients, directions, draftOf, firmSeconds, firmText, firmUntil, keep, onMarketAxis,
-  requestOf, salesNames, solvedNumbers, solving, spreadText, ticketFields, ticketLegs, verdictOf,
+  clientText, clients, directions, draftOf, firmSeconds, firmText, keep, onMarketAxis, requestOf,
+  salesNames, solvedNumbers, solving, spreadText, standsAt, ticketFields, ticketLegs, verdictOf,
   type Draft, type Kept, type TicketLeg, type Verdict,
 } from '../quote';
-import { openTrade, useApp } from '../state';
+import { clockOf, openTrade, useApp } from '../state';
 import { formatNumber } from '../tokens';
-import type { PendingQuote, Quote, Schema, StructureType } from '../types';
+import type { PendingQuote, Quote, QuoteGiven, Schema, StructureType } from '../types';
+import { useRead } from './ClientView';
 
 const POLL_MS = 500;
 
-/** The page a new ticket is written on. */
+/** The page listing the desk's quotes, and the one a new ticket is written on. */
+const LIST = 'list';
 const NEW = 'new';
 
-/** Where this browser keeps the quotes it opened or made - a convenience, so a storage that
- * refuses (a private window) costs the list and nothing else. */
+/** The desk's quotes, newest first, read again where the book or the record moves and on `again`;
+ * nothing where no service book stands behind the page. */
+export function useQuoteList(again?: number) {
+  const { state } = useApp();
+  return useRead(state.source?.kind === 'book' ? getQuotes : null, [clockOf(state), again]);
+}
+
+/** The pending trade each quote id names, read again where the book or the record moves. */
+export function useQuotes(ids: string[]) {
+  const { state } = useApp();
+  return useRead(ids.length ? async () => Object.fromEntries(await Promise.all(ids.map(
+    async (id) => [id, await getQuote(id)] as const))) : null, [ids.join('\n'), clockOf(state)]);
+}
+
+/** Where this browser keeps the re-quotes it made, each with the quote it re-quotes, which the
+ * service does not link - a convenience, so a storage that refuses costs the links alone. */
 const KEPT = 'derivus.quotes';
 
 function useKept() {
@@ -50,24 +68,23 @@ const salesName = (schema: Schema | null, structure: string) => {
 
 /** The sales desk's ticket: a structure quoted off what `/schema` declares for it, the answer read
  * as one card a person reads to a client, and the acceptance that books it - beside every quote
- * this browser opened or made, a quote the chat gave opening by its id as the same card. Every
- * level reads on the market's axis by the blotter's rule. A quote is an act: changing one quotes
- * again, and the old one stands beside the new. */
+ * the desk has given, newest first, a quote the chat gave opening by its id as the same card.
+ * Every level reads on the market's axis by the blotter's rule. A quote is an act: changing one
+ * quotes again, and the old one stands beside the new. */
 export function QuoteView() {
   const { state, dispatch } = useApp();
   const { doc, schema } = state;
-  const [list, setList] = useKept();
-  const [held, setHeld] = useState<Record<string, PendingQuote | string>>({});
-  const etag = state.source?.kind === 'book' ? state.source.etag : null;
-
-  // every kept quote read again where the book moves: an acceptance anywhere writes onto its file
+  const [links, setLinks] = useKept();
+  // a quote made or typed here, until the desk's list holds it
+  const [opened, setOpened] = useState<string[]>([]);
+  const [again, setAgain] = useState(0);
+  const listed = useQuoteList(again);
+  // where each quote stands is read against this browser's clock, again every half minute
+  const [now, setNow] = useState(Date.now());
   useEffect(() => {
-    let live = true;
-    Promise.all(list.map(({ id }) => getQuote(id).then((pending) => [id, pending] as const,
-      (error) => [id, failure(error).error] as const)))
-      .then((read) => { if (live) setHeld(Object.fromEntries(read)); });
-    return () => { live = false; };
-  }, [list, etag]);
+    const timer = setInterval(() => setNow(Date.now()), 30_000);
+    return () => clearInterval(timer);
+  }, []);
 
   if (!doc || !schema) return null;
   const structures = schema.Structure?.types ?? {};
@@ -82,35 +99,115 @@ export function QuoteView() {
     );
   }
 
-  const made = (id: string, from?: string) => {
-    setList((standing) => keep(standing, id, from));
+  const rows = listed.data?.quotes ?? [];
+  const window = firmSeconds(doc, schema);
+  const open = (id: string, from?: string) => {
+    if (from) setLinks((standing) => keep(standing, id, from));
+    setOpened((standing) => [id, ...standing]);
+    setAgain((count) => count + 1);
     dispatch({ type: 'PICK', screen: 'quote', id });
   };
-  const read = (id: string, pending: PendingQuote) =>
-    setHeld((standing) => ({ ...standing, [id]: pending }));
+  const ticket = (id: string) => (
+    <Ticket id={id} from={links.find((entry) => entry.id === id)?.from}
+            requotes={links.filter((entry) => entry.from === id).map((entry) => entry.id)}
+            onMade={open} />
+  );
 
   return (
     <Navigator
-      screen="quote" side={<OpenById onOpen={(id) => made(id)} />}
+      screen="quote" side={<OpenById onOpen={(id) => open(id)} />}
       pages={[
+        { id: LIST, label: "the desk's quotes",
+          content: <QuoteList listed={listed} window={window} now={now} /> },
         { id: NEW, label: 'new quote', accent: true,
-          content: <QuoteForm onQuoted={(id) => made(id)} /> },
-        ...list.map(({ id, from }) => {
-          const pending = held[id];
-          const quote = typeof pending === 'object' ? pending.quote : null;
-          return {
-            id, label: quote ? `${salesName(schema, quote.structure)} · ${
-              quote.netting_set ?? 'root'}` : short(id),
-            hint: typeof pending === 'string' ? 'unread' : pending?.booked ? 'booked' : short(id),
-            content: (
-              <Ticket id={id} pending={pending} from={from}
-                      requotes={list.filter((entry) => entry.from === id).map((entry) => entry.id)}
-                      onMade={made} onRead={(fresh) => read(id, fresh)} />
-            ),
-          };
-        }),
+          content: <QuoteForm onQuoted={(id) => open(id)} /> },
+        ...opened.filter((id) => !rows.some((row) => row.quote_id === id))
+          .map((id) => ({ id, label: short(id), hint: 'opened by id', content: ticket(id) })),
+        ...rows.map((row) => ({
+          id: row.quote_id, label: `${salesName(schema, row.structure)} · ${
+            row.netting_set ?? 'root'}`,
+          hint: standsAt(row, window, now).word, content: ticket(row.quote_id),
+        })),
       ]}
     />
+  );
+}
+
+const CHIP: Record<string, string> = { booked: 'done', firm: 'running', lapsed: 'error' };
+
+/** Where a quote stands as its row says it: a word, the time its window closes or closed, and
+ * where a booked one landed - the trade there opening its page. */
+function Stands({ row, window, now }: { row: QuoteGiven; window: number | null; now: number }) {
+  const { state, dispatch } = useApp();
+  const { word, until } = standsAt(row, window, now);
+  const landed = row.booked && nodeAt(state.doc?.Calc.Deals?.Deals?.Children ?? [],
+                                      row.booked.deal_path)?.Instrument['.Deal'].Reference;
+  return (
+    <>
+      <span className={`chip ${CHIP[word] ?? ''}`}>{STANDS[word]}</span>
+      {until && <span className="hint"> {word === 'firm' ? 'until' : 'since'} {stampText(until)}</span>}
+      {row.booked && (
+        <button className="tradelink" title="open the trade's page"
+                onClick={(event) => { event.stopPropagation(); openTrade(dispatch, row.booked!.deal_path); }}>
+          {' '}{String(landed ?? row.booked.deal_path)} ›
+        </button>
+      )}
+    </>
+  );
+}
+
+/** A standing's words. */
+const STANDS: Record<string, string> = {
+  booked: 'booked as', accepted: 'accepted, not booked', firm: 'firm', lapsed: 'past its firm window',
+  quoted: 'quoted, with no firm window',
+};
+
+/** The desk's quotes, newest first: when and by whom, what it is and for whom, its net with its
+ * currency, and where it stands - a row opening its ticket. */
+function QuoteList({ listed, window, now }: {
+  listed: { data: { quotes: QuoteGiven[] } | null; error: string | null }; window: number | null;
+  now: number;
+}) {
+  const { state, dispatch } = useApp();
+  const paper = state.paper.data ?? NO_PAPER;
+  const rows = listed.data?.quotes ?? [];
+  return (
+    <section className="card">
+      <h3>The desk's quotes <span className="hint">newest first</span></h3>
+      <div className="nested">
+        {listed.error && <div className="error-box">{listed.error}</div>}
+        {!listed.data && !listed.error && <div className="hint">reading the desk's quotes…</div>}
+        {listed.data && !rows.length && <div className="hint">This desk has given no quote yet.</div>}
+        {rows.length > 0 && (
+          <div className="tablewrap">
+            <table className="data desk quotes">
+              <thead>
+                <tr>
+                  <th>Quoted</th><th>By</th><th>What</th><th>For</th><th className="n">Net</th>
+                  <th>Ccy</th><th>Where it stands</th>
+                </tr>
+              </thead>
+              <tbody>
+                {rows.map((row) => (
+                  <tr key={row.quote_id} className="pick" title={`quote ${row.quote_id}`}
+                      onClick={() => dispatch({ type: 'PICK', screen: 'quote', id: row.quote_id })}>
+                    <td>{stampText(row.quoted_at)}</td>
+                    <td>{row.quoted_by ?? <span className="hint">no seat named</span>}</td>
+                    <td title={row.structure}>{salesName(state.schema, row.structure)}
+                      {row.variation && ` · ${row.variation}`}</td>
+                    <td>{clientText(row.netting_set, paper.entities, paper.agreements)}</td>
+                    <td className="n">{formatNumber(row.net, 'money')}</td>
+                    <td>{row.currency}</td>
+                    <td><Stands row={row} window={window} now={now} /></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        )}
+        <div className="hint">{firmText(window, state.record.spine !== null)}</div>
+      </div>
+    </section>
   );
 }
 
@@ -279,18 +376,19 @@ function QuoteForm({ draft: initial = EMPTY, from, onQuoted }: {
 
 /** One quote as the card a salesperson reads to the client, and what can be done with it here:
  * the sheet, the acceptance, a re-quote. */
-function Ticket({ id, pending, from, requotes, onMade, onRead }: {
-  id: string; pending?: PendingQuote | string; from?: string; requotes: string[];
-  onMade: (id: string, from?: string) => void; onRead: (pending: PendingQuote) => void;
+function Ticket({ id, from, requotes, onMade }: {
+  id: string; from?: string; requotes: string[]; onMade: (id: string, from?: string) => void;
 }) {
   const { state, dispatch } = useApp();
   const [changing, setChanging] = useState(false);
   const [verdict, setVerdict] = useState<Verdict | null>(null);
   const quoting = useQuoting((made) => onMade(made, id));
+  const read = useQuotes([id]);
+  const pending = read.data?.[id];
   const pick = (other: string) => dispatch({ type: 'PICK', screen: 'quote', id: other });
 
+  if (read.error) return <div className="error-box">{read.error}</div>;
   if (pending === undefined) return <div className="placeholder">reading quote {short(id)}…</div>;
-  if (typeof pending === 'string') return <div className="error-box">{pending}</div>;
 
   const { quote } = pending;
   const declared = state.schema?.Structure?.types[quote.structure];
@@ -312,10 +410,7 @@ function Ticket({ id, pending, from, requotes, onMade, onRead }: {
       </div>
       <TicketCard pending={pending} />
       <Acceptance id={id} pending={pending} verdict={verdict} quoting={quoting}
-                  onVerdict={(said) => {
-                    setVerdict(said);
-                    getQuote(id).then(onRead, () => undefined);
-                  }}
+                  onVerdict={setVerdict}
                   onRequote={() => again && declared
                     && quoting.start(requestOf(again, declared))} />
       <div className="statusrow">
@@ -347,16 +442,15 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
   const spot = onMarketAxis(quote.spot.value_market, quote.params.pair, surface);
   const forward = onMarketAxis(quote.forward, quote.params.pair, surface);
   const window = firmSeconds(state.doc, schema);
-  const until = window === null ? undefined : firmUntil(pending.quoted_at, window);
-  const lapsed = until !== undefined && !pending.booked && Date.parse(until) < Date.now();
+  const { word, until } = standsAt(pending, window, Date.now());
   // painted again the moment the window closes, which nothing else on the desk would move
   const [, lapse] = useState(0);
   useEffect(() => {
-    if (until === undefined || lapsed || pending.booked) return;
+    if (word !== 'firm') return;
     const timer = setTimeout(() => lapse((count) => count + 1),
-                             Date.parse(until) - Date.now() + 50);
+                             Date.parse(until!) - Date.now() + 50);
     return () => clearTimeout(timer);
-  }, [until, lapsed, pending.booked]);
+  }, [word, until]);
   const delivery = dateOf(first.Delivery_Date);
   const level = (on: { pair: string; level: number } | undefined, raw: number) =>
     (on ? `${on.pair} ${formatNumber(on.level)}` : formatNumber(raw));
@@ -401,9 +495,9 @@ export function TicketCard({ pending }: { pending: PendingQuote }) {
             <div className="label">outright forward{delivery ? ` to ${delivery}` : ''}</div>
             <div className="value">{level(forward, quote.forward)}</div>
           </div>
-          {until && !pending.booked && (
-            <div className={`stat${lapsed ? ' warn' : ''}`}>
-              <div className="label">{lapsed ? 'past its firm window' : 'firm until'}</div>
+          {until && (
+            <div className={`stat${word === 'lapsed' ? ' warn' : ''}`}>
+              <div className="label">{word === 'lapsed' ? STANDS.lapsed : 'firm until'}</div>
               <div className="value">{stampText(until)}</div>
             </div>
           )}
