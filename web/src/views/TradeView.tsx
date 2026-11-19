@@ -184,16 +184,14 @@ const CHIP: Record<string, string> = { approved: 'done', pending: 'running', rej
 
 /** Where the trade came from: the quote that landed at it, on any desk, its ticket a click away;
  * and where the desk records, who booked it and when, and every clip with what its ticket reads -
- * a pending one with its tier and the seat it waits on, where the record tells this seat. */
+ * the tier it fell in and, while pending, what it waits on in the service's words. */
 function Origin({ recording, held, history, quote }: {
   recording: boolean; held: Position[]; history: ActivityRow[] | string | null;
   quote: QuoteGiven | null | undefined;
 }) {
-  const { state } = useApp();
   const [showing, setShowing] = useState(false);
   const read = useQuotes(showing && quote ? [quote.quote_id] : []);
   const pending = quote && read.data?.[quote.quote_id];
-  const waiting = state.record.worklist?.pending ?? [];
   const booked = Array.isArray(history) ? bookedBy(history) : undefined;
   const tickets: Ticket[] = held.flatMap((position) => position.tickets)
     .sort((a, b) => a.fill - b.fill);
@@ -240,30 +238,24 @@ function Origin({ recording, held, history, quote }: {
                 </tr>
               </thead>
               <tbody>
-                {tickets.map((ticket) => {
-                  const waits = waiting.find((row) => row.key === ticket.ticket);
-                  return (
-                    <tr key={ticket.ticket}>
-                      <td className="n">{ticket.fill}</td>
-                      <td className="n">{formatNumber(ticket.quantity)}</td>
-                      <td className="mono" title={ticket.execution_reference}>
-                        {ticket.execution_reference === quote?.quote_id ? `quote ${
-                          ticket.execution_reference.slice(0, 8)}…` : ticket.execution_reference}
-                      </td>
-                      <td>{ticket.actor}{ticket.lsn !== ticket.fill && (
-                        <span className="hint"> · restruck at {ticket.lsn}</span>)}</td>
-                      <td>{stampText(ticket.at)}</td>
-                      <td className="prose">
-                        <span className={`chip ${CHIP[ticket.status] ?? ''}`}>{ticket.status}</span>
-                        {ticket.status === 'pending' && (
-                          <span className="hint"> {waits ? `tier ${waits.tier}: ${waits.waits_on}`
-                            : 'waits on a second seat; the record names its tier and who may '
-                              + 'sign it only to a seat that may'}</span>
-                        )}
-                      </td>
-                    </tr>
-                  );
-                })}
+                {tickets.map((ticket) => (
+                  <tr key={ticket.ticket}>
+                    <td className="n">{ticket.fill}</td>
+                    <td className="n">{formatNumber(ticket.quantity)}</td>
+                    <td className="mono" title={ticket.execution_reference}>
+                      {ticket.execution_reference === quote?.quote_id ? `quote ${
+                        ticket.execution_reference.slice(0, 8)}…` : ticket.execution_reference}
+                    </td>
+                    <td>{ticket.actor}{ticket.lsn !== ticket.fill && (
+                      <span className="hint"> · restruck at {ticket.lsn}</span>)}</td>
+                    <td>{stampText(ticket.at)}</td>
+                    <td className="prose">
+                      <span className={`chip ${CHIP[ticket.status] ?? ''}`}>{ticket.status}</span>
+                      {ticket.tier && <span className="hint"> tier <b>{ticket.tier}</b></span>}
+                      {ticket.waits_on && <span className="hint">: {ticket.waits_on}</span>}
+                    </td>
+                  </tr>
+                ))}
               </tbody>
             </table>
           </div>

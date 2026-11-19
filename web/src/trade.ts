@@ -223,7 +223,8 @@ export function paperText(set: string, agreements: Agreement[], schema: Schema |
 
 /** The tickets awaiting a second seat that `listed` - the seat's own worklist - leaves out, oldest
  * first and each once, though a restrike books several positions under one, as rows of the
- * worklist's shape: what a seat that cannot sign them reads of what waits. */
+ * worklist's shape - the tier each fell in and what it waits on among them: what a seat that cannot
+ * sign them reads of what waits. */
 export function waitingElsewhere(positions: Position[], listed: WorkRow[]): WorkRow[] {
   const seen = new Set(listed.map((row) => row.key));
   const rows: WorkRow[] = [];
@@ -233,7 +234,8 @@ export function waitingElsewhere(positions: Position[], listed: WorkRow[]): Work
       seen.add(ticket.ticket);
       rows.push({ kind: 'pending', what: '', key: ticket.ticket, lsn: ticket.lsn, since: ticket.at,
                   booker: ticket.actor, reference: position.reference, agreement: position.agreement,
-                  deal_path: position.deal_paths[0] ?? null, client: position.counterparty });
+                  deal_path: position.deal_paths[0] ?? null, client: position.counterparty,
+                  tier: ticket.tier, waits_on: ticket.waits_on });
     }
   }
   return rows.sort((a, b) => a.lsn! - b.lsn!);
@@ -247,6 +249,6 @@ export function holdsFor(row: WorkRow, seat: string | null, listed: boolean): st
     return 'Booked by this seat: under four eyes its own verdict counts for nothing, so another '
       + 'seat signs it.';
   }
-  return listed ? null : 'This seat does not sign it: the record names its tier, and what it waits '
-    + 'on, only to a seat that may.';
+  return listed ? null : 'This seat does not sign it: a seat its tier wants signs it from its own '
+    + 'Back Office.';
 }

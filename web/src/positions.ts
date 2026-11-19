@@ -33,10 +33,12 @@ export type Position = {
 };
 
 /** One ticket a position is booked by: a fill's, or a restrike's in place of the clip it restruck
- * - `fill` the LSN of the fill, `lsn` the ticket's own, `actor` and `at` the ticket's. */
+ * - `fill` the LSN of the fill, `lsn` the ticket's own, `actor` and `at` the ticket's, the `tier`
+ * it fell in and, while pending, what it `waits_on` in the service's words. */
 export type Ticket = {
   ticket: string; lsn: number; fill: number; actor: string; at: string;
-  execution_reference: string; quantity: number; status: string;
+  execution_reference: string; quantity: number; status: string; tier: string | null;
+  waits_on: string | null;
 };
 
 export type Entity = { entity: string; name: string; parent: string | null };

@@ -295,9 +295,12 @@ check('the paper says its agreement and kind, and collateral by its own terms - 
        'ISDA-SAYS-CSA (ISDA 2002 with CSA), uncollateralised', 'CSA-USD (CSA), collateralised in USD',
        'ISDA-X, which the record declares no agreement for']);
 
+const WANTS = "no verdict is filed against this ticket, and the 'second-seat' tier wants a seat "
+  + 'other than the booker to sign it';
 const ticketed = (ticket, lsn, status, actor = 'sales-1') => ({
   ticket, lsn, fill: lsn, actor, at: `2026-11-19T21:${lsn}:00Z`, status,
-  execution_reference: `EX-${lsn}`, quantity: 1 });
+  execution_reference: `EX-${lsn}`, quantity: 1, tier: status === 'pending' ? 'second-seat' : 'desk-auto',
+  waits_on: status === 'pending' ? WANTS : null });
 const position = (reference, path, tickets) => ({
   reference, agreement: 'ISDA-K', counterparty: 'K', deal_paths: [path], tickets });
 const HELD = [
@@ -309,12 +312,15 @@ const HELD = [
 ];
 const elsewhere = trade.waitingElsewhere(HELD, [{ key: 't3' }]);
 check('what waits elsewhere is every pending ticket the seat\'s worklist leaves out, oldest first, '
-        + 'a restrike\'s once, in the worklist\'s shape',
-      'the worklist\'s own tickets listed again as waiting on another seat; or a restrike\'s ticket '
-        + 'once per position it moved',
+        + 'a restrike\'s once, in the worklist\'s shape - its tier and what it waits on among them',
+      'the worklist\'s own tickets listed again as waiting on another seat; a restrike\'s ticket '
+        + 'once per position it moved; or the tier and the service\'s sentence left off, so the '
+        + 'booker reads only that it waits',
       [elsewhere.map((row) => row.key), elsewhere[0] && [elsewhere[0].booker, elsewhere[0].reference,
-        elsewhere[0].deal_path, elsewhere[0].agreement, elsewhere[0].since]],
-      [['t2', 't9'], ['sales-1', 'NDF', '0/1', 'ISDA-K', '2026-11-19T21:25:00Z']]);
+        elsewhere[0].deal_path, elsewhere[0].agreement, elsewhere[0].since, elsewhere[0].tier,
+        elsewhere[0].waits_on]],
+      [['t2', 't9'], ['sales-1', 'NDF', '0/1', 'ISDA-K', '2026-11-19T21:25:00Z', 'second-seat',
+        WANTS]]);
 
 const holds = (seat, listed) => trade.holdsFor({ booker: 'fx-trader' }, seat, listed)
   ?.split(':')[0] ?? null;
