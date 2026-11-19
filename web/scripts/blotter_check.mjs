@@ -366,7 +366,34 @@ check('a leg reads by its role under its structure, and any other reference whol
        blotter.nameOf({ reference: 'ZeroCostCollar-6a90461d', deal: {} })],
       ['protection', 'EURZAR-ZARCALL-REBOOKED-2027-05', 'ZeroCostCollar-6a90461d']);
 
-console.log(`\n${ran} checks over 9 functions, ${missed.length} missed`);
+// ---- the export: the rows as shown, in the columns shown, every number as itself ----------------
+
+const OPTION = { ...ON_USD, Reference: 'USDZAR, CALL "A"', Expiry_Date: { '.Timestamp': '2027-05-16' } };
+const EXPORTED = blotter.flatten(blotter.heldRows(blotter.toRows([
+  node({ Object: 'NettingCollateralSet', Reference: 'ISDA-1' }, [node(OPTION), node(FORWARD)])],
+  ['NettingCollateralSet'], '2026-11-16'), new Map([['0/0', [{ ...POSITION, deal_paths: ['0/0'] }]]])),
+  new Set()).map((row) => blotter.exported(row, MARKET, SCHEMA));
+check('a row exports a value per column the table shows, every number the one behind its cell',
+      'the cell\'s text exported - `cellText` for `rawOf` - which writes 1,000,000 and 18.25 as '
+      + 'text a spreadsheet cannot add; the amount as written under a halved position; or a column '
+      + 'dropped, which shifts every value after it under the wrong head',
+      [EXPORTED.map((row) => row.length === blotter.HEADS.length), EXPORTED[1]],
+      [[true, true, true], ['USDZAR, CALL "A"', 'FXOptionDeal', 'Sell', 'USDZAR Call', 'USD', 1e6,
+                            18.25, null, null, '2027-05-16', null, 181]]);
+check('a CSV field holding a comma, a quote or a line break is quoted, a number written as itself',
+      'the quoting dropped, which splits a reference with a comma across two columns; or a number '
+      + 'run through a format, which rounds 0.30000000000000004 or groups 1000000',
+      blotter.csvText([['Reference', 'Amount'], ['USDZAR, CALL "A"', 1e6], [undefined, 0.1 + 0.2],
+                       ['two\nlines', null]]),
+      'Reference,Amount\r\n"USDZAR, CALL ""A""",1000000\r\n,0.30000000000000004\r\n'
+        + '"two\nlines",\r\n');
+check('a Percent or a Basis is its number behind the cell, and its unit on it',
+      'the scaled tokens left out of `rawOf`, which blanks a percent cell and exports nothing for it',
+      [[{ '.Percent': 5 }, { '.Basis': 12.5 }].map(blotter.rawOf),
+       [{ '.Percent': 5 }, { '.Basis': 12.5 }].map((value) => blotter.cellText(value))],
+      [[5, 12.5], ['5 %', '12.5 bp']]);
+
+console.log(`\n${ran} checks over 13 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

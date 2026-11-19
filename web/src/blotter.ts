@@ -187,19 +187,26 @@ export function sizeOf(deal: Record<string, unknown>, object: string, schema: Sc
   return { side, amount, of: key ? { key, value: deal[key] } : undefined };
 }
 
-/** One cell of a scalar column, a number as the `kind` it is, or undefined where the value is a
- * shape a cell cannot state - the details expander carries those whole. */
-export function cellText(value: unknown, kind: Kind = 'plain'): string | undefined {
-  if (typeof value === 'number') return formatNumber(value, kind);
-  const percent = token(value, '.Percent');
-  if (typeof percent === 'number') return formatNumber(percent, 'percent');
-  const basis = token(value, '.Basis');
-  if (typeof basis === 'number') return formatNumber(basis, 'basis');
+/** The value behind a scalar cell: a number - a Percent's or a Basis's its own - a date, a word,
+ * or undefined where the value is a shape a cell cannot state. */
+export function rawOf(value: unknown): number | string | undefined {
+  if (typeof value === 'number') return value;
+  const scaled = token(value, '.Percent') ?? token(value, '.Basis');
+  if (typeof scaled === 'number') return scaled;
   const stamp = dateOf(value);
   if (stamp) return stamp;
   if (typeof value === 'string') return value;
   if (typeof value === 'boolean') return value ? 'true' : 'false';
   return undefined;
+}
+
+/** One cell of a scalar column, a number as the `kind` it is - a Percent or a Basis with its
+ * unit - or undefined where the value is a shape the details expander carries whole. */
+export function cellText(value: unknown, kind: Kind = 'plain'): string | undefined {
+  const raw = rawOf(value);
+  if (typeof raw !== 'number') return raw;
+  return formatNumber(raw, token(value, '.Percent') !== undefined ? 'percent'
+    : token(value, '.Basis') !== undefined ? 'basis' : kind);
 }
 
 // ---- the market's axis --------------------------------------------------------------------------
@@ -579,4 +586,33 @@ export function flatten(rows: BlotterRow[], collapsed: Set<string>): BlotterRow[
   return rows.flatMap((row) => (
     collapsed.has(row.path) ? [row] : [row, ...flatten(row.children, collapsed)]
   ));
+}
+
+// ---- the export ---------------------------------------------------------------------------------
+
+/** The blotter's columns in the order the table shows them, and the record's four after them. */
+export const HEADS = ['Reference', 'Type', 'Desk side', 'On', 'Ccy', 'Amount', 'Strike', 'Barrier',
+  'Terms', 'Expiry', 'Next date', 'Days'];
+export const RECORD_HEADS = ['Qty', 'Portfolio', 'Client', 'Status'];
+
+/** A row as the export writes it, a value per column of `HEADS`: every number the one behind its
+ * cell - an amount under a position the one held, a level on the pair's axis - never the text the
+ * cell formats it to, and the reference whole, a spreadsheet having no tree to read a role under. */
+export function exported(row: BlotterRow, market: Market | null, schema: Schema | null): unknown[] {
+  const size = sizeOf(row.deal, row.object, schema, row.units);
+  const read = quoted(row, market, schema);
+  return [row.reference, row.object, size.side?.value,
+    [read.on?.value, read.sense].filter(Boolean).join(' '), size.of?.value, size.amount?.value,
+    read.strike?.value, read.barrier?.value, read.terms?.parts.join(' · '), row.expiry,
+    row.next !== row.expiry ? row.next : undefined, row.days].map(rawOf);
+}
+
+/** Rows of values as CSV: a number as itself, anything else as its text - quoted where it holds a
+ * comma, a quote or a line break - and nothing as an empty field. */
+export function csvText(rows: unknown[][]): string {
+  const field = (value: unknown) => {
+    const text = value === undefined || value === null ? '' : String(value);
+    return /[",\r\n]/.test(text) ? `"${text.replace(/"/g, '""')}"` : text;
+  };
+  return rows.map((row) => row.map(field).join(',')).join('\r\n') + '\r\n';
 }

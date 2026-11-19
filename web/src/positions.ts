@@ -103,6 +103,16 @@ export function statusText(held: Position[]): string {
   return pending && pending !== quantity ? `${read} · ${formatNumber(pending)} pending` : read;
 }
 
+/** What the record holds of a row as the blotter's four record columns: the net quantity - none
+ * where nothing is held - the portfolios and the clients it sits under, and what its tickets read. */
+export function heldColumns(held: Position[], entities: Entity[]):
+  [number | undefined, string, string, string] {
+  const distinct = (values: string[]) => [...new Set(values)].join(', ');
+  return [held.length ? held.reduce((sum, row) => sum + row.quantity, 0) : undefined,
+    distinct(held.map((row) => row.portfolio)),
+    distinct(held.map((row) => clientName(entities, row.counterparty))), statusText(held)];
+}
+
 /** One position as a leaf, by the reference a desk knows it by. `other` is the coordinate the tree
  * does not file it by - the agreement in the portfolio tree, the portfolio in the client tree - so
  * the same terms held twice under one folder still read as two things. A position the file does

@@ -1,13 +1,13 @@
 import { useMemo, useState } from 'react';
 import {
-  WINDOWS, baseDateOf, cellText, describe, filterRows, flatten, groupedRows, heldRows, inWindow,
-  nameOf, quoted, rollingCount, rowsByPath, sizeOf, sortRows, toRows, type BlotterRow,
-  type Picked,
+  HEADS, RECORD_HEADS, WINDOWS, baseDateOf, cellText, csvText, describe, exported, filterRows,
+  flatten, groupedRows, heldRows, inWindow, nameOf, quoted, rollingCount, rowsByPath, sizeOf,
+  sortRows, toRows, type BlotterRow, type Picked,
 } from '../blotter';
 import { DealPanels } from '../components/FieldView';
 import {
-  GROUPINGS, NO_PAPER, byId, byPath, clientName, clientTree, portfolioTree, statusText,
-  type Paper, type Position,
+  GROUPINGS, NO_PAPER, byId, byPath, clientTree, heldColumns, portfolioTree, type Paper,
+  type Position,
 } from '../positions';
 import { marketOf, useApp } from '../state';
 import { formatNumber, type Kind } from '../tokens';
@@ -54,6 +54,9 @@ export function BlotterView() {
   // the deal COUNT is /describe's answer and the header already states it - this bar states only
   // what is the blotter's own reading, the roll-off
   const rolling = rollingCount(tree, 30);
+  const heads = recording ? [...HEADS, ...RECORD_HEADS] : HEADS;
+  const heldOf = (row: BlotterRow): Position[] | null => (!recording ? null
+    : row.position ? [row.position] : grouping === 'book' ? heldAt.get(row.path) ?? [] : []);
 
   function toggle(path: string) {
     setCollapsed((current) => {
@@ -61,6 +64,19 @@ export function BlotterView() {
       if (next.has(path)) next.delete(path); else next.add(path);
       return next;
     });
+  }
+
+  /** The rows as shown, in the columns shown, saved as CSV - with a byte-order mark, so a
+   * spreadsheet reads the dots and dashes of a row's terms as written. */
+  function download() {
+    const table = rows.map((row) => [...exported(row, market, schema),
+      ...(recording ? heldColumns(heldOf(row)!, paper.entities) : [])]);
+    const link = document.createElement('a');
+    link.href = URL.createObjectURL(new Blob(['﻿', csvText([heads, ...table])],
+                                             { type: 'text/csv' }));
+    link.download = `blotter ${base ?? 'undated'}.csv`;
+    link.click();
+    URL.revokeObjectURL(link.href);
   }
 
   return (
@@ -101,6 +117,10 @@ export function BlotterView() {
           <button className="ghost" onClick={() => setSort(sort === 'days' ? 'reference' : 'days')}>
             sort: {sort === 'days' ? 'days to roll' : 'reference'}
           </button>
+          <button className="ghost" onClick={download}
+                  title="the rows as shown, in the columns shown, every number as itself">
+            export CSV
+          </button>
         </div>
 
         {!base && (
@@ -114,25 +134,12 @@ export function BlotterView() {
           <table className="data blotter">
             <thead>
               <tr>
-                <th>Reference</th>
-                <th>Type</th>
-                <th title={SIDE}>Desk side</th>
-                <th title={'what the trade is on - the pair as the market writes it, else the '
-                           + 'commodity, equity or index it names - and an option\'s sense on it'}>
-                  On
-                </th>
-                <th>Ccy</th>
-                <th className="n" title={recording ? HELD : undefined}>Amount</th>
-                <th className="n" title={`${LEVELS}; a forward's outright, a swap's far one`}>Strike</th>
-                <th className="n" title={LEVELS}>Barrier</th>
-                <th>Terms</th>
-                <th>Expiry</th>
-                <th>Next date</th>
-                <th className="n" title="days to the roll: the expiry, else the next date">Days</th>
-                {recording && <th className="n">Qty</th>}
-                {recording && <th>Portfolio</th>}
-                {recording && <th>Client</th>}
-                {recording && <th>Status</th>}
+                {heads.map((head) => (
+                  <th key={head} className={NUMERIC.includes(head) ? 'n' : undefined}
+                      title={head === 'Amount' && !recording ? undefined : TITLES[head]}>
+                    {head}
+                  </th>
+                ))}
                 <th />
               </tr>
             </thead>
@@ -143,9 +150,7 @@ export function BlotterView() {
                   row={row}
                   schema={schema}
                   market={market}
-                  held={!recording ? null
-                    : row.position ? [row.position] : grouping === 'book'
-                      ? heldAt.get(row.path) ?? [] : []}
+                  held={heldOf(row)}
                   entities={paper.entities}
                   selected={row.target !== null && selection.deal === row.target}
                   emphasised={horizon !== null ? inWindow(row, horizon) : inWindow(row, 7)}
@@ -158,7 +163,7 @@ export function BlotterView() {
                 />
               ))}
               {rows.length === 0 && (
-                <tr><td colSpan={recording ? 17 : 13} className="hint">
+                <tr><td colSpan={heads.length + 1} className="hint">
                   nothing rolls off in this window.
                 </td></tr>
               )}
@@ -177,6 +182,18 @@ const SIDE = 'the desk\'s side of the trade, as the desk booked it: Sell is the 
 const HELD = 'under a position, the written amount times the units the record holds of it';
 
 const LEVELS = 'an FX level as the market quotes its pair, base then quote';
+
+/** The heads that say more on hover, and the ones whose column is a number. */
+const TITLES: Record<string, string> = {
+  'Desk side': SIDE,
+  On: 'what the trade is on - the pair as the market writes it, else the commodity, equity or '
+    + 'index it names - and an option\'s sense on it',
+  Amount: HELD,
+  Strike: `${LEVELS}; a forward's outright, a swap's far one`,
+  Barrier: LEVELS,
+  Days: 'days to the roll: the expiry, else the next date',
+};
+const NUMERIC = ['Amount', 'Strike', 'Barrier', 'Days', 'Qty'];
 
 function Row(props: {
   row: BlotterRow; schema: Schema | null; market: Market | null; held: Position[] | null;
@@ -231,7 +248,7 @@ function Row(props: {
       </tr>
       {opened && (
         <tr className="detail">
-          <td colSpan={props.held ? 17 : 13}>
+          <td colSpan={HEADS.length + (props.held ? RECORD_HEADS.length : 0) + 1}>
             <DealPanels deal={row.deal} schema={schema} />
           </td>
         </tr>
@@ -244,17 +261,14 @@ function Row(props: {
  * and what its tickets read with the quantity awaiting a second seat - one position where the book
  * is grouped by the record, every one the file's node holds where it is not. */
 function Held({ held, entities }: { held: Position[]; entities: Paper['entities'] }) {
-  const distinct = (values: string[]) => [...new Set(values)].join(', ');
-  const quantity = held.reduce((sum, row) => sum + row.quantity, 0);
-  const portfolios = distinct(held.map((row) => row.portfolio));
-  const clients = distinct(held.map((row) => clientName(entities, row.counterparty)));
+  const [quantity, portfolios, clients, status] = heldColumns(held, entities);
   return (
     <>
-      <td className="n">{held.length ? formatNumber(quantity) : ''}</td>
+      <td className="n">{quantity === undefined ? '' : formatNumber(quantity)}</td>
       <td className="clip" title={portfolios}>{portfolios}</td>
       <td className="clip" title={clients}>{clients}</td>
       <td className={held.some((row) => row.status === 'rejected') ? 'rejected' : ''}>
-        {statusText(held)}
+        {status}
       </td>
     </>
   );

@@ -201,7 +201,18 @@ check('a trade pending whole reads pending once, and a part awaiting a seat says
        positions.statusText([ticketed('approved', 1, 0), ticketed('rejected', -1, 0)])],
       ['pending', 'approved · 0.5 pending', 'approved, rejected']);
 
-console.log(`\n${ran} checks over 10 functions, ${missed.length} missed`);
+// --- the blotter's four record columns, as the table shows them and the export writes them
+check('a row held twice sums its quantity and names each portfolio and client once, by name; a '
+      + 'row held by nothing has no quantity at all',
+      'the quantity summed over nothing, which writes 0 beside a node the record holds none of - '
+      + 'the reading of a trade closed out; or the clients written by id',
+      [positions.heldColumns([ticketed('approved', 1, 0), { ...EM, status: 'approved', pending: 0 },
+                              { ...LEGACY, status: 'approved', pending: 0 }], PAPER.entities),
+       positions.heldColumns([], PAPER.entities)],
+      [[1, 'desk, desk/Rates/EM, desk/Rates', 'Client A, CPTY_B', 'approved'],
+       [null, '', '', '']]);
+
+console.log(`\n${ran} checks over 11 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);
