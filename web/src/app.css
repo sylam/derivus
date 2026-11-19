@@ -665,6 +665,22 @@ table.data th .sub { font-size: 10.5px; font-weight: 400; text-transform: none; 
 table.desk td .unit { margin-left: 2px; color: var(--text-muted); font-size: 11px; }
 table.desk td .unit.unknown { color: var(--warn); }
 
+/* ---- every counterparty as a credit officer reads it ---- */
+
+.blotterbar.wrongs .hint b { font-weight: 650; }
+.blotterbar.wrongs.act > .hint:first-child { color: var(--bad); }
+.blotterbar.wrongs:not(.act) > .hint:first-child b { color: var(--good); }
+table.credit th { white-space: normal; vertical-align: bottom; padding: 5px 7px; }
+table.credit td { padding: 4px 7px; }
+table.credit tr.acting td:first-child { box-shadow: inset 3px 0 0 var(--bad); }
+table.credit tr.node td:first-child { padding-left: 28px; }
+table.credit td .hint { font-size: 11px; color: var(--text-muted); }
+table.credit td .call { font-size: 11px; color: var(--warn); font-weight: 600; }
+table.credit tr.wrongs td { background: var(--bg); padding: 0 6px; white-space: normal; }
+table.credit tr.wrongs .facts { padding: 4px 8px 6px; font-size: 12.5px; }
+table.credit tr.detail .card.profile { margin-bottom: 10px; }
+table.credit tr.detail .card.profile > :is(.hint, .error-box, .tablenote) { margin: 6px 14px; }
+
 /* ---- one client's page ---- */
 
 .clienthead { display: flex; align-items: baseline; gap: 12px; flex-wrap: wrap; margin: 0 0 12px; }

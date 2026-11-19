@@ -562,19 +562,6 @@ export function isOrphan(set: XvaSet): boolean {
 
 export type Chip = { text: string; tone: string; title: string };
 
-/** The status a row leads with. A recalc IN FLIGHT outranks the last run: what the desk wants to
- * know first is that the number is moving. The last run keeps its own chip beside it, so a done
- * row being recalculated never looks like a row with no number. */
-export function statusChip(set: XvaSet): Chip {
-  if (set.recalc) {
-    return {
-      text: set.recalc.status, tone: 'running',
-      title: `a recalc is ${set.recalc.status} - result ${set.recalc.result_id}`,
-    };
-  }
-  return lastRunChip(set);
-}
-
 export function lastRunChip(set: XvaSet): Chip {
   switch (set.status) {
     case 'done':

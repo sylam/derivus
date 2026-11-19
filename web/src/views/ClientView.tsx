@@ -29,7 +29,7 @@ import { Back } from './TradeView';
 
 /** One read of the live book while this page is up, again whenever `keys` move - the answer held
  * on screen while the next is read - or the service's refusal in its own words. */
-function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
+export function useRead<T>(read: (() => Promise<T>) | null, keys: unknown[]) {
   const [held, setHeld] = useState<{ data: T | null; error: string | null }>(
     { data: null, error: null });
   useEffect(() => {
