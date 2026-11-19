@@ -8,6 +8,7 @@ import { bookClock } from './desk';
 import type { Grouping, Paper } from './positions';
 import { pinnedAt, readRecord, reconciledRecord, type RecordHeld } from './spine';
 import { isObject } from './tokens';
+import { tradeAt } from './trade';
 import type {
   ActivityPage, BookMarket, BookResponse, BookRisk, BookXva, DealNode, DescribeResult, JobDoc,
   Market, PathsAnswer, Reconcile, ResultSummary, Schema, SpineBlock, TablePage, ValidateResult,
@@ -284,11 +285,13 @@ export function reducer(state: AppState, action: Action): AppState {
   }
 }
 
-/** Open what a row of the record names: a deal or a position on the Portfolio, else an agreement
- * or an entity on the Paper. */
-export function opened(dispatch: Dispatch<Action>, deal: string | null | undefined,
-                       paper?: string | null) {
-  if (deal) {
+/** Open what a row of the record names: a trade of `doc` - or a leg of one - on its page, any
+ * other node or a position on the Portfolio, else an agreement or an entity on the Paper. */
+export function opened(dispatch: Dispatch<Action>, doc: JobDoc | null,
+                       deal: string | null | undefined, paper?: string | null) {
+  const trade = deal ? tradeAt(doc?.Calc.Deals?.Deals?.Children ?? [], deal) : undefined;
+  if (trade) openTrade(dispatch, trade.path);
+  else if (deal) {
     dispatch({ type: 'SELECT_DEAL', path: deal });
     dispatch({ type: 'TAB', tab: 'portfolio' });
   } else if (paper) {

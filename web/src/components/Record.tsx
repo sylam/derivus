@@ -103,7 +103,7 @@ export function WorklistBanner() {
             <tbody>
               {WAITING.flatMap(([list]) => worklist[list].map((row) => (
                 <tr key={`${row.kind}/${row.key}/${row.lsn}`} className="pick"
-                    onClick={() => (list === 'rejected' ? opened(dispatch, row.deal_path)
+                    onClick={() => (list === 'rejected' ? opened(dispatch, state.doc, row.deal_path)
                       : dispatch({ type: 'TAB', tab: clearedOn[list] ?? 'backoffice' }))}>
                   <td>{row.kind}</td>
                   <td>{row.what}</td>
@@ -151,7 +151,7 @@ function Divergences({ reconcile }: { reconcile: Reconcile }) {
               && position.agreement === row.position!.agreement));
             return (
               <tr key={row.key} className="pick"
-                  onClick={() => opened(dispatch, held ? positionId(held) : row.deal,
+                  onClick={() => opened(dispatch, state.doc, held ? positionId(held) : row.deal,
                                         row.agreement ?? row.position?.agreement)}>
                 <td>{row.trade}</td>
                 <td>{row.what}</td>
@@ -201,7 +201,8 @@ export function ActivityStrip() {
                 return (
                   <tr key={row.lsn} className={opens ? 'pick' : ''}
                       title={opens ? `open ${opens}` : undefined}
-                      onClick={() => opened(dispatch, row.deal_path, row.agreement ?? row.entity)}>
+                      onClick={() => opened(dispatch, state.doc, row.deal_path,
+                                          row.agreement ?? row.entity)}>
                     <td className="n mono">{row.lsn}</td>
                     {/* the writer's own clock, in UTC; the title is when the fact is TRUE, which
                         is null where the fact carries no truth-time of its own */}

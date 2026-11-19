@@ -148,7 +148,9 @@ function Ticket({ row, onSaid }: { row: WorkRow; onSaid: (said: string) => void 
   return (
     <tr>
       <td>
-        <button className="ghost" onClick={() => opened(dispatch, row.deal_path)}>{trade}</button>
+        <button className="ghost" onClick={() => opened(dispatch, state.doc, row.deal_path)}>
+          {trade}
+        </button>
       </td>
       <td>{row.client ?? ''}<div className="hint">{row.agreement ?? ''}</div></td>
       <td>{object}{size.side ? <div className="hint">{String(size.side.value)}</div> : null}</td>

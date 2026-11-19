@@ -1,6 +1,7 @@
 // Drives `src/trade.ts` where the eye cannot: which node a path's trade is, which mark is its own,
 // how the record is read whole and what of it is the trade's, who booked it, its size and dates,
-// and what an unwind files and says - and the store's way back to where the page was opened from.
+// and what an unwind files and says - and the store's way onto the page from a row naming a trade
+// and back to where it was opened from.
 // Every check names the MUTATION it kills - the change that would still typecheck, still render,
 // and still be wrong.
 //
@@ -56,6 +57,8 @@ const BOOK = [
   node({ Object: 'FXForwardDeal', Reference: 'FWD', Buy_Currency: 'ZAR', Buy_Amount: 20091300,
          Sell_Currency: 'EUR', Sell_Amount: 1000000, Settlement_Date: ts('2027-02-16') }),
 ];
+
+const BOOK_DOC = { Calc: { Deals: { Deals: { Children: BOOK } } } };
 
 // --- which node is the trade
 check('a leg names its structure, the trade, beside the set it sits in',
@@ -174,7 +177,23 @@ check('opening another trade from the page keeps the way back',
       'a tab asked for twice taking itself as where it came from',
       state.reducer(at, { type: 'TAB', tab: 'trade' }).back, 'blotter');
 
-console.log(`\n${ran} checks over 12 functions, ${missed.length} missed`);
+const opens = (deal, paper) => {
+  const asked = [];
+  state.opened((action) => asked.push(action), BOOK_DOC, deal, paper);
+  return asked.map((action) => [action.type, action.tab ?? action.id ?? action.path]);
+};
+check('a row naming a trade or a leg opens the trade\'s page; a set, a position or an agreement '
+        + 'opens where it did',
+      'every deal path opened as a trade, a netting set landing on a page with no trade; or a '
+        + 'trade opened on the Portfolio as before',
+      [opens('0/1/1'), opens('1'), opens('0'), opens('position:["x","ISDA-A","BOOK/FX"]'),
+       opens(null, 'ISDA-A')],
+      [[['PICK', '0/1'], ['TAB', 'trade']], [['PICK', '1'], ['TAB', 'trade']],
+       [['SELECT_DEAL', '0'], ['TAB', 'portfolio']],
+       [['SELECT_DEAL', 'position:["x","ISDA-A","BOOK/FX"]'], ['TAB', 'portfolio']],
+       [['PICK', 'ISDA-A'], ['TAB', 'paper']]]);
+
+console.log(`\n${ran} checks over 13 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

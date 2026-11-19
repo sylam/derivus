@@ -97,7 +97,7 @@ export function PaperView() {
                   {path !== null && (
                     <button className="ghost" onClick={(event) => {
                       event.preventDefault();
-                      opened(dispatch, path);
+                      opened(dispatch, state.doc, path);
                     }}>open its set</button>
                   )}
                   <button className="ghost" onClick={(event) => {

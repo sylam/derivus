@@ -7,8 +7,9 @@ import {
 } from '../desk';
 import { EmptyState } from '../components/EmptyState';
 import type { Position } from '../positions';
-import { clockOf, marketOf, useApp } from '../state';
+import { clockOf, marketOf, openTrade, useApp } from '../state';
 import { axisText, formatNumber } from '../tokens';
+import { tradeAt } from '../trade';
 import type { BookRisk, GreekRow, JobDoc } from '../types';
 
 /** The consolidated risk: the book's own mark and its whole-book gradient, counterparty-blind.
@@ -384,7 +385,7 @@ function Risk({ row }: { row: GreekRow }) {
  * netting set appears once with its net and `mtm` is exactly this column's total. The legs are not
  * here on purpose - they are inside the row their container reports, and adding them again would
  * double the book. On a desk that records, a row names the clients it is against and the trades
- * in it that wait on a second seat. */
+ * in it that wait on a second seat. A trade's row opens its page; a set's picks it here. */
 function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
   const { state, dispatch } = useApp();
   const total = marksTotal(risk.per_deal);
@@ -395,6 +396,7 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
   const holds = (path: string | null) => markHolds(
     (path === null ? undefined : under.get(path)) ?? [], state.paper.data?.entities ?? []);
   const waiting = risk.per_deal.flatMap((row) => holds(row.deal_path).pending);
+  const nodes = state.doc?.Calc.Deals.Deals.Children ?? [];
 
   return (
     <>
@@ -451,8 +453,9 @@ function Marks({ risk, currency }: { risk: BookRisk; currency: string }) {
                   key={`${row.deal_path ?? '?'}:${position}`}
                   className={`${row.deal_path ? 'pick ' : ''}${held.length ? 'pending ' : ''}${
                     row.deal_path !== null && state.selection.deal === row.deal_path ? 'selected' : ''}`}
-                  onClick={() => row.deal_path
-                    && dispatch({ type: 'SELECT_DEAL', path: row.deal_path })}
+                  onClick={() => row.deal_path && (tradeAt(nodes, row.deal_path)
+                    ? openTrade(dispatch, row.deal_path)
+                    : dispatch({ type: 'SELECT_DEAL', path: row.deal_path }))}
                 >
                   <td>{row.reference || <span className="hint">(no reference)</span>}</td>
                   {recording && (
