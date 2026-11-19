@@ -21,6 +21,9 @@ export type Descriptor = {
   col_names?: string[];
   sub_types?: unknown[];
   sub_fields?: Record<string, Descriptor>;
+  /** Structure only: which way a structure is dealt, chosen rather than filled - `required` where
+   * no level tells its variations apart. */
+  selector?: 'required' | 'optional';
 };
 
 export type Section = Record<string, Descriptor>;
@@ -57,7 +60,72 @@ export type Schema = {
   Process_factor_map: Record<string, string[]>;
   Interpolation_factor_map: Record<string, string[]>;
   System: { fields: Section; types: Record<string, string[]> };
+  /** What a sales desk quotes, and the mandate a book may declare beside its `Calculation`. */
+  Structure?: { types: Record<string, StructureType> };
+  'Quote Policy'?: { fields: Section };
   engine_version: string;
+};
+
+// ---- a quote: /book/structure, /book/quote ------------------------------------------------------
+
+/** One leg a structure books: a declared instrument type, what the structure pins on it and the
+ * parameter each remaining field is filled from. */
+export type StructureLeg = {
+  deal_type: string; pinned: Record<string, unknown>; slots: Record<string, string>;
+};
+
+/** One way a structure is dealt: the side of the pair its client buys, its own parameters and
+ * legs. */
+export type Variation = {
+  buys: 'base' | 'quote'; fields: Section; legs: Record<string, StructureLeg>;
+};
+
+/** A structure as `/schema` declares it: its sales names, the parameters every form shares, the
+ * recipe's steps in words, and either its legs or its variations. */
+export type StructureType = {
+  vernacular: string; fields: Section; recipe: string[];
+  legs?: Record<string, StructureLeg>; variations?: Record<string, Variation>;
+};
+
+/** One priced leg, on the client's side: its market-terms strike and barrier, its premium in the
+ * quote's currency, and the deal field the recipe solved on it where it solved one. */
+export type QuotedLeg = {
+  reference: string; role: string; deal_type: string; buy_sell: string | null;
+  strike_market: number | null; barrier_market: number | null; premium: number;
+  solved: Record<string, number> | null; note: string | null; spread_charge: number | null;
+};
+
+/** The quote a structure answers with, every money in `currency`. */
+export type Quote = {
+  quote_id: string; structure: string; params: Record<string, unknown>;
+  variation: string | null; client: { buys: string; sells: string } | null;
+  netting_set: string | null; legs: QuotedLeg[]; net: number; net_mid: number;
+  charged_on: string; edge: number; currency: string;
+  spot: { source: string; note: string | null; value_market: number };
+  forward: number; spread_note: string | null; notes: string[] | null;
+  risk?: { note?: string | null; scale?: number | null };
+  margin?: { amount: number; currency: string; value: number; pricing_currency: string };
+  files?: { sheet: string | null; sheet_note?: string; quote: string };
+};
+
+/** `GET /book/quote/{id}`: the pending trade as filed - and, once accepted, where it was filed and
+ * where it landed (`booked.lsn` null on a desk keeping no record). */
+export type PendingQuote = {
+  quote: Quote; deal: Record<string, unknown>; quoted_at: string | null;
+  quoted_by: string | null; portfolio?: string;
+  accepted?: { lsn: number; ticket: string } | null;
+  booked?: { lsn: number | null; deal_path: string } | null;
+};
+
+/** What `POST /book/quote` answers short of a 422: a booking, a refusal in words, or the quote
+ * already booked; on a desk keeping a record, the tier it was routed through. */
+export type Acceptance = {
+  written: boolean; deal_path?: string; refused?: string[]; note?: string;
+  accepted?: { lsn: number; ticket: string } | null;
+  booked?: { lsn: number | null; deal_path: string };
+  recorded?: { lsn: number };
+  tier?: { name: string; four_eyes: boolean }; waits_on?: string;
+  firmness?: { plan?: { pinned: string; current: string; moved: boolean } };
 };
 
 export type DealNode = {

@@ -4,8 +4,8 @@
 import type { MarkedDays, Pnl } from './pnl';
 import type { Agreement, Entity, Position } from './positions';
 import type {
-  ActivityPage, BookMarket, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva,
-  CalculationOutcome,
+  Acceptance, ActivityPage, BookMarket, BookMarkets, BookResponse, BookRisk, BookStatus, BookXva,
+  CalculationOutcome, PendingQuote,
   CalculationsAnswer, CloseVerdict, CurveOutcome, CurvesAnswer, Decided, DescribeResult, JobDoc,
   PathMaps,
   PathsAnswer, Reconcile, Recorded, ResultSummary, Schema, SecuritiesAnswer, SeedOutcome,
@@ -63,7 +63,8 @@ export function failure(error: unknown): { status: number | null; error: string 
   return { status: error.status, error: error.message || `HTTP ${error.status}` };
 }
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+/** One request, a refusal thrown as the `ApiError` `failure` reads. */
+async function send(method: string, path: string, body?: unknown): Promise<Response> {
   const token = stored(TOKEN);
   const response = await fetch(method === 'GET' ? seated(path) : path, {
     method,
@@ -77,8 +78,11 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     const text = await response.text();
     throw new ApiError(response.status, text.slice(0, 500) || response.statusText);
   }
-  return response.json() as Promise<T>;
+  return response;
 }
+
+const call = async <T>(method: string, path: string, body?: unknown): Promise<T> =>
+  (await send(method, path, body)).json() as Promise<T>;
 
 export type BookDealOutcome = {
   written: boolean;
@@ -189,6 +193,17 @@ export const runCalculation = (name: string, dealPath?: string) =>
 // never in a job, beside a row per file the served book names; a save replaces both maps whole
 export const getPaths = () => call<PathsAnswer>('GET', '/paths');
 export const savePaths = (maps: PathMaps) => call<PathsAnswer>('POST', '/paths', maps);
+// a quote: a structure priced against the book under the acting seat - queued and polled like an
+// execute, the quote landing under the run's `stats.Quote` - the pending trade its id names, the
+// spreadsheet a client is sent, and the acceptance that books it
+export const quoteStructure = (request: Record<string, unknown>) =>
+  call<{ result_id: string; status: string }>('POST', '/book/structure', signed(request));
+const quoted = (id: string) => `/book/quote/${encodeURIComponent(id)}`;
+export const getQuote = (id: string) => call<PendingQuote>('GET', quoted(id));
+export const getQuoteSheet = async (id: string) =>
+  (await send('GET', `${quoted(id)}/sheet`)).blob();
+export const acceptQuote = (id: string) =>
+  call<Acceptance>('POST', '/book/quote', signed({ quote_id: id }));
 export const postDescribe = (doc: JobDoc) => call<DescribeResult>('POST', '/describe', doc);
 export const postValidate = (doc: JobDoc) => call<ValidateResult>('POST', '/validate', doc);
 export const postExecute = (doc: JobDoc) =>
