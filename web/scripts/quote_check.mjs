@@ -220,7 +220,17 @@ check('the solved number is set apart on the market\'s axis; a solved ticket cel
       [quote.solvedNumbers(legs).map((one) => [one.what, one.on, Number(one.value.toFixed(4))]),
        quote.solvedNumbers([{ leg: { role: 'tier_1', solved: { 'tiers[0].coupon': 2.85 } },
                               read: {} }])],
-      [[['financing strike', 'USDZAR', 17.1051]], [{ what: 'tiers[0].coupon', value: 2.85 }]]);
+      [[['financing strike', 'USDZAR', 17.1051]], [{ what: 'coupon, tiers row 1', value: 2.85 }]]);
+
+check('a solved parameter reads in words, a table\'s cell by its row counted from one',
+      'the path shown as the recipe writes it, which reads a desk tiers[0].coupon; or the row '
+      + 'counted from nothing, which names the first tier row 0',
+      [quote.pathWords('strike_price'), quote.pathWords('tiers[0].coupon'),
+       quote.pathWords('tiers[2].upper_cap'),
+       quote.spreadText({ ...ZARUSD, charged_on: 'tiers[0].coupon', edge: 10, net_mid: 5 })],
+      ['strike price', 'coupon, tiers row 1', 'upper cap, tiers row 3',
+       "The market's two-way spread costs the client 10 USD, charged on the coupon, tiers row 1; at "
+       + 'mid the legs are worth 5 USD.']);
 
 check('the spot and the forward read on the pair as the market quotes it',
       'the level read as the ticket wrote it, which shows a USDZAR desk a spot of 0.0576',

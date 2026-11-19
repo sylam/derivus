@@ -105,6 +105,14 @@ export function draftOf(quote: Quote, declared: StructureType): Draft {
 
 const words = (key: string) => key.replace(/_/g, ' ').toLowerCase();
 
+/** A parameter path in words: `strike_price` as it reads, a table's `tiers[0].coupon` as its cell
+ * and row, counted from one. */
+export function pathWords(path: string): string {
+  const [, key, row, cell] = PATH.exec(path) ?? [];
+  return cell === undefined ? words(key ?? path)
+    : `${words(cell)}, ${words(key)} row ${Number(row) + 1}`;
+}
+
 /** What the recipe solves rather than the ticket stating, in words: a leg's field off its declared
  * step `Solve <leg>.<field> to <target>`, the target's premiums named; any other solve as it is
  * declared. */
@@ -178,7 +186,7 @@ export function solvedNumbers(legs: TicketLeg[]): { what: string; value: number;
       const level = solved && read[solved];
       return level && typeof level.value === 'number'
         ? [{ what: `${leg.role} ${solved}`, value: level.value, on: String(read.on?.value ?? '') }]
-        : [{ what: key, value }];
+        : [{ what: pathWords(key), value }];
     }));
 }
 
@@ -200,7 +208,7 @@ export function onMarketAxis(level: number, pair: unknown, surface: unknown):
 export function spreadText(quote: Quote): string {
   if (quote.spread_note) return quote.spread_note;
   const on = quote.charged_on === 'premium' ? 'added to the premium'
-    : `charged on the ${words(quote.charged_on)}`;
+    : `charged on the ${pathWords(quote.charged_on)}`;
   return `The market's two-way spread costs the client ${formatNumber(quote.edge, 'money')} `
     + `${quote.currency}, ${on}; at mid the legs are worth ${formatNumber(quote.net_mid, 'money')} `
     + `${quote.currency}.`;

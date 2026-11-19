@@ -451,7 +451,8 @@ function TicketLegs({ legs, currency }: { legs: TicketLeg[]; currency: string })
           <tr>
             <th>Leg</th><th>Client</th><th>On</th><th className="n">Amount</th><th>Ccy</th>
             <th className="n">Strike</th><th className="n">Barrier</th><th>Terms</th>
-            <th className="n">Premium {currency}</th><th />
+            <th className="n" title="what the leg is worth to the client at mid; the net adds the spread and the margin">
+              At mid {currency}</th><th />
           </tr>
         </thead>
         <tbody>
