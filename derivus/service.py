@@ -6937,8 +6937,8 @@ class StructureJob:
     `DV_HOME/tmp` and the one the client accepts is filed by `/book/quote`, from this file. Under a
     home the pending file therefore carries everything that acceptance will file - the book's two
     hashes and the values vector behind them, the plan the acceptance leaves the book at, how old
-    the board was, the `portfolio` it books into, who quoted it and what the client asked - and
-    with no home it is byte for byte what it always was.
+    the board was, the `portfolio` it books into and what the client asked. On every desk it says
+    who quoted it, `quoted_by`.
     """
 
     def __init__(self, document, structure, params, netting_set=None, request=None, margin=None,
@@ -6994,9 +6994,9 @@ class StructureJob:
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')
         outcome['files'] = dict(self.sheet(directory, outcome), quote=path)
-        # one file IS the pending trade: what was quoted, the deal that books it, and WHEN
+        # one file IS the pending trade: what was quoted, the deal that books it, WHEN and by whom
         record = {'quote': {name: value for name, value in outcome.items() if name != 'deal'},
-                  'deal': outcome['deal'], 'quoted_at': quoted_at}
+                  'deal': outcome['deal'], 'quoted_at': quoted_at, 'quoted_by': self.actor}
         if pinned is not None:
             # a plan does not read a spot, so the live one this copy now carries cannot move it:
             # this is the plan the acceptance books the book to, the quote's model pin included
@@ -7005,10 +7005,9 @@ class StructureJob:
             # the values vector travels as JSON and canonicalises back to the hash beside it, so
             # the acceptance files the vector this quote was struck on and not a second reading
             record['pinned'] = dict(pinned, values=json.loads(pinned['values'].decode('utf-8')))
-            # who quoted, what the client asked and where it books: the acceptance files them
-            # under the ACCEPTOR's seat, so the file is where they survive
-            record['quoted_by'], record['request'] = self.actor, self.request
-            record['portfolio'] = self.portfolio
+            # what the client asked and where it books: the acceptance files them under the
+            # ACCEPTOR's seat, so the file is where they survive
+            record['request'], record['portfolio'] = self.request, self.portfolio
             outcome['pinned'] = {name: value for name, value in record['pinned'].items()
                                  if name != 'values'}
         with open(path, 'w', encoding='utf-8', newline='') as handle:
@@ -7033,8 +7032,9 @@ def book_structure(request: dict):
     moves, a quote not being a trade. The SPOT on that copy is this workstation's live one when the
     terminal is up and the book's last ticked one with a named reason when it is not; the surface
     and curves are always the book's, and the outcome's `spot` block says which. What it DOES write
-    is the pending trade: `DV_HOME/tmp/<quote_id>.json` carries the quote, the composed deal and
-    `quoted_at`, with a `.xlsx` sheet beside it when the `quote` extra is installed.
+    is the pending trade: `DV_HOME/tmp/<quote_id>.json` carries the quote, the composed deal,
+    `quoted_at` and `quoted_by`, the `actor` named, with a `.xlsx` sheet beside it when the `quote`
+    extra is installed.
 
     `netting_set` is WHO the quote is for: the Reference of a `NettingCollateralSet` already in the
     book. Checked HERE against the book as it stands, and an unknown one refuses 422 naming the
@@ -7050,7 +7050,7 @@ def book_structure(request: dict):
     ACCEPTS it, by `/book/quote`, out of this pending file, and the ones nobody accepts die in
     `DV_HOME/tmp`. Under a home the file therefore carries what that acceptance will file - the
     book's two hashes and the values vector behind them, the ticket an approval would sign, how old
-    the board was when the price was given, `quoted_by` and the relayed client `request`.
+    the board was when the price was given and the relayed client `request`.
     """
     document, etag = live_book().read()
     structure = request.get('structure')
@@ -7074,7 +7074,7 @@ def book_structure(request: dict):
                               'netting_set': netting_set, 'margin': margin,
                               'at': time.perf_counter()})
     # the seat is resolved HERE, where a request's token is: the worker thread carries none
-    seat = spine.actor(request.get('actor')) if spine.configured() else None
+    seat = spine.actor(request.get('actor')) if spine.configured() else request.get('actor')
     submitted = Job(result_id, StructureJob(document, structure, params, netting_set,
                                             request.get('request'), margin, seat, portfolio), {},
                     spine.CURIOSITY, actor=seat, book=book_name(document))

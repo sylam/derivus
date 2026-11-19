@@ -4858,11 +4858,13 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
     The last step cannot be faked: `net` is what the runner computed while solving, and the book's
     value is the engine on the composed deal actually written, priced from the file. Zero is
     asserted against a leg premium - a net of zero means nothing if both legs are worth nothing.
+    The desk records nothing, and the quote resource still says who quoted it.
 
-    Killing mutation: the approval booking the quote as client paper rather than its mirror, which
-    books the bank's side the wrong way round.
+    Killing mutations: the approval booking the quote as client paper rather than its mirror, which
+    books the bank's side the wrong way round; `quoted_by` written only under a record, which reads
+    null here.
     """
-    quote = quote_of('ZeroCostCollar', COLLAR)
+    quote = quote_of('ZeroCostCollar', COLLAR, actor='desk-a')
     premium = max(abs(leg['premium']) for leg in quote['legs'])
 
     assert quote['structure'] == 'ZeroCostCollar'
@@ -4880,6 +4882,7 @@ def test_a_quoted_collar_is_filed_pending_and_books_at_zero(quoting, tmp_path):
     filed = json.loads(pending.read_text())
     assert filed['deal'] == quote['deal']
     assert filed['quote']['quote_id'] == quote['quote_id'] and 'deal' not in filed['quote']
+    assert CLIENT.get('/book/quote/{}'.format(quote['quote_id'])).json()['quoted_by'] == 'desk-a'
 
     booked = CLIENT.post('/book/quote', json={'quote_id': quote['quote_id']}).json()
     on_disk = json.loads(quoting.read_text())
