@@ -44,7 +44,7 @@ const BARRIER_FIELDS = ['Barrier_Price', 'Barrier'];
 const UNDERLYING_FIELDS = ['Commodity', 'Reference_Type', 'Equity', 'Index'];
 
 /** A schedule each row of which is a fixing paying the deal's amount; one the amount averages. */
-const STRIP_FIELDS = [
+export const STRIP_FIELDS = [
   'TARF_ExpiryDates', 'Accumulator_ExpiryDates', 'Extendable_ExpiryDates', 'Observation_Dates',
 ];
 const AVERAGE_FIELDS = ['Sampling_Data'];
@@ -125,7 +125,8 @@ export function pick(deal: Record<string, unknown>, candidates: string[]): Picke
 }
 
 /** A type's declared fields, its sections merged; undefined where the schema declares no type. */
-function fieldsOf(schema: Schema | null, object: string): Record<string, Descriptor> | undefined {
+export function fieldsOf(schema: Schema | null, object: string):
+  Record<string, Descriptor> | undefined {
   const sections = schema?.Instrument.types[object];
   return sections
     && Object.assign({}, ...sections.map((name) => schema!.Instrument.sections[name]));
@@ -451,6 +452,10 @@ export function toRows(
     };
   });
 }
+
+/** One deal as a blotter row of its own, nothing above or under it. */
+export const dealRow = (deal: Record<string, unknown>): BlotterRow =>
+  toRows([{ Instrument: { '.Deal': deal } }], [], undefined)[0];
 
 /** A row's name as it reads under its structure's row: what follows the `Structure_Reference` a
  * leg's own reference begins with - its role - and any other reference whole. */

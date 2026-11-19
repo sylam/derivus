@@ -8,7 +8,7 @@
 // the XVA verb never runs anything at all. A recalc is asked for through the MCP verbs, and this
 // module has no vocabulary for one on purpose.
 
-import { quoted, type BlotterRow } from './blotter';
+import { dealRow, quoted } from './blotter';
 import { clientName, type Entity, type Position } from './positions';
 import {
   COLLATERAL, axisText, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
@@ -280,12 +280,9 @@ export function spotQuoted(factor: string, level: number, market: Market | null)
   const domestic = String(token(market?.['Price Factors']?.[factor], 'Domestic_Currency')
     || token(market?.['System Parameters'], 'Base_Currency') || '');
   if (family !== 'FxRate' || !domestic) return undefined;
-  const deal = { Currency: domestic, Underlying_Currency: currency, Buy_Currency: currency,
-                 Sell_Currency: domestic, Strike_Price: level };
-  const row: BlotterRow = { path: factor, target: null, depth: 0, object: family,
-                            reference: factor, container: false, ignored: false, deal,
-                            children: [] };
-  const read = quoted(row, market);
+  const read = quoted(dealRow({ Currency: domestic, Underlying_Currency: currency,
+                                Buy_Currency: currency, Sell_Currency: domestic,
+                                Strike_Price: level }), market);
   if (!read.on || typeof read.strike?.value !== 'number') return undefined;
   return { pair: String(read.on.value), level: read.strike.value,
            turned: read.strike.value !== level, held: `${domestic} per 1 ${currency}` };
