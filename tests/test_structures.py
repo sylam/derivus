@@ -637,11 +637,13 @@ def test_a_book_with_no_two_way_quotes_exactly_as_it_always_did(book):
     price; only a real spread can.
 
     A QUOTE NEVER REPORTS A SPREAD IT DID NOT CHARGE, and the two books say different things. With
-    no two-way at all the three spread keys are null and `spread_note` names the absence. Zero-wide,
-    the spread was read and IS zero, and the rows say so pillar by pillar - which is a statement
-    about the market rather than about the book.
+    no two-way at all the three spread keys are null and `spread_note` names the absence, the one
+    sentence saying the quote is the mid: the risk note, the book declaring no policy, says only
+    that nothing was tightened. Zero-wide, the spread was read and IS zero, and the rows say so
+    pillar by pillar - which is a statement about the market rather than about the book.
 
-    Killing mutation: a leg no vega reaches charged zero rather than nothing.
+    Killing mutations: a leg no vega reaches charged zero rather than nothing; the risk note saying
+    the quote is the full two-way spread, which contradicts `spread_note` on this book.
     """
     ask = forward_extra_params(floor=SPOT * 0.97)
     mid = structures.quote(book, 'ForwardExtra', ask)
@@ -651,6 +653,7 @@ def test_a_book_with_no_two_way_quotes_exactly_as_it_always_did(book):
     assert [row['spread_source'] for row in mid['legs']] == [None, None]
     assert [row['spread'] for row in mid['legs']] == [None, None]
     assert 'Quoted_Bid' in mid['spread_note'] and 'FXVolPrices.USD.ZAR' in mid['spread_note']
+    assert 'the quote is the mid' in mid['spread_note'] and 'two-way' not in mid['risk']['note']
     assert mid['edge'] == 0.0 and abs(mid['net']) <= SOLVE_TOLERANCE
 
     assert [row['spread_charge'] for row in zero_wide['legs']] == [0.0, 0.0]

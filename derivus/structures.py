@@ -1948,8 +1948,8 @@ def risk_impact(book, params, reference, surface, legs, halves, charge_full, cac
     empty = {'coordinates': 'quote-space', 'buckets': [], 'saving': None, 'charge_full': None,
              'charge_effective': None, 'scale': None, 'policy': policy}
     if policy is None:
-        return dict(empty, note='the book declares no {} block - the quote is the full two-way '
-                                'spread, exactly as it was before'.format(Structure.POLICY.name))
+        return dict(empty, note='the book declares no {} block - the risk step does not run, so '
+                                'no charge is tightened'.format(Structure.POLICY.name))
     if not halves:
         return dict(empty, note='{} carries no two-way - there is no spread to tighten'.format(
             prices_block(surface)))
