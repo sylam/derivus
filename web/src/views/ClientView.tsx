@@ -389,7 +389,8 @@ function TradeRow({ trade, market, schema, recording, mark }: {
       {recording && (
         <>
           <td className="n">{closed ? '0' : formatNumber(position!.quantity)}</td>
-          <td>{closed ? 'closed: the record holds nothing of it' : statusText([position!])}</td>
+          <td title={closed ? 'the record holds nothing of it' : undefined}>
+            {closed ? 'closed' : statusText([position!])}</td>
         </>
       )}
       <td className={`n${mark && mark.value < 0 ? ' neg' : ''}`} title={mark && String(mark.value)}>
