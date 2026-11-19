@@ -6,14 +6,14 @@ import {
 import { EmptyState } from '../components/EmptyState';
 import { currencyOf, lagsBook, stampText } from '../desk';
 import { NO_PAPER, byPath, clientName, nodeAt, type Position, type Ticket } from '../positions';
-import { clientText, salesNames, verdictOf, type Verdict } from '../quote';
+import { clientText, verdictOf, type Verdict } from '../quote';
 import { WORKSPACES } from '../registry';
 import { pinnedAt } from '../spine';
 import { clockOf, marketOf, useApp, written } from '../state';
 import { formatNumber, ungrouped } from '../tokens';
 import {
-  bookedBy, datesOf, historyOf, legsOf, markOf, tradeAt, tradeSize, unwindFill, unwindWords,
-  wholeRecord, type Price,
+  bookedBy, datesOf, historyOf, legsOf, markOf, tradeAt, tradeName, tradeSize, unwindFill,
+  unwindWords, wholeRecord, type Price,
 } from '../trade';
 import type { ActivityRow, PendingQuote } from '../types';
 import { Side, Value } from './BlotterView';
@@ -37,7 +37,7 @@ function useRecordRows(recording: boolean, at: string | null) {
 
 /** The quote each execution reference names, null where it names none - all of it null until
  * the first read lands. */
-function useQuotes(references: string[]) {
+export function useQuotes(references: string[]) {
   const [found, setFound] = useState<Record<string, PendingQuote | null> | null>(null);
   const key = references.join('\n');
   useEffect(() => {
@@ -122,10 +122,7 @@ function Terms({ row, set, held, quote }: {
   const units = held?.length ? held.reduce((sum, position) => sum + position.quantity, 0)
     : undefined;
   const read = quoted(row, market, schema);
-  const declared = quote && schema?.Structure?.types[quote.quote.structure];
-  const what = quote ? `${declared ? salesNames(declared)[0] : quote.quote.structure}${
-    quote.quote.variation ? ` · ${quote.quote.variation}` : ''}`
-    : row.children.length ? `${row.object} of ${row.children.length} legs` : row.object;
+  const what = tradeName(row, quote, schema);
   const legs = legsOf(row);
   return (
     <section className="card ticket">

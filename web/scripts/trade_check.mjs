@@ -1,7 +1,7 @@
 // Drives `src/trade.ts` where the eye cannot: which node a path's trade is, which mark is its own,
 // how the record is read whole and what of it is the trade's, who booked it, its size and dates,
-// and what an unwind files and says - and the store's way onto the page from a row naming a trade
-// and back to where it was opened from.
+// what an unwind files and says, and what a ticket to sign says to the seat reading it - and the
+// store's way onto the page from a row naming a trade and back to where it was opened from.
 // Every check names the MUTATION it kills - the change that would still typecheck, still render,
 // and still be wrong.
 //
@@ -193,7 +193,119 @@ check('a row naming a trade or a leg opens the trade\'s page; a set, a position 
        [['SELECT_DEAL', 'position:["x","ISDA-A","BOOK/FX"]'], ['TAB', 'portfolio']],
        [['PICK', 'ISDA-A'], ['TAB', 'paper']]]);
 
-console.log(`\n${ran} checks over 13 functions, ${missed.length} missed`);
+// --- a ticket to sign
+const QUOTED = { quote: { structure: 'ZeroCostCollar', variation: 'floor' } };
+const SCHEMA = {
+  Structure: { types: { ZeroCostCollar: { vernacular: 'zero-cost collar, range forward' } } },
+  Instrument: { types: { NettingCollateralSet: ['Set'] }, sections: { Set: {
+    Collateralized: { value: 'False', values: ['True', 'False'] },
+    Agreement_Currency: { value: '' }, Balance_Currency: { value: '' } } } },
+};
+const collar = rows.get('0/1');
+check('a structure booked from a quote is its sales name and form; any other trade its type, a '
+        + 'structure\'s with its legs counted',
+      'the structure\'s type named where its quote declares a sales name, a collar read as '
+        + 'StructuredDeal; or an undeclared structure left nameless',
+      [trade.tradeName(collar, QUOTED, SCHEMA),
+       trade.tradeName(collar, { quote: { structure: 'Seagull', variation: null } }, null),
+       trade.tradeName(collar, undefined, SCHEMA), trade.tradeName(rows.get('0/0'), undefined, null)],
+      ['zero-cost collar · floor', 'Seagull', 'StructuredDeal of 2 legs', 'FXOptionDeal']);
+
+const OPTION = blotter.dealRow({
+  Object: 'FXOptionDeal', Reference: 'USDZAR-CALL', Currency: 'ZAR', Underlying_Currency: 'USD',
+  Underlying_Amount: 2000000, FX_Volatility: 'USD.ZAR', Option_Type: 'Call', Buy_Sell: 'Buy',
+  Strike_Price: 18.25, Expiry_Date: ts('2027-05-16') });
+const NDF = blotter.dealRow({
+  Object: 'FXNonDeliverableForward', Reference: 'GBPZAR-NDF', Buy_Currency: 'GBP',
+  Buy_Amount: -5000000, Sell_Currency: 'ZAR', Sell_Amount: -113800000,
+  Settlement_Date: ts('2027-02-16') });
+const CROSSES = { 'Price Factors': { 'FXVol.GBP.USD': {}, 'FXVol.USD.ZAR': {} } };
+check('a ticket reads aloud as what it is, the desk\'s side and size, on what, its levels on the '
+        + 'pair - a structure\'s leg by leg with the desk\'s side of each - and when it ends',
+      'the legs\' levels said without the desk\'s side of each, a collar that cannot tell the put '
+        + 'it sells from the call it buys; or a forward\'s outright said as a strike',
+      [trade.ticketWords(OPTION, 'FXOptionDeal', null, null),
+       trade.ticketWords(NDF, 'FXNonDeliverableForward', CROSSES, null),
+       trade.ticketWords(collar, 'zero-cost collar · floor', null, null)],
+      ['FXOptionDeal · desk buys 2,000,000 USD · on USDZAR call · strike 18.25 · expires 2027-05-16',
+       'FXNonDeliverableForward · desk sells 5,000,000 GBP · on GBPZAR · at 22.76 · expires '
+         + '2027-02-16',
+       'zero-cost collar · floor · 1,000,000 USD · on USDZAR · desk sells put 17.5, desk buys call '
+         + '17.76 · expires 2027-05-14']);
+
+const local = (day, hour, minute) => new Date(2026, 10, day, hour, minute).getTime();
+const stamp = (ms) => new Date(ms).toISOString();
+const waited = (since, now) => trade.waitedText(since, now);
+check('a wait reads in minutes within the hour, hours on the day, since yesterday, then days - '
+        + 'counted on the calendar and floored',
+      'days counted in 24-hour blocks: a ticket booked at nine last night read as 12 hours and '
+        + 'not since yesterday, one from three mornings back as 2 days; or the hours rounded up',
+      [waited(stamp(local(19, 9, 0)), local(19, 9, 0) + 30_000),
+       waited(stamp(local(19, 9, 0)), local(19, 9, 12)),
+       waited(stamp(local(18, 23, 50)), local(19, 0, 5)),
+       waited(stamp(local(19, 1, 0)), local(19, 23, 30)),
+       waited(stamp(local(18, 21, 0)), local(19, 9, 0)),
+       waited(stamp(local(16, 10, 0)), local(19, 9, 0))],
+      ['under a minute', '12 minutes', '15 minutes', '22 hours', 'since yesterday', '3 days']);
+check('a wait reads the service\'s own stamps - microseconds and an offset - and a clock ahead of '
+        + 'this one as no wait at all',
+      'the offset dropped, a ticket booked a minute ago in another zone read hours old',
+      [waited('2026-11-19T07:00:00.123456+02:00', Date.parse('2026-11-19T05:01:30Z')),
+       waited('2026-11-19T07:00:00Z', Date.parse('2026-11-19T06:58:00Z')), waited(null, 0)],
+      ['1 minute', 'under a minute', '']);
+
+const PAPER = [
+  { agreement: 'ISDA-CSA', entity: 'A', kind: 'ISDA 2002 with CSA', terms: {
+    Collateralized: 'True', Agreement_Currency: 'USD', Balance_Currency: 'EUR' } },
+  { agreement: 'ISDA-K', entity: 'K', kind: 'ISDA 2002', terms: { Agreement_Currency: 'USD' } },
+  { agreement: 'ISDA-SAYS-CSA', entity: 'S', kind: 'ISDA 2002 with CSA', terms: {
+    Collateralized: 'False' } },
+  { agreement: 'CSA-USD', entity: 'U', kind: 'CSA', terms: {
+    Collateralized: 'True', Agreement_Currency: 'USD' } },
+];
+check('the paper says its agreement and kind, and collateral by its own terms - the flag at its '
+        + 'declared convention where unstated - in the currency its balance is kept in',
+      'an unstated flag read as on, the declared convention ignored; or collateral read off the '
+        + 'document\'s name, a set whose terms say no read as collateralised',
+      ['ISDA-CSA', 'ISDA-K', 'ISDA-SAYS-CSA', 'CSA-USD', 'ISDA-X'].map(
+        (set) => trade.paperText(set, PAPER, SCHEMA)),
+      ['ISDA-CSA (ISDA 2002 with CSA), collateralised in EUR', 'ISDA-K (ISDA 2002), uncollateralised',
+       'ISDA-SAYS-CSA (ISDA 2002 with CSA), uncollateralised', 'CSA-USD (CSA), collateralised in USD',
+       'ISDA-X, which the record declares no agreement for']);
+
+const ticketed = (ticket, lsn, status, actor = 'sales-1') => ({
+  ticket, lsn, fill: lsn, actor, at: `2026-11-19T21:${lsn}:00Z`, status,
+  execution_reference: `EX-${lsn}`, quantity: 1 });
+const position = (reference, path, tickets) => ({
+  reference, agreement: 'ISDA-K', counterparty: 'K', deal_paths: [path], tickets });
+const HELD = [
+  position('RESTRUCK-A', '0/4', [ticketed('t9', 40, 'pending', 'sales-2')]),
+  position('NDF', '0/1', [ticketed('t2', 25, 'pending')]),
+  position('CALL', '0/0', [ticketed('t1', 24, 'approved')]),
+  position('RESTRUCK-B', '0/5', [ticketed('t9', 40, 'pending', 'sales-2')]),
+  position('FWD-2Y', '1/1', [ticketed('t3', 28, 'pending', 'sales-2')]),
+];
+const elsewhere = trade.waitingElsewhere(HELD, [{ key: 't3' }]);
+check('what waits elsewhere is every pending ticket the seat\'s worklist leaves out, oldest first, '
+        + 'a restrike\'s once, in the worklist\'s shape',
+      'the worklist\'s own tickets listed again as waiting on another seat; or a restrike\'s ticket '
+        + 'once per position it moved',
+      [elsewhere.map((row) => row.key), elsewhere[0] && [elsewhere[0].booker, elsewhere[0].reference,
+        elsewhere[0].deal_path, elsewhere[0].agreement, elsewhere[0].since]],
+      [['t2', 't9'], ['sales-1', 'NDF', '0/1', 'ISDA-K', '2026-11-19T21:25:00Z']]);
+
+const holds = (seat, listed) => trade.holdsFor({ booker: 'fx-trader' }, seat, listed)
+  ?.split(':')[0] ?? null;
+check('a seat signs only a ticket its worklist lists that it did not book; no seat, its own and one '
+        + 'not listed each say what holds',
+      'the booker\'s own ticket given its verdicts, an approval four eyes count for nothing; or no '
+        + 'seat at all handed the buttons',
+      [holds(null, true), holds('fx-trader', true), holds('fx-trader', false), holds('risk', true),
+       holds('risk', false)],
+      ['No seat is set', 'Booked by this seat', 'Booked by this seat', null,
+       'This seat does not sign it']);
+
+console.log(`\n${ran} checks over 19 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

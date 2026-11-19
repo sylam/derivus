@@ -2,9 +2,16 @@
 // `quote.ts` are: which node of the file a path's trade is, what it is worth, what happened to it
 // on the record, and what an unwind of it files and leaves.
 
-import { SET, dateOf, sizeOf, type BlotterRow, type Size } from './blotter';
-import { formatNumber } from './tokens';
-import type { ActivityPage, ActivityRow, DealMark, DealNode, Schema } from './types';
+import {
+  SET, cellText, dateOf, fieldsOf, quoted, sizeOf, type BlotterRow, type Picked, type Size,
+} from './blotter';
+import { plural } from './desk';
+import type { Agreement, Position } from './positions';
+import { salesNames } from './quote';
+import { COLLATERAL, formatNumber, uncollateralised } from './tokens';
+import type {
+  ActivityPage, ActivityRow, DealMark, DealNode, Market, PendingQuote, Schema, WorkRow,
+} from './types';
 
 /** The trade a deal path names: the outermost node on the path that is no netting set - a leg
  * naming its structure - beside the reference of the set it sits in, null at the book's root.
@@ -119,4 +126,106 @@ export function unwindWords(held: number, units: number, size: Size, price: Pric
       ? 'no cash moves' : receives > 0 ? `${client} pays the desk ${cash}`
         : `the desk pays ${client} ${cash}`}, and ${left === 0 ? 'nothing is left'
       : `${told(left)} is left`}.`;
+}
+
+// ---- a ticket to sign ---------------------------------------------------------------------------
+
+/** What a trade is in the market's words: a structure booked from a quote by its sales name and the
+ * form it was dealt in, else its type - a structure's with how many legs it has. */
+export function tradeName(row: BlotterRow, quote: PendingQuote | undefined,
+                          schema: Schema | null): string {
+  if (!quote) return row.children.length ? `${row.object} of ${row.children.length} legs` : row.object;
+  const declared = schema?.Structure?.types[quote.quote.structure];
+  return `${declared ? salesNames(declared)[0] : quote.quote.structure}${
+    quote.quote.variation ? ` · ${quote.quote.variation}` : ''}`;
+}
+
+/** A side as the desk says it of itself: it buys, it sells, else it is the side its field names. */
+const sideText = (side?: Picked): string | undefined => side && `desk ${
+  { Buy: 'buys', Sell: 'sells' }[String(side.value)] ?? `is ${String(side.value).toLowerCase()}`}`;
+
+/** A ticket in one line a desk reads aloud: what it is, the desk's side and its size in the
+ * currency it is of, what it is on, its levels on the market's axis - a structure's leg by leg with
+ * the desk's side of each - its terms, and the day it ends. */
+export function ticketWords(row: BlotterRow, name: string, market: Market | null,
+                            schema: Schema | null): string {
+  const levels = (one: BlotterRow, legged: boolean) => {
+    const read = quoted(one, market, schema);
+    return [legged && sideText(sizeOf(one.deal, one.object, schema).side),
+      legged && read.sense?.toLowerCase(),
+      read.strike && `${legged ? '' : read.sense ? 'strike ' : 'at '}${cellText(read.strike.value)}`,
+      read.barrier && `barrier ${cellText(read.barrier.value)}`].filter(Boolean).join(' ');
+  };
+  const read = quoted(row, market, schema);
+  const size = tradeSize(row, schema);
+  const end = row.expiry ?? row.roll;
+  return [name,
+    [sideText(size.side),
+      size.amount && `${cellText(size.amount.value, 'money')} ${size.of?.value ?? ''}`.trim()]
+      .filter(Boolean).join(' '),
+    read.on && `on ${read.on.value}${read.sense ? ` ${read.sense.toLowerCase()}` : ''}`,
+    row.children.length ? row.children.map((leg) => levels(leg, true)).join(', ')
+      : levels(row, false),
+    read.terms?.parts.join(', '), end && `expires ${end}`].filter(Boolean).join(' · ');
+}
+
+/** How long a ticket has waited for its signature at `now`, in words: minutes within the hour, then
+ * hours on the day it was booked, then since yesterday, then days - every count floored, and the
+ * days this browser's calendar ones. */
+export function waitedText(since: string | null, now: number): string {
+  const at = Date.parse(since ?? '');
+  if (!isFinite(at)) return since ?? '';
+  const minutes = Math.floor((now - at) / 60_000);
+  const day = (ms: number) => {
+    const date = new Date(ms);
+    return Date.UTC(date.getFullYear(), date.getMonth(), date.getDate()) / 86_400_000;
+  };
+  const days = Math.round(day(now) - day(at));
+  if (minutes < 1) return 'under a minute';
+  if (minutes < 60) return plural(minutes, 'minute');
+  if (days < 1) return plural(Math.floor(minutes / 60), 'hour');
+  return days === 1 ? 'since yesterday' : plural(days, 'day');
+}
+
+/** The paper a ticket books under in a line: the agreement and the document it is, and whether its
+ * own terms hold collateral - the set's flag, at its declared convention where they state none - in
+ * the currency its balance is kept in; an agreement the record never declared says so. */
+export function paperText(set: string, agreements: Agreement[], schema: Schema | null): string {
+  const paper = agreements.find((row) => row.agreement === set);
+  if (!paper) return `${set}, which the record declares no agreement for`;
+  const fields = fieldsOf(schema, SET) ?? {};
+  const currency = [paper.terms.Balance_Currency, paper.terms.Agreement_Currency].find(Boolean);
+  return `${set} (${paper.kind})${!(COLLATERAL in fields) ? ''
+    : uncollateralised(fields, paper.terms) ? ', uncollateralised'
+      : `, collateralised${currency ? ` in ${currency}` : ''}`}`;
+}
+
+/** The tickets awaiting a second seat that `listed` - the seat's own worklist - leaves out, oldest
+ * first and each once, though a restrike books several positions under one, as rows of the
+ * worklist's shape: what a seat that cannot sign them reads of what waits. */
+export function waitingElsewhere(positions: Position[], listed: WorkRow[]): WorkRow[] {
+  const seen = new Set(listed.map((row) => row.key));
+  const rows: WorkRow[] = [];
+  for (const position of positions) {
+    for (const ticket of position.tickets) {
+      if (ticket.status !== 'pending' || seen.has(ticket.ticket)) continue;
+      seen.add(ticket.ticket);
+      rows.push({ kind: 'pending', what: '', key: ticket.ticket, lsn: ticket.lsn, since: ticket.at,
+                  booker: ticket.actor, reference: position.reference, agreement: position.agreement,
+                  deal_path: position.deal_paths[0] ?? null, client: position.counterparty });
+    }
+  }
+  return rows.sort((a, b) => a.lsn! - b.lsn!);
+}
+
+/** What holds for the seat reading a pending ticket, or null where it signs it: no seat named; the
+ * booker's own, whose verdict four eyes do not count; one the seat's worklist does not list. */
+export function holdsFor(row: WorkRow, seat: string | null, listed: boolean): string | null {
+  if (seat === null) return 'No seat is set: type yours in the seat box at the top right to sign it.';
+  if (row.booker === seat) {
+    return 'Booked by this seat: under four eyes its own verdict counts for nothing, so another '
+      + 'seat signs it.';
+  }
+  return listed ? null : 'This seat does not sign it: the record names its tier, and what it waits '
+    + 'on, only to a seat that may.';
 }
