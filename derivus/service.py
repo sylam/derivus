@@ -2202,11 +2202,39 @@ def terms_moved(document):
     for path, node in netting_sets(document):
         held = paper(node['Instrument']['.Deal'])
         terms = declared.get(held.get('Reference'))
-        fields = [] if terms is None else sorted(
-            key for key in set(held) | set(terms) if held.get(key) != terms.get(key))
+        fields = [] if terms is None else moved_fields(held, terms)
         if fields:
             found.append({'agreement': held['Reference'], 'deal_path': path, 'fields': fields})
     return found
+
+
+def moved_fields(one, other):
+    """The fields the two blocks of terms `one` and `other` state differently, sorted."""
+    return sorted(key for key in set(one) | set(other) if one.get(key) != other.get(key))
+
+
+#: How many fields a restrike's sentence names one by one before it counts them instead.
+FEW_FIELDS = 3
+
+
+def restrike(was, became):
+    """`(changed, words)` for the terms `was` restruck to `became`: `[{field, was, became}]` in
+    wire form, and what the strip's sentence says of them - each field with its two values where
+    few, one holding legs by its name alone, else how many. None and nothing where either is not
+    held."""
+    if was is None or became is None:
+        return None, ''
+    changed = [{'field': field, 'was': was.get(field), 'became': became.get(field)}
+               for field in moved_fields(was, became)]
+    if len(changed) > FEW_FIELDS:
+        return changed, ': {} fields'.format(len(changed))
+
+    def said(row):
+        held = [plain(row[side]) for side in ('was', 'became')]
+        return row['field'] if any(isinstance(one, (tuple, dict)) for one in held) else (
+            '{} {} to {}'.format(row['field'], *held))
+
+    return changed, ': ' + ', '.join(map(said, changed))
 
 
 def behind(pinned):
@@ -2563,7 +2591,7 @@ def book_activity(since: str = None, limit: int = 200, actor: str = None):
     vocabulary, so it costs the length of the history rather than the price of a key, and a type
     the declared table has no sentence for renders its own name rather than dropping out of the
     sequence. THE PAGE IS TOLD (`told`): this box opens the bodies of the rows it answers, so each
-    names what it is about and who did it, and says what it opens.
+    names what it is about and who did it, and says what it opens - a restrike, what it moved.
 
     A PAGE WALKS THE RECORD FORWARD. With `?since=` it is the OLDEST `limit` rows after that
     position and the cursor is THE LAST ROW DELIVERED, so a reader asking again with the cursor it
@@ -2608,15 +2636,17 @@ def told(rows):
     try:
         return telling(rows)
     except spine.SpineRefused:
-        return [dict(row, by=row['actor'], deal_path=None, agreement=None, entity=None)
-                for row in rows]
+        return [dict(row, by=row['actor'], deal_path=None, agreement=None, entity=None,
+                     changed=None) for row in rows]
 
 
 def telling(rows):
     """The strip's `rows`, each its `summary` naming the trade, agreement or client it is about,
     `by` who did it - the refused seat on a denial, the tier on the hub's own approval - and the
-    `deal_path`, `agreement` and `entity` it opens, null where it names none. A box serving no
-    book names a trade off the record's own copy of its terms, at no path."""
+    `deal_path`, `agreement` and `entity` it opens, null where it names none. A restrike's
+    `changed` is the fields it moved (`restrike`), null on every other row and where this box's
+    store lacks either set of terms. A box serving no book names a trade off the record's own copy
+    of its terms, at no path."""
     if not rows:
         return rows
     document = None if BOOK is None else BOOK.read()[0]
@@ -2653,6 +2683,11 @@ def telling(rows):
 
     held = {row['lsn']: about(row['event_type'], bodies[row['lsn']]) for row in rows
             if row['lsn'] in bodies}
+    # the terms each restrike moved from and to, where this box's store holds them
+    restruck = {bodies[row['lsn']][key] for row in rows if row['event_type'] == 'amendment'
+                for key in ('instrument', 'amended_to')}
+    terms = spine.folded(lambda log: {address: json.loads(log.store.get(address).decode(
+        'utf-8')) for address in restruck if log.store.has(address)}) if restruck else {}
     # a row opens the terms the file holds now, a restruck deal's last
     moved = {row['instrument']: row['amended_to'] for row in standing if row['amended_to']}
     now = {instrument: amended_head(moved, instrument) for instrument, _ in held.values()
@@ -2664,7 +2699,8 @@ def telling(rows):
     def said(row):
         kind, body, actor = row['event_type'], bodies.get(row['lsn']), row['actor']
         instrument, act = held.get(row['lsn'], (None, None))
-        answer = {'by': actor, 'deal_path': None, 'agreement': None, 'entity': None}
+        answer = {'by': actor, 'deal_path': None, 'agreement': None, 'entity': None,
+                  'changed': None}
         if body is None:
             return answer
         if instrument is not None:
@@ -2685,8 +2721,10 @@ def telling(rows):
                 body['execution_reference']))
         if instrument is not None:
             if kind == 'amendment':
-                return dict(answer, summary='amended the terms of {} - a restrike, ticketed '
-                                            'again'.format(what))
+                changed, words = restrike(terms.get(body['instrument']),
+                                          terms.get(body['amended_to']))
+                return dict(answer, changed=changed, summary='amended the terms of {}{} - a '
+                            'restrike, ticketed again'.format(what, words))
             if kind == 'rejection':
                 return dict(answer, summary='refused {}: {}'.format(what, body['reason']))
             if kind == 'approval' and actor == writer:

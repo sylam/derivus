@@ -3301,8 +3301,46 @@ def test_a_strip_row_names_the_trade_who_did_it_and_what_it_opens(recorded, desk
          auto['deal_path'], CLIENT_SET),
         (RISK_SEAT, 'refused: holds no approve scope over spine-desk, so its approval was not '
                     'filed', None, None),
-        (ACTOR, 'amended the terms of {} - a restrike, ticketed again'.format(big_trade),
-         big['deal_path'], CLIENT_SET)], told
+        (ACTOR, 'amended the terms of {}: Amount {} to 300000.0 - a restrike, ticketed '
+                'again'.format(big_trade, BIG), big['deal_path'], CLIENT_SET)], told
+
+
+def test_a_restrike_row_says_what_it_moved(recorded, desk):
+    """A RESTRIKE'S ROW SAYS WHAT CHANGED, off the two sets of terms the record holds: each field
+    it moved with what it was and what it became, as the file writes them, and its sentence says
+    them where they are few. Moving the amount and the payment date reads both in the sentence;
+    moving four fields counts them; the fill beside them moved nothing.
+
+    Killing mutation: the two sets of terms read the wrong way round, which says the restrike
+    moved the amount from 300,000 to 250,000.
+    """
+    with_client(desk)
+    booked = ticketed('EXEC-1').json()
+    later = {'.Timestamp': '2027-06-28'}
+    assert restruck(booked['deal_path'], Amount=300_000.0, Payment_Date=later)['written']
+    assert restruck(booked['deal_path'], Amount=400_000.0, Currency='USD', Discount_Rate='USD',
+                    Payment_Date={'.Timestamp': '2028-06-28'})['written']
+
+    told = [{key: value for key, value in row.items()
+             if key not in ('lsn', 'record_time', 'effective_time')}
+            for row in strip()['rows'] if row['event_type'] in ('fill', 'amendment')]
+    trade = {'actor': ACTOR, 'book': 'spine-desk', 'by': ACTOR, 'deal_path': booked['deal_path'],
+             'agreement': CLIENT_SET, 'entity': None}
+    assert told == [
+        dict(trade, event_type='fill', changed=None,
+             summary='booked EXEC-1 for CPTY_A under CLIENT_A, execution EXEC-1'),
+        dict(trade, event_type='amendment', changed=[
+            {'field': 'Amount', 'was': 250_000.0, 'became': 300_000.0},
+            {'field': 'Payment_Date', 'was': {'.Timestamp': '2026-06-28'}, 'became': later}],
+            summary='amended the terms of EXEC-1 for CPTY_A: Amount 250000.0 to 300000.0, '
+                    'Payment_Date 2026-06-28 to 2027-06-28 - a restrike, ticketed again'),
+        dict(trade, event_type='amendment', changed=[
+            {'field': 'Amount', 'was': 300_000.0, 'became': 400_000.0},
+            {'field': 'Currency', 'was': 'ZAR', 'became': 'USD'},
+            {'field': 'Discount_Rate', 'was': 'ZAR', 'became': 'USD'},
+            {'field': 'Payment_Date', 'was': later, 'became': {'.Timestamp': '2028-06-28'}}],
+            summary='amended the terms of EXEC-1 for CPTY_A: 4 fields - a restrike, ticketed '
+                    'again')], told
 
 
 def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk):
@@ -3853,7 +3891,7 @@ def test_a_partial_unwind_leaves_the_file_and_the_record_agreeing(recorded, book
 #: Every field one line of the strip carries: the envelope, the sentence the service tells it in,
 #: who did it and what it opens.
 STRIP_FIELDS = {'lsn', 'record_time', 'effective_time', 'actor', 'event_type', 'book', 'summary',
-                'by', 'deal_path', 'agreement', 'entity'}
+                'by', 'deal_path', 'agreement', 'entity', 'changed'}
 
 
 def strip(**params):

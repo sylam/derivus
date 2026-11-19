@@ -1588,7 +1588,8 @@ def book_activity(since: int | None = None, limit: int = 200,
     it is TRUE, who said it, and the sentence for what it was: `summary` names the trade and
     client, agreement or entity it is about, `by` is who did it (the seat refused on a refusal,
     the tier on an automatic signature), and `deal_path`, `agreement` and `entity` are what it
-    names, null where it names none.
+    names, null where it names none; on a restrike `changed` is each field it moved, `{field, was,
+    became}`.
 
     Newest last, beside the `lsn` to ask again from. A PAGE WALKS FORWARD: with `since` it is the
     OLDEST `limit` rows after that position and the `lsn` is the last row delivered, so asking

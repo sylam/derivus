@@ -7860,7 +7860,7 @@ def test_the_frames_read_is_the_twelve_fields_and_the_strip_is_six(recorded):
     assert canonical_bytes(strip) != canonical_bytes(held)
     kept = set(strip[0]) & set(FRAME_FIELDS)
     assert len(kept) == 6 and set(strip[0]) - kept == {
-        'summary', 'by', 'deal_path', 'agreement', 'entity'}
+        'summary', 'by', 'deal_path', 'agreement', 'entity', 'changed'}
     assert set(FRAME_FIELDS) - kept == {
         'body', 'entitlement_class', 'event_hash', 'event_version', 'idempotency_tag', 'prev_hash'}
 
