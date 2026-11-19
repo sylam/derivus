@@ -190,7 +190,7 @@ def receiver(expiry, dates, **terms):
         'Payer_Receiver': 'Receiver', 'Settlement_Style': 'Physical', 'Option_Expiry_Date': expiry,
         'Swap_Effective_Date': dates[0], 'Swap_Maturity_Date': dates[-1], 'Settlement_Date': expiry,
         'Principal': 4e6, 'Swap_Rate': 5.0, 'Index_Tenor': pd.DateOffset(months=12),
-        'Index_Day_Count': 'ACT_365', 'Pay_Frequency': pd.DateOffset(months=12),
+        'Pay_Frequency': pd.DateOffset(months=12),
         'Pay_Day_Count': 'ACT_365', 'Receive_Frequency': pd.DateOffset(months=12),
         'Receive_Day_Count': '_30_360'}, **terms)},
         'Children': [

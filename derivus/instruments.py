@@ -782,16 +782,15 @@ class Deal(object):
             utils.adjust_date(pays, 'Modified_Following', day)
             for day in (dates[:-1] if timing and read(timing) in ('Begin', 'Discounted') else dates[1:])])
 
-    def float_index(self, calendars, day_count, frequency):
-        """How the deal's floating index fixes (`utils.FloatIndex`), off its `Index_Day_Count`, the
-        floating leg's `day_count` where blank, `Reset_Type`, `Index_Offset`, `Index_Calendars`,
-        `Index_Publication_Calendars` and the floating leg's `frequency`."""
+    def float_index(self, calendars, frequency):
+        """How the deal's floating index fixes (`utils.FloatIndex`), off its `Reset_Type`,
+        `Index_Offset`, `Index_Calendars`, `Index_Publication_Calendars` and the floating leg's
+        `frequency`, its rate accruing in the leg's own day count."""
         def calendar(key):
             return utils.business_day(calendars, self.field.read(key))
 
         return utils.FloatIndex(
-            utils.DayCount.code(self.field.read('Index_Day_Count', day_count)), self.field.read('Reset_Type'),
-            int(self.field.read('Index_Offset', 0)), calendar('Index_Calendars'),
+            self.field.read('Reset_Type'), int(self.field.read('Index_Offset', 0)), calendar('Index_Calendars'),
             calendar('Index_Publication_Calendars'), frequency)
 
     def spot_lag(self, kind, name, all_factors, base_date, calendars, other=None):
@@ -2929,8 +2928,7 @@ class SwapInterestDeal(Deal):
             base_date, time_grid, dates, -sign * self.field['Principal'], self.field['Amortisation'],
             self.field['Known_Rates'], self.field['Index_Tenor'], self.field['Index_Tenor'],
             utils.DayCount.code(self.field[floating + 'Day_Count']), self.field['Floating_Margin'] / 10000.0,
-            self.field.get('Reference'), pays, self.float_index(
-                calendars, self.field[floating + 'Day_Count'], self.field[floating + 'Frequency']))
+            self.field.get('Reference'), pays, self.float_index(calendars, self.field[floating + 'Frequency']))
 
         field_index['Discounted'] = self.field[floating + 'Timing'] == 'Discounted'
         field_index['Compounding'] = self.field['Fixed_Compounding'] == 'Yes'
@@ -3475,8 +3473,7 @@ class CapDeal(Deal):
                     (1.0 if self.field['Buy_Sell'] == 'Buy' else -1.0) * Principal,
                     Amortisation, Known_Rates, self.field['Index_Tenor'], self.field['Reset_Frequency'],
                     utils.DayCount.code(self.field['Accrual_Day_Count']), self.field[strike] / 100.0,
-                    self.field.get('Reference'), self.pays, self.float_index(
-                        calendars, self.field['Accrual_Day_Count'], self.field['Payment_Interval']))
+                    self.field.get('Reference'), self.pays, self.float_index(calendars, self.field['Payment_Interval']))
             field_index.update(
                 SettleCurrency=self.field['Currency'], CompoundingMethod='None',
                 AveragingMethod=self.field['Averaging_Method'], Model=pricer,
@@ -3581,8 +3578,7 @@ class SwaptionDeal(Deal):
         '#### The Vol',
         '',
         '$\\sigma$ is the **Forecast_Rate_Volatility** surface at moneyness $s-K$ (decimal), expiry $t_0-t$ in',
-        'the discount curve\'s day count and a tenor in **Index_Day_Count** years, the floating leg\'s where',
-        'blank: $T_2-T_1$ for a swap that',
+        'the discount curve\'s day count and a tenor in the floating leg\'s day count: $T_2-T_1$ for a swap that',
         'does not amortise, and its duration-equivalent tenor for one that does. On the axis $\\delta_i$,',
         '$T_2-T_1$ at the last accrual end $t_n$ of the fixed leg its terms spell and proportional to the',
         'days from $T_1$ before it, with $P_i$ that leg\'s principal over its first, $c_i$ its rate times',
@@ -3712,7 +3708,8 @@ class SwaptionDeal(Deal):
         field_index['Cash_Settled'] = self.field['Settlement_Style'] != 'Physical'
         fixed, floating, sign = ('Pay_', 'Receive_', -1) if self.field['Payer_Receiver'] == 'Payer' else (
             'Receive_', 'Pay_', 1)
-        index = self.float_index(calendars, self.field[floating + 'Day_Count'], self.field[floating + 'Frequency'])
+        index = self.float_index(calendars, self.field[floating + 'Frequency'])
+        day_count = utils.DayCount.code(self.field[floating + 'Day_Count'])
 
         def fixed_leg(legs, leg=fixed):
             dates, pays = legs[leg]
@@ -3726,11 +3723,11 @@ class SwaptionDeal(Deal):
             return utils.TensorCashFlows.generate_float(
                 base_date, time_grid, dates, -sign * self.field['Principal'],
                 self.field[floating + 'Amortisation'], None, self.field['Index_Tenor'],
-                self.field['Index_Tenor'], utils.DayCount.code(self.field[floating + 'Day_Count']),
-                self.field['Floating_Margin'] / 10000.0, self.field.get('Reference'), pays, index)
+                self.field['Index_Tenor'], day_count, self.field['Floating_Margin'] / 10000.0,
+                self.field.get('Reference'), pays, index)
 
         def tenor(start, end):
-            return utils.DayCount.accrual(base_date, (end - start).days, index.day_count)
+            return utils.DayCount.accrual(base_date, (end - start).days, day_count)
 
         expiry, effective, maturity = (self.field[key] for key in (
             'Option_Expiry_Date', 'Swap_Effective_Date', 'Swap_Maturity_Date'))

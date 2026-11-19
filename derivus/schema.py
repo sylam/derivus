@@ -1195,11 +1195,10 @@ PRICING = Group('Pricing', 'Pricing', [
     F('Discount_Rate', 'Text', default=REQUIRED, factors=['InterestRate'])
 ])
 
-#: How a floating index fixes: its tenor, day count, the calendars it is read and published on,
-#: the offset to the fixing and whether it resets in advance or in arrears.
+#: How a floating index fixes: its tenor, the calendars it is read and published on, the offset to
+#: the fixing and whether it resets in advance or in arrears.
 FLOATING_INDEX = Group('FloatingIndex', 'Floating index', [
     F('Index_Tenor', 'Period', default='3M', convention=True),
-    F('Index_Day_Count', 'Text', default='', convention=True, values=('',) + DAY_COUNTS),
     F('Index_Calendars', 'Text', default='', convention=True),
     F('Index_Publication_Calendars', 'Text', default='', convention=True,
       description='The calendar the index is published on, a reset reading the rate published on or '

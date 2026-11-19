@@ -722,7 +722,7 @@ DECLARED = {
     'Calendars': None, 'Compounding': 'No', 'Compounding_Method': 'None',
     'Day_Count': 'ACT_365', 'Discount_Rate_Volatility': '', 'First_Coupon_Date': None,
     'Fixed_Compounding': 'No', 'Floating_Margin': 0.0, 'FX_Reset_Offset': 0,
-    'Index_Calendars': None, 'Index_Day_Count': '', 'Index_Offset': 0,
+    'Index_Calendars': None, 'Index_Offset': 0,
     'Index_Publication_Calendars': None, 'Index_Tenor': {'.DateOffset': '3M'},
     'Interest_Rate_Volatility': '', 'Known_FX_Rates': None, 'Known_Rate': 0.0, 'Known_Rates': None,
     'Pay_Accrual_Calendars': None, 'Pay_Day_Count': 'ACT_365', 'Pay_First_Coupon_Date': None,

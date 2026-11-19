@@ -113,8 +113,8 @@ rolling its end past one adding none; **Reset_Type** `Arrears` takes each reset 
 period's end where it holds one reset, and `Advance` one earlier, the previous period's start where
 it holds one reset and the first period's a leg period before its own. A reset fixes
 **Index_Offset** business days of **Index_Calendars** before its window (weekdays where blank), a
-known rate being the row stated for that day, and its rate accrues on **Index_Day_Count** ($\alpha_2$
-above), the leg's own day count where blank. Under **Index_Publication_Calendars** a reset reads the
+known rate being the row stated for that day, and its rate accrues on the leg's own day count
+($\alpha_2$ above). Under **Index_Publication_Calendars** a reset reads the
 rate published on or before its day, so the days of a daily index reading one rate are one reset
 over their joined windows, weighted by their count: a weekend reads Friday's rate over Friday to
 Monday, and a compounded leg is the same leg whatever the calendar.

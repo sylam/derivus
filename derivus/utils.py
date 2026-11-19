@@ -118,11 +118,10 @@ ARX1Fit = namedtuple('ARX1Fit', 'phi mu sigma gamma resid garch')
 DealDataType = namedtuple('DealDataType', 'Instrument Factor_dep Time_dep Calc_res')
 Collateral = namedtuple('Collateral', 'Haircut_Posted Haircut_Received Amount Currency Funding_Rate '
                                       'Collateral_Rate Collateral')
-#: How a floating index fixes: the day-count code its rate accrues on, its `Reset_Type`, how many
-#: business days of `business_day` (weekdays where None) before its window it fixes, the calendar its
-#: rate is published on (every day where None) and the leg's frequency, by which an `Advance` reset
-#: reaches back before the first period.
-FloatIndex = namedtuple('FloatIndex', 'day_count reset_type offset business_day publication frequency')
+#: How a floating index fixes: its `Reset_Type`, how many business days of `business_day` (weekdays
+#: where None) before its window it fixes, the calendar its rate is published on (every day where
+#: None) and the leg's frequency, by which an `Advance` reset reaches back before the first period.
+FloatIndex = namedtuple('FloatIndex', 'reset_type offset business_day publication frequency')
 #: The reset periods each `Reset_Type` moves a reset by.
 RESET_SHIFTS = {'Advance': -1, 'Standard': 0, 'Arrears': 1}
 
@@ -2128,15 +2127,15 @@ class TensorCashFlows(TensorSchedule):
         """`periods`' schedule plus the reset structure. The nominal array must be one shorter
         than `reset_dates`, or a single number for a constant profile; `reference` names the deal
         a reset behind the base date with no known rate is fixed at 0% for, with a warning. `index`,
-        a `FloatIndex`, says how each reset fixes: in the leg's own day count, on its window's
-        start, where None; a known rate is the row stated for the day it fixes.
+        a `FloatIndex`, says how each reset fixes, on its window's start where None, its rate
+        accruing in the leg's own `daycount_code`; a known rate is the row stated for the day it fixes.
 
         A reset moves by its `Reset_Type`'s `RESET_SHIFTS` reset periods, a period holding one reset
         fixing on the accrual date that many periods from its start. Under a publication calendar a
         reset reads the rate published on or before its day, the days reading one rate being one
         reset over their joined windows, weighted by their count.
         """
-        index = index or FloatIndex(daycount_code, 'Standard', 0, None, None, None)
+        index = index or FloatIndex('Standard', 0, None, None, None)
         shift = RESET_SHIFTS[index.reset_type]
         accruals = ([reset_dates[0] - index.frequency] if shift < 0 else []) + list(reset_dates)
         # prepare to consume reset dates
@@ -2169,7 +2168,7 @@ class TensorCashFlows(TensorSchedule):
                 Reset_Day = (fixing - reference_date).days
                 Start_Day = (days[0] - reference_date).days
                 End_Day = (days[-1] + reset_tenor - reference_date).days
-                Accrual = DayCount.accrual(reference_date, End_Day - Start_Day, index.day_count)
+                Accrual = DayCount.accrual(reference_date, End_Day - Start_Day, daycount_code)
                 Weight = len(days) / len(reset_days)
                 Time_Grid, Scenario = time_grid.get_scenario_offset(Reset_Day)
 

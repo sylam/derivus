@@ -5065,7 +5065,7 @@ def knot_prices(curve, price_factors, factor_interp, base_date, calendars, conve
                 terms, Effective_Date=base_date, Pay_Rate_Type='Fixed', Pay_Frequency=fixed,
                 Pay_Day_Count=block['Fixed_Day_Count'], Receive_Frequency=floating,
                 Receive_Day_Count=block['Float_Day_Count'], Index_Tenor=zero,
-                Index_Day_Count=block['Float_Day_Count'], Compounding_Method=block['Compounding'],
+                Compounding_Method=block['Compounding'],
                 Principal=1e6, Swap_Rate=0.0)
         points.append({'Use': 'Yes', 'Descriptor': '{} {} {:%Y-%m-%d}'.format(name, kind, end),
                        'DealType': kind, 'Quote_Type': 'Par_Rate', 'Quoted_Market_Value': 0.0,

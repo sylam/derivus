@@ -172,7 +172,7 @@ def swaption(reference, payer_receiver):
         'Option_Expiry_Date': EXPIRY, 'Swap_Effective_Date': EXPIRY,
         'Swap_Maturity_Date': SWAP_END, 'Settlement_Date': EXPIRY,
         'Principal': NOTIONAL, 'Swap_Rate': STRIKE, 'Floating_Margin': 0.0,
-        'Reset_Type': 'Standard', 'Index_Day_Count': DAY_COUNT,
+        'Reset_Type': 'Standard',
         'Index_Tenor': pd.DateOffset(months=3), 'Index_Offset': 0, 'Index_Calendars': None,
         'Index_Publication_Calendars': None, 'Rate_Schedule': None, 'Margin_Schedule': None,
         'Pay_Frequency': pd.DateOffset(months=6), 'Pay_Day_Count': DAY_COUNT,

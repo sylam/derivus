@@ -114,7 +114,7 @@ def par_swap(ref, currency, forecast, discount, years, quote, fixed_frequency=12
         'Receive_Timing': 'End', 'Receive_Payment_Offset': 0, 'Receive_Accrual_Calendars': None,
         'Receive_Payment_Calendars': None, 'Receive_First_Coupon_Date': None,
         'Receive_Penultimate_Coupon_Date': None,
-        'Index_Tenor': pd.DateOffset(months=0), 'Index_Day_Count': day_count, 'Index_Offset': 0,
+        'Index_Tenor': pd.DateOffset(months=0), 'Index_Offset': 0,
         'Index_Calendars': None, 'Index_Publication_Calendars': None,
         'Reset_Type': 'Standard', 'Rate_Multiplier': 1.0, 'Rate_Constant': utils.Percent(0.0),
         'Floating_Margin': 0.0, 'Fixed_Compounding': 'No', 'Compounding_Method': compounding,

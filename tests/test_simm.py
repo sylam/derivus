@@ -518,7 +518,7 @@ AMORTISING = {'Instrument': {'.Deal': {
     'Payer_Receiver': 'Payer', 'Settlement_Style': 'Physical', 'Option_Expiry_Date': EXPIRY,
     'Swap_Effective_Date': EXPIRY, 'Swap_Maturity_Date': MATURITY, 'Settlement_Date': EXPIRY,
     'Principal': 1e7, 'Swap_Rate': 4.0, 'Floating_Margin': 0.0,
-    'Index_Tenor': pd.DateOffset(months=12), 'Index_Day_Count': 'ACT_365',
+    'Index_Tenor': pd.DateOffset(months=12),
     'Pay_Frequency': pd.DateOffset(months=12), 'Pay_Day_Count': 'ACT_365',
     'Receive_Frequency': pd.DateOffset(months=12), 'Receive_Day_Count': 'ACT_365',
     'Pay_Amortisation': STEPS, 'Receive_Amortisation': STEPS}},

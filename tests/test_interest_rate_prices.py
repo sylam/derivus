@@ -36,7 +36,7 @@ import torch
 import test_declared_defaults as book
 import trial_rates
 import derivus
-from derivus import bootstrappers, utils
+from derivus import bootstrappers, schema, utils
 from derivus.bootstrappers import author_quote
 from derivus.instruments import deal_node
 from derivus.schema import completed
@@ -1250,7 +1250,7 @@ def periods(dates, pay=lambda s, e: e, fixing=lambda s, e: s, window=lambda s, e
     return [(s, e, pay(s, e), fixing(s, e)) + window(s, e) for s, e in zip(dates[:-1], dates[1:])]
 
 
-def listed(reference, rows, index='ACT_360', known=None):
+def listed(reference, rows, known=None):
     """A swap paying 4% ACT/360 on a million as the two cashflow lists its `rows` spell, the
     fixings behind the base date reading `known`."""
     fixed = [{'Payment_Date': pay, 'Notional': 1e6, 'Rate': utils.Percent(4.0),
@@ -1259,7 +1259,7 @@ def listed(reference, rows, index='ACT_360', known=None):
               'FX_Reset_Date': None, 'Known_FX_Rate': 0.0} for s, e, pay, *_ in rows]
     floating = [{'Payment_Date': pay, 'Notional': 1e6, 'Accrual_Start_Date': s, 'Accrual_End_Date': e,
                  'Accrual_Day_Count': 'ACT_360', 'Accrual_Year_Fraction': year(s, e), 'Resets': [
-                     [fixing, w0, w1, year(w0, w1, index), pd.DateOffset(days=1), index, '0D', 0.0,
+                     [fixing, w0, w1, year(w0, w1), pd.DateOffset(days=1), 'ACT_360', '0D', 0.0,
                       'No', utils.Percent((known or {}).get(fixing, 0.0))]],
                  'Margin': utils.Basis(0.0), 'Fixed_Amount': 0.0, 'FX_Reset_Date': None,
                  'Known_FX_Rate': 0.0} for s, e, pay, fixing, w0, w1 in rows]
@@ -1277,16 +1277,15 @@ def test_a_swap_leg_is_the_schedule_its_conventions_spell():
     a long first period, one of 16 January rolls the schedule forward from it to a short first and
     a short last period, and a `Penultimate_Coupon_Date` of 16 November 2028 rolls it back from that
     day; `Arrears` fixes each coupon on its period's end over the window of its length from there;
-    `Index_Day_Count` ACT_365 accrues the index rate on its own basis; and a swap seasoned from 17
-    June 2026 fixing one Johannesburg business day before each start reads the 6% stated for 15 June,
-    the 16th being a holiday.
+    and a swap seasoned from 17 June 2026 fixing one Johannesburg business day before each start
+    reads the 6% stated for 15 June, the 16th being a holiday.
 
     KILLING MUTATIONS, each the convention unread again, by the mark it reads against the hand's:
     the payment offset, +2.87; the timing, -67.66; the accrual calendar (the dates rolled on the
     payment one alone), -129.47; the offset counted in weekdays, +1.37; the first coupon date, -77.06
-    (and +22.97 short); the penultimate, +22.90; arrears, -7,742.34; the index day count, -1,113.95;
-    the fixing offset or its calendar, or the known rate looked up by the window's start, each reading
-    the 5% stated for the 16th, -2,549.74.
+    (and +22.97 short); the penultimate, +22.90; arrears, -7,742.34; the fixing offset or its
+    calendar, or the known rate looked up by the window's start, each reading the 5% stated for the
+    16th, -2,549.74.
     """
     dates = [END - QUARTER * k for k in range(9)][::-1]
     first, penultimate, seasoned = (pd.Timestamp(day) for day in ('2027-01-16', '2028-11-16', '2026-06-17'))
@@ -1309,14 +1308,13 @@ def test_a_swap_leg_is_the_schedule_its_conventions_spell():
                   'Receive_Penultimate_Coupon_Date': penultimate},
                  periods([START] + [penultimate - QUARTER * k for k in range(8)][::-1] + [END])),
         'ARREARS': ({'Reset_Type': 'Arrears'},
-                    periods(dates, fixing=lambda s, e: e, window=lambda s, e: (e, e + (e - s)))),
-        'INDEX': ({'Index_Day_Count': 'ACT_365'}, periods(dates))}
+                    periods(dates, fixing=lambda s, e: e, window=lambda s, e: (e, e + (e - s))))}
     documents = []
     for reference, (conventions, rows) in cases.items():
         documents += [dict(par_swap(reference, 'USD', 'USD-PROJ', 'USD', 2, 4.0, fixed_frequency=3,
                                     float_frequency=3), Effective_Date=START, Maturity_Date=END,
                            **conventions)]
-        documents += listed('HAND_' + reference, rows, conventions.get('Index_Day_Count', 'ACT_360'))
+        documents += listed('HAND_' + reference, rows)
     fixed = {pd.Timestamp('2026-06-15'): 6.0, pd.Timestamp('2026-06-16'): 5.0}
     documents += [dict(par_swap('SEASONED', 'USD', 'USD-PROJ', 'USD', 2, 4.0, fixed_frequency=3,
                                 float_frequency=3), Effective_Date=seasoned,
@@ -1335,13 +1333,12 @@ def test_a_swap_leg_is_the_schedule_its_conventions_spell():
         assert float.fromhex(marks[reference]) == hand, (reference, float.fromhex(marks[reference]) - hand)
 
 
-#: Each reader of `Index_Day_Count` on ACT/360 legs stating none: the two-year quarterly swap, a
-#: cap at 4% on a million from 16 December 2026, and the declared-defaults swaption, whose underlying
-#: tenor the index's day count reads, on a surface rising a vol point a year of tenor.
+#: Each deal fixing a floating index on ACT/360 legs: the two-year quarterly swap, a cap at 4% on a
+#: million from 16 December 2026, and the declared-defaults swaption, whose underlying tenor its
+#: floating leg's day count reads, on a surface rising a vol point a year of tenor.
 INDEXED = {
-    'swap': dict({key: value for key, value in par_swap(
-        'SWAP', 'USD', 'USD-PROJ', 'USD', 2, 4.0, fixed_frequency=3, float_frequency=3).items()
-        if key != 'Index_Day_Count'}, Effective_Date=START, Maturity_Date=END),
+    'swap': dict(par_swap('SWAP', 'USD', 'USD-PROJ', 'USD', 2, 4.0, fixed_frequency=3, float_frequency=3),
+                 Effective_Date=START, Maturity_Date=END),
     'cap': {'Object': 'CapDeal', 'Reference': 'CAP', 'Currency': 'USD', 'Discount_Rate': 'USD',
             'Forecast_Rate': 'USD-PROJ', 'Forecast_Rate_Volatility': 'USD-PROJ', 'Buy_Sell': 'Buy',
             'Effective_Date': START, 'Maturity_Date': END, 'Cap_Rate': 4.0, 'Principal': 1e6,
@@ -1354,20 +1351,36 @@ RISING = {'InterestYieldVol.USD-PROJ': {
                                 for e in (0.25, 1.0, 2.0, 5.0) for t in (1.0, 3.0, 5.0)])}}
 
 
-@pytest.mark.parametrize('reader', list(INDEXED))
-def test_a_blank_index_day_count_is_the_floating_legs_own(reader):
-    """A deal on ACT/360 legs stating no `Index_Day_Count` prices bit-identically to the one stating
-    `ACT_360`, on the sloped index, each in a run of its own.
+def test_no_deal_type_declares_an_index_day_count():
+    """The types fixing a floating index - read off the store, each listing its `FloatingIndex`
+    section: the cap, the floor, the swap and the swaption - publish no `Index_Day_Count`, nor does
+    any other type: an index accrues in its leg's own day count, a property of the index and not of
+    the trade.
 
-    Killing mutation: a blank read as ACT/365, the swap +1,113.95 (11.1 bp of notional), the cap
-    +654.90 and the swaption -10.36 against the stated.
+    Killing mutation: the declaration back in `schema.FLOATING_INDEX`.
     """
-    readings = []
-    for deal in (INDEXED[reader], dict(INDEXED[reader], Index_Day_Count='ACT_360')):
-        marks, stats = book.marks([deal], factors=dict(SLOPED, **RISING))
-        assert 'Deals Skipped' not in stats, stats
-        readings.append(float.fromhex(marks[deal['Reference']]))
-    assert readings[0] == readings[1], readings[0] - readings[1]
+    store = schema.mapping['Instrument']
+    assert sorted(name for name, sections in store['types'].items() if 'FloatingIndex' in sections) == [
+        'CapDeal', 'FloorDeal', 'SwapInterestDeal', 'SwaptionDeal']
+    assert not [name for name in store['types'] if 'Index_Day_Count' in schema.instrument_fields(name)]
+
+
+@pytest.mark.parametrize('reader', list(INDEXED))
+def test_an_index_accrues_in_its_legs_day_count_whatever_an_old_document_states(reader):
+    """A swap, a cap or a swaption on ACT/360 legs marks to the bit alike stating no index day
+    count and, as an old document may, stating `Index_Day_Count` ACT/360 or ACT/365, a key its type
+    no longer declares and nothing reads, each in a run of its own on the sloped index: the index
+    accrues in its leg's own day count, 2,668.65, 11,567.23 and 42,394.26.
+
+    Killing mutation: `float_index` reading a stated `Index_Day_Count` again, the ACT/365 document
+    moving the swap +1,113.95, the cap +654.90 and the swaption -10.36.
+    """
+    readings = set()
+    for stated in ({}, {'Index_Day_Count': 'ACT_360'}, {'Index_Day_Count': 'ACT_365'}):
+        marks, stats = book.marks([dict(INDEXED[reader], **stated)], factors=dict(SLOPED, **RISING))
+        assert not [name for name in stats if name.endswith('Skipped')], stats
+        readings.add(marks[INDEXED[reader]['Reference']])
+    assert len(readings) == 1, readings
 
 
 def test_two_swaptions_on_one_surface_and_expiry_each_read_their_own_tenor():
