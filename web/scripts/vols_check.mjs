@@ -55,3 +55,20 @@ if (file) {
   read(file, surface.description, surface.data);
 }
 read('synthetic Space', '(moneyness, expiry, tenor, volatility) quads', SPACE);
+
+// --- a normal vol reads in basis points. Each check names the MUTATION it kills.
+let missed = 0;
+function check(name, kills, got, want) {
+  const same = JSON.stringify(got) === JSON.stringify(want);
+  missed += same ? 0 : 1;
+  console.log(`\n${same ? 'ok  ' : 'MISS'}  ${name}\n      kills: ${kills}`);
+  if (!same) console.log(`      got   ${JSON.stringify(got)}\n      want  ${JSON.stringify(want)}`);
+}
+const DECLARED = { Distribution_Type: { widget: 'Dropdown', value: 'Lognormal' } };
+check('a surface quoting normal vols reads in basis points, a lognormal one in percent',
+      'every vol read per unit as a percent, a normal 0.85% where a desk quotes 85bp; the block\'s '
+      + 'own Distribution_Type left unread; or a surface declaring none read as normal',
+      [[DECLARED, { Distribution_Type: 'Normal' }], [DECLARED, {}], [undefined, {}]]
+        .map(([fields, values]) => vols.volText(0.0085, vols.quotesNormal(fields, values))),
+      ['85 bp', '0.85 %', '0.85 %']);
+if (missed) process.exit(1);

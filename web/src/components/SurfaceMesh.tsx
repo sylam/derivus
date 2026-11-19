@@ -12,8 +12,11 @@ import type { Mesh } from '../vols';
 echarts.use([SurfaceChart, Grid3DComponent]);
 
 /** The surface as the notebook drew it: a mesh over expiry and x, coloured by height, rotatable
- * with the mouse. `dataShape` is the grid's own, so the rows are the expiries. */
-export default function SurfaceMesh({ mesh, axes }: { mesh: Mesh; axes: string[] }) {
+ * with the mouse. `dataShape` is the grid's own, so the rows are the expiries; `vol` reads a
+ * node. */
+export default function SurfaceMesh({ mesh, axes, vol }: {
+  mesh: Mesh; axes: string[]; vol: (value: number) => string;
+}) {
   const option = useMemo(() => {
     const palette = chartPalette();
     const values = mesh.z.flat();
@@ -28,17 +31,17 @@ export default function SurfaceMesh({ mesh, axes }: { mesh: Mesh; axes: string[]
       animation: false,
       tooltip: { formatter: (point: { value: number[] }) =>
         `${axes[1]} ${tenorLabel(point.value[1])}<br/>${axes[0]} ${formatNumber(point.value[0])}<br/>` +
-        `${axes[2]} ${(point.value[2] * 100).toFixed(2)} %` },
+        `${axes[2]} ${vol(point.value[2])}` },
       visualMap: {
         min: Math.min(...values), max: Math.max(...values), dimension: 2,
         calculable: true, orient: 'vertical' as const, right: 0, top: 'center',
         textStyle: { color: palette.text },
-        formatter: (value: number) => `${(value * 100).toFixed(2)} %`,
+        formatter: vol,
         inRange: { color: GRADIENT },
       },
       xAxis3D: axis3D(axes[0]),
       yAxis3D: axis3D(axes[1], (value: number) => tenorLabel(value)),
-      zAxis3D: axis3D(axes[2], (value: number) => `${(value * 100).toFixed(1)}%`),
+      zAxis3D: axis3D(axes[2], vol),
       grid3D: {
         boxWidth: 110, boxDepth: 70, boxHeight: 60,
         environment: 'transparent',
@@ -55,7 +58,7 @@ export default function SurfaceMesh({ mesh, axes }: { mesh: Mesh; axes: string[]
           mesh.xs.map((x, column) => [x, expiry, mesh.z[row][column]])),
       }],
     };
-  }, [mesh, axes]);
+  }, [mesh, axes, vol]);
 
   return <div className="chart tall" ref={useChart(option)} />;
 }

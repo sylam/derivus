@@ -5,7 +5,7 @@ import {
   kindOf, label, offsetText, sharedSections, supportRows, token, ungrouped,
 } from '../tokens';
 import type { Descriptor, Schema, Section } from '../types';
-import { axisNames } from '../vols';
+import { axisNames, quotesNormal } from '../vols';
 import { CurveChart } from './CurveChart';
 import { DataTable } from './DataTable';
 import { JsonView } from './JsonView';
@@ -15,8 +15,11 @@ import { VolSurface } from './VolSurface';
  * authoritative: a document may carry a key the schema does not declare, and a viewer that hides
  * such a key is a viewer nobody can trust. The descriptor refines - table columns, dropdown
  * hints, formatting - and its absence only ever downgrades to the JSON fallback, never to
- * nothing. A `.Curve` branches on ROW ARITY, because the widget token folds Surface and Space. */
-export function FieldView({ value, descriptor }: { value: unknown; descriptor?: Descriptor }) {
+ * nothing. A `.Curve` branches on ROW ARITY, because the widget token folds Surface and Space;
+ * `normal` is a surface of absolute normal vols. */
+export function FieldView({ value, descriptor, normal }: {
+  value: unknown; descriptor?: Descriptor; normal?: boolean;
+}) {
   // --- wire tokens ---
   const curve = curveOf(value);
   if (curve) {
@@ -25,7 +28,7 @@ export function FieldView({ value, descriptor }: { value: unknown; descriptor?: 
       return <CurveChart data={curve.data} axes={axisNames(descriptor?.description, 2)} />;
     }
     if (arity === 3 || arity === 4) {
-      return <VolSurface data={curve.data} descriptor={descriptor} />;
+      return <VolSurface data={curve.data} descriptor={descriptor} normal={normal} />;
     }
     return <JsonView value={value} />;
   }
@@ -181,7 +184,8 @@ export function DescriptorPanel({ title, fields, values, onAmend, editable, asid
                       declared={!!descriptor || !undeclared.includes(key)} tables={tables}
                       currency={descriptor && inCurrency(descriptor.description)}
                       onAmend={onAmend && (!descriptor || !editable || editable(key, descriptor))
-                        ? onAmend : undefined} aside={aside?.(key)} ask={ask} />
+                        ? onAmend : undefined} aside={aside?.(key)}
+                      normal={quotesNormal(fields, values)} ask={ask} />
           );
         })}
       </div>
@@ -226,10 +230,11 @@ export function DealPanels({ deal, schema, own, cut = (fields) => fields, ...pan
  * engine's own booking verdict says. `required` is the Instrument store's reading, MUST BE
  * STATED; on every other store it is still `default=REQUIRED`, and this panel renders both. A
  * convention left unstated reads as one, lighter and named so; `currency` is the amount's. */
-function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, ask, tables,
-                    currency }: {
+function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, normal, ask,
+                    tables, currency }: {
   name: string; descriptor?: Descriptor; value: unknown; stated?: boolean; declared: boolean;
-  onAmend?: AmendField; aside?: ReactNode; ask?: string; tables?: boolean; currency?: string;
+  onAmend?: AmendField; aside?: ReactNode; normal?: boolean; ask?: string;
+  tables?: boolean; currency?: string;
 }) {
   const editable = onAmend !== undefined && descriptor !== undefined &&
     isEditableScalar(descriptor, value);
@@ -251,7 +256,7 @@ function FieldRow({ name, descriptor, value, stated, declared, onAmend, aside, a
           : editable
             ? <EditableScalar name={name} descriptor={descriptor!} value={value} onAmend={onAmend!}
                               ask={ask} />
-            : <FieldView value={value} descriptor={descriptor} />}
+            : <FieldView value={value} descriptor={descriptor} normal={normal} />}
       </div>
     </>
   );

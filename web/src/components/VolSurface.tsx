@@ -1,18 +1,16 @@
-import { Suspense, lazy, useMemo, useState, type ComponentType } from 'react';
+import { Suspense, lazy, useCallback, useMemo, useState, type ComponentType } from 'react';
 import { GRADIENT, chartPalette, ramp } from '../charts/echarts';
 import { useChart } from '../charts/useChart';
 import { axisText, formatNumber, tenorLabel } from '../tokens';
 import type { Descriptor } from '../types';
 import {
-  axisNames, mesh, neutralX, shape, sliceKeys, termStructure, triples, type Shaped,
+  axisNames, mesh, neutralX, shape, sliceKeys, termStructure, triples, volText, type Shaped,
 } from '../vols';
 
 const SurfaceMesh = lazy(() => import('./SurfaceMesh'));
 
-/** A vol as a desk reads one. */
-const vol = (value: number) => `${(value * 100).toFixed(2)} %`;
-
-type ViewProps = { shaped: Shaped; axes: string[] };
+/** `vol` reads a node's value as the surface quotes it - `volText`, normal or lognormal. */
+type ViewProps = { shaped: Shaped; axes: string[]; vol: (value: number) => string };
 
 /** The shared axis furniture: quiet lines, the app's own text colour, the name centred along the
  * axis so it never meets a legend or an end label. */
@@ -29,7 +27,7 @@ function axis(palette: ReturnType<typeof chartPalette>, name: string, formatter?
 
 /** One line per expiry over the x coordinate, the legend in tenor order and coloured along the
  * ramp, so short-dated and long-dated separate at a glance. */
-function Smiles({ shaped, axes }: ViewProps) {
+function Smiles({ shaped, axes, vol }: ViewProps) {
   const option = useMemo(() => {
     const palette = chartPalette();
     const last = Math.max(shaped.smiles.length - 1, 1);
@@ -51,12 +49,12 @@ function Smiles({ shaped, axes }: ViewProps) {
         itemStyle: { color: ramp(index / last) },
       })),
     };
-  }, [shaped, axes]);
+  }, [shaped, axes, vol]);
   return <div className="chart tall" ref={useChart(option)} />;
 }
 
 /** Vol against expiry at one x, the expiry axis labelled by tenor. */
-function TermStructure({ shaped, axes }: ViewProps) {
+function TermStructure({ shaped, axes, vol }: ViewProps) {
   const [x, setX] = useState(() => neutralX(shaped.xs));
   const at = shaped.xs.includes(x) ? x : neutralX(shaped.xs);
   const option = useMemo(() => {
@@ -75,7 +73,7 @@ function TermStructure({ shaped, axes }: ViewProps) {
         lineStyle: { color: palette.accent, width: 2 }, itemStyle: { color: palette.accent },
       }],
     };
-  }, [shaped, axes, at]);
+  }, [shaped, axes, at, vol]);
   return (
     <>
       <div className="pager">
@@ -103,7 +101,7 @@ function cellSpan(values: number[], at: number): [number, number] {
  * heatmap series needs two CATEGORY axes - which is what drew this surface's clustered nodes as
  * evenly spaced strings - so a cell is a rect spanning the midpoints to its neighbours, which puts
  * every node where its coordinate says. */
-function Heatmap({ shaped, axes }: ViewProps) {
+function Heatmap({ shaped, axes, vol }: ViewProps) {
   const option = useMemo(() => {
     const palette = chartPalette();
     const grid = mesh(shaped);
@@ -153,16 +151,16 @@ function Heatmap({ shaped, axes }: ViewProps) {
           grid.xs.map((x, column) => [x, expiry, grid.z[row][column]])),
       }],
     };
-  }, [shaped, axes]);
+  }, [shaped, axes, vol]);
   return <div className="chart tall" ref={useChart(option)} />;
 }
 
 /** The mesh, behind its own chunk: the GL code is fetched the first time a desk asks for it. */
-function Mesh({ shaped, axes }: ViewProps) {
+function Mesh({ shaped, axes, vol }: ViewProps) {
   const grid = useMemo(() => mesh(shaped), [shaped]);
   return (
     <Suspense fallback={<div className="chart tall placeholder">loading the mesh…</div>}>
-      <SurfaceMesh mesh={grid} axes={axes} />
+      <SurfaceMesh mesh={grid} axes={axes} vol={vol} />
     </Suspense>
   );
 }
@@ -177,8 +175,10 @@ const VIEWS: { id: string; label: string; view: ComponentType<ViewProps> }[] = [
 /** A shaped `.Curve` of arity 3 (`[x, expiry, value]`) or 4 (`[x, expiry, tenor, value]`) as the
  * four views of one surface, over `vols.ts`. The axis NAMES are the descriptor's own opening
  * tuple, so a `(delivery, expiry, moneyness, volatility)` grid labels itself; an arity-4 surface
- * picks one slice with a select. */
-export function VolSurface({ data, descriptor }: { data: number[][]; descriptor?: Descriptor }) {
+ * picks one slice with a select. `normal` is a surface of absolute normal vols, read in bp. */
+export function VolSurface({ data, descriptor, normal }: {
+  data: number[][]; descriptor?: Descriptor; normal?: boolean;
+}) {
   const arity = data[0]?.length ?? 0;
   const axes = axisNames(descriptor?.description, arity);
   const keys = useMemo(() => sliceKeys(data), [data]);
@@ -187,6 +187,7 @@ export function VolSurface({ data, descriptor }: { data: number[][]; descriptor?
   const slice = keys.length ? (keys.includes(key as number) ? key! : keys[0]) : undefined;
   const shaped = useMemo(() => shape(triples(data, slice)), [data, slice]);
   const Active = VIEWS.find((view) => view.id === tab)?.view ?? Smiles;
+  const vol = useCallback((value: number) => volText(value, normal), [normal]);
   if (!shaped.expiries.length) return null;
 
   return (
@@ -207,7 +208,8 @@ export function VolSurface({ data, descriptor }: { data: number[][]; descriptor?
         )}
         <span>{shaped.expiries.length} expiries · {data.length} nodes</span>
       </div>
-      <Active shaped={shaped} axes={arity === 4 ? [axes[0], axes[1], axes[3]] : axes} />
+      <Active shaped={shaped} axes={arity === 4 ? [axes[0], axes[1], axes[3]] : axes}
+              vol={vol} />
     </div>
   );
 }

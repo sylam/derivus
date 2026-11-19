@@ -3,7 +3,18 @@
 // grid whose AXIS NAMES come off the factor's own declaration, and the grid is ragged, because a
 // bootstrapped smile refines its own x nodes per expiry.
 
-import { tenorLabel } from './tokens';
+import { formatNumber, tenorLabel } from './tokens';
+import type { Section } from './types';
+
+/** Whether a vol block quotes absolute normal vols: its declared `Distribution_Type` reads Normal,
+ * stated or at its default. */
+export const quotesNormal = (fields?: Section, values?: Record<string, unknown>): boolean =>
+  String(values?.Distribution_Type ?? fields?.Distribution_Type?.value) === 'Normal';
+
+/** A vol as a desk reads one: a lognormal vol in percent, a normal vol - an absolute vol of a rate
+ * - in basis points. */
+export const volText = (value: number, normal = false): string =>
+  (normal ? formatNumber(value * 1e4, 'basis') : formatNumber(value * 100, 'percent'));
 
 /** Positional stand-ins, where the declaration's prose does not name one per column: a curve's
  * first axis is its tenor in years. */
