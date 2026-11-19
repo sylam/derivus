@@ -2521,11 +2521,13 @@ def book_positions(actor: str = None):
     `settles` saying when, and rolls off on that day - read off the record's own terms where the
     file has lost it, and null on a box whose store lacks those too.
 
-    `tickets` are what books it, each with its own status - a restrike's in place of the clips it
-    restruck - `status` the first of `spine.STATUSES` among them and `pending` the quantity
-    awaiting a second seat: a pending trade prices, settles and exports all the same - the status
-    is workflow, not economics. `actor` is the seat reading, which sees the positions under the
-    nodes it holds any grant at (`spine.visible`). 404 where no home is configured.
+    `tickets` are what books it, each with its own status, the `tier` it fell in and, while
+    pending, `waits_on`, that tier's sentence for the seat it wants - a restrike's in place of the
+    clips it restruck - `status` the first of `spine.STATUSES` among them and `pending` the
+    quantity awaiting a second seat: a pending trade prices, settles and exports all the same -
+    the status is workflow, not economics. `actor` is the seat reading, which sees the positions
+    under the nodes it holds any grant at (`spine.visible`), its own tickets' waits among them.
+    404 where no home is configured.
     """
     document, _ = recording().read()
     standing = spine.visible([row for row in spine.standing(folds=folds())
@@ -3739,17 +3741,17 @@ def book_worklist(actor: str = None):
         return list(found.values())
 
     def waiting(found):
-        # what a pending trade was booked at and the sentence its tier waits on, off its own fact
+        # what a pending trade was booked at, off its own fact, beside its ticket's tier and wait
         if not found:
             return found
         booked = spine.folded(lambda log: {row['lsn']: log.open_body(log.frame_at(row['lsn']))
                                            for row in found})
-        tiers, reporting = spine.package().tiers, reporting_currency(document)
-        return [dict(row, tier=booked[row['lsn']].get('tier'), price=booked[row['lsn']].get(
-            'price'), currency=booked[row['lsn']].get('currency') or reporting,
-            waits_on=tiers.standing_approval({'name': booked[row['lsn']].get('tier'),
-                                              'four_eyes': True}, row['booker'],
-                                             spine.verdicts(row['key']))[1]) for row in found]
+        entries = {entry['lsn']: entry for position in rows for entry in position['tickets']}
+        reporting = reporting_currency(document)
+        return [dict(row, price=booked[row['lsn']].get('price'),
+                     currency=booked[row['lsn']].get('currency') or reporting,
+                     tier=entries[row['lsn']]['tier'], waits_on=entries[row['lsn']]['waits_on'])
+                for row in found]
 
     # a seat that posts collateral nowhere pays nothing for calls it cannot see
     due = [] if day not in marks or sight is not None and sight[demands['collateral']] == [] else (

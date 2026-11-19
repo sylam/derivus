@@ -1814,7 +1814,8 @@ def book_positions(actor: str | None = None) -> dict:
     to zero stands at a quantity of 0 where it sat, and one whose deal has expired stands until the
     day it settles - `expired` and `settles` say when - and rolls off on that day. `status` is what
     its tickets read - `rejected`, `pending`, `approved` or `unticketed` - and `pending` the
-    quantity awaiting a second seat; a pending trade prices and settles all the same. `actor` is
+    quantity awaiting a second seat; a pending trade prices and settles all the same. Each of its
+    `tickets` names the `tier` it fell in and, while pending, `waits_on`, why it waits. `actor` is
     the seat reading. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/positions', params=_stated(actor=actor))

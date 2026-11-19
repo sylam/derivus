@@ -1336,17 +1336,27 @@ STATUSES = ('rejected', 'pending', 'approved', 'unticketed')
 
 def standing(lsn=None, folds=None):
     """Every position the record holds at `lsn` with what its tickets read: each ticket its own
-    `status` (`status_of`), the position the first of `STATUSES` among them and `pending` the
-    quantity awaiting a second seat. The positions fold beside the decisions fold, both ADVANCED
-    in `folds` in one open of the log - no fill is reopened."""
+    `status` (`status_of`) and, where pending, `waits_on` - its tier's own sentence for the seat
+    it wants - the position the first of `STATUSES` among them and `pending` the quantity awaiting
+    a second seat. The positions fold beside the decisions fold, both ADVANCED in `folds` in one
+    open of the log - no fill is reopened."""
+    spine = package()
+
+    def waits_on(entry, status, decisions):
+        # a pending ticket is one the hub never signed, so its tier is under four eyes
+        return None if status != 'pending' else spine.tiers.standing_approval(
+            {'name': entry['tier'], 'four_eyes': True}, entry['actor'],
+            decisions['plans'].get(entry['ticket'], []))[1]
+
     def read(log):
-        projections = package().projections
+        projections = spine.projections
         decisions = advancing(log, projections.PROJECTORS['decisions'], lsn, folds)
         rows = projections.PROJECTORS['positions'].rows(
             advancing(log, projections.PROJECTORS['positions'], lsn, folds))
         for row in rows:
-            row['tickets'] = [dict(entry, status=status) for entry, status in zip(
-                row['tickets'], status_of(row['tickets'], decisions))]
+            row['tickets'] = [dict(entry, status=status, waits_on=waits_on(entry, status, decisions))
+                              for entry, status in zip(row['tickets'],
+                                                       status_of(row['tickets'], decisions))]
             said = {entry['status'] for entry in row['tickets']}
             row.update(status=next((word for word in STATUSES if word in said), STATUSES[-1]),
                        pending=sum((entry['quantity'] for entry in row['tickets']

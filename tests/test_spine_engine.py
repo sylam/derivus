@@ -3386,6 +3386,63 @@ def test_the_worklist_names_each_ticket_and_the_seat_it_waits_on(recorded, desk)
     assert worklist(actor=DESK_TWO)['counts']['pending'] == 0
 
 
+def test_a_booker_reads_why_its_ticket_waits_on_the_position(recorded, desk):
+    """A BOOKER SEES WHY ITS TICKET WAITS. A seat that books and cannot approve files 250,000 rand,
+    which the hub signs under the automatic tier, and 5,000,000, which waits under four eyes. Its
+    worklist lists nothing to sign; its positions read each ticket's tier and, on the pending one,
+    the tier's sentence naming why - as the approver reads them, whose worklist row says the same.
+    Restruck to 300,000 rand - 5,550,000 dollars, past the cap - the first trade's clip reads the
+    restrike's ticket under the four-eyes tier and waits too. A seat acting only at another node
+    sees no position. Signed by the second seat, a ticket waits on nothing.
+
+    Killing mutation: a restruck clip keeping the tier its fill fell in, which reads the restrike
+    as signed automatically while it waits.
+    """
+    booker, elsewhere = 'subject-booker', 'subject-desk-fx'
+    with_client(desk)
+    declare(recorded, policy.TIERS_POLICY, tiers(
+        {'name': 'auto', 'max_notional': {'amount': BIG, 'currency': 'USD'}},
+        {'name': 'desk', 'four_eyes': True}))
+    entitle(recorded, [(ACTOR, 'admin', '*'), (ACTOR, 'validate', '*'), (DESK_TWO, 'approve', '*'),
+                       (booker, 'book', 'spine-desk'), (booker, 'validate', 'spine-desk'),
+                       (elsewhere, 'book', 'spine-desk/FX')])
+    small = ticketed('EXEC-SMALL', actor=booker).json()
+    big = ticketed('EXEC-BIG', amount=BIG, actor=booker).json()
+
+    def tickets(seat):
+        return {row['reference']: [{key: value for key, value in entry.items() if key != 'at'}
+                                   for entry in row['tickets']]
+                for row in CLIENT.get('/book/positions', params={'actor': seat}).json()[
+                    'positions']}
+
+    def ticket(booked, execution, tier, status, waits_on, by=None):
+        return [{'quantity': 1.0, 'instrument': booked['recorded']['instrument'],
+                 'execution_reference': execution, 'fill': booked['recorded']['lsn'],
+                 'ticket': (by or booked)['ticket'], 'tier': tier,
+                 'lsn': (by or booked)['recorded']['lsn'], 'actor': booker, 'status': status,
+                 'waits_on': waits_on}]
+
+    waits = ("no verdict is filed against this ticket, and the 'desk' tier wants a seat other "
+             "than the booker to sign it")
+    assert CLIENT.get('/book/worklist', params={'actor': booker}).json()['pending'] == []
+    assert tickets(booker) == tickets(DESK_TWO) == {
+        'EXEC-SMALL': ticket(small, 'EXEC-SMALL', 'auto', 'approved', None),
+        'EXEC-BIG': ticket(big, 'EXEC-BIG', 'desk', 'pending', waits)}
+    (row,) = CLIENT.get('/book/worklist', params={'actor': DESK_TWO}).json()['pending']
+    assert (row['key'], row['tier'], row['waits_on']) == (big['ticket'], 'desk', waits)
+    assert tickets(elsewhere) == {}
+
+    amended = CLIENT.post('/book/deals', content=dump({
+        'action': 'amend', 'deal_path': small['deal_path'], 'fields': {'Amount': 300_000.0},
+        'actor': booker}), headers=JSON).json()
+    assert amended['tier']['name'] == 'desk', amended
+    assert CLIENT.post('/book/approve', json={'ticket': big['ticket'], 'actor': DESK_TWO}
+                       ).json()['status'] == 'approved'
+    assert tickets(booker) == {
+        'EXEC-SMALL': ticket(small, 'EXEC-SMALL', 'desk', 'pending', waits, by=amended),
+        'EXEC-BIG': ticket(big, 'EXEC-BIG', 'desk', 'approved', None)}
+
+
 def test_a_deal_booked_again_as_it_was_is_the_trade_the_record_holds(recorded, desk):
     """A TICKET IS THE TRADE: the plan it leaves and its own fields. A delete records nothing, so a
     deal deleted and booked again as it was - its reference, quantity and price - is the trade the
