@@ -5036,10 +5036,11 @@ def book_status():
 
     The book's `base_date`, `base_currency` and calculation - which names the inner path count a
     simulated deal is priced on and, where the book states fewer than the declaration, says so with
-    the remedy; how many deals it holds and which netting sets; each curve with the knots it solved
-    on, the scheme it is built under, the latest print its rows carry and any benchmark held out;
-    each vol surface with its own quote stamp; the spot models calibrated onto it; the last XVA per
-    set, trimmed to the columns a desk reads staleness off.
+    the remedy; how many deals it holds - a structure one with its legs, a netting set none, as
+    `file_positions` reads the file's trades - and which netting sets; each curve with the knots
+    it solved on, the scheme it is built under, the latest print its rows carry and any benchmark
+    held out; each vol surface with its own quote stamp; the spot models calibrated onto it; the
+    last XVA per set, trimmed to the columns a desk reads staleness off.
 
     Under a configured home `spine` says which LSN the file was hydrated at and how far the record
     has moved since - in events, and in the fills and amendments among them. What the two disagree
@@ -5063,7 +5064,7 @@ def book_status():
                         'Currency': calculation.get('Currency'),
                         'paths': calculation.get('MCMC_Simulations') or structures.declared_paths(),
                         'paths_note': structures.thin_paths(calculation)},
-        'deals': sum(1 for _ in walk_job_deals(document)),
+        'deals': sum(map(len, file_positions(document, ()).values())),
         'netting_sets': [node['Instrument']['.Deal'].get('Reference')
                          for _, node in netting_sets(document)],
         'curves': [{'curve': entry['curve'], 'currency': entry['currency'],

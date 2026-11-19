@@ -487,7 +487,8 @@ def desk_status() -> dict:
     with, and how old each piece of it is.
 
     The book's `base_date` (the day it is valued as of), `base_currency` and `calculation`; how
-    many `deals` it holds and the `netting_sets` a client's trade can be booked under; `curves`,
+    many `deals` it holds - a structure one with its legs, a netting set none - and the
+    `netting_sets` a client's trade can be booked under; `curves`,
     one per bootstrapped block, with the knots it solved on, the `interpolation` it is built under,
     the latest print its rows carry (`snapped`) and any benchmark `held_out`; `surfaces` with their
     own quote stamps; `models`, the spot models calibrated onto this book; `xva`, the last

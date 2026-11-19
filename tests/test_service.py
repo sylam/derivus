@@ -1628,6 +1628,32 @@ def test_the_status_verb_says_what_the_desk_is_set_up_with(book, tmp_path, monke
         'knots': [row['tenor'] for row in CURVE_ROWS[:-1]], 'held_out': ['10Y']}]
 
 
+def test_the_status_counts_the_trades_a_book_holds(tmp_path, monkeypatch):
+    """`deals` is the trades the file holds: the root's cashflow, and a client's structure of two
+    legs counted once with its legs - six nodes, one of them an empty set, two trades by hand.
+
+    Killing mutation: every node of the tree counted, which reads 6.
+    """
+    monkeypatch.setenv('DV_HOME', str(tmp_path / 'home'))
+    legs = [dict(CASHFLOW, Reference='LEG-A'), dict(BOOKED, Reference='LEG-B')]
+    structure = {'Instrument': {'.Deal': {'Object': 'StructuredDeal', 'Reference': 'ST1',
+                                          'Currency': 'USD', 'Net_Cashflows': 'No'}},
+                 'Children': [{'Instrument': {'.Deal': leg}} for leg in legs]}
+    client = netting_set('CLIENT_A', 'CPTY_A', [])
+    client['Children'].append(structure)
+    document = job()
+    document['Calc']['Deals']['Deals']['Children'] += [client, netting_set('EMPTY', 'CPTY_B', [])]
+    path = tmp_path / 'book.json'
+    path.write_text(json.dumps(json.loads(dump(document)), indent=2), newline='\n')
+    service.BOOK = service.Book(str(path))
+    try:
+        status = CLIENT.get('/book/status').json()
+        assert len(list(service.walk_job_deals(json.loads(path.read_text())))) == 6
+        assert (status['deals'], status['netting_sets']) == (2, ['CLIENT_A', 'EMPTY'])
+    finally:
+        service.BOOK = None
+
+
 def test_the_curve_verb_refuses_by_name_and_the_file_stands_still(book, monkeypatch):
     """THREE REFUSALS, each naming the thing to fix, each writing nothing.
 
