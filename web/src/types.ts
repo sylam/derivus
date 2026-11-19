@@ -24,6 +24,8 @@ export type Descriptor = {
   /** Structure only: which way a structure is dealt, chosen rather than filled - `required` where
    * no level tells its variations apart. */
   selector?: 'required' | 'optional';
+  /** The price-factor types the field's value names; a table's keyed by its column. */
+  factors?: string[] | Record<string, string[]>;
 };
 
 export type Section = Record<string, Descriptor>;

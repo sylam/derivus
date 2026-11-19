@@ -396,6 +396,26 @@ check("a refusal of a credit curve reads beside what it is about, in the route's
        "actor 'sales-1' holds no mark scope over 'HARBOURLINE', so no survival curve is written.",
        'No seat is set, and this desk files every act under the seat that asks'].map(desk.refusedAt),
       ['counterparty', 'curve', 'curve', 'curve', 'act', 'act']);
+
+const CURVES = { 'Price Factors': {
+  'InterestRate.ZAR': {}, 'InterestRate.USD-OIS': {}, 'InterestRate.EUR': {}, 'FxRate.ZAR': {},
+  'FXVol.USD.ZAR': {}, 'EquityPrice.ACME': {}, 'DividendRate.ACME': {}, 'InterestRateVol.JPY': {},
+  SurvivalProb: {} } };
+const named = (factors) => ({ widget: 'Text', description: '', value: '', factors });
+check("a field naming price factors offers the market's of its types, by the name after the "
+      + 'type, each once and in order',
+      'the whole factor name offered, InterestRate.ZAR where the deal states ZAR; a type matched '
+      + 'by prefix, which offers InterestRateVol.JPY as a discount curve; the name cut at its last '
+      + 'dot, which offers USD.ZAR as ZAR; an equity named by its price and dividend offered '
+      + 'twice; a table\'s column map read as one list; or a field declaring none offered every '
+      + 'factor',
+      [desk.factorNames(named(['InterestRate']), CURVES),
+       desk.factorNames(named(['FXVol']), CURVES),
+       desk.factorNames(named(['EquityPrice', 'DividendRate']), CURVES),
+       desk.factorNames(named({ Currency: ['FxRate'] }), CURVES),
+       desk.factorNames({ widget: 'Text', description: '', value: '' }, CURVES),
+       desk.factorNames(named(['InterestRate']), null)],
+      [['EUR', 'USD-OIS', 'ZAR'], ['USD.ZAR'], ['ACME'], [], [], []]);
 const NETTED = { Calc: { Deals: { Deals: { Children: [
   { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Credit_Support_Amounts: {
     Counterparty: 'KESTREL' } } }, Children: [{ Instrument: { '.Deal': { Object: 'FXOptionDeal' } } },
@@ -439,7 +459,7 @@ check("a profile's peaks are each column's largest number on the day it falls, t
       [{ ee: { value: 5, day: '2026-12-16' }, pfe: { value: 9, day: '2027-02-16', quantile: 97.5 } },
        { ee: { value: 5, day: '2026-12-16' } }]);
 
-console.log(`\n${ran} checks over 34 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 35 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

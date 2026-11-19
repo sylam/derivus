@@ -1,5 +1,7 @@
-import { useEffect, useRef, useState, type ReactNode } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { failure } from '../api';
+import { factorNames } from '../desk';
+import { marketOf, useApp } from '../state';
 import {
   SUPPORT_ROW, currencyOf, curveOf, editRaw, encodeScalar, formatNumber, isEditableScalar, isObject,
   kindOf, label, offsetText, sharedSections, supportRows, token, ungrouped,
@@ -283,6 +285,7 @@ function TableEdit({ name, declared, value, onAmend }: {
   const cell = (form: string, column: string): Descriptor => ({
     widget: ['Float', 'Percent'].includes(form) ? 'Float' : form === 'Integer' ? 'Integer' : 'Text',
     obj: form, description: column, value: null,
+    factors: (declared.factors as Record<string, string[]> | undefined)?.[column],
   });
   return (
     <div>
@@ -309,11 +312,14 @@ function TableEdit({ name, declared, value, onAmend }: {
 /** One scalar input, saved on Enter or on leaving it where its VALUE changed - `2000000.00` over
  * `2000000` is no change - and with `ask` only on the confirm beside it, declining restoring the
  * value held. A save refreshes the book and the effect below re-syncs: the file is the truth. A
- * refusal renders verbatim over the value that stands, until the next edit. Exported because a
- * quote ladder's value cells are the same input. */
+ * refusal renders verbatim over the value that stands, until the next edit. A field naming price
+ * factors offers the market's of its types, and takes a name typed. Exported because a quote
+ * ladder's value cells are the same input. */
 export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
   name: string; descriptor: Descriptor; value: unknown; onAmend: AmendField; ask?: string;
 }) {
+  const offered = factorNames(descriptor, marketOf(useApp().state));
+  const list = useId();
   const incoming = editRaw(value);
   const [raw, setRaw] = useState(incoming);
   const [refused, setRefused] = useState<string[] | null>(null);
@@ -378,6 +384,7 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
     input = (
       <input
         type={descriptor.widget === 'DatePicker' ? 'date' : 'text'}
+        list={offered.length ? list : undefined}
         inputMode={numeric ? 'decimal' : undefined} value={shown} disabled={saving}
         onFocus={() => setEditing(true)}
         onChange={(e) => edit(e.target.value)}
@@ -389,6 +396,11 @@ export function EditableScalar({ name, descriptor, value, onAmend, ask }: {
   return (
     <span className="editcell">
       {input}{suffix && <span className="hint">{suffix}</span>}
+      {offered.length > 0 && (
+        <datalist id={list}>
+          {offered.map((option) => <option key={option} value={option} />)}
+        </datalist>
+      )}
       {saving && <span className="hint">saving…</span>}
       {asking && (
         <span className="banner">

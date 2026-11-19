@@ -15,7 +15,8 @@ import {
   ungrouped,
 } from './tokens';
 import type {
-  BookRisk, BookXva, DealMark, DealNode, GreekRow, JobDoc, Market, Schema, TablePage, XvaSet,
+  BookRisk, BookXva, DealMark, DealNode, Descriptor, GreekRow, JobDoc, Market, Schema, TablePage,
+  XvaSet,
 } from './types';
 import { axisNames } from './vols';
 
@@ -482,6 +483,17 @@ export function tableReading(name: string, columns: unknown[], dated: boolean, d
 export function factorFamily(factor: string): string {
   const stop = factor.indexOf('.');
   return stop === -1 ? factor : factor.slice(0, stop);
+}
+
+/** What a field naming price factors offers: every factor of the market of a type its declaration
+ * names, by the name after the type - `InterestRate.ZAR` as `ZAR`. A table's cell is declared per
+ * column, so it is asked with its column's own. */
+export function factorNames(descriptor: Descriptor | undefined, market: Market | null): string[] {
+  const declared = descriptor?.factors;
+  const types = Array.isArray(declared) ? declared : [];
+  return [...new Set(Object.keys(market?.['Price Factors'] ?? {})
+    .filter((name) => types.includes(factorFamily(name)))
+    .map((name) => name.slice(name.indexOf('.') + 1)))].sort();
 }
 
 export function marksTotal(rows: DealMark[]): number {
