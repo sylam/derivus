@@ -2123,14 +2123,8 @@ class MtMCrossCurrencySwapDeal(Deal):
 
     def reset(self, calendars):
         super(MtMCrossCurrencySwapDeal, self).reset()
-        self.paydates = utils.generate_dates_backward(
-            self.field['Maturity_Date'], self.field['Effective_Date'],
-            self.field.get('Pay_Frequency', pd.DateOffset(months=6)))
-        self.recdates = utils.generate_dates_backward(
-            self.field['Maturity_Date'], self.field['Effective_Date'],
-            self.field.get('Receive_Frequency', pd.DateOffset(months=6)))
-        self.add_reval_dates(self.paydates, self.field['Pay_Currency'])
-        self.add_reval_dates(self.recdates, self.field['Receive_Currency'])
+        # its children's dates replace it (`finalize_dates`); unfinalised, its last day is all that is read
+        self.add_reval_dates({self.field['Maturity_Date']})
         self.child_map = {}
 
     def finalize_dates(self, parser, base_date, grid, node_children, node_resets, node_settlements):
@@ -2151,12 +2145,12 @@ class MtMCrossCurrencySwapDeal(Deal):
             # which child carries the MtM leg is known only once the children exist, and the
             # principal exchange this inserts is a schedule edit - so each child's compile
             # CONTINUES here and its tensor half is rebuilt after (`reopen` / `bind`)
+            daycount = 'ACT_365'    # a principal row accrues nothing, on any day count
             for index, child in enumerate(child_dependencies):
                 # make the child price to the same grid as the parent
                 child.Time_dep.assign(deal_data.Time_dep)
                 cashflows = child.Factor_dep['Cashflows'].reopen()
                 if child.Factor_dep['Currency'] == factor_dep[factor_dep['MTM']]['Currency']:
-                    daycount = self.field.get(factor_dep['MTM'] + '_Day_Count', 'ACT_365')
                     # add a zero nominal payment at the beginning if forward starting
                     cashflows.add_mtm_payments(
                         factor_dep['base_date'], self.field['Principal_Exchange'],
@@ -2165,7 +2159,6 @@ class MtMCrossCurrencySwapDeal(Deal):
                         deal_time[:, utils.TIME_GRID_MTM].max(), time_grid)
                     self.child_map.setdefault('MTM', child)
                 else:
-                    daycount = self.field.get(factor_dep['Other'] + '_Day_Count', 'ACT_365')
                     capital = cashflows.schedule[-1][utils.CASHFLOW_INDEX_Nominal]
                     cashflows.add_fixed_payments(
                         factor_dep['base_date'], self.field['Principal_Exchange'],
@@ -2223,7 +2216,6 @@ class MtMCrossCurrencySwapDeal(Deal):
         # TODO - complete cashflow definitions..
 
         field_index['MTM'] = self.field['MtM_Side']
-        field_index['Other'] = {'Pay': 'Receive', 'Receive': 'Pay'}[self.field['MtM_Side']]
         # a principal resets on the fixing of the other leg's currency in the resetting one's
         field_index['Spot_Lag'] = self.spot_lag(
             'FxRate', field['Pay_Currency'], all_factors, base_date, calendars, field['Receive_Currency'])
