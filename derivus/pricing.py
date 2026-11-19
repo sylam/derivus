@@ -5792,7 +5792,7 @@ def paid_up(mtm_list, deal_time, deal_data, shared):
 
 
 def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.TimeGrid, deal_data: utils.DealDataType,
-                           cashflow_pricer, mtm_currency=None, settle_cash=cash_settle, lag=None):
+                           cashflow_pricer, mtm_currency=None, settle_cash=cash_settle, lag=None, repaid=True):
     """The floating leg. Its one invariant is CANONICAL FORM: by the time the fold below runs,
     every cashflow row carries exactly ONE effective reset, so a row is a rate and an accrual.
 
@@ -5828,7 +5828,7 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
     earn `(1+J)` in every later step, which is exactly `Flat`.
 
     A leg whose principal resets on the fixing of `mtm_currency` reads that fixing's forward
-    between spot dates under `lag`.
+    between spot dates under `lag`, and repays its last principal only where `repaid`.
     """
     mtm_list = []
     factor_dep = deal_data.Factor_dep
@@ -5939,9 +5939,10 @@ def pv_float_cashflow_list(shared: utils.Calculation_State, time_grid: utils.Tim
                 all_fx_resets = utils.join_resets(
                     [past_fx_resets, future_fx_resets], 1, deal_data, fx_codes)
 
-                # the nominal in the resetting currency, and the next period's
+                # the nominal in the resetting currency, and the next period's: past the last, none
+                # where the last is repaid and the last again where it is not
                 Pi = all_fx_resets * cashflows.tn[:, utils.CASHFLOW_INDEX_Nominal].reshape(1, -1, 1)
-                Pi_1 = F.pad(Pi[:, 1:, :], [0, 0, 0, 1, 0, 0])
+                Pi_1 = F.pad(Pi[:, 1:, :], [0, 0, 0, 1, 0, 0]) if repaid else torch.cat([Pi[:, 1:], Pi[:, -1:]], 1)
 
             time_ofs += size
 

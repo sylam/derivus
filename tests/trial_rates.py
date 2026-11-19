@@ -27,8 +27,8 @@ def redeeming(rows):
     return rows[:-1] + [dict(rows[-1], Fixed_Amount=rows[-1]['Notional'])]
 
 
-def fixed_list(reference, buy_sell, items, **extra):
-    return rates_world._cashflow_leg('CFFixedInterestListDeal', reference, 'USD', 'USD', buy_sell,
+def fixed_list(reference, buy_sell, items, currency='USD', **extra):
+    return rates_world._cashflow_leg('CFFixedInterestListDeal', reference, currency, currency, buy_sell,
                                      {'Compounding': 'No', 'Items': items}, **extra)
 
 

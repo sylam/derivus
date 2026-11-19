@@ -2086,7 +2086,9 @@ class MtMCrossCurrencySwapDeal(Deal):
         F('Pay_Rate_Type', 'Text', default='Fixed', convention=True, values=['Fixed', 'Floating']),
         F('Receive_Interest_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
         F('Maturity_Date', 'Date', default=''),
-        F('Principal_Exchange', 'Text', default='None', values=['None', 'Start', 'Maturity', 'Start_Maturity']),
+        F('Principal_Exchange', 'Text', default='None', values=['None', 'Start', 'Maturity', 'Start_Maturity'],
+          description='The end exchanges both legs make: their principals on the effective date where it '
+                      'names Start, and repaid at maturity where it names Maturity'),
         F('Pay_Interest_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
         F('Receive_Discount_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
         F('Receive_Rate_Type', 'Text', default='Floating', convention=True, values=['Fixed', 'Floating']),
@@ -2106,7 +2108,9 @@ class MtMCrossCurrencySwapDeal(Deal):
                      ['This currency swap adjusts the notional of one leg to capture any changes in the FX Spot rate',
                       'since the last reset. At each reset, the principal of the adjusted leg is set to the principal',
                       'of the unadjusted leg multiplied by the spot FX rate. MtM cross currency swaps are path',
-                      'dependent.',
+                      'dependent. **Principal_Exchange** names the end exchanges both legs make: their principals',
+                      'on the effective date of a forward-starting swap where it names `Start`, and repaid at maturity',
+                      'where it names `Maturity`.',
                       '',
                       'The unadjusted leg is either a fixed or floating interest rate list and is valued as such,',
                       'however, the floating adjusted leg is valued as',
@@ -2115,7 +2119,8 @@ class MtMCrossCurrencySwapDeal(Deal):
                       '',
                       'where',
                       '',
-                      '- $A_i(t)=P_i(t)-P_{i+1}(t)$ for $i\\lt n$ and $A_n(t)=P_n(t)$',
+                      '- $A_i(t)=P_i(t)-P_{i+1}(t)$ for $i\\lt n$, whatever **Principal_Exchange** says, and',
+                      '  $A_n(t)=P_n(t)$ where it names `Maturity`, nothing where it does not',
                       '- $P_i(t)$ is the expected principal $P_i(t)=F(t,t_{i-1})\\tilde P_i$,',
                       '- $\\tilde P_i$ is the unadjusted leg principal for the $i^{th}$ period.',
                       '- $F(t,T)$ is the forward FX rate for settlement at time $T$.'
@@ -2187,7 +2192,8 @@ class MtMCrossCurrencySwapDeal(Deal):
 
         mtm_leg = pricing.pv_float_cashflow_list(
             shared, time_grid, self.child_map['MTM'], pricing.pricer_float_cashflows,
-            mtm_currency=self.child_map['Static'].Factor_dep['Currency'], lag=factor_dep['Spot_Lag'])
+            mtm_currency=self.child_map['Static'].Factor_dep['Currency'], lag=factor_dep['Spot_Lag'],
+            repaid='Maturity' in self.field['Principal_Exchange'])
 
         mtm = (static_leg * FX_static + mtm_leg * FX_mtm) / FX_rep
 

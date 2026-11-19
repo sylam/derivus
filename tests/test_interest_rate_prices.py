@@ -1054,6 +1054,96 @@ def test_a_coupon_on_several_resets_averages_them_unless_its_leg_compounds_them(
         assert paths.mean() == pytest.approx(value(averaged + fixed, at), rel=1e-9, abs=1e-6), at
 
 
+def test_a_resetting_cross_currency_swap_exchanges_principal_as_its_setting_says():
+    """A resetting EUR/USD swap, a million a side at 4% fixed, starting a year out for four 13-week
+    periods, every date a Monday so each spot date is two days on. Its resetting leg's principal is
+    P_i = s N F(T_{i-1}), F the pair's forward between spot dates - 0.8 e^{-0.02 T} for USD in EUR
+    and 1.25 e^{0.02 T} the other way, T in years from today - and a euro is worth
+    X = 1.25 e^{-0.02 2/365} dollars, its quote carried back from its spot date. By hand, on the
+    flat curves D (USD 4%, EUR 2%), the resetting leg pays on T_i
+
+        P_i (D(T_{i-1}) / D(T_i) - 1) + P_i - P_{i+1},  P_{n+1} = 0 where the setting names
+        Maturity and P_n where it does not, and -P_1 on T_0 where it names Start,
+
+    and the fixed leg s N 4% a_i, with s N on T_n where Maturity is named and -s N on T_0 where
+    Start is. So the four settings differ by the end exchanges alone, each leg's in its currency:
+
+        Start_Maturity - Start = Maturity - None = s N D(T_n) X + P_n D(T_n) X
+        Start_Maturity - Maturity = Start - None = -s N D(T_0) X - P_1 D(T_0) X
+
+    -4,513.76 and -105.30 resetting the euro leg, -5,842.61 and -134.27 resetting the dollar one,
+    whose `Start` swaps are worth 4,326.70 and -18,231.26. Under a credit Monte Carlo with no
+    volatility and the pair constant, the euro-resetting `Start` swap's last row books on every path
+    its last coupons alone: N 4% a, 9,972.60 dollars, and -0.8 N (e^{0.02 a} - 1), -3,999.00 euros.
+
+    KILLING MUTATIONS: the last principal repaid whatever the setting - the euro-resetting `Start`
+    swap reads -923,505.75 and its last row books -803,999.00 euros; the reset payments dropped
+    where the setting names no Maturity - it reads -942,338.55.
+    """
+    N, a, x = 1e6, 91 / 365.0, 1.25 * math.exp(-0.02 * 2 / 365.0)
+    dates = [BASE + pd.Timedelta(weeks=52 + 13 * k) for k in range(5)]
+    # the resetting leg's currency and the fixed one's, their rates and dollar prices, the quote
+    sides = {'Pay': ('EUR', 'USD', 0.02, 0.04, x, 1.0, 0.8), 'Receive': ('USD', 'EUR', 0.04, 0.02, 1.0, x, 1.25)}
+
+    def forward(side, day):
+        _, _, r_m, r_f, _, _, quote = sides[side]
+        return quote * math.exp((r_m - r_f) * (day - BASE).days / 365.0)
+
+    def swap(side, setting):
+        """The swap resetting its `side`'s leg, the other leg fixed, `setting` its exchanges."""
+        resetting, fixed, *_ = sides[side]
+        rows = [{'Payment_Date': e, 'Notional': N, 'Accrual_Start_Date': s, 'Accrual_End_Date': e,
+                 'Accrual_Day_Count': 'ACT_365', 'Accrual_Year_Fraction': a, 'Fixed_Amount': 0.0,
+                 'Known_FX_Rate': 0.0} for s, e in zip(dates, dates[1:])]
+        sell, buy = ('Sell', 'Buy') if side == 'Pay' else ('Buy', 'Sell')
+        return {'Object': 'MtMCrossCurrencySwapDeal', 'Reference': side + setting, 'MtM_Side': side,
+                side + '_Currency': resetting, {'Pay': 'Receive', 'Receive': 'Pay'}[side] + '_Currency': fixed,
+                'Principal_Exchange': setting, 'Effective_Date': dates[0], 'Maturity_Date': dates[-1],
+                'Children': [
+                    trial_rates.float_list(side + setting + '_M', sell, [dict(
+                        row, Margin=utils.Basis(0.0), FX_Reset_Date=row['Accrual_Start_Date'], Resets=[[
+                            row['Accrual_Start_Date'], row['Accrual_Start_Date'], row['Payment_Date'], a,
+                            pd.DateOffset(days=1), 'ACT_365', '0D', 0.0, 'No', utils.Percent(0.0)]])
+                        for row in rows], currency=resetting, forecast=resetting),
+                    trial_rates.fixed_list(side + setting + '_F', buy, [dict(
+                        row, Rate=utils.Percent(4.0), Discounted='No', FX_Reset_Date=None) for row in rows],
+                        currency=fixed)]}
+
+    def hand(side, setting):
+        """The swap's value in dollars, its flows `(day, amount)` discounted and converted."""
+        _, _, r_m, r_f, x_m, x_f, _ = sides[side]
+        s = 1.0 if side == 'Pay' else -1.0
+        principals = [-s * N * forward(side, day) for day in dates[:-1]]
+        after = principals[1:] + [0.0 if 'Maturity' in setting else principals[-1]]
+        resetting = [(e, p * (discount(b, r_m) / discount(e, r_m) - 1.0) + p - q)
+                     for b, e, p, q in zip(dates, dates[1:], principals, after)]
+        fixed = [(e, s * N * 0.04 * a) for e in dates[1:]] + [(dates[-1], s * N)] * ('Maturity' in setting)
+        if 'Start' in setting:
+            resetting, fixed = resetting + [(dates[0], -principals[0])], fixed + [(dates[0], -s * N)]
+        return (x_m * sum(amount * discount(day, r_m) for day, amount in resetting) +
+                x_f * sum(amount * discount(day, r_f) for day, amount in fixed))
+
+    settings = ('Start_Maturity', 'Maturity', 'Start', 'None')
+    marks, _ = book.marks([swap(side, setting) for side in sides for setting in settings])
+    for side, (_, _, r_m, r_f, x_m, x_f, _) in sides.items():
+        s, value = (1.0 if side == 'Pay' else -1.0), {k: float.fromhex(marks[side + k]) for k in settings}
+        first, last = (-s * N * forward(side, day) for day in (dates[0], dates[-2]))
+        maturity = s * N * discount(dates[-1], r_f) * x_f + last * discount(dates[-1], r_m) * x_m
+        start = -s * N * discount(dates[0], r_f) * x_f - first * discount(dates[0], r_m) * x_m
+        for setting in settings:
+            assert value[setting] == pytest.approx(hand(side, setting), rel=1e-10), (side, setting)
+        assert value['Start_Maturity'] - value['Start'] == pytest.approx(maturity, rel=1e-10), side
+        assert value['Maturity'] - value['None'] == pytest.approx(maturity, rel=1e-10), side
+        assert value['Start_Maturity'] - value['Maturity'] == pytest.approx(start, rel=1e-10), side
+        assert value['Start'] - value['None'] == pytest.approx(start, rel=1e-10), side
+
+    _, out = book.simulated([swap('Pay', 'Start')], ('USD', 'EUR'), sigma=0.0, prec=torch.float64, models={
+        'FxRate.EUR': ('GBMAssetPriceModel', {'Vol': 0.0, 'Drift': 0.0})}, Generate_Cashflows='Yes')
+    cash = out['Results']['cashflows']
+    assert cash['USD'].loc[dates[-1]].to_numpy() == pytest.approx(N * 0.04 * a, rel=1e-12)
+    assert cash['EUR'].loc[dates[-1]].to_numpy() == pytest.approx(-0.8 * N * math.expm1(0.02 * a), rel=1e-12)
+
+
 def test_a_reset_fixed_by_the_base_date_reads_the_rate_its_document_states(caplog):
     """A reset behind the base date reads the rate its document states and is fixed at 0% with a
     warning naming the deal where it states none; one ON the base date reads the stated rate where
