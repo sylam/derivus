@@ -86,8 +86,8 @@ def fx(surface, strike):
     deal = {
         'Object': 'FXOptionDeal', 'Reference': 'OPT', 'Currency': 'USD',
         'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
-        'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Expiry_Date': EXPIRY, 'Strike_Price': strike,
-        'Underlying_Amount': 1.0}
+        'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Expiry_Date': EXPIRY, 'Delivery_Date': EXPIRY,
+        'Strike_Price': strike, 'Underlying_Amount': 1.0}
     return factors, deal
 
 

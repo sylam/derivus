@@ -518,7 +518,7 @@ def test_on_a_sloped_curve_every_asian_sample_is_forwarded_to_its_own_date():
                                   'EquityPriceVol.EQ': surface, 'FXVol.EUR.USD': surface})
     fx = {'Object': 'FXDiscreteExplicitAsianOption', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
           'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy',
-          'Strike_Price': FX_SPOT, 'Underlying_Amount': UNITS, 'Expiry_Date': EXPIRY,
+          'Strike_Price': FX_SPOT, 'Underlying_Amount': UNITS, 'Expiry_Date': EXPIRY, 'Delivery_Date': EXPIRY,
           'Sampling_Data': [[d, 0.0, 1.0] for d in SAMPLES]}
     kinds = ('Call', 'Put')
     out = _run(_job([_asian('EQ' + k, k, payoff=None, strike=SPOT) for k in kinds] +

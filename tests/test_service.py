@@ -1047,7 +1047,7 @@ FX_OPTION = {'Object': 'FXOptionDeal', 'Reference': 'OPT1', 'Currency': 'USD',
              'Underlying_Currency': 'ZAR', 'Underlying_Amount': 1_000_000.0,
              'Strike_Price': SPOT, 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
              'Option_Style': 'European', 'Expiry_Date': BASE + pd.DateOffset(years=1),
-             'FX_Volatility': 'USD.ZAR', 'Discount_Rate': 'USD'}
+             'Delivery_Date': BASE + pd.DateOffset(years=1), 'FX_Volatility': 'USD.ZAR', 'Discount_Rate': 'USD'}
 
 
 def test_a_bloomberg_snapshot_reaches_a_solved_strike(tmp_path):
@@ -4021,7 +4021,7 @@ def test_a_surface_is_held_with_the_leg_it_cannot_stand_on(desk_setup, tmp_path,
     result, outcome = set_up({'deal': dict(
         service.PAIR_PROBE, Reference='OPT', Currency='ZAR', Underlying_Currency='EUR',
         FX_Volatility='EUR.ZAR', Discount_Rate='EUR', Expiry_Date=expiry,
-        Settlement_Date=expiry)})
+        Delivery_Date=expiry)})
     reasons = {row['factor']: row['reason'] for row in outcome['not_supplied']}
 
     assert result['status'] == 'done' and outcome['written'] is False, result

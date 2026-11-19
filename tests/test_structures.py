@@ -1282,10 +1282,11 @@ def test_a_knock_in_plus_a_knock_out_is_the_vanilla(book):
     and composes to that decomposition - not that the formula is accurate.
     """
     knock = SPOT * 1.10
+    expiry = {'.Timestamp': (BASE + pd_offset()).strftime('%Y-%m-%d')}
     common = {'Currency': 'ZAR', 'Discount_Rate': 'ZAR', 'Underlying_Currency': 'USD',
               'Underlying_Amount': NOTIONAL / SPOT, 'FX_Volatility': 'USD.ZAR',
               'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': SPOT,
-              'Expiry_Date': {'.Timestamp': (BASE + pd_offset()).strftime('%Y-%m-%d')}}
+              'Expiry_Date': expiry, 'Delivery_Date': expiry}
     # a deal block IS the pricer's field dict, so the barrier's two fields are written out -
     # continuous monitoring, no rebate - exactly as the runner writes them
     barrier = dict(common, Object='FXBarrierOption', Cash_Rebate=0.0,

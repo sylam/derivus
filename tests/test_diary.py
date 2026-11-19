@@ -156,7 +156,7 @@ FX_OPTION = {'Object': 'FXOptionDeal', 'Reference': 'FXO', 'Currency': 'ZAR',
              'Option_Type': 'Call', 'Strike_Price': 1.0 / 18.5, 'Option_Style': 'European',
              'Settlement_Style': 'Physical', 'Discount_Rate': 'ZAR', 'FX_Volatility': 'USD.ZAR',
              'Expiry_Date': BASE + pd.DateOffset(days=60),
-             'Trade_Date': None, 'Delivery_Date': None, 'Structure_Reference': ''}
+             'Trade_Date': None, 'Delivery_Date': BASE + pd.DateOffset(days=60), 'Structure_Reference': ''}
 OPTION = {'Object': 'EquityOptionDeal', 'Reference': 'EQO', 'Currency': 'ZAR', 'Equity': 'EQ',
           'Dividends': 'EQ', 'Discount_Rate': 'ZAR', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy',
           'Option_Style': 'European', 'Option_On_Forward': 'No',
@@ -1186,8 +1186,7 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(option, recorded, tmp
     Killing mutations: the option announcing its expiry alone, under which the catch-up rule passes
     over a payoff nobody paid and nobody observed - for the binary, its own `observes` deleted; the
     settlement day read off the expiry before the type's own field, under which an FX option's
-    `Delivery_Date` is ignored entirely; and no expiry to fall back to, under which one stating none
-    settles nothing.
+    `Delivery_Date` is ignored entirely.
     """
     serving(tmp_path, [netting_set(CLIENT_SET, 'CPTY_A')], factors=dict(FACTORS, **EQUITY))
     expiry = str((BASE + pd.DateOffset(days=60)).date())
@@ -1203,8 +1202,7 @@ def test_an_option_waits_for_its_fixing_and_its_settlement(option, recorded, tmp
     assert rows[(Diary.PAYMENT, expiry)]['amount'] is None
     assert rows[(Diary.EXPIRY, expiry)]['needs'] is None, 'cash settlement vests no choice'
 
-    # the settlement day is the TYPE'S OWN field where it declares one, not the expiry, which it
-    # falls back to where that field is blank
+    # the settlement day is the TYPE'S OWN field where it declares one, not the expiry
     serving(tmp_path, [node(FX_OPTION)], factors=dict(FACTORS, **EQUITY))
     assert [(row['due_date'], row['currency']) for row in payments(diary_rows()['rows'])] == [
         (expiry, 'ZAR')], 'in its own currency, the payoff currency it states none of'

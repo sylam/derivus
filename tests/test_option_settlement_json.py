@@ -64,7 +64,7 @@ BINARY = dict({k: v for k, v in VANILLA.items() if k != 'Units'},
               Object='EquityBinaryOption', Reference='EQB', Payoff=CASH)
 FX = {'Object': 'FXOptionDeal', 'Reference': 'FXO', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
       'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
-      'Strike_Price': FX_SPOT, 'Underlying_Amount': UNITS, 'Expiry_Date': EXPIRY}
+      'Strike_Price': FX_SPOT, 'Underlying_Amount': UNITS, 'Expiry_Date': EXPIRY, 'Delivery_Date': EXPIRY}
 CMC = {'Object': 'CreditMonteCarlo', 'Time_grid': '0d 12m(1m)', 'Batch_Size': 256, 'Random_Seed': 1,
        'Simulation_Batches': 1, 'Deflation_Interest_Rate': 'USD', 'Generate_Cashflows': 'Yes'}
 
@@ -256,9 +256,9 @@ def test_on_the_expiry_the_engine_fixes_the_level_and_before_it_the_lag_only_mov
 
 
 def test_an_fx_option_pays_on_the_delivery_date_its_family_declares():
-    """The FX option settles on `Delivery_Date`, the field its family declares it settles on, the
-    expiry where blank: Black on the forward between spot dates, as far apart here as the two
-    Fridays, discounted to the delivery, exact. A `Settlement_Date` written on it declares nothing
+    """The FX option settles on `Delivery_Date`, the field its family declares it settles on, stated
+    on its expiry or ten days on: Black on the forward between spot dates, as far apart here as the
+    two Fridays, discounted to the delivery, exact. A `Settlement_Date` written on it declares nothing
     and is not read.
 
     Killing mutation: the settlement read off a `Settlement_Date` the type does not declare.
@@ -286,7 +286,8 @@ KNOCKS = {'KI': dict(BARRIER, Reference='KI', Barrier_Type='Up_And_In'),
 
 def test_a_barrier_pays_on_the_delivery_date_its_family_declares():
     """`Delivery_Date` stated on all three, a knock-in plus a knock-out is the vanilla, and each
-    barrier its blank twin discounted from the expiry to the delivery, a touch's rebate aside.
+    barrier its twin delivered on the expiry discounted from the expiry to the delivery, a touch's
+    rebate aside.
 
     Killing mutation: the barrier discounting to the expiry, the pair 4.4e-4 above the vanilla.
     """
@@ -308,7 +309,7 @@ PARTIAL = dict(BARRIER, Object='FXPartialTimeBarrierOption', Payoff_Currency='US
                Barrier_Limit_Date=BASE + pd.DateOffset(months=6))
 TOUCH = {'Currency': 'USD', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD', 'Buy_Sell': 'Buy',
          'Underlying_Currency': 'EUR', 'FX_Volatility': 'EUR.USD', 'Cash_Payoff': CASH,
-         'Expiry_Date': EXPIRY, 'Barrier_Type': 'Up', 'Barrier_Price': 1.40}
+         'Expiry_Date': EXPIRY, 'Delivery_Date': EXPIRY, 'Barrier_Type': 'Up', 'Barrier_Price': 1.40}
 PAID = {'PKO': dict(PARTIAL, Reference='PKO', Barrier_Type='Up_And_Out'),
         'PKI_REBATE': dict(PARTIAL, Reference='PKI_REBATE', Barrier_Type='Up_And_In', Cash_Rebate=1.0),
         'PKO_REBATE': dict(PARTIAL, Reference='PKO_REBATE', Barrier_Type='Up_And_Out', Cash_Rebate=1.0),
@@ -321,9 +322,10 @@ PAID = {'PKO': dict(PARTIAL, Reference='PKO', Barrier_Type='Up_And_Out'),
 
 def test_an_fx_option_paid_at_expiry_pays_on_the_delivery_date_its_family_declares():
     """`Delivery_Date` stated, each partial barrier, one-touch and no-touch paid at expiry and Asian
-    marks its blank twin discounted from the expiry to the delivery; a touch's payment is not.
+    marks its twin delivered on the expiry discounted from the expiry to the delivery; a touch's
+    payment is not.
 
-    Killing mutation: `carried_to_settlement` answering none, every one at its blank twin.
+    Killing mutation: `carried_to_settlement` answering none, every one at its twin.
     """
     marked = marks([*PAID.values(), *(dict(deal, Reference=name + '_D', Delivery_Date=SETTLE)
                                       for name, deal in PAID.items())])
@@ -334,33 +336,78 @@ def test_an_fx_option_paid_at_expiry_pays_on_the_delivery_date_its_family_declar
     assert touch > 0.0 and marked['PKO_REBATE_D'] == pytest.approx(marked['PKO_D'] + touch, rel=1e-12)
 
 
-def test_a_blank_delivery_date_settles_every_fx_option_where_it_did():
-    """Each FX option type declaring `Delivery_Date` marks to the bit with it blank as stated on its
-    expiry, and each strip, settling on its own schedule, as stated on any day.
+#: Quarterly fixings each paid three days on, a year out, and a strip on them
+ROWS = [[BASE + pd.DateOffset(months=m), BASE + pd.DateOffset(months=m, days=3), 0.0] for m in (3, 6, 9, 12)]
+STRIP = dict({k: v for k, v in FX.items() if k not in ('Expiry_Date', 'Delivery_Date')},
+             LeverageNotional=2.0 * UNITS, Strike_Price=FX_SPOT * 0.98)
+#: An FX option of each type paying on `Delivery_Date`, delivered on its expiry
+DELIVERING = {
+    'FXO': FX, 'FXE': dict(FX, Object='FXEuropeanOption', Reference='FXE'),
+    'FXB': dict({k: v for k, v in FX.items() if k != 'Underlying_Amount'}, Object='FXBinaryOption',
+                Reference='FXB', Payoff=CASH),
+    'KI': KNOCKS['KI'], 'PKO': PAID['PKO'], 'OT': PAID['OT'], 'NT': PAID['NT'], 'ASIAN': PAID['ASIAN'],
+    'DASIAN': dict(FX, Object='FXDiscreteExplicitDoubleAsianOption', Reference='DASIAN', Strike_Price=0.01,
+                   Sampling_Data_1=[[BASE + pd.DateOffset(months=m), 0.0, 1.0] for m in (9, 10, 11, 12)],
+                   Sampling_Data_2=[[BASE + pd.DateOffset(months=m), 0.0, 1.0] for m in (1, 2, 3, 4)])}
+#: Each strip settling on its own schedule, which declares `Delivery_Date` and never reads it
+STRIPS = {
+    'TARF': dict(STRIP, Object='FXTARFOptionDeal', Reference='TARF', TargetLevel=0.1, TARF_ExpiryDates=ROWS,
+                 Expiry_Date=ROWS[-1][1]),
+    'ACCU': dict(STRIP, Object='FXAccumulatorOptionDeal', Reference='ACCU', Barrier_Type='Up_And_Out',
+                 Barrier_Price=FX_SPOT * 1.10, Accumulator_ExpiryDates=ROWS),
+    'EXT': dict({k: v for k, v in STRIP.items() if k != 'LeverageNotional'}, Object='FXExtendableForwardDeal',
+                Reference='EXT', Extension_Strike=FX_SPOT * 1.02, Extension_Date=ROWS[1][0], Extension_Style='Strip',
+                Extendable_ExpiryDates=[[fixing, paid, None, None] for fixing, paid, _ in ROWS]),
+    'RANGE': {'Object': 'FXRangeAccrualDeal', 'Reference': 'RANGE', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
+              'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Lower_Barrier': 1.15,
+              'Upper_Barrier': 1.35, 'Payoff': CASH, 'Settlement_Date': ROWS[-1][1],
+              'Observation_Dates': [[fixing, None] for fixing, *_ in ROWS]}}
 
-    Killing mutation: a blank `Delivery_Date` on the barrier read two days after the expiry.
+
+def blank(deal):
+    """`deal` leaving `Delivery_Date` out."""
+    return {k: v for k, v in deal.items() if k != 'Delivery_Date'}
+
+
+@pytest.mark.parametrize('name', sorted(DELIVERING) + sorted(STRIPS))
+def test_validate_names_a_blank_delivery_date_on_each_fx_option_paid_on_it(name):
+    """`Delivery_Date` is the day the payoff is paid, a term the author states: `validate` names it,
+    left out or written blank, on each FX option type paying on it, and says nothing of it on a strip
+    settling on its own schedule, which declares it and never reads it.
+
+    Killing mutation: the declaration a convention again (`default=''`, `convention=True`), every
+    blank passed over.
     """
-    rows = [[BASE + pd.DateOffset(months=m), BASE + pd.DateOffset(months=m, days=3), 0.0]
-            for m in (3, 6, 9, 12)]
-    strip = dict({k: v for k, v in FX.items() if k != 'Expiry_Date'}, LeverageNotional=2.0 * UNITS,
-                 Strike_Price=FX_SPOT * 0.98)
-    deals = [FX, *KNOCKS.values(), *PAID.values(),
-             dict(strip, Object='FXTARFOptionDeal', Reference='TARF', TargetLevel=0.1,
-                  TARF_ExpiryDates=rows, Expiry_Date=rows[-1][1]),
-             dict(strip, Object='FXAccumulatorOptionDeal', Reference='ACCU', Barrier_Type='Up_And_Out',
-                  Barrier_Price=FX_SPOT * 1.10, Accumulator_ExpiryDates=rows),
-             {'Object': 'FXRangeAccrualDeal', 'Reference': 'RANGE', 'Currency': 'USD',
-              'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
-              'Buy_Sell': 'Buy', 'Lower_Barrier': 1.15, 'Upper_Barrier': 1.35, 'Payoff': CASH,
-              'Settlement_Date': rows[-1][1], 'Observation_Dates': [[fixing, None] for fixing, *_ in rows]}]
-    stated = [dict(deal, Reference=deal['Reference'] + '_D',
-                   Delivery_Date=SETTLE if deal['Reference'] in ('TARF', 'ACCU', 'RANGE') else EXPIRY)
-              for deal in deals]
-    marked = run(deals + stated, calc={'MCMC_Simulations': 256})['mtm']
-    marked = dict(zip(marked['Reference'], marked['Value'].astype(float)))
-    for deal in deals:
-        reference = deal['Reference']
-        assert marked[reference] != 0.0 and marked[reference + '_D'].hex() == marked[reference].hex(), reference
+    for unstated in (blank(dict(DELIVERING, **STRIPS)[name]), dict(dict(DELIVERING, **STRIPS)[name], Delivery_Date='')):
+        said = world([unstated]).validate()['deals'].get(name, [])
+        assert [m for m in said if 'Delivery_Date' in m] == ['Delivery_Date is required'] * (name in DELIVERING), said
+
+
+def test_a_blank_delivery_date_prices_nothing_and_a_strip_never_reads_it(caplog):
+    """A run prices no FX option leaving `Delivery_Date` blank: its compile reads the last day its
+    declaration settles on, a blank one settles on none, and each is skipped by name on the
+    `ValueError` of `max` over nothing, the book priced without it - under a base valuation and a
+    credit Monte Carlo of the equity vanilla beside them alike. Each strip marks to the bit with it
+    blank as stated on any day.
+
+    Killing mutation: `otherwise='Expiry_Date'` put back on the declaration, every blank priced on
+    its expiry.
+    """
+    try:
+        max(())
+    except ValueError as error:
+        empty = error.args
+    skipped = ['{} {} {} - Skipped'.format(deal['Object'], name, empty) for name, deal in DELIVERING.items()]
+    strips = [*STRIPS.values(), *(dict(deal, Reference=name + '_D', Delivery_Date=SETTLE) for name, deal in STRIPS.items())]
+    for calc, deals in (({'MCMC_Simulations': 256}, strips), (CMC, [VANILLA])):
+        caplog.clear()
+        out = world([blank(deal) for deal in DELIVERING.values()] + deals, calc=calc).run_job()[1]
+        logged = [record.getMessage() for record in caplog.records]
+        assert out['Stats']['Deals Skipped'] == len(DELIVERING) and all(line in logged for line in skipped), logged
+        if deals is strips:
+            marked = dict(zip(out['Results']['mtm']['Reference'], out['Results']['mtm']['Value'].astype(float)))
+            assert not set(DELIVERING).intersection(marked), marked
+            assert all(marked[name] != 0.0 and marked[name].hex() == marked[name + '_D'].hex() for name in STRIPS), marked
 
 
 def held(reference, deals):
@@ -404,8 +451,8 @@ DELIVERED = WORLD_EXPIRY + pd.DateOffset(days=40)
 UP = {'Expiry_Date': WORLD_EXPIRY, 'Barrier_Price': 1.375}
 WINDOW = dict(UP, Barrier_At_Start='Yes', Barrier_Limit_Date=book.WORLD_BASE + pd.DateOffset(months=6))
 TOUCHES = {'Currency': 'USD', 'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
-           'Buy_Sell': 'Buy', 'Expiry_Date': WORLD_EXPIRY, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Up',
-           'Barrier_Price': 1.35}
+           'Buy_Sell': 'Buy', 'Expiry_Date': WORLD_EXPIRY, 'Delivery_Date': WORLD_EXPIRY, 'Cash_Payoff': 10_000.0,
+           'Barrier_Type': 'Up', 'Barrier_Price': 1.35}
 SETTLING = {
     'KO': book.fx_leg('FXBarrierOption', 'KO', Barrier_Type='Up_And_Out', **UP),
     'KI': book.fx_leg('FXBarrierOption', 'KI', Barrier_Type='Up_And_In', **UP),
@@ -422,8 +469,8 @@ SETTLING = {
     'NT': dict(TOUCHES, Object='FXNoTouchOption', Reference='NT'),
     'ASN': book.fx_leg('FXDiscreteExplicitAsianOption', 'ASN', Expiry_Date=WORLD_EXPIRY, Sampling_Data=[
         [book.WORLD_BASE + pd.DateOffset(months=m), 0.0, 1.0] for m in (3, 6, 9, 12)])}
-#: Each settles where `SETTLING` does: blank, stated on its expiry, and stated forty days after it
-TWINS = {'': {}, '_E': {'Delivery_Date': WORLD_EXPIRY}, '_D': {'Delivery_Date': DELIVERED}}
+#: Each settles where `SETTLING` does, on its expiry, and forty days after it
+TWINS = {'': {}, '_D': {'Delivery_Date': DELIVERED}}
 #: EURUSD a GBM at the surface's 15%
 EURUSD = {'FxRate.EUR': ('GBMAssetPriceModel', {'Vol': book.SIGMA, 'Drift': 0.0})}
 
@@ -445,7 +492,7 @@ def delivered():
 
 
 def delivered_identities(dates, ledgers, profiles, names, expiry, paid_on, exact, rtol=1e-13):
-    """Each of `names` paid on `paid_on`, against its blank twin settling on `expiry`, on one run of
+    """Each of `names` paid on `paid_on`, against its twin delivered on `expiry`, on one run of
     a monthly grid, read on the rows both price - the months, the expiry and `paid_on`, a row only
     another deal adds reading each interpolated: every row to the expiry the twin's times that row's
     forward discount between the two days, a unit on each read path by path; every row after it the
@@ -472,33 +519,15 @@ def delivered_identities(dates, ledgers, profiles, names, expiry, paid_on, exact
                 name, dates[row])
 
 
-def test_stated_on_its_expiry_an_fx_option_simulates_and_books_as_its_blank_twin():
-    """Under a float64 credit Monte Carlo every FX option `SETTLING` holds - the barriers, the
-    start-window barriers, the one-touches paid at expiry and at the touch, the no-touch and the
-    Asian - stated on its expiry simulates every row and books every cash flow, its ledger's days
-    among them, to the bit as with its `Delivery_Date` blank. The base valuation's marks are held so
-    by `test_a_blank_delivery_date_settles_every_fx_option_where_it_did`.
-
-    Killing mutation: a blank `Delivery_Date` read two days after the expiry (in
-    `schema.settlement_days`), the blank twins' rows and cash moving off the stated ones.
-    """
-    dates, ledgers, profiles = delivered()
-    for name in SETTLING:
-        assert np.array_equal(profiles[name + '_E'], profiles[name]), name
-        blank, stated = ledgers[name], ledgers[name + '_E']
-        assert stated.index.equals(blank.index) and np.array_equal(stated.values, blank.values), name
-        assert np.asarray(blank.values, dtype=float).any(), name
-
-
 def test_delivered_after_its_expiry_an_fx_option_holds_what_the_expiry_fixed_and_books_it_on_the_delivery():
     """Delivered forty days after its expiry, under a float64 credit Monte Carlo with a Hull-White on
     USD, each barrier, start-window and end-window barrier, one-touch and no-touch paid at expiry and the Asian,
-    read on the monthly rows, the expiry and the delivery: to the expiry every row is its blank
-    twin's times that row's own forward discount from the expiry to the delivery, read off a unit
+    read on the monthly rows, the expiry and the delivery: to the expiry every row is its twin's
+    delivered on the expiry times that row's own forward discount from the expiry to the delivery, read off a unit
     paid on each, to 1e-13 - the closed form carries the same two curve reads in another order; the
     monthly row after the expiry and the delivery's are not zero and hold the payoff the delivery
     books, discounted to them as the unit paid there is; nothing is booked on the expiry; and the
-    delivery books the payoff whole, path by path the blank twin's on its expiry - to the bit but for
+    delivery books the payoff whole, path by path that twin's on its expiry - to the bit but for
     the Asian, within 1e-12, whose expiry row reads its last sample as a forward at no tenor where
     the rows after it read it fixed.
 
@@ -515,11 +544,11 @@ def test_delivered_after_its_expiry_an_fx_option_holds_what_the_expiry_fixed_and
 
 def test_a_knock_out_s_rebate_and_a_one_touch_paid_at_the_touch_pay_when_they_pay():
     """Delivered forty days after the expiry, a knock-out and a start-window knock-out paying a 50
-    rebate at the touch book every rebate before the expiry to the bit as their blank twins do, the
-    knock-out the one its last interval touches on the expiry itself, on some paths and not others,
-    and the delivery the rest: the expiry's and the delivery's cash sum to the blank twin's on the
-    expiry to 1e-13. A one-touch paid at the touch reads no delivery, its rows and cash the blank
-    twin's to the bit.
+    rebate at the touch book every rebate before the expiry to the bit as their twins delivered on the
+    expiry do, the knock-out the one its last interval touches on the expiry itself, on some paths
+    and not others, and the delivery the rest: the expiry's and the delivery's cash sum to that
+    twin's on the expiry to 1e-13. A one-touch paid at the touch reads no delivery, its rows and cash
+    that twin's to the bit.
 
     Killing mutations: the knock-out's rebate on the expiry row left unbooked (`pv_barrier_option`
     booking it only before the expiry), short by that interval's touch on those paths; the one-touch
@@ -616,16 +645,16 @@ def test_a_forward_carries_between_spot_dates():
         return [
             (dict(VANILLA, Settlement_Date=expiry, **terms), UNITS, 0.01) + equity,
             (dict(BINARY, Settlement_Date=expiry, Payoff_Style='Asset', **terms), CASH, 0.0) + equity,
-            (dict(FX, **terms), UNITS, 0.01) + pair,
+            (dict(FX, Delivery_Date=expiry, **terms), UNITS, 0.01) + pair,
             (dict({k: v for k, v in FX.items() if k != 'Underlying_Amount'}, Object='FXBinaryOption',
-                  Reference='FXB', Payoff=CASH, Payoff_Style='Asset', **terms), CASH, 0.0) + pair,
+                  Reference='FXB', Payoff=CASH, Payoff_Style='Asset', Delivery_Date=expiry, **terms), CASH, 0.0) + pair,
             ({'Object': 'EquityForwardDeal', 'Reference': 'EQF', 'Currency': 'USD', 'Equity': 'EQ',
               'Discount_Rate': 'USD', 'Buy_Sell': 'Buy', 'Forward_Price': 0.01, 'Units': UNITS,
               'Maturity_Date': expiry}, UNITS, 0.01) + equity,
             # a start-window knock-out at a barrier no path reaches is the vanilla
             (dict(FX, Object='FXPartialTimeBarrierOption', Reference='FXP', Payoff_Currency='USD',
                   Barrier_Type='Down_And_Out', Barrier_Price=0.001, Barrier_At_Start='Yes',
-                  Barrier_Limit_Date=BASE + pd.DateOffset(days=90), **terms), UNITS, 0.01) + pair]
+                  Barrier_Limit_Date=BASE + pd.DateOffset(days=90), Delivery_Date=expiry, **terms), UNITS, 0.01) + pair]
 
     # a Thursday parts one day from two, which from a Friday to a Wednesday carry alike
     for expiry, stated in ((midweek, {}), (midweek, {'EQ': 2, 'EUR': 3}),
@@ -669,7 +698,8 @@ def test_a_forward_carries_between_spot_dates():
     years = lambda date, days: ((date - BASE).days + lag(date, days) - lag(BASE, days)) / 365.0
     touch = {'Currency': 'USD', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD', 'Buy_Sell': 'Buy',
              'Cash_Payoff': CASH, 'Expiry_Date': year, 'Barrier_Monitoring_Frequency': pd.DateOffset(days=0)}
-    fx_touch = dict(touch, Underlying_Currency='EUR', FX_Volatility='EUR.USD', Barrier_Type='Up', Barrier_Price=1.35)
+    fx_touch = dict(touch, Underlying_Currency='EUR', FX_Volatility='EUR.USD', Barrier_Type='Up', Barrier_Price=1.35,
+                    Delivery_Date=year)
     marked = marks([
         dict(fx_touch, Object='FXOneTouchOption', Reference='FXOT'),
         dict(fx_touch, Object='FXNoTouchOption', Reference='FXNT'),
@@ -728,7 +758,7 @@ def test_a_pair_counts_its_spot_date_as_the_market_does():
     expiry, inverse = pd.Timestamp('2024-12-11'), pd.Timestamp('2024-10-17')
     calendars = {'FxRate.EUR': 'TARGET (Euro)', 'FxRate.USD': 'New York', 'FxRate.GBP': 'London'}
     named = {name: dict(dict(FACTORS, **GBP)[name], Holiday_Calendar=calendar) for name, calendar in calendars.items()}
-    deep = dict(FX, Strike_Price=0.01, Expiry_Date=expiry)
+    deep = dict(FX, Strike_Price=0.01, Expiry_Date=expiry, Delivery_Date=expiry)
     cross = dict(deep, Reference='CROSS', Currency='GBP', Discount_Rate='GBP', FX_Volatility='EUR.GBP')
     unit = {'Object': 'FixedCashflowDeal', 'Reference': 'UNIT', 'Currency': 'GBP', 'Discount_Rate': 'GBP',
             'Amount': 1.0, 'Payment_Date': expiry}

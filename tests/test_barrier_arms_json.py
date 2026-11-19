@@ -84,14 +84,15 @@ def _deal(barrier_type, barrier, strike, option_type, rebate):
             'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': option_type,
             'Strike_Price': strike, 'Barrier_Price': barrier, 'Barrier_Type': barrier_type,
             'Barrier_Monitoring_Frequency': pd.DateOffset(days=0), 'Cash_Rebate': rebate,
-            'Underlying_Amount': NOTIONAL,
-            'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D)}
+            'Underlying_Amount': NOTIONAL, 'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D),
+            'Delivery_Date': BASE + pd.DateOffset(days=EXPIRY_D)}
 
 
 def _touch(kind, **terms):
     return dict({'Object': kind, 'Reference': 'BR', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
                  'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy',
                  'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D), 'Cash_Payoff': NOTIONAL,
+                 'Delivery_Date': BASE + pd.DateOffset(days=EXPIRY_D),
                  'Barrier_Type': 'Up', 'Barrier_Price': 1.40}, **terms)
 
 

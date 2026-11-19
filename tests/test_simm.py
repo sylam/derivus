@@ -65,7 +65,7 @@ OPTION = {'Object': 'FXOptionDeal', 'Reference': 'FXO', 'Currency': 'ZAR',
           'Underlying_Currency': 'USD', 'Discount_Rate': 'ZAR-JIBAR.ZAR-JIBAR+50BP',
           'FX_Volatility': 'USD.ZAR', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
           'Strike_Price': 18.5, 'Underlying_Amount': NOTIONAL,
-          'Expiry_Date': BASE + pd.DateOffset(years=1)}
+          'Expiry_Date': BASE + pd.DateOffset(years=1), 'Delivery_Date': BASE + pd.DateOffset(years=1)}
 
 #: An index autocall whose coupon a month behind the base date printed a tenth over its trigger,
 #: and the index it reads.
@@ -1535,7 +1535,8 @@ def test_a_later_valuation_date_values_each_market_as_a_base_valuation_on_that_d
 WINGS = {-0.01: -0.008, -0.1: -0.007, -0.25: -0.005, 0.5: 0.0, 0.25: 0.011, 0.1: 0.023, 0.01: 0.031}
 PILLARS = (7 / 365, 14 / 365, 1 / 12, 2 / 12, 0.25, 0.5, 0.75, 1.0, 1.5, 2.0, 3.0)
 PUTS = [dict(OPTION, Reference='P{}_{}'.format(days, strike), Option_Type='Put',
-             Strike_Price=strike, Expiry_Date=BASE + pd.DateOffset(days=days))
+             Strike_Price=strike, Expiry_Date=BASE + pd.DateOffset(days=days),
+             Delivery_Date=BASE + pd.DateOffset(days=days))
         for days in (35, 92, 304, 427, 851) for strike in (17.3, 19.2, 20.5)]
 
 
@@ -1935,13 +1936,13 @@ def test_vega_lands_on_the_options_own_expiry(months, split):
     the nearer vertex taking the smaller share.
     """
     expiry = BASE + pd.DateOffset(months=months)
-    vega = rows(world(option={'Expiry_Date': expiry}).run_job()[1], 'FXO', 'Risk_FXVol')
+    vega = rows(world(option={'Expiry_Date': expiry, 'Delivery_Date': expiry}).run_job()[1], 'FXO', 'Risk_FXVol')
     surface = factors()['FXVol.USD.ZAR']
 
     def worth(size):
         moved = dict(surface, Surface=utils.Curve(
             surface['Surface'].meta, surface['Surface'].array + [0.0, 0.0, size]))
-        return valued(world(VALUATION, option={'Expiry_Date': expiry}, configuration={},
+        return valued(world(VALUATION, option={'Expiry_Date': expiry, 'Delivery_Date': expiry}, configuration={},
                             extra={'FXVol.USD.ZAR': moved}))['FXO']
 
     base = worth(0.0)
@@ -1967,7 +1968,8 @@ SVI_TENORS = (0.04, 0.4, 0.8, 1.5)
 SVI_SMILE = parametric('SVI', SVI_TENORS, a=[0.020, 0.018, 0.017, 0.016],
                        b=[0.08, 0.06, 0.05, 0.04], rho=[-0.5, -0.4, -0.35, -0.3],
                        m=[0.02, 0.03, 0.04, 0.05], sigma=[0.10, 0.15, 0.20, 0.25])
-SVI_OPTION = {'Expiry_Date': BASE + pd.DateOffset(days=219), 'Strike_Price': 21.0}
+SVI_OPTION = {'Expiry_Date': BASE + pd.DateOffset(days=219), 'Delivery_Date': BASE + pd.DateOffset(days=219),
+              'Strike_Price': 21.0}
 
 
 @pytest.mark.parametrize('days, label', [(14, '2w'), (365, '1y'), (1095, '3y')])
@@ -1987,7 +1989,7 @@ def test_a_flat_svi_surface_moves_as_the_explicit_surface_stating_its_vol(days, 
                       sigma=[0.1] * 3)
     explicit = dict(factors()['FXVol.USD.ZAR'], Surface=utils.Curve(
         [], [[m, t, vol] for m in (0.8, 1.0, 1.2) for t in tenors]))
-    option = {'Expiry_Date': BASE + pd.DateOffset(days=days)}
+    option = {'Expiry_Date': BASE + pd.DateOffset(days=days), 'Delivery_Date': BASE + pd.DateOffset(days=days)}
     vega = [rows(world(option=option, extra={'FXVol.USD.ZAR': surface}).run_job()[1], 'FXO',
                  'Risk_FXVol') for surface in (flat, explicit)]
     assert set(vega[0]) == set(vega[1]) == {label}, vega
@@ -2056,7 +2058,7 @@ def test_a_skew_vertex_moves_the_pillars_its_tent_reaches_off_the_standing_surfa
     398, and on the vertex pillars the vega lands on 3m and 6m.
     """
     smile = parametric('Skew', tenors, **SKEW)
-    option = {'Expiry_Date': BASE + pd.DateOffset(days=219), 'Strike_Price': 21.0}
+    option = SVI_OPTION
     vega = rows(world(option=option, extra={'FXVol.USD.ZAR': smile}).run_job()[1], 'FXO',
                 'Risk_FXVol')
 

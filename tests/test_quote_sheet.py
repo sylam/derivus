@@ -87,8 +87,8 @@ def option(reference, buy_sell, option_type, strike_market):
             'Underlying_Currency': 'ZAR', 'Underlying_Amount': NOTIONAL,
             'Strike_Price': 1.0 / strike_market, 'Buy_Sell': buy_sell,
             'Option_Type': option_type, 'Option_Style': 'European',
-            'Expiry_Date': {'.Timestamp': EXPIRY}, 'FX_Volatility': 'USD.ZAR',
-            'Discount_Rate': 'USD'}
+            'Expiry_Date': {'.Timestamp': EXPIRY}, 'Delivery_Date': {'.Timestamp': EXPIRY},
+            'FX_Volatility': 'USD.ZAR', 'Discount_Rate': 'USD'}
 
 
 def outcome(financing='COLLAR_FINANCING', **extra):

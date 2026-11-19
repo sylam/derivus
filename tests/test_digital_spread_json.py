@@ -249,7 +249,7 @@ def test_an_fx_binary_spread_reads_the_fx_smile():
     deal = {'Object': 'FXBinaryOption', 'Reference': 'FXB', 'Currency': 'USD',
             'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
             'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': FX_SPOT,
-            'Payoff': CASH, 'Expiry_Date': EXPIRY}
+            'Payoff': CASH, 'Expiry_Date': EXPIRY, 'Delivery_Date': EXPIRY}
     factors = dict(RATES, **{'FXVol.EUR.USD': _surface(FX_ATM, FX_SKEW)})
     fwd = FX_SPOT * math.exp((R_USD - R_EUR) * T_FWD_FX)
     sigma_of = lambda k: FX_ATM + FX_SKEW * (fwd / k - 1.0)

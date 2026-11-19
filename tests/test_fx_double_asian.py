@@ -215,25 +215,24 @@ def test_a_double_asian_prices_every_row_of_a_credit_monte_carlo():
 
 def test_a_double_asian_stating_a_delivery_date_is_discounted_to_it():
     """The trialled option delivered four days after its expiry marks the option delivered on it
-    times four days' discount at the flat 4%, and a blank delivery date marks that one to the bit.
+    times four days' discount at the flat 4%.
 
     Killing mutation: the payoff discounted from the expiry whatever day the deal settles on.
     """
     last, early = [(m, None) for m in (9, 10, 11, 12)], [(m, None) for m in (1, 2, 3, 4)]
 
-    def mark(days=None):
-        terms = {} if days is None else {'Delivery_Date': {'.Timestamp': (
-            month(12) + pd.Timedelta(days=days)).strftime('%Y-%m-%d')}}
-        return float.fromhex(marks(option(last, early, **terms))['FXDASN'])
+    def mark(days):
+        return float.fromhex(marks(option(last, early, Delivery_Date={'.Timestamp': (
+            month(12) + pd.Timedelta(days=days)).strftime('%Y-%m-%d')}))['FXDASN'])
 
-    blank = mark()
-    assert mark(0) == blank != 0.0
-    assert abs(mark(4) / (blank * math.exp(-book.DISCOUNT[0] * 4.0 / 365.0)) - 1.0) < 1e-12
+    expiry = mark(0)
+    assert expiry != 0.0
+    assert abs(mark(4) / (expiry * math.exp(-book.DISCOUNT[0] * 4.0 / 365.0)) - 1.0) < 1e-12
 
 
 @functools.lru_cache(maxsize=None)
 def delivered():
-    """The trialled option blank, delivered on its expiry and forty days after it, each in a netting
+    """The trialled option delivered on its expiry and forty days after it, each in a netting
     set of its own beside a unit paid on each day, in one float64 credit Monte Carlo on a monthly
     grid, EURUSD a GBM at 15% and a Hull-White on USD (`settled.delivered`'s run)."""
     deal = next(d for d in trial_fx.DEALS if d['Reference'] == 'FXDASN')
@@ -242,29 +241,13 @@ def delivered():
                           ('USD',), models=settled.EURUSD, Time_Grid='0d 1m(1m)')
 
 
-def test_stated_on_its_expiry_a_double_asian_simulates_and_books_as_its_blank_twin():
-    """Under a float64 credit Monte Carlo the trialled option delivered on its expiry simulates every
-    row and books every cash flow, its ledger's days among them, to the bit as with its
-    `Delivery_Date` blank; the base valuation's mark is held so by
-    `test_a_double_asian_stating_a_delivery_date_is_discounted_to_it`.
-
-    Killing mutation: a blank `Delivery_Date` read two days after the expiry (in
-    `schema.settlement_days`), the blank twin's rows and cash moving off the stated one's.
-    """
-    _, ledgers, profiles = delivered()
-    assert np.array_equal(profiles['FXDASN_E'], profiles['FXDASN'])
-    blank, stated = ledgers['FXDASN'], ledgers['FXDASN_E']
-    assert stated.index.equals(blank.index) and np.array_equal(stated.values, blank.values)
-    assert np.asarray(blank.values, dtype=float).any()
-
-
 def test_delivered_after_its_expiry_a_double_asian_holds_its_fixed_spread_and_books_it_on_the_delivery():
     """Delivered forty days after its expiry under that run, the option reads on the monthly rows,
     the expiry and the delivery as every FX option settling there does
-    (`settled.delivered_identities`): to the expiry each row its blank twin's times that row's own
+    (`settled.delivered_identities`): to the expiry each row its twin's on the expiry times that row's own
     forward discount to the delivery, to 1e-13; after it, the monthly row and the delivery's not
     zero and the payoff discounted to them; nothing booked on the expiry; and the delivery booking,
-    path by path, to the bit what the blank twin books on its expiry, both reading the two averages
+    path by path, to the bit what that twin books on its expiry, both reading the two averages
     fixed.
 
     Killing mutation: the cash left on the expiry row (`pv_discrete_double_asian_option` booking its

@@ -253,10 +253,10 @@ POSTED = dict(margined(0.0, 0.0, 0.0, -1e6, 10), Collateral_Assets={
 MIXED = [
     {'Object': 'FXOptionDeal', 'Reference': 'EUR_CALL', 'Currency': 'USD', 'Underlying_Currency': 'EUR',
      'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
-     'Strike_Price': 1.3, 'Underlying_Amount': 1e6, 'Expiry_Date': years(1)},
+     'Strike_Price': 1.3, 'Underlying_Amount': 1e6, 'Expiry_Date': years(1), 'Delivery_Date': years(1)},
     {'Object': 'FXOptionDeal', 'Reference': 'USD_CALL', 'Currency': 'EUR', 'Underlying_Currency': 'USD',
      'Discount_Rate': 'EUR', 'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Sell', 'Option_Type': 'Call',
-     'Strike_Price': 0.75, 'Underlying_Amount': 1e6, 'Expiry_Date': SIX_MONTHS},
+     'Strike_Price': 0.75, 'Underlying_Amount': 1e6, 'Expiry_Date': SIX_MONTHS, 'Delivery_Date': SIX_MONTHS},
     {'Object': 'EquityForwardDeal', 'Reference': 'INDEX_FWD', 'Currency': 'USD', 'Discount_Rate': 'USD',
      'Equity': 'INDEX', 'Buy_Sell': 'Buy', 'Units': 2500.0, 'Forward_Price': 4000.0,
      'Maturity_Date': years(2)},

@@ -87,6 +87,7 @@ def _deal(barrier_type, barrier, strike=1.25, at_start='No', option_type='Call',
             'Barrier_At_Start': at_start,
             'Barrier_Limit_Date': BASE + pd.DateOffset(days=limit_days),
             'Expiry_Date': BASE + pd.DateOffset(days=expiry_days),
+            'Delivery_Date': BASE + pd.DateOffset(days=expiry_days),
             'Barrier_Monitoring_Frequency': pd.DateOffset(days=0), 'Cash_Rebate': rebate,
             'Underlying_Amount': NOTIONAL}
 
@@ -178,6 +179,7 @@ VANILLA = {'Object': 'FXOptionDeal', 'Reference': 'VAN', 'Currency': 'USD',
            'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
            'Strike_Price': 1.25, 'Underlying_Amount': NOTIONAL,
            'Expiry_Date': BASE + pd.DateOffset(days=EXPIRY_D),
+           'Delivery_Date': BASE + pd.DateOffset(days=EXPIRY_D),
            'Option_Style': 'European', 'Settlement_Style': 'Cash'}
 
 CASES = [(bt, at, bar) for at in ('Yes', 'No')

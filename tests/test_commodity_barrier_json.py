@@ -246,11 +246,11 @@ def test_under_a_credit_monte_carlo_the_knock_out_pays_its_rebate_on_the_grid_an
     assert (profile.loc[before, 'EE'] > 0.0).all() and (profile.loc[after].abs().to_numpy() == 0.0).all()
 
 
-#: The trial's knock-out with its 2,000 rebate, without one, and its knock-in, each settled where
-#: `settled.TWINS` says, `Settlement_Date` being the field the type settles on
+#: The trial's knock-out with its 2,000 rebate, without one, and its knock-in, each with
+#: `Settlement_Date` blank, stated on its expiry, and stated forty days after it
 FUEL = {'KOR': trial_commodity.BARRIER, 'KO': dict(trial_commodity.BARRIER, Cash_Rebate=0.0),
         'KI': dict(trial_commodity.BARRIER, Barrier_Type='Up_And_In', Cash_Rebate=0.0)}
-TWINS = {tag: {'Settlement_Date': day['Delivery_Date']} if day else {} for tag, day in settled.TWINS.items()}
+TWINS = {'': {}, '_E': {'Settlement_Date': E}, '_D': {'Settlement_Date': settled.DELIVERED}}
 
 
 @functools.lru_cache(maxsize=None)

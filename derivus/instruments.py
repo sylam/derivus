@@ -21,7 +21,7 @@ from .schema import (
     declared_settlements, engine_default, Exposure, KNOWN_CASH, settlement_days,
     ADMIN, FX_ADMIN, FX_AXIS, CASHFLOWLISTDEAL, COMMODITY_TOUCH, EQUITYOPTIONBASE, EQUITY_OPTION, EQUITY_TOUCH,
     EXPIRY_PRINT, FX_OPTION, FX_TOUCH, FXOPTIONBASE, FX_OPTION_STYLE, PRICING, FLOATING_INDEX, COUPON_SCHEDULE,
-    CAP_FLOOR, OPTION_STYLE, TOUCH, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING)
+    CAP_FLOOR, OPTION_STYLE, TOUCH, QEDI_CUSTOMAUTOCALLSWAP, QEDI_CUSTOMSWAP, TIMING, FX_STRIP_ADMIN)
 
 import numpy as np
 import pandas as pd
@@ -6324,7 +6324,7 @@ class FXBarrierOption(BarrierLifecycle, Deal):
         'Brownian-bridge touch probability, Broadie-Glasserman-Kou shift for',
         '**Barrier_Monitoring_Frequency**. **Cash_Rebate** is an absolute amount. A **Payoff_Currency**',
         'other than **Currency** is not quanto-adjusted (a warning is logged). The payoff and a',
-        'knock-in\'s rebate are paid on **Delivery_Date**, the expiry where blank, and a knock-out\'s',
+        'knock-in\'s rebate are paid on **Delivery_Date**, and a knock-out\'s',
         'rebate on the touch. The barrier is watched to the expiry; past it the payoff is on what the',
         'expiry fixed: the path\'s own level on the expiry row or, where the expiry is behind the base',
         'date, the print **Price_Fixing** states for it, which it must.'])
@@ -6466,7 +6466,7 @@ class FXPartialTimeBarrierOption(Deal):
 class FXTARFOptionDeal(Deal):
     vernacular = 'TARF, target redemption forward, target forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'TARF_ExpiryDates', 2)
-    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXTARFOptionDeal', [
+    fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXTARFOptionDeal', [
         F('Expiry_Date', 'Date', default=''),
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('Settlement_Style', 'Text', default='Physical', convention=True, values=['Physical', 'Cash']),
@@ -6621,7 +6621,7 @@ class FXTARFOptionDeal(Deal):
 class FXAccumulatorOptionDeal(Deal):
     vernacular = 'FX accumulator, decumulator, accu'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Accumulator_ExpiryDates', 2)
-    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXAccumulatorOptionDeal', [
+    fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXAccumulatorOptionDeal', [
         F('Underlying_Amount', 'Float', default=0.0, sized=True),
         F('LeverageNotional', 'Float', default=0.0, sized=True),
         F('Barrier_Type', 'Text', default='Up_And_Out', values=['Up_And_Out', 'Down_And_Out']),
@@ -6761,7 +6761,7 @@ class FXAccumulatorOptionDeal(Deal):
 class FXExtendableForwardDeal(Deal):
     vernacular = 'extendable forward, extendible forward'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Extendable_ExpiryDates', 2)
-    fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXExtendableForwardDeal', [
+    fields = [ADMIN, FX_STRIP_ADMIN, FXOPTIONBASE, own('FXExtendableForwardDeal', [
         F('Extension_Strike', 'Float', default=REQUIRED),
         F('Extension_Date', 'Date', default=REQUIRED),
         F('Extension_Style', 'Text', default='Strip', convention=True, values=['Strip', 'Rolling']),
@@ -6968,7 +6968,7 @@ class FXOptionDeal(Deal):
                           'from the valuation date and from the expiry, the vol at the forward\'s moneyness and',
                           'the expiry, discounted on **Discount_Rate**.',
                           '',
-                          'The payoff is paid on **Delivery_Date**, the expiry where blank. Past the expiry the',
+                          'The payoff is paid on **Delivery_Date**. Past the expiry the',
                           'forward is held at what the expiry fixed: the path\'s own level on the expiry row or,',
                           'where the expiry is behind the base date, the print **Price_Fixing** states for it,',
                           'which it must.',
@@ -7065,7 +7065,7 @@ class FXBinaryOption(FXOptionDeal):
 class FXRangeAccrualDeal(Deal):
     vernacular = 'FX range accrual, corridor, fairway, digital strip'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Observation_Dates', 1)
-    fields = [ADMIN, FX_ADMIN, own('FXRangeAccrualDeal', [
+    fields = [ADMIN, FX_STRIP_ADMIN, own('FXRangeAccrualDeal', [
         F('Currency', 'Text', default='', factors=['FxRate']),
         F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
         F('Discount_Rate', 'Text', default='', convention=True, factors=['InterestRate']),

@@ -5742,7 +5742,7 @@ def pair_factors(document, pair):
     expiry = {'.Timestamp': (book_base_date(document) + datetime.timedelta(365)).isoformat()}
     probe = dict(PAIR_PROBE, Currency=right, Underlying_Currency=left,
                  FX_Volatility='{}.{}'.format(left, right),
-                 Expiry_Date=expiry, Settlement_Date=expiry)
+                 Expiry_Date=expiry, Delivery_Date=expiry)
     resolved, missing = walked_factors(dict(document, Calc=dict(
         document['Calc'], Deals=dict(document['Calc']['Deals'],
                                      Deals={'Children': [{'Instrument': {'.Deal': probe}}]}))))

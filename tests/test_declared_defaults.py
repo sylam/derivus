@@ -202,12 +202,15 @@ def float_items(months=3, notional=1e6):
 
 
 def fx_leg(object_type, reference, **extra):
-    """The block every FX option here shares - a EUR call on a USD book off one surface."""
-    return dict({
+    """The block every FX option here shares - a EUR call on a USD book off one surface, delivered
+    on the expiry it states where its type requires a delivery date."""
+    block = dict({
         'Object': object_type, 'Reference': reference, 'Currency': 'USD',
         'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
         'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': 1.25,
         'Underlying_Amount': 1000.0}, **extra)
+    return dict({'Delivery_Date': block['Expiry_Date']}, **block) if 'Expiry_Date' in block and (
+        'Delivery_Date' in schema.required_fields(getattr(instruments, object_type))) else block
 
 
 #: The ten types gate 2 prices both ways, each AUTHORED IN FULL: `stripped` takes the conventions
@@ -285,12 +288,13 @@ def declared(cls):
 
 
 def barrier_deal(barrier_type, barrier, strike, option_type, **extra):
+    expiry = {'.Timestamp': (BASE + pd.DateOffset(days=EXPIRY_D)).strftime('%Y-%m-%d')}
     block = {'Object': 'FXBarrierOption', 'Reference': 'BR', 'Currency': 'USD',
              'Underlying_Currency': 'EUR', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD',
              'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': option_type,
              'Strike_Price': strike, 'Barrier_Price': barrier, 'Barrier_Type': barrier_type,
              'Underlying_Amount': NOTIONAL,
-             'Expiry_Date': {'.Timestamp': (BASE + pd.DateOffset(days=EXPIRY_D)).strftime('%Y-%m-%d')}}
+             'Expiry_Date': expiry, 'Delivery_Date': expiry}
     block.update(extra)
     return block
 
@@ -1069,7 +1073,7 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
     lean, full = [stripped(deal) for deal in BOOK], [furnished(deal) for deal in BOOK]
     # the admin group's Product_Class convention among them, one on each of the fourteen deals, and
     # the option's and the barrier's expiry print
-    assert sum(dropped(deal) for deal in BOOK) == 184
+    assert sum(dropped(deal) for deal in BOOK) == 182
 
     lean_marks, lean_stats = marks(lean)
     full_marks, full_stats = marks(full)

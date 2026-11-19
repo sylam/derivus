@@ -45,7 +45,7 @@ and the partial-time rebate below read the same $\lambda$.
 `FXBarrierOption`, `CommodityBarrierOption`, and `EquityBarrierOption` without **Barrier_Dates**, apply
 the closed form on every scenario date $t_i$ of the deal:
 
-- An `FXBarrierOption` stating **Delivery_Date**, or a `CommodityBarrierOption` stating
+- An `FXBarrierOption` paid on **Delivery_Date**, or a `CommodityBarrierOption` stating
   **Settlement_Date**, has each row's option and knock-in rebate discounted on from the expiry to it;
   the knock-out's rebate is paid at the touch. Its rows run on to that day, which books the payoff:
   the barrier is watched to the expiry and a row past it holds the payoff the expiry fixed,
@@ -80,7 +80,7 @@ $e^{-r\tau}$ less it and a one-touch paid at the touch $F/R$. The vol is read at
 On the scenario grid the touch probability $P_i$ is the bridge probability above: before a touch the value
 is $(1-P_i)$ times the closed form; a touched one-touch paid at expiry carries $P_i\,e^{-r\tau}$, one paid at
 the touch settles $P_i-P_{i-1}$ on $t_i$. A no-touch reports $(1-P_i)(e^{-r\tau}-\text{one-touch})$. An FX
-payment at expiry is paid on **Delivery_Date** where one is stated, discounted on to it and booked
+payment at expiry is paid on **Delivery_Date**, discounted on to it and booked
 there, a row past the expiry holding the touch the expiry left; one at the touch is not.
 
 ### Discontinuous Barrier Sampling
@@ -129,7 +129,7 @@ $$\mathcal P(p_1,\dots,p_8;\rho_1,\rho_2)=F\Big[M(p_1,p_2;\rho_1)-\big(\tfrac{H}
   probability of $E$ (still discounted from expiry) and the touch value of $F$, both with $\tau_\ell$ in
   place of $\tau$; for an end window their bivariate analogues with correlation $\rho$ and the same
   $\lambda$, a path already beyond the barrier at $t_\ell$ touching there.
-- **Delivery_Date** stated, the option and a knock-in's rebate are discounted on from the expiry to it
+- On **Delivery_Date** the option and a knock-in's rebate are discounted on from the expiry to it
   and booked there, as on a single barrier; a knock-out's rebate is paid at the touch.
 - $\sigma$ is one surface vol at the strike's moneyness and the expiry, used for both the window and the
   remaining life; using one vol for the two periods is an approximation, unmeasured.
@@ -154,8 +154,8 @@ $$\bar S=\sum_{i=1}^n\omega_iS(t_i),\qquad \omega_i=d_i\Big/\sum_{k=1}^n d_k,$$
 
 $t_i$ and $d_i$ the dates and weights of **Sampling_Data**, $K$ the strike and $\delta=\pm1$ for a call or
 put. **Is_Digital** `Yes` pays the amount itself when $\delta(\bar S-K)>0$. The value is discounted on
-**Discount_Rate** from the day it is paid, which books it: an FX Asian's **Delivery_Date**, else
-**Expiry_Date**.
+**Discount_Rate** from the day it is paid, which books it: an FX Asian's **Delivery_Date**, an equity
+Asian's **Expiry_Date**.
 
 A sample dated before the base date is the **Price** its row states; one between the base date and $t$
 is the simulated spot on that sample's scenario date (today's spot for an unsimulated underlying). A

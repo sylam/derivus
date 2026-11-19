@@ -1252,10 +1252,15 @@ CAP_FLOOR = Group('CapFloor', 'Cap/floor terms', [
 
 FX_ADMIN = Group('FXAdmin', 'FX conventions', [
     F('Trade_Date', 'Date', default='', convention=True),
-    F('Delivery_Date', 'Date', default='', convention=True,
-      settles=Cash('Payoff_Currency', otherwise='Expiry_Date')),
+    F('Delivery_Date', 'Date', default=REQUIRED, description='The day the payoff is paid',
+      settles=Cash('Payoff_Currency')),
     F('Structure_Reference', 'Text', default='', convention=True)
 ])
+
+#: The FX conventions of a strip settling on its own schedule, which never reads its delivery date.
+FX_STRIP_ADMIN = Group('FXStripAdmin', 'FX conventions', [
+    FX_ADMIN.fields[0], F('Delivery_Date', 'Date', default='', convention=True,
+                          settles=Cash('Payoff_Currency', otherwise='Expiry_Date')), FX_ADMIN.fields[2]])
 
 #: The columns every option quote carries, whatever the family.
 OPTION_QUOTE = [F('Expiry_Date', 'Date'), F('Strike', 'Float', description='0 reads the forward'),

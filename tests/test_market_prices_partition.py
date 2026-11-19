@@ -228,7 +228,7 @@ def test_the_surface_blocks_forward_is_the_priced_forward_at_every_pillar():
     instrument = block['instrument']
     expiries = sorted({row['Expiry_Date'] for row in instrument['European_Options']})
     config = world([dict(FX_OPTION, Reference=str(expiry.date()), Strike_Price=0.01,
-                         Underlying_Amount=1.0, Discount_Rate='ZERO', Expiry_Date=expiry)
+                         Underlying_Amount=1.0, Discount_Rate='ZERO', Expiry_Date=expiry, Delivery_Date=expiry)
                     for expiry in expiries])
     config.bootstrap()
     params = config.params

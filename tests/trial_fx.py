@@ -25,11 +25,11 @@ DEALS = [
                 Sampling_Data_2=[[date, 0.0, 1.0] for date in dates(1, 2, 3, 4)]),
     {'Object': 'FXOneTouchOption', 'Reference': 'FXOT', 'Currency': 'USD',
      'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
-     'Buy_Sell': 'Buy', 'Expiry_Date': E, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Up',
+     'Buy_Sell': 'Buy', 'Expiry_Date': E, 'Delivery_Date': E, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Up',
      'Barrier_Price': 1.35},
     {'Object': 'FXNoTouchOption', 'Reference': 'FXNT', 'Currency': 'USD',
      'Underlying_Currency': 'EUR', 'Discount_Rate': 'USD', 'FX_Volatility': 'EUR.USD',
-     'Buy_Sell': 'Buy', 'Expiry_Date': E, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Up',
+     'Buy_Sell': 'Buy', 'Expiry_Date': E, 'Delivery_Date': E, 'Cash_Payoff': 10_000.0, 'Barrier_Type': 'Up',
      'Barrier_Price': 1.35},
     # 8% below spot for the first half year, so the knock-out's rebate is paid
     book.fx_leg('FXPartialTimeBarrierOption', 'FXPKO', Expiry_Date=E, Barrier_Type='Down_And_Out',

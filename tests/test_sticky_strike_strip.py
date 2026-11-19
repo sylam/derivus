@@ -198,7 +198,7 @@ def book(stretch=1):
          'Underlying_Currency': 'EUR', 'Payoff_Currency': 'USD', 'Discount_Rate': 'USD',
          'FX_Volatility': 'EUR.USD', 'Buy_Sell': 'Buy', 'Option_Type': 'Call', 'Strike_Price': X0,
          'Barrier_Price': 1.12, 'Barrier_Type': 'Down_And_In', 'Barrier_At_Start': 'Yes',
-         'Barrier_Limit_Date': at(150), 'Expiry_Date': at(300), 'Underlying_Amount': 1000.0,
+         'Barrier_Limit_Date': at(150), 'Expiry_Date': at(300), 'Delivery_Date': at(300), 'Underlying_Amount': 1000.0,
          'Barrier_Monitoring_Frequency': pd.DateOffset(days=0)})
 
 
