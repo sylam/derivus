@@ -2473,12 +2473,13 @@ def book_positions(actor: str = None):
 
     Beside each, where the book FILE holds it: `deal_paths` are the nodes carrying that instrument
     under that agreement's set - the first the one the book prices at the net, any later one a
-    clip it ignores - and `reference` and `object` the first one's. A position closed to
-    zero or amended onto other terms stands no more - the record keeps its history - and one the
-    file does not hold answers no path, which `/book/reconcile` names. One whose instrument has
-    EXPIRED at the book's date stands until the day it settles, `expired` and `settles` saying
-    when, and rolls off on that day - read off the record's own terms where the file has lost it,
-    and null on a box whose store lacks those too.
+    clip it ignores - and `reference` and `object` the first one's. A position netted to nothing
+    stands at a quantity of nothing beside the nodes it sat at, so a screen can say it closed; one
+    amended onto other terms stands no more, its quantity carried onto them - the record keeps its
+    history - and one the file does not hold answers no path, which `/book/reconcile` names. One
+    whose instrument has EXPIRED at the book's date stands until the day it settles, `expired` and
+    `settles` saying when, and rolls off on that day - read off the record's own terms where the
+    file has lost it, and null on a box whose store lacks those too.
 
     `tickets` are what books it, each with its own status - a restrike's in place of the clips it
     restruck - `status` the first of `spine.STATUSES` among them and `pending` the quantity
@@ -2487,8 +2488,8 @@ def book_positions(actor: str = None):
     nodes it holds any grant at (`spine.visible`). 404 where no home is configured.
     """
     document, _ = recording().read()
-    standing = spine.visible([row for row in spine.standing(folds=folds()) if row['quantity']],
-                             spine.sight(actor))
+    standing = spine.visible([row for row in spine.standing(folds=folds())
+                              if row['quantity'] or row['amended_to'] is None], spine.sight(actor))
     wanted = {row['instrument'] for row in standing}
     held, legs = file_positions(document, wanted), PnL.held_legs(job_children(document), wanted)
     diaried = [dict(row, instrument=legs.get(row['instrument'], row['instrument']))

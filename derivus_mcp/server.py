@@ -1805,11 +1805,11 @@ def book_positions(actor: str | None = None) -> dict:
     the deal as written - the clips behind it, and `deal_paths` where the book file holds it, the
     path `read_deal` and `amend_deal` take. The portfolio is a path whose top node is the book; the
     client is the counterparty, whose name and parent `describe_agreements` gives. A position closed
-    to zero stands no more, and one whose deal has expired stands until the day it settles -
-    `expired` and `settles` say when - and rolls off on that day. `status` is what its tickets read
-    - `rejected`, `pending`, `approved` or `unticketed` - and `pending` the quantity awaiting a
-    second seat; a pending trade prices and settles all the same. `actor` is the seat reading. 404
-    on a box that records nothing.
+    to zero stands at a quantity of 0 where it sat, and one whose deal has expired stands until the
+    day it settles - `expired` and `settles` say when - and rolls off on that day. `status` is what
+    its tickets read - `rejected`, `pending`, `approved` or `unticketed` - and `pending` the
+    quantity awaiting a second seat; a pending trade prices and settles all the same. `actor` is
+    the seat reading. 404 on a box that records nothing.
     """
     return service().call('GET', '/book/positions', params=_stated(actor=actor))
 

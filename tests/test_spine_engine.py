@@ -1391,11 +1391,12 @@ def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, 
     """`/book/positions` is the fold at the head joined to the FILE: every position standing under
     its agreement and portfolio, beside the nodes carrying its instrument under that agreement's
     set. One instrument under two agreements is two positions, each reading its own set's nodes; a
-    close-out stands no more; a node the file lost answers no path. A portfolio whose top node is
-    not the book, or with an empty segment, refuses by name with nothing appended.
+    close-out stands at nothing beside the nodes it sat at; a node the file lost answers no path.
+    A portfolio whose top node is not the book, or with an empty segment, refuses by name with
+    nothing appended.
 
     Killing mutations: the join by instrument alone hands the legacy set's position the declared
-    agreement's nodes too; the standing filter dropped answers the closed position at zero.
+    agreement's nodes too; the standing filter read on quantity alone drops the closed position.
     """
     CLIENT.post('/book/entities', content=dump({'entity': 'LEI-A', 'name': 'Client A'}),
                 headers=JSON)
@@ -1431,6 +1432,8 @@ def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, 
     assert sorted((row['agreement'], row['portfolio'], row['counterparty'], row['quantity'],
                    row['clips'], row['deal_paths'], row['reference'], row['object'])
                   for row in standing) == [
+        (CLIENT_SET, 'spine-desk', 'LEI-A', 0.0, 2, ['1/0', '1/1', '1/2'], 'CF-HELD',
+         'FixedCashflowDeal'),
         (CLIENT_SET, 'spine-desk/Rates/EM', 'LEI-A', 1.0, 1, ['1/0', '1/1', '1/2'], 'CF-HELD',
          'FixedCashflowDeal'),
         ('CLIENT_B', 'spine-desk', 'CPTY_B', 1.0, 1, ['2/0'], 'CF-HELD', 'FixedCashflowDeal')]
@@ -1441,6 +1444,49 @@ def test_a_position_is_read_where_it_sits_and_where_the_file_holds_it(recorded, 
     lost = {row['agreement']: row for row in CLIENT.get('/book/positions').json()['positions']}
     assert (lost['CLIENT_B']['deal_paths'], lost['CLIENT_B']['reference']) == ([], None)
     assert lost[CLIENT_SET]['deal_paths'] == ['1/0', '1/1', '1/2']
+
+
+def test_a_position_netted_to_nothing_reads_closed_where_it_sat(recorded, desk):
+    """A cashflow booked at one and closed by a fill of minus one at its own node stands at
+    1 + (-1) = 0 beside that node, the file still holding the deal and both clips behind it, so a
+    screen can say it closed. Terms restruck onto others are not a close: the new terms carry the
+    one unit and the old terms stand no more. Two rows, whole.
+
+    Killing mutations: the standing filter read on quantity alone, which drops the closed row; the
+    fold read whole, which adds the restruck terms' row at nothing with no node.
+    """
+    document = json.loads(desk.read_text())
+    document['Calc']['Deals']['Deals']['Children'].append(netting_set(CLIENT_SET, 'CPTY_A'))
+    desk.write_text(json.dumps(document, indent=2), newline='\n')
+
+    def booked(**body):
+        answer = CLIENT.post('/book/deals', content=dump(dict(body, actor=ACTOR)),
+                             headers=JSON).json()
+        assert answer['written'] is True, answer
+        return answer
+
+    shut = booked(action='add', deal=dict(CASHFLOW, Reference='CF-SHUT'),
+                  parent_reference=CLIENT_SET, quantity=1.0, execution_reference='EXEC-1')
+    booked(action='fill', deal_path=shut['deal_path'], reference='CF-SHUT', quantity=-1.0,
+           execution_reference='EXEC-2')
+    moved = booked(action='add', deal=dict(CASHFLOW, Reference='CF-MOVED', Amount=250_000.0),
+                   parent_reference=CLIENT_SET, quantity=1.0, execution_reference='EXEC-3')
+    assert restruck(moved['deal_path'], Amount=300_000.0)['written'] is True
+
+    rows = CLIENT.get('/book/positions').json()['positions']
+    assert sorted(((row['reference'], row['quantity'], row['deal_paths']) for row in rows),
+                  key=str) == [('CF-MOVED', 1.0, [moved['deal_path']]),
+                               ('CF-SHUT', 0.0, [shut['deal_path']])]
+    closed = next(row for row in rows if row['reference'] == 'CF-SHUT')
+    assert closed['first_lsn'] < closed['last_lsn'] and len(closed['instrument']) == 64
+    assert {key: value for key, value in closed.items()
+            if key not in ('instrument', 'first_lsn', 'last_lsn', 'tickets')} == {
+        'agreement': CLIENT_SET, 'portfolio': 'spine-desk', 'book': 'spine-desk',
+        'counterparty': 'CPTY_A', 'quantity': 0.0, 'clips': 2, 'amended_to': None,
+        'status': 'unticketed', 'pending': 0.0, 'expired': None, 'settles': None,
+        'deal_paths': [shut['deal_path']], 'reference': 'CF-SHUT', 'object': 'FixedCashflowDeal'}
+    assert [(clip['quantity'], clip['execution_reference']) for clip in closed['tickets']] == [
+        (1.0, 'EXEC-1'), (-1.0, 'EXEC-2')]
 
 
 def test_the_book_prices_every_position_at_its_net(recorded, desk):
