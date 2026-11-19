@@ -6740,20 +6740,13 @@ def board_age(document, quoted_at):
     return max(measured) if measured else None
 
 
-def mirrored_plan(document, deal, parent_reference=None, models=None, reading=Context):
-    """THE PLAN AN ACCEPTANCE LEAVES THE BOOK AT: the quote's MIRROR spliced in and its pinned spot
-    models merged, through the booking's own seams, `splice_deal` and `structures.pin_models` - so
-    the plan is the plan and not a near one: a fitted strip books a `Valuation Configuration` entry
-    beside its deal, and that entry is PLAN. The quote pins it and the acceptance, which reaches it
-    by booking, refuses where the two are not one number. A hash is not a verdict and nothing is
-    validated here; the pin cannot refuse, the legs having just priced on those parameters.
-    `reading` makes the context it loads on.
-    """
-    booked = deepcopy(document)
-    splice_deal(booked, instrument_of(booked_node(structures.mirror(deal))), parent_reference)
-    if models:
-        structures.pin_models(booked, deal, models)
-    return load(booked, reading()).plan_hash()
+def quoted_terms(deal, netting_set, models):
+    """WHAT AN ACCEPTANCE BOOKS OFF A PENDING QUOTE, as one hash: the MIRROR's terms as `deal_edit`
+    splices them, the netting set it books under and the spot models it merges. Pinned when the
+    quote is priced and compared before it books, so an edited file refuses whatever the book did
+    in between."""
+    return content_hash({'deal': instrument_of(booked_node(structures.mirror(deal))),
+                         'netting_set': netting_set, 'models': models})
 
 
 def check_pins(pending, document, quote_id, held):
@@ -6938,9 +6931,9 @@ class StructureJob:
     back, so this lane is CURIOSITY and the record does not move: the fourteen others die in
     `DV_HOME/tmp` and the one the client accepts is filed by `/book/quote`, from this file. Under a
     home the pending file therefore carries everything that acceptance will file - the book's two
-    hashes and the values vector behind them, the plan the acceptance leaves the book at, how old
-    the board was, the `portfolio` it books into and what the client asked. On every desk it says
-    who quoted it, `quoted_by`.
+    hashes and the values vector behind them, how old the board was, the `portfolio` it books into
+    and what the client asked. On every desk it says who quoted it, `quoted_by`, and pins the
+    `terms` the acceptance books (`quoted_terms`).
     """
 
     def __init__(self, document, structure, params, netting_set=None, request=None, margin=None,
@@ -6996,14 +6989,13 @@ class StructureJob:
         os.makedirs(directory, exist_ok=True)
         path = os.path.join(directory, outcome['quote_id'] + '.json')
         outcome['files'] = dict(self.sheet(directory, outcome), quote=path)
-        # one file IS the pending trade: what was quoted, the deal that books it, WHEN and by whom
+        # one file IS the pending trade: what was quoted, the deal that books it, WHEN, by whom,
+        # and the pin of what the acceptance will book off it
         record = {'quote': {name: value for name, value in outcome.items() if name != 'deal'},
-                  'deal': outcome['deal'], 'quoted_at': quoted_at, 'quoted_by': self.actor}
+                  'deal': outcome['deal'], 'quoted_at': quoted_at, 'quoted_by': self.actor,
+                  'terms': quoted_terms(outcome['deal'], self.netting_set,
+                                        outcome['valuation_configuration'])}
         if pinned is not None:
-            # a plan does not read a spot, so the live one this copy now carries cannot move it:
-            # this is the plan the acceptance books the book to, the quote's model pin included
-            pinned['plan'] = mirrored_plan(self.document, outcome['deal'], self.netting_set,
-                                           outcome['valuation_configuration'], context.reading)
             # the values vector travels as JSON and canonicalises back to the hash beside it, so
             # the acceptance files the vector this quote was struck on and not a second reading
             record['pinned'] = dict(pinned, values=json.loads(pinned['values'].decode('utf-8')))
@@ -7051,8 +7043,8 @@ def book_structure(request: dict):
     about the one that comes back, so nothing is filed here: the quote is recorded when the client
     ACCEPTS it, by `/book/quote`, out of this pending file, and the ones nobody accepts die in
     `DV_HOME/tmp`. Under a home the file therefore carries what that acceptance will file - the
-    book's two hashes and the values vector behind them, the ticket an approval would sign, how old
-    the board was when the price was given and the relayed client `request`.
+    book's two hashes and the values vector behind them, how old the board was when the price was
+    given and the relayed client `request`.
     """
     document, etag = live_book().read()
     structure = request.get('structure')
@@ -7133,8 +7125,8 @@ def book_quote(request: dict):
     THE MODEL BOOKS WITH THE TRADE. A quote may have priced its legs under a spot model the book's
     `Valuation Configuration` does not name, and that copy is thrown away when the quote is
     answered - so the pending file records the pin and it is merged HERE, inside the same edit
-    closure the deal is spliced by. That entry is PLAN, so the plan the quote pinned carries it too,
-    and a pin whose parameters the book no longer carries REFUSES 422 in `pin_models`' own words
+    closure the deal is spliced by. The quote's `terms` pin carries it with the deal, and a pin
+    whose parameters the book no longer carries REFUSES 422 in `pin_models`' own words
     before anything appends, rather than booking a switch that would skip the deal at the next
     valuation.
 
@@ -7148,20 +7140,23 @@ def book_quote(request: dict):
     again under the book lock, so a second acceptance - sent after or racing this one - answers
     `{written: false, booked}` naming where the trade landed rather than booking it again.
 
-    UNDER A SPINE HOME, THREE MORE CHECKS AND ONE READING, in order and all of them before anything
+    A QUOTE BOOKS ITS OWN TERMS. The pending file pins `terms` (`quoted_terms`): the mirror, the
+    netting set and the model pin it books. They are compared before anything books, on every desk
+    and whatever the book did since, and an edited file refuses 422 - as does a file filed before
+    the pin, which cannot show it says what was quoted: re-quote.
+
+    UNDER A SPINE HOME, TWO MORE CHECKS AND ONE READING, in order and all of them before anything
     appends: the PLAN the charge was solved against, refused where the book has moved under it and
     the book declares no firm window; the PILLAR age of the board the quote was struck on, refused
-    where a declared `pillar_seconds` says it was already too old; the PLAN THE ACCEPTANCE LEAVES
-    THE BOOK AT, reached by booking the mirror and refused, where the book has not moved, if it is
-    not the one the quote pinned; and the MARKET, which is REPORTED as `{pinned, current, moved}`
-    and never refused - the board moves between a quote and the client's word, and the desk's own
-    window is the promise that bounds it. A BOOK MOVE IS A MARKET MOVE inside that window: the quote
-    books as priced and `firmness.plan` says the plan it was priced on and the one it lands in, as
-    `quote_filed`'s `plan_hash` and ticket do. The price of this promise grows with the book and
-    with how fast the market moves, and the firm window is where the desk bounds it. ALL FOUR ARE READ
-    INSIDE THE EDIT CLOSURE, against the document the trade lands in: the closure reads under the
-    book lock and the read above it does not, so a check taken up there would be a statement about a
-    book nobody booked into.
+    where a declared `pillar_seconds` says it was already too old; and the MARKET, which is
+    REPORTED as `{pinned, current, moved}` and never refused - the board moves between a quote and
+    the client's word, and the desk's own window is the promise that bounds it. A BOOK MOVE IS A
+    MARKET MOVE inside that window: the quote books as priced and `firmness.plan` says the plan it
+    was priced on and the one it lands in, as `quote_filed`'s `plan_hash` and ticket do. The price
+    of this promise grows with the book and with how fast the market moves, and the firm window is
+    where the desk bounds it. ALL THREE ARE READ INSIDE THE EDIT CLOSURE, against the document the
+    trade lands in: the closure reads under the book lock and the read above it does not, so a
+    check taken up there would be a statement about a book nobody booked into.
 
     Then ONE ACT of the writer (`spine.routed`): `quote_filed` under the ACCEPTOR's seat and the
     fill's own ticket, the tier step where a `tiers` policy is in force, the `fill` under the quote
@@ -7220,6 +7215,11 @@ def book_quote(request: dict):
 
     quoted = pending.get('quote') or {}
     parent, models = quoted.get('netting_set'), quoted.get('valuation_configuration')
+    terms = quoted_terms(pending['deal'], parent, models)
+    if terms != pending.get('terms'):
+        raise HTTPException(422, 'quote {} pinned the terms {} and its file now books {} - the '
+                                 'file no longer says what was quoted, so nothing is booked from '
+                                 'it: re-quote'.format(quote_id, pending.get('terms'), terms))
 
     def accept(book, etag):
         # read again under the book lock: an acceptance landing since the read above is answered
@@ -7250,12 +7250,6 @@ def book_quote(request: dict):
             return True, dict(outcome, **filled)
         context = load(book)
         plan = context.plan_hash()
-        # a book moved inside the window lands the quote on another plan by construction
-        if not verdict['plan']['moved'] and plan != pending['pinned'].get('plan'):
-            raise HTTPException(
-                422, 'quote {} pinned the plan {} and booking it here leaves the book at {} - the '
-                     'file no longer says what was quoted, so nothing is booked from it: '
-                     're-quote'.format(quote_id, pending['pinned'].get('plan'), plan))
         # ONE ACT: the acceptance is a fact whatever the tier then says, so the quote is filed
         # first and stands where the fill does not follow
         filled = spine_fill(

@@ -597,26 +597,28 @@ A trade sent again under its key is answered `{written: false, booked}`, other f
 
 A quote records nothing; the record cares about the price a client takes. Under a home the pending
 file ([Structures](structures.md#the-quote-lifecycle)) adds `pinned`: the book's two hashes and its
-values, taken before the live spot lands; the board's age at `quoted_at`; and `plan`, the book as
-acceptance leaves it. `values_hash` drops every clock (`schema.without_clocks`), so a board re-read
+values, taken before the live spot lands, and the board's age at `quoted_at`. On every desk it pins
+`terms` (`service.quoted_terms`): the mirror, the netting set and the model pin the acceptance
+books. `values_hash` drops every clock (`schema.without_clocks`), so a board re-read
 at the same prices is one market, and the age is the oldest of those clocks. **Held by**
 `test_spine_engine.py::test_a_quote_records_nothing_and_files_what_the_acceptance_will`,
 `::test_a_quote_pins_the_book_before_the_live_spot_lands_on_its_copy`.
 
 `POST /book/quote` checks, in order and before anything appends: `firm_seconds`, the desk's promise;
-the plan, refused where the book moved under the solve and no `Quote Policy` is declared; the
-pillar age past `pillar_seconds`; and, on an unmoved book, the plan acceptance leaves, refused where
-it is not the one pinned (an edited file). The market is reported as `{pinned, current, moved}`,
-never refused, the desk's window bounding it, and inside that window so is a moved plan: the quote
-books as priced, `quote_filed` keeping the plan it was priced on and its ticket the one it lands
-in. The price of that promise grows with the book and with how fast the market moves. Then one act:
+the `terms`, refused where the file no longer hashes to them (an edited file, or one filed before
+the pin), whatever the book did; the plan, refused where the book moved under the solve and no
+`Quote Policy` is declared; and the pillar age past `pillar_seconds`. The market is reported as
+`{pinned, current, moved}`, never refused, the desk's window bounding it, and inside that window so
+is a moved plan: the quote books as priced, `quote_filed` keeping the plan it was priced on and its
+ticket the one it lands in. The price of that promise grows with the book and with how fast the
+market moves. Then one act:
 `quote_filed` under the acceptor, the tier step, one unit of the mirror filled under the quote id
 at the premium, value dated on the pair's spot date for the trade day (`service.spot_day`, the
 spot rule `structures.tenor_dates` dates the legs with), the file. A quote filed before a tier refuses stands; the client took the price. **Held by**
 `test_spine_engine.py::test_a_booking_between_the_quote_and_the_acceptance_refuses_with_nothing_appended`,
-`::test_an_edited_pending_file_no_longer_says_what_was_quoted`,
 `::test_a_moved_market_between_the_quote_and_the_acceptance_books_and_says_so`,
 `::test_a_booking_elsewhere_inside_the_firm_window_is_read_as_a_market_move`,
+`::test_an_edited_quote_refuses_whether_or_not_the_book_moved`,
 `::test_an_accepted_premium_settles_on_the_pair_s_spot_date`.
 
 !!! warning "An edit that appends before it writes takes `Book.transact`"

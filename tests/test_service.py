@@ -5119,16 +5119,15 @@ def test_a_fitted_structure_books_and_marks_at_the_margin_and_the_spread(quoting
 
     log = SpineLog(home)
     try:
-        filed = [log.open_body(frame) for frame in log.frames()
-                 if frame['event_type'] == 'quote_filed']
+        filed, (fill,) = ([log.open_body(frame) for frame in log.frames()
+                           if frame['event_type'] == kind] for kind in ('quote_filed', 'fill'))
     finally:
         log.close()
     assert len(filed) == 1 and filed[0]['quote_id'] == quote['quote_id']
-    with open(service.pending_quote(quote['quote_id']), encoding='utf-8') as handle:
-        pinned = json.load(handle)['pinned']
-    assert pinned['plan'] == service.load(on_disk).plan_hash(), \
-        'the quote pinned a plan this booking did not leave the book at, its model pin included'
-    assert filed[0]['ticket'] == booked['ticket'], 'the quote and its fill carry two tickets'
+    assert filed[0]['ticket'] == booked['ticket'] == service.spine.ticket(
+        service.load(on_disk).plan_hash(), {key: value for key, value in fill.items()
+                                            if key != 'ticket'}), \
+        'the ticket is not the plan this booking left the book at, its model pin included'
 
     marked_id, marked = run(on_disk)
     assert marked['status'] == 'done', marked.get('error')
@@ -5303,17 +5302,20 @@ def test_a_pending_trade_the_book_would_refuse_is_refused_in_the_booking_wording
                                                                                  tmp_path):
     """An approval is a BOOKING, so it is refused on what it would land in and in the same words as
     `test_a_bad_amendment_touches_nothing` - one validate-before-write seam, or the two paths have
-    drifted. The pending file is authored here because that is the only way to reach the refusal
-    branch without asking the runner for a quote it would rightly decline.
+    drifted. The pending file is authored here, its terms pinned as a quote pins them, because that
+    is the only way to reach the refusal branch without asking the runner for a quote it would
+    rightly decline.
 
     Killing mutation: validate-before-write switched off, which writes a deal the book refuses.
     """
     before = quoting.read_bytes()
     pending = tmp_path / 'tmp'
     pending.mkdir(parents=True, exist_ok=True)
-    broken = dict(CASHFLOW, Reference='BROKEN', Currency='GBP', Discount_Rate='GBP')
-    (pending / 'authored.json').write_text(json.dumps(json.loads(dump(
-        {'quote': {'quote_id': 'authored'}, 'deal': broken})), indent=2), newline='\n')
+    broken = json.loads(dump(dict(CASHFLOW, Reference='BROKEN', Currency='GBP',
+                                  Discount_Rate='GBP')))
+    (pending / 'authored.json').write_text(json.dumps({
+        'quote': {'quote_id': 'authored'}, 'deal': broken,
+        'terms': service.quoted_terms(broken, None, None)}, indent=2), newline='\n')
 
     refused = CLIENT.post('/book/quote', json={'quote_id': 'authored'}).json()
 
