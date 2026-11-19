@@ -7,6 +7,7 @@ import { EmptyState } from '../components/EmptyState';
 import { stampText } from '../desk';
 import { nodeAt } from '../positions';
 import { opened, useApp } from '../state';
+import { ungrouped } from '../tokens';
 import type { CloseVerdict, Decided, WorkRow } from '../types';
 
 /** The three lists this seat clears, each by its own verb. */
@@ -194,7 +195,8 @@ function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string })
     setFiling(true);
     try {
       await postTransition(moves ? {
-        subject: row.key, status: 'settled', amount: Number(amount), asset: row.currency,
+        subject: row.key, status: 'settled', amount: Number(ungrouped(amount.trim())),
+        asset: row.currency,
         kind: list === 'payments' ? row.kind : kind, reference, value_date: valueDate,
         ...(row.agreement ? { agreement: row.agreement } : {}),
       } : { subject: row.key, status: 'confirmed' });
@@ -217,7 +219,7 @@ function Clearing({ list, row, day }: { list: List; row: WorkRow; day: string })
       {moves ? (
         <>
           <td>
-            <input type="number" step="any" placeholder="amount" value={amount}
+            <input type="text" inputMode="decimal" placeholder="amount" value={amount}
                    onChange={(event) => setAmount(event.target.value)} /> {row.currency ?? ''}
           </td>
           <td>
