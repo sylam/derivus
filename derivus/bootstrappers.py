@@ -4950,6 +4950,12 @@ def as_period(value):
     return utils.parse_period(value) if isinstance(value, str) else value
 
 
+def swaps_discount(block, price_factors):
+    """The curve a credit or inflation block's swaps discount on: its `Discount_Rate`, else its
+    currency's own (`utils.own_curve_name`)."""
+    return block.get('Discount_Rate') or utils.own_curve_name(block.get('Currency'), price_factors)
+
+
 def quote_nodes(points, discount_rate, shift=0.0):
     """The used quotes as deal-tree nodes, each authored at its own quote plus `shift` in its unit.
 
@@ -5912,8 +5918,8 @@ class SurvivalProb(Construction):
         connected discount curve through its graph, so a curve quote's derivative carries this
         curve's re-solve."""
         factor = utils.Factor(type(self).__name__, utils.check_rate_name(market_price)[1:])
-        points = self.contracts(block, market_price, base_date)
-        nodes = quote_nodes(points, block['Discount_Rate'])
+        points, discount = self.contracts(block, market_price, base_date), swaps_discount(block, price_factors)
+        nodes = quote_nodes(points, discount)
         knots = InterestRate.live_knots(market_price, points, nodes, base_date, self.DAY_COUNT,
                                         calendars)
         recovery = float(block['Recovery_Rate'])
@@ -5928,7 +5934,7 @@ class SurvivalProb(Construction):
         benchmarks = BenchmarkInstruments(
             nodes, price_factors, factor_interp, base_date, block['Currency'], calendars, [factor],
             self.device, quotes=[point['Quoted_Market_Value'] for point in points] if carry else None,
-            bumped_nodes=quote_nodes(points, block['Discount_Rate'], 1.0) if carry else None, held=1,
+            bumped_nodes=quote_nodes(points, discount, 1.0) if carry else None, held=1,
             connected=self.connected if carry else {})
         theta = utils.CalibrationSolve.apply(
             benchmarks, benchmarks.written(), standing, int(block['N_Iter']), float(block['Tol']),
@@ -6150,8 +6156,8 @@ class InflationRate(Construction):
         if prints is None:
             raise ValueError('{}: Price_Index {} names no PriceIndex the market carries, and the '
                              'swaps reference its prints'.format(market_price, block['Price_Index']))
-        points = self.contracts(block, market_price, base_date)
-        nodes = quote_nodes(points, block['Discount_Rate'])
+        points, discount = self.contracts(block, market_price, base_date), swaps_discount(block, price_factors)
+        nodes = quote_nodes(points, discount)
         knots = self.live_knots(market_price, points, nodes, prints['Last_Period_Start'],
                                 block['Day_Count'])
         name = utils.check_tuple_name(factor)
@@ -6165,7 +6171,7 @@ class InflationRate(Construction):
         benchmarks = BenchmarkInstruments(
             nodes, price_factors, factor_interp, base_date, block['Currency'], calendars, [factor],
             self.device, quotes=[point['Quoted_Market_Value'] for point in points] if carry else None,
-            bumped_nodes=quote_nodes(points, block['Discount_Rate'], 1.0) if carry else None,
+            bumped_nodes=quote_nodes(points, discount, 1.0) if carry else None,
             connected=self.connected if carry else {})
         theta = utils.CalibrationSolve.apply(
             benchmarks, benchmarks.written(), standing, int(block['N_Iter']), float(block['Tol']),
@@ -6668,7 +6674,7 @@ def block_readers(market):
     factor TYPES a family prices on, which is the whole of it for a surface or a spot model; the
     curve family names the very curve, in `Discount_Rate` and inside its benchmark deals
     (`benchmark_curves`), and the credit and inflation families the curve their swaps discount on,
-    `Discount_Rate` else the currency's own (`utils.own_curve_name` off `market`'s `Price Factors`),
+    `Discount_Rate` else the currency's own (`swaps_discount` off `market`'s `Price Factors`),
     so a curve is read by the curves discounting on it and the survival and inflation curves solved
     on it and no others. A block of a type no family reads is nobody's dependency.
     """
@@ -6679,7 +6685,7 @@ def block_readers(market):
               if utils.check_rate_name(name)[0] in writer}
     curves = InterestRate
     named = {name: {block.get('Discount_Rate')} | curves.benchmark_curves(block, name)
-             if cls is curves else {block.get('Discount_Rate') or utils.own_curve_name(block.get('Currency'), factors)}
+             if cls is curves else {swaps_discount(block, factors)}
              for name, cls in blocks.items() if cls in (curves, SurvivalProb, InflationRate)
              for entry in [entries.get(cls.__name__)]
              for block in [dict(entry if isinstance(entry, dict) else {},

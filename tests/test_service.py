@@ -6312,7 +6312,8 @@ def test_the_cva_column_reads_the_same_whether_or_not_fva_ran(desk_xva):
 
 def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path, monkeypatch):
     """A book whose rates name `USD-OIS` and `ZAR-OIS` and which files no curve under a bare
-    currency, its deals and sets leaving their discount and funding curves blank and its calculation
+    currency, its deals naming the dollar curve as the book files it, its sets leaving their funding
+    curves blank and its calculation
     stating no deflation curve: the recalc lands both columns of each set, a real CVA beside NS_A's
     FVA funding at `FUND` and NS_B's exact zero, and the run it builds names no curve the book did
     not, the engine reading a blank as the report currency's own.
@@ -6321,7 +6322,7 @@ def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path,
     does not carry, so both rows land failed.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
-    vanilla = {key: value for key, value in VANILLA.items() if key != 'Discount_Rate'}
+    vanilla = dict(VANILLA, Discount_Rate='USD-OIS')
     path = xva_book(tmp_path, [
         netting_set('NS_A', 'CPTY_A', [dict(vanilla, Reference='OPT_A')], funding_rate='FUND'),
         netting_set('NS_B', 'CPTY_B', [dict(vanilla, Reference='OPT_B')], funding_rate='')])

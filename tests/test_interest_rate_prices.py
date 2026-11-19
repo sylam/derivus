@@ -1096,8 +1096,10 @@ def test_a_resetting_cross_currency_swap_exchanges_principal_as_its_setting_says
                  'Accrual_Day_Count': 'ACT_365', 'Accrual_Year_Fraction': a, 'Fixed_Amount': 0.0,
                  'Known_FX_Rate': 0.0} for s, e in zip(dates, dates[1:])]
         sell, buy = ('Sell', 'Buy') if side == 'Pay' else ('Buy', 'Sell')
+        other = {'Pay': 'Receive', 'Receive': 'Pay'}[side]
         return {'Object': 'MtMCrossCurrencySwapDeal', 'Reference': side + setting, 'MtM_Side': side,
-                side + '_Currency': resetting, {'Pay': 'Receive', 'Receive': 'Pay'}[side] + '_Currency': fixed,
+                side + '_Currency': resetting, other + '_Currency': fixed,
+                side + '_Discount_Rate': resetting, other + '_Discount_Rate': fixed,
                 'Principal_Exchange': setting, 'Effective_Date': dates[0], 'Maturity_Date': dates[-1],
                 'Children': [
                     trial_rates.float_list(side + setting + '_M', sell, [dict(

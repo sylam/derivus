@@ -161,7 +161,7 @@ class F(object):
     the key an author writes.
 
     `convention` says the declared default is what OMISSION MEANS - `Pay_Timing: End`, a null
-    calendar, a blank `Discount_Rate` - so a deal completes it on a read by name. Unflagged, a
+    calendar - so a deal completes it on a read by name. Unflagged, a
     default is a PLACEHOLDER: a number the panel shows that nobody means by leaving it out, and a
     deal missing one is refused by name rather than priced at it. A container declares none: its
     default is what its children offer (`offered`), a nested container's included.
@@ -1070,7 +1070,7 @@ FX_AXIS = ('{} on the ENGINE axis: the reporting currency per unit of Underlying
 FXOPTIONBASE = Group('FXOptionBase.Fields', 'FX option', [
     F('Currency', 'Text', default='', factors=['FxRate']),
     F('Underlying_Currency', 'Text', default='', factors=['FxRate']),
-    F('Discount_Rate', 'Text', default='', convention=True, factors=['InterestRate']),
+    F('Discount_Rate', 'Text', default=REQUIRED, factors=['InterestRate']),
     F('FX_Volatility', 'Text', default='', factors=['FXVol']),
     F('Buy_Sell', 'Text', default='Buy', values=['Buy', 'Sell'], side=True),
     F('Option_Type', 'Text', default='Call', values=['Call', 'Put']),
@@ -1192,7 +1192,7 @@ ADMIN = Group('Admin', 'Admin', [
 #: What a deal is priced in: the currency it settles and the curve it discounts on.
 PRICING = Group('Pricing', 'Pricing', [
     F('Currency', 'Text', default=REQUIRED, factors=['FxRate']),
-    F('Discount_Rate', 'Text', default='', convention=True, factors=['InterestRate'])
+    F('Discount_Rate', 'Text', default=REQUIRED, factors=['InterestRate'])
 ])
 
 #: How a floating index fixes: its tenor, day count, the calendars it is read and published on,

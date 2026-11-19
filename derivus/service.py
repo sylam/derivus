@@ -5718,11 +5718,10 @@ def candidate_walk(document, deal, parent_reference, baseline):
 
 
 #: The candidate a pair's want-list is walked as: a vanilla option on it, which is what the desk
-#: would quote and therefore exactly what such a market has to price. `Discount_Rate` is BLANK on
-#: purpose - the settlement leg discounts on the curve its own `FxRate` block names.
+#: would quote and therefore exactly what such a market has to price.
 PAIR_PROBE = {'Object': 'FXOptionDeal', 'Reference': 'setup', 'Underlying_Amount': 1.0,
               'Strike_Price': 1.0, 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
-              'Option_Style': 'European', 'Discount_Rate': ''}
+              'Option_Style': 'European'}
 
 
 def pair_factors(document, pair):
@@ -5741,7 +5740,7 @@ def pair_factors(document, pair):
     left, right = structures.split_pair(pair)
     expiry = {'.Timestamp': (book_base_date(document) + datetime.timedelta(365)).isoformat()}
     probe = dict(PAIR_PROBE, Currency=right, Underlying_Currency=left,
-                 FX_Volatility='{}.{}'.format(left, right),
+                 FX_Volatility='{}.{}'.format(left, right), Discount_Rate=utils.own_curve_name(right, factors),
                  Expiry_Date=expiry, Delivery_Date=expiry)
     resolved, missing = walked_factors(dict(document, Calc=dict(
         document['Calc'], Deals=dict(document['Calc']['Deals'],

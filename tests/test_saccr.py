@@ -283,7 +283,7 @@ FX_LINEAR = [
     outright('FWD_EUR', (1e6, 'EUR'), (1.3e6, 'USD'), SIX_MONTHS),
     outright('FWD_USD', (1.3e6, 'USD'), (1e6, 'EUR'), years(1)),
     {'Object': 'FXNonDeliverableForward', 'Reference': 'NDF', 'Buy_Amount': 1e6, 'Buy_Currency': 'EUR',
-     'Sell_Amount': 0.9e6, 'Sell_Currency': 'GBP', 'Settlement_Currency': 'USD',
+     'Sell_Amount': 0.9e6, 'Sell_Currency': 'GBP', 'Settlement_Currency': 'USD', 'Discount_Rate': 'USD',
      'Settlement_Date': years(1)}]
 
 #: `FX_LINEAR` as a book of record states each trade the other way: both its amounts negative.
@@ -517,7 +517,8 @@ def resetting(reference, side):
     paid, received = ('EUR', 'USD') if side == 'Pay' else ('USD', 'EUR')
     return {'Instrument': {'.Deal': {
         'Object': 'MtMCrossCurrencySwapDeal', 'Reference': reference, 'MtM_Side': side,
-        'Pay_Currency': paid, 'Receive_Currency': received, 'Principal_Exchange': 'Start_Maturity',
+        'Pay_Currency': paid, 'Receive_Currency': received, 'Pay_Discount_Rate': paid,
+        'Receive_Discount_Rate': received, 'Principal_Exchange': 'Start_Maturity',
         'Effective_Date': dates[0], 'Maturity_Date': dates[-1]}}, 'Children': [
         node(euro), node(cashflows(FIXED, 'USD', 'Buy' if side == 'Pay' else 'Sell', dates, 1.25e6))]}
 

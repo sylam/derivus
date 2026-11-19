@@ -7,7 +7,7 @@ nothing. The seam is `schema.DealFields`, which `Deal.__init__` wraps the author
 by name falls through to `schema.deal_defaults`, and nothing else does.
 
 WHICH DEFAULTS COMPLETE IS ON THE DECLARATION. `convention=True` says the declared value IS what
-omission means - `Pay_Timing: End`, a null calendar, a blank `Discount_Rate` - and those complete.
+omission means - `Pay_Timing: End`, a null calendar - and those complete.
 Every other default is a PLACEHOLDER: what a blank panel shows and nobody means by leaving it out.
 Answering `FXBarrierOption.Strike_Price` 0.0 turns a schema-invalid block into a plausible wrong
 number - 741.53 against the 78.93 the author meant - so a placeholder keeps its `KeyError`, and
@@ -399,7 +399,7 @@ def test_no_declared_default_can_mint_a_price_factor():
     """Discovery reads the raw block through `get_fieldname`, which drops a blank - so a default
     landing on a factor-naming field has to BE blank, or a deal would name a curve nobody loaded.
 
-    Killing mutation: the cash account's `Discount_Rate` convention declaring a curve."""
+    Killing mutation: the cap's `Discount_Rate_Volatility` convention declaring a surface."""
     minting = []
     for name, cls in deal_classes():
         defaults = schema.deal_defaults(cls)
@@ -1086,6 +1086,50 @@ def test_a_document_stating_only_its_terms_prices_the_full_one_to_the_bit():
                if deal['Object'] != 'NettingCollateralSet')
 
 
+#: Every term an author states that a blank once read off another field
+STATED = ('Discount_Rate', 'Pay_Discount_Rate', 'Receive_Discount_Rate')
+#: A deal of `BOOK` reading one of them, by the term
+UNSTATED = {'Discount_Rate': 'FXO'}
+
+
+@pytest.mark.parametrize('key', STATED)
+def test_validate_names_a_blank_term_on_every_type_declaring_it(key):
+    """`validate` names `key` left out or written blank as required, on every deal type declaring
+    it - read off the declarations, the alias `FXEuropeanOption` among them - and says nothing else
+    of it.
+
+    Killing mutation: `PRICING`'s `Discount_Rate` a convention again (`default=''`,
+    `convention=True`), every type declaring it there passing a blank over.
+    """
+    types = [name for name, cls in deal_classes() if key in schema.declared_fields(cls)]
+    assert types
+    for blank in ({}, {key: ''}):
+        context = derivus.Context()
+        context.load_json((json.dumps(book([dict({'Object': name, 'Reference': name}, **blank) for name in types]),
+                                      cls=CustomJsonEncoder), 'blank'))
+        said = context.validate()['deals']
+        assert {name: [message for message in said.get(name, []) if message.split()[0] == key]
+                for name in types} == {name: ['{} is required'.format(key)] for name in types}
+
+
+@pytest.mark.parametrize('key', sorted(UNSTATED))
+def test_a_deal_leaving_a_term_out_prices_nothing(key, caplog):
+    """A base valuation prices no deal leaving `key` out - an FX option its discount curve: its
+    compile reads the term by name and the deal is skipped on that `KeyError`, logged by name, the
+    deposit beside it priced.
+
+    Killing mutation: the FX option's blank discount curve its currency's own again (`fx_pair`),
+    the option priced.
+    """
+    deal = next(deal for deal in BOOK if deal['Reference'] == UNSTATED[key])
+    caplog.set_level(logging.ERROR)
+    marked, stats = marks([{name: value for name, value in deal.items() if name != key}, BOOK[1]])
+    assert stats.get('Deals Skipped') == 1 and deal['Reference'] not in marked, (marked, stats)
+    assert float.fromhex(marked[BOOK[1]['Reference']]) != 0.0, marked
+    assert '{} {} {} - Skipped'.format(deal['Object'], deal['Reference'], (key,)) in [
+        record.getMessage() for record in caplog.records]
+
+
 #: How a book may file each currency's own curve (`world`): under the currency's name with its
 #: `FxRate` naming it, under it with none naming it, or under another name with nothing left under
 #: the currency's, a share funding on it naming none.
@@ -1093,36 +1137,32 @@ BARE, UNNAMED, RENAMED = {'USD': 'USD', 'EUR': 'EUR'}, {'USD': '', 'EUR': ''}, {
     'USD': 'USD-OIS', 'EUR': 'EUR-ESTR'}
 
 
-def own_curves(deal, names):
-    """`deal`, legs included, as an author leaving blank every discount curve it may that is its
-    currency's own, and naming any other curve of a currency as `names` files it."""
+def named_curves(deal, names):
+    """`deal`, legs included, naming each curve of a currency as `names` files it."""
     cls = getattr(instruments, deal['Object'])
     out = {}
     for key, value in deal.items():
         if key == 'Children':
-            out[key] = [own_curves(child, names) for child in value]
+            out[key] = [named_curves(child, names) for child in value]
         elif 'InterestRate' not in cls.factor_fields.get(key, ()) or value not in names:
             out[key] = value
-        elif not key.endswith('Discount_Rate') or key not in declared(cls):
+        else:
             out[key] = names[value] or value
     return out
 
 
 def test_a_blank_curve_is_its_currency_s_own_whatever_the_book_calls_it():
     """Every family's trial book (`tests/test_position_scaling.py`), and an equity knock-out its
-    history knocked out today, priced with every discount curve a deal may leave blank that is its
-    currency's own left blank (`own_curves`), and with the share and the commodity funding on that
-    curve naming none, marks to the bit as the book stating them: on curves filed under their
-    currencies' names, on the same curves with no `FxRate` naming them, and on curves filed under
-    other names with nothing under a bare currency. The families reach every deal site reading a
-    blank discount curve through `Deal.discount_name` - an FX option's `fx_pair`, both legs of a
-    mark-to-market cross-currency swap, a non-deliverable forward's settlement currency, a
-    commodity option's payoff currency, a swaplet list's paid one - every deal reading a share's or
-    a commodity's curve, and the knock-out's rebate cashflow carrying the barrier's blank.
+    history knocked out today, each deal naming its curves as the book files them (`named_curves`)
+    and the share and the commodity funding on their currency's own curve naming none, marks to the
+    bit as the book stating them: on curves filed under their currencies' names, on the same curves
+    with no `FxRate` naming them, and on curves filed under other names with nothing under a bare
+    currency. The families reach every deal reading a share's or a commodity's curve, and every FX
+    forward growing on its currency's own.
 
-    Killing mutations: `discount_name` falling back to the bare currency, or a share's or a
-    commodity's blank `Interest_Rate` read as its currency's code, under which the renamed book
-    skips every deal reading the curve (`Cannot find InterestRate.USD`).
+    Killing mutation: a share's or a commodity's blank `Interest_Rate` read as its currency's code,
+    under which the renamed book skips every deal reading the curve (`Cannot find
+    InterestRate.USD`).
     """
     import test_position_scaling as scaling
     import trial_equity
@@ -1137,7 +1177,7 @@ def test_a_blank_curve_is_its_currency_s_own_whatever_the_book_calls_it():
         stated, _ = marks(deals, dict(trial.FACTORS, **funded))
         assert set(scaling.references(deals)) <= set(stated), family
         for names in (BARE, UNNAMED, RENAMED):
-            blank, stats = marks([own_curves(deal, names) for deal in deals], dict(trial.FACTORS, **{
+            blank, stats = marks([named_curves(deal, names) for deal in deals], dict(trial.FACTORS, **{
                 key: dict(block, Interest_Rate='') for key, block in funded.items()}), names=names)
             assert stats.get('Deals Skipped', 0) == 0, (family, names, stats)
             assert blank == stated, (family, names, sorted(key for key in stated
@@ -1159,7 +1199,7 @@ def test_a_blank_deflation_risk_free_or_funding_curve_is_the_report_currency_s_o
     """
     import trial_credit
 
-    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'EUR',
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'EUR', 'Discount_Rate': 'EUR-ESTR',
                 'Amount': 1e6, 'Payment_Date': WORLD_EXPIRY}
     credit = {'Calculate': 'Yes', 'Counterparty': 'ISSUER_A', 'Deflate_Stochastically': 'Yes',
               'Stochastic_Hazard_Rates': 'No'}
@@ -1193,7 +1233,7 @@ def test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_c
     """
     import trial_credit
 
-    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD',
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD', 'Discount_Rate': 'USD',
                 'Amount': 1e6, 'Payment_Date': WORLD_EXPIRY}
     funding = {'Calculate': 'Yes', 'Counterparty': 'ISSUER_A', 'Risk_Free_Curve': 'USD',
                'Funding_Cost_Interest_Curve': 'USD-PROJ', 'Funding_Benefit_Interest_Curve': 'USD'}
@@ -1467,8 +1507,8 @@ EQUITY_OPTION = {'Object': 'EquityOptionDeal', 'Reference': 'EQO', 'Currency': '
 CLOSED_OUT = {'Object': 'NettingCollateralSet', 'Reference': 'CSA', 'Netted': 'True',
               'Collateralized': 'True', 'Agreement_Currency': 'USD', 'Liquidation_Period': 10.0,
               'Settlement_Period': 0.0, 'Children': [{
-                  'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD', 'Amount': 1e6,
-                  'Payment_Date': WORLD_EXPIRY}]}
+                  'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'USD', 'Discount_Rate': 'USD',
+                  'Amount': 1e6, 'Payment_Date': WORLD_EXPIRY}]}
 #: Every kind of field naming a calendar, each read at its own site.
 CALENDAR_KINDS = ['fx_rate', 'share', 'forward_sample', 'schedule', 'index', 'reset', 'default_swap',
                   'basket', 'netting_set', 'calculation']
@@ -1682,7 +1722,7 @@ def test_the_store_publishes_the_flag_and_the_must_state_list():
     for section in store['types']['SwapInterestDeal']:
         swap.update(store['sections'][section])
     assert sorted(key for key, meta in swap.items() if meta.get('required')) == [
-        'Currency', 'Effective_Date', 'Maturity_Date', 'Object', 'Pay_Rate_Type', 'Principal',
-        'Swap_Rate']
+        'Currency', 'Discount_Rate', 'Effective_Date', 'Maturity_Date', 'Object', 'Pay_Rate_Type',
+        'Principal', 'Swap_Rate']
     assert swap['Swap_Rate']['value'] == 0.0 and swap['Object']['value'] == ''
     assert swap['Pay_Timing']['convention'] is True and swap['Pay_Timing']['value'] == 'End'
