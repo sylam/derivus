@@ -1711,7 +1711,7 @@ def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accr
     fixing, settlement, observed = deal['TARF_ExpiryDates'][0]
     assert fixing == {'.Timestamp': '2024-07-31'} and settlement == {'.Timestamp': '2024-08-02'}
     assert deal['TARF_ExpiryDates'][-1][:2] == [EXPIRES, DELIVERS], 'the strip ends on the tenor'
-    assert observed == 0.0, 'a quote is struck today and nothing in it has fixed'
+    assert observed is None, 'a quote is struck today and nothing in it has fixed'
     assert deal['Expiry_Date'] == deal['TARF_ExpiryDates'][-1][1], (
         'a strip expires with its last cashflow, not with its last fixing')
     assert deal['LeverageNotional'] == 2.0 * NOTIONAL, 'the declared leverage never reached the deal'
@@ -1735,6 +1735,27 @@ def test_an_accrual_strip_costs_nothing_and_strikes_better_than_the_forward(accr
     assert only_leg(accumulator)['LeverageNotional'] == 2.0 * NOTIONAL
     assert 'Expiry_Date' not in only_leg(accumulator), (
         'FXAccumulatorOptionDeal declares no Expiry_Date, so the block must not carry one')
+
+
+def test_a_quoted_strip_states_no_value_for_a_fixing_still_to_come(accrual_book):
+    """A TARF and an accumulator quoted today carry twelve fixings none of which has printed, so no
+    row states a `Value` - the blank a range accrual's rows already carry - and a leg prices to the
+    bit what it priced with every row stating 0.0: each pricer reads a blank as 0.0 and writes every
+    value dated on or after the base date as 0.0 (`TensorResets.from_observations`). Read with its
+    strike 1% off the solved one, so the number compared is no zero-cost residual.
+
+    Killing mutation: `fixing_grid` stating 0.0 on every row, the twelve fixings a ticket shows at 0.
+    """
+    for name, ask in (('TargetRedemptionForward', dict(accrual_params(target=TARGET),
+                                                       notional_currency='USD')),
+                      ('Accumulator', accrual_params(knockout=SPOT * 1.10))):
+        deal = only_leg(structures.quote(accrual_book, name, ask))
+        table = schema.OBSERVES[deal['Object']].table
+        assert [row[2] for row in deal[table]] == [None] * 12, name
+        off = dict(deal, Strike_Price=deal['Strike_Price'] * 1.01)
+        zeroed = dict(off, **{table: [row[:2] + [0.0] for row in deal[table]]})
+        blank, zero = (values(accrual_book, [block])[deal['Reference']] for block in (off, zeroed))
+        assert blank == zero and abs(blank) > 1.0, (name, blank, zero)
 
 
 def test_a_strip_at_a_margin_strikes_further_from_the_client(accrual_book):

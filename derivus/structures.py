@@ -784,8 +784,8 @@ def fixing_grid(base_date, expiry, frequency, convention):
     """An accrual deal's fixing SCHEDULE, in the wire form both declarations read.
 
     `[[fixing, settlement, observed], ...]` - the row shape `TARF_ExpiryDates` and
-    `Accumulator_ExpiryDates` share, untagged, with the observed fixing 0.0 because a quote is
-    struck today. The k-th fixing is the expiry of the vanilla `k x frequency` long and settles on
+    `Accumulator_ExpiryDates` share, untagged, with no observed fixing because a quote is struck
+    today. The k-th fixing is the expiry of the vanilla `k x frequency` long and settles on
     that vanilla's delivery (`tenor_dates` under `convention`), up to and including the tenor, so
     the last fixing is the structure's own expiry and each is dated off the base date rather than
     stepped off the one before (31 Jan + 1M + 1M is 28 Mar, not 31 Mar). A day two tenors land on,
@@ -807,7 +807,7 @@ def fixing_grid(base_date, expiry, frequency, convention):
         if timestamp(fixing) > last:
             break
         if not rows or rows[-1][0] != fixing:
-            rows.append([fixing, settles, 0.0])
+            rows.append([fixing, settles, None])
         step += 1
     if not rows:
         raise ValueError('a {} tenor holds no {} fixing - the strip would be empty and the '
@@ -1401,10 +1401,10 @@ def furnish_accrual(structure, deal, params, book, base_date, underlying, invert
     Returns the leg's note.
 
     THE SCHEDULE. `fixing_grid` grows it from the tenor and `fixing_frequency` under the pair's spot
-    `convention`, and it is filed under the table the deal declares it observes.
-    `FXTARFOptionDeal` also declares an `Expiry_Date`, set to the LAST SETTLEMENT rather than to the
-    tenor. A type declaring a `Settlement_Date` pays the whole strip once, on that last settlement,
-    and its table holds each fixing with no `Value`, none having printed.
+    `convention`, and it is filed under the table the deal declares it observes, no row stating a
+    `Value`, none having printed. `FXTARFOptionDeal` also declares an `Expiry_Date`, set to the
+    LAST SETTLEMENT rather than to the tenor. A type declaring a `Settlement_Date` pays the whole
+    strip once, on that last settlement, and its table holds each fixing without its settlement.
 
     THE NOTIONALS. `Underlying_Amount` is the notional per fixing, already in `notional_currency`;
     `LeverageNotional`, on a type declaring it, is `leverage` times it. Neither has an axis:
