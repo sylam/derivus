@@ -1264,13 +1264,14 @@ def test_a_hedging_run_asks_for_no_deflation_curve():
 
 def test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_child_it_omits(caplog):
     """A credit Monte Carlo on a dollar cashflow, a Hull-White on its deflation curve. An FVA block
-    omitting `Deflate_Stochastically` reports the FVA of the block stating its declared `Yes` to the
-    bit, not of `No`, and with no model on that curve is refused by name; one naming no counterparty
-    asks for no survival curve; a CVA block stating only `Calculate` and `Counterparty` reports the
-    CVA of the block stated whole, to the bit.
+    omitting `Deflate_Stochastically` reports the FVA of the block stating its declared `No` to the
+    bit, not of `Yes`; one naming no counterparty asks for no survival curve; a CVA block stating
+    only `Calculate` and `Counterparty`, with no model on the deflation curve (the hazard alone
+    simulated, and not read), runs and reports the CVA of the block stated whole, to the bit.
 
     Killing mutations: the run completing its top level alone, a stated block's omitted child a
-    `KeyError`; discovery reading the counterparty key's presence, a blank one a curve asked for.
+    `KeyError`; discovery reading the counterparty key's presence, a blank one a curve asked for;
+    either declared `Deflate_Stochastically` back to `Yes`, that block's identity broken.
     """
     import trial_credit
 
@@ -1285,20 +1286,19 @@ def test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_c
         _, out = simulated([cashflow], (curve,), trial_credit.FACTORS, **block)
         return float(out['Results'][result])
 
-    omitted, stated, deterministic = (run('fva', Funding_Valuation_Adjustment=dict(funding, **switch))
-                                      for switch in ({}, {'Deflate_Stochastically': 'Yes'},
-                                                     {'Deflate_Stochastically': 'No'}))
-    assert omitted == stated != deterministic, (omitted, stated, deterministic)
-    with pytest.raises(ValueError, match='Funding_Valuation_Adjustment.Deflate_Stochastically is Yes '
-                                         'but USD has no model'):
-        run('fva', 'USD-PROJ', Funding_Valuation_Adjustment=funding)
+    omitted, stated, stochastic = (run('fva', Funding_Valuation_Adjustment=dict(funding, **switch))
+                                   for switch in ({}, {'Deflate_Stochastically': 'No'},
+                                                  {'Deflate_Stochastically': 'Yes'}))
+    assert omitted == stated != stochastic, (omitted, stated, stochastic)
     caplog.clear()
     run('fva', Funding_Valuation_Adjustment=dict(funding, Counterparty=''))
     assert 'SurvivalProb' not in caplog.text
-    whole = dict(credit, Bank='', Deflate_Stochastically='Yes', Stochastic_Hazard_Rates='No',
+    whole = dict(credit, Bank='', Deflate_Stochastically='No', Stochastic_Hazard_Rates='No',
                  Gradient='No', Hessian='No', CDS_Tenors=[])
-    partial = run('cva', Credit_Valuation_Adjustment=credit)
-    assert partial == run('cva', Credit_Valuation_Adjustment=whole) and partial > 0.0, partial
+    hazard = {'SurvivalProb.ISSUER_A': ('HWHazardRateModel', {'Alpha': 0.1, 'Lambda': 0.0, 'Sigma': 0.01})}
+    partial = run('cva', 'USD-PROJ', models=hazard, Credit_Valuation_Adjustment=credit)
+    assert partial == run('cva', 'USD-PROJ', models=hazard,
+                          Credit_Valuation_Adjustment=whole) and partial > 0.0, partial
 
 
 def test_a_cap_stated_by_its_terms_prices_its_caplets():

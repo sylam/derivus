@@ -54,7 +54,7 @@ For the `CreditMonteCarlo` containers that is:
 
 | Sub-fields | Read when the container omits them |
 |---|---|
-| `Deflate_Stochastically` (CVA and FVA) | `Yes`: the deflation curve needs a model, and a run without one is refused by name |
+| `Deflate_Stochastically` (CVA and FVA) | `No`: today's deflation curve, which needs no model; `Yes` needs one, and a run without it is refused by name |
 | `Credit_Valuation_Adjustment.Counterparty` | blank: a CVA under `Calculate: Yes` naming none fails, `Cannot find SurvivalProb.` |
 | `Funding_Valuation_Adjustment`: the two funding curves | blank: the base currency's own, the curve the exposure is deflated on, so a blank one funds at no spread |
 | `Initial_Margin`: the weight files and currencies | blank, read under `Calculate: Yes` |

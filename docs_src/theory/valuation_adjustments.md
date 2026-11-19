@@ -108,18 +108,18 @@ adjustments of this shape are derived by Burgard and Kjaer [@burgard2011] and Gr
 
 The xVA blocks of the `Calculation`, with the declared defaults. A block the job writes in part
 reads the default of every field it omits, so a CVA or FVA block omitting
-`Deflate_Stochastically` deflates stochastically and needs a model on the deflation curve.
+`Deflate_Stochastically` deflates on today's curve and needs no model on the deflation curve.
 
 | block | field | default | read as |
 | --- | --- | --- | --- |
 | `Credit_Valuation_Adjustment` | `Calculate`, `Counterparty` | `No`, blank | the `SurvivalProb` factor's name |
-| | `Deflate_Stochastically` | `Yes` | the deflator above |
+| | `Deflate_Stochastically` | `No` | the deflator above |
 | | `Stochastic_Hazard_Rates` | `No` | $H$ above |
 | | `Gradient`, `Hessian` | `No`, `No` | Sensitivities below |
 | | `CDS_Tenors` | `[]` | years; par CDS rates and the CS01 map |
 | | `Bank` | blank | not read |
 | `Funding_Valuation_Adjustment` | `Funding_Cost_Interest_Curve`, `Funding_Benefit_Interest_Curve` | blank | $c$, $b$, each the deflation curve $f$ where blank, so a blank one funds at no spread |
-| | `Deflate_Stochastically`, `Gradient` | `Yes`, `No` | as above |
+| | `Deflate_Stochastically`, `Gradient` | `No`, `No` | as above |
 | | `Counterparty`, `Bank`, `Stochastic_Funding` | blank, blank, `No` | see FVA |
 | top level | `Batch_Size`, `Simulation_Batches`, `Random_Seed`, `Antithetic` | 1024, 1, 5120, `No` | paths and seed |
 | | `Quasi_Seed` | 1234 | the quasi-random draws: a pricer's inner paths and the Sobol-driven processes |
