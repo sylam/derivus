@@ -5910,12 +5910,11 @@ def test_a_named_calculation_is_the_desks_own_and_prices_what_it_is_pointed_at(d
     book = desk_xva.read_bytes()
     cva_a = {'Object': 'CreditMonteCarlo', 'Batch_Size': service.XVA_BATCH_SIZE,
              'Simulation_Batches': service.XVA_SIMULATION_BATCHES,
-             'Deflation_Interest_Rate': 'USD',
              'Credit_Valuation_Adjustment': dict(
                  service.XVA_CVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A'),
              'Funding_Valuation_Adjustment': dict(
                  service.XVA_FVA_BLOCK, Calculate='Yes', Counterparty='CPTY_A',
-                 Risk_Free_Curve='USD', Funding_Cost_Interest_Curve='FUND',
+                 Funding_Cost_Interest_Curve='FUND',
                  Funding_Benefit_Interest_Curve='FUND')}
     greeks = {'Object': 'BaseValuation', 'Greeks': 'First'}
 
@@ -6315,11 +6314,11 @@ def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path,
     currency, its deals naming the dollar curve as the book files it, its sets leaving their funding
     curves blank and its calculation
     stating no deflation curve: the recalc lands both columns of each set, a real CVA beside NS_A's
-    FVA funding at `FUND` and NS_B's exact zero, and the run it builds names no curve the book did
-    not, the engine reading a blank as the report currency's own.
+    FVA funding at `FUND` and NS_B's exact zero, and the run it builds names neither a deflation nor
+    a risk-free curve, the engine deflating on the base currency's own.
 
-    Killing mutation: the recalc deflating on the report currency's code, `USD`, which this book
-    does not carry, so both rows land failed.
+    Killing mutation: the engine deflating on the base currency's code, `USD`, which this book does
+    not carry, so both rows land failed.
     """
     monkeypatch.setenv('DV_HOME', str(tmp_path))
     vanilla = dict(VANILLA, Discount_Rate='USD-OIS')
@@ -6342,7 +6341,7 @@ def test_a_book_filing_its_curves_under_other_names_lands_both_columns(tmp_path,
         for _, node in service.netting_sets(document):
             run = service.xva_document(document, node, '')['Calc']['Calculation']
             funding = run['Funding_Valuation_Adjustment']
-            assert 'Deflation_Interest_Rate' not in run and funding['Risk_Free_Curve'] == ''
+            assert 'Deflation_Interest_Rate' not in run and 'Risk_Free_Curve' not in funding
             assert funding['Funding_Cost_Interest_Curve'] == node['Instrument']['.Deal']['Funding_Rate']
     finally:
         service.BOOK = None

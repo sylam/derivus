@@ -1211,7 +1211,8 @@ class Config(object):
             return children, resets, settlement_currencies
 
         def add_interest_rate(curve_name):
-            # a blank is the report currency's own curve, which its `FxRate` brings with these dates
+            # a blank funding curve is the base currency's own, the deflation curve, which the base
+            # `FxRate` brings with these dates
             if not curve_name:
                 return
             interest_rate_factor = utils.Factor(
@@ -1265,9 +1266,8 @@ class Config(object):
                     {})
                 )
             if options.get('Funding_Valuation_Adjustment', {}).get('Calculate', 'No') == 'Yes':
-                add_interest_rate(options['Funding_Valuation_Adjustment']['Funding_Cost_Interest_Curve'])
-                add_interest_rate(options['Funding_Valuation_Adjustment']['Funding_Benefit_Interest_Curve'])
-                add_interest_rate(options['Funding_Valuation_Adjustment']['Risk_Free_Curve'])
+                add_interest_rate(options['Funding_Valuation_Adjustment'].get('Funding_Cost_Interest_Curve'))
+                add_interest_rate(options['Funding_Valuation_Adjustment'].get('Funding_Benefit_Interest_Curve'))
 
                 # need to weight the FVA by the survival prob of the counterparty (if defined)
                 if options['Funding_Valuation_Adjustment'].get('Counterparty'):
@@ -1275,8 +1275,6 @@ class Config(object):
                         utils.Factor('SurvivalProb', utils.check_rate_name(
                             options['Funding_Valuation_Adjustment']['Counterparty'])), {})
                     )
-
-            add_interest_rate(options.get('Deflation_Interest_Rate'))
 
             # update the linked factor max tenors
             missing_tenors = {}

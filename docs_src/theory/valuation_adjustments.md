@@ -23,16 +23,16 @@ counterparty defaults; the bank's own default, and with it DVA, is not modelled.
 | $N$ | paths, `Batch_Size` $\times$ `Simulation_Batches` (with or without `Antithetic`) |
 | $V_k(t)$ | the book's value on path $k$ in the reporting currency (`Currency`): the sum of every top-level structure's reported value, a collateralised set's after collateral |
 | $X_k(t)$ | the reporting-to-base FX rate on path $k$; $X(0)$ today's |
-| $D_k(t)$ | the deflator built from `Deflation_Interest_Rate` (below) |
+| $D_k(t)$ | the deflator, off the base currency's own curve (below) |
 | $I(t)$ | the counterparty's log-survival curve, $I(t)=-\log S(0,t)$, the `SurvivalProb` factor named by the block's `Counterparty` ([Survival Rates](survival_rates.md)); past its last knot its last hazard continues |
 | $R$ | that factor's `Recovery_Rate`, a constant |
 
 Every reported adjustment is a mean over batches of the per-batch estimate; with equal batches this
 is the mean over all $N$ paths. Amounts are in the reporting currency at today's FX.
 
-**The deflator.** The deflation curve is `Deflation_Interest_Rate`, the reporting currency's own
-curve where it is blank: the curve that currency's `FxRate` names, its own code where it names none.
-With `Deflate_Stochastically: No`, $D(t_i)=P(0,t_i)$, today's discount factor off the deflation
+**The deflator.** $V_k(t)X_k(t)$ is an amount in the base currency (`System Parameters`
+`Base_Currency`), the numeraire, so the deflation curve is the base currency's own: the curve its
+`FxRate` names, its own code where it names none. It is no setting of the run. With `Deflate_Stochastically: No`, $D(t_i)=P(0,t_i)$, today's discount factor off the deflation
 curve, the same on every path. With `Yes`,
 
 $$D_k(t_i)=\exp\Big(-\sum_{j=1}^{i}y_k(t_j;\Delta_j)\,\Delta_j\Big),\qquad D_k(t_0)=1,$$
@@ -89,7 +89,7 @@ $$\widehat{\mathrm{FVA}}=\frac1N\sum_{k}\sum_{i=1}^{m}\Big[s^{c}_k(i)\,\frac{U^{
 reported as `fva`, positive for a net funding cost. The interval spreads accrue the funding curve
 over the risk-free one, read at the interval's **start**:
 
-| `Deflate_Stochastically` | $s^{c}_k(i)$ (`Funding_Cost_Interest_Curve` $c$ over `Risk_Free_Curve` $f$) |
+| `Deflate_Stochastically` | $s^{c}_k(i)$ (`Funding_Cost_Interest_Curve` $c$ over the deflation curve $f$) |
 | --- | --- |
 | `No` | $\dfrac{P_c(0,t_{i-1})}{P_c(0,t_i)}-\dfrac{P_f(0,t_{i-1})}{P_f(0,t_i)}$ |
 | `Yes` | $e^{y^c_k(t_{i-1};\Delta_i)\Delta_i}-e^{y^f_k(t_{i-1};\Delta_i)\Delta_i}$ |
@@ -118,14 +118,14 @@ reads the default of every field it omits, so a CVA or FVA block omitting
 | | `Gradient`, `Hessian` | `No`, `No` | Sensitivities below |
 | | `CDS_Tenors` | `[]` | years; par CDS rates and the CS01 map |
 | | `Bank` | blank | not read |
-| `Funding_Valuation_Adjustment` | `Funding_Cost_Interest_Curve`, `Funding_Benefit_Interest_Curve`, `Risk_Free_Curve` | blank | $c$, $b$, $f$, each the reporting currency's own curve where blank, so a blank funding curve beside a blank risk-free one reads a zero spread |
+| `Funding_Valuation_Adjustment` | `Funding_Cost_Interest_Curve`, `Funding_Benefit_Interest_Curve` | blank | $c$, $b$, each the deflation curve $f$ where blank, so a blank one funds at no spread |
 | | `Deflate_Stochastically`, `Gradient` | `Yes`, `No` | as above |
 | | `Counterparty`, `Bank`, `Stochastic_Funding` | blank, blank, `No` | see FVA |
 | top level | `Batch_Size`, `Simulation_Batches`, `Random_Seed`, `Antithetic` | 1024, 1, 5120, `No` | paths and seed |
 | | `Quasi_Seed` | 1234 | the quasi-random draws: a pricer's inner paths and the Sobol-driven processes |
 | | `Time_Grid`, `Dynamic_Scenario_Dates` | `0d 2d 1w(1w) 3m(1m) 2y(3m)`, `Yes` | the grids |
 | | `MCMC_Simulations` | 2048 | inner paths of a Monte Carlo pricer |
-| | `Deflation_Interest_Rate`, `Currency`, `Percentile` | blank, required, `95` | the deflator (the reporting currency's own curve where blank), the reporting currency, the PFE |
+| | `Currency`, `Percentile` | required, `95` | the reporting currency, the PFE |
 | | `NoModel`, `Gradient_Variables` | `Constant`, `All` | unmodelled factors; which leaves are differentiated |
 | | `Gradient_Total` | `No` | the gradients asked for, reported as one sum |
 | | `Boundary_AAD_Bandwidth`, `Boundary_AAD_Margin_Calls` | 0.01, `No` | the boundary correction's kernel width, and whether margin calls register for it |

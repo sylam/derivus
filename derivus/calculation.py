@@ -979,13 +979,15 @@ class CreditMonteCarlo(Calculation):
         '',
         '#### Exposure Deflation',
         '',
-        'Exposure at time $t$ is simulated in units of the time $t$ reporting currency. Exposure deflation',
-        'converts this to time $0$ reporting currency i.e.',
+        'Exposure at time $t$ is simulated in units of the time $t$ reporting currency. The CVA and the',
+        'FVA convert it to the base currency at time $t$, the numeraire, deflate it on the base',
+        'currency\'s own curve (the one its `FxRate` names) and convert it back at today\'s rate, i.e.',
         '',
-        '$$V^*(t)=\\frac{V(t)}{\\beta(t)},\\qquad \\beta(t)=\\exp\\Big(\\int_0^t r(s)ds\\Big),$$',
+        '$$V^*(t)=\\frac{V(t)X(t)}{\\beta(t)X(0)},\\qquad \\beta(t)=\\exp\\Big(\\int_0^t r(s)ds\\Big),$$',
         '',
-        '$r$ the short rate of **Deflation Interest Rate**. With **Deflate Stochastically** `Yes` the run',
-        'approximates it on the report rows by',
+        '$X(t)$ one unit of the reporting currency in the base currency and $r$ the short rate of the',
+        'base currency\'s own curve, which is no setting of the run. With **Deflate Stochastically**',
+        '`Yes` the run approximates it on the report rows by',
         '',
         '$$\\frac{1}{\\beta(t_i)}\\approx\\prod_{j=1}^{i}D(t_j,t_j+\\Delta_j),\\qquad \\Delta_j=t_j-t_{j-1},$$',
         '',
@@ -1044,8 +1046,8 @@ class CreditMonteCarlo(Calculation):
         '- $V(t)$ is the deflated funding profile at time $t$',
         '- $f_{fc,C}(t)$ and $f_{fb,C}(t)$ are the forward rates of **Funding Cost Interest Curve** and',
         '  **Funding Benefit Interest Curve**',
-        '- $f_{rf,C}(t)$ is the forward rate of **Risk Free Curve**, each of the three curves the reporting',
-        '  currency\'s own where blank',
+        '- $f_{rf,C}(t)$ is the forward rate of the base currency\'s own curve, the deflation curve, which',
+        '  a blank funding curve reads too',
         '- $SP_C(t)=S(0,t)$ is the survival probability of the counterparty each netting set names under',
         '  **Credit Support Amounts**.',
         '',
@@ -1067,8 +1069,6 @@ class CreditMonteCarlo(Calculation):
         '',
         'Calculation parameters are extended from the Base Valuation with these fields:',
         '',
-        ' - **Deflation Interest Rate** - the interest rate price factor that PVs the exposure to today, the',
-        '   reporting currency\'s own curve where blank (the curve its `FxRate` names)',
         ' - **Batch Size** - the number of simulations per batch (default 1024). Smaller batch sizes are more',
         '   likely to fit in memory; larger ones run quicker. Usually a power of 2.',
         ' - **Simulation Batches** - the number of batches to run (default 1). The total number of',
@@ -1096,8 +1096,6 @@ class CreditMonteCarlo(Calculation):
         F('Base_Date', 'Date', default=''),
         F('Currency', 'Text', default=REQUIRED),
         F('Time_Grid', 'Text', default='0d 2d 1w(1w) 3m(1m) 2y(3m)'),
-        F('Deflation_Interest_Rate', 'Text', default='', convention=True,
-          description='The curve the exposure is deflated on, blank being the reporting currency\'s own'),
         F('Percentile', 'Text', default='95'),
         F('MCMC_Simulations', 'Integer', default=2048),
         F('Simulation_Batches', 'Integer', default=1),
@@ -1158,7 +1156,6 @@ class CreditMonteCarlo(Calculation):
               F('Calculate', 'Text', default='No', values=['Yes', 'No']),
               F('Counterparty', 'Text', default=''),
               F('Bank', 'Text', default=''),
-              F('Risk_Free_Curve', 'Text', default=''),
               F('Funding_Cost_Interest_Curve', 'Text', default=''),
               F('Funding_Benefit_Interest_Curve', 'Text', default=''),
               F('Deflate_Stochastically', 'Text', default='Yes', values=['Yes', 'No']),
@@ -1689,15 +1686,15 @@ class CreditMonteCarlo(Calculation):
                 'declare a Price Models entry for a factor the deals reach, or run this book as '
                 'a BaseValuation')
 
-    def curve(self, name):
-        """The code of the curve `name` names, the reporting currency's own where it is blank
-        (`instruments.get_fx_zero_rate_factor`)."""
+    def curve(self, name=''):
+        """The code of the curve `name` names, the base currency's own where it is blank
+        (`instruments.get_fx_zero_rate_factor`): the numeraire's, which deflates the exposure."""
         if name:
             return get_interest_factor(
                 utils.check_rate_name(name), self.static_factors, self.stoch_factors, self.all_tenors)
         return instruments.get_fx_zero_rate_factor(
-            utils.check_rate_name(self.params['Currency']), self.static_factors, self.stoch_factors,
-            self.all_tenors, self.all_factors)
+            utils.check_rate_name(self.config.params['System Parameters']['Base_Currency']),
+            self.static_factors, self.stoch_factors, self.all_tenors, self.all_factors)
 
     def execute(self, params, job_id=0, num_jobs=1, deterministic_batches=False):
         """Run the batched exposure simulation plus whichever sub-calculations `params` enables
@@ -1932,8 +1929,7 @@ class CreditMonteCarlo(Calculation):
 
                 funding_cost = self.curve(params['Funding_Valuation_Adjustment']['Funding_Cost_Interest_Curve'])
                 funding_benefit = self.curve(params['Funding_Valuation_Adjustment']['Funding_Benefit_Interest_Curve'])
-                riskfree = self.curve(params['Funding_Valuation_Adjustment']['Risk_Free_Curve'])
-                discount = self.curve(params['Deflation_Interest_Rate'])
+                riskfree = discount = self.curve()
 
                 # note that for FVA, we already scale the exposure matrix by the survival probability
                 if params['Funding_Valuation_Adjustment']['Deflate_Stochastically'] == 'Yes':
@@ -2020,7 +2016,7 @@ class CreditMonteCarlo(Calculation):
                             self.calc_stats['Gradient_Vector_Size'] = sensitivity.P
 
             if params['Credit_Valuation_Adjustment']['Calculate'] == 'Yes':
-                discount = self.curve(params['Deflation_Interest_Rate'])
+                discount = self.curve()
                 survival = get_survival_factor(
                     utils.check_rate_name(params['Credit_Valuation_Adjustment']['Counterparty']),
                     self.static_factors, self.stoch_factors, self.all_tenors)

@@ -39,7 +39,6 @@ methods behind them are described in [API & Usage](../api_usage/calculations.md)
       },
       "Random_Seed": 1,
       "Dynamic_Scenario_Dates": "Yes",
-      "Deflation_Interest_Rate": "ZAR-SWAP",
       "Credit_Valuation_Adjustment": {
         "Calculate": "Yes",
         "Counterparty": "Sketchy Traders LTD",

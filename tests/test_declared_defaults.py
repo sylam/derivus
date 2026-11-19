@@ -1027,8 +1027,7 @@ def simulated(deals, curves, factors=None, sigma=0.01, prec=None, system=None, m
     calc = job['Calc']
     calc['Calculation'] = dict({
         'Object': 'CreditMonteCarlo', 'Base_Date': calc['Calculation']['Base_Date'], 'Currency': 'USD',
-        'Time_Grid': '0d 3m(3m)', 'Batch_Size': 256, 'Random_Seed': 1, 'Deflation_Interest_Rate': 'USD',
-        'DealLevel': True}, **calculation)
+        'Time_Grid': '0d 3m(3m)', 'Batch_Size': 256, 'Random_Seed': 1, 'DealLevel': True}, **calculation)
     calc['Deals']['Deals']['Children'] = [{'Instrument': {'.Deal': {
         'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
         'Collateralized': 'False'}}, 'Children': calc['Deals']['Deals']['Children']}]
@@ -1188,16 +1187,19 @@ def test_a_blank_curve_is_its_currency_s_own_whatever_the_book_calls_it():
             assert float.fromhex(stated['EQKO_HIT']) == 500.0, 'the knock-out is its rebate today'
 
 
-def test_a_blank_deflation_risk_free_or_funding_curve_is_the_report_currency_s_own():
+def test_a_credit_monte_carlo_deflates_on_the_base_currency_s_own_curve_whatever_it_states():
     """A credit Monte Carlo on the renamed world over a euro cashflow alone, so no deal reads the
-    dollar curve, deflated stochastically on it. Leaving blank the deflation and risk-free curves,
-    funding stated at `USD-PROJ`, or the deflation and both funding curves, risk-free stated at
-    `USD-PROJ`, reports the CVA and the FVA to the bit as the job naming `USD-OIS` in their place:
-    the report currency's own, which its `FxRate` brings into the run. With no model on it a blank
-    deflation read stochastically is refused naming that curve.
+    dollar curve, deflated stochastically on the base currency's own, `USD-OIS`, which the base
+    `FxRate` brings into the run. Stating `USD-PROJ` as its deflation and risk-free curves reports
+    the CVA, the FVA and the exposure of the job stating neither, to the bit; a blank funding curve
+    reads the risk-free one, so two blank fund at no spread, an FVA of exactly nil. With no model
+    on `USD-OIS` the stochastic deflation is refused naming it, whatever the job states. `validate`
+    says nothing of a document stating either key, which no calculation declares, nor of a funding
+    block naming neither funding curve.
 
-    Killing mutations: a blank read as the bare report currency, under which every blank job fails
-    (`Cannot find InterestRate.USD`); the refusal naming the stated deflation, a blank.
+    Killing mutations: the stated deflation curve read again, which deflates the CVA on `USD-PROJ`;
+    the stated risk-free curve read again, which measures the funding spread over `USD-PROJ`; the
+    factor walk indexing a funding curve its block omits, under which `validate` dies on the key.
     """
     import trial_credit
 
@@ -1205,22 +1207,59 @@ def test_a_blank_deflation_risk_free_or_funding_curve_is_the_report_currency_s_o
                 'Amount': 1e6, 'Payment_Date': WORLD_EXPIRY}
     credit = {'Calculate': 'Yes', 'Counterparty': 'ISSUER_A', 'Deflate_Stochastically': 'Yes',
               'Stochastic_Hazard_Rates': 'No'}
-    curves = ('Risk_Free_Curve', 'Funding_Cost_Interest_Curve', 'Funding_Benefit_Interest_Curve')
+    funding = {'Calculate': 'Yes', 'Counterparty': 'ISSUER_A', 'Deflate_Stochastically': 'Yes',
+               'Funding_Cost_Interest_Curve': 'USD-PROJ',
+               'Funding_Benefit_Interest_Curve': 'USD-PROJ'}
 
-    def run(blanks, own, models=('USD-OIS',)):
-        """`(cva, fva)` with the deflation curve and the funding block's `blanks` stating `own`."""
-        funding = dict({key: own if key in blanks else 'USD-PROJ' for key in curves},
-                       Calculate='Yes', Counterparty='ISSUER_A', Deflate_Stochastically='Yes')
+    def run(stated='', models=('USD-OIS', 'USD-PROJ'), **curves):
+        """`Results` of the job stating `stated` as its deflation and risk-free curves and `curves`
+        over its funding block."""
         _, out = simulated([cashflow], models, trial_credit.FACTORS, names=RENAMED,
-                           Deflation_Interest_Rate=own, Credit_Valuation_Adjustment=credit,
-                           Funding_Valuation_Adjustment=funding)
-        return float(out['Results']['cva']), float(out['Results']['fva'])
+                           Deflation_Interest_Rate=stated, Credit_Valuation_Adjustment=credit,
+                           Funding_Valuation_Adjustment=dict(funding, Risk_Free_Curve=stated, **curves))
+        return out['Results']
 
-    for blanks in (curves[:1], curves[1:]):
-        blank, named = run(blanks, ''), run(blanks, 'USD-OIS')
-        assert blank == named and blank[0] > 0.0 and blank[1] != 0.0, (blanks, blank, named)
+    neither, both = run(), run('USD-PROJ')
+    assert [float(neither[key]) for key in ('cva', 'fva')] == [
+        float(both[key]) for key in ('cva', 'fva')]
+    assert neither['mtm'].equals(both['mtm']) and float(neither['cva']) > 0.0 != float(neither['fva'])
+    assert float(run(Funding_Cost_Interest_Curve='', Funding_Benefit_Interest_Curve='')['fva']) == 0.0
     with pytest.raises(ValueError, match='Deflate_Stochastically is Yes but USD-OIS has no model'):
-        run(curves, '', models=('EUR-ESTR',))
+        run('USD-PROJ', models=('EUR-ESTR', 'USD-PROJ'))
+
+    def judged(block):
+        """What `validate` says of the calculation stating both keys over the funding block `block`."""
+        job = json.loads(json.dumps(book([cashflow], RENAMED), cls=CustomJsonEncoder))
+        job['Calc']['Calculation'] = dict(
+            job['Calc']['Calculation'], Object='CreditMonteCarlo', Currency='USD',
+            Deflation_Interest_Rate='USD-PROJ', Funding_Valuation_Adjustment=dict(block, Risk_Free_Curve='USD-PROJ'))
+        context = derivus.Context()
+        context.load_json((json.dumps(job), 'judged'))
+        return context.validate()['calculation']
+
+    assert judged(funding) == judged({'Calculate': 'Yes', 'Counterparty': 'ISSUER_A'}) == []
+
+
+def test_a_hedging_run_asks_for_no_deflation_curve():
+    """A hedging run reports no adjustment and so deflates nothing: the simulate-only fixture, run
+    traced, never calls `CreditMonteCarlo.curve`. Killing mutation: `HedgeMonteCarlo.execute`
+    reading the deflation curve once its factors are built - traced once.
+    """
+    from derivus.calculation import CreditMonteCarlo
+
+    with open(os.path.join(FIXTURES, 'policy_test_simulate_only.json')) as handle:
+        context = derivus.Context().load_json((handle.read(), 'hedge'))
+    asked = []
+
+    def traced(frame, event, arg):
+        if event == 'call' and frame.f_code is CreditMonteCarlo.curve.__code__:
+            asked.append(frame.f_back.f_code.co_name)
+    sys.setprofile(traced)
+    try:
+        context.run_job()
+    finally:
+        sys.setprofile(None)
+    assert asked == []
 
 
 def test_an_adjustment_block_stated_in_part_reads_the_declared_default_of_each_child_it_omits(caplog):

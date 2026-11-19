@@ -421,3 +421,90 @@ def test_a_stochastic_reading_of_a_curve_no_model_moves_is_refused_by_name(block
         book.simulated([cashflow], (), trial_credit.FACTORS,
                        models={'FxRate.EUR': ('GBMAssetPriceModel', {'Vol': 0.1, 'Drift': 0.0})},
                        **{block: dict(stated, **{switch: 'Yes'})})
+
+
+#: A rand cashflow on a USD-based book: every curve flat, the rand held at its spot by a GBM of no
+#: volatility stating no spot lag, the counterparty's hazard flat at 2%.
+X0, R_USD, R_ZAR, R_FUND, HAZARD = 0.055, 0.03, 0.07, 0.05, 0.02
+
+
+def deflated(report, sigma=0.0, **calculation):
+    """`Results` of a float64 credit Monte Carlo, `calculation` over its block, of R1m paid in a
+    year, in one uncollateralised set against CPTY, reported in `report`, its CVA and its FVA
+    funding at FUND both on, the rand a GBM of volatility `sigma`."""
+    def flat(currency, rate):
+        return {'Currency': currency, 'Day_Count': 'ACT_365', 'Sub_Type': None,
+                'Curve': utils.Curve([], [[0.0, rate], [5.0, rate]])}
+
+    adjustment = {'Calculate': 'Yes', 'Counterparty': 'CPTY', 'Deflate_Stochastically': 'No'}
+    cashflow = {'Object': 'FixedCashflowDeal', 'Reference': 'CF', 'Currency': 'ZAR',
+                'Discount_Rate': 'ZAR', 'Amount': 1e6, 'Payment_Date': B + pd.DateOffset(years=1)}
+    job = {'Calc': {
+        'Calculation': dict({
+            'Object': 'CreditMonteCarlo', 'Base_Date': B, 'Currency': report,
+            'Time_Grid': '0d 3m(3m)', 'Batch_Size': 64, 'Random_Seed': 1,
+            'Credit_Valuation_Adjustment': dict(adjustment, Stochastic_Hazard_Rates='No'),
+            'Funding_Valuation_Adjustment': dict(
+                adjustment, Funding_Cost_Interest_Curve='FUND',
+                Funding_Benefit_Interest_Curve='FUND')}, **calculation),
+        'Deals': {'Reference': 'deflated', 'Deals': {'Children': [{'Instrument': {'.Deal': {
+            'Object': 'NettingCollateralSet', 'Reference': 'NS', 'Netted': 'True',
+            'Collateralized': 'False', 'Credit_Support_Amounts': {'Counterparty': 'CPTY'}}},
+            'Children': [{'Instrument': {'.Deal': cashflow}}]}]}},
+        'MergeMarketData': {'MarketDataFile': '', 'ExplicitMarketData': {
+            'System Parameters': {'Base_Currency': 'USD', 'Base_Date': B},
+            'Price Factors': {
+                'FxRate.USD': {'Domestic_Currency': None, 'Interest_Rate': 'USD', 'Spot': 1.0},
+                'FxRate.ZAR': {'Domestic_Currency': None, 'Interest_Rate': 'ZAR', 'Spot': X0,
+                               'Settlement_Days': 0},
+                'InterestRate.USD': flat('USD', R_USD), 'InterestRate.ZAR': flat('ZAR', R_ZAR),
+                'InterestRate.FUND': flat('USD', R_FUND),
+                'SurvivalProb.CPTY': {'Recovery_Rate': 0.4, 'Curve': utils.Curve(
+                    [], [[0.0, 0.0], [10.0, 10 * HAZARD]])}},
+            'Price Models': {'GBMAssetPriceModel.ZAR': {'Vol': sigma, 'Drift': 0.0}},
+            'Model Configuration': {'.ModelParams': {
+                'modeldefaults': {'FxRate': 'GBMAssetPriceModel'}, 'modelfilters': {}}}}}}}
+    context = derivus.Context()
+    context.load_json((json.dumps(job, cls=CustomJsonEncoder), 'deflated'))
+    return derivus.run_cmc(context.current_cfg, prec=torch.float64)[1]['Results']
+
+
+def test_a_book_reported_in_rand_deflates_its_exposure_on_the_dollar_curve():
+    """The rand cashflow reported in ZAR on its USD book, by hand. On the report rows t_i, days 0,
+    92, 184, 273, 365 and 366 over 365, its value is V_i = 1e6 exp(-7% (1 - t_i)), nil on the last
+    row; the rand is X0 on every row, so converted to dollars, deflated on the dollar curve and
+    converted back at today's rate the exposure is P_i = V_i exp(-3% t_i); S_i = exp(-2% t_i).
+
+        CVA = 0.6 sum_i (P_(i-1) + P_i) / 2 (S_(i-1) - S_i)                                11,317.14
+        FVA = sum_i (exp(5% d_i) - exp(3% d_i)) (P_(i-1) S_(i-1) + P_i S_i) / 2,  d_i = t_i - t_(i-1)
+                                                                                           19,051.06
+
+    the FVA's cube carrying each row's survival and its spread taken over the dollar curve. Both to
+    1e-10. Killing mutation: the deflation read off the report currency's own curve, the rand at
+    7%, under which the CVA reads 11,092.60.
+    """
+    rows = [(B + pd.DateOffset(months=3 * k) - B).days / 365.0 for k in range(5)] + [366 / 365.0]
+    value = [1e6 * math.exp(-R_ZAR * (1.0 - t)) if t <= 1.0 else 0.0 for t in rows]
+    exposure = [v * math.exp(-R_USD * t) for v, t in zip(value, rows)]
+    survival = [math.exp(-HAZARD * t) for t in rows]
+    cva = 0.6 * sum((exposure[i - 1] + exposure[i]) / 2 * (survival[i - 1] - survival[i])
+                    for i in range(1, 6))
+    fva = sum((math.exp(R_FUND * (t - s)) - math.exp(R_USD * (t - s)))
+              * (exposure[i - 1] * survival[i - 1] + exposure[i] * survival[i]) / 2
+              for i, (s, t) in enumerate(zip(rows, rows[1:]), 1))
+    results = deflated('ZAR')
+    assert float(results['cva']) == pytest.approx(cva, rel=1e-10)
+    assert float(results['fva']) == pytest.approx(fva, rel=1e-10)
+
+
+def test_an_adjustment_reported_in_rand_is_the_dollar_one_at_today_s_rate():
+    """The rand at 15% volatility, the book reported in ZAR and in USD, its base currency: either
+    way a path's exposure is deflated in dollars, so the rand CVA and FVA times today's rate are
+    the dollar ones. Held at 1e-15 relative: a path's dollar exposure differs from the rand one
+    times today's rate by the rounding of one product and one quotient, which the mean and the sum
+    over rows do not grow; measured 2.2e-16 on each. Killing mutation: the deflation read off the
+    report currency's own curve, the rand run deflated at 7% against the dollar run's 3%.
+    """
+    rand, dollar = deflated('ZAR', sigma=0.15), deflated('USD', sigma=0.15)
+    for key in ('cva', 'fva'):
+        assert float(rand[key]) * X0 == pytest.approx(float(dollar[key]), rel=1e-15, abs=0.0), key

@@ -3855,10 +3855,9 @@ XVA_CVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Gradient': 'No'}
 
 #: The FVA block a recalc switches on, beside the CVA one and off the SAME run - the projection's
-#: second column. `Counterparty` is the set's; the three curves are decided per set (see
+#: second column. `Counterparty` is the set's; the two funding curves are decided per set (see
 #: `funding_curves`); the rest is the CVA block's own desk-projection posture.
-XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '', 'Risk_Free_Curve': '',
-                 'Funding_Cost_Interest_Curve': '', 'Funding_Benefit_Interest_Curve': '',
+XVA_FVA_BLOCK = {'Calculate': 'Yes', 'Counterparty': '', 'Bank': '',
                  'Deflate_Stochastically': 'No', 'Stochastic_Funding': 'No', 'Gradient': 'No'}
 
 #: The recalc in flight per netting set, as the POST filed it: `{Reference: result_id}`. The row in
@@ -3929,18 +3928,18 @@ def set_terms(deal):
             str(deal.get('Collateralized', 'False')).lower() == 'true')
 
 
-def funding_curves(deal, risk_free):
+def funding_curves(deal):
     """`(cost, benefit)` funding curve names for a set's FVA, off the set's OWN declaration.
 
     `Funding_Rate` is the curve a `NettingCollateralSet` already names as what it funds at, so the
     projection reads the funding leg where the book states it rather than inventing a desk-wide
-    spread nobody authored. A set that names none funds at the risk-free curve and FVA is then
-    identically zero - FCA and FBA are both spreads OVER risk-free. That zero is a READING, not a
-    placeholder: the remedy is to author `Funding_Rate` on the set.
+    spread nobody authored. A set that names none leaves both blank, which the engine reads as the
+    risk-free curve, and FVA is then identically zero - FCA and FBA are both spreads OVER
+    risk-free. That zero is a READING, not a placeholder: the remedy is to author `Funding_Rate`.
 
     Cost and benefit are the same curve because a single `Funding_Rate` is all the set declares.
     """
-    funding = deal.get('Funding_Rate') or risk_free
+    funding = deal.get('Funding_Rate') or ''
     return funding, funding
 
 
@@ -3964,9 +3963,9 @@ def xva_document(document, node, counterparty):
     way, 0 ULP on both of the gate's sets. FVA keeps the scaled cube it is defined on.
 
     The synthesized fields are a FLOOR: `setdefault` leaves a book stating its own path count or
-    batching alone, and an authored adjustment block keeps every field but the counterparty. The
-    risk-free curve the funding spread is measured against is the book's own deflation curve, blank
-    where it states none, as the engine reads a blank: the report currency's own curve.
+    batching alone, and an authored adjustment block keeps every field but the counterparty. No
+    deflation or risk-free curve is written: the engine reads both as the base currency's own, so
+    nothing here reads the market.
     """
     run = deepcopy(document)
     # the pin moves on a booking into any set, so one set's plan does not carry it
@@ -3979,10 +3978,9 @@ def xva_document(document, node, counterparty):
     block.update(Calculate='Yes', Counterparty=counterparty)
     calculation['Credit_Valuation_Adjustment'] = block
 
-    risk_free = calculation.get('Deflation_Interest_Rate', '')
-    cost, benefit = funding_curves(node['Instrument']['.Deal'], risk_free)
-    funding = dict(XVA_FVA_BLOCK, Risk_Free_Curve=risk_free,
-                   Funding_Cost_Interest_Curve=cost, Funding_Benefit_Interest_Curve=benefit,
+    cost, benefit = funding_curves(node['Instrument']['.Deal'])
+    funding = dict(XVA_FVA_BLOCK, Funding_Cost_Interest_Curve=cost,
+                   Funding_Benefit_Interest_Curve=benefit,
                    **(calculation.get('Funding_Valuation_Adjustment') or {}))
     funding.update(Calculate='Yes', Counterparty=counterparty)
     calculation['Funding_Valuation_Adjustment'] = funding

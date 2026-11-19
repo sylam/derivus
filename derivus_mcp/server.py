@@ -710,8 +710,9 @@ def configure_calculation(name: str, calculation: dict | None = None) -> dict:
     `calculation` is a `Calculation` block: `{"Object": "CreditMonteCarlo", "MCMC_Simulations":
     8192, "Time_Grid": "0d 1m(1m) 2y(3m)", "Credit_Valuation_Adjustment": {"Calculate": "Yes",
     "Counterparty": "<SurvivalProb name>", ...}}` - the type, then only the fields you want to
-    differ from the book's own calculation. A container such as `Credit_Valuation_Adjustment` is
-    stated whole. Judged against the type's declarations before anything is written: an unknown
+    differ from the book's own calculation. A credit Monte Carlo deflates on the base currency's
+    own curve, which is no setting of it. A
+    container such as `Credit_Valuation_Adjustment` is stated whole. Judged against the type's declarations before anything is written: an unknown
     type, an undeclared field or a value outside a field's menu comes back `{written: false,
     refused: [...]}` naming it, the file untouched. The book and the record never move."""
     return service().call('POST', '/calculations', json={'name': name, 'calculation': calculation})
