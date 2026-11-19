@@ -1,6 +1,7 @@
 // One function per service endpoint, same-origin: vite proxies in dev, the service serves the
 // build at /ui in production. No client class - the endpoints are the vocabulary.
 
+import type { SpreadRequest } from './desk';
 import type { MarkedDays, Pnl } from './pnl';
 import type { Agreement, Entity, Position } from './positions';
 import type {
@@ -125,6 +126,9 @@ export const configureBook = (section: string, entry: string, fields: Record<str
 export const getCurves = () => call<CurvesAnswer>('GET', '/book/curve');
 export const configureCurve = (request: Record<string, unknown>) =>
   call<CurveOutcome>('POST', '/book/curve', request);
+// a counterparty's credit curve from its spread, written under the acting seat
+export const stateSurvival = (request: SpreadRequest) =>
+  call<BookDealOutcome & { factor: string }>('POST', '/book/survival', signed(request));
 // the ticker vocabulary: the candidates this desk could quote, what a terminal verified about
 // them and every knot's own print in one read; one entry of the desk's own seed merged; and the
 // terminal round trip that rewrites the map, queued and polled like an execute

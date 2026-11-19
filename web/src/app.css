@@ -684,3 +684,6 @@ table.desk td .unit.unknown { color: var(--warn); }
 /* a strip's fixings under its leg, as its declaration names their columns */
 table.blotter tr.schedule td { background: var(--bg); padding-top: 2px; padding-bottom: 8px; }
 table.blotter tr.schedule table.data { width: auto; min-width: 360px; }
+/* a credit curve's card: its lines inset as a field panel's, its tables as wide as their rows */
+.card.credit > :not(h3) { margin: 10px 14px; }
+.card.credit table.data { width: auto; min-width: 360px; }

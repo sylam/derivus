@@ -310,14 +310,103 @@ check("a turned spot's delta is per 1% of the pair: the engine's number with its
        Math.round(zar.value * zar.level * 0.01)],
       ['USDZAR', 17.35, -Math.round(GREEKS[0].risk), -Math.round(GREEKS[0].risk)]);
 
-// --- a credit curve read back as the spreads entered
-check('a credit curve reads as the spreads typed: average hazard times one less the recovery',
+// --- a credit curve stated as spreads and read back as them. `POST /book/survival`'s own answers
+// on a book valued 2026-11-16: 1Y/3Y/5Y at 100/150/200bp and a recovery of 0.35, and flat 21bp
+// and 120bp at the convention's 0.4, each run on to fifty years
+const BASE = '2026-11-16';
+const ROUTE_ROWS = [[0, 0], [1, 0.015384615384615384], [3.0027397260273974, 0.06929399367755532],
+                    [5.002739726027397, 0.15393045310853531], [50, 1.5384615384615385]];
+const ROUTE_21 = [[0, 0], [1, 0.0035], [50, 0.17500000000000002]];
+const ROUTE_120 = [[0, 0], [1, 0.02], [50, 1.0]];
+const LAB = [[0, 0], [1, 0.03833333333333334], [3.0027397260273974, 0.13512328767123288],
+             [5.002739726027397, 0.2501369863013699], [50, 2.5]];
+const readBack = (curve, recovery) => desk.spreads(curve, recovery).map(([tenor, spread, survival]) =>
+  [Number(tenor.toFixed(4)), Number((spread * 1e4).toFixed(6)), Number(survival.toFixed(6))]);
+check('a credit curve reads as the spreads typed, each with the survival to its tenor',
       'the average hazard shown as the spread, 383bp where 230bp was typed; the cumulative -ln S '
-      + 'taken for the hazard, which reads the 5Y at 1,501bp; or the knot at nought divided by '
-      + 'nought',
-      desk.spreads([[0, 0], [1, 0.0383333], [3.00274, 0.1351233], [5.00274, 0.250137], [50, 2.5]],
-                   0.4).map(([tenor, spread]) => [tenor, Math.round(spread * 1e4)]),
-      [[1, 230], [3.00274, 270], [5.00274, 300], [50, 300]]);
+      + 'taken for the hazard, which reads the 5Y at 1,501bp; the knot at nought divided by '
+      + 'nought; the knot the curve runs on to read as a 50Y nobody typed; that knot left only '
+      + 'where it equals the spread before it to the last bit, which reads a flat 21bp back as a '
+      + '1Y and a 50Y; or the survival read as exp of the spread',
+      [readBack(LAB, 0.4), readBack(ROUTE_21, 0.4)],
+      [[[1, 230, 0.962392], [3.0027, 270, 0.873608], [5.0027, 300, 0.778694]],
+       [[1, 21, 0.996506]]]);
+check("a tenor's years are the engine's own: ACT/365 to the day the period moves the book's to",
+      'a year read as 365 days flat, 3Y at 3.0 where the route writes 3.0027; a month as 30 days, '
+      + '6M at 0.4932; the day not held to the month\'s end, 31 January and a month read as 3 '
+      + 'March; a lower-case unit unread, or a repeated one summed where the engine keeps the '
+      + 'last; or an unreadable tenor read as nought',
+      [...['1Y', '3Y', '6M', '1Y6M', '2W', '10D', '3m', '1y1y', 'soon', '']
+        .map((tenor) => desk.yearsTo(BASE, tenor)),
+       desk.yearsTo('2026-01-31', '1M') * 365, desk.yearsTo('2028-02-29', '1Y') * 365],
+      [1, 3.0027397260273974, 0.4958904109589041, 1.4986301369863013, 0.038356164383561646,
+       0.0273972602739726, 0.25205479452054796, 1, NaN, NaN, 28, 365]);
+const TERM = { recovery: '0.35', flat: false, rows: [
+  { tenor: '1Y', spread: '100' }, { tenor: ' 3Y', spread: '150' }, { tenor: '', spread: '' },
+  { tenor: '5Y', spread: '200' }] };
+const FLAT = { recovery: '0.4', flat: true, rows: [{ tenor: '2Y', spread: '120' },
+                                                  { tenor: '5Y', spread: '300' }] };
+const factor = (curve, recovery) => ({ Recovery_Rate: recovery, Curve: { '.Curve': {
+  meta: [], data: curve } } });
+check('spreads typed, curve written, spreads read: the form and the read-back are one round trip',
+      'a spread read in percent, or the recovery left out of the hazard, which writes a curve the '
+      + 'route does not; a tenor\'s hazard not scaled by its years; a row nothing is typed on '
+      + 'posted; a flat spread posted as a row, or restated as two; a grouped or a mistyped number '
+      + 'sent as anything but what it reads as; a curve restated at the convention\'s recovery '
+      + 'rather than its own; or a blank spread read as nought, which previews a survival of 100 %',
+      [desk.spreadRequest(' MARRICK ', TERM),
+       JSON.stringify(desk.survivalCurve(desk.spreadRequest('MARRICK', TERM), BASE))
+         === JSON.stringify(ROUTE_ROWS.slice(0, -1)),
+       readBack(ROUTE_ROWS, 0.35).map(([, spread]) => spread),
+       desk.spreadForm(factor(ROUTE_ROWS, 0.35), 0.4),
+       desk.spreadRequest('ALDERBY-AM', FLAT), desk.survivalCurve(
+         desk.spreadRequest('ALDERBY-AM', FLAT), BASE),
+       desk.spreadForm(factor(ROUTE_120, 0.4), 0.4), desk.spreadForm(undefined, 0.4),
+       desk.survivalCurve(desk.spreadRequest('X', desk.spreadForm(undefined, 0.4)), BASE),
+       desk.spreadRequest('X', { recovery: 'forty', flat: false, rows: [
+         { tenor: '1Y', spread: '1,250' }, { tenor: '2Y', spread: '2,5' }] })],
+      [{ counterparty: 'MARRICK', recovery: 0.35, spread: [
+        { tenor: '1Y', spread: 100 }, { tenor: '3Y', spread: 150 }, { tenor: '5Y', spread: 200 }] },
+       true, [100, 150, 200],
+       { recovery: '0.35', flat: false, rows: [{ tenor: '1Y', spread: '100' },
+         { tenor: '3Y', spread: '150' }, { tenor: '5Y', spread: '200' }] },
+       { counterparty: 'ALDERBY-AM', recovery: 0.4, spread: 120 }, ROUTE_120.slice(0, -1),
+       { recovery: '0.4', flat: true, rows: [{ tenor: '1Y', spread: '120' }] },
+       { recovery: '0.4', flat: true, rows: [{ tenor: '', spread: '' }] }, [[0, 0], [1, NaN]],
+       { counterparty: 'X', recovery: 'forty', spread: [{ tenor: '1Y', spread: 1250 },
+         { tenor: '2Y', spread: '2,5' }] }]);
+check("a refusal of a credit curve reads beside what it is about, in the route's own words",
+      'every refusal printed in one place; the spread-and-recovery sentence filed by the '
+      + 'counterparty it quotes first; a tenor that is no period filed by the act; or a seat '
+      + 'without the grant filed by the curve',
+      ["a survival curve for 'NOBODY': the record declares ALDERBY-AM, KESTREL, MARRICK - declare "
+         + 'the entity first',
+       'a survival curve is a counterparty, a positive spread in basis points or rows [{tenor, '
+         + "spread}] of them, and a recovery in [0, 1) - not 'ALDERBY-AM', -5 and 0.4",
+       "the tenors ['5Y', '3Y'] do not rise - a term structure is one spread per tenor, shortest "
+         + 'first',
+       "'soon' is not a period - a count and one of D, W, M or Y, largest unit first (3M, 1Y6M)",
+       "actor 'sales-1' holds no mark scope over 'HARBOURLINE', so no survival curve is written.",
+       'No seat is set, and this desk files every act under the seat that asks'].map(desk.refusedAt),
+      ['counterparty', 'curve', 'curve', 'curve', 'act', 'act']);
+const NETTED = { Calc: { Deals: { Deals: { Children: [
+  { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Credit_Support_Amounts: {
+    Counterparty: 'KESTREL' } } }, Children: [{ Instrument: { '.Deal': { Object: 'FXOptionDeal' } } },
+    { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Credit_Support_Amounts: {
+      Counterparty: 'ALDERBY-AM' } } } }] },
+  { Instrument: { '.Deal': { Object: 'NettingCollateralSet', Credit_Support_Amounts: {
+    Counterparty: 'KESTREL' } } } },
+  { Instrument: { '.Deal': { Object: 'NettingCollateralSet' } } }] } } } };
+const HELD = { 'SurvivalProb.NOBODY': {}, 'SurvivalProb.KESTREL': {}, 'InterestRate.USD': {} };
+check('a credit curve is stated for the entities a record declares, else for every counterparty '
+      + 'the netting sets name or a curve is held for',
+      "the record's entities passed over on a desk that records, which offers a name the route "
+      + 'refuses; a set nested under another missed; a counterparty with a curve and no set left '
+      + 'out, so its curve cannot be restated; or a name listed twice, or a set naming nobody '
+      + 'listed as a blank',
+      [desk.creditCounterparties([{ entity: 'MARRICK' }, { entity: 'ALDERBY-AM' }], NETTED, HELD),
+       desk.creditCounterparties(null, NETTED, HELD)],
+      [['ALDERBY-AM', 'MARRICK'], ['ALDERBY-AM', 'KESTREL', 'NOBODY']]);
 
 // --- XVA: a row's own currency
 const xset = (reference, currency, cva, fva) => ({ reference, currency, cva, fva, status: 'done',
@@ -330,7 +419,7 @@ check('amounts in two currencies are never added: one sum per currency the rows 
       desk.xvaTotals(VIEW).sums.map((sum) => [sum.currency, sum.cva, sum.counted, sum.countedFva]),
       [['USD', 6114.49, 1, 1], ['ZAR', 1295.26, 1, 1], [null, 10, 1, 0]]);
 
-console.log(`\n${ran} checks over 26 functions, ${missed.length} missed`);
+console.log(`\n${ran} checks over 32 functions, ${missed.length} missed`);
 if (missed.length) {
   console.log(missed.map((name) => `  ${name}`).join('\n'));
   process.exit(1);

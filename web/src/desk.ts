@@ -11,7 +11,8 @@
 import { dealRow, quoted } from './blotter';
 import { clientName, type Entity, type Position } from './positions';
 import {
-  COLLATERAL, axisText, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
+  COLLATERAL, axisText, curveOf, formatNumber, isObject, label, tenorLabel, token, uncollateralised,
+  ungrouped,
 } from './tokens';
 import type {
   BookRisk, BookXva, DealMark, DealNode, GreekRow, JobDoc, Market, Schema, XvaSet,
@@ -301,12 +302,105 @@ export function onPair(row: GreekRow, market: Market | null): GreekRow & { pair?
 
 // ---- the market as a desk reads it --------------------------------------------------------------
 
-/** A credit curve as the spreads a credit officer types: `-ln S(t)` over `t` is the average hazard
- * to each tenor, and the spread is that hazard times one less the recovery. The knot at nought
- * states no hazard and is left off. */
-export function spreads(curve: number[][], recovery: number): [number, number][] {
-  return curve.filter(([tenor]) => tenor > 0)
-    .map(([tenor, hazard]) => [tenor, (hazard / tenor) * (1 - recovery)]);
+/** The price-factor family a counterparty's credit curve is filed under, `SurvivalProb.<id>`. */
+export const SURVIVAL = 'SurvivalProb';
+
+/** A credit curve as the spreads a credit officer types, with the survival to each tenor: `-ln S(t)`
+ * over `t` is the average hazard to each tenor, and the spread is that hazard times one less the
+ * recovery. The knot at nought states no hazard, and a last knot at the spread before it only runs
+ * that spread on: both are left off. */
+export function spreads(curve: number[][], recovery: number): [number, number, number][] {
+  const read = curve.filter(([tenor]) => tenor > 0).map(([tenor, hazard]): [number, number, number] =>
+    [tenor, (hazard / tenor) * (1 - recovery), Math.exp(-hazard)]);
+  const [before, last] = read.slice(-2);
+  return last && Math.abs(last[1] - before[1]) <= RECONCILE_TOLERANCE * Math.abs(before[1])
+    ? read.slice(0, -1) : read;
+}
+
+/** Years ACT/365 from `base`, an ISO day, to that day moved by `tenor` - a count and one of D, W, M
+ * or Y each, largest first (`3M`, `1Y6M`) - the months moved on the calendar and the day held to
+ * the month's end; NaN where the tenor is not one. */
+export function yearsTo(base: string, tenor: string): number {
+  const day = /^(\d{4})-(\d{2})-(\d{2})/.exec(base);
+  const units = /^\s*([+-]?\d+\s*[DWMY]\s*)+$/i.test(tenor)
+    ? [...tenor.matchAll(/([+-]?\d+)\s*([DWMY])/gi)] : [];
+  if (!day || !units.length) return NaN;
+  const by = (unit: string) =>
+    Number(units.filter((part) => part[2].toUpperCase() === unit).pop()?.[1] ?? 0);
+  const months = 12 * (+day[1] + by('Y')) + (+day[2] - 1) + by('M');
+  const [year, month] = [Math.floor(months / 12), months - 12 * Math.floor(months / 12)];
+  const held = Math.min(+day[3], new Date(Date.UTC(year, month + 1, 0)).getUTCDate());
+  const moved = Date.UTC(year, month, held + 7 * by('W') + by('D'));
+  return (moved - Date.UTC(+day[1], +day[2] - 1, +day[3])) / 86_400_000 / 365;
+}
+
+/** A credit curve as the officer types it: the recovery, and one flat spread - the first row's - or
+ * a spread in basis points per tenor. */
+export type SpreadForm = { recovery: string; flat: boolean; rows: { tenor: string; spread: string }[] };
+
+/** What `POST /book/survival` takes: a typed number as the number, anything else as typed. */
+export type SpreadRequest = {
+  counterparty: string; recovery: number | string;
+  spread: number | string | { tenor: string; spread: number | string }[];
+};
+
+const typed = (text: string): number | string => {
+  const plain = ungrouped(text.trim());
+  return plain !== '' && isFinite(Number(plain)) ? Number(plain) : plain;
+};
+
+/** The request a form states: a flat spread as one number, else every row anything is typed on. */
+export function spreadRequest(counterparty: string, form: SpreadForm): SpreadRequest {
+  return {
+    counterparty: counterparty.trim(), recovery: typed(form.recovery),
+    spread: form.flat ? typed(form.rows[0]?.spread ?? '')
+      : form.rows.filter((row) => `${row.tenor}${row.spread}`.trim())
+        .map((row) => ({ tenor: row.tenor.trim(), spread: typed(row.spread) })),
+  };
+}
+
+/** The curve `POST /book/survival` writes on the book's `base` day, to its last tenor - `spreads`
+ * read backwards: each row's spread a hazard s/(1-R) from nought to its tenor, a flat spread a row
+ * at a year, and a value typed that is no number none. The service runs the last row's line on. */
+export function survivalCurve({ spread, recovery }: SpreadRequest, base: string): number[][] {
+  const rows = Array.isArray(spread) ? spread : [{ tenor: '1Y', spread }];
+  const number = (value: unknown) => (typeof value === 'number' ? value : NaN);
+  return [[0, 0], ...rows.map((row) => {
+    const years = yearsTo(base, row.tenor);
+    return [years, ((number(row.spread) / 1e4) * years) / (1 - number(recovery))];
+  })];
+}
+
+/** The form a counterparty's curve opens in: the factor's spreads read back at the recovery it
+ * states - one alone a flat spread - else one blank row at the factor's `convention`. */
+export function spreadForm(factor: unknown, convention: number): SpreadForm {
+  const curve = curveOf(token(factor, 'Curve'));
+  const recovery = Number(token(factor, 'Recovery_Rate') ?? convention);
+  const rows = (curve ? spreads(curve.data, recovery) : []).map(([tenor, spread]) => ({
+    tenor: tenorLabel(tenor), spread: String(+(spread * 1e4).toPrecision(12)) }));
+  return { recovery: String(recovery), flat: rows.length < 2,
+           rows: rows.length ? rows : [{ tenor: '', spread: '' }] };
+}
+
+/** Where the survival route's refusal reads: its counterparty's by the counterparty, one about the
+ * spread, the recovery or the tenors by them, any other - a seat without the grant - by the act. */
+export function refusedAt(sentence: string): 'counterparty' | 'curve' | 'act' {
+  return /^a survival curve for /.test(sentence) ? 'counterparty'
+    : /^(a survival curve is |the tenors )|is not a period/.test(sentence) ? 'curve' : 'act';
+}
+
+/** Who a credit curve is stated for: on a desk that records, the entities its record declares; on
+ * one that does not, the counterparties the book's netting sets name and those a curve is held for. */
+export function creditCounterparties(entities: Entity[] | null, doc: JobDoc | null,
+                                     factors: Record<string, unknown>): string[] {
+  if (entities) return entities.map((entity) => entity.entity).sort();
+  const named = (nodes: DealNode[]): unknown[] => nodes.flatMap((node) => [
+    token(node.Instrument['.Deal'].Credit_Support_Amounts, 'Counterparty'),
+    ...named(node.Children ?? [])]);
+  const held = Object.keys(factors).filter((name) => factorFamily(name) === SURVIVAL)
+    .map((name) => name.slice(SURVIVAL.length + 1));
+  return [...new Set([...named(doc?.Calc.Deals.Deals.Children ?? []), ...held])]
+    .filter((id): id is string => typeof id === 'string' && id !== '').sort();
 }
 
 // ---- what a table of a run's results is in ------------------------------------------------------
@@ -363,7 +457,8 @@ export function marksTotal(rows: DealMark[]): number {
   return rows.reduce((total, row) => total + row.value, 0);
 }
 
-/** Relative, because summing the same rows in a different order moves the last bits. */
+/** Relative, because one number reached by two roads - the same rows summed in a different order -
+ * differs in its last bits. */
 export const RECONCILE_TOLERANCE = 1e-9;
 
 /** Whether `mtm` is the sum of the per-deal rows, which the service promises it is on any book.
