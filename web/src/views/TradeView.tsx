@@ -220,7 +220,8 @@ function Origin({ recording, held, history, quote }: {
           </div>
         ) : quote === null && <div className="hint">No quote this desk gave landed here.</div>}
         {showing && (read.error ? <div className="error-box">{read.error}</div>
-          : pending ? <TicketCard pending={pending} /> : <div className="hint">reading its ticket…</div>)}
+          : pending ? <TicketCard pending={pending} />
+            : <div className="hint">reading its ticket…</div>)}
         {!recording ? null : tickets.length > 0 ? (
           <div className="tablewrap">
             <table className="data desk">
@@ -345,7 +346,8 @@ function History({ recording, history, deal }: {
                             <Fragment key={moved.field}>
                               <dt title={moved.field}>{moved.words}</dt>
                               <dd><FieldView value={moved.was} descriptor={moved.declared} />
-                                {' → '}<FieldView value={moved.became} descriptor={moved.declared} />
+                                {' → '}
+                                <FieldView value={moved.became} descriptor={moved.declared} />
                                 {moved.unit && <span className="hint"> {moved.unit}</span>}</dd>
                             </Fragment>
                           ))}

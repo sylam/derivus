@@ -139,7 +139,9 @@ function Tickets({ worklist }: { worklist: Worklist }) {
           : 'approve, or refuse with a reason'}</span></h3>
         <div className="nested">
           {(desk.error ?? quotes.error) && (
-            <div className="error-box">the desk's quotes did not answer: {desk.error ?? quotes.error}</div>
+            <div className="error-box">
+              the desk's quotes did not answer: {desk.error ?? quotes.error}
+            </div>
           )}
           {said && (
             <div className="statusrow">

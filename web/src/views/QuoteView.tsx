@@ -145,10 +145,15 @@ function Stands({ row, window, now }: { row: QuoteGiven; window: number | null; 
   return (
     <>
       <span className={`chip ${CHIP[word] ?? ''}`}>{STANDS[word]}</span>
-      {until && <span className="hint"> {word === 'firm' ? 'until' : 'since'} {stampText(until)}</span>}
+      {until && (
+        <span className="hint"> {word === 'firm' ? 'until' : 'since'} {stampText(until)}</span>
+      )}
       {row.booked && (
         <button className="tradelink" title="open the trade's page"
-                onClick={(event) => { event.stopPropagation(); openTrade(dispatch, row.booked!.deal_path); }}>
+                onClick={(event) => {
+                  event.stopPropagation();
+                  openTrade(dispatch, row.booked!.deal_path);
+                }}>
           {' '}{String(landed ?? row.booked.deal_path)} ›
         </button>
       )}
@@ -158,7 +163,8 @@ function Stands({ row, window, now }: { row: QuoteGiven; window: number | null; 
 
 /** A standing's words. */
 const STANDS: Record<string, string> = {
-  booked: 'booked as', accepted: 'accepted, not booked', firm: 'firm', lapsed: 'past its firm window',
+  booked: 'booked as', accepted: 'accepted, not booked', firm: 'firm',
+  lapsed: 'past its firm window',
   quoted: 'quoted, with no firm window',
 };
 
@@ -177,7 +183,9 @@ function QuoteList({ listed, window, now }: {
       <div className="nested">
         {listed.error && <div className="error-box">{listed.error}</div>}
         {!listed.data && !listed.error && <div className="hint">reading the desk's quotes…</div>}
-        {listed.data && !rows.length && <div className="hint">This desk has given no quote yet.</div>}
+        {listed.data && !rows.length && (
+          <div className="hint">This desk has given no quote yet.</div>
+        )}
         {rows.length > 0 && (
           <div className="tablewrap">
             <table className="data desk quotes">
