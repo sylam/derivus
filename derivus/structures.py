@@ -2024,7 +2024,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
 
     `spot` names the market this quote was struck on: `value_market` is the pair as the client
     quotes it, READ off the document the legs priced against rather than taken from the caller,
-    beside the caller's `source` ('terminal' or 'book') and its `note`.
+    beside the caller's `source` ('terminal' or 'book') and its `note`. `forward` is the pair's
+    outright to the ticket's delivery on that same axis (`forward_rate`).
 
     THE SALES MARGIN. `margin` is `{'amount': 50000.0, 'currency': 'ZAR'}`, what the desk charges,
     stated as money in whatever currency it was agreed in. It crosses to the pricing currency at
@@ -2099,7 +2100,7 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
     surface = probe.deal['FX_Volatility']
     halves = quote_two_way(market, surface)
     # the coordinate THIS ticket solves: a parameter solve has one only where the ticket leaves a
-    # blank, and the forward it may be placed about is priced once, only if it is asked for
+    # blank, and the forward it may be placed about is priced once, for the solve and the outcome
     moved = [field for field in (step.field if isinstance(step, Solve) else structure.unknown(
         params, probe.to_market(spot))[0] for step in solves) if field]
     forward = functools.lru_cache(maxsize=None)(lambda: forward_rate(book, params))
@@ -2162,6 +2163,8 @@ def quote(document, structure_name, params, spot_source=None, netting_set=None, 
         # from the caller; the caller owns only the account of where it came from
         'spot': dict({'source': 'book', 'note': None}, **(spot_source or {}),
                      value_market=legs[0].to_market(spot)),
+        # the pair's outright to the ticket's delivery, in the market terms the spot is quoted in
+        'forward': forward(),
         # every number above is CLIENT-frame; the desk's capture is said once under its own name,
         # and it IS the charge, so it is non-negative by construction
         'edge': levied,

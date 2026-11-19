@@ -346,6 +346,24 @@ def test_a_straddle_is_exactly_its_two_legs(book):
     assert [row['solved'] for row in outcome['legs']] == [None, None], 'a straddle solves nothing'
 
 
+def test_a_quote_gives_the_outright_forward_to_its_delivery(book):
+    """A quote carries the pair's outright FORWARD to its delivery, on the axis its spot is quoted
+    on: a unit of each currency received that day, each discounted on its own curve. Rand at 7% and
+    dollars at 2% ACT/365, a 1Y tenor dealt Friday 2024-06-28: the spot settles Tuesday 2 July and
+    the outright delivers 2025-07-02, 365 days of carry, so USDZAR 18.5 x exp(0.05) = 19.4485,
+    whichever side of the pair the notional is in.
+
+    Killing mutation: the forward reported as the spot it was struck on.
+    """
+    document = copy.deepcopy(book)
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors']['InterestRate.ZAR'][
+        'Curve'] = json.loads(dump(utils.Curve([], [[0.0, 0.07], [5.0, 0.07]])))
+    outright = SPOT * math.exp(0.05 * 365 / 365)
+    for side in ('ZAR', 'USD'):
+        quoted = structures.quote(document, 'Straddle', params(strike=SPOT, notional_currency=side))
+        assert quoted['forward'] == pytest.approx(outright, rel=1e-9), side
+
+
 def test_a_quotes_money_says_the_currency_it_is_in(book):
     """Every money a quote carries is in ONE currency, the book's reporting currency, and the
     outcome names it. The same straddle on the same market reported in rand is every dollar amount

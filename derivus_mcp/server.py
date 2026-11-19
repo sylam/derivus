@@ -1231,7 +1231,8 @@ async def solve_structure(structure: str, params: dict, netting_set: str | None 
 
     A quote prices on the LIVE spot when this workstation's terminal is up, and on the book's last
     ticked one - with the reason named - when it is not; the outcome's `spot` block says which was
-    used (`value_market`, the pair as quoted, with `source` and `note`).
+    used (`value_market`, the pair as quoted, with `source` and `note`), and `forward` is the
+    pair's outright to the delivery, quoted the same way.
 
     Where the book's vol quotes carry a two-way, every leg is still priced at the MID and what the
     market charges for the spread is levied where the margin is - on the coordinate the recipe
