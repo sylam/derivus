@@ -7026,8 +7026,7 @@ class FXBinaryOption(FXOptionDeal):
     vernacular = 'FX digital, binary option, cash-or-nothing, asset-or-nothing'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Price_Fixing', 1,
                         expires='Expiry_Date')
-    exposure = FX_OPTION._replace(amount='Payoff', currency='Currency', underlying='Underlying_Currency',
-                                  digital=('Payoff_Style', 'Cash', 'Asset'))
+    exposure = FX_OPTION._replace(amount='Payoff', digital=('Payoff_Style', 'Cash', 'Asset'))
     fields = [ADMIN, FX_ADMIN, FXOPTIONBASE, own('FXBinaryOption', [
         F('Payoff', 'Float', default=REQUIRED, sized=True),
         F('Payoff_Style', 'Text', default='Cash', convention=True, values=['Cash', 'Asset']),
@@ -7071,7 +7070,7 @@ class FXRangeAccrualDeal(Deal):
     vernacular = 'FX range accrual, corridor, fairway, digital strip'
     observes = Observes(('Underlying_Currency', 'Currency'), 'FxRate', 'Observation_Dates', 1)
     # at each observation a digital call bought at the lower bound and one sold at the upper
-    exposure = tuple(Exposure('Payoff', 'Currency', 'Underlying_Currency', long=('Buy_Sell', side), strike=bound,
+    exposure = tuple(Exposure('Payoff', 'Underlying_Currency', 'Currency', long=('Buy_Sell', side), strike=bound,
                               call=True, digital=True, per='Observation_Dates')
                      for side, bound in (('Buy', 'Lower_Barrier'), ('Sell', 'Upper_Barrier')))
     fields = [ADMIN, FX_STRIP_ADMIN, own('FXRangeAccrualDeal', [

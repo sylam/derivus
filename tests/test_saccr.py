@@ -741,6 +741,9 @@ def world(tmp_path_factory):
             'DIGITAL_MARGINED': (THRESHOLD, [node(binary('CALL', expiry=BASE + pd.DateOffset(days=2),
                                                          Settlement_Date=years(1)))]),
             'DIGITAL_PAIR': ({}, [node(binary('CALL')), node(binary('PUT', 'Put'))]),
+            **{name: ({}, [node(binary('CALL', expiry=BASE - pd.offsets.BDay(1), Settlement_Date=BASE + pd.DateOffset(
+                days=7), Price_Fixing=[[BASE - pd.offsets.BDay(1), 50.5]], **terms))]) for name, terms in (
+                    ('DIGITAL_FIXED', {}), ('ASSET_FIXED', {'Payoff': 1e3, 'Payoff_Style': 'Asset'}))},
             'ASSET': ({}, [node(binary(reference, kind, Payoff=1e3, Payoff_Style='Asset'))
                            for reference, kind in (('CALL', 'Call'), ('PUT', 'Put'))]),
             'DIGITALS': ({}, [node(deal) for deal in DIGITALS]),
@@ -1863,6 +1866,28 @@ def test_an_asset_or_nothing_digital_is_its_vanilla_and_a_cash_digital_of_its_un
     assert rows['Value'].notna().tolist() == [True, False, True, False], rows
 
 
+def test_a_digital_its_expiry_has_fixed_pays_known_cash_and_reads_no_row(world):
+    """CRE52.10 AND CRE52.31: AN OPTION PAST ITS EXPIRY IS NO LONGER ONE. The share digital paying
+    100,000 dollars, which expired the business day before at a print of 50.5, inside its band from
+    47.50 to 52.50, and pays in a week, owes what is known: no row, its value in V alone, 100,000
+    e^(-0.04 x 7/365) = 99,923.32. The same digital paying a thousand shares reads its vanilla alone,
+    as an expired option does: delta one on what the expiry fixed, 50.5 over 50, on d 50,000, at the
+    ten business days its maturity is floored at, (10/250)^0.5 = 0.2; its cash digital of 50,000 is
+    known and reads none.
+
+    Killing mutation: the expired digital read as a collar - the cash digital's row at delta one,
+    the collar's limit inside its band, D 200,000; the asset's digital row beside its vanilla.
+    """
+    _, output = world
+    found = netting_sets(output)
+    assert trades(output, 'DIGITAL_FIXED').empty and found.loc['DIGITAL_FIXED', 'AddOn_Equity'] == 0.0, found
+    assert found.loc['DIGITAL_FIXED', 'V'] == pytest.approx(1e5 * math.exp(-0.04 * 7 / 365), rel=1e-12), found
+    row = trades(output, 'ASSET_FIXED')
+    assert list(zip(row['Component'], row['AdjustedNotional'], row['Delta'])) == [
+        ('ASSET_FIXED_CALL vanilla', 5e4, 1.0)], row
+    assert row['MaturityFactor'].tolist() == pytest.approx([0.2], rel=1e-15), row
+
+
 def test_every_digital_type_reads_the_collar_of_its_terms(world):
     """CRE52.42(1) AND CRE52.42(3); A CONVENTION FOR A BARRIER OR A TOUCH, CRE52 STATING NEITHER'S
     DELTA. The share digital knocked out above 70 reads the plain digital's row, its barrier unread.
@@ -1876,9 +1901,9 @@ def test_every_digital_type_reads_the_collar_of_its_terms(world):
     1.3 is on 1,000,000 / 0.13 euros, 9,615,384.62 dollars, P the average's current value, 1.235325:
     0.253152.
 
-    Killing mutations: a type declaring no exposure - the run refused by name; an FX digital on the
-    currency it is paid in - the euro digital read on the dollar, d 1,250,000 and delta -0.001984;
-    the no-touch the one-touch's sign - +0.028780.
+    Killing mutations: a type declaring no exposure - the run refused by name; the euro digital
+    declared on the dollar it pays in - d 1,250,000 and delta -0.001984; the no-touch the
+    one-touch's sign - +0.028780.
     """
     _, output = world
     rows, columns = trades(output, 'DIGITALS'), ['Delta', 'AdjustedNotional', 'MaturityFactor', 'EffectiveNotional']
@@ -1979,8 +2004,8 @@ def test_a_range_accrual_is_a_digital_bought_at_its_lower_bound_and_one_sold_at_
     a month out and +0.490378 and -0.498175 two; M its settlement, 62/360. Each cap, 10,000 / 4% =
     250,000, is out of reach; the add-on 4% of 0.414997 x 5,569.10, 92.45.
 
-    Killing mutations: the upper digital bought - its deltas +0.583618 and +0.498175; an FX digital
-    on the currency it is paid in - every row on the dollar, d 125,000 and its delta under 1e-8.
+    Killing mutations: the upper digital bought - its deltas +0.583618 and +0.498175; the range
+    declared on the dollar it pays in - every row's d 125,000 and its delta under 1e-8.
     """
     _, output = world
     rows = trades(output, 'RANGE')
@@ -2001,6 +2026,8 @@ def test_a_range_accrual_is_a_digital_bought_at_its_lower_bound_and_one_sold_at_
     (EQUITY_LEG, (), 'SET_LEG is a EquitySwapLeg, which declares no exposure CRE52 reads'),
     (STRIPS[2], (), 'SET_EXTENDABLE is a FXExtendableForwardDeal, whose extension is an option on a strip of '
                     'forwards CRE52 states no delta for'),
+    (dict(STRIPS[0], InvertedTarget='Yes'), (), "SET_TARF is a FXTARFOptionDeal whose accrual is on the reciprocal "
+                                                "of its pair, where CRE52's reading at its strike as stated does not hold"),
     *[(touch(kind, 'TOUCH', 1.4, Underlying_Currency='EUR', FX_Volatility='EUR.USD', Delivery_Date=years(1)), (),
        'SET_TOUCH is a {}, which declares no exposure CRE52 reads'.format(kind))
       for kind in ('FXOneTouchOption', 'FXNoTouchOption')],
@@ -2012,14 +2039,18 @@ def test_a_trade_whose_exposure_the_declarations_do_not_state_is_refused_by_name
         tmp_path, deal, drop, said):
     """A TRADE IS READ THROUGH ITS DECLARATIONS. An equity swap leg, whose type declares no
     exposure; an extendable forward, whose right to extend its strip of forwards is an option CRE52
-    states no delta for; an FX one-touch and no-touch, whose payout may be in the currency their
-    barrier prices, which no collar of a cash digital reads; an equity forward, which does declare
-    one, under a mapping classing its type in no asset class; and a default swap on a survival curve
-    the mapping rates nothing: each refuses the run by name.
+    states no delta for; a TARF stating `InvertedTarget`, whose fixings pay N1 max(c(1/K - 1/S), 0)
+    on the reciprocal of its pair, not the option at its strike (its calls alone on a million
+    euros struck at 1.0 are worth 392,309.89 stated so and 491,715.33 blank, the vanilla's
+    1,000,000 sum (F - 1) DF); an FX one-touch and no-touch, whose payout may be in the currency
+    their barrier prices, which no collar of a cash digital reads; an equity forward, which does
+    declare one, under a mapping classing its type in no asset class; and a default swap on a
+    survival curve the mapping rates nothing: each refuses the run by name.
 
     Killing mutations: a type declaring no exposure skipped - the leg's set valued and its EAD
     written, nothing refused; a strip of no options read as its fixings - a `KeyError` on the
-    expiry its declaration leaves unstated.
+    expiry its declaration leaves unstated; the reciprocal TARF read at its strike - its set valued,
+    nothing refused.
     """
     mapping = mapping_file(tmp_path / 'mapping.json', drop)
     with pytest.raises(ValueError, match='SACCR: trade ' + said):

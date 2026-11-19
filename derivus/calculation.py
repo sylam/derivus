@@ -5398,7 +5398,8 @@ class SACCR(NettingSetCalculation):
     kind on its amount and selling one of the other kind on its geared amount, its target, knock-in
     and knock-out unread (a convention: CRE52 states none, and a strip read to its end never
     understates it), a range accrual a digital call bought at its lower bound and one sold at its
-    upper; an extendable forward, its extension an option on a strip of forwards, refuses by name.
+    upper; an extendable forward, its extension an option on a strip of forwards, and a TARF
+    accruing on the reciprocal of its pair (`InvertedTarget`) refuse by name.
     A credit entity's rating is the mapping's `SACCR.Rating` under its survival curve, AAA to CCC a
     single name and IG or SG an index; an equity is an index where its price's SIMM bucket is 11 or
     12, Risk_Equity's index buckets; a commodity's type is its price's SIMM bucket, whose
@@ -5440,8 +5441,9 @@ class SACCR(NettingSetCalculation):
     digital paying Q at K the collar of 52.42(3), one row, a bought and a sold option of its kind at
     0.95K and 1.05K each on Q / (0.1K) units, its delta theirs less, its effective notional,
     margined and not, at most Q crossed over SF, one paying its units the vanilla on them, sold for
-    a put, and the cash digital of them at K, two rows named by the deal (52.42(4)), an FX digital
-    on its pair's currency it is not paid in, a barrier digital its digital's, its barrier unread,
+    a put, and the cash digital of them at K, two rows named by the deal (52.42(4)), past its
+    expiry the cash it pays known and read by no row, its value V's alone, an FX digital on its
+    pair's currency it is not paid in, a barrier digital its digital's, its barrier unread,
     an equity or commodity touch the digital at its barrier, Up a call and Down a put, a no-touch
     its negative (a convention: CRE52 states no touch's delta), a
     rate option's P and K shifted by its currency's `option_shift`
@@ -5497,7 +5499,9 @@ class SACCR(NettingSetCalculation):
         '(CRE52 states none: a convention, the strip read to its end, which never understates it). A',
         'range accrual buys a digital call at its lower bound and sells one at its upper at each',
         'observation. An extendable forward refuses the run by name: its extension is an option on a',
-        'strip of forwards, which CRE52 states no delta for. The inputs are:',
+        'strip of forwards, which CRE52 states no delta for; so does a TARF stating',
+        '**InvertedTarget**, whose fixings pay on the reciprocal of its pair, not at its strike as',
+        'stated. The inputs are:',
         '',
         '- **Currency** the exposures are in, and **Base Date** they are read at.',
         '- **Mapping**: per instrument type its asset class (`SACCR.Asset_Class`), per credit factor its',
@@ -5547,7 +5551,9 @@ class SACCR(NettingSetCalculation):
         'one\'s less the sold one\'s, its effective notional, margined and not, at most $Q$ crossed over',
         'its supervisory factor. One paying its units is the vanilla on them, sold for a put, and the',
         'cash digital of them at $K$, two rows, each `Component` the deal and "vanilla" or "digital"',
-        '(CRE52.42(4)). An FX digital is read on the currency of its pair it is not paid in.',
+        '(CRE52.42(4)). Past its expiry what a digital pays in cash is known: it reads no row, its',
+        'value in $V$ alone, and one paying units reads its vanilla alone. An FX digital is read on',
+        'the currency of its pair it is not paid in.',
         'A barrier digital is its digital, the barrier unread; an equity or commodity touch is the',
         'digital at its barrier, Up a call and Down a put, a no-touch its negative (CRE52 states no',
         'touch\'s delta: a convention); the',
@@ -5968,11 +5974,15 @@ class SACCR(NettingSetCalculation):
         """A strip's fixings (52.43): its `parts`' rows at each row of the table they deal their
         amount `per` whose first cell, the day it fixes and T, is still to come, one fixed reading
         none, its value V's alone; `Component` the deal, that day and the field its part differs
-        from the others' in, its strike or else its amount. A strip of no options refuses by name."""
+        from the others' in, its strike or else its amount. A strip of no options, and one accruing on
+        the reciprocal of its pair (`InvertedTarget`), refuse by name."""
         fields, reference = deal.field, deal.field.get('Reference')
         if not parts[0].strike:
             raise ValueError('SACCR: trade {} is a {}, whose extension is an option on a strip of forwards CRE52 '
                              'states no delta for'.format(reference, fields['Object']))
+        if fields.get('InvertedTarget'):
+            raise ValueError("SACCR: trade {} is a {} whose accrual is on the reciprocal of its pair, where CRE52's "
+                             'reading at its strike as stated does not hold'.format(reference, fields['Object']))
         named = 'strike' if len({part.strike for part in parts}) > 1 else 'amount'
         return [dict(row, Component='{} {:%Y-%m-%d} {}'.format(reference, day, getattr(part, named)))
                 for day, *_ in fields[parts[0].per] if day >= self.valuation['Base_Date']
@@ -5984,14 +5994,10 @@ class SACCR(NettingSetCalculation):
         in cash, one row, the collar of 52.42(3): a bought and a sold option of its kind at 0.95K and
         1.05K, each on Q / (0.1K) units, its delta theirs less, |D| at most Q crossed over SF; paid
         in units, two, the vanilla on them, sold for a put, and the cash digital of them at K
-        (52.42(4)), named by the deal. An FX digital is on its pair's currency it is not paid in."""
+        (52.42(4)), named by the deal. Its expiry behind the base date, the cash it pays is known and
+        reads no row, its value V's alone."""
         fields, reference = deal.field, deal.field.get('Reference')
-        asset = self.asset(deal)
-        # in cash, or where its field states a value after that in units of its underlying
-        paid = terms.digital and (terms.digital is True or fields[terms.digital[0]] == terms.digital[1] or (
-            fields[terms.digital[0]] in terms.digital[2:] and 'units'))
-        if paid and asset == 'FX' and fields[terms.currency] == deal.payoff_ccy:
-            terms = terms._replace(currency=terms.underlying, underlying=terms.currency)
+        asset, paid = self.asset(deal), terms.pays(fields)
         if isinstance(fields[terms.amount], dict):
             # a leg: S, E and M its periods' first start, last end and last pay day; a commodity's
             # units each period's volume at its price multiplier (52.36), else its notional averaged
@@ -6048,6 +6054,10 @@ class SACCR(NettingSetCalculation):
         if not terms.strike:
             return [self.entry(asset, hedging, subclass, bucket, notional, side, maturity, mpor)]
         strike, expiry = fields[terms.strike], expiry or fields[terms.expiry]
+        known = expiry < self.valuation['Base_Date']
+        if paid == 'cash' and known:
+            # its expiry has fixed the cash it pays: its value V's alone
+            return []
         spread = supervisory['option_volatility'] * math.sqrt(self.years(expiry))
         shift = self.shifts.get(hedging, 0.0) if asset == 'IR' else 0.0
         forward = (self.mean(asset, deal, terms) if terms.average else self.underlying(
@@ -6063,6 +6073,11 @@ class SACCR(NettingSetCalculation):
             return self.black(flip * side, flip * math.log(forward / (level + shift)), spread, call == (flip > 0))
         if not paid:
             return [self.entry(asset, hedging, subclass, bucket, notional, black(strike), maturity, mpor)]
+        rows = [] if paid == 'cash' else [dict(self.entry(
+            asset, hedging, subclass, bucket, notional, black(strike) * (1.0 if call else -1.0), maturity, mpor),
+            Component='{} vanilla'.format(reference))]
+        if known:
+            return rows
         # Q per unit of its amount: one of cash, a unit's strike
         cash = strike if paid == 'units' else 1.0
         digital = self.entry(asset, hedging, subclass, bucket, notional * cash / (0.1 * strike), black(
@@ -6070,9 +6085,7 @@ class SACCR(NettingSetCalculation):
         limit = size * cash * self.fx(deal.payoff_ccy) / supervisory['factor']
         digital.update({key: math.copysign(min(abs(digital[key]), limit), digital[key])
                         for key in ('EffectiveNotional', 'Unmargined')})
-        return [digital] if paid is True else [dict(self.entry(
-            asset, hedging, subclass, bucket, notional, black(strike) * (1.0 if call else -1.0), maturity, mpor),
-            Component='{} vanilla'.format(reference)), dict(digital, Component='{} digital'.format(reference))]
+        return rows + [digital if paid == 'cash' else dict(digital, Component='{} digital'.format(reference))]
 
     def add_ons(self, rows, column):
         """`[add-on]` per asset class over a set's trade `rows`, each effective notional its

@@ -3017,6 +3017,39 @@ def test_a_range_accrual_is_sized_at_its_payoff_at_every_observation_to_come(rec
         pytest.approx(AMOUNT * 0.08 * 367 / 365, rel=1e-14)
 
 
+#: A digital call a year out on a share at 50 paying 100,000 dollars, and one on the rand paying
+#: 100,000 dollars.
+DIGITAL = {'Object': 'EquityBinaryOption', 'Reference': 'DIGITAL', 'Currency': 'USD', 'Discount_Rate': 'USD',
+           'Equity': 'EQ', 'Equity_Volatility': 'EQ', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+           'Strike_Price': 50.0, 'Payoff': 1e5, 'Expiry_Date': BASE + pd.DateOffset(years=1)}
+FX_DIGITAL = {'Object': 'FXBinaryOption', 'Reference': 'FX_DIGITAL', 'Currency': 'USD', 'Underlying_Currency': 'ZAR',
+              'Discount_Rate': 'USD', 'FX_Volatility': 'USD.ZAR', 'Buy_Sell': 'Buy', 'Option_Type': 'Call',
+              'Strike_Price': USDZAR, 'Payoff': 1e5, 'Expiry_Date': BASE + pd.DateOffset(years=1),
+              'Delivery_Date': BASE + pd.DateOffset(years=1)}
+
+
+def test_a_cash_digital_is_sized_at_its_payout_and_one_paying_shares_at_their_price(recorded, quoting):
+    """A DIGITAL PAYING CASH DEALS ITS PAYOUT, in the currency its settlement pays it in; ONE PAYING
+    UNITS DEALS THEM AT TODAY'S PRICE (CRE52.36). On a share at 50, a digital call paying 100,000
+    dollars carries 100,000 and the same paying a thousand shares 1,000 x 50 = 50,000; a digital
+    call on the rand paying 100,000 dollars carries 100,000: an automatic tier capped at 200,000
+    signs each.
+
+    Killing mutation: the cash digital read as units - its 100,000 as shares at 50, 5,000,000,
+    passed to four eyes.
+    """
+    document = json.loads(quoting.read_text())
+    document['Calc']['MergeMarketData']['ExplicitMarketData']['Price Factors'].update(json.loads(dump(
+        dict(EQUITY, **{INDEX: dict(EQUITY[INDEX], Spot=50.0)}))))
+    quoting.write_text(json.dumps(document, indent=2), newline='\n')
+    capped(recorded, 2e5)
+    for deal, size in ((DIGITAL, 1e5), (dict(DIGITAL, Reference='SHARES', Payoff=1e3, Payoff_Style='Asset'), 5e4),
+                       (FX_DIGITAL, 1e5)):
+        dealt = booked(deal, 'EXEC-' + deal['Reference'])
+        assert dealt['written'] is True and dealt['tier']['name'] == 'auto', dealt
+        assert dollars(quoting, dealt['deal_path']) == size, deal['Reference']
+
+
 #: A swap buying a million dollars for rand a month out and 100,000 rand back for dollars a year
 #: out - 1,850,000 dollars on this book's axis.
 SWAP = {'Object': 'FXSwapDeal', 'Reference': 'SWAP', 'Near_Buy_Far_Sell_Ccy': 'USD',

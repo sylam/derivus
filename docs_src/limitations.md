@@ -266,12 +266,11 @@ Grouped by where a validator meets them.
   a TARF whose fixed rows have reached its target, worth only what they owe, still reads each
   fixing after them, which never understates it. A barrier digital's barrier is unread, as a
   barrier option's is, and a touch, whose delta CRE52 states nowhere, reads as the European
-  digital at its barrier on its expiry, Up a call and Down a put, a no-touch its negative. A
-  digital whose expiry has passed and whose payment has not reads the collar's limit on the print
-  it fixed, one inside the band from 95% to 105% of its strike and nothing outside it, though
-  what it pays is known. An extendable forward refuses the run by name, its extension an option
-  on a strip of forwards CRE52 states no delta for; an FX touch declares no exposure, its payout
-  possibly in the currency its barrier prices, which no collar of a cash digital reads.
+  digital at its barrier on its expiry, Up a call and Down a put, a no-touch its negative. An
+  extendable forward refuses the run by name, its extension an option on a strip of forwards CRE52
+  states no delta for, and so does a TARF stating `InvertedTarget`, whose fixings pay on the
+  reciprocal of its pair; an FX touch declares no exposure, its payout possibly in the currency
+  its barrier prices, which no collar of a cash digital reads.
 - **The replay tuple pins neither build nor device** (2026-10-11). `engine_version` is a hand-set
   string, no commit, torch, CUDA or device is recorded, and `Deterministic_Kernels` defaults to
   `No`, so bit-for-bit replay holds only on one build, stack and device, and for a GPU gradient only

@@ -129,12 +129,22 @@ Observes = namedtuple('Observes', 'index family table column elects expires moni
 #: its steps; `other` an FX trade's amount in that other currency, where its terms state one; `runs`
 #: the (field, value) under which it runs to its end, else settling at its start; `average` the
 #: field stating what has fixed of the average an option is on; `digital` the (field, value) of a
-#: digital paying its amount in cash, any value after it one paying it in units of its underlying,
-#: True always the first; `end` its last day, the last its tenor fields name where None; `per` the
-#: table a strip deals its amount again at every row of, each row's first cell the day it fixes, an
-#: option's expiry. A type of several declares each.
-Exposure = namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
-                                  'amortisation other runs average digital end per', defaults=(None,) * 15)
+#: digital paying its amount in cash, in the currency its settlement states, any value after it one
+#: paying it in units of its underlying, True always the first (`pays`); `end` its last day, the
+#: last its tenor fields name where None; `per` the table a strip deals its amount again at every
+#: row of, each row's first cell the day it fixes, an option's expiry. A type of several declares
+#: each.
+class Exposure(namedtuple('Exposure', 'amount currency underlying price start long strike expiry call '
+                                      'amortisation other runs average digital end per', defaults=(None,) * 15)):
+    __slots__ = ()
+
+    def pays(self, fields):
+        """How a deal stating `fields` pays the amount this declares: 'cash' a digital paying it,
+        'units' one paying it in units of its underlying, None no digital."""
+        digital = self.digital
+        if digital is True or digital and fields[digital[0]] == digital[1]:
+            return 'cash'
+        return 'units' if digital and fields[digital[0]] in digital[2:] else None
 
 #: Amounts fixed today (`Exposure`): no risk factor CRE52 charges, their value in V alone.
 KNOWN_CASH = Exposure(None)

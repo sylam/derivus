@@ -1273,9 +1273,10 @@ def deal_size(market, base, deal):
     largest of its children's, never its own terms. An amount is its field's, an FX trade's other
     side too where it states one (`other`, CRE52.35), a table's its largest `sized` cell, units' at
     today's price of one where `market` states that as one number, in the price's currency
-    (CRE52.36), and a strip's times its rows dated on or after `base` (`per`, CRE52.37(4)); amounts
-    fixed today are the cash their settlements state (`schema.Cash`). Empty where the type declares
-    none."""
+    (CRE52.36), and a strip's times its rows dated on or after `base` (`per`, CRE52.37(4)); a
+    digital paying cash its amount in the currency its settlement states (`Exposure.pays`), the
+    deal's own where that is blank; amounts fixed today are the cash their settlements state
+    (`schema.Cash`). Empty where the type declares none."""
     def sized(field, value):
         # every amount `field` declares in `value`: itself, or its sub-fields' or its rows' cells
         if field.sub_fields and isinstance(value, dict):
@@ -1303,6 +1304,10 @@ def deal_size(market, base, deal):
                 rows if isinstance(rows, list) else [])) if part.per else 1
             amounts = [times * max(sized(declared[key], fields.get(key)), default=0.0)
                        for key in (part.amount, part.other) if key]
+            if part.pays(fields) == 'cash':
+                stated += [(fields.get(cash.currency or 'Currency') or fields.get('Currency'), amounts[0])
+                           for *_, cash in declared_settlements(cls)]
+                continue
             if part.currency:
                 # an FX trade stating its other side too is the larger of the two (CRE52.35)
                 stated += zip([fields.get(part.currency), fields.get(part.underlying)], amounts)
