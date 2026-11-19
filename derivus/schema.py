@@ -183,7 +183,8 @@ class F(object):
     `Cash` per payment that day, which is what its diary announces (`declared_settlements`).
 
     `factors` names the price-factor types the field's value refers to; discovery finds a deal's
-    factors through them (`declared_factors`).
+    factors through them (`declared_factors`), and a front end offers the book's factors of those
+    types for it - a table's per column, as `settles` is.
     """
     # 'Surface' covers BOTH shaped types (a Space is a tenor-keyed surface), so a renderer branches
     # on the value's row arity, never on the token.
@@ -240,6 +241,8 @@ class F(object):
             d['side'] = True
         if self.settles:
             d['settles'] = [cash._asdict() for cash in self.settles]
+        if self.factors:
+            d['factors'] = list(self.factors)
         if self.values is not None:
             d['values'] = self.values
         if self.bind is not None:
@@ -255,6 +258,8 @@ class F(object):
             if any(f.settles for f in self.row.fields):
                 d['settles'] = {f.name: [cash._asdict() for cash in f.settles]
                                 for f in self.row.fields if f.settles}
+            if any(f.factors for f in self.row.fields):
+                d['factors'] = {f.name: list(f.factors) for f in self.row.fields if f.factors}
         if self.sub_fields is not None:
             # a container holds its children, rather than naming entries in a store beside it
             d['sub_fields'] = {f.key: f.descriptor() for f in self.sub_fields}

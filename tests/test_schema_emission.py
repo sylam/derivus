@@ -411,6 +411,38 @@ def test_a_containers_default_is_what_its_children_offer():
     assert not wrong, wrong
 
 
+def test_a_field_naming_a_price_factor_publishes_the_types_it_names():
+    """A field whose value names a price factor publishes the types it names, so a screen offers
+    the book's factors of those types for it: every deal field's declared `factors` reaches the
+    section a front end reads - a table's per column, as `settles` is - and each names a type the
+    Factor store publishes. A client's counterparty names its `SurvivalProb`; a cash collateral
+    row its currency's `FxRate` and two `InterestRate` curves.
+
+    Killing mutation: `F.descriptor` leaving `factors` out, which publishes none.
+    """
+    def walk(f, d):
+        yield f, d
+        for child in f.sub_fields or []:
+            yield from walk(child, d['sub_fields'][child.key])
+
+    sections = INSTRUMENT['sections']
+    pairs = [pair for groups in declared_classes().values() for group in groups
+             for top in group.fields for pair in walk(top, sections[group.name][top.key])]
+    for f, d in pairs:
+        columns = {c.name: list(c.factors) for c in (f.row.fields if f.row else ()) if c.factors}
+        assert d.get('factors') == (columns or list(f.factors) or None), f.key
+    named = {name for _, d in pairs for found in [d.get('factors') or []]
+             for names in (found.values() if isinstance(found, dict) else [found])
+             for name in names}
+    assert {'InterestRate', 'FxRate', 'FXVol', 'SurvivalProb'} <= named <= set(FACTOR['types'])
+    terms = INSTRUMENT['sections']['NettingCollateralSet.Fields']
+    assert terms['Credit_Support_Amounts']['sub_fields']['Counterparty']['factors'] == [
+        'SurvivalProb']
+    assert terms['Collateral_Assets']['sub_fields']['Cash_Collateral']['factors'] == {
+        'Currency': ['FxRate'], 'Collateral_Rate': ['InterestRate'],
+        'Funding_Rate': ['InterestRate']}
+
+
 def test_no_class_is_hidden_from_the_create_menu():
     """`groups` is the Workbench's create-deal menu and stays hand-curated, being presentation. So
     it is the one part of the store that can still drift from the classes: a deal type absent from
